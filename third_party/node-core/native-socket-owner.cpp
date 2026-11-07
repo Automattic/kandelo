@@ -16,7 +16,7 @@ struct KandeloSocketState {
   JSContext* cx;
   KandeloSocketState* next = nullptr;
   std::unique_ptr<kandelo::socket::Owner> socket;
-  std::unique_ptr<kandelo::socket::Lease> accepted;
+  std::unique_ptr<PersistentRootedObject> accepted;
   std::unique_ptr<KandeloSocketWriteMaterial> write;
   std::shared_ptr<kandelo::socket::Read> delivering;
   std::unique_ptr<PersistentRootedObject> pending, liveRoot;
@@ -32,7 +32,7 @@ struct KandeloSocketState {
   explicit KandeloSocketState(JSContext* context) : cx(context) {}
   void RefreshMemory() noexcept {
     allocation.Resize(sizeof(KandeloSocketState) + claims.MaterialBytes() +
-        (accepted ? sizeof(kandelo::socket::Lease) : 0) +
+        (accepted ? sizeof(PersistentRootedObject) : 0) +
         (pending ? sizeof(PersistentRootedObject) : 0) +
         (liveRoot ? sizeof(PersistentRootedObject) : 0) +
         (readClaim ? sizeof(kandelo::memory::Claim) : 0) +
@@ -46,9 +46,10 @@ struct KandeloSocketState {
     socket->Close(); readClaim.reset(); pending.reset(); closing = true;
     RefreshMemory();
   }
+  void CloseAccepted();
   void Close() {
     if (socket) socket->Close();
-    accepted.reset();
+    CloseAccepted();
     write.reset();
     delivering.reset(); readClaim.reset(); inflightReadClaim.reset();
     pending.reset(); liveRoot.reset(); closing = false;
@@ -86,11 +87,22 @@ static const JSClass KandeloSocketConnectClass = {
 static const JSClass KandeloSocketWriteClass = {
   "WriteWrap", JSCLASS_HAS_RESERVED_SLOTS(SocketSlots) | JSCLASS_FOREGROUND_FINALIZE,
   &KandeloSocketOwnerClassOps};
-// A pre-publication accepted descriptor is a capability, never an AsyncWrap
-// identity or a bare integer waiting for a JavaScript constructor to finish.
+// A null-prototype publication capability roots the actual already-initialized
+// accepted TCP owner. The capability has no fabricated AsyncWrap identity.
 static const JSClass KandeloAcceptedSocketClass = {
   "KandeloAcceptedSocket", JSCLASS_HAS_RESERVED_SLOTS(SocketSlots) | JSCLASS_FOREGROUND_FINALIZE,
   &KandeloSocketOwnerClassOps};
+void KandeloSocketState::CloseAccepted() {
+  if (!accepted) return;
+  // The persistent root keeps this actual owner/state alive even if both
+  // token and closed handle would otherwise be finalized in the same GC.
+  const Value slot = JS::GetReservedSlot(*accepted, SocketState);
+  auto* owner = slot.isUndefined() ? nullptr : static_cast<KandeloSocketState*>(slot.toPrivate());
+  if (owner) owner->BeginClose();
+  accepted.reset();RefreshMemory();
+}
+static bool KandeloCreateSocketOwner(JSContext* cx, MutableHandleObject result,
+                                     kandelo::socket::Lease* prior);
 static KandeloSocketState* KandeloAcceptedSocketState(JSContext* cx, HandleValue value) {
   JSObject* object = value.isObject() ? js::CheckedUnwrapStatic(&value.toObject()) : nullptr;
   if (!object || JS::GetClass(object) != &KandeloAcceptedSocketClass) {
@@ -105,39 +117,59 @@ static KandeloSocketState* KandeloAcceptedSocketState(JSContext* cx, HandleValue
 }
 static bool KandeloResolveAcceptedSocket(JSContext* cx, HandleObject promise, int fd) {
   kandelo::socket::Lease prior(fd);
+  // Poll dispatch need not still be in the realm that registered the accept.
+  // The actual request Promise owns the creation realm of its TCP and token.
+  JSAutoRealm realm(cx, promise);
   RootedObject token(cx, JS_NewObjectWithGivenProto(cx, &KandeloAcceptedSocketClass, nullptr)); if (!token) return false;
   std::unique_ptr<KandeloSocketState> preparing;
   try {
     preparing = std::make_unique<KandeloSocketState>(cx);
-    preparing->accepted = std::make_unique<kandelo::socket::Lease>();
     preparing->claims.Add(preparing->allocation.Handle(), KandeloNativeMemoryOwner(cx));
     preparing->RefreshMemory();
   } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
+  RootedObject owner(cx);
+  // Pinned ConnectionWrap creates the real client TCPWRAP before onconnection
+  // enters Socket construction/drop/blocklist getters. The candidate keeps
+  // fd -1 through init, then the existing transaction adopts the actual lease.
+  if (!KandeloCreateSocketOwner(cx, &owner, &prior)) return false;
+  auto* actual = static_cast<KandeloSocketState*>(JS::GetReservedSlot(owner, SocketState).toPrivate());
+  bool rooted = false;
+  auto closeUnrooted = mozilla::MakeScopeExit([&] { if (!rooted) actual->BeginClose(); });
+  try { preparing->accepted = std::make_unique<PersistentRootedObject>(cx, owner); }
+  catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
+  rooted = true;preparing->RefreshMemory();
   auto* state = preparing.release();
   JS::SetReservedSlot(token, SocketState, PrivateValue(state));
   state->next = gKandeloSocketOwners; gKandeloSocketOwners = state;
-  MOZ_RELEASE_ASSERT(state->accepted->Adopt(prior));
   bool resolved = false;
-  auto rollback = mozilla::MakeScopeExit([&] { if (!resolved) state->Close(); });
+  auto rollback = mozilla::MakeScopeExit([&] { if (!resolved) state->CloseAccepted(); });
   RootedValue result(cx, ObjectValue(*token));
-  // Promise resolution can invoke a then getter. Both roots and the actual
-  // lease remain owned through that reentry and any allocation failure.
+  // Keep the null-prototype capability: publishing a mutable TCP prototype
+  // directly would add an inherited then-getter assimilation/reentry path.
   if (!JS::ResolvePromise(cx, promise, result)) return false;
   resolved = true; return true;
+}
+static KandeloSocketState* KandeloAcceptedOwnerState(JSContext* cx, KandeloSocketState* token) {
+  if (!token->accepted) {
+    JS_ReportErrorASCII(cx, "Accepted TCP lease has already retired or transferred"); return nullptr;
+  }
+  const Value slot = JS::GetReservedSlot(*token->accepted, SocketState);
+  auto* owner = slot.isUndefined() ? nullptr : static_cast<KandeloSocketState*>(slot.toPrivate());
+  if (!owner || owner->detached || owner->cx != cx || !owner->socket || owner->socket->Fd() < 0) {
+    JS_ReportErrorASCII(cx, "Accepted TCP owner has already closed"); return nullptr;
+  }
+  return owner;
 }
 static bool KandeloNativeAcceptedSocketFd(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   auto* state = KandeloAcceptedSocketState(cx, args.get(0)); if (!state) return false;
-  if (!state->accepted || state->accepted->Fd() < 0) {
-    JS_ReportErrorASCII(cx, "Accepted TCP lease has already retired or transferred"); return false;
-  }
-  args.rval().setInt32(state->accepted->Fd()); return true;
+  auto* owner = KandeloAcceptedOwnerState(cx, state);if (!owner) return false;
+  args.rval().setInt32(owner->socket->Fd()); return true;
 }
 static bool KandeloNativeCloseAcceptedSocket(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   auto* state = KandeloAcceptedSocketState(cx, args.get(0)); if (!state) return false;
-  if (state->accepted) state->accepted->Close();
-  args.rval().setUndefined(); return true;
+  state->CloseAccepted();args.rval().setUndefined(); return true;
 }
 static KandeloSocketState* KandeloSocketOwnerState(JSContext* cx, HandleObject object,
                                                     bool allowWrite = false) {
@@ -679,13 +711,12 @@ static bool KandeloNativeAdoptSocket(JSContext* cx, unsigned argc, Value* vp) {
 static bool KandeloNativeAdoptAcceptedSocket(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   auto* state = KandeloAcceptedSocketState(cx, args.get(0)); if (!state) return false;
-  if (!state->accepted || state->accepted->Fd() < 0) {
-    JS_ReportErrorASCII(cx, "Accepted TCP lease has already retired or transferred"); return false;
-  }
-  RootedObject owner(cx);
-  // Init can throw, close the lease or adopt it reentrantly. No raw fd is
-  // released on failure. The token still owns it until actual Owner::Adopt.
-  if (!KandeloCreateSocketOwner(cx, &owner, state->accepted.get())) return false;
+  if (!KandeloAcceptedOwnerState(cx, state)) return false;
+  // Transfer the same already-initialized real owner exactly once. No second
+  // TCPWRAP construction/init or raw-fd adoption belongs in Socket's getter path.
+  RootedObject owner(cx, *state->accepted);
+  if (!JS_WrapObject(cx, &owner)) return false;
+  state->accepted.reset();state->RefreshMemory();
   args.rval().setObject(*owner); return true;
 }
 static bool KandeloSocketConnectFailure(JSContext* cx, HandleObject owner,

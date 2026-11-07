@@ -6856,3 +6856,7 @@ Source168 normalizes actual native kill errno through unchanged pinned ErrnoExce
 ### Test snapshot update CLI source ownership
 
 Source169 admits --test-update-snapshots in the actual command-line owner, preserves execArgv and projects its real boolean to the test option reader. It rejects the option and negation in NODE_OPTIONS before applying values, following the pinned policy. Existing SnapshotManager/filesystem/VM/serializer algorithms own the writes and real errors. Current component controls do not establish guest startup, JSAPI projection or four-host behavior. See [scope](../tests/nodejs/outline/snapshot-activation-integration.md).
+
+### Accepted TCP resource publication source ownership
+
+Source170 constructs the real accepted TCP owner before publication and retains it behind the existing null-prototype capability. Adoption returns that same owner once; unclaimed cleanup queues close of the actual owner. Accept completions detach their watch before JS init/rejection and return without a stale raw next pointer. Listener ownership, native callback/fatal phases and other dispatcher branches remain gaps. See [scope](../tests/nodejs/outline/accepted-tcp-owner-integration.md).

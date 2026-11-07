@@ -1,0 +1,75 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network.md",
+    "findingIds": [
+      "N-013",
+      "N-018"
+    ],
+    "relatedDocuments": [
+      "tests/nodejs/audit/network-contracts.md"
+    ],
+    "relatedFamilies": [
+      "network",
+      "async",
+      "streams",
+      "engine"
+    ],
+    "scope": "Accepted-resource identity/init timing and watch reentry subset; actual listener/nativecallback/fullServer findings remain open"
+  },
+  "sourceImplemented": [
+    "Construct/root real accepted TCP owner before null-prototype capability publication, retaining original descriptor lease transaction",
+    "Transfer that same real owner once with wrap-before-transfer; unclaimed/error/drop cleanup begins actual queued close",
+    "Enter actual Promise creation realm, keep owner/state rooted across failure/finalization and preserve actual resource allocation claims",
+    "Detach accepted watch before JS init/rejection and return before retaining raw next across reentry; preserve current Signal/UDP/snapshot hooks"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tcp170-source-r1/report.json",
+    "sha256": "0bc58514c6d3f25084adbfdd9726c5df78d680756d8cf231d566fd4cd1a1e2b7",
+    "guardedInputs": 786,
+    "scope": "Current actual bootstrap accepted publication/adoption source with real native TCPWrap boundaries,4scenarios/12accepts plus unchanged getter reference. CandidateSM/init/watch/lifecycle/fatal/listener and guest/fourhost remain unvalidated."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tcp170-affected-r1.json",
+    "sha256": "07cd7a9fba9e15f1f70d858032dc1a8eeafeaa45cd82b1917e81f4d7a295e8f6",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tcp170-source-r1/report.json",
+    "sha256": "0bc58514c6d3f25084adbfdd9726c5df78d680756d8cf231d566fd4cd1a1e2b7",
+    "nativeBoundaryScenarios": 4,
+    "actualAccepts": 12,
+    "unchangedNativeGetterReference": true,
+    "candidateSpiderMonkeyExecuted": false,
+    "scope": "Current actual publication/adoption source with actual native TCPWrap boundary and limited Socket wrapper, not candidateSM or fullServer"
+  },
+  "sealedEvidence": {
+    "report": ".context/tcp-accepted-owner-agent/REPORT.json",
+    "sha256": "aa3e49efd8ef456fbb470e8f89d149d427ec8fe7bfb996ea50be984b5441c587",
+    "reusedEvidence": true,
+    "scope": "4native-boundary scenarios/12accepts, unchanged getter reference,26sourcechecks; candidateSM/init/watch unexecuted and0compiles"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tcp-accepted-owner-agent/SEAL.json",
+      "sha256": "7dfc6fc85eac3df3c236bbd00a3e8ead6b44d25e271ce6815396eb175ee202ff",
+      "kind": "native-reference-probe-and-source-harness-errors",
+      "reason": "Original exit138 from private fd read during native init and initial source-check harness failure retained; no vendor defect inferred"
+    }
+  ],
+  "remaining": [
+    "Actual listenerTCPWRAP/defaulttrigger/frame/nativeonconnection and Promise-vs-native fatal phases",
+    "Selectedcurrentengine compile and actual nativeJSAPI/GC/CCW/OOM/context lifecycle",
+    "Other legacywatch reentry/full SocketServer ref/fd/generation/relisten/options/transfer/dispose and allfourhosts"
+  ],
+  "at": "2026-11-07T01:32:31.141393+00:00",
+  "recipeRevision": 170,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -53,3 +53,35 @@ The initial root staging check rejected blank context whitespace in the new
 engine patch. A zero-context serialization replays to the exact same canonical
 engine source with zero fuzz. The original patch/log remain preserved; no
 runtime source or upstream assertions changed for this formatting correction.
+
+## Accepted owner initialization followup
+
+The null-prototype accepted capability now roots an actual TCP owner created
+in native acceptance before Promise publication. That owner's existing
+transaction initializes the real TCPWRAP and then transfers the actual accepted
+fd from its stack Lease. Later Socket adoption returns the same owner instead
+of constructing a second resource after user getters. Persistent-root storage
+keeps native owner/state valid even when token and closed owner could otherwise
+be finalized in one GC. Unclaimed token, drop or failed publication begins the
+actual owner's queued close; consumed capabilities cannot close another fd.
+
+The accepted-watch completion unlinks and owns its watch before owner init or
+rejection can reenter JavaScript. It returns after that completion instead of
+resuming a saved raw list-next pointer after listener/other-watch close/rearm.
+This engine delta composes over identified UDP165 source; other legacy watch
+branches and the overall dispatcher still need independent reentry review.
+
+A focused actual-native-TCPWrap component exercises four scenarios/twelve
+accepted connections over extracted candidate publication/adoption source:
+concurrent identity, inherited-then isolation, pre-construction drops and
+constructor-getter failure disposal. The unchanged native reference separately
+observes an actual accepted owner before the getter and original uncaught error
+identity. These execute native Node boundaries and a limited Socket wrapper,
+not the candidate SpiderMonkey owner/init/watch implementation.
+
+A real listener TCPWRAP/default-trigger/native callback owner is still missing.
+Do not substitute a numeric async ID or claim listener/accepted trigger parity
+from this slice. Promise-delivered constructor/listener failures still differ
+from native callback/fatal boundaries. Production compilation, moving-GC/CCW/
+OOM/context shutdown and identified four-host runtime evidence remain open.
+No whole engine/kernel/product build or overall suite was run for this slice.

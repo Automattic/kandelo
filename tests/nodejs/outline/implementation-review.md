@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source170 integrates actual pre-publication accepted TCP ownership and watch reentry fencing.4current native-boundary scenarios/12accepts plus unchanged getter reference and14package checks pass; listener/guest/fatal/fourhost remain open.
+See [source scope](accepted-tcp-owner-integration.md).
+
 Source169 integrates real snapshot-update CLI activation.8current public pairs match native, including preserved missing/changed failures and real identical file bytes;13CLI pairs are reused with identical actual parser source.14package checks pass; guest/fourhost remain open.
 See [source scope](snapshot-activation-integration.md).
 

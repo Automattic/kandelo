@@ -1501,3 +1501,14 @@ of applying net.isIP's stricter zone grammar to the whole string. Real native
 channel configuration and canonical server reads are exercised by focused
 native components; this does not establish query/provider/guest conformance.
 See [DNS owner scope](../../tests/nodejs/outline/dns-channel-implementation-dependencies.md).
+
+### Accepted TCP owner initialization source followup
+
+Accepted capabilities now retain the real native TCP owner constructed before
+Promise publication and before Socket constructor/drop/blocklist getters.
+Socket adoption consumes that same owner once, and unclaimed capability cleanup
+uses its actual queued close. Accepted watch completion detaches before native
+init can reenter JS and returns before using a stale list-next pointer. Listener
+resource/trigger and native onconnection/fatal-vs-Promise semantics remain
+implementation gaps; source-only JSAPI changes do not close them. See [TCP
+owner scope](../../tests/nodejs/outline/tcp-agent-integration.md).
