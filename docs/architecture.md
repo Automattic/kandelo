@@ -7035,11 +7035,14 @@ only on the active-watch path.
 
 `benchmarks/desktop-latency/` contains an external macOS owned-window
 observer, separate from Kandelo's production rendering path. Its native
-pixel matcher compares sparse calibrated foreground samples at bounded
-candidate positions. Ambiguous and missing matches are observations, not
-successful responses. Calibration alone may request window rasters; timed
-matching emits scalar identities and scores. The Node/browser graphics
-contract is unchanged by this diagnostic.
+legacy pixel matcher compares sparse calibrated foreground samples at bounded
+candidate positions. A separate opt-in complete-response matcher checks every
+pixel in the old and new response rectangles in one frame, including a fresh
+response-bound challenge, background and old-position erasure. Its synthetic
+expected pixels are specified independently of captured candidate images.
+Ambiguous and missing matches are observations, not successful responses.
+Calibration may request window rasters; timed matching emits scalar identities
+and scores. The Node/browser graphics contract is unchanged by this diagnostic.
 
 The current recorder observes a selected-display crop with no window
 exclusions. Each callback checks the exact owned window, foreground/visibility,
@@ -7793,3 +7796,19 @@ with no live operation can be unlinked. These are cold ownership operations;
 warmed selectors and unused graphics features acquire no added scans or native
 queries. Node/browser execution, coherent application builds, conformance and
 native-feel measurements remain separate acceptance requirements.
+
+
+The complete-response control uses an explicit selected-display ROI policy.
+It retains owned PID/window/foreground/geometry checks and overlay metadata,
+while determining response visibility from actual unfiltered display pixels.
+The recorder rejects legacy sparse matcher commands in that mode before
+changing state. This prevents a sparse configuration from inheriting relaxed
+rectangle authority. Synthetic source challenges paint with the response;
+unarmed originals and failures remain in the evidence ledger. The standalone
+launcher copies and seals its authored source/config closure before compiling
+or executing it and refuses changed origin or sealed inputs afterward.
+
+Integrated Swift/Node and three-engine headless controls validate these tooling
+contracts only. Physical opaque/partial/hidden-window adversarial controls and
+observer overhead remain unqualified. No complete-presentation coverage,
+originating native layer, application latency or native-feel claim follows.

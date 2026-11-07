@@ -28,6 +28,22 @@ import CoreGraphics
   try validateOwnedDisplayWindows(expected:target,current:target,above:[invisibleOverlay])
   let invalidOverlay=DisplayWindowRecord(id:43,owner:999,bounds:window,alpha:Double.nan,onScreen:true)
   rejects{try validateOwnedDisplayWindows(expected:target,current:target,above:[invalidOverlay])}
+  // ROI policy permits overlap metadata, never a replacement owned identity.
+  try validateOwnedDisplayWindows(expected:target,current:target,above:[overlay],responseROI:true)
+  rejects{try validateOwnedDisplayWindows(expected:target,current:replacement,above:[overlay],responseROI:true)}
+  var snapshots=[[String:Any]]()
+  rejects{try validateOwnedDisplaySnapshot(expected:target,current:target,above:[overlay],diagnostic:{snapshots.append($0)})}
+  precondition(snapshots.count==1 && (snapshots[0]["expected"] as? [String:Any])?["id"] as? UInt32 == 42)
+  _=try JSONSerialization.data(withJSONObject:snapshots)
+  rejects{try validateOwnedDisplaySnapshot(expected:target,current:nil,above:nil,diagnostic:{snapshots.append($0)})}
+  precondition(snapshots.count==2 && snapshots[1]["inventoryComplete"] as? Bool == false)
+  _=try JSONSerialization.data(withJSONObject:snapshots)
+  let invalidBounds=DisplayWindowRecord(id:43,owner:123,bounds:CGRect(x:Double.nan,y:0,width:1,height:1),alpha:1,onScreen:true)
+  rejects{try validateOwnedDisplayWindows(expected:target,current:target,above:[invalidBounds],responseROI:true)}
+  try requireRecorderMatcherPolicy(responseROI:false,decision:false)
+  try requireRecorderMatcherPolicy(responseROI:true,decision:true)
+  rejects{try requireRecorderMatcherPolicy(responseROI:true,decision:false)}
+  rejects{try requireRecorderMatcherPolicy(responseROI:false,decision:true)}
   print("Display crop/overlay/replacement/visibility authority controls passed; model fixtures only, no screen access or capture started.")
  }
 }

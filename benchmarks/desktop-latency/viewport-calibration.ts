@@ -11,7 +11,7 @@ export function viewportMarkers(width: number, height: number): ViewportMarker[]
     { x: width - 24, y: height - 24, rgb: [171, 31, 223] },
   ];
 }
-export function calibrateViewport(raster: WindowRaster, markers: ViewportMarker[]) {
+export function calibrateViewport(raster: WindowRaster, markers: ViewportMarker[], diagnostic?: (value: unknown) => void) {
   assert(Number.isInteger(raster.width) && raster.width > 0 && raster.width <= 2048);
   assert(Number.isInteger(raster.height) && raster.height > 0 && raster.height <= 2048);
   assert(Number.isInteger(raster.stride) && raster.stride >= raster.width * 4 && raster.stride <= 12288);
@@ -46,6 +46,11 @@ export function calibrateViewport(raster: WindowRaster, markers: ViewportMarker[
     return { scale, offset: targetMean - scale * sourceMean };
   };
   const x = fit('x'), y = fit('y');
+  // Retain actual fit values BEFORE a refusal. Only owned scalar copies leave
+  // this helper: a diagnostic cannot mutate the very geometry being checked.
+  diagnostic?.({ x: { ...x }, y: { ...y }, found: found.map(p => ({
+    x: p.x, y: p.y, count: p.count, sourceX: p.source.x, sourceY: p.source.y, bounds: { ...p.bounds },
+  })) });
   assert(Math.abs(x.scale / y.scale - 1) <= .03, 'Viewport mapping is distorted');
   const maxResidual = Math.max(...found.map(p => Math.hypot(
     p.x - (x.offset + x.scale * p.source.x), p.y - (y.offset + y.scale * p.source.y))));

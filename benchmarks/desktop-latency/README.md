@@ -263,3 +263,44 @@ plus0.25ms native clock guards. A broad interval such as[0,1000] is uncertain,
 not proof that the observer caught the delay. Missing informative nonresponse
 frames may therefore refuse native calibration; no clock guard, output pixel,
 full-presentation claim or desktop acceptance criterion is relaxed.
+
+### Complete response-ROI metrology prototype
+
+`run-response-control.sh <private-output> headless` exercises a separate,
+opt-in dense proof for synthetic DOM and worker content. It does not qualify
+Freeciv/ScummVM or replace their independent scene/reference admission.
+The old sparse cursor/template API and default native rectangle guard remain.
+
+Each trial configures, without painting, a fresh128-bit challenge. The original
+key event paints that challenge inside the same cursor sprite/worker canvas
+response. Every pixel of the old sprite/background rectangle and new
+sprite/background rectangle must match ONE complete captured frame: new pose,
+fresh code and old-position erasure. Candidate after-images never train this
+oracle. The same Swift matcher runs offline and in the recorder. All input
+offers, unmatched/ambiguous rows, errors and refusals stay evidence.
+
+The explicit native `response-roi` policy preserves the selected-display crop
+with no exclusions, owned PID/geometry/foreground checks and bounded overlay
+inventories. Intersecting bounds are diagnostic; accepted pixels must prove
+the declared response. This claims neither whole-window unocclusion nor the
+native layer supplying identical pixels. An exact fresh-pixel clone can show
+the desired content while layer attribution remains unresolved.
+
+Headless screenshots have synthetic geometry/time and never provide native
+latency. The prototype keeps `qualifiedNative:false` and
+`completePresentationCoverage:false`; actual physical positive/negative
+controls, native clock/known-stall qualification and instrumentation overhead
+must be recorded separately before promoting the method. Captured display
+samples do not establish unobserved guest frames or exact physical photons.
+Visible mode operates only a new owned browser and requires a freshly
+scheduled authorized unlocked session. Do not launch it to diagnose source
+or headless failures.
+
+The standalone response launcher copies its complete authored benchmark/config
+closure before compiling, re-executes the copied launcher and runs copied
+Swift/TypeScript. Node/Playwright dependencies are explicit read-only links,
+with dependency declarations and executable identities recorded separately.
+Both original and sealed source closures are verified before and after the
+run, including added/deleted files; mutation fails the launcher even if a
+child produced results. Private source-custody controls exercise actual sealed
+JS execution after origin mutation and refuse changed origin/seal/namespace.

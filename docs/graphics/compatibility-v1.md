@@ -26919,3 +26919,45 @@ This establishes the unused-row footprint on that target and compiler,
 not execution of a Wasm test, Wasm64 layout, compilation of the kernel
 wasm_api integration, SDK/browser behavior, B5 activation or performance.
 Both earlier std-harness failures remain preserved separately.
+
+
+### Complete response-region tooling integration, 2026-11-07 (R770)
+
+The opt-in measurement prototype now checks both complete old/new response
+regions, including background, erasure and a fresh response-bound 128-bit
+challenge. An actual causal control shows the old sparse matcher accepting
+an opaque lookalike that restores its sampled points; the complete-region
+matcher rejects it. The recorder refuses sparse matcher commands under the
+new ROI policy before state changes. Unarmed original inputs persist before
+refusal. The launcher executes copied authored sources with pre/post source
+and namespace verification; declared dependency installations remain separate.
+Why comments explain those ownership, ordering and oracle invariants.
+
+Root composition matches all 40 frozen source hashes from prototype r4,
+patch SHA256 4d6aada106df4a751330cc36a0b3db0262a5cd8fd115cbbb487f13e77d407032.
+Actual integrated positive job R770 passes 47 seconds: all six engine/mode
+cells on Chromium, Firefox and WebKit retain five responses, no-op and known
+delay controls, with 44 authored source/config inputs sealed and unchanged.
+Integrated negative job passes 14 seconds: 36 raster controls plus six
+unarmed-input custody cells. Strict types, 24 Node/Swift controls and three
+actual source-custody mutation controls pass the 4-second followup. Its first
+component aggregate compiles Swift and passes pure authority checks, then
+fails at a missing host-compiler locator in the copied tree. The followup
+uses the declared compiler explicitly and reuses the verified binary; no
+source change or repeated Swift compilation hides that failure.
+
+Producer r1/r2 review findings and original failures remain preserved.
+The first Chromium-worker startup geometry refusal remains unexplained;
+later successful runs are not presented as its cause or fix. The earlier
+wrong-response fixture failure was an exact predecessor image before new
+content was presented; the corrected fixture waits an independently specified
+presentation witness. The producer's expected source-error cohort retains
+all six original inputs/offers/refusals; its aggregate judge-field failure
+and read-only corrected judgment remain separate. Exact root results are in
+integration's private graphics-response-integration-r770/judgment.json.
+
+All current results are source/model/headless evidence. Physical selected-
+display occlusion/hidden-window controls, actual application response oracles,
+source-to-display distributions, native/main comparison and instrumentation
+overhead remain required. Production graphics, ABI 56/3/17/21 and stage order
+are unchanged. This does not announce a complete B1 preview.

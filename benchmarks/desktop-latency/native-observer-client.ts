@@ -71,9 +71,9 @@ export class NativeWindowObserver implements WindowObserver {
   private stopping = false;
   private id = 0;
   stderr = '';
-  constructor(binary: string, title: string, owners: number[], width: string) {
+  constructor(binary: string, title: string, owners: number[], width: string, policy?: 'response-roi') {
     assert(owners.length && owners.every(Number.isInteger));
-    this.child = spawn(binary, [title, owners.join(','), width], { stdio: ['pipe', 'pipe', 'pipe'] });
+    this.child = spawn(binary, [title, owners.join(','), width, ...(policy?[policy]:[])], { stdio: ['pipe', 'pipe', 'pipe'] });
     this.child.on('error', e => this.stream.fail(e));
     this.child.stdin.on('error', e => this.stream.fail(e));
     this.child.stderr.on('data', b => { this.stderr += b; if (this.stderr.length > 1_000_000) {

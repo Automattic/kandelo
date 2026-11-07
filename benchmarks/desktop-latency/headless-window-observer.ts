@@ -11,23 +11,29 @@ export class HeadlessWindowObserver implements WindowObserver {
   // The native observer retains its independent ten-second response deadline.
   readonly stream = new ObservationRows(30_000);
   private configuration: any;
+  private decision: any;
   private snapshots: string[] = [];
   private snapshotIds = new Set<string>();
   private index = 0;
-  constructor(private page: any, private binary: string) {
+  constructor(private page: any, private binary: string, private decisionMode = false) {
     this.stream.receive({ kind: 'ready', native: false, syntheticGeometry: true });
   }
   command(line: string) {
     this.stream.check();
-    if (line.startsWith('matcher ')) {
-      this.configuration = JSON.parse(line.slice(8));
+    try {
+    if (line.startsWith('decision ')) {
+      assert(this.decisionMode);this.decision=JSON.parse(line.slice(9));this.configuration=undefined;this.stream.receive({kind:'decision-configured',tag:this.decision.tag});
+    } else if (line.startsWith('matcher ')) {
+      assert(!this.decisionMode,'Legacy sparse matcher is incompatible with response-roi mode');
+      this.configuration = JSON.parse(line.slice(8));this.decision=undefined;
       this.stream.receive({ kind: 'matcher-configured', tag: this.configuration.tag });
     } else if (line.startsWith('pixels ')) {
       const id = line.slice(7);
       assert(id && id.length <= 128 && this.snapshots.length < 4 && this.snapshotIds.size < 16 && !this.snapshotIds.has(id));
       this.snapshotIds.add(id); this.snapshots.push(id);
-    } else if (line === 'matcher-clear') this.configuration = undefined;
+    } else if (line === 'matcher-clear') {this.configuration = undefined;this.decision=undefined;}
     else throw new Error('Unknown headless observer command');
+    } catch(error) {this.stream.fail(error as Error);throw error;}
   }
   async flush() {
     try {
@@ -38,11 +44,12 @@ export class HeadlessWindowObserver implements WindowObserver {
       await this.page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
       const viewport = this.page.viewportSize();
       assert(viewport, 'A fixed viewport is required for replay');
-      const mapping = { x: { scale: .75, offset: 7 }, y: { scale: .75, offset: 53 } } as any;
+      const scale=this.decisionMode?1:.75;
+      const mapping = { x: { scale, offset: 7 }, y: { scale, offset: 53 } } as any;
       const acquisitionStartN = performance.now();
       let raster;
       try {
-        raster = await screenshotRaster(this.page, undefined, { width: Math.round(viewport.width * .75) + 16, height: Math.round(viewport.height * .75) + 64, mapping });
+        raster = await screenshotRaster(this.page, undefined, { width: Math.round(viewport.width * scale) + 16, height: Math.round(viewport.height * scale) + 64, mapping });
       } finally {
         const acquisitionEndN = performance.now();
         this.stream.receive({ kind: 'headless-acquisition', acquisitionStartN, acquisitionEndN,
@@ -56,6 +63,8 @@ export class HeadlessWindowObserver implements WindowObserver {
         input: JSON.stringify({ configuration: this.configuration, ...raster, bgra }) + '\n',
         encoding: 'utf8', maxBuffer: 1_000_000,
       }));
+      if(this.decision)frame.decisionMatch=JSON.parse(execFileSync(this.binary,[],{
+        input:JSON.stringify({decision:this.decision,...raster,bgra})+'\n',encoding:'utf8',maxBuffer:1_000_000}));
       this.stream.receive(frame);
       for (const id of this.snapshots.splice(0)) this.stream.receive({ ...frame, ...raster, kind: 'pixels', id, bgra });
       } while (waiting && this.stream.pendingCount > 0);

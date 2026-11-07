@@ -1,7 +1,8 @@
 import Foundation
 
 private struct PixelRequest: Decodable {
-  let configuration: PixelMatcherConfiguration
+  let configuration: PixelMatcherConfiguration?
+  let decision: DecisionConfiguration?
   let width: Int
   let height: Int
   let stride: Int
@@ -20,12 +21,20 @@ private struct PixelRequest: Decodable {
           let bytes = Data(base64Encoded: request.bgra),
           bytes.count == request.stride * request.height
         else { throw PixelMatcherError.invalid("offline raster size") }
-        let matcher = try PixelMatcher(request.configuration)
-        let result = try bytes.withUnsafeBytes { raw in
-          try matcher.match(bgra: raw.bindMemory(to: UInt8.self), width: request.width,
-            height: request.height, stride: request.stride)
-        }
-        var encoded = try JSONEncoder().encode(result)
+        var encoded: Data
+        if let configuration=request.configuration,request.decision==nil {
+          let matcher=try PixelMatcher(configuration)
+          let result=try bytes.withUnsafeBytes {raw in
+            try matcher.match(bgra:raw.bindMemory(to:UInt8.self),width:request.width,height:request.height,stride:request.stride)
+          }
+          encoded=try JSONEncoder().encode(result)
+        } else if let decision=request.decision,request.configuration==nil {
+          let matcher=try DecisionMatcher(decision)
+          let result=try bytes.withUnsafeBytes {raw in
+            try matcher.match(bgra:raw.bindMemory(to:UInt8.self),width:request.width,height:request.height,stride:request.stride)
+          }
+          encoded=try JSONEncoder().encode(result)
+        } else {throw PixelMatcherError.invalid("exactly one matcher mode required")}
         encoded.append(10)
         try FileHandle.standardOutput.write(contentsOf: encoded)
       }

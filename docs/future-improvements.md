@@ -1525,3 +1525,11 @@ input. The complete-response/fresh-trial method is being prepared privately;
 it is not accepted native timing or a Freeciv/ScummVM oracle. Safe retirement
 of inactive build copies and lossless historical-evidence compression changes
 storage only and waives no correctness, stage or performance requirement.
+
+
+The R770 complete-response measurement prototype is now integrated with
+source sealing, original-input failure custody and recorder-level policy
+separation. Its Swift/Node and three-engine headless controls pass, while
+physical adversarial qualification and application oracles remain current-
+iteration work. The original unexplained geometry refusal remains recorded.
+These tooling results close no desktop performance or full B1 gate.

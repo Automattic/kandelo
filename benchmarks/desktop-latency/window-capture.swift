@@ -19,16 +19,29 @@ func ticksMs(_ ticks: UInt64) -> Double {
 final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
   var observedApplication: NSRunningApplication?
   var visibleAuthority: OwnedDisplayCaptureAuthority?
+  var responseROI = false
+  private var lastAuthority = ""
+  private var storedAuthorityID = 0
+  private var authorityDiagnosticFailed = false
+  var authorityID:Int {lock.lock();defer{lock.unlock()};return storedAuthorityID}
   private let lock = NSLock()
   private var continuation: CheckedContinuation<Void, Never>?
   private var ended = false
   private var count = 0
   private var matcher: PixelMatcher?
+  private var decisionMatcher: DecisionMatcher?
   private var snapshotRequests = [String]()
   private var snapshotIds = Set<String>()
 
   func command(_ line: String) throws {
-    if line.hasPrefix("pixels ") {
+    if line.hasPrefix("decision ") {
+      try requireRecorderMatcherPolicy(responseROI:responseROI,decision:true)
+      guard line.utf8.count<=262_144 else {throw PixelMatcherError.invalid("decision mode/capacity")}
+      let c=try JSONDecoder().decode(DecisionConfiguration.self,from:Data(line.dropFirst(9).utf8))
+      let next=try DecisionMatcher(c)
+      lock.lock();decisionMatcher=next;matcher=nil;lock.unlock()
+      emit(["kind":"decision-configured","tag":c.tag])
+    } else if line.hasPrefix("pixels ") {
       let id = String(line.dropFirst(7))
       lock.lock()
       let valid = !id.isEmpty && id.utf8.count <= 128 && snapshotRequests.count < 4 &&
@@ -37,16 +50,17 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       lock.unlock()
       guard valid else { throw PixelMatcherError.invalid("snapshot identity or capacity") }
     } else if line.hasPrefix("matcher ") {
+      try requireRecorderMatcherPolicy(responseROI:responseROI,decision:false)
       guard line.utf8.count <= 262_144 else {
         throw PixelMatcherError.invalid("configuration capacity")
       }
       let configuration = try JSONDecoder().decode(PixelMatcherConfiguration.self,
         from: Data(line.dropFirst(8).utf8))
       let configured = try PixelMatcher(configuration)
-      lock.lock(); matcher = configured; lock.unlock()
+      lock.lock(); matcher = configured; decisionMatcher=nil; lock.unlock()
       emit(["kind": "matcher-configured", "tag": configuration.tag])
     } else if line == "matcher-clear" {
-      lock.lock(); matcher = nil; lock.unlock()
+      lock.lock(); matcher = nil; decisionMatcher=nil; lock.unlock()
       emit(["kind": "matcher-cleared"])
     } else {
       throw PixelMatcherError.invalid("unknown recorder command")
@@ -63,6 +77,31 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       FileHandle.standardError.write(Data("native recorder output error: \(error)\n".utf8))
       exit(2)
     }
+  }
+  func noteAuthority(_ detail:[String:Any],phase:String,begin:Double) {
+    // Snapshot only on inventory/geometry changes. Every frame refers to the
+    // retained immutable row, avoiding an unbounded full-window dump at120Hz.
+    do {
+      let signature=String(data:try JSONSerialization.data(withJSONObject:detail,options:[.sortedKeys]),encoding:.utf8)!
+      lock.lock()
+      let changed=signature != lastAuthority
+      if changed {lastAuthority=signature;storedAuthorityID+=1}
+      let id=storedAuthorityID
+      lock.unlock()
+      if changed {
+        emit(["kind":"authority-snapshot","id":id,"phase":phase,
+          "queryBeginMs":begin,"queryEndMs":nativeMs(),"detail":detail])
+      }
+    } catch {
+      lock.lock();authorityDiagnosticFailed=true;lock.unlock()
+      emit(["kind":"authority-diagnostic-error","error":String(describing:error)])
+    }
+  }
+  func requireAuthorityDiagnostic() throws {
+    lock.lock();let failed=authorityDiagnosticFailed;lock.unlock()
+    // Keep an original authority refusal primary; when ownership checks pass,
+    // unavailable diagnostic custody still cannot become a successful sample.
+    if failed {throw DisplayAuthorityError.invalid("authority diagnostic unavailable")}
   }
   func finish() {
     lock.lock()
@@ -98,7 +137,8 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       guard observedApplication?.isActive == true, let visibleAuthority else {
         throw DisplayAuthorityError.invalid("owned browser lost foreground authority")
       }
-      try visibleAuthority.check()
+      try visibleAuthority.check(responseROI:responseROI){self.noteAuthority($0,phase:"frame",begin:authorityBegin)}
+      try requireAuthorityDiagnostic()
     } catch {
       emit(["kind":"error", "error":String(describing:error)])
       finish()
@@ -173,11 +213,14 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       "authorityCheckBeginMs": authorityBegin, "authorityCheckEndMs": authorityEnd,
       "authorityCheckMs": authorityEnd-authorityBegin,
       "captureAuthority": "selected-display-composition-crop/no-window-exclusions",
+      "visibilityPolicy": responseROI ? "response-roi" : "strict-rectangle-absence",
+      "authoritySnapshotId": authorityID,
       "scaleFactor": info[.scaleFactor] ?? NSNull(),
       "contentScale": info[.contentScale] ?? NSNull(),
     ]
     lock.lock()
     let currentMatcher = matcher
+    let currentDecision = decisionMatcher
     let snapshots = snapshotRequests
     snapshotRequests.removeAll(keepingCapacity: true)
     lock.unlock()
@@ -194,6 +237,14 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         finish()
         return
       }
+    }
+    if let currentDecision {
+      do {
+        let begin=nativeMs()
+        let bytes=UnsafeBufferPointer(start:base.assumingMemoryBound(to:UInt8.self),count:stride*height)
+        frame["decisionMatch"]=try currentDecision.match(bgra:bytes,width:width,height:height,stride:stride).dictionary
+        frame["decisionMatcherMs"]=nativeMs()-begin
+      } catch {emit(["kind":"error","error":String(describing:error)]);finish();return}
     }
     emit(frame)
     if !snapshots.isEmpty {
@@ -245,7 +296,7 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
               .utf8))
         return
       }
-      guard CommandLine.arguments.count == 3 || CommandLine.arguments.count == 4 else {
+      guard (3...5).contains(CommandLine.arguments.count) else {
         throw NSError(
           domain: "recorder", code: 1,
           userInfo: [
@@ -304,13 +355,19 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       }
       let sourceRect = try ownedDisplaySourceRect(display:selectedDisplay.frame,window:window.frame)
       let observer = Observer()
+      if CommandLine.arguments.count==5 {
+        guard CommandLine.arguments[4]=="response-roi" else {throw PixelMatcherError.invalid("unknown visibility policy")}
+        observer.responseROI=true
+      }
       let config = SCStreamConfiguration()
       config.sourceRect = sourceRect
       observer.observedApplication = application
       observer.visibleAuthority = OwnedDisplayCaptureAuthority(id:window.windowID,
         owner:window.owningApplication!.processID,bounds:window.frame)
-      try observer.visibleAuthority!.check()
-      let requestedWidth = CommandLine.arguments.count == 4 ? CommandLine.arguments[3] : "512"
+      let authorityBegin=nativeMs()
+      try observer.visibleAuthority!.check(responseROI:observer.responseROI){observer.noteAuthority($0,phase:"startup",begin:authorityBegin)}
+      try observer.requireAuthorityDiagnostic()
+      let requestedWidth = CommandLine.arguments.count >= 4 ? CommandLine.arguments[3] : "512"
       let width = requestedWidth == "points" ? Int(window.frame.width.rounded()) : Int(requestedWidth) ?? 0
       guard (128...2048).contains(width) else {
         throw PixelMatcherError.invalid("capture width must be 128 through 2048")
@@ -342,6 +399,8 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         "active": application.isActive, "displays": displays,
         "captureColorSpace": "sRGB",
         "captureAuthority": "selected-display-composition-crop/no-window-exclusions",
+        "visibilityPolicy": observer.responseROI ? "response-roi" : "strict-rectangle-absence",
+        "authoritySnapshotId": observer.authorityID,
         "selectedDisplayId": selectedDisplay.displayID,
         "sourceRect": [sourceRect.origin.x, sourceRect.origin.y, sourceRect.width, sourceRect.height],
         "completePresentationCoverage": false,
