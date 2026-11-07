@@ -793,6 +793,7 @@ pub(crate) const UNIMPLEMENTED_SYSCALL_NAMES: &[(u32, &str)] = &[
     (266, "mount"),
     (267, "umount2"),
     (268, "reboot"),
+    (287, "personality"),
     (289, "unshare"),
     (292, "tee"),
     (301, "acct"),
@@ -1564,6 +1565,21 @@ mod tests {
             ]
         );
         with_ring(|ring| assert_eq!(ring.read_at(0).unwrap().facility, LOG_KERN));
+    }
+
+    #[test]
+    fn personality_is_refused_by_name_not_answered_with_a_fabricated_value() {
+        // personality(2) is Linux-only and Kandelo has no execution-domain
+        // concept, so the dispatcher refuses 287 as unimplemented. The log
+        // must say which function was refused: a bare number would hide that
+        // the gap is one a Linux program is likely to probe at startup.
+        reset_test_ring();
+        let mut host = ClockHost::at(1, 0);
+        assert!(klog_unimplemented_syscall(&mut host, 9, 287).is_some());
+        assert_eq!(
+            texts_logged(),
+            ["pid 9 called syscall 287 (personality), which is not implemented (ENOSYS)"]
+        );
     }
 
     #[test]

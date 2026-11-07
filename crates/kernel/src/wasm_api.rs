@@ -6650,7 +6650,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
         // clock_settime — always return EPERM (cannot set clock in Wasm sandbox)
         226 => -(Errno::EPERM as i32), // SYS_CLOCK_SETTIME
-        // sched_yield — no-op in Wasm (single-threaded per worker)
+        // sched_yield — a legitimate no-op: POSIX only asks for 0 on success, and
+        // each process thread is its own host Worker, so the host scheduler
+        // already interleaves them. Audited as honest; see docs/posix-status.md.
         229 => 0, // SYS_SCHED_YIELD
 
         // statx — musl: (dirfd, path, flags, mask, statxbuf)
@@ -7322,7 +7324,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let len = channel_cstr_len!(p);
             kernel_lchown(p, len, a2 as u32, a3 as u32)
         }
-        307 => 0, // SYS_FADVISE64: advisory, always succeed
+        // posix_fadvise advice "may be ignored entirely" (POSIX), so succeeding
+        // without acting on it is the correct implementation, not a stub.
+        // Audited as honest; see docs/posix-status.md.
+        307 => 0, // SYS_FADVISE64: advice is permitted to be ignored
 
         // POSIX timers
         326 => kernel_timer_create(
@@ -7547,7 +7552,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         ),
 
         // -- Memory/sync stubs --
-        257 => 0, // SYS_MEMBARRIER: no-op (single-threaded per process in Wasm)
+        // membarrier answers 0 to every command without issuing a barrier. The
+        // old justification, "single-threaded per process in Wasm", does not
+        // hold: clone(CLONE_VM|CLONE_THREAD) gives a process real threads, each
+        // its own Worker over one shared memory. Behaviour is unchanged here;
+        // the finding and the open question are in docs/posix-status.md.
+        257 => 0, // SYS_MEMBARRIER
         273 => match sync_rootfs_mappings_and_persistence() {
             Ok(()) => 0,
             Err(error) => -(error as i32),
@@ -7574,7 +7584,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         } // SYS_MSYNC: no-op (MAP_PRIVATE changes are private, file-backed writes go through write())
 
         // -- Process stubs --
-        287 => 0, // SYS_PERSONALITY: return 0 (current personality, PER_LINUX)
+        // personality(2) is Linux-only and absent from POSIX. Kandelo has no
+        // execution-domain concept to report, and answering 0 would assert
+        // PER_LINUX, a compatibility claim this platform does not make.
+        287 => refuse_unimplemented_syscall(nr), // SYS_PERSONALITY
 
         // -- Filesystem --
         306 => {
@@ -7609,7 +7622,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 result
             }
         }
-        323 => 0, // SYS_SYNC_FILE_RANGE: advisory, no-op
+        // sync_file_range carries durability semantics (a caller told 0 believes
+        // the range reached storage), so unlike fadvise it cannot be ignored.
+        // Syncing the whole file is a correct, conservative implementation of
+        // syncing a range: fsync provides at least what the range call promises.
+        // The (offset, nbytes, flags) arguments are deliberately not interpreted,
+        // so no marshalling is added; the cost is over-syncing and not rejecting
+        // flag bits Linux would call EINVAL.
+        323 => kernel_fsync(a1), // SYS_SYNC_FILE_RANGE: (fd, offset, nbytes, flags)
         325 => {
             // SYS_GETCPU: (cpu*, node*, unused)
             let cpu_ptr = channel_mut_ptr!(0, u32);
