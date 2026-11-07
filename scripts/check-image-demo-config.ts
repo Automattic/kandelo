@@ -62,7 +62,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // files in this repository.
 const KNOWN_PROFILE_KEYS = [
   "presentation", "assets", "guide", "exchange", "dockActions",
-  "identity", "runtime", "init", "web", "display",
+  "identity", "runtime", "init", "web", "display", "requires",
 ];
 
 /** Levenshtein distance, capped at 2 — enough to catch a typo, not a rename. */

@@ -48,6 +48,7 @@ Most readers want one of these. Detailed sections follow further down.
 | I want to…                                    | Look at                                                                                                                                                                                                                                                            |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Add a new package to the registry             | [Schema: `package.toml`](#schema-packagetoml) + [docs/porting-guide.md](porting-guide.md#adding-a-new-package-to-the-registry) for the end-to-end workflow.                                                                                                        |
+| Try a package in a machine without building the whole shell | [Partial images](#partial-images) — `./run.sh partial shell <pkg>...` composes the rootfs base plus only the named packages. |
 | Resolve one package on demand                 | `cargo xtask build-deps resolve <name>` — source-builds if needed, populates the local cache.                                                                                                                                                                      |
 | Build every local VFS product                 | [Local DAG build](#local-dag-build) — one parallel, resumable command for all seven products and their package dependencies.                                                                                                                                       |
 | Find where an output lands                    | `cargo xtask build-deps output-path <name> <declared-artifact>` — single source of truth for the layout convention (flat for a one-member output/runtime closure, nested under `<pkg>/` for two or more members). A basename is accepted only when unique.         |
@@ -2083,12 +2084,100 @@ the previously cached artifact no longer matches. The next
 the canonical cache path, and rebuilds from source via `build-<name>.sh`.
 No stale-archive handling is needed — a changed recipe simply rebuilds.
 
-For pre-push iteration, edit the recipe and run `./run.sh local-build`
-(or `./run.sh browser`). The local DAG rebuilds the affected node and its
+To try a package in a machine while you iterate, build a
+[partial image](#partial-images) carrying only it. Before pushing, edit the
+recipe and run `./run.sh local-build` (or `./run.sh browser`). The local DAG rebuilds the affected node and its
 dependent products; unchanged content-addressed nodes are reused from
 cache. See [Local DAG build](#local-dag-build) for the aggregate build
 command and [Resolution order](#resolution-order) for the exact local
 override, cache, and source-build tiers.
+
+## Partial images
+
+The canonical shell depends on about 55 packages, from PHP and MariaDB to
+Qt and FFmpeg, and the browser app and `./run.sh local-build` build all of
+them. A worktree that only needs to try one package pays for every other.
+A **partial image** is a development build of one image that carries the
+rootfs base plus only the packages you name:
+
+```bash
+./run.sh partial shell tmux less          # compose it (members come from the shared cache)
+./run.sh partial shell tmux --with-tests  # ...then run packages/registry/tmux/test/
+./run.sh partial lamp tmux                # LAMP on a partial shell
+./run.sh browser --partial                # serve what is built, no full local-build
+```
+
+Every image that embeds the shell has a partial build: `shell`, `nginx`,
+`nginx-php`, `nginx-python`, `wordpress`, `lamp`, `web-stack` and
+`wordpress-family`. For an image derived from the shell, the partial image
+is that image's normal build with the partial shell in place of the
+canonical one: its own packages (nginx, PHP, MariaDB, ...) are all present.
+Images that do not embed the shell already build without it and have no
+partial build.
+
+What it contains:
+
+- the `rootfs` package's closure (bash, coreutils, grep, sed, gawk,
+  findutils, diffutils, make, login, sudo, ...) and `ca-certificates`;
+- each named package, installed exactly as the canonical shell installs it:
+  the same role from `packages/registry/shell/source-rootfs-shell-dependencies.json`,
+  the same lazy file or archive entry, wrappers, exchange rules and
+  `/etc/profile.d` script;
+- only the activities whose `requires` packages are present (see
+  [docs/package-sessions.md](package-sessions.md) "Activity catalog and game
+  data"). The command prints every activity it left out and the packages
+  that activity needs, e.g. `left out scummvm: needs scummvm, curl, unzip`.
+
+A package must already be in the canonical shell to go into a partial
+image: its role in `source-rootfs-shell-dependencies.json`, the same
+`name@version` in `packages/registry/shell/package.toml` `depends_on`, and
+the composer table entry that installs it (`SHELL_LAZY_BINARY_SPECS` in
+`images/vfs/lib/init/shell-binaries.ts` or `SHELL_LAZY_ARCHIVE_SPECS` in
+`images/vfs/scripts/shell-lazy-archives.ts`). The command refuses any other
+name and lists those three places. Naming a base package is a no-op.
+
+How it is built: `xtask partial-image` builds the kernel, SDK and member
+packages (and, for a derived image, its packages that do not embed the
+shell) through the normal local-build engine and shared cache. It then
+writes a registry root, `local-binaries/partial/registry/`, whose only
+package is a `shell` recipe narrowed to the selection, and builds the image
+package through the ordinary resolver with that root first on the
+[registry search path](#registry-search-path). The narrowed recipe runs
+`packages/registry/shell/build-shell.sh --selection`, which hands the shell
+composer (`images/vfs/scripts/build-source-rootfs-shell-image.ts`) an
+explicit package selection (`images/vfs/scripts/shell-selection.ts`).
+Without a selection the composer builds the canonical shell with every
+completeness check unchanged; with one it holds the image to that
+selection: every file a selected package owns is present, every file an
+unselected package owns is absent. The image's metadata records the
+selection (`partialSelection`), and
+`images/vfs/scripts/describe-partial-image.ts` reads the selection and
+activities back from the built image for `partial.json`.
+
+Because the narrowed `shell` recipe and every image built on it have their
+own cache keys, they sit in the shared on-disk cache beside the canonical
+entries without replacing them, and an unchanged selection is a cache hit.
+
+What it is not:
+
+- **Not a product.** It is copied into `local-binaries/partial/`
+  (`<image>-partial.vfs.zst`, the manifest `partial.json`, and the baked
+  `demo.json`), never into this worktree's published program view, so it
+  cannot stand in for `shell.vfs.zst` or any canonical image. One partial
+  image exists per worktree; a new build replaces the previous one. The
+  browser never serves it from a cache (see
+  [docs/browser-support.md](browser-support.md) "Consumer-owned product
+  selection").
+- **Not evidence for the canonical image.** A partial image proves the
+  named packages work on the base. It says nothing about the canonical
+  shell or the images that embed it. Build those (`./run.sh local-build`)
+  before claiming them.
+- **Not published.** Nothing in CI or release builds a partial image.
+
+Node tests can boot it: `host/test/partial-image.test.ts` boots the
+worktree's partial image, runs the named packages' programs (fetched as lazy
+files from this worktree's package view), and checks that unselected
+programs are absent. It is skipped when no partial image is built.
 
 ## Atomic cache install
 

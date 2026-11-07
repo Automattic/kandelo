@@ -405,6 +405,18 @@ itself continues using its local Unix socket. The Redis
 image explicitly permits unauthenticated remote commands on this virtual
 network; its sockets do not expose a physical host port.
 
+Each shell profile in `/etc/kandelo/demo.json` declares `requires`: the
+resolver package names it cannot run without, beyond the rootfs base (for
+example `doom` requires `fbdoom`; `scummvm` requires `scummvm`, `curl` and
+`unzip`, because `scummvm-play` downloads and unpacks its games).
+`identity.packages` stays display text. The shell composer checks every
+`requires` entry against the shell's dependency contract, and a
+[partial image](package-management.md#partial-images) keeps only the
+profiles whose packages it carries, so its activity list never names an
+activity it cannot run. A package's session declarations
+(`/usr/share/kandelo/sessions/<pkg>.json`) are likewise installed only when
+the package is.
+
 The board's **Explore Redis** link opens unmodified phpCacheAdmin 2.7.3 at
 `/admin/`, initially on its command console. Its key browser, command
 history and console operate on the board's real Redis database; writes

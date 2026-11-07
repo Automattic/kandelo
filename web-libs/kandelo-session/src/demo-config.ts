@@ -333,6 +333,14 @@ export interface KandeloDemoProfileConfig {
   web?: DemoWebConfigInput;
   identity?: DemoIdentityConfig;
   display?: DemoDisplayConfig;
+  /**
+   * Resolver package names the profile cannot run without, beyond the base
+   * rootfs. Unlike `identity.packages`, which is display text, this is a
+   * build contract: the shell composer checks every entry against its
+   * package contract, and a partial image (one composed from a subset of the
+   * shell's packages) keeps only the profiles whose packages it carries.
+   */
+  requires?: string[];
 }
 
 /**
@@ -428,6 +436,7 @@ const PROFILE_ONLY_KEYS = [
   "web",
   "identity",
   "display",
+  "requires",
 ] as const;
 
 /** Why a retired `ingest` block is refused, and where its hints now live. */
@@ -1039,6 +1048,39 @@ function validateProfileFields(
   if (value.dockActions !== undefined) {
     normalizeDockActions(value.dockActions, `${field}.dockActions`);
   }
+  if (value.requires !== undefined) {
+    normalizeRequires(value.requires, `${field}.requires`);
+  }
+}
+
+const MAX_PROFILE_REQUIRES = 32;
+const PACKAGE_NAME = /^[a-z0-9][a-z0-9._-]*$/;
+
+function normalizeRequires(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+  if (value.length > MAX_PROFILE_REQUIRES) {
+    throw new Error(`${field} must list at most ${MAX_PROFILE_REQUIRES} packages`);
+  }
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    if (typeof entry !== "string" || !PACKAGE_NAME.test(entry)) {
+      throw new Error(`${field}[${index}] must be a package name`);
+    }
+    if (seen.has(entry)) throw new Error(`${field} lists ${entry} twice`);
+    seen.add(entry);
+    return entry;
+  });
+}
+
+/** The packages `profileId` requires; empty when it declares none. */
+export function resolveDemoRequires(
+  config: KandeloDemoConfig,
+  profileId: string,
+): string[] {
+  const profile = profileConfig(config, profileId);
+  return profile?.requires === undefined
+    ? []
+    : normalizeRequires(profile.requires, `profiles.${profileId}.requires`);
 }
 
 function normalizeActivity(value: unknown, field: string): DemoActivityConfig {

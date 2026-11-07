@@ -334,11 +334,17 @@ is derived from its `resolverPath`, so a new archive needs no entry anywhere
 else; `tests/package-system/shell-lazy-url-resolution.test.ts` checks that
 every declared address resolves to its package member.
 
+The spec's `dependency` is the package that owns the archive. A
+[partial image](package-management.md#partial-images) installs the archive
+only when that package is selected, so the attribution must be exact.
+
 ### When you also want `/bin/<program>` symlinks
 
-Create image-level aliases in the VFS image builder (see
-`populateExtendedSymlinks` in `build-shell-vfs-image.ts`), not inside the
-archive. Package-owned links that are part of a program's runtime may remain
+Create image-level aliases in the shell overlay
+(`populateSourceRootfsShellOverlay` in
+`images/vfs/scripts/source-rootfs-shell-overlay.ts`, which links
+`/usr/bin/vi` to Vim, guarded by the owning package so a partial image
+without it gets no dangling link), not inside the archive. Package-owned links that are part of a program's runtime may remain
 inside its archive; the deterministic ZIP helper preserves them and the
 registrar validates every member path and link target before adding anything
 to the VFS.
@@ -914,6 +920,27 @@ mkdir -p "$BUILD_DIR"
 
 ### 4. Verify locally
 
+Try the package in a machine first, without building the whole shell.
+Once the package is in the canonical shell's contract (its role in
+`packages/registry/shell/source-rootfs-shell-dependencies.json`, the same
+`name@version` in `packages/registry/shell/package.toml`, and its entry in
+`SHELL_LAZY_BINARY_SPECS` or `SHELL_LAZY_ARCHIVE_SPECS`), compose a partial
+shell carrying the rootfs base and only your package:
+
+```bash
+./run.sh partial shell myprog             # local-binaries/partial/shell-partial.vfs.zst
+./run.sh partial shell myprog --with-tests
+./run.sh browser --partial                # boot it as its own gallery machine
+```
+
+Iterate there. The members come from the shared cache, so a fresh worktree
+pays for the rootfs closure and your package, not for the whole shell. See
+[Partial images](package-management.md#partial-images) for what the image
+contains and what it does not prove. Build the canonical products once,
+before the PR (step 5).
+
+The package's own outputs can also be checked directly:
+
 ```bash
 scripts/dev-shell.sh bash -lc '
   set -euo pipefail
@@ -1007,9 +1034,10 @@ release to publish or fetch. A new or changed recipe invalidates the
 package's cache key, so CI (and every developer) rebuilds it from source
 under the new key.
 
-Locally, run `./run.sh browser` (or `./run.sh local-build`) to build the
-package through the local SourceOnly graph and its dependent VFS products,
-then verify the result.
+Locally, iterate against a partial image (step 4), then run
+`./run.sh browser` (or `./run.sh local-build`) once to build the package
+through the local SourceOnly graph and its dependent canonical VFS
+products, and verify the result there before opening the PR.
 
 ### 6. Register in `run.sh` (optional)
 
