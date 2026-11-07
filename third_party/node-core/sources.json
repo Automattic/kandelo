@@ -5484,5 +5484,79 @@
         "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561"
       }
     }
+  },
+  "http2Settings": {
+    "version": "26.13.0",
+    "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+    "references": {
+      "lib/http2.js": {
+        "path": "upstream/http2-settings/lib/http2.js",
+        "sha256": "1cd29a174f5780cb561628bf187b387f8babad06ae581908f7e472e597db7784"
+      },
+      "lib/internal/http2/core.js": {
+        "path": "upstream/http2-settings/lib/internal/http2/core.js",
+        "sha256": "71537e5d80e8f2579e8819f42056c927dbc0d41e6d1f581426becba34177349a"
+      },
+      "lib/internal/http2/util.js": {
+        "path": "upstream/http2-settings/lib/internal/http2/util.js",
+        "sha256": "29641c1f3f29baf666dd6d9682db818a1fc954c6fbda29aacf649fab3285e423"
+      },
+      "src/node_http2.cc": {
+        "path": "upstream/http2-settings/src/node_http2.cc",
+        "sha256": "10c3fa807b6dcb84374687104615a356ad6dbffb02858822cba4899fe307d459"
+      },
+      "src/node_http2.h": {
+        "path": "upstream/http2-settings/src/node_http2.h",
+        "sha256": "658e9a1f19a5cce09a31fa2101029fb48973ee0474358a541aed23167699f4d9"
+      },
+      "src/node_http_common.h": {
+        "path": "upstream/http2-settings/src/node_http_common.h",
+        "sha256": "2a0bb5311862578415a9c631cbec7845ef77d6c7fae98ad5faf0991392f6e3a9"
+      },
+      "deps/nghttp2/lib/includes/nghttp2/nghttp2.h": {
+        "path": "upstream/http2-settings/deps/nghttp2/lib/includes/nghttp2/nghttp2.h",
+        "sha256": "0bd0ee37b1b08fa38f9b773de201fe431846fda2bd0bed44f642c6c332e2e342"
+      },
+      "deps/nghttp2/lib/includes/nghttp2/nghttp2ver.h": {
+        "path": "upstream/http2-settings/deps/nghttp2/lib/includes/nghttp2/nghttp2ver.h",
+        "sha256": "53b46254a82c2075b28459e0f0cd8da7369afbd5632a71560ab75d6af920c5e1"
+      },
+      "deps/nghttp2/lib/nghttp2_submit.c": {
+        "path": "upstream/http2-settings/deps/nghttp2/lib/nghttp2_submit.c",
+        "sha256": "7217715ffede0e6b22a4df0b67fdc3e49bf0fa1432c4c985a1593d01a4a075e8"
+      },
+      "deps/nghttp2/lib/nghttp2_frame.c": {
+        "path": "upstream/http2-settings/deps/nghttp2/lib/nghttp2_frame.c",
+        "sha256": "951e396a8935f14d2f2e4963ee904e281542434baff0446a8a6c8783bbed8c92"
+      },
+      "deps/nghttp2/lib/nghttp2_frame.h": {
+        "path": "upstream/http2-settings/deps/nghttp2/lib/nghttp2_frame.h",
+        "sha256": "0b85d70d5ba546c2ae7c292c769cdb02346e3f1357ceff31faeca4efc6b9b48c"
+      },
+      "deps/nghttp2/lib/nghttp2_net.h": {
+        "path": "upstream/http2-settings/deps/nghttp2/lib/nghttp2_net.h",
+        "sha256": "5de3c1f06e987987e9c138863a71bfd021d34771b69862d4c0ed8a25dc9fba8a"
+      },
+      "test/parallel/test-http2-getpackedsettings.js": {
+        "path": "upstream/http2-settings/test/parallel/test-http2-getpackedsettings.js",
+        "sha256": "25e8aa1bb62ef17d708170d6056cbab6669f91652b720a22b0dba892a78a1587"
+      },
+      "test/common/index.js": {
+        "path": "upstream/http2-settings/test/common/index.js",
+        "sha256": "86ed9ed1eb8bf4f40c49c59f0b7afd79545c7b931ae3793631a6fe9f0c071196"
+      },
+      "doc/api/http2.md": {
+        "path": "upstream/http2-settings/doc/api/http2.md",
+        "sha256": "d71d1a347bb50863f178173a07fabe061727e4e39a37e45eb306bbf678092caa"
+      },
+      "src/node.h": {
+        "path": "upstream/http2-settings/src/node.h",
+        "sha256": "83185475268b1b2d9f5ffdbec1bb2062ebe70674869dde96fe6cd526dc9b2a79"
+      },
+      "src/util.h": {
+        "path": "upstream/http2-settings/src/util.h",
+        "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
+      }
+    }
   }
 }

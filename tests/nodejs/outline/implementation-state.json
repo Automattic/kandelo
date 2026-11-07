@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T00:43:46.699438+00:00",
+  "updatedAt": "2026-11-07T00:57:46.738763+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -112,7 +112,7 @@
       "breadthState": "started",
       "implementationComplete": false,
       "runtimeConformance": {
-        "node": "138full pinned outgoing/client framing source;20runner groups and6existing headers+14package checks pass over explicit native dependencies. Actual guest/TLS/GC/complete client/Agent/four-host behavior unvalidated.",
+        "node": "164HTTP2settings/helpers source integrated;87semantic cases and complete unchanged selected upstream74assertions per subject pass with native dependencies. Missing sessions/servers/transport and guest/fourhost remain open.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -276,7 +276,7 @@
     "host/test/node-vm-platform.test.ts": "f2741bd33c6d004a781c38619507f81cd0aa60994410e2722e7292192e690d6d",
     "host/test/node-web-data.test.ts": "ccbf83a77c8985d2b0a6b4433461f1fb3f086bf47881eb4385b48801848d28ee",
     "host/vitest.node-core.config.ts": "5be342b2cfa295dc0745d079063f66be788184afa66db4e6cdd2ac26c82e5f14",
-    "packages/registry/node-compat/bootstrap.js": "31b787208e2a206e4b89d61f1c1f21c4e4dfd91ea664ed9719a5b4d9b0941dc0",
+    "packages/registry/node-compat/bootstrap.js": "6f97eefcd96d9feadd4b291a7acc6acd7f5c592ad40b2d26e18728be9c767438",
     "packages/registry/node-sqlite/README.md": "2f33632266b7386e3c51bc1842f6b8fa1a7c2741b46653cefb035d0b083f4427",
     "packages/registry/node-sqlite/build-node-sqlite.py": "e2996a1b42348ba06f6454aadf72ddc6ab085e5272ab0f9485f04de3ce97af99",
     "packages/registry/node-sqlite/build-node-sqlite.sh": "e26fde2fd77b7dff5b613338646cb3492ca08b01f46cb6ee0974dda5fd83ac57",
@@ -284,7 +284,7 @@
     "packages/registry/node-sqlite/package.toml": "f9bc81b35d6a50836314b620b538154c57c62e95398f91177d7efb8a8d8f8ab3",
     "packages/registry/node-sqlite/sources.json": "f3673b87afd9b84f8e66c320dc3e76a6fb701754fb5180edd751edd569272eb8",
     "packages/registry/spidermonkey/build-spidermonkey.sh": "07b9344e7a3837e6a943a8b588d45bde6d38d989d50e9758944f8ee492329d1e",
-    "packages/registry/spidermonkey/build.toml": "35fad8e0b17e351d10d5f65bc969ddfb299eddedeb8edbf67f2ff205fb66488d",
+    "packages/registry/spidermonkey/build.toml": "799c6d5cfce83885c64801ab1f4f6ecc466ff3bcf667cb703220b8c294fac828",
     "packages/registry/spidermonkey/node-compat/adapter.js": "357670375d6b6ab78c7dfedb4c91a0d0e4fe17f0c802bd0b750f286ecec6d54d",
     "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
     "packages/registry/spidermonkey/patches/0054-kandelo-node-vm-owner.patch": "58f70ae5b3d3d27548ae57499efa7946f7ed987ee037c86aed035de7b2d208b5",
@@ -293,7 +293,7 @@
     "packages/registry/spidermonkey/patches/0057-kandelo-node-monotonic-hrtime.patch": "5c75e223641cff044f5306255162ffd365be572fde45e0c2830eccfbdcb1356d",
     "scripts/ci-vitest-evidence-classes.tsv": "8eec2f7e6f2c60a904d343d7ba583f20b253a30b3c115a67c572b6d42096ead7",
     "third_party/node-core/buffer-bytes-adapter.js": "b73d5e43885582c9d25be752d8c4211a796b904412d2b824be4162e7b3dbd68a",
-    "third_party/node-core/build.py": "8909b5d9dceb8aba8c14c74157c727364d053af724c088676236f7aede2d10cb",
+    "third_party/node-core/build.py": "00075e9d858e2853ba02c60fe79a2705f7b827b8d831170acd3cf4846ebea0c6",
     "third_party/node-core/codec-handle.cpp": "131df7e6b690bfdb7db5c1f1c455fb63c9dc58816ffe27d8aa5fd95f6dc5c943",
     "third_party/node-core/compression-binding-adapter.js": "3bc33adbddf590f5fe39961e34a30be294ed0e1f2a50ac133336d4475d5385b2",
     "third_party/node-core/crypto-random-sync-adapter.js": "cfa961263245ceca02a665c02c227dd8c6587ad07ab55b96e90bf118d2955fb9",
@@ -313,12 +313,12 @@
     "third_party/node-core/native-vm.cpp": "cc5bcede30e34912579792fee808bebd3632d287d288e8d9ceb672f7694adfbd",
     "third_party/node-core/native-work.cpp": "25a2c44fbb5d12fb3b908c6448b8f582ee66e334e6d6784b35abcc7f24296dc0",
     "third_party/node-core/network-ip-adapter.js": "5e34e498fc85f4485d941780175c52676e84743b6bc91f649ed215769dd6912b",
-    "third_party/node-core/node-core.js": "b175f0b4cb205b33e36d38443786711264f12d3b9859787523e898a8d5c80f22",
+    "third_party/node-core/node-core.js": "0b3cee9d64da1bc72f56c88d91111b36453746c5766d39fec61b331218df0f83",
     "third_party/node-core/port-queue.h": "36fb8ee414c23c0e98d8dfd67310cdf6e8e7bdc8ed91b0375878822b339f9b13",
     "third_party/node-core/ports-platform-adapter.js": "78ce9062fe07a24fff35326eea22b461d84b32beab78edd50547e79e3d97fedf",
     "third_party/node-core/process-clock-adapter.js": "f88ea5cdc9890104bf5ff8075a586cad55da60f41bfafebdb9de199748baaeca",
     "third_party/node-core/readline-platform-adapter.js": "d57d4c2fd7f188398987ce21e8591458714c5ac5d7e42c1ecc184e8d909000ae",
-    "third_party/node-core/sources.json": "1ab4fa87dc898a8a08788cf064bb059c53148479de910c13587c5a7bcf40dd93",
+    "third_party/node-core/sources.json": "08871a748bedd037fe50ba4545bada759600dabee78ef7cc88d90d70439c243e",
     "third_party/node-core/sqlite-platform-adapter.js": "8a6cc0327250f62f9d094e00dec585cb6ce59fc9415b7dcdd85cf8b08ef8633c",
     "third_party/node-core/sqlite-store.h": "738c9de42036b04098c854aebc233f1bff2c870c05e692aeafe3674cbcb7aef1",
     "third_party/node-core/stream-platform-adapter.js": "2073a7b29238c6feb09667e76806e6f42ad725f321758b9514699812223e4ac9",
@@ -420,9 +420,9 @@
     "third_party/node-web-platform/package-lock.json": "ddb5be6e5d370130c538c38bf2f04ce69ce9ea7b79d9bfbb0a75ac7be6cf89c9",
     "third_party/node-web-platform/package.json": "0b8cfac4546c79619ec56bb64edbb71a0cc0aa370570385b073dd0e59ccd7ff8",
     "third_party/node-core/upstream/mime.js": "4fbea1679908f457f39e6794a82a2988753dbbfae9849c92b13e61646dd5c50e",
-    "tests/nodejs/outline/current-capability-reconciliation.md": "4471cf3362442850005d4b5e2abb19f8b18e416c79f1f254256e27c290fcdb51",
-    "tests/nodejs/outline/current-capability-reconciliation.json": "2dc59c23f4519641579d8928df3fec651e01531fb18a20ee584a56b5f61409a3",
-    "tests/nodejs/outline/deprecation-reconciliation.json": "7c8c977e66c36cf96be4871a9e3e20f280692e7760c1840b2e74f405089515fd",
+    "tests/nodejs/outline/current-capability-reconciliation.md": "2b02de564024533b3282021c530b1dddd2e9f25c20580a9a84e88194912bb6a5",
+    "tests/nodejs/outline/current-capability-reconciliation.json": "e4c2bb45fa52003b6efffc6ab408d269dff4d3741f86704b27d46768bdedea46",
+    "tests/nodejs/outline/deprecation-reconciliation.json": "73848cc08dc25129da9b9bd59ed3ffb53eeb6b1058b3aa9352cbbea2a7a0db95",
     "third_party/node-core/process-state-adapter.js": "44aaeb3cb8504ff1f7c7fcf94954d9874e283df6668bc75ebcc78dd7414d8792",
     "third_party/node-core/process-state.h": "2ad8733734e10f694bd67069aa752aeed8e65f418f19750d9d2cd54486dac2b6",
     "host/test/fixtures/node-process-state.cjs": "1b4d836b2d4bf38ff7db3b54ce8059f5f5193ebe1b0e409dfe519cda75159691",
@@ -474,7 +474,7 @@
     "packages/registry/spidermonkey/README.md": "12f2f8daadb10a91e386221fb3d15886c41c53eec93741e68df1c488b35e4a5f",
     "packages/registry/spidermonkey/patches/README.md": "c57c47d049d37f448e7a6eee3eb9ab873356683db83d5ff91713c9957d2c887e",
     "packages/registry/node-compat/README.md": "d05d796ec268c520a2de1f0fdb066440474ddff19df0b6f57e0a8b3b512b0227",
-    "docs/architecture.md": "7e9a4a732aa4641af76a18a038074dd189ff31a3a7a93f171eee8c32482bc8a5",
+    "docs/architecture.md": "6925983b9f67c9c26354f61e86282e1f459975d16d9fd3ff88289c11408257b2",
     "tests/nodejs/outline/breadth-first-implementation.md": "23f1fca112029b1bb19ff884fafb0bb54401eb19b159c915b82a99e81f037492",
     "libc/musl-overlay/src/network/wasm32posix/if_nametoindex.c": "cd62192bfdfa70ed555f18e7d382b5d03355da7d1e93cb5191a3bce7b48056c2",
     "libc/musl-overlay/src/network/wasm32posix/if_nameindex.c": "7bacd44a07d103810ebecfd7ff10364e7b7b8e198b9e29414058516a5edf7a91",
@@ -707,7 +707,7 @@
     "host/test/fixtures/node-string-decoder-controls.cjs": "f8486de93aad5c3ba6340de8f3d3a1389485f1aa10c5c5534b636c22dca8d339",
     "third_party/node-core/upstream/string-decoder/src/string_bytes.cc": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d",
     "third_party/node-core/upstream/random-jobs/src/async_wrap.h": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6",
-    "tests/nodejs/outline/README.md": "ce66f68c118eccb5161d8626a6b6980cf227c8c9d88cdd2e7d39511d0c1cd550",
+    "tests/nodejs/outline/README.md": "e850f97621ae79e8ac9dac1eeb77976f67b398cedfa974856ab090b72363c940",
     "tests/nodejs/outline/string-decoder-implementation-dependencies.md": "3954deecf903ff0155e74951f7ddbc7c0b63ef93b0c90d93512a688cd1a97d63",
     "host/test/node-text-decoder.test.ts": "c259e4757d83bc7ac1a3251ce93d0d348b94add348212f99ecf9bcec2616f365",
     "tests/nodejs/outline/random-implementation-dependencies.md": "0d14d44be5c1d2f6d84dfd7665ffb2be82bda0fa8ce0aebc8a28100ffd921196",
@@ -1043,7 +1043,7 @@
     "third_party/node-core/upstream/keys/src/crypto/crypto_keys.h": "b295605d6b1415e20008b05268bd19c95dfe5abdbb6ec4f199c7c48fac25f029",
     "third_party/node-core/upstream/keys/lib/internal/crypto/util.js": "79c2825d2173435a80f914aeca952032826bb61ea5a2835c315f08ced5963337",
     "third_party/node-core/upstream/keys/lib/internal/crypto/keys.js": "e6c16626648d551dd3aa505a6b386376f6173ae6bab6fd9360acf406ce92e1ff",
-    "tests/nodejs/outline/implementation-review.md": "84b5dc154f4797806a26d325bd2c38345d018cde58d69b7654399f32d6344170",
+    "tests/nodejs/outline/implementation-review.md": "bf8b4e87f10680715556b8b22989417a25127d8629746d859d432c6e82f1238c",
     "tests/nodejs/outline/key-implementation-dependencies.md": "8a8ff166f13234d486aeeabbee8b5f44f348994d18993830d802c474a27e056e",
     "tests/nodejs/outline/engine100-integration.md": "0ed009ef5769ee68fa191085da1832315775ec2612cffa16c39eb72dedc84f0b",
     "tests/nodejs/outline/key-finding-progress.json": "be8eedcbe7eee085757e077e4daef4699b06f6f9a84904abeaedcbb4ca1db77b",
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "5a755c8bfae1899d725e0f7374ad4d324a24ba482149194fa9914b231f4da291",
+    "tests/nodejs/outline/status-by-family.md": "937c6b7333ea0a91615d55f1e56f13841add8b2daa89400bd936c716e21c9a94",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -1886,7 +1886,32 @@
     "tests/nodejs/outline/tty-size-owner-finding-progress.json": "3bbe04ef69961d903a8db65b61bf2ee289355730dbb276cec612a18e5249aeb5",
     "third_party/node-core/tests/tty-output-owner/same-number.cpp": "c6b6b53fb5dddf9bf9a4b04da0f5592f887cd908cb36e1359fdfbf574918d445",
     "third_party/node-core/tests/tty-output-owner/size-owner.cjs": "668c57349161b31c6f287d255ad08ea560bbed2cd0d461dd59750ff006516190",
-    "third_party/node-core/tests/tty-output-owner/run-size-owner.py": "90eb9b55771e206327a8c253ad462859a952dbda23c677ec1c0f23c399c9d9e8"
+    "third_party/node-core/tests/tty-output-owner/run-size-owner.py": "90eb9b55771e206327a8c253ad462859a952dbda23c677ec1c0f23c399c9d9e8",
+    "host/test/fixtures/node-http2-settings-control.cjs": "e95a39cdf24807c7eec25cb1622669ba2fefee9bda469f413b3b91c70c471fb9",
+    "third_party/node-core/upstream/http2-settings/lib/http2.js": "1cd29a174f5780cb561628bf187b387f8babad06ae581908f7e472e597db7784",
+    "third_party/node-core/upstream/http2-settings/deps/nghttp2/lib/includes/nghttp2/nghttp2ver.h": "53b46254a82c2075b28459e0f0cd8da7369afbd5632a71560ab75d6af920c5e1",
+    "third_party/node-core/upstream/http2-settings/src/node_http2.h": "658e9a1f19a5cce09a31fa2101029fb48973ee0474358a541aed23167699f4d9",
+    "third_party/node-core/upstream/http2-settings/lib/internal/http2/util.js": "29641c1f3f29baf666dd6d9682db818a1fc954c6fbda29aacf649fab3285e423",
+    "tests/nodejs/outline/http2-settings-finding-progress.json": "d9cb6995f67d879da06f322859e28fac8e2d678f1765b749b2219f56f72f9f8b",
+    "third_party/node-core/http2-settings-adapter.js": "b837ecce6701f40c7ca7ebe9f3129cae83a074a99dd1818a0147d35aeab9bbb3",
+    "third_party/node-core/upstream/http2-settings/test/parallel/test-http2-getpackedsettings.js": "25e8aa1bb62ef17d708170d6056cbab6669f91652b720a22b0dba892a78a1587",
+    "third_party/node-core/upstream/http2-settings/deps/nghttp2/lib/nghttp2_frame.c": "951e396a8935f14d2f2e4963ee904e281542434baff0446a8a6c8783bbed8c92",
+    "host/test/fixtures/node-http2-settings-upstream.cjs": "ad2e012eaa3a5c0ceae623178e28e3c1f604b93841651b99f71b9c3c72ac2671",
+    "third_party/node-core/upstream/http2-settings/src/node_http_common.h": "2a0bb5311862578415a9c631cbec7845ef77d6c7fae98ad5faf0991392f6e3a9",
+    "third_party/node-core/upstream/http2-settings/src/node_http2.cc": "10c3fa807b6dcb84374687104615a356ad6dbffb02858822cba4899fe307d459",
+    "third_party/node-core/http2-settings.md": "fafbb60f5150e9624b0162f5deeab4b877735d5e151fd3e5f0e1dd0f6ccfee79",
+    "tests/nodejs/outline/http2-settings-integration.md": "d4dbae3e01c55e735c9cb6933ca2b40017d850fa53191f883a6fb96d06ac3a7b",
+    "third_party/node-core/upstream/http2-settings/deps/nghttp2/lib/nghttp2_submit.c": "7217715ffede0e6b22a4df0b67fdc3e49bf0fa1432c4c985a1593d01a4a075e8",
+    "host/test/fixtures/node-http2-settings-platform.cjs": "85f09db465699ac99721c6ebf631a6ade95e215726573668ac6c68f42ab26cd2",
+    "third_party/node-core/generate-http2-settings.py": "fd2b114bb9f84bade3c5f16e8c390c93adeb9005c9449f574333c388cc9c35e5",
+    "third_party/node-core/upstream/http2-settings/deps/nghttp2/lib/includes/nghttp2/nghttp2.h": "0bd0ee37b1b08fa38f9b773de201fe431846fda2bd0bed44f642c6c332e2e342",
+    "third_party/node-core/upstream/http2-settings/deps/nghttp2/lib/nghttp2_frame.h": "0b85d70d5ba546c2ae7c292c769cdb02346e3f1357ceff31faeca4efc6b9b48c",
+    "third_party/node-core/upstream/http2-settings/doc/api/http2.md": "d71d1a347bb50863f178173a07fabe061727e4e39a37e45eb306bbf678092caa",
+    "third_party/node-core/upstream/http2-settings/test/common/index.js": "86ed9ed1eb8bf4f40c49c59f0b7afd79545c7b931ae3793631a6fe9f0c071196",
+    "third_party/node-core/upstream/http2-settings/src/node.h": "83185475268b1b2d9f5ffdbec1bb2062ebe70674869dde96fe6cd526dc9b2a79",
+    "third_party/node-core/upstream/http2-settings/deps/nghttp2/lib/nghttp2_net.h": "5de3c1f06e987987e9c138863a71bfd021d34771b69862d4c0ed8a25dc9fba8a",
+    "third_party/node-core/upstream/http2-settings/lib/internal/http2/core.js": "71537e5d80e8f2579e8819f42056c927dbc0d41e6d1f581426becba34177349a",
+    "third_party/node-core/upstream/http2-settings/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
   },
   "changes": [
     {
@@ -5788,16 +5813,43 @@
         "Private SIGWINCH activation still requires real owning signal subscription, not only refresh consumer"
       ],
       "fourHostConformance": false
+    },
+    {
+      "scope": "Implement public HTTP2 settings protocol helpers over real Buffer owners",
+      "auditRequirements": {
+        "document": "tests/nodejs/audit/http.md",
+        "findingIds": [
+          "H-002"
+        ],
+        "relatedFamilies": [
+          "http",
+          "values",
+          "engine"
+        ],
+        "scope": "Settings/protocol subset only; full HTTP2 finding remains open"
+      },
+      "sourceImplemented": [
+        "Pinned default/packing/unpacking/validation/getter-order algorithms with actual private Uint32 and Buffer numeric/allocation owners",
+        "Node/nghttp2-derived protocol constants, actual six-byte big-endian settings layout and wire validation",
+        "Genuine sensitiveHeaders symbol; only implemented export shapes claimed; no sessions or transport capability fabricated",
+        "Current signals, capturedTTY, crypto/TCP/CJS source retained through normal regeneration"
+      ],
+      "remaining": [
+        "Missing connect/createServer/createSecureServer/performServerHandshake/Http2ServerRequest/Http2ServerResponse",
+        "Real sessions/streams/HPACK/frameIO/ALPN/TLS/flow-control/ACK and asynchronous lifecycle",
+        "Production Buffer/GC/realm/error/guest and identified-artifact four-host conformance"
+      ],
+      "fourHostConformance": false
     }
   ],
   "nextSourceWork": [
-    "Commit/push163then integrate realHTTP2settings/constants and UDPoriginalallocation/backing proposal without duplicateSignal loopfences",
-    "Review separateUDPkernel ABIproposal; integrate DNSaddress and Child.killpublicerror slices and realtesting snapshot activation privately underway",
-    "After coherent current sourcebatch run selected engine build only; overall/fullproduct deferral and all19partial status retained"
+    "Commit/push164then integrate preparedUDP original-allocation/backing owners preserving signal loop fences; kernel proposal separate",
+    "Freeze root inputs and run selected current engine resolve/build; do not run overall suites or full product rebuild",
+    "Integrate scopedIPv6DNS, Child.kill and snapshot activation capsules after terminal build result, continue remaining independent audited gaps"
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real signal dispositions/selfpipe/root/lifecycle and pinned listener activation, preserved actual target constants and existingfamilies, corrected two shared callback ordering gaps with identified scoped controls and no broad rebuild."
+    "reason": "Corrected real captured output geometry and same-number descriptor ownership, preserved actual failure/resource identity in controls and all native fallback nonpasses, while retaining current signal/TCP/crypto source."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -38006,6 +38058,46 @@
         "genericFdCases": 4,
         "scope": "Actual production header/NAPI/native POSIX ownership and frontend methods over native dependencies; not SM/guest"
       }
+    },
+    {
+      "at": "2026-11-07T00:57:46.738763+00:00",
+      "kind": "Implement public HTTP2 settings protocol helpers over real Buffer owners",
+      "sourceChecks": {
+        "report": ".context/node26-http2164-source-r1/report.json",
+        "sha256": "9e261f964dbca1ba53f6c6b949d6c22f384ad20a704e0f5b8d9fc5216e3b5c53",
+        "guardedInputs": 776,
+        "scope": "Current standalone protocol/settings source with87semantic controls and complete unchanged selected upstream file74assertions per subject; other HTTP2 APIs/full namespace remain missing. No engine/guest/four-host acceptance."
+      },
+      "packageChecks": {
+        "report": ".context/node26-http2164-affected-r1.json",
+        "sha256": "519f2dcafcdaa25469aba7df85082c0590c586b55e73698c273ae19c45fb02c4",
+        "passed": 14,
+        "failed": 0,
+        "skipped": 0
+      },
+      "currentComponentEvidence": {
+        "report": ".context/node26-http2164-source-r1/report.json",
+        "sha256": "9e261f964dbca1ba53f6c6b949d6c22f384ad20a704e0f5b8d9fc5216e3b5c53",
+        "semanticPass": 87,
+        "semanticFail": 0,
+        "upstreamAssertionsEach": 74,
+        "discoveredFilesEach": 1,
+        "runFilesEach": 1,
+        "excludedFilesEach": 0,
+        "skips": 0,
+        "scope": "Current candidate protocol/settings/Buffer algorithms over explicit native memory/type/process boundaries; no guest/session acceptance"
+      },
+      "sealedEvidence": {
+        "report": ".context/http2-settings-agent/SEAL.json",
+        "sha256": "04b681a5c3bb391dcd10f0fdf8f7e3959b3a4cb98a3cc617952ed1f4e45748ea",
+        "reusedEvidence": true,
+        "scope": "Original grammar failures and negative omission85pass2fail retained; current root checks are separate"
+      },
+      "reviewRetraction": {
+        "report": ".context/node26-http2164-source-r1/assembly-review-correction.json",
+        "sha256": "d57811780f429e176652fd7be16730f7ac91b58c425a49c4952528b238dc6dce",
+        "scope": "Incorrect root anticipated syntax failure retracted: actual syntax was valid before any edit"
+      }
     }
   ],
   "preservedFailedEvidence": [
@@ -40750,10 +40842,28 @@
           "reason": "Old source161twoPTY geometry/same-number teardown failures, original unequal-resource failure injection and current master HWM nonpass all retained"
         }
       ]
+    },
+    {
+      "at": "2026-11-07T00:57:46.738763+00:00",
+      "scope": "Preserved generator setup errors, missing-validator negative and retracted root syntax hypothesis; no candidate runtime failure concealed",
+      "evidence": [
+        {
+          "report": ".context/http2-settings-agent/SEAL.json",
+          "sha256": "04b681a5c3bb391dcd10f0fdf8f7e3959b3a4cb98a3cc617952ed1f4e45748ea",
+          "kind": "negative-control-and-preparation-errors",
+          "reason": "Deliberately omitted wire validation fails2cases; initial3generator grammar errors preserved"
+        },
+        {
+          "report": ".context/node26-http2164-source-r1/assembly-review-correction.json",
+          "sha256": "d57811780f429e176652fd7be16730f7ac91b58c425a49c4952528b238dc6dce",
+          "kind": "retracted-review-hypothesis",
+          "reason": "Failed review helper assertion, not a runtime/assembly failure; no source edit made"
+        }
+      ]
     }
   ],
   "nativeReferenceSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
-  "newFocusedPassCountThisTurn": 10,
+  "newFocusedPassCountThisTurn": 87,
   "nativeBoundaryDebt": [
     "Diagnostics store controls use native AsyncLocalStorage rather than guest context-frame propagation",
     "Socket controls inject native streams; they do not exercise the actual shared guest stream dependency graph",
@@ -41154,10 +41264,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/tty-size-owner-20261107T004347Z.tar.gz",
-    "sha256": "efc21d5d677698180f8e5b5cacce7b9596a995af668fe805008968afae8e7fb2",
-    "bytes": 16849252,
-    "scope": "163actualTTYcapturedsize/descriptor source correction with scoped native evidence; currentengine/guest/fourhost unproven",
+    "path": ".context/node26-implementation-snapshots/http2-settings-20261107T005747Z.tar.gz",
+    "sha256": "335bcd37f7ba8a30b27cc5544eee416b5b2570af6aa27a6165353264f0e1cd90",
+    "bytes": 20989318,
+    "scope": "164actualHTTP2settings/protocol source with current checks and explicit native boundaries; missing transport/currentengine/guest/fourhost unproven",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -42124,15 +42234,15 @@
       ".context/node26-mime-upstream-candidate.cjs": "c6f2bfe47c9e01da0e8b2c8836872625e1e7353f28d2fd6260d9a0f794a0c201"
     }
   },
-  "focusedCountMeaningThisTurn": "Scoped frontend/source/actual native descriptor evidence, not API closure",
+  "focusedCountMeaningThisTurn": "Scoped protocol/settings evidence, not full HTTP2 API closure",
   "currentCapabilityReconciliation": {
     "path": "tests/nodejs/outline/current-capability-reconciliation.json",
-    "sha256": "2dc59c23f4519641579d8928df3fec651e01531fb18a20ee584a56b5f61409a3",
+    "sha256": "e4c2bb45fa52003b6efffc6ab408d269dff4d3741f86704b27d46768bdedea46",
     "families": 19,
     "retainedMatrixObservations": 13292,
     "deprecations": {
       "path": "tests/nodejs/outline/deprecation-reconciliation.json",
-      "sha256": "7c8c977e66c36cf96be4871a9e3e20f280692e7760c1840b2e74f405089515fd",
+      "sha256": "73848cc08dc25129da9b9bd59ed3ffb53eeb6b1058b3aa9352cbbea2a7a0db95",
       "count": 207
     },
     "openFabricatedClaims": 0,
@@ -43656,10 +43766,10 @@
     "guestPackageAttempts": 0,
     "guestDependencyCompilations": 0,
     "kernelWasmCompilations": 0,
-    "nativeHelperCompileAttempts": 5,
+    "nativeHelperCompileAttempts": 0,
     "nativeHelperCompileFailures": 0,
     "productRebuilds": 0,
-    "scope": "Previously unrecorded private5tiny native component attempts, all compiled; their preimage/runtime nonpasses separately preserved. Root163adds0compiles."
+    "scope": "Root and private HTTP2settings work compile0native/engine/product components"
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -44451,7 +44561,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Corrected real captured output geometry and same-number descriptor ownership, preserved actual failure/resource identity in controls and all native fallback nonpasses, while retaining current signal/TCP/crypto source."
+    "reason": "Integrated standalone real settings protocol/Buffer behavior and source-derived constants, retained current source and all negative/preparation evidence; prior status-only goal turn classified no progress, this turn source/docs/ledger checkpoint is progress."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -47579,13 +47689,13 @@
     }
   ],
   "nativeEmbeddingIntegration": {
-    "at": "2026-11-07T00:43:46.699438+00:00",
-    "recipeRevision": 163,
+    "at": "2026-11-07T00:57:46.738763+00:00",
+    "recipeRevision": 164,
     "lastAcceptedEngine": 116,
     "sourceOnly": true,
     "guestCompiled": false,
     "guestRuntimeValidated": false,
-    "scope": "163capturedTTYsize/same-number source fix;10fd/readline+14packagechecks and identified header/native groups separate from uncompiledJSAPI/guest/fourhost."
+    "scope": "164standaloneHTTP2settings/protocol source;87semantic controls/unchangedupstream74assertions each/14package checks, native dependencies explicit; no guest/session/fourhost."
   },
   "asyncAuditedFindingProgress": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -48531,6 +48641,15 @@
       "guestCompiled": false,
       "guestRuntimeValidated": false,
       "scope": "162actualmainSignalWrap/compiledconstants/activation source and reviewed fences;5boundednative-dependentgroups+14packagechecks, not productionJSAPI or currentengine/fourhostacceptance."
+    },
+    {
+      "at": "2026-11-07T00:43:46.699438+00:00",
+      "recipeRevision": 163,
+      "lastAcceptedEngine": 116,
+      "sourceOnly": true,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "scope": "163capturedTTYsize/same-number source fix;10fd/readline+14packagechecks and identified header/native groups separate from uncompiledJSAPI/guest/fourhost."
     }
   ],
   "bufferPoolImplementation": {
@@ -48838,14 +48957,14 @@
     "compilationLimit": "Source77 included in normal targeted engine78. No actual guest HTTP behavior validated by VM controls."
   },
   "sourceCandidateIntegration": {
-    "recipeRevision": 163,
+    "recipeRevision": 164,
     "sourceOnly": true,
     "lastAcceptedEngine": 116,
     "acceptedArtifactCurrentForCandidate": false,
     "guestCompiled": false,
     "guestRuntimeValidated": false,
     "fourHostConformance": false,
-    "scope": "117\u2013163combined guest source has no accepted build;accepted116and prior nonpasses retain scopes. Pending private agent work excluded."
+    "scope": "117\u2013164combined guest source has no accepted build;accepted116and prior nonpasses retain scopes. Pending private agent work excluded."
   },
   "vmPlainContextImplementation": {
     "at": "2026-11-05T00:10:14.839714+00:00",
@@ -49784,6 +49903,13 @@
       "sha256": "11963fe8e3281d4b40d7efd7e176846b18f64b1dc520207e39d18ed9bd2b12f0",
       "bytes": 19053892,
       "scope": "162realSignalWrap/compiledconditionalconstants/activation and callback boundarysource; actualengine/guest/fourhostunproven",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/tty-size-owner-20261107T004347Z.tar.gz",
+      "sha256": "efc21d5d677698180f8e5b5cacce7b9596a995af668fe805008968afae8e7fb2",
+      "bytes": 16849252,
+      "scope": "163actualTTYcapturedsize/descriptor source correction with scoped native evidence; currentengine/guest/fourhost unproven",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -50966,6 +51092,16 @@
       "guestRuntimeValidated": false,
       "fourHostConformance": false,
       "scope": "117\u2013162combined guest source has no accepted build;accepted116and prior nonpasses retain scopes. Pending private agent work excluded."
+    },
+    {
+      "recipeRevision": 163,
+      "sourceOnly": true,
+      "lastAcceptedEngine": 116,
+      "acceptedArtifactCurrentForCandidate": false,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "scope": "117\u2013163combined guest source has no accepted build;accepted116and prior nonpasses retain scopes. Pending private agent work excluded."
     }
   ],
   "nativeCompilationAccountingHistory": [
@@ -52383,6 +52519,18 @@
       "nativeHelperCompileFailures": 1,
       "productRebuilds": 0,
       "scope": "Previously unrecorded originalsignal-owner run2-5helper compilations:3success/1Darwin macro failure. Root162reuses exact binary/header, adds0compilation."
+    },
+    {
+      "at": "2026-11-07T00:57:46.738763+00:00",
+      "acceptedEngineBuilds": 0,
+      "guestEngineBuildFailures": 0,
+      "guestPackageAttempts": 0,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "nativeHelperCompileAttempts": 5,
+      "nativeHelperCompileFailures": 0,
+      "productRebuilds": 0,
+      "scope": "Previously unrecorded private5tiny native component attempts, all compiled; their preimage/runtime nonpasses separately preserved. Root163adds0compiles."
     }
   ],
   "cryptoKdfImplementation": {
@@ -54629,7 +54777,7 @@
     "oldArtifactRetained": true,
     "fullProductRebuilt": false
   },
-  "focusedCounterScopeThisTurn": "10freshfd/readline+14package tests;12+7+4native groups/same-number/genericfd evidence reused, never guest conformance.",
+  "focusedCounterScopeThisTurn": "87freshsemanticcases+74upstreamassertionsper subject+14packagechecks; different units never added as API coverage",
   "focusedGuestOutcomeHistoryThisTurn": [
     {
       "report": ".context/node26-environment-guest-controls/report.json",
@@ -55209,7 +55357,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "b2da8104ae2b5101fb19bec555e06b4fe0ea646b",
+    "pushedThrough": "3d2fec553ad8d700386c8b8a403fff34e57f1777",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -55265,7 +55413,8 @@
       ".context/node26-push-159-https.log": "ad2a428478df63cf3d465c3edd0147063cc05b71594038d6a78d59ce9ddd6f63",
       ".context/node26-push-160-https.log": "85c751921a6d6cd7b4b051e2fdceef12a61428145dfa0469e740a337e4ccdb2e",
       ".context/node26-push-161-https.log": "2780dc52d4fafa7c090aa947c1ab5384fa785f344cb63878e9f691bb59740f6e",
-      ".context/node26-push-162-https.log": "8f66c259b5d224d3cfcb7cb9cba4d22369eeb09f4c50dedd6897839c8b89c490"
+      ".context/node26-push-162-https.log": "8f66c259b5d224d3cfcb7cb9cba4d22369eeb09f4c50dedd6897839c8b89c490",
+      ".context/node26-push-163-https.log": "db84e2cbdb277666dfd03bee170823f5ce586d576d77a9e40e0adde2c2a540a1"
     }
   },
   "sourceLedgerCoverageCorrection": {
@@ -55910,12 +56059,12 @@
   },
   "coreBuildInputClosure": {
     "at": "2026-11-05T19:22:46.853209+00:00",
-    "recipeRevision": 163,
+    "recipeRevision": 164,
     "runtimeOutputChange": false,
     "addedInputCount": 309,
     "newGuardCount": 1,
     "previouslyExistingInputCount": 308,
-    "guardedFileCount": 757,
+    "guardedFileCount": 776,
     "missingSelectedInputs": 0,
     "sourceGuard": "third_party/node-core/check-build-inputs.py",
     "sourceImplemented": [
@@ -56275,26 +56424,25 @@
     "implementationComplete": false,
     "acceptedPlatformLimits": [],
     "mostRecentSourceCheck": {
-      "report": ".context/node26-ttysize163-source-r1/report.json",
-      "sha256": "d800fc04bf064512018418a00222dc6a1dd5eb17f79757a6b0ae993494e774aa",
-      "guardedInputs": 757,
-      "scope": "Current captured-owner TTY geometry and same-number reopen source integration; actual assertions retained with corrected same-resource close injection. Normal input/bootstrap/unity checks, no new production JSAPI/engine compilation or guest/four-host acceptance."
+      "report": ".context/node26-http2164-source-r1/report.json",
+      "sha256": "9e261f964dbca1ba53f6c6b949d6c22f384ad20a704e0f5b8d9fc5216e3b5c53",
+      "guardedInputs": 776,
+      "scope": "Current standalone protocol/settings source with87semantic controls and complete unchanged selected upstream file74assertions per subject; other HTTP2 APIs/full namespace remain missing. No engine/guest/four-host acceptance."
     },
     "additionalRuntimeInputs": [],
     "currentPackageChecks": {
-      "report": ".context/node26-ttysize163-affected-r1.json",
-      "sha256": "40788fc97d39cc232d82cd4071c17fe532f6d393c9c9bac5758c081ebecc7982",
+      "report": ".context/node26-http2164-affected-r1.json",
+      "sha256": "519f2dcafcdaa25469aba7df85082c0590c586b55e73698c273ae19c45fb02c4",
       "passed": 14,
       "failed": 0,
-      "skipped": 0,
-      "scope": "Package-source subset of24test run"
+      "skipped": 0
     }
   },
   "packageContractChecksThisTurn": {
     "passed": 14,
     "failed": 0,
     "skipped": 0,
-    "scope": "757guarded inputs;separate package/source controls,not API conformance"
+    "scope": "776guarded inputs;separate package/source controls,not API conformance"
   },
   "warningImplementation": {
     "at": "2026-11-05T20:47:59.983128+00:00",
@@ -73435,6 +73583,388 @@
         "skipped": 0,
         "scope": "Existing package-source checks only"
       }
+    },
+    {
+      "at": "2026-11-05T19:22:46.853209+00:00",
+      "recipeRevision": 163,
+      "runtimeOutputChange": false,
+      "addedInputCount": 309,
+      "newGuardCount": 1,
+      "previouslyExistingInputCount": 308,
+      "guardedFileCount": 757,
+      "missingSelectedInputs": 0,
+      "sourceGuard": "third_party/node-core/check-build-inputs.py",
+      "sourceImplemented": [
+        "Conservative production owners,recursive manifest paths,literal generator reads,unity fragments and literal shell paths must be declared",
+        "Normal engine build runs the input guard and generated bundle freshness check before staging source;does not rewrite checkout inputs",
+        "Explicit declarations bind 308 existing files plus the guard itself to resolver cache identity"
+      ],
+      "evidence": {
+        "report": ".context/node26-core-inputs-r4/report.json",
+        "sha256": "2e77a6b46d1b6b88d8f5a9217040e79cc29273d570d42c05b185fd71c5329c2a",
+        "packageContractChecksPassed": 12,
+        "failures": 0,
+        "skips": 0,
+        "scope": "Source generation/freshness and package input contract checks,not guest runtime or four-host compatibility"
+      },
+      "historicalEvidence": [
+        {
+          "report": ".context/node26-core-input-coverage-r2.json",
+          "sha256": "8e341cf2293a77a65389b897a9427567540289a5d72b95464c722ee59cd50691",
+          "scope": "Initial 305 missing static file inventory,not dynamic closure"
+        },
+        {
+          "report": ".context/node26-core-inputs-missing-r1.json",
+          "sha256": "0412ada305d8c26af7c200b4361f40361cb9ed46dfa0266bd2420917c5378875",
+          "scope": "Expanded initial guard missing-input result;subsequent literal-generator scan also retained uv-inet license"
+        },
+        {
+          "log": ".context/node26-core-inputs-checks-r1.log",
+          "sha256": "616a7fb493aa8d23f415216f234be94292eb3e9f4728f988318a67245e4a93e1",
+          "scope": "Failed Vitest invocation:wrong root-level executable path;corrected to existing host/node_modules"
+        },
+        {
+          "report": ".context/node26-core-inputs-r2/report.json",
+          "sha256": "7e5ad86c74d6a0c84be8182d8167858658892bf6d174dc7b5d9221811bbe85e2",
+          "scope": "Earlier9positive checks before additional generator/shell/stale fixtures"
+        }
+      ],
+      "addedInputs": [
+        "third_party/node-core/address-rules-adapter.js",
+        "third_party/node-core/async-platform-adapter.js",
+        "third_party/node-core/buffer-bytes-adapter.js",
+        "third_party/node-core/buffer-codecs-adapter.js",
+        "third_party/node-core/buffer-numeric-adapter.js",
+        "third_party/node-core/buffer-unpooled-adapter.js",
+        "third_party/node-core/builtin-policy-adapter.js",
+        "third_party/node-core/check-build-inputs.py",
+        "third_party/node-core/clone-platform-adapter.js",
+        "third_party/node-core/compression-binding-adapter.js",
+        "third_party/node-core/console-platform-adapter.js",
+        "third_party/node-core/crypto-random-jobs-adapter.js",
+        "third_party/node-core/crypto-random-sync-adapter.js",
+        "third_party/node-core/diagnostics-platform-adapter.js",
+        "third_party/node-core/dir-platform-adapter.js",
+        "third_party/node-core/directory-platform-adapter.js",
+        "third_party/node-core/domain-platform-adapter.js",
+        "third_party/node-core/dotenv-platform-adapter.js",
+        "third_party/node-core/event-helpers-prelude.js",
+        "third_party/node-core/event-platform-adapter.js",
+        "third_party/node-core/file-platform-adapter.js",
+        "third_party/node-core/formdata-platform-adapter.js",
+        "third_party/node-core/fs-handle-adapter.js",
+        "third_party/node-core/fs-stats-adapter.js",
+        "third_party/node-core/fs-streams-adapter.js",
+        "third_party/node-core/http-headers-adapter.js",
+        "third_party/node-core/incremental-crypto-adapter.js",
+        "third_party/node-core/inspection-adapter.js",
+        "third_party/node-core/licenses/balanced-match.txt",
+        "third_party/node-core/licenses/brace-expansion.txt",
+        "third_party/node-core/licenses/minimatch.txt",
+        "third_party/node-core/licenses/undici.txt",
+        "third_party/node-core/licenses/uv-inet.txt",
+        "third_party/node-core/network-ip-adapter.js",
+        "third_party/node-core/os-platform-adapter.js",
+        "third_party/node-core/package-reader-adapter.js",
+        "third_party/node-core/path-platform-adapter.js",
+        "third_party/node-core/process-clock-adapter.js",
+        "third_party/node-core/process-state-adapter.js",
+        "third_party/node-core/query-codecs-platform-adapter.js",
+        "third_party/node-core/readdir-platform-adapter.js",
+        "third_party/node-core/readline-platform-adapter.js",
+        "third_party/node-core/stream-platform-adapter.js",
+        "third_party/node-core/string-decoder-adapter.js",
+        "third_party/node-core/tls-identity-adapter.js",
+        "third_party/node-core/upstream/abort-controller.js",
+        "third_party/node-core/upstream/abort-listener.js",
+        "third_party/node-core/upstream/address-rules/deps/uv/src/uv-common.c",
+        "third_party/node-core/upstream/address-rules/lib/internal/blocklist.js",
+        "third_party/node-core/upstream/address-rules/lib/internal/socketaddress.js",
+        "third_party/node-core/upstream/address-rules/lib/net.js",
+        "third_party/node-core/upstream/address-rules/src/node_errors.h",
+        "third_party/node-core/upstream/address-rules/src/node_sockaddr-inl.h",
+        "third_party/node-core/upstream/address-rules/src/node_sockaddr.cc",
+        "third_party/node-core/upstream/address-rules/src/node_sockaddr.h",
+        "third_party/node-core/upstream/assert-utils.js",
+        "third_party/node-core/upstream/assert.js",
+        "third_party/node-core/upstream/async-context-frame.js",
+        "third_party/node-core/upstream/async-local-storage.js",
+        "third_party/node-core/upstream/async-resource.js",
+        "third_party/node-core/upstream/async-run-scope.js",
+        "third_party/node-core/upstream/buffer-codecs/deps/nbytes/include/nbytes.h",
+        "third_party/node-core/upstream/buffer-codecs/deps/nbytes/src/nbytes.cpp",
+        "third_party/node-core/upstream/buffer-codecs/src/node.h",
+        "third_party/node-core/upstream/buffer-codecs/src/node_buffer.cc",
+        "third_party/node-core/upstream/buffer-codecs/src/node_errors.h",
+        "third_party/node-core/upstream/buffer-codecs/src/string_bytes.cc",
+        "third_party/node-core/upstream/buffer-inspect.js",
+        "third_party/node-core/upstream/buffer-numeric-source.js",
+        "third_party/node-core/upstream/buffer-source.js",
+        "third_party/node-core/upstream/builtin-policy.js",
+        "third_party/node-core/upstream/child-process/deps/uv/src/unix/process.c",
+        "third_party/node-core/upstream/child-process/lib/child_process.js",
+        "third_party/node-core/upstream/child-process/lib/internal/child_process.js",
+        "third_party/node-core/upstream/child-process/src/process_wrap.cc",
+        "third_party/node-core/upstream/clone-dom-exception.js",
+        "third_party/node-core/upstream/codec-constants.cc",
+        "third_party/node-core/upstream/comparisons.js",
+        "third_party/node-core/upstream/compression-reference/async_wrap-inl.h",
+        "third_party/node-core/upstream/compression-reference/node_zlib.cc",
+        "third_party/node-core/upstream/compression/internal/zip.js",
+        "third_party/node-core/upstream/compression/internal/zip/archive.js",
+        "third_party/node-core/upstream/compression/internal/zip/binary.js",
+        "third_party/node-core/upstream/compression/internal/zip/buffer.js",
+        "third_party/node-core/upstream/compression/internal/zip/compression.js",
+        "third_party/node-core/upstream/compression/internal/zip/constants.js",
+        "third_party/node-core/upstream/compression/internal/zip/content-size.js",
+        "third_party/node-core/upstream/compression/internal/zip/dos.js",
+        "third_party/node-core/upstream/compression/internal/zip/entry.js",
+        "third_party/node-core/upstream/compression/internal/zip/extra-fields.js",
+        "third_party/node-core/upstream/compression/internal/zip/file.js",
+        "third_party/node-core/upstream/compression/internal/zip/fs-util.js",
+        "third_party/node-core/upstream/compression/internal/zip/header-builders.js",
+        "third_party/node-core/upstream/compression/internal/zip/headers.js",
+        "third_party/node-core/upstream/compression/zlib.js",
+        "third_party/node-core/upstream/console/lib/console.js",
+        "third_party/node-core/upstream/console/lib/internal/bootstrap/web/exposed-wildcard.js",
+        "third_party/node-core/upstream/console/lib/internal/cli_table.js",
+        "third_party/node-core/upstream/console/lib/internal/console/constructor.js",
+        "third_party/node-core/upstream/console/lib/internal/console/global.js",
+        "third_party/node-core/upstream/console/lib/internal/constants.js",
+        "third_party/node-core/upstream/console/lib/internal/trace_events.js",
+        "third_party/node-core/upstream/console/lib/internal/util.js",
+        "third_party/node-core/upstream/console/lib/internal/util/debuglog.js",
+        "third_party/node-core/upstream/core-value-helpers.js",
+        "third_party/node-core/upstream/crypto-public-source.js",
+        "third_party/node-core/upstream/crypto-random-source.js",
+        "third_party/node-core/upstream/crypto-web-source.js",
+        "third_party/node-core/upstream/debuglog.js",
+        "third_party/node-core/upstream/diagnostics-channel.js",
+        "third_party/node-core/upstream/digests/deps/ncrypto/ncrypto.cc",
+        "third_party/node-core/upstream/digests/deps/ncrypto/ncrypto.h",
+        "third_party/node-core/upstream/digests/lib/internal/crypto/hash.js",
+        "third_party/node-core/upstream/digests/lib/internal/crypto/util.js",
+        "third_party/node-core/upstream/digests/lib/internal/util.js",
+        "third_party/node-core/upstream/digests/src/crypto/crypto_hash.cc",
+        "third_party/node-core/upstream/digests/src/crypto/crypto_timing.cc",
+        "third_party/node-core/upstream/digests/src/crypto/crypto_util.cc",
+        "third_party/node-core/upstream/digests/src/crypto/crypto_util.h",
+        "third_party/node-core/upstream/digests/src/node_errors.h",
+        "third_party/node-core/upstream/dir/deps/uv/src/unix/fs.c",
+        "third_party/node-core/upstream/dir/lib/internal/fs/dir.js",
+        "third_party/node-core/upstream/dir/lib/internal/fs/promises.js",
+        "third_party/node-core/upstream/dir/src/node_dir.cc",
+        "third_party/node-core/upstream/dir/src/node_dir.h",
+        "third_party/node-core/upstream/directory/deps/uv/src/unix/fs.c",
+        "third_party/node-core/upstream/directory/lib/internal/test/binding.js",
+        "third_party/node-core/upstream/directory/src/node_file-inl.h",
+        "third_party/node-core/upstream/directory/src/node_file.cc",
+        "third_party/node-core/upstream/directory/src/node_file.h",
+        "third_party/node-core/upstream/domexception.js",
+        "third_party/node-core/upstream/errors.js",
+        "third_party/node-core/upstream/event-symbols.js",
+        "third_party/node-core/upstream/event-target.js",
+        "third_party/node-core/upstream/events-async-resource.js",
+        "third_party/node-core/upstream/events-public-helpers.js",
+        "third_party/node-core/upstream/fixed-queue.js",
+        "third_party/node-core/upstream/fs-fs-source.js",
+        "third_party/node-core/upstream/fs-promises-source.js",
+        "third_party/node-core/upstream/fs-read-context.js",
+        "third_party/node-core/upstream/fs-utils-source.js",
+        "third_party/node-core/upstream/get-builtin-module.js",
+        "third_party/node-core/upstream/get-lazy.js",
+        "third_party/node-core/upstream/http/client.js",
+        "third_party/node-core/upstream/http/common.js",
+        "third_party/node-core/upstream/http/outgoing.js",
+        "third_party/node-core/upstream/http/server.js",
+        "third_party/node-core/upstream/incremental-crypto/lib/crypto.js",
+        "third_party/node-core/upstream/incremental-crypto/lib/internal/crypto/hash.js",
+        "third_party/node-core/upstream/incremental-crypto/lib/internal/crypto/keys.js",
+        "third_party/node-core/upstream/incremental-crypto/lib/internal/crypto/util.js",
+        "third_party/node-core/upstream/incremental-crypto/lib/internal/streams/lazy_transform.js",
+        "third_party/node-core/upstream/inspect.js",
+        "third_party/node-core/upstream/internal-assert.js",
+        "third_party/node-core/upstream/js-transferable.js",
+        "third_party/node-core/upstream/mime.js",
+        "third_party/node-core/upstream/module-records/lib/internal/modules/cjs/loader.js",
+        "third_party/node-core/upstream/module-records/lib/internal/modules/helpers.js",
+        "third_party/node-core/upstream/module-records/src/env_properties.h",
+        "third_party/node-core/upstream/module-records/src/node_credentials.cc",
+        "third_party/node-core/upstream/module-records/src/node_util.cc",
+        "third_party/node-core/upstream/network-identity/ada.cpp",
+        "third_party/node-core/upstream/network-identity/cares_wrap.cc",
+        "third_party/node-core/upstream/network-identity/inet.c",
+        "third_party/node-core/upstream/network-identity/net.js",
+        "third_party/node-core/upstream/network-identity/tls.js",
+        "third_party/node-core/upstream/node-options-env.cc",
+        "third_party/node-core/upstream/os/deps/uv/src/unix/core.c",
+        "third_party/node-core/upstream/os/lib/internal/util.js",
+        "third_party/node-core/upstream/os/lib/os.js",
+        "third_party/node-core/upstream/os/src/api/encoding.cc",
+        "third_party/node-core/upstream/os/src/node_credentials.cc",
+        "third_party/node-core/upstream/os/src/node_os.cc",
+        "third_party/node-core/upstream/packages/lib/internal/modules/cjs/loader.js",
+        "third_party/node-core/upstream/packages/lib/internal/modules/esm/resolve.js",
+        "third_party/node-core/upstream/packages/lib/internal/modules/helpers.js",
+        "third_party/node-core/upstream/packages/lib/internal/modules/package_json_reader.js",
+        "third_party/node-core/upstream/packages/lib/internal/modules/package_map.js",
+        "third_party/node-core/upstream/path-constants.js",
+        "third_party/node-core/upstream/path-glob-matching.js",
+        "third_party/node-core/upstream/path-minimatch.js",
+        "third_party/node-core/upstream/path.js",
+        "third_party/node-core/upstream/ports/lib/internal/per_context/messageport.js",
+        "third_party/node-core/upstream/ports/lib/internal/worker/io.js",
+        "third_party/node-core/upstream/ports/src/node_errors.h",
+        "third_party/node-core/upstream/ports/src/node_messaging.cc",
+        "third_party/node-core/upstream/primordials.js",
+        "third_party/node-core/upstream/process-state/lib/internal/bootstrap/switches/does_not_own_process_state.js",
+        "third_party/node-core/upstream/process-state/lib/internal/bootstrap/switches/does_own_process_state.js",
+        "third_party/node-core/upstream/process-state/src/node_env_var.cc",
+        "third_party/node-core/upstream/process-state/src/node_errors.h",
+        "third_party/node-core/upstream/process-state/src/node_process_methods.cc",
+        "third_party/node-core/upstream/query-codecs/lib/internal/querystring.js",
+        "third_party/node-core/upstream/query-codecs/lib/punycode.js",
+        "third_party/node-core/upstream/query-codecs/lib/querystring.js",
+        "third_party/node-core/upstream/query-codecs/src/node_util.cc",
+        "third_party/node-core/upstream/random-jobs/deps/ncrypto/ncrypto.cc",
+        "third_party/node-core/upstream/random-jobs/lib/internal/crypto/random.js",
+        "third_party/node-core/upstream/random-jobs/src/async_wrap.h",
+        "third_party/node-core/upstream/random-jobs/src/crypto/crypto_random.cc",
+        "third_party/node-core/upstream/random-jobs/src/crypto/crypto_random.h",
+        "third_party/node-core/upstream/random-jobs/src/crypto/crypto_util.cc",
+        "third_party/node-core/upstream/random-jobs/src/crypto/crypto_util.h",
+        "third_party/node-core/upstream/readline-interface/lib/internal/readline/emitKeypressEvents.js",
+        "third_party/node-core/upstream/readline-interface/lib/internal/readline/interface.js",
+        "third_party/node-core/upstream/readline-interface/lib/internal/readline/utils.js",
+        "third_party/node-core/upstream/readline-interface/lib/internal/repl/history.js",
+        "third_party/node-core/upstream/readline-interface/lib/readline.js",
+        "third_party/node-core/upstream/readline-interface/lib/readline/promises.js",
+        "third_party/node-core/upstream/readline/callbacks.js",
+        "third_party/node-core/upstream/readline/promises.js",
+        "third_party/node-core/upstream/readline/tty.js",
+        "third_party/node-core/upstream/readline/utils.js",
+        "third_party/node-core/upstream/removal/lib/fs.js",
+        "third_party/node-core/upstream/removal/lib/internal/fs/promises.js",
+        "third_party/node-core/upstream/removal/lib/internal/fs/rimraf.js",
+        "third_party/node-core/upstream/removal/lib/internal/fs/utils.js",
+        "third_party/node-core/upstream/removal/src/node_file.cc",
+        "third_party/node-core/upstream/streams-stdio/is_main_thread.js",
+        "third_party/node-core/upstream/streams/fs-streams.js",
+        "third_party/node-core/upstream/streams/internal/streams/add-abort-signal.js",
+        "third_party/node-core/upstream/streams/internal/streams/compose.js",
+        "third_party/node-core/upstream/streams/internal/streams/destroy.js",
+        "third_party/node-core/upstream/streams/internal/streams/duplex.js",
+        "third_party/node-core/upstream/streams/internal/streams/duplexify.js",
+        "third_party/node-core/upstream/streams/internal/streams/duplexpair.js",
+        "third_party/node-core/upstream/streams/internal/streams/end-of-stream.js",
+        "third_party/node-core/upstream/streams/internal/streams/from.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/broadcast.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/classic.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/consumers.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/duplex.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/from.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/pull.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/push.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/ringbuffer.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/share.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/transform.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/types.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/utils.js",
+        "third_party/node-core/upstream/streams/internal/streams/iter/webidl.js",
+        "third_party/node-core/upstream/streams/internal/streams/legacy.js",
+        "third_party/node-core/upstream/streams/internal/streams/operators.js",
+        "third_party/node-core/upstream/streams/internal/streams/passthrough.js",
+        "third_party/node-core/upstream/streams/internal/streams/pipeline.js",
+        "third_party/node-core/upstream/streams/internal/streams/readable.js",
+        "third_party/node-core/upstream/streams/internal/streams/state.js",
+        "third_party/node-core/upstream/streams/internal/streams/transform.js",
+        "third_party/node-core/upstream/streams/internal/streams/utils.js",
+        "third_party/node-core/upstream/streams/internal/streams/writable.js",
+        "third_party/node-core/upstream/streams/internal/webstreams/adapters-public.js",
+        "third_party/node-core/upstream/streams/internal/webstreams/compression.js",
+        "third_party/node-core/upstream/streams/internal/webstreams/encoding.js",
+        "third_party/node-core/upstream/streams/internal/webstreams/queuingstrategies.js",
+        "third_party/node-core/upstream/streams/internal/webstreams/readablestream.js",
+        "third_party/node-core/upstream/streams/internal/webstreams/transfer.js",
+        "third_party/node-core/upstream/streams/internal/webstreams/transformstream.js",
+        "third_party/node-core/upstream/streams/internal/webstreams/util.js",
+        "third_party/node-core/upstream/streams/internal/webstreams/writablestream.js",
+        "third_party/node-core/upstream/streams/stream.js",
+        "third_party/node-core/upstream/streams/stream/consumers.js",
+        "third_party/node-core/upstream/streams/stream/iter.js",
+        "third_party/node-core/upstream/streams/stream/promises.js",
+        "third_party/node-core/upstream/streams/stream/web.js",
+        "third_party/node-core/upstream/streams/zlib/iter.js",
+        "third_party/node-core/upstream/string-decoder/lib/internal/util.js",
+        "third_party/node-core/upstream/string-decoder/lib/string_decoder.js",
+        "third_party/node-core/upstream/string-decoder/src/node.h",
+        "third_party/node-core/upstream/string-decoder/src/string_bytes.cc",
+        "third_party/node-core/upstream/string-decoder/src/string_decoder-inl.h",
+        "third_party/node-core/upstream/string-decoder/src/string_decoder.cc",
+        "third_party/node-core/upstream/string-decoder/src/string_decoder.h",
+        "third_party/node-core/upstream/tick-object.js",
+        "third_party/node-core/upstream/tty-colors.js",
+        "third_party/node-core/upstream/util-algorithms/lib/internal/assert/myers_diff.js",
+        "third_party/node-core/upstream/util-algorithms/lib/internal/timers.js",
+        "third_party/node-core/upstream/util-algorithms/lib/internal/util/debounce.js",
+        "third_party/node-core/upstream/util-algorithms/lib/internal/util/diff.js",
+        "third_party/node-core/upstream/util-algorithms/lib/internal/util/parse_args/parse_args.js",
+        "third_party/node-core/upstream/util-algorithms/lib/internal/util/parse_args/utils.js",
+        "third_party/node-core/upstream/util-algorithms/lib/internal/util/throttle.js",
+        "third_party/node-core/upstream/util-algorithms/lib/util.js",
+        "third_party/node-core/upstream/util-algorithms/src/env.cc",
+        "third_party/node-core/upstream/util-algorithms/src/node_util.cc",
+        "third_party/node-core/upstream/util-algorithms/src/timers.cc",
+        "third_party/node-core/upstream/util-colors.js",
+        "third_party/node-core/upstream/util-internal-source.js",
+        "third_party/node-core/upstream/util-source.js",
+        "third_party/node-core/upstream/validators.js",
+        "third_party/node-core/upstream/vm/internal.js",
+        "third_party/node-core/upstream/vm/node_contextify.cc",
+        "third_party/node-core/upstream/vm/public.js",
+        "third_party/node-core/upstream/web-data/core-symbols.js",
+        "third_party/node-core/upstream/web-data/core-util-source.js",
+        "third_party/node-core/upstream/web-data/events.js",
+        "third_party/node-core/upstream/web-data/file.js",
+        "third_party/node-core/upstream/web-data/formdata.js",
+        "third_party/node-core/upstream/web-data/headers.js",
+        "third_party/node-core/upstream/web-data/iteratorSource.js",
+        "third_party/node-core/upstream/web-data/runtimeFeatures.js",
+        "third_party/node-core/upstream/web-data/webidl.js",
+        "third_party/node-core/upstream/webidl.js",
+        "third_party/node-core/util-algorithms-adapter.js",
+        "third_party/node-core/util-public-adapter.js",
+        "third_party/node-core/uv-platform-adapter.js",
+        "third_party/node-core/value-helpers-prelude.js",
+        "third_party/node-core/values-platform-adapter.js",
+        "third_party/node-core/vm-platform-adapter.js",
+        "third_party/node-core/web-adapters-prelude.js"
+      ],
+      "limits": [
+        "Conservative static source guard,not dynamic reads or complete SDK/toolchain closure",
+        "New computed subdirectory reads or build mechanisms require review;all public API/family/runtime gaps remain",
+        "No attribution of earlier runtime failures to missing cache inputs follows from this check"
+      ],
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "implementationComplete": false,
+      "acceptedPlatformLimits": [],
+      "mostRecentSourceCheck": {
+        "report": ".context/node26-ttysize163-source-r1/report.json",
+        "sha256": "d800fc04bf064512018418a00222dc6a1dd5eb17f79757a6b0ae993494e774aa",
+        "guardedInputs": 757,
+        "scope": "Current captured-owner TTY geometry and same-number reopen source integration; actual assertions retained with corrected same-resource close injection. Normal input/bootstrap/unity checks, no new production JSAPI/engine compilation or guest/four-host acceptance."
+      },
+      "additionalRuntimeInputs": [],
+      "currentPackageChecks": {
+        "report": ".context/node26-ttysize163-affected-r1.json",
+        "sha256": "40788fc97d39cc232d82cd4071c17fe532f6d393c9c9bac5758c081ebecc7982",
+        "passed": 14,
+        "failed": 0,
+        "skipped": 0,
+        "scope": "Package-source subset of24test run"
+      }
     }
   ],
   "filesystemTraversalImplementation": {
@@ -78643,6 +79173,90 @@
     ],
     "at": "2026-11-07T00:43:46.699438+00:00",
     "recipeRevision": 163,
+    "lastAcceptedEngine": 116,
+    "guestCompiled": false,
+    "guestRuntimeValidated": false,
+    "fourHostConformance": false,
+    "individualApiClosure": false,
+    "implementationComplete": false,
+    "acceptedPlatformLimits": []
+  },
+  "http2SettingsImplementation": {
+    "auditRequirements": {
+      "document": "tests/nodejs/audit/http.md",
+      "findingIds": [
+        "H-002"
+      ],
+      "relatedFamilies": [
+        "http",
+        "values",
+        "engine"
+      ],
+      "scope": "Settings/protocol subset only; full HTTP2 finding remains open"
+    },
+    "sourceImplemented": [
+      "Pinned default/packing/unpacking/validation/getter-order algorithms with actual private Uint32 and Buffer numeric/allocation owners",
+      "Node/nghttp2-derived protocol constants, actual six-byte big-endian settings layout and wire validation",
+      "Genuine sensitiveHeaders symbol; only implemented export shapes claimed; no sessions or transport capability fabricated",
+      "Current signals, capturedTTY, crypto/TCP/CJS source retained through normal regeneration"
+    ],
+    "sourceChecks": {
+      "report": ".context/node26-http2164-source-r1/report.json",
+      "sha256": "9e261f964dbca1ba53f6c6b949d6c22f384ad20a704e0f5b8d9fc5216e3b5c53",
+      "guardedInputs": 776,
+      "scope": "Current standalone protocol/settings source with87semantic controls and complete unchanged selected upstream file74assertions per subject; other HTTP2 APIs/full namespace remain missing. No engine/guest/four-host acceptance."
+    },
+    "packageChecks": {
+      "report": ".context/node26-http2164-affected-r1.json",
+      "sha256": "519f2dcafcdaa25469aba7df85082c0590c586b55e73698c273ae19c45fb02c4",
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0
+    },
+    "currentComponentEvidence": {
+      "report": ".context/node26-http2164-source-r1/report.json",
+      "sha256": "9e261f964dbca1ba53f6c6b949d6c22f384ad20a704e0f5b8d9fc5216e3b5c53",
+      "semanticPass": 87,
+      "semanticFail": 0,
+      "upstreamAssertionsEach": 74,
+      "discoveredFilesEach": 1,
+      "runFilesEach": 1,
+      "excludedFilesEach": 0,
+      "skips": 0,
+      "scope": "Current candidate protocol/settings/Buffer algorithms over explicit native memory/type/process boundaries; no guest/session acceptance"
+    },
+    "sealedEvidence": {
+      "report": ".context/http2-settings-agent/SEAL.json",
+      "sha256": "04b681a5c3bb391dcd10f0fdf8f7e3959b3a4cb98a3cc617952ed1f4e45748ea",
+      "reusedEvidence": true,
+      "scope": "Original grammar failures and negative omission85pass2fail retained; current root checks are separate"
+    },
+    "reviewRetraction": {
+      "report": ".context/node26-http2164-source-r1/assembly-review-correction.json",
+      "sha256": "d57811780f429e176652fd7be16730f7ac91b58c425a49c4952528b238dc6dce",
+      "scope": "Incorrect root anticipated syntax failure retracted: actual syntax was valid before any edit"
+    },
+    "preservedNonpasses": [
+      {
+        "report": ".context/http2-settings-agent/SEAL.json",
+        "sha256": "04b681a5c3bb391dcd10f0fdf8f7e3959b3a4cb98a3cc617952ed1f4e45748ea",
+        "kind": "negative-control-and-preparation-errors",
+        "reason": "Deliberately omitted wire validation fails2cases; initial3generator grammar errors preserved"
+      },
+      {
+        "report": ".context/node26-http2164-source-r1/assembly-review-correction.json",
+        "sha256": "d57811780f429e176652fd7be16730f7ac91b58c425a49c4952528b238dc6dce",
+        "kind": "retracted-review-hypothesis",
+        "reason": "Failed review helper assertion, not a runtime/assembly failure; no source edit made"
+      }
+    ],
+    "remaining": [
+      "Missing connect/createServer/createSecureServer/performServerHandshake/Http2ServerRequest/Http2ServerResponse",
+      "Real sessions/streams/HPACK/frameIO/ALPN/TLS/flow-control/ACK and asynchronous lifecycle",
+      "Production Buffer/GC/realm/error/guest and identified-artifact four-host conformance"
+    ],
+    "at": "2026-11-07T00:57:46.738763+00:00",
+    "recipeRevision": 164,
     "lastAcceptedEngine": 116,
     "guestCompiled": false,
     "guestRuntimeValidated": false,

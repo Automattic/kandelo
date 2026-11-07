@@ -6097,6 +6097,23 @@ separate descriptor before duplication and teardown. Native descriptor/header
 controls cover these transitions; production JSAPI, guest dup3, master fallback
 and broader TTY behavior remain unvalidated or incomplete.
 
+### Node HTTP/2 settings source ownership
+
+The HTTP/2 settings source now has a standalone protocol owner for
+getDefaultSettings/getPackedSettings/getUnpackedSettings, source-derived
+protocol constants and the genuine sensitiveHeaders symbol. It reuses the
+pinned Node validation/default/unpacking algorithms, private Buffer numeric
+and unpooled allocation owners, and Node/nghttp2 settings layout, ordering
+and validation. It supplies actual six-byte settings payloads without
+creating pretend sessions or transport capabilities. See
+[the source boundary](../third_party/node-core/http2-settings.md).
+
+This remains a partial module. Connect/server/handshake/compatibility
+constructors and returned sessions/streams, HPACK, ALPN/TLS, frame I/O,
+flow control and asynchronous lifecycle remain implementation gaps. Focused
+native-dependent controls do not establish production guest/four-host
+conformance or a complete http2 namespace shape.
+
 ### Native Node TCP and plain Agent source ownership
 
 The source160 TCP owner retains actual descriptors and original write

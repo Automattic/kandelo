@@ -1,0 +1,84 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/http.md",
+    "findingIds": [
+      "H-002"
+    ],
+    "relatedFamilies": [
+      "http",
+      "values",
+      "engine"
+    ],
+    "scope": "Settings/protocol subset only; full HTTP2 finding remains open"
+  },
+  "sourceImplemented": [
+    "Pinned default/packing/unpacking/validation/getter-order algorithms with actual private Uint32 and Buffer numeric/allocation owners",
+    "Node/nghttp2-derived protocol constants, actual six-byte big-endian settings layout and wire validation",
+    "Genuine sensitiveHeaders symbol; only implemented export shapes claimed; no sessions or transport capability fabricated",
+    "Current signals, capturedTTY, crypto/TCP/CJS source retained through normal regeneration"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-http2164-source-r1/report.json",
+    "sha256": "9e261f964dbca1ba53f6c6b949d6c22f384ad20a704e0f5b8d9fc5216e3b5c53",
+    "guardedInputs": 776,
+    "scope": "Current standalone protocol/settings source with87semantic controls and complete unchanged selected upstream file74assertions per subject; other HTTP2 APIs/full namespace remain missing. No engine/guest/four-host acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-http2164-affected-r1.json",
+    "sha256": "519f2dcafcdaa25469aba7df85082c0590c586b55e73698c273ae19c45fb02c4",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0
+  },
+  "currentComponentEvidence": {
+    "report": ".context/node26-http2164-source-r1/report.json",
+    "sha256": "9e261f964dbca1ba53f6c6b949d6c22f384ad20a704e0f5b8d9fc5216e3b5c53",
+    "semanticPass": 87,
+    "semanticFail": 0,
+    "upstreamAssertionsEach": 74,
+    "discoveredFilesEach": 1,
+    "runFilesEach": 1,
+    "excludedFilesEach": 0,
+    "skips": 0,
+    "scope": "Current candidate protocol/settings/Buffer algorithms over explicit native memory/type/process boundaries; no guest/session acceptance"
+  },
+  "sealedEvidence": {
+    "report": ".context/http2-settings-agent/SEAL.json",
+    "sha256": "04b681a5c3bb391dcd10f0fdf8f7e3959b3a4cb98a3cc617952ed1f4e45748ea",
+    "reusedEvidence": true,
+    "scope": "Original grammar failures and negative omission85pass2fail retained; current root checks are separate"
+  },
+  "reviewRetraction": {
+    "report": ".context/node26-http2164-source-r1/assembly-review-correction.json",
+    "sha256": "d57811780f429e176652fd7be16730f7ac91b58c425a49c4952528b238dc6dce",
+    "scope": "Incorrect root anticipated syntax failure retracted: actual syntax was valid before any edit"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/http2-settings-agent/SEAL.json",
+      "sha256": "04b681a5c3bb391dcd10f0fdf8f7e3959b3a4cb98a3cc617952ed1f4e45748ea",
+      "kind": "negative-control-and-preparation-errors",
+      "reason": "Deliberately omitted wire validation fails2cases; initial3generator grammar errors preserved"
+    },
+    {
+      "report": ".context/node26-http2164-source-r1/assembly-review-correction.json",
+      "sha256": "d57811780f429e176652fd7be16730f7ac91b58c425a49c4952528b238dc6dce",
+      "kind": "retracted-review-hypothesis",
+      "reason": "Failed review helper assertion, not a runtime/assembly failure; no source edit made"
+    }
+  ],
+  "remaining": [
+    "Missing connect/createServer/createSecureServer/performServerHandshake/Http2ServerRequest/Http2ServerResponse",
+    "Real sessions/streams/HPACK/frameIO/ALPN/TLS/flow-control/ACK and asynchronous lifecycle",
+    "Production Buffer/GC/realm/error/guest and identified-artifact four-host conformance"
+  ],
+  "at": "2026-11-07T00:57:46.738763+00:00",
+  "recipeRevision": 164,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

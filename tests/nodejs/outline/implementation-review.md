@@ -1,5 +1,11 @@
 # Broad implementation review
 
+Source164 integrates standalone HTTP2 settings and protocol constants over
+real private Buffer owners.87semantic cases,74assertions per subject in an
+unchanged selected upstream file and14package checks pass with explicit
+native dependencies. Complete HTTP2transport and guest/fourhost remain gaps.
+See [HTTP2settings scope](http2-settings-integration.md).
+
 Source163 fixes captured terminal size/resize ownership and same-number
 reopen teardown.757source inputs and24existing focused checks pass; native
 12+7+4groups and controlledsame-number evidence remain scoped separately.

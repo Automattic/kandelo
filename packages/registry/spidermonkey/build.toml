@@ -1,5 +1,8 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/generate-http2-settings.py",
+  "third_party/node-core/http2-settings-adapter.js",
+  "third_party/node-core/upstream/http2-settings",
   "third_party/node-core/signal-owner.h",
   "third_party/node-core/native-signals.cpp",
   "third_party/node-core/process-signals-platform-adapter.js",
@@ -606,4 +609,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 163
+revision = 164

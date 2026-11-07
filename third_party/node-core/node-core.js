@@ -114288,3 +114288,450 @@ module.exports = {
     }
     return module.exports;
 }
+// Standalone public settings/protocol data; no native sessions are fabricated.
+function _createNodeHttp2Settings(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { ArrayIsArray, Number, NumberIsNaN, ObjectEntries, ObjectDefineProperty,
+        ReflectApply, Symbol, Uint32Array } = primordials;
+    const { hideStackFrames, codes: { ERR_INVALID_ARG_TYPE,
+        ERR_HTTP2_INVALID_SETTING_VALUE, ERR_HTTP2_TOO_MANY_CUSTOM_SETTINGS,
+        ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH } } = platform.values.errors;
+    const process = platform.process;
+    const isArrayBufferView = platform.types.isArrayBufferView;
+    // Use the existing pinned numeric owners without public method lookups at
+    // call time. In particular Uint16Array input retains upstream element
+    // interpretation; it is not silently copied/reinterpreted as raw bytes.
+    const read16 = platform.Buffer.prototype.readUInt16BE;
+    const read32 = platform.Buffer.prototype.readUInt32BE;
+    const write16 = platform.Buffer.prototype.writeUInt16BE;
+    const write32 = platform.Buffer.prototype.writeUInt32BE;
+    const readUInt16BE = (buf, offset) => ReflectApply(read16, buf, [offset]);
+    const readUInt32BE = (buf, offset) => ReflectApply(read32, buf, [offset]);
+    const allocate = platform.allocator.createUnsafeBuffer;
+    const constants = {};
+    for (const [name, value, enumerable] of [["NGHTTP2_HCAT_REQUEST",0,false],["NGHTTP2_HCAT_RESPONSE",1,false],["NGHTTP2_HCAT_PUSH_RESPONSE",2,false],["NGHTTP2_HCAT_HEADERS",3,false],["NGHTTP2_NV_FLAG_NONE",0,false],["NGHTTP2_NV_FLAG_NO_INDEX",1,false],["NGHTTP2_ERR_DEFERRED",-508,false],["NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE",-509,false],["NGHTTP2_ERR_INVALID_ARGUMENT",-501,false],["NGHTTP2_ERR_STREAM_CLOSED",-510,false],["NGHTTP2_ERR_NOMEM",-901,false],["STREAM_OPTION_EMPTY_PAYLOAD",1,false],["STREAM_OPTION_GET_TRAILERS",2,false],["NGHTTP2_ERR_FRAME_SIZE_ERROR",-522,true],["NGHTTP2_SESSION_SERVER",0,true],["NGHTTP2_SESSION_CLIENT",1,true],["NGHTTP2_STREAM_STATE_IDLE",1,true],["NGHTTP2_STREAM_STATE_OPEN",2,true],["NGHTTP2_STREAM_STATE_RESERVED_LOCAL",3,true],["NGHTTP2_STREAM_STATE_RESERVED_REMOTE",4,true],["NGHTTP2_STREAM_STATE_HALF_CLOSED_LOCAL",5,true],["NGHTTP2_STREAM_STATE_HALF_CLOSED_REMOTE",6,true],["NGHTTP2_STREAM_STATE_CLOSED",7,true],["NGHTTP2_FLAG_NONE",0,true],["NGHTTP2_FLAG_END_STREAM",1,true],["NGHTTP2_FLAG_END_HEADERS",4,true],["NGHTTP2_FLAG_ACK",1,true],["NGHTTP2_FLAG_PADDED",8,true],["NGHTTP2_FLAG_PRIORITY",32,true],["DEFAULT_SETTINGS_HEADER_TABLE_SIZE",4096,true],["DEFAULT_SETTINGS_ENABLE_PUSH",1,true],["DEFAULT_SETTINGS_MAX_CONCURRENT_STREAMS",4294967295,true],["DEFAULT_SETTINGS_INITIAL_WINDOW_SIZE",65535,true],["DEFAULT_SETTINGS_MAX_FRAME_SIZE",16384,true],["DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE",65535,true],["DEFAULT_SETTINGS_ENABLE_CONNECT_PROTOCOL",0,true],["MAX_MAX_FRAME_SIZE",16777215,true],["MIN_MAX_FRAME_SIZE",16384,true],["MAX_INITIAL_WINDOW_SIZE",2147483647,true],["NGHTTP2_SETTINGS_HEADER_TABLE_SIZE",1,true],["NGHTTP2_SETTINGS_ENABLE_PUSH",2,true],["NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS",3,true],["NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE",4,true],["NGHTTP2_SETTINGS_MAX_FRAME_SIZE",5,true],["NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE",6,true],["NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL",8,true],["PADDING_STRATEGY_NONE",0,true],["PADDING_STRATEGY_ALIGNED",1,true],["PADDING_STRATEGY_MAX",2,true],["PADDING_STRATEGY_CALLBACK",1,true],["NGHTTP2_NO_ERROR",0,true],["NGHTTP2_PROTOCOL_ERROR",1,true],["NGHTTP2_INTERNAL_ERROR",2,true],["NGHTTP2_FLOW_CONTROL_ERROR",3,true],["NGHTTP2_SETTINGS_TIMEOUT",4,true],["NGHTTP2_STREAM_CLOSED",5,true],["NGHTTP2_FRAME_SIZE_ERROR",6,true],["NGHTTP2_REFUSED_STREAM",7,true],["NGHTTP2_CANCEL",8,true],["NGHTTP2_COMPRESSION_ERROR",9,true],["NGHTTP2_CONNECT_ERROR",10,true],["NGHTTP2_ENHANCE_YOUR_CALM",11,true],["NGHTTP2_INADEQUATE_SECURITY",12,true],["NGHTTP2_HTTP_1_1_REQUIRED",13,true],["NGHTTP2_DEFAULT_WEIGHT",16,true],["HTTP2_HEADER_STATUS",":status",true],["HTTP2_HEADER_METHOD",":method",true],["HTTP2_HEADER_AUTHORITY",":authority",true],["HTTP2_HEADER_SCHEME",":scheme",true],["HTTP2_HEADER_PATH",":path",true],["HTTP2_HEADER_PROTOCOL",":protocol",true],["HTTP2_HEADER_ACCEPT_ENCODING","accept-encoding",true],["HTTP2_HEADER_ACCEPT_LANGUAGE","accept-language",true],["HTTP2_HEADER_ACCEPT_RANGES","accept-ranges",true],["HTTP2_HEADER_ACCEPT","accept",true],["HTTP2_HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS","access-control-allow-credentials",true],["HTTP2_HEADER_ACCESS_CONTROL_ALLOW_HEADERS","access-control-allow-headers",true],["HTTP2_HEADER_ACCESS_CONTROL_ALLOW_METHODS","access-control-allow-methods",true],["HTTP2_HEADER_ACCESS_CONTROL_ALLOW_ORIGIN","access-control-allow-origin",true],["HTTP2_HEADER_ACCESS_CONTROL_EXPOSE_HEADERS","access-control-expose-headers",true],["HTTP2_HEADER_ACCESS_CONTROL_REQUEST_HEADERS","access-control-request-headers",true],["HTTP2_HEADER_ACCESS_CONTROL_REQUEST_METHOD","access-control-request-method",true],["HTTP2_HEADER_AGE","age",true],["HTTP2_HEADER_AUTHORIZATION","authorization",true],["HTTP2_HEADER_CACHE_CONTROL","cache-control",true],["HTTP2_HEADER_CONNECTION","connection",true],["HTTP2_HEADER_CONTENT_DISPOSITION","content-disposition",true],["HTTP2_HEADER_CONTENT_ENCODING","content-encoding",true],["HTTP2_HEADER_CONTENT_LENGTH","content-length",true],["HTTP2_HEADER_CONTENT_TYPE","content-type",true],["HTTP2_HEADER_COOKIE","cookie",true],["HTTP2_HEADER_DATE","date",true],["HTTP2_HEADER_ETAG","etag",true],["HTTP2_HEADER_FORWARDED","forwarded",true],["HTTP2_HEADER_HOST","host",true],["HTTP2_HEADER_IF_MODIFIED_SINCE","if-modified-since",true],["HTTP2_HEADER_IF_NONE_MATCH","if-none-match",true],["HTTP2_HEADER_IF_RANGE","if-range",true],["HTTP2_HEADER_LAST_MODIFIED","last-modified",true],["HTTP2_HEADER_LINK","link",true],["HTTP2_HEADER_LOCATION","location",true],["HTTP2_HEADER_RANGE","range",true],["HTTP2_HEADER_REFERER","referer",true],["HTTP2_HEADER_SERVER","server",true],["HTTP2_HEADER_SET_COOKIE","set-cookie",true],["HTTP2_HEADER_STRICT_TRANSPORT_SECURITY","strict-transport-security",true],["HTTP2_HEADER_TRANSFER_ENCODING","transfer-encoding",true],["HTTP2_HEADER_TE","te",true],["HTTP2_HEADER_UPGRADE_INSECURE_REQUESTS","upgrade-insecure-requests",true],["HTTP2_HEADER_UPGRADE","upgrade",true],["HTTP2_HEADER_USER_AGENT","user-agent",true],["HTTP2_HEADER_VARY","vary",true],["HTTP2_HEADER_X_CONTENT_TYPE_OPTIONS","x-content-type-options",true],["HTTP2_HEADER_X_FRAME_OPTIONS","x-frame-options",true],["HTTP2_HEADER_KEEP_ALIVE","keep-alive",true],["HTTP2_HEADER_PROXY_CONNECTION","proxy-connection",true],["HTTP2_HEADER_X_XSS_PROTECTION","x-xss-protection",true],["HTTP2_HEADER_ALT_SVC","alt-svc",true],["HTTP2_HEADER_CONTENT_SECURITY_POLICY","content-security-policy",true],["HTTP2_HEADER_EARLY_DATA","early-data",true],["HTTP2_HEADER_EXPECT_CT","expect-ct",true],["HTTP2_HEADER_ORIGIN","origin",true],["HTTP2_HEADER_PURPOSE","purpose",true],["HTTP2_HEADER_TIMING_ALLOW_ORIGIN","timing-allow-origin",true],["HTTP2_HEADER_X_FORWARDED_FOR","x-forwarded-for",true],["HTTP2_HEADER_PRIORITY","priority",true],["HTTP2_HEADER_ACCEPT_CHARSET","accept-charset",true],["HTTP2_HEADER_ACCESS_CONTROL_MAX_AGE","access-control-max-age",true],["HTTP2_HEADER_ALLOW","allow",true],["HTTP2_HEADER_CONTENT_LANGUAGE","content-language",true],["HTTP2_HEADER_CONTENT_LOCATION","content-location",true],["HTTP2_HEADER_CONTENT_MD5","content-md5",true],["HTTP2_HEADER_CONTENT_RANGE","content-range",true],["HTTP2_HEADER_DNT","dnt",true],["HTTP2_HEADER_EXPECT","expect",true],["HTTP2_HEADER_EXPIRES","expires",true],["HTTP2_HEADER_FROM","from",true],["HTTP2_HEADER_IF_MATCH","if-match",true],["HTTP2_HEADER_IF_UNMODIFIED_SINCE","if-unmodified-since",true],["HTTP2_HEADER_MAX_FORWARDS","max-forwards",true],["HTTP2_HEADER_PREFER","prefer",true],["HTTP2_HEADER_PROXY_AUTHENTICATE","proxy-authenticate",true],["HTTP2_HEADER_PROXY_AUTHORIZATION","proxy-authorization",true],["HTTP2_HEADER_REFRESH","refresh",true],["HTTP2_HEADER_RETRY_AFTER","retry-after",true],["HTTP2_HEADER_TRAILER","trailer",true],["HTTP2_HEADER_TK","tk",true],["HTTP2_HEADER_VIA","via",true],["HTTP2_HEADER_WARNING","warning",true],["HTTP2_HEADER_WWW_AUTHENTICATE","www-authenticate",true],["HTTP2_HEADER_HTTP2_SETTINGS","http2-settings",true],["HTTP2_METHOD_ACL","ACL",true],["HTTP2_METHOD_BASELINE_CONTROL","BASELINE-CONTROL",true],["HTTP2_METHOD_BIND","BIND",true],["HTTP2_METHOD_CHECKIN","CHECKIN",true],["HTTP2_METHOD_CHECKOUT","CHECKOUT",true],["HTTP2_METHOD_CONNECT","CONNECT",true],["HTTP2_METHOD_COPY","COPY",true],["HTTP2_METHOD_DELETE","DELETE",true],["HTTP2_METHOD_GET","GET",true],["HTTP2_METHOD_HEAD","HEAD",true],["HTTP2_METHOD_LABEL","LABEL",true],["HTTP2_METHOD_LINK","LINK",true],["HTTP2_METHOD_LOCK","LOCK",true],["HTTP2_METHOD_MERGE","MERGE",true],["HTTP2_METHOD_MKACTIVITY","MKACTIVITY",true],["HTTP2_METHOD_MKCALENDAR","MKCALENDAR",true],["HTTP2_METHOD_MKCOL","MKCOL",true],["HTTP2_METHOD_MKREDIRECTREF","MKREDIRECTREF",true],["HTTP2_METHOD_MKWORKSPACE","MKWORKSPACE",true],["HTTP2_METHOD_MOVE","MOVE",true],["HTTP2_METHOD_OPTIONS","OPTIONS",true],["HTTP2_METHOD_ORDERPATCH","ORDERPATCH",true],["HTTP2_METHOD_PATCH","PATCH",true],["HTTP2_METHOD_POST","POST",true],["HTTP2_METHOD_PRI","PRI",true],["HTTP2_METHOD_PROPFIND","PROPFIND",true],["HTTP2_METHOD_PROPPATCH","PROPPATCH",true],["HTTP2_METHOD_PUT","PUT",true],["HTTP2_METHOD_REBIND","REBIND",true],["HTTP2_METHOD_REPORT","REPORT",true],["HTTP2_METHOD_SEARCH","SEARCH",true],["HTTP2_METHOD_TRACE","TRACE",true],["HTTP2_METHOD_UNBIND","UNBIND",true],["HTTP2_METHOD_UNCHECKOUT","UNCHECKOUT",true],["HTTP2_METHOD_UNLINK","UNLINK",true],["HTTP2_METHOD_UNLOCK","UNLOCK",true],["HTTP2_METHOD_UPDATE","UPDATE",true],["HTTP2_METHOD_UPDATEREDIRECTREF","UPDATEREDIRECTREF",true],["HTTP2_METHOD_VERSION_CONTROL","VERSION-CONTROL",true],["HTTP_STATUS_CONTINUE",100,true],["HTTP_STATUS_SWITCHING_PROTOCOLS",101,true],["HTTP_STATUS_PROCESSING",102,true],["HTTP_STATUS_EARLY_HINTS",103,true],["HTTP_STATUS_OK",200,true],["HTTP_STATUS_CREATED",201,true],["HTTP_STATUS_ACCEPTED",202,true],["HTTP_STATUS_NON_AUTHORITATIVE_INFORMATION",203,true],["HTTP_STATUS_NO_CONTENT",204,true],["HTTP_STATUS_RESET_CONTENT",205,true],["HTTP_STATUS_PARTIAL_CONTENT",206,true],["HTTP_STATUS_MULTI_STATUS",207,true],["HTTP_STATUS_ALREADY_REPORTED",208,true],["HTTP_STATUS_IM_USED",226,true],["HTTP_STATUS_MULTIPLE_CHOICES",300,true],["HTTP_STATUS_MOVED_PERMANENTLY",301,true],["HTTP_STATUS_FOUND",302,true],["HTTP_STATUS_SEE_OTHER",303,true],["HTTP_STATUS_NOT_MODIFIED",304,true],["HTTP_STATUS_USE_PROXY",305,true],["HTTP_STATUS_TEMPORARY_REDIRECT",307,true],["HTTP_STATUS_PERMANENT_REDIRECT",308,true],["HTTP_STATUS_BAD_REQUEST",400,true],["HTTP_STATUS_UNAUTHORIZED",401,true],["HTTP_STATUS_PAYMENT_REQUIRED",402,true],["HTTP_STATUS_FORBIDDEN",403,true],["HTTP_STATUS_NOT_FOUND",404,true],["HTTP_STATUS_METHOD_NOT_ALLOWED",405,true],["HTTP_STATUS_NOT_ACCEPTABLE",406,true],["HTTP_STATUS_PROXY_AUTHENTICATION_REQUIRED",407,true],["HTTP_STATUS_REQUEST_TIMEOUT",408,true],["HTTP_STATUS_CONFLICT",409,true],["HTTP_STATUS_GONE",410,true],["HTTP_STATUS_LENGTH_REQUIRED",411,true],["HTTP_STATUS_PRECONDITION_FAILED",412,true],["HTTP_STATUS_PAYLOAD_TOO_LARGE",413,true],["HTTP_STATUS_URI_TOO_LONG",414,true],["HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE",415,true],["HTTP_STATUS_RANGE_NOT_SATISFIABLE",416,true],["HTTP_STATUS_EXPECTATION_FAILED",417,true],["HTTP_STATUS_TEAPOT",418,true],["HTTP_STATUS_MISDIRECTED_REQUEST",421,true],["HTTP_STATUS_UNPROCESSABLE_ENTITY",422,true],["HTTP_STATUS_LOCKED",423,true],["HTTP_STATUS_FAILED_DEPENDENCY",424,true],["HTTP_STATUS_TOO_EARLY",425,true],["HTTP_STATUS_UPGRADE_REQUIRED",426,true],["HTTP_STATUS_PRECONDITION_REQUIRED",428,true],["HTTP_STATUS_TOO_MANY_REQUESTS",429,true],["HTTP_STATUS_REQUEST_HEADER_FIELDS_TOO_LARGE",431,true],["HTTP_STATUS_UNAVAILABLE_FOR_LEGAL_REASONS",451,true],["HTTP_STATUS_INTERNAL_SERVER_ERROR",500,true],["HTTP_STATUS_NOT_IMPLEMENTED",501,true],["HTTP_STATUS_BAD_GATEWAY",502,true],["HTTP_STATUS_SERVICE_UNAVAILABLE",503,true],["HTTP_STATUS_GATEWAY_TIMEOUT",504,true],["HTTP_STATUS_HTTP_VERSION_NOT_SUPPORTED",505,true],["HTTP_STATUS_VARIANT_ALSO_NEGOTIATES",506,true],["HTTP_STATUS_INSUFFICIENT_STORAGE",507,true],["HTTP_STATUS_LOOP_DETECTED",508,true],["HTTP_STATUS_BANDWIDTH_LIMIT_EXCEEDED",509,true],["HTTP_STATUS_NOT_EXTENDED",510,true],["HTTP_STATUS_NETWORK_AUTHENTICATION_REQUIRED",511,true]])
+        ObjectDefineProperty(constants, name, { __proto__: null, value, enumerable });
+    const { NGHTTP2_SETTINGS_HEADER_TABLE_SIZE, NGHTTP2_SETTINGS_ENABLE_PUSH,
+        NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE,
+        NGHTTP2_SETTINGS_MAX_FRAME_SIZE, NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE,
+        NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL } = constants;
+    const kMaxFrameSize = (2 ** 24) - 1;
+const kMaxInt = (2 ** 32) - 1;
+const kMaxInitialWindowSize = (2 ** 31) - 1;  // HTTP/2 spec maximum
+// A connection window of 0 stalls the connection
+const kMinConnectionWindowSize = 1;
+const kMaxStreams = (2 ** 32) - 1;
+    const kEmptyObject = platform.values.util.kEmptyObject;
+    const kSensitiveHeaders = Symbol('sensitiveHeaders');
+    const IDX_SETTINGS_HEADER_TABLE_SIZE = 0;
+const IDX_SETTINGS_ENABLE_PUSH = 1;
+const IDX_SETTINGS_INITIAL_WINDOW_SIZE = 2;
+const IDX_SETTINGS_MAX_FRAME_SIZE = 3;
+const IDX_SETTINGS_MAX_CONCURRENT_STREAMS = 4;
+const IDX_SETTINGS_MAX_HEADER_LIST_SIZE = 5;
+const IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL = 6;
+const IDX_SETTINGS_FLAGS = 7;
+
+// Maximum number of allowed additional settings
+const MAX_ADDITIONAL_SETTINGS = 10;
+    // This is the actual private settings owner for these synchronous helpers,
+    // with the same Uint32 coercion/layout as Node's binding. It is neither a
+    // session's local/remote settings nor an invented stream capability.
+    const settingsBuffer = new Uint32Array(IDX_SETTINGS_FLAGS + 2 + MAX_ADDITIONAL_SETTINGS * 2);
+    const binding = {
+        refreshDefaultSettings() {
+            let flags = 0;
+                        settingsBuffer[IDX_SETTINGS_HEADER_TABLE_SIZE] = 4096; flags |= 1 << IDX_SETTINGS_HEADER_TABLE_SIZE;
+            settingsBuffer[IDX_SETTINGS_ENABLE_PUSH] = 1; flags |= 1 << IDX_SETTINGS_ENABLE_PUSH;
+            settingsBuffer[IDX_SETTINGS_MAX_CONCURRENT_STREAMS] = 4294967295; flags |= 1 << IDX_SETTINGS_MAX_CONCURRENT_STREAMS;
+            settingsBuffer[IDX_SETTINGS_INITIAL_WINDOW_SIZE] = 65535; flags |= 1 << IDX_SETTINGS_INITIAL_WINDOW_SIZE;
+            settingsBuffer[IDX_SETTINGS_MAX_FRAME_SIZE] = 16384; flags |= 1 << IDX_SETTINGS_MAX_FRAME_SIZE;
+            settingsBuffer[IDX_SETTINGS_MAX_HEADER_LIST_SIZE] = 65535; flags |= 1 << IDX_SETTINGS_MAX_HEADER_LIST_SIZE;
+            settingsBuffer[IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL] = 0; flags |= 1 << IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL;
+            settingsBuffer[IDX_SETTINGS_FLAGS] = flags;
+            settingsBuffer[IDX_SETTINGS_FLAGS + 1] = 0;
+        },
+        packSettings() {
+            // Http2Settings::Init captures actual entries before Buffer
+            // allocation. Reentry during allocation must not reread the owner.
+            const entries = new Uint32Array((IDX_SETTINGS_FLAGS + MAX_ADDITIONAL_SETTINGS) * 2);
+            const flags = settingsBuffer[IDX_SETTINGS_FLAGS];
+            let count = 0;
+                        if (flags & (1 << IDX_SETTINGS_HEADER_TABLE_SIZE)) { entries[count * 2] = 1; entries[count * 2 + 1] = settingsBuffer[IDX_SETTINGS_HEADER_TABLE_SIZE]; count++; }
+            if (flags & (1 << IDX_SETTINGS_ENABLE_PUSH)) { entries[count * 2] = 2; entries[count * 2 + 1] = settingsBuffer[IDX_SETTINGS_ENABLE_PUSH]; count++; }
+            if (flags & (1 << IDX_SETTINGS_MAX_CONCURRENT_STREAMS)) { entries[count * 2] = 3; entries[count * 2 + 1] = settingsBuffer[IDX_SETTINGS_MAX_CONCURRENT_STREAMS]; count++; }
+            if (flags & (1 << IDX_SETTINGS_INITIAL_WINDOW_SIZE)) { entries[count * 2] = 4; entries[count * 2 + 1] = settingsBuffer[IDX_SETTINGS_INITIAL_WINDOW_SIZE]; count++; }
+            if (flags & (1 << IDX_SETTINGS_MAX_FRAME_SIZE)) { entries[count * 2] = 5; entries[count * 2 + 1] = settingsBuffer[IDX_SETTINGS_MAX_FRAME_SIZE]; count++; }
+            if (flags & (1 << IDX_SETTINGS_MAX_HEADER_LIST_SIZE)) { entries[count * 2] = 6; entries[count * 2 + 1] = settingsBuffer[IDX_SETTINGS_MAX_HEADER_LIST_SIZE]; count++; }
+            if (flags & (1 << IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL)) { entries[count * 2] = 8; entries[count * 2 + 1] = settingsBuffer[IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL]; count++; }
+            const additional = settingsBuffer[IDX_SETTINGS_FLAGS + 1];
+            for (let i = 0; i < additional; i++) {
+                entries[count * 2] = settingsBuffer[IDX_SETTINGS_FLAGS + 2 + i * 2];
+                entries[count * 2 + 1] = settingsBuffer[IDX_SETTINGS_FLAGS + 3 + i * 2];
+                count++;
+            }
+            // nghttp2_pack_settings_payload returns failure for an invalid
+            // known setting; Node exposes undefined, not a manufactured frame.
+            const bytes = allocate(count * 6);
+            for (let i = 0; i < count; i++) {
+                const id = entries[i * 2], value = entries[i * 2 + 1];
+                if (!validEntry(id, value)) return undefined;
+            }
+            for (let i = 0; i < count; i++) {
+                ReflectApply(write16, bytes, [entries[i * 2] & 0xffff, i * 6]);
+                ReflectApply(write32, bytes, [entries[i * 2 + 1], i * 6 + 2]);
+            }
+            return bytes;
+        },
+    };
+    function validEntry(id, value) {
+            switch (id) {
+    case 1:
+      break;
+    case 3:
+      break;
+    case 2:
+      if (value != 0 && value != 1) {
+        return false;
+      }
+      break;
+    case 4:
+      if (value > 2147483647) {
+        return false;
+      }
+      break;
+    case 5:
+      if (value < 16384 ||
+          value > 16777215) {
+        return false;
+      }
+      break;
+    case 6:
+      break;
+    case 8:
+      if (value != 0 && value != 1) {
+        return false;
+      }
+      break;
+    case 9:
+      if (value != 0 && value != 1) {
+        return false;
+      }
+      break;
+    }
+        return true;
+    }
+    const assertIsObject = hideStackFrames((value, name, types) => {
+  if (value !== undefined &&
+      (value === null ||
+       typeof value !== 'object' ||
+       ArrayIsArray(value))) {
+    throw new ERR_INVALID_ARG_TYPE.HideStackFramesError(name, types || 'Object', value);
+  }
+});
+    const assertWithinRange = hideStackFrames(
+  (name, value, min = 0, max = Infinity) => {
+    if (value !== undefined &&
+      (typeof value !== 'number' || value < min || value > max)) {
+      throw new ERR_HTTP2_INVALID_SETTING_VALUE.RangeError.HideStackFramesError(
+        name, value, min, max);
+    }
+  },
+);
+    function addCustomSettingsToObj() {
+  const toRet = {};
+  const num = settingsBuffer[IDX_SETTINGS_FLAGS + 1];
+  for (let i = 0; i < num; i++) {
+    toRet[settingsBuffer[IDX_SETTINGS_FLAGS + 1 + 2 * i + 1].toString()] =
+       Number(settingsBuffer[IDX_SETTINGS_FLAGS + 1 + 2 * i + 2]);
+  }
+  return toRet;
+}
+
+function getDefaultSettings() {
+  settingsBuffer[IDX_SETTINGS_FLAGS] = 0;
+  settingsBuffer[IDX_SETTINGS_FLAGS + 1] = 0; // Length of custom settings
+  binding.refreshDefaultSettings();
+  const holder = { __proto__: null };
+
+  const flags = settingsBuffer[IDX_SETTINGS_FLAGS];
+
+  if ((flags & (1 << IDX_SETTINGS_HEADER_TABLE_SIZE)) ===
+      (1 << IDX_SETTINGS_HEADER_TABLE_SIZE)) {
+    holder.headerTableSize =
+      settingsBuffer[IDX_SETTINGS_HEADER_TABLE_SIZE];
+  }
+
+  if ((flags & (1 << IDX_SETTINGS_ENABLE_PUSH)) ===
+      (1 << IDX_SETTINGS_ENABLE_PUSH)) {
+    holder.enablePush =
+      settingsBuffer[IDX_SETTINGS_ENABLE_PUSH] === 1;
+  }
+
+  if ((flags & (1 << IDX_SETTINGS_INITIAL_WINDOW_SIZE)) ===
+      (1 << IDX_SETTINGS_INITIAL_WINDOW_SIZE)) {
+    holder.initialWindowSize =
+      settingsBuffer[IDX_SETTINGS_INITIAL_WINDOW_SIZE];
+  }
+
+  if ((flags & (1 << IDX_SETTINGS_MAX_FRAME_SIZE)) ===
+      (1 << IDX_SETTINGS_MAX_FRAME_SIZE)) {
+    holder.maxFrameSize =
+      settingsBuffer[IDX_SETTINGS_MAX_FRAME_SIZE];
+  }
+
+  if ((flags & (1 << IDX_SETTINGS_MAX_CONCURRENT_STREAMS)) ===
+      (1 << IDX_SETTINGS_MAX_CONCURRENT_STREAMS)) {
+    holder.maxConcurrentStreams =
+      settingsBuffer[IDX_SETTINGS_MAX_CONCURRENT_STREAMS];
+  }
+
+  if ((flags & (1 << IDX_SETTINGS_MAX_HEADER_LIST_SIZE)) ===
+      (1 << IDX_SETTINGS_MAX_HEADER_LIST_SIZE)) {
+    holder.maxHeaderListSize = holder.maxHeaderSize =
+      settingsBuffer[IDX_SETTINGS_MAX_HEADER_LIST_SIZE];
+  }
+
+  if ((flags & (1 << IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL)) ===
+      (1 << IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL)) {
+    holder.enableConnectProtocol =
+      settingsBuffer[IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL] === 1;
+  }
+
+  if (settingsBuffer[IDX_SETTINGS_FLAGS + 1]) holder.customSettings = addCustomSettingsToObj();
+
+  return holder;
+}
+    function updateSettingsBuffer(settings) {
+  let flags = 0;
+  let numCustomSettings = 0;
+
+  if (typeof settings.customSettings === 'object') {
+    const customSettings = settings.customSettings;
+    for (const setting in customSettings) {
+      const val = customSettings[setting];
+      if (typeof val === 'number') {
+        let set = false;
+        const nsetting = Number(setting);
+        if (NumberIsNaN(nsetting) ||
+          typeof nsetting !== 'number' ||
+          0 >= nsetting ||
+          nsetting > 0xffff)
+          throw new ERR_HTTP2_INVALID_SETTING_VALUE.RangeError(
+            'Range Error', nsetting, 0, 0xffff);
+        if (NumberIsNaN(val) ||
+            typeof val !== 'number' ||
+            0 >= val ||
+            val > 0xffffffff)
+          throw new ERR_HTTP2_INVALID_SETTING_VALUE.RangeError(
+            'Range Error', val, 0, 0xffffffff);
+        if (nsetting < IDX_SETTINGS_FLAGS) {
+          set = true;
+          switch (nsetting) {
+            case IDX_SETTINGS_HEADER_TABLE_SIZE:
+              flags |= (1 << IDX_SETTINGS_HEADER_TABLE_SIZE);
+              settingsBuffer[IDX_SETTINGS_HEADER_TABLE_SIZE] =
+                val;
+              break;
+            case IDX_SETTINGS_ENABLE_PUSH:
+              flags |= (1 << IDX_SETTINGS_ENABLE_PUSH);
+              settingsBuffer[IDX_SETTINGS_ENABLE_PUSH] = val;
+              break;
+            case IDX_SETTINGS_INITIAL_WINDOW_SIZE:
+              flags |= (1 << IDX_SETTINGS_INITIAL_WINDOW_SIZE);
+              settingsBuffer[IDX_SETTINGS_INITIAL_WINDOW_SIZE] =
+                val;
+              break;
+            case IDX_SETTINGS_MAX_FRAME_SIZE:
+              flags |= (1 << IDX_SETTINGS_MAX_FRAME_SIZE);
+              settingsBuffer[IDX_SETTINGS_MAX_FRAME_SIZE] =
+                val;
+              break;
+            case IDX_SETTINGS_MAX_CONCURRENT_STREAMS:
+              flags |= (1 << IDX_SETTINGS_MAX_CONCURRENT_STREAMS);
+              settingsBuffer[IDX_SETTINGS_MAX_CONCURRENT_STREAMS] = val;
+              break;
+            case IDX_SETTINGS_MAX_HEADER_LIST_SIZE:
+              flags |= (1 << IDX_SETTINGS_MAX_HEADER_LIST_SIZE);
+              settingsBuffer[IDX_SETTINGS_MAX_HEADER_LIST_SIZE] =
+                val;
+              break;
+            case IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL:
+              flags |= (1 << IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL);
+              settingsBuffer[IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL] = val;
+              break;
+            default:
+              set = false;
+              break;
+          }
+        }
+        if (!set) { // not supported
+          let i = 0;
+          while (i < numCustomSettings) {
+            if (settingsBuffer[IDX_SETTINGS_FLAGS + 1 + 2 * i + 1] === nsetting) {
+              settingsBuffer[IDX_SETTINGS_FLAGS + 1 + 2 * i + 2] = val;
+              break;
+            }
+            i++;
+          }
+          if (i === numCustomSettings) {
+            if (numCustomSettings === MAX_ADDITIONAL_SETTINGS)
+              throw new ERR_HTTP2_TOO_MANY_CUSTOM_SETTINGS();
+
+            settingsBuffer[IDX_SETTINGS_FLAGS + 1 + 2 * numCustomSettings + 1] = nsetting;
+            settingsBuffer[IDX_SETTINGS_FLAGS + 1 + 2 * numCustomSettings + 2] = val;
+            numCustomSettings++;
+          }
+        }
+      }
+    }
+  }
+  settingsBuffer[IDX_SETTINGS_FLAGS + 1] = numCustomSettings;
+
+  if (typeof settings.headerTableSize === 'number') {
+    flags |= (1 << IDX_SETTINGS_HEADER_TABLE_SIZE);
+    settingsBuffer[IDX_SETTINGS_HEADER_TABLE_SIZE] =
+      settings.headerTableSize;
+  }
+  if (typeof settings.maxConcurrentStreams === 'number') {
+    flags |= (1 << IDX_SETTINGS_MAX_CONCURRENT_STREAMS);
+    settingsBuffer[IDX_SETTINGS_MAX_CONCURRENT_STREAMS] =
+      settings.maxConcurrentStreams;
+  }
+  if (typeof settings.initialWindowSize === 'number') {
+    flags |= (1 << IDX_SETTINGS_INITIAL_WINDOW_SIZE);
+    settingsBuffer[IDX_SETTINGS_INITIAL_WINDOW_SIZE] =
+      settings.initialWindowSize;
+  }
+  if (typeof settings.maxFrameSize === 'number') {
+    flags |= (1 << IDX_SETTINGS_MAX_FRAME_SIZE);
+    settingsBuffer[IDX_SETTINGS_MAX_FRAME_SIZE] =
+      settings.maxFrameSize;
+  }
+  if (typeof settings.maxHeaderListSize === 'number' ||
+      typeof settings.maxHeaderSize === 'number') {
+    flags |= (1 << IDX_SETTINGS_MAX_HEADER_LIST_SIZE);
+    if (settings.maxHeaderSize !== undefined &&
+      (settings.maxHeaderSize !== settings.maxHeaderListSize)) {
+      process.emitWarning(
+        'settings.maxHeaderSize overwrite settings.maxHeaderListSize',
+      );
+      settingsBuffer[IDX_SETTINGS_MAX_HEADER_LIST_SIZE] =
+        settings.maxHeaderSize;
+    } else {
+      settingsBuffer[IDX_SETTINGS_MAX_HEADER_LIST_SIZE] =
+        settings.maxHeaderListSize;
+    }
+  }
+  if (typeof settings.enablePush === 'boolean') {
+    flags |= (1 << IDX_SETTINGS_ENABLE_PUSH);
+    settingsBuffer[IDX_SETTINGS_ENABLE_PUSH] = Number(settings.enablePush);
+  }
+  if (typeof settings.enableConnectProtocol === 'boolean') {
+    flags |= (1 << IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL);
+    settingsBuffer[IDX_SETTINGS_ENABLE_CONNECT_PROTOCOL] =
+      Number(settings.enableConnectProtocol);
+  }
+
+  settingsBuffer[IDX_SETTINGS_FLAGS] = flags;
+}
+    const validateSettings = hideStackFrames((settings) => {
+  if (settings === undefined) return;
+  assertIsObject.withoutStackTrace(settings.customSettings, 'customSettings', 'Number');
+  if (settings.customSettings) {
+    const entries = ObjectEntries(settings.customSettings);
+    if (entries.length > MAX_ADDITIONAL_SETTINGS)
+      throw new ERR_HTTP2_TOO_MANY_CUSTOM_SETTINGS();
+    for (const { 0: key, 1: value } of entries) {
+      assertWithinRange.withoutStackTrace('customSettings:id', Number(key), 0, 0xffff);
+      assertWithinRange.withoutStackTrace('customSettings:value', Number(value), 0, kMaxInt);
+    }
+  }
+
+  assertWithinRange.withoutStackTrace('headerTableSize',
+                                      settings.headerTableSize,
+                                      0, kMaxInt);
+  assertWithinRange.withoutStackTrace('initialWindowSize',
+                                      settings.initialWindowSize,
+                                      0, kMaxInitialWindowSize);
+  assertWithinRange.withoutStackTrace('maxFrameSize',
+                                      settings.maxFrameSize,
+                                      16384, kMaxFrameSize);
+  assertWithinRange.withoutStackTrace('maxConcurrentStreams',
+                                      settings.maxConcurrentStreams,
+                                      0, kMaxStreams);
+  assertWithinRange.withoutStackTrace('maxHeaderListSize',
+                                      settings.maxHeaderListSize,
+                                      0, kMaxInt);
+  assertWithinRange.withoutStackTrace('maxHeaderSize',
+                                      settings.maxHeaderSize,
+                                      0, kMaxInt);
+  if (settings.enablePush !== undefined &&
+      typeof settings.enablePush !== 'boolean') {
+    throw new ERR_HTTP2_INVALID_SETTING_VALUE.HideStackFramesError('enablePush',
+                                                                   settings.enablePush);
+  }
+  if (settings.enableConnectProtocol !== undefined &&
+      typeof settings.enableConnectProtocol !== 'boolean') {
+    throw new ERR_HTTP2_INVALID_SETTING_VALUE.HideStackFramesError('enableConnectProtocol',
+                                                                   settings.enableConnectProtocol);
+  }
+});
+    function getPackedSettings(settings) {
+  assertIsObject(settings, 'settings');
+  validateSettings(settings);
+  updateSettingsBuffer({ ...settings });
+  return binding.packSettings();
+}
+
+function getUnpackedSettings(buf, options = kEmptyObject) {
+  if (!isArrayBufferView(buf) || buf.length === undefined) {
+    throw new ERR_INVALID_ARG_TYPE('buf',
+                                   ['Buffer', 'TypedArray'], buf);
+  }
+  if (buf.length % 6 !== 0)
+    throw new ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH();
+  const settings = {};
+  let offset = 0;
+  while (offset < buf.length) {
+    const id = readUInt16BE(buf, offset);
+    offset += 2;
+    const value = readUInt32BE(buf, offset);
+    switch (id) {
+      case NGHTTP2_SETTINGS_HEADER_TABLE_SIZE:
+        settings.headerTableSize = value;
+        break;
+      case NGHTTP2_SETTINGS_ENABLE_PUSH:
+        settings.enablePush = value !== 0;
+        break;
+      case NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS:
+        settings.maxConcurrentStreams = value;
+        break;
+      case NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE:
+        settings.initialWindowSize = value;
+        break;
+      case NGHTTP2_SETTINGS_MAX_FRAME_SIZE:
+        settings.maxFrameSize = value;
+        break;
+      case NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE:
+        settings.maxHeaderListSize = settings.maxHeaderSize = value;
+        break;
+      case NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL:
+        settings.enableConnectProtocol = value !== 0;
+        break;
+      default:
+        settings.customSettings ||= {};
+        settings.customSettings[id] = value;
+    }
+    offset += 4;
+  }
+
+  if (options != null && options.validate)
+    validateSettings(settings);
+
+  return settings;
+}
+    return { constants, getDefaultSettings, getPackedSettings, getUnpackedSettings,
+        sensitiveHeaders: kSensitiveHeaders };
+}

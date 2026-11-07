@@ -4358,6 +4358,9 @@ const _nodeHttpHeaders = _createNodeHttpHeaders({
     values: _nodeValues, Buffer, insecureHTTPParser: _nodeNative.cliOptions?.insecureHttpParser === true,
 });
 const STATUS_CODES = _nodeHttpHeaders.STATUS_CODES;
+const _nodeHttp2Settings = _createNodeHttp2Settings({
+    process, Buffer, values: _nodeValues, types: util.types, allocator: _nodeBufferAllocator,
+});
 const _nodeHttpIncoming = _createNodeHttpIncoming({
     stream, abort: _nodeEventPlatform.abort, process,
 });
@@ -5005,9 +5008,8 @@ const _builtinModules = {
     'string_decoder': string_decoder,
     'timers': timers,
     'timers/promises': timersPromises,
-    // @sigstore/sign reads http2.constants at module init but fetches over
-    // make-fetch-happen (http/1) — empty stub satisfies the load.
-    'http2': { constants: {} },
+    // Standalone protocol settings only; session/stream/server owners remain gaps.
+    'http2': _nodeHttp2Settings,
     'child_process': child_process,
     'crypto': crypto,
     'net': net,
