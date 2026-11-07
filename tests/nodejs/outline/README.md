@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source238 adds actual lifecycle performance milestones. One portable clock program and four native-reference subjects pass; Worker bootstrap/loop ordering and guest execution remain open.
+See [source scope](performance-milestone-integration.md).
+
 Source237 adds actual TLS certificate/issuer snapshot ownership and public X509 getters; eight native-dependent groups pass. Guest C++ and full TLS/handle/shutdown conformance remain open.
 See [source scope](tls-x509-owner-integration.md).
 

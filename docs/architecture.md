@@ -7222,3 +7222,7 @@ HTTP request parsers now join a real shared native ConnectionsList with intrusiv
 ### TLS certificate getters retain independent native X509 snapshots
 
 TLS certificate access now snapshots actual peer/local SSL certificate material with the pinned clone/get1 ownership rules and preserves supplied issuer order in an acyclic owned graph. Native handles feed the existing branded X509 wrapper and per-instance cache; no SSL or context pointer survives in certificate material. Current public methods use real TLS capabilities, including configured local access before handshake. Eight native-dependent owner groups pass, with five source/staging checks and fourteen package-input tests. Positive server client-certificate get1, new guest JSAPI/GC/realm behavior, full handle interception and shutdown remain unvalidated or incomplete.
+
+### Performance milestones record their actual lifecycle events
+
+Node timing now reads the actual per-owner monotonic clock and marks native entry, environment creation, pre-user bootstrap completion and final natural loop exit at their owning seams. Existing loopStart and idle accounting are preserved; explicit or fatal exits do not invent a natural loop-exit mark. v8Start stays unset because the guest runs SpiderMonkey. A real Worker bootstrap/loop ordering mismatch remains documented. One portable clock program and four pinned-native lifecycle references pass, alongside source staging and package-input checks; new guest hooks remain unexecuted and Observer queue/GC behavior is unchanged.

@@ -6494,6 +6494,9 @@ function _initializeNodeWorkerStartup(data) {
         delete globalThis[name];
     return { eval: false };
 }
+// All builtin/global/bootstrap owners are ready; mark before Worker LOAD
+// deserializers or the first user main/eval entry can execute.
+_nodeNative.performanceBootstrapComplete();
 if (_nodeNative.workerEnvironment) {
     // Host deserializers depend on actual builtin/Blob/File/stream owners.
     // All user startup values are decoded once through that same LOAD graph.

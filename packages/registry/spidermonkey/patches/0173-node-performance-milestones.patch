@@ -1,0 +1,72 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2105,0 +2106,42 @@
++}
++
++static bool KandeloPerformanceClockError(JSContext* cx, const char* phase) {
++  const int error = errno;
++  JS_ReportErrorUTF8(cx, "performance %s clock: %s", phase, strerror(error));
++  KandeloDecoratePendingError(cx, error); return false;
++}
++static bool KandeloNativePerformanceMilestone(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  UniqueChars name; if (!KandeloGetString(cx, args.get(0), &name)) return false;
++  uint64_t stamp = 0; bool recorded = false;
++  if (strcmp(name.get(), "nodeStart") == 0) {
++    stamp = kandeloPerformanceOrigin.nativeEntry;
++    recorded = kandeloPerformanceOrigin.nativeEntryRecorded;
++  } else {
++    using Milestone = kandelo::clock::EventLoopClock::Milestone;
++    Milestone kind;
++    if (strcmp(name.get(), "environment") == 0) kind = Milestone::Environment;
++    else if (strcmp(name.get(), "bootstrapComplete") == 0) kind = Milestone::BootstrapComplete;
++    else if (strcmp(name.get(), "loopExit") == 0) kind = Milestone::LoopExit;
++    else if (strcmp(name.get(), "v8Start") == 0) kind = Milestone::V8Start;
++    else { JS_ReportErrorASCII(cx, "Unknown performance lifecycle milestone"); return false; }
++    if (GetShellContext(cx)->kandeloPerformanceLoop.ReadMilestone(kind, &stamp, &recorded) != 0)
++      return KandeloPerformanceClockError(cx, "lifecycle");
++  }
++  if (!kandeloPerformanceOrigin.initialized ||
++      (recorded && stamp < kandeloPerformanceOrigin.monotonic)) {
++    JS_ReportErrorASCII(cx, "Performance lifecycle origin is unavailable"); return false;
++  }
++  args.rval().setDouble(recorded ? double(stamp - kandeloPerformanceOrigin.monotonic) / 1e6 : -1.0);
++  return true;
++}
++static bool KandeloNativePerformanceBootstrapComplete(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (GetShellContext(cx)->kandeloPerformanceLoop.MarkBootstrapComplete() != 0)
++    return KandeloPerformanceClockError(cx, "bootstrap");
++  args.rval().setUndefined(); return true;
++}
++static bool KandeloRecordPerformanceLoopExit(JSContext* cx) {
++  if (GetShellContext(cx)->kandeloPerformanceLoop.MarkLoopExit() != 0)
++    return KandeloPerformanceClockError(cx, "loop exit");
++  return true;
+@@ -4795,0 +4838,2 @@
++      JS_FN("performanceMilestone", KandeloNativePerformanceMilestone, 1, 0),
++      JS_FN("performanceBootstrapComplete", KandeloNativePerformanceBootstrapComplete, 0, 0),
+@@ -9734 +9778,6 @@
+-    if (!sc->quitting) {
++    // Only the final loop drain, after all beforeExit restarts, owns this mark.
++    bool lifecycleReady = true;
++    if (!sc->quitting && !KandeloRecordPerformanceLoopExit(cx)) {
++      lifecycleReady = false; sc->exitCode = 1; KandeloCaptureWorkerException(cx);
++    }
++    if (!sc->quitting && lifecycleReady) {
+@@ -17634,0 +17684,3 @@
++  if (IsKandeloNodeMode() && kandeloPerformanceLoop.MarkEnvironment() != 0) {
++    perror("performance environment clock"); return false;
++  }
+@@ -17827 +17879,6 @@
+-    if (IsKandeloNodeMode() && !sc->quitting) {
++    bool lifecycleReady = true;
++    if (IsKandeloNodeMode() && !sc->quitting && !KandeloRecordPerformanceLoopExit(cx)) {
++      AutoReportException are(cx);
++      lifecycleReady = false; result = EXIT_FAILURE; sc->exitCode = EXIT_FAILURE;
++    }
++    if (IsKandeloNodeMode() && !sc->quitting && lifecycleReady) {
+@@ -18071,0 +18129,3 @@
++  }
++  if (kandeloPerformanceOrigin.MarkNativeEntry() != 0) {
++    perror("performance native entry clock"); return EXIT_FAILURE;

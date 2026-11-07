@@ -108155,8 +108155,8 @@ NODE_PERFORMANCE_MILESTONE_BOOTSTRAP_COMPLETE: 7,
             return unavailable('performance loop measurements');
         return platform.native.performanceLoopState();
     }
-    // Only the actual loop-start producer is installed here. Other milestones
-    // remain unavailable until their owning initialization/exit phases exist.
+    // ELU consumes the actual raw loop start. Public node timing uses the same
+    // owning clock plus real environment/bootstrap/final-loop phase records.
     const milestones = primordials.ObjectCreate(null);
     ObjectDefineProperty(milestones, constants.NODE_PERFORMANCE_MILESTONE_LOOP_START, {
         __proto__: null, get() { return loopState()[0]; },
@@ -108175,8 +108175,14 @@ NODE_PERFORMANCE_MILESTONE_BOOTSTRAP_COMPLETE: 7,
             getTimeOriginTimestamp: () => platform.native.performanceTimeOrigin(),
             getMilestoneTimestamp(index) {
                 if (index === constants.NODE_PERFORMANCE_MILESTONE_LOOP_START) return loopState()[1];
-                if (platform.native.performanceMilestone === undefined) return unavailable('performance milestone measurement');
-                return platform.native.performanceMilestone(index);
+                const name = index === constants.NODE_PERFORMANCE_MILESTONE_NODE_START ? 'nodeStart' :
+                    index === constants.NODE_PERFORMANCE_MILESTONE_ENVIRONMENT ? 'environment' :
+                    index === constants.NODE_PERFORMANCE_MILESTONE_BOOTSTRAP_COMPLETE ? 'bootstrapComplete' :
+                    index === constants.NODE_PERFORMANCE_MILESTONE_LOOP_EXIT ? 'loopExit' :
+                    index === constants.NODE_PERFORMANCE_MILESTONE_V8_START ? 'v8Start' : undefined;
+                if (name === undefined || platform.native.performanceMilestone === undefined)
+                    return unavailable('performance milestone measurement');
+                return platform.native.performanceMilestone(name);
             } }],
         ['internal/histogram', { isHistogram(value) {
             if (platform.histogram === undefined) return unavailable('performance histogram branding/ownership');

@@ -689,6 +689,8 @@
         performanceNow() { return native.performanceNow(); },
         performanceTimeOrigin() { return native.performanceTimeOrigin(); },
         performanceLoopState() { return native.performanceLoopState(); },
+        performanceMilestone(name) { return native.performanceMilestone(name); },
+        performanceBootstrapComplete() { return native.performanceBootstrapComplete(); },
         socketLookup(host, family, hints) { return native.socketLookup(host, family, hints); },
         socketConnect(host, port, family, localAddress, localPort) {
             return native.socketConnect(host, port, family, localAddress, localPort);

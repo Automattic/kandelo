@@ -1,0 +1,84 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/observability.md",
+    "findingIds": [
+      "O-008"
+    ],
+    "relatedFamilies": [
+      "observability",
+      "processes",
+      "workers",
+      "engine"
+    ],
+    "scope": "Partial actual NodeTiming milestone owner only. O-009 Observer delivery/lifecycle is unchanged. Worker loopStart-before-bootstrapComplete remains a real ordering gap; v8Start is physically unset, not a fabricated V8 event."
+  },
+  "sourceImplemented": [
+    "Extend the actual existing per-owner performance clock with real native-entry/environment/bootstrap/final-loop marks",
+    "Mark bootstrapComplete at actual final pre-user-entry/Worker LOAD seam rather than after user code returns",
+    "Mark loopExit only at real final natural-loop completion after beforeExit restarts; explicit/fatal quits retain unrecorded state",
+    "Preserve actual loopStart and idle accounting, native clock errors and independent thread ownership",
+    "Use existing pinned public NodeTiming getters/toJSON; v8Start stays physically unset(-1) with no invented SpiderMonkey-to-V8 event",
+    "Compose narrow0173engine additions over237certificate/235async/currentkeygen owners and regenerate the genuine core"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-milestone238-source-r1/report.json",
+    "sha256": "a213e90779c65e3a02a8b2d89714772b80febc91d1d8c7f2cca5573872f68029",
+    "guardedInputs": 897,
+    "scope": "Lifecycle source/input/staging/bootstrap checks and explicitly reused portable/native reference components only."
+  },
+  "packageChecks": {
+    "report": ".context/node26-milestone238-affected-r1.json",
+    "sha256": "87da3cd6bb70d38df42b305a9dbecedfb4de4101b3d2cb2a1e1221fa57b1417b",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-milestone238-source-r1/report.json",
+    "sha256": "a213e90779c65e3a02a8b2d89714772b80febc91d1d8c7f2cca5573872f68029",
+    "normalSourceChecks": 3,
+    "portableSubjects": 1,
+    "nativeReferenceSubjects": 4,
+    "newRootCompilerAttempts": 0,
+    "historicalProducerHelperCompileAttempts": 1,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "deterministicToolCompleted": true,
+    "declaredChecksImported": 2,
+    "scope": "One reused actual portable clock program plus four pinned-native lifecycle references. Thirteen static helper assertion annotations are not thirteen matched cases. Actual new guest lifecycle/JSAPI/Worker hooks unexecuted."
+  },
+  "sealedEvidence": {
+    "report": ".context/performance-milestone-owner-agent/verification.json",
+    "sha256": "07cabed675bf60a8e3d836ba00c6f776022491af75032af2d7151e91e9f965e0",
+    "reusedEvidence": true,
+    "scope": "One portable clock helper compiled successfully and four pinned native lifecycle subjects passed. Normal composed bootstrap/core parsing succeeded; raw open adapter-prefix EOF parse failure retained. Independent source review is not guest proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/performance-milestone-owner-agent/generation-r0/generate.stderr",
+      "sha256": "788045da55fc3aec50c35b74a6ffa1e4e02d850fde8a41894b5ffe5838121253",
+      "scope": "Historical raw intentionally open adapter prefix parsed alone and failed EOF; normal actual bootstrap+suffix composition subsequently parsed. Original error remains, no production workaround or assertion weakening."
+    },
+    {
+      "report": ".context/milestone238-integration-plan/authoring-r0/failure.json",
+      "sha256": "ee6797ff643b7aee067e14a1c2763f0b196e5729f1c2386cd9addf36f46f287d",
+      "scope": "Author-only private preparation helper syntax error before execution; original script/failure retained and corrected helper sealed before root use. No check/compiler or root source mutation from failed authoring."
+    }
+  ],
+  "remaining": [
+    "Compile and execute actual new guest native-entry/environment/bootstrap/final-loop marks, clock failure, context/realm/GC/Worker teardown across identified four-host artifacts",
+    "Implement genuine Worker bootstrap/LOAD dispatch and loop-entry ordering; current Worker loopStart precedes bootstrapComplete unlike native Node",
+    "Reconcile API-specific physically absent V8-init event without manufacturing values; no accepted platform exclusions established here",
+    "Complete broader O-008 timing entries and O-009 actual observer queues/delivery; resolve GC flags policy before activating observations"
+  ],
+  "at": "2026-11-07T20:36:59.633244+00:00",
+  "recipeRevision": 238,
+  "lastAcceptedEngine": 230,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

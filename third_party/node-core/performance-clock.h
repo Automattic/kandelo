@@ -9,6 +9,8 @@ struct PerformanceOrigin {
   uint64_t monotonic = 0;
   double unixMilliseconds = 0;
   bool initialized = false;
+  uint64_t nativeEntry = 0;
+  bool nativeEntryRecorded = false;
   int Initialize() {
     if (initialized) { errno = EALREADY; return -1; }
     timespec wall;
@@ -16,6 +18,12 @@ struct PerformanceOrigin {
     unixMilliseconds = double(wall.tv_sec) * 1000 + double(wall.tv_nsec) / 1e6;
     initialized = true;
     return 0;
+  }
+  int MarkNativeEntry() {
+    if (!initialized || nativeEntryRecorded) { errno = EINVAL; return -1; }
+    if (Nanoseconds(&nativeEntry) != 0) return -1;
+    if (nativeEntry < monotonic) { errno = EIO; return -1; }
+    nativeEntryRecorded = true; return 0;
   }
   int Now(double* milliseconds) const {
     if (!initialized) { errno = EINVAL; return -1; }
@@ -32,6 +40,23 @@ struct PerformanceOrigin {
 // observable and never become zero samples.
 class EventLoopClock {
  public:
+  enum class Milestone { Environment, BootstrapComplete, LoopExit, V8Start };
+  int MarkEnvironment() { return Capture(environment_); }
+  int MarkBootstrapComplete() {
+    if (!environment_.recorded) { errno = EINVAL; return -1; }
+    return Capture(bootstrap_);
+  }
+  int MarkLoopExit() {
+    // No loop exit exists when explicit/synchronous exit never entered it.
+    return started_ ? Capture(exit_) : 0;
+  }
+  int ReadMilestone(Milestone kind, uint64_t* stamp, bool* recorded) const {
+    if (error_) { errno = error_; return -1; }
+    const Stamp* value = kind == Milestone::Environment ? &environment_ :
+        kind == Milestone::BootstrapComplete ? &bootstrap_ :
+        kind == Milestone::LoopExit ? &exit_ : &v8_;
+    *stamp = value->nanoseconds; *recorded = value->recorded; return 0;
+  }
   void Enter() {
     if (error_ || started_) return;
     if (Nanoseconds(&started_) != 0) error_ = errno;
@@ -69,6 +94,21 @@ class EventLoopClock {
     *start = started_; *idle = elapsed; return 0;
   }
  private:
+  struct Stamp { uint64_t nanoseconds = 0; bool recorded = false; };
+  Stamp environment_, bootstrap_, exit_;
+  // This SpiderMonkey embedding has no V8 initialization transition. Like
+  // Node when v8_initialized is false, its legacy field stays genuinely unset.
+  Stamp v8_;
+  int Capture(Stamp& stamp) {
+    if (error_) { errno = error_; return -1; }
+    if (stamp.recorded) return 0;
+    uint64_t now;
+    if (Nanoseconds(&now) != 0) { error_ = errno; return -1; }
+    if (environment_.recorded && now < environment_.nanoseconds) {
+      error_ = errno = EIO; return -1;
+    }
+    stamp.nanoseconds = now; stamp.recorded = true; return 0;
+  }
   uint64_t started_ = 0;
   uint64_t idleStart_ = 0;
   uint64_t idle_ = 0;
