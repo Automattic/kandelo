@@ -292,6 +292,17 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/scheduler/slot-pressure
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_HIGH_THREAD_TESTS=1 WASM_POSIX_RESOLUTION_POLICY=source-only-v1 WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$(realpath ../../local-binaries/source-only-v1)" npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit --grep "48 concurrent locked Go threads" --workers=1'
 ```
 
+The selected Go 1.28 development wasm32 compiler at `f6053060` passes
+48 locked workers over five retirement waves with both the 64-slot and
+1,024-slot fixtures. Both fresh Node parents exit zero with empty stderr
+and diagnostics; all six Chromium/Firefox/WebKit cases pass without skips
+or flakes. The fixtures match the fresh compiler gate's recorded hashes.
+This rerun uses the isolated general TCP correction's ABI-55 kernel
+`741aa821cccd` and compiled host. It establishes bounded thread retirement
+and slot reuse, not long-lived PHP allocator behavior or physical memory
+reclamation. The 256/512-worker results below are historical Go 1.25
+evidence and have not been repeated with this compiler.
+
 The browser probe caught serialized 250 ms per-thread teardown exceeding the
 kernel-worker's two-second graceful-detach deadline; thread terminations now
 settle concurrently. A separate `slot-pressure-1024.wasm` fixture declares

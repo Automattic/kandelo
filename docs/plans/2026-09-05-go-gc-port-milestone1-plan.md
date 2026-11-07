@@ -10,6 +10,20 @@ Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
 Implementation/evaluation checkpoints are pushed to draft PR #1492.
 The full WordPress service goal remains unfinished.
 
+**Current-compiler thread retirement:** hash-verified f605 fixtures pass
+48 simultaneously locked worker Ms across five retirement waves under
+both 64-slot and 1,024-slot declarations. Two fresh Node parents exit zero
+with empty stderr/diagnostics. All six three-engine browser cases pass,
+zero skipped/flaky, in 82.9 seconds; the whole gate takes 2m11s. It uses
+the isolated TCP correction's kernel `741aa821cccd` and compiled host.
+This refreshes bounded reuse evidence for the selected compiler without
+repeating the legacy 256/512-worker stress on this 36 GB machine. Those
+higher counts remain historical Go 1.25 evidence. PHP churn, final-image
+lifecycle and memory reclamation remain separate gates. Evidence:
+`.context/offline-egress-listeners/.context/selected-go-thread-churn/`.
+The initial private-script path error ran no guest case and is retained
+separately as job `selected-go-thread-churn-1107-095621-5ace` (exit 127).
+
 **General TCP namespace correction validated:** isolated commit
 [`67a49efe3`](https://github.com/Automattic/kandelo/commit/67a49efe3)
 keeps offline guest listeners out of physical host ports and routes TCP to
