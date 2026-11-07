@@ -31,7 +31,9 @@ reproduction's built-in-target control passed (exit 0), while its named
 custom target produced the `built-in target` compiler panic (exit 101).
 Node and Chromium guest tests reached the same panic after successfully
 formatting code, enforcing Clippy lints and generating HTML documentation.
-The guest patch still requires runtime validation after rebuilding.
+The patched guest compiler package was rebuilt through the normal resolver.
+The shared Node, Chromium, Firefox and WebKit workflow then passed, including
+a real positive doctest reporting one passed test and zero failures.
 
 ## Why this is not a Kandelo defect
 

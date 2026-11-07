@@ -102,7 +102,8 @@ image does not establish canonical-shell integration readiness.
 
 The optional `kandelo-rust-sdk` package builds a ZIP mounted at `/usr`.
 It combines the C/C++ SDK and its linker with the pinned guest rustc,
-matching prebuilt standard library, Cargo and `wasm-fork-instrument`.
+matching prebuilt standard library and libtest, Cargo, rustdoc, rustfmt,
+Clippy and `wasm-fork-instrument`.
 It is experimental and excluded from the default supported build set.
 Build it through the normal resolver from `scripts/dev-shell.sh`:
 
@@ -113,9 +114,12 @@ cargo xtask build-deps output-path kandelo-rust-sdk kandelo-rust-sdk.zip
 
 Register that ZIP as a verified lazy archive at `/usr` on a persistent
 machine, preserving archive symlinks and executable modes. The archive
-installs `/usr/bin/cargo` and `/usr/bin/rustc`; the compiler implementation
-lives at `/usr/libexec/rustc`. The acceptance workspace uses this bounded
-build profile in its root `Cargo.toml`:
+installs the public commands in `/usr/bin`; the raw compiler, rustdoc and
+Clippy driver live in `/usr/libexec` behind the SDK entry point. Cargo
+subcommand aliases include the target's `.wasm` executable suffix, so
+`cargo fmt` and `cargo clippy` use ordinary Cargo command discovery. The
+acceptance workspace uses this bounded build profile in its root
+`Cargo.toml`:
 
 ```toml
 [profile.dev]
@@ -141,6 +145,11 @@ cd /home/maker/project
 cargo check --offline -j1
 cargo build --offline -j1
 cargo run --offline -j1
+cargo fmt --all
+cargo fmt --all -- --check
+cargo clippy --offline -j1 --workspace -- -D warnings
+cargo doc --offline --no-deps -j1
+cargo test --offline -j1 --workspace -- --test-threads=1
 ```
 
 The public rustc entry point supplies `-Zunstable-options` and the matching
@@ -201,13 +210,17 @@ Tests run in separate processes, so they do not share mutable process globals.
 This does not provide stack unwinding or destructor cleanup after a panic.
 
 ```sh
-cargo test --offline -j1 --workspace --tests -- --test-threads=1
+cargo test --offline -j1 --workspace -- --test-threads=1
 ```
 
-`--tests` selects unit and integration tests and avoids the documentation
-test phase. `rustdoc` is not shipped, so plain `cargo test` on a library
-can still fail when it reaches doctests; use explicit test target selection
-until rustdoc is available. Binary-only packages do not have that phase.
+Plain `cargo test` can now reach the documentation-test phase using the
+matching rustdoc. The public rustdoc entry point supplies the same sysroot
+and uses `/usr/bin/rustc` as its default test builder, so generated doctest
+executables receive the normal fork preparation. Explicit test builders
+remain authoritative. The named custom target keeps its compiler identity;
+a [tracked rustdoc patch](../tests/runtime-workarounds/RUST-RUSTDOC-NAMED-CUSTOM-TARGET/entry.md)
+resolves doctest executable suffixes through the normal target search.
+This does not add panic unwinding.
 Test filtering, ignored tests, expected panics, mismatched panic messages,
 failure exit status, build-script generated source, subprocess tests and
 running tests again after reopening a persistent disk are exercised by Cargo acceptance.
@@ -216,19 +229,38 @@ they must report failure, rather than turn an empty test run green.
 Acceptance uses one test thread; parallel harness execution still needs
 dedicated coverage.
 
+### Formatting, linting and documentation
+
+The tools come from the compiler's pinned Rust source revision. The guest
+SDK includes `rustdoc`, `rustfmt`, `cargo-fmt`, `cargo-clippy` and
+`clippy-driver`; Clippy uses the same compiler libraries as rustc.
+
+The shared workflow in `host/test/fixtures/rust-devtools.ts` checks tool
+versions, rejects unformatted source, formats it, rejects an intentional
+Clippy lint, accepts the corrected source, verifies a generated function's
+HTML, and requires a documentation example to execute. Node and browser
+acceptance use the same guest commands on persistent disks. This is a small
+compatibility case, not coverage of every rustdoc or Clippy option.
+For a denied Clippy lint, Cargo returns status 101 with the real diagnostic
+and reports the driver's abort-mode termination by `SIGABRT`, as with fatal
+rustc errors. Correcting the source allows the same lint policy to pass.
+
+Guest-linked executables currently lack the engine's newer
+`kandelo.abi.contract` digest stamp and trigger the host's existing warning.
+They use the matching SDK and numeric ABI marker; propagating the contract
+digest through guest linking remains follow-up work.
+
 ### Remaining development-tool gaps
 
 | Expected workflow | Guest SDK status |
 |---|---|
-| `cargo doc` and doctests | Missing `rustdoc` |
-| `cargo fmt`, `cargo clippy` | Guest `rustfmt` and Clippy tools are not shipped |
 | Editor analysis and standard-library source navigation | Guest `rust-analyzer` and `rust-src` are not shipped |
 | Procedural macros, such as derive plugins | Loading and panic recovery remain unvalidated |
 | Cargo dependencies that compile C/C++ or run configure tools | Basic cross-language linking is covered; general guest native-dependency builds remain unvalidated |
 | `catch_unwind`, panic unwinding and backtraces | Unsupported; abort-mode libtest isolates tests instead |
 | Online registries, Git authentication and proxies | Transport defaults configured; end-to-end workflow unvalidated |
 | Incremental compilation on WebKit | Disabled in the tested profile because of native process memory limits |
-| Guest release/LTO builds, benchmarks, coverage and test time limits | Need dedicated guest-toolchain validation |
+| Broader merged/negative doctests, parallel test harnesses, release/LTO builds, benchmarks, coverage and test time limits | Need dedicated guest-toolchain validation |
 
 On the build machine, the cross-compilation wrapper can build test targets
 with `--no-run`, but its `test` subcommand still needs a Cargo runner that
