@@ -57,9 +57,11 @@ const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // signals; the exec-state fixture preserves them for replacement tests.
 // v19 retains the KMS cursor BO across exec; fork children own no cursor.
 // v20 carries the image's executable (`Process::exe`) as an inherited OFD.
-// v21 carries the owner of an AF_UNIX datagram association, so a child
-// inherits a peer in another process as that foreign endpoint instead of
-// re-reading `peer_idx` as a slot in its own socket table.
+// v21 carries each socket's machine-wide endpoint identity and the identity
+// plus owner of an AF_UNIX datagram association, so a child inherits a peer in
+// another process as that exact endpoint instead of re-reading `peer_idx` as a
+// slot in its own socket table, and an `exec` round trip does not silently
+// re-identify a socket its peers are already associated with.
 const FORK_VERSION: u32 = 21;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
@@ -510,6 +512,12 @@ fn write_durable_socket_state(
     // process", which keeps a same-process association pointing at the child's
     // copied table rather than at the parent's socket.
     w.write_u32(sock.peer_owner_pid.unwrap_or(u32::MAX))?;
+    // This socket's own identity, and the identity of the peer an AF_UNIX
+    // datagram association names. Both must survive the round trip: peers hold
+    // the former, and the latter is what refuses a different socket that later
+    // occupies the peer's slot. Zero encodes "no association recorded".
+    w.write_u64(sock.endpoint_id)?;
+    w.write_u64(sock.peer_endpoint_id)?;
     Ok(())
 }
 
@@ -574,6 +582,8 @@ fn read_durable_socket_state(
     sock.udp_source_addr = if source == 0 { None } else { Some(source.to_be_bytes()) };
     let peer_owner_pid = r.read_u32()?;
     sock.peer_owner_pid = (peer_owner_pid != u32::MAX).then_some(peer_owner_pid);
+    sock.endpoint_id = r.read_u64()?;
+    sock.peer_endpoint_id = r.read_u64()?;
     Ok(())
 }
 

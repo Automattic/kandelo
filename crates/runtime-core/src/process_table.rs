@@ -1323,8 +1323,11 @@ impl ProcessTable {
     /// Split the live records into one addressed process and its peers.
     ///
     /// Same disjointness as `current_process_peers_and_locks`, addressed by
-    /// pid rather than by the channel dispatch binding, for readiness checks
-    /// that must see another process's socket state.
+    /// pid rather than by the channel dispatch binding. Production readiness
+    /// checks reach `peers` through that channel-bound accessor; this one
+    /// exists so a test can drive the same `sys_poll_with_peers` entry point
+    /// without installing a dispatch binding.
+    #[cfg(test)]
     pub fn process_and_peers(
         &mut self,
         pid: u32,
