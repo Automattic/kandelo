@@ -892,7 +892,12 @@ function isValidMemoryRange(
  * each list's terminating null pointer. This matches the advertised 4 MiB
  * _SC_ARG_MAX boundary without imposing a separate argument-count ceiling.
  */
-/** Backstop for a spawn waiting on a lazily fetched target. */
+/**
+ * Budget for a spawn retrying EAGAIN while no deferred fetch is in flight. A
+ * fetch in flight is bounded by the transport's own deadlines
+ * (`withLazyResponse` in `vfs/lazy-fetch-bytes.ts`), so waiting on one is not
+ * charged here; a clock that was could fail a slow but healthy fetch.
+ */
 const SPAWN_EAGAIN_MAX_WAIT_MS = 30_000;
 
 const SYS_FUTEX = ABI_SYSCALLS.Futex;
@@ -2829,7 +2834,6 @@ export class CentralizedKernelWorker {
    * its fetch. Null until configured, or when the pipe offers none.
    */
   #rootfsDeferredSettled: DeferredFetchSettled | null = null;
-  #rootfsDeferredProgressAt: (() => number | undefined) | undefined;
   #rootfsDeferredInvalidator: ((uri: string) => void) | undefined;
   /**
    * Canonical mount points of the host filesystems still mounted under the
@@ -5066,7 +5070,6 @@ export class CentralizedKernelWorker {
      *  {@link deferredFetchSettled}. */
     deferredSettled?: DeferredFetchSettled,
     deferredInvalidator?: (uri: string) => void,
-    deferredProgressAt?: () => number | undefined,
     deferredDispose?: () => void,
     persistentImageBinding?: PersistentImageReadBinding,
   ): void {
@@ -5076,7 +5079,6 @@ export class CentralizedKernelWorker {
     this.#rootfsDeferredProvider = deferredProvider;
     this.#rootfsDeferredSettled = deferredSettled ?? null;
     this.#rootfsDeferredInvalidator = deferredInvalidator;
-    this.#rootfsDeferredProgressAt = deferredProgressAt;
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
     this.#rootfsNosuid = rootNosuid === true;
     if (!Number.isSafeInteger(imageLength) || imageLength <= 0) {
@@ -5598,15 +5600,12 @@ export class CentralizedKernelWorker {
   /**
    * The next settlement of a deferred `/` fetch in flight, or `null` when none
    * is in flight. A host-side reader that got `EAGAIN` from
-   * {@link rootfsReadFile} or an exec-target read awaits this (bounded by its
-   * own deadline; see `waitForDeferredFetch`) instead of polling a timer.
+   * {@link rootfsReadFile} or an exec-target read awaits this instead of
+   * polling a timer. It needs no deadline of its own: the transport bounds
+   * every fetch in flight (`withLazyResponse` in `vfs/lazy-fetch-bytes.ts`).
    */
   deferredFetchSettled(): Promise<void> | null {
     return this.#rootfsDeferredSettled?.() ?? null;
-  }
-
-  deferredFetchProgressAt(): number | undefined {
-    return this.#rootfsDeferredProgressAt?.();
   }
 
   /**
@@ -21458,17 +21457,21 @@ export class CentralizedKernelWorker {
     }
     if (result === -EAGAIN) {
       // A lazily fetched target is still arriving and nothing has changed;
-      // retry once the fetch settles, with a truthful timeout as backstop.
-      if (waitedMs >= SPAWN_EAGAIN_MAX_WAIT_MS) {
+      // retry once the fetch settles. Only EAGAIN with nothing in flight is
+      // charged against the timeout.
+      const inFlight = this.deferredFetchSettled();
+      if (inFlight === null && waitedMs >= SPAWN_EAGAIN_MAX_WAIT_MS) {
         this.#completeSpawnWithinKernelEntry(channel, origArgs, -1, ETIMEDOUT, entry);
         return;
       }
       const started = Date.now();
       entry.deferProtocolTransactionStart(() => {
-        this.#continuePromise(waitForDeferredFetch(this.deferredFetchSettled(), 10), () => {
+        // Poll, so a spawner that dies meanwhile is dropped promptly.
+        this.#continuePromise(waitForDeferredFetch(inFlight, 10), () => {
           this.#runOrDeferChannelKernelEntry(channel, "spawn retry", (retryEntry) => {
             if (this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, retryEntry)) {
-              this.#handleSpawn(channel, origArgs, retryEntry, waitedMs + Date.now() - started);
+              const charged = inFlight === null ? Date.now() - started : 0;
+              this.#handleSpawn(channel, origArgs, retryEntry, waitedMs + charged);
             }
             return undefined;
           });
