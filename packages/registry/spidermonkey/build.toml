@@ -3,6 +3,17 @@ inputs = [
   "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch",
   "packages/registry/spidermonkey/patches/0131-node-vm-execution-deadlines.patch",
   "packages/registry/spidermonkey/patches/0132-node-domain-callback-owner.patch",
+  "packages/registry/spidermonkey/patches/0133-node-wasi-context-owner.patch",
+  "third_party/node-core/wasi-sources.json",
+  "third_party/node-core/wasi-owner.md",
+  "third_party/node-core/wasi-platform-adapter.js",
+  "third_party/node-core/wasi-context.h",
+  "third_party/node-core/wasi-policy.h",
+  "third_party/node-core/wasi-wire.h",
+  "third_party/node-core/native-wasi.cpp",
+  "third_party/node-core/generate-wasi-policy.py",
+  "third_party/node-core/stage-wasi.py",
+  "third_party/node-core/upstream/wasi",
   "third_party/node-core/domain-owner-adapter.js",
   "third_party/node-core/upstream/domain.js",
   "third_party/node-core/datagram-platform-adapter.js",
@@ -627,4 +638,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 178
+revision = 179

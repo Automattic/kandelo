@@ -1,0 +1,307 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/wasi.js": {
+      "path": "upstream/wasi/lib/wasi.js",
+      "upstreamPath": "lib/wasi.js",
+      "sha256": "1ac09ae3f0829b6f755610e03c5e2bece6a58d77be51058e6d78a2ee0747ebb2"
+    },
+    "src/node_wasi.cc": {
+      "path": "upstream/wasi/src/node_wasi.cc",
+      "upstreamPath": "src/node_wasi.cc",
+      "sha256": "8d7b319186e7bc86ecfc91f3e57304cca4c997fd44cb301747b6c39037ba5d12"
+    },
+    "src/node_wasi.h": {
+      "path": "upstream/wasi/src/node_wasi.h",
+      "upstreamPath": "src/node_wasi.h",
+      "sha256": "6071af5342b137459367df1a40a27f54bd39f1fb63b49997a2e52acb75696f11"
+    },
+    "deps/uvwasi/include/wasi_types.h": {
+      "path": "upstream/wasi/deps/uvwasi/include/wasi_types.h",
+      "upstreamPath": "deps/uvwasi/include/wasi_types.h",
+      "sha256": "ad8ec1b5127eef0da8d7fdb66350698793ebbd555a88745c3c6aaa33bc07cbe9"
+    },
+    "deps/uvwasi/include/wasi_serdes.h": {
+      "path": "upstream/wasi/deps/uvwasi/include/wasi_serdes.h",
+      "upstreamPath": "deps/uvwasi/include/wasi_serdes.h",
+      "sha256": "b6ecc45ae4a63092dd76e7ae61f4c8a937d42ece9f6fe06c7f82e24e9433969c"
+    },
+    "deps/uvwasi/src/wasi_serdes.c": {
+      "path": "upstream/wasi/deps/uvwasi/src/wasi_serdes.c",
+      "upstreamPath": "deps/uvwasi/src/wasi_serdes.c",
+      "sha256": "ba6f47aabd07ad5e54df7ff8f7fdb26eb2493f70fb230395376b3aaf98087ba3"
+    },
+    "deps/uvwasi/src/wasi_rights.c": {
+      "path": "upstream/wasi/deps/uvwasi/src/wasi_rights.c",
+      "upstreamPath": "deps/uvwasi/src/wasi_rights.c",
+      "sha256": "923b7e41e3c59f6217a5c7c6bfbde506d912790e237f2b089e5924a4ea329d43"
+    },
+    "deps/uvwasi/src/wasi_rights.h": {
+      "path": "upstream/wasi/deps/uvwasi/src/wasi_rights.h",
+      "upstreamPath": "deps/uvwasi/src/wasi_rights.h",
+      "sha256": "61c418b5e671ec1e4dc076a79dfe37c2c24008ee74500c437dda0175372d1e76"
+    },
+    "deps/uvwasi/src/path_resolver.c": {
+      "path": "upstream/wasi/deps/uvwasi/src/path_resolver.c",
+      "upstreamPath": "deps/uvwasi/src/path_resolver.c",
+      "sha256": "debd6aba1f1e4356acb0be576318a0134d2eafa9bf378e021c82c5a25065fc4f"
+    },
+    "deps/uvwasi/src/uv_mapping.c": {
+      "path": "upstream/wasi/deps/uvwasi/src/uv_mapping.c",
+      "upstreamPath": "deps/uvwasi/src/uv_mapping.c",
+      "sha256": "74d20bacde7d37882c175048b45c7eb3e31e4ca6c331cf40fc8fc7b991d0d528"
+    },
+    "deps/uvwasi/src/uvwasi.c": {
+      "path": "upstream/wasi/deps/uvwasi/src/uvwasi.c",
+      "upstreamPath": "deps/uvwasi/src/uvwasi.c",
+      "sha256": "09c420b22dc5f92daf773e42dda8fe0d839dcbad58b5aad046618c9b76cfa90c"
+    },
+    "deps/uvwasi/LICENSE": {
+      "path": "upstream/wasi/deps/uvwasi/LICENSE",
+      "upstreamPath": "deps/uvwasi/LICENSE",
+      "sha256": "3a94b84af77767e64afdf5fc31d4196810c9717ce2ac2be089f06fec4bfc0e99"
+    },
+    "deps/uv/src/unix/fs.c": {
+      "path": "upstream/wasi/deps/uv/src/unix/fs.c",
+      "upstreamPath": "deps/uv/src/unix/fs.c",
+      "sha256": "895d46c60b30e12249ed6a6696a184fcc594fccaefb008ddb3a3b6a694f0388b"
+    }
+  },
+  "operations": [
+    {
+      "name": "ArgsGet",
+      "wire": "args_get",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "ArgsSizesGet",
+      "wire": "args_sizes_get",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "ClockResGet",
+      "wire": "clock_res_get",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "ClockTimeGet",
+      "wire": "clock_time_get",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint64_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "EnvironGet",
+      "wire": "environ_get",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "EnvironSizesGet",
+      "wire": "environ_sizes_get",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdClose",
+      "wire": "fd_close",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdDatasync",
+      "wire": "fd_datasync",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdFdstatGet",
+      "wire": "fd_fdstat_get",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdFdstatSetFlags",
+      "wire": "fd_fdstat_set_flags",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdFdstatSetRights",
+      "wire": "fd_fdstat_set_rights",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint64_t",
+        "uint64_t"
+      ]
+    },
+    {
+      "name": "FdFilestatGet",
+      "wire": "fd_filestat_get",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdFilestatSetSize",
+      "wire": "fd_filestat_set_size",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint64_t"
+      ]
+    },
+    {
+      "name": "FdPread",
+      "wire": "fd_pread",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t",
+        "uint32_t",
+        "uint64_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdPrestatGet",
+      "wire": "fd_prestat_get",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdPrestatDirName",
+      "wire": "fd_prestat_dir_name",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdPwrite",
+      "wire": "fd_pwrite",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t",
+        "uint32_t",
+        "uint64_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdRead",
+      "wire": "fd_read",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t",
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdSeek",
+      "wire": "fd_seek",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "int64_t",
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdSync",
+      "wire": "fd_sync",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdTell",
+      "wire": "fd_tell",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdWrite",
+      "wire": "fd_write",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t",
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "ProcExit",
+      "wire": "proc_exit",
+      "return": "void",
+      "args": [
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "RandomGet",
+      "wire": "random_get",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "SchedYield",
+      "wire": "sched_yield",
+      "return": "uint32_t",
+      "args": []
+    }
+  ],
+  "scope": "Real guest POSIX-backed public WASI subset; missing path/poll/socket and numeric direct-Wasm fast import ABI remain implementation gaps"
+}

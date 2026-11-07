@@ -2062,6 +2062,7 @@ bundle += x509_adapter.replace('/* NODE_X509_MODULE */',
     (root / x509_spec['sources']['lib/internal/crypto/x509.js']['path']).read_text()).rstrip('\n') + '\n'
 
 bundle += '\n' + runpy.run_path(str(root / 'generate-process-signals.py'))['assemble']().rstrip('\n') + '\n'
+bundle += '\n' + runpy.run_path(str(root / 'generate-wasi-policy.py'))['assemble']().rstrip('\n') + '\n'
 # Public HTTP/2 protocol settings are independent of native sessions.
 bundle += runpy.run_path(str(root / 'generate-http2-settings.py'))['render']()['bundle'].rstrip('\n') + '\n'
 

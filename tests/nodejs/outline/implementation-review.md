@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source179 integrates real bounded WASI ownership and actual production constructor forwarding.34public groups per native/component subject and4adapter groups pass; strict directWasm28vs61nonpass remains.21imports/guestbackend/JSAPI/fourhost remain open.
+See [source scope](wasi-owner-integration.md).
+
 Source178 integrates full unchanged public Domain and a real bounded native MakeCallback seam.24unchanged upstream source-component executions,4actual Async/fatal groups and14package checks pass; productionJSAPI/guest/fourhost remain unestablished.
 See [source scope](domain-owner-integration.md).
 

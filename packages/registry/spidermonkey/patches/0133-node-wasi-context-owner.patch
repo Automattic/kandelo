@@ -1,0 +1,21 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4078,6 +4078,7 @@
+       JS_FN("fsStatPromise", (KandeloFsPromiseGuard<KandeloFsStatPromise>), 3, 0),
+       JS_FN("statWatcher", KandeloNativeStatWatcher, 4, 0),
+       JS_FN("signalOperation", KandeloNativeSignals, 3, 0),
++      JS_FN("wasiConstructor", KandeloNativeWasiConstructor, 0, 0),
+       JS_FN("fsStatSync", (KandeloFsPromiseGuard<KandeloFsStatSync>), 3, 0),
+       JS_FN("fsCopyFileSync", (KandeloFsPromiseGuard<KandeloFsCopyFileSync>), 3, 0),
+       JS_FN("fsCopyFile", (KandeloFsPromiseGuard<KandeloFsCopyFile>), 4, 0),
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -91,3 +91,8 @@
+ # Node's unchanged directory-copy walk uses C++20 string path checks.
+ SOURCES += ["kandelo-node-copy-directory-operations.cpp"]
+ SOURCES["kandelo-node-copy-directory-operations.cpp"].flags += ["-std=c++20"]
++
++LOCAL_INCLUDES += ["/third_party/kandelo-node/wasi"]
++# Unchanged pinned uvwasi wire serialization used by the guest WASI owner.
++SOURCES += ["/third_party/kandelo-node/wasi/wasi_serdes.c"]
++SOURCES["/third_party/kandelo-node/wasi/wasi_serdes.c"].flags += ["-std=c11"]

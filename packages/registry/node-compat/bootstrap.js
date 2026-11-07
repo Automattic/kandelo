@@ -5193,6 +5193,17 @@ for (const id of ['stream/iter', 'zlib/iter']) {
     });
 }
 
+// WASI's unchanged public module emits its warning only when first required.
+// The native owner is guest-local; missing engine/import prerequisites remain
+// visible errors and are not replaced by the embedding host's node:wasi.
+let _nodeWasiPlatform;
+Object.defineProperty(_builtinModules, 'wasi', {
+    enumerable: true, configurable: true,
+    get() {
+        return _nodeWasiPlatform ??= _createNodeWasiPlatform({ native: _nodeNative, values: _nodeValues });
+    },
+});
+
 // Node exposes `node:module` as the CJS Module class itself: a
 // constructor that doubles as the namespace for createRequire / _cache
 // / _nodeModulePaths / etc., with a self-ref `Module.Module === Module`.

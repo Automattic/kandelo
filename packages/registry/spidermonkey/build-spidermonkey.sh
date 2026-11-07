@@ -389,6 +389,7 @@ python3 "$REPO_ROOT/third_party/node-core/generate-socket-state.py" --check
 cp "$REPO_ROOT/third_party/node-core/socket-stream-state.h" "$SRC_DIR/js/src/shell/kandelo-node-socket-stream-state.h"
 cp "$REPO_ROOT/third_party/node-core/native-retained-memory.h" "$SRC_DIR/js/src/shell/native-retained-memory.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-process-signals.py" --shell-dir "$SRC_DIR/js/src/shell"
+python3 "$REPO_ROOT/third_party/node-core/stage-wasi.py" --shell-dir "$SRC_DIR/js/src/shell"
 python3 "$REPO_ROOT/third_party/node-core/stage-stat-watcher.py" \
     --shell-dir "$SRC_DIR/js/src/shell"
 # The VM's native capability boundary stays C++17; only this existing C++20

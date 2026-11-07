@@ -6900,3 +6900,7 @@ Source177 initializes the actual supplied inheriting net.Server receiver, using 
 ### Domain ownership and real callback invocation
 
 Source178 loads the complete pinned Domain algorithms on actual public module demand. The owning async state roots its callback and activation predicate; the shared native MakeCallback invocation seam consults actual execution ID and distinguishes internal direct resolvers. Existing FS/stat callbacks consume this seam. Native JSAPI/legacy zero-ID/Promise/GC/fatal/realm and guest behavior remain unvalidated. See [source scope](../tests/nodejs/outline/domain-owner-integration.md).
+
+### Guest-local WASI ownership and explicit execution prerequisites
+
+Source179 reuses the complete pinned public WASI lifecycle and implements25real imports over actual current guest memory and POSIX descriptor/rights/clock/random/exit owners. The curated production adapter explicitly forwards its actual constructor; unchanged uvwasi wire C source is normally staged/compiled. Twenty-one imports remain absent, direct-Wasm unsigned conversion retains a strict28versus61nonpass, and the configured guest engine has no execution backend. Host-native components do not supply it or justify an exclusion. See [source scope](../tests/nodejs/outline/wasi-owner-integration.md).

@@ -522,3 +522,12 @@ the curated native adapter. The owning native callback seam consults the
 actual execution ID and preserves the distinction between MakeCallback and
 an internal direct resolver. This registration is a source prerequisite;
 production JSAPI/zero-ID/Promise/GC/fatal/realm behavior remains unvalidated.
+
+### 0133: real WASI context registration and wire serialization
+
+Register the actual guest-local WASI constructor and compile the unchanged
+pinned uvwasi C serializer at the vendor boundary. Public lifecycle and
+actual POSIX context owners are shared source, not embedding-host Node
+WASI delegation. Twenty-one imports, direct-Wasm uint32 dispatch semantics
+and the guest WebAssembly execution backend remain implementation gaps.
+The new JSAPI path is uncompiled; no guest/four-host closure is claimed.

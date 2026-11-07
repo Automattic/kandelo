@@ -1,0 +1,111 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-003",
+      "NI-007"
+    ],
+    "relatedFamilies": [
+      "native-integration",
+      "engine",
+      "filesystem",
+      "processes",
+      "values"
+    ],
+    "scope": "Unchanged public WASI lifecycle and25real POSIX/native import source owners only; no complete import set/guest execution/numeric dispatch/API closure"
+  },
+  "sourceImplemented": [
+    "Whole pinned public WASI constructor/validation/coercion/lazy warning/start/initialize/finalize/returnOnExit/import identity algorithms",
+    "25genuine import operations over guest-local actual UTF8/args/env, fd/type/fullrights/preopen lifecycle, original-memory vectored/positioned I/O, clocks/random/yield/exit owners",
+    "Rooted checked real WasmMemoryObject identity, realm-wrapped traced edge and current backing/volatile length under synchronous no-GC borrow; atomic scalar serialization for shared memory",
+    "Exact unchanged uvwasi wire serializers and source-derived rights/error policies, truthful absent imports rather than stubbed success or metadata masking",
+    "Actual curated production wasiConstructor forwarding corrected during root review; current recipe/0133registration/C11serialization composed with174VM/175SQLite/177Net/178Domain"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-wasi179-source-r1/report.json",
+    "sha256": "14ec83b0049705161e270e6b47de2b0774a2425682bc2095abb3d1d985932650",
+    "guardedInputs": 809,
+    "scope": "Current realWASI portable/frontend source, actual curated native routing and normal staging; strict28vs61 nonpass and21missingimports/guestbackend/JSAPI/fourhost remain open."
+  },
+  "packageChecks": {
+    "report": ".context/node26-wasi179-affected-r1.json",
+    "sha256": "e57461ac454e3fa8a714aae67ebda0da024776859f78c7963f1b89562656cc8c",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-wasi179-source-r1/report.json",
+    "sha256": "14ec83b0049705161e270e6b47de2b0774a2425682bc2095abb3d1d985932650",
+    "nativePublicGroups": 34,
+    "componentPublicGroups": 34,
+    "nativeDirectImportAssertions": 2,
+    "strictDirectWasmNonpasses": 1,
+    "productionAdapterGroups": 4,
+    "identifiedOwnerAllocationFaultAdmissionsCleaned": 18,
+    "identifiedSuccessfulAdmissions": 62,
+    "newNativeCompilerAttempts": 0,
+    "productionSMExecuted": false,
+    "scope": "Current exact public frontend and actual curated adapter over identified previously compiled native portable Context, actual hostWasm memory/instance; strict conversion failure retained. No productionJSAPI/guestbackend/four-host execution."
+  },
+  "sealedEvidence": {
+    "report": ".context/wasi-owner-agent/report.json",
+    "sha256": "fb96d944abfed580568e30570b95e19760e65082b05fbbb18dd3966e459329c1",
+    "reusedEvidence": true,
+    "scope": "32source checks/private798inputs;34public groups per subject, strict28vs61nonpass,18allocationfault cleanup/62successfuladmissions and original-memory batching;15tinycompiles/1initialfailure. Native frontend/portable only."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/wasi-owner-agent/build-smoke-1.stderr",
+      "sha256": "8c5ba5f9a53df53e41e6f27f4d951999c1d2df0b669ee2b2b32efed8a9ec561e",
+      "kind": "initial-portable-CXX-missing-header",
+      "reason": "Actual Darwin getentropy declaration requires sys/random.h; original error retained, real header added. One of15helper compiler attempts failed."
+    },
+    {
+      "report": ".context/wasi-owner-agent/attempt1/component-lifecycle.stderr",
+      "sha256": "51d9e550f5aef738d627ac7f5fcc0268de7441a6231a8c2047a17057502a3230",
+      "kind": "initial-test-bridge-error-decoration",
+      "reason": "Bridge exposed intrinsic TypeError without Node code. Owning test bridge corrected, unchanged assertions rerun; productionJSAPI already specified that code."
+    },
+    {
+      "report": ".context/wasi-owner-agent/parent-applicability.json",
+      "sha256": "7dce0169424c4e4ffee01993c3445ced21deaafa2bf705771fe7d345ecce7990",
+      "kind": "initial-shared-native-unity-context-mismatch",
+      "reason": "SQLite175 added a real fragment. Correct additive group3patch preserves it; no older whole generator copied."
+    },
+    {
+      "report": ".context/node26-wasi179-integration-preflight-failure.log",
+      "sha256": "276ab1fe48e95604632e97bf3e147bb58d5386504257085028d3a6ed4168b123",
+      "kind": "root-shared-preimage-guard",
+      "reason": "Guard caught legitimate174VM/175SQLite build-script additions versus private173base. Root composes only additive new staging and preserves actual newer owners."
+    },
+    {
+      "report": ".context/node26-wasi179-controls-preflight-r1/source-check.log",
+      "sha256": "9d79ad3dc92f1a09fe3817f3d8641e348a968600cbb9fbc1a8b4b20c55a932f1",
+      "kind": "root-native-artifact-location-guard",
+      "reason": "Report artifact hashes identify normal-controls outputs, not historical top-level addon. Guard rejected stale location before execution; exact normal-controls artifact selected by hash."
+    },
+    {
+      "report": ".context/node26-wasi179-source-r1/controls/component-direct-negative.stderr",
+      "sha256": "490024f7b5c2caebbf0396cc957995caf1b24729af801887a7d2440d7ebf12ea",
+      "kind": "current-direct-Wasm-numeric-dispatch-nonpass",
+      "reason": "Strict unchanged assertion expects EOVERFLOW61 for Wasm i32 negative bitpattern; candidate returns EINVAL28. DirectJS remains correctly28. Genuine native import provenance required, not stack heuristics/spoofable flags."
+    }
+  ],
+  "remaining": [
+    "21missing path/poll/socket/other import operations, permission/preopen resolver and full WASI capability model",
+    "Genuine engine direct-Wasm uint32 provenance/signature/context dispatch; current strict28versus61failure remains an implementation gap",
+    "Actual guest WebAssembly validation/module/memory/instance/execution backend; no namespace/HasSupport/config flag spoofing and no exclusion approved",
+    "ProductionJSAPI/realm/CCW/GC/worker/memory/exit/cancellation/descriptor/libc/kernel/host conformance and allfourhosts"
+  ],
+  "at": "2026-11-07T04:15:37.334623+00:00",
+  "recipeRevision": 179,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

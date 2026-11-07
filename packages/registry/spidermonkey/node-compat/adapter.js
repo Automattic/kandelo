@@ -532,6 +532,7 @@
         previewEntries: (value, pairs) => native.previewEntries(value, pairs),
         moduleSyntax(operation, source, filename) { return native.moduleSyntax(operation, source, filename); },
         httpParser(...args) { return native.httpParser(...args); },
+        wasiConstructor() { return native.wasiConstructor(); },
         evalScriptAsFunction(source, filename, firstLine = 1) {
             if (typeof native.evalScriptAsFunction === 'function') {
                 return native.evalScriptAsFunction(source, filename, firstLine);
