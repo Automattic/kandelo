@@ -1,0 +1,14 @@
+{
+  "at": "2026-11-07T19:16:21.910407+00:00",
+  "scope": "Metadata-only input-name correction. Actual package recipe/generator/896-input source check already used the correct symmetric manifest; runtime/source/check results unchanged. Original source checkpoint and archive retained.",
+  "before": "third_party/node-core/secret-keygen-sources.json",
+  "after": "third_party/node-core/symmetric-keygen-sources.json",
+  "actualInputSha256": "2e1b5a2fd318710677402717c252a232913c6ddebfaa71cbd93b3cbb60abe7e0",
+  "sourceCheckReport": {
+    "path": ".context/node26-keygen232-source-r1/report.json",
+    "sha256": "27275b261cc05f862dcfd3c1e77ba24b538a5ea86618601e4ef69567a7761fef"
+  },
+  "runtimeChanges": 0,
+  "newTests": 0,
+  "newCompilations": 0
+}

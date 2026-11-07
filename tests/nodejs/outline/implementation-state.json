@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T19:12:53.363042+00:00",
+  "updatedAt": "2026-11-07T19:16:21.910407+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -2528,7 +2528,8 @@
     "tests/nodejs/outline/symmetric-keygen-finding-progress.json": "56781661a7a93a62067956cc0be1d5a22d5e65a9c80434e13eef450eab8c733b",
     "third_party/node-core/upstream/symmetric-keygen/lib/internal/crypto/keygen.js": "11f62343421173bbe2e29726f55f8d1ee5db492e3f04fa8d07bbc93547dc9b4e",
     "tests/nodejs/outline/symmetric-keygen-integration.md": "4cd79a1c927094ffeade99c9a5e9a27f454020c0a7926ca550bd09334cb39be9",
-    "packages/registry/spidermonkey/patches/0169-node-secret-keygen.patch": "11698bd5f4eb911d1d938f6a4a9038ec99303caa9198444c9dcf553f69a7312e"
+    "packages/registry/spidermonkey/patches/0169-node-secret-keygen.patch": "11698bd5f4eb911d1d938f6a4a9038ec99303caa9198444c9dcf553f69a7312e",
+    "tests/nodejs/outline/symmetric-keygen-input-metadata-correction.json": "63c016975c481a19bb1b10bafff309cfad2581077f64b25fde378f6142561119"
   },
   "changes": [
     {
@@ -68684,7 +68685,7 @@
       "third_party/node-core/native-secret-keygen.cpp",
       "third_party/node-core/secret-keygen-operations.h",
       "third_party/node-core/symmetric-keygen-platform-adapter.js",
-      "third_party/node-core/secret-keygen-sources.json",
+      "third_party/node-core/symmetric-keygen-sources.json",
       "third_party/node-core/native-keys.cpp",
       "third_party/node-core/native-fs-promise.cpp"
     ],
@@ -129117,5 +129118,12 @@
     "individualApiClosure": false,
     "implementationComplete": false,
     "acceptedPlatformLimits": []
-  }
+  },
+  "metadataCorrections": [
+    {
+      "report": "tests/nodejs/outline/symmetric-keygen-input-metadata-correction.json",
+      "sha256": "63c016975c481a19bb1b10bafff309cfad2581077f64b25fde378f6142561119",
+      "scope": "Metadata-only input-name correction. Actual package recipe/generator/896-input source check already used the correct symmetric manifest; runtime/source/check results unchanged. Original source checkpoint and archive retained."
+    }
+  ]
 }
