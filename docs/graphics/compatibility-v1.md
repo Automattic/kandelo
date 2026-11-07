@@ -26416,3 +26416,33 @@ diagnostics are in `.context/graphics-sdl-package-r675/`. Normal SDL2 and
 affected consumer rebuilds, Freeciv's original error/rendering admission,
 Node/browser and three-engine application validation remain pending. No
 performance, complete-B1 or new-preview claim follows from these controls.
+
+
+### Normal SDL2 correction build and Node consumer, 2026-11-07
+
+At pushed source `7eb752d899`, normal job
+`graphics-sdl-normal-r676-1107-033947-38e5` passes2m24s using the provisioned
+normal checkout's compiled xtask `bootstrap sdl2 --jobs 4`. All8,442 source
+inputs remain unchanged. The normal resolver publishes SDL2 revision13 with
+all required KMSDRM/Wayland/render/input backends enabled. This is the ordinary
+source-only package path, not a manually substituted library.
+
+`graphics-sdl-node-r678-1107-034337-f6f9` passes3m20s through the canonical
+dev shell: the unmodified `packages/registry/sdl2/test/runtime.test.ts` builds,
+fork-instruments and ABI-stamps a real guest against the resolved library,
+then verifies text, cross-device event order, overflow recovery and inclusive
+pointer bounds on the dedicated Node kernel worker. One case runs, passes and
+is not skipped; all6,394 source/product inputs remain unchanged. Resolved
+`libSDL2.a` is4,697,530bytes, SHA256
+`4850e586be041bf97f65e0998d2816c16955647648647617f3de737392f91b53`.
+Exact resolver prefix, product hashes, commands and results are retained in
+`.context/graphics-sdl-normal-r676/` and `.context/graphics-sdl-node-r678/`.
+This event test does not create a rendering window and therefore does not
+prove target execution of the corrected display-restore path.
+
+Freeciv/ScummVM normal consumer rebuilds are now in progress as sequential
+job `graphics-sdl-consumers-r680-1107-034811-2c0a`; no new preview is announced.
+Actual application/error/rendering, three-engine and latency acceptance remain
+required. Canonical cache collection R677 is terminal and removes0bytes: the
+source cache is protected by another build's lock and ordinary generations
+remain protected by policy. The earlier19.9GiB dry plan is not reclaimed space.
