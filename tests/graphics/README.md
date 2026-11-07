@@ -24,11 +24,12 @@ earlier adapted subset retaining selected original assertions. Full `deqp-egl`
 execution beyond inventory and those adapted checks remains acceptance work;
 the two harnesses must not be confused.
 
-The current user-directed phase is complete combined implementation, using quick
-compile checks and focused causal controls. Broad rebuilds and suite execution
-are deferred until that implementation pass is complete. Existing inventories
-and specifications guide implementation now; focused failure-injection tests
-supplement upstream acceptance rather than replacing it.
+PR #1594 requires implementation, normal builds, validation and measurement of
+each frozen B1–B6 and C1–C3 stage in order. Drafting B2–B6 ahead with focused
+checks is approved; it does not replace stage acceptance or authorize landing
+later stages first. Existing inventories and specifications guide the work;
+focused causal controls supplement upstream acceptance. See the current
+maintainer decisions and exact run limits in the compatibility ledger.
 
 ## Complete chunked upstream runs
 

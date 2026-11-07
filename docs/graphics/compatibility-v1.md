@@ -26628,3 +26628,45 @@ normal tree. Workspace formatting check also remains failed on existing
 unformatted Rust; no wholesale formatting is applied. New guard module
 formatting, shell syntax and whitespace checks are separate. No ABI or
 functional/performance acceptance requirement changes.
+
+
+### Current normal ownership and source graphics gates, 2026-11-07
+
+`graphics-target-ownership-current-r698-1107-054350-ee23` passes1m25s on
+clean normal6d534:16/16 Node and48/48 browser cases,16 per Chromium153.0.8010.12,
+Firefox155.0 and WebKit26.6 across both guest widths, zero failures/skips.
+The R655 harness and eight fixture/helper hashes are unchanged. Read-only
+preflight proves both SDK cores, driver/plugin/fork-tool stamps and xtask are
+already current; no preparation/resolver build occurs. All6,565 source/product
+hashes remain unchanged. Backup837 copied products are preserved but are NOT
+executed; the real normal SDK stamp path compiles the guests. Exact commands,
+48 completed guest metadata records and limits are frozen in R698 HANDOFF.md.
+This covers selected descriptor, GBM/EGL, fork/import and mapping ownership,
+not complete raw-client/application/desktop/memory/conformance/performance
+acceptance or a complete B1 preview.
+
+`graphics-host-shader-r704-1107-054734-599e` passes27s at8e65a5f842:
+2,173 WebGL assertions/85 files, full production TypeScript,725-file evidence
+inventory and real shader compile/link/pixel checks on three engines;1,898
+source inputs unchanged. That source selection is narrower than the canonical
+graphics gate. The separate canonical run
+`graphics-canonical-gate-r705-1107-054924-ddaa` passes18s:2,348 assertions/92
+files with its required image-write audit enabled, zero failed/unloaded/skipped
+files or cases, and the same1,898 inputs unchanged. No SDK/package build or
+current normal producer mutation occurs in either job.
+
+Shader results are Chromium297 passes, WebKit297 passes and Firefox294 passes,
+zero hard failures with one inconclusive rewrite and two already recorded
+native depth-range controls. These statuses remain explicit; they are not
+297 Firefox passes, actual guest dEQP or new performance evidence. Browser
+versions match R698. Complete per-case GLES2/EGL and final application gates
+remain required.
+
+Full normal producer `graphics-full-normal-r703-1107-054559-89f1` starts on
+clean8e65a5f842 with about24GiB available, one graph node at a time and the
+explicit16GiB admission floor. Its own release xtask passes47s. Real normal
+musl32/64 builds pass22s/23s and each leaves no new private staging directory;
+this exercises the committed portable cleanup fix through the actual builder.
+The full supported graph is still RUNNING at this checkpoint. It is not a
+completed image, r9 availability or acceptance claim. Public6271 remains the
+immutable earlier normal preview. The guard does not guarantee peak space.
