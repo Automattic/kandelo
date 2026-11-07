@@ -1,0 +1,81 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/tty-contracts.md",
+    "findingIds": [
+      "T-002",
+      "T-008",
+      "T-010"
+    ],
+    "relatedDocuments": [
+      "tests/nodejs/audit/terminal.md"
+    ],
+    "relatedFamilies": [
+      "terminal",
+      "streams",
+      "processes",
+      "engine"
+    ],
+    "scope": "Concrete captured output size/descriptor ownership corrections; full findings/public TTY remain open"
+  },
+  "sourceImplemented": [
+    "Retain exact actual captured output lease privately for writes and window/resize, never a mutable public or numeric-fd owner map",
+    "Native tty-output-size reads actual OutputHandle descriptor, preserving owner-close EBADF/cache/error semantics",
+    "Promote same-number reopen to distinct owned descriptor before dup initialization/retirement",
+    "Correct only original asymmetric failure-injection resource to actual captured lease, retain all assertions and old failure evidence; current162signals and other source preserved"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-ttysize163-source-r1/report.json",
+    "sha256": "d800fc04bf064512018418a00222dc6a1dd5eb17f79757a6b0ae993494e774aa",
+    "guardedInputs": 757,
+    "scope": "Current captured-owner TTY geometry and same-number reopen source integration; actual assertions retained with corrected same-resource close injection. Normal input/bootstrap/unity checks, no new production JSAPI/engine compilation or guest/four-host acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-ttysize163-affected-r1.json",
+    "sha256": "40788fc97d39cc232d82cd4071c17fe532f6d393c9c9bac5758c081ebecc7982",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Package-source subset of24test run"
+  },
+  "fdReadlineRegressions": {
+    "report": ".context/node26-ttysize163-affected-r1.json",
+    "sha256": "40788fc97d39cc232d82cd4071c17fe532f6d393c9c9bac5758c081ebecc7982",
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing unchanged fd/readline assertions"
+  },
+  "sealedNativeEvidence": {
+    "report": ".context/tty-size-owner-agent/REPORT.json",
+    "sha256": "1b0a98ca7a84e556ff1dbdbeb47e0549ca6c025879a6c1c08283a0391f12f42a",
+    "reusedEvidence": true,
+    "slavePtyGroups": 12,
+    "ownershipGroups": 7,
+    "capturedOwnerGroups": 4,
+    "sameNumberInterleavings": 1,
+    "genericFdCases": 4,
+    "scope": "Actual production header/NAPI/native POSIX ownership and frontend methods over native dependencies; not SM/guest"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tty-size-owner-agent/SEAL.json",
+      "sha256": "5487a143e5db465337b424f21d94ff63790c7ea4c3fc46b583ee65926db4a64b",
+      "kind": "actual-preimage-and-strict-master-nonpasses",
+      "reason": "Old source161twoPTY geometry/same-number teardown failures, original unequal-resource failure injection and current master HWM nonpass all retained"
+    }
+  ],
+  "remaining": [
+    "Production JSAPI/realms/wrappers/reentry/GC/OOM and guest dup3/current-engine and four-host validation",
+    "Strict unsupported master/unreopenable/partial/EAGAIN/backpressure gaps remain; public TTY hierarchy/async/ref/close/resize/REPL and concurrent-close cases incomplete",
+    "Private SIGWINCH activation still requires real owning signal subscription, not only refresh consumer"
+  ],
+  "at": "2026-11-07T00:43:46.699438+00:00",
+  "recipeRevision": 163,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

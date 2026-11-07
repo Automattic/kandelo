@@ -4,14 +4,16 @@ function _createNodeTerminalPlatform(platform) {
     const { SafeWeakMap, ObjectAssign } = _createNodePrimordials();
     const { ErrnoException, codes: { ERR_INVALID_ARG_VALUE, ERR_TTY_INIT_FAILED } } = platform.values.errors;
     const entries = new SafeWeakMap();
-    const outputFds = new SafeWeakMap();
+    const outputOwners = new SafeWeakMap();
     const { getColorDepth, hasColors } = platform.values.require('internal/tty');
-    // This private borrowed fd owner does not pretend to be a Socket/TTY handle.
-    // The actual window ioctl/error packet belongs to the native OS boundary.
+    // Reopened writes and size queries share the same captured native owner.
+    // Unsupported borrowed transports retain their explicit raw-fd fallback.
     function getWindowSize(output, result) {
-        const fd = outputFds.get(output);
-        if (fd === undefined) throw new platform.values.errors.codes.ERR_INVALID_THIS('TTY output');
-        const packet = platform.native.operatingSystem('tty-size', fd);
+        const binding = outputOwners.get(output);
+        if (binding === undefined) throw new platform.values.errors.codes.ERR_INVALID_THIS('TTY output');
+        const packet = binding.owner === undefined
+            ? platform.native.operatingSystem('tty-size', binding.fd)
+            : platform.native.operatingSystem('tty-output-size', binding.owner);
         if (packet.error) return packet.error;
         result[0] = packet.value[0];result[1] = packet.value[1];return 0;
     }
@@ -24,8 +26,10 @@ function _createNodeTerminalPlatform(platform) {
     /* NODE_TERMINAL_OUTPUT_METHODS */
     function bindOutput(output, fd) {
         // Pipes/files keep their actual fd stream and never acquire TTY fields.
-        if (!platform.isTTY(fd)) return false;
-        outputFds.set(output, fd);
+        if (!outputOwners.has(output)) {
+            if (!platform.isTTY(fd)) return false;
+            outputOwners.set(output, { fd });
+        }
         ObjectAssign(output, WriteStream.prototype);
         const dimensions = [0, 0];
         if (!getWindowSize(output, dimensions)) {
@@ -45,11 +49,16 @@ function _createNodeTerminalPlatform(platform) {
                 message: platform.uv.getSystemErrorMessage(packet.error), syscall: 'uv_tty_init' });
         }
         const owner = packet.value;
-        return function writeTerminal(chunk) {
-            const result = platform.native.operatingSystem('tty-output-write', owner, chunk);
-            // Writable itself owns nextTick callback/drain/HWM behavior. This
-            // synchronous result follows an actual full native write/error.
-            return result.error ? new ErrnoException(result.error, 'write') : undefined;
+        return {
+            // Bind by output object, never by a public descriptor number that
+            // can be closed/reused after native initialization.
+            bind(output) { outputOwners.set(output, { owner }); },
+            write(chunk) {
+                const result = platform.native.operatingSystem('tty-output-write', owner, chunk);
+                // Writable owns callback/drain/HWM behavior after the actual
+                // full synchronous native write/error.
+                return result.error ? new ErrnoException(result.error, 'write') : undefined;
+            },
         };
     }
     // Exact pinned uv_tty_mode_t values, not capability or terminal-state data.
@@ -78,7 +87,7 @@ function _createNodeTerminalPlatform(platform) {
     }
     function refreshOutput(output) {
         // Actual binding identity, not the mutable public isTTY convenience flag.
-        if (outputFds.has(output)) output._refreshSize();
+        if (outputOwners.has(output)) output._refreshSize();
     }
     return { bindInput, bindOutput, refreshOutput, openOutput };
 }

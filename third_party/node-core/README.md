@@ -1450,3 +1450,14 @@ credited as guest behavior. Actual native Node environment snapshots/marks
 pass separately. Prototype/constructor/keys/store/warnings and real guest/GC/
 JIT/clone/four-host obligations remain. See
 [environment dependencies](../../tests/nodejs/outline/environment-object-implementation-dependencies.md).
+
+### Captured terminal size owner source followup
+
+Reopened stdio output retains one actual opaque native lease for both writes
+and size queries. Reusing or mutating the public fd cannot redirect that owned
+terminal's `_refreshSize`. Unsupported borrowed transports retain the raw-fd
+fallback and its known backpressure gap. Same-number reopens are promoted to a
+separate descriptor before dup initialization so owner teardown cannot close
+the supplied number. Focused native/header and JS-component controls preserve
+actual two-terminal ownership and error behavior; production JSAPI and all four
+guest hosts still need validation. See [terminal output scope](../../tests/nodejs/outline/tty-output-integration.md).

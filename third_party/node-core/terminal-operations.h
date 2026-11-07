@@ -72,8 +72,10 @@ class OutputHandle {
       close(owned);return -ENOTSUP;
     }
     // Keep our owned descriptor outside borrowed stdio even when another
-    // stdio slot was closed before open(). Only this extra fd is retired.
-    if (owned <= STDERR_FILENO) {
+    // stdio slot was closed before open(). Also isolate a same-number reopen
+    // after a concurrent close, avoiding dup3(fd, fd) and owned teardown of
+    // the supplied number. Only our separate extra descriptor is retired.
+    if (owned <= STDERR_FILENO || owned == supplied) {
       int extra;do { extra = fcntl(owned, F_DUPFD_CLOEXEC, STDERR_FILENO + 1); } while (extra < 0 && errno == EINTR);
       if (extra < 0) { const int error = -errno;if (owned != supplied) close(owned);return error; }
       if (owned != supplied) close(owned);owned = extra;
@@ -102,6 +104,10 @@ class OutputHandle {
       (void)fcntl(supplied, F_SETFL, saved);close(owned);return error;
     }
     fd_ = owned;return 0;
+  }
+  int GetWindowSize(std::array<unsigned, 2>* result) const {
+    if (fd_ < 0) return -EBADF;
+    return WindowSize(fd_, result);
   }
   WriteResult Write(const uint8_t* bytes, size_t length) {
     if (fd_ < 0) return {-EBADF, 0};

@@ -18,8 +18,18 @@ WASM_POSIX_DEV_SHELL_ATTEMPTS=1 scripts/dev-shell.sh env \
 The twelve-group original slave-PTY comparison retains the unchanged HWM=1
 assertion. Ownership controls additionally exercise real inherited OFD alias
 isolation, offsets, public-fd reuse, extra-descriptor close and rejection of
-invalid/nonterminal inputs. Children are bounded and reaped; the byte controller
+invalid/nonterminal inputs. Four additional two-PTY groups verify captured-owner
+size/resize after public-fd replacement, unchanged notifications, actual write
+routing and real owner-close errors. A tiny native race control exercises an
+actual same-number reopen and separate-descriptor teardown. Children are bounded and reaped; the byte controller
 waits for actual terminal bytes before acknowledging the last slave's exit.
+
+The last error-injection group now closes the actual captured component owner,
+matching native Node's `_handle.close()` setup. Its cache/error assertions and
+HWM assertions are unchanged. Closing only public fd1 no longer closes that
+owner; the earlier fixture setup and its resulting assertion failure remain in
+the additive followup evidence. The new fd-reuse controls independently assert
+that a reused public fd cannot redirect the captured terminal owner.
 
 The final real PTY-master comparison currently exits1: native returns true at
 HWM=1 and the existing borrowed asynchronous fallback returns false. This is

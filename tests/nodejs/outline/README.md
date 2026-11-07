@@ -1,5 +1,11 @@
 # Node 26 core implementation outline
 
+Source163 fixes captured terminal size/resize ownership and same-number
+reopen teardown.757source inputs and24existing focused checks pass; native
+12+7+4groups and controlledsame-number evidence remain scoped separately.
+Masterfallback remains failing; production JSAPI/guest/fourhost are unproven.
+See [terminal scope](tty-output-integration.md).
+
 Source162 integrates main-only real process signal ownership and pinned
 listener activation, with legacy Promise/checkpoint and quitting fences.
 757source inputs,14package checks and5bounded native-dependent controls pass.

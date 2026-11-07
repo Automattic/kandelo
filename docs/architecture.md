@@ -6090,6 +6090,13 @@ before bounded source-realm/no-GC access. Master/unreopenable paths retain a
 known async/backpressure gap; public TTY classes and production JSAPI/four-host
 conformance remain open. See [terminal output scope](../tests/nodejs/outline/tty-output-integration.md).
 
+The source163 terminal followup binds size/resize queries to the same opaque
+output owner as writes. Closing/reusing the public fd cannot redirect that
+owned terminal's geometry. Same-number reopen results are promoted to a
+separate descriptor before duplication and teardown. Native descriptor/header
+controls cover these transitions; production JSAPI, guest dup3, master fallback
+and broader TTY behavior remain unvalidated or incomplete.
+
 ### Native Node TCP and plain Agent source ownership
 
 The source160 TCP owner retains actual descriptors and original write

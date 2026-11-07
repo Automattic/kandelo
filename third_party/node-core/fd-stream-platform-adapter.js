@@ -12,7 +12,7 @@ function _createNodeFdStreamPlatform(platform) {
     /* NODE_STDIO_DUMMY_DESTROY */
 
     function writable(fd, options) {
-        const writeTerminal = platform.openTerminalOutput ? platform.openTerminalOutput(fd) : null;
+        const terminalOutput = platform.openTerminalOutput ? platform.openTerminalOutput(fd) : null;
         // A verified blocking TTY owner completes actual libc writes first.
         // The generic async operation owns copied bytes through readiness
         // waits. Writable owns serialization, HWM, drain,
@@ -20,9 +20,9 @@ function _createNodeFdStreamPlatform(platform) {
         const result = new Writable({
             ...options,
             write(chunk, encoding, callback) {
-                if (writeTerminal) {
+                if (terminalOutput) {
                     let error;
-                    try { error = writeTerminal(chunk); }
+                    try { error = terminalOutput.write(chunk); }
                     catch (failure) { error = failure; }
                     callback(error);
                     return;
@@ -33,6 +33,7 @@ function _createNodeFdStreamPlatform(platform) {
                 PromisePrototypeThen(promise, () => callback(), error => callback(error));
             },
         });
+        if (terminalOutput) terminalOutput.bind(result);
         result.fd = fd;
         result._isStdio = true;
         result.destroySoon = result.destroy;

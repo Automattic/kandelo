@@ -78,6 +78,15 @@ static bool KandeloTerminalDispatch(JSContext* cx, const CallArgs& args,
   // Keep the actual native owner alive while later view authority checks may
   // reenter. Do not cache its fd: a reentrant close must produce real EBADF.
   auto* lease = static_cast<js::shell::KandeloTerminalLease*>(JS::GetReservedSlot(leaseObject, 0).toPrivate());
+  if (strcmp(name, "tty-output-size") == 0) {
+    if (!lease->outputOwner) { JS_ReportErrorASCII(cx, "Terminal output requires an output owner");return false; }
+    std::array<unsigned, 2> dimensions{};
+    *error = lease->output.GetWindowSize(&dimensions);
+    if (*error) return true;
+    JS::RootedValueArray<2> fields(cx);fields[0].setNumber(dimensions[0]);fields[1].setNumber(dimensions[1]);
+    RootedObject array(cx, JS::NewArrayObject(cx, fields));if (!array) return false;
+    value.setObject(*array);return true;
+  }
   if (strcmp(name, "tty-output-write") == 0) {
     if (!lease->outputOwner) {
       JS_ReportErrorASCII(cx, "Terminal output requires its actual owner and ArrayBufferView");return false;
