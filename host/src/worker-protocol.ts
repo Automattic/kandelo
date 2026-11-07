@@ -136,6 +136,7 @@ export interface CentralizedThreadInitMessage {
   type: "centralized_thread_init";
   pid: number;
   tid: number;
+  /** Private structured clone, consumed after thread startup validation. */
   programBytes: ArrayBuffer;
   programModule?: WebAssembly.Module;
   memory: WebAssembly.Memory;

@@ -6060,6 +6060,15 @@ export async function centralizedThreadWorkerMain(
           "wpk_fork_resume_thread",
       );
     }
+    // Startup has decoded and registered all artifact metadata. These buffers
+    // are private structured clones owned by this thread Worker; retaining
+    // its init message must not retain another complete executable. The
+    // kernel worker keeps the original source for fork and later launches.
+    // Older hosts without ArrayBuffer.transfer retain the existing behavior.
+    if (typeof initData.programBytes.transfer === "function") {
+      if (programBytes && programBytes !== initData.programBytes) programBytes.transfer(0);
+      initData.programBytes.transfer(0);
+    }
     let result = 0;
     if (hasForkInstrumentation && threadProcessContinuation) {
       for (;;) {
