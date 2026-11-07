@@ -41,6 +41,11 @@ async function exchangeImage(): Promise<Uint8Array> {
     ["/usr/share/kandelo/exchange-handlers.d", 0, 0],
     ["/home", 0, 0],
     ["/home/maker", 1000, 1000],
+    // /var/log is the image's own directory now (it was a tmpfs mount the
+    // kernel supplied). Without it kxchgd cannot open /var/log/kxchgd.log, and
+    // the failure diagnostic below reads nothing while the test still passes.
+    ["/var", 0, 0],
+    ["/var/log", 0, 0],
   ] as const) {
     fs.mkdirWithOwner(dir, 0o755, uid, gid);
   }

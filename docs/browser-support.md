@@ -289,9 +289,9 @@ pipe pair.
   fails with `ENOSPC`; so does an `ftruncate` that would grow past it. That is
   deliberate: a daemon must be able to see the failure instead of believing it
   logged. Overwriting bytes a file already holds spends nothing, and removing
-  or truncating a log frees room. The cap does not rotate anything: sysklogd
-  rotation bounds the files it owns, and unrotated service logs hit the cap
-  and stop growing until something frees space. Files outside `/var/log` are
+  or truncating a log frees room. The cap bounds the directory and
+  rotates nothing: rotation is left to whatever owns each file, and a log
+  nothing rotates hits the cap and stops growing until something frees space. Files outside `/var/log` are
   not affected, a file renamed out of it stops counting, and a file renamed
   into it is counted from then on but is not itself refused. It is a rule over
   the live tree, with nothing recorded in the journal, and the same on Node.js

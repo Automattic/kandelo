@@ -281,6 +281,19 @@ impl Inode {
         }
     }
 
+    /// `st_size`: bytes for a file, entry count for a directory.
+    fn apparent_size(&self) -> u64 {
+        match &self.kind {
+            InodeKind::Dir(entries) => entries.len() as u64,
+            InodeKind::BaseRegular { size, .. } => self.persistent_size.unwrap_or(*size),
+            InodeKind::Regular(data) => data.len() as u64,
+            InodeKind::PersistentRegular => self.persistent_size.unwrap_or(0),
+            InodeKind::Symlink(target) => target.len() as u64,
+            InodeKind::Special(_) => 0,
+            InodeKind::LazyMember { size, .. } => *size,
+        }
+    }
+
     fn stat(&self) -> WasmStat {
         let type_bits = match self.kind {
             InodeKind::Dir(_) => S_IFDIR,
@@ -293,15 +306,7 @@ impl Inode {
             InodeKind::Symlink(_) => S_IFLNK,
             InodeKind::Special(type_bits) => type_bits,
         };
-        let size = match &self.kind {
-            InodeKind::Dir(entries) => entries.len() as u64,
-            InodeKind::BaseRegular { size, .. } => self.persistent_size.unwrap_or(*size),
-            InodeKind::Regular(data) => data.len() as u64,
-            InodeKind::PersistentRegular => self.persistent_size.unwrap_or(0),
-            InodeKind::Symlink(target) => target.len() as u64,
-            InodeKind::Special(_) => 0,
-            InodeKind::LazyMember { size, .. } => *size,
-        };
+        let size = self.apparent_size();
         WasmStat {
             st_dev: ROOTFS_DEV,
             st_ino: self.ino,
@@ -405,6 +410,10 @@ struct RootfsState {
     /// Walks of the `/var/log` subtree, so tests can see which writes pay one.
     #[cfg(test)]
     var_log_walks: core::cell::Cell<u32>,
+    /// Sizings a cap check made of the written file, so tests can see which
+    /// writes did any cap work at all.
+    #[cfg(test)]
+    var_log_sizings: core::cell::Cell<u32>,
     dirty_persistent_timestamps: BTreeSet<u32>,
     /// Root ("/") inode index, created on first use.
     root: Option<u32>,
@@ -515,6 +524,8 @@ impl RootfsState {
             var_log_byte_limit: VAR_LOG_BYTE_LIMIT,
             #[cfg(test)]
             var_log_walks: core::cell::Cell::new(0),
+            #[cfg(test)]
+            var_log_sizings: core::cell::Cell::new(0),
             dirty_persistent_timestamps: BTreeSet::new(),
             root: None,
             dir_iters: Vec::new(),
@@ -5070,6 +5081,21 @@ fn set_var_log_byte_limit(limit: u64) {
 }
 
 impl RootfsState {
+    /// Whether the `/var/log` cap could govern `idx` at all: one inode lookup.
+    /// Every cap check asks this first, so a write to a file that has never
+    /// had a name under `/var/log` does nothing else for the cap.
+    fn var_log_governs(&self, idx: u32) -> bool {
+        self.get(idx).is_some_and(|inode| inode.in_var_log)
+    }
+
+    /// Current size of `idx`, for a cap check that has passed
+    /// [`Self::var_log_governs`].
+    fn var_log_file_size(&self, idx: u32) -> Result<u64, Errno> {
+        #[cfg(test)]
+        self.var_log_sizings.set(self.var_log_sizings.get() + 1);
+        Ok(self.get(idx).ok_or(Errno::EBADF)?.apparent_size())
+    }
+
     fn var_log_byte_limit(&self) -> u64 {
         #[cfg(test)]
         return self.var_log_byte_limit;
@@ -5115,7 +5141,7 @@ impl RootfsState {
                 | InodeKind::BaseRegular { .. }
                 | InodeKind::PersistentRegular
                 | InodeKind::LazyMember { .. } => {
-                    used = used.saturating_add(inode.stat().st_size);
+                    used = used.saturating_add(inode.apparent_size());
                     member |= index == target;
                 }
                 InodeKind::Symlink(_) | InodeKind::Special(_) => {}
@@ -5132,10 +5158,9 @@ impl RootfsState {
         if end <= old_size {
             return Ok(end);
         }
-        // Only a file that has had a name under `/var/log` can be governed by
-        // its cap. Everything else (homes, `/tmp`-like roots, `/srv`) returns
-        // here without touching the directory.
-        if !self.get(target).is_some_and(|inode| inode.in_var_log) {
+        // Callers have already passed `var_log_governs`; it is repeated here so
+        // the walk can never run for a file the hint excludes.
+        if !self.var_log_governs(target) {
             return Ok(end);
         }
         let Some((used, true)) = self.var_log_usage(target)? else { return Ok(end) };
@@ -5158,10 +5183,16 @@ fn path_is_under_var_log(path: &[u8]) -> bool {
 /// an `open` through the directory, or a `link` or `rename` into it. A moved
 /// directory marks the files beneath it.
 fn mark_var_log_names(path: &[u8]) {
-    if !path_is_under_var_log(path) {
-        return;
+    let mut components = split_components(path);
+    // Anything that lands at `/var/log` or beneath it, and also a rename or
+    // link whose target IS `/var` or `/var/log`: moving a tree onto an emptied
+    // `/var/log` (or a tree holding `log` onto `/var`) puts every file in it
+    // under the cap without any name passing through a path longer than that.
+    match components.as_slice() {
+        [first] if *first == b"var" => components.push(b"log"),
+        [first, second, ..] if *first == b"var" && *second == b"log" => {}
+        _ => return,
     }
-    let components = split_components(path);
     ROOTFS.with(|state| {
         let Some(root) = state.root else { return };
         let Ok(start) = state.walk(root, &components) else { return };
@@ -5191,7 +5222,12 @@ fn var_log_clamp_write<'a>(idx: u32, offset: u64, buf: &'a [u8]) -> Result<&'a [
         return Ok(buf);
     };
     ROOTFS.with(|state| {
-        let old_size = state.get(idx).ok_or(Errno::EBADF)?.stat().st_size;
+        // The hint comes first, before the file is even sized: a write to a
+        // file the cap cannot govern leaves here after one inode lookup.
+        if !state.var_log_governs(idx) {
+            return Ok(buf);
+        }
+        let old_size = state.var_log_file_size(idx)?;
         let admitted = state.var_log_admit(idx, old_size, end, offset)?;
         Ok(&buf[..(admitted - offset) as usize])
     })
@@ -5605,7 +5641,10 @@ where
         // Growing a file under `/var/log` spends the same cap a write does,
         // but a truncate has no short form: all of it fits or none of it.
         ROOTFS.with(|state| {
-            let old_size = state.get(idx).ok_or(Errno::EBADF)?.stat().st_size;
+            if !state.var_log_governs(idx) {
+                return Ok(());
+            }
+            let old_size = state.var_log_file_size(idx)?;
             match state.var_log_admit(idx, old_size, new_size, old_size)? {
                 admitted if admitted < new_size => Err(Errno::ENOSPC),
                 _ => Ok(()),
@@ -13101,6 +13140,10 @@ mod tests {
         ROOTFS.with(|state| state.var_log_walks.get())
     }
 
+    fn var_log_sizings() -> u32 {
+        ROOTFS.with(|state| state.var_log_sizings.get())
+    }
+
     #[test]
     fn a_growing_write_outside_var_log_does_not_walk_var_log() {
         let _guard = TestGuard::acquire();
@@ -13113,14 +13156,18 @@ mod tests {
         release_handle(create(b"/var/log/nginx/error.log"));
 
         let before = var_log_walks();
+        let sized = var_log_sizings();
         assert_eq!(var_log_write(home, 0, &[1; 4096]), Ok(4096));
         assert_eq!(var_log_write(home, 4096, &[1; 4096]), Ok(4096));
         assert_eq!(truncate_handle(home, 1 << 20, |_, _| Err(Errno::EIO)), Ok(()));
         assert_eq!(var_log_walks(), before, "a write outside /var/log paid for a /var/log walk");
+        // Nor did it do any other cap work: the file was not even sized.
+        assert_eq!(var_log_sizings(), sized, "a write outside /var/log was sized for the cap");
 
         // A write into the directory does pay, once per growing write ...
         assert_eq!(var_log_write(log, 0, &[2; 10]), Ok(10));
         assert_eq!(var_log_walks(), before + 1);
+        assert_eq!(var_log_sizings(), sized + 1);
         // ... and an overwrite that grows nothing does not.
         assert_eq!(var_log_write(log, 0, &[3; 10]), Ok(10));
         assert_eq!(var_log_walks(), before + 1);
@@ -13149,6 +13196,34 @@ mod tests {
         rename(b"/home/tree", b"/var/log/tree").unwrap();
         assert_eq!(var_log_write(inner, 0, b"x"), Err(Errno::ENOSPC));
         for handle in [linked, moved, inner] { release_handle(handle); }
+    }
+
+    #[test]
+    fn a_tree_renamed_onto_var_log_or_var_is_capped() {
+        let _guard = TestGuard::acquire();
+        memory_root_with_var_log();
+        set_var_log_byte_limit(10);
+        // Onto an emptied /var/log.
+        mkdir(b"/home/tree", 0o755, 0, 0).unwrap();
+        let inner = create(b"/home/tree/inner");
+        rmdir(b"/var/log").unwrap();
+        rename(b"/home/tree", b"/var/log").unwrap();
+        assert_eq!(var_log_write(inner, 0, &[1; 64]), Ok(10));
+        assert_eq!(var_log_write(inner, 10, b"x"), Err(Errno::ENOSPC));
+
+        // Onto an emptied /var, carrying a `log` directory.
+        mkdir(b"/v2", 0o755, 0, 0).unwrap();
+        mkdir(b"/v2/log", 0o755, 0, 0).unwrap();
+        let deep = create(b"/v2/log/deep");
+        let sibling = create(b"/v2/other");
+        rename(b"/var/log", b"/home/aside").unwrap();
+        rmdir(b"/var").unwrap();
+        rename(b"/v2", b"/var").unwrap();
+        assert_eq!(var_log_write(deep, 0, &[1; 64]), Ok(10));
+        assert_eq!(var_log_write(deep, 10, b"x"), Err(Errno::ENOSPC));
+        // The rest of the moved /var is not under /var/log.
+        assert_eq!(var_log_write(sibling, 0, &[1; 64]), Ok(64));
+        for handle in [inner, deep, sibling] { release_handle(handle); }
     }
 
     #[test]
@@ -13201,6 +13276,15 @@ mod tests {
         assert_eq!(read_file_at(b"/var/log/messages", 0, &mut back, &mut source), Ok(9));
         assert_eq!(&back, b"boot: ok\n");
         assert_eq!(lstat(b"/var/log/messages").unwrap().st_mode & 0o7777, 0o640);
+
+        // The restored log still counts toward the cap, and opening it by path
+        // after the reboot is what puts it under the cap's hint: nine bytes are
+        // already spent, so a limit of twelve leaves room for three.
+        set_var_log_byte_limit(12);
+        let again = open(b"/var/log/messages", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(again, 9, &[1; 10], &mut source), Ok(3));
+        assert_eq!(write(again, 12, b"x", &mut source), Err(Errno::ENOSPC));
+        release_handle(again);
     }
 
     #[test]
