@@ -603,7 +603,10 @@ The linker already queries the selected SDK compiler for compatibility
 archives, so an explicit worktree sysroot `-L` is unnecessary. Native and
 wasm32 controls reproduce the path-sensitive identity; the new classic
 recipe also passes full independent reproduction with Go IDs retained.
-The combined Caddy reproduction and new browser gates are still running.
+Combined Caddy also passes full independent reproduction. All four normal
+consumers now have same-Mac reproduction checks, with a refreshed 12/12
+three-engine browser gate on exact projected bytes. Cross-OS reproduction
+is unverified; final WordPress/image/memory/performance gates remain open.
  FrankenPHP's recipes use its documented
 static closure through the latter, with no source patch. Keep upstream's
 normal `-lm` and `-lutil` compatibility archives; the linker accepts strictly

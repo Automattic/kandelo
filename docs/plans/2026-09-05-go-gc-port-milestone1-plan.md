@@ -26,8 +26,16 @@ compiler, library and application algorithms are unchanged in this step.
 Classic 39 publishes, passes Node PHP/static/OPcache and 32 lifetime checks
 at concurrency four (Go collections 1 to 3, no host diagnostics, normal
 shutdown), then passes an independent compiler/bootstrap/target byte-for-byte
-rebuild. Combined Caddy 20 is undergoing the same normal build/Node/rebuild
-gate. The new browser cohort and WordPress 43 rebuild follow that gate.
+rebuild. Combined Caddy 20 also passes normal publication, Node and independent
+byte reproduction; the complete four-build/two-Node sequence takes 55m14s
+with serial optimization. The refreshed receipt-validated browser cohort
+passes 12/12 with zero skips/failures/flakes in 77.8 seconds and no Vite
+scan failure. GoHello 33's earlier reproduction and a fresh standalone
+Caddy 15 reproduction (6m08s) complete same-Mac independent reproduction
+for all four consumers. This does not establish cross-OS reproduction.
+WordPress 43 is now building through the full normal shell/image dependency
+pipeline, with FHS and Node service gates queued. The saved preview remains
+unchanged until its replacement is verified.
 Historical 38/19 results below remain scoped to their original artifacts.
 
 **Approved shared regexp improvement is selected for normal rebuilds:**

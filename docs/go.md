@@ -6,14 +6,15 @@ C/C++ compiled by the Kandelo SDK into that program.
 
 All four Go consumers now build with upstream's Go 1.28 development
 `wasm32` architecture and the immutable `go_toolchain` pin f6053060.
-The previous normal artifact cohort passes Node and the focused
-three-engine browser gate; the new cgo path revisions are being validated. WordPress replacement-image and release validation remain open.
+All four normal consumers pass Node and the focused three-engine browser
+gate, plus independent same-key reproduction on this Mac. Cross-OS
+reproduction is unverified. WordPress replacement-image and release validation remain open.
 
 | Consumer | Selected compiler/target |
 | --- | --- |
 | `go-hello`, `wasm32posix-go` | Go 1.28 development, `kandelo/wasm32`; four-byte Go/C pointers |
-| Custom classic FrankenPHP recipe | Same wasm32 target; 1.13.5/revision 39 builds, passes Node and independent byte reproduction; new browser gate pending |
-| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; standalone Caddy 2.11.9/revision 15 and combined FrankenPHP 1.13.5/revision 20 is in the build/reproduction gate (revision 19 passed Node/three browsers) |
+| Custom classic FrankenPHP recipe | Same wasm32 target; 1.13.5/revision 39 passes normal build, Node, independent byte reproduction and three browsers |
+| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; standalone Caddy 2.11.9/revision 15 and combined FrankenPHP 1.13.5/revision 20 pass normal build, Node, independent byte reproduction and three browsers |
 
 The [implementation checkpoint](plans/2026-09-05-go-gc-port-milestone1-plan.md)
 records the exact source pins, validation and remaining release gates.

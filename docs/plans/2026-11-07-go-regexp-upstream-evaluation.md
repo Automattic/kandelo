@@ -134,6 +134,46 @@ build-process cost is distinct from guest/demo footprint and does not bound
 the optimizer's peak. Further large runs select the documented
 `BINARYEN_CORES=1` setting; its memory effect is not yet measured.
 
+## Stable cgo archive prefixes and final consumer gate
+
+An independent classic 38 rebuild completes compilation but fails exact
+receipt equality; the canonical generation remains valid. Declared native
+Go 1.25.8 and Kandelo/wasm32 f605 controls isolate the cause: unused absolute
+cgo search paths change artifact identity even with trimpath, while stable
+flags produce identical bytes. Omitting the optional executable build ID
+also produces identical controls, but that option is not adopted.
+
+Both PHP recipes now use the shared `scripts/go-cgo-static-libs.sh` helper
+to require actual archives in declared dependency prefixes and link from
+those prefixes. They no longer stage symlinks under temporary `-L` roots.
+SDK compatibility archives use the Go linker's existing selected-compiler
+lookup. Compiler and application algorithms remain unchanged in this step;
+Go build IDs and the exact-source table-state bindings are retained.
+
+Classic 39 and combined Caddy 20 each pass normal publication, Node
+PHP/static/OPcache, 32 requests with concurrency four during collection,
+normal shutdown and a second independent compiler/bootstrap/target build
+with identical bytes. The sequence takes 55m14s using serial optimization.
+GoHello 33's previous check and a fresh standalone Caddy 15 reproduction
+(6m08s) complete this same-Mac reproduction gate for all four consumers.
+Different operating systems/build environments remain unverified.
+
+| Package/revision | Wasm bytes | SHA-256 |
+| --- | ---: | --- |
+| Classic 39 | 70,004,737 | ac0fa25fb73d0deb4cd3b72e3a6bd9cc32dd3f927fcd1d04f8cb46cc172c22f5 |
+| FrankenPHP/Caddy 20 | 185,049,722 | 606d5174c8a6ded853a483a0cc4eadc0e14f4cc2455917b148afc814b472f2fb |
+
+The refreshed normal-consumer browser gate passes 12/12, zero skipped,
+unexpected or flaky, in 77.8 seconds. The rootfs-inclusive receipt-validated
+projection preserves the exact checked Go bytes and kernel a991e3cf, with
+no Vite dependency-scan failure. WordPress 43 is now building through the
+normal full shell/image pipeline. Its final workflows, memory/lifecycle and
+performance gates remain open; the older preview is preserved.
+
+A clean detached benchmark source checkout at main afeedd583 is prepared
+with its own musl source and npm installations. No timing runs occur under
+this build load; the older baseline and raw results are preserved.
+
 ## Compilation measurements
 
 These are library-compilation measurements, with parse/simplification
