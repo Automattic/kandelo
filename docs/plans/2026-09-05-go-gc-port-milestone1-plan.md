@@ -10,6 +10,18 @@ Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
 Implementation/evaluation checkpoints are pushed to draft PR #1492.
 The full WordPress service goal remains unfinished.
 
+**Regexp upstream candidate evaluated:** the approved shared traversal is
+selected at f605 for all four normal Go consumers. Native/race checks,
+2,022 complete-program comparisons, deep-tree checks and the expanded
+297-case browser compiler gate pass. Real FrankenPHP/Caddy passes Node and
+all three browser engines, including WebKit. URL compilation is about
+50–58% slower on the measured Wasm hosts where the original succeeds;
+WebKit's original overflows. This is a demonstrated robustness improvement,
+with no established request-throughput improvement. The exported
+three-file upstream review patch applies to the preserved baseline and
+matches the evaluated source hashes. No upstream submission is made.
+See the [full evaluation](2026-11-07-go-regexp-upstream-evaluation.md).
+
 **Memory experiment: maintained and compiled-host validation:** follow-up
 [`f9360b2c3`](https://github.com/Automattic/kandelo/commit/f9360b2c362172e15dfa18f55627c077191b9029)
 adds real worker interleavings and maintained C zeroing tests on the isolated
@@ -42,15 +54,16 @@ open before adoption. Primary runtime and its live image build are unchanged.
 SDK cores, kernel, rootfs and host build in 37m34s. Kernel SHA-256 is
 `f9bad7129738e4aeadca32c05eb0267ec6fff0dd0b7f13ade63ba51197028f1f`;
 rootfs is `f833b30d83c21ba541772eafbd4a83eed2a4c0f5430307d2c31ec7c9df4bb877`
-and passes the layout audit. Full benchmark-product preparation now runs
+and passes the layout audit. Full benchmark-product preparation starts
 separately as `benchmark-main-products-1107-063730-874a`, including its own
 PHP, both MariaDB architectures, database images, WordPress and micro
 fixtures. That first product attempt finds the baseline's uninitialized
 Rust libc submodule: Harper, the guest SDK, modeset and termchat fail, so
 WordPress is blocked while independent C products continue into the cache.
-Stop that owned job at a cheap tar-configure phase (recorded exit 143),
-initialize the pinned `71d5bfcc` submodule without changing main, and retry
-as `benchmark-main-products-ready-1107-074030-53fd`. The first log remains
+The owned job is stopped at a cheap tar-configure phase (recorded exit
+143), the pinned `71d5bfcc` submodule is initialized without changing main,
+and preparation retries as `benchmark-main-products-ready-1107-074030-53fd`.
+The first log remains
 `benchmark-products-before-rust-libc-init.log`; completed cache entries are
 preserved. The private set enables the dormant MariaDB image only for
 validation. No timings run under compilation load. WordPress 43's primary
@@ -58,8 +71,9 @@ normal build is still in its full shell graph, currently LLVM/Clang.
 
 **Parallel validation preparation:** clean latest-main worktree
 `.context/go-benchmark-main-afeed` has its own npm installations and freshly
-built wasm32/wasm64 musl SDK cores. Its normal kernel/rootfs publication is
-running; no benchmark timings run alongside compilation. The preserved
+built wasm32/wasm64 musl SDK cores. Its normal kernel/rootfs publication has
+completed; the full product retry is running and no benchmark timings run
+alongside compilation. The preserved
 older baseline remains unchanged and is not used as latest-main evidence.
 The test-evidence inventory exposed three unclassified tests after the
 main merge and service-test additions. The retro-emulator and WordPress

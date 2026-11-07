@@ -276,6 +276,27 @@ remain open.
 
 ## Reproduction and remaining decision
 
+The upstream review patch is limited to three files: `compile.go`,
+`compile_equivalence_test.go` and `compile_stack_test.go` under
+`src/regexp/syntax`. It does not include the Kandelo target port. Export it
+from the Go fork with:
+
+```sh
+git diff a0b048e19e1b183db33f52d26c08d1c63b4f1c1d \
+  f60530600f70a5ea905a907ac311ec8bd2ae8ac4 -- \
+  src/regexp/syntax/compile.go \
+  src/regexp/syntax/compile_equivalence_test.go \
+  src/regexp/syntax/compile_stack_test.go > regexp.patch
+```
+
+The exported patch passes `git apply --check` against the preserved A0
+source, and all three source hashes still match the evaluated candidate.
+The local review bundle is `.context/go-regexp-upstream-review/`; its
+manifest records those hashes and the patch SHA-256. This is contribution
+preparation, not an upstream submission or acceptance. Review must include
+the measured compilation regressions above. No runtime tests are repeated
+for this export because production and test sources are unchanged.
+
 The candidate contains upstream-style equivalence/deep/concurrency tests
 and `BenchmarkCompileTraversal`. The portable evaluation harness is
 [`benchmarks/go-regexp`](../../benchmarks/go-regexp/README.md). Its Node and
