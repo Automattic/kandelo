@@ -74,7 +74,12 @@ export function shellLazyPlaceholderUrl(spec: VfsBinarySpec): string {
 export const SHELL_LAZY_BINARY_SPECS = [
   { id: "cargo", resolverPath: "programs/wasm32/cargo.wasm", vfsPath: "/usr/bin/cargo", symlinks: [] },
   { id: "rustc", resolverPath: "programs/wasm32/rustc/rustc.wasm", vfsPath: "/usr/libexec/rustc", symlinks: [] },
-  { id: "kandelo-rustc", resolverPath: "programs/wasm32/kandelo-rustc.wasm", vfsPath: "/usr/bin/kandelo-rustc", symlinks: ["/usr/bin/rustc", "/usr/bin/wasm32posix-rustc"] },
+  { id: "rustdoc", dependency: "rustc", resolverPath: "programs/wasm32/rustc/rustdoc.wasm", vfsPath: "/usr/libexec/rustdoc", symlinks: [] },
+  { id: "rustfmt", dependency: "rustc", resolverPath: "programs/wasm32/rustc/rustfmt.wasm", vfsPath: "/usr/bin/rustfmt", symlinks: [] },
+  { id: "cargo-fmt", dependency: "rustc", resolverPath: "programs/wasm32/rustc/cargo-fmt.wasm", vfsPath: "/usr/bin/cargo-fmt", symlinks: [] },
+  { id: "cargo-clippy", dependency: "rustc", resolverPath: "programs/wasm32/rustc/cargo-clippy.wasm", vfsPath: "/usr/bin/cargo-clippy", symlinks: [] },
+  { id: "clippy-driver", dependency: "rustc", resolverPath: "programs/wasm32/rustc/clippy-driver.wasm", vfsPath: "/usr/libexec/clippy-driver", symlinks: [] },
+  { id: "kandelo-rustc", resolverPath: "programs/wasm32/kandelo-rustc.wasm", vfsPath: "/usr/bin/kandelo-rustc", symlinks: ["/usr/bin/rustc", "/usr/bin/wasm32posix-rustc", "/usr/bin/rustdoc", "/usr/bin/clippy-driver"] },
   { id: "redis-cli", dependency: "redis", resolverPath: "programs/redis/redis-cli.wasm", vfsPath: "/usr/bin/redis-cli", symlinks: [] },
   { id: "mariadb", dependency: "mariadb", resolverPath: "programs/mariadb/mariadb.wasm", vfsPath: "/usr/bin/mariadb", symlinks: ["/usr/bin/mysql"] },
   {

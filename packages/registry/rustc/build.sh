@@ -21,17 +21,9 @@ kandelo_package_stage_primary_source rustc "$src" "$work"
 for patch_file in "$here"/source-patches/*.patch; do
   patch --fuzz=0 -p1 -d "$src" < "$patch_file"
 done
-# Only the compiler participates in this package. Upstream's other workspace
-# members include optional documentation/tool submodules absent from its archive.
-python3 - "$src/Cargo.toml" <<'PY'
-from pathlib import Path
-import re, sys
-p = Path(sys.argv[1])
-text, count = re.subn(r'members = \[.*?\n\]', 'members = ["compiler/rustc"]', p.read_text(), count=1, flags=re.S)
-if count != 1:
-    raise SystemExit('cannot select the upstream compiler workspace')
-p.write_text(text)
-PY
+# Use the exact compiler libraries for all tools, without a host rustc-dev
+# sysroot or optional upstream workspace submodules.
+python3 "$here/prepare-tools.py" "$src"
 export WASM_POSIX_DEP_WORK_DIR="$work" WASM_POSIX_DEP_LIBCXX_DIR="$libcxx"
 export WASM_POSIX_SYSROOT
 WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot rustc "$repo/sysroot" libcxx)"
@@ -57,7 +49,11 @@ WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot rustc "$repo/sysro
   export CARGO_PROFILE_RELEASE_OPT_LEVEL=1 CARGO_PROFILE_RELEASE_DEBUG=0
   export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
   cd "$src"
-  cargo build --locked --release -j 3 -p rustc-main --features llvm \
+  cargo build --locked --release -j 3 \
+    -p rustc-main -p rustdoc-tool -p rustfmt-nightly -p clippy \
+    --features rustc-main/llvm \
+    --bin rustc-main --bin rustdoc_tool_binary --bin rustfmt \
+    --bin cargo-fmt --bin cargo-clippy --bin clippy-driver \
     --target wasm32-unknown-kandelo-std --target-dir "$work/target"
 )
 export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
@@ -68,10 +64,17 @@ source "$repo/scripts/install-local-binary.sh"
 # rustc's large structured functions; no continuation coverage is omitted.
 # Keep post-link optimization and validation, with bounded host concurrency.
 export BINARYEN_CORES=1
-"$repo/scripts/run-wasm-fork-instrument.sh" \
-  "$work/target/wasm32-unknown-kandelo-std/release/rustc-main.wasm" \
-  --no-sinks -o "$work/rustc.wasm"
-install_local_binary rustc "$work/rustc.wasm" rustc.wasm
+for tool in rustc rustdoc rustfmt cargo-fmt cargo-clippy clippy-driver; do
+  binary="$tool"
+  case "$tool" in
+    rustc) binary=rustc-main ;;
+    rustdoc) binary=rustdoc_tool_binary ;;
+  esac
+  "$repo/scripts/run-wasm-fork-instrument.sh" \
+    "$work/target/wasm32-unknown-kandelo-std/release/$binary.wasm" \
+    --no-sinks -o "$work/$tool.wasm"
+  install_local_binary rustc "$work/$tool.wasm" "$tool.wasm"
+done
 # Ship the matching prebuilt std separately; projects do not need rust-src.
 python3 - "$src/.kandelo-rust/sysroot/lib/rustlib/wasm32-unknown-kandelo-std" "$work/rust-std.zip" <<'PY'
 from pathlib import Path

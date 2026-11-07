@@ -1,10 +1,11 @@
 script_path = "packages/registry/rustc/build.sh"
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 2
+revision = 3
 inputs = [
   "packages/registry/rustc/build.sh",
   "packages/registry/rustc/llvm-config.py",
+  "packages/registry/rustc/prepare-tools.py",
   "packages/registry/rustc/source-patches",
   "packages/registry/rustc/patches",
   "scripts/package-build-roots.sh",

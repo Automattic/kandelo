@@ -26,6 +26,31 @@ fork_instrumentation = "auto"
 artifact = "rust-std.zip"
 guest_path = "/usr/share/kandelo/rust-std.zip"
 
+[[outputs]]
+name = "rustdoc"
+wasm = "rustdoc.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "rustfmt"
+wasm = "rustfmt.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "cargo-fmt"
+wasm = "cargo-fmt.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "cargo-clippy"
+wasm = "cargo-clippy.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "clippy-driver"
+wasm = "clippy-driver.wasm"
+fork_instrumentation = "auto"
+
 [[host_tools]]
 name = "cargo"
 version_constraint = ">=1.97.0"

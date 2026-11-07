@@ -3,10 +3,21 @@
 
 pub type Result<T> = std::result::Result<T, String>;
 
+pub fn tool_main(tool: &str, args: &[String]) -> Result<i32> {
+    match tool {
+        "rustdoc" => rustdoc_main(args),
+        "clippy-driver" => clippy_main(args),
+        _ => compiler_main(args),
+    }
+}
+
 #[cfg(any(target_os = "kandelo", test))]
 fn compiler_arguments(args: &[String]) -> Vec<String> {
     let mut compiler_args = vec!["-Zunstable-options".to_owned()];
-    if !args.iter().any(|arg| arg == "--sysroot" || arg.starts_with("--sysroot=")) {
+    if !args
+        .iter()
+        .any(|arg| arg == "--sysroot" || arg.starts_with("--sysroot="))
+    {
         compiler_args.extend(["--sysroot".to_owned(), "/usr".to_owned()]);
     }
     if args.iter().any(|arg| arg == "--test") {
@@ -19,6 +30,64 @@ fn compiler_arguments(args: &[String]) -> Vec<String> {
     compiler_args
 }
 
+#[cfg(any(target_os = "kandelo", test))]
+fn rustdoc_arguments(args: &[String]) -> Vec<String> {
+    let mut options = compiler_arguments(args);
+    if args.iter().any(|arg| arg == "--test")
+        && !args
+            .iter()
+            .any(|arg| arg == "--test-builder" || arg.starts_with("--test-builder="))
+    {
+        // The installed compiler prepares linked doctest executables through
+        // the same fork-instrumentation path as ordinary Cargo artifacts.
+        let caller_start = options.len() - args.len();
+        options.splice(
+            caller_start..caller_start,
+            ["--test-builder".to_owned(), "/usr/bin/rustc".to_owned()],
+        );
+    }
+    options
+}
+
+#[cfg(any(target_os = "kandelo", test))]
+fn clippy_arguments(args: &[String]) -> &[String] {
+    // Cargo supplies its rustc path before compiler flags when invoking a
+    // workspace wrapper. Remove it before injecting our sysroot flags: the
+    // upstream driver's wrapper detection requires it to be the first arg.
+    match args
+        .first()
+        .and_then(|arg| std::path::Path::new(arg).file_stem())
+        .and_then(|name| name.to_str())
+    {
+        Some("rustc" | "kandelo-rustc" | "wasm32posix-rustc") => &args[1..],
+        _ => args,
+    }
+}
+
+#[cfg(not(target_os = "kandelo"))]
+fn rustdoc_main(_args: &[String]) -> Result<i32> {
+    Err("the Rust documentation entry point is available inside Kandelo".into())
+}
+
+#[cfg(target_os = "kandelo")]
+fn rustdoc_main(args: &[String]) -> Result<i32> {
+    use std::os::unix::process::CommandExt;
+    let error = std::process::Command::new("/usr/libexec/rustdoc")
+        .args(rustdoc_arguments(args))
+        .exec();
+    Err(format!("starting rustdoc: {error}"))
+}
+
+#[cfg(not(target_os = "kandelo"))]
+fn clippy_main(_args: &[String]) -> Result<i32> {
+    Err("the Clippy compiler entry point is available inside Kandelo".into())
+}
+
+#[cfg(target_os = "kandelo")]
+fn clippy_main(args: &[String]) -> Result<i32> {
+    run_compiler("/usr/libexec/clippy-driver", clippy_arguments(args))
+}
+
 #[cfg(not(target_os = "kandelo"))]
 pub fn compiler_main(_args: &[String]) -> Result<i32> {
     Err("the Rust compiler entry point is available inside Kandelo; on the build machine use wasm32posix-cargo".into())
@@ -26,17 +95,21 @@ pub fn compiler_main(_args: &[String]) -> Result<i32> {
 
 #[cfg(target_os = "kandelo")]
 pub fn compiler_main(args: &[String]) -> Result<i32> {
+    run_compiler("/usr/libexec/rustc", args)
+}
+
+#[cfg(target_os = "kandelo")]
+fn run_compiler(compiler: &str, args: &[String]) -> Result<i32> {
     use std::path::Path;
     use std::process::Command;
 
-    const COMPILER: &str = "/usr/libexec/rustc";
     let compiler_args = compiler_arguments(args);
     // Queries and metadata-only compiles need no post-link work. Replace
     // this wrapper so they do not keep an extra process and fork snapshot.
     if !emits_link(args) {
         use std::os::unix::process::CommandExt;
-        let error = Command::new(COMPILER).args(&compiler_args).exec();
-        return Err(format!("starting {COMPILER}: {error}"));
+        let error = Command::new(compiler).args(&compiler_args).exec();
+        return Err(format!("starting {compiler}: {error}"));
     }
     let reports_artifacts = option_value(args, "--error-format") == Some("json")
         && option_value(args, "--json")
@@ -45,11 +118,11 @@ pub fn compiler_main(args: &[String]) -> Result<i32> {
     let status = if reports_artifacts {
         use std::io::{BufRead, Write};
         use std::process::Stdio;
-        let mut child = Command::new(COMPILER)
+        let mut child = Command::new(compiler)
             .args(&compiler_args)
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|error| format!("starting {COMPILER}: {error}"))?;
+            .map_err(|error| format!("starting {compiler}: {error}"))?;
         let mut stderr = std::io::BufReader::new(child.stderr.take().expect("piped stderr"));
         let mut line = Vec::new();
         while stderr
@@ -70,10 +143,10 @@ pub fn compiler_main(args: &[String]) -> Result<i32> {
         }
         child.wait().map_err(|error| error.to_string())?
     } else {
-        Command::new(COMPILER)
+        Command::new(compiler)
             .args(&compiler_args)
             .status()
-            .map_err(|error| format!("starting {COMPILER}: {error}"))?
+            .map_err(|error| format!("starting {compiler}: {error}"))?
     };
     if !status.success() {
         use std::os::unix::process::ExitStatusExt;
@@ -88,7 +161,7 @@ pub fn compiler_main(args: &[String]) -> Result<i32> {
     } else {
         // Direct rustc callers may request human diagnostics. Ask for output
         // names only when there was no artifact stream to supply real paths.
-        let names = Command::new(COMPILER)
+        let names = Command::new(compiler)
             .args(&compiler_args)
             .arg("--print=file-names")
             .output()
@@ -175,9 +248,40 @@ mod tests {
         values.iter().map(|value| (*value).into()).collect()
     }
     #[test]
+    fn doctests_use_the_preparing_compiler_and_keep_explicit_builders() {
+        let options = rustdoc_arguments(&args(&["--test", "lib.rs"]));
+        assert_eq!(
+            option_value(&options, "--test-builder"),
+            Some("/usr/bin/rustc")
+        );
+        assert!(options.iter().any(|arg| arg == "-Zpanic-abort-tests"));
+        let options =
+            rustdoc_arguments(&args(&["--test", "--test-builder=/custom/rustc", "lib.rs"]));
+        assert_eq!(
+            option_value(&options, "--test-builder"),
+            Some("/custom/rustc")
+        );
+        assert!(!options.iter().any(|arg| arg == "/usr/bin/rustc"));
+        assert!(
+            !rustdoc_arguments(&args(&["lib.rs"]))
+                .iter()
+                .any(|arg| arg == "--test-builder")
+        );
+    }
+    #[test]
+    fn clippy_workspace_wrappers_strip_only_the_compiler_path() {
+        let wrapped = args(&["/usr/bin/rustc", "--crate-name", "demo", "--emit=metadata"]);
+        assert_eq!(clippy_arguments(&wrapped), &wrapped[1..]);
+        let direct = args(&["--crate-name", "demo", "src/main.rs"]);
+        assert_eq!(clippy_arguments(&direct), direct);
+    }
+    #[test]
     fn test_harness_uses_abort_subprocesses_and_preserves_caller_options() {
-        assert!(!compiler_arguments(&args(&["main.rs"]))
-            .iter().any(|arg| arg == "-Zpanic-abort-tests"));
+        assert!(
+            !compiler_arguments(&args(&["main.rs"]))
+                .iter()
+                .any(|arg| arg == "-Zpanic-abort-tests")
+        );
         let options = compiler_arguments(&args(&["--test", "--sysroot=/custom", "test.rs"]));
         assert!(options.iter().any(|arg| arg == "-Zpanic-abort-tests"));
         assert!(!options.iter().any(|arg| arg == "/usr"));
