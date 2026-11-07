@@ -236,6 +236,23 @@ class Statement {
       if (result != SQLITE_OK) throw DatabaseError(owner_->Require(), result);
     }
   }
+  int Stat(std::string_view name) const {
+    auto* stmt = Require();
+    for (const auto& info : kStatusMapping) {
+      if (info.js_name == name)
+        return sqlite3_stmt_status(stmt, info.sqlite_status_id, false);
+    }
+    throw Error("ERR_INVALID_ARG_VALUE", "The \"counter\" argument is not a valid statistic name.");
+  }
+  void ResetStats() {
+    auto* stmt = Require();
+    for (const auto& info : kStatusMapping) {
+      if (info.sqlite_status_id != SQLITE_STMTSTATUS_MEMUSED)
+        sqlite3_stmt_status(stmt, info.sqlite_status_id, true);
+    }
+    // This owner obtains names directly from the live SQLite VM, with no
+    // reprepare-count column-name cache to invalidate after clearing it.
+  }
   int ParameterCount() const { return sqlite3_bind_parameter_count(Require()); }
   std::string ParameterName(int index) const {
     const char* name = sqlite3_bind_parameter_name(Require(), index);

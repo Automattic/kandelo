@@ -2057,6 +2057,12 @@
       "start": "struct LimitInfo {",
       "length": 645,
       "sha256": "cc69a6f323efa9932f7e0cb4d46baf577731c07bb2ab192e3cebb2e1fa9a5359"
+    },
+    "statusMapping": {
+      "start": "struct StatusInfo {",
+      "length": 833,
+      "sha256": "e6e9bd84684a281d10dc6dd9fe1673f82751c71adc638c2c79318e8769f1c0b8",
+      "adaptation": "Only std::to_array initialization spelling becomes an equivalent C++17 constexpr C array; exact entries/macros/conditional gate preserved."
     }
   },
   "fdStreams": {

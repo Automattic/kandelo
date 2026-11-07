@@ -7,6 +7,29 @@ import json
 import re
 
 
+def statuses(root):
+    spec = json.loads((root / 'sources.json').read_text())['sqlitePlatform']
+    item = spec['sources']['nativeHeader']
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('SQLite native header reference mismatch')
+    selector = spec['statusMapping']
+    text = raw.decode('utf8')
+    if text.count(selector['start']) != 1:
+        raise ValueError('Ambiguous SQLite status mapping')
+    start = text.index(selector['start'])
+    body = text[start:start + selector['length']]
+    if hashlib.sha256(body.encode()).hexdigest() != selector['sha256']:
+        raise ValueError('SQLite status mapping selection mismatch')
+    # Preserve the pinned names, SQLite macros and feature condition. The
+    # existing standalone owner and embedding compile with C++17; an array
+    # initializer changes no counter identity or backend feature admission.
+    opening = 'inline constexpr auto kStatusMapping = std::to_array<StatusInfo>({'
+    if body.count(opening) != 1 or not body.endswith('});'):
+        raise ValueError('Review SQLite status array initializer')
+    return body.replace(opening, 'inline constexpr StatusInfo kStatusMapping[] = {')[:-3] + '};'
+
+
 def limits(root):
     spec = json.loads((root / 'sources.json').read_text())['sqlitePlatform']
     item = spec['sources']['nativeHeader']
@@ -30,7 +53,7 @@ def limits(root):
               'namespace kandelo::sqlite {\n' + body + '\n')
     for i, (_, macro) in enumerate(names):
         header += 'static_assert(' + macro + ' == ' + str(i) + ');\n'
-    return header + '}\n#endif\n', [name for name, _ in names]
+    return header + '\n' + statuses(root) + '\n}\n#endif\n', [name for name, _ in names]
 
 
 def generate(root):

@@ -26,7 +26,8 @@ using SqliteCell = kandelo::sqlite::Cell;
 using SqliteError = kandelo::sqlite::Error;
 static bool KandeloSqliteRaise(JSContext* cx, const SqliteError& error) {
   if (JS_IsExceptionPending(cx)) return false;
-  const JSExnType type = error.code == "ERR_INVALID_ARG_TYPE" ? JSEXN_TYPEERR
+  const JSExnType type = (error.code == "ERR_INVALID_ARG_TYPE" ||
+                         error.code == "ERR_INVALID_ARG_VALUE") ? JSEXN_TYPEERR
       : error.code == "ERR_OUT_OF_RANGE" ? JSEXN_RANGEERR : JSEXN_ERR;
   RootedString message(cx, JS_NewStringCopyUTF8Z(cx, JS::ConstUTF8CharsZ(error.what(), strlen(error.what()))));
   RootedString file(cx, JS_GetEmptyString(cx));
@@ -550,7 +551,7 @@ static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
     if (open) owner->connection->Open();
     return KandeloSqliteNewOwner(cx, std::move(owner), args.rval());
   }
-  const bool statementOperation = operation == "checkStatement" || operation == "isStatementFinalized" || operation == "closeStatement" || operation == "columns" || operation == "finalize" || operation == "reset" || operation == "bind" || operation == "step" || operation == "stepDiscard" || operation == "names" || operation == "parameters" || operation == "sourceSQL" || operation == "expandedSQL";
+  const bool statementOperation = operation == "checkStatement" || operation == "isStatementFinalized" || operation == "closeStatement" || operation == "columns" || operation == "finalize" || operation == "reset" || operation == "bind" || operation == "step" || operation == "stepDiscard" || operation == "names" || operation == "parameters" || operation == "sourceSQL" || operation == "expandedSQL" || operation == "stat" || operation == "resetStats";
   const bool sessionOperation = operation == "sessionChangeset" || operation == "closeSession";
   auto* owner = KandeloSqliteOwner(args.get(1), sessionOperation ? 2 : statementOperation ? 1 : 0);
   if (operation == "open") owner->connection->Open();
@@ -610,6 +611,13 @@ static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
             window ? KandeloSqliteAggregateValue<false> : nullptr,
             window ? KandeloSqliteAggregateStep<true> : nullptr, KandeloSqliteFunctionDestroy);
     if (result != SQLITE_OK) throw kandelo::sqlite::DatabaseError(db, result);
+  } else if (operation == "stat") {
+    owner->statement->Require(); // finalized state precedes argument access
+    std::string name;
+    if (!KandeloSqliteString(cx, args.get(2), &name)) return false;
+    args.rval().setInt32(owner->statement->Stat(name)); return true;
+  } else if (operation == "resetStats") {
+    owner->statement->ResetStats();
   } else if (operation == "isStatementFinalized") {
     args.rval().setBoolean(owner->statement->IsFinalized()); return true;
   } else if (operation == "closeStatement") {

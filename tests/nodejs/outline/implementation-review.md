@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source225 adds real SQLite statement counters/resetStats and reviewed receiver/counter admission.11native-owner+8current frontend groups match; new guest TypeError bridge and fullSQLite/four-host behavior remain unvalidated.
+See [source scope](sqlite-statement-status-integration.md).
+
 Source224 adds actual Socket destroySoon and no-owner final callback completion;7current native TCP-dependent groups match. Production connected shutdown, full socket lifecycle and guest/four-host behavior remain open.
 See [source scope](socket-destroy-soon-integration.md).
 

@@ -38457,6 +38457,21 @@ function _createNodeSqlitePlatform(platform) {
                 return result;
             } finally { owner.active = false; }
         }
+        stat(...args) {
+            const owner = statements.get(this);
+            if (!owner) throw new P.TypeError('Illegal invocation');
+            native('checkStatement', owner.handle);
+            // A missing native callback argument is undefined, never an
+            // inherited rest-array index. Preserve receiver/finalized priority.
+            const counter = args.length === 0 ? undefined : args[0];
+            if (typeof counter !== 'string') argument('counter', 'a string');
+            return native('stat', owner.handle, counter);
+        }
+        resetStats() {
+            const owner = statements.get(this);
+            if (!owner) throw new P.TypeError('Illegal invocation');
+            native('resetStats', owner.handle);
+        }
         columns() {
             const rows = native('columns', statement(this).handle), result = [];
             const keys = ['column', 'database', 'name', 'table', 'type'];
@@ -38469,6 +38484,8 @@ function _createNodeSqlitePlatform(platform) {
         }
     }
     ObjectDefineProperty(Statement.prototype, 'close', { enumerable: true });
+    ObjectDefineProperty(Statement.prototype, 'stat', { enumerable: true });
+    ObjectDefineProperty(Statement.prototype, 'resetStats', { enumerable: true });
     const disposeStatement = function() { closeStatement(this, true); };
     ObjectDefineProperty(disposeStatement, 'name', { value: '' });
     ObjectDefineProperty(Statement.prototype, SymbolDispose, { configurable: true, writable: true,

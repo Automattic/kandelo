@@ -1,0 +1,91 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-002"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "native-integration",
+      "values",
+      "engine"
+    ],
+    "scope": "Actual SQLite Statement stat/resetStats, native mapping/error and receiver/counter admission prerequisites. No full SQLite or finding closure."
+  },
+  "sourceImplemented": [
+    "Read nine actual sqlite3_stmt_status counters using complete pinned native mapping and existing genuine statement lifetime",
+    "Reset real counters except memused without resetting the VM/iterator or adding a stale column cache",
+    "Reuse existing generated limits-header/normal native staging for new status names and actual native dispatch operations",
+    "Install actual public stat/resetStats with receiver/finalized-before-counter ordering and no inherited Array index access for missing rest arguments",
+    "Correct actual ERR_INVALID_ARG_VALUE native error factory to TypeError; compose only new SQLite metadata field, preserving Buffer and Socket/current CLI sources"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-sqlite225-source-r1/report.json",
+    "sha256": "e02f90bcca779e61efa6244e258d2891766d46c0bd260febea2a630f623b5936",
+    "guardedInputs": 885,
+    "scope": "Actual statement status/resetStats C++ owner over exact SQLite3.54 and current generated public receiver/counter admission over explicit native dependencies. New guest JSAPI TypeError bridge uncompiled; no guest/fullSQLite/fourhost acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-sqlite225-affected-r1.json",
+    "sha256": "4aeb7f50c1c77e3924b51fc22ee27082f7a5e58be0fbef694eef1627107c27f3",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-sqlite225-source-r1/report.json",
+    "sha256": "e02f90bcca779e61efa6244e258d2891766d46c0bd260febea2a630f623b5936",
+    "actualOwnerGroups": 11,
+    "currentFrontendAdmissionGroups": 8,
+    "nativeBackedErrorGroupsIncluded": 2,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "guestTypeErrorBridgeValidated": false,
+    "fourHostConformance": false,
+    "scope": "Fresh identical actual production C++owner executable/headers over exact preserved SQLite3.54object plus actual current normal generated JS frontend over native SQLite/VM/errors/bytes/parameter helper. Two native-backed TypeError cases do not validate new guest factory. Historical10frontend/15upstreamtest evidence is not current-source execution."
+  },
+  "sealedEvidence": {
+    "report": ".context/sqlite-statement-status-owner-agent/report.json",
+    "sha256": "dc4dbd70049555f2b98c96a038198629e842167c5bb15030937222e010d5ee3c",
+    "reusedEvidence": true,
+    "scope": "Original11actual native owner cases compiled once;10frontendgroups/15unchangedupstreamtests over pre-admission source preserved historically. Final6admission cases match after retained2/6oldsource regression; full native bridge uncompiled."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/sqlite-statement-status-owner-agent/report.json",
+      "sha256": "dc4dbd70049555f2b98c96a038198629e842167c5bb15030937222e010d5ee3c",
+      "scope": "Original raw-template syntax check/harness and aggregate source/metadata preimage guard failures preserved. Historicalpre-admissionfrontend/upstream runs not relabeled current. Metadata-helper descendant count unknown, not zero."
+    },
+    {
+      "report": ".context/sqlite-statement-status-review-agent/REPORT.md",
+      "sha256": "e26ef4a66d44deb64e030fa7b719d3b57113a606ec0a61db78d2d3cdbe4dac0d",
+      "scope": "Independent review found inherited Array.prototype[0] admission bug; final3172a651patch fixes it. Old source/patch/actual failure preserved. No other verified introduced blocker, no guest evidence."
+    },
+    {
+      "report": ".context/sqlite225-integration-plan-agent/plan.json",
+      "sha256": "5e7209dbc085ee1710de9d21fa997edc5e3e104b72f81e6641acb4c997bc5c82",
+      "scope": "Explicit Buffer/current metadata insertion and protected bootstrap/build.py plan, actual guest eight-case future validation prerequisite. No new tests/builds in plan preparation."
+    },
+    {
+      "report": ".context/sqlite225-integration-review-agent/REPORT.md",
+      "sha256": "91d7ba034ce1e76fd9134a9ce0de6ca268785504985d5a0bb0c01f13fb42bd0e",
+      "scope": "Read-only root9leaf/protected metadata/actual staged native/header/generated admission source review, no new P1/P2. No tests/builds; real guest TypeError bridge remains uncompiled."
+    }
+  ],
+  "remaining": [
+    "Compile and exercise new actual JSAPI/native TypeError/stat/resetStats bridge, GC/parent/lifetime/OOM/realm/error construction and callback behavior",
+    "Complete SQLite Database/Statement/session/backup/extensions/authorization/async and other audited native integration APIs",
+    "Actual callback/reprepare/iterator/error/transaction/concurrency and resource disposal semantics on current guest artifacts",
+    "Current identified Node/Chromium/Firefox/WebKit conformance; no API/family closure or new exclusion"
+  ],
+  "at": "2026-11-07T16:28:23.147725+00:00",
+  "recipeRevision": 225,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
