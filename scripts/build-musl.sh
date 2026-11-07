@@ -430,10 +430,15 @@ rm -f "$SYSROOT/lib/ucontext_unsupported.o"
 # Keep one nonce/receipt implementation across EGL and GBM. Separate archive
 # membership avoids a graphics hook or initialization cost in other programs.
 echo "==> Building kernel-owned device resource runtime..."
+# Like musl's overlay objects, this member must name a stable relative source
+# in calltypes metadata. Compile a private staged copy: an absolute checkout
+# path would give one shared cache key different bytes in different worktrees.
+mkdir -p src/kandelo
+cp "$REPO_ROOT/libc/glue/drm_owned.c" "$REPO_ROOT/libc/glue/drm_owned.h" src/kandelo/
 "$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS \
     -matomics -mbulk-memory \
     -I"$SYSROOT/include" \
-    -c "$REPO_ROOT/libc/glue/drm_owned.c" \
+    -c "src/kandelo/drm_owned.c" \
     -o "$SYSROOT/lib/drm_owned.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/drm_owned.o"
 rm -f "$SYSROOT/lib/drm_owned.o"

@@ -26043,3 +26043,22 @@ pending. A coherent targeted normal SDK/kernel/host build is next. Pending
 native Wayland leaves, D-59 enforcement, fork-shutdown findings and all full
 B1/final gates remain required. No complete preview, performance result or
 additional boundary is claimed.
+
+### Stable graphics-runtime build provenance, 2026-11-07
+
+The first R616 normal foundations build fails its existing checkout-path
+integrity check before publishing a new SDK. The standalone `drm_owned.c`
+archive member used an absolute compiler input path, which the calltypes
+plugin records in linked metadata. The builder now stages that source and
+its header in its invocation-private musl tree and compiles by the same
+stable relative path used for overlay objects. The integrity check stays
+mandatory; no host-specific launcher or compiler change is introduced.
+
+`graphics-drm-build-provenance-r620-1107-005203-7799` passes5s: actual plugin
+compiles from two distinct private roots produce different absolute-path
+control objects and byte-identical relative-path objects on both wasm32
+and wasm64, with no private root embedded in the corrected objects. Shell
+syntax and whitespace checks pass. This proves the local object-provenance
+fix; the coherent normal build and every pending B1 check remain required.
+Exact commands and object hashes are in
+`.context/graphics-drm-build-provenance-r620/` and its agent-job log.
