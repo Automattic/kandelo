@@ -612,9 +612,9 @@ The largest baseline cost is subagents blocking on long builds, at 938 M
 tokens. This rule turns standing guidance into enforcement: a subagent that
 needs a build expected to take more than 5 minutes returns that need to its
 parent instead of waiting. In subagents only, the hook denies foreground
-`./run.sh setup`, `local-build`, and full-suite runs, plus any command whose
-recorded median (tool 10) is over 5 min. It tells the subagent to report
-back what it needs built.
+`./run.sh setup`, `local-build`, and full-suite runs. It tells the subagent
+to report back what it needs built. Recorded-duration lookup is not
+implemented.
 
 - **Measure:** idle-gap cache rewrites in subagents, against the 938 M
   baseline.
@@ -625,6 +625,69 @@ back what it needs built.
   the denial log; 2 or more sessions means revise.
 - **Feasibility check:** this relies on the hook input identifying a
   subagent. If it does not, the rule is dropped, and this file says so.
+
+**Subagent wait windows, plan before measuring (2026-11-07).**
+
+The graphics baseline at `3700f32cb4` found 187 subagent wakes from
+`agent-job wait`, with a median 9.1-minute gap and 412k-token context.
+They cost 153M input-equivalent tokens, 21% of that workflow. After
+3–4.75-minute gaps, 0/74 subagent turns rebuilt their cache; after
+6–10-minute gaps, 194/194 did. Main-session caches survived gaps up to
+an hour. The projected 153M → 22M cost with shorter windows is an
+estimate, not measured savings. Source transcripts and the analysis in
+madrid are read-only; local copies are in `.context/graphics-baseline`.
+
+- **Boundary:** local agent tooling and Claude Code's prompt cache;
+  no guest/kernel, Node/browser host, ABI, or package change.
+- **Design:** keep the main-session 540 s default and interactive
+  background `--timeout 0`. Split CLI hints by session type. Subagents
+  use foreground `--timeout 240` for targeted work; whole-tree builds,
+  full suites and other known long jobs return to the parent. Preserve
+  explicit timeouts in retry hints. The opt-in hook uses `agent_id` to
+  deny subagent `agent-job wait` calls without a literal positive
+  timeout, or with a total window over 270 s in one Bash call. The
+  margin leaves time for scheduling, status output and the next request
+  inside the observed five-minute cache boundary. This is a guardrail,
+  not a guarantee about scheduler delay or arbitrary shell programs.
+- **Identity check:** inspect CLI environment/process evidence and
+  capture a main and a subagent probe in the controlled check. Prefer
+  hook identity over inferring identity from a process name or adding
+  a global timeout that also shortens main-session waits.
+- **Replay:** run `replay-hook.py` over the graphics transcripts;
+  review a deterministic sample of at least 20 new-rule denials (all
+  if fewer), plus main-session and quoted-text controls. Report policy
+  precision separately from actual observed wait durations: a completed
+  job may return immediately even with an unsafe requested window.
+- **Controlled check:** one baseline/candidate pair, Sonnet, with one
+  foreground subagent per session waiting on a 660 s fixture job.
+  Both start with the same default wait request; baseline uses the
+  pre-change hook and CLI, candidate uses this change. Load a fixed
+  context before waiting so a rebuild is visible. Capture hook inputs,
+  safe environment/process probes, raw model streams and persisted
+  subagent transcripts. Score the exit status and error line against
+  fixture output. Inspect usage at each wake, including cache reads
+  and creation, rather than inferring a cache hit from elapsed time.
+- **Accounting:** cherry-pick `ea82add28e`, preserving authorship;
+  use session-total `modelUsage`, sum turns across result segments,
+  and retain raw streams. Check its aggregation with regression tests.
+- **Cost estimate before model calls:** about $0.50–$2 total on Sonnet
+  for the pair with modest fixed context; cap each session at $1.50
+  ($3 combined). No repeated statistical trial or large graphics replay
+  with models. Replay and unit tests make no model calls.
+- **Measure:** denial precision, correct completion, actual subagent
+  idle gaps and cache creation/read tokens at wakes, input-equivalent
+  tokens and billed session cost, tool calls, wall time, and unchanged
+  main-session wait behavior. Record model/client versions and limits.
+- **Keep if:** at least 90% of sampled denials target executable
+  subagent waits with unsafe windows, no main-session denial, both
+  arms report the fixture result correctly, and candidate wakes avoid
+  the baseline's full-context rebuild with lower wake token cost.
+  If the controlled check cannot reproduce a baseline rebuild, report
+  it as inconclusive; do not claim measured cache savings. Retain the
+  narrow policy only as a guardrail supported by historical evidence.
+- **Revise/remove if:** a main session is restricted, results are lost,
+  or a denial encourages polling/evasion. Review the first five real
+  subagent uses; two blocked-parent or evasion incidents require revision.
 
 ### 9. `local-build plan --status` with time estimate
 
