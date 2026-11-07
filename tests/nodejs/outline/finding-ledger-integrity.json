@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T02:17:33.041155+00:00",
-  "sourceHead": "7df5cbc20967d79aec2cd1177dbe73fabfd8e07b",
-  "recipeRevision": 172,
+  "at": "2026-11-07T03:26:41.971213+00:00",
+  "sourceHead": "6b359387563aced534a3c2bb97bb05609ca8d50c",
+  "recipeRevision": 176,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 91,
+    "sourceSliceRecords": 94,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 264
+    "findingsWithoutExplicitOrProposedSourceSlice": 258
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,13 +26,23 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 91,
+  "sourceSliceIdentitiesVerified": 94,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "0c8c390f7ab06df0c39435524baf18e21fea947b46cc4bef6fdd1e8d8ddf84da"
+    "sha256": "4e7a114efb69a4897087ccf9e8a60baedec123329af67a6b709ea890ca1bb49b"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
-  "scope": "Document references, identities and metadata only; no new API/runtime conformance claim"
+  "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
+  "previousIntegrityIdentity": {
+    "sha256": "739677fd52397fda11fb2f7f4e9fb0b65d9644988199aa001802504823b873ea",
+    "sourceHead": "7df5cbc20967d79aec2cd1177dbe73fabfd8e07b",
+    "scope": "Preserved in prior committed source and sourceSnapshotHistory"
+  },
+  "sourceProgressOverlaysAdded": [
+    "vm-execution-deadline",
+    "sqlite-backup",
+    "http-request-server-response"
+  ]
 }

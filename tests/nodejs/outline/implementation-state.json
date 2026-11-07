@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T03:23:23.881340+00:00",
+  "updatedAt": "2026-11-07T03:26:41.971213+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "0c8c390f7ab06df0c39435524baf18e21fea947b46cc4bef6fdd1e8d8ddf84da",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "739677fd52397fda11fb2f7f4e9fb0b65d9644988199aa001802504823b873ea",
-    "tests/nodejs/outline/finding-ledger.md": "676852fbcf728bbd37e6b9636d9bb596c257b6b14c1e7210c6ae672273ef9702",
+    "tests/nodejs/outline/finding-ledger.json": "4e7a114efb69a4897087ccf9e8a60baedec123329af67a6b709ea890ca1bb49b",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "f6dd01453fad30b281f5306682925965b9ec421cae277d365cfb63d3dd37aa79",
+    "tests/nodejs/outline/finding-ledger.md": "9fe0e2084a3ebd8e9ee5ff339fa03cf30f69fbb2cf7fe9f216f3ba7bffa21768",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -6330,7 +6330,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real SQLite backup/native queue source, freshly compiled exact current portableowner and compared actual public frontend against native while preserving real reference crash and production gaps."
+    "reason": "Integrated real request/ServerResponse source and corrected public method catalog using actual compiled data, verified focused current controls while preserving server-admission failure and production gaps."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -42495,10 +42495,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/http-request-server-response-20261107T032325Z.tar.gz",
-    "sha256": "cb041803343850e71eb86605360489f6f06eb0be060e4137e5dfdb0592ad7b40",
-    "bytes": 48371702,
-    "scope": "176realrequest/ServerResponse/catalogsource and scoped positive/nonpass evidence, all identified source; newJSAPI/fullServer/guest/fourhost unproven",
+    "path": ".context/node26-implementation-snapshots/finding-overlay176-20261107T032641Z.tar.gz",
+    "sha256": "19f43906a52de516e1b3f66f61775f91cff0b4378c7e920b7ebe622ebb24a47d",
+    "bytes": 9979904,
+    "scope": "Current176source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -45792,7 +45792,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real request/ServerResponse source and corrected public method catalog using actual compiled data, verified focused current controls while preserving server-admission failure and production gaps."
+    "reason": "Reconciled canonical finding navigation with three integrated source slices, preserving document-qualified definitions, exact nonpasses and unknown dispositions without API closure."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -51418,6 +51418,13 @@
       "sha256": "1d535a7a264b7afda4194a4e2856925d4b7ef4bcc82fd2d224d8dbc778ea205b",
       "bytes": 34445475,
       "scope": "175realSQLitebackup/currentportable owner and native-dependent frontend evidence, all identified source; no currentengine/guest/fourhost acceptance",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/http-request-server-response-20261107T032325Z.tar.gz",
+      "sha256": "cb041803343850e71eb86605360489f6f06eb0be060e4137e5dfdb0592ad7b40",
+      "bytes": 48371702,
+      "scope": "176realrequest/ServerResponse/catalogsource and scoped positive/nonpass evidence, all identified source; newJSAPI/fullServer/guest/fourhost unproven",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -86820,22 +86827,22 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "0c8c390f7ab06df0c39435524baf18e21fea947b46cc4bef6fdd1e8d8ddf84da",
+    "sha256": "4e7a114efb69a4897087ccf9e8a60baedec123329af67a6b709ea890ca1bb49b",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "739677fd52397fda11fb2f7f4e9fb0b65d9644988199aa001802504823b873ea"
+      "sha256": "f6dd01453fad30b281f5306682925965b9ec421cae277d365cfb63d3dd37aa79"
     },
-    "sourceCheckpoint": 172,
+    "sourceCheckpoint": 176,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 91,
+      "sourceSliceRecords": 94,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
-      "findingsWithoutExplicitOrProposedSourceSlice": 264
+      "findingsWithoutExplicitOrProposedSourceSlice": 258
     },
     "individualApiClosure": false,
     "fourHostConformance": false
@@ -87210,5 +87217,29 @@
     "individualApiClosure": false,
     "implementationComplete": false,
     "acceptedPlatformLimits": []
-  }
+  },
+  "originalFindingLedgerHistory": [
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "0c8c390f7ab06df0c39435524baf18e21fea947b46cc4bef6fdd1e8d8ddf84da",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "739677fd52397fda11fb2f7f4e9fb0b65d9644988199aa001802504823b873ea"
+      },
+      "sourceCheckpoint": 172,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 91,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 264
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    }
+  ]
 }

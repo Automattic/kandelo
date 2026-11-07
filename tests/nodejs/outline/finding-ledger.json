@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 91,
+    "sourceSliceRecords": 94,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 264
+    "findingsWithoutExplicitOrProposedSourceSlice": 258
   },
   "families": [
     {
@@ -331,7 +331,7 @@
         "H-013",
         "H-014"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 9,
+      "findingsWithExplicitOrProposedSourceSlices": 12,
       "sourceRouteAsRecorded": "Pinned outgoing headers/full IncomingMessage and unchanged common parser callbacks; actual Node-vendored llhttp/private GC-owned response framing, strict/insecure/relaxed limits, interim/HEAD/upgrade/CONNECT source; unconditional pooled replay and same-feed leftover reuse removed ; source138 full pinned OutgoingMessage/request framing and response-consumption/writable-finished reuse fence; source160 pinned plain Agent queue/pool/selection/proxy/control owners with real reusable-socket timeout reset ordering; source164 pinned HTTP2 settings helpers, source-derived protocol constants and genuine sensitiveHeaders symbol",
       "remainingAsRecorded": "Synchronous native-to-JS callback/reentry/byte/memory/error/EOF integration, OutgoingMessage/request framing, idle bytes/public Agent/TLS pool keys, servers/request parsing and complete HTTP/2 sessions/streams/server/transport; guest/four-host lifecycle remains unvalidated",
       "remainingOwner": "HTTP request/response/parser/Agent/server compatibility and native llhttp/nghttp2 owners",
@@ -690,7 +690,7 @@
         "E-017",
         "E-018"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 2,
+      "findingsWithExplicitOrProposedSourceSlices": 4,
       "sourceRouteAsRecorded": "Generic Error location policy and actual VM/context/compiler owners; source 136 adds pinned public module classes over actual source/synthetic records, live environments, graph/link/evaluation/namespace hooks and native experimental CLI state; source151 actual realm/rooted-array/shared-buffer API compilation corrections; source158 actual shared-buffer header alignment correction retaining original assertion/ownership; source166 actual metadata visibility/retained transfer maximum access corrections",
       "remainingAsRecorded": "No accepted current combined engine; actual165production compile failed on metadata declaration visibility and protected transfer maximum access;166corrections await compilation; actual graph/GC/realm/dynamic Promise execution and all four hosts unvalidated. Arbitrary attributes, source/defer phases, negative offsets, cache/deadline scopes, sandbox exotic properties, heap/inspector and broader context/worker gaps remain open",
       "remainingOwner": "Actual VM context/script/module/debugger/heap/interrupt owners",
@@ -755,7 +755,7 @@
         "NI-013",
         "NI-014"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 1,
+      "findingsWithExplicitOrProposedSourceSlices": 2,
       "sourceRouteAsRecorded": "SQLite scalar/aggregate/window registrations and GC-traced native callback/parent/accumulator owners compiled in113; real SQLite statement/iterator/column/limit/defensive/session/change-set and rooted synchronous callback owners, native virtual limits and actual activation; source154 actual statement close/dispose, executing-VM guards and reentrant-safe native retirement",
       "remainingAsRecorded": "Database disposal suppression/serialization and remaining Statement receiver/reset/iterator semantics; complete scalar/aggregate/window error/reentry/GC policy, authorizer/virtual-table callbacks; complete limits/reflection/storage/GC/realm/accounting, tag cache/backup/extensions, FFI/WASI/SEA/addons/embedding and ABI/loader",
       "remainingOwner": "Actual SQLite/FFI/WASI/SEA/Node-API/embedding native ABI and loader owners",
@@ -4361,7 +4361,15 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "Server/ServerResponse/OutgoingMessage and request lifecycle",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "http-request-server-response",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/http.md",
+          "scope": "Request/parser/ServerResponse/method catalog source subset; full Server and complete finding obligations remain open",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "HTTP request/response/parser/Agent/server compatibility and native llhttp/nghttp2 owners",
@@ -4411,7 +4419,15 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "Header/status parsing, duplicate rules and bounded error handling",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "http-request-server-response",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/http.md",
+          "scope": "Request/parser/ServerResponse/method catalog source subset; full Server and complete finding obligations remain open",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [
         "http-parser-implementation-dependencies"
@@ -4434,7 +4450,15 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "HEAD, interim/informational responses, upgrade/CONNECT",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "http-request-server-response",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/http.md",
+          "scope": "Request/parser/ServerResponse/method catalog source subset; full Server and complete finding obligations remain open",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [
         "http-parser-implementation-dependencies"
@@ -4670,6 +4694,13 @@
         {
           "slice": "tcp-agent",
           "relation": "explicit"
+        },
+        {
+          "slice": "http-request-server-response",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/http.md",
+          "scope": "Request/parser/ServerResponse/method catalog source subset; full Server and complete finding obligations remain open",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -8539,7 +8570,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "vm timeout",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "vm-execution-deadline",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/engine.md",
+          "scope": "Synchronous VM script deadline subset; legacy E002 and explicit E009 are document-qualified navigation, not whole finding closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "native scoped execution deadline/watchdog interrupt owner with nested-context cancellation restoration",
@@ -8704,7 +8743,15 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "Execution deadlines and interrupt policy",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "vm-execution-deadline",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/engine.md",
+          "scope": "Synchronous VM script deadline subset; legacy E002 and explicit E009 are document-qualified navigation, not whole finding closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "native scoped execution deadline/watchdog interrupt owner with nested-context cancellation restoration",
@@ -9132,6 +9179,13 @@
         {
           "slice": "sqlite-lifecycle",
           "relation": "explicit"
+        },
+        {
+          "slice": "sqlite-backup",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Actual async backup and selected backend identity subset; remaining SQLite findings and runtime obligations remain open",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -9216,7 +9270,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Backend identity matches the exact target or divergence is explicit",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "sqlite-backup",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Actual async backup and selected backend identity subset; remaining SQLite findings and runtime obligations remain open",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [
         "sqlite-implementation-dependencies"
@@ -18372,6 +18434,216 @@
         "Full crypto/WebCrypto/generation/exchange/signature/STORE and fourhost identified-artifact conformance"
       ],
       "rootOverlay": true
+    },
+    "vm-execution-deadline": {
+      "document": "tests/nodejs/outline/vm-execution-deadline-finding-progress.json",
+      "sha256": "065e214f35af88354497018a951ba6644ad9985fa705f4d059efb14c3f93d92e",
+      "recordedRevision": 174,
+      "explicitFindingIds": [
+        "E-002",
+        "E-009"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-vm174-source-r1/report.json",
+          "sha256": "788599c706f153dbace0d9928802422b2101a6f4d769880bd3d9131ce1a6837e",
+          "guardedInputs": 789,
+          "scope": "Real joined native watchdog/frame/interrupt source with original compileFunction unchanged; current8deadline+11validation/native-dependent public comparisons,10portable ownergroups, whole unchanged upstream eachsubject and unchanged style. Production174JSAPI/guest/fourhost not established; wait-failure edge open."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-vm174-affected-r1.json",
+          "sha256": "c9caf2383aa0cd922466a7b44779a5b924b296befca8c929a8838c7e9c463c8f",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false,
+          "selection": "tests/package-system/node-core-build-inputs.test.ts",
+          "allReportPassedCases": 25,
+          "otherAffectedVmComponentCases": 11,
+          "scope": "14actual package-contract assertion records within preserved combined25case report;11VMcomponent records are separate"
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-vm174-source-r1/report.json",
+          "sha256": "788599c706f153dbace0d9928802422b2101a6f4d769880bd3d9131ce1a6837e",
+          "portableOwnerGroups": 10,
+          "publicDeadlineComparisons": 8,
+          "validationComparisons": 11,
+          "wholeUnchangedUpstreamSubjects": 2,
+          "affectedVmComponentCases": 11,
+          "packageContractCases": 14,
+          "productionSMExecuted": false,
+          "scope": "Current174public frontend over explicit pinned nativeVM backend and exact reused compiled portable owner; no productionSM, guest or fourhost execution"
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/vm-deadline-agent/handoff.json",
+          "sha256": "55e1ed7889ee011fd3fb25c1002c66e955217f148bf5b7f0345e8200bbea0bc8",
+          "reusedEvidence": true,
+          "scope": "10portable ownergroups,8frontend/reference+11validation,11host cases and unchanged full upstream;3tiny compilation attempts including1missing-dependency failure; no engine/guest proof"
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/vm-execution-deadline-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/vm-execution-deadline-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Real steady-clock C++ watchdog with explicit cancellation/join and per-context invocation ownership, repeated expiry interrupts",
+        "Actual engine uncatchable interruption and foreign nested-boundary propagation; owning target-realm timeout Error only after unwind/join",
+        "Own literal public timeout forwarding retains unchanged pinned validation and existing compileFunction body",
+        "Preserve actual foreign shell/worker/OOM/forced states and prior173style/vendor/currentPKCS12 ownership"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/vm-execution-deadline-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Wait-failure catch only sends one request; actual persistence under reentrant embedding callback remains unresolved source edge",
+        "Actual174productionJSAPI compilation/interrupt/GC/OOM/realm/worker/foreign-state lifecycle and all four hosts",
+        "Module evaluate scopes, microtaskMode/afterEvaluate, breakOnSigint/debugger/cache/dynamic import and broader VM surface"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/engine.md",
+      "findingScope": "Synchronous VM script deadline subset; legacy E002 and explicit E009 are document-qualified navigation, not whole finding closure"
+    },
+    "sqlite-backup": {
+      "document": "tests/nodejs/outline/sqlite-backup-finding-progress.json",
+      "sha256": "2e8f0463e878bd7ee800803cff17a99930472e58b114dd870edda3d56b4842ee",
+      "recordedRevision": 175,
+      "explicitFindingIds": [
+        "NI-002",
+        "NI-006"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-sqlite175-source-r1/report.json",
+          "sha256": "61aad693d662aa2f26d794ebaa01d8069aa5c0c54ff0e981c58cdb9c14905102",
+          "guardedInputs": 791,
+          "scope": "Actual asyncSQLitebackup/page-step/sharedconnection/nativequeue source; freshlycompiled portableowner11cases over realSQLite3.54 and13current publicfrontend/native comparisons.175productionJSAPI/GC/queue/guest/fourhost not established; malformed source reference crash remains nonpass."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-sqlite175-affected-r1.json",
+          "sha256": "b904d68abeefbb05a6225cd6805080752f19db647c951e25dd7478f41ec70466",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-sqlite175-source-r1/report.json",
+          "sha256": "61aad693d662aa2f26d794ebaa01d8069aa5c0c54ff0e981c58cdb9c14905102",
+          "portableOwnerCases": 11,
+          "currentFrontendComparisonGroups": 13,
+          "allocationFailureThrows": 5,
+          "beyondAllocationPositionsSucceeded": 4,
+          "freshNativeCompilerAttempts": 1,
+          "packageContractCases": 14,
+          "productionSMExecuted": false,
+          "scope": "Fresh actual portableowner/currentheaders over realSQLite3.54; frontend controls use explicit nativeNodeSQLite boundary, not production JSAPI/queue/GC or guest/fourhost"
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/sqlite-backup-owner-agent/report.json",
+          "sha256": "4d03f0a0d3904a110ab389d2c808e0a21fbab5244e8e2e386bcdb0915dff1218",
+          "reusedEvidence": true,
+          "scope": "13public frontend groups/11native portableowner cases,3prior successfultinycompiles, exact SQLite3.54source/object; malformed-sourceSIGBUS remains nonpass and JSAPI uncompiled"
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/sqlite-backup-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/sqlite-backup-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Real sqlite3_backup state over actual serialized source/destination connections, per-worker page steps with context-owned finish/close",
+        "Pinned-order public source/path/options and byte/URI snapshots with genuine function metadata and post-getter source recheck",
+        "Fresh per-batch native jobs root actual source/callback graph/Promise before queue transfer; owner-thread zombie finalization and exception cleanup",
+        "Real page/status/progress and requested native capacity accounting; actual target SQLite backend dependency preserved"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/sqlite-backup-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual175productionJSAPI/nativequeue/Promise/GC/realm/reentry/cancellation/thread/VFS/file-lock and allfourhosts",
+        "Dedicated real lock contention and external-source-connection restart controls; full SQLite allocator accounting",
+        "Wrong plain-object native reference crash/error-equivalence unresolved; all remaining SQLite/native integration APIs stay open"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/native-integration.md",
+      "findingScope": "Actual async backup and selected backend identity subset; remaining SQLite findings and runtime obligations remain open"
+    },
+    "http-request-server-response": {
+      "document": "tests/nodejs/outline/http-request-server-response-finding-progress.json",
+      "sha256": "857503dd879e72001587e6eca44be78b762d433370eeb883d07a8e32d4cb19ef",
+      "recordedRevision": 176,
+      "explicitFindingIds": [
+        "H-001",
+        "H-003",
+        "H-004",
+        "H-013"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-http176-source-r1/report.json",
+          "sha256": "63ed05e701c4069c040364379f8ffbdf5b210d05ddf1e4469d2a19e148286f27",
+          "guardedInputs": 795,
+          "scope": "Actual request/parser/ServerResponse/compiled method catalogs, fresh portableCXX owners and current native-dependentfrontend/upstream/live native-socket controls;1real server-admission nonpass preserved,176JSAPI/fullserver/guest/fourhost open."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-http176-affected-r1.json",
+          "sha256": "937fee22b99fe1401e31834a568c8a80d595381f88b934ff44a3aa208fd0a5b1",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-http176-source-r1/report.json",
+          "sha256": "63ed05e701c4069c040364379f8ffbdf5b210d05ddf1e4469d2a19e148286f27",
+          "requestParserCases": 27,
+          "unchangedResponseParserCases": 25,
+          "serverResponseGroups": 12,
+          "unchangedUpstreamExecutions": 4,
+          "publicHttpMethods": 35,
+          "parserAllMethods": 47,
+          "liveNativeSocketCases": 9,
+          "liveNativeSocketPasses": 8,
+          "liveNativeSocketNonpasses": 1,
+          "freshNativeCompilerAttempts": 2,
+          "productionSMExecuted": false,
+          "scope": "Current actual portable parser/catalog; public/frontend over genuine native dependencies and actual native accepted sockets, not productionSM/fullServer/guest/fourhost",
+          "nonpassMeaning": "1of9currentliveprimitive comparisons fails; wrapper0only verifies exact preserved failure accounting, not allpass"
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/http-request-server-owner-agent/report.json",
+          "sha256": "2e2372f0e45b3c7f7e2819b7e3b2e407061fcc64ad152058f20203aa788ba96f",
+          "reusedEvidence": true,
+          "scope": "27request/25response/12ServerResponse groups,4unchangedupstream executions,8/9liveprimitive comparisons,4tiny compiles and38sourcechecks; JSAPI/fullserver not established"
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/http-request-server-response-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/http-request-server-response-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Real shared llhttp request mode with actual method/URL/body/trailer/budget/error/upgrade/remainder ownership; existing response mode preserved",
+        "Pinned ServerResponse algorithms over actual existing OutgoingMessage/IncomingMessage/socket/trace/performance and diagnostic producer owners",
+        "Shared compiled HTTP_METHOD_MAP vs HTTP_ALL_METHOD_MAP catalogs, actual public METHODS.toSorted policy yielding35rather than9names",
+        "Preserve current VM174/SQLite175/style173 source and real full-server/automatic400 nonpass; no substitute Server"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/http-request-server-response-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Real full Server/admission/ConnectionsList/timeout/pipeline and net.Server actual receiver/transport integration",
+        "Synchronous parser consume/pause/reentry and borrowed aliases/errorpositions/rawPacket/transient memory/GC/realm/request lifecycle",
+        "Current malformed-URL native server automatic400 nonpass, HTTPS/HTTP2/export aliases/performance/client/Agent gaps and allfourhosts",
+        "Production176JSAPI currentengine compilation/artifact and identified guest conformance"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/http.md",
+      "findingScope": "Request/parser/ServerResponse/method catalog source subset; full Server and complete finding obligations remain open"
     }
   },
   "dependencyNarratives": {
@@ -20166,6 +20438,30 @@
     "fourHostConformance": false,
     "runtimeTestsRunForThisIntegration": 0,
     "compilationsRunForThisIntegration": 0,
-    "recipeChanged": false
+    "recipeChanged": false,
+    "progressOverlays": [
+      {
+        "at": "2026-11-07T03:26:41.971213+00:00",
+        "sourceCheckpoint": 176,
+        "sourceHead": "6b359387563aced534a3c2bb97bb05609ca8d50c",
+        "addedSourceSlices": [
+          "vm-execution-deadline",
+          "sqlite-backup",
+          "http-request-server-response"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "c5a9314850c172b57c1510909042c24b616dbe152c4da96985487679a173cf48"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current174VM/175SQLite/176HTTP source contributions and bounded evidence. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      }
+    ]
   }
 }

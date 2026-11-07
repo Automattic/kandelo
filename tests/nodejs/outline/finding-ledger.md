@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 91 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 94 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 264 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 258 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -63,3 +63,23 @@ propagating ENOSYS honestly does not implement notifications.
 Complete per-finding implementation versus validation-debt classification
 still requires explicit owner reconciliation. All families remain partial.
 Overall suites and full product rebuilds remain deferred.
+
+## Source176 progress overlay
+
+The current overlay adds scoped VM deadline174, SQLite backup175 and HTTP
+request/ServerResponse/catalog176 records. Their exact original audit labels,
+source/evidence identities and retained nonpasses are linked individually.
+The original171capture and172overlay retain their historical source scope;
+later records are not projected backward into those captures.
+
+Engine173has normal compilation/link/check/cache acceptance and static ABI55
+contract evidence. It predates these three slices. Current176combined source
+is uncompiled, no new product projection is materialized, and no guest or
+four-host conformance is established. Public HTTP catalog controls match35
+methods and47parser entries; the9live primitive comparisons still include
+one failed server automatic400 admission case. VM wait-failure reentry and
+SQLite malformed-source reference crash remain unresolved.
+
+No finding/family is closed. Exact finding links remain navigation to scoped
+contributions, not completed semantic obligations. A missing exact link remains
+an unknown disposition, not proof of absent code.
