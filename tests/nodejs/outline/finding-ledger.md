@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 117 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 120 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 233 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 231 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -349,3 +349,32 @@ All original357lexical IDs,417qualified definitions,52ranges and19families remai
 No finding/family closes; accepted173is stale for199. Existing ALS/frame failure,
 skips and all old host outcomes stay unchanged. This overlay runs0runtime controls
 and0compiles; selected engine compilation is a separate prepared next operation.
+
+## Source200–202 compilation, terminal and ordinary-image overlay
+
+The actual200Root/namespace/FFI compiler prerequisites now link to their immutable
+qualified finding definitions. R-001 belongs to family-survey.md and R-013 to
+worker-contracts.md; the progress document's old workers.md shorthand was wrong
+and is corrected without editing audit evidence. Engine200compiled, linked,
+passed normal Mozilla checks and was accepted in the canonical cache. Exact
+artifact/static ABI evidence is in engine200-build-result.json; it proves no
+guest behavior or per-host conformance.
+
+Source201adds real captured-terminal callback/resource/read ownership without an
+extra private read Promise. Two native/candidate real-PTY scenarios and four
+unchanged fd-stream cases pass over explicit native dependencies; the disabled
+route is rejected. Public TTY constructors/Socket/StreamBase/WriteWrap and
+negative errno/GC/realm/Worker guest behavior remain open.
+
+Source202adds real compiled-image SEA fuse identity and unchanged ordinary public
+algorithms. Nine current groups and two unchanged upstream files per subject
+pass over the identified native detector/candidate algorithms. PositiveSEA
+format/build/injection/resources/assets/VFS/startup remain implementation gaps,
+not accepted boundaries. Two prior tiny helper attempts, including one fixture
+failure, are accounted exactly once. New201/202guest C++ remains uncompiled and
+is excluded from the accepted200artifact.
+
+All357lexical IDs,417qualified definitions,52ranges and19families remain. No
+finding or family closes. Old failures/skips/timeouts and the signature ALS/frame
+nonpass stay visible. This overlay adds0runtime controls and0compiles; overall
+suites/fullproduct rebuild remain deferred and nested guest Wasm remains in scope.

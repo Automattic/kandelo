@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 117,
+    "sourceSliceRecords": 120,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 233
+    "findingsWithoutExplicitOrProposedSourceSlice": 231
   },
   "families": [
     {
@@ -755,7 +755,7 @@
         "NI-013",
         "NI-014"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 7,
+      "findingsWithExplicitOrProposedSourceSlices": 9,
       "sourceRouteAsRecorded": "SQLite scalar/aggregate/window registrations and GC-traced native callback/parent/accumulator owners compiled in113; real SQLite statement/iterator/column/limit/defensive/session/change-set and rooted synchronous callback owners, native virtual limits and actual activation; source154 actual statement close/dispose, executing-VM guards and reentrant-safe native retirement",
       "remainingAsRecorded": "Database disposal suppression/serialization and remaining Statement receiver/reset/iterator semantics; complete scalar/aggregate/window error/reentry/GC policy, authorizer/virtual-table callbacks; complete limits/reflection/storage/GC/realm/accounting, tag cache/backup/extensions, FFI/WASI/SEA/addons/embedding and ABI/loader",
       "remainingOwner": "Actual SQLite/FFI/WASI/SEA/Node-API/embedding native ABI and loader owners",
@@ -7260,6 +7260,13 @@
           "auditDocument": "tests/nodejs/audit/terminal.md",
           "scope": "Actual runtime-thread ownership of native watch roots/list only; no full async resource/provider, cancellation/drain or public TTY/TLS closure",
           "closure": false
+        },
+        {
+          "slice": "terminal-callback-resource",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "scope": "Partial source prerequisites for actual terminal resource/callback/read lifecycle; no public constructor or inherited Socket/StreamBase closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7379,6 +7386,13 @@
           "auditDocument": "tests/nodejs/audit/terminal.md",
           "scope": "Consumed captured-input/OFD/read request/mode lease and correct OS tuple prerequisite; public TTY classes/master/mode/JSAPI/fourhost still open",
           "closure": false
+        },
+        {
+          "slice": "terminal-callback-resource",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "scope": "Partial source prerequisites for actual terminal resource/callback/read lifecycle; no public constructor or inherited Socket/StreamBase closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7484,6 +7498,13 @@
         {
           "slice": "tty-size-owner",
           "relation": "explicit"
+        },
+        {
+          "slice": "terminal-callback-resource",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "scope": "Partial source prerequisites for actual terminal resource/callback/read lifecycle; no public constructor or inherited Socket/StreamBase closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7667,6 +7688,13 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/workers.md",
           "scope": "Actual automatic native endpoint/packet/data cycle retirement and bridge ownership prerequisite; no generic stream-transfer, full Worker lifecycle or guest/API closure",
+          "closure": false
+        },
+        {
+          "slice": "native-bridge-compilation",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/family-survey.md",
+          "scope": "Actual native bridge compile prerequisites for owning transit/FFI classes, not new public semantics or finding closure",
           "closure": false
         }
       ],
@@ -8038,6 +8066,13 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/workers.md",
           "scope": "Actual automatic native endpoint/packet/data cycle retirement and bridge ownership prerequisite; no generic stream-transfer, full Worker lifecycle or guest/API closure",
+          "closure": false
+        },
+        {
+          "slice": "native-bridge-compilation",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/worker-contracts.md",
+          "scope": "Actual native bridge compile prerequisites for owning transit/FFI classes, not new public semantics or finding closure",
           "closure": false
         }
       ],
@@ -9644,6 +9679,13 @@
           "auditDocument": "tests/nodejs/audit/native-integration.md",
           "scope": "Actual typed/raw/copy/borrowed-memory and consumer-before-unload foundation; no generic FFI calls/callbacks/Node-API/full permissions/API closure",
           "closure": false
+        },
+        {
+          "slice": "native-bridge-compilation",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Actual native bridge compile prerequisites for owning transit/FFI classes, not new public semantics or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -9728,7 +9770,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "SEA isSea/assets and build/runtime format",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "ordinary-sea-image",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Partial ordinary executable-image identity/public SEA behavior; positive packaging/resources/startup/format and qualified questions remain open",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "actual SEA packaging/asset/bootstrap owner",
@@ -9960,7 +10010,15 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "SEA packaging target questions",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "ordinary-sea-image",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Partial ordinary executable-image identity/public SEA behavior; positive packaging/resources/startup/format and qualified questions remain open",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "actual SEA packaging/asset/bootstrap owner",
@@ -20925,6 +20983,239 @@
           "sha256": "0c145f0bc7f6d0379284ae357eed3ec3feccdb0606af1c8964264ea283f825e8"
         }
       ]
+    },
+    "native-bridge-compilation": {
+      "document": "tests/nodejs/outline/native-bridge-compilation-finding-progress.json",
+      "sha256": "ece780df94b3baa715e3631d2740275448ab0ba2f93138a93647fd39dc78a566",
+      "recordedRevision": 200,
+      "explicitFindingIds": [
+        "NI-001"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-compile200-source-r1/report.json",
+          "sha256": "4752eb7a41c6b60e9d5454d3ccf4a2ea375f7975eb1c4a198609d6c33d07d422",
+          "guardedInputs": 866,
+          "scope": "Actual engine199compile failure owner corrections, not workaround/access-check weakening. One current portable compile; complete200native bridge/guest/fourhost acceptance pending."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-compile200-affected-r1.json",
+          "sha256": "b168b541e8c1203dca98e43e23f6163f41d247273c0e3116807394cc4b7f7ab5",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-compile200-source-r1/report.json",
+          "sha256": "4752eb7a41c6b60e9d5454d3ccf4a2ea375f7975eb1c4a198609d6c33d07d422",
+          "portableGraphGroups": 9,
+          "publicationRaces": 100,
+          "newCompilerAttempts": 1,
+          "newCompilerFailures": 0,
+          "productionJSAPICompiled": false,
+          "scope": "Actual current portable headers compiled; complete bridge native compilation retry pending, prior199engine failed"
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/node26-engine199-failed-r1/terminal.json",
+          "sha256": "411e6e0a2a3da1de85d7f76f855b073bf6b6ce9553260854796d6aaac4f23628",
+          "reusedEvidence": true,
+          "scope": "Actual normal engine199failure after6m36s,9node closure8cached, no changed frozen sources, no kernel/rootfs/app/fullproduct or overall suite; actual source work deleted by normal resolver after failure."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/native-bridge-compilation-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/native-bridge-compilation-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Transit Root exposes the dereference used by the actual destination-peer bridge without changing owner lifetime",
+        "Redundant second native-port anonymous namespace removed, restoring shared forward-declaration and global js::shell registry identity",
+        "DynamicLibrary uses actual140JS_InitClass parameter order/name and PropertyKey::Symbol; owner/access/prototype alias checks preserved",
+        "Actual failed normal engine attempt retained with preflight9nodes8cached, frozen source identities, raw compiler output and no cache promotion"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/native-bridge-compilation-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Normal selected200engine compiler/link/cache acceptance; later diagnostics may expose further errors after prior compiler error limit",
+        "Actual owning transfer/FFI/VM/WASI/queue/byte/realm/GC/fatal/teardown behavior on identified artifacts across all four hosts",
+        "All previously retained core/family implementation gaps, native ALS/frame nonpass, skipped branches and historical host failures remain open"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/native-integration.md",
+      "findingScope": "Actual native bridge compile prerequisites for owning transit/FFI classes, not new public semantics or finding closure",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/family-survey.md": [
+          "R-001"
+        ],
+        "tests/nodejs/audit/worker-contracts.md": [
+          "R-013"
+        ]
+      },
+      "publicRequirementRecords": []
+    },
+    "terminal-callback-resource": {
+      "document": "tests/nodejs/outline/terminal-callback-resource-finding-progress.json",
+      "sha256": "249f8dc247f5e782afeb3d8dc0a7146f3d2ede3a40776e06f055a1233f07049b",
+      "recordedRevision": 201,
+      "explicitFindingIds": [
+        "T-002",
+        "T-007",
+        "T-010"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-terminal201-source-r1/report.json",
+          "sha256": "013f0b6e4be5aef4fa3edd1bae8a3f9e454ec95a42ce7d4f076840dbeb4ca9c3",
+          "guardedInputs": 866,
+          "scope": "Actual captured terminal native callback/resource owner source; current JS/native-dependent PTY and unchanged FD controls, not new C++ JSAPI or guest conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-terminal201-affected-r1.json",
+          "sha256": "aba546e3bf28f9cf5adbb2d313304a9f33dd7e5f61344197a5cbb539b879eeff",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-terminal201-source-r1/report.json",
+          "sha256": "013f0b6e4be5aef4fa3edd1bae8a3f9e454ec95a42ce7d4f076840dbeb4ca9c3",
+          "actualNativeCallbackAndResourceOwner": true,
+          "publicTTYConstructorsActivated": false,
+          "currentPTYScenarios": 2,
+          "currentPositivePTYProcesses": 4,
+          "expectedDisabledRouteRejections": 1,
+          "existingUnchangedFDComponentCases": 4,
+          "newCompilerAttempts": 0,
+          "unchangedStyleCheckerPassed": true,
+          "productionJSAPICompiled": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Candidate JS consumption over explicit real native TTY dependencies and source owner checks only; new production JSAPI uncompiled and unexecuted."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tty-streambase-agent/handoff/report.json",
+          "sha256": "3202cac64e74f1d26e8cd23ee88f71c5a467203f54642fae6f891ba5ae7128b3",
+          "reusedEvidence": true,
+          "scope": "Immutable partial TTY callback/resource source and real PTY/native-dependent controls;17prior component processes with four fixture/setup nonpasses and one expected disabled-route failure retained. Zero C++ compiles/guest runs."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/terminal-callback-resource-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/terminal-callback-resource-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Actual captured terminal I/O lease owns async ID/trigger/frame/native init and once-only retirement; mode-only leases keep their separate identity",
+        "Actual callback read owns rooted lease/callback and native readiness; detach before shared callback/recovery/after/checkpoint entry",
+        "Actual start/stop/ref scalar publication prevents packet allocation from hiding committed ownership/control transitions",
+        "FD-readable demand/pause/ref/unref/destroy consume real callback operations; cancellation precedes descriptor release and callback path creates no private read Promise",
+        "Exact narrow engine patch composes over source200 watch registry/collector/SignJob routes; no root source or assertion replacement"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/terminal-callback-resource-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Public callable TTY ReadStream/WriteStream, prototype/aliases/options/descriptors are unchanged incomplete generic stream exports",
+        "Actual shared net.Socket options.handle/manualStart/TTY adoption and complete StreamBase native methods/prototype/descriptors; this opaque resource is not a complete public native TTY handle API",
+        "Init occurs after actual captured owner acquisition; pinned failed-init/constructor native init order/reentry remain unimplemented/not established",
+        "Deferred native close callback ownership/prototype shapes/WriteWrap and exact callback/destroy ordering remain gaps; do not infer them from queued destroy IDs",
+        "Negative errno delivery source exists but final real PTY controls observe EOF; production errno/recovery/fatal/GC/OOM/realm/Worker behavior uncompiled/unvalidated",
+        "Existing strict raw-to-normal attribute restoration nonpasses and master/unreopenable fallback/backpressure gaps preserved from191",
+        "Private SIGWINCH activation and all4 identified guest-host conformance remain absent",
+        "Separate thread-local list correction is necessary but does not implement comprehensive pending generic numeric fd watch shutdown"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/terminal.md",
+      "findingScope": "Partial source prerequisites for actual terminal resource/callback/read lifecycle; no public constructor or inherited Socket/StreamBase closure",
+      "additionalAuditDocuments": {},
+      "publicRequirementRecords": []
+    },
+    "ordinary-sea-image": {
+      "document": "tests/nodejs/outline/ordinary-sea-image-finding-progress.json",
+      "sha256": "d53e0ea5ec44b8513884f63ff260ec1df9f98f18dbb78fe89a1f2577ffbe0863",
+      "recordedRevision": 202,
+      "explicitFindingIds": [
+        "NI-004"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-sea202-source-r1/report.json",
+          "sha256": "7a19d5f2a06b1bdf7fc1b4a887c3506e767f984b35f7a401ad42302018f46e0c",
+          "guardedInputs": 875,
+          "scope": "Actual ordinary compiled-image fuse identity and unchanged public API algorithms, no positiveSEA admission or guest conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-sea202-affected-r1.json",
+          "sha256": "c60bc9ee7b78a2734dd13d755d0ba72fbd7097eadd66f38ddda74c9523dfd25a",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-sea202-source-r1/report.json",
+          "sha256": "7a19d5f2a06b1bdf7fc1b4a887c3506e767f984b35f7a401ad42302018f46e0c",
+          "ordinarySEAGroupCount": 9,
+          "unchangedUpstreamFilesPerSubject": 2,
+          "nativeAndCandidateFileProcesses": 4,
+          "reusedNativeComponent": {
+            "path": ".context/sea-image-owner-agent/component-r2/component.node",
+            "sha256": "0f621087a68dd2eee560a96af2da7c4e7ea08357c07323119ea9002069c34816"
+          },
+          "newCompilerAttempts": 0,
+          "previousHelperAttemptsIntegrated": 2,
+          "previousHelperFailuresIntegrated": 1,
+          "unchangedStyleCheckerPassed": true,
+          "positiveSEAImplemented": false,
+          "productionJSAPICompiled": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Current candidate public algorithms over exact reused compiled native fuse detector and explicit native dependencies; not production JSAPI/positiveSEA/guest conformance."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/sea-image-owner-agent/report.json",
+          "sha256": "3d180dc0db289ed176349b914e8d660e33629c26ab4fbaca6fc3f6505140838f",
+          "reusedEvidence": true,
+          "scope": "Immutable ordinary SEA image detector/public algorithms,9groups,2unchanged files eachsubject, actual native compiler input identities. Two helper attempts/one fixture failure integrated once; no production JSAPI/positiveSEA/guest proof."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/ordinary-sea-image-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/ordinary-sea-image-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Exact pinned Node image sentinel/IsSingleExecutable and byte-identical Postject header at the real staged third-party boundary",
+        "Native binding reads actual compiled image fuse, not filename/argv0/execPath/env/outerhost metadata or a fixed JS value",
+        "Entire unchanged pinned public lib/sea.js consumes actual candidate validation/error algorithms with ordinary-image error/admission ordering",
+        "Marked-image activation visibly fails the actual unimplemented resource/startup-profile admission; no unsupported resource finder or fake assets used",
+        "Paired shared bootstrap/engine registration, declared normal inputs/staging, exact selected patch replay and retained real controls"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/ordinary-sea-image-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "real resource/startup positive profile",
+        "versioned portable/native/Wasm format/build/injection decision and implementation",
+        "assets/raw lifetime/copies/decoding/Blob/VFS/ZIP/module/startup/worker ownership",
+        "full config/CLI/execArgv/extensions/mainFormat/snapshot/cache behavior",
+        "guest realm/errors/loaded-image/GC/exit/fault evidence and four-host conformance"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/native-integration.md",
+      "findingScope": "Partial ordinary executable-image identity/public SEA behavior; positive packaging/resources/startup/format and qualified questions remain open",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/native-integration.md": [
+          "NI-013"
+        ]
+      },
+      "publicRequirementRecords": []
     }
   },
   "dependencyNarratives": {
@@ -23050,6 +23341,52 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current199 actual native transit-cycle collector, context-thread watch ownership and Zstd pledged-size source contributions. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T09:28:51.793992+00:00",
+        "sourceCheckpoint": 202,
+        "sourceHead": "3099bea13c063fb44ae54a9db9b7d59a7d11e434",
+        "addedSourceSlices": [
+          "native-bridge-compilation",
+          "terminal-callback-resource",
+          "ordinary-sea-image"
+        ],
+        "qualifiedReferenceCorrections": [
+          {
+            "document": "tests/nodejs/outline/native-bridge-compilation-finding-progress.json",
+            "previousAdditionalDocuments": {
+              "tests/nodejs/audit/workers.md": [
+                "R-001",
+                "R-013"
+              ]
+            },
+            "correctedAdditionalDocuments": {
+              "tests/nodejs/audit/family-survey.md": [
+                "R-001"
+              ],
+              "tests/nodejs/audit/worker-contracts.md": [
+                "R-013"
+              ]
+            },
+            "reason": "Original shorthand workers.md references did not own the immutable R-001/R-013 standalone definitions; actual qualified source definitions verified."
+          }
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "afb6c45add4c97521d02f0521f67e2a1126757520831c0de9e499cc079dd528f"
+        },
+        "latestAcceptedEngine": 200,
+        "acceptedEngineEvidence": {
+          "path": "tests/nodejs/outline/engine200-build-result.json",
+          "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5"
+        },
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current202links source200real compiler prerequisites/accepted build separately from201TTYcallback and202ordinary SEA source. New source remains uncompiled; exact qualified links and documentation updates do not close API findings."
       }
     ]
   }

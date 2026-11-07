@@ -5,8 +5,10 @@
       "NI-001"
     ],
     "additionalDocuments": {
-      "tests/nodejs/audit/workers.md": [
-        "R-001",
+      "tests/nodejs/audit/family-survey.md": [
+        "R-001"
+      ],
+      "tests/nodejs/audit/worker-contracts.md": [
         "R-013"
       ]
     },
