@@ -27,8 +27,10 @@ const ETIMEDOUT = 110;
 // timer period to every first exec of a lazy file. Only an EAGAIN with no
 // fetch in flight falls back to this plain delay between retries.
 const EXEC_TARGET_EAGAIN_RETRY_DELAY_MS = 10;
-// Backstop only: a fetch normally settles long before this. It exists so a
-// stuck fetch fails exec with a truthful timeout instead of hanging it.
+// Budget for EAGAIN while no deferred fetch is in flight. A fetch in flight is
+// bounded by the transport's own deadlines (`withLazyResponse` in
+// `vfs/lazy-fetch-bytes.ts`), so a clock here could only misjudge a slow but
+// healthy fetch, such as one still preparing, as stuck.
 const EXEC_TARGET_EAGAIN_MAX_WAIT_MS = 30_000;
 
 /** What the kernel decides a retained target is (`kernel_exec_target_admit`). */
@@ -51,7 +53,6 @@ export interface PreparedExecKernel {
    *  is; see `CentralizedKernelWorker.deferredFetchSettled`. Optional: a
    *  kernel without a deferred pipe never returns EAGAIN for one. */
   deferredFetchSettled?(): Promise<void> | null;
-  deferredFetchProgressAt?(): number | undefined;
 }
 
 export class PreparedExecTargetError extends Error {
@@ -153,7 +154,7 @@ export async function readPreparedExecTarget(
     }
 
     let offset = 0n;
-    let eagainSince: number | undefined;
+    let idleEagainMs = 0;
     while (offset < size) {
       const start = Number(offset);
       const capacity = Math.min(
@@ -174,11 +175,12 @@ export async function readPreparedExecTarget(
       if (read === -EAGAIN) {
         // The deferred bytes are still being fetched: retry the same offset
         // once the fetch has settled.
-        eagainSince ??= performance.now();
         const inFlight = kernel.deferredFetchSettled?.() ?? null;
-        const progressAt = inFlight === null ? undefined : kernel.deferredFetchProgressAt?.();
-        const eagainWaitedMs = performance.now() - Math.max(eagainSince, progressAt ?? eagainSince);
-        if (eagainWaitedMs >= EXEC_TARGET_EAGAIN_MAX_WAIT_MS) {
+        if (inFlight !== null) {
+          await inFlight;
+          continue;
+        }
+        if (idleEagainMs >= EXEC_TARGET_EAGAIN_MAX_WAIT_MS) {
           throw new PreparedExecTargetError(
             "prepared exec target read did not become available after "
               + `${EXEC_TARGET_EAGAIN_MAX_WAIT_MS}ms of retrying a transient `
@@ -186,12 +188,9 @@ export async function readPreparedExecTarget(
             ETIMEDOUT,
           );
         }
-        await waitForDeferredFetch(
-          inFlight,
-          inFlight === null
-            ? EXEC_TARGET_EAGAIN_RETRY_DELAY_MS
-            : EXEC_TARGET_EAGAIN_MAX_WAIT_MS - eagainWaitedMs,
-        );
+        const started = performance.now();
+        await waitForDeferredFetch(null, EXEC_TARGET_EAGAIN_RETRY_DELAY_MS);
+        idleEagainMs += performance.now() - started;
         continue;
       }
       if (read < 0) {

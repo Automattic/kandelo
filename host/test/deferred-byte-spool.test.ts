@@ -221,10 +221,9 @@ describe("positioned deferred byte staging", () => {
     },
   );
 
-  it.each(["inspection", "ranged inspection", "prepared exec"])("allows a long %s read despite wall-clock changes while bytes progress", async kind => {
+  it.each(["inspection", "ranged inspection", "prepared exec"])("waits out a long in-flight fetch in a %s read despite wall-clock changes", async kind => {
     vi.useFakeTimers();
     let available = false;
-    let progressAt: number | undefined;
     let finish!: () => void;
     const pending = new Promise<void>(resolve => { finish = resolve; });
     const native = {
@@ -243,8 +242,8 @@ describe("positioned deferred byte staging", () => {
         return 1;
       },
       execTargetCancel: vi.fn(() => 0),
+      // The transport bounds a fetch in flight, so the reader keeps no clock.
       deferredFetchSettled: () => pending,
-      deferredFetchProgressAt: () => progressAt,
     };
     let failure: unknown;
     let bytes: Uint8Array | null | undefined;
@@ -255,9 +254,8 @@ describe("positioned deferred byte staging", () => {
         : readPreparedExecTarget(native, 1, 2);
     const result = operation.then(value => { bytes = value; }, error => { failure = error; });
     await vi.advanceTimersByTimeAsync(20_000);
-    progressAt = performance.now();
     vi.setSystemTime(Date.now() + 24 * 60 * 60 * 1000);
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
     expect(failure).toBeUndefined();
     available = true;
     finish();
@@ -268,7 +266,7 @@ describe("positioned deferred byte staging", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each(["inspection", "ranged inspection", "prepared exec"])("keeps the %s backstop without deferred byte progress", async kind => {
+  it.each(["inspection", "ranged inspection", "prepared exec"])("keeps the %s backstop for EAGAIN with no fetch in flight", async kind => {
     vi.useFakeTimers();
     const native = {
       rootfsReadFile: () => { throw Object.assign(new Error("pending"), { errno: 11 }); },
@@ -276,8 +274,7 @@ describe("positioned deferred byte staging", () => {
       execTargetSize: () => 1n,
       execTargetRead: () => -11,
       execTargetCancel: vi.fn(() => 0),
-      deferredFetchSettled: () => new Promise<void>(() => {}),
-      deferredFetchProgressAt: () => undefined,
+      deferredFetchSettled: () => null,
     };
     let failure: unknown;
     const operation = kind === "inspection"
@@ -286,11 +283,78 @@ describe("positioned deferred byte staging", () => {
         ? readNamespaceFileRangeWithRetry(native as unknown as Parameters<typeof readNamespaceFileRangeWithRetry>[0], "/stuck", 0, 1)
         : readPreparedExecTarget(native, 1, 2);
     const result = operation.catch(error => { failure = error; });
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(failure).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1_100);
     expect(failure).toMatchObject({ errno: 110 });
     await result;
     expect(native.execTargetCancel).toHaveBeenCalledTimes(kind === "prepared exec" ? 1 : 0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    ["inspection", "without a spool"], ["inspection", "with a spool"],
+    ["prepared exec", "without a spool"], ["prepared exec", "with a spool"],
+  ] as const)("does not charge slow transport preparation to a %s read %s", async (kind, staging) => {
+    vi.useFakeTimers();
+    const spool = staging === "with a spool" ? new DeferredByteSpool(memoryStorage()) : undefined;
+    let provider!: ReturnType<typeof buildRootfsLazyWiring>["deferredProvider"];
+    let settled!: ReturnType<typeof buildRootfsLazyWiring>["whenFetchSettles"];
+    const native = {
+      configureRootfsOverlay: (
+        value: typeof provider, _prefixes: string[], _nosuid: boolean,
+        _length: number, _read: unknown, wait: typeof settled,
+      ) => { provider = value; settled = wait; },
+      rootfsLazyResourceLimits: () => new Map([["programs/slow.wasm", 3]]),
+      rootfsTransportMetadataBudget: () => new StorageMemoryBudget(),
+    } as unknown as Parameters<typeof configureRootfsOverlayFromImage>[0];
+    // Preparation outlasts the transfer idle timeout, the way repository
+    // resolution of a large image does on Node.
+    const prepare = vi.fn((_address: string) => new Promise<void>(resolve => setTimeout(resolve, 45_000)));
+    const fetcher = vi.fn(async () => new Response(new Uint8Array([4, 5, 6])));
+    configureRootfsOverlayFromImage(native, {
+      imageRead: () => 0,
+      imageLength: 0,
+      foreignPrefixes: [],
+      nosuid: true,
+      lazyFetcher: fetcher,
+      lazyPrepare: prepare,
+      lazyUrlMap: { "programs/slow.wasm": "repo/programs/slow.wasm" },
+      deferredByteSpool: spool,
+    })();
+    const readThrough = (destination: Uint8Array): number => provider("programs/slow.wasm", 0n, destination);
+    const kernel = {
+      rootfsReadFile: () => {
+        const bytes = new Uint8Array(3);
+        const count = readThrough(bytes);
+        if (count < 0) throw Object.assign(new Error("deferred"), { errno: -count });
+        return bytes.subarray(0, count);
+      },
+      execTargetSize: () => 3n,
+      execTargetRead: (_owner: number, _target: number, _offset: bigint, destination: Uint8Array) => readThrough(destination),
+      execTargetCancel: vi.fn(() => 0),
+      deferredFetchSettled: () => settled(),
+    };
+    try {
+      let failure: unknown;
+      let bytes: Uint8Array | null | undefined;
+      const operation = kind === "inspection"
+        ? readRootfsFileWithRetry(kernel as unknown as Parameters<typeof readRootfsFileWithRetry>[0], "/usr/bin/slow")
+        : readPreparedExecTarget(kernel, 1, 2);
+      const result = operation.then(value => { bytes = value; }, error => { failure = error; });
+      await vi.advanceTimersByTimeAsync(44_000);
+      expect(failure).toBeUndefined();
+      expect(fetcher).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await result;
+      expect(failure).toBeUndefined();
+      expect(bytes).toEqual(new Uint8Array([4, 5, 6]));
+      expect(prepare).toHaveBeenCalledWith("repo/programs/slow.wasm", expect.any(AbortSignal));
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await spool?.close();
+    }
   });
 
   it("allocates from received bytes and relocates growing retries without damaging other slots", async () => {

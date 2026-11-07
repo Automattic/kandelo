@@ -1260,6 +1260,14 @@ shas)`, where `revision` is read from `build.toml` (overlaid onto the
 parsed `DepsManifest` at load time) and defaults to 1 when
 `build.toml` omits it or is absent.
 
+Recursive directory hashing skips children named exactly `.git`, whether
+they are worktree/submodule pointer files or standalone Git directories.
+Git administrative paths and history therefore do not split identical source
+trees across checkouts. All other entries, including `.gitignore`, remain
+inputs: local source edits, additions, and deletions still invalidate the key.
+This applies to both Default and SourceOnly hashing, including nested
+submodules. Trees without `.git` children retain their existing digests.
+
 Source-only cache keys add the stable semantic marker
 `kandelo-source-provider-v1\0` followed by `archive\0`, `repository\0`, or
 `dev-shell\0`. They never hash whether the provider spelling was explicit.

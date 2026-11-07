@@ -73,6 +73,7 @@ import {
 } from "./vfs";
 import * as rootImage from "./vfs/root-image-facts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
+import type { LazyPrepare } from "./vfs/lazy-fetch-bytes";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
 import { NodeImageReader } from "./vfs/node-image-reader";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
@@ -251,6 +252,7 @@ let vfsExecIO: PlatformIO | null = null;
  *  in `buildVirtualPlatformIO`. Handed to the kernel's rootfs in `handleInit`
  *  as the fetcher behind `host_fetch_deferred`. */
 let rootfsLazyFetcher: LazyFetch | undefined;
+let rootfsLazyPrepare: LazyPrepare | undefined;
 let deferredByteSpool: DeferredByteSpool | undefined;
 /** Canonical mount points of the host filesystems mounted beneath the
  *  kernel-owned `/` (session-seed trees, extra host mounts). Handed to the
@@ -842,11 +844,22 @@ async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
 // --- Init ---
 
 /**
- * Serve the image's lazy assets from repository trees. Every image URL is
- * resolved in one checkpoint started on the first lazy read in a separate
- * worker. Programs that never read these assets need no resolver preparation;
- * a lazy read awaits its pinned path before reading bytes.
+ * Resolve a repository-served address before the transport fetches it. Every
+ * image URL is resolved in one checkpoint started on the first lazy read in a
+ * separate worker, which can take longer than the transfer idle timeout on a
+ * large image. Running it as the transport's preparation step keeps that local
+ * work out of the transfer's deadline; see `LazyPrepare`.
  * A failed URL rethrows only when fetched, so latent bad assets do not abort boot.
+ */
+async function prepareRepoLazyAsset(url: string): Promise<void> {
+  if (/^https?:\/\//.test(url) || url.startsWith("file://")) return;
+  await repoLazyAssetResolver!.resolve(url);
+}
+
+/**
+ * Serve the image's lazy assets from repository trees. Programs that never
+ * read these assets need no resolver preparation; a lazy read awaits its
+ * pinned path (already settled by `prepareRepoLazyAsset`) before reading bytes.
  */
 function createRepoLazyAssetFetcher(): LazyFetch {
   return async (url, init) => {
@@ -922,11 +935,13 @@ async function buildVirtualPlatformIO(
     ...extras,
   ];
   if (rootImage.record(rootfsMountSpec ?? DEFAULT_MOUNT_SPEC)) {
+    const fromRepository = rootfsLazyAssets === undefined && rootfsLazyAssetSources === undefined;
     rootfsLazyFetcher = rootfsLazyAssets !== undefined
       ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
       : rootfsLazyAssetSources !== undefined
       ? createClosedLazyAssetSourceFetcher(rootfsLazyAssetSources)
       : createRepoLazyAssetFetcher();
+    rootfsLazyPrepare = fromRepository ? prepareRepoLazyAsset : undefined;
   }
   // The host mounts are exactly the sibling filesystems the kernel's rootfs
   // must not claim; hand their prefixes over so they keep resolving through
@@ -967,6 +982,7 @@ function cleanupSessionDir(): Promise<void> {
     vfsExecIO = null;
     rootImage.forget();
     rootfsLazyFetcher = undefined;
+    rootfsLazyPrepare = undefined;
     rootfsForeignPrefixes = [];
   });
   return sessionCleanup;
@@ -1234,6 +1250,7 @@ async function handleInit(msg: InitMessage) {
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),
       lazyFetcher: rootfsLazyFetcher,
+      lazyPrepare: rootfsLazyPrepare,
       deferredByteSpool,
       lazyUrlBase: msg.rootfsLazyUrlBase,
       lazyAssetDirectory: msg.rootfsLazyAssetDirectory,
