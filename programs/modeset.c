@@ -6,8 +6,8 @@
  * only deliberate omissions are (a) the dithering noise PNG (would
  * add an asset dep for negligible visual gain — banding is well below
  * 8-bit perception on dark backgrounds) and (b) the MANUAL_FILTERING
- * advect fallback (we always have `OES_texture_float_linear` via the
- * host's WebGL2 context, so the simple path always wins).
+ * advect fallback (startup requires half-float linear filtering, so the
+ * simple path always wins).
  *
  * Pipeline per frame:
  *   1. drain_mouse        — read PS/2 packets from /dev/input/mice
@@ -33,6 +33,7 @@
 
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 #include <drm/drm.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_mode.h>
@@ -50,14 +51,6 @@
 #include <xf86drmMode.h>
 
 #define FAIL(msg) do { perror(msg); return 1; } while (0)
-
-/* GLES2 headers don't carry the WebGL2 internal-format / type
- * constants Pavel needs. The host bridge forwards the GLenum value
- * verbatim to the underlying WebGL2 context, so the value is what
- * matters. */
-#define GL_RGBA16F                 0x881A
-#define GL_HALF_FLOAT              0x140B
-#define GL_COLOR_ATTACHMENT0_EXT   0x8CE0   /* same as GL_COLOR_ATTACHMENT0 */
 
 /* Canvas dims: the scanout buffers are sized to the connector mode the
  * CRTC is set to (a CRTC scans exactly its mode's active area, so a
@@ -470,6 +463,30 @@ static const char display_fs_src[] =
  * GL helpers
  * ──────────────────────────────────────────────────────────────────── */
 
+static void require_fluid_extensions(void) {
+    static const char *required[] = {
+        "GL_OES_texture_half_float",
+        "GL_OES_texture_half_float_linear",
+        "GL_EXT_color_buffer_half_float",
+    };
+    const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
+    for (size_t i = 0; i < sizeof required / sizeof *required; i++) {
+        const char *found = extensions;
+        size_t length = strlen(required[i]);
+        while (found && (found = strstr(found, required[i])) != NULL) {
+            if ((found == extensions || found[-1] == ' ') &&
+                    (found[length] == ' ' || found[length] == '\0')) break;
+            found += length;
+        }
+        /* The solver stores signed velocity/pressure; substituting RGBA8
+         * would clamp its state rather than provide a working fallback. */
+        if (!found) {
+            fprintf(stderr, "fluid simulation requires %s\n", required[i]);
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
 static GLuint compile_shader(GLenum type, const char *src, const char *label) {
     GLuint sh = glCreateShader(type);
     const char *p = src;
@@ -478,10 +495,11 @@ static GLuint compile_shader(GLenum type, const char *src, const char *label) {
     GLint ok = 0;
     glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
     if (!ok) {
-        char log[1024];
+        char log[1024] = {0};
         GLsizei len = 0;
         glGetShaderInfoLog(sh, sizeof log, &len, log);
         fprintf(stderr, "shader compile FAILED [%s]: %s\n", label, log);
+        exit(EXIT_FAILURE);
     }
     return sh;
 }
@@ -498,7 +516,7 @@ static GLuint compile_fragment_with_defines(const char *src,
     char *combined = (char *)malloc(dlen + slen + 1);
     if (!combined) {
         fprintf(stderr, "compile_fragment_with_defines: OOM\n");
-        return 0;
+        exit(EXIT_FAILURE);
     }
     if (dlen) memcpy(combined, defines, dlen);
     memcpy(combined + dlen, src, slen + 1);
@@ -516,10 +534,11 @@ static GLuint link_program(GLuint vs, GLuint fs, const char *label) {
     GLint ok = 0;
     glGetProgramiv(p, GL_LINK_STATUS, &ok);
     if (!ok) {
-        char log[1024];
+        char log[1024] = {0};
         GLsizei len = 0;
         glGetProgramInfoLog(p, sizeof log, &len, log);
         fprintf(stderr, "program link FAILED [%s]: %s\n", label, log);
+        exit(EXIT_FAILURE);
     }
     return p;
 }
@@ -593,15 +612,25 @@ static RT create_rt(int w, int h, GLint filter) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
+    /* This is a GLES2 context: OES half-float textures use an unsized RGBA
+     * internal format and HALF_FLOAT_OES. WebGL2's sized RGBA16F/HALF_FLOAT
+     * triple is invalid here even when the renderer uses that storage. */
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_HALF_FLOAT_OES, NULL);
+    GLenum error = glGetError();
+    if (error != GL_NO_ERROR) {
+        fprintf(stderr, "fluid texture allocation failed: GL error 0x%x (size %dx%d)\n",
+                error, w, h);
+        exit(EXIT_FAILURE);
+    }
 
     glGenFramebuffers(1, &r.fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, r.fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0_EXT,
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                            GL_TEXTURE_2D, r.tex, 0);
     GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (status != GL_FRAMEBUFFER_COMPLETE) {
         fprintf(stderr, "FBO incomplete: 0x%x (size %dx%d)\n", status, w, h);
+        exit(EXIT_FAILURE);
     }
     /* Per the GL spec, glTexImage2D(NULL) leaves texture content
      * undefined. Without this clear, pressure/curl/divergence start
@@ -1247,17 +1276,25 @@ static int kms_pageflip_wait(void) {
  * main: EGL + GLES2 setup, build sim, run loop
  * ──────────────────────────────────────────────────────────────────── */
 
+static int egl_startup_failure(const char *operation, int status) {
+    fprintf(stderr, "fluid: %s failed (EGL error 0x%x)\n", operation, eglGetError());
+    return status;
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
 
     int mouse = open("/dev/input/mice", O_RDONLY | O_NONBLOCK);
     if (mouse < 0) FAIL("open /dev/input/mice");
 
+    fprintf(stderr, "fluid: initializing KMS\n");
     if (setup_kms() != 0) return 8;
 
+    fprintf(stderr, "fluid: initializing EGL\n");
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (dpy == EGL_NO_DISPLAY) return egl_startup_failure("eglGetDisplay", 1);
     EGLint maj = 0, min = 0;
-    if (!eglInitialize(dpy, &maj, &min)) return 1;
+    if (!eglInitialize(dpy, &maj, &min)) return egl_startup_failure("eglInitialize", 1);
 
     EGLint cfg_attribs[] = {
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
@@ -1267,20 +1304,25 @@ int main(int argc, char **argv) {
     };
     EGLConfig cfg;
     EGLint num_cfg = 0;
-    if (!eglChooseConfig(dpy, cfg_attribs, &cfg, 1, &num_cfg) || num_cfg < 1) return 2;
-    if (!eglBindAPI(EGL_OPENGL_ES_API)) return 3;
+    if (!eglChooseConfig(dpy, cfg_attribs, &cfg, 1, &num_cfg) || num_cfg < 1)
+        return egl_startup_failure("eglChooseConfig (requires a window config)", 2);
+    if (!eglBindAPI(EGL_OPENGL_ES_API)) return egl_startup_failure("eglBindAPI", 3);
 
     EGLint ctx_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
     EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attribs);
-    if (ctx == EGL_NO_CONTEXT) return 4;
+    if (ctx == EGL_NO_CONTEXT) return egl_startup_failure("eglCreateContext", 4);
 
     EGLSurface surf = eglCreateWindowSurface(dpy, cfg, 0, 0);
-    if (surf == EGL_NO_SURFACE) return 5;
-    if (!eglMakeCurrent(dpy, surf, surf, ctx)) return 6;
+    if (surf == EGL_NO_SURFACE) return egl_startup_failure("eglCreateWindowSurface", 5);
+    if (!eglMakeCurrent(dpy, surf, surf, ctx)) return egl_startup_failure("eglMakeCurrent", 6);
 
+    require_fluid_extensions();
     setup_quad();
+    fprintf(stderr, "fluid: compiling simulation shaders\n");
     build_programs();
+    fprintf(stderr, "fluid: allocating half-float render targets\n");
     setup_pipeline();
+    fprintf(stderr, "fluid: simulation ready\n");
 
     float aspect = (float)CANVAS_W / (float)CANVAS_H;
     /* Pavel's correctRadius: multiply by aspect when > 1. */

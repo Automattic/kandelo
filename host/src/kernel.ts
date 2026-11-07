@@ -96,7 +96,6 @@ import { allocateMultisampleTarget, resolveSurfaceMultisample } from "./webgl/mu
 import { bindForeignTexture, bindGpuForeignTexture, gpuSourceStorage } from "./webgl/foreign-texture";
 import { imageWriteAudit, noteStorageWrite, storageWrites } from "./webgl/image-writes";
 import {
-  blitGpuScanout,
   blitPresentTarget,
   ensurePresentTarget,
 } from "./webgl/present-target";
@@ -4246,7 +4245,14 @@ export class WasmPosixKernel {
           ) {
             if (!this.kms.gamma(crtc_id) && !scanoutNeedsReduction(gpu)) {
               this.#releaseColorStage(crtc_id);
-              blitGpuScanout(b, gpu, fb.width, fb.height, fb.x, fb.y);
+              // WHY: immediate flips and vblank must expose the same opaque
+              // primary plane. Copying BO alpha directly reveals the page
+              // between pumps; the checked helper changes only canvas alpha
+              // and restores native state without consuming the owner's errors.
+              this.withRestoredGraphicsState(gpu.gl, () => {
+                if (!drawGpuScanout(gpu, fb.width, fb.height, fb.x, fb.y))
+                  throw new Error("GPU scanout blit failed");
+              });
             } else {
               try {
                 this.#presentThroughStage(crtc_id, b.gl, gpu.fbo, fb.x, fb.y, fb.width, fb.height, true, true,

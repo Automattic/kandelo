@@ -164,6 +164,43 @@ describe("CRTC color stage in the host presentation paths", () => {
     expect(lutUploads(corrected2), "the LUT is uploaded once per change, not per present").toBe(1);
   });
 
+  it("presents immediate flips and vblank with identical opaque RGB, without changing BO alpha or native state", () => {
+    const r = pixelGl(2, 2);
+    const h = kernelHarness(r.gl, { width: 2, height: 2 });
+    h.kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 128, cmdbufLen: 0 });
+    const binding = h.kernel.gl.get(PID)!;
+    binding.gl = r.gl; binding.canvas = h.canvas as HTMLCanvasElement;
+    binding.claimedKmsCrtc = 1;
+    // Every channel and BO row differs. Alpha must survive in the shared BO
+    // for image consumers even though neither scanout route may expose it.
+    const pixels = [10, 20, 30, 0, 40, 50, 60, 7, 70, 80, 90, 128, 100, 110, 120, 254];
+    const fbo = r.framebuffer(2, 2, pixels);
+    const storage = { gl: r.gl, fbo, w: 2, h: 2 };
+    const boPixels = r.textures.get(r.framebuffers.get(fbo)!.color!)!.data;
+    vi.spyOn(h.kernel.gl, "gpuBo").mockReturnValue(storage as any);
+    h.imports.env.host_kms_addfb(PID, 9, 99, 2, 2, 0x34325258, 8, 0);
+    r.state.set(0x0c23, [true, false, true, false]);
+    r.state.set(0x0c22, [0.25, 0.5, 0.75, 0.125]);
+    const before = r.snapshot();
+    const expected = [70, 80, 90, 255, 100, 110, 120, 255, 10, 20, 30, 255, 40, 50, 60, 255];
+    for (let frame = 0; frame < 2; frame++) {
+      r.screen.data.fill(0);
+      h.imports.env.host_kms_set_fb(PID, 1, 9, 0, 0, 2, 2);
+      expect([...r.screen.data], "the immediate page flip is opaque, not just the later pump").toEqual(expected);
+      expect(r.state).toEqual(before);
+      expect([...boPixels]).toEqual(pixels);
+      r.screen.data.fill(0);
+      expect(getKernelGraphicsAccess(h.kernel).gpuScanout(
+        h.kernel.kms.currentFb(1)!, h.canvas as any, true, 1, frame + 1,
+      )).toEqual({ direct: true });
+      expect([...r.screen.data], "vblank presents exactly the same RGB and alpha").toEqual(expected);
+      expect(r.state).toEqual(before);
+      expect([...boPixels]).toEqual(pixels);
+    }
+    expect(r.counts.readPixels).toBe(0);
+    expect(hasNativeRepair(r.gl)).toBe(false);
+  });
+
   it.each([
     // 2x1 BO pixels (one row): 10-bit words, or half floats R,G,B,A.
     ["RGB10_A2", 0x8059, [0xff, 0x03, 0x08, 0x00, 0x02, 0x00, 0xf0, 0xff], [255, 128, 0, 0, 0, 255]],

@@ -27108,3 +27108,23 @@ it is active. Cleanup succeeds and source/binary checks remain valid. Cause
 is unverified; diagnostic metadata now compiles in R786, but has not supplied
 a new visible observation. No physical application timing or native-feel claim
 follows, and the maintainer's visible session has been released.
+
+## B1 preview rendering investigation (2026-11-07)
+
+The maintainer confirmed Sway, ScummVM and Freeciv were usable on the
+normal-built preview at port 7776, but reported blank fluid simulation and
+flickering GLSL playground output. These reports are not full acceptance.
+The fluid consumer incorrectly used GLES3 texture enums in its GLES2
+context; its corrected half-float calls preserve solver precision, and
+startup now reports failed capabilities, shader compilation and allocation
+instead of continuing with incomplete targets. The original zero-present
+startup still requires diagnosis on rebuilt artifacts.
+
+Immediate KMS GPU flips now share vblank's checked primary-plane presentation:
+RGB is preserved, displayed alpha is opaque, and BO alpha and native
+selectors are restored. An actual host-import regression fails on the
+parent implementation with leaked alpha and passes with the correction;
+217 focused host cases pass (R797). A constant-shader browser control passed
+on the old preview, so it does not prove the original flicker resolved.
+Normal rebuild and original-demo checks remain required. ABI versions
+remain program 56, unpublished host 3, GL 17 and fork 21.
