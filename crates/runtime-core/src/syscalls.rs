@@ -174,7 +174,7 @@ pub enum VirtualDevice {
     /// `crate::kmsg_device`). host_handle -13.
     Kmsg,
     /// `/dev/console` — the machine's console, write-only in effect: a
-    /// program's bytes go to the host's output stream and nowhere else (see
+    /// program's bytes go to the host's stderr stream and nowhere else (see
     /// `crate::console_device`). host_handle -14.
     Console,
 }
@@ -273,7 +273,7 @@ const fn makedev(major: u32, minor: u32) -> u64 {
 /// Check if a resolved path is a virtual device node.
 ///
 /// `/dev/console` is the machine's console (see `crate::console_device`):
-/// writes reach the host's output stream, reads find end-of-file. It is not
+/// writes reach the host's stderr stream, reads find end-of-file. It is not
 /// an alias of `/dev/null`.
 fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
     match path {
@@ -6281,7 +6281,10 @@ pub fn sys_write(
                         // rather than accepted and discarded.
                         VirtualDevice::Kmsg => Err(Errno::EACCES),
                         // The program's own bytes, to the host and nowhere
-                        // else: the console module cannot reach the ring.
+                        // else. This arm is where console writes are kept
+                        // out of the ring; the behavioural test
+                        // `writes_arriving_at_dev_console_never_enter_the_ring`
+                        // guards it, and no source lint does.
                         VirtualDevice::Console => crate::console_device::write(host, buf),
                         _ => Ok(buf.len()), // Null, Zero, Urandom, Mice: discard
                     };
@@ -57347,14 +57350,16 @@ impl HostIO for RelSymlinkMock {
         }
 
         #[test]
-        fn kernel_ring_records_do_not_reach_the_hosts_stdout_stream() {
-            // The host's stdout is attributed to whichever process the kernel
-            // is serving, and programs and test harnesses read it as bytes
-            // the program wrote. A ring record echoed there would appear in
-            // an unrelated program's output (a SIGPIPE death logs one), so
-            // until the host offers a console channel of its own the ring is
-            // not echoed. See docs/architecture.md, "Host-runtime failure
-            // diagnostics are kept separate from guest file descriptor 2".
+        fn kernel_ring_records_do_not_reach_the_hosts_output_streams() {
+            // The host's stdout and stderr are attributed to whichever
+            // process the kernel is serving, and programs and test harnesses
+            // read them as bytes the program wrote. A ring record echoed
+            // there would appear in an unrelated program's output (a SIGPIPE
+            // death logs one), so until the host offers a console channel of
+            // its own the ring is not echoed. The same principle as
+            // docs/architecture.md, "Host-runtime failure diagnostics are
+            // kept separate from guest file descriptor 2", which concerns
+            // host diagnostics rather than ring records.
             let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let mut host = MockHostIO::new();
             host.clock_time = (3, 0);
@@ -57362,15 +57367,19 @@ impl HostIO for RelSymlinkMock {
                 klog(&mut host, KlogSite::ProcessKilledBySignal, format_args!("process 5 killed by signal 13 (SIGPIPE)"))
             });
             assert!(seq.is_some(), "the record was written to the ring");
-            assert!(host.host_writes.is_empty(), "and was not written to the host's output");
+            assert!(host.host_writes.is_empty(), "and was not written to the host's stdout or stderr");
         }
 
         #[test]
         fn the_console_write_path_has_no_access_to_the_ring() {
-            // Structural, not behavioral: the module that carries a program's
-            // bytes to the console must not name the ring or either writer of
-            // it, so a later edit cannot route console writes into it without
-            // first editing this test and answering for it.
+            // A source lint, not a type-level guarantee: the module that
+            // carries a program's bytes to the console must not name the ring
+            // or either writer of it, so a later edit cannot route console
+            // writes into it without first editing this test.
+            // This lint covers this file only. The routing decision is the
+            // `Console` arm of `sys_write`; a source lint over one match arm
+            // would pass a `klog` added beside it, so that arm is guarded by
+            // `writes_arriving_at_dev_console_never_enter_the_ring` instead.
             let source = include_str!("console_device.rs");
             let code = source.split("#[cfg(test)]").next().unwrap();
             let code: String = code
