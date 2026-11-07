@@ -1,0 +1,84 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/timer-contracts.md",
+    "findingIds": [
+      "A-011"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "async",
+      "processes",
+      "streams",
+      "workers"
+    ],
+    "scope": "Actual Promise timer option/getter/error/listener/reaction and shared timer insertion prerequisites. No full scheduler/native loop/async or finding closure."
+  },
+  "sourceImplemented": [
+    "Consume complete unchanged6390byte pinned timers/promises module via real normal factory and bootstrap/custom-promisify routes",
+    "Separate actual Timeout construction from insertion; classic and Promise timer callers each schedule once",
+    "Capture genuine monotonic origin separately from duration and truncate delay before actual native scheduler call",
+    "Supply genuine shared validators/errors/primordials/cancellation and lazy EventTarget resistant listener symbol",
+    "Preserve original option errors, listener cleanup reactions, interval yield/return/abort and Scheduler receiver semantics; compose over unchanged226child collector"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-timers227-source-r1/report.json",
+    "sha256": "7f18cb5feb6c3d3de7c998cc97bf79345672e5cb5d52cc8ea43c923f5a4f83e7",
+    "guardedInputs": 889,
+    "scope": "Actual shared timer construction/insertion/cancellation plus complete pinned timers/promises options/listener/interval/Scheduler behavior over explicit native scheduler/clock/EventTarget/value/Promise/frame dependencies. Current child collector preserved; no guest/fourhost/fullasync acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-timers227-affected-r1.json",
+    "sha256": "14aa9ae75f4883b3581b3aa4b26f351c25bce045de3c93a08338473425994b71",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-timers227-source-r1/report.json",
+    "sha256": "7f18cb5feb6c3d3de7c998cc97bf79345672e5cb5d52cc8ea43c923f5a4f83e7",
+    "nativeDependentGroups": 18,
+    "unchangedUpstreamFiles": 4,
+    "upstreamSubjectsPassed": 8,
+    "upstreamSkipMarkers": 0,
+    "unrefExitSubjectsPassed": 2,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "engineCXXChanged": false,
+    "scope": "Fresh current shared timer/bootstrap and full pinned Promise module over explicit genuine native clock/handles/ref/Promise/EventTarget/VM and existing AsyncResource/ALS dependencies. No guest scheduling/frame/GC/fatal/Worker/fourhost proof."
+  },
+  "sealedEvidence": {
+    "report": ".context/timers-promises-owner-agent/report.json",
+    "sha256": "9fb06aa6f65ef0f5351c733ef7fbe12822a32e2ed8aa2f7b5a2af52814978d98",
+    "reusedEvidence": true,
+    "scope": "Final18native matches vs11/18baseline,4unchangedfiles/8subjects and2unref-exit subjects. All41direct runtime attempts across versions retained, including reproduced insertion defect and fixture setup failures;0toolchaincompiles."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/timers-promises-owner-agent/report.json",
+      "sha256": "9fb06aa6f65ef0f5351c733ef7fbe12822a32e2ed8aa2f7b5a2af52814978d98",
+      "scope": "Original baseline7mismatches, r1wrong delay-as-origin and actual deadline17/18regression, corrected-source fixture missing primordial factory causing1group+4upstream exits preserved. No production assertion/algorithm weakening."
+    },
+    {
+      "report": ".context/timers-promises-review-agent/REPORT.md",
+      "sha256": "6dc63cc0f9ec6ae69e84b36880e20162b0f8f76bc9e350bbfa86bc2a8894986a",
+      "scope": "Independent full pinned source/actual clock/provider signature/construction/classic/Promise/lazy-symbol ownership review;1501members verified, no new P1/P2. No tests/builds or guest approval."
+    }
+  ],
+  "remaining": [
+    "Actual identified guest scheduler/native provider/ref/process-exit/callback/GC/OOM/fatal and Promise/context/ALS/Worker behavior",
+    "Other timer/async-hook/event-loop/resource lifecycle/interval/clock/public API findings and full native loop integration",
+    "Shared cross-module classic timer/runtime regression and Node/Chromium/Firefox/WebKit identified-artifact conformance",
+    "Complete A-011 and broader async surface; no finding/family closure or new platform exclusion"
+  ],
+  "at": "2026-11-07T16:50:46.888861+00:00",
+  "recipeRevision": 227,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

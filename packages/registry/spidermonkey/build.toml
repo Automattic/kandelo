@@ -1,5 +1,8 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/timers-promises-platform-adapter.js",
+  "third_party/node-core/timers-promises-sources.json",
+  "third_party/node-core/upstream/timers-promises/lib/timers/promises.js",
   "third_party/node-core/child-exec-platform-adapter.js",
   "third_party/node-core/child-exec-sources.json",
   "packages/registry/spidermonkey/patches/0164-test-pattern-options.patch",
@@ -743,4 +746,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 226
+revision = 227

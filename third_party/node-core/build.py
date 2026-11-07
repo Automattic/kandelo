@@ -2290,6 +2290,18 @@ if datagram_adapter.count('/* NODE_DATAGRAM_MODULES */') != 1:
     raise ValueError('Review datagram module marker')
 bundle += datagram_adapter.replace('/* NODE_DATAGRAM_MODULES */', ',\n'.join(datagram_factories)).rstrip('\n') + '\n'
 
+timer_promises_spec = json.loads((root / 'timers-promises-sources.json').read_text())
+if timer_promises_spec['version'] != manifest['version'] or timer_promises_spec['commit'] != manifest['commit']:
+    raise ValueError('Promise timers must retain the audited Node target')
+timer_promises_source = timer_promises_spec['source']
+timer_promises_raw = (root / timer_promises_source['path']).read_bytes()
+if hashlib.sha256(timer_promises_raw).hexdigest() != timer_promises_source['sha256']:
+    raise ValueError('Promise timer source identity mismatch')
+timer_promises_adapter = (root / 'timers-promises-platform-adapter.js').read_text()
+if timer_promises_adapter.count('/* NODE_TIMERS_PROMISES */') != 1:
+    raise ValueError('Review Promise timer module marker')
+bundle += timer_promises_adapter.replace('/* NODE_TIMERS_PROMISES */', timer_promises_raw.decode()).rstrip('\n') + '\n'
+
 dest = root / 'node-core.js'
 if '--check' in sys.argv:
     if dest.read_text() != bundle:

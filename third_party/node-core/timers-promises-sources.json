@@ -1,0 +1,10 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "source": {
+    "path": "upstream/timers-promises/lib/timers/promises.js",
+    "upstreamPath": "lib/timers/promises.js",
+    "sha256": "7352c2b6c168ab8003e6715de5e648a31a6fd74f4559d60e9f82a8dfb5f7ae2c"
+  },
+  "scope": "Complete unchanged public Promise timer algorithms over real existing timer insertion/async/event-target owners; native/four-host conformance remains distinct."
+}

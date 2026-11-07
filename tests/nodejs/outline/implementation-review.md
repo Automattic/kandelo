@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source227 consumes complete pinned timers/promises over corrected shared construction/insertion and real abort owners;18current groups/8upstreamsubjects/2unref exits pass. Guest and full async/four-host behavior remain open.
+See [source scope](timers-promises-integration.md).
+
 Source226 integrates actual pinned child exec/execFile collectors and custom promises;23current native-dependent groups/8upstream subjects pass. Lower guest spawn and full process/four-host behavior remain open.
 See [source scope](child-exec-integration.md).
 

@@ -2342,7 +2342,9 @@ const string_decoder = _createNodeStringDecoder({
 // timers module
 // ============================================================
 
+let _nodeTimerInternals;
 const timers = (() => {
+    const { MathTrunc } = _createNodePrimordials();
     const refed = Symbol('refed'), token = Symbol('timer'), id = Symbol('timerId');
     const known = new Map();
     let nextId = 1, warnedNegative = false, warnedNaN = false;
@@ -2369,7 +2371,7 @@ const timers = (() => {
         }
         return after;
     }
-    function activate(timer, start = os.timerNow()) {
+    function activate(timer, start = os.timerNow(), msecs = timer._idleTimeout) {
         if (timer._idleTimeout < 0 || !timer._onTimeout) return;
         os.clearTimeout(timer[token]);
         if (timer._destroyed) {
@@ -2394,7 +2396,7 @@ const timers = (() => {
                     _nodeAsyncPlatform.retireTask(timer);
                 }
             }
-        }, timer._idleTimeout, !!timer[refed], start);
+        }, MathTrunc(msecs), !!timer[refed], start);
     }
     class Timeout {
         constructor(callback, after, args, repeat, isRefed) {
@@ -2403,7 +2405,6 @@ const timers = (() => {
             this._repeat = repeat ? this._idleTimeout : null;
             this._destroyed = false; this[refed] = isRefed; this[id] = nextId++;
             _nodeAsyncPlatform.createTask(this, 'Timeout');
-            activate(this);
         }
         refresh() { activate(this); return this; }
         unref() { if (this[refed]) { this[refed] = false; os.timerRef(this[token], false); } return this; }
@@ -2417,10 +2418,14 @@ const timers = (() => {
         [Symbol.dispose]() { clearTimeout(this); }
     }
     function setTimeout(callback, after, ...args) {
-        validateCallback(callback); return new Timeout(callback, after, args.length ? args : undefined, false, true);
+        validateCallback(callback);
+        const timeout = new Timeout(callback, after, args.length ? args : undefined, false, true);
+        activate(timeout); return timeout;
     }
     function setInterval(callback, repeat, ...args) {
-        validateCallback(callback); return new Timeout(callback, repeat, args.length ? args : undefined, true, true);
+        validateCallback(callback);
+        const timeout = new Timeout(callback, repeat, args.length ? args : undefined, true, true);
+        activate(timeout); return timeout;
     }
     function clearTimeout(timer) {
         if (typeof timer === 'number' || typeof timer === 'string') timer = known.get(String(timer));
@@ -2465,6 +2470,8 @@ const timers = (() => {
     }
     for (const key of ['close', Symbol.toPrimitive, Symbol.dispose]) Object.defineProperty(Timeout.prototype, key, { enumerable: true });
     Object.defineProperty(Immediate.prototype, Symbol.dispose, { enumerable: true });
+    _nodeTimerInternals = { Timeout, Immediate,
+        insert(timer, msecs) { activate(timer, os.timerNow(), msecs); } };
     const api = { setTimeout, clearTimeout, setImmediate, clearImmediate, setInterval, clearInterval };
     Object.defineProperty(api, 'promises', { enumerable: true, configurable: true, get() { return timersPromises; } });
     const custom = Symbol.for('nodejs.util.promisify.custom');
@@ -2491,75 +2498,10 @@ Object.assign(fs.promises, _nodeTempdirPlatform.promises);
 _installNodeProcessExceptions({ process, values: _nodeValues,
     async: _nodeAsyncPlatform, timers, native: _nodeNative });
 
-const timersPromises = (() => {
-    function invalid(name, expected) {
-        const error = new TypeError('The "' + name + '" argument must be of type ' + expected);
-        error.code = 'ERR_INVALID_ARG_TYPE'; return error;
-    }
-    function validate(delay, options, checkDelay) {
-        if (checkDelay && delay !== undefined && typeof delay !== 'number') throw invalid('delay', 'number');
-        if (options === null || typeof options !== 'object' || Array.isArray(options)) throw invalid('options', 'Object');
-        const { signal, ref = true } = options;
-        _nodeEventPlatform.validators.validateAbortSignal(signal, 'options.signal');
-        if (typeof ref !== 'boolean') throw invalid('options.ref', 'boolean');
-        return { signal, ref };
-    }
-    function aborted(signal) {
-        const error = new Error('The operation was aborted', { cause: signal.reason });
-        error.name = 'AbortError'; error.code = 'ABORT_ERR'; return error;
-    }
-    function schedule(immediate, delay, value, options) {
-        return new Promise((resolve, reject) => {
-            const { signal, ref } = validate(delay, options, !immediate);
-            if (signal?.aborted) { reject(aborted(signal)); return; }
-            let abortDisposable;
-            const cleanup = () => abortDisposable?.[_nodeDispose]();
-            const finish = () => { cleanup(); resolve(value); };
-            const handle = immediate ? timers.setImmediate(finish) : timers.setTimeout(finish, delay);
-            if (!ref) handle.unref();
-            function cancel() {
-                if (immediate) timers.clearImmediate(handle); else timers.clearTimeout(handle);
-                cleanup(); reject(aborted(signal));
-            }
-            if (signal) abortDisposable = _nodeEventPlatform.addAbortListener(signal, cancel);
-        });
-    }
-    function setTimeout(delay, value, options = {}) { return schedule(false, delay, value, options); }
-    function setImmediate(value, options = {}) { return schedule(true, undefined, value, options); }
-    async function* setInterval(delay, value, options = {}) {
-        const { signal, ref } = validate(delay, options, true);
-        if (signal?.aborted) throw aborted(signal);
-        let count = 0, wake;
-        const handle = timers.setInterval(() => {
-            count++;
-            if (wake) { const resolve = wake; wake = undefined; resolve(); }
-        }, delay);
-        if (!ref) handle.unref();
-        const cancel = () => { timers.clearInterval(handle); if (wake) { const resolve = wake; wake = undefined; resolve(); } };
-        let abortDisposable;
-        try {
-            if (signal) abortDisposable = _nodeEventPlatform.addAbortListener(signal, cancel);
-            while (!signal?.aborted) {
-                if (count === 0) await new Promise(resolve => { wake = resolve; });
-                // Values already delivered by the interval remain queued while
-                // the consumer is paused, including when abort races delivery.
-                while (count > 0) { count--; yield value; }
-            }
-            throw aborted(signal);
-        } finally { timers.clearInterval(handle); abortDisposable?.[_nodeDispose](); }
-    }
-    const schedulerBrand = Symbol('kScheduler');
-    class Scheduler {
-        constructor() { const error = new TypeError('Illegal constructor'); error.code = 'ERR_ILLEGAL_CONSTRUCTOR'; throw error; }
-        yield() { checkScheduler(this); return setImmediate(); }
-        wait(delay, options) { checkScheduler(this); return setTimeout(delay, undefined, options); }
-    }
-    function checkScheduler(value) {
-        if (!value[schedulerBrand]) { const error = new TypeError('Value of "this" must be of type Scheduler'); error.code = 'ERR_INVALID_THIS'; throw error; }
-    }
-    const scheduler = Object.create(Scheduler.prototype); scheduler[schedulerBrand] = true;
-    return { setTimeout, setImmediate, setInterval, scheduler };
-})();
+const timersPromises = _createNodeTimersPromisesPlatform({
+    internals: _nodeTimerInternals, timers, values: _nodeValues,
+    getEventTarget: () => _nodeEventPlatform.require('internal/event_target'),
+});
 
 _nodeEventPlatform = _createNodeEventPlatform({
     native: _nodeNative, events, inspection: _nodeInspection, process, timers, values: _nodeValues, clone: _nodeClonePlatform,
