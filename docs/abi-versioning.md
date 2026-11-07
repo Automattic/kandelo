@@ -45,6 +45,70 @@ metadata inspection, not execution of candidate code. Native allocation tests
 cover a large unrelated body and many unrelated bodies; they do not establish
 application startup performance or total artifact-admission memory bounds.
 
+## Affirmed prior program contracts
+
+A program carries one 32-byte digest in its `kandelo.abi.contract` custom
+section, hashed over `ABI_VERSION` plus every section
+`abi_surfaces.program` lists, and admission compares it for equality. A hash
+cannot be partially matched, so a program built one additive field ago differs
+from the current contract exactly as much as one built against a contradictory
+contract. **The strictness is in the stamp, not in the comparison**, and
+loosening the comparison alone would discard the signal rather than refine it.
+
+`abi/accepted-program-digests.json` records prior contracts the current epoch
+still admits beside its own. A contract joins that record only when **both**
+of two independent conditions hold — never one:
+
+1. **The classifier finds only additions.** `cargo xtask
+   check-program-baseline` runs the snapshot compatibility classifier
+   (`tools/xtask/src/dump_abi.rs`) over the *program-surface view* of the
+   prior snapshot and of the current one: the epoch, the program-surface
+   section list, and those sections' values, which is exactly the data the
+   digest hashes. Kernel-host sections are absent from both sides rather than
+   filtered out of the answer, so no kernel-host change can appear in it, and
+   a section that moved out of the program surface appears as a removal, which
+   stays breaking.
+2. **A named author has affirmed the behavior.** A change can be additive in
+   schema and breaking in behavior: a new errno an existing syscall can now
+   return, a reserved flag bit gaining meaning, a `repr(C)` struct gaining a
+   field. No classifier can see any of those, so each entry carries an
+   `affirmation` — author, date, and prose saying why the addition is safe for
+   programs that predate it.
+
+### Why this is not a list of digests someone pasted in
+
+`docs/persistent-program-compatibility.md` forbids working around the exact
+gate "by accepting arbitrary old digests or giving new requirements the old
+identity". Nothing in this record is arbitrary, and the mechanism is built so
+that a reviewer does not have to take that on trust:
+
+- Each entry's digest is **recomputed**, by the same function that stamps
+  programs, from a stored copy of the snapshot that produced it under
+  `abi/accepted-program-snapshots/<digest>.json`. The file is found *by* the
+  digest, so a hand-written digest names no snapshot; and the digest is
+  checked against the snapshot's content, so a snapshot edited to suit no
+  longer hashes to its digest. An entry also records the Git revision the
+  stored snapshot came from, for a reviewer to diff against history.
+- The classifier's verdict is **re-derived on every build**, not remembered.
+  An entry that was an additive predecessor last month and is contradicted by
+  today's program surface fails the build today, and the refusal names the
+  breaking item.
+- An entry recorded under an epoch `ABI_VERSION` has since replaced is
+  **superseded**: reported by name, and absent from the accepted set. A digest
+  binds the epoch, and bumping it is a deliberate declaration that every
+  program is rebuilt, so this mechanism relaxes digest equality *within* one
+  epoch and never relaxes the epoch check itself. The epoch is checked
+  separately, by `expectedAbi` in `host/src/constants.ts`.
+
+Anything outside the accepted set still fails hard, and an unstamped legacy
+guest still warns once and passes, exactly as before. `cargo xtask dump-abi`
+renders the authorized set into
+`host/src/generated/abi.ts` as `ACCEPTED_PROGRAM_CONTRACT_DIGESTS`, which both
+the Node.js and browser hosts read from the same shared admission code in
+`host/src/constants.ts`, so neither host can admit a program the other
+refuses. Because that constant is generated, `scripts/check-abi-version.sh`
+fails on drift between the record and what the host compiles against.
+
 ## ABI staging rollout status
 
 The checked-in ABI staging foundation is local and inert. It defines strict,

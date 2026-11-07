@@ -5,6 +5,13 @@ export const ABI_VERSION = 56 as const;
 export const ABI_CUSTOM_SECTION = "wasm-posix-abi" as const;
 export const ABI_KERNEL_EXPORT = "__abi_version" as const;
 
+/* Affirmed prior program contracts this epoch admits beside the
+* running kernel's own digest (abi/accepted-program-digests.json).
+* Derived, never hand-written: each entry is recomputed from a stored
+* prior snapshot and authorized by a recorded author affirmation. */
+export const ACCEPTED_PROGRAM_CONTRACT_DIGESTS: readonly string[] = [
+];
+
 /* Kandelo's reference instant: the first Kandelo commit's time. Stamped
 * on image files when no time is supplied; never 0, which software
 * reads as "no timestamp" (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). */

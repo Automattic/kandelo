@@ -47,11 +47,7 @@ pub(crate) fn program_contract_digest(
         ));
     }
 
-    let program = program_sections(object)?;
-    let mut surface = serde_json::Map::new();
-    for name in program {
-        surface.insert(name.to_owned(), object[name].clone());
-    }
+    let surface = program_surface_sections(object)?;
     let mut canonical = Vec::new();
     write_canonical_json(&Value::Object(surface), &mut canonical)?;
     let mut hasher = Sha256::new();
@@ -60,6 +56,47 @@ pub(crate) fn program_contract_digest(
     hasher.update((canonical.len() as u64).to_le_bytes());
     hasher.update(&canonical);
     Ok(hasher.finalize().into())
+}
+
+/// Exactly the sections the digest hashes, by name.
+fn program_surface_sections(
+    object: &serde_json::Map<String, Value>,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let mut surface = serde_json::Map::new();
+    for name in program_sections(object)? {
+        surface.insert(name.to_owned(), object[name].clone());
+    }
+    Ok(surface)
+}
+
+/// A snapshot reduced to the program surface: the epoch, the program-surface
+/// section list, and those sections' values. Kernel-host sections are gone.
+///
+/// WHY this is a snapshot rather than a bare section map: it is itself a valid
+/// snapshot — `program_contract_digest` of a view equals the digest of the
+/// snapshot it came from — so the compatibility classifier can be run over it
+/// directly. Asking "did this change compatibly?" over the view asks it of
+/// exactly the data the digest stamps: a kernel-host change cannot show up in
+/// the answer because it is not present, and a section that moved out of the
+/// program surface shows up as a removal rather than as a reshuffled list.
+pub(crate) fn program_surface_view(snapshot: &Value) -> Result<Value, String> {
+    let object = snapshot.as_object().ok_or("must have a JSON object root")?;
+    let version = object
+        .get("abi_version")
+        .cloned()
+        .ok_or("must contain an unsigned u32 abi_version")?;
+    let surface = program_surface_sections(object)?;
+    let mut view = serde_json::Map::new();
+    view.insert("abi_version".to_owned(), version);
+    view.insert(
+        SURFACES_KEY.to_owned(),
+        serde_json::json!({
+            "program": surface.keys().cloned().collect::<Vec<String>>(),
+            "kernel_host": Vec::<String>::new(),
+        }),
+    );
+    view.extend(surface);
+    Ok(Value::Object(view))
 }
 
 /// The program-surface section names, after proving `abi_surfaces` assigns
@@ -149,7 +186,7 @@ fn write_canonical_json(value: &serde_json::Value, output: &mut Vec<u8>) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::{local_abi_contract_digest, program_contract_digest};
+    use super::{local_abi_contract_digest, program_contract_digest, program_surface_view};
     use serde_json::{Value, json};
     use std::path::PathBuf;
 
@@ -209,6 +246,27 @@ mod tests {
         assert_ne!(digest(&baseline), digest(&program_changed));
         assert_eq!(digest(&baseline), digest(&kernel_host_changed));
         assert_ne!(digest(&baseline), digest(&next_epoch));
+    }
+
+    /// The view and the stamp must cover the same data, or a compatibility
+    /// question asked of the view would be answered about something else.
+    #[test]
+    fn a_program_surface_view_stamps_identically_to_its_snapshot() {
+        let snapshot: Value =
+            serde_json::from_str(&std::fs::read_to_string(crate::repo_root().join("abi/snapshot.json")).unwrap())
+                .unwrap();
+        let view = program_surface_view(&snapshot).unwrap();
+        assert_eq!(digest(&snapshot), digest(&view));
+
+        // The view drops kernel-host sections outright rather than ignoring
+        // them, so no kernel-host change can reach a question asked of it.
+        let view_keys: Vec<&String> = view.as_object().unwrap().keys().collect();
+        assert!(!view_keys.iter().any(|key| key.as_str() == "kernel_exports"));
+        assert!(view["abi_surfaces"]["kernel_host"].as_array().unwrap().is_empty());
+        assert_eq!(
+            view["abi_surfaces"]["program"],
+            snapshot["abi_surfaces"]["program"],
+        );
     }
 
     #[test]

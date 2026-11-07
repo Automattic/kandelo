@@ -74,6 +74,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
+mod accepted_program_digests;
 mod vfs_image_describe;
 mod vfs_products;
 mod archive_extract_member;

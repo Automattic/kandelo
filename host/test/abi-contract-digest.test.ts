@@ -4,6 +4,7 @@ import {
   describeWasmArtifactPolicyFailures,
   readWasmCustomSectionPayload,
 } from "../src/constants";
+import { ACCEPTED_PROGRAM_CONTRACT_DIGESTS } from "../src/generated/abi";
 
 // ---------------------------------------------------------------------------
 // Minimal wasm builder: a module exporting `__abi_version` returning `abi`,
@@ -139,5 +140,107 @@ describe("describeWasmArtifactPolicyFailures ABI-contract-digest gate", () => {
     const wasm = buildAbiModule({ abi: 44, contractDigest: digestOf(0x99) });
     const failures = describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 44 });
     expect(failures).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Affirmed prior contracts. The digest is one hash over the whole program
+// surface, so admission cannot partially match it; a program built one
+// additive field ago differs exactly as much as one built against a
+// contradictory contract. The accepted set carries the difference the digest
+// cannot: prior contracts that `cargo xtask check-program-baseline` has
+// re-derived as additive predecessors of the current surface AND that a named
+// author has affirmed are behaviorally safe. See
+// abi/accepted-program-digests.json and tools/xtask/src/
+// accepted_program_digests.rs.
+// ---------------------------------------------------------------------------
+
+describe("describeWasmArtifactPolicyFailures affirmed prior contracts", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("admits a stamped guest whose digest is in the accepted set", () => {
+    const kernelDigest = digestOf(0x11);
+    const priorDigest = digestOf(0x22);
+    const wasm = buildAbiModule({ abi: 44, contractDigest: priorDigest });
+    const failures = describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: 44,
+      expectedAbiContractDigest: kernelDigest,
+      affirmedPriorAbiContractDigests: [priorDigest],
+    });
+    expect(failures).toEqual([]);
+  });
+
+  it("still fails hard for a stamped guest outside the accepted set", () => {
+    const wasm = buildAbiModule({ abi: 44, contractDigest: digestOf(0x22) });
+    const failures = describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: 44,
+      expectedAbiContractDigest: digestOf(0x11),
+      // A non-empty set, so this is membership failing rather than an
+      // absent mechanism.
+      affirmedPriorAbiContractDigests: [digestOf(0x33), digestOf(0x44)],
+    });
+    expect(failures.some((f) => f.includes("ABI contract digest mismatch"))).toBe(true);
+  });
+
+  it("still warns once and passes for an unstamped legacy guest", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const wasm = buildAbiModule({ abi: 44 }); // no contract section
+    const failures = describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: 44,
+      expectedAbiContractDigest: digestOf(0x11),
+      affirmedPriorAbiContractDigests: [digestOf(0x22)],
+    });
+    expect(failures).toEqual([]);
+    // Warn-once is per worker process, so a later unstamped guest in this
+    // same process legitimately produces no second line.
+    if (warn.mock.calls.length > 0) {
+      expect(String(warn.mock.calls[0]?.[0])).toContain("kandelo.abi.contract");
+    }
+  });
+
+  it("does not accept a prior contract whose ABI epoch differs", () => {
+    // The accepted set relaxes digest equality within one epoch. The epoch
+    // itself is checked separately and is not relaxed: a digest binds
+    // ABI_VERSION, and a bump declares every program must be rebuilt.
+    const priorDigest = digestOf(0x22);
+    const wasm = buildAbiModule({ abi: 43, contractDigest: priorDigest });
+    const failures = describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: 44,
+      expectedAbiContractDigest: digestOf(0x11),
+      affirmedPriorAbiContractDigests: [priorDigest],
+    });
+    expect(failures).toEqual(["ABI 43, expected 44"]);
+  });
+
+  it("admits every digest the generated accepted set carries", () => {
+    // Vacuous while this epoch accepts none, and load-bearing as soon as one
+    // is affirmed: these are exactly the digests admission must accept with
+    // no option passed, so the default comes from the generated constant
+    // rather than from a caller.
+    for (const hex of ACCEPTED_PROGRAM_CONTRACT_DIGESTS) {
+      expect(hex).toMatch(/^[0-9a-f]{64}$/);
+      const digest = new Uint8Array(
+        hex.match(/../g)!.map((pair) => Number.parseInt(pair, 16)),
+      );
+      const wasm = buildAbiModule({ abi: 44, contractDigest: digest });
+      expect(
+        describeWasmArtifactPolicyFailures(wasm, {
+          expectedAbi: 44,
+          expectedAbiContractDigest: digestOf(0x11),
+        }),
+      ).toEqual([]);
+    }
+  });
+
+  it("accepts nothing beyond the current digest when the set is empty", () => {
+    const wasm = buildAbiModule({ abi: 44, contractDigest: digestOf(0x22) });
+    const failures = describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: 44,
+      expectedAbiContractDigest: digestOf(0x11),
+      affirmedPriorAbiContractDigests: [],
+    });
+    expect(failures.some((f) => f.includes("ABI contract digest mismatch"))).toBe(true);
   });
 });

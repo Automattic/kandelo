@@ -27,7 +27,9 @@ fn validate(bytes: &[u8], version: u32, digest: &[u8; 32]) -> Result<(), String>
     Ok(())
 }
 
-pub(crate) fn check(repo: &Path) -> Result<[u8; 32], String> {
+pub(crate) fn check(
+    repo: &Path,
+) -> Result<Vec<crate::accepted_program_digests::Verdict>, String> {
     let version = wasm_posix_shared::ABI_VERSION;
     let digest = crate::local_abi_identity::local_abi_contract_digest(repo, version)?;
     require_current_snapshot(&digest, &crate::dump_abi::source_program_contract_digest()?)?;
@@ -40,7 +42,12 @@ pub(crate) fn check(repo: &Path) -> Result<[u8; 32], String> {
         return Err("supported program baseline exceeds 4096 bytes".to_owned());
     }
     validate(&bytes, version, &digest)?;
-    Ok(digest)
+    // The accepted-digest record is part of what a program may be admitted
+    // against, so every gate that enforces the baseline re-derives it too: a
+    // recorded prior contract that today's program surface contradicts must
+    // fail the build, not quietly keep being admitted.
+    // Returned rather than printed so a caller decides what to report.
+    crate::accepted_program_digests::authorize(repo)
 }
 
 fn require_current_snapshot(snapshot: &[u8; 32], source: &[u8; 32]) -> Result<(), String> {
@@ -54,8 +61,11 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     if !args.is_empty() {
         return Err("usage: xtask check-program-baseline".to_owned());
     }
-    check(&crate::repo_root())?;
+    let accepted = check(&crate::repo_root())?;
     println!("abi: supported program baseline is unchanged");
+    for verdict in &accepted {
+        println!("{}", verdict.describe());
+    }
     Ok(())
 }
 

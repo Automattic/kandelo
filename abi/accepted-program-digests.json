@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "accepted": [
+    {
+      "program_contract_digest": "1358eca04a8d33fa5bcc27d1c672af2f6e7aaf466a398ad598d991347b1a4415",
+      "abi_version": 55,
+      "source_revision": "a1f8442718",
+      "affirmation": {
+        "author": "Brandon Payton <brandon.payton@a8c.com>",
+        "date": "2026-11-06",
+        "behavioral_safety": "At ABI 55 Kandelo syscall 304 (klogctl) was absent from the declared contract: it had no entry in syscalls, syscall_arg_descriptors or channel_scalar_contract, and the kernel answered every call with a fake success, returning 0 and leaving the caller's buffer untouched. An ABI-55 program could therefore observe nothing from syscall 304 but that 0, and nothing a program can usefully depend on. Giving 304 real kernel-message-ring behavior is safe for those programs because the only prior behavior it replaces is that fake success."
+      }
+    }
+  ]
+}

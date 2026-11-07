@@ -102,7 +102,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let spawn_header = render_spawn_contract_header();
     let soundcard_header = render_soundcard_header();
     let clipboard_header = render_clipboard_header();
-    let ts_module = render_ts_module();
+    let ts_module = render_ts_module(&crate::accepted_program_digests::accepted_digests(
+        &repo_root(),
+    )?);
     let host_imports = render_host_imports_file();
 
     let out = out_path.unwrap_or_else(|| repo_root().join("abi/snapshot.json"));
@@ -1466,7 +1468,9 @@ fn oss_capability_constants() -> Vec<(&'static str, u32)> {
 /// Keep this generated from the same Rust/shared source of truth as
 /// `abi/snapshot.json`; otherwise the host can silently drift on channel
 /// offsets or syscall numbers even when the ABI check is green.
-fn render_ts_module() -> String {
+/// `accepted` is the affirmed prior program contracts
+/// (`crate::accepted_program_digests`), lowercase hex and sorted.
+fn render_ts_module(accepted: &[String]) -> String {
     use shared::channel;
 
     let mut out = String::new();
@@ -1485,6 +1489,26 @@ fn render_ts_module() -> String {
         "export const ABI_KERNEL_EXPORT = {:?} as const;\n\n",
         shared::abi::ABI_KERNEL_EXPORT
     ));
+
+    // Prior program contracts this epoch still admits, beside the running
+    // kernel's own digest. Each one is derived here, on every regeneration,
+    // from a stored copy of the snapshot that produced it AND from an author's
+    // recorded affirmation that the addition is behaviorally safe; see
+    // abi/accepted-program-digests.json and tools/xtask/src/
+    // accepted_program_digests.rs. An epoch bump empties this list: a digest
+    // binds ABI_VERSION, so a contract recorded under a replaced epoch is
+    // superseded rather than accepted.
+    out.push_str(
+        "/* Affirmed prior program contracts this epoch admits beside the\n\
+         * running kernel's own digest (abi/accepted-program-digests.json).\n\
+         * Derived, never hand-written: each entry is recomputed from a stored\n\
+         * prior snapshot and authorized by a recorded author affirmation. */\n\
+         export const ACCEPTED_PROGRAM_CONTRACT_DIGESTS: readonly string[] = [\n",
+    );
+    for digest in accepted {
+        out.push_str(&format!("  {digest:?},\n"));
+    }
+    out.push_str("];\n\n");
 
     // Not an ABI value: the one fixed instant image builders use when a fixed
     // time is needed (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). It
@@ -4393,6 +4417,15 @@ fn declared_snapshot_sections() -> Sections {
     s.add(KernelHost, "export_deny", export_deny());
 
     s
+}
+
+/// The current program surface, from source rather than from the committed
+/// snapshot, as a snapshot in its own right. See
+/// [`crate::local_abi_identity::program_surface_view`].
+pub(crate) fn source_program_surface_view() -> Result<Value, String> {
+    crate::local_abi_identity::program_surface_view(&Value::Object(
+        declared_snapshot_sections().finish().into_iter().collect(),
+    ))
 }
 
 pub(crate) fn source_program_contract_digest() -> Result<[u8; 32], String> {
@@ -8017,9 +8050,9 @@ fn render_deterministic(root: &JsonMap) -> String {
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
-struct CompatReport {
-    additive: Vec<String>,
-    breaking: Vec<String>,
+pub(crate) struct CompatReport {
+    pub(crate) additive: Vec<String>,
+    pub(crate) breaking: Vec<String>,
     /// The top-level section of each `breaking` item, index for index.
     breaking_sections: Vec<String>,
 }
@@ -8068,7 +8101,7 @@ fn compat_verdict(old: &Value, new: &Value, report: &CompatReport) -> Result<(),
     Ok(())
 }
 
-fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, String> {
+pub(crate) fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, String> {
     let old_obj = old
         .as_object()
         .ok_or("old ABI snapshot root must be a JSON object")?;
@@ -8603,7 +8636,7 @@ mod tests {
             !lines.iter().any(|l| l.starts_with("__wpk_fork_")),
             "fork imports are added by instrumentation after linking"
         );
-        assert!(super::render_ts_module().contains("export const HOST_ENV_IMPORTS"));
+        assert!(super::render_ts_module(&[]).contains("export const HOST_ENV_IMPORTS"));
     }
     use super::*;
     use serde_json::json;
@@ -8646,7 +8679,7 @@ mod tests {
 
     #[test]
     fn generated_typescript_contains_pathconf_names_and_required_outputs() {
-        let rendered = render_ts_module();
+        let rendered = render_ts_module(&[]);
         assert!(rendered.contains("export const SCHED_AFFINITY_MASK_SIZE = 4 as const;"));
         assert!(rendered.contains("export const PROCESS_SNAPSHOT_COUNT_BYTES = 4 as const;"));
         assert!(rendered.contains("export const PROCESS_SNAPSHOT_RECORDS_OFFSET = 4 as const;"));
@@ -8922,7 +8955,7 @@ mod tests {
             }),
         );
 
-        let rendered = render_ts_module();
+        let rendered = render_ts_module(&[]);
         assert!(rendered.contains("export const POLL_EVENTS = {"));
         assert!(rendered.contains("  POLLNVAL: 32,"));
         assert!(rendered.contains("export const EPOLL_EVENTS = {"));
@@ -8966,7 +8999,7 @@ mod tests {
             );
         }
 
-        let rendered = render_ts_module();
+        let rendered = render_ts_module(&[]);
         for expected in [
             "export const OPEN_FLAGS = {",
             "  O_PATH: 2097152,",
@@ -8999,7 +9032,7 @@ mod tests {
 
     #[test]
     fn generated_channel_scalar_consumers_share_one_contract() {
-        let typescript = render_ts_module();
+        let typescript = render_ts_module(&[]);
         for expected in [
             "export const CHANNEL_SCALAR_DEFAULT_SLOT_KIND = \"i32\" as const;",
             "export const CHANNEL_RESULT_DEFAULT_KIND = \"i32\" as const;",
@@ -9081,7 +9114,7 @@ mod tests {
             assert!(header.contains(expected), "missing generated C: {expected}");
         }
 
-        let typescript = render_ts_module();
+        let typescript = render_ts_module(&[]);
         for expected in [
             "export const CH_REQUEST_FLAGS = 68 as const;",
             "export const CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY = 4 as const;",
@@ -9570,7 +9603,7 @@ mod tests {
                 "wasm-posix-abi"
             ])
         );
-        let rendered = render_ts_module();
+        let rendered = render_ts_module(&[]);
         for expected in [
             "export const WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE = 24 as const;",
             "export const WPK_FORK_MODULE_STATE_FORMAT_SECTION = \"kandelo.wpk_fork.module_state\" as const;",
@@ -9595,7 +9628,7 @@ mod tests {
 
     #[test]
     fn generated_wait_abi_metadata_matches_shared_layouts() {
-        let rendered = render_ts_module();
+        let rendered = render_ts_module(&[]);
         for expected in [
             "export const STRUCT_SIZE_WPK_DRM_MODE_MODEINFO = 68 as const;",
             "export const STRUCT_SIZE_WASM_RUSAGE_WIRE = 144 as const;",
