@@ -1,0 +1,49 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3543,0 +3544,3 @@
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloSignalClass) {
++    return KandeloSignalResourceInfo(cx, unwrapped, args.rval());
++  }
+@@ -4044,0 +4048 @@
++      JS_FN("signalOperation", KandeloNativeSignals, 3, 0),
+@@ -5493,0 +5498 @@
++  bool signalCloseFirst = false;
+@@ -5565 +5570 @@
+-          !KandeloStatWatcherReferences(cx)) {
++          !KandeloStatWatcherReferences(cx) && !KandeloSignalsHaveReferences(cx)) {
+@@ -5599,0 +5605,13 @@
++    if (ranNative >= 0 && !sc->quitting && IsKandeloNodeMode()) {
++      // Legacy socket/child completions resolve actual Promises without a
++      // native callback scope. Finish their jobs before entering signal JS.
++      if ((ranTasks || ranNative) && !KandeloPerformCallbackCheckpoint(cx)) {
++        ranNative = -1;
++      } else if (!sc->quitting) {
++        const int signalProgress = KandeloDispatchSignals(cx, false);
++        ranNative = signalProgress < 0 ? -1 : ranNative + signalProgress;
++      }
++    }
++    // A real signal callback or the preceding checkpoint may request exit.
++    // Do not enter the adapter timer callbacks after that request.
++    if (sc->quitting) return;
+@@ -5674,2 +5692,13 @@
+-    const int ranStatClose = IsKandeloNodeMode()
+-        ? KandeloDispatchStatWatchers(cx, true) : 0;
++    int ranStatClose = 0;
++    if (IsKandeloNodeMode()) {
++      // Rotate actual close owners without entering a second callback after
++      // the first one quits, throws or queues its required checkpoint.
++      if (signalCloseFirst) {
++        ranStatClose = KandeloDispatchSignals(cx, true);
++        if (!ranStatClose) ranStatClose = KandeloDispatchStatWatchers(cx, true);
++      } else {
++        ranStatClose = KandeloDispatchStatWatchers(cx, true);
++        if (!ranStatClose) ranStatClose = KandeloDispatchSignals(cx, true);
++      }
++      if (ranStatClose > 0) signalCloseFirst = !signalCloseFirst;
++    }
+@@ -5689 +5718 @@
+-          !KandeloStatWatcherReferences(cx)) {
++          !KandeloStatWatcherReferences(cx) && !KandeloSignalsHaveReferences(cx)) {
+@@ -16955,0 +16985,2 @@
++    KandeloSignalEnvironmentScope signalEnvironment(cx, glob);
++    if (!signalEnvironment.Ready()) return EXIT_FAILURE;

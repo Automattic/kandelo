@@ -1,0 +1,101 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/process-contracts.md",
+    "findingIds": [
+      "PROC-012"
+    ],
+    "requirementSelectors": [
+      "process signal events, first/last listener lifecycle and actual native subscription",
+      "Actual conditional os.constants.signals values and aliases",
+      "Native async SignalWrap resource/frame/trigger/close lifecycle"
+    ],
+    "relatedDocuments": [
+      "tests/nodejs/audit/processes.md",
+      "tests/nodejs/audit/async-contracts.md",
+      "tests/nodejs/audit/tty-contracts.md"
+    ],
+    "relatedFamilies": [
+      "processes",
+      "async",
+      "terminal",
+      "engine"
+    ],
+    "scope": "Real signal/compiled-constant/loop prerequisites; no complete finding/API/family closure"
+  },
+  "sourceImplemented": [
+    "Main-only real sigaction/nonblocking pipe SignalWrap with actual roots/IDs/claims/ref/close/pending-record and shutdown ownership",
+    "Unchanged pinned first/last listener activation and target-header conditional signal constant generation; no Darwin guest values",
+    "Single legacy Promise checkpoint before signalJS and stopping guard before timers; fair real close providers without additional post-stop callbacks",
+    "Additive current161CJS/TCP/TTY/crypto/SQLite/Locks/Body/X509 source preserved and regenerated normally"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-signals162-source-r1/report.json",
+    "sha256": "6c61fdad71176bb5fdbcc5a8073112d16673248a19eff38bf208f5eaa23d1ebc",
+    "guardedInputs": 757,
+    "scope": "Current signal source/engine composition and normal input/bootstrap/native staging. Target signal values are compiled by the real engine later, not copied from Darwin. No new C++/JSAPI/engine compilation or guest/four-host acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-signals162-affected-r1.json",
+    "sha256": "3a70b66e65f7293876d3ddd03f81e1998b74a50e5b6a0137aaa65c3009d8e94e",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing package-source checks only"
+  },
+  "nativeControls": {
+    "report": ".context/node26-signals162-controls-r1/report.json",
+    "sha256": "f9b1d66658cf0422d6cc5e9546044f5ba1f2fbb73f5dd1f6144c06624e24e3e4",
+    "passed": 5,
+    "failed": 0,
+    "scope": "Actual unchanged portable POSIX signal owner and current pinned listener activation over explicit native Node signal/async/primordial/error dependencies; worker metadata policy control only. No production JSAPI/kernel/guest/four-host validation."
+  },
+  "sealedOwnerEvidence": {
+    "report": ".context/process-signals-agent/REPORT.json",
+    "sha256": "7e0509d8c48cd13d40dc3d76d89600ec06908b196aac6818a9cafcf70da26cdd",
+    "scope": "Original private source149 owner/control/error evidence, production JSAPI uncompiled"
+  },
+  "integrationReview": {
+    "report": ".context/process-signals-integration-review-160/report.json",
+    "sha256": "00a9c5d6725701958021184076f7a83a11a6cd12bf46f81598a2b73a320b337f",
+    "reviewFindings": [
+      "SIG160-001",
+      "SIG160-002",
+      "SIG160-003"
+    ],
+    "scope": "Two source loop fences and conditional handler conflict; no new compile/runtime case"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/process-signals-agent/SEAL.json",
+      "sha256": "cc721e99033cd1f847f7788a84ac6f23adff315567702d087cac8c9b4f97176d",
+      "kind": "original-control-and-compilation-errors",
+      "reason": "Run1setup,run2Darwin macro compile failure,run4dictionary transport mismatch and source inventory failures preserved"
+    },
+    {
+      "report": ".context/node26-signals162-compose.log",
+      "sha256": "a2641778ad5aa24db91eebaab7016ff7fdaaa4b12cfa6083e2c837035148a32f",
+      "kind": "additive-source-composition",
+      "reason": "Original stale signal build.py hunk conflicts with real later module generation; append exact signal section preserving all current blocks"
+    },
+    {
+      "report": ".context/process-signals-integration-review-160/REVIEW.md",
+      "sha256": "153d40d099f334aa9e49615df18646208a85b630d9e69b6acc957b8f684a7dc5",
+      "kind": "retracted-preliminary-language-claim",
+      "reason": "Actual C++20shelloverride disproves constinit false lead; no fabricated compile nonpass"
+    }
+  ],
+  "remaining": [
+    "Production JSAPI/current-engine compilation and actual allowed/denied wrapper/getter/GC/realm/fatal/loop/mask/libc/worker/fork/default-signal behavior on all four hosts",
+    "Existing custom/coverage disposition EBUSY remains implementation gap, including actual signal arguments/flags/restoration ownership",
+    "Complete SignalWrap public resource descriptors/prototype and privateTTY SIGWINCH activation; all nineteen families and runtime conformance incomplete"
+  ],
+  "at": "2026-11-07T00:32:57.073322+00:00",
+  "recipeRevision": 162,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

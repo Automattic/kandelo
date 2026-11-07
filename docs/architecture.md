@@ -6046,6 +6046,20 @@ Production SpiderMonkey/GC/realm/loop and guest recovery remain unvalidated;
 fatal getter/reentry, startup IDs and Promise-policy gaps stay open. See
 [execution and recovery scope](../tests/nodejs/outline/callback-recovery-integration.md).
 
+### Native Node process signal source ownership
+
+The source162 main environment owns real signal dispositions and a
+nonblocking self-pipe. First/last public listener transitions start and close
+native SignalWrap watches; callbacks enter through actual native async scopes.
+Workers do not acquire this main-only authority. Generated conditional signal
+names use the real target header values when compiled.
+
+Legacy Promise completions checkpoint before signal JavaScript, and stopping
+prevents further timer callbacks. Roots, pending records and close retirement
+remain actual native ownership. Existing custom/coverage dispositions still
+conflict with EBUSY; this is an implementation gap. The production JSAPI and
+four-host behavior remain unvalidated. See [signal integration scope](../tests/nodejs/outline/process-signals-integration.md).
+
 ### Node stdio stream source candidate
 
 The Node compatibility source now routes process stdio through

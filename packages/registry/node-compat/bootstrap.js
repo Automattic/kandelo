@@ -1938,16 +1938,7 @@ const fs = (() => {
 // methods below install the actual pinned frontend after shared errors/codecs.
 const nodeOs = {
         constants: {
-            signals: {
-                SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4,
-                SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7, SIGFPE: 8,
-                SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12,
-                SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17,
-                SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21,
-                SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24, SIGXFSZ: 25,
-                SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29,
-                SIGPWR: 30, SIGSYS: 31,
-            },
+            signals: _nodeNative.signalOperation('constants'),
             errno: {
                 EPERM: 1, ENOENT: 2, ESRCH: 3, EINTR: 4,
                 EIO: 5, EBADF: 9, EAGAIN: 11, ENOMEM: 12,
@@ -2208,6 +2199,7 @@ const _nodeDebug = _nodeValues.require('internal/util/debuglog');
 _nodeDebug.initializeDebugEnv(process.env.NODE_DEBUG);
 util.debug = util.debuglog = _nodeDebug.debuglog;
 const _nodeAsyncPlatform = _createNodeAsyncPlatform({ native: _nodeNative, process, inspection: _nodeInspection, values: _nodeValues });
+const _nodeProcessSignals = _createNodeProcessSignals({ process, values: _nodeValues, native: _nodeNative, signals: nodeOs.constants.signals });
 const _nodeDiagnostics = _createNodeDiagnosticsPlatform({ process, values: _nodeValues, types: util.types });
 const _nodeFsTruncation = _createNodeFsTruncation({
     fs, Buffer, process, native: _nodeNative, values: _nodeValues, throwErrno: _throwErrno,

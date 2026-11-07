@@ -1,5 +1,11 @@
 # Broad implementation review
 
+Source162 integrates main-only real process signal ownership and pinned
+listener activation, with legacy Promise/checkpoint and quitting fences.
+757source inputs,14package checks and5bounded native-dependent controls pass.
+See [signal scope](process-signals-integration.md). Production JSAPI/current
+engine/four-host acceptance remains open; handler conflicts are gaps.
+
 Source161 integrates real reopened-terminal output ownership and pinned stdio
 methods with checked/rooted lease/view borrowing.752source inputs and24focused
 checks pass; original native PTY/OFD evidence is separately identified. Master

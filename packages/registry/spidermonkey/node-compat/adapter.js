@@ -380,6 +380,7 @@
             if (typeof native.worker !== 'function') { const error = new Error('Native Worker owner is unavailable'); error.code = 'ERR_NOT_IMPLEMENTED'; throw error; }
             return native.worker(...args);
         },
+        signalOperation(...args) { return native.signalOperation(...args); },
         workerEnvironment,
 
         isInsideNodeModules(frameLimit = 10) {

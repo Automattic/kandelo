@@ -2023,6 +2023,7 @@ if x509_adapter.count('/* NODE_X509_MODULE */') != 1:
 bundle += x509_adapter.replace('/* NODE_X509_MODULE */',
     (root / x509_spec['sources']['lib/internal/crypto/x509.js']['path']).read_text()).rstrip('\n') + '\n'
 
+bundle += '\n' + runpy.run_path(str(root / 'generate-process-signals.py'))['assemble']().rstrip('\n') + '\n'
 dest = root / 'node-core.js'
 if '--check' in sys.argv:
     if dest.read_text() != bundle:

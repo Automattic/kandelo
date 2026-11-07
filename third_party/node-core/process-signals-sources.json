@@ -1,0 +1,35 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/internal/process/signal.js": {
+      "path": "upstream/process-signals/lib/internal/process/signal.js",
+      "sha256": "7f2b9926fe8fb8ef850b72a7e751db6db1708e637d9dfcca815d2c40818d1794"
+    },
+    "src/signal_wrap.cc": {
+      "path": "upstream/process-signals/src/signal_wrap.cc",
+      "sha256": "d7dd9888ebb0fddb0fc5e350c36ea02c018eb71cb410a01c6fecbf5a3a7b5bbe"
+    },
+    "src/handle_wrap.cc": {
+      "path": "upstream/process-signals/src/handle_wrap.cc",
+      "sha256": "20f94b3dc1569f2b90116500dc6c7546b0b92b38f1398281f7b90d5b37f6751b"
+    },
+    "deps/uv/src/unix/signal.c": {
+      "path": "upstream/process-signals/deps/uv/src/unix/signal.c",
+      "sha256": "d6e74aa544ea4adfd57a6fbbf452f831a0fb3030873dd37e65205610174fbc94"
+    },
+    "src/node_constants.cc": {
+      "path": "upstream/process-signals/src/node_constants.cc",
+      "sha256": "9e22dc6f106498895367e01bc02e00b3cedb8beef004b8b11f62f4a961a6891c"
+    },
+    "lib/internal/bootstrap/switches/is_main_thread.js": {
+      "path": "upstream/process-signals/lib/internal/bootstrap/switches/is_main_thread.js",
+      "sha256": "da6d9350b7f2284dfc3613e43fd295c521d51aacc3674d79df76290f74cd55ab"
+    },
+    "lib/internal/bootstrap/switches/is_not_main_thread.js": {
+      "path": "upstream/process-signals/lib/internal/bootstrap/switches/is_not_main_thread.js",
+      "sha256": "dd18ff133e8fe9216687a76b073feb666e1fc886c7f1bb2a36349d839509643d"
+    }
+  },
+  "signalConstantsBodySha256": "f71833cde0bc8e0fdcedb53bb4a852a4bb4286406e3b5fd6a67b34bbb57d4a25"
+}

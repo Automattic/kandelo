@@ -114190,3 +114190,91 @@ module.exports = {
     })(module, module.exports, require, internalBinding, primordials);
     return module.exports;
 }
+
+// Pinned process listener activation over a real main-environment SignalWrap.
+function _createNodeProcessSignals(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const process = platform.process;
+    const native = (...args) => primordials.ReflectApply(platform.native.signalOperation, undefined, args);
+    const NativeSignal = class Signal {
+        constructor() { return native('create', new.target.prototype); }
+        start(signum) { return native('start', this, signum); }
+        stop() { return native('stop', this); }
+        close(callback) { return native('close', this, callback); }
+        ref() { return native('ref', this); }
+        unref() { return native('unref', this); }
+        hasRef() { return native('hasRef', this); }
+        getAsyncId() { return native('getAsyncId', this); }
+    };
+    const module = { exports: {} };
+    const require = name => {
+        if (name === 'internal/errors') return platform.values.errors;
+        throw new primordials.Error('Unresolved process signal dependency: ' + name);
+    };
+    const internalBinding = name => {
+        if (name === 'constants') return { os: { signals: platform.signals } };
+        if (name === 'signal_wrap') return { Signal: NativeSignal };
+        throw new primordials.Error('Unresolved process signal binding: ' + name);
+    };
+    'use strict';
+
+const {
+  FunctionPrototypeBind,
+  SafeMap,
+} = primordials;
+
+const {
+  ErrnoException,
+} = require('internal/errors');
+
+const { signals } = internalBinding('constants').os;
+
+let Signal;
+const signalWraps = new SafeMap();
+
+function isSignal(event) {
+  return typeof event === 'string' && signals[event] !== undefined;
+}
+
+// Detect presence of a listener for the special signal types
+function startListeningIfSignal(type) {
+  if (isSignal(type) && !signalWraps.has(type)) {
+    if (Signal === undefined)
+      Signal = internalBinding('signal_wrap').Signal;
+    const wrap = new Signal();
+
+    wrap.unref();
+
+    wrap.onsignal = FunctionPrototypeBind(process.emit, process, type, type);
+
+    const signum = signals[type];
+    const err = wrap.start(signum);
+    if (err) {
+      wrap.close();
+      throw new ErrnoException(err, 'uv_signal_start');
+    }
+
+    signalWraps.set(type, wrap);
+  }
+}
+
+function stopListeningIfSignal(type) {
+  const wrap = signalWraps.get(type);
+  if (wrap !== undefined && process.listenerCount(type) === 0) {
+    wrap.close();
+    signalWraps.delete(type);
+  }
+}
+
+module.exports = {
+  startListeningIfSignal,
+  stopListeningIfSignal,
+};
+
+    if (platform.native.workerEnvironment === null) {
+        process.on('newListener', module.exports.startListeningIfSignal);
+        process.on('removeListener', module.exports.stopListeningIfSignal);
+    }
+    return module.exports;
+}

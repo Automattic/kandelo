@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "eb871a5c070cec4893c61bef3036285ae2d49600110a7cc46e4832ef30a59b65",
+    "packages/registry/node-compat/bootstrap.js": "31b787208e2a206e4b89d61f1c1f21c4e4dfd91ea664ed9719a5b4d9b0941dc0",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "2b4311bb7771028882a70bcf432bc1ebb887dcce9f75786ba7df896850a01022",
@@ -74,6 +74,7 @@
     "third_party/node-core/process-clock-adapter.js": "f88ea5cdc9890104bf5ff8075a586cad55da60f41bfafebdb9de199748baaeca",
     "third_party/node-core/process-exception-adapter.js": "0bca9492048b73c0d82a875db2073aca28cbe50aa97dd8fcf7ea72b2fe756295",
     "third_party/node-core/process-lifetime-adapter.js": "c10aa4e4f2c8e1701f5fd6d6958cf32ec6870070d46e9f33b7b5ca7947f16fff",
+    "third_party/node-core/process-signals-platform-adapter.js": "f1e3e1dcfbb46b6b0f38638eb9e6390d19023b808238a68dcee8086bc5eeb521",
     "third_party/node-core/process-state-adapter.js": "44aaeb3cb8504ff1f7c7fcf94954d9874e283df6668bc75ebcc78dd7414d8792",
     "third_party/node-core/process-usage-adapter.js": "ad4a506a23019556ac4557a8198c4f0f03e6e360490a2cc82124b577361a22ae",
     "third_party/node-core/query-codecs-platform-adapter.js": "38065f1cb667ab06a30f3a337ad8fbb771882ae28b2b233def2e1705c90a9766",
@@ -2368,7 +2369,7 @@
       "selectedAdapterLiteralOccurrences": [
         {
           "path": "packages/registry/node-compat/bootstrap.js",
-          "line": 2930
+          "line": 2922
         }
       ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",
