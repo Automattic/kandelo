@@ -1,14 +1,14 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T16:11:43.948065+00:00",
-  "sourceHead": "8a4195364d4a050117547cb876648ad4be21d3bc",
-  "recipeRevision": 222,
+  "at": "2026-11-07T16:29:06.049058+00:00",
+  "sourceHead": "1b875621d961b7e3bb6a56423af44f3679a58017",
+  "recipeRevision": 225,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 145,
+    "sourceSliceRecords": 148,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 221
@@ -26,24 +26,24 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 145,
+  "sourceSliceIdentitiesVerified": 148,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "abee8ad5b98af2d2ba004cf64f1dce689c3e06288d08904d926904d15ffb4c01"
+    "sha256": "d82f97c72fdf602216f57e71a4025df2e80c649d1cbd8add632f69e52951d260"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
-  "scope": "Qualified source/evidence identity links only; immutable audit and all remaining finding semantics preserved.",
+  "scope": "Qualified source/evidence links only; original definitions/ranges and unresolved semantics unchanged.",
   "previousIntegrityIdentity": {
-    "sha256": "2f4c83f19c414125a9686bcf26f442b1f28546c3c906db919d98072a3487010e",
-    "sourceHead": "bb9a9567dbbd16a6fc882bc3ba21a251341f9a85",
+    "sha256": "bbb41802c298b45d9bd1792df50707ef6a72cb8c5bd03a75bc54c668407faad1",
+    "sourceHead": "8a4195364d4a050117547cb876648ad4be21d3bc",
     "scope": "Preserved in prior commit and source snapshot history"
   },
   "sourceProgressOverlaysAdded": [
-    "decoder-fatal-state",
-    "tty-output-publication",
-    "buffer-view-json"
+    "test-pattern-cli",
+    "socket-destroy-soon",
+    "sqlite-statement-status"
   ],
   "qualifiedReferenceCorrections": [
     {

@@ -25,7 +25,7 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 145,
+    "sourceSliceRecords": 148,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 221
@@ -4002,6 +4002,14 @@
         {
           "slice": "target-config",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "test-pattern-cli",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/process-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Actual name/skip filter and Node-only UTF8 argument/string publication prerequisites; no full CLI, test runner or individual finding closure.",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4270,6 +4278,14 @@
         {
           "slice": "tcp-agent",
           "relation": "explicit"
+        },
+        {
+          "slice": "socket-destroy-soon",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial real Socket flush-before-destroy and never-acquired-owner finalization. No full Socket/native async shutdown or finding closure.",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4457,6 +4473,14 @@
           "originalProseRefs": [],
           "standaloneDefinitionRecovered": true,
           "scope": "Partial actual Socket receiver/genuine TCP admission/ref/read/write lifecycle prerequisite; not complete Socket/Server/TTY/StreamBase or guest/four-host closure",
+          "closure": false
+        },
+        {
+          "slice": "socket-destroy-soon",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial real Socket flush-before-destroy and never-acquired-owner finalization. No full Socket/native async shutdown or finding closure.",
           "closure": false
         }
       ],
@@ -9931,6 +9955,14 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Partial real isolation:none runner/discovery/import/report prerequisite; default process/CLI/watch/coverage/benchmark and guest/four-host gaps stay open",
           "closure": false
+        },
+        {
+          "slice": "test-pattern-cli",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/testing.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Actual name/skip filter and Node-only UTF8 argument/string publication prerequisites; no full CLI, test runner or individual finding closure.",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -10004,6 +10036,14 @@
           "originalProseRefs": [],
           "standaloneDefinitionRecovered": true,
           "scope": "Partial real isolation:none runner/discovery/import/report prerequisite; default process/CLI/watch/coverage/benchmark and guest/four-host gaps stay open",
+          "closure": false
+        },
+        {
+          "slice": "test-pattern-cli",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/testing.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Actual name/skip filter and Node-only UTF8 argument/string publication prerequisites; no full CLI, test runner or individual finding closure.",
           "closure": false
         }
       ],
@@ -10169,6 +10209,14 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/native-integration.md",
           "scope": "Actual async backup and selected backend identity subset; remaining SQLite findings and runtime obligations remain open",
+          "closure": false
+        },
+        {
+          "slice": "sqlite-statement-status",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Actual SQLite Statement stat/resetStats, native mapping/error and receiver/counter admission prerequisites. No full SQLite or finding closure.",
           "closure": false
         }
       ],
@@ -24103,6 +24151,308 @@
       "auditDocument": "tests/nodejs/audit/values-contracts.md",
       "findingScope": "Partial actual Buffer inherited view/JSON/offset/dispatch behavior, not full overload/codec/backing/realm/GC/guest coverage.",
       "additionalAuditDocuments": {}
+    },
+    "test-pattern-cli": {
+      "document": "tests/nodejs/outline/test-pattern-cli-finding-progress.json",
+      "sha256": "00c11027134852b00eb7bb017732378053fe2f43cdcf4432fc910303a2670430",
+      "recordedRevision": 223,
+      "explicitFindingIds": [
+        "TEST-001",
+        "TEST-003"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-patterns223-source-r1/report.json",
+          "sha256": "f54ffe7df79f5e70419f5a3abd84328852a42659667d243406225dc454fbf6e3",
+          "guardedInputs": 885,
+          "scope": "Actual CLI name/skip vectors, parser/option chronology and current generated Test/Suite filtering. Node-only UTF8 source shares actual owned string/list/eval material; separate34sealed material groups reused. No guest JSAPI/fullCLI/test-runner/fourhost acceptance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-patterns223-affected-r1.json",
+          "sha256": "2298fc88b0150022a3191c4ef98a2de7f14a1b8db28aaa42306ca2d3424533bc",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-patterns223-source-r1/report.json",
+          "sha256": "f54ffe7df79f5e70419f5a3abd84328852a42659667d243406225dc454fbf6e3",
+          "nativeParserMatches": 14,
+          "successfulTreeMatches": 10,
+          "exactRegexpErrorMatches": 1,
+          "focusedChildAttempts": 50,
+          "reusedUtf8MaterialGroups": 34,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Fresh parser/option/current generated test-tree component comparisons. Separate immutable34UTF8material groups reused; none compile new JSAPI or run guest. Exact native async/events/streams/errors/fs/ESM/VM/brands are explicit dependencies."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/test-filter-owner-agent/report.json",
+          "sha256": "6d124d0649c71b3f92762b418614ce919aa3deadf59f62a862876a504997998e",
+          "reusedEvidence": true,
+          "scope": "Original14parser/10tree/1exact error matches,2tiny compile attempts/1failure. Separate UTF8 correction34material groups/68children and3tiny attempts/2failures; original source verification provisioning failure remains preserved alongside later r2 success."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/test-filter-owner-agent/report.json",
+          "sha256": "6d124d0649c71b3f92762b418614ce919aa3deadf59f62a862876a504997998e",
+          "scope": "Original tiny compile/setup failure and Nix entry before planned final syntax checks, original baseline filtering divergence and real negative regexp exits retained."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/node-cli-utf8-correction-agent/report.json",
+          "sha256": "7d0d17dbaf3a9782cd1dceaf754e9b76f9c9511c18bb408e6442b49985ce9129",
+          "scope": "Both tiny correction fixture compilation failures retained; final34material matches do not compile guest JSAPI. Shared locale-dependent publisher defect corrected with no runtime workaround attribution."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/test-filter-review-agent/REPORT.md",
+          "sha256": "c98a26f1784bf2d49295a0c0139672bf24b74678240631229563c22d8dcfd729",
+          "scope": "Independent original publisher review found UTF8 locale issue, corrected by separate immutable capsule."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/node-cli-utf8-review-agent/review.md",
+          "sha256": "9589e7832f66c1d15e5a5cbc65f8205d74259591d0dd8c9336d8cc0e1906e6b9",
+          "scope": "Independent correction source/API/rooting review, no new verified production blocker; no tests/builds."
+        },
+        {
+          "field": "$.preservedNonpasses[4]",
+          "report": ".context/node26-patterns223-source-r1/integration-nonpass.json",
+          "sha256": "bf85210b3017f3221ae1da366579508e9adf6072f4b925271e79f7b8369f5106",
+          "scope": "Initial root recorder used byte offsets for a text selection and stopped after successful additive replay; corrected exact selection verified and only unexecuted tail finalized, no compile attempt or assertion relaxation."
+        },
+        {
+          "field": "$.preservedNonpasses[5]",
+          "report": ".context/node26-patterns223-affected-entry-failure.log",
+          "sha256": "16da99fe54a111e9937158186181064c68b597d371e295a2592f8d28bbb8fe67",
+          "scope": "Initial focused package command used a nonexistent root node_modules/.bin/vitest and failed before any test/compile. Corrected invocation uses existing declared host/node_modules bin; original failure preserved."
+        },
+        {
+          "field": "$.preservedNonpasses[6]",
+          "report": ".context/node26-patterns223-affected-harness-failure.json",
+          "sha256": "4beead7cbf2460b32b891ed1084f6903533c14113696546ecd2bf03d34f4b560",
+          "scope": "Focused package invocation from root collected zero tests and exited1, success=false. Harness error retained; corrected normal invocation runs from host with exact pinned native reference, matching prior recipe."
+        },
+        {
+          "field": "$.preservedNonpasses[7]",
+          "report": ".context/patterns223-source-review-agent/REPORT.md",
+          "sha256": "19880090c546b9620f88a84b4c370357931c81b9c636b8cbb9d9a76dc7fbcd2b",
+          "scope": "Independent root combined source review: exact additive public-abort preservation, original patch/parser/recipe/actual reader linkage; no new verified P1/P2. No runtime/compilers; guest remains unvalidated."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/test-pattern-cli-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/test-pattern-cli-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Store repeatable name/skip patterns in actual native CLI state, with NODE_OPTIONS before CLI and original execArgv spelling",
+        "Publish rooted actual CLI arrays to persistent option-reader state consumed by unchanged pinned regexp/Test/Suite owners",
+        "Reuse genuine SpiderMonkey lossy UTF8 decoder with UniqueTwoByteChars adoption and owned JS string/list publication",
+        "Use same Node-only policy for warning/condition/execArgv/scalar/script metadata and actual eval execution material; preserve generic shell policy and raw path byte authority",
+        "Compose two additive normal engine patches over current canonical source, retaining public abort, and regenerate normal combined core/bootstrap/staging"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/test-pattern-cli-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Full CLI option metadata/negation/diagnostics/title/executable and raw Unicode/malformed path loading semantics",
+        "Test CLI launcher/discovery, default process isolation/IPC, watch, real coverage producers and complete runner API/lifecycle behavior",
+        "Actual guest JSAPI allocation/root/realm/GC/OOM/fatal/Worker startup and explicit Worker execArgv ownership",
+        "Current combined engine compilation and identified-artifact Node/Chromium/Firefox/WebKit conformance; no finding/family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/testing.md",
+      "findingScope": "Actual name/skip filter and Node-only UTF8 argument/string publication prerequisites; no full CLI, test runner or individual finding closure.",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/process-contracts.md": [
+          "PROC-015"
+        ]
+      }
+    },
+    "socket-destroy-soon": {
+      "document": "tests/nodejs/outline/socket-destroy-soon-finding-progress.json",
+      "sha256": "195c5caf79f8d7ab7dd8f4cee6694008eb1de23db54cfa214c9faa07d695832c",
+      "recordedRevision": 224,
+      "explicitFindingIds": [
+        "N-010",
+        "N-015"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-socket224-source-r1/report.json",
+          "sha256": "4c1208191b96ffaf911ce5d6b86250c8d6d87f9dfee1cdd9ee2829a41d8a515a",
+          "guardedInputs": 885,
+          "scope": "Proposed spec only; future root-owned control driver must preserve per-row exact native/after comparison, original 0/7 baseline and native ShutdownWrap dependency. No current224 execution receipt."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-socket224-affected-r1.json",
+          "sha256": "847072fceb0fdca223911385288d113c9dea01ace55713f01b195f1e6c8ca459",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-socket224-source-r1/report.json",
+          "sha256": "4c1208191b96ffaf911ce5d6b86250c8d6d87f9dfee1cdd9ee2829a41d8a515a",
+          "nativeDependentGroups": 7,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "engineCXXChanged": false,
+          "scope": "Fresh exact native/current generated Socket groups over real native accepted TCP,2MiBpeer EOF, WriteWrap/ShutdownWrap/VM/stream/Buffer/error/brand dependencies. No guest listen/connect or actual production async shutdown acceptance."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/socket-destroy-soon-owner-agent/handoff/evidence/report.json",
+          "sha256": "e7be0c5812756d54898fa53abe93608c8de9d6577bd6c26a5237785bf5d8df62",
+          "reusedEvidence": true,
+          "scope": "Original native7/7,baseline0/7,candidate7/7, allthreeobservationprocessesexit0. Baseline remains seven nonmatches.0compilers, no guest validation."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/socket-destroy-soon-owner-agent/handoff/evidence/report.json",
+          "sha256": "e7be0c5812756d54898fa53abe93608c8de9d6577bd6c26a5237785bf5d8df62",
+          "scope": "Original0/7baseline matches retained, including explicit failures and differing rows. Invalid-1 assertion is fixture refusal, not claimed guest errno. Native ShutdownWrap dependency differs from production rawfd shutdown."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/socket-destroy-soon-review-agent/REPORT.md",
+          "sha256": "63ffc9f16295ea6413b7a0c695c9fb9f771411a4415cfa543592eff14ee43711",
+          "scope": "Independent actual owner/connecting/retirement/descriptor/installer/source review; no newly introduced blocker. Existing callback-inside-try, connected async shutdown and lifecycle gaps retained; no new runtime/compiler evidence."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/socket224-integration-plan-agent/preflight-attempt0-coordination-nonpass.json",
+          "sha256": "5be4a2869b277291087a8094469ac608f337fd416c125be8b71b61834514a634",
+          "scope": "Read-only planning receipt initially refused source223inflight/state222 coordination; later exact finalized223preflight passes. No source replay/runtime/compile failure or waived guard."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/socket-destroy-soon-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/socket-destroy-soon-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Select complete unchanged179byte pinned net.js destroySoon method through existing source manifest/build/installer",
+        "Install actual method on the consumed public Socket prototype, using real writable/end/finish/current destroy dispatch",
+        "Consult actual private receiver-to-owner association in _final after connecting deferral; complete no-owner callback without invalid shutdown",
+        "Preserve acquired/closed owner shutdown route, actual native close, error and fd authority rather than using public numeric fields",
+        "Regenerate combined source while preserving current223CLI/UTF8/public-abort C++ and all independent runtime owners"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/socket-destroy-soon-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual connected ShutdownWrap request/completion/error/cancellation ownership, opaque descriptor generation and callback-inside-try exception policy",
+        "Connecting deferral/failure/reuse/closed-owner generation and actual guest read/write/close callback/resource chronology",
+        "Socket counters/reset/TOS/metadata/fd kinds and mixed string writev/original storage encoding behavior",
+        "TLS/TLSWrap/session/HTTPS and HTTP server prerequisites; no server transport activation from this slice",
+        "Current combined guest artifact and identified Node/Chromium/Firefox/WebKit conformance; no API/family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/network-contracts.md",
+      "findingScope": "Partial real Socket flush-before-destroy and never-acquired-owner finalization. No full Socket/native async shutdown or finding closure.",
+      "additionalAuditDocuments": {}
+    },
+    "sqlite-statement-status": {
+      "document": "tests/nodejs/outline/sqlite-statement-status-finding-progress.json",
+      "sha256": "418e6a1b525e0c256e42e2a03d50f9dcae50149eb457c50821aa81ebf85684a1",
+      "recordedRevision": 225,
+      "explicitFindingIds": [
+        "NI-002"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-sqlite225-source-r1/report.json",
+          "sha256": "e02f90bcca779e61efa6244e258d2891766d46c0bd260febea2a630f623b5936",
+          "guardedInputs": 885,
+          "scope": "Actual statement status/resetStats C++ owner over exact SQLite3.54 and current generated public receiver/counter admission over explicit native dependencies. New guest JSAPI TypeError bridge uncompiled; no guest/fullSQLite/fourhost acceptance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-sqlite225-affected-r1.json",
+          "sha256": "4aeb7f50c1c77e3924b51fc22ee27082f7a5e58be0fbef694eef1627107c27f3",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-sqlite225-source-r1/report.json",
+          "sha256": "e02f90bcca779e61efa6244e258d2891766d46c0bd260febea2a630f623b5936",
+          "actualOwnerGroups": 11,
+          "currentFrontendAdmissionGroups": 8,
+          "nativeBackedErrorGroupsIncluded": 2,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "guestTypeErrorBridgeValidated": false,
+          "fourHostConformance": false,
+          "scope": "Fresh identical actual production C++owner executable/headers over exact preserved SQLite3.54object plus actual current normal generated JS frontend over native SQLite/VM/errors/bytes/parameter helper. Two native-backed TypeError cases do not validate new guest factory. Historical10frontend/15upstreamtest evidence is not current-source execution."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/sqlite-statement-status-owner-agent/report.json",
+          "sha256": "dc4dbd70049555f2b98c96a038198629e842167c5bb15030937222e010d5ee3c",
+          "reusedEvidence": true,
+          "scope": "Original11actual native owner cases compiled once;10frontendgroups/15unchangedupstreamtests over pre-admission source preserved historically. Final6admission cases match after retained2/6oldsource regression; full native bridge uncompiled."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/sqlite-statement-status-owner-agent/report.json",
+          "sha256": "dc4dbd70049555f2b98c96a038198629e842167c5bb15030937222e010d5ee3c",
+          "scope": "Original raw-template syntax check/harness and aggregate source/metadata preimage guard failures preserved. Historicalpre-admissionfrontend/upstream runs not relabeled current. Metadata-helper descendant count unknown, not zero."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/sqlite-statement-status-review-agent/REPORT.md",
+          "sha256": "e26ef4a66d44deb64e030fa7b719d3b57113a606ec0a61db78d2d3cdbe4dac0d",
+          "scope": "Independent review found inherited Array.prototype[0] admission bug; final3172a651patch fixes it. Old source/patch/actual failure preserved. No other verified introduced blocker, no guest evidence."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/sqlite225-integration-plan-agent/plan.json",
+          "sha256": "5e7209dbc085ee1710de9d21fa997edc5e3e104b72f81e6641acb4c997bc5c82",
+          "scope": "Explicit Buffer/current metadata insertion and protected bootstrap/build.py plan, actual guest eight-case future validation prerequisite. No new tests/builds in plan preparation."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/sqlite225-integration-review-agent/REPORT.md",
+          "sha256": "91d7ba034ce1e76fd9134a9ce0de6ca268785504985d5a0bb0c01f13fb42bd0e",
+          "scope": "Read-only root9leaf/protected metadata/actual staged native/header/generated admission source review, no new P1/P2. No tests/builds; real guest TypeError bridge remains uncompiled."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/sqlite-statement-status-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/sqlite-statement-status-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Read nine actual sqlite3_stmt_status counters using complete pinned native mapping and existing genuine statement lifetime",
+        "Reset real counters except memused without resetting the VM/iterator or adding a stale column cache",
+        "Reuse existing generated limits-header/normal native staging for new status names and actual native dispatch operations",
+        "Install actual public stat/resetStats with receiver/finalized-before-counter ordering and no inherited Array index access for missing rest arguments",
+        "Correct actual ERR_INVALID_ARG_VALUE native error factory to TypeError; compose only new SQLite metadata field, preserving Buffer and Socket/current CLI sources"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/sqlite-statement-status-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and exercise new actual JSAPI/native TypeError/stat/resetStats bridge, GC/parent/lifetime/OOM/realm/error construction and callback behavior",
+        "Complete SQLite Database/Statement/session/backup/extensions/authorization/async and other audited native integration APIs",
+        "Actual callback/reprepare/iterator/error/transaction/concurrency and resource disposal semantics on current guest artifacts",
+        "Current identified Node/Chromium/Firefox/WebKit conformance; no API/family closure or new exclusion"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/native-integration.md",
+      "findingScope": "Actual SQLite Statement stat/resetStats, native mapping/error and receiver/counter admission prerequisites. No full SQLite or finding closure.",
+      "additionalAuditDocuments": {}
     }
   },
   "dependencyNarratives": {
@@ -26476,6 +26826,25 @@
         "fourHostConformance": false,
         "individualApiClosure": false,
         "scope": "Qualified source220decoder fatal/BOM/reentry/retirement, source221captured TTY output publication rollback and source222pinned Buffer view/JSON owners. Existing scoped controls and original/intermediate failures preserved. Metadata only; accepted200stale; no guest/four-host/API/family closure."
+      },
+      {
+        "at": "2026-11-07T16:29:06.049058+00:00",
+        "sourceCheckpoint": 225,
+        "sourceHead": "1b875621d961b7e3bb6a56423af44f3679a58017",
+        "addedSourceSlices": [
+          "test-pattern-cli",
+          "socket-destroy-soon",
+          "sqlite-statement-status"
+        ],
+        "latestAcceptedEngine": 200,
+        "currentCombinedEngineCompiled": false,
+        "currentKernelTypechecked": true,
+        "currentKernelLinked": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "scope": "Actual native CLI/filter/shared UTF8, Socket destroySoon/no-owner finalization and SQLite statement status/reset/admission/error source owners. Current scoped source/native components and original failures retained. No guest/four-host/API/family closure."
       }
     ]
   }

@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T16:28:23.147725+00:00",
+  "updatedAt": "2026-11-07T16:29:06.049058+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "abee8ad5b98af2d2ba004cf64f1dce689c3e06288d08904d926904d15ffb4c01",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "bbb41802c298b45d9bd1792df50707ef6a72cb8c5bd03a75bc54c668407faad1",
-    "tests/nodejs/outline/finding-ledger.md": "929153562c2d9982247122aa0727326fa65acf21e2535b3f82d70d931907c310",
+    "tests/nodejs/outline/finding-ledger.json": "d82f97c72fdf602216f57e71a4025df2e80c649d1cbd8add632f69e52951d260",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "6bca32c2cdef476746932328fc035d9d13b4f1f94a1827d8a7e11093af8305bd",
+    "tests/nodejs/outline/finding-ledger.md": "eec40a3f62ba64a040c3f4d96bfd0cad487e54efebfc7cd2644b9dfe60ab961b",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -8801,7 +8801,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Reused pinned Socket flush-before-destroy over actual existing streams and corrected never-acquired-owner final callback without touching acquired-owner authority; normal source and exact native controls pass."
+    "reason": "Integrated real SQLite status/resetStats and reviewed final receiver/counter admission with native TypeError source correction, preserving current metadata/runtime owners and exact artifact evidence."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -48991,10 +48991,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/sqlite-statement-status-20261107T162824Z.tar.gz",
-    "sha256": "5a87ab33e9e07a3445132aa538a102027a91f00d27dc1e7834b93f391246db0d",
-    "bytes": 32278200,
-    "scope": "225actual SQLite status/resetStats and final admission/native error source, current11nativeowner+8frontend groups, original failures and independent reviews; no guest/fullSQLite closure.",
+    "path": ".context/node26-implementation-snapshots/finding-overlay225-20261107T162906100513Z.tar.gz",
+    "sha256": "fd1c2a659b9f4f6c5ec6d0ce02fa9ecfb1449b3c63ebf64b4222fde12227ed4e",
+    "bytes": 11698060,
+    "scope": "Current225qualified CLI/filter/UTF8, Socket finalization and SQLite status finding links. Metadata only, no new runtime/compiler/closure.",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -52288,7 +52288,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real SQLite status/resetStats and reviewed final receiver/counter admission with native TypeError source correction, preserving current metadata/runtime owners and exact artifact evidence."
+    "reason": "Reconciled main, integrated/committed CLI/test-filter/shared UTF8, Socket finalization and real SQLite status source with focused checks, and linked all three to original findings. Private async/process owner implementations continue; all19partial and no guest/fourhost closure."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -59111,6 +59111,13 @@
       "sha256": "26702328cb2ec498fc07459b28444f96d05ea68cd524d5bb2fad0daea35fbb94",
       "bytes": 32185713,
       "scope": "224actual pinned Socket destroySoon/no-owner finalization, current7native-dependent groups and preserved baseline/review/source identity; no fullSocket/guest closure.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/sqlite-statement-status-20261107T162824Z.tar.gz",
+      "sha256": "5a87ab33e9e07a3445132aa538a102027a91f00d27dc1e7834b93f391246db0d",
+      "bytes": 32278200,
+      "scope": "225actual SQLite status/resetStats and final admission/native error source, current11nativeowner+8frontend groups, original failures and independent reviews; no guest/fullSQLite closure.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -66121,7 +66128,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "70ec3f9f6fe11923ac8b9a449302659d78f298d5",
+    "pushedThrough": "1b875621d961b7e3bb6a56423af44f3679a58017",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -66255,7 +66262,8 @@
       ".context/node26-tty221-push.log": "7f653e3bd97cba656cfa49a6de402d8d30eb3c56f3fe6bddf664f8687fee79e4",
       ".context/node26-disk222-push.log": "5da7774dc0851a0f87f06f92a6cff3b376319a7e70af9398fce567632d668326",
       ".context/node26-patterns223-push.log": "869e5b97ee7abcb9a3931388757424a85aa2137d5d4eaffd1cb7d1bc3e1358e6",
-      ".context/node26-socket224-push.log": "945306672973f3c5a5dc980228c186f10bbc2fa363d275482b987b1c106697df"
+      ".context/node26-socket224-push.log": "945306672973f3c5a5dc980228c186f10bbc2fa363d275482b987b1c106697df",
+      ".context/node26-sqlite225-push.log": "14023eb5e7cbcd35101e913d4493b503f716a692e612348798cc8b0f5d8dbd6f"
     }
   },
   "sourceLedgerCoverageCorrection": {
@@ -117085,19 +117093,19 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "abee8ad5b98af2d2ba004cf64f1dce689c3e06288d08904d926904d15ffb4c01",
+    "sha256": "d82f97c72fdf602216f57e71a4025df2e80c649d1cbd8add632f69e52951d260",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "bbb41802c298b45d9bd1792df50707ef6a72cb8c5bd03a75bc54c668407faad1"
+      "sha256": "6bca32c2cdef476746932328fc035d9d13b4f1f94a1827d8a7e11093af8305bd"
     },
-    "sourceCheckpoint": 222,
+    "sourceCheckpoint": 225,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 145,
+      "sourceSliceRecords": 148,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
       "findingsWithoutExplicitOrProposedSourceSlice": 221
@@ -118045,6 +118053,28 @@
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 222
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "abee8ad5b98af2d2ba004cf64f1dce689c3e06288d08904d926904d15ffb4c01",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "bbb41802c298b45d9bd1792df50707ef6a72cb8c5bd03a75bc54c668407faad1"
+      },
+      "sourceCheckpoint": 222,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 145,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 221
       },
       "individualApiClosure": false,
       "fourHostConformance": false

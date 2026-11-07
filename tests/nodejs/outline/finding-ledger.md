@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 145 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 148 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 221 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -651,3 +651,30 @@ All19families remain partial; no finding closes. Compilation accounting stays
 predates current222; combined guest/runtime/four-host conformance remains
 unestablished. Overall suites and full product rebuilds stay deferred.
 Historical overlays retain their original capture/failure scope.
+
+
+## Source223–225 CLI filtering, Socket finalization and SQLite status
+
+Six qualified original finding links now identify these three partial source
+contributions. Native repeatable CLI filters and shared Node-only owned UTF8
+publication preserve pinned parser/Test/Suite behavior. Twenty-five current
+component comparisons and separately reused34decoder material groups retain
+native dependencies; actual new JSAPI and full CLI/runner remain unvalidated.
+
+Socket destroySoon consumes the complete pinned method; no-owner finalization
+completes without invalid shutdown. Seven current native TCP/stream groups
+retain actual EOF/byte checks and baseline0/7matches. Native ShutdownWrap is a
+fixture dependency; connected production asynchronous shutdown remains a gap.
+
+Actual SQLite stat/resetStats read nine real counters without VM rewind. Final
+receiver/counter admission avoids inherited absent-argument getters. Eleven
+identical native-owner cases and eight current frontend groups pass; native-backed
+TypeError cases do not compile/validate the new guest error factory. Historical
+ten frontend groups/fifteen upstream tests remain pre-admission evidence.
+
+Original failures, provenance and review corrections remain preserved. All19
+families remain partial, with no finding closure. Accepted200predates current225;
+current guest/four-host conformance is unestablished. Compilation accounting292
+includes original tiny helpers, with zero new compile/test in this ledger overlay.
+Overall suites and full product rebuild stay deferred. Private timers/promises
+and child-process collector work is excluded from root source claims.
