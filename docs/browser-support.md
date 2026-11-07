@@ -683,6 +683,7 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
   than `getProcessMemory()`.
 - `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
 - Keyboard input: the demo page maps focused browser `KeyboardEvent` values to Linux input keycodes, encodes them as MEDIUMRAW bytes, and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software decodes those bytes from the tty. Ctrl+Shift+Esc is reserved as the host escape from keyboard capture.
+- The same keys also reach the machine keyboard device `/dev/input/event0` as evdev key events while the framebuffer canvas holds focus, as every key reaches both the console and evdev on Linux. That lets a program bind `/dev/fb0` without a terminal: the retro ROM exchange handler starts the emulator with stdin on `/dev/null`, and the emulator then reads `/dev/input/event0`. A program reads one source, never both, or it sees every key twice; the retro emulators read their terminal when they have one. Images that declare `evdev-input` already feed evdev from their display surface; for other images the shell attaches the evdev source scoped to the KMS canvas and the focused framebuffer canvas (`apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`).
 - Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via
   `FBIOPAN_DISPLAY` is a no-op. Device/CRTC-owned surfaces, per-handle rights,
   serialized presentation, and multi-writer/compositor ownership remain
@@ -1725,6 +1726,134 @@ tile's size. Pointer input and the launcher's size on a HiDPI display are
 checked by hand (Chromium at a device scale factor of 2), because
 Playwright's emulated device scale does not change the size the pane
 reports.
+
+### Retro emulators
+
+Every shell machine carries three emulators from the `retro-emulators`
+package as lazy files, each a libretro core linked with one small frontend
+and named for the emulator it is:
+
+| Command | Shorter name | Systems |
+|---|---|---|
+| `/usr/bin/fceumm` | `retro-nes` | NES |
+| `/usr/bin/genesis-plus-gx` | `retro-genesis` | Mega Drive, Master System, Game Gear |
+| `/usr/bin/snes9x` | `retro-snes` | SNES |
+
+A 240p test suite ROM for each is under `/usr/share/retro-emulators/roms`.
+Nothing is fetched until an emulator runs. Each takes
+`ROM [--state FILE | --info | --keys]` and reads the system from the ROM's
+extension. The emulator draws on `/dev/fb0`, plays through `/dev/dsp` and
+reads the keyboard as a joypad: the arrows, Enter, Right Shift, Z, X, A,
+S, Q and W are the D-pad, Start, Select and the face and shoulder buttons.
+What each key is on a given system comes from the core itself: every
+libretro core names its buttons (`RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS`),
+so Genesis Plus GX calls Right Shift "Mode" and X "C". The emulator prints
+that list when a game starts, before it takes the keyboard, and `--keys`
+prints it and exits. F2 saves a state, F4 loads it, and Ctrl+C quits.
+
+Saves are kept per game in the user's data directory,
+`$XDG_DATA_HOME/retro-emulators` or `~/.local/share/retro-emulators`, named
+after the ROM's file name without its extension, so they last as long as
+the computer does (across reboots for a saved computer, until it closes for
+a temporary one):
+
+- `saves/GAME.srm` is the cartridge's own save memory, the battery-backed
+  RAM a game writes when the player saves inside it. It is loaded when the
+  game starts, and written back within a few seconds of the game changing it
+  and when the game quits (Ctrl+C, or SIGTERM or SIGHUP, which is how the
+  page and the drop handler stop a game). A file of the wrong size is left
+  alone and reported.
+- `states/GAME.state` is the snapshot F2 saves and F4 loads. It is not
+  loaded at start, so a game begins from its title screen or its own save;
+  `retro-run ROM --state FILE` starts from a snapshot.
+
+`retro-run ROM` (eager, `/usr/bin/retro-run`) chooses the emulator from
+the ROM's own bytes, not its name: the iNES magic, the Mega Drive `SEGA`
+header, the Master System and Game Gear `TMR SEGA` header, or a SNES
+header checksum. A file that matches none of them is refused with a
+message. It passes further options to the emulator. With no argument it
+runs the NES test suite. `retro-run --identify FILE` prints the system it
+detected (`nes`, `md`, `sms`, `gg` or `sfc`) and exits 0, or exits 1 when
+the file is not a ROM. `retro-run --keys [FILE]` prints the key list for
+that ROM's emulator.
+
+Dropping a ROM, or a folder holding ROMs, on a machine plays it. ROMs are
+recognised by their contents, because collections name them `.rom`, `.bin`
+or nothing at all: the image's exchange rule `90-retro-rom.handler` takes
+every drop that the game machines' rules do not, and
+`/usr/libexec/kandelo/retro-load-rom` asks `retro-run --identify` about
+each file whose name could be a ROM (a console extension, `.rom`, `.bin`,
+or none). A drop with no ROM in it goes to `exchange-save`, so it is saved
+to `~/Downloads` as before. Otherwise the handler copies the drop into
+`~/roms` as it arrived (a folder keeps its contents) and runs
+`kandelo-terminal --display "retro-run ~/roms/NAME"` for the first ROM in
+path order (see "Terminal requests" below). The page opens a new terminal
+with that command typed at its prompt, stops whatever holds the display,
+and shows the display, so the user sees what the drop ran; once the game
+exits, Up and Enter in that terminal run it again. The drop's status reads
+"opened a terminal: retro-run ~/roms/NAME". Files over 16 MiB are left to
+the catch-all.
+
+Where nothing outside the machine opens terminals (the Node host, or no
+listener for exchange outputs), `kandelo-terminal` fails and the handler
+starts the game in the background instead: it stops the emulator if one is
+playing, starts `retro-run`, and reports "playing NAME" once the emulator
+holds the display, or the emulator's own error. A display already held by
+another program is not taken there: the drop fails with a message saying
+so.
+
+An emulator started in the background has no terminal (kxchgd starts
+handlers with stdin on `/dev/null`), so it reads keys from
+`/dev/input/event0`, which the framebuffer canvas feeds while it has focus
+(see "Framebuffer (`/dev/fb0`)"). Started from a terminal, including one a
+drop opened, the emulator reads the terminal instead. Either way Ctrl+C
+quits it. The keyboard is read raw, so no terminal turns Ctrl+C into a
+signal; the emulator acts on the chord itself.
+Esc alone does nothing, so a stray press does not end a game. The emulator
+keeps its boot-lifetime files in the user's runtime directory,
+`$XDG_RUNTIME_DIR` or `/run/user/<uid>`: its pid in `retro.pid`. A
+background game's output goes to `retro.log` there.
+
+Gated in Node by `host/test/retro-emulators-cli-smoke.test.ts` (each
+emulator initialises its core and lists its keys by the core's button
+names, including F2 and F4; a European ROM's name sets PAL timing; with no
+terminal the emulator reads `/dev/input/event0`, ignores Esc, saves and
+loads a state on F2 and F4 and quits on Ctrl+C there; a battery-backed
+game's save file is loaded at start)
+and in the browser by `apps/browser-demos/test/retro-rom-drop.spec.ts` (a
+dropped ROM opens a terminal with its command and plays, takes keys, keeps
+running on Esc and quits on Ctrl+C, after which Up and Enter in that
+terminal run it again; a SNES ROM named `.rom` still starts Snes9x, a later
+drop replaces the game, a ROM with no extension plays, and a file that is
+not a ROM is saved to `~/Downloads`). The request format and its routing
+are covered by `web-libs/kandelo-session/test/terminal-request.test.ts` and
+`exchange-session.test.ts`.
+
+#### Terminal requests
+
+A program in the machine can ask the page for a terminal running a
+command: `kandelo-terminal [--display] [--title TITLE] COMMAND-LINE`
+(`/usr/bin/kandelo-terminal` in the shell image). It publishes a Kandelo
+exchange output of type `application/x-kandelo-terminal-command`, a small
+JSON object `{"version": 1, "command": …, "title": …, "display":
+"framebuffer"}` (`web-libs/kandelo-session/src/terminal-request.ts`).
+`ExchangeSession` hands such outputs to the app's handler instead of the
+output tray, and the app opens them as an activity: a new terminal tab
+labelled with the title, the command typed at its prompt, and for
+`--display` the display owner stopped and the display shown. The command
+runs as that terminal's login user, the same account a guest publisher
+already is, so a request grants nothing a program in the machine could not
+do itself.
+
+The request is untrusted input. A command must be one line of at most 2,048
+characters with no control characters, because it is typed into a shell;
+the title is shortened to 80 characters; unknown fields, other versions and
+requests over 4 KiB are refused, and a refusal or a failed launch is shown
+as a failed entry with its reason. Activities' limits apply (32 per
+computer, one starting at a time). A page without a handler keeps the
+request as an ordinary output in the tray, and with no output listener at
+all the publish fails with `ENXIO`, so `kandelo-terminal` exits 1 and its
+caller can fall back.
 
 ### Kandelo session UI
 
@@ -3092,8 +3221,10 @@ Files reach a machine through Kandelo exchange (`docs/architecture.md`,
 the terminal, framebuffer, or display surface, or choosing them with the
 dock's "Send files" button, offers them to the machine as one batch. The
 machine's agent and its handler rules decide what happens: the game
-machines' rules load a WAD, a pak or zipped game data, and the catch-all
-saves anything else to `~/Downloads`. Each batch gets a toast with its
+machines' rules load a WAD, a pak or zipped game data; on every shell
+machine a NES, SNES, Mega Drive, Master System or Game Gear ROM is kept in
+`~/roms` and played (see "Retro emulators" below); and the catch-all saves
+anything else to `~/Downloads`. Each batch gets a toast with its
 status and outcome; outputs the machine publishes appear in a tray with
 Save and Dismiss (Save streams through `showSaveFilePicker` where the
 browser has it, and otherwise buffers the output and downloads it). A

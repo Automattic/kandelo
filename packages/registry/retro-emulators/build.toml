@@ -1,0 +1,10 @@
+script_path = "packages/registry/retro-emulators/build-retro-emulators.sh"
+inputs = [
+  "packages/registry/retro-emulators/build-retro-emulators.sh",
+  "packages/registry/retro-emulators/frontend/main.c",
+  "packages/registry/retro-emulators/LICENSE-MAP.md",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

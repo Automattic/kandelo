@@ -49,6 +49,7 @@ depends_on = [
   "love@11.5-kandelo-kms",
   "elinks@0.20.0",
   "ffmpeg@9.0",
+  "retro-emulators@0.1.0",
   "vim-browser-bundle@9.1.0900",
   "freeciv-browser-bundle@3.2.6",
   "nethack-browser-bundle@3.6.7",
