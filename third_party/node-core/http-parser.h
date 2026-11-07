@@ -3,6 +3,8 @@
 #ifndef KANDELO_NODE_HTTP_PARSER_H
 #define KANDELO_NODE_HTTP_PARSER_H
 #include <cstdint>
+#include <cmath>
+#include <limits>
 #include <exception>
 #include <llhttp.h>
 #include <new>
@@ -39,6 +41,24 @@ struct Step {
   size_t consumed = 0;
   bool complete = false, upgrade = false;
   std::string code, reason;
+};
+// Only stack-scoped synchronous handlers may affect the active native parse.
+// No callback/context is retained beyond Feed/Finish; ordinary packet consumers
+// keep the existing interface. The owner itself retains actual input authority.
+// Node's Value::IntegerValue saturates to int64 before the callback narrows
+// to int. ToInt32 directly would differ for infinities and values >=2^63.
+inline int HeadersDecision(double number) {
+  int64_t wide;
+  if (std::isnan(number)) wide = 0;
+  else if (number >= static_cast<double>(std::numeric_limits<int64_t>::max())) wide = std::numeric_limits<int64_t>::max();
+  else if (number <= static_cast<double>(std::numeric_limits<int64_t>::min())) wide = std::numeric_limits<int64_t>::min();
+  else wide = static_cast<int64_t>(number);
+  const uint32_t low = static_cast<uint32_t>(wide);
+  return low <= uint32_t(INT32_MAX) ? int(low) : int(int64_t(low) - 0x100000000LL);
+}
+struct HeadersHandler {
+  void* context = nullptr;
+  int (*call)(void*, const Event&) = nullptr;
 };
 class Parser final {
  public:
@@ -82,7 +102,8 @@ class Parser final {
   Parser(Parser&&) = delete;
   Parser& operator=(Parser&&) = delete;
 
-  Step Feed(const uint8_t* bytes, size_t length) {
+  Step Feed(const uint8_t* bytes, size_t length, HeadersHandler headers = {}) {
+    if (step_) throw std::logic_error("HTTP parser is already executing");
     if (oom_) throw std::bad_alloc();
     if (unexpected_) throw std::runtime_error("HTTP parser callback failed");
     Step step;
@@ -92,7 +113,7 @@ class Parser final {
       if (length) step.remainder.assign(bytes, bytes + length);
       return step;
     }
-    step_ = &step;
+    ActiveStep active(*this, step, headers);
     // A non-null empty buffer also avoids undefined pointer subtraction.
     const char* input = length ? reinterpret_cast<const char*>(bytes) : "";
     const auto error = llhttp_execute(&parser_, input, length);
@@ -116,13 +137,14 @@ class Parser final {
     Error(step);
     return step;
   }
-  Step Finish() {
+  Step Finish(HeadersHandler headers = {}) {
+    if (step_) throw std::logic_error("HTTP parser is already executing");
     if (oom_) throw std::bad_alloc();
     if (unexpected_) throw std::runtime_error("HTTP parser callback failed");
     Step step;
     if (!errorCode_.empty()) { Error(step); return step; }
     if (!complete_) {
-      step_ = &step;
+      ActiveStep active(*this, step, headers);
       const auto error = llhttp_finish(&parser_);
       step_ = nullptr;
       CheckCallback();
@@ -148,6 +170,14 @@ class Parser final {
   bool complete_ = false, upgrade_ = false, informational_ = false;
   bool oom_ = false, unexpected_ = false;
   Step* step_ = nullptr;
+  HeadersHandler handler_{};
+  struct ActiveStep {
+    Parser& parser;
+    ActiveStep(Parser& parser, Step& step, HeadersHandler headers) : parser(parser) {
+      parser.step_ = &step;parser.handler_ = headers;
+    }
+    ~ActiveStep() { parser.step_ = nullptr;parser.handler_ = {}; }
+  };
   static size_t HeapString(const std::string& value) {
     const auto data = reinterpret_cast<uintptr_t>(value.data());
     const auto owner = reinterpret_cast<uintptr_t>(&value);
@@ -236,6 +266,9 @@ class Parser final {
       event.url = std::move(s.url_);
       event.status = s.parser_.status_code; event.keepAlive = llhttp_should_keep_alive(&s.parser_);
       event.upgrade = s.upgrade_; event.informational = s.informational_;
+      // The caller's real decision participates in this exact llhttp frame,
+      // before body bytes are read. Do not replay a copied header packet later.
+      if (s.handler_.call) return s.handler_.call(s.handler_.context, event);
       s.step_->events.push_back(std::move(event));
       if (s.upgrade_) return 2;
       if (!s.request_ && (s.informational_ || s.method_ == "HEAD")) return 1;

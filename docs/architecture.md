@@ -6908,3 +6908,7 @@ Source179 reuses the complete pinned public WASI lifecycle and implements25real 
 ### Actual ESM source, identity and mock ownership
 
 Source180 shares synchronous resolve/load hooks and CLI-gated MockTracker with actual native fullURL/type registry/source/synthetic evaluation owners. Exact Node-vendored Merve supplies CJS names without executing during preparse; evaluation consumes prepared source through the real CJS owner. Static native request memoization retains the actual resolved record. A saved native exception explicitly survives failed cleanup; unsuccessful source retirement remains open. Imported lexer inputs remain at the real vendor boundary and normal checker rules are unchanged. Native bindings/GC/realm/worker/guest behavior remain uncompiled/unvalidated. See [scope](../tests/nodejs/outline/module-mocks-esm-source-integration.md).
+
+### Synchronous request-header decisions over original storage
+
+Source181 lets the actual request headers callback determine llhttp body/upgrade consumption inside its current C frame. The native path retains the original unshared allocation through a real backing Span and preserves pending JS/coercion failures. The existing request consumer and actual curated variadic forwarder use it. Target int64 saturation precedes narrowing; actual shared atomic parsing, remaining synchronous callbacks/parser reuse/ConnectionsList/fullServer and production JSAPI/guest semantics remain open. See [scope](../tests/nodejs/outline/http-synchronous-headers-integration.md).

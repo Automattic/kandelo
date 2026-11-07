@@ -1600,3 +1600,20 @@ providers; production JSAPI/kernel/Promise-fatal behavior is not validated.
 Worker listener transfer, complete Server/Socket lifecycle, borrowed arbitrary
 method receivers and full HTTP Server support remain separate implementation
 gaps. See tests/net-server-receiver/README.md for exact boundaries.
+
+### HTTP request header execution prerequisite
+
+The request parser's header decision now enters the actual llhttp frame, before
+body bytes are consumed. Its synchronous native path retains the original
+unshared backing allocation through an existing Span capability, roots the actual
+callback, and propagates original callback/coercion failures after unwinding the
+C frames. Pinned IntegerValue saturation precedes narrowing to the parser return
+code; it is not a direct ToInt32 conversion. Response packets keep their existing
+contract. Shared-input atomic consumption is still an implementation gap.
+
+Focused portable/native parser differentials and the generated request consumer
+exercise the byte/decision path, with unchanged response framing controls retained.
+Production JSAPI/GC/realm/backing/async evidence is unexecuted. This is a consumed
+prerequisite; public Server/createServer remains unavailable until reusable parser,
+ConnectionsList/timeout, complete callback/stream and lifecycle owners exist.
+See tests/http-request-headers/README.md for exact evidence boundaries.

@@ -1,6 +1,7 @@
 /* Opaque GC-owned HTTP framing state. Input/events never retain JS pointers. */
 #include "kandelo-node-http-parser.h"
 #include "mozilla/ScopeExit.h"
+#include "js/Conversions.h"
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -9,8 +10,10 @@ namespace {
 struct KandeloHttpOwner {
   kandelo::http::ResponseParser parser;
   size_t accounted = 0;
+  bool executing = false;
+  const bool request;
   KandeloHttpOwner(std::string method, uint64_t limit, bool insecure, bool relaxed, bool request)
-      : parser(std::move(method), limit, insecure, relaxed, request) {}
+      : parser(std::move(method), limit, insecure, relaxed, request), request(request) {}
   size_t Bytes() const { return sizeof(*this) - sizeof(parser) + parser.AllocationBytes(); }
 };
 static void KandeloHttpAccount(JSObject* object, KandeloHttpOwner* owner) {
@@ -46,17 +49,7 @@ static bool KandeloHttpHeaders(JSContext* cx, HandleObject object, const std::ve
   }
   return JS_DefineProperty(cx, object, "headers", array, JSPROP_ENUMERATE);
 }
-static bool KandeloHttpPacket(JSContext* cx, const kandelo::http::Step& step, MutableHandleValue result) {
-  RootedObject object(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
-  RootedObject events(cx, JS::NewArrayObject(cx, 0));
-  if (!object || !events ||
-      !JS_DefineProperty(cx, object, "consumed", double(step.consumed), JSPROP_ENUMERATE) ||
-      !JS_DefineProperty(cx, object, "complete", step.complete, JSPROP_ENUMERATE) ||
-      !JS_DefineProperty(cx, object, "upgrade", step.upgrade, JSPROP_ENUMERATE) ||
-      !KandeloHttpText(cx, object, "code", step.code) ||
-      !KandeloHttpText(cx, object, "reason", step.reason)) return false;
-  for (size_t i = 0; i < step.events.size(); ++i) {
-    const auto& event = step.events[i];
+static bool KandeloHttpEvent(JSContext* cx, const kandelo::http::Event& event, MutableHandleValue result) {
     RootedObject item(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
     if (!item || !JS_DefineProperty(cx, item, "type", int(event.type), JSPROP_ENUMERATE)) return false;
     if (event.type == kandelo::http::Event::Type::Body) {
@@ -76,7 +69,38 @@ static bool KandeloHttpPacket(JSContext* cx, const kandelo::http::Step& step, Mu
            !JS_DefineProperty(cx, item, "minor", int(event.minor), JSPROP_ENUMERATE) ||
            !JS_DefineProperty(cx, item, "keepAlive", event.keepAlive, JSPROP_ENUMERATE))) return false;
     }
-    RootedValue value(cx, ObjectValue(*item));
+  result.setObject(*item);return true;
+}
+struct KandeloHttpHeadersCall {
+  JSContext* cx;
+  HandleValue callback;
+  bool failed = false;
+  static int Invoke(void* opaque, const kandelo::http::Event& event) {
+    auto& state = *static_cast<KandeloHttpHeadersCall*>(opaque);
+    RootedValue argument(state.cx), result(state.cx);
+    if (!KandeloHttpEvent(state.cx, event, &argument) ||
+        !JS::Call(state.cx, UndefinedHandleValue, state.callback,
+                  JS::HandleValueArray(argument), &result)) {
+      state.failed = true;return -1;
+    }
+    double number;
+    if (!JS::ToNumber(state.cx, result, &number)) { state.failed = true;return -1; }
+    return kandelo::http::HeadersDecision(number);
+  }
+};
+static bool KandeloHttpPacket(JSContext* cx, const kandelo::http::Step& step, MutableHandleValue result) {
+  RootedObject object(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
+  RootedObject events(cx, JS::NewArrayObject(cx, 0));
+  if (!object || !events ||
+      !JS_DefineProperty(cx, object, "consumed", double(step.consumed), JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx, object, "complete", step.complete, JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx, object, "upgrade", step.upgrade, JSPROP_ENUMERATE) ||
+      !KandeloHttpText(cx, object, "code", step.code) ||
+      !KandeloHttpText(cx, object, "reason", step.reason)) return false;
+  for (size_t i = 0; i < step.events.size(); ++i) {
+    const auto& event = step.events[i];
+    RootedValue value(cx);
+    if (!KandeloHttpEvent(cx, event, &value)) return false;
     if (!JS_DefineElement(cx, events, uint32_t(i), value, JSPROP_ENUMERATE)) return false;
   }
   RootedObject remainder(cx, KandeloNewUint8ArrayCopy(cx, step.remainder.data(), step.remainder.size()));
@@ -123,8 +147,34 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
   auto* owner = static_cast<KandeloHttpOwner*>(JS::GetReservedSlot(object, 0).toPrivate());
   // Callback/OOM failure can leave additional native capacity allocated.
   auto account = mozilla::MakeScopeExit([&] { KandeloHttpAccount(object, owner); });
+  const bool synchronous = strcmp(operation.get(), "feedRequestHeaders") == 0;
+  if (owner->executing) { JS_ReportErrorASCII(cx, "HTTP parser is already executing");return false; }
+  owner->executing = true;
+  auto endExecution = mozilla::MakeScopeExit([&] { owner->executing = false; });
   kandelo::http::Step step;
-  if (strcmp(operation.get(), "feed") == 0) {
+  if (synchronous) {
+    if (!owner->request) { JS_ReportErrorASCII(cx, "Synchronous request headers require a request parser");return false; }
+    RootedValue callback(cx, args.get(3));
+    if (!callback.isObject() || !JS::IsCallable(&callback.toObject())) {
+      JS_ReportErrorASCII(cx, "HTTP request parsing requires its actual headers callback");return false;
+    }
+    KandeloCryptoByteSource input(cx);
+    if (!input.Init(args.get(2))) {
+      if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "HTTP input requires a real buffer source");
+      return false;
+    }
+    auto original = input.Capture();if (!original) return false;
+    // A raw C parser cannot race shared JS writes. Atomic shared consumption
+    // needs a separate actual owner; never substitute a hidden copied buffer.
+    if (original->Shared()) {
+      JS_ReportErrorASCII(cx, "Synchronous HTTP shared input requires atomic parser consumption");return false;
+    }
+    KandeloHttpHeadersCall call{cx, callback};
+    step = owner->parser.Feed(original->Data(), original->Length(), {&call, KandeloHttpHeadersCall::Invoke});
+    // Original JS/coercion failure wins over llhttp's unwind status. It is not
+    // converted to a parser error packet that would manufacture a 400 response.
+    if (call.failed || JS_IsExceptionPending(cx)) return false;
+  } else if (strcmp(operation.get(), "feed") == 0) {
     kandelo::crypto::Bytes input;
     if (!args.get(2).isObject()) { JS_ReportErrorASCII(cx, "HTTP input requires buffer bytes"); return false; }
     if (!KandeloCryptoInput(cx, args.get(2), &input)) return false;

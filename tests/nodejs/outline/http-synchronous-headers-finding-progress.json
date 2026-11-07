@@ -1,0 +1,101 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/http.md",
+    "findingIds": [
+      "H-003",
+      "H-004",
+      "H-013"
+    ],
+    "relatedFamilies": [
+      "http",
+      "network",
+      "streams",
+      "async",
+      "engine",
+      "values"
+    ],
+    "scope": "Consumed request-header/original-allocation/numeric-decision source prerequisite, not complete parser/Server/lifecycle or finding closure"
+  },
+  "sourceImplemented": [
+    "Real llhttp on_headers_complete invokes stack-scoped synchronous handler before body bytes, with actual callback result controlling that native parser frame; no replayed header event",
+    "Actual native request owner/callback roots and original unshared backing allocation Span survive the synchronous JS callback without a copied input or no-GC JS entry",
+    "Preserve pending actual callback/number-coercion failure after native unwind rather than converting it to a parser packet or fabricated400",
+    "Use exact target IntegerValue int64 saturation then int narrowing, including NaN/infinities and2^63edge cases",
+    "Existing pinned parserOnHeadersComplete/IncomingMessage request consumer and actual curated variadic forwarding consume the new operation; response packet contract unchanged",
+    "Active-step/handler and owner execution guards retire on unwind; no fabricated parser resource/provider/async IDs or fullServer activation"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-http181-source-r1/report.json",
+    "sha256": "7e23cfe1a642b99016dca4156300887a2dc1d38fd408ea559e02084541ba1b31",
+    "guardedInputs": 817,
+    "scope": "Current actual synchronous HTTPrequest headers/production consumer over original-allocation source; focused portable/native controls, fullServer/shared atomic parser/JSAPI/guest/fourhost gaps retained."
+  },
+  "packageChecks": {
+    "report": ".context/node26-http181-affected-r1.json",
+    "sha256": "b57d467156b4364df254d69892057dc79e844b9302799912c165730af73e1a8c",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-http181-source-r1/report.json",
+    "sha256": "7e23cfe1a642b99016dca4156300887a2dc1d38fd408ea559e02084541ba1b31",
+    "requestGroups": 16,
+    "portableNativeDifferentials": 11,
+    "unchangedResponseCases": 25,
+    "actualProductionForwarderExecuted": true,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Current portable header owner/current actual request consumer/production adapter over real nativeHTTPParser/IncomingMessage and identified sealed llhttp artifacts. Engine Span/GC/realm/detach/resize/transfer and parser async/fatal/guest remain unexecuted."
+  },
+  "sealedEvidence": {
+    "report": ".context/http-server-owner-agent/HANDOFF.json",
+    "sha256": "b21d383c9a17bc097d29ed1793eca478a4a23ca6ec896acad8a95cd8726fd992",
+    "reusedEvidence": true,
+    "scope": "32source checks,16requestgroups/11portable-native comparisons,25unchangedresponse cases;10successful tiny compiler steps, genuine private missing Net declaration retained, root177already declares it"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/http-server-owner-agent/controls-r1/request-controls.stderr",
+      "sha256": "2b376fa1759e44c03f3c75f4e855fa61add612a9b1369db78810b7d6bdd87e95",
+      "kind": "initial-control-readable-drain-assumption",
+      "reason": "One native fragment read yielded Z rather than all Zbc. Fixture now drains to null with the same strict full-byte assertion; no runtime/upstream assertion weakened."
+    },
+    {
+      "report": ".context/http-server-owner-agent/verify-r1.stderr",
+      "sha256": "56caf74cfbcd08080fd714fad1090b274f230cb150ef11e76b4eefb51e1e72e0",
+      "kind": "initial-source-fixture-forwarder-syntax-assumption",
+      "reason": "Verifier expected arrow syntax while real variadic method was already correct; actual forwarding-object control added."
+    },
+    {
+      "report": ".context/http-server-owner-agent/production-forwarded-request-controls.stderr.r2",
+      "sha256": "1fc82969e42812ca5727cf49f16ef5ab0e1bd5e1812bc669d6e5ee3c92b5b0b1",
+      "kind": "missing-actual-async-prologue-in-control",
+      "reason": "Initial stronger fixture lacked real runWithAsyncContext declaration; final control executes exact production prologue and object."
+    },
+    {
+      "report": ".context/http-server-owner-agent/input-declarations-parent-net-unintegrated.stdout",
+      "sha256": "4486043199cfa33ec3e28f56df0e2b658c80358b47b41d56bd0d77feec746971",
+      "kind": "private-missing-prior-Net-input",
+      "reason": "Private closure genuinely fails for prior Net receiver adapter; root177declares that actual source and current817closure passes."
+    }
+  ],
+  "remaining": [
+    "Full reusable native HTTPParser initialize/reset/execute/finish/pause/resume/remove/free/close and pipelining/original input ownership",
+    "Synchronous body/completion/begin/header-flush callbacks, exact stream backpressure/upgrade/EOF/keepalive/reentry policy",
+    "Actual native HTTPINCOMINGMESSAGE provider/resource/trigger/fatal/Domain callback ownership and native StreamBase consume/unconsume where real",
+    "Real ConnectionsList monotonic parser/request/header timing, active/idle/expiry queries and lifecycle/timeouts",
+    "Shared input atomic consumption is a missing owner, not an accepted engine boundary or copied-snapshot support",
+    "Full pinned HTTP Server/createServer/_connectionListener over those owners; current productionJSAPI/Span/GC/realm/detach/resize/transfer/teardown/fourhost validation"
+  ],
+  "at": "2026-11-07T04:50:52.849499+00:00",
+  "recipeRevision": 181,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

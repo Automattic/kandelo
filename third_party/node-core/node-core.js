@@ -108947,8 +108947,9 @@ module.exports = {
 }
 
 // Pinned IncomingMessage callbacks over an opaque native llhttp owner.
-// Native events own their bytes. Synchronous JS callback/reentry equivalence
-// during llhttp_execute remains a separate obligation of this packet bridge.
+// Response events retain their packet contract. Request header decisions enter
+// the actual synchronous llhttp frame over the original input allocation;
+// body/completion callback and full HTTPServer/native consume remain separate.
 function _createNodeHttpParser(platform) {
     'use strict';
     const { MathMin, Symbol, ReflectApply, Error } = _createNodePrimordials();
@@ -109089,11 +109090,11 @@ function parserOnMessageComplete() {
             onIncoming(incoming, shouldKeepAlive) {
                 message = incoming;
                 keepAlive = shouldKeepAlive;
-                if (incoming.upgrade) return 2;
                 if (request) {
-                    if (options.onHeaders) options.onHeaders(incoming);
-                    return 0;
+                    const decision = options.onHeaders ? options.onHeaders(incoming) : undefined;
+                    return decision === undefined ? (incoming.upgrade ? 2 : 0) : decision;
                 }
+                if (incoming.upgrade) return 2;
                 if (incoming.statusCode >= 100 && incoming.statusCode < 200 && incoming.statusCode !== 101) {
                     if (options.onInformation) options.onInformation({
                         statusCode: incoming.statusCode, statusMessage: incoming.statusMessage,
@@ -109107,6 +109108,11 @@ function parserOnMessageComplete() {
                 return options.method === 'HEAD' ? 1 : 0;
             },
         };
+        function requestHeaders(event) {
+            return ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
+                event.headers, event.method, event.url, event.status, event.statusMessage,
+                event.upgrade, event.keepAlive]);
+        }
         function consume(packet, input) {
             if (packet.remainder.length) remainder = Buffer.from(packet.remainder);
             for (let i = 0; i < packet.events.length; ++i) {
@@ -109145,7 +109151,8 @@ function parserOnMessageComplete() {
             getRemainder() { return remainder; },
             feed(bytes) {
                 if (failed || completed) return;
-                consume(platform.native.httpParser('feed', owner, bytes), bytes);
+                consume(request ? platform.native.httpParser('feedRequestHeaders', owner, bytes, requestHeaders)
+                    : platform.native.httpParser('feed', owner, bytes), bytes);
             },
             end() {
                 if (failed || completed) return;

@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source181 integrates actual synchronous HTTP request-header decisions over original-storage ownership.16request groups/11native differentials and25unchanged response cases plus14package checks pass. NativeSpan/JSAPI/shared consumption/fullServer/guest/fourhost remain unvalidated or missing.
+See [source scope](http-synchronous-headers-integration.md).
+
 Source180 integrates real mock/hook and generic fullURL/source/native synthetic/CJS-preparse ownership.8whole-upstream executions,21selected mock tests per subject,6loader/7mock semantic groups, lifecycle controls,14CLI and25lexer comparisons plus14package checks pass. ProductionSM/guest/fourhost remain uncompiled.
 See [source scope](module-mocks-esm-source-integration.md).
 

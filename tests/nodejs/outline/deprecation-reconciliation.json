@@ -57,7 +57,7 @@
     "third_party/node-core/http-headers-adapter.js": "ea0571356e14c94e8679037759502368aa9d5e680cfe07832c4ea76a82f4e8be",
     "third_party/node-core/http-incoming-adapter.js": "6dedb3fe1773cfd0c6a804db0482d131533be15f8babf934287da3638edbd44a",
     "third_party/node-core/http-outgoing-adapter.js": "35ca48ff3efb87d5236c378c6429aa56af5c28babfa839fc03be7dd4e36fe1ed",
-    "third_party/node-core/http-parser-platform-adapter.js": "338caac058d80274ec8405ce28162e9d151ee4525f8a0a28d2a628ad93d0c919",
+    "third_party/node-core/http-parser-platform-adapter.js": "7c4fd0bd45fa1f77835030a14d1633742b0f3f99b93fd88634de5697ed62a0f5",
     "third_party/node-core/http-server-response-adapter.js": "195151e495fb710376347ef00b618719568c8ebf09a020e8edfa3a42d680e65a",
     "third_party/node-core/http2-settings-adapter.js": "b837ecce6701f40c7ca7ebe9f3129cae83a074a99dd1818a0147d35aeab9bbb3",
     "third_party/node-core/incremental-crypto-adapter.js": "06b695ccac9a79973f78f8987175ee600cf8364efffb9d0396bf76a4d7c5c1b6",
