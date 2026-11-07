@@ -13,7 +13,7 @@ The maintainer explicitly approved developing and evaluating a shared
 upstream improvement. The candidate is on
 [`kandelo-wasm32-regexp-candidate`](https://github.com/kandelo-dev/go/tree/kandelo-wasm32-regexp-candidate),
 currently [`f6053060`](https://github.com/kandelo-dev/go/commit/f60530600f70a5ea905a907ac311ec8bd2ae8ac4).
-After the expanded compiler gate passes, all four normal Kandelo Go pins
+After the expanded compiler gate passed, all four normal Kandelo Go pins
 and `kandelo-wasm32-prototype` select f605. Normal consumer/image rebuilds
 are pending. No upstream issue or pull request has been submitted. The existing WordPress preview is preserved.
 
@@ -79,8 +79,12 @@ the expected compiler or C SDK producer and kernel ABI; typed prototype
 receipts bind source/target/layout. The freshly rebuilt manual C-link
 fixture exposed legacy assembly assumptions on both A0 and f605; its
 wasm32 assembly now uses direct C handles and four-byte values. No compiler
-or app correction was needed. Final WordPress and reproducibility gates
-remain open.
+or app correction was needed. GoHello now passes an independent same-key rebuild after the shared
+helper selects upstream's reproducible builder mode. Development bootstrap
+otherwise discards ambient GOFLAGS and retains scratch paths in native tools;
+their content IDs affect target build IDs. Compiler identities are preserved.
+This checks this Mac/development environment, not cross-OS reproducibility.
+Final WordPress and larger consumer reproducibility gates remain open.
 
 ## Compilation measurements
 

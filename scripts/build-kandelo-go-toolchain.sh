@@ -25,6 +25,10 @@ kandelo_build_go_toolchain() {
         # SDK cross-compiler settings must not enter the native bootstrap.
         unset GOOS GOARCH GOROOT CC CXX AR RANLIB
         export GOENV=off GOTOOLCHAIN=local GOWORK=off CGO_ENABLED=0
+        # Development Go otherwise keeps scratch-root paths in its own tools.
+        # Upstream's builder mode trims those paths, making their content IDs
+        # (and the target build IDs derived from them) reproducible too.
+        export GO_BUILDER_NAME=kandelo-package
         export GOCACHE="$work_dir/gocache" GOTMPDIR="$work_dir/tmp"
         export GOMAXPROCS="${GOMAXPROCS:-4}" GOFLAGS="-trimpath -p=${GOMAXPROCS:-4}"
         export GOROOT_BOOTSTRAP="$(go env GOROOT)"

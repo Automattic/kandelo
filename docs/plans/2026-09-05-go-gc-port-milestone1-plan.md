@@ -42,14 +42,29 @@ seconds candidate, with overlapping ranges; it establishes no performance
 difference or request-throughput result. Full results and provenance are in
 the [evaluation](2026-11-07-go-regexp-upstream-evaluation.md).
 
-Selected normal revisions are GoHello 32, classic FrankenPHP 37,
-FrankenPHP+Caddy 18 and standalone Caddy 14. Their normal rebuilds and
-WordPress revision 43 rebuild remain pending, followed by final workflows,
-memory/lifecycle and performance gates. The saved preview is preserved.
-The original A0 source/toolchain is retained at
-`.context/go-regexp-baseline-a0` for comparisons; its existing compiler is
-relocated, not independently rebuilt. The prototype's local developer
-compiler will be rebuilt after its source fast-forward.
+Normal GoHello revision 32 builds and passes Node VFS/posix_spawn, but
+an independent same-key rebuild correctly fails the cache's byte-equivalence
+check. The canonical artifact is preserved. Repeated builds using one
+compiler are byte-identical; separately built development compilers have
+different tool content IDs. Upstream's development bootstrap discards
+ambient GOFLAGS and retains its own scratch paths unless its standard
+reproducible-builder mode is selected. The shared helper now selects
+`GO_BUILDER_NAME=kandelo-package`, preserving real compiler/build identities.
+GoHello 33 now publishes and passes Node VFS/posix_spawn. A fresh resolver
+work root independently rebuilds both native compilers and the target;
+its Wasm bytes match the canonical generation exactly (SHA-256
+`8445a3ef4fe9660d09771631bb506cda46145c87998d85c521ded0386335d209`).
+This is same-host/same-declared-environment reproducibility, not a cross-OS
+claim. Classic 38, combined 19 and standalone Caddy 15 remain pending.
+Standalone Caddy is intentionally outside the default bootstrap set and
+uses the normal explicit source resolver. An initial private orchestration
+attempt used bootstrap for it and stopped before compiling that package.
+No compiler source changes are involved.
+WordPress revision 43 and final workflows, memory/lifecycle and performance
+gates remain pending. The saved preview is preserved. The original A0
+source/toolchain is retained at `.context/go-regexp-baseline-a0`; its existing
+compiler is relocated, not independently rebuilt. The prototype's local
+f605 developer compiler has also been freshly rebuilt.
 
 The Go browser harness streams program/kernel/image bytes. Its corrected
 regexp smoke passes 3/3 and expected slot-exhaustion smoke passes 3/3.

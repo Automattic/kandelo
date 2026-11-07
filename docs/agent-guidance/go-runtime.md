@@ -30,7 +30,13 @@ Normal builds declare `go-bootstrap-source@1.26.10` and use the shared
 `scripts/build-kandelo-go-toolchain.sh` helper. The declared host Go builds
 that verified source release, which then builds the pinned Go 1.28 source.
 The helper uses private work roots, preserves the sealed input's Git
-metadata for Go's own commit/version generation, and uses `-trimpath`.
+metadata for Go's own commit/version generation. It selects upstream's
+`GO_BUILDER_NAME` builder mode so development `cmd/dist` trims paths in its
+own tools; ambient `GOFLAGS=-trimpath` alone is discarded by that bootstrap.
+Development tool content IDs affect target build IDs, so independently
+built compilers must also be reproducible. Preserve those IDs and verify
+an independent same-key resolver rebuild; do not suppress them to mask
+divergence. Target builds separately use `-trimpath`.
 Keep both native compilers out of target package outputs. A direct developer
 build also needs Go 1.26 or newer as `GOROOT_BOOTSTRAP`; the dev shell's
 Go 1.25.8 cannot bootstrap Go 1.28 directly.

@@ -27,9 +27,12 @@ smallest package example. The resolver supplies verified Go and bootstrap
 source. The shared
 `scripts/build-kandelo-go-toolchain.sh` helper builds Go 1.26.10 with the
 declared host Go, then builds the pinned Go 1.28 compiler with that
-bootstrap. Both native compilers stay in the private work directory;
-`-trimpath` removes those temporary paths from compilation. The normal
-installer records the program's ABI contract and package identity.
+bootstrap. Both native compilers stay in the private work directory.
+The helper selects upstream's `GO_BUILDER_NAME` reproducible-builder mode:
+Go's development bootstrap otherwise discards ambient `GOFLAGS` and keeps
+scratch paths in its tools. Those tool content IDs affect target build IDs
+even when the target uses `-trimpath`. No compiler identity is suppressed.
+The normal installer records the program's ABI contract and package identity.
 Keep that path for maintained packages; rebuilding only a Wasm file does not
 update its package or VFS image.
 
