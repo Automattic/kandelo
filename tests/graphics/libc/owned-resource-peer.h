@@ -22,6 +22,7 @@ struct graphics_peer_ops {
     int (*poll)(struct graphics_peer_file *,uint32_t,int32_t,uint32_t *);
     void (*bo_retain)(struct graphics_peer_file *,uint32_t,uint64_t);
     void (*fork_child)(void);
+    int (*unmap)(void *,uint64_t);
 };
 int graphics_peer_ioctl(const struct graphics_peer_ops *,struct wpk_drm_owned_packet *);
 /* Causal tests can lose only the copyout: the immutable receipt must recover

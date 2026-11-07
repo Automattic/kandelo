@@ -4464,6 +4464,21 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "namespace_custody":"logical-caps-across-processes-only-temporary-work-retains-storage-not-name",
         "recovery": "copied-once-only-receipt-never-replay-unknown-effects"
     }));
+    s.add(Program, "dri_owned_exact_mappings", json!({
+        "request": shared::dri_owned::REQUEST,
+        "version": shared::dri_owned::VERSION,
+        "actions": {"mmap_exact":shared::dri_owned::MMAP_EXACT,"unmap_exact":shared::dri_owned::UNMAP_EXACT},
+        "mmap_body_bytes":40,"mmap_body":["address:u64","length:u64","offset:i64","prot:u32","flags:u32","reserved-zero-or-result-mapping-id:u64"],
+        "unmap_body_bytes":8,"unmap_body":["mapping-id:u64"],
+        "authority":"exact-process-exec-original-ofdid-and-optional-boid",
+        "identity":"nonzero-monotonic-never-recycled-after-failure-release-or-fork",
+        "fork":"rust-parent-metadata-and-full-counter-no-fork-wire-change",
+        "fragments":"retain-original-id-on-split-shrink-new-admission-gets-new-id",
+        "retirement":"all-original-surviving-fragments-only-already-gone-no-op-replacement-untouched",
+        "receipt":"existing-once-only-read-last-ack-no-operation-replay",
+        "constructor":"existing-optional-kernel_owned_mapping_finish-signature-unchanged",
+        "legacy_mmap_action_4":"unchanged"
+    }));
     s.add(Program, "gl_export_fence", json!({
         "ioctl": shared::dri_sync::DRM_IOCTL_WPK_EXPORT_FENCE,
         "ioctl_bytes": core::mem::size_of::<shared::dri_sync::WpkDrmExportFence>(),
@@ -8788,6 +8803,7 @@ fn additive_top_level_section(section: &str) -> bool {
         // Its one-time metadata introduction is additive; established field
         // changes still use the ordinary exact-match breaking classifier.
         "dri_owned_resource"
+            | "dri_owned_exact_mappings"
             | "gl_context_reset_scope"
             | "gl_shader_program_creation"
             | "gl_program_mutation"
@@ -10369,6 +10385,22 @@ mod tests {
         }
         let mut changed=established.clone();changed["dri_owned_resource"]["actions"]["poll"]=json!(99);
         assert!(!classify_compat_change(&established,&changed).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn exact_mapping_actions_are_additive_without_changing_established_owned_wire() {
+        let mut old=base_snapshot();
+        old["dri_owned_resource"]=json!({"request":shared::dri_owned::REQUEST,"actions":{"mmap":4}});
+        let mut new=old.clone();
+        new["dri_owned_exact_mappings"]=json!({"request":shared::dri_owned::REQUEST,"actions":{"mmap_exact":13,"unmap_exact":14},"mmap_body_bytes":40,"unmap_body_bytes":8});
+        let report=classify_compat_change(&old,&new).unwrap();
+        assert!(report.breaking.is_empty(),"{report:?}");
+        assert_eq!(report.additive,vec!["added top-level section \"dri_owned_exact_mappings\""]);
+        assert_eq!(new["dri_owned_resource"],old["dri_owned_resource"]);
+        let mut changed=new.clone();changed["dri_owned_exact_mappings"]["actions"]["unmap_exact"]=json!(15);
+        assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty());
+        changed=new.clone();changed["dri_owned_resource"]["actions"]["mmap"]=json!(13);
+        assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty());
     }
 
     #[test]

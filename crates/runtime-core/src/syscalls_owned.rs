@@ -686,6 +686,7 @@ pub(crate) enum OwnedMappingPlan {
         hold: DriMappingHold,
         bo: u32,
         len: usize,
+        identity: Option<crate::memory::ExactMappingIdentity>,
     },
     Commands {
         allocation: DeviceMapAllocation,
@@ -693,6 +694,7 @@ pub(crate) enum OwnedMappingPlan {
         session: u32,
         display: OfdId,
         len: usize,
+        identity: Option<crate::memory::ExactMappingIdentity>,
     },
 }
 impl OwnedMappingPlan {
@@ -715,7 +717,17 @@ impl OwnedMappingPlan {
             hold,
             bo,
             len,
+            identity: None,
         })
+    }
+    fn with_identity(mut self, identity: Option<crate::memory::ExactMappingIdentity>) -> Self {
+        match &mut self {
+            Self::Bo { identity: slot, .. } | Self::Commands { identity: slot, .. } => *slot = identity,
+        }
+        self
+    }
+    pub(crate) fn identity(&self) -> Option<crate::memory::ExactMappingIdentity> {
+        match self { Self::Bo { identity, .. } | Self::Commands { identity, .. } => *identity }
     }
     pub(crate) fn addr(&self) -> usize {
         match self {
@@ -736,6 +748,7 @@ impl OwnedMappingPlan {
                 mut hold,
                 bo,
                 len,
+                identity,
             } => {
                 let mapped = allocation.addr;
                 // Bind admission is atomic. Rejection leaves old native views
@@ -745,6 +758,7 @@ impl OwnedMappingPlan {
                     return Err(Errno::ENOMEM);
                 }
                 allocation.commit(proc, host, true);
+                if let Some(identity) = identity { proc.memory.publish_exact_mapping(mapped, identity); }
                 proc.dri_bindings.push(crate::process::DriBoBinding {
                     addr: mapped,
                     len,
@@ -760,6 +774,7 @@ impl OwnedMappingPlan {
                 session,
                 display,
                 len,
+                identity,
             } => {
                 if let Err(error) = validate_actor(proc, target) {
                     allocation.rollback(proc);
@@ -779,6 +794,7 @@ impl OwnedMappingPlan {
                     owner.cmdbuf_range = Some((addr, len));
                 }
                 host.gl_bind(proc.pid as i32, addr, len, session, display.0);
+                if let Some(identity) = identity { proc.memory.publish_exact_mapping(addr, identity); }
                 Ok(addr)
             }
         }
@@ -841,6 +857,11 @@ pub(crate) fn owned_resource_prepare_mmap(
             }
             let session = gl.session_id;
             let display = gl.display_file_id.ok_or(Errno::EINVAL)?;
+            let identity = if packet.action == W::MMAP_EXACT {
+                Some(crate::memory::ExactMappingIdentity {
+                    id: proc.memory.reserve_exact_mapping_id()?, source_file: target.id.0, source_bo: None,
+                })
+            } else { None };
             let allocation = DeviceMapAllocation::prepare(proc, addr, len, prot, flags)?;
             return Ok(OwnedMappingPlan::Commands {
                 allocation,
@@ -848,6 +869,7 @@ pub(crate) fn owned_resource_prepare_mmap(
                 session,
                 display,
                 len,
+                identity,
             });
         }
         if offset as u64 & 0xfff != 0 || (offset as u64) >> 12 > u64::from(u32::MAX) {
@@ -871,7 +893,40 @@ pub(crate) fn owned_resource_prepare_mmap(
     {
         return Err(Errno::EINVAL);
     }
-    OwnedMappingPlan::bo(proc, addr, len, prot, flags, bo)
+    let identity = if packet.action == W::MMAP_EXACT {
+        Some(crate::memory::ExactMappingIdentity {
+            id: proc.memory.reserve_exact_mapping_id()?, source_file: target.id.0, source_bo: Some(bo),
+        })
+    } else { None };
+    Ok(OwnedMappingPlan::bo(proc, addr, len, prot, flags, bo)?.with_identity(identity))
+}
+
+pub(crate) fn owned_resource_unmap_exact(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    kind: Kind,
+    source: Option<Kind>,
+    packet: &W::Packet,
+) -> Result<(), Errno> {
+    let Kind::File(target) = kind else { return Err(Errno::EINVAL); };
+    owned_resource_validate(proc, target)?;
+    let source_bo = match source {
+        None => None,
+        Some(Kind::Bo { file, bo, .. }) => {
+            owned_resource_validate(proc, file)?;
+            if file.id != target.id { return Err(Errno::EACCES); }
+            Some(bo)
+        }
+        Some(Kind::File(_)) => return Err(Errno::EINVAL),
+    };
+    let id = u64::from_le_bytes(packet.body[..8].try_into().unwrap());
+    let ranges = proc.memory.exact_mapping_ranges(id, target.id.0, source_bo)?;
+    if ranges.is_empty() { return Ok(()); }
+    // One preflight covers every surviving fragment. Native retirement cannot
+    // partially succeed and then discover missing split/vector capacity.
+    DeviceUnmapPlan::prepare_exact(proc, ranges)?.commit(proc, host);
+    proc.memory.retire_exact_mapping_regions(id);
+    Ok(())
 }
 /// Before mapping refs retire, abort any unpublished constructor while its
 /// old VMAs still retain the split-hold backing required by rollback.

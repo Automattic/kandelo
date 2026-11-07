@@ -47,7 +47,7 @@
 __attribute__((weak)) int _wpk_gbm_window_acquire(const void *, void **, struct wpk_gbm_frame *);
 __attribute__((weak)) int _wpk_gbm_window_prepare(void *, struct wpk_gbm_frame *);
 __attribute__((weak)) void _wpk_gbm_window_finish(void *, int);
-__attribute__((weak)) void _wpk_gbm_window_release(void *);
+WPK_WAYLAND_OPTIONAL void _wpk_gbm_window_release_pending(struct wpk_gbm_window_retirement *);
 
 void glDrawBuffer(GLenum buf);
 void glDrawBuffers(GLsizei n, const GLenum *bufs);
@@ -115,6 +115,11 @@ struct egl_session {
     int fd, base, context_used, surface_used;
     struct wpk_drm_owner *owner;
     uint8_t *cmdbuf_base;
+    struct wpk_drm_mapping mapping;
+    struct wpk_drm_actor_claim construction_claim;
+    /* A failed constructor may retain a live mapping while exact cleanup
+     * retries. Mapping liveness alone must never admit that private session. */
+    int constructing, construction_failed;
     unsigned sync_references;
     uint32_t next_fence_token;
     struct egl_session *next;
@@ -164,6 +169,11 @@ struct egl_context_record {
     /* Created with EGL robust buffer access (host robust-access.ts). */
     int robust_access;
 };
+/* WHY: opaque Wayland cleanup cannot report which native steps survived an ended
+ * callback. ACTIVE may only be completed by its original continuing stack;
+ * an abandoned ACTIVE needs an owning progress-slot API before it can retry.
+ * UNRESOLVED is an explicit incomplete repair, never successful retirement. */
+enum egl_native_release_phase { EGL_RELEASE_IDLE, EGL_RELEASE_ACTIVE, EGL_RELEASE_UNRESOLVED };
 struct egl_surface_record {
     EGLSurface handle;
     struct egl_session *session;
@@ -173,10 +183,19 @@ struct egl_surface_record {
     EGLint largest_pbuffer, mipmap_texture;
     EGLint render_buffer, gl_colorspace, config_id;
     void *native_window, *gbm_lease, *wayland_lease;
+    struct wpk_gbm_window_retirement gbm_retirement;
+    struct wpk_drm_actor_claim release_claim;
+    enum egl_native_release_phase wayland_release_phase;
+    uint64_t release_visit;
     struct egl_surface_record *next;
 };
 struct egl_generation {
     int fd, display_fd, native_fd, initialized, terminate_pending,fork_retired;
+    int constructing;
+    struct wpk_drm_actor_claim construction_claim;
+    struct wpk_drm_actor_claim release_claim;
+    enum egl_native_release_phase wayland_release_phase;
+    uint64_t release_visit;
     struct wpk_drm_owner *owner,*display_owner,*native_owner,*storage_owner;
     void *wayland_hold;
     struct egl_display_record *display;
@@ -192,16 +211,26 @@ struct egl_generation {
     struct egl_generation *next;
 };
 static struct egl_generation *g_generations, *g_generation_releases;
+static struct egl_surface_record *g_surface_releases;
+/* WHY: lifecycle calls and newly withdrawn nodes request a cold pass. Incomplete
+ * native leaves must not turn swap/query unlocks into queue scans. */
+static atomic_int g_release_work;
 static struct wpk_egl_image *g_images;
+static int g_image_retire_pending;
+/* WHY: caller holds both context metadata and the pure publication guard. Queue
+ * publication must share the transaction withdrawing the original graph edge:
+ * a fork between unlink and enqueue would otherwise lose its only owner. */
 static void free_generation_locked(struct egl_generation *generation) {
     if(!generation->wayland_hold) {free(generation);return;}
     generation->next=g_generation_releases;g_generation_releases=generation;
+    atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
 }
-static struct egl_surface_record *g_surface_releases;
 static void free_surface_record_locked(struct egl_surface_record *surface) {
     if (!surface->gbm_lease && !surface->wayland_lease) { free(surface); return; }
+    surface->gbm_retirement.live=surface->gbm_lease;surface->gbm_lease=NULL;
     surface->next = g_surface_releases;
     g_surface_releases = surface;
+    atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
 }
 struct egl_thread_binding {
     uint64_t process_epoch;
@@ -234,33 +263,113 @@ static void lock_context(void) {
     if(!g_facade_epoch)g_facade_epoch=epoch;
     else if(g_facade_epoch!=epoch){mark_inherited_generations_locked(epoch);g_facade_epoch=epoch;}
 }
-static void unlock_context(void) {
-    int cancel_state = g_context_cancel_state;
-    struct egl_surface_record *releases = g_surface_releases;
-    struct egl_generation *generations=g_generation_releases;
-    g_surface_releases = NULL;g_generation_releases=NULL;
-    _wpk_drm_mutex_unlock(&g_context_mutex);
-    while (releases) {
-        struct egl_surface_record *surface = releases;
-        releases = surface->next;
-        if(surface->gbm_lease)_wpk_gbm_window_release(surface->gbm_lease);
-        if(surface->wayland_lease){
+/* WHY: every selection starts from a global root under publication. A callback may
+ * prepend/drain arbitrary nodes, fork, or end its thread: no next/link cursor
+ * may survive it. Independent claims keep a live outer stack busy even when
+ * that same thread reenters in a fork child. */
+static void drain_egl_releases(void) {
+    if(!atomic_load_explicit(&g_release_work,memory_order_relaxed))return;
+    /* Consume only this request, before preparation. Failure retains every
+     * node but retries at the next cold event; it must not allocate/diagnose on
+     * each later frame. A concurrent enqueue leaves its own request set. */
+    if(!atomic_exchange_explicit(&g_release_work,0,memory_order_relaxed))return;
+    if(!_wpk_drm_actor_prepare())return;
+    uint64_t visit=_wpk_owned_resource_nonce();
+    if(!visit){fprintf(stderr,"Kandelo EGL: retirement visit exhausted; queues retained\n");return;}
+    size_t surface_budget=0,generation_budget=0;
+    _wpk_drm_owned_publication_begin();
+    for(struct egl_surface_record *p=g_surface_releases;p;p=p->next)surface_budget++;
+    for(struct egl_generation *p=g_generation_releases;p;p=p->next)generation_budget++;
+    _wpk_drm_owned_publication_end();
+    /* A fixed initial budget bounds this cold run even when callbacks enqueue
+     * more work or nested runs change visit marks. Failed capsules retry only
+     * at another lifecycle/enqueue event, never on every draw/frame unlock. */
+    while(surface_budget--){
+        struct egl_surface_record *surface=NULL;
+        int unresolved=0;
+        _wpk_drm_owned_publication_begin();
+        for(struct egl_surface_record *p=g_surface_releases;p;p=p->next){
+            if(p->release_visit==visit || p->wayland_release_phase==EGL_RELEASE_UNRESOLVED)continue;
+            if(!_wpk_drm_actor_try_claim_locked(&p->release_claim))continue;
+            surface=p;p->release_visit=visit;
+            if(p->wayland_release_phase==EGL_RELEASE_ACTIVE || (p->inherited&&p->wayland_lease)){
+                p->wayland_release_phase=EGL_RELEASE_UNRESOLVED;unresolved=1;
+            }
+            break;
+        }
+        _wpk_drm_owned_publication_end();
+        if(!surface)break;
+        if(unresolved)fprintf(stderr,"Kandelo EGL: Wayland surface release lacks durable ended/inherited native progress; custody unresolved\n");
+        if(!unresolved && (surface->gbm_retirement.live || surface->gbm_retirement.retired)){
+            if(!_wpk_gbm_window_release_pending)abort();
+            _wpk_gbm_window_release_pending(&surface->gbm_retirement);
+        }
+        if(!unresolved && surface->wayland_lease){
+            _wpk_drm_owned_publication_begin();
+            surface->wayland_release_phase=EGL_RELEASE_ACTIVE;
+            _wpk_drm_owned_publication_end();
             if(surface->inherited){
                 if(!_wpk_wlegl_release_inherited)abort();
                 _wpk_wlegl_release_inherited(surface->wayland_lease);
             }else _wpk_wlegl_release(surface->wayland_lease);
+            _wpk_drm_owned_publication_begin();
+            surface->wayland_lease=NULL;surface->wayland_release_phase=EGL_RELEASE_IDLE;
+            _wpk_drm_owned_publication_end();
         }
-        free(surface);
+        _wpk_drm_owned_publication_begin();
+        _wpk_drm_actor_release_locked(&surface->release_claim);
+        if(!surface->gbm_retirement.live && !surface->gbm_retirement.retired && !surface->wayland_lease){
+            struct egl_surface_record **link=&g_surface_releases;
+            while(*link && *link!=surface)link=&(*link)->next;
+            if(!*link)abort();
+            *link=surface->next;free(surface);
+        }
+        _wpk_drm_owned_publication_end();
     }
-    while(generations) {
-        struct egl_generation *generation=generations;generations=generation->next;
-        if(generation->fork_retired){
-            if(!_wpk_wl_display_release_inherited)abort();
-            _wpk_wl_display_release_inherited(generation->wayland_hold);
-        }else _wpk_wl_display_release(generation->wayland_hold);
-        free(generation);
+    while(generation_budget--){
+        struct egl_generation *generation=NULL;
+        int unresolved=0;
+        _wpk_drm_owned_publication_begin();
+        for(struct egl_generation *p=g_generation_releases;p;p=p->next){
+            if(p->release_visit==visit || p->wayland_release_phase==EGL_RELEASE_UNRESOLVED)continue;
+            if(!_wpk_drm_actor_try_claim_locked(&p->release_claim))continue;
+            generation=p;p->release_visit=visit;
+            if(p->wayland_release_phase==EGL_RELEASE_ACTIVE || (p->fork_retired&&p->wayland_hold)){
+                p->wayland_release_phase=EGL_RELEASE_UNRESOLVED;unresolved=1;
+            }
+            break;
+        }
+        _wpk_drm_owned_publication_end();
+        if(!generation)break;
+        if(unresolved)fprintf(stderr,"Kandelo EGL: Wayland display release lacks durable ended/inherited native progress; custody unresolved\n");
+        else if(generation->wayland_hold){
+            _wpk_drm_owned_publication_begin();
+            generation->wayland_release_phase=EGL_RELEASE_ACTIVE;
+            _wpk_drm_owned_publication_end();
+            if(generation->fork_retired){
+                if(!_wpk_wl_display_release_inherited)abort();
+                _wpk_wl_display_release_inherited(generation->wayland_hold);
+            }else _wpk_wl_display_release(generation->wayland_hold);
+            _wpk_drm_owned_publication_begin();
+            generation->wayland_hold=NULL;generation->wayland_release_phase=EGL_RELEASE_IDLE;
+            _wpk_drm_owned_publication_end();
+        }
+        _wpk_drm_owned_publication_begin();
+        _wpk_drm_actor_release_locked(&generation->release_claim);
+        if(!generation->wayland_hold){
+            struct egl_generation **link=&g_generation_releases;
+            while(*link && *link!=generation)link=&(*link)->next;
+            if(!*link)abort();
+            *link=generation->next;free(generation);
+        }
+        _wpk_drm_owned_publication_end();
     }
-    pthread_setcancelstate(cancel_state, NULL);
+}
+static void unlock_context(void) {
+    int cancel_state=g_context_cancel_state;
+    _wpk_drm_mutex_unlock(&g_context_mutex);
+    drain_egl_releases();
+    pthread_setcancelstate(cancel_state,NULL);
 }
 /* GL siblings can retire while another thread terminates/reinitializes EGL.
  * Keep image references and per-generation GEM owners under one lock. The
@@ -279,7 +388,9 @@ static _Atomic uintptr_t g_next_image_scope;
 static uint64_t g_image_epoch, g_fork_image_scope;
 
 static void image_release_locked(struct wpk_egl_image *image);
-static int publish_image(struct wpk_egl_image *image, struct egl_generation *generation);
+static int publish_image(struct wpk_egl_image *,struct egl_generation *);
+static int reserve_image(struct wpk_egl_image *,struct egl_generation *);
+static void abandon_image(struct wpk_egl_image *);
 static void lock_images(void) {
     _wpk_drm_mutex_lock(&g_image_mutex);
     uint64_t epoch = _wpk_drm_process_generation();
@@ -305,6 +416,12 @@ static void lock_images(void) {
             image = next;
         }
 
+    }
+    if(g_image_retire_pending){
+        g_image_retire_pending=0;
+        for(struct wpk_egl_image *image=g_images,*next;image;image=next){
+            next=image->next;image_release_locked(image);
+        }
     }
 }
 static void image_scope_forked(void) {
@@ -402,11 +519,31 @@ static int register_binding_thread(void) {
  * Actual C graph retirement is preflighted later by eglInitialize, where an
  * allocation failure has an honest EGL_BAD_ALLOC result and retained custody. */
 static void mark_inherited_generations_locked(uint64_t epoch) {
+    /* WHY: withdrawn nodes have left the generation graph but still own native
+     * leaves. A copied idle leaf cannot safely walk an uncoordinated inherited
+     * Wayland graph. Classify it here; the drainer diagnoses unresolved custody
+     * until its owner supplies durable progress/snapshot APIs. This is an open
+     * repair requirement, not a supported retention boundary. Live continuing
+     * callback claims remain busy and complete their original stack normally. */
+    _wpk_drm_owned_publication_begin();
+    for(struct egl_surface_record *p=g_surface_releases;p;p=p->next)p->inherited=1;
+    for(struct egl_generation *p=g_generation_releases;p;p=p->next)p->fork_retired=1;
+    if(g_surface_releases||g_generation_releases)atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
+    _wpk_drm_owned_publication_end();
     if(g_fork_surviving_binding)
         *g_fork_surviving_binding=(struct egl_thread_binding){.process_epoch=epoch};
     g_empty_binding=(struct egl_thread_binding){.process_epoch=epoch};
     for(struct egl_generation *g=g_generations;g;g=g->next){
         if(g->fork_retired)continue;
+        _wpk_drm_owned_publication_begin();
+        int live_constructor=g->constructing&&_wpk_drm_actor_claim_live_locked(&g->construction_claim);
+        if(g->constructing&&!live_constructor){g->constructing=0;_wpk_drm_actor_release_locked(&g->construction_claim);}
+        for(struct egl_session *session=g->sessions;session;session=session->next)
+            if(session->constructing&&!_wpk_drm_actor_claim_live_locked(&session->construction_claim)){
+                session->constructing=0;_wpk_drm_actor_release_locked(&session->construction_claim);
+            }
+        _wpk_drm_owned_publication_end();
+        if(live_constructor)continue;
         if(g->display->active==g){g->display->active=NULL;g->display->inherited_storage=g;}
         g->initialized=0;g->terminate_pending=1;g->fork_retired=1;
         for(struct egl_context_record *c=g->contexts;c;c=c->next){
@@ -729,6 +866,7 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
 static int probe_surface_limits(struct wpk_drm_owner *owner, uint32_t limits[3], uint32_t *sample_mask);
 EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
     egl_call_begin();
+    atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
     lock_context();
     EGLBoolean result = initialize_locked(dpy, major, minor);
     unlock_context();
@@ -754,110 +892,91 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
         return EGL_TRUE;
     }
     if(!cleanup_inherited_generations_locked()){g_last_error=errno==ENOMEM?EGL_BAD_ALLOC:EGL_NOT_INITIALIZED;return EGL_FALSE;}
-    generation=NULL;
-    int native_fd=-1,display_fd=-1,fd=-1;
-    struct wpk_drm_owner *native_owner=NULL,*display_owner=NULL,*owner=NULL,*storage_owner=NULL;
-    void *p=MAP_FAILED;
-    EGLint failure=EGL_NOT_INITIALIZED;
-    if(display->native_kind==NATIVE_WAYLAND) {
-        generation=calloc(1,sizeof *generation);
-        if(!generation) {g_last_error=EGL_BAD_ALLOC;return EGL_FALSE;}
-        if(!_wpk_wl_display_acquire || !_wpk_wl_display_release || !_wpk_wl_display_alive)goto fail;
-        if(!(generation->wayland_hold=_wpk_wl_display_acquire(display->native_device,display->native_identity)))goto resource_fail;
-        if(_wpk_drm_owned_open(WPK_DRM_OWNED_CARD_NODE,&native_owner)!=0)goto resource_fail;
-    }else if(display==&g_default_display){
-        if(_wpk_drm_owned_open(WPK_DRM_OWNED_CARD_NODE,&native_owner)!=0)goto resource_fail;
-    }else {
-        if(!_wpk_gbm_device_acquire_owner)goto fail;
-        if(_wpk_gbm_device_acquire_owner(display->native_device,display->native_identity,&native_owner)!=0)goto resource_fail;
+    for(struct egl_generation *g=g_generations;g;g=g->next)if(g->display==display&&g->constructing){
+        g_last_error=EGL_NOT_INITIALIZED;return EGL_FALSE;
     }
-    /* A Wayland socket is never DRM-file authority. Its native generation
-     * owns a separate real DRM file and a retained exact connection lease. */
-    if(_wpk_drm_owned_open(WPK_DRM_OWNED_RENDER_NODE,&display_owner)!=0)goto resource_fail;
-    struct gl_init_info root={WPK_GL_OP_VERSION,WPK_GL_SESSION_DISPLAY,native_fd,0};
-    if(_wpk_drm_owned_ioctl(display_owner,GLIO_INIT,&root,sizeof root,native_owner,0,NULL)!=0) {
-        int error=errno;
-        fprintf(stderr,"eglInitialize: GLIO_INIT(op_version=%u) failed: errno=%d\n",
-            (unsigned)WPK_GL_OP_VERSION,error);
+    if(!_wpk_drm_actor_prepare()){g_last_error=EGL_BAD_ALLOC;return EGL_FALSE;}
+    generation=calloc(1,sizeof *generation);
+    struct egl_session *session=calloc(1,sizeof *session);
+    if(!generation||!session){free(generation);free(session);g_last_error=EGL_BAD_ALLOC;return EGL_FALSE;}
+    uint64_t construction_epoch=_wpk_drm_process_generation();
+    generation->display=display;generation->fd=generation->display_fd=generation->native_fd=-1;
+    session->generation=generation;session->fd=-1;session->base=1;
+    /* Root private constructor custody before OPEN or mmap can have an
+     * effect. Public display selection remains closed until the final seal;
+     * a stack-local address/FILE pair cannot survive a foreign-thread fork. */
+    _wpk_drm_owned_publication_begin();
+    generation->constructing=session->constructing=1;
+    if(!_wpk_drm_actor_try_claim_locked(&generation->construction_claim)||
+       !_wpk_drm_actor_try_claim_locked(&session->construction_claim))abort();
+    generation->sessions=session;generation->next=g_generations;g_generations=generation;
+    _wpk_drm_owned_publication_end();
+    EGLint failure=EGL_NOT_INITIALIZED;
+    if(display->native_kind==NATIVE_WAYLAND){
+        if(!_wpk_wl_display_acquire||!_wpk_wl_display_release||!_wpk_wl_display_alive)goto fail;
+        if(!(generation->wayland_hold=_wpk_wl_display_acquire(display->native_device,display->native_identity)))goto resource_fail;
+        if(_wpk_drm_owned_open(WPK_DRM_OWNED_CARD_NODE,&generation->native_owner)!=0)goto resource_fail;
+    }else if(display==&g_default_display){
+        if(_wpk_drm_owned_open(WPK_DRM_OWNED_CARD_NODE,&generation->native_owner)!=0)goto resource_fail;
+    }else{
+        if(!_wpk_gbm_device_acquire_owner)goto fail;
+        if(_wpk_gbm_device_acquire_owner(display->native_device,display->native_identity,&generation->native_owner)!=0)goto resource_fail;
+    }
+    if(_wpk_drm_owned_open(WPK_DRM_OWNED_RENDER_NODE,&generation->display_owner)!=0)goto resource_fail;
+    struct gl_init_info root={WPK_GL_OP_VERSION,WPK_GL_SESSION_DISPLAY,-1,0};
+    if(_wpk_drm_owned_ioctl(generation->display_owner,GLIO_INIT,&root,sizeof root,generation->native_owner,0,NULL)!=0){
+        int error=errno;fprintf(stderr,"eglInitialize: GLIO_INIT(op_version=%u) failed: errno=%d\n",(unsigned)WPK_GL_OP_VERSION,error);
         errno=error;goto resource_fail;
     }
-    if(_wpk_drm_owned_open(WPK_DRM_OWNED_RENDER_NODE,&owner)!=0)goto resource_fail;
-    struct gl_init_info object={WPK_GL_OP_VERSION,WPK_GL_SESSION_OBJECTS,display_fd,root.display_id};
-    if(_wpk_drm_owned_ioctl(owner,GLIO_INIT,&object,sizeof object,display_owner,0,NULL)!=0)goto resource_fail;
-    uint64_t mapped=0;
-    if(_wpk_drm_owned_map(owner,0,WPK_GL_CMDBUF_LEN,0,PROT_READ|PROT_WRITE,MAP_SHARED,&mapped)!=0)goto resource_fail;
-    p=(void *)(uintptr_t)mapped;
-    if(p==MAP_FAILED) {
-        fprintf(stderr,"eglInitialize: cmdbuf mmap(len=%u) failed: errno=%d\n",
-            (unsigned)WPK_GL_CMDBUF_LEN,errno);goto fail;
-    }
-    /* EGL 1.5 section 3.2: "EGL_NOT_INITIALIZED is generated if display
-     * cannot be initialized." A host without a GLES renderer (Node without
-     * an embedder WebGL2/OffscreenCanvas, or a browser where WebGL2 context
-     * creation fails) has no display to initialize, as Mesa reports
-     * EGL_NOT_INITIALIZED when no driver loads. The surface capability query
-     * is the host's renderer probe; its limits are kept for the pbuffer
-     * attributes. Without this, initialization succeeded and the missing
-     * renderer surfaced later as EGL_BAD_ALLOC from window creation. */
-    uint32_t limits[3], sample_mask;
-    int probed=probe_surface_limits(owner,limits,&sample_mask);
-    if(probed<0) {failure=EGL_BAD_ALLOC;goto fail;}
-    if(!probed) {
-        fprintf(stderr,"eglInitialize: no GLES renderer is available on this host\n");goto fail;
-    }
-    if(!generation)generation=calloc(1,sizeof *generation);
-    if(!generation) {failure=EGL_BAD_ALLOC;goto fail;}
-    memcpy(generation->pbuffer_limits,limits,sizeof limits);
-    generation->sample_mask=sample_mask;
+    if(_wpk_drm_owned_open(WPK_DRM_OWNED_RENDER_NODE,&session->owner)!=0)goto resource_fail;
+    generation->owner=session->owner; /* alias; the session owns this edge */
+    struct gl_init_info object={WPK_GL_OP_VERSION,WPK_GL_SESSION_OBJECTS,-1,root.display_id};
+    if(_wpk_drm_owned_ioctl(session->owner,GLIO_INIT,&object,sizeof object,generation->display_owner,0,NULL)!=0)goto resource_fail;
+    if(_wpk_drm_owned_map_exact(&session->mapping,session->owner,NULL,0,WPK_GL_CMDBUF_LEN,0,
+        PROT_READ|PROT_WRITE,MAP_SHARED)!=0)goto resource_fail;
+    session->cmdbuf_base=(void *)(uintptr_t)session->mapping.address;
+    /* A successful native init alone does not prove a usable GLES renderer.
+     * Preserve the ordinary capability probe and its honest failure result. */
+    uint32_t limits[3],sample_mask;
+    int probed=probe_surface_limits(session->owner,limits,&sample_mask);
+    if(probed<0){failure=EGL_BAD_ALLOC;goto fail;}
+    if(!probed){fprintf(stderr,"eglInitialize: no GLES renderer is available on this host\n");goto fail;}
     struct egl_generation *inherited=display->inherited_storage;
-    struct wpk_drm_owner *storage=inherited?inherited->storage_owner:owner;
-    if(!storage||_wpk_drm_owned_retain(storage)!=0){failure=EGL_BAD_ALLOC;goto fail;}
-    storage_owner=storage;
-    struct egl_session *session=calloc(1,sizeof *session);
-    if(!session) {failure=EGL_BAD_ALLOC;goto fail;}
-    *session =
-        (struct egl_session){.generation = generation, .owner=owner, .fd = fd, .base = 1, .cmdbuf_base = p};
-    generation->sessions = session;
-    generation->owner=owner;generation->display_owner=display_owner;generation->native_owner=native_owner;
-    generation->storage_owner=storage_owner;
-    generation->fd = fd;
-    generation->display_fd = display_fd;
-    generation->native_fd = native_fd;
-    generation->display = display;
-    generation->id = root.display_id;
-    generation->initialized = 1;
-    generation->next = g_generations;
-    g_generations = generation;
-    display->active = generation;
+    struct wpk_drm_owner *storage=inherited?inherited->storage_owner:session->owner;
+    int storage_cancel;
+    if(!storage||_wpk_drm_owned_retain_begin(storage,&storage_cancel)!=0){failure=EGL_BAD_ALLOC;goto fail;}
+    generation->storage_owner=storage;
+    _wpk_drm_owned_retain_end(storage,storage_cancel);
+    if(construction_epoch!=_wpk_drm_process_generation()||generation->fork_retired)goto fail;
+    _wpk_drm_owned_publication_begin();
+    memcpy(generation->pbuffer_limits,limits,sizeof limits);generation->sample_mask=sample_mask;
+    generation->id=root.display_id;generation->initialized=1;
+    generation->constructing=session->constructing=0;
+    _wpk_drm_actor_release_locked(&session->construction_claim);
+    _wpk_drm_actor_release_locked(&generation->construction_claim);
+    display->active=generation;
+    _wpk_drm_owned_publication_end();
     if(inherited){
-        /* The child renderer is fresh, but public BO handles still name the
-         * inherited namespace. Recreating them on the new render file would
-         * collide/reassign scalar names and revoke live EGLImage storage. */
         generation->imported_bos=inherited->imported_bos;inherited->imported_bos=NULL;
         lock_images();
         for(struct wpk_egl_image *image=g_images;image;image=image->next)
             if(image->generation==inherited)image->generation=generation;
         _wpk_drm_mutex_unlock(&g_image_mutex);
-        display->inherited_storage=NULL;
-        _wpk_drm_owned_retire(&inherited->storage_owner);
+        display->inherited_storage=NULL;_wpk_drm_owned_retire(&inherited->storage_owner);
         retire_inherited_skeletons_locked();
     }
-    if (major) *major = 1;
-    if (minor) *minor = 5;
-    return EGL_TRUE;
+    if(major)*major=1;if(minor)*minor=5;return EGL_TRUE;
 resource_fail:
-    /* WHY: failure to allocate an exact-file receiver is resource exhaustion,
-     * even before native initialization begins. Reporting NOT_INITIALIZED
-     * hides a usable renderer behind a local allocation failure. Classify
-     * before retirement, whose ioctls may overwrite the original errno. */
     if(initialization_resource_exhausted(errno))failure=EGL_BAD_ALLOC;
 fail:
-    if(p!=MAP_FAILED)munmap(p,WPK_GL_CMDBUF_LEN);
-    _wpk_drm_owned_retire(&storage_owner);
-    _wpk_drm_owned_retire(&owner);
-    _wpk_drm_owned_retire(&display_owner);
-    _wpk_drm_owned_retire(&native_owner);
-    if(generation)free_generation_locked(generation);
+    _wpk_drm_owned_publication_begin();
+    generation->constructing=session->constructing=0;generation->terminate_pending=1;
+    if(construction_epoch!=_wpk_drm_process_generation())generation->fork_retired=1;
+    _wpk_drm_actor_release_locked(&session->construction_claim);
+    _wpk_drm_actor_release_locked(&generation->construction_claim);
+    _wpk_drm_owned_publication_end();
+    if(generation->fork_retired)cleanup_inherited_generations_locked();
+    else retire_pending_resources_locked(generation);
     g_last_error=failure;return EGL_FALSE;
 }
 
@@ -1139,48 +1258,55 @@ static uint32_t transfer_bo_handle(struct wpk_drm_owner *,struct wpk_drm_owner *
                                      struct wpk_drm_owner *,uint32_t,struct wpk_drm_owner **);
 static int egl_bo_ioctl(struct wpk_drm_owner *,struct wpk_drm_owner *,unsigned long,void *,uint32_t);
 static struct wpk_drm_owner *public_bo_owner(struct egl_generation *,uint32_t);
-static struct egl_session *object_session(struct egl_generation *generation, int context) {
-    for (struct egl_session *p = generation->sessions; p; p = p->next)
-        if (!(context ? p->context_used : p->surface_used))
-            return p;
-    struct egl_session *p = calloc(1, sizeof *p);
-    if (!p)
-        return NULL;
+static void retire_empty_sessions(struct egl_generation *);
+static struct egl_session *object_session(struct egl_generation *generation,int context) {
+    for(struct egl_session *p=generation->sessions;p;p=p->next)
+        if(!p->constructing&&!p->construction_failed&&_wpk_drm_mapping_phase(&p->mapping)==WPK_DRM_MAPPING_LIVE&&
+           !(context?p->context_used:p->surface_used))return p;
+    if(!_wpk_drm_actor_prepare())return NULL;
+    struct egl_session *p=calloc(1,sizeof *p);if(!p)return NULL;
+    uint64_t epoch=_wpk_drm_process_generation();p->generation=generation;p->fd=-1;
+    _wpk_drm_owned_publication_begin();
+    p->constructing=1;if(!_wpk_drm_actor_try_claim_locked(&p->construction_claim))abort();
+    p->next=generation->sessions;generation->sessions=p;
+    _wpk_drm_owned_publication_end();
     if(_wpk_drm_owned_open(WPK_DRM_OWNED_RENDER_NODE,&p->owner)!=0)goto fail;
-    p->fd=-1;
-    struct gl_init_info info = {WPK_GL_OP_VERSION, WPK_GL_SESSION_OBJECTS, generation->display_fd,
-                                generation->id};
-    if (_wpk_drm_owned_ioctl(p->owner,GLIO_INIT,&info,sizeof info,generation->display_owner,0,NULL) != 0)
-        goto fail;
-    uint64_t mapped=0;
-    if(_wpk_drm_owned_map(p->owner,0,WPK_GL_CMDBUF_LEN,0,PROT_READ|PROT_WRITE,MAP_SHARED,&mapped)!=0)goto fail;
-    void *map=(void *)(uintptr_t)mapped;
-    p->generation = generation;
-    p->cmdbuf_base = map;
-    p->next = generation->sessions;
-    generation->sessions = p;
-    return p;
-fail:
-    _wpk_drm_owned_retire(&p->owner);
-    free(p);
-    return NULL;
-}
+    struct gl_init_info info={WPK_GL_OP_VERSION,WPK_GL_SESSION_OBJECTS,generation->display_fd,generation->id};
+    if(_wpk_drm_owned_ioctl(p->owner,GLIO_INIT,&info,sizeof info,generation->display_owner,0,NULL)!=0)goto fail;
+    if(_wpk_drm_owned_map_exact(&p->mapping,p->owner,NULL,0,WPK_GL_CMDBUF_LEN,0,PROT_READ|PROT_WRITE,MAP_SHARED)!=0)goto fail;
+    if(epoch!=_wpk_drm_process_generation()||generation->fork_retired){errno=EIO;goto fail;}
+    _wpk_drm_owned_publication_begin();
+    p->cmdbuf_base=(void *)(uintptr_t)p->mapping.address;p->constructing=0;
+    _wpk_drm_actor_release_locked(&p->construction_claim);
+    _wpk_drm_owned_publication_end();return p;
+fail:{
+    int error=errno;
+    _wpk_drm_owned_publication_begin();p->constructing=0;p->construction_failed=1;
+    _wpk_drm_actor_release_locked(&p->construction_claim);_wpk_drm_owned_publication_end();
+    /* The rooted node, not this stack, remains responsible if read-only
+     * recovery cannot yet prove whether mapping construction completed. */
+    retire_empty_sessions(generation);errno=error;return NULL;
+}}
+
 /* Native termination runs while the session is still discoverable. Transfer
  * its exact file edge and withdraw the node together before unmap/free. */
 static void retire_empty_sessions(struct egl_generation *generation) {
     struct egl_session **link = &generation->sessions;
     while (*link) {
         struct egl_session *p = *link;
-        if (p->base || p->context_used || p->surface_used || p->sync_references) {
+        if (p->constructing || p->base || p->context_used || p->surface_used || p->sync_references) {
             link = &p->next;
             continue;
         }
-        egl_device_ioctl(p->owner, GLIO_TERMINATE, NULL);
+        if(_wpk_drm_owned_unmap_exact(&p->mapping)<0){
+            fprintf(stderr,"Kandelo EGL: session mapping retirement failed; custody retained\n");
+            link=&p->next;continue;
+        }
+        if(p->owner)egl_device_ioctl(p->owner,GLIO_TERMINATE,NULL);
         _wpk_drm_owned_publication_begin();
         _wpk_drm_owned_defer_locked(&p->owner);
         *link = p->next;
         _wpk_drm_owned_publication_end();
-        munmap(p->cmdbuf_base, WPK_GL_CMDBUF_LEN);
         free(p);
         _wpk_drm_owned_drain();
     }
@@ -1495,7 +1621,7 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
     if (is_gbm) {
         struct wpk_gbm_frame frame;
         if (!_wpk_gbm_window_acquire || !_wpk_gbm_window_prepare ||
-            !_wpk_gbm_window_finish || !_wpk_gbm_window_release)
+            !_wpk_gbm_window_finish || !_wpk_gbm_window_release_pending)
             goto fail;
         if (!_wpk_gbm_window_acquire((void *)win, &surface->gbm_lease, &frame)) {
             if (errno == EOPNOTSUPP) error = EGL_BAD_MATCH;
@@ -1562,7 +1688,9 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
     return surface->handle;
 fail:
     if(wayland_prepared)_wpk_wlegl_finish(surface->wayland_lease,0);
+    _wpk_drm_owned_publication_begin();
     free_surface_record_locked(surface);
+    _wpk_drm_owned_publication_end();
     retire_empty_sessions(generation);
     g_last_error = error;
     return EGL_NO_SURFACE;
@@ -2082,6 +2210,7 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
 }
 EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface handle) {
     egl_call_begin();
+    atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
     lock_context();
     EGLBoolean result = EGL_FALSE;
     struct egl_generation *g = active_generation(dpy);
@@ -2104,6 +2233,7 @@ EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface handle) {
 }
 EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext handle) {
     egl_call_begin();
+    atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
     lock_context();
     EGLBoolean result = EGL_FALSE;
     struct egl_generation *g = active_generation(dpy);
@@ -2154,7 +2284,7 @@ static int reset_group_has_no_live_context(struct egl_generation *g,struct egl_c
     return all_reset || atomic_load_explicit(&retiring->reset_group->lost,memory_order_relaxed);
 }
 static void retire_pending_resources_locked(struct egl_generation *g) {
-    if(g->fork_retired)return;
+    if(g->fork_retired||g->constructing)return;
     retire_syncs_locked(g);
     struct egl_context_record **context = &g->contexts;
     while (*context) {
@@ -2224,23 +2354,28 @@ static void retire_pending_resources_locked(struct egl_generation *g) {
         for (struct egl_context_record *c = g->contexts; c; c = c->next)
             if (c->owner && (c->owner->draw == p || c->owner->read == p))
                 detach_binding(c->owner);
+        _wpk_drm_owned_publication_begin();
         *surface = p->next;
         p->session->surface_used = 0;
         free_surface_record_locked(p);
+        _wpk_drm_owned_publication_end();
     }
     retire_empty_sessions(g);
     if (!g->terminate_pending || g->contexts || g->surfaces || g->syncs)
         return;
     retire_imported_images(g);
     while (g->sessions) {
-        struct egl_session *p = g->sessions;
-        egl_device_ioctl(p->owner, GLIO_TERMINATE, NULL);
+        struct egl_session *p=g->sessions;
+        if(p->constructing)return;
+        if(_wpk_drm_owned_unmap_exact(&p->mapping)<0){
+            fprintf(stderr,"Kandelo EGL: base mapping retirement failed; generation retained\n");return;
+        }
+        if(p->owner)egl_device_ioctl(p->owner,GLIO_TERMINATE,NULL);
         _wpk_drm_owned_publication_begin();
         if(g->owner==p->owner)g->owner=NULL; /* alias, not another C edge */
         _wpk_drm_owned_defer_locked(&p->owner);
         g->sessions = p->next;
         _wpk_drm_owned_publication_end();
-        munmap(p->cmdbuf_base, WPK_GL_CMDBUF_LEN);
         free(p);
         _wpk_drm_owned_drain();
     }
@@ -2260,9 +2395,9 @@ static void retire_pending_resources_locked(struct egl_generation *g) {
         link = &(*link)->next;
     if (*link)
         *link = g->next;
+    free_generation_locked(g);
     _wpk_drm_owned_publication_end();
     _wpk_drm_mutex_unlock(&g_image_mutex);
-    free_generation_locked(g);
     _wpk_drm_owned_drain();
 }
 static void retire_generations_locked(void) {
@@ -2273,6 +2408,7 @@ static void retire_generations_locked(void) {
 }
 EGLBoolean eglTerminate(EGLDisplay dpy) {
     egl_call_begin();
+    atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
     lock_context();
     EGLBoolean result = EGL_FALSE;
     struct egl_generation *g = active_generation(dpy);
@@ -2351,10 +2487,17 @@ static void retire_inherited_skeletons_locked(void) {
         for(struct wpk_egl_image *image=g_images;image;image=image->next)if(image->generation==g){image_live=1;break;}
         _wpk_drm_mutex_unlock(&g_image_mutex);
         if(image_live){slot=&g->next;continue;}
+        _wpk_drm_owned_publication_begin();
         *slot=g->next;free_generation_locked(g);
+        _wpk_drm_owned_publication_end();
     }
 }
 static int cleanup_inherited_generations_locked(void) {
+    for(struct egl_generation *g=g_generations;g;g=g->next){
+        if(g->constructing){errno=EBUSY;return 0;}
+        for(struct egl_session *session=g->sessions;session;session=session->next)
+            if(session->constructing){errno=EBUSY;return 0;}
+    }
     lock_images();
     _wpk_drm_mutex_unlock(&g_image_mutex);
     size_t count=0;
@@ -2395,14 +2538,22 @@ static int cleanup_inherited_generations_locked(void) {
             _wpk_drm_owned_defer_locked(&sync->native_owner);g->syncs=sync->next;
             _wpk_drm_owned_publication_end();free_sync(sync);
         }
-        while(g->surfaces){struct egl_surface_record *p=g->surfaces;g->surfaces=p->next;p->inherited=1;free_surface_record_locked(p);}
+        while(g->surfaces){
+            _wpk_drm_owned_publication_begin();
+            struct egl_surface_record *p=g->surfaces;g->surfaces=p->next;
+            p->inherited=1;free_surface_record_locked(p);
+            _wpk_drm_owned_publication_end();
+        }
         while(g->sessions){
             struct egl_session *session=g->sessions;
+            if(session->constructing){errno=EBUSY;return 0;}
+            if(_wpk_drm_owned_unmap_exact(&session->mapping)<0){
+                fprintf(stderr,"Kandelo EGL: inherited mapping retirement failed; custody retained\n");return 0;
+            }
             _wpk_drm_owned_publication_begin();
             if(g->owner==session->owner)g->owner=NULL;
             _wpk_drm_owned_defer_locked(&session->owner);g->sessions=session->next;
             _wpk_drm_owned_publication_end();
-            if(session->cmdbuf_base)munmap(session->cmdbuf_base,WPK_GL_CMDBUF_LEN);
             free(session);_wpk_drm_owned_drain();
         }
         g->owner=NULL;
@@ -3176,6 +3327,7 @@ EGLBoolean eglWaitClient(void) {
 
 EGLBoolean eglReleaseThread(void) {
     egl_call_begin();
+    atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
     lock_context();
     struct egl_thread_binding *binding = &g_thread_binding;
     (void)release_current_locked(1);
@@ -3695,6 +3847,36 @@ static uint32_t adopt_bo_handle(struct egl_generation *generation,struct wpk_drm
     uint32_t local=transfer_bo_handle(source,*original,-1,generation->storage_owner,handle,adopted);
     _wpk_drm_owned_retire(original);return local;
 }
+/* Constructor scratch receivers belong to the already-rooted private image.
+ * A temporary PRIME descriptor/capability on a peer's stack disappears at
+ * fork; retaining only the final BO would strand an accepted intermediate. */
+static uint32_t import_image_bo(struct wpk_egl_image *image,int fd,struct wpk_drm_owner **bo) {
+    int rc=_wpk_drm_owned_acquire(fd,0,&image->construction_file);
+    struct wpk_drm_prime_handle request={.fd=-1};
+    if(!rc)rc=_wpk_drm_owned_ioctl(image->source_owner,WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE,
+        &request,sizeof request,image->construction_file,WPK_DRM_OWNED_CAPTURE_BO,bo);
+    int error=errno;_wpk_drm_owned_retire(&image->construction_file);errno=error;
+    return rc?0:request.handle;
+}
+static uint32_t adopt_image_bo(struct wpk_egl_image *image,struct wpk_drm_owner *source,uint32_t handle) {
+    if(source==image->source_owner){
+        int cancel_state;
+        if(_wpk_drm_owned_retain_begin(image->construction_bo,&cancel_state)!=0)return 0;
+        image->bo_owner=image->construction_bo;
+        _wpk_drm_owned_retain_end(image->construction_bo,cancel_state);
+    }else{
+        struct wpk_drm_prime_handle exported={.handle=handle,.flags=O_CLOEXEC|O_RDWR,.fd=-1};
+        struct wpk_drm_bo_binding proof={0,image->construction_bo};
+        if(_wpk_drm_owned_ioctl_bo(source,WPK_DRM_IOCTL_PRIME_HANDLE_TO_FD,&exported,sizeof exported,
+            NULL,WPK_DRM_OWNED_CAPTURE_FD,&image->construction_file,&proof,1)!=0)return 0;
+        struct wpk_drm_prime_handle imported={.fd=-1};
+        if(_wpk_drm_owned_ioctl(image->source_owner,WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE,&imported,sizeof imported,
+            image->construction_file,WPK_DRM_OWNED_CAPTURE_BO,&image->bo_owner)!=0)return 0;
+        handle=imported.handle;
+    }
+    _wpk_drm_owned_retire(&image->construction_file);
+    _wpk_drm_owned_retire(&image->construction_bo);return handle;
+}
 /* The DRM format naming a GLES image's sized internal format, as Mesa's DRI
  * image formats do; zero when no DRM format describes it. */
 static uint32_t gl_image_fourcc(uint32_t internal_format) {
@@ -3757,13 +3939,12 @@ static EGLImageKHR create_gl_image_locked(struct egl_generation *generation, EGL
     if (!g_next_object_handle) { g_last_error = EGL_BAD_ALLOC; return EGL_NO_IMAGE_KHR; }
     struct wpk_egl_image *image = calloc(1, sizeof *image);
     if (!image) { g_last_error = EGL_BAD_ALLOC; return EGL_NO_IMAGE_KHR; }
+    if(!reserve_image(image,generation)){free(image);g_last_error=EGL_BAD_ALLOC;return EGL_NO_IMAGE_KHR;}
     struct wpk_drm_export_image request = {.ctx_id = context->backend_id, .target = gl_target,
         .name = (uint32_t)name, .level = (uint32_t)level};
-    struct wpk_drm_owner *exported_bo=NULL;
     if (_wpk_drm_owned_ioctl(context->session->owner,WPK_DRM_IOCTL_EXPORT_IMAGE,&request,sizeof request,
-            NULL,WPK_DRM_OWNED_CAPTURE_BO,&exported_bo)!=0) {
-        _wpk_drm_owned_retire(&exported_bo);
-        free(image);
+            NULL,WPK_DRM_OWNED_CAPTURE_BO,&image->construction_bo)!=0) {
+        int error=errno;abandon_image(image);errno=error;
         g_last_error = errno == ENOENT || errno == EINVAL ? EGL_BAD_PARAMETER
                      : errno == ERANGE ? EGL_BAD_MATCH
                      : errno == ENOMEM || errno == EMFILE ? EGL_BAD_ALLOC : EGL_BAD_ACCESS;
@@ -3771,8 +3952,8 @@ static EGLImageKHR create_gl_image_locked(struct egl_generation *generation, EGL
     }
     /* Releasing the only handle retires the bo; the host then returns the
      * storage to the object, which never stopped using it. */
-    image->handle = adopt_bo_handle(generation,context->session->owner,request.bo_handle,&exported_bo,&image->bo_owner);
-    if (!image->handle) { free(image); g_last_error = EGL_BAD_ALLOC; return EGL_NO_IMAGE_KHR; }
+    image->handle=adopt_image_bo(image,context->session->owner,request.bo_handle);
+    if(!image->handle){abandon_image(image);g_last_error=EGL_BAD_ALLOC;return EGL_NO_IMAGE_KHR;}
     image->generation = generation;
     image->public_handle = g_next_object_handle++;
     image->width = request.width;
@@ -4005,7 +4186,7 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_IMAGE_KHR;
     }
-    image->generation = generation;
+    if(!reserve_image(image,generation)){free(image);g_last_error=EGL_BAD_ALLOC;return EGL_NO_IMAGE_KHR;}
     image->public_handle = g_next_object_handle;
     image->width = (uint32_t)width;
     image->height = (uint32_t)height;
@@ -4027,17 +4208,17 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
         for (unsigned p = 0; p < layout->num_planes && error == EGL_SUCCESS; p++) {
             image->planes[p].pitch = (uint32_t)planes[p].pitch;
             image->planes[p].offset = (uint32_t)planes[p].offset;
-            image->planes[p].handle = import_dmabuf_handle(generation,(int)planes[p].fd,&image->planes[p].owner);
+            image->planes[p].handle = import_image_bo(image,(int)planes[p].fd,&image->planes[p].owner);
             if (!image->planes[p].handle) { error = EGL_BAD_ACCESS; break; }
             struct wpk_drm_bo_info info;
             uint64_t row=wpk_drm_row_bytes(layout,(uint32_t)width,p);
             if(_wpk_drm_owned_bo_info(image->planes[p].owner,&info)!=0 || info.size>SIZE_MAX ||
                (uint64_t)planes[p].offset+(uint64_t)planes[p].pitch*
                (wpk_drm_plane_height(layout,(uint32_t)height,p)-1)+row>info.size){error=EGL_BAD_ACCESS;break;}
-            sizes[p]=(size_t)info.size;uint64_t mapped=0;
-            int mapped_ok=_wpk_drm_owned_map_bo(generation->storage_owner,image->planes[p].owner,0,sizes[p],0,
-                PROT_READ,MAP_SHARED,&mapped)==0;
-            void *map=mapped_ok?(void *)(uintptr_t)mapped:MAP_FAILED;
+            sizes[p]=(size_t)info.size;
+            int mapped_ok=_wpk_drm_owned_map_exact(&image->planes[p].mapping,image->source_owner,
+                image->planes[p].owner,0,sizes[p],0,PROT_READ,MAP_SHARED)==0;
+            void *map=mapped_ok?(void *)(uintptr_t)image->planes[p].mapping.address:MAP_FAILED;
             if (map != MAP_FAILED) {
                 image->planes[p].map = map;
                 image->planes[p].map_len = sizes[p];
@@ -4057,13 +4238,7 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
             }
         }
         if (error != EGL_SUCCESS) {
-            lock_images();
-            for (unsigned p = 0; p < layout->num_planes; p++) {
-                if (image->planes[p].map) munmap(image->planes[p].map, image->planes[p].map_len);
-                if (image->planes[p].handle) _wpk_drm_owned_retire(&image->planes[p].owner);
-            }
-            _wpk_drm_mutex_unlock(&g_image_mutex);
-            free(image);
+            abandon_image(image);
             g_last_error = error;
             return EGL_NO_IMAGE_KHR;
         }
@@ -4078,9 +4253,9 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
     EGLAttrib fd = planes[0].fd, offset = planes[0].offset;
     size_t size = sizes[0];
     image->plane_count = 1;
-    image->handle = import_dmabuf_handle(generation,(int)fd,&image->bo_owner);
+    image->handle = import_image_bo(image,(int)fd,&image->bo_owner);
     if (image->handle == 0) {
-        free(image);
+        abandon_image(image);
         g_last_error = EGL_BAD_ACCESS;
         return EGL_NO_IMAGE_KHR;
     }
@@ -4090,10 +4265,7 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
     struct wpk_drm_check_bo_format check = {.handle = image->handle, .format = (uint32_t)fourcc};
     if (egl_bo_ioctl(generation->storage_owner,image->bo_owner,WPK_DRM_IOCTL_CHECK_BO_FORMAT,&check,0) != 0) {
         EGLint error = errno == EINVAL ? EGL_BAD_MATCH : EGL_BAD_ACCESS;
-        lock_images();
-        _wpk_drm_owned_retire(&image->bo_owner);
-        _wpk_drm_mutex_unlock(&g_image_mutex);
-        free(image);
+        abandon_image(image);
         g_last_error = error;
         return EGL_NO_IMAGE_KHR;
     }
@@ -4102,11 +4274,12 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
     uint64_t row=wpk_drm_row_bytes(layout,(uint32_t)width,0);
     if(_wpk_drm_owned_bo_info(image->bo_owner,&info)!=0 || info.size>SIZE_MAX ||
        (uint64_t)offset+(uint64_t)image->pitch*((uint32_t)height-1)+row>info.size){
-        _wpk_drm_owned_retire(&image->bo_owner);free(image);g_last_error=EGL_BAD_ACCESS;return EGL_NO_IMAGE_KHR;
+        abandon_image(image);g_last_error=EGL_BAD_ACCESS;return EGL_NO_IMAGE_KHR;
     }
-    size=(size_t)info.size;uint64_t mapped=0;
-    int mapped_ok=_wpk_drm_owned_map_bo(generation->storage_owner,image->bo_owner,0,size,0,PROT_READ,MAP_SHARED,&mapped)==0;
-    void *map=mapped_ok?(void *)(uintptr_t)mapped:MAP_FAILED;
+    size=(size_t)info.size;
+    int mapped_ok=_wpk_drm_owned_map_exact(&image->mapping,image->source_owner,image->bo_owner,
+        0,size,0,PROT_READ,MAP_SHARED)==0;
+    void *map=mapped_ok?(void *)(uintptr_t)image->mapping.address:MAP_FAILED;
     if (map == MAP_FAILED) {
         /* A GPU-tier bo has no CPU mapping (EINVAL). Its texture is the
          * whole bo, so it cannot honor a plane offset. */
@@ -4120,10 +4293,7 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
             g_next_object_handle++;
             return (EGLImageKHR)image->public_handle;
         }
-        lock_images();
-        _wpk_drm_owned_retire(&image->bo_owner);
-        _wpk_drm_mutex_unlock(&g_image_mutex);
-        free(image);
+        abandon_image(image);
         g_last_error = error;
         return EGL_NO_IMAGE_KHR;
     }
@@ -4169,48 +4339,64 @@ void _wpk_egl_image_retain(struct wpk_egl_image *image) {
 }
 
 static void image_release_locked(struct wpk_egl_image *image) {
-    if (image->public_live || image->storage_references ||
-        image->renderer_references || image->borrows) return;
-    /* Publish exact kernel custody before withdrawing the last facade root.
-     * Fork may lose this cleanup thread immediately after unlink: its local
-     * stack is not a child owner. The queue transfer and unlink are one pure
-     * C transaction, while munmap and native retirement stay outside it. */
-    _wpk_drm_owned_publication_begin();
-    if (image->external_only) {
-        for (unsigned p = 0; p < image->plane_count; p++)
-            _wpk_drm_owned_defer_locked(&image->planes[p].owner);
-    } else _wpk_drm_owned_defer_locked(&image->bo_owner);
-    _wpk_drm_owned_defer_locked(&image->source_owner);
-    struct wpk_egl_image **slot = &g_images;
-    while (*slot && *slot != image) slot = &(*slot)->next;
-    if (*slot) *slot = image->next;
-    _wpk_drm_owned_publication_end();
-    if (image->external_only) {
-        for (unsigned p = 0; p < image->plane_count; p++)
-            if (image->planes[p].map) munmap(image->planes[p].map, image->planes[p].map_len);
-    } else if (image->map) munmap(image->map, image->map_len);
-    free(image);
-    _wpk_drm_owned_drain();
-}
-/* A BO capability retains storage, but callers also need the exact source
- * file namespace for transfers. The generation owns only its own FILE edge;
- * borrowing that edge would leave a private image dangling at eglTerminate. */
-static int publish_image(struct wpk_egl_image *image, struct egl_generation *generation) {
-    lock_images();
-    int cancel_state;
-    if (_wpk_drm_owned_retain_begin(generation->storage_owner, &cancel_state) != 0) {
-        image_release_locked(image);
-        _wpk_drm_mutex_unlock(&g_image_mutex);
-        return 0;
+    if(image->constructing){
+        _wpk_drm_owned_publication_begin();
+        if(_wpk_drm_actor_claim_live_locked(&image->construction_claim)){
+            _wpk_drm_owned_publication_end();return;
+        }
+        image->constructing=0;_wpk_drm_actor_release_locked(&image->construction_claim);
+        _wpk_drm_owned_publication_end();
     }
-    image->source_owner = generation->storage_owner;
-    image->public_live = 1;
-    image->next = g_images;
-    g_images = image;
-    _wpk_drm_owned_retain_end(image->source_owner, cancel_state);
-    _wpk_drm_mutex_unlock(&g_image_mutex);
-    return 1;
+    if(image->public_live||image->storage_references||image->renderer_references||image->borrows)return;
+    /* Keep the globally rooted capsule and its exact FILE/BO edges until
+     * conditional retirement is known complete. Raw range replay can destroy
+     * a replacement; unlinking first can orphan the inherited original. */
+    if(_wpk_drm_owned_unmap_exact(&image->mapping)<0){
+        g_image_retire_pending=1;
+        fprintf(stderr,"Kandelo EGL: image mapping retirement failed; custody retained\n");return;
+    }
+    for(unsigned p=0;p<3;p++)if(_wpk_drm_owned_unmap_exact(&image->planes[p].mapping)<0){
+        g_image_retire_pending=1;
+        fprintf(stderr,"Kandelo EGL: image plane retirement failed; custody retained\n");return;
+    }
+    _wpk_drm_owned_publication_begin();
+    _wpk_drm_owned_defer_locked(&image->construction_file);
+    _wpk_drm_owned_defer_locked(&image->construction_bo);
+    if(image->external_only){for(unsigned p=0;p<image->plane_count;p++)_wpk_drm_owned_defer_locked(&image->planes[p].owner);}
+    else _wpk_drm_owned_defer_locked(&image->bo_owner);
+    _wpk_drm_owned_defer_locked(&image->source_owner);
+    struct wpk_egl_image **slot=&g_images;
+    while(*slot&&*slot!=image)slot=&(*slot)->next;
+    if(*slot)*slot=image->next;
+    _wpk_drm_owned_publication_end();free(image);_wpk_drm_owned_drain();
 }
+static int reserve_image(struct wpk_egl_image *image,struct egl_generation *generation) {
+    if(!_wpk_drm_actor_prepare())return 0;
+    lock_images();int cancel_state;
+    if(_wpk_drm_owned_retain_begin(generation->storage_owner,&cancel_state)!=0){
+        _wpk_drm_mutex_unlock(&g_image_mutex);return 0;
+    }
+    image->generation=generation;image->source_owner=generation->storage_owner;
+    image->constructing=1;if(!_wpk_drm_actor_try_claim_locked(&image->construction_claim))abort();
+    image->next=g_images;g_images=image;
+    _wpk_drm_owned_retain_end(image->source_owner,cancel_state);
+    _wpk_drm_mutex_unlock(&g_image_mutex);return 1;
+}
+static void abandon_image(struct wpk_egl_image *image) {
+    lock_images();_wpk_drm_owned_publication_begin();
+    image->constructing=0;_wpk_drm_actor_release_locked(&image->construction_claim);
+    _wpk_drm_owned_publication_end();image_release_locked(image);
+    _wpk_drm_mutex_unlock(&g_image_mutex);
+}
+static int publish_image(struct wpk_egl_image *image,struct egl_generation *generation) {
+    if(!generation->initialized||generation->fork_retired){abandon_image(image);errno=EIO;return 0;}
+    lock_images();_wpk_drm_owned_publication_begin();
+    if(!image->constructing||!image->source_owner)abort();
+    image->public_live=1;image->constructing=0;
+    _wpk_drm_actor_release_locked(&image->construction_claim);
+    _wpk_drm_owned_publication_end();_wpk_drm_mutex_unlock(&g_image_mutex);return 1;
+}
+
 void _wpk_egl_image_release(struct wpk_egl_image *image) {
     int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
     lock_images();

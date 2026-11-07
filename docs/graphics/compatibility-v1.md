@@ -25999,3 +25999,47 @@ in `.context/graphics-cts-final-accounting-r607/`. These are older source
 Observed audit records are context/NO_ERROR records; transport drop counters
 were not independently proved. Final A3 audit and current-tree conformance
 remain required.
+
+### Exact mapping and durable C retirement checkpoint, 2026-11-07
+
+Additive private actions13/14 retain mapping-instance authority independently
+of address, BO and descriptor reuse. Original fragments retain their ID;
+replacement mappings receive fresh IDs. Full counter inheritance stays in
+Rust metadata, preserving fork21 bytes and established action4/owned-wire
+sections. Host construction validates and seals exact receipt identity.
+All ABI families remain56/3/17/21; the new program-surface section requires
+coherently rebuilding consumers before pairing them with the new kernel.
+
+Rooted C capsules seal receipts before later acknowledgements and publish
+phase atomically to unrelated FILE callers. EGL constructor custody precedes
+effects and public selection follows final sealing. Exact actor claims keep
+BOs, surfaces and EGL outer queues rooted across callback reentry, fork and
+thread exit. Public withdrawal, queue admission and the caller claim share
+one publication; front-hold release transfers its slot with the ring owner.
+Inline Why comments cover the unsafe address, epoch, cursor, ACK and
+per-frame-scan simplifications.
+
+| Integration command/job | Result and exact scope |
+|---|---|
+| `graphics-mapping-integration-r611-1106-235246-fb08`, `run-rust-host.sh` | PASS1m12:2,908 runtime-core,97 shared,181 host controls; source types, both additive ABI policies, generated snapshot check using existing R565 exports metadata. No new kernel execution |
+| `graphics-mapping-native-integration-r611-1107-001127-3cea`, `run-native.sh` | PASS5m34:493 native libc consumers, mapping/concurrency/native-VM controls,24 GBM actor modes, GBM/peer/transport scripts,6 generation controls and actual child-rebind source control with explicit musl-state doubles |
+| `graphics-final-source-r615-1107-002537-8837` | Aggregate FAILED only on missing Node typeRoots in private compiler configuration; all10 unchanged-limit source-audit controls,719 evidence inventory, native epoch and28 queue observations pass. Failure retained |
+| `graphics-final-source-r2-r615-1107-002957-ae72`, `run-r2.sh` | PASS10s: corrected strict changed Node/browser fixture types,4 actual pending front-hold modes,28 actual queue observations,719 inventory and frozen-source hashes |
+
+Commands and exact scopes are in
+`.context/graphics-mapping-integration-r611/` and
+`.context/graphics-final-source-r615/`. The28 queue modes include20 sound
+queue/GBM/ordinary behaviours and8 explicit unresolved-native observations;
+those8 are not successful native-retirement acceptance. Frozen upstream
+source validation additionally covers493 consumers and both-width syntax.
+The outer-queue patch needed only new-file-mode metadata corrected before
+fresh application; all8 applied source files equal the validated producer.
+
+New normal-target fixtures cover whole/leading/middle anonymous replacement
+and same-BO replacement, copied parent/child cleanup and recycled descriptors,
+using real `/proc/self/maps` metadata rather than assuming readable Wasm
+bytes imply a live VMA. Both-width syntax passes; normal SDK execution is
+pending. A coherent targeted normal SDK/kernel/host build is next. Pending
+native Wayland leaves, D-59 enforcement, fork-shutdown findings and all full
+B1/final gates remain required. No complete preview, performance result or
+additional boundary is claimed.

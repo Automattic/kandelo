@@ -32,6 +32,7 @@ static void publication_end(struct wpk_drm_owner *, int);
 #undef free
 #undef _wpk_drm_owned_retain_end
 void _wpk_gbm_window_release(void *p){(void)p;abort();}
+void _wpk_gbm_window_release_pending(struct wpk_gbm_window_retirement *p){(void)p;abort();}
 void _wpk_wl_display_release(void *p){(void)p;abort();}
 void _wpk_wl_display_release_inherited(void *p){(void)p;abort();}
 void _wpk_wlegl_release(void *p){(void)p;abort();}
@@ -65,11 +66,19 @@ static void publication_end(struct wpk_drm_owner *owner,int cancel_state) {
     }
     _wpk_drm_owned_retain_end(owner,cancel_state);
 }
+static void finish_actor_scope(void){
+    if(actor_current_scope){struct wpk_drm_actor_scope *scope=actor_current_scope;
+        assert(!pthread_setspecific(actor_scope_key,NULL));actor_scope_ended(scope);}
+}
 #ifdef WPK_IMAGE_GENERATION_OWNED
+static int fixture_publish_image(struct wpk_egl_image *image,struct egl_generation *generation){
+    if(!reserve_image(image,generation)){int error=errno;image_release_locked(image);errno=error;return 0;}
+    return publish_image(image,generation);
+}
 struct publication_args {struct wpk_egl_image *image;struct egl_generation *generation;};
 static void *publish_peer(void *data) {
     struct publication_args *args=data;publisher=pthread_self();
-    assert(publish_image(args->image,args->generation));return NULL;
+    assert(fixture_publish_image(args->image,args->generation));return NULL;
 }
 static void *resume_peer(void *unused) {
     (void)unused;pthread_mutex_lock(&publication_gate);
@@ -98,16 +107,16 @@ int main(int argc,char **argv) {
     old->storage_owner=source;old->display=&display;old->initialized=1;
     old->next=g_generations;g_generations=old;display.active=old;
     struct wpk_egl_image *held=owned_calloc(1,sizeof *held);assert(held);
-    held->generation=old;held->public_handle=123;held->fourcc=0x34325241;
+    tracked_image=held;held->generation=old;held->public_handle=123;held->fourcc=0x34325241;
     held->bo_owner=make_bo(source);
 #ifdef WPK_IMAGE_GENERATION_OWNED
     if(!strcmp(argv[1],"saturation")) {
         tracked_image=held;source->references=UINT32_MAX;
-        assert(!publish_image(held,old)&&errno==EOVERFLOW);
+        assert(!fixture_publish_image(held,old)&&errno==EOVERFLOW);
         assert(!g_images&&image_frees==1&&caps[1].live);
         source->references=1;lock_context();old->initialized=0;old->terminate_pending=1;
         display.active=NULL;retire_pending_resources_locked(old);unlock_context();
-        assert(!g_generations&&!live_caps()&&!allocations);
+        finish_actor_scope();assert(!g_generations&&!live_caps()&&!allocations);
         assert(!munmap(generation_page,generation_page_size));
         puts("PASS private image publication saturation unwinds exact BO custody");return 0;
     }
@@ -122,12 +131,19 @@ int main(int argc,char **argv) {
         pid_t child=fork();assert(child>=0);
         if(!child) {
             alarm(5);publication_control=0;
-            assert(g_images==held&&held->source_owner==source&&held->public_live);
-            assert(source->references==2);_exit(0);
+            assert(g_images==held&&held->source_owner==source&&source->references==2);
+            if(held->public_live){assert(!held->constructing);}
+            else{
+                /* A fork between reserve and final seal inherits a private
+                 * foreign constructor, never an admitted public image. */
+                assert(held->constructing);lock_images();_wpk_drm_mutex_unlock(&g_image_mutex);
+                assert(!g_images&&image_frees==1&&source->references==1);
+            }
+            _exit(0);
         }
         int status;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&!WEXITSTATUS(status));
         assert(!pthread_join(worker,NULL)&&!pthread_join(controller,NULL));publication_control=0;
-    }else assert(publish_image(held,old));
+    }else assert(fixture_publish_image(held,old));
 #else
     held->public_live=1;held->next=g_images;g_images=held;
 #endif
@@ -166,7 +182,7 @@ int main(int argc,char **argv) {
         uint32_t value=9;assert(!_wpk_drm_owned_ioctl(source,0x1234,&value,4,NULL,0,NULL));
     }else abort();
     _wpk_egl_image_release(held);
-    assert(!g_images&&image_frees==1&&!live_caps()&&!allocations);
+    finish_actor_scope();assert(!g_images&&image_frees==1&&!live_caps()&&!allocations);
     assert(!munmap(generation_page,generation_page_size));
     printf("PASS private image generation %s\n",argv[1]);return 0;
 }

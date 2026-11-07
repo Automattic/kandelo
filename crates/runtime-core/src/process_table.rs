@@ -1537,6 +1537,11 @@ impl ProcessTable {
                 .memory
                 .mappings(),
         );
+        // Mapping authority is Rust-owned metadata, not a new fork wire field.
+        // Copy its full allocator state even when every old mapping has retired.
+        child.memory.inherit_exact_mapping_ids(
+            &self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?.memory,
+        );
         // POSIX fork leaves one thread in the child, and that thread inherits
         // the mask of the task that called fork rather than the process
         // leader's mask.

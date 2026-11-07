@@ -12,6 +12,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "drm_owned.h"
 
 #define WPK_GL_OP_VERSION 17u
 #define WPK_GL_INLINE_DRAW_HEADER_BYTES 16u
@@ -441,7 +442,9 @@ struct wpk_egl_image {
     uint64_t storage_references; /* explicit process-owned private holds */
     uint64_t renderer_references; /* invalidated with inherited renderers */
     struct wpk_egl_image_borrow *borrows; /* exact caller-scoped admission */
-    int public_live;
+    int public_live, constructing;
+    struct wpk_drm_actor_claim construction_claim;
+    struct wpk_drm_owner *construction_file, *construction_bo;
     struct wpk_egl_image *next;
     uint32_t handle;          /* GEM handle on the EGL session's fd */
     struct wpk_drm_owner *bo_owner;
@@ -451,13 +454,14 @@ struct wpk_egl_image {
     const uint8_t *pixels;    /* first row of a CPU-tier image, else NULL */
     void *map;                /* the mmap behind `pixels` */
     size_t map_len;
+    struct wpk_drm_mapping mapping;
     /* YUV images: every plane's GEM handle on the EGL session's fd (each
      * one import reference), pitch, offset and the mapping proving it is
      * CPU storage, and the conversion EGL_EXT_image_dma_buf_import's hints
      * select (WPK_YUV_* color space, full range, WPK_CHROMA_SITING_*). */
     int external_only;
     uint32_t plane_count;
-    struct { uint32_t handle, pitch, offset; void *map; size_t map_len; struct wpk_drm_owner *owner; } planes[3];
+    struct { uint32_t handle, pitch, offset; void *map; size_t map_len; struct wpk_drm_owner *owner; struct wpk_drm_mapping mapping; } planes[3];
     uint32_t color_space, full_range, chroma_siting;
 };
 

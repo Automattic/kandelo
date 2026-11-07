@@ -30,6 +30,7 @@ struct wpk_drm_owner {
     uint32_t pending_action,pending_token,pending_request,pending_length,pending_flags;
     uint64_t pending_transaction;
     struct wpk_drm_owner *capture, *creation_parent, *retirement_next;
+    struct wpk_drm_mapping *mapping;
     struct wpk_drm_owned_packet request, recovery;
 };
 static _Atomic(struct wpk_drm_owner *) retired_owners;
@@ -152,6 +153,10 @@ static int recover_pending(struct wpk_drm_owner *owner) {
         if(reply->request!=owner->pending_request||reply->length!=owner->pending_length||reply->flags!=owner->pending_flags){errno=EIO;return -1;}
         if((owner->pending_flags&(WPK_DRM_OWNED_CAPTURE_FD|WPK_DRM_OWNED_CAPTURE_BO))&&
            reply->result>=0&&reply->source_token==0){errno=EIO;return -1;}
+        if(action==WPK_DRM_OWNED_MMAP_EXACT&&reply->result>=0){
+            uint64_t identity;memcpy(&identity,reply->body+32,8);
+            if(!identity){errno=EIO;return -1;}
+        }
         *request=*reply;return 1;
     }
     if(valid_packet(reply)&&reply->action==WPK_DRM_OWNED_READ_LAST&&reply->transaction==tx&&reply->token==token&&
@@ -161,6 +166,10 @@ static int recover_pending(struct wpk_drm_owner *owner) {
     errno=EIO;return -1;
 }
 static int captures_valid(const struct wpk_drm_owner *owner,const struct wpk_drm_owned_packet *packet) {
+    if(owner->pending_action==WPK_DRM_OWNED_MMAP_EXACT&&packet->result>=0){
+        uint64_t identity;memcpy(&identity,packet->body+32,8);
+        if(!identity)return 0;
+    }
     if(!(owner->pending_flags&(WPK_DRM_OWNED_CAPTURE_FD|WPK_DRM_OWNED_CAPTURE_BO)))return 1;
     return packet->result<0||packet->source_token!=0;
 }
@@ -308,6 +317,26 @@ static void unclaim_capture_parent_locked(struct wpk_drm_owner *parent,struct wp
 }
 
 static void publish_request_result(struct wpk_drm_owner *owner,int accepted) {
+    if(owner->mapping){
+        struct wpk_drm_mapping *mapping=owner->mapping;
+        /* A later FILE request may ACK this receipt. Publish its exact mapping
+         * custody under the same fork guard before making that ACK possible;
+         * otherwise a vanished caller could leave an unrecoverable map. */
+        capture_publication_begin();
+        if(accepted){owner->transaction=owner->request.transaction;owner->acknowledge=owner->transaction;}
+        if(owner->pending_action==WPK_DRM_OWNED_MMAP_EXACT){
+            if(accepted&&owner->request.result>=0){
+                memcpy(&mapping->address,owner->request.body,8);
+                memcpy(&mapping->identity,owner->request.body+32,8);
+                atomic_store_explicit(&mapping->phase,WPK_DRM_MAPPING_LIVE,memory_order_release);
+            }else atomic_store_explicit(&mapping->phase,WPK_DRM_MAPPING_EMPTY,memory_order_release);
+        }else if(owner->pending_action==WPK_DRM_OWNED_UNMAP_EXACT){
+            atomic_store_explicit(&mapping->phase,accepted&&owner->request.result>=0
+                ?WPK_DRM_MAPPING_EMPTY:WPK_DRM_MAPPING_LIVE,memory_order_release);
+        }else abort();
+        owner->mapping=NULL;owner->pending=0;
+        capture_publication_end();return;
+    }
     if(accepted){
         owner->transaction=owner->request.transaction;owner->acknowledge=owner->transaction;
         finish_capture(owner,owner->request.source_token);
@@ -435,6 +464,60 @@ int _wpk_drm_owned_map_bo(struct wpk_drm_owner *owner,struct wpk_drm_owner *bo,
 int _wpk_drm_owned_map(struct wpk_drm_owner *owner,uint64_t address,uint64_t length,int64_t offset,
                        uint32_t prot,uint32_t flags,uint64_t *mapped) {
     return _wpk_drm_owned_map_bo(owner,NULL,address,length,offset,prot,flags,mapped);
+}
+static int mapping_arguments_match(const struct wpk_drm_mapping *mapping,
+    struct wpk_drm_owner *file,struct wpk_drm_owner *bo,uint64_t address,
+    uint64_t length,int64_t offset,uint32_t prot,uint32_t flags) {
+    return mapping->file==file&&mapping->bo==bo&&mapping->requested_address==address&&
+        mapping->length==length&&mapping->offset==offset&&mapping->prot==prot&&mapping->flags==flags;
+}
+int _wpk_drm_owned_map_exact(struct wpk_drm_mapping *mapping,
+    struct wpk_drm_owner *file,struct wpk_drm_owner *bo,uint64_t address,
+    uint64_t length,int64_t offset,uint32_t prot,uint32_t flags) {
+    if(!mapping||!length||(bo&&(!bo->token||bo->released||
+       bo->release_action!=WPK_DRM_OWNED_BO_RELEASE))){errno=EINVAL;return -1;}
+    int cancel_state;if(!lock_owner(file,&cancel_state))return -1;
+    int was_pending=_wpk_drm_mapping_phase(mapping)==WPK_DRM_MAPPING_MAP_PENDING;
+    if(!resolve_owner(file)){unlock_owner(file,cancel_state);errno=EIO;return -1;}
+    if(_wpk_drm_mapping_phase(mapping)!=WPK_DRM_MAPPING_EMPTY){
+        int match=_wpk_drm_mapping_phase(mapping)==WPK_DRM_MAPPING_LIVE&&
+            mapping_arguments_match(mapping,file,bo,address,length,offset,prot,flags);
+        unlock_owner(file,cancel_state);if(!match)errno=EBUSY;return match?0:-1;
+    }
+    /* Recovery proving ABSENT/failed construction must not replay a vanished
+     * caller's mutation. A fresh caller may explicitly retry after observing
+     * EMPTY, but this invocation reports the original failure. */
+    if(was_pending){unlock_owner(file,cancel_state);errno=EIO;return -1;}
+    if(!begin_request(file,WPK_DRM_OWNED_MMAP_EXACT)){unlock_owner(file,cancel_state);return -1;}
+    file->request.length=40;file->request.source_token=bo?bo->token:0;
+    memcpy(file->request.body,&address,8);memcpy(file->request.body+8,&length,8);
+    memcpy(file->request.body+16,&offset,8);memcpy(file->request.body+24,&prot,4);memcpy(file->request.body+28,&flags,4);
+    capture_publication_begin();
+    mapping->file=file;mapping->bo=bo;mapping->requested_address=address;
+    mapping->length=length;mapping->offset=offset;mapping->prot=prot;mapping->flags=flags;
+    mapping->address=0;mapping->identity=0;atomic_store_explicit(&mapping->phase,WPK_DRM_MAPPING_MAP_PENDING,memory_order_release);
+    file->mapping=mapping;stage_request(file);file->pending=1;
+    capture_publication_end();
+    int entered=enter_request(file),rc=complete_request(file,entered);
+    unlock_owner(file,cancel_state);return rc;
+}
+int _wpk_drm_owned_unmap_exact(struct wpk_drm_mapping *mapping) {
+    if(!mapping){errno=EINVAL;return -1;}
+    if(_wpk_drm_mapping_phase(mapping)==WPK_DRM_MAPPING_EMPTY)return 0;
+    struct wpk_drm_owner *file=mapping->file;
+    int cancel_state;if(!lock_owner(file,&cancel_state))return -1;
+    if(!resolve_owner(file)){unlock_owner(file,cancel_state);errno=EIO;return -1;}
+    if(_wpk_drm_mapping_phase(mapping)==WPK_DRM_MAPPING_EMPTY){unlock_owner(file,cancel_state);return 0;}
+    if(_wpk_drm_mapping_phase(mapping)!=WPK_DRM_MAPPING_LIVE||!mapping->identity){unlock_owner(file,cancel_state);errno=EIO;return -1;}
+    if(!begin_request(file,WPK_DRM_OWNED_UNMAP_EXACT)){unlock_owner(file,cancel_state);return -1;}
+    file->request.length=8;file->request.source_token=mapping->bo?mapping->bo->token:0;
+    memcpy(file->request.body,&mapping->identity,8);
+    capture_publication_begin();
+    atomic_store_explicit(&mapping->phase,WPK_DRM_MAPPING_UNMAP_PENDING,memory_order_release);file->mapping=mapping;
+    stage_request(file);file->pending=1;
+    capture_publication_end();
+    int entered=enter_request(file),rc=complete_request(file,entered);
+    unlock_owner(file,cancel_state);return rc;
 }
 int _wpk_drm_owned_bo_info(struct wpk_drm_owner *owner,struct wpk_drm_bo_info *info) {
     if(!info||!owner||owner->release_action!=WPK_DRM_OWNED_BO_RELEASE){errno=EINVAL;return -1;}
@@ -761,4 +844,128 @@ void _wpk_drm_mutex_unlock(struct wpk_drm_mutex *mutex) {
     uint64_t prior=atomic_exchange_explicit(&mutex->state,epoch,memory_order_release);
     if((prior&~UINT64_C(3))!=epoch||!(prior&3))abort();
     if((prior&3)==2)metadata_wake(mutex);
+}
+
+
+
+
+/* Heap scopes outlive their thread whenever a published cleanup claim still
+ * names them. TLS addresses and process epochs cannot distinguish a vanished
+ * peer from the fork caller whose callback stack continues in the child. */
+struct wpk_drm_actor_scope {
+    struct wpk_drm_actor_scope *next;
+    size_t references;
+    int alive;
+};
+static struct wpk_drm_actor_scope *actor_scopes;
+static _Thread_local struct wpk_drm_actor_scope *actor_current_scope;
+static pthread_key_t actor_scope_key;
+static pthread_once_t actor_scope_once=PTHREAD_ONCE_INIT;
+static int actor_scope_status=EAGAIN;
+static void actor_drop_locked(struct wpk_drm_actor_scope *scope) {
+    if(!scope->references)abort();
+    if(--scope->references)return;
+    if(scope->alive)abort();
+    struct wpk_drm_actor_scope **link=&actor_scopes;
+    while(*link&&*link!=scope)link=&(*link)->next;
+    if(!*link)abort();
+    *link=scope->next;free(scope);
+}
+static void actor_scope_ended(void *opaque) {
+    struct wpk_drm_actor_scope *scope=opaque;
+    capture_publication_begin();
+    /* The key argument is authoritative during thread teardown. A native
+     * libc may already have torn down compiler TLS before invoking keys. */
+    if(!scope->alive)abort();
+    actor_current_scope=NULL;scope->alive=0;
+    /* Claims retain their own refs. pthread_exit/cancellation cannot make
+     * their identity dangle or leave an abandoned callback permanently busy. */
+    actor_drop_locked(scope);
+    capture_publication_end();
+}
+static void actor_child_fork(void) {
+    /* Registration follows the publication handler, so its child unlock has
+     * already run. The child has no peer threads: this is metadata only and
+     * deliberately performs no free, I/O, key mutation or receiver locking. */
+    /* Read an already-installed key, not first-use compiler TLS. There is
+     * no prepare snapshot to allocate storage or race another fork caller. */
+    struct wpk_drm_actor_scope *caller=pthread_getspecific(actor_scope_key);
+    for(struct wpk_drm_actor_scope *scope=actor_scopes;scope;scope=scope->next){
+        if(scope->alive&&scope!=caller){
+            if(!scope->references)abort();
+            scope->alive=0;--scope->references; /* vanished TLS reference */
+        }
+    }
+}
+static void actor_scope_initialize(void) {
+    actor_scope_status=pthread_key_create(&actor_scope_key,actor_scope_ended);
+    if(actor_scope_status)return;
+    actor_scope_status=pthread_atfork(NULL,NULL,actor_child_fork);
+    if(actor_scope_status)pthread_key_delete(actor_scope_key);
+}
+static int actor_prepare_failed(int error) {
+    /* No cleanup claim is consumed on failure. Returning apparent success
+     * would hide a permanently unreachable receiver behind a void destructor. */
+    fprintf(stderr,"Kandelo graphics: durable cleanup actor preparation failed (%d); cleanup not entered\n",error);
+    errno=error;return 0;
+}
+static void actor_sweep_locked(void) {
+    struct wpk_drm_actor_scope **link=&actor_scopes;
+    while(*link){
+        struct wpk_drm_actor_scope *scope=*link;
+        if(!scope->references){
+            if(scope->alive)abort();
+            *link=scope->next;free(scope);
+        }else link=&scope->next;
+    }
+}
+int _wpk_drm_actor_prepare(void) {
+    int cancel_state,error=0;
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    if(actor_current_scope){
+        capture_publication_begin();actor_sweep_locked();capture_publication_end();
+        pthread_setcancelstate(cancel_state,NULL);return 1;
+    }
+    if(!process_epoch()||!prepare_capture_publication())error=errno?errno:ENOMEM;
+    else if(pthread_once(&actor_scope_once,actor_scope_initialize))error=EAGAIN;
+    else if(actor_scope_status)error=actor_scope_status;
+    if(!error){
+        capture_publication_begin();
+        /* Child handlers leave zero-ref vanished scopes for ordinary code.
+         * Reclaiming here keeps atfork free of allocator/native cleanup work. */
+        actor_sweep_locked();
+        struct wpk_drm_actor_scope *scope=calloc(1,sizeof *scope);
+        if(!scope)error=ENOMEM;
+        else {
+            /* Key installation and list publication form one pure metadata
+             * step. A fork cannot see a surviving caller's new scope before
+             * the key used by its child handler identifies that same scope. */
+            error=pthread_setspecific(actor_scope_key,scope);
+            if(error)free(scope);
+            else {
+                scope->alive=1;scope->references=1;scope->next=actor_scopes;
+                actor_scopes=scope;actor_current_scope=scope;
+            }
+        }
+        capture_publication_end();
+    }
+    pthread_setcancelstate(cancel_state,NULL);
+    return error?actor_prepare_failed(error):1;
+}
+int _wpk_drm_actor_claim_live_locked(const struct wpk_drm_actor_claim *claim) {
+    return claim&&claim->scope&&claim->scope->alive;
+}
+int _wpk_drm_actor_try_claim_locked(struct wpk_drm_actor_claim *claim) {
+    if(!claim||!actor_current_scope||!actor_current_scope->alive)abort();
+    if(_wpk_drm_actor_claim_live_locked(claim))return 0;
+    struct wpk_drm_actor_scope *prior=claim->scope;
+    if(actor_current_scope->references==SIZE_MAX)abort();
+    ++actor_current_scope->references;claim->scope=actor_current_scope;
+    if(prior)actor_drop_locked(prior);
+    return 1;
+}
+void _wpk_drm_actor_release_locked(struct wpk_drm_actor_claim *claim) {
+    if(!claim||!claim->scope)return;
+    struct wpk_drm_actor_scope *scope=claim->scope;
+    claim->scope=NULL;actor_drop_locked(scope);
 }

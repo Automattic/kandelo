@@ -9,7 +9,7 @@ fn call(proc: &mut Process, host: &mut MockHostIO, packet: W::Packet) -> W::Pack
     sys_ioctl(proc, host, -1, W::REQUEST, &mut bytes).unwrap();
     let response: W::Packet = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast()) };
     assert_eq!(response.magic, W::MAGIC);
-    if response.action == W::MMAP && response.state == W::PENDING && response.result == 0 {
+    if matches!(response.action, W::MMAP | W::MMAP_EXACT) && response.state == W::PENDING && response.result == 0 {
         // This fixture models the host's accepted construction decision. Real
         // Wasm Memory grow/zero/prime belongs to the matching adapter tests.
         let tid = current_tid_for_process(proc);
@@ -1836,4 +1836,176 @@ fn owned_resource_forced_removal_rolls_back_staged_split_holds_before_old_mappin
             .count(),
         1
     );
+}
+
+fn exact_map_packet(token: u32, bo: u32, tx: u64, addr: usize, len: usize, fixed: bool) -> W::Packet {
+    use wasm_posix_shared::mmap::*;
+    let mut packet = W::Packet { action: W::MMAP_EXACT, token, source_token: bo,
+        transaction: tx, acknowledge: tx - 1, length: 40, ..Default::default() };
+    packet.body[..8].copy_from_slice(&(addr as u64).to_le_bytes());
+    packet.body[8..16].copy_from_slice(&(len as u64).to_le_bytes());
+    packet.body[24..28].copy_from_slice(&(PROT_READ | PROT_WRITE).to_le_bytes());
+    packet.body[28..32].copy_from_slice(&(MAP_SHARED | if fixed { MAP_FIXED } else { 0 }).to_le_bytes());
+    packet
+}
+fn exact_unmap_packet(token: u32, bo: u32, tx: u64, id: u64) -> W::Packet {
+    let mut packet = W::Packet { action: W::UNMAP_EXACT, token, source_token: bo,
+        transaction: tx, acknowledge: tx - 1, length: 8, ..Default::default() };
+    packet.body[..8].copy_from_slice(&id.to_le_bytes()); packet
+}
+fn exact_mapping_id(packet: &W::Packet) -> u64 {
+    u64::from_le_bytes(packet.body[32..40].try_into().unwrap())
+}
+#[test]
+fn exact_mapping_same_address_same_bo_replacement_survives_old_cleanup_and_recovery() {
+    let mut proc = Process::new(1); let mut host = MockHostIO::new();
+    let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+    let token = acquire(&mut proc, &mut host, fd, 1);
+    let bo = create(&mut proc, &mut host, token, 1).source_token;
+    let first = call(&mut proc, &mut host, exact_map_packet(token, bo, 2, 0, 0x10000, false));
+    assert_eq!(first.result, 0); let first_id = exact_mapping_id(&first);
+    let addr = u64::from_le_bytes(first.body[..8].try_into().unwrap()) as usize;
+    let replacement = call(&mut proc, &mut host, exact_map_packet(token, bo, 3, addr, 0x10000, true));
+    assert_eq!(replacement.result, 0); let replacement_id = exact_mapping_id(&replacement);
+    assert!(replacement_id > first_id);
+    sys_close(&mut proc, &mut host, fd).unwrap();
+    let unbinds = host.gbm_bo_unbind_calls.len();
+    let cleanup = exact_unmap_packet(token, bo, 4, first_id);
+    assert_eq!(call(&mut proc, &mut host, cleanup).result, 0);
+    assert_eq!(host.gbm_bo_unbind_calls.len(), unbinds);
+    assert_eq!(proc.dri_bindings.len(), 1);
+    assert_eq!(call(&mut proc, &mut host, cleanup).result, 0);
+    let recovered = call(&mut proc, &mut host, W::Packet { action: W::READ_LAST,
+        token, transaction: 4, ..Default::default() });
+    assert_eq!(recovered.action, W::UNMAP_EXACT); assert_eq!(recovered.result, 0);
+    assert_eq!(host.gbm_bo_unbind_calls.len(), unbinds);
+    assert_eq!(proc.memory.exact_mapping_ranges(replacement_id,
+        proc.owned_resources.target(token, proc.pid, proc.exec_generation).unwrap().id.0, None).unwrap(),
+        [(addr, addr + 0x10000)]);
+    assert_eq!(call(&mut proc, &mut host, exact_unmap_packet(token, bo, 5, replacement_id)).result, 0);
+    assert!(proc.dri_bindings.is_empty()); sys_exit(&mut proc, &mut host, 0);
+}
+#[test]
+fn exact_mapping_partial_replacement_preserves_new_middle_and_retires_only_old_fragments() {
+    use wasm_posix_shared::mmap::*;
+    let mut proc = Process::new(1); let mut host = MockHostIO::new();
+    let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+    let token = acquire(&mut proc, &mut host, fd, 1);
+    let mut create_packet = operation(token, 1, DRM_IOCTL_MODE_CREATE_DUMB, 32);
+    create_packet.flags = W::CAPTURE_BO;
+    create_packet.body[..4].copy_from_slice(&768u32.to_le_bytes());
+    create_packet.body[4..8].copy_from_slice(&64u32.to_le_bytes());
+    create_packet.body[8..12].copy_from_slice(&32u32.to_le_bytes());
+    let created = call(&mut proc, &mut host, create_packet); assert_eq!(created.result, 0);
+    let bo = created.source_token;
+    let mapped = call(&mut proc, &mut host, exact_map_packet(token, bo, 2, 0, 0x30000, false));
+    assert_eq!(mapped.result, 0); let id = exact_mapping_id(&mapped);
+    let addr = u64::from_le_bytes(mapped.body[..8].try_into().unwrap()) as usize;
+    sys_mmap(&mut proc, &mut host, addr + 0x10000, 0x10000,
+        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0).unwrap();
+    let before = host.gbm_bo_unbind_calls.len();
+    assert_eq!(call(&mut proc, &mut host, exact_unmap_packet(token, bo, 3, id)).result, 0);
+    let spans: Vec<_> = host.gbm_bo_unbind_calls[before..].iter().map(|v| (v.2, v.3)).collect();
+    assert_eq!(spans, [(addr, 0x10000), (addr + 0x20000, 0x10000)]);
+    assert!(proc.dri_bindings.is_empty());
+    assert!(proc.memory.mappings().iter().any(|m| m.addr == addr + 0x10000 && m.len == 0x10000 && m.exact_mapping.is_none()));
+    sys_exit(&mut proc, &mut host, 0);
+}
+#[test]
+fn exact_mapping_failed_constructor_burns_identity_and_preserves_old_vma() {
+    use wasm_posix_shared::mmap::*;
+    for backing_failure in [false, true] {
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let token = acquire(&mut proc, &mut host, fd, 1);
+        let bo = create(&mut proc, &mut host, token, 1).source_token;
+        let addr = sys_mmap(&mut proc, &mut host, 0, 0x10000, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0).unwrap();
+        let (status, pending) = try_packet(&mut proc, &mut host, exact_map_packet(token, bo, 2, addr, 0x10000, true));
+        assert_eq!(status, Ok(())); assert_eq!(pending.state, W::PENDING);
+        let failed_id = exact_mapping_id(&pending); assert_ne!(failed_id, 0);
+        if backing_failure { host.gbm_bo_bind_rc = -(Errno::ENOMEM as i32); }
+        crate::owned_resource::finish_mapping(&mut proc, &mut AdvisoryLockManager::new(), &mut host,
+            1, token, 2, if backing_failure { 0 } else { Errno::ENOMEM as u32 }).unwrap();
+        let failed = call(&mut proc, &mut host, W::Packet { action: W::READ_LAST,
+            token, transaction: 2, ..Default::default() });
+        assert_eq!(failed.result, -(Errno::ENOMEM as i32)); assert_eq!(exact_mapping_id(&failed), failed_id);
+        assert!(proc.memory.mappings().iter().any(|m| m.addr == addr && m.exact_mapping.is_none()));
+        host.gbm_bo_bind_rc = 0;
+        let next = call(&mut proc, &mut host, exact_map_packet(token, bo, 3, addr, 0x10000, true));
+        assert_eq!(next.result, 0); assert!(exact_mapping_id(&next) > failed_id);
+        sys_exit(&mut proc, &mut host, 0);
+    }
+}
+#[test]
+fn exact_mapping_rejects_wrong_file_and_bo_before_unbinding_anything() {
+    let mut proc = Process::new(1); let mut host = MockHostIO::new();
+    let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+    let token = acquire(&mut proc, &mut host, fd, 1);
+    let bo = create(&mut proc, &mut host, token, 1).source_token;
+    let mapped = call(&mut proc, &mut host, exact_map_packet(token, bo, 2, 0, 0x10000, false));
+    let id = exact_mapping_id(&mapped);
+    let other_fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+    let other_file = acquire(&mut proc, &mut host, other_fd, 2);
+    assert_eq!(call(&mut proc, &mut host, exact_unmap_packet(other_file, 0, 1, id)).result, -(Errno::EACCES as i32));
+    let other_bo = create(&mut proc, &mut host, token, 3).source_token;
+    assert_eq!(call(&mut proc, &mut host, exact_unmap_packet(token, other_bo, 4, id)).result, -(Errno::EACCES as i32));
+    assert!(host.gbm_bo_unbind_calls.is_empty()); assert_eq!(proc.dri_bindings.len(), 1);
+    assert_eq!(call(&mut proc, &mut host, exact_unmap_packet(token, bo, 5, id)).result, 0);
+    sys_exit(&mut proc, &mut host, 0);
+}
+#[test]
+fn exact_mapping_fork_inherits_live_identity_and_retired_high_water_mark() {
+    use crate::process_table::ProcessTable;
+    let mut table = ProcessTable::new(); let pid = table.create_process().unwrap();
+    let mut host = MockHostIO::new(); let proc = table.get_mut(pid).unwrap();
+    let fd = sys_open(proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+    let token = acquire(proc, &mut host, fd, 1); let bo = create(proc, &mut host, token, 1).source_token;
+    let mapped = call(proc, &mut host, exact_map_packet(token, bo, 2, 0, 0x10000, false));
+    let id = exact_mapping_id(&mapped); let child = table.fork_process_for_caller(pid, pid).unwrap();
+    let child_proc = table.get_mut(child).unwrap();
+    assert_eq!(call(child_proc, &mut host, exact_unmap_packet(token, bo, 3, id)).result, 0);
+    assert!(child_proc.dri_bindings.is_empty());
+    let new = call(child_proc, &mut host, exact_map_packet(token, bo, 4, 0, 0x10000, false));
+    assert!(exact_mapping_id(&new) > id);
+    assert_eq!(table.get(pid).unwrap().dri_bindings.len(), 1);
+    sys_exit(table.get_mut(child).unwrap(), &mut host, 0);
+    let parent = table.get_mut(pid).unwrap();
+    assert_eq!(call(parent, &mut host, exact_unmap_packet(token, bo, 3, id)).result, 0);
+    let retired_high = exact_mapping_id(&call(parent, &mut host, exact_map_packet(token, bo, 4, 0, 0x10000, false)));
+    assert_eq!(call(parent, &mut host, exact_unmap_packet(token, bo, 5, retired_high)).result, 0);
+    assert!(parent.dri_bindings.is_empty());
+    let next_child = table.fork_process_for_caller(pid, pid).unwrap();
+    let next = call(table.get_mut(next_child).unwrap(), &mut host,
+        exact_map_packet(token, bo, 6, 0, 0x10000, false));
+    assert!(exact_mapping_id(&next) > retired_high, "no live ID remains from which to reconstruct the allocator");
+    sys_exit(table.get_mut(next_child).unwrap(), &mut host, 0);
+    sys_exit(table.get_mut(pid).unwrap(), &mut host, 0);
+}
+
+#[test]
+fn exact_mapping_metadata_does_not_change_fork21_serialized_bytes() {
+    use crate::memory::ExactMappingIdentity;
+    let mut proc = Process::new(1);
+    let addr = proc.memory.mmap_anonymous(0, 0x10000, 3, 0x22);
+    let mut before = vec![0; 256 * 1024];
+    let n = crate::fork::serialize_fork_state(&proc, &mut before).unwrap();
+    before.truncate(n);
+    let id = proc.memory.reserve_exact_mapping_id().unwrap();
+    proc.memory.publish_exact_mapping(addr, ExactMappingIdentity {
+        id, source_file: 17, source_bo: Some(23),
+    });
+    // Failed reservations and retired maps must never make old C cleanup
+    // tokens reusable. This high-water state travels in kernel metadata,
+    // not in fork21's program-visible bytes.
+    let burned = proc.memory.reserve_exact_mapping_id().unwrap();
+    let mut after = vec![0; 256 * 1024];
+    let n = crate::fork::serialize_fork_state(&proc, &mut after).unwrap();
+    after.truncate(n);
+    assert_eq!(before, after, "private mapping authority must not alter fork21");
+    let mut child = crate::fork::deserialize_fork_state(&after, 2).unwrap();
+    assert!(child.memory.mappings()[0].exact_mapping.is_none());
+    child.memory.inherit_exact_mapping_ids(&proc.memory);
+    assert_eq!(child.memory.mappings()[0].exact_mapping.unwrap().id, id);
+    assert!(child.memory.reserve_exact_mapping_id().unwrap() > burned);
 }

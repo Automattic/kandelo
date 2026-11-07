@@ -16,6 +16,9 @@ pub const BO_RELEASE: u32 = 9;
 pub const BO_INFO: u32 = 10;
 pub const POLL: u32 = 11;
 pub const CANCEL_POLL: u32 = 12;
+// Additive opt-in mapping authority; established MMAP action 4 is unchanged.
+pub const MMAP_EXACT: u32 = 13;
+pub const UNMAP_EXACT: u32 = 14;
 pub const CONSUME_FD: u32 = 1;
 pub const CAPTURE_FD: u32 = 2;
 pub const CAPTURE_BO: u32 = 4;

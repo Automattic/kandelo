@@ -83,7 +83,7 @@ static void *map_bo(struct graphics_peer_file *file,uint64_t address,uint64_t le
 }
 static int poll_file(struct graphics_peer_file *file,uint32_t events,int32_t timeout,uint32_t *revents){(void)file;(void)events;(void)timeout;(void)revents;assert(!"no sync_file in this peer control");return -1;}
 static void fork_child(void){for(unsigned i=1;i<64;i++)if(files[i].refs)atomic_fetch_add(&shared->pins,1);}
-static const struct graphics_peer_ops ops={open_file,acquire_file,retain_file,release_file,duplicate_file,alias_matches,close_alias,device_ioctl,bo_info,bo_release,map_bo,poll_file,bo_retain,fork_child};
+static const struct graphics_peer_ops ops={open_file,acquire_file,retain_file,release_file,duplicate_file,alias_matches,close_alias,device_ioctl,bo_info,bo_release,map_bo,poll_file,bo_retain,fork_child,NULL};
 static pthread_mutex_t drain_mutex=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t drain_condition=PTHREAD_COND_INITIALIZER;
 static _Thread_local int drainer_thread;

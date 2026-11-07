@@ -15,7 +15,35 @@ struct peer_cold {int live;uint64_t nonce;struct wpk_drm_owned_packet reply;};
 static struct peer_cap caps[PEER_MAX];
 static struct peer_bo bos[PEER_MAX];
 static struct peer_cold cold[PEER_MAX];
+struct peer_mapping {struct graphics_peer_file *file;struct peer_bo *bo;uint64_t id,address,length;};
+static struct peer_mapping mappings[PEER_MAX];
+static uint64_t last_mapping_id;
 static uint32_t last_cap;
+/* The peer models the kernel VMA table rather than remembering retired IDs.
+ * Splits keep their original identity; replacement maps receive a fresh one.
+ * Fixed metadata capacity is checked before native mapping construction. */
+static void drop_mapping(const struct graphics_peer_ops *ops,unsigned i){
+    struct peer_mapping *m=&mappings[i];
+    if(m->bo){assert(m->bo->refs);if(!--m->bo->refs)assert(!ops->bo_release(m->file,m->bo->handle,m->bo->storage));}
+    assert(!ops->release(m->file));*m=(struct peer_mapping){0};
+}
+static unsigned empty_mapping(void){for(unsigned i=0;i<PEER_MAX;i++)if(!mappings[i].length)return i;assert(!"mapping capacity was not reserved");return 0;}
+static void remove_mapping_range(const struct graphics_peer_ops *ops,uint64_t start,uint64_t end){
+    for(unsigned i=0;i<PEER_MAX;i++){
+        struct peer_mapping *m=&mappings[i];if(!m->length)continue;
+        uint64_t mend=m->address+m->length;if(end<=m->address||start>=mend)continue;
+        if(start<=m->address&&end>=mend)drop_mapping(ops,i);
+        else if(start<=m->address){m->address=end;m->length=mend-end;}
+        else if(end>=mend)m->length=start-m->address;
+        else{
+            unsigned slot=empty_mapping();mappings[slot]=*m;
+            mappings[slot].address=end;mappings[slot].length=mend-end;
+            ops->retain(m->file);if(m->bo)m->bo->refs++;
+            m->length=start-m->address;
+        }
+    }
+}
+
 static unsigned effects;
 static pthread_mutex_t peer_lock=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t peer_idle=PTHREAD_COND_INITIALIZER;
@@ -123,7 +151,7 @@ int graphics_peer_ioctl(const struct graphics_peer_ops *ops,struct wpk_drm_owned
                 int fd;memcpy(&fd,p->body+8,4);struct graphics_peer_file *captured=ops->acquire(fd,0);assert(captured);
                 p->source_token=mint(ops,captured,NULL);assert(!ops->close_alias(captured,fd));ops->release(captured);
             }
-        }else if(action==WPK_DRM_OWNED_MMAP){
+        }else if(action==WPK_DRM_OWNED_MMAP||action==WPK_DRM_OWNED_MMAP_EXACT){
             /* Native construction finishes in this entry. READ_LAST only
              * copies this receipt; it cannot remap or overwrite later data.
              * Host staged-map finalization has separate actual adapter tests. */
@@ -131,8 +159,36 @@ int graphics_peer_ioctl(const struct graphics_peer_ops *ops,struct wpk_drm_owned
             memcpy(&address,p->body,8);memcpy(&length,p->body+8,8);memcpy(&offset,p->body+16,8);memcpy(&prot,p->body+24,4);memcpy(&flags,p->body+28,4);
             uint32_t handle=0;uint64_t storage=0;/* source resolved before zeroing output */
             if(source){assert(caps[source_token].bo&&source==cap->file);handle=caps[source_token].bo->handle;storage=caps[source_token].bo->storage;}
+            uint64_t identity=0;
+            if(action==WPK_DRM_OWNED_MMAP_EXACT){
+                assert(p->length==40&&last_mapping_id<UINT64_MAX);
+                identity=++last_mapping_id;unsigned free_slots=0;
+                for(unsigned i=0;i<PEER_MAX;i++)free_slots+=!mappings[i].length;
+                assert(free_slots>=2); /* one new map and at most one right split */
+                memcpy(p->body+32,&identity,8);
+            }else assert(p->length==32);
             void *mapped=ops->map(cap->file,address,length,offset,prot,flags,handle,storage);
-            result=mapped==MAP_FAILED?-1:0;address=(uintptr_t)mapped;memcpy(p->body,&address,8);effects++;
+            result=mapped==MAP_FAILED?-1:0;address=(uintptr_t)mapped;
+            if(result>=0){
+                remove_mapping_range(ops,address,address+length);
+                if(identity){unsigned slot=empty_mapping();struct peer_bo *bo=source?caps[source_token].bo:NULL;
+                    mappings[slot]=(struct peer_mapping){cap->file,bo,identity,address,length};
+                    ops->retain(cap->file);if(bo)bo->refs++;
+                }
+            }
+            memcpy(p->body,&address,8);effects++;
+        }else if(action==WPK_DRM_OWNED_UNMAP_EXACT){
+            assert(p->length==8&&!cap->bo);uint64_t identity;memcpy(&identity,p->body,8);
+            if(!identity){errno=EINVAL;result=-1;}
+            for(unsigned i=0;result>=0&&i<PEER_MAX;i++)if(mappings[i].length&&mappings[i].id==identity){
+                if(mappings[i].file!=cap->file||(source&&mappings[i].bo!=caps[source_token].bo)){errno=EACCES;result=-1;}
+            }
+            if(result>=0)for(unsigned i=0;i<PEER_MAX;i++)if(mappings[i].length&&mappings[i].id==identity){
+                int rc=ops->unmap?ops->unmap((void *)(uintptr_t)mappings[i].address,mappings[i].length)
+                    :munmap((void *)(uintptr_t)mappings[i].address,mappings[i].length);
+                if(rc<0){result=-1;break;}
+                drop_mapping(ops,i);effects++;
+            }
         }else if(action==WPK_DRM_OWNED_BO_INFO){assert(cap->bo&&p->length==32);memcpy(p->body,&cap->bo->info,32);}
         else if(action==WPK_DRM_OWNED_DUP_FD){
             assert(!cap->bo);int previous=p->fd;if(p->flags&WPK_DRM_OWNED_BORROW_ALIAS&&cap->borrowed>=0)previous=cap->borrowed;

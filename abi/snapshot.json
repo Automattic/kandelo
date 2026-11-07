@@ -22,6 +22,7 @@
       "channel_status_codes",
       "clipboard_device_abi",
       "custom_sections",
+      "dri_owned_exact_mappings",
       "dri_owned_resource",
       "gl_buffer_snapshot_draw",
       "gl_compressed_upload",
@@ -1387,6 +1388,35 @@
       "host_kms_rmfb",
       "host_kms_drop_master"
     ]
+  },
+  "dri_owned_exact_mappings": {
+    "actions": {
+      "mmap_exact": 13,
+      "unmap_exact": 14
+    },
+    "authority": "exact-process-exec-original-ofdid-and-optional-boid",
+    "constructor": "existing-optional-kernel_owned_mapping_finish-signature-unchanged",
+    "fork": "rust-parent-metadata-and-full-counter-no-fork-wire-change",
+    "fragments": "retain-original-id-on-split-shrink-new-admission-gets-new-id",
+    "identity": "nonzero-monotonic-never-recycled-after-failure-release-or-fork",
+    "legacy_mmap_action_4": "unchanged",
+    "mmap_body": [
+      "address:u64",
+      "length:u64",
+      "offset:i64",
+      "prot:u32",
+      "flags:u32",
+      "reserved-zero-or-result-mapping-id:u64"
+    ],
+    "mmap_body_bytes": 40,
+    "receipt": "existing-once-only-read-last-ack-no-operation-replay",
+    "request": 3242222823,
+    "retirement": "all-original-surviving-fragments-only-already-gone-no-op-replacement-untouched",
+    "unmap_body": [
+      "mapping-id:u64"
+    ],
+    "unmap_body_bytes": 8,
+    "version": 1
   },
   "dri_owned_resource": {
     "actions": {

@@ -135,7 +135,9 @@ static int gbm_peer_info(struct graphics_peer_file *f,uint32_t handle,uint64_t *
 static int gbm_peer_bo_release(struct graphics_peer_file *f,uint32_t handle,uint64_t storage){assert(storage==handle);return drmCloseBufferHandle(f->pin,handle);}
 static void *gbm_peer_map(struct graphics_peer_file *f,uint64_t address,uint64_t length,int64_t offset,uint32_t prot,uint32_t flags,uint32_t handle,uint64_t storage){assert(!handle||storage==handle);return mmap((void *)(uintptr_t)address,length,prot,flags,f->pin,offset);}
 static int gbm_peer_poll(struct graphics_peer_file *f,uint32_t events,int32_t timeout,uint32_t *revents){(void)f;(void)events;(void)timeout;(void)revents;errno=ENOSYS;return -1;}
-static const struct graphics_peer_ops gbm_peer_ops={gbm_peer_open,gbm_peer_acquire,gbm_peer_retain,gbm_peer_release,gbm_peer_dup,gbm_peer_matches,gbm_peer_close,gbm_peer_io,gbm_peer_info,gbm_peer_bo_release,gbm_peer_map,gbm_peer_poll};
+extern int graphics_gbm_munmap(void *,size_t);
+static int gbm_peer_unmap(void *address,uint64_t length){return graphics_gbm_munmap(address,(size_t)length);}
+static const struct graphics_peer_ops gbm_peer_ops={gbm_peer_open,gbm_peer_acquire,gbm_peer_retain,gbm_peer_release,gbm_peer_dup,gbm_peer_matches,gbm_peer_close,gbm_peer_io,gbm_peer_info,gbm_peer_bo_release,gbm_peer_map,gbm_peer_poll,NULL,NULL,gbm_peer_unmap};
 int graphics_gbm_ioctl(int fd,unsigned long request,...){
     va_list ap;va_start(ap,request);void *arg=va_arg(ap,void *);va_end(ap);
     assert(fd==-1&&request==WPK_DRM_IOCTL_OWNED_RESOURCE);return graphics_peer_ioctl(&gbm_peer_ops,arg);

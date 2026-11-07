@@ -13567,9 +13567,17 @@ fn mmap_dri_bo(proc:&mut Process,host:&mut dyn HostIO,addr:usize,len:usize,prot:
 
 /// Reserve device-mapping retirement before the address allocator changes.
 /// Until commit, the old mappings still own their references and host views.
+enum DeviceUnmapRanges {
+    One([(usize, usize); 1]),
+    Exact(Vec<(usize, usize)>),
+}
+impl DeviceUnmapRanges {
+    fn as_slice(&self) -> &[(usize, usize)] {
+        match self { Self::One(range) => range, Self::Exact(ranges) => ranges }
+    }
+}
 struct DeviceUnmapPlan {
-    addr: usize,
-    end: usize,
+    ranges: DeviceUnmapRanges,
     fragments: Vec<crate::process::DriBoBinding>,
     split_holds: Vec<crate::dri::BoId>,
 }
@@ -13577,70 +13585,68 @@ struct DeviceUnmapPlan {
 impl DeviceUnmapPlan {
     fn prepare(proc: &Process, addr: usize, len: usize) -> Result<Self, Errno> {
         let end = addr.checked_add(len).ok_or(Errno::EINVAL)?;
+        Self::prepare_ranges(proc, DeviceUnmapRanges::One([(addr, end)]))
+    }
+
+    fn prepare_exact(proc: &Process, ranges: Vec<(usize, usize)>) -> Result<Self, Errno> {
+        Self::prepare_ranges(proc, DeviceUnmapRanges::Exact(ranges))
+    }
+
+    fn prepare_ranges(proc: &Process, ranges: DeviceUnmapRanges) -> Result<Self, Errno> {
+        let spans = ranges.as_slice();
+        if spans.iter().any(|(start, end)| start >= end)
+            || spans.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+            return Err(Errno::EINVAL);
+        }
         let mut fragments = Vec::new();
         let mut split_holds = Vec::new();
-        fragments
-            .try_reserve_exact(
-                proc.dri_bindings
-                    .len()
-                    .checked_mul(2)
-                    .and_then(|count| count.checked_add(1))
-                    .ok_or(Errno::ENOMEM)?,
-            )
-            .map_err(|_| Errno::ENOMEM)?;
-        split_holds
-            .try_reserve_exact(proc.dri_bindings.len())
-            .map_err(|_| Errno::ENOMEM)?;
+        let bound = proc.dri_bindings.len().checked_add(spans.len().checked_mul(2).ok_or(Errno::ENOMEM)?)
+            .ok_or(Errno::ENOMEM)?;
+        fragments.try_reserve_exact(bound).map_err(|_| Errno::ENOMEM)?;
+        split_holds.try_reserve_exact(spans.len()).map_err(|_| Errno::ENOMEM)?;
         for binding in &proc.dri_bindings {
             let binding_end = binding.addr.checked_add(binding.len).ok_or(Errno::EINVAL)?;
-            if binding_end <= addr || binding.addr >= end {
-                fragments.push(*binding);
-                continue;
-            }
-            if binding.addr < addr {
-                fragments.push(crate::process::DriBoBinding {
-                    len: addr - binding.addr,
-                    ..*binding
-                });
-            }
-            if binding_end > end {
-                let delta = end - binding.addr;
-                let bo_offset = binding
-                    .bo_offset
-                    .checked_add(delta as u64)
-                    .ok_or(Errno::EOVERFLOW)?;
-                fragments.push(crate::process::DriBoBinding {
-                    addr: end,
-                    len: binding_end - end,
-                    bo_offset,
-                    ..*binding
-                });
-                if binding.addr < addr {
-                    split_holds.push(binding.bo_id);
+            let before = fragments.len();
+            let mut cursor = binding.addr;
+            for &(start, end) in spans {
+                if end <= cursor || start >= binding_end { continue; }
+                if cursor < start {
+                    let bo_offset = binding.bo_offset.checked_add((cursor - binding.addr) as u64)
+                        .ok_or(Errno::EOVERFLOW)?;
+                    fragments.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+                    fragments.push(crate::process::DriBoBinding {
+                        addr: cursor, len: start - cursor, bo_offset, ..*binding
+                    });
                 }
+                cursor = end.min(binding_end).max(cursor);
             }
+            if cursor < binding_end {
+                let bo_offset = binding.bo_offset.checked_add((cursor - binding.addr) as u64)
+                    .ok_or(Errno::EOVERFLOW)?;
+                fragments.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+                fragments.push(crate::process::DriBoBinding {
+                    addr: cursor, len: binding_end - cursor, bo_offset, ..*binding
+                });
+            }
+            let extra = (fragments.len() - before).saturating_sub(1);
+            split_holds.try_reserve(extra).map_err(|_| Errno::ENOMEM)?;
+            for _ in 0..extra { split_holds.push(binding.bo_id); }
         }
-        // Reserve all split references before any destructive cleanup. A failed
-        // fixed allocation drops this plan and returns these temporary holds.
+        // Reserve every resulting reference and vector before native unbinds.
+        // Preparing separate plans per fragment would let a later allocation
+        // fail after earlier fragments had already been destructively retired.
         if !split_holds.is_empty() {
             crate::dri::with_registry(|registry| {
                 for (index, bo_id) in split_holds.iter().enumerate() {
                     if registry.incref(*bo_id).is_none() {
-                        for previous in &split_holds[..index] {
-                            registry.decref(*previous);
-                        }
+                        for previous in &split_holds[..index] { registry.decref(*previous); }
                         return Err(Errno::EOVERFLOW);
                     }
                 }
                 Ok(())
             })?;
         }
-        Ok(Self {
-            addr,
-            end,
-            fragments,
-            split_holds,
-        })
+        Ok(Self { ranges, fragments, split_holds })
     }
 
     fn commit(self, proc: &mut Process, host: &mut dyn HostIO) {
@@ -13653,42 +13659,35 @@ impl DeviceUnmapPlan {
         host: &mut dyn HostIO,
         host_replaced_bindings: bool,
     ) {
-        let Self { addr, end, .. } = self;
-        // A fixed replacement has reserved its new allocator interval, but the
-        // host has not overwritten the process bytes yet. Flush the retiring
-        // device views now, before post-syscall population of the new mapping.
-        if proc.fb_binding.is_some_and(|binding| {
-            addr <= binding.addr && end >= binding.addr.saturating_add(binding.len)
-        }) {
-            release_process_fb_binding(proc, host);
+        for &(addr, end) in self.ranges.as_slice() {
+            if proc.fb_binding.is_some_and(|binding| {
+                addr <= binding.addr && end >= binding.addr.saturating_add(binding.len)
+            }) {
+                release_process_fb_binding(proc, host);
+            }
+            unbind_gl_cmdbufs_in_range(proc, host, addr, end - addr);
         }
-        unbind_gl_cmdbufs_in_range(proc, host, addr, end - addr);
         let pid = proc.pid as i32;
         for binding in &proc.dri_bindings {
-            let removed_start = addr.max(binding.addr);
-            let removed_end = end.min(binding.addr + binding.len);
-            if removed_start >= removed_end {
-                continue;
+            let mut removed = 0usize;
+            for &(addr, end) in self.ranges.as_slice() {
+                let removed_start = addr.max(binding.addr);
+                let removed_end = end.min(binding.addr + binding.len);
+                if removed_start >= removed_end { continue; }
+                removed += removed_end - removed_start;
+                if !host_replaced_bindings {
+                    apply_dri_release_effect(pid, DriReleaseEffect::UnbindBo {
+                        bo_id: binding.bo_id, addr: removed_start, len: removed_end - removed_start,
+                    }, host);
+                }
             }
-            if !host_replaced_bindings {
-                apply_dri_release_effect(
-                    pid,
-                    DriReleaseEffect::UnbindBo {
-                        bo_id: binding.bo_id,
-                        addr: removed_start,
-                        len: removed_end - removed_start,
-                    },
-                    host,
-                );
-            }
-            if removed_start == binding.addr && removed_end == binding.addr + binding.len {
+            if removed == binding.len {
                 if crate::dri::with_registry(|registry| registry.decref(binding.bo_id)) == Some(0) {
                     apply_dri_release_effect(pid, DriReleaseEffect::DestroyBo(binding.bo_id), host);
                 }
             }
         }
         proc.dri_bindings = core::mem::take(&mut self.fragments);
-        // The committed fragments now own these holds.
         self.split_holds.clear();
     }
 }

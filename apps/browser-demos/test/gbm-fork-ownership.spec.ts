@@ -18,7 +18,8 @@ test.beforeAll(() => {
 test.afterAll(() => { for (const fixture of fixtures.values()) fixture.cleanup(); });
 
 for (const arch of ["wasm32", "wasm64"] as const) {
-test(`normal ${arch} GBM guest preserves inherited storage through nested fork`, async ({ page, baseURL, browser }) => {
+for (const mode of ["inherited", "mapping-replacement", "mapping-partial", "mapping-middle", "mapping-same-bo"] as const) {
+test(`normal ${arch} GBM guest preserves exact custody through ${mode}`, async ({ page, baseURL, browser }) => {
   test.setTimeout(90_000);
   const program = readFileSync(fixtures.get(arch)!.programPath);
   const kernelBytes = readFileSync(resolveBinary("kernel.wasm"));
@@ -34,7 +35,7 @@ test(`normal ${arch} GBM guest preserves inherited storage through nested fork`,
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
   const module = fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts", import.meta.url));
   try {
-    const result = await page.evaluate(async url => {
+    const result = await page.evaluate(async ({ url, mode }) => {
       const { BrowserKernel } = await import(/* @vite-ignore */ url);
       const state = { stdout: "", stderr: "", diagnostics: [] as unknown[] };
       const kernel = new BrowserKernel({ kernelOwnedFs: true,
@@ -47,18 +48,19 @@ test(`normal ${arch} GBM guest preserves inherited storage through nested fork`,
         kernelWasm: await (await fetch("/__gbmFork_kernel")).arrayBuffer(),
         vfsImage: new Uint8Array(await (await fetch("/__gbmFork_image")).arrayBuffer()),
       });
-      const child = await kernel.spawnFromVfs("/bin/probe", ["probe"], { uid: 1000, gid: 1000 });
+      const child = await kernel.spawnFromVfs("/bin/probe", ["probe", mode], { uid: 1000, gid: 1000 });
       const status = await child.exit;
       await kernel.terminateProcess(child.pid, 0);
       return { ...state, status };
-    }, new URL(`/@fs${module}`, baseURL).href);
+    }, { url: new URL(`/@fs${module}`, baseURL).href, mode });
     expect(result.status, JSON.stringify(result)).toBe(0);
-    expect(result.stdout.trim()).toBe("OK inherited GBM storage and custody");
+    expect(result.stdout.trim()).toBe(mode === "inherited"
+      ? "OK inherited GBM storage and custody" : "OK exact GBM mapping replacement custody");
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);
     const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
-    writeFileSync(`${evidence}/${Date.now()}-${test.info().project.name}-${arch}.json`, JSON.stringify({
-      arch, engine: test.info().project.name, version: browser.version(),
+    writeFileSync(`${evidence}/${Date.now()}-${test.info().project.name}-${arch}-${mode}.json`, JSON.stringify({
+      arch, mode, engine: test.info().project.name, version: browser.version(),
       kernelSha256: hash(kernelBytes), programSha256: hash(program), imageSha256: hash(imageBytes), ...result,
     }, null, 2) + "\n");
   } finally {
@@ -68,4 +70,5 @@ test(`normal ${arch} GBM guest preserves inherited storage through nested fork`,
   expect(errors).toEqual([]);
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
+}
 }

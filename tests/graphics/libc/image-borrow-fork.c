@@ -22,6 +22,7 @@ static void *tracked_calloc(size_t n,size_t s) {if(fail_allocation){errno=ENOMEM
 /* Renderer/Wayland paths are outside this image-helper control; entering any
  * would invalidate the bounded claim instead of silently simulating it. */
 void _wpk_gbm_window_release(void *p){(void)p;abort();}
+void _wpk_gbm_window_release_pending(struct wpk_gbm_window_retirement *p){(void)p;abort();}
 void _wpk_wl_display_release(void *p){(void)p;abort();}
 void _wpk_wl_display_release_inherited(void *p){(void)p;abort();}
 void _wpk_wlegl_release(void *p){(void)p;abort();}

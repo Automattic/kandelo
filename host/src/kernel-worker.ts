@@ -965,6 +965,7 @@ const DRM_IOCTL_WPK_OWNED_RESOURCE = 0xc14064e7;
 const OWNED_RESOURCE_BYTES = 320;
 const OWNED_RESOURCE_POLL = 11;
 const OWNED_RESOURCE_MMAP = 4;
+const OWNED_RESOURCE_MMAP_EXACT = 13;
 
 /** Syscall numbers for memory management */
 const SYS_MMAP = ABI_SYSCALLS.Mmap;
@@ -7021,20 +7022,24 @@ export class CentralizedKernelWorker {
     const packet = new DataView(
       output.bytes.buffer, output.bytes.byteOffset, output.bytes.byteLength,
     );
-    if (
-      packet.getUint32(4, true) !== OWNED_RESOURCE_MMAP
-      || packet.getUint32(52, true) !== 3
-    ) return result;
+    const action = packet.getUint32(4, true);
+    if ((action !== OWNED_RESOURCE_MMAP && action !== OWNED_RESOURCE_MMAP_EXACT)
+      || packet.getUint32(52, true) !== 3) return result;
     if (!allowed) {
       this.#failBlockingRetryProtocol("owned mapping finish left a pending receipt");
     }
     try {
       const input = ownedResourceInput(plan);
+      const exact = action === OWNED_RESOURCE_MMAP_EXACT;
+      const bodyBytes = exact ? 40 : 32;
+      const mappingIdentity = exact ? packet.getBigUint64(96, true) : 0n;
       const token = packet.getUint32(24, true);
       const transaction = packet.getBigUint64(8, true);
       if (
         packet.getUint32(0, true) !== 1
-        || packet.getUint32(40, true) !== 32
+        || input.getUint32(4, true) !== action
+        || packet.getUint32(40, true) !== bodyBytes
+        || (exact && mappingIdentity === 0n)
         || packet.getInt32(48, true) !== 0
         || packet.getUint32(56, true) !== 0x4f574e31
         || token !== input.getUint32(24, true)
@@ -7099,8 +7104,9 @@ export class CentralizedKernelWorker {
       const sealed = new DataView(sealedBytes.buffer, sealedBytes.byteOffset, sealedBytes.byteLength);
       if (
         sealed.getUint32(0, true) !== 1
-        || sealed.getUint32(4, true) !== OWNED_RESOURCE_MMAP
-        || sealed.getUint32(40, true) !== 32
+        || sealed.getUint32(4, true) !== action
+        || sealed.getUint32(40, true) !== bodyBytes
+        || (exact && sealed.getBigUint64(96, true) !== mappingIdentity)
         || sealed.getUint32(52, true) !== 1
         || sealed.getUint32(24, true) !== token
         || sealed.getBigUint64(8, true) !== transaction

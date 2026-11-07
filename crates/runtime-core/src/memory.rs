@@ -26,6 +26,14 @@ pub struct MappingFile {
     pub name: Vec<u8>,
 }
 
+/// Rust-owned identity and resource authority for one opt-in device mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExactMappingIdentity {
+    pub id: u64,
+    pub source_file: u64,
+    pub source_bo: Option<u32>,
+}
+
 /// Tracks a single mmap'd region.
 #[derive(Debug, Clone)]
 pub struct MappedRegion {
@@ -38,6 +46,9 @@ pub struct MappedRegion {
     /// The mapped object for a file-backed mapping; `None` for anonymous
     /// memory.
     pub file: Option<Rc<MappingFile>>,
+    /// Opt-in driver cleanup authority, independent of address and BO reuse.
+    /// Ordinary mmap and the fork wire format carry no such authority.
+    pub(crate) exact_mapping: Option<ExactMappingIdentity>,
 }
 
 impl MappedRegion {
@@ -50,6 +61,7 @@ impl MappedRegion {
             flags,
             file_offset: 0,
             file: None,
+            exact_mapping: None,
         }
     }
 
@@ -84,6 +96,9 @@ pub struct MemoryLayoutMetadata {
 pub struct MemoryManager {
     /// List of active mappings, kept sorted by address.
     mappings: Vec<MappedRegion>,
+    // Keep the high-water mark independently of live mappings: reconstructing
+    // it from surviving IDs would revive retired C tokens after fork.
+    last_exact_mapping_id: u64,
     /// Host-owned dynamic control ranges. These occupy process address space
     /// but are not guest mmap mappings and cannot be released by munmap.
     reserved_regions: Vec<ReservedRegion>,
@@ -126,6 +141,7 @@ impl MemoryManager {
     pub fn new() -> Self {
         MemoryManager {
             mappings: Vec::new(),
+            last_exact_mapping_id: 0,
             reserved_regions: Vec::new(),
             program_break: Self::INITIAL_BRK,
             max_addr: Self::DEFAULT_MAX_ADDR,
@@ -149,6 +165,56 @@ impl MemoryManager {
 
     pub fn mappings(&self) -> &[MappedRegion] {
         &self.mappings
+    }
+
+    pub(crate) fn reserve_exact_mapping_id(&mut self) -> Result<u64, Errno> {
+        let id = self.last_exact_mapping_id.checked_add(1).ok_or(Errno::ENOMEM)?;
+        // Reservation is irreversible, including constructor rollback. No
+        // tombstone is needed and a failed mapping can never lend its ID again.
+        self.last_exact_mapping_id = id;
+        Ok(id)
+    }
+
+    pub(crate) fn publish_exact_mapping(&mut self, addr: usize, identity: ExactMappingIdentity) {
+        self.mappings.iter_mut().find(|mapping| mapping.addr == addr)
+            .expect("admitted device mapping lost its VMA").exact_mapping = Some(identity);
+    }
+
+    pub(crate) fn exact_mapping_ranges(
+        &self,
+        id: u64,
+        source_file: u64,
+        source_bo: Option<u32>,
+    ) -> Result<Vec<(usize, usize)>, Errno> {
+        if id == 0 { return Err(Errno::EINVAL); }
+        let mut ranges = Vec::new();
+        ranges.try_reserve_exact(self.mappings.iter()
+            .filter(|mapping| mapping.exact_mapping.is_some_and(|identity| identity.id == id))
+            .count()).map_err(|_| Errno::ENOMEM)?;
+        for mapping in &self.mappings {
+            let Some(identity) = mapping.exact_mapping.filter(|identity| identity.id == id) else { continue; };
+            if identity.source_file != source_file
+                || source_bo.is_some_and(|bo| identity.source_bo != Some(bo)) {
+                return Err(Errno::EACCES);
+            }
+            ranges.push((mapping.addr, mapping.addr.checked_add(mapping.len).ok_or(Errno::EINVAL)?));
+        }
+        Ok(ranges)
+    }
+
+    pub(crate) fn retire_exact_mapping_regions(&mut self, id: u64) {
+        // All allocations and backing retirement were prepared before this
+        // infallible publication. Address-matching replacements are untouched.
+        self.mappings.retain(|mapping| !mapping.exact_mapping.is_some_and(|identity| identity.id == id));
+    }
+
+    pub(crate) fn inherit_exact_mapping_ids(&mut self, parent: &Self) {
+        self.last_exact_mapping_id = parent.last_exact_mapping_id;
+        for mapping in &mut self.mappings {
+            mapping.exact_mapping = parent.mappings.iter()
+                .find(|source| source.addr == mapping.addr && source.len == mapping.len)
+                .and_then(|source| source.exact_mapping);
+        }
     }
 
     pub fn reserved_regions(&self) -> &[ReservedRegion] {
@@ -487,6 +553,7 @@ impl MemoryManager {
                         flags: self.mappings[i].flags,
                         file_offset: self.mappings[i].offset_after(unmap_end - m_addr),
                         file: self.mappings[i].file.clone(),
+                        exact_mapping: self.mappings[i].exact_mapping,
                     };
                     self.mappings[i].len = addr - m_addr;
                     self.mappings.insert(i + 1, right);
@@ -729,6 +796,19 @@ mod tests {
 
     fn mapped_region(addr: usize, len: usize) -> MappedRegion {
         MappedRegion::anonymous(addr, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS)
+    }
+
+    #[test]
+    fn exact_mapping_counter_exhaustion_never_wraps_or_reuses_a_failed_reservation() {
+        let mut parent = MemoryManager::new();
+        assert_eq!(parent.reserve_exact_mapping_id(), Ok(1));
+        let mut child = MemoryManager::new();
+        child.inherit_exact_mapping_ids(&parent);
+        assert_eq!(child.reserve_exact_mapping_id(), Ok(2));
+        parent.last_exact_mapping_id = u64::MAX;
+        assert_eq!(parent.reserve_exact_mapping_id(), Err(Errno::ENOMEM));
+        child.inherit_exact_mapping_ids(&parent);
+        assert_eq!(child.reserve_exact_mapping_id(), Err(Errno::ENOMEM));
     }
 
     /// Reference the former combined-list implementation so the stream merge

@@ -253,6 +253,13 @@ fn validate_new(packet: &Packet) -> Result<(), Errno> {
                 && packet.request == 0
                 && packet.length == 32
                 && packet.flags == 0 => {}
+        W::MMAP_EXACT
+            if packet.token != 0 && packet.fd == -1 && packet.request == 0
+                && packet.length == 40 && packet.flags == 0
+                && packet.body[32..40].iter().all(|byte| *byte == 0) => {}
+        W::UNMAP_EXACT
+            if packet.token != 0 && packet.fd == -1 && packet.request == 0
+                && packet.length == 8 && packet.flags == 0 => {}
         W::RELEASE | W::BO_RELEASE
             if packet.token != 0
                 && packet.source_token == 0
@@ -738,15 +745,19 @@ pub(crate) fn ioctl(
             crate::syscalls::owned_resource_poll(proc, host, kind, deadline_ns, &mut working)
         }
         W::BO_INFO => crate::syscalls::owned_resource_bo_info(proc, kind, &mut working),
-        W::MMAP => match crate::syscalls::owned_resource_prepare_mmap(proc, kind, source, &working)
+        W::MMAP | W::MMAP_EXACT => match crate::syscalls::owned_resource_prepare_mmap(proc, kind, source, &working)
         {
             Ok(plan) => {
                 working.body[..8].copy_from_slice(&(plan.addr() as u64).to_le_bytes());
+                if let Some(identity) = plan.identity() {
+                    working.body[32..40].copy_from_slice(&identity.id.to_le_bytes());
+                }
                 mapping_plan = Some(plan);
                 Ok(())
             }
             Err(error) => Err(error),
         },
+        W::UNMAP_EXACT => crate::syscalls::owned_resource_unmap_exact(proc, host, kind, source, &working),
         W::DUP_FD => {
             crate::syscalls::owned_resource_duplicate(proc, kind, &mut working, &mut published_fd)
         }
@@ -779,9 +790,9 @@ pub(crate) fn ioctl(
         }
         _ => Err(Errno::EINVAL),
     };
-    let mapping_pending = working.action == W::MMAP && result.is_ok();
+    let mapping_pending = matches!(working.action, W::MMAP | W::MMAP_EXACT) && result.is_ok();
     let pending = matches!(result, Err(Errno::EAGAIN))
-        && matches!(working.action, W::IOCTL | W::POLL | W::MMAP);
+        && matches!(working.action, W::IOCTL | W::POLL | W::MMAP | W::MMAP_EXACT);
     if pending || mapping_pending {
         working.state = W::PENDING;
         working.result = if mapping_pending {
@@ -1008,7 +1019,7 @@ pub(crate) fn finish_mapping(
         .receipt
         .as_ref()
         .ok_or(Errno::ENOENT)?;
-    if receipt.request.action != W::MMAP
+    if !matches!(receipt.request.action, W::MMAP | W::MMAP_EXACT)
         || receipt.request.transaction != transaction
         || receipt.creator_tid != tid
     {

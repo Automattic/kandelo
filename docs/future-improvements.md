@@ -1428,3 +1428,11 @@ inherited native Wayland connections after multithreaded fork. Implement
 its loud rejection and exact child/parent resource guarantees now. Ordinary
 Wayland callback/thread-exit cleanup and the remaining graphics/native-feel
 gates remain current work; this is not a general graphics-fork deferral.
+
+Exact mapping IDs, rooted constructor capsules, actor-aware BO/surface/EGL
+queues and pending front-hold consumption now have source/native evidence.
+Execute their normal-target parent/child replacement fixtures next, then
+finish native Wayland continuations, D-59 enforcement and fork-shutdown
+ownership. The private libc fork-epoch primitive is available; boundary
+enforcement is still pending. Keep all native-feel, Freeciv/ScummVM and
+final Node/browser requirements in this iteration.

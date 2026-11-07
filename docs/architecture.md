@@ -7618,3 +7618,32 @@ transaction couples the FILE reference increment with the global image root,
 and releases the publication guard before receiver unlock. Private transfers
 use the retained source file, while renderer/public admission requires a live
 matching generation. Only creation and final retirement perform this work.
+
+Private mapping actions13/14 additionally bind cleanup to a nonzero,
+monotonic Rust-owned mapping identity. Splitting/shrinking a mapping keeps
+that identity; a new mapping at the same address and BO gets another one.
+Conditional retirement preflights every remaining original fragment before
+native effects and leaves replacement VMAs untouched. Ordinary POSIX
+`mmap`/`munmap` and established action4 retain their semantics. Rust copies
+the complete mapping counter and IDs at fork independently of the unchanged
+fork21 serialized layout, including after every prior mapping has retired.
+
+Guest mapping capsules remain rooted with their FILE/BO sources until exact
+retirement is known complete. Receipt recovery publishes the capsule before
+another FILE operation can acknowledge its result; atomic release/acquire
+phase publication also covers unrelated same-FILE recovery callers. Private
+EGL session/image constructors become discoverable before native effects
+but cannot be selected publicly until sealed. GBM BO/surface destruction
+keeps whole rings rooted through callbacks and removes exact nodes rather
+than retaining list cursors. A pending front-hold release consumes its caller
+slot with the corresponding ring obligation in one guarded publication.
+Ordinary frame release acquires no retirement actor or global queue scan.
+
+Heap ActorScope identities distinguish a continuing callback stack from a
+dead/vanished peer. EGL outer surface/generation queues use independent
+claims and bounded cold retries. Opaque Wayland leaves with unknown progress
+remain visibly unresolved; durable native leaf APIs and D-59 enforcement are
+still being implemented. These source controls are not full B1 or normal
+target acceptance. Libc now preserves a child-only multithreaded-fork epoch
+before rebinding its copied thread list; this primitive alone does not
+implement the approved Wayland boundary.

@@ -23,6 +23,8 @@
 #define WPK_DRM_OWNED_BO_INFO 10u
 #define WPK_DRM_OWNED_POLL 11u
 #define WPK_DRM_OWNED_CANCEL_POLL 12u
+#define WPK_DRM_OWNED_MMAP_EXACT 13u
+#define WPK_DRM_OWNED_UNMAP_EXACT 14u
 #define WPK_DRM_OWNED_CONSUME_FD 1u
 #define WPK_DRM_OWNED_CAPTURE_FD 2u
 #define WPK_DRM_OWNED_CAPTURE_BO 4u
@@ -78,6 +80,32 @@ int _wpk_drm_owned_map_bo(struct wpk_drm_owner *owner,struct wpk_drm_owner *bo,
                        uint32_t prot,uint32_t flags,uint64_t *mapped);
 int _wpk_drm_owned_map(struct wpk_drm_owner *owner,uint64_t address,uint64_t length,
                        int64_t offset,uint32_t prot,uint32_t flags,uint64_t *mapped);
+/* Stable, caller-rooted custody for one mapping instance. Publish the containing
+ * object before map_exact and keep both source receivers alive until EMPTY.
+ * Raw address/length cleanup can destroy a replacement after fork; the kernel
+ * identity instead retires only surviving fragments of this original map. */
+enum wpk_drm_mapping_phase {
+    WPK_DRM_MAPPING_EMPTY, WPK_DRM_MAPPING_MAP_PENDING,
+    WPK_DRM_MAPPING_LIVE, WPK_DRM_MAPPING_UNMAP_PENDING
+};
+struct wpk_drm_mapping {
+    struct wpk_drm_owner *file, *bo;
+    uint64_t address, length, identity, requested_address;
+    int64_t offset;
+    uint32_t prot, flags;
+    _Atomic(enum wpk_drm_mapping_phase) phase;
+};
+/* A different FILE caller may recover this capsule's pending receipt.
+ * EMPTY must be observable without touching already-retired source receivers;
+ * acquire also publishes immutable source/address/identity fields to readers.
+ * The facade root still serializes map reuse and final object withdrawal. */
+static inline enum wpk_drm_mapping_phase _wpk_drm_mapping_phase(const struct wpk_drm_mapping *mapping) {
+    return atomic_load_explicit(&mapping->phase,memory_order_acquire);
+}
+int _wpk_drm_owned_map_exact(struct wpk_drm_mapping *mapping,
+    struct wpk_drm_owner *file, struct wpk_drm_owner *bo,
+    uint64_t address,uint64_t length,int64_t offset,uint32_t prot,uint32_t flags);
+int _wpk_drm_owned_unmap_exact(struct wpk_drm_mapping *mapping);
 int _wpk_drm_owned_poll(struct wpk_drm_owner *owner,uint32_t events,int32_t timeout_ms,uint32_t *revents);
 int _wpk_drm_owned_fd(struct wpk_drm_owner *owner,int previous,uint32_t flags);
 /* Transfers an otherwise unreturnable constructor/void-cleanup receiver to
@@ -116,4 +144,16 @@ void _wpk_drm_mutex_unlock(struct wpk_drm_mutex *mutex);
 /* One process-wide cold nonce source, shared by every graphics archive. */
 uint64_t _wpk_owned_resource_nonce(void);
 uint64_t _wpk_drm_process_generation(void);
+/* A cleanup stack can survive fork on its own thread. An epoch-only claim
+ * would let a reentrant child drain free that stack's node. These cold claims
+ * retain heap thread identities, so only an ended/vanished actor is adoptable.
+ * Prepare outside the publication guard before effects; all *_locked calls
+ * require that guard. Preparation failure leaves queued custody untouched and
+ * emits a diagnostic; the caller must not enter cleanup without a scope. */
+struct wpk_drm_actor_scope;
+struct wpk_drm_actor_claim { struct wpk_drm_actor_scope *scope; };
+int _wpk_drm_actor_prepare(void);
+int _wpk_drm_actor_try_claim_locked(struct wpk_drm_actor_claim *claim);
+int _wpk_drm_actor_claim_live_locked(const struct wpk_drm_actor_claim *claim);
+void _wpk_drm_actor_release_locked(struct wpk_drm_actor_claim *claim);
 #endif

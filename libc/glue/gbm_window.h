@@ -29,4 +29,21 @@ int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_fra
 int _wpk_gbm_window_prepare(void *lease, struct wpk_gbm_frame *frame);
 void _wpk_gbm_window_finish(void *lease, int accepted);
 void _wpk_gbm_window_release(void *lease);
+/* Keep the capsule globally reachable with one exclusive actor per process
+ * until both fields clear. A child may adopt a vanished actor, but a continuing forkcaller stack
+ * keeps its live claim.
+ * This is cold retirement state, not an extra per-frame resource. */
+struct wpk_gbm_window_retirement { void *live, *retired; };
+void _wpk_gbm_window_release_pending(struct wpk_gbm_window_retirement *);
+void _wpk_gbm_surface_destroy_pending(struct wpk_gbm_window_retirement *);
+void _wpk_gbm_device_destroy_pending(struct gbm_device **);
+/* A dedicated, caller-rooted front hold, separate from any cached BO pointer.
+ * Non-NULL bo owns exactly one in_use slot. The caller provides one exclusive
+ * actor and publishes/transfers this capsule under the common fork guard.
+ * 0 means EMPTY or exact retirement transferred to the internal surface queue;
+ * -1 retains invalid custody and diagnoses it. No acquisition API is implied. */
+struct gbm_surface;
+struct gbm_bo;
+struct wpk_gbm_front_hold { struct gbm_surface *surface; struct gbm_bo *bo; };
+int _wpk_gbm_surface_release_buffer_pending(struct wpk_gbm_front_hold *);
 #endif

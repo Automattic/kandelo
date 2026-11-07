@@ -103,13 +103,20 @@ void graphics_free(void *ptr) {
     free(ptr);
     pthread_mutex_unlock(&allocation_mutex);
 }
-static unsigned allocation_count(void) {
+static void *fixture_tls_scope;
+static unsigned allocation_count_raw(void) {
     pthread_mutex_lock(&allocation_mutex);
     unsigned count = 0;
     for (unsigned i = 0; i < 1024; i++)
         count += allocations[i].pointer != NULL;
     pthread_mutex_unlock(&allocation_mutex);
     return count;
+}
+static unsigned allocation_count(void) {
+    pthread_mutex_lock(&allocation_mutex);
+    unsigned count=0;
+    for(unsigned i=0;i<1024;i++)count+=allocations[i].pointer&&allocations[i].pointer!=fixture_tls_scope;
+    pthread_mutex_unlock(&allocation_mutex);return count;
 }
 
 static int fixture_frame_owners(void *,int,uint32_t,struct wpk_drm_owner **,struct wpk_drm_owner **);
@@ -207,6 +214,14 @@ void _wpk_gbm_window_release(void *lease) {
     assert(i < 3 && window_leases[i]);
     window_leases[i] = 0;fixture_frame_release(lease);
 }
+/* This synchronous fixture peer has no callback/partial native effect in its
+ * lease release; actual GBM continuation is exercised by egl-release-queues. */
+void _wpk_gbm_window_release_pending(struct wpk_gbm_window_retirement *state) {
+    assert(!state->retired);
+    if(state->live)_wpk_gbm_window_release(state->live);
+    state->live=NULL;
+}
+
 
 static unsigned closes, imports;
 static struct {
@@ -867,7 +882,8 @@ static void *image_peer_map(struct graphics_peer_file *f,uint64_t address,uint64
 static int image_peer_poll(struct graphics_peer_file *f,uint32_t events,int32_t timeout,uint32_t *revents){
     assert(f->signaled);*revents=*f->signaled?(events&POLLIN):0;assert(*revents||timeout==0);return !!*revents;
 }
-static const struct graphics_peer_ops image_peer_ops={image_peer_open,image_peer_acquire,image_peer_retain,image_peer_release,image_peer_duplicate,image_peer_alias_matches,image_peer_close_alias,image_peer_io,image_peer_bo_info,image_peer_bo_release,image_peer_map,image_peer_poll};
+static int image_peer_unmap(void *address,uint64_t length){return graphics_munmap(address,(size_t)length);}
+static const struct graphics_peer_ops image_peer_ops={image_peer_open,image_peer_acquire,image_peer_retain,image_peer_release,image_peer_duplicate,image_peer_alias_matches,image_peer_close_alias,image_peer_io,image_peer_bo_info,image_peer_bo_release,image_peer_map,image_peer_poll,NULL,NULL,image_peer_unmap};
 struct fixture_frame_owner {void *lease;int fd;uint32_t handle;struct graphics_peer_file *resource;struct wpk_drm_owner *file,*bo;};
 static struct fixture_frame_owner fixture_frames[32];
 static int fixture_producer_slot(int slot,uint32_t handle){
@@ -905,9 +921,27 @@ int graphics_close(int fd){
     if(fd>=0&&fd<512&&peer_aliases[fd])return image_peer_close_alias(peer_aliases[fd],fd);
     return backend_close(fd);
 }
+static pthread_mutex_t mapping_constructor_gate=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t mapping_constructor_changed=PTHREAD_COND_INITIALIZER;
+static int mapping_constructor_enabled,mapping_constructor_after,mapping_constructor_image;
+static int mapping_constructor_ready,mapping_constructor_resume;
+static void mapping_constructor_stop(void){
+    pthread_mutex_lock(&mapping_constructor_gate);mapping_constructor_ready=1;
+    pthread_cond_broadcast(&mapping_constructor_changed);
+    while(!mapping_constructor_resume)pthread_cond_wait(&mapping_constructor_changed,&mapping_constructor_gate);
+    pthread_mutex_unlock(&mapping_constructor_gate);
+}
 int graphics_ioctl(int fd,unsigned long request,...){
     va_list args;va_start(args,request);void *arg=va_arg(args,void *);va_end(args);
-    if(fd==-1&&request==WPK_DRM_IOCTL_OWNED_RESOURCE)return graphics_peer_ioctl(&image_peer_ops,arg);
+    if(fd==-1&&request==WPK_DRM_IOCTL_OWNED_RESOURCE){
+        struct wpk_drm_owned_packet *packet=arg;
+        int stop=mapping_constructor_enabled&&packet->action==WPK_DRM_OWNED_MMAP_EXACT&&
+            !!packet->source_token==mapping_constructor_image;
+        if(stop&&!mapping_constructor_after)mapping_constructor_stop();
+        int rc=graphics_peer_ioctl(&image_peer_ops,packet);
+        if(stop&&mapping_constructor_after)mapping_constructor_stop();
+        return rc;
+    }
     struct graphics_peer_file *f=fd>=0&&fd<512?peer_aliases[fd]:NULL;
     return backend_ioctl(f?f->slot:fd,request,arg);
 }
@@ -3559,12 +3593,61 @@ static void *hold_dispatch_across_fork(void *opaque) {
     assert(!pthread_mutex_unlock(&p->mutex));_wpk_gl_end_name_scope(&guard);return NULL;
 }
 
-int main(int argc, char **argv) {
+struct mapping_constructor_args {EGLDisplay display;EGLBoolean initialized;EGLImageKHR image;};
+static void *mapping_constructor_thread(void *opaque){
+    struct mapping_constructor_args *args=opaque;
+    if(mapping_constructor_image){
+        EGLint attributes[]={EGL_WIDTH,64,EGL_HEIGHT,64,EGL_LINUX_DRM_FOURCC_EXT,0x34324241,
+            EGL_DMA_BUF_PLANE0_FD_EXT,100,EGL_DMA_BUF_PLANE0_OFFSET_EXT,0,EGL_DMA_BUF_PLANE0_PITCH_EXT,256,EGL_NONE};
+        args->image=eglCreateImageKHR(args->display,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,attributes);
+    }else args->initialized=eglInitialize(args->display,NULL,NULL);
+    return NULL;
+}
+static void mapping_constructor_case(EGLDisplay dpy,const char *name){
+    mapping_constructor_image=strstr(name,"image")!=NULL;
+    mapping_constructor_after=strstr(name,"after")!=NULL;
+    dmabuf_cpu_tier=1;
+    if(mapping_constructor_image)assert(eglInitialize(dpy,NULL,NULL));
+    mapping_constructor_enabled=1;
+    struct mapping_constructor_args args={.display=dpy};pthread_t constructor;
+    assert(!pthread_create(&constructor,NULL,mapping_constructor_thread,&args));
+    pthread_mutex_lock(&mapping_constructor_gate);
+    while(!mapping_constructor_ready)pthread_cond_wait(&mapping_constructor_changed,&mapping_constructor_gate);
+    pthread_mutex_unlock(&mapping_constructor_gate);
+    pid_t child=fork();assert(child>=0);
+    if(!child){
+        alarm(10);mapping_constructor_enabled=0;
+        /* No parent renderer or private constructor may become a public
+         * initialized child display. Fresh init must retire its exact maps,
+         * including a result whose receiver had not yet sealed publication. */
+        assert(!eglQueryString(dpy,EGL_VERSION)&&eglGetError()==EGL_NOT_INITIALIZED);
+        assert(eglInitialize(dpy,NULL,NULL));assert(eglTerminate(dpy));
+        assert(!graphics_peer_live_capabilities()&&!allocation_count());
+        assert(allocation_count_raw()==1); /* the surviving caller's live TLS root */
+        fprintf(stderr,"PASS constructor child cleanup; one live caller TLS scope before _exit\n");
+        _exit(0);
+    }
+    int status;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&!WEXITSTATUS(status));
+    pthread_mutex_lock(&mapping_constructor_gate);mapping_constructor_resume=1;
+    pthread_cond_broadcast(&mapping_constructor_changed);pthread_mutex_unlock(&mapping_constructor_gate);
+    assert(!pthread_join(constructor,NULL));mapping_constructor_enabled=0;
+    if(mapping_constructor_image){assert(args.image);assert(eglDestroyImageKHR(dpy,args.image));}
+    else assert(args.initialized);
+    assert(eglTerminate(dpy)&&!graphics_peer_live_capabilities()&&!allocation_count());
+}
+static int fixture_case_main(int argc,char **argv) {
     /* These controls measure the checked transport. Real guest/browser
      * controls separately exercise default automatic admission. */
     assert(!setenv("KANDELO_GL_CHECKED_PROGRAM_SELECTION","1",1));
     assert(argc == 2 || (argc == 3 && !strcmp(argv[1],"encoder-inline-export")));
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if(!strncmp(argv[1],"mapping-constructor-",20)){
+#ifdef KANDELO_GRAPHICS_ACTOR_SCOPE
+        mapping_constructor_case(dpy,argv[1]);printf("PASS %s\n",argv[1]);return 0;
+#else
+        fprintf(stderr,"constructor phase control requires exact-mapping/actor source\n");return 1;
+#endif
+    }
     if (!strncmp(argv[1], "egl-spec-", 9)) {
         assert(egl_spec_case(dpy, argv[1]));
         return 0;
@@ -10658,4 +10741,33 @@ int main(int argc, char **argv) {
         assert(eglTerminate(dpy));
     }
     printf("PASS %s\n", argv[1]);
+    return 0;
 }
+
+/* A live thread owns one bounded ActorScope independently of EGL resources.
+ * Preserve the consumer leak assertions by identifying that exact allocation,
+ * then judge its real key-destructor reclamation after the worker exits.
+ * Exempting every scope/category would hide leaked cleanup claims. */
+#ifdef KANDELO_GRAPHICS_ACTOR_SCOPE
+struct fixture_case_args {int argc;char **argv;int result,consumer_clean;};
+static void *fixture_case_thread(void *opaque) {
+    struct fixture_case_args *args=opaque;
+    assert(allocation_count_raw()==0&&_wpk_drm_actor_prepare());
+    assert(allocation_count_raw()==1);
+    for(unsigned i=0;i<1024;i++)if(allocations[i].pointer){assert(!fixture_tls_scope);fixture_tls_scope=allocations[i].pointer;}
+    args->result=fixture_case_main(args->argc,args->argv);
+    args->consumer_clean=allocation_count()==0;
+    if(args->consumer_clean)assert(allocation_count_raw()==1);
+    return NULL;
+}
+int main(int argc,char **argv) {
+    struct fixture_case_args args={argc,argv,0,0};pthread_t worker;
+    assert(!pthread_create(&worker,NULL,fixture_case_thread,&args));
+    assert(!pthread_join(worker,NULL));
+    if(args.consumer_clean)assert(allocation_count_raw()==0);
+    return args.result;
+}
+
+#else
+int main(int argc,char **argv){return fixture_case_main(argc,argv);}
+#endif

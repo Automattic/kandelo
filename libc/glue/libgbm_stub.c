@@ -213,8 +213,13 @@ struct gbm_bo {
     struct gbm_mapping *mappings;
     void *map_addr;           /* shared by this BO's active CPU map leases */
     size_t map_len;
+    struct wpk_drm_mapping mapping;
     void *user_data;
     void (*user_data_destroy)(struct gbm_bo *, void *);
+    struct wpk_drm_actor_claim callback_claim, destruction_claim;
+    int callback_started, retiring;
+    uint64_t drain_visit_nonce;
+    struct gbm_bo *retirement_next;
     struct gbm_surface *surface;  /* non-NULL when owned by a surface ring */
     struct gbm_bo *handle_next;
 };
@@ -223,7 +228,11 @@ struct gbm_bo {
  * imported plane has a capability before registration, so removing a peer
  * cannot revoke an accepted allocation or a later recycled numeric name. */
 static struct wpk_drm_mutex handle_mutex = WPK_DRM_MUTEX_INITIALIZER;
-static struct gbm_bo *live_bos;
+static struct gbm_bo *live_bos, *retired_bos;
+static struct wpk_drm_actor_claim bo_drain_claim;
+static _Atomic int bo_retire_pending;
+static void drain_retired_bos(void);
+static void drain_retired_surfaces(void);
 static void register_bo(struct gbm_bo *bo) {
     _wpk_drm_mutex_lock(&handle_mutex);
     bo->handle_next = live_bos;
@@ -247,7 +256,10 @@ struct gbm_surface {
     uint32_t width, height, format, flags;
     struct gbm_bo *bos[WPK_GBM_SURFACE_BO_COUNT];
     int in_use[WPK_GBM_SURFACE_BO_COUNT];
-    int public_live, window_owned, device_retired, retirement_cancel_state;
+    int public_live, window_owned, device_retired;
+    struct wpk_drm_actor_claim retirement_claim;
+    uint64_t drain_visit_nonce;
+    struct gbm_surface *retirement_next;
     int back, front, pending;
     struct gbm_surface *live_next;
 };
@@ -255,7 +267,9 @@ struct gbm_surface {
 /* EGL native windows are opaque. Look up our own live handles rather than
  * interpreting another backend's pointer using the GBM structure layout. */
 static struct wpk_drm_mutex surface_mutex = WPK_DRM_MUTEX_INITIALIZER;
-static struct gbm_surface *live_surfaces;
+static struct gbm_surface *live_surfaces, *retired_surfaces;
+static struct wpk_drm_actor_claim surface_drain_claim;
+static _Atomic int surface_retire_pending;
 
 int _wpk_gbm_surface_metadata(const void *window, uint32_t *width, uint32_t *height,
                               uint32_t *format, uint32_t *flags) {
@@ -406,6 +420,7 @@ static struct gbm_device *publish_owned_device(struct wpk_drm_owner *owner,int p
     _wpk_drm_mutex_unlock(&device_mutex);return d;
 }
 struct gbm_device *gbm_create_device(int fd) {
+    drain_retired_bos();drain_retired_surfaces();
     struct wpk_drm_owner *owner=NULL;
     if(_wpk_drm_owned_acquire(fd,0,&owner)!=0){_wpk_drm_owned_retire(&owner);return NULL;}
     struct gbm_device *device=publish_owned_device(owner,fd);_wpk_drm_owned_retire(&owner);return device;
@@ -417,6 +432,7 @@ struct gbm_device *_wpk_gbm_device_from_owner(struct wpk_drm_owner *owner) {
 }
 
 void gbm_device_destroy(struct gbm_device *gbm) {
+    drain_retired_bos();drain_retired_surfaces();
     int retired=0,cancel_state;
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
     _wpk_drm_mutex_lock(&device_mutex);
@@ -877,10 +893,9 @@ static int map_bo_locked(struct gbm_bo *bo) {
     if (length > SIZE_MAX) { errno = EOVERFLOW; return -1; }
     struct drm_mode_map_dumb req = {.handle = bo->handle};
     if (bo_ioctl(bo->dev,bo->planes[0].owner,DRM_IOCTL_MODE_MAP_DUMB,&req,sizeof req) < 0) return -1;
-    uint64_t mapped=0;
-    if(_wpk_drm_owned_map_bo(bo->dev->owner,bo->planes[0].owner,0,length,
-            req.offset,PROT_READ|PROT_WRITE,MAP_SHARED,&mapped)!=0)return -1;
-    void *addr=(void *)(uintptr_t)mapped;
+    if(_wpk_drm_owned_map_exact(&bo->mapping,bo->dev->owner,bo->planes[0].owner,0,length,
+            req.offset,PROT_READ|PROT_WRITE,MAP_SHARED)!=0)return -1;
+    void *addr=(void *)(uintptr_t)bo->mapping.address;
     bo->map_addr = addr;
     bo->map_len = (size_t)length;
     return 0;
@@ -944,7 +959,7 @@ static int unmap_bo_locked(struct gbm_bo *bo, void *map_data) {
     struct gbm_mapping *mapping = *link;
     if (link == &bo->mappings && !mapping->next) {
         // Keep the lease and address if the kernel did not accept release.
-        if (munmap(bo->map_addr, bo->map_len) < 0) return -1;
+        if (_wpk_drm_owned_unmap_exact(&bo->mapping) < 0) return -1;
         bo->map_addr = NULL;
         bo->map_len = 0;
     }
@@ -960,41 +975,117 @@ void gbm_bo_unmap(struct gbm_bo *bo, void *map_data) {
     _wpk_drm_mutex_unlock(&mapping_mutex);
 }
 
-void gbm_bo_destroy(struct gbm_bo *bo) {
-    if (!bo) return;
-    if (bo->user_data_destroy) {
-        bo->user_data_destroy(bo, bo->user_data);
-        bo->user_data = NULL;
-        bo->user_data_destroy = NULL;
-    }
-    int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+/* A published slot keeps BO, FILE, device and mapping custody together.
+ * A callback may fork/reenter or exit its thread: a live scope owns its C
+ * stack, whereas a dead scope permits another actor to finish without replay.
+ * Process-epoch comparisons alone would free a surviving fork caller's stack. */
+static void finish_claimed_bo(struct gbm_bo *bo,struct gbm_bo **receiver) {
+    void (*callback)(struct gbm_bo *, void *) = NULL;
+    void *data = NULL;
+    _wpk_drm_owned_publication_begin();
+    bo->surface = NULL;
+    if(bo->user_data_destroy&&!bo->callback_started){
+        if(!_wpk_drm_actor_try_claim_locked(&bo->callback_claim))abort();
+        bo->callback_started=1;callback=bo->user_data_destroy;data=bo->user_data;
+    }else if(bo->callback_started&&_wpk_drm_actor_claim_live_locked(&bo->callback_claim))abort();
+    _wpk_drm_owned_publication_end();
+    if(callback)callback(bo,data);
+    _wpk_drm_owned_publication_begin();
+    bo->user_data=NULL;bo->user_data_destroy=NULL;
+    _wpk_drm_actor_release_locked(&bo->callback_claim);
+    _wpk_drm_owned_publication_end();
     _wpk_drm_mutex_lock(&mapping_mutex);
+    /* Exact retirement must finish while the capsule and both source edges
+     * are still globally rooted. Clearing the BO slot first would orphan an
+     * inherited map; retaining only its address would endanger replacements. */
+    if(_wpk_drm_owned_unmap_exact(&bo->mapping)<0){
+        int error=errno;
+        _wpk_drm_mutex_unlock(&mapping_mutex);
+        _wpk_drm_owned_publication_begin();
+        _wpk_drm_actor_release_locked(&bo->destruction_claim);
+        _wpk_drm_owned_publication_end();
+        fprintf(stderr,"Kandelo GBM: exact mapping retirement failed (errno=%d); BO custody retained\n",error);
+        errno=error;return;
+    }
     _wpk_drm_mutex_lock(&handle_mutex);
     _wpk_drm_mutex_lock(&device_mutex);
     struct gbm_device *device=bo->dev;
-    /* The BO list, all aliased plane slots, and its device edge change as
-     * one pure-C fork publication. A child sees either a usable BO facade
-     * or globally queued exact resources, never live fields with NULL owners
-     * or an unlinked BO whose native cleanup exists only on a peer stack. */
     _wpk_drm_owned_publication_begin();
     defer_plane_owners_published(bo);
-    struct gbm_bo **link = &live_bos;
-    while (*link && *link != bo) link = &(*link)->handle_next;
-    if (*link) *link = bo->handle_next;
+    struct gbm_bo **link=&live_bos;
+    while(*link&&*link!=bo)link=&(*link)->handle_next;
+    if(*link)*link=bo->handle_next;
     int device_retired=release_device_published(device);
+    if(receiver){if(*receiver!=bo)abort();*receiver=NULL;}
+    if(bo->retiring){
+        /* User callbacks can prepend or synchronously destroy another BO.
+         * A saved head/next slot would now name somebody else's actor. Remove
+         * this exact node only, with the same guard as its native custody. */
+        struct gbm_bo **retired=&retired_bos;
+        while(*retired&&*retired!=bo)retired=&(*retired)->retirement_next;
+        if(!*retired)abort();*retired=bo->retirement_next;
+    }
+    _wpk_drm_actor_release_locked(&bo->destruction_claim);
     _wpk_drm_owned_publication_end();
     _wpk_drm_mutex_unlock(&device_mutex);
     _wpk_drm_mutex_unlock(&handle_mutex);
-    if (bo->map_addr) munmap(bo->map_addr, bo->map_len);
-    while (bo->mappings) {
-        struct gbm_mapping *mapping = bo->mappings;
-        bo->mappings = mapping->next;
-        free(mapping);
-    }
+    while(bo->mappings){struct gbm_mapping *mapping=bo->mappings;bo->mappings=mapping->next;free(mapping);}
     _wpk_drm_mutex_unlock(&mapping_mutex);
     if(device_retired)free(device);
-    free(bo);
-    _wpk_drm_owned_drain();
+    free(bo);_wpk_drm_owned_drain();
+}
+static void destroy_bo_slot(struct gbm_bo **receiver) {
+    if(!_wpk_drm_actor_prepare()){
+        fprintf(stderr,"Kandelo GBM: cleanup scope unavailable; BO slot retained\n");return;
+    }
+    _wpk_drm_owned_publication_begin();
+    struct gbm_bo *bo=*receiver;
+    int claimed=bo&&_wpk_drm_actor_try_claim_locked(&bo->destruction_claim);
+    _wpk_drm_owned_publication_end();
+    if(claimed)finish_claimed_bo(bo,receiver);
+}
+static void drain_retired_bos(void) {
+    if(!atomic_load_explicit(&bo_retire_pending,memory_order_acquire))return;
+    if(!_wpk_drm_actor_prepare())return;
+    uint64_t visit=_wpk_owned_resource_nonce();
+    if(!visit){fprintf(stderr,"Kandelo GBM: retirement visit exhausted; queue retained\n");return;}
+    _wpk_drm_owned_publication_begin();
+    int claimed=_wpk_drm_actor_try_claim_locked(&bo_drain_claim);
+    _wpk_drm_owned_publication_end();if(!claimed)return;
+    for(;;){
+        _wpk_drm_owned_publication_begin();
+        struct gbm_bo *bo=retired_bos;
+        while(bo&&bo->drain_visit_nonce==visit)bo=bo->retirement_next;
+        int entered=0;
+        if(bo){
+            bo->drain_visit_nonce=visit;
+            entered=_wpk_drm_actor_try_claim_locked(&bo->destruction_claim);
+        }
+        _wpk_drm_owned_publication_end();
+        if(!bo)break;
+        /* Selection and claim publication are inseparable. Native callbacks
+         * may remove other nodes, so retain no list cursor across entry. A
+         * failed actor is visited once, with no retired-ID/tombstone list. */
+        if(entered)finish_claimed_bo(bo,NULL);
+    }
+    _wpk_drm_owned_publication_begin();
+    if(!retired_bos)atomic_store_explicit(&bo_retire_pending,0,memory_order_release);
+    _wpk_drm_actor_release_locked(&bo_drain_claim);
+    _wpk_drm_owned_publication_end();
+}
+void gbm_bo_destroy(struct gbm_bo *bo) {
+    if(!bo)return;
+    int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    int prepared=_wpk_drm_actor_prepare();
+    _wpk_drm_owned_publication_begin();
+    if(!bo->retiring){bo->retiring=1;bo->retirement_next=retired_bos;retired_bos=bo;atomic_store_explicit(&bo_retire_pending,1,memory_order_release);}
+    /* The queued node and this caller's stack claim publish together. A
+     * drainer could otherwise free it while scope preparation still runs.
+     * Failed preparation publishes custody but never dereferences it again. */
+    int claimed=prepared&&_wpk_drm_actor_try_claim_locked(&bo->destruction_claim);
+    _wpk_drm_owned_publication_end();
+    if(claimed)finish_claimed_bo(bo,NULL);
+    if(prepared)drain_retired_bos();
     pthread_setcancelstate(cancel_state,NULL);
 }
 
@@ -1198,39 +1289,85 @@ static struct gbm_surface *find_surface_locked(const void *window) {
         if (s == window) return s;
     return NULL;
 }
-static struct gbm_surface *retire_surface_locked(struct gbm_surface *s) {
-    if (s->public_live || s->window_owned) return NULL;
-    for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i)
-        if (s->in_use[i]) return NULL;
-    struct gbm_surface **link = &live_surfaces;
-    while (*link && *link != s) link = &(*link)->live_next;
-    /* Drop the ring's device edge while its BO roots still exist. Waiting
-     * until the last BO is freed would leave the device only on this retiring
-     * surface's local cleanup stack in another thread's fork snapshot. */
-    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&s->retirement_cancel_state);
-    _wpk_drm_mutex_lock(&device_mutex);
+/* surface_mutex is held; caller prepared its scope and disabled cancellation
+ * before any metadata effect. Fold withdrawal/release into the same guarded
+ * publication as queue custody, rather than leaving a dead live-list node. */
+static struct gbm_surface *retire_surface_locked(struct gbm_surface *s,int prepared,
+    int withdraw_public,int withdraw_window,struct gbm_bo *release_bo,struct wpk_gbm_front_hold *consume) {
+    int retire=(!s->public_live||withdraw_public)&&(!s->window_owned||withdraw_window);
+    for(unsigned i=0;i<WPK_GBM_SURFACE_BO_COUNT;i++)
+        if(s->in_use[i]&&s->bos[i]!=release_bo)retire=0;
+    if(retire)_wpk_drm_mutex_lock(&device_mutex);
     _wpk_drm_owned_publication_begin();
-    if (*link) *link = s->live_next;
-    s->device_retired=release_device_published(s->dev);
-    _wpk_drm_owned_publication_end();
-    _wpk_drm_mutex_unlock(&device_mutex);
-    return s;
-}
-/* User BO callbacks may reenter EGL/GBM. Never run them under metadata locks. */
-static void free_surface(struct gbm_surface *s) {
-    if (!s) return;
-    int cancel_state=s->retirement_cancel_state;
-    for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i) {
-        if (s->bos[i]) {
-            s->bos[i]->surface = NULL;
-            gbm_bo_destroy(s->bos[i]);
-        }
+    if(withdraw_public)s->public_live=0;
+    if(withdraw_window){s->window_owned=0;s->back=s->front=s->pending=-1;}
+    if(release_bo)for(unsigned i=0;i<WPK_GBM_SURFACE_BO_COUNT;i++)
+        if(s->bos[i]==release_bo){s->in_use[i]=0;break;}
+    if(consume){consume->surface=NULL;consume->bo=NULL;}
+    if(retire){
+        struct gbm_surface **link=&live_surfaces;
+        while(*link&&*link!=s)link=&(*link)->live_next;
+        if(*link)*link=s->live_next;
+        s->device_retired=release_device_published(s->dev);
+        s->retirement_next=retired_surfaces;retired_surfaces=s;
+        atomic_store_explicit(&surface_retire_pending,1,memory_order_release);
+        if(prepared&&!_wpk_drm_actor_try_claim_locked(&s->retirement_claim))abort();
     }
+    _wpk_drm_owned_publication_end();
+    if(retire)_wpk_drm_mutex_unlock(&device_mutex);
+    return retire&&prepared?s:NULL;
+}
+
+static void finish_claimed_surface(struct gbm_surface *s) {
+    for(unsigned i=0;i<WPK_GBM_SURFACE_BO_COUNT;i++)destroy_bo_slot(&s->bos[i]);
+    _wpk_drm_owned_publication_begin();
+    for(unsigned i=0;i<WPK_GBM_SURFACE_BO_COUNT;i++)if(s->bos[i]){
+        _wpk_drm_actor_release_locked(&s->retirement_claim);
+        _wpk_drm_owned_publication_end();return;
+    }
+    struct gbm_surface **link=&retired_surfaces;
+    while(*link&&*link!=s)link=&(*link)->retirement_next;
+    if(!*link)abort();*link=s->retirement_next;
+    if(!retired_surfaces)atomic_store_explicit(&surface_retire_pending,0,memory_order_release);
     if(s->device_retired)free(s->dev);
-    free(s);
-    _wpk_drm_owned_drain();
+    _wpk_drm_actor_release_locked(&s->retirement_claim);
+    free(s);_wpk_drm_owned_publication_end();_wpk_drm_owned_drain();
+}
+/* Eligible callers publish their stack claim before dropping surface_mutex.
+ * A preparation failure returns NULL after queue publication: another actor
+ * can already own the node, so the original caller must not dereference it. */
+static void free_surface(struct gbm_surface *s) {
+    if(s)finish_claimed_surface(s);
+}
+
+static void drain_retired_surfaces(void) {
+    if(!atomic_load_explicit(&surface_retire_pending,memory_order_acquire))return;
+    int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    if(!_wpk_drm_actor_prepare()){pthread_setcancelstate(cancel_state,NULL);return;}
+    uint64_t visit=_wpk_owned_resource_nonce();
+    if(!visit){fprintf(stderr,"Kandelo GBM: surface retirement visit exhausted; ring retained\n");pthread_setcancelstate(cancel_state,NULL);return;}
+    _wpk_drm_owned_publication_begin();
+    int entered=_wpk_drm_actor_try_claim_locked(&surface_drain_claim);
+    _wpk_drm_owned_publication_end();
+    if(entered){
+        for(;;){
+            _wpk_drm_owned_publication_begin();
+            struct gbm_surface *s=retired_surfaces;
+            while(s&&s->drain_visit_nonce==visit)s=s->retirement_next;
+            int claimed=0;
+            if(s){s->drain_visit_nonce=visit;claimed=_wpk_drm_actor_try_claim_locked(&s->retirement_claim);}
+            _wpk_drm_owned_publication_end();
+            if(!s)break;
+            if(claimed)finish_claimed_surface(s);
+        }
+        _wpk_drm_owned_publication_begin();
+        if(!retired_surfaces)atomic_store_explicit(&surface_retire_pending,0,memory_order_release);
+        _wpk_drm_actor_release_locked(&surface_drain_claim);
+        _wpk_drm_owned_publication_end();
+    }
     pthread_setcancelstate(cancel_state,NULL);
 }
+
 static void surface_frame(struct gbm_surface *s, int index, struct wpk_gbm_frame *frame) {
     struct gbm_bo *bo = s->bos[index];
     *frame = (struct wpk_gbm_frame){s->dev->fd, bo->handle, s->width, s->height,
@@ -1310,17 +1447,88 @@ void _wpk_gbm_window_finish(void *lease, int accepted) {
     }
     _wpk_drm_mutex_unlock(&surface_mutex);
 }
-void _wpk_gbm_window_release(void *lease) {
+/* Keep the removed ring in the caller's published continuation until every
+ * BO slot has transferred exact custody. Clearing only the live lease before
+ * the old free_surface loop would strand the rest if another thread forks. */
+static void retire_surface_pending(struct wpk_gbm_window_retirement *state, int destroy_public) {
+    if (!state) abort();
+    int cancel_state; pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
     _wpk_drm_mutex_lock(&surface_mutex);
-    struct gbm_surface *s = find_surface_locked(lease), *retired = NULL;
-    if (s && s->window_owned) {
-        s->window_owned = 0;
-        s->back = s->front = s->pending = -1;
-        retired = retire_surface_locked(s);
+    struct gbm_surface *s = state->live ? find_surface_locked(state->live) : NULL;
+    if (state->live && state->retired) abort();
+    if (state->live) {
+        if (s) _wpk_drm_mutex_lock(&device_mutex);
+        _wpk_drm_owned_publication_begin();
+        if (s) {
+            if (destroy_public) s->public_live = 0;
+            else { s->window_owned = 0; s->back = s->front = s->pending = -1; }
+            int retire = !s->public_live && !s->window_owned;
+            for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++)
+                if (s->in_use[i]) retire = 0;
+            if (retire) {
+                struct gbm_surface **link = &live_surfaces;
+                while (*link && *link != s) link = &(*link)->live_next;
+                if (*link) *link = s->live_next;
+                s->device_retired = release_device_published(s->dev);
+                state->retired = s;
+            }
+        }
+        state->live = NULL;
+        _wpk_drm_owned_publication_end();
+        if (s) _wpk_drm_mutex_unlock(&device_mutex);
     }
     _wpk_drm_mutex_unlock(&surface_mutex);
-    free_surface(retired);
+    s = state->retired;
+    if (s) {
+        for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) destroy_bo_slot(&s->bos[i]);
+        for(unsigned i=0;i<WPK_GBM_SURFACE_BO_COUNT;i++)if(s->bos[i]){
+            pthread_setcancelstate(cancel_state,NULL);return;
+        }
+        _wpk_drm_owned_publication_begin();
+        if (s->device_retired) free(s->dev);
+        state->retired = NULL; free(s);
+        _wpk_drm_owned_publication_end();
+        _wpk_drm_owned_drain();
+    }
+    pthread_setcancelstate(cancel_state, NULL);
 }
+void _wpk_gbm_window_release_pending(struct wpk_gbm_window_retirement *state) {
+    retire_surface_pending(state, 0);
+}
+void _wpk_gbm_surface_destroy_pending(struct wpk_gbm_window_retirement *state) {
+    retire_surface_pending(state, 1);
+}
+/* Slot consumption and the public device edge are inseparable. Otherwise a
+ * fork after withdrawal could retain a pointer to an already consumed device,
+ * or lose the only actor that should finish its last FILE reference. */
+void _wpk_gbm_device_destroy_pending(struct gbm_device **receiver) {
+    if (!receiver) abort();
+    int cancel_state; pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
+    _wpk_drm_mutex_lock(&device_mutex);
+    struct gbm_device *device = *receiver;
+    struct gbm_device **link = &live_devices;
+    while (*link && *link != device) link = &(*link)->live_next;
+    _wpk_drm_owned_publication_begin();
+    if (device && *link) {
+        *link = device->live_next;
+        if (release_device_published(device)) free(device);
+    }
+    *receiver = NULL;
+    _wpk_drm_owned_publication_end();
+    _wpk_drm_mutex_unlock(&device_mutex);
+    _wpk_drm_owned_drain();
+    pthread_setcancelstate(cancel_state, NULL);
+}
+void _wpk_gbm_window_release(void *lease) {
+    int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    int prepared=_wpk_drm_actor_prepare();
+    _wpk_drm_mutex_lock(&surface_mutex);
+    struct gbm_surface *s=find_surface_locked(lease),*retired=NULL;
+    if(s&&s->window_owned)retired=retire_surface_locked(s,prepared,0,1,NULL,NULL);
+    _wpk_drm_mutex_unlock(&surface_mutex);
+    free_surface(retired);pthread_setcancelstate(cancel_state,NULL);
+}
+
 struct gbm_bo *gbm_surface_lock_front_buffer(struct gbm_surface *window) {
     struct gbm_bo *bo = NULL;
     _wpk_drm_mutex_lock(&surface_mutex);
@@ -1334,17 +1542,56 @@ struct gbm_bo *gbm_surface_lock_front_buffer(struct gbm_surface *window) {
     _wpk_drm_mutex_unlock(&surface_mutex);
     return bo;
 }
-void gbm_surface_release_buffer(struct gbm_surface *window, struct gbm_bo *bo) {
+void gbm_surface_release_buffer(struct gbm_surface *window,struct gbm_bo *bo) {
     _wpk_drm_mutex_lock(&surface_mutex);
-    struct gbm_surface *s = find_surface_locked(window), *retired = NULL;
-    if (s && bo) {
-        for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i)
-            if (s->bos[i] == bo) { s->in_use[i] = 0; break; }
-        retired = retire_surface_locked(s);
+    struct gbm_surface *s=find_surface_locked(window);
+    if(s&&bo){
+        if(!s->public_live&&!s->window_owned){
+            int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+            int prepared=_wpk_drm_actor_prepare();
+            struct gbm_surface *retired=retire_surface_locked(s,prepared,0,0,bo,NULL);
+            _wpk_drm_mutex_unlock(&surface_mutex);
+            free_surface(retired);pthread_setcancelstate(cancel_state,NULL);return;
+        }
+        /* Ordinary frame release keeps the existing metadata-only path; no
+         * queue scan, actor preparation or cancellation work runs here. */
+        for(unsigned i=0;i<WPK_GBM_SURFACE_BO_COUNT;i++)
+            if(s->bos[i]==bo){s->in_use[i]=0;break;}
     }
     _wpk_drm_mutex_unlock(&surface_mutex);
-    free_surface(retired);
 }
+
+int _wpk_gbm_surface_release_buffer_pending(struct wpk_gbm_front_hold *hold) {
+    if(!hold){errno=EINVAL;return -1;}
+    if(!hold->surface&&!hold->bo)return 0;
+    _wpk_drm_mutex_lock(&surface_mutex);
+    struct gbm_surface *s=find_surface_locked(hold->surface);
+    unsigned slot=WPK_GBM_SURFACE_BO_COUNT;
+    if(s&&hold->bo)for(unsigned i=0;i<WPK_GBM_SURFACE_BO_COUNT;i++)
+        if(s->bos[i]==hold->bo&&s->in_use[i]){slot=i;break;}
+    if(slot==WPK_GBM_SURFACE_BO_COUNT){
+        _wpk_drm_mutex_unlock(&surface_mutex);
+        fprintf(stderr,"Kandelo GBM: invalid pending front hold; custody retained\n");errno=EINVAL;return -1;
+    }
+    int retire=!s->public_live&&!s->window_owned;
+    for(unsigned i=0;i<WPK_GBM_SURFACE_BO_COUNT;i++)if(i!=slot&&s->in_use[i])retire=0;
+    if(!retire){
+        /* A live public/window/other-front owner retains the ring. Release is
+         * metadata only: no actor allocation, queue scan or device request. */
+        _wpk_drm_owned_publication_begin();
+        s->in_use[slot]=0;hold->surface=NULL;hold->bo=NULL;
+        _wpk_drm_owned_publication_end();_wpk_drm_mutex_unlock(&surface_mutex);return 0;
+    }
+    int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    int prepared=_wpk_drm_actor_prepare();
+    /* Clearing the capsule before release loses cleanup intent at fork;
+     * clearing it afterwards replays a stale BO if userdata exits its thread.
+     * Transfer the exact in_use hold and ring actor in one publication. */
+    struct gbm_surface *retired=retire_surface_locked(s,prepared,0,0,hold->bo,hold);
+    _wpk_drm_mutex_unlock(&surface_mutex);
+    free_surface(retired);pthread_setcancelstate(cancel_state,NULL);return 0;
+}
+
 int gbm_surface_has_free_buffers(struct gbm_surface *window) {
     int available = 0;
     _wpk_drm_mutex_lock(&surface_mutex);
@@ -1356,9 +1603,12 @@ int gbm_surface_has_free_buffers(struct gbm_surface *window) {
     return available;
 }
 void gbm_surface_destroy(struct gbm_surface *window) {
+    drain_retired_surfaces();
+    int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    int prepared=_wpk_drm_actor_prepare();
     _wpk_drm_mutex_lock(&surface_mutex);
-    struct gbm_surface *s = find_surface_locked(window), *retired = NULL;
-    if (s && s->public_live) { s->public_live = 0; retired = retire_surface_locked(s); }
+    struct gbm_surface *s=find_surface_locked(window),*retired=NULL;
+    if(s&&s->public_live)retired=retire_surface_locked(s,prepared,1,0,NULL,NULL);
     _wpk_drm_mutex_unlock(&surface_mutex);
-    free_surface(retired);
+    free_surface(retired);pthread_setcancelstate(cancel_state,NULL);
 }

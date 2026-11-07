@@ -4734,19 +4734,22 @@ describe("owned graphics retry custody", () => {
 
 
 describe("owned mapping construction", () => {
-  for (const kind of ["command", "buffer", "capacity-failure", "backing-failure", "fixed-capacity-failure", "fixed-backing-failure"] as const) {
-    it.each(WIDTHS)(`%s finishes ${kind} once before publishing its receipt`, (_name, width) => {
+  for (const exact of [false, true]) for (const kind of ["command", "buffer", "capacity-failure", "backing-failure", "fixed-capacity-failure", "fixed-backing-failure", "identity-zero", "identity-changed"] as const) {
+    if (!exact && kind.startsWith("identity-")) continue;
+    it.each(WIDTHS)(`%s finishes ${exact ? "exact " : ""}${kind} once before publishing its receipt`, async (_name, width) => {
       const h = createRetryHarness(width);
       const capacityFailure=kind.includes("capacity-failure");
+      const identityFailure=kind.startsWith("identity-");
+      const action=exact ? 13 : 4;
       const pointer=0x1000, address=kind === "fixed-capacity-failure" ? 0x70000 : capacityFailure ? 0x90000 : 0x30000;
       const length=kind === "fixed-capacity-failure" ? 0x20000 : 0x10000;
       const originalBytes=h.processMemory.buffer.byteLength;
       const oldProbe=address<originalBytes?address:0x30000;
       h.processBytes.fill(0x5a,oldProbe,Math.min(oldProbe+length,originalBytes));
       const input=new DataView(h.processMemory.buffer,pointer,320);
-      input.setUint32(0,1,true);input.setUint32(4,4,true);
+      input.setUint32(0,1,true);input.setUint32(4,action,true);
       input.setBigUint64(8,1n,true);input.setUint32(24,7,true);
-      input.setUint32(40,32,true);input.setInt32(32,-1,true);
+      input.setUint32(40,exact ? 40 : 32,true);input.setInt32(32,-1,true);
       input.setBigUint64(72,BigInt(length),true);input.setUint32(88,3,true);input.setUint32(92,kind.startsWith("fixed-")?0x11:1,true);
       const request=0xc14064e7;
       let receipt:Uint8Array|undefined;
@@ -4762,6 +4765,7 @@ describe("owned mapping construction", () => {
         finishes++;
         const packet=new DataView(receipt!.buffer);
         packet.setUint32(52,1,true);
+        if(kind === "identity-changed")packet.setBigUint64(96,42n,true);
         packet.setInt32(48,kind.includes("backing-failure") ? -12 : -errno,true);
         if(kind === "buffer")expect(h.worker.bos.bind(h.channel.pid,71,address,length,0,length)).toBe(0);
         return 0;
@@ -4772,11 +4776,12 @@ describe("owned mapping construction", () => {
         const offset=Number(kernelArg(channel,2));
         const packet=kernelView(h,offset);
         const action=packet.getUint32(4,true);
-        if(action===4) {
+        if(action===(exact ? 13 : 4)) {
           constructors++;
           packet.setUint32(56,0x4f574e31,true);
           packet.setUint32(52,3,true);
           packet.setBigUint64(64,BigInt(address),true);
+          if(exact)packet.setBigUint64(96,kind === "identity-zero" ? 0n : 41n,true);
           receipt=h.kernelBytes.slice(offset,offset+320);
         } else {
           expect(action).toBe(6);
@@ -4786,11 +4791,20 @@ describe("owned mapping construction", () => {
         publishKernelResult(channel,0,0);return 0;
       });
       writeRequest(h,ABI_SYSCALLS.Ioctl,[-1n,BigInt(request),BigInt(pointer)]);
+      if(identityFailure) {
+        expect(() => h.worker.handleSyscall(h.channel)).toThrow();
+        await Promise.resolve();
+        expect(h.onKernelFatal).toHaveBeenCalledOnce();
+        expect(finishes).toBe(kind === "identity-zero" ? 0 : 1);
+        expect(h.processBytes[oldProbe]).toBe(0x5a);
+        return;
+      }
       h.worker.handleSyscall(h.channel);
       expect(constructors).toBe(1);expect(finishes).toBe(1);
       expect(requestResult(h)).toMatchObject({status:CHANNEL_STATUS_COMPLETE,returnValue:0,errno:0});
       const returned=new DataView(h.processMemory.buffer,pointer,320);
       expect(returned.getUint32(52,true)).toBe(1);
+      if(exact)expect(returned.getBigUint64(96,true)).toBe(41n);
       const failed=kind.includes("failure");
       expect(returned.getInt32(48,true)).toBe(failed ? -12 : 0);
       if(failed) {

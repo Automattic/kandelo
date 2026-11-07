@@ -177,6 +177,14 @@ void _wpk_gbm_window_finish(void *lease,int accepted) {
 void _wpk_gbm_window_release(void *lease) {
     struct gbm_surface *s=lease;assert(s->pending==-1);s->back=-1;
 }
+/* This synchronous fixture peer has no callback/partial native effect in its
+ * lease release; actual GBM continuation is exercised by egl-release-queues. */
+void _wpk_gbm_window_release_pending(struct wpk_gbm_window_retirement *state) {
+    assert(!state->retired);
+    if(state->live)_wpk_gbm_window_release(state->live);
+    state->live=NULL;
+}
+
 struct gbm_bo *gbm_surface_lock_front_buffer(struct gbm_surface *s) {
     assert(s->front>=0 && !s->locked[s->front]);
     struct gbm_bo *bo=s->bos[s->front];s->locked[s->front]=1;s->front=-1;return bo;

@@ -29,6 +29,7 @@ static void facade_drain(void);
 #include "libgbm_stub.c"
 #else
 #include "libegl_stub.c"
+void _wpk_gbm_window_release_pending(struct wpk_gbm_window_retirement *p){(void)p;abort();}
 #endif
 #undef calloc
 #undef free
