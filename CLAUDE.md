@@ -94,6 +94,11 @@ For nontrivial work:
 6. Run validation that supports the exact claim you will make.
 7. Report what changed, what was run, and what was not run.
 
+For a reviewed patch integration, use the optional
+[`scripts/agent-integrate` workflow](docs/agent-integration.md) to validate
+pinned inputs, preserve unrelated work, and journal evidence/checkpoints.
+It imports reviewed check results; command execution remains separate.
+
 Do not stop at code reasoning for browser demo bugs, syscall semantics, ABI
 changes, package artifacts, or performance claims.
 
@@ -113,6 +118,13 @@ changes, package artifacts, or performance claims.
 | Optional Spacefast deployment, publication and examples | `docs/agent-guidance/spacefast-deployment.md` | `apps/spacefast-cors-proxy/README.md`, `.agents/skills/deploying-kandelo-to-spacefast/SKILL.md` |
 
 ## Validation Contract
+
+Keep automated browser tests silent through the shared
+`apps/browser-demos/playwright-test.ts` fixture, including private diagnostic
+specs. Leave guest PCM and analysers running for audio checks. Do not mute the
+computer's system output, which can disrupt calls. Audible playback requires
+the user's explicit intent and the documented test opt-in. See
+`docs/agent-guidance/validation.md` "Keep browser tests quiet".
 
 Validation is evidence for a specific claim. Do not say "tests pass", "the
 branch is complete", "the browser works", "ABI is fine", or "performance
@@ -412,6 +424,9 @@ details, or validation. Explain the current problem, who or what it affects,
 and why fixing it matters before describing the mechanics.
 
 Prefer concise PR titles that remain suitable as merge subjects.
+Keep PR descriptions as concise and focused as reasonable while giving a
+junior developer enough clear context to understand the problem, change,
+and relevant validation. See the focused guide for the writing contract.
 Manually wrap prose in PR descriptions and commit-message bodies at
 72 columns. Do not reflow Markdown tables, code blocks, generated
 text, or indivisible URLs and identifiers when wrapping would damage

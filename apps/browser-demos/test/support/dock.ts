@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Page } from "../../playwright-test";
 
 export async function dockTool(page: Page, name: "Internals" | "Appearance" | "Share setup…" | "About Kandelo" | "Services") {
   const more = page.getByRole("dialog", { name: "More tools and help", exact: true });

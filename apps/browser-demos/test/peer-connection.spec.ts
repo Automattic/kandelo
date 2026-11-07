@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { fileURLToPath } from "node:url";
 
 const moduleUrl = "/@fs" + fileURLToPath(new URL(

@@ -1,4 +1,4 @@
-import { expect, type FrameLocator } from "@playwright/test";
+import { expect, type FrameLocator } from "../../playwright-test";
 import { gotoInPreview } from "./kandelo-machine";
 
 export async function loginToWordPress(frame: FrameLocator, appPrefix: string): Promise<void> {

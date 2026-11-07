@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 const fixtureModuleUrl = "/test/fixtures/boot-progress-fixture.ts";
 const fixturePageUrl = "/test/fixtures/boot-progress-fixture.html";

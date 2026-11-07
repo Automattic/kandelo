@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { expect } from "@playwright/test";
+import { expect } from "../playwright-test";
 import { persistentBaseFixture } from "../../../host/test/fixtures/persistent-base-image";
 import { opfsTest as test } from "./support/opfs-page";
 

@@ -3562,21 +3562,42 @@ an unavailable deferred source after reboot, and consume separate physical
 storage quota. Transport storage preserves `ENOSPC`, `ENOMEM`, and `EROFS`
 rather than reporting every failure as `EIO`.
 
-Each active persistent deferred transfer has a 30-second inactivity deadline.
-Only positive bytes successfully staged renew it; empty chunks, observer
-notifications, and retry attempts do not. Expiry reports `ETIMEDOUT` and releases
-the serialized queue. Fetch, read, retry-delay, and cleanup waits are abortable,
-even if a custom fetcher ignores its signal or cancellation never settles.
-Late responses are discarded and cannot publish or modify staged bytes after
-cancellation. This cannot force a custom fetcher to release its own resources,
-nor interrupt synchronous work that blocks the worker's event loop.
-Deferred readers share one settlement signal per active cohort. Timed waits
-register admitted, removable listeners rather than adding another promise
-reaction to every pending fetch. Timeout or settlement removes the listener
-and clears its timer; settlement releases the signal's retained metadata.
-Inspection and prepared-exec retries observe monotonic transfer progress,
-rather than imposing a 30-second total limit on healthy large downloads.
-Without progress, their existing 30-second backstop remains in force.
+Every deferred `/` fetch, with or without a spool, follows one timing policy
+on both hosts (`withLazyResponse` in `host/src/vfs/lazy-fetch-bytes.ts`). A
+fetch has two phases with separate deadlines:
+
+- **Preparation** is local work a transport must finish before it can request
+  an address. Node uses it for repository-served images: the first lazy read
+  resolves every lazy asset in the image in one batch, which can regenerate
+  the program index. Preparation moves no bytes, so it has no inactivity
+  deadline. It has a 10-minute ceiling so that a wedged resolver fails rather
+  than hangs. It runs once and is not retried.
+- **Transfer** (the request, its retries, and the body) has a 30-second
+  inactivity deadline that starts when preparation ends. Only positive
+  received bytes renew it, after the spool, if any, has staged them. Empty
+  chunks, response headers, observer notifications, and retry attempts do not.
+
+Either deadline reports `ETIMEDOUT`; with a spool, expiry also releases the
+serialized queue. Preparation, fetch, read, retry-delay, and cleanup waits are
+abortable, even if a custom fetcher or preparation ignores its signal or
+cancellation never settles. Late responses are discarded and cannot publish or
+modify staged bytes after cancellation. This cannot force a custom fetcher to
+release its own resources, nor interrupt synchronous work that blocks the
+worker's event loop.
+
+Because the transport bounds every fetch in flight, host-side readers that
+retry `EAGAIN` keep no clock of their own while one is in flight. That covers
+inspection, prepared exec, and spawn. They wait for the next settlement and
+read again. Their 30-second budgets count only `EAGAIN` with no deferred fetch
+in flight, which the deferred pipe does not produce. A reader clock that also
+ran during a fetch could only misjudge a slow but healthy fetch as stuck, such
+as a long preparation or a large download.
+Deferred readers share one settlement signal per active cohort. An untimed
+wait holds one promise reaction until that settlement. Timed waits
+(`waitForDeferredFetch`) register admitted, removable listeners rather than
+adding another reaction to every pending fetch. Timeout or settlement removes
+the listener and clears its timer; settlement releases the signal's retained
+metadata.
 Shutdown closes creator admission and cancels deferred work before waiting for
 admitted creators to drain; otherwise a blocked lazy exec could prevent the
 normal dirty-file sync from running before forced worker termination. Transfer
@@ -5088,6 +5109,12 @@ A kernel-worker relay copies newly produced ring bytes and producer metadata
 into the mirror, and returns worklet-owned cursor/error publications to the
 canonical transport. Seqlocks, generation fences and monotonic discard floors
 preserve the single queue's capacity and reset semantics. The relay never
+republishes unchanged producer/discard cursors: leaving their sequence locks
+readable avoids silent quanta during idle relay ticks. If a new producer
+publication overlaps rendering, the worklet can consume PCM up to its last
+confirmed producer position within the current generation. Discard reads and
+configuration/generation fences remain mandatory; reset invalidates that cached
+bound. The relay never
 advances playback; the worklet remains its clock. Audio demand reaches the UI
 as a plain notification sampled in the kernel worker. Main is not the audio
 clock and does not drain through a timer. At 48 kHz one render quantum is about 2.7 ms; browser

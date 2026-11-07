@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { resolve } from "node:path";
 
 test("primed audio clocks do not retain kernel transports before explicit demand", async ({ page, baseURL }) => {

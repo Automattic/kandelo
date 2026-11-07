@@ -144,6 +144,7 @@ changes. See [API stability](docs-site/reference/api-stability.md).
 |------------|------------|
 | Use the browser app | [User guide](https://automattic.github.io/kandelo/guide/) |
 | Build, change, or test Kandelo | [Contributing](CONTRIBUTING.md) |
+| Integrate a reviewed patch | [Integration CLI](docs/agent-integration.md) |
 | Compile a program | [C/C++ SDK](docs/sdk-guide.md) · [Rust SDK](sdk/rust/README.md) |
 | Port software | [Porting Guide](docs/porting-guide.md) |
 | Host Kandelo | [Static hosting](docs/browser-support.md#directory-scoped-production-hosting) · [Optional Spacefast hosting](apps/spacefast-cors-proxy/README.md#combined-kandelo-site) |

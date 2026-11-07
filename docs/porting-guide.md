@@ -1074,6 +1074,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 
 | Software | Script | Build system | Notes |
 |----------|--------|-------------|-------|
+| DOSBox Pure | `packages/registry/dosbox-pure/build-dosbox-pure.sh` | upstream make | x86 interpreter with a POSIX/device libretro frontend; [usage, limits and optional x86-to-Wasm follow-up](../packages/registry/dosbox-pure/README.md) |
 | dash | `packages/registry/dash/build-dash.sh` | autoconf | Minimal POSIX shell |
 | coreutils | `packages/registry/coreutils/build-coreutils.sh` | autoconf | 50+ utilities as multicall binary |
 | grep | `packages/registry/grep/build-grep.sh` | autoconf | PCRE not included |

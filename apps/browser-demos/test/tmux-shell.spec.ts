@@ -1,5 +1,5 @@
 import { clickDockTool } from "./support/dock";
-import { expect } from "@playwright/test";
+import { expect } from "../playwright-test";
 import { test } from "./support/persistent-page";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

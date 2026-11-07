@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "../playwright-test";
 import { writeFileSync } from "node:fs";
 import { startPiplet } from "./support/piplet";
 

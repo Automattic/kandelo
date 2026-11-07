@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { zstdCompressSync } from "node:zlib";
-import { expect, test, type BrowserType, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type BrowserType, type Page, type TestInfo } from "../playwright-test";
 import { routeCurrentImageModules } from "./support/current-image-module";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";

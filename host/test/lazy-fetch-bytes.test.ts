@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchLazyResourceBytes } from "../src/vfs/lazy-fetch-bytes";
+import {
+  LAZY_PREPARATION_TIMEOUT_MS,
+  LAZY_TRANSFER_IDLE_TIMEOUT_MS,
+  fetchLazyResourceBytes,
+} from "../src/vfs/lazy-fetch-bytes";
 import { buildRootfsLazyWiring } from "../src/vfs/rootfs-lazy-archives";
 
 afterEach(() => vi.useRealTimers());
@@ -97,4 +101,71 @@ describe("native rootfs lazy transport retry policy", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+});
+
+describe("native rootfs lazy transport phases", () => {
+  it("starts the transfer idle deadline only after preparation settles", async () => {
+    vi.useFakeTimers();
+    const prepare = vi.fn(() => new Promise<void>(resolve => setTimeout(resolve, 2 * LAZY_TRANSFER_IDLE_TIMEOUT_MS)));
+    const fetcher = vi.fn(() => new Promise<Response>(() => {}));
+    let failure: unknown;
+    const pending = fetchLazyResourceBytes(fetcher, "programs/slow.wasm", 3, undefined, { prepare })
+      .catch(error => { failure = error; });
+    await vi.advanceTimersByTimeAsync(2 * LAZY_TRANSFER_IDLE_TIMEOUT_MS);
+    expect(failure).toBeUndefined();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(LAZY_TRANSFER_IDLE_TIMEOUT_MS - 1);
+    expect(failure).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(failure).toMatchObject({ name: "TimeoutError", code: "ETIMEDOUT" });
+    expect(String(failure)).toContain("made no progress");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fails a preparation that ignores cancellation at its own deadline", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn(async () => new Response(new Uint8Array([1])));
+    let failure: unknown;
+    const pending = fetchLazyResourceBytes(fetcher, "programs/wedged.wasm", 1, undefined, {
+      prepare: () => new Promise<void>(() => {}),
+    }).catch(error => { failure = error; });
+    await vi.advanceTimersByTimeAsync(LAZY_PREPARATION_TIMEOUT_MS - 1);
+    expect(failure).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(failure).toMatchObject({ name: "TimeoutError", code: "ETIMEDOUT" });
+    expect(String(failure)).toContain("preparation for programs/wedged.wasm");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not retry a failed preparation or fetch after it", async () => {
+    const failure = new Error("no such package");
+    const prepare = vi.fn(async () => { throw failure; });
+    const fetcher = vi.fn(async () => new Response(new Uint8Array([1])));
+    await expect(fetchLazyResourceBytes(fetcher, "programs/missing.wasm", 1, undefined, { prepare }))
+      .rejects.toBe(failure);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("times out a stalled body without a spool", async () => {
+    vi.useFakeTimers();
+    let cancelled = false;
+    const fetcher = vi.fn(async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new Uint8Array([1])); },
+      cancel() { cancelled = true; },
+    })));
+    let failure: unknown;
+    const pending = fetchLazyResourceBytes(fetcher, "https://fixture.invalid/data", 4, undefined, { idleTimeoutMs: 100 })
+      .catch(error => { failure = error; });
+    await vi.advanceTimersByTimeAsync(99);
+    expect(failure).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(failure).toMatchObject({ name: "TimeoutError", code: "ETIMEDOUT" });
+    expect(cancelled).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
 });

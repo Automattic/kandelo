@@ -1,9 +1,14 @@
 import type { LazyFetch } from "./lazy-download-event";
-import { streamLazyResourceBytes, type DeferredByteProgress } from "./lazy-fetch-bytes";
+import {
+  LAZY_TRANSFER_IDLE_TIMEOUT_MS,
+  streamLazyResourceBytes,
+  type DeferredByteProgress,
+  type LazyPrepare,
+} from "./lazy-fetch-bytes";
 import { StorageMemoryBudget, StorageMetadataMap, storageEntryBytes, type StorageMemoryReservation } from "./storage-memory-budget";
 
 export const MAX_DEFERRED_IO_BYTES = 64 * 1024;
-export const DEFAULT_DEFERRED_IDLE_TIMEOUT_MS = 30_000;
+export const DEFAULT_DEFERRED_IDLE_TIMEOUT_MS = LAZY_TRANSFER_IDLE_TIMEOUT_MS;
 
 export interface DeferredByteSource {
   readonly length: number;
@@ -27,7 +32,6 @@ export class DeferredByteSpool {
   private pending: Promise<void> = Promise.resolve();
   private closing: Promise<void> | undefined;
   private storageClosed = false;
-  private progressAt: number | undefined;
 
   constructor(
     private readonly storage: DeferredByteStorage,
@@ -58,15 +62,12 @@ export class DeferredByteSpool {
     }
   }
 
-  lastProgressAt(): number | undefined {
-    return this.progressAt;
-  }
-
   fetch(
     fetcher: LazyFetch,
     url: string,
     maxBytes: number,
     onProgress?: DeferredByteProgress,
+    prepare?: LazyPrepare,
   ): Promise<DeferredByteSource> {
     if (this.controller.signal.aborted) return Promise.reject(ioFailure());
     let admission: StorageMemoryReservation;
@@ -81,50 +82,27 @@ export class DeferredByteSpool {
       const span = this.spans.get(key) ?? { offset: this.end, capacity: 0 };
       this.spans.set(key, span);
       let written = 0;
-      const transfer = new AbortController();
-      const abort = () => transfer.abort(this.controller.signal.reason);
-      this.controller.signal.addEventListener("abort", abort, { once: true });
-      let timer: ReturnType<typeof setTimeout>;
-      const renew = () => {
-        clearTimeout(timer);
-        timer = setTimeout(() => transfer.abort(Object.assign(
-          new Error(`Deferred byte transfer made no progress for ${this.idleTimeoutMs}ms`),
-          { name: "TimeoutError", code: "ETIMEDOUT" },
-        )), this.idleTimeoutMs);
-      };
-      const requireActive = () => {
-        this.requireOpen();
-        if (transfer.signal.aborted) throw transfer.signal.reason;
-      };
-      renew();
-      try {
-        const length = await streamLazyResourceBytes(fetcher, url, maxBytes, {
-          reset: () => { requireActive(); written = 0; },
-          write: (bytes) => {
-            requireActive();
-            let done = 0;
-            while (done < bytes.byteLength) {
-              requireActive();
-              const chunk = bytes.subarray(done, done + MAX_DEFERRED_IO_BYTES);
-              this.reserve(span, written + chunk.byteLength, maxBytes, written);
-              const count = this.storage.writeAt(span.offset + written, chunk);
-              if (!Number.isInteger(count) || count <= 0 || count > chunk.byteLength) throw ioFailure();
-              written += count;
-              done += count;
-            }
-            if (bytes.byteLength > 0) {
-              this.progressAt = performance.now();
-              renew();
-            }
-          },
-        }, onProgress, transfer.signal);
-        requireActive();
-        if (written !== length) throw ioFailure();
-        return this.sourceAt(span.offset, length);
-      } finally {
-        clearTimeout(timer!);
-        this.controller.signal.removeEventListener("abort", abort);
-      }
+      // The shared transport owns this transfer's deadlines; the spool only
+      // supplies the cancellation that its own close or shutdown requires.
+      const length = await streamLazyResourceBytes(fetcher, url, maxBytes, {
+        reset: () => { this.requireOpen(); written = 0; },
+        write: (bytes) => {
+          this.requireOpen();
+          let done = 0;
+          while (done < bytes.byteLength) {
+            this.requireOpen();
+            const chunk = bytes.subarray(done, done + MAX_DEFERRED_IO_BYTES);
+            this.reserve(span, written + chunk.byteLength, maxBytes, written);
+            const count = this.storage.writeAt(span.offset + written, chunk);
+            if (!Number.isInteger(count) || count <= 0 || count > chunk.byteLength) throw ioFailure();
+            written += count;
+            done += count;
+          }
+        },
+      }, onProgress, { signal: this.controller.signal, idleTimeoutMs: this.idleTimeoutMs, prepare });
+      this.requireOpen();
+      if (written !== length) throw ioFailure();
+      return this.sourceAt(span.offset, length);
     });
     const admitted = result.finally(() => admission.release());
     this.pending = admitted.then(() => {}, () => {});

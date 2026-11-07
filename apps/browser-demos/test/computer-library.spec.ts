@@ -1,5 +1,5 @@
 import { clickDockTool } from "./support/dock";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page } from "../playwright-test";
 import { test } from "./support/persistent-page";
 import { machineUrl } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";

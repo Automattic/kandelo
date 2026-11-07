@@ -1,7 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { findRepoRoot, tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -14,15 +12,9 @@ import {
 
 // Boots the worktree's partial image (`./run.sh partial <image> <pkg>...`,
 // docs/package-management.md "Partial images") the way a developer would:
-// Bash from the image, lazy programs fetched on first use from this
-// worktree's published package view. Skipped until a partial image exists.
-//
-// WHY a file:// lazy-asset directory: without one, the Node host resolves
-// every lazy address the image records in one batch on the first lazy read.
-// For an image with many lazy entries (a partial LAMP) that batch can outlast
-// the spawn path's 30 s no-progress backstop (RootfsReadTimeoutError), which
-// says nothing about the image. Serving members straight from the view, as
-// other host tests do with their own directories, tests the image itself.
+// Bash from the image, lazy programs resolved on first use from this
+// worktree's packages through the Node host's repository resolver. Skipped
+// until a partial image exists.
 const repoRoot = findRepoRoot();
 const partialDir = join(repoRoot, "local-binaries/partial");
 const manifestPath = join(partialDir, "partial.json");
@@ -49,6 +41,7 @@ const PROBES: Record<string, string> = {
   cargo: "cargo --version",
   rustc: "/usr/libexec/rustc --version",
   "kandelo-rustc": '. /etc/profile.d/rust.sh; test "$RUST_LIBC_UNSTABLE_MUSL_V1_2_3" = 1; rustc --print sysroot',
+  "dosbox-pure": "dosbox-pure --info; dos-play --list",
 };
 
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -89,13 +82,9 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
     let stdout = "";
     let stderr = "";
     const lazy: string[] = [];
-    const assets = mkdtempSync(join(tmpdir(), "kandelo-partial-assets-"));
-    symlinkSync(join(repoRoot, "local-binaries/source-only-v1"), join(assets, "assets"));
-    const lazyDirectory = `${pathToFileURL(assets).href}/`;
     const host = new NodeKernelHost({
       maxWorkers: 4,
       rootfsImage: imageBytes(),
-      rootfsLazyAssetDirectory: lazyDirectory,
       onStdout: (_pid, data) => { stdout += new TextDecoder().decode(data); },
       onStderr: (_pid, data) => { stderr += new TextDecoder().decode(data); },
       onLazyDownload: (event) => {
@@ -122,9 +111,12 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
       if (manifest!.packages.includes("cargo")) expect(stdout).toContain("cargo 1.97.0-nightly");
       if (manifest!.packages.includes("rustc")) expect(stdout).toContain("rustc 1.97.0-nightly");
       if (manifest!.packages.includes("kandelo-rustc")) expect(stdout).toContain("/usr");
+      if (manifest!.packages.includes("dosbox-pure")) {
+        expect(stdout).toContain("CPU: x86 interpreter");
+        expect(stdout).toContain("keen1");
+      }
     } finally {
       await host.destroy().catch(() => {});
-      rmSync(assets, { recursive: true, force: true });
     }
   }, 180_000);
 

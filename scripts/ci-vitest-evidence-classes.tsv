@@ -322,6 +322,7 @@ host/test/owned-job-reap.test.ts	source-only
 host/test/owned-jobs.test.ts	source-only
 host/test/package-runtime-file.test.ts	prepared-product
 host/test/pango-cairo-smoke.test.ts	prepared-product
+host/test/partial-image.test.ts	prepared-product
 host/test/patch-wasm-for-thread-gc.test.ts	source-only
 host/test/pathconf.test.ts	prepared-product
 host/test/pcm-audio-worklet.test.ts	source-only
@@ -345,6 +346,8 @@ host/test/pixman-smoke.test.ts	prepared-product
 host/test/plain-catch-payload-lifetime.test.ts	source-only
 host/test/platform-node.test.ts	source-only
 host/test/platform/native-metadata.test.ts	source-only
+host/test/playwright-audio-output.test.ts	source-only
+host/test/playwright-audio-policy.test.ts	source-only
 host/test/poll-timeout-preserves-pollfds.test.ts	prepared-product
 host/test/popen-daemon-regression.test.ts	prepared-product
 host/test/positioned-image-targets.test.ts	source-only
@@ -429,6 +432,7 @@ host/test/shared-pipe-buffer.test.ts	source-only
 host/test/shared-wasm-memory-growth-isolate.test.ts	source-only
 host/test/shared-wasm-memory-growth.test.ts	source-only
 host/test/shell-demo-identity.test.ts	prepared-product
+host/test/shell-dos-import.test.ts	prepared-product
 host/test/shell-lazy-archive-inputs.test.ts	prepared-product
 host/test/shell-lazy-data.test.ts	prepared-product
 host/test/shell-preview-command.test.ts	source-only
@@ -566,6 +570,8 @@ packages/registry/dash/test/dash-signal-regression.test.ts	prepared-product
 packages/registry/dash/test/dash.test.ts	prepared-product
 packages/registry/dinit/test/dinit-scripted-service.test.ts	prepared-product
 packages/registry/dinit/test/dinitctl.test.ts	prepared-product
+packages/registry/dosbox-pure/test/launcher.test.ts	prepared-product
+packages/registry/dosbox-pure/test/runtime.test.ts	prepared-product
 packages/registry/elinks/test/elinks.test.ts	prepared-product
 packages/registry/ffmpeg/test/ffmpeg-devices.test.ts	prepared-product
 packages/registry/ffmpeg/test/ffmpeg-process-runtime.test.ts	prepared-product
@@ -620,11 +626,13 @@ tests/package-system/composer-package.test.ts	source-only
 tests/package-system/configure-prefix-paths.test.ts	source-only
 tests/package-system/dev-lazy-assets.test.ts	source-only
 tests/package-system/espeak-ng-package.test.ts	prepared-product
+tests/package-system/game-import.test.ts	source-only
 tests/package-system/host-package-projection-contract.test.ts	prepared-product
 tests/package-system/installed-host-package.test.ts	prepared-product
 tests/package-system/kandelo-build-image.test.ts	prepared-product
 tests/package-system/kernel-test-fixtures.test.ts	prepared-product
 tests/package-system/local-build-wrapper.test.ts	source-only
+tests/package-system/partial-shell-selection.test.ts	prepared-product
 tests/package-system/playwright-server-policy.test.ts	prepared-product
 tests/package-system/program-resolver-literals.test.ts	prepared-product
 tests/package-system/qtbase-package.test.ts	source-only

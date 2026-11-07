@@ -46,6 +46,7 @@ depends_on = [
   "qtgallery@0.1.0",
   "quickshell@0.3.1",
   "scummvm@2026.3.0",
+  "dosbox-pure@1.0-preview8",
   "love@11.5-kandelo-kms",
   "elinks@0.20.0",
   "ffmpeg@9.0",

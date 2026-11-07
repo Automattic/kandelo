@@ -2,7 +2,7 @@ import { clickDockTool } from "./support/dock";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { gotoInPreview, machineAppPrefix, machineUrl, previewFrame } from "./support/kandelo-machine";
 import { loginToWordPress } from "./support/wordpress-login";
 

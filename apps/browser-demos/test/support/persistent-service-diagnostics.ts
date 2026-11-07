@@ -1,5 +1,5 @@
 import { clickDockTool } from "./dock";
-import type { Page, TestInfo } from "@playwright/test";
+import type { Page, TestInfo } from "../../playwright-test";
 
 export async function capturePersistentServiceLogs(page: Page, testInfo: TestInfo) {
   const observations: { path: string; text?: string; error?: string }[] = [];

@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page } from "../playwright-test";
 import { test } from "./support/persistent-page";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 import { configureNewComputer } from "./support/computer-library";

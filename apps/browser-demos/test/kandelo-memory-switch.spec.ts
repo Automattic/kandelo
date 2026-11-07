@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page } from "../playwright-test";
 import { test } from "./support/persistent-page";
 import { gotoMachine, gotoMachineOrSkip, previewFrame } from "./support/kandelo-machine";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures, memoryBoundaryRealmId } from "./support/browser-memory-boundary";
@@ -56,7 +56,7 @@ async function leaveDetachedTmuxSession(page: Page, cycle: number): Promise<void
   // must release them through normal host teardown in this same page realm.
 }
 
-test("@slow framebuffer games, Freeciv, LÖVE, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
+test("@slow framebuffer games, Freeciv, LÖVE, DOS, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
   test.setTimeout(900_000);
   const required = process.env.KANDELO_MEMORY_SWITCH_REQUIRED === "1";
   // This follows the same external-data boundary as the Quake demo spec.
@@ -104,6 +104,12 @@ test("@slow framebuffer games, Freeciv, LÖVE, tmux and WordPress survive repeat
     await expect.poll(loveFlips, { timeout: 60_000 }).toBeGreaterThan(initialFlips + 5);
     await launch(page, "Bare shell", "shell");
     await leaveDetachedTmuxSession(page, cycle);
+    // Leave DOSBox's real framebuffer/audio owner alongside detached tmux.
+    // Switching computers must retire both through the ordinary host path.
+    await page.locator(".xterm-helper-textarea:visible").focus();
+    await page.keyboard.type("dos-play keen1");
+    await page.keyboard.press("Enter");
+    await expectGameFrame(page);
     await launch(page, "WordPress MariaDB", "wordpress-mariadb");
     await expect(previewFrame(page, "WordPress MariaDB").locator("body"))
       .toContainText(/Hello world/i, { timeout: 240_000 });

@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "../playwright-test";
 import { gotoMachine, machineUrl } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 import { configureNewComputer, currentComputerMetadata } from "./support/computer-library";

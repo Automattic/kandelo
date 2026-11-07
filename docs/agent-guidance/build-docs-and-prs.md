@@ -215,6 +215,12 @@ semantics. These exceptions do not justify leaving surrounding
 ordinary prose unwrapped.
 
 Write for a junior developer who has not followed the incident or earlier PRs.
+Keep descriptions as concise and focused as reasonable. Include the problem,
+resulting behavior, and validation needed to assess the change; omit unrelated
+details, conversational history, and repeated explanations. Scale the length
+to the change: a small fix can use a sentence or two under each required
+section, while a complex change may need more context. Concision must not
+depend on unexplained shorthand or omitted information a reviewer needs.
 Define necessary terms, expand acronyms on first use, and use a concrete example
 when it makes the failure easier to understand. Links may supply evidence or
 history, but the reader must not need to open them to learn why the PR exists.

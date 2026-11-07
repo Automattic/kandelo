@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import { appUrl, gotoMachine } from "./support/kandelo-machine";
 import { configureNewComputer, currentComputerMetadata } from "./support/computer-library";

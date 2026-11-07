@@ -119,6 +119,28 @@ describe("Kandelo PCM AudioWorklet", () => {
     ).toBe(0);
   });
 
+  it("plays already-published queued samples while a new producer cursor is being published", () => {
+    const descriptor = createPcmTransport({ activeCapacityBytes: 16,
+      format: PcmSampleFormat.U8, channels: 1, frameBytes: 1 });
+    writeRing(descriptor, 0n, Uint8Array.from([0, 64, 192, 255]), 16);
+    writeProducer(descriptor, 4n);
+    const words = pcmControlWords(descriptor);
+    const processor = new KandeloPcmProcessor({ processorOptions: processorOptions(descriptor) });
+    expect([...render(processor, 1)[0]!]).toEqual([-1]);
+    Atomics.add(words, PCM_CONTROL.producerSeq, 1);
+    expect([...render(processor, 2)[0]!]).toEqual([-0.5, 0.5]);
+    expect(readConsumerPosition(words)).toBe(3n);
+    Atomics.add(words, PCM_CONTROL.discardSeq, 1);
+    expect([...render(processor, 1)[0]!]).toEqual([0]);
+    expect(readConsumerPosition(words)).toBe(3n);
+    Atomics.add(words, PCM_CONTROL.discardSeq, 1);
+    // A reset must invalidate the cached publication, even if the new writer
+    // has not finished publishing its first cursor yet.
+    Atomics.add(words, PCM_CONTROL.generation, 1);
+    expect([...render(processor, 1)[0]!]).toEqual([0]);
+    expect(readConsumerPosition(words)).toBe(3n);
+  });
+
   it("converts unsigned 8-bit mono and advances the byte cursor", () => {
     const descriptor = createPcmTransport({
       activeCapacityBytes: 16,
@@ -475,6 +497,28 @@ describe("AudioWorklet memory ownership", () => {
 
 
 describe("bounded browser PCM relay", () => {
+  it("leaves unchanged cursor publications readable between actual updates", () => {
+    vi.useFakeTimers();
+    const original = createPcmTransport();
+    writeProducer(original, 8n);
+    const mirror = new BrowserPcmMirror(original);
+    const target = pcmControlWords(mirror.transport);
+    const producerSequence = Atomics.load(target, PCM_CONTROL.producerSeq);
+    const discardSequence = Atomics.load(target, PCM_CONTROL.discardSeq);
+    try {
+      vi.advanceTimersByTime(10);
+      expect(Atomics.load(target, PCM_CONTROL.producerSeq)).toBe(producerSequence);
+      expect(Atomics.load(target, PCM_CONTROL.discardSeq)).toBe(discardSequence);
+      writeProducer(original, 12n);
+      vi.advanceTimersByTime(2);
+      expect(Atomics.load(target, PCM_CONTROL.producerSeq)).toBe(producerSequence + 2);
+      expect(Atomics.load(target, PCM_CONTROL.discardSeq)).toBe(discardSequence);
+      writeDiscard(original, 4n);
+      vi.advanceTimersByTime(2);
+      expect(Atomics.load(target, PCM_CONTROL.discardSeq)).toBe(discardSequence + 2);
+    } finally { mirror.close(); vi.useRealTimers(); }
+  });
+
   it("returns worklet underruns and permanent sink failures to the kernel", () => {
     vi.useFakeTimers();
     const original = createPcmTransport();

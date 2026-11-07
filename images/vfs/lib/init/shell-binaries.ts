@@ -157,6 +157,13 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // machine sharing this image pays to fetch it.
   { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/bin/foot", symlinks: [] },
   { id: "love", resolverPath: "programs/love/love.wasm", vfsPath: "/usr/bin/love", symlinks: [] },
+  { id: "dosbox-pure", resolverPath: "programs/dosbox-pure/dosbox-pure.wasm", vfsPath: "/usr/bin/dosbox-pure", symlinks: [] },
+  { id: "dos-play", dependency: "dosbox-pure", resolverPath: "programs/dosbox-pure/bin/dos-play", vfsPath: "/usr/bin/dos-play", symlinks: [], mode: 0o755 },
+  ...["games.tsv", "DOSDEF-UNLICENSE.txt"].map((file) => ({
+    id: `dos-play-${file}`, dependency: "dosbox-pure",
+    resolverPath: `programs/dosbox-pure/share/dos-play/${file}`,
+    vfsPath: `/usr/share/dos-play/${file}`, symlinks: [], mode: 0o644,
+  })),
   // ScummVM: the engine and the GUI data it reads from /usr/share/scummvm
   // (the package's declared runtime_files). /usr/bin/scummvm is the
   // image's launch wrapper, which execs this engine.
