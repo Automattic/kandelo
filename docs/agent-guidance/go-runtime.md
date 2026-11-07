@@ -18,9 +18,13 @@ All four Go recipes and the SDK wrapper select `kandelo/wasm32`; the
 prototype branch and normal pins now include approved regexp improvement
 `f6053060`. Its fresh compiler passes five standard-library modes, 18 Node
 runtime/cgo checks and all 297 expanded browser cases without skips/flakes.
-Private unmodified FrankenPHP 1.13.5/Caddy 2.11.9 passes real request/GC/
-shutdown on Node and three browsers. Normal consumer/image rebuilds and
-final WordPress validation remain pending. Deep regexp compilation is
+All four normal Go consumers now build and pass their Node gates and the
+focused three-engine browser gate (12/12). Unmodified FrankenPHP 1.13.5/
+Caddy 2.11.9 executes real requests, collection and shutdown. The first narrow
+validation projection omitted rootfs, so Vite's app-wide dependency scan
+warned despite all consumer cases passing. Include the declared base image
+when preparing a full app test projection. WordPress image rebuild and final
+validation remain pending. Deep regexp compilation is
 slower on tested Wasm hosts; retain that measured tradeoff. The authoritative
 record is `docs/plans/2026-09-05-go-gc-port-milestone1-plan.md`; `docs/go.md`
 maps consumers to targets. Historical legacy service evidence does not
@@ -37,6 +41,13 @@ Development tool content IDs affect target build IDs, so independently
 built compilers must also be reproducible. Preserve those IDs and verify
 an independent same-key resolver rebuild; do not suppress them to mask
 divergence. Target builds separately use `-trimpath`.
+For byte-equivalence diagnostics, map changed function bodies before
+attributing them to compiler semantics. Fork instrumentation derives its
+table-state fingerprints from the exact original bytes: differing Go build
+IDs also change generated table save/restore checks. Stripping metadata
+after instrumentation would invalidate that binding, not repair its cause.
+Preserve the source/ABI/receipt chain described in the fork-instrumentation
+guide.
 Keep both native compilers out of target package outputs. A direct developer
 build also needs Go 1.26 or newer as `GOROOT_BOOTSTRAP`; the dev shell's
 Go 1.25.8 cannot bootstrap Go 1.28 directly.

@@ -4,21 +4,23 @@ Kandelo has experimental Go compiler/runtime ports for Wasm. The compiler
 runs on the development machine; its output runs inside Kandelo. Cgo links
 C/C++ compiled by the Kandelo SDK into that program.
 
-The packages are migrating to upstream's Go 1.28 development `wasm32`
-architecture. Check each recipe's immutable `go_toolchain` revision: the
-migration is not complete.
+All four Go consumers now build with upstream's Go 1.28 development
+`wasm32` architecture and the immutable `go_toolchain` pin f6053060.
+Their normal artifacts pass Node and the focused three-engine browser
+gate. WordPress replacement-image and release validation remain open.
 
 | Consumer | Selected compiler/target |
 | --- | --- |
 | `go-hello`, `wasm32posix-go` | Go 1.28 development, `kandelo/wasm32`; four-byte Go/C pointers |
-| Custom classic FrankenPHP recipe | Same wasm32 target; selected 1.13.5/revision 37 with Go f605 awaits normal rebuild |
-| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; selected Caddy revision 14 and combined revision 18 use Go f605. Private unadapted FrankenPHP 1.13.5/Caddy 2.11.9 passes Node and all three browsers; normal rebuilds are pending |
+| Custom classic FrankenPHP recipe | Same wasm32 target; 1.13.5/revision 38 builds and passes Node/three browsers |
+| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; standalone Caddy 2.11.9/revision 15 and combined FrankenPHP 1.13.5/revision 19 build and pass Node/three browsers |
 
 The [implementation checkpoint](plans/2026-09-05-go-gc-port-milestone1-plan.md)
 records the exact source pins, validation and remaining release gates.
 Neither target establishes complete upstream Go conformance or production
-readiness. Historical service results below use the legacy target until
-replacement-image validation is recorded.
+readiness. The package-level gates above use the new target; historical
+WordPress service results below use the legacy target until replacement-image
+validation is recorded.
 
 ## Building packages
 

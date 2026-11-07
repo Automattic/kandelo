@@ -14,8 +14,8 @@ upstream improvement. The candidate is on
 [`kandelo-wasm32-regexp-candidate`](https://github.com/kandelo-dev/go/tree/kandelo-wasm32-regexp-candidate),
 currently [`f6053060`](https://github.com/kandelo-dev/go/commit/f60530600f70a5ea905a907ac311ec8bd2ae8ac4).
 After the expanded compiler gate passed, all four normal Kandelo Go pins
-and `kandelo-wasm32-prototype` select f605. Normal consumer/image rebuilds
-are pending. No upstream issue or pull request has been submitted. The existing WordPress preview is preserved.
+and `kandelo-wasm32-prototype` select f605. All four normal consumers now build and pass their Node and focused browser
+gates. The WordPress image rebuild remains pending. No upstream issue or pull request has been submitted. The existing WordPress preview is preserved.
 
 The candidate is **selected for normal package rebuilds** after its broad
 validation. It demonstrates stack safety for the exercised cases, but
@@ -85,6 +85,51 @@ otherwise discards ambient GOFLAGS and retains scratch paths in native tools;
 their content IDs affect target build IDs. Compiler identities are preserved.
 This checks this Mac/development environment, not cross-OS reproducibility.
 Final WordPress and larger consumer reproducibility gates remain open.
+
+## Normal package integration
+
+All four normal packages build with f605 and the shared reproducible native
+bootstrap. GoHello 33 passes Node VFS/posix_spawn and an independent same-key
+rebuild of both compilers and its target. Standalone Caddy 15 uses the normal
+explicit source resolver because it is intentionally excluded from the
+default bootstrap set. Classic 38 and combined 19 use normal bootstrap.
+Their combined build/Node sequence completes in 25m12s.
+
+Both FrankenPHP Node gates execute PHP/static/OPcache, 32 request-lifetime
+checks at concurrency four and normal shutdown without host diagnostics.
+Classic observes Go collections 1 to 3; Caddy observes 16 to 31. Four normal
+consumers also pass Chromium/Firefox/WebKit (12/12). A receipt-validated
+projection preserves their exact bytes and matches frozen kernel
+`a991e3cf4469345e8b274572c2fec153331fa9da53678e0860f5f7e238d80783`.
+The first narrow projection omitted rootfs, so Vite's full-app dependency
+scan warned even though the consumer tests passed. A rerun with the normal
+rootfs prerequisite is in progress. No artifact validation is relaxed.
+
+| Package/revision | Wasm bytes | SHA-256 |
+| --- | ---: | --- |
+| GoHello 33 | 2,197,333 | 8445a3ef4fe9660d09771631bb506cda46145c87998d85c521ded0386335d209 |
+| Caddy 15 | 92,108,164 | 9150f42c177a64764c68529766c1e5aef911923e130770da834f516de3c59318 |
+| Classic 38 | 70,004,744 | 90cfbd2753045029948ee95b588cfed63b0170778c83a08359cef8434e1be430 |
+| FrankenPHP/Caddy 19 | 185,049,718 | b2e9fc963c76df4e8ee8ad234ca5b3ee7205db65c77d114fae21e0811f4aab06 |
+
+A read-only comparison with the private f605 build finds identical data
+and all but two of 196,005 function bodies. The changed bodies export
+`wpk_fork_module_table_state_save` and `restore`; they embed baseline
+fingerprints bound to the exact original bytes. Custom `go:buildid` and
+`kandelo.build.key` differ too. These variants have different native builder
+mode/recipe revisions, so this is a diagnostic, not a same-key reproduction.
+Do not strip identities after instrumentation to force equality. Larger
+C-linked independent
+byte-reproducibility checks remain open; GoHello's completed check is not
+substituted for them. WordPress image, final workflows, memory/lifecycle and
+performance gates remain open. The existing preview is preserved.
+
+Final instrumentation sampled about 8.9 GiB RSS in native `wasm-opt` and
+briefly nearly exhausted unused RAM. Swap-out counters did not increase
+across the checks, and it completed without intervention. This sampled
+build-process cost is distinct from guest/demo footprint and does not bound
+the optimizer's peak. Further large runs select the documented
+`BINARYEN_CORES=1` setting; its memory effect is not yet measured.
 
 ## Compilation measurements
 

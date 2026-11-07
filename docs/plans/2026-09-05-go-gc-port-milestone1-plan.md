@@ -55,12 +55,23 @@ work root independently rebuilds both native compilers and the target;
 its Wasm bytes match the canonical generation exactly (SHA-256
 `8445a3ef4fe9660d09771631bb506cda46145c87998d85c521ded0386335d209`).
 This is same-host/same-declared-environment reproducibility, not a cross-OS
-claim. Classic 38, combined 19 and standalone Caddy 15 remain pending.
+claim. Classic 38, combined 19 and standalone Caddy 15 now publish and pass Node;
+the build/Node sequence takes 25m12s. Both FrankenPHP gates check static/
+PHP/OPcache and 32 requests at concurrency four, with observed Go collection
+(classic 1 to 3; Caddy 16 to 31), normal shutdown and no diagnostics.
+All four normal consumers pass three browsers (12/12) on exact preserved
+bytes and kernel a991e3cf. The narrow projection omitted rootfs, producing a
+Vite app-wide dependency-scan warning despite the passing consumer tests.
+A rerun with the normal base-image prerequisite is in progress. Larger
+C-linked independent byte-reproducibility checks remain open; GoHello's
+completed check is not substituted for them.
 Standalone Caddy is intentionally outside the default bootstrap set and
 uses the normal explicit source resolver. An initial private orchestration
 attempt used bootstrap for it and stopped before compiling that package.
-No compiler source changes are involved.
-WordPress revision 43 and final workflows, memory/lifecycle and performance
+No compiler source changes are involved. Normal artifact hashes and the
+sampled 8.9 GiB native optimizer cost are in the regexp evaluation. Future
+large instrumentation runs select documented BINARYEN_CORES=1; no footprint
+improvement is claimed yet. WordPress revision 43 and final workflows, memory/lifecycle and performance
 gates remain pending. The saved preview is preserved. The original A0
 source/toolchain is retained at `.context/go-regexp-baseline-a0`; its existing
 compiler is relocated, not independently rebuilt. The prototype's local
