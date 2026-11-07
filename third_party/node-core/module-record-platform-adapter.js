@@ -3,12 +3,12 @@
 function _createNodeModuleRecords(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
-    const { ArrayIsArray, ArrayPrototypeFilter, ArrayPrototypeIncludes, ArrayPrototypeIndexOf, ArrayPrototypeJoin,
+    const { ArrayIsArray, ArrayPrototypeForEach, ArrayPrototypeFilter, ArrayPrototypeIncludes, ArrayPrototypeIndexOf, ArrayPrototypeJoin,
         ArrayPrototypePush, ArrayPrototypePushApply, ArrayPrototypeMap, ArrayPrototypeSlice, ArrayPrototypeSplice, ArrayPrototypeUnshift,
         ArrayPrototypeUnshiftApply, Boolean, ObjectCreate, ObjectDefineProperty,
         ObjectGetOwnPropertyDescriptor, ObjectGetPrototypeOf, ObjectPrototype, ObjectSetPrototypeOf, ObjectPrototypeHasOwnProperty, String, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet, SafeSet, SafeMap,
         StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeEndsWith,
-        StringPrototypeIndexOf, StringPrototypeSlice, StringPrototypeSplit,
+        StringPrototypeIncludes, StringPrototypeIndexOf, StringPrototypeSlice, StringPrototypeSplit,
         StringPrototypeStartsWith, JSONParse, ObjectKeys, RegExpPrototypeExec, Error } = primordials;
     const path = platform.path, process = platform.process;
     const { validateString } = platform.values.validators;
@@ -22,6 +22,7 @@ function _createNodeModuleRecords(platform) {
     const shouldReportRequiredModules = getLazy(() => process.env.WATCH_REPORT_DEPENDENCIES);
     function require(name) {
         if (name === 'internal/modules/esm/resolve') return platform.policy.resolver;
+        if (name === 'internal/modules/cjs/loader') return { Module };
         throw new ERR_METHOD_NOT_IMPLEMENTED('Module policy dependency: ' + name);
     }
     const isWindows = process.platform === 'win32';
@@ -130,7 +131,7 @@ function _createNodeModuleRecords(platform) {
     // Activation of that VFS and its resolution roots remains a separate owner.
     Module.registerHooks = hooks.registerHooks;
     Module._initPaths();
-    return { Module, make, create, cached, complete, failed, getRequireStack, notFound,
+    return { Module, make, makeRequireFunction, addBuiltinLibsToObject, create, cached, complete, failed, getRequireStack, notFound,
         getModuleResolver() {
             return moduleResolver ??= _createNodeModuleSyncResolver({
                 values: platform.values, policy: platform.policy, hooks,

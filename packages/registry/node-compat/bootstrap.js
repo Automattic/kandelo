@@ -11,6 +11,7 @@ import * as _nodeNative from 'qjs:node';
 
 const _nodeMonotonicStart = os.timerNow();
 const _nodeParsedEvalSource = _nodeNative.workerEnvironment ? undefined : _nodeNative.cliOptions?.evalSource;
+const _nodeHasEvalSource = !_nodeNative.workerEnvironment && _nodeNative.cliOptions?.hasEvalSource === true;
 const _nodeDispose = Symbol.dispose;
 let _nodeEventPlatform;
 let _nodeValues;
@@ -6428,6 +6429,12 @@ function _installNodeGlobalScope() {
     }
 }
 _installNodeGlobalScope();
+// Node's actual --eval entry exposes builtins through the same Module/require
+// owner used by ordinary CJS. This is not standalone or public REPL activation.
+if (_nodeHasEvalSource) {
+    _nodeModuleRecords.addBuiltinLibsToObject(globalThis, '<eval>');
+}
+
 
 
 let _nodeWorkerStartupInitialized = false;

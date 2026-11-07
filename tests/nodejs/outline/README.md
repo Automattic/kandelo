@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source230 wires real main eval builtin bindings to the existing shared Module/require owner and adds actual parser-presence source.14native-dependent groups,4source guards,1unchanged upstream file/two subjects and14package checks pass; no fullCLI/publicREPL/guest/four-host closure.
+See [source scope](eval-builtin-bindings-integration.md).
+
 Source229 adds real retained connected shutdown request/lifecycle and fixes the combined datagram libc lookup.9frontend+7portable+7regression groups pass; new guest bridge/fullSocket/TLS/fourhost remain open.
 See [source scope](socket-shutdown-integration.md).
 

@@ -1,0 +1,8 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -11936,0 +11937 @@
++  bool hasEvalSource = false;
+@@ -12188,0 +12190 @@
++      kandeloNodeCLI.hasEvalSource = true;
+@@ -17137,0 +17140 @@
++        !KandeloDefineBooleanProperty(cx, cli, "hasEvalSource", kandeloNodeCLI.hasEvalSource, 0) ||

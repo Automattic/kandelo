@@ -56887,12 +56887,12 @@ module.exports = {
 function _createNodeModuleRecords(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
-    const { ArrayIsArray, ArrayPrototypeFilter, ArrayPrototypeIncludes, ArrayPrototypeIndexOf, ArrayPrototypeJoin,
+    const { ArrayIsArray, ArrayPrototypeForEach, ArrayPrototypeFilter, ArrayPrototypeIncludes, ArrayPrototypeIndexOf, ArrayPrototypeJoin,
         ArrayPrototypePush, ArrayPrototypePushApply, ArrayPrototypeMap, ArrayPrototypeSlice, ArrayPrototypeSplice, ArrayPrototypeUnshift,
         ArrayPrototypeUnshiftApply, Boolean, ObjectCreate, ObjectDefineProperty,
         ObjectGetOwnPropertyDescriptor, ObjectGetPrototypeOf, ObjectPrototype, ObjectSetPrototypeOf, ObjectPrototypeHasOwnProperty, String, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet, SafeSet, SafeMap,
         StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeEndsWith,
-        StringPrototypeIndexOf, StringPrototypeSlice, StringPrototypeSplit,
+        StringPrototypeIncludes, StringPrototypeIndexOf, StringPrototypeSlice, StringPrototypeSplit,
         StringPrototypeStartsWith, JSONParse, ObjectKeys, RegExpPrototypeExec, Error } = primordials;
     const path = platform.path, process = platform.process;
     const { validateString } = platform.values.validators;
@@ -56906,6 +56906,7 @@ function _createNodeModuleRecords(platform) {
     const shouldReportRequiredModules = getLazy(() => process.env.WATCH_REPORT_DEPENDENCIES);
     function require(name) {
         if (name === 'internal/modules/esm/resolve') return platform.policy.resolver;
+        if (name === 'internal/modules/cjs/loader') return { Module };
         throw new ERR_METHOD_NOT_IMPLEMENTED('Module policy dependency: ' + name);
     }
     const isWindows = process.platform === 'win32';
@@ -57423,6 +57424,65 @@ function getRequireStack(parent) {
   return requireStack;
 }
 
+
+function addBuiltinLibsToObject(object, dummyModuleName) {
+  // Make built-in modules available directly (loaded lazily).
+  const Module = require('internal/modules/cjs/loader').Module;
+  const { builtinModules } = Module;
+
+  // To require built-in modules in user-land and ignore modules whose
+  // `canBeRequiredByUsers` is false. So we create a dummy module object and not
+  // use `require()` directly.
+  const dummyModule = new Module(dummyModuleName);
+
+  ArrayPrototypeForEach(builtinModules, (name) => {
+    // Neither add underscored modules, nor ones that contain slashes (e.g.,
+    // 'fs/promises') or ones that are already defined.
+    if (name[0] === '_' ||
+        StringPrototypeIncludes(name, '/') ||
+        ObjectPrototypeHasOwnProperty(object, name)) {
+      return;
+    }
+    // Goals of this mechanism are:
+    // - Lazy loading of built-in modules
+    // - Having all built-in modules available as non-enumerable properties
+    // - Allowing the user to re-assign these variables as if there were no
+    //   pre-existing globals with the same name.
+
+    const setReal = (val) => {
+      // Deleting the property before re-assigning it disables the
+      // getter/setter mechanism.
+      delete object[name];
+      object[name] = val;
+    };
+
+    ObjectDefineProperty(object, name, {
+      __proto__: null,
+      get: () => {
+        const lib = dummyModule.require(name);
+
+        try {
+          // Override the current getter/setter and set up a new
+          // non-enumerable property.
+          ObjectDefineProperty(object, name, {
+            __proto__: null,
+            get: () => lib,
+            set: setReal,
+            configurable: true,
+            enumerable: false,
+          });
+        } catch {
+          // If the property is no longer configurable, ignore the error.
+        }
+
+        return lib;
+      },
+      set: setReal,
+      configurable: true,
+      enumerable: false,
+    });
+  });
+}
 
     const nmChars = [ 115, 101, 108, 117, 100, 111, 109, 95, 101, 100, 111, 110 ];
 const nmLen = nmChars.length;
@@ -58268,7 +58328,7 @@ function createEsmNotFoundErr(request, path) {
     // Activation of that VFS and its resolution roots remains a separate owner.
     Module.registerHooks = hooks.registerHooks;
     Module._initPaths();
-    return { Module, make, create, cached, complete, failed, getRequireStack, notFound,
+    return { Module, make, makeRequireFunction, addBuiltinLibsToObject, create, cached, complete, failed, getRequireStack, notFound,
         getModuleResolver() {
             return moduleResolver ??= _createNodeModuleSyncResolver({
                 values: platform.values, policy: platform.policy, hooks,

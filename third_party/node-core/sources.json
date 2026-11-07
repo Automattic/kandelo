@@ -2966,6 +2966,11 @@
         "start": "function stripBOM(content) {",
         "length": 157,
         "sha256": "ffa6a22ccaf1696ecfc06a70f019bd1a9412031332b626ba556906cc278f2694"
+      },
+      "builtinLibraries": {
+        "start": "function addBuiltinLibsToObject(object, dummyModuleName) {",
+        "length": 1940,
+        "sha256": "8f24b085cc47708027d127addfe7b554a943a50ce0622b9dba18395c5ceaad41"
       }
     }
   },

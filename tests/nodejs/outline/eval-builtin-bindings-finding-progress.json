@@ -1,0 +1,96 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/loading-contracts.md",
+    "findingIds": [
+      "L-031"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/terminal.md": [
+        "T-012",
+        "T-016",
+        "T-017"
+      ]
+    },
+    "relatedFamilies": [
+      "loading",
+      "terminal"
+    ],
+    "scope": "Partial actual eval builtin-binding/shared Module helper and parsed-presence source for L-031; terminal T-012/T-016/T-017 links are shared prerequisites only, public REPL remains absent"
+  },
+  "sourceImplemented": [
+    "Consume complete unchanged1940byte pinned addBuiltinLibsToObject in actual module-record owner beside existing makeRequireFunction; share same genuine Module/cache/require path",
+    "Install genuine lazy eval global bindings after real global-scope initialization, retaining native descriptor/error/retry/inherited-setter behavior",
+    "Record parser-owned hasEvalSource boolean independently of raw evalSource text and gate actual main eval helper admission; preserve raw util behavior and exclude Worker borrowing",
+    "Compose narrow normal0168patch/current bootstrap/build selectors over unchanged shutdown229, datagram ::socket, Meta228 and existing CLI/child/timer owners"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-eval230-source-r1/report.json",
+    "sha256": "0709d39b10c5870be0c7187d18c469b3688835c6cf9c30c03ad845310a54fb9a",
+    "guardedInputs": 891,
+    "scope": "Actual eval builtin/shared Module helper and separate parser-owned presence source over existing native dependencies. Preserve current shutdown229+libc qualification; new C++presence/guest/defaultREPL/Inspector/fullCLI remain unvalidated."
+  },
+  "packageChecks": {
+    "report": ".context/node26-eval230-affected-r1.json",
+    "sha256": "3d158886ef842061bf0a717365d3819b1d16e27616f63d5b6353cc0f11432e97",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-eval230-source-r1/report.json",
+    "sha256": "0709d39b10c5870be0c7187d18c469b3688835c6cf9c30c03ad845310a54fb9a",
+    "nativeDependentGroups": 14,
+    "candidateSourceGuardCases": 4,
+    "unchangedUpstreamFiles": 1,
+    "upstreamSubjectsPassed": 2,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "newCLIFlagCompiled": false,
+    "fourHostConformance": false,
+    "scope": "Actual current Module helper/control and generated factory over explicit native VM/fs/URL/package/builtin owners. Native upstream REPL uses candidate helper only; guard cases inspect supplied source/bridge, not compiled native CLI."
+  },
+  "sealedEvidence": {
+    "report": ".context/eval-builtin-bindings-owner-agent/handoff/report.json",
+    "sha256": "03acffdad6416212ab723bc704e2d44b423adb5087c18e6d91d53389eb92fde1",
+    "reusedEvidence": true,
+    "scope": "Producer14/14native/candidate vs0/14baseline new-private-seam availability;4source guards; unchanged test-repl-autolibs.js two subjects;5native-only metadata cases+1admission rejection;0compilers. Native REPL/evaluator/dependencies do not establish public guest activation."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/eval-builtin-bindings-owner-agent/handoff/REPORT.md",
+      "sha256": "7621c40ae8404a7882ffaa7cb0a8aec5cb36ba64ccbf4f68e593e40722163446",
+      "scope": "Preserve native spy fixture11/14,3authored syntax exits,2native wrong presence/admission expectations, rejected intermediate raw-text omission proposal and root228-to229 drift guard. Final14groups/4guards are bounded; baseline0/14 means absent new private seams, not old requireFactory absence."
+    },
+    {
+      "report": ".context/eval-builtin-bindings-owner-agent/handoff/presence-results-interpretation.json",
+      "sha256": "1f35442c2d64f6a6d33535ca2d086c77d4cc6563b5c67f8033fdbfc1d91991fd",
+      "scope": "Earlier raw rejected row retains superseded expected metadata; explicit expectedTargetAdmission/status9 governs --eval=. Kandelo existing inline-empty admission mismatch remains open."
+    },
+    {
+      "report": ".context/eval-builtin-bindings-review-agent/REPORT.md",
+      "sha256": "c2c62de18744631f4a2c4b925353aab2dbd38067bc0ad634e84d5e07751dd323",
+      "scope": "Exact pinned helper/CLI/main-only/Module/lazy descriptor source review; no newP1/P2, no runtime or compilation. Current root composition separately checked."
+    },
+    {
+      "report": ".context/eval230-integration-plan/PLAN.md",
+      "sha256": "93e55e04433e94447fb52ca95c193bef62b57d9a6515b370417127e68158fe12",
+      "scope": "Plan sealed before root execution; initial preparation-only wrong escaping assertion had no source mutation. Actual integration receipt/source checks separately identify current combined postimages."
+    }
+  ],
+  "remaining": [
+    "Compile new actual parser-presence C++ and execute guest CLI/eval/global propagation with exact artifacts",
+    "Fix existing --eval= inline-empty admission/exit mismatch and implement missing --print plus remaining CLI/evaluator/crypto-identifier semantics",
+    "Complete public REPL/Inspector/default-context/private utilities/parser/session/history/standalone owners; terminal links are prerequisites only",
+    "Validate actual guest Module/builtin/VM/fs/URL/GC/realm/lifecycle and exact identified four-host candidate; no API/family closure"
+  ],
+  "at": "2026-11-07T18:12:13.770354+00:00",
+  "recipeRevision": 230,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

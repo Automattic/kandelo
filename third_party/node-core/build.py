@@ -1450,7 +1450,7 @@ for marker, replacement in [
         *[record_sections[n] for n in ['updateChildren', 'constructor', 'preloading', 'parentAccessors', 'parentDescriptor', 'circularExports', 'circularCleanup']]])),
     ('/* NODE_MODULE_WRAPPERS */', record_sections['wrappers']),
     ('/* NODE_MODULE_REQUIRE */', '\n'.join([record_sections['require'], record_sections['createRequire'],
-        require_sections['requireFactory'], require_sections['requireStack']])),
+        require_sections['requireFactory'], require_sections['requireStack'], require_sections['builtinLibraries']])),
     ('/* NODE_MODULE_LOOKUP */', '\n'.join(record_sections[n] for n in ['nodePaths', 'lookupPaths', 'initPaths'])),
     ('/* NODE_MODULE_LOAD */', '\n'.join(record_sections[n] for n in ['longestExtension', 'extensionForFormat', 'load'])),
     ('/* NODE_MODULE_PACKAGES */', '\n'.join(package_sections[n] for n in ['readPackage', 'tryPackage', 'tryFiles'])),
