@@ -26758,3 +26758,19 @@ fuzz, then reverses to the exact original bytes. Job
 same maintained package0009; only cover text is independent of Kandelo.
 There is no upstream submission or Linux hardware-KMS claim. Normal full
 application and cross-engine acceptance remains required.
+
+R735 checks the unchanged generic candidate against the current upstream
+SDL2 branch, pinned at
+`cee83f2d9a916e9de30c5712e798541fdc134b06` on 2026-11-07. Its
+[restore sequence](https://github.com/libsdl-org/SDL/blob/cee83f2d9a916e9de30c5712e798541fdc134b06/src/video/kmsdrm/SDL_kmsdrmvideo.c#L1101)
+still repeats the invalid enable request for an originally disabled CRTC.
+The standalone patch SHA256
+`e0ba839d831a1929c2fd142642c26c93c9715dfc5bf360d9101ee986a4cdcd90`
+applies and reverses with zero fuzz in the declared development shell;
+reversal restores every original byte. The input source SHA256 is
+`53fe16a8ac92d0899e86c2bb77ac82b17387c2d5db2f5967e51432367f7c6918`.
+Exact commands/results are in integration's private
+`.context/graphics-sdl-upstream-current-r735/declared-shell-result.json`.
+This supports its scope as a generic upstream candidate, without claiming
+upstream acceptance, Linux hardware execution or completed application
+validation. D-60 remains the sole new ported-software patch exception.
