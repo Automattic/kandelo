@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source223 activates actual test-name/skip filtering and shared Node-only UTF8 CLI publication; current native-dependent comparisons pass. New guest bindings, full CLI/runner and four-host behavior remain unvalidated.
+See [source scope](test-pattern-cli-integration.md).
+
 Source222 installs complete pinned Buffer view/JSON algorithms over the existing real class/backing owner.14native-dependent groups and2unchanged upstream files match; full Buffer and guest/four-host behavior remain open.
 See [source scope](buffer-view-json-integration.md).
 

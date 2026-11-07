@@ -81,11 +81,11 @@ function _createNodeTestingPlatform(platform) {
         get reporters() { return require('test/reporters'); }, require };
 }
 
-// The normal Node argument parser currently rejects test/watch/coverage flags.
-// Default node:test imports still need their actual unactivated option state.
-// Generate that state from the exact target's C++ field declarations, retaining
-// arrays across reads like the target option cache. This does not activate CLI
-// discovery, coverage, source maps, watching or any unavailable runner feature.
+// Actual admitted options below feed their existing test-tree owners. Other
+// node:test options retain the unactivated state generated from the exact
+// target's C++ field declarations, including persistent cached arrays. Pattern
+// flags do not activate CLI discovery, process isolation, coverage, source maps
+// or watching; those still require their real owning implementations.
 function _createNodeTestOptionReader(platform) {
     const { Error, SafeMap } = _createNodePrimordials();
     const defaults = new SafeMap(/* NODE_TEST_OPTION_DEFAULTS */);
@@ -93,6 +93,10 @@ function _createNodeTestOptionReader(platform) {
     return function getOptionValue(name) {
         if (name === '--experimental-test-module-mocks') return options.experimentalTestModuleMocks === true;
         if (name === '--test-update-snapshots') return options.testUpdateSnapshots === true;
+        // Persistent actual CLI arrays feed the unchanged pinned regexp
+        // conversion and Test selection owners; no second argument parsing.
+        if (name === '--test-name-pattern') return options.testNamePatterns ?? defaults.get(name);
+        if (name === '--test-skip-pattern') return options.testSkipPatterns ?? defaults.get(name);
         if (name === '--strip-types') return options.stripTypes === true;
         if (defaults.has(name)) return defaults.get(name);
         const error = new Error('Test option ownership is not implemented: ' + name);

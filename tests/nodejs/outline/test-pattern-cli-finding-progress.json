@@ -1,0 +1,117 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/testing.md",
+    "findingIds": [
+      "TEST-001",
+      "TEST-003"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/process-contracts.md": [
+        "PROC-015"
+      ]
+    },
+    "relatedFamilies": [
+      "testing",
+      "process",
+      "engine",
+      "workers"
+    ],
+    "scope": "Actual name/skip filter and Node-only UTF8 argument/string publication prerequisites; no full CLI, test runner or individual finding closure."
+  },
+  "sourceImplemented": [
+    "Store repeatable name/skip patterns in actual native CLI state, with NODE_OPTIONS before CLI and original execArgv spelling",
+    "Publish rooted actual CLI arrays to persistent option-reader state consumed by unchanged pinned regexp/Test/Suite owners",
+    "Reuse genuine SpiderMonkey lossy UTF8 decoder with UniqueTwoByteChars adoption and owned JS string/list publication",
+    "Use same Node-only policy for warning/condition/execArgv/scalar/script metadata and actual eval execution material; preserve generic shell policy and raw path byte authority",
+    "Compose two additive normal engine patches over current canonical source, retaining public abort, and regenerate normal combined core/bootstrap/staging"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-patterns223-source-r1/report.json",
+    "sha256": "f54ffe7df79f5e70419f5a3abd84328852a42659667d243406225dc454fbf6e3",
+    "guardedInputs": 885,
+    "scope": "Actual CLI name/skip vectors, parser/option chronology and current generated Test/Suite filtering. Node-only UTF8 source shares actual owned string/list/eval material; separate34sealed material groups reused. No guest JSAPI/fullCLI/test-runner/fourhost acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-patterns223-affected-r1.json",
+    "sha256": "2298fc88b0150022a3191c4ef98a2de7f14a1b8db28aaa42306ca2d3424533bc",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-patterns223-source-r1/report.json",
+    "sha256": "f54ffe7df79f5e70419f5a3abd84328852a42659667d243406225dc454fbf6e3",
+    "nativeParserMatches": 14,
+    "successfulTreeMatches": 10,
+    "exactRegexpErrorMatches": 1,
+    "focusedChildAttempts": 50,
+    "reusedUtf8MaterialGroups": 34,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Fresh parser/option/current generated test-tree component comparisons. Separate immutable34UTF8material groups reused; none compile new JSAPI or run guest. Exact native async/events/streams/errors/fs/ESM/VM/brands are explicit dependencies."
+  },
+  "sealedEvidence": {
+    "report": ".context/test-filter-owner-agent/report.json",
+    "sha256": "6d124d0649c71b3f92762b418614ce919aa3deadf59f62a862876a504997998e",
+    "reusedEvidence": true,
+    "scope": "Original14parser/10tree/1exact error matches,2tiny compile attempts/1failure. Separate UTF8 correction34material groups/68children and3tiny attempts/2failures; original source verification provisioning failure remains preserved alongside later r2 success."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/test-filter-owner-agent/report.json",
+      "sha256": "6d124d0649c71b3f92762b418614ce919aa3deadf59f62a862876a504997998e",
+      "scope": "Original tiny compile/setup failure and Nix entry before planned final syntax checks, original baseline filtering divergence and real negative regexp exits retained."
+    },
+    {
+      "report": ".context/node-cli-utf8-correction-agent/report.json",
+      "sha256": "7d0d17dbaf3a9782cd1dceaf754e9b76f9c9511c18bb408e6442b49985ce9129",
+      "scope": "Both tiny correction fixture compilation failures retained; final34material matches do not compile guest JSAPI. Shared locale-dependent publisher defect corrected with no runtime workaround attribution."
+    },
+    {
+      "report": ".context/test-filter-review-agent/REPORT.md",
+      "sha256": "c98a26f1784bf2d49295a0c0139672bf24b74678240631229563c22d8dcfd729",
+      "scope": "Independent original publisher review found UTF8 locale issue, corrected by separate immutable capsule."
+    },
+    {
+      "report": ".context/node-cli-utf8-review-agent/review.md",
+      "sha256": "9589e7832f66c1d15e5a5cbc65f8205d74259591d0dd8c9336d8cc0e1906e6b9",
+      "scope": "Independent correction source/API/rooting review, no new verified production blocker; no tests/builds."
+    },
+    {
+      "report": ".context/node26-patterns223-source-r1/integration-nonpass.json",
+      "sha256": "bf85210b3017f3221ae1da366579508e9adf6072f4b925271e79f7b8369f5106",
+      "scope": "Initial root recorder used byte offsets for a text selection and stopped after successful additive replay; corrected exact selection verified and only unexecuted tail finalized, no compile attempt or assertion relaxation."
+    },
+    {
+      "report": ".context/node26-patterns223-affected-entry-failure.log",
+      "sha256": "16da99fe54a111e9937158186181064c68b597d371e295a2592f8d28bbb8fe67",
+      "scope": "Initial focused package command used a nonexistent root node_modules/.bin/vitest and failed before any test/compile. Corrected invocation uses existing declared host/node_modules bin; original failure preserved."
+    },
+    {
+      "report": ".context/node26-patterns223-affected-harness-failure.json",
+      "sha256": "4beead7cbf2460b32b891ed1084f6903533c14113696546ecd2bf03d34f4b560",
+      "scope": "Focused package invocation from root collected zero tests and exited1, success=false. Harness error retained; corrected normal invocation runs from host with exact pinned native reference, matching prior recipe."
+    },
+    {
+      "report": ".context/patterns223-source-review-agent/REPORT.md",
+      "sha256": "19880090c546b9620f88a84b4c370357931c81b9c636b8cbb9d9a76dc7fbcd2b",
+      "scope": "Independent root combined source review: exact additive public-abort preservation, original patch/parser/recipe/actual reader linkage; no new verified P1/P2. No runtime/compilers; guest remains unvalidated."
+    }
+  ],
+  "remaining": [
+    "Full CLI option metadata/negation/diagnostics/title/executable and raw Unicode/malformed path loading semantics",
+    "Test CLI launcher/discovery, default process isolation/IPC, watch, real coverage producers and complete runner API/lifecycle behavior",
+    "Actual guest JSAPI allocation/root/realm/GC/OOM/fatal/Worker startup and explicit Worker execArgv ownership",
+    "Current combined engine compilation and identified-artifact Node/Chromium/Firefox/WebKit conformance; no finding/family closure"
+  ],
+  "at": "2026-11-07T16:16:06.481430+00:00",
+  "recipeRevision": 223,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

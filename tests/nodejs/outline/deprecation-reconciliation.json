@@ -103,7 +103,7 @@
     "third_party/node-core/sys-platform-adapter.js": "795f104873cdfb340667f160d358f548984b3fe73b7f4db335624f4073774b44",
     "third_party/node-core/tempdir-platform-adapter.js": "5102bbeeeb0ca8ffe47dec42d4edad3a91e0e8c6842903b3d3fb904b237afa39",
     "third_party/node-core/terminal-platform-adapter.js": "e07fcf97c90ec795f4b1e22da596f6b77938350f88d97aecfac714e431f1ffaa",
-    "third_party/node-core/testing-platform-adapter.js": "eaee35db45a98b90c761628a322e51b90cbd6563ed9376d9e36ff3ab233658f9",
+    "third_party/node-core/testing-platform-adapter.js": "9e8717598ae201818f3272c717ccc138196cacd92348e58e90531a7c2647567a",
     "third_party/node-core/testing-runner-adapter.js": "22eb03e53a82385215a23a6f382cf85101afcee1d86762a29b05e2812c02e7e6",
     "third_party/node-core/tls-context-adapter.js": "345706068e55beb99e0fe3fc747ad675b2bbc3091166766fb80970bafec3f767",
     "third_party/node-core/tls-identity-adapter.js": "7e1688bff98af17878908679a8c58fc084730e4c1dd6daa03975e0fcdb525760",

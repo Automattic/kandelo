@@ -1,0 +1,75 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -11920,2 +11920,4 @@
+   std::vector<std::string> disableWarnings;
++  std::vector<std::string> testNamePatterns;
++  std::vector<std::string> testSkipPatterns;
+   bool testUpdateSnapshots = false;
+@@ -12037,3 +12039,9 @@
+          name == "--diagnostic-dir" || name == "--disable-warning" ||
+-         name == "--tls-cipher-list";
++         name == "--tls-cipher-list" || name == "--test-name-pattern" ||
++         name == "--test-skip-pattern";
++}
++
++static bool KandeloNodeTestPatternOption(const std::string& arg) {
++  const auto name = KandeloNodeOptionName(arg);
++  return name == "--test-name-pattern" || name == "--test-skip-pattern";
+ }
+@@ -12053,2 +12061,6 @@
+     kandeloNodeCLI.tlsCipherList = value;
++  } else if (name == "--test-name-pattern") {
++    kandeloNodeCLI.testNamePatterns.push_back(value);
++  } else if (name == "--test-skip-pattern") {
++    kandeloNodeCLI.testSkipPatterns.push_back(value);
+   } else {
+@@ -12099,3 +12111,4 @@
+           if (++i == envArgs.size() ||
+-              (envArgs[i].empty() || envArgs[i][0] == '-')) {
++              ((envArgs[i].empty() && !KandeloNodeTestPatternOption(arg)) ||
++               (!envArgs[i].empty() && envArgs[i][0] == '-'))) {
+             fprintf(stderr, "%s: %s requires an argument\n", argv[0], arg.c_str());
+@@ -12104,2 +12117,4 @@
+           option = envArgs[i];
++          if (KandeloNodeTestPatternOption(arg) && option.size() > 1 &&
++              option[0] == '\\' && option[1] == '-') option.erase(0, 1);
+         }
+@@ -12133,3 +12148,5 @@
+       } else {
+-        if (++i == argc || (argv[i][0] == '\0' || argv[i][0] == '-')) {
++        if (++i == argc ||
++            ((argv[i][0] == '\0' && !KandeloNodeTestPatternOption(arg)) ||
++             argv[i][0] == '-')) {
+           fprintf(stderr, "%s: %s requires an argument\n", argv[0], arg.c_str());
+@@ -12138,3 +12155,7 @@
+         option = argv[i];
++        // execArgv retains the original argument spelling; only the parsed
++        // kStringList value removes a separate leading backslash-dash.
+         kandeloNodeCLI.execArgs.push_back(option);
++        if (KandeloNodeTestPatternOption(arg) && option.size() > 1 &&
++            option[0] == '\\' && option[1] == '-') option.erase(0, 1);
+       }
+@@ -16982,2 +17003,19 @@
+
++static bool KandeloDefineTestPatternOptions(JSContext* cx, HandleObject cli) {
++  auto list = [&](const char* name, const std::vector<std::string>& values) {
++    RootedObject array(cx, JS::NewArrayObject(cx, 0));
++    if (!array) return false;
++    uint32_t index = 0;
++    for (const auto& value : values) {
++      UniqueChars utf8 = JS::EncodeNarrowToUtf8(cx, value.c_str());
++      RootedString text(cx, utf8 ? NewStringCopyUTF8(cx, utf8.get()) : nullptr);
++      if (!text || !JS_DefineElement(cx, array, index++, text, JSPROP_ENUMERATE))
++        return false;
++    }
++    return JS_DefineProperty(cx, cli, name, array, 0);
++  };
++  return list("testNamePatterns", kandeloNodeCLI.testNamePatterns) &&
++         list("testSkipPatterns", kandeloNodeCLI.testSkipPatterns);
++}
++
+ static bool KandeloDefineWarningOptions(JSContext* cx, HandleObject cli) {
+@@ -17089,2 +17127,3 @@
+     if (!KandeloDefineWarningOptions(cx, cli) ||
++        !KandeloDefineTestPatternOptions(cx, cli) ||
+         !JS_DefineProperty(cx, cli, "evalSource", evalSource, 0) ||

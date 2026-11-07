@@ -1,0 +1,172 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -17003,17 +17003,49 @@
+
++// Node CLI strings are UTF-8 byte material independently of LC_CTYPE.
++// Use the existing maximal-subpart replacement decoder (also used by native
++// POSIX pathname diagnostics), retaining its real allocation until the JS
++// string takes ownership. Generic SpiderMonkey shell conversion is separate.
++static JSString* KandeloNodeCLIString(JSContext* cx, const char* bytes,
++                                     size_t length) {
++  size_t units;
++  JS::UniqueTwoByteChars chars(JS::LossyUTF8CharsToNewTwoByteCharsZ(
++      cx, JS::UTF8Chars(bytes, length), &units, js::MallocArena).get());
++  if (!chars) return nullptr;
++  return JS_NewUCString(cx, std::move(chars), units);
++}
++
++static JSString* KandeloNodeCLIString(JSContext* cx, const char* bytes) {
++  return KandeloNodeCLIString(cx, bytes, strlen(bytes));
++}
++
++static bool KandeloDefineNodeCLIString(JSContext* cx, HandleObject object,
++                                      const char* name,
++                                      const std::string& value) {
++  RootedString text(cx, KandeloNodeCLIString(cx, value.data(), value.size()));
++  return text && JS_DefineProperty(cx, object, name, text, 0);
++}
++
++static JSObject* KandeloNodeCLIStringArray(
++    JSContext* cx, const std::vector<std::string>& values) {
++  RootedObject array(cx, JS::NewArrayObject(cx, 0));
++  if (!array) return nullptr;
++  uint32_t index = 0;
++  for (const auto& value : values) {
++    RootedString text(cx, KandeloNodeCLIString(cx, value.data(), value.size()));
++    if (!text || !JS_DefineElement(cx, array, index++, text, JSPROP_ENUMERATE))
++      return nullptr;
++  }
++  return array;
++}
++
++static bool KandeloDefineNodeCLIStringList(
++    JSContext* cx, HandleObject object, const char* name,
++    const std::vector<std::string>& values) {
++  RootedObject array(cx, KandeloNodeCLIStringArray(cx, values));
++  return array && JS_DefineProperty(cx, object, name, array, 0);
++}
++
+ static bool KandeloDefineTestPatternOptions(JSContext* cx, HandleObject cli) {
+-  auto list = [&](const char* name, const std::vector<std::string>& values) {
+-    RootedObject array(cx, JS::NewArrayObject(cx, 0));
+-    if (!array) return false;
+-    uint32_t index = 0;
+-    for (const auto& value : values) {
+-      UniqueChars utf8 = JS::EncodeNarrowToUtf8(cx, value.c_str());
+-      RootedString text(cx, utf8 ? NewStringCopyUTF8(cx, utf8.get()) : nullptr);
+-      if (!text || !JS_DefineElement(cx, array, index++, text, JSPROP_ENUMERATE))
+-        return false;
+-    }
+-    return JS_DefineProperty(cx, cli, name, array, 0);
+-  };
+-  return list("testNamePatterns", kandeloNodeCLI.testNamePatterns) &&
+-         list("testSkipPatterns", kandeloNodeCLI.testSkipPatterns);
++  return KandeloDefineNodeCLIStringList(cx, cli, "testNamePatterns", kandeloNodeCLI.testNamePatterns) &&
++         KandeloDefineNodeCLIStringList(cx, cli, "testSkipPatterns", kandeloNodeCLI.testSkipPatterns);
+ }
+@@ -17025,19 +17057,6 @@
+       !KandeloDefineBooleanProperty(cx, cli, "traceWarnings", kandeloNodeCLI.traceWarnings, 0)) return false;
+-  auto stringOption = [&](const char* name, const std::string& value) {
+-    UniqueChars utf8 = JS::EncodeNarrowToUtf8(cx, value.c_str());
+-    RootedString text(cx, utf8 ? NewStringCopyUTF8(cx, utf8.get()) : nullptr);
+-    return text && JS_DefineProperty(cx, cli, name, text, 0);
+-  };
+-  if (!stringOption("redirectWarnings", kandeloNodeCLI.redirectWarnings) ||
+-      !stringOption("diagnosticDir", kandeloNodeCLI.diagnosticDir) ||
+-      !stringOption("tlsCipherList", kandeloNodeCLI.tlsCipherList)) return false;
+-  RootedObject disabled(cx, JS::NewArrayObject(cx, 0));
+-  if (!disabled) return false;
+-  uint32_t index = 0;
+-  for (const auto& item : kandeloNodeCLI.disableWarnings) {
+-    UniqueChars utf8 = JS::EncodeNarrowToUtf8(cx, item.c_str());
+-    RootedString text(cx, utf8 ? NewStringCopyUTF8(cx, utf8.get()) : nullptr);
+-    if (!text || !JS_DefineElement(cx, disabled, index++, text, JSPROP_ENUMERATE)) return false;
+-  }
+-  return JS_DefineProperty(cx, cli, "disableWarnings", disabled, 0);
++  return KandeloDefineNodeCLIString(cx, cli, "redirectWarnings", kandeloNodeCLI.redirectWarnings) &&
++         KandeloDefineNodeCLIString(cx, cli, "diagnosticDir", kandeloNodeCLI.diagnosticDir) &&
++         KandeloDefineNodeCLIString(cx, cli, "tlsCipherList", kandeloNodeCLI.tlsCipherList) &&
++         KandeloDefineNodeCLIStringList(cx, cli, "disableWarnings", kandeloNodeCLI.disableWarnings);
+ }
+@@ -17063,4 +17082,3 @@
+   if (nodeEval && op->getStringArg("script")) {
+-    UniqueChars first = JS::EncodeNarrowToUtf8(cx, op->getStringArg("script"));
+-    RootedString str(cx, first ? NewStringCopyUTF8(cx, first.get()) : nullptr);
++    RootedString str(cx, KandeloNodeCLIString(cx, op->getStringArg("script")));
+     if (!str || !JS_DefineElement(cx, scriptArgs, i++, str, JSPROP_ENUMERATE)) return false;
+@@ -17069,7 +17087,10 @@
+     const char* scriptArg = msr.front();
+-    UniqueChars scriptArgUtf8 = JS::EncodeNarrowToUtf8(cx, scriptArg);
+-    if (!scriptArgUtf8) {
+-      return false;
+-    }
+-    RootedString str(cx, NewStringCopyUTF8(cx, scriptArgUtf8.get()));
++    RootedString str(cx);
++    if (IsKandeloNodeMode()) {
++      str = KandeloNodeCLIString(cx, scriptArg);
++    } else {
++      UniqueChars scriptArgUtf8 = JS::EncodeNarrowToUtf8(cx, scriptArg);
++      if (!scriptArgUtf8) return false;
++      str = NewStringCopyUTF8(cx, scriptArgUtf8.get());
++    }
+     if (!str || !JS_DefineElement(cx, scriptArgs, i, str, JSPROP_ENUMERATE)) {
+@@ -17081,8 +17102,10 @@
+   if (const char* scriptPath = nodeEval ? nullptr : op->getStringArg("script")) {
+-    UniqueChars scriptPathUtf8 = JS::EncodeNarrowToUtf8(cx, scriptPath);
+-    if (!scriptPathUtf8) {
+-      return false;
+-    }
+-    RootedString scriptPathString(cx,
+-                                  NewStringCopyUTF8(cx, scriptPathUtf8.get()));
++    RootedString scriptPathString(cx);
++    if (IsKandeloNodeMode()) {
++      scriptPathString = KandeloNodeCLIString(cx, scriptPath);
++    } else {
++      UniqueChars scriptPathUtf8 = JS::EncodeNarrowToUtf8(cx, scriptPath);
++      if (!scriptPathUtf8) return false;
++      scriptPathString = NewStringCopyUTF8(cx, scriptPathUtf8.get());
++    }
+     if (!scriptPathString) {
+@@ -17101,26 +17124,9 @@
+     RootedObject cli(cx, JS_NewPlainObject(cx));
+-    RootedObject execArgs(cx, JS::NewArrayObject(cx, 0));
++    RootedObject execArgs(cx, KandeloNodeCLIStringArray(cx, kandeloNodeCLI.execArgs));
+     if (!cli || !execArgs) return false;
+-    uint32_t index = 0;
+-    auto append = [&](const char* value) {
+-      UniqueChars utf8 = JS::EncodeNarrowToUtf8(cx, value);
+-      RootedString text(cx, utf8 ? NewStringCopyUTF8(cx, utf8.get()) : nullptr);
+-      return text && JS_DefineElement(cx, execArgs, index++, text, JSPROP_ENUMERATE);
+-    };
+-    for (const auto& arg : kandeloNodeCLI.execArgs) {
+-      if (!append(arg.c_str())) return false;
+-    }
+-    RootedObject conditions(cx, JS::NewArrayObject(cx, 0));
++    RootedObject conditions(cx, KandeloNodeCLIStringArray(cx, kandeloNodeCLI.conditions));
+     if (!conditions) return false;
+-    uint32_t conditionIndex = 0;
+-    for (const auto& arg : kandeloNodeCLI.conditions) {
+-      UniqueChars utf8 = JS::EncodeNarrowToUtf8(cx, arg.c_str());
+-      RootedString text(cx, utf8 ? NewStringCopyUTF8(cx, utf8.get()) : nullptr);
+-      if (!text || !JS_DefineElement(cx, conditions, conditionIndex++, text, JSPROP_ENUMERATE)) return false;
+-    }
+-    UniqueChars mapUtf8 = JS::EncodeNarrowToUtf8(cx, kandeloNodeCLI.packageMapPath.c_str());
+-    RootedString packageMapPath(cx, mapUtf8 ? NewStringCopyUTF8(cx, mapUtf8.get()) : nullptr);
++    RootedString packageMapPath(cx, KandeloNodeCLIString(cx, kandeloNodeCLI.packageMapPath.data(), kandeloNodeCLI.packageMapPath.size()));
+     if (!packageMapPath) return false;
+-    UniqueChars evalUtf8 = JS::EncodeNarrowToUtf8(cx, kandeloNodeCLI.evalSource.c_str());
+-    RootedString evalSource(cx, evalUtf8 ? NewStringCopyUTF8(cx, evalUtf8.get()) : nullptr);
++    RootedString evalSource(cx, KandeloNodeCLIString(cx, kandeloNodeCLI.evalSource.data(), kandeloNodeCLI.evalSource.size()));
+     if (!evalSource) return false;
+@@ -17252,3 +17258,10 @@
+     if (ccArgno == minArgno) {
+-      UniqueChars code = JS::EncodeNarrowToUtf8(cx, codeChunks.front());
++      UniqueChars code;
++      if (IsKandeloNodeMode()) {
++        RootedString source(cx, KandeloNodeCLIString(cx, codeChunks.front()));
++        if (!source) return false;
++        code = JS_EncodeStringToUTF8(cx, source);
++      } else {
++        code = JS::EncodeNarrowToUtf8(cx, codeChunks.front());
++      }
+       if (!code) {
