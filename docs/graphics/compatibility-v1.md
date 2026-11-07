@@ -26062,3 +26062,12 @@ syntax and whitespace checks pass. This proves the local object-provenance
 fix; the coherent normal build and every pending B1 check remain required.
 Exact commands and object hashes are in
 `.context/graphics-drm-build-provenance-r620/` and its agent-job log.
+
+The R616 foundations retry passes the original path-integrity point but
+fails compiling standalone GBM: its new diagnostics lacked `<stdio.h>`.
+The owning source now includes that header directly, rather than depending
+on native fixture preludes. `graphics-gbm-standalone-r621-1107-005601-515c`
+passes10s: standalone wasm32/wasm64 object compilation against existing
+sysroot headers plus the GBM retirement and front-hold actor controls.
+This is source/component evidence; normal foundations and target execution
+remain pending. Both original build failures are preserved.
