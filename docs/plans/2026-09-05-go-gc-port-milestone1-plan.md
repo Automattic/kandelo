@@ -20,7 +20,10 @@ main merge and service-test additions. The retro-emulator and WordPress
 service cases are now prepared-product; the terminal-request parser is
 source-only. Registry and collected inventory agree for all 662 files.
 
-An isolated host experiment in `.context/go-mmap-fresh-pages` avoids
+An isolated host experiment in `.context/go-mmap-fresh-pages` is pushed as
+[`c137da096`](https://github.com/Automattic/kandelo/commit/c137da0964a9d93ac1f290477f8a11470f7bb5c0)
+on `brandonpayton/mmap-fresh-pages-evaluation`, separate from this PR's
+runtime. It avoids
 explicitly clearing pages appended by its own `Memory.grow`, using that
 operation's actual previous page count. Reused pages, including another
 thread's growth, still need clearing. The supported helper retains its void
@@ -36,7 +39,7 @@ warned attempts remain separate. The corrected run has no dependency-scan
 failure. Evidence is `.context/go-mmap-fresh-pages/.context/`. This host
 change is not adopted; maintained test integration, inter-isolate growth,
 footprint measurements, final-image lifecycle, conformance and performance
-gates remain required. No memory benefit is claimed.
+gates remain required. Final application memory benefit is unmeasured.
 
 **Incremental Node memory diagnostic:** three alternating rounds use six
 fresh Node parents, the same f605 memory-accounting fixture (`2859460c`)
