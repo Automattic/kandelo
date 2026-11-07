@@ -8336,20 +8336,37 @@ fn classify_host_adapter(
 /// Classify the per-syscall scalar-marshalling table and the defaults an
 /// unlisted syscall falls back to.
 ///
-/// WHY `syscalls` here is additive but the defaults are not: an already-linked
-/// libc marshals a call from the entry it was built with, and a syscall number
-/// the table did not list was unreachable through the declared contract — it
-/// had no `syscalls` entry either, so no program could issue it as part of the
-/// contract. Adding such an entry therefore cannot change how an existing
-/// program marshals any call it can already make. This is the same argument
-/// recorded for `ioctl_request_contracts` above. Changing or removing a listed
-/// entry restages a live call's arguments and stays breaking, and so does
-/// changing `default_argument_kind` or `default_result_kind`, which govern
-/// every syscall the table does *not* list.
+/// WHY an added entry is NOT automatically additive. A number this table did
+/// not list was never unreachable: its slots were read with
+/// `default_argument_kind` and `default_result_kind`. The kinds are consumed
+/// on the *decode* side — `host/src/channel-scalar-contract.ts` falls back to
+/// `?? CHANNEL_SCALAR_DEFAULT_SLOT_KIND` for an absent entry — so adding an
+/// entry reinterprets bits an already-built binary already wrote per the
+/// defaults. Syscall 304 is the proof that unlisted does not mean unissuable:
+/// `__NR_syslog` was already in `bits/syscall.h.in` and musl's
+/// `src/linux/klogctl.c` compiled at ABI 55, so an ABI-55 program could issue
+/// it and have its slots decoded as `i32`.
 ///
-/// Whether the newly reachable syscall's *behavior* is safe for programs that
-/// predate it is a separate question no classifier can answer; see
-/// `crate::accepted_program_digests`.
+/// So an added entry is additive only when every kind it declares is
+/// *slot-equivalent* to the default it replaces: the same single slot, the
+/// same 32 bits, differing at most in how that slot's sign is read
+/// ([`slot_equivalent_scalar_kind`]). That admits `i32` → `u32`. It refuses
+/// `i64`, `exact-u32`, `process-size` and `process-address`, which keep all 64
+/// physical bits where the default kept the low 32; and it refuses
+/// `split-i64-low-u32` / `split-i64-high-i32`, which build one value out of a
+/// *pair* of slots and so change what each slot of the pair means. An
+/// otherwise-additive-looking entry that declares one of those is breaking,
+/// and the report names the kind.
+///
+/// Even a slot-equivalent addition changes a value's sign interpretation, so
+/// whether that is safe for programs that predate it is a separate question
+/// no classifier can answer: only an author can say whether anything could
+/// depend on the old reading. See `crate::accepted_program_digests`.
+///
+/// Everything else stays breaking. Changing or removing a listed entry
+/// restages a live call's arguments; `default_argument_kind` and
+/// `default_result_kind` govern every syscall the table does *not* list; and
+/// a field nobody has judged yet is breaking by default.
 fn classify_channel_scalar_contract(
     section: &str,
     old: &Value,
@@ -8371,25 +8388,16 @@ fn classify_channel_scalar_contract(
             continue;
         };
         if key == "syscalls" {
-            classify_additive_array(
+            classify_channel_scalar_syscalls(
                 &format!("{section}.syscalls"),
                 &old_obj[key],
                 new_value,
+                // The judgement is "what did an existing program's bits mean
+                // before?", so it is the OLD defaults that governed the
+                // unlisted number. A changed default is reported separately.
+                old_obj.get("default_argument_kind").and_then(Value::as_str),
+                old_obj.get("default_result_kind").and_then(Value::as_str),
                 report,
-                |entry| {
-                    let number = entry
-                        .get("number")
-                        .and_then(Value::as_u64)
-                        .ok_or_else(|| {
-                            format!("{section}.syscalls entry missing numeric number: {entry}")
-                        })?;
-                    if entry.get("musl_name").and_then(Value::as_str).is_none() {
-                        return Err(format!(
-                            "{section}.syscalls entry missing string musl_name: {entry}"
-                        ));
-                    }
-                    Ok(number.to_string())
-                },
             )?;
         } else if &old_obj[key] != new_value {
             report
@@ -8407,6 +8415,115 @@ fn classify_channel_scalar_contract(
     }
 
     Ok(())
+}
+
+/// Kinds that read exactly one slot's low 32 bits, differing from each other
+/// only in how they interpret that slot's sign (`normalizeChannelScalar` in
+/// `host/src/channel-scalar-contract.ts`). Replacing one with another leaves
+/// every bit a program wrote where it was, and leaves it in the same slot.
+///
+/// Deliberately a short allowlist rather than a derived rule: a new kind is
+/// not slot-equivalent until someone has looked at what it decodes to. The
+/// numerically similar `split-i64-low-u32` is excluded on purpose — it reads
+/// the same bits, but it only has meaning as half of a pair, so declaring it
+/// also changes what the other slot of that pair means.
+fn slot_equivalent_scalar_kind(kind: &str) -> bool {
+    matches!(kind, "i32" | "u32")
+}
+
+/// Compare the per-syscall scalar tables, judging each *added* entry against
+/// the defaults that governed its number before it was listed. See
+/// [`classify_channel_scalar_contract`] for why an addition is conditional.
+fn classify_channel_scalar_syscalls(
+    section: &str,
+    old: &Value,
+    new: &Value,
+    default_argument_kind: Option<&str>,
+    default_result_kind: Option<&str>,
+    report: &mut CompatReport,
+) -> Result<(), String> {
+    let key_for = |entry: &Value| -> Result<String, String> {
+        let number = entry
+            .get("number")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{section} entry missing numeric number: {entry}"))?;
+        if entry.get("musl_name").and_then(Value::as_str).is_none() {
+            return Err(format!("{section} entry missing string musl_name: {entry}"));
+        }
+        Ok(number.to_string())
+    };
+    let old_entries = keyed_array(section, old, &key_for)?;
+    let new_entries = keyed_array(section, new, &key_for)?;
+
+    for (key, old_value) in &old_entries {
+        match new_entries.get(key) {
+            Some(new_value) if new_value == old_value => {}
+            Some(_) => report
+                .breaking
+                .push(format!("changed {section} entry {key:?}")),
+            None => report
+                .breaking
+                .push(format!("removed {section} entry {key:?}")),
+        }
+    }
+    for (key, entry) in &new_entries {
+        if old_entries.contains_key(key) {
+            continue;
+        }
+        match reinterpreted_slot_kind(section, entry, default_argument_kind, default_result_kind)? {
+            None => report.additive.push(format!("added {section} entry {key:?}")),
+            Some(reason) => report
+                .breaking
+                .push(format!("added {section} entry {key:?} {reason}")),
+        }
+    }
+
+    Ok(())
+}
+
+/// `None` when every kind `entry` declares is slot-equivalent to the default
+/// it replaces; otherwise the reason the addition reinterprets a slot.
+fn reinterpreted_slot_kind(
+    section: &str,
+    entry: &Value,
+    default_argument_kind: Option<&str>,
+    default_result_kind: Option<&str>,
+) -> Result<Option<String>, String> {
+    let judge = |kind: &str, default: Option<&str>, what: &str| -> Option<String> {
+        let Some(default) = default else {
+            return Some(format!(
+                "declares {what} {kind:?} and the old section declares no \
+                 default to compare it against"
+            ));
+        };
+        if slot_equivalent_scalar_kind(kind) && slot_equivalent_scalar_kind(default) {
+            None
+        } else {
+            Some(format!(
+                "declares {what} {kind:?}, which is not slot-equivalent to the \
+                 default {default:?} its slots were read with before"
+            ))
+        }
+    };
+
+    let arguments = entry
+        .get("arguments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{section} entry missing arguments array: {entry}"))?;
+    for argument in arguments {
+        let kind = argument
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{section} argument missing string kind: {argument}"))?;
+        if let Some(reason) = judge(kind, default_argument_kind, "argument kind") {
+            return Ok(Some(reason));
+        }
+    }
+    let result = entry
+        .get("result")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{section} entry missing string result: {entry}"))?;
+    Ok(judge(result, default_result_kind, "result kind"))
 }
 
 fn classify_additive_object_by_key(
@@ -9927,10 +10044,94 @@ mod tests {
         snapshot
     }
 
-    #[test]
-    fn adding_a_channel_scalar_contract_syscall_is_compatible() {
+    fn with_added_channel_scalar_syscall(entry: Value) -> (Value, Value) {
         let old = snapshot_with_channel_scalar_contract();
         let mut new = snapshot_with_channel_scalar_contract();
+        new["channel_scalar_contract"]["syscalls"]
+            .as_array_mut()
+            .unwrap()
+            .push(entry);
+        (old, new)
+    }
+
+    /// The real shape of routing `klogctl`: one added number whose only
+    /// declared kind reads the same slot's same 32 bits as the default it
+    /// replaces, differing only in sign.
+    #[test]
+    fn adding_a_slot_equivalent_channel_scalar_syscall_is_compatible() {
+        let (old, new) = with_added_channel_scalar_syscall(json!({
+            "arguments": [{"index": 2, "kind": "u32"}],
+            "musl_name": "syslog",
+            "number": 304,
+            "result": "i32",
+        }));
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added channel_scalar_contract.syscalls entry \"304\""]
+        );
+    }
+
+    /// An unlisted number was never unreachable — its slots were read with
+    /// the defaults — so an addition that reads DIFFERENT bits, or builds one
+    /// value out of a pair of slots, reinterprets what an already-built
+    /// binary wrote. `split-i64-*` is the trap: it decodes the same 32 bits as
+    /// `u32`, but only as half of a pair.
+    #[test]
+    fn adding_a_channel_scalar_syscall_that_reinterprets_its_slots_is_breaking() {
+        for kind in [
+            "i64",
+            "exact-u32",
+            "process-size",
+            "process-address",
+            "split-i64-low-u32",
+            "split-i64-high-i32",
+        ] {
+            let (old, new) = with_added_channel_scalar_syscall(json!({
+                "arguments": [{"index": 1, "kind": kind}],
+                "musl_name": "newcall",
+                "number": 305,
+                "result": "i32",
+            }));
+            let report = classify_compat_change(&old, &new).unwrap();
+            assert!(report.additive.is_empty(), "{kind}: {report:?}");
+            assert_eq!(report.breaking.len(), 1, "{kind}: {report:?}");
+            assert!(
+                report.breaking[0].contains("added channel_scalar_contract.syscalls entry \"305\"")
+                    && report.breaking[0].contains(kind)
+                    && report.breaking[0].contains("not slot-equivalent"),
+                "{kind}: {report:?}"
+            );
+        }
+
+        // A widened RESULT is caught on the same grounds: the return value is
+        // encoded for a program that still reads the default.
+        let (old, new) = with_added_channel_scalar_syscall(json!({
+            "arguments": [],
+            "musl_name": "newcall",
+            "number": 305,
+            "result": "process-address",
+        }));
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.additive.is_empty(), "{report:?}");
+        assert!(
+            report.breaking[0].contains("result kind \"process-address\""),
+            "{report:?}"
+        );
+    }
+
+    /// The defaults are what the addition is judged against, so a section
+    /// that declares none cannot have an addition judged at all.
+    #[test]
+    fn adding_a_channel_scalar_syscall_without_a_default_to_compare_is_breaking() {
+        let mut old = snapshot_with_channel_scalar_contract();
+        old["channel_scalar_contract"]
+            .as_object_mut()
+            .unwrap()
+            .remove("default_argument_kind");
+        let mut new = old.clone();
         new["channel_scalar_contract"]["syscalls"]
             .as_array_mut()
             .unwrap()
@@ -9942,10 +10143,10 @@ mod tests {
             }));
 
         let report = classify_compat_change(&old, &new).unwrap();
-        assert!(report.breaking.is_empty(), "{report:?}");
-        assert_eq!(
-            report.additive,
-            vec!["added channel_scalar_contract.syscalls entry \"304\""]
+        assert!(report.additive.is_empty(), "{report:?}");
+        assert!(
+            report.breaking[0].contains("no default to compare it against"),
+            "{report:?}"
         );
     }
 
