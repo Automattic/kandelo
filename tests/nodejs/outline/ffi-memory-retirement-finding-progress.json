@@ -1,0 +1,135 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-001",
+      "NI-005"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/native-public-contracts.md": [
+        "NI-008"
+      ]
+    },
+    "relatedFamilies": [
+      "native-integration",
+      "engine",
+      "workers",
+      "filesystem",
+      "streams",
+      "async"
+    ],
+    "scope": "Actual typed/raw/copy/borrowed-memory and consumer-before-unload foundation; no generic FFI calls/callbacks/Node-API/full permissions/API closure"
+  },
+  "sourceImplemented": [
+    "20actual unaligned scalar accessors with pointer/size/value admission over guest address space",
+    "Raw pointer/original backing and view offset, real null-terminated UTF8, default copy and actual caller-owned zero-copy AB/Buffer aliases",
+    "Borrowed Allocation/Owner/Span track actual metadata only; private native Buffer prototype rooting and real null-backing detach/untransferability",
+    "Complete unchanged selected export helpers and exact types/suffix source; missing calls/callbacks/loop providers stay absent",
+    "Shared main/Worker/destructor consumer retirement waits actual jobs/joins before library unload, native async last, completion after return",
+    "Normalize/preserve durable final exit status and reset terminal state at fresh REPRL boundary",
+    "Preserve root184 checked-wrapper/mounted-reader/GetSymbol ordering fixes; declare actual inputs and exact zero-fuzz0137; regenerate normal combined source"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-ffi188-source-r1/report.json",
+    "sha256": "4501bdf0beddb5380da5870e3cbcdc9a96f3a2377b4b631b5d6f1f0642ac3a80",
+    "guardedInputs": 842,
+    "scope": "Real FFI memory owners and shared consumer-before-unload teardown; scoped portable/native-dependent frontend/structural controls, no current guest JSAPI/GC/realm/lifetime/cancellation/full FFI/fourhost conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-ffi188-affected-r1.json",
+    "sha256": "86ac9c6f9dd651d52b8d24ee1d6b42909effdace873ae8ca5dd26ca650fb442a",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-ffi188-source-r1/report.json",
+    "sha256": "4501bdf0beddb5380da5870e3cbcdc9a96f3a2377b4b631b5d6f1f0642ac3a80",
+    "scalarByteObservations": 10,
+    "errorObservations": 61,
+    "functionShapes": 28,
+    "teardownStatusCases": 8,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "teardownSealedReport": {
+      "report": ".context/ffi-teardown-agent/handoff/report.json",
+      "sha256": "99a7330396993bff28733f93cc197b9f4050bb7535846475d0bcbc4f793ab9a8"
+    },
+    "scope": "Current portable memory source and selected frontend over native private boundary; exact structural queue/coordinator compiler input; not guest JSAPI/Worker/DLL/fourhost conformance"
+  },
+  "sealedEvidence": {
+    "report": ".context/ffi-memory-agent/handoff/report.json",
+    "sha256": "b0fb5b071b19b420316a81de83b81615d40888375d4f97075773c43b0136bbd7",
+    "reusedEvidence": true,
+    "scope": "Actual memory source, native-dependent selected frontend, portable owner/metadata and tiny native/SDK evidence; original failures retained. Teardown report separately identified in currentFocusedEvidence. No new JSAPI compile/guest conformance."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/ffi-memory-agent/handoff/evidence/run-r1/source-generation.stderr",
+      "sha256": "e943ec8f5ad3978fac3fbfe77f9f0a4920282ec2cb20414a1f266f417ec0e655",
+      "kind": "private-source-baseline-missing",
+      "reason": "First private staging lacked exact0044 baseline; original failure retained."
+    },
+    {
+      "report": ".context/ffi-memory-agent/handoff/evidence/run-r2/source-generation.stderr",
+      "sha256": "56df838e67a9613544fd600cdff8ec27df463b05c8a81b0fb6663461de55bcbf",
+      "kind": "private-source-baseline-missing",
+      "reason": "Second private staging lacked exact0043 baseline; original failure retained."
+    },
+    {
+      "report": ".context/ffi-memory-agent/handoff/evidence/run-r3/frontend-component.stderr",
+      "sha256": "70893ccd65da1615932646a6994562c63ce50ace2769283065c4a29a06aa620c",
+      "kind": "detached-null-backing-frontend-failure",
+      "reason": "Earlier frontend attempted a new view after null foreign backing detach; actual native private Buffer creation replaces it."
+    },
+    {
+      "report": ".context/ffi-memory-agent/handoff/evidence/extra-buffer/before-fix-known-nonpass.stderr",
+      "sha256": "c573e6080ed4c4149983f386daa71477c70f7b35b698140eed9afd6f02a5a7ff",
+      "kind": "public-Buffer-factory-lookup",
+      "reason": "Original unchanged before-load replacement assertions reject earlier public Buffer.from reconstruction."
+    },
+    {
+      "report": ".context/ffi-teardown-agent/handoff/evidence/native-r1/new-order.stderr",
+      "sha256": "ec5d6d0fc1625b0c246965ec37950a5294dc3b3041b9a51676d519625aace84d",
+      "kind": "terminal-status-durability-failure",
+      "reason": "Original repeated-entry assertion failed before actual status owner correction."
+    },
+    {
+      "report": ".context/ffi-teardown-agent/handoff/evidence/native-r2/old-order-known-nonpass.stderr",
+      "sha256": "05a62255bf4b734c6ba4c1c637c91cadae64d44acf2a57781e6cc45bb531e0e5",
+      "kind": "unsafe-consumer-unload-order",
+      "reason": "Original owner attempts unload while native readers live; explicit instrumentation rejects it instead of unmapping live bytes."
+    },
+    {
+      "report": ".context/ffi-teardown-agent/handoff/evidence/source-r1/commands.json",
+      "sha256": "a21fa38741ca0a16b70f95deabb708d57d53f04e861265eb63944db8b00ea914",
+      "kind": "private-target-baseline-setup",
+      "reason": "Initial private staging missing exact target baseline; original error retained."
+    },
+    {
+      "report": ".context/node26-ffi188-integration-bootstrap-context-r1.log",
+      "sha256": "0ae8025ed77bc89b115428900021efd23636dcf0a3a8187a76d95e890ac7047b",
+      "kind": "root-patch-preflight-context",
+      "reason": "First additive apply preflight rejected current bootstrap context; no source mutation then, narrow current-getter composition follows."
+    }
+  ],
+  "remaining": [
+    "Compile/execute actual guest memory/registration/backing/prototype/realm/GC/security/OOM/resize/detach/shared/transfer/error paths and all-four-host conformance",
+    "Interruptible blocking native I/O and worker cancellation; actual Worker/dynamic-linker status/teardown proof",
+    "Generic FFI signatures/calls/function/callback/closure/current-loop providers and complete namespace",
+    "Enabled permission model, Node mounted-VFS library materialization and real Node-API/addon/embedding owners",
+    "Exact native FFI code-property setter/name/stack/getter error policy; physical/native/opaque accounting",
+    "Caller-owned unsafe pointer/free/explicit-close lifetime remains actual target contract, not synthesized safety",
+    "Nested guest Wasm backend remains in scope for final phase; independent outer memory/loader work continues"
+  ],
+  "at": "2026-11-07T06:16:38.358469+00:00",
+  "recipeRevision": 188,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -5121,6 +5121,10 @@ const _builtinModules = {
     get test() { return _getNodeTestingPlatform().api; },
     get 'test/reporters'() { return _getNodeTestingPlatform().reporters; },
     get ffi() { return _nodeFfi ??= _createNodeFfiLibrary({ native: _nodeNative, values: _nodeValues,
+        Buffer, FastBuffer: _FastBuffer, process, types: util.types,
+        // Enabled permission-model CLI activation is rejected by the current
+        // process owner. This is its real ordinary mode, not enabled policy.
+        permission: { isEnabled: () => false },
         getVfsLibraryReader() {
             if (_nodeFsTruncation.vfsState.handlers !== null) {
                 // The pinned constructor consults this reader only for strings.

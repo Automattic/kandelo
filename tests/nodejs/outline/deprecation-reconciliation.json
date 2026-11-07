@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "68557c47dce09464ea46a77a57662cd8cae56ab3fe85b28ae7301689555fe8ed",
+    "packages/registry/node-compat/bootstrap.js": "684e9ddc5d5abc955b0cc26c319f710912ea3fa59203e6b98a8e810728067ed3",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
@@ -41,7 +41,7 @@
     "third_party/node-core/event-platform-adapter.js": "83c398737e7a7fa0af9b86f10ee289057b10f2a210e7a31a0025301e2e1773ed",
     "third_party/node-core/fd-stream-platform-adapter.js": "c4905014ca96885343e03908477ea2718ff79eab749b8774212f13d857f8c5d7",
     "third_party/node-core/fetch-body-platform-adapter.js": "3613c55e368b30fc03e0bbc1efcaf2c97f3bf52b3f8068992787aee35a3e4dcd",
-    "third_party/node-core/ffi-library-platform-adapter.js": "c9c855b9679f8040d4cba884876c53e424ba515990e2fba835506436b60cad99",
+    "third_party/node-core/ffi-library-platform-adapter.js": "cd542f7a1f97a3d512a6377b3739ea9d085b1ebfbf76e8f4254b6dc859bea995",
     "third_party/node-core/file-jobs-adapter.js": "421c39f5139be3c48861f6e881eba2520118d621d757c1cfa40351aa41168a60",
     "third_party/node-core/file-platform-adapter.js": "14f6702bde786ab09e9e05cd86c743a548c9cc33074716ee616ac995c11e348c",
     "third_party/node-core/file-sync-adapter.js": "a764abfd8bb8697006b467a4c32f9a6a7c2f4eb3f616b250cbfa6151996dd767",

@@ -1,0 +1,140 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -279,6 +279,10 @@
+
+ // Process option state is private native input to every unsafe backing allocation.
+ static bool gKandeloZeroFillBuffers = false;
++// Main, Worker and destructor share one actual native retirement owner.
++static bool KandeloShutdownNodeEnvironment(ShellContext* sc);
++static int KandeloFinishNodeEnvironment(ShellContext* sc, int result,
++                                       bool restoreNodeStatus, int32_t nodeStatus);
+ #include "shell/kandelo-node-native.cpp"
+
+ static JSObject* KandeloNewUint8ArrayCopy(JSContext* cx, const uint8_t* data,
+@@ -4213,7 +4217,8 @@
+       JS_FN("loadEnvFile", (KandeloFsPromiseGuard<KandeloNativeLoadEnvFile>), 1, 0),
+       JS_FS_END,
+   };
+-  if (!JS_DefineFunctions(cx, native, funcs) || !KandeloDefineFfi(cx, native)) {
++  if (!JS_DefineFunctions(cx, native, funcs) || !KandeloDefineFfi(cx, native) ||
++      !KandeloDefineFfiMemory(cx, native)) {
+     return false;
+   }
+   return JS_DefineProperty(cx, cx->global(), "__kandeloNodeNative", native, 0);
+@@ -9148,8 +9153,7 @@
+         } else sc->exitCode = result.isInt32() ? result.toInt32() : 1;
+       }
+     }
+-    KandeloShutdownFfi(sc.get());
+-    input->exitCode = sc->exitCode;
++    input->exitCode = KandeloFinishNodeEnvironment(sc.get(), sc->exitCode, false, 0);
+     KillWatchdog(cx);
+   } catch (const std::bad_alloc&) {
+     input->exitCode = 1; input->failure = "Worker native allocation failed";
+@@ -16983,22 +16987,46 @@
+   return true;
+ }
+
++static bool KandeloShutdownNodeEnvironment(ShellContext* sc) {
++  if (sc->kandeloNativeTeardownComplete) return sc->kandeloNativeTeardownOk;
++  // Completion is recorded only after producers have actually stopped/joined,
++  // queued/running work has retired, and every owning span consumer is closed.
++  // Admission of shutdown alone never authorizes unmapping foreign bytes.
++  KandeloShutdownLocks(sc->cx_);
++  KandeloShutdownWorkers(sc->cx_);
++  // Finish/cancel native jobs and retire pins/roots while the JSContext lives.
++  KandeloStopStatWatchers(sc);
++  KandeloShutdownUdp(sc);
++  KandeloShutdownNativeWork(sc);
++  KandeloShutdownStatWatchers(sc);
++  KandeloShutdownChildWatches(sc->cx_);
++  KandeloShutdownPorts(sc->cx_);
++  KandeloELDShutdown(sc->cx_);
++  KandeloShutdownHistograms(sc->cx_);
++  KandeloShutdownSocketOwners(sc->cx_);
++  if (!KandeloShutdownFfi(sc)) sc->kandeloNativeTeardownOk = false;
++  KandeloShutdownNativeAsync(sc);
++  sc->kandeloNativeTeardownComplete = true;
++  return sc->kandeloNativeTeardownOk;
++}
++
++static int KandeloFinishNodeEnvironment(ShellContext* sc, int result,
++                                       bool restoreNodeStatus, int32_t nodeStatus) {
++  // Preserve Node's chosen status before retirement, including explicit zero
++  // after an exit-listener exception. Unload failure promotes only success.
++  if (restoreNodeStatus) {
++    sc->exitCode = nodeStatus;
++    result = nodeStatus;
++  } else if (sc->exitCode) result = sc->exitCode;
++  const bool retired = KandeloShutdownNodeEnvironment(sc);
++  if (!result && (!retired || sc->exitCode))
++    result = sc->exitCode ? sc->exitCode : EXIT_FAILURE;
++  sc->exitCode = result;  // Keep the chosen terminal status durable on reentry.
++  return result;
++}
++
+ ShellContext::~ShellContext() {
+-  // Children retire their contexts/roots before their parent runtime disappears.
+-  KandeloShutdownFfi(this);
+-  KandeloShutdownLocks(cx_);
+-  KandeloShutdownWorkers(cx_);
+-  // Finish/cancel native jobs and retire pins/roots while the JSContext lives.
+-  KandeloStopStatWatchers(this);
+-  KandeloShutdownUdp(this);
+-  KandeloShutdownNativeWork(this);
+-  KandeloShutdownStatWatchers(this);
+-  KandeloShutdownChildWatches(cx_);
+-  KandeloShutdownPorts(cx_);
+-  KandeloELDShutdown(cx_);
+-  KandeloShutdownHistograms(cx_);
+-  KandeloShutdownSocketOwners(cx_);
+-  KandeloShutdownNativeAsync(this);
++  (void)KandeloShutdownNodeEnvironment(this);
+   if (cx_) cx_->setKandeloExecutionProvider(nullptr, nullptr, nullptr);
+   markObservers.reset();
+   if (cx_) {
+@@ -17073,6 +17101,8 @@
+     if (!signalEnvironment.Ready()) return EXIT_FAILURE;
+
+     ShellContext* sc = GetShellContext(cx);
++    sc->kandeloNativeTeardownComplete = false;
++    sc->kandeloNativeTeardownOk = true;
+     if (!sc->moduleLoader && !InitModuleLoader(cx, *op)) {
+       return EXIT_FAILURE;
+     }
+@@ -17152,20 +17182,9 @@
+       }
+     }
+
+-    // Exit listeners may still use FFI. Retire actual loader owners afterward,
+-    // before status is copied; the context destructor is only a fallback.
+-    if (!KandeloShutdownFfi(sc)) {
+-      restoreNodeStatus = false;
+-      result = sc->exitCode;
+-    }
+-    if (restoreNodeStatus) {
+-      // An explicitly assigned zero is meaningful too; do not let the shell's
+-      // generic runtime-error code override Node's chosen exit status.
+-      sc->exitCode = nodeStatus;
+-      result = nodeStatus;
+-    } else if (sc->exitCode) {
+-      result = sc->exitCode;
+-    }
++    // Exit listeners retain live resources. Only after they finish do the
++    // shared owner and status policy retire workers/jobs before FFI mappings.
++    result = KandeloFinishNodeEnvironment(sc, result, restoreNodeStatus, nodeStatus);
+
+ #ifdef FUZZING_JS_FUZZILLI
+     if (reprl_mode) {
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -206,6 +206,9 @@
+   KandeloStatWatcherLoop* kandeloStatWatchers = nullptr;
+   KandeloNativeAsyncState* kandeloNativeAsync = nullptr;
+   KandeloFfiRegistry* kandeloFfi = nullptr;
++  // One terminal owner; success is recorded after actual consumer quiescence.
++  bool kandeloNativeTeardownComplete = false;
++  bool kandeloNativeTeardownOk = true;
+   KandeloUdpRegistry* kandeloUdp = nullptr;
+
+   // Security callbacks are installed per runtime and retired before this owner.

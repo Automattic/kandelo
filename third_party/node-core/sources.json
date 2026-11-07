@@ -5795,6 +5795,18 @@
       "src/node_options.cc": {
         "path": "upstream/ffi-reference/src/node_options.cc",
         "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279"
+      },
+      "src/ffi/data.cc": {
+        "path": "upstream/ffi-reference/src/ffi/data.cc",
+        "sha256": "f1a7782f92fa08eadff0e4e26dc7bc90e290c39b6ac0017fbeb79fed8bfe5618"
+      },
+      "src/ffi/data.h": {
+        "path": "upstream/ffi-reference/src/ffi/data.h",
+        "sha256": "c3b741af14a53d8846e52e73fd6f137a0a64cbbec8d90d90de381c186d0c6424"
+      },
+      "src/node_buffer.cc": {
+        "path": "upstream/ffi-reference/src/node_buffer.cc",
+        "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2"
       }
     },
     "selections": {
@@ -5812,8 +5824,23 @@
         "start": "ObjectDefineProperty(DynamicLibrary.prototype, SymbolDispose, {",
         "length": 143,
         "sha256": "983e2a7b30b07bd3662cc781de85ef267bb51638f795a34a3e06bf38749d3724"
+      },
+      "permission": {
+        "start": "function checkFFIPermission() {",
+        "length": 289,
+        "sha256": "2c61e7c97e3b08c8a57538acd3f2e60c8ae04908883ded099519b02ac3c8191f"
+      },
+      "exportsMemory": {
+        "start": "function exportString(str, data, len, encoding = 'utf8') {",
+        "length": 2257,
+        "sha256": "d0426530c2b737d5fa611c9c399b775e246fed74a9dae3eed1dd7161e616e93c"
+      },
+      "metadata": {
+        "start": "const suffix =",
+        "length": 560,
+        "sha256": "4ad02afbee846ef35a6e57dd78b098e4f7c63125be7298fca13e175ab18a954f"
       }
     },
-    "scope": "DynamicLibrary constructor/path/close/getSymbol/getSymbols/symbols; exact dlclose/dlsym aliases. Function calls, callbacks, pointer memory, mounted Node VFS materialization and remaining FFI exports are implementation gaps."
+    "scope": "Library/symbol + typed/raw/copy/borrowed/export memory helpers; calls/signatures/callbacks/current-loop/public permission activation still missing."
   }
 }

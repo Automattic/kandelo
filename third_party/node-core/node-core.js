@@ -119507,11 +119507,149 @@ function wasiReturnOnProcExit(rval) {
     })(module, module.exports, require, internalBinding, primordials);
     return module.exports;
 }
-// This public subset consumes real native library/symbol owners. Generic call,
-// callback, pointer-memory and event-loop APIs are still missing, not stubs.
+// This public subset consumes real library/symbol and guest-memory owners.
+// Generic calls, callbacks and current-event-loop APIs remain missing, not stubs.
 function _createNodeFfiLibrary(platform) {
     'use strict';
-    const { FunctionPrototypeCall, ReflectConstruct, ObjectDefineProperty, SymbolDispose } = _createNodePrimordials();
+    const { FunctionPrototypeCall, ReflectConstruct, ObjectDefineProperty, ObjectFreeze, SymbolDispose,
+        ArrayBufferPrototypeGetDetached, DataViewPrototypeGetBuffer, TypedArrayPrototypeGetBuffer } = _createNodePrimordials();
+    const { Buffer, FastBuffer, process, permission } = platform;
+    const { validateInteger, validateString } = platform.values.validators;
+    const { ERR_ACCESS_DENIED, ERR_INVALID_ARG_TYPE, ERR_OUT_OF_RANGE } = platform.values.errors.codes;
+    const { isArrayBuffer, isDataView, isArrayBufferView, isSharedArrayBuffer } = platform.types;
+    const memory = platform.native.ffiMemory;
+    const { getInt8, getUint8, getInt16, getUint16, getInt32, getUint32, getInt64, getUint64, getFloat32, getFloat64, setInt8, setUint8, setInt16, setUint16, setInt32, setUint32, setInt64, setUint64, setFloat32, setFloat64,
+        getRawPointer, exportBytes, toString, toArrayBuffer } = memory;
+    // The actual native function traces this environment's private prototype
+    // in its own reserved slot. No public factory/property is called at delivery.
+    const toBuffer = memory.createToBuffer(FastBuffer.prototype);
+    function checkFFIPermission() {
+  if (!permission.isEnabled()) {
+    return;
+  }
+
+  if (permission.has('ffi') || permission.isAuditMode()) {
+    return;
+  }
+
+  throw new ERR_ACCESS_DENIED(
+    'Access to this API has been restricted. Use --allow-ffi to manage permissions.',
+    'FFI');
+}
+
+    function exportString(str, data, len, encoding = 'utf8') {
+  checkFFIPermission();
+  validateString(str, 'string');
+  validateString(encoding, 'encoding');
+  validateInteger(len, 'len', 0);
+
+  let terminatorSize;
+
+  switch (encoding.toLowerCase()) {
+    case 'ucs2':
+    case 'ucs-2':
+    case 'utf16le':
+    case 'utf-16le':
+      terminatorSize = 2;
+      break;
+    default:
+      terminatorSize = 1;
+      break;
+  }
+
+  const sourceBuffer = Buffer.from(str, encoding);
+  const requiredLength = sourceBuffer.length + terminatorSize;
+
+  if (len < requiredLength) {
+    throw new ERR_OUT_OF_RANGE('len', `>= ${requiredLength}`, len);
+  }
+
+  const terminated = Buffer.allocUnsafe(requiredLength);
+  sourceBuffer.copy(terminated);
+  terminated.fill(0, sourceBuffer.length);
+  exportBytes(terminated, data, len);
+}
+
+function exportBuffer(source, data, len) {
+  checkFFIPermission();
+
+  if (!Buffer.isBuffer(source)) {
+    throw new ERR_INVALID_ARG_TYPE('buffer', 'Buffer', source);
+  }
+
+  validateInteger(len, 'len', 0);
+
+  if (len < source.length) {
+    throw new ERR_OUT_OF_RANGE('len', `>= ${source.length}`, len);
+  }
+
+  exportBytes(source, data, len);
+}
+
+function exportArrayBuffer(source, data, len) {
+  checkFFIPermission();
+
+  if (!isArrayBuffer(source)) {
+    throw new ERR_INVALID_ARG_TYPE('arrayBuffer', 'ArrayBuffer', source);
+  }
+
+  validateInteger(len, 'len', 0);
+
+  if (len < source.byteLength) {
+    throw new ERR_OUT_OF_RANGE('len', `>= ${source.byteLength}`, len);
+  }
+
+  exportBytes(source, data, len);
+}
+
+function exportArrayBufferView(source, data, len) {
+  checkFFIPermission();
+
+  if (!isArrayBufferView(source)) {
+    throw new ERR_INVALID_ARG_TYPE('arrayBufferView', 'ArrayBufferView', source);
+  }
+
+  validateInteger(len, 'len', 0);
+
+  // Reading byteLength throws for a detached DataView. Let the native binding
+  // reject detached views consistently with detached ArrayBuffers.
+  const buffer = isDataView(source) ?
+    DataViewPrototypeGetBuffer(source) : TypedArrayPrototypeGetBuffer(source);
+  if ((isSharedArrayBuffer(buffer) ||
+       !ArrayBufferPrototypeGetDetached(buffer)) &&
+      len < source.byteLength) {
+    throw new ERR_OUT_OF_RANGE('len', `>= ${source.byteLength}`, len);
+  }
+
+  exportBytes(source, data, len);
+}
+
+    const suffix = process.platform === 'win32' ? 'dll' : process.platform === 'darwin' ? 'dylib' : 'so';
+
+const types = ObjectFreeze({
+  __proto__: null,
+  VOID: 'void',
+  POINTER: 'pointer',
+  BUFFER: 'buffer',
+  ARRAY_BUFFER: 'arraybuffer',
+  FUNCTION: 'function',
+  BOOL: 'bool',
+  CHAR: 'char',
+  STRING: 'string',
+  FLOAT: 'float',
+  DOUBLE: 'double',
+  INT_8: 'int8',
+  UINT_8: 'uint8',
+  INT_16: 'int16',
+  UINT_16: 'uint16',
+  INT_32: 'int32',
+  UINT_32: 'uint32',
+  INT_64: 'int64',
+  UINT_64: 'uint64',
+  FLOAT_32: 'float32',
+  FLOAT_64: 'float64',
+});
+
     const NativeDynamicLibrary = platform.native.DynamicLibrary;
     const getVfsLibraryReader = platform.getVfsLibraryReader;
     platform.values.util.emitExperimentalWarning('FFI');
@@ -119554,7 +119692,13 @@ function dlsym(handle, symbol) {
   return handle.getSymbol(symbol);
 }
 
-    return { DynamicLibrary, dlclose, dlsym };
+    return { DynamicLibrary, dlclose, dlsym,
+        exportArrayBuffer, exportArrayBufferView, exportString, exportBuffer,
+        getInt8, getUint8, getInt16, getUint16, getInt32, getUint32,
+        getInt64, getUint64, getFloat32, getFloat64, getRawPointer,
+        setInt8, setUint8, setInt16, setUint16, setInt32, setUint32,
+        setInt64, setUint64, setFloat32, setFloat64,
+        suffix, toString, toArrayBuffer, toBuffer, types };
 }
 // Standalone public settings/protocol data; no native sessions are fabricated.
 function _createNodeHttp2Settings(platform) {

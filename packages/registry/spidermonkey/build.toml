@@ -1,5 +1,12 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/ffi-borrowed-backing.h",
+  "third_party/node-core/ffi-memory-owner.h",
+  "third_party/node-core/native-ffi-memory.cpp",
+  "packages/registry/spidermonkey/patches/0137-node-ffi-memory-retirement.patch",
+  "third_party/node-core/upstream/ffi-reference/src/ffi/data.cc",
+  "third_party/node-core/upstream/ffi-reference/src/ffi/data.h",
+  "third_party/node-core/upstream/ffi-reference/src/node_buffer.cc",
   "third_party/node-core/ffi-library-owner.h",
   "third_party/node-core/native-ffi-library.cpp",
   "third_party/node-core/ffi-library-platform-adapter.js",
@@ -664,4 +671,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 187
+revision = 188

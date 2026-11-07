@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source188 integrates real FFI memory operations and native-consumer-before-library-unload retirement. Focused controls and normal source/package checks pass; accepted engine173 is stale. Current JSAPI/guest/four-host conformance, blocking cancellation and full FFI remain open.
+See [source scope](ffi-memory-retirement-integration.md).
+
 Source187 integrates real publicEncrypt/privateDecrypt/privateEncrypt/publicDecrypt owners over pinned wrappers and existing key/byte/error layers.71focused native/component groups,2unchanged upstream files per subject and14package checks pass. Actual guest JSAPI/STORE/provider/lifecycle and four-host conformance remain open.
 See [source scope](rsa-transform-owner-integration.md).
 

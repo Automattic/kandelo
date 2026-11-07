@@ -28,7 +28,7 @@ FRAGMENTS = (
     'native-random.cpp', 'native-kdf.cpp', 'native-address-rules.cpp', 'native-dns-lookup.cpp', 'native-dns-records.cpp', 'native-datagram.cpp',
     'native-terminal.cpp', 'native-os.cpp', 'native-dotenv.cpp', 'native-vm.cpp', 'native-vm-modules.cpp', 'native-module-syntax.cpp',
     'native-sqlite.cpp', 'native-sqlite-backup.cpp', 'histogram-native.cpp', 'event-loop-delay-native.cpp', 'histogram-clone.cpp', 'native-ports.cpp', 'native-worker.cpp', 'native-locks.cpp',
-    'native-signals.cpp', 'native-wasi.cpp', 'native-ffi-library.cpp',
+    'native-signals.cpp', 'native-wasi.cpp', 'native-ffi-library.cpp', 'native-ffi-memory.cpp',
 )
 
 # These headers are also used directly by the surrounding shell operations.

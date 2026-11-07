@@ -18,7 +18,9 @@ static bool KandeloFfiRaise(JSContext* cx, const kandelo::ffi::Error& error) {
   if (JS_IsExceptionPending(cx)) return false;
   const JSExnType type = !strcmp(error.code, "ERR_INVALID_ARG_TYPE") ||
       !strcmp(error.code, "ERR_CONSTRUCT_CALL_REQUIRED") ||
-      !strcmp(error.code, "ERR_INVALID_ARG_VALUE") ? JSEXN_TYPEERR : JSEXN_ERR;
+      !strcmp(error.code, "ERR_INVALID_ARG_VALUE") ? JSEXN_TYPEERR
+      : !strcmp(error.code, "ERR_OUT_OF_RANGE") || !strcmp(error.code, "ERR_MEMORY_ALLOCATION_FAILED")
+          ? JSEXN_RANGEERR : JSEXN_ERR;
   RootedString message(cx, JS_NewStringCopyUTF8Z(cx,
       JS::ConstUTF8CharsZ(error.what(), strlen(error.what()))));
   RootedString file(cx, JS_GetEmptyString(cx));
