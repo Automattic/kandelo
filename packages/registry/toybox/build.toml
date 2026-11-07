@@ -1,0 +1,9 @@
+script_path = "packages/registry/toybox/build-toybox.sh"
+inputs = [
+  "packages/registry/toybox/build-toybox.sh",
+  "packages/registry/toybox/patches/0001-gate-portability-on-headers-not-os.patch",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision = 1

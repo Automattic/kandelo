@@ -709,12 +709,20 @@ name = "sudo-lite"
 class = "platform"
 
 [[packages]]
+name = "sysklogd"
+class = "platform"
+
+[[packages]]
 name = "tar"
 class = "user-software"
 
 [[packages]]
 name = "tmux"
 class = "user-software"
+
+[[packages]]
+name = "toybox"
+class = "platform"
 
 [[packages]]
 name = "termchat"
