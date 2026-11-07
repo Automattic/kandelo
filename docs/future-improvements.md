@@ -1515,3 +1515,13 @@ three-engine timing remain required. It is not submitted or accepted upstream.
 All B2–B6 and C1–C3 stages, Freeciv/ScummVM workloads and existing numeric bars
 remain in this iteration. Next-iteration proposals remain the remaining driver
 work, GLES3, IGT and multiple displays; none removes a current requirement.
+
+
+R760 normal-build recovery and metrology qualification remain current-iteration
+work. R703-r2 stops at the unchanged disk admission floor with183 of222 nodes
+completed/reusable; the full image, ABI/freshness and application gates remain
+open. An unlocked six-cohort R757 attempt refuses overlay authority before any
+input. The complete-response/fresh-trial method is being prepared privately;
+it is not accepted native timing or a Freeciv/ScummVM oracle. Safe retirement
+of inactive build copies and lossless historical-evidence compression changes
+storage only and waives no correctness, stage or performance requirement.

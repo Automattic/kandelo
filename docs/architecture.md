@@ -7104,6 +7104,19 @@ owned window to fit fully on one display. Positive physical validation, total
 instrumentation overhead and the full desktop workload matrix remain open.
 
 
+The R757 selected-display attempt is refused before input on all six
+three-engine DOM/worker cohorts despite an unlocked preflight: the current
+rectangle authority check sees an intersecting window. No visible timing
+is accepted from that run. Whole-window overlay metadata is not pixel-opacity
+proof, and sparse foreground matches cannot prove full response appearance
+or erasure. A complete response-region/fresh-trial successor remains private
+and unqualified. It must observe actual unfiltered display pixels, retain
+unknowns and refused inputs, and distinguish visible content from native
+layer attribution. No diagnostic marker may substitute for a real
+application response. These method requirements change neither production
+rendering nor the desktop ship bar.
+
+
 Surfaceless EGL contexts retain normal GL error semantics: their absent
 default framebuffer rejects clear, read and copy operations with
 `GL_INVALID_FRAMEBUFFER_OPERATION` before native work. This guest API error

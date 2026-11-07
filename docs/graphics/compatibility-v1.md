@@ -26774,3 +26774,62 @@ Exact commands/results are in integration's private
 This supports its scope as a generic upstream candidate, without claiming
 upstream acceptance, Linux hardware execution or completed application
 validation. D-60 remains the sole new ported-software patch exception.
+
+
+### Normal-build admission and measurement refusal, 2026-11-07 (R757–R760)
+
+The final R703-r2 graph is FAILED after13,516s of full-normal work:
+44 cached plus139 succeeded nodes,17 failed disk-admission checks and22
+blocked dependents,222 nodes total. Thus183 completed results remain reusable.
+Every failed node is refused before a child starts at the unchanged16GiB
+floor; this is not a package compilation failure. All8,980 frozen source
+inputs remain unchanged and310 product/metadata paths are hashed. The ABI
+and final freshness phases were not reached. R760 prepares a separately
+frozen restart on the same clean8e65 source; disk maintenance precedes it.
+No current image or complete B1 preview follows from these partial products.
+
+The unlocked R757 calibration fails12s on all six DOM/worker cohorts across
+Chromium, Firefox and WebKit. Preflight explicitly records authorized,
+unlocked and on-console, but the native observer refuses intersecting
+window46 before any offered or original input. Source, binaries and browser
+identities remain unchanged; owned windows are closed. No timing sample is
+accepted. A later window inventory names46 as Dock, but is not co-temporal
+with the refusal and proves no pixel opacity. There is no name whitelist.
+
+The current sparse foreground matcher does not prove complete response
+appearance, old-position erasure or fresh trial identity. A private successor
+is being prepared with complete response regions and a fresh challenge
+painted atomically with each synthetic response. It must retain independent
+expected pixels, original-input custody, failure tails and clock guards.
+This is diagnostic work, not an application oracle or a relaxed ship bar.
+Freeciv/ScummVM correctness, actual application latency, instrumentation cost,
+all three engines and the complete workload matrix remain required.
+
+R760 reduces historical evidence storage losslessly:41 old Playwright ZIPs
+plus42 old synthetic observer JSONs shrink by3,352,011,200 file bytes
+(3.12GiB). Streaming decompression reproduces every original SHA256 before
+the original file is removed;1,299 other file hashes remain exact.
+Failure screenshots, logs, source/config, summaries and every archived sample
+remain available. Original paths now require restoring their `.zst` envelope;
+private `graphics-own-disk-r760/RESTORE.md` records how. This is storage
+maintenance, not a repeated test or revised verdict. Concurrent builds and
+APFS prevent attributing whole-volume free-space changes solely to it.
+
+Canonical `./run.sh cache-gc --max-size 100G --below-abi 55` dry run R758
+passes14s and identifies4.1GiB eligible. Apply R759 passes31s but skips the
+shared source cache because another build holds its lock; actual removal is
+zero bytes. Live-root, recent-use and lock protections remain unchanged.
+There is no manual deletion of shared cache generations. Separate reviewed
+inactive compiler/copy cleanup is still in progress at this checkpoint.
+
+
+R762 then retires2,037 exact single-link files from seven inactive old
+program projections, with10,372,325,376 summed allocated bytes. Sources,
+patches, logs, SDKs, parent directories and28 adjacent kernel/rootfs/metadata
+hashes remain unchanged. Fresh process/open-file and8,870-symlink checks find
+no active or incoming references. This is retired copied storage, not a
+9.66GiB physical-recovery claim: observed free space changes from
+26,100,408,320 to26,077,650,944 bytes during deletion. Shared APFS extents and
+concurrent writes can dominate that observation. Replaying those old runs
+requires normally rematerializing their exact retired program products;
+no current preview or normal build product is replaced.
