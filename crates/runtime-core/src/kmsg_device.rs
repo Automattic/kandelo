@@ -43,7 +43,11 @@
 //!   successfully. The longest line is under 4.2 KiB, so an 8 KiB buffer
 //!   always suffices.
 //! * At the tail the read is `EAGAIN`: the host returns it to an `O_NONBLOCK`
-//!   caller and parks a blocking one.
+//!   caller and parks a blocking one. The parked read is retried against the
+//!   same description, whose cursor `EAGAIN` left alone, so it returns the
+//!   record that arrived while it slept. Writing a record also notifies
+//!   `epoll` waiters on the device (see `kmsg::announce`); `poll` is
+//!   readable exactly when a read would not be `EAGAIN`.
 //! * A cursor behind the oldest surviving record means the reader was
 //!   overrun. That read is `EPIPE` once and moves the cursor to the oldest
 //!   surviving record, so the next read succeeds.

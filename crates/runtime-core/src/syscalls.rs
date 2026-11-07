@@ -57054,5 +57054,168 @@ impl HostIO for RelSymlinkMock {
             poll_check(&mut proc, &mut host, core::slice::from_mut(&mut pollfd));
             assert_eq!(pollfd.revents, 0);
         }
+
+        #[test]
+        fn poll_reports_an_overrun_cursor_readable_because_read_answers_epipe_not_eagain() {
+            let (_guard, ring) = lock_ring();
+            let text = [b'x'; 100];
+            ring.push(0, 6, 0, &text);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = open_kmsg(&mut proc, &mut host);
+            let start = ring.oldest_seq();
+            while ring.oldest_seq() == start {
+                ring.push(0, 6, 0, &text);
+            }
+            let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+            poll_check(&mut proc, &mut host, core::slice::from_mut(&mut pollfd));
+            // A reader that was overrun must be told, not left parked.
+            assert_eq!(pollfd.revents, POLLIN);
+            assert_eq!(read_line(&mut proc, &mut host, fd), Err(Errno::EPIPE));
+        }
+
+        #[test]
+        fn read_at_the_tail_is_eagain_for_a_nonblocking_open_and_a_blocking_one() {
+            // The kernel answers EAGAIN either way. Whether that is returned
+            // (O_NONBLOCK) or the reader is parked is the host's decision from
+            // the frozen descriptor flags, so it is not decided here.
+            let (_guard, _ring) = lock_ring();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let blocking = open_kmsg(&mut proc, &mut host);
+            let nonblocking = sys_open(&mut proc, &mut host, KMSG, O_RDONLY | O_NONBLOCK, 0).unwrap();
+            assert_eq!(read_line(&mut proc, &mut host, blocking), Err(Errno::EAGAIN));
+            assert_eq!(read_line(&mut proc, &mut host, nonblocking), Err(Errno::EAGAIN));
+        }
+
+        // The ring's rate limiter lives in the global ring and survives
+        // `clear`, so the tests below write from sites no other global-ring
+        // test uses: `what_klog_writes_is_what_dev_kmsg_and_klogctl_read` owns
+        // `ProcessKilledByFault`, and the flood test owns its own site, so
+        // neither can spend the other's burst.
+
+        #[test]
+        fn a_reader_parked_at_the_tail_reads_what_was_logged_while_it_slept() {
+            use crate::kmsg::{klog, with_global_ring_selected, KlogSite};
+            use crate::test_fixtures::ClockHost;
+            let (_guard, ring) = lock_ring();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = open_kmsg(&mut proc, &mut host);
+            // The host retries the same read on the same description. The
+            // EAGAIN left the cursor where it was, so the retry finds the
+            // record that arrived in between rather than skipping it.
+            assert_eq!(read_line(&mut proc, &mut host, fd), Err(Errno::EAGAIN));
+            let mut clock = ClockHost::at(1, 0);
+            let seq = with_global_ring_selected(|| {
+                klog(&mut clock, KlogSite::ProcessKilledBySignal, format_args!("while it slept"))
+            })
+            .expect("written");
+            assert_eq!(ring.head_seq(), seq + 1);
+            let line = read_line(&mut proc, &mut host, fd).unwrap();
+            assert!(line.starts_with(format!("6,{seq},").as_bytes()));
+            assert!(line.ends_with(b";while it slept\n"));
+            assert_eq!(read_line(&mut proc, &mut host, fd), Err(Errno::EAGAIN));
+        }
+
+        /// An edge-triggered epoll instance reports an event only for a
+        /// notification, so it is the observable stand-in for "something
+        /// told the waiters a record arrived": a level-triggered one
+        /// re-evaluates readiness every wait and would pass without it.
+        fn tail_waiter(proc: &mut Process, host: &mut MockHostIO) -> (i32, i32) {
+            use wasm_posix_shared::epoll::{EPOLLET, EPOLLIN};
+            let fd = open_kmsg(proc, host);
+            let ep = sys_epoll_create1(proc, 0).unwrap();
+            sys_epoll_ctl(proc, ep, 1, fd, EPOLLIN | EPOLLET, 7).unwrap();
+            // Registration queues one edge. Drain it: nothing is readable at
+            // the tail, so this is the empty wait a daemon parks in.
+            let first = sys_epoll_pwait(proc, host, ep, 1, 0, None).unwrap().1;
+            assert!(first.is_empty(), "nothing is readable at the tail");
+            (fd, ep)
+        }
+
+        #[test]
+        fn a_logged_record_wakes_an_edge_triggered_waiter_at_the_tail() {
+            use crate::kmsg::{klog, with_global_ring_selected, KlogSite};
+            use crate::test_fixtures::ClockHost;
+            use wasm_posix_shared::epoll::EPOLLIN;
+            let (_guard, _ring) = lock_ring();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let (_fd, ep) = tail_waiter(&mut proc, &mut host);
+            let mut clock = ClockHost::at(1, 0);
+            with_global_ring_selected(|| {
+                klog(&mut clock, KlogSite::ProcessKilledBySignal, format_args!("wake"))
+            })
+            .expect("written");
+            let woken = sys_epoll_pwait(&mut proc, &mut host, ep, 1, 0, None).unwrap().1;
+            assert_eq!(woken, vec![(EPOLLIN, 7)]);
+        }
+
+        #[test]
+        fn every_writer_of_the_ring_wakes_a_waiter() {
+            use crate::kmsg::{
+                klog, klog_once, klog_unimplemented_syscall, klog_unknown_syscall,
+                with_global_ring_selected, KlogSite,
+            };
+            use crate::test_fixtures::ClockHost;
+            let (_guard, _ring) = lock_ring();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let (fd, ep) = tail_waiter(&mut proc, &mut host);
+            let mut clock = ClockHost::at(1, 0);
+            let writers: [(&str, &dyn Fn(&mut ClockHost)); 4] = [
+                ("klog", &|c| {
+                    klog(c, KlogSite::ProcessKilledBySignal, format_args!("a"));
+                }),
+                ("klog_once", &|c| {
+                    klog_once(c, KlogSite::DeviceFirstOpen, 63, format_args!("b"));
+                }),
+                ("klog_unimplemented_syscall", &|c| {
+                    klog_unimplemented_syscall(c, 1, 247);
+                }),
+                ("klog_unknown_syscall", &|c| {
+                    klog_unknown_syscall(c, 1, 99_999);
+                }),
+            ];
+            for (name, write) in writers {
+                with_global_ring_selected(|| write(&mut clock));
+                let woken = sys_epoll_pwait(&mut proc, &mut host, ep, 1, 0, None).unwrap().1;
+                assert_eq!(woken.len(), 1, "{name} did not wake the waiter");
+                // The record is still unread, so a level-triggered view keeps
+                // it ready; consume it so the next writer starts from a tail.
+                let mut sink = vec![0u8; 8192];
+                while sys_read(&mut proc, &mut host, fd, &mut sink).is_ok() {}
+            }
+        }
+
+        #[test]
+        fn a_record_the_rate_limiter_drops_wakes_nobody() {
+            use crate::kmsg::{klog, with_global_ring_selected, KlogSite};
+            use crate::test_fixtures::ClockHost;
+            let (_guard, ring) = lock_ring();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let (_fd, ep) = tail_waiter(&mut proc, &mut host);
+            let mut clock = ClockHost::at(1, 0);
+            // Exhaust one site's burst inside one window until it drops.
+            let dropped = with_global_ring_selected(|| {
+                (0..1000).find_map(|_| {
+                    klog(&mut clock, KlogSite::MmapKernelMemoryExhausted, format_args!("flood"))
+                        .is_none()
+                        .then_some(())
+                })
+            });
+            assert!(dropped.is_some(), "the limiter never dropped a record");
+            // Drain what the flood admitted, and its wake.
+            let _ = sys_epoll_pwait(&mut proc, &mut host, ep, 1, 0, None);
+            let before = ring.head_seq();
+            with_global_ring_selected(|| {
+                klog(&mut clock, KlogSite::MmapKernelMemoryExhausted, format_args!("flood"))
+            });
+            assert_eq!(ring.head_seq(), before, "the record was dropped");
+            let woken = sys_epoll_pwait(&mut proc, &mut host, ep, 1, 0, None).unwrap().1;
+            assert!(woken.is_empty(), "a dropped record changed nothing a reader can see");
+        }
     }
 }

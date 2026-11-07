@@ -720,10 +720,57 @@ fn klog_at<H: HostIO + ?Sized>(
 ) -> Option<u64> {
     let raw = monotonic_nsec(host)?;
     let text = format_event(args);
-    with_ring(|ring| {
+    let seq = with_ring(|ring| {
         let ts_nsec = ring.rebase(raw);
         ring.push_limited(callsite, LOG_KERN, level, ts_nsec, &text.bytes[..text.len])
-    })
+    });
+    announce(seq)
+}
+
+/// Tell everything waiting on `/dev/kmsg` that `seq`, if there is one, was
+/// just written, and hand `seq` back.
+///
+/// Every record the kernel writes passes through here: [`klog_at`] and
+/// [`klog_once`] are the only writers of the global ring, so a reader cannot
+/// be missed by one call site forgetting to say so.
+///
+/// This is the same notification the other character devices give
+/// ([`crate::mouse::inject_event`], [`crate::clipboard::offer`]): it marks
+/// the device's epoll interests ready. An edge-triggered (`EPOLLET`) waiter
+/// is told of a change only by this, because it reports an event only for a
+/// notification; level-triggered `epoll`, `poll` and `select` re-evaluate
+/// readiness (`kmsg_device::readable`) whenever they run and need it only to
+/// run sooner. A blocking `read(2)` at the tail has no kernel-owned park:
+/// the host retries it on its own timer, exactly as for the mouse and
+/// clipboard, and finds the record by re-reading at the unchanged cursor.
+/// That retry latency is a property of how the host parks any blocking read
+/// on a character device, not of this log.
+///
+/// It sits where a record is written rather than on any syscall path. A
+/// record is a boot-, device- or process-lifecycle event or a failure
+/// branch, and a record the rate limiter drops (`None`) changed nothing a
+/// reader can see, so it wakes no one.
+fn announce(seq: Option<u64>) -> Option<u64> {
+    if seq.is_some() {
+        notify_readers();
+    }
+    seq
+}
+
+fn notify_readers() {
+    use wasm_posix_shared::epoll::{EPOLLIN, EPOLLRDNORM};
+    // Under test a writer that has not selected the global ring writes to its
+    // own thread's ring, which no `/dev/kmsg` reads. Waking the machine-global
+    // epoll table for it would let one test's record disturb another test's
+    // waiters.
+    #[cfg(test)]
+    if !USE_GLOBAL_RING.with(|selected| selected.get()) {
+        return;
+    }
+    crate::epoll::notify(
+        crate::epoll::Source::Device(crate::syscalls::VirtualDevice::Kmsg.host_handle()),
+        EPOLLIN | EPOLLRDNORM,
+    );
 }
 
 /// The syscalls the dispatcher refuses by name: numbers that Kandelo's libc
@@ -877,12 +924,13 @@ pub fn klog_once<H: HostIO + ?Sized>(
     }
     let raw = monotonic_nsec(host)?;
     let text = format_event(args);
-    with_ring(|ring| {
+    let seq = with_ring(|ring| {
         let ts_nsec = ring.rebase(raw);
         let seq = ring.push_limited(site.id(), LOG_KERN, site.level(), ts_nsec, &text.bytes[..text.len])?;
         ring.first_time(key);
         Some(seq)
-    })
+    });
+    announce(seq)
 }
 
 /// Run `f` on the ring the kernel's own events are written to.
