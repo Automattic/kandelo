@@ -1480,6 +1480,18 @@ for code in ['ERR_CONSTRUCT_CALL_INVALID', 'ERR_CONSTRUCT_CALL_REQUIRED']:
     port_error_messages[code] = native_errors.split(prefix, 1)[1].split('"', 1)[0]
 port_adapter = port_adapter.replace('/* NODE_PORT_NATIVE_ERRORS */', json.dumps(port_error_messages))
 bundle += port_adapter.replace(marker, ',\n'.join(port_factories)) + '\n'
+sea_spec = manifest['seaPlatform']
+sea_sources = {}
+for name, item in sea_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('SEA source identity mismatch: ' + name)
+    sea_sources[name] = raw.decode('utf-8')
+sea_adapter = (root / 'sea-platform-adapter.js').read_text()
+if sea_adapter.count('/* NODE_SEA_PUBLIC */') != 1:
+    raise ValueError('Review SEA public-source marker')
+bundle += sea_adapter.replace('/* NODE_SEA_PUBLIC */', sea_sources['public']) + '\n'
+
 testing_sources = {}
 for name, item in manifest['testingPlatform']['sources'].items():
     raw = (root / item['path']).read_bytes()

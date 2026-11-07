@@ -1,0 +1,8 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4197,4 +4197,5 @@
+       JS_FN("signalOperation", KandeloNativeSignals, 3, 0),
+       JS_FN("wasiConstructor", KandeloNativeWasiConstructor, 0, 0),
++      JS_FN("seaBinding", KandeloNativeSeaBinding, 0, 0),
+       JS_FN("fsStatSync", (KandeloFsPromiseGuard<KandeloFsStatSync>), 3, 0),
+       JS_FN("fsCopyFileSync", (KandeloFsPromiseGuard<KandeloFsCopyFileSync>), 3, 0),

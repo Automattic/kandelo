@@ -6015,5 +6015,48 @@
         "sha256": "3345ab03dc27f0a80edbfd8a880cd9f077684ed13a5e764963297a61e8e3e17c"
       }
     }
+  },
+  "seaPlatform": {
+    "sources": {
+      "public": {
+        "path": "upstream/sea/lib/sea.js",
+        "upstreamPath": "lib/sea.js",
+        "sha256": "96e8357c40d66d7e3d4c964e87cc11cb21bf589247ae1ece691088c27032201d"
+      },
+      "image": {
+        "path": "upstream/sea/src/node_sea_bin.cc",
+        "upstreamPath": "src/node_sea_bin.cc",
+        "sha256": "4579ca57162a30218f78ad981d901ed36e0f01b7051357bd83ad0b7acdb07054"
+      },
+      "runtime": {
+        "path": "upstream/sea/src/node_sea.cc",
+        "upstreamPath": "src/node_sea.cc",
+        "sha256": "3be5c49ea362f5c2f09015368d7bbffbef999e464a2299c070a5138bf146097e"
+      },
+      "postject": {
+        "path": "upstream/sea/deps/postject/postject-api.h",
+        "upstreamPath": "deps/postject/postject-api.h",
+        "sha256": "28bfabfe661945bdbf107812e3ed6c6326911cd22fe70002b3875e034b02d5c7"
+      },
+      "postjectLicense": {
+        "path": "upstream/sea/deps/postject/LICENSE",
+        "upstreamPath": "deps/postject/LICENSE",
+        "sha256": "6546657539feb5b454f400db317e71fa39ff5cd048fa5d78ae0ada2df72f1ea7"
+      }
+    },
+    "sections": {
+      "fuse": {
+        "source": "image",
+        "start": "#define SEA_SENTINEL_PREFIX",
+        "length": 610,
+        "sha256": "1ec640226a6ba8159c9599860ece301602d3a01d8689085bb3bc73219428377c"
+      },
+      "detector": {
+        "source": "image",
+        "start": "bool IsSingleExecutable() {",
+        "length": 64,
+        "sha256": "e66b5cf4290a75ff4ad6fd9e5d99478c711ff4e5795985127f1088ecf278aeb2"
+      }
+    }
   }
 }

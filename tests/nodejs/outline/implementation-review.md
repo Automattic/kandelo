@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source202 adds actual ordinary-image node:sea ownership with the exact compiled fuse detector and unchanged public algorithms. Nine current groups and two unchanged upstream files per subject pass over explicit native dependencies;875normal inputs/style/bootstrap and14package checks pass. PositiveSEA and guest conformance remain unimplemented/unvalidated.
+See [source scope](ordinary-sea-image-integration.md).
+
 Source201 integrates real captured-terminal callback/resource ownership. Two current native/candidate PTY scenarios and four unchanged fd-stream cases pass; the disabled-callback mutant is rejected. Normal source/staging/style/bootstrap checks and14package checks pass. New guest C++ remains uncompiled; accepted engine200 excludes this slice.
 See [source scope](terminal-callback-resource-integration.md).
 

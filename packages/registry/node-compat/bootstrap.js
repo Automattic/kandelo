@@ -5087,6 +5087,7 @@ function _bufferIsUtf8(input) {
 }
 
 let _nodeSqlite;
+let _nodeSea;
 let _nodeTestingPlatform;
 function _getNodeTestingPlatform() {
     return _nodeTestingPlatform ??= _createNodeTestingPlatform({
@@ -5202,6 +5203,8 @@ const _builtinModules = {
             _nodeNative.cliOptions?.experimentalVmModules === true }),
     get test() { return _getNodeTestingPlatform().api; },
     get 'test/reporters'() { return _getNodeTestingPlatform().reporters; },
+    get sea() { return _nodeSea ??= _createNodeSeaPlatform({ native: _nodeNative, values: _nodeValues,
+        TextDecoder, Blob: _nodeBodyData.Blob }); },
     get ffi() { return _nodeFfi ??= _createNodeFfiLibrary({ native: _nodeNative, values: _nodeValues,
         Buffer, FastBuffer: _FastBuffer, process, types: util.types,
         // Enabled permission-model CLI activation is rejected by the current

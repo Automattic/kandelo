@@ -62,6 +62,17 @@ inputs = [
   "third_party/node-core/wasi-policy.h",
   "third_party/node-core/wasi-wire.h",
   "third_party/node-core/native-wasi.cpp",
+  "third_party/node-core/generate-sea.py",
+  "third_party/node-core/sea-image-profile.h",
+  "third_party/node-core/sea-image-profile.md",
+  "third_party/node-core/sea-platform-adapter.js",
+  "third_party/node-core/native-sea.cpp",
+  "packages/registry/spidermonkey/patches/0147-node-sea-image-owner.patch",
+  "third_party/node-core/upstream/sea/lib/sea.js",
+  "third_party/node-core/upstream/sea/src/node_sea_bin.cc",
+  "third_party/node-core/upstream/sea/src/node_sea.cc",
+  "third_party/node-core/upstream/sea/deps/postject/postject-api.h",
+  "third_party/node-core/upstream/sea/deps/postject/LICENSE",
   "third_party/node-core/generate-wasi-policy.py",
   "third_party/node-core/stage-wasi.py",
   "third_party/node-core/upstream/wasi",
@@ -700,4 +711,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 201
+revision = 202

@@ -356,6 +356,11 @@ python3 "$REPO_ROOT/third_party/node-core/generate-dns-constants.py" \
 cp "$REPO_ROOT/third_party/node-core/process-state.h" "$SRC_DIR/js/src/shell/kandelo-node-process-state.h"
 cp "$REPO_ROOT/third_party/node-core/os-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-os-operations.h"
 cp "$REPO_ROOT/third_party/node-core/default-locale.h" "$SRC_DIR/js/src/shell/kandelo-node-default-locale.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-sea.py" --check
+cp "$REPO_ROOT/third_party/node-core/sea-image-profile.h" "$SRC_DIR/js/src/shell/kandelo-node-sea-image-profile.h"
+mkdir -p "$SRC_DIR/third_party/kandelo-node/postject"
+cp "$REPO_ROOT/third_party/node-core/upstream/sea/deps/postject/postject-api.h" "$SRC_DIR/third_party/kandelo-node/postject/postject-api.h"
+cp "$REPO_ROOT/third_party/node-core/upstream/sea/deps/postject/LICENSE" "$SRC_DIR/third_party/kandelo-node/postject/LICENSE"
 cp "$REPO_ROOT/third_party/node-core/terminal-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-terminal-operations.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-dotenv.py" --check
 cp "$REPO_ROOT/third_party/node-core/dotenv-parser.h" "$SRC_DIR/js/src/shell/kandelo-node-dotenv-parser.h"

@@ -90022,6 +90022,124 @@ exports.emitMessage = function(data, ports, type) {
         drain(port) { while (receive(port, true, true) !== symbols.no_message_symbol) {} } };
 }
 
+// Ordinary-image public SEA behavior, gated by actual compiled image bytes.
+// No JS/argv flag, asset table or native-format resource lookup is fabricated.
+function _createNodeSeaPlatform(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const binding = platform.native.seaBinding();
+    // A marked image needs real resource/startup ownership before this module
+    // can serve it. Never turn unsupported format lookup into missing assets.
+    if (binding.isSea())
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('SEA resource and startup profile');
+    const module = { exports: {} };
+    function internalBinding(name) {
+        if (name === 'sea') return binding;
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('SEA binding ' + name);
+    }
+    function require(name) {
+        if (name === 'internal/encoding') return { TextDecoder: platform.TextDecoder };
+        if (name === 'internal/blob') return { Blob: platform.Blob };
+        if (name === 'internal/validators') return platform.values.validators;
+        if (name === 'internal/errors') return platform.values.errors;
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('SEA dependency ' + name);
+    }
+    (function(module, exports, require, primordials, internalBinding) {
+        'use strict';
+const {
+  ArrayBufferPrototypeSlice,
+} = primordials;
+
+const { isSea, getAsset: getAssetInternal, getAssetKeys: getAssetKeysInternal } = internalBinding('sea');
+const { TextDecoder } = require('internal/encoding');
+const { validateString } = require('internal/validators');
+const {
+  ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION,
+  ERR_SINGLE_EXECUTABLE_APPLICATION_ASSET_NOT_FOUND,
+} = require('internal/errors').codes;
+const { Blob } = require('internal/blob');
+
+/**
+ * Look for the asset in the injected SEA blob using the key. If
+ * no matching asset is found an error is thrown. The returned
+ * ArrayBuffer should not be mutated or otherwise the process
+ * can crash due to access violation.
+ * @param {string} key
+ * @returns {ArrayBuffer}
+ */
+function getRawAsset(key) {
+  validateString(key, 'key');
+
+  if (!isSea()) {
+    throw new ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION();
+  }
+
+  const asset = getAssetInternal(key);
+  if (asset === undefined) {
+    throw new ERR_SINGLE_EXECUTABLE_APPLICATION_ASSET_NOT_FOUND(key);
+  }
+  return asset;
+}
+
+/**
+ * Look for the asset in the injected SEA blob using the key. If the
+ * encoding is specified, return a string decoded from it by TextDecoder,
+ * otherwise return *a copy* of the original data in an ArrayBuffer. If
+ * no matching asset is found an error is thrown.
+ * @param {string} key
+ * @param {string|undefined} encoding
+ * @returns {string|ArrayBuffer}
+ */
+function getAsset(key, encoding) {
+  if (encoding !== undefined) {
+    validateString(encoding, 'encoding');
+  }
+  const asset = getRawAsset(key);
+  if (encoding === undefined) {
+    return ArrayBufferPrototypeSlice(asset);
+  }
+  const decoder = new TextDecoder(encoding);
+  return decoder.decode(asset);
+}
+
+/**
+ * Look for the asset in the injected SEA blob using the key. If
+ * no matching asset is found an error is thrown. The data is returned
+ * in a Blob. If no matching asset is found an error is thrown.
+ * @param {string} key
+ * @param {ConstructorParameters<Blob>[1]} [options]
+ * @returns {Blob}
+ */
+function getAssetAsBlob(key, options) {
+  const asset = getRawAsset(key);
+  return new Blob([asset], options);
+}
+
+/**
+ * Returns an array of all the keys of assets embedded into the
+ * single-executable application.
+ * @returns {string[]}
+ */
+function getAssetKeys() {
+  if (!isSea()) {
+    throw new ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION();
+  }
+
+  return getAssetKeysInternal() || [];
+}
+
+module.exports = {
+  isSea,
+  getAsset,
+  getRawAsset,
+  getAssetAsBlob,
+  getAssetKeys,
+};
+
+    })(module, module.exports, require, primordials, internalBinding);
+    return module.exports;
+}
+
 // Actual pinned test tree/harness, mocks and reporters over the shared process,
 // async, stream and caller-location owners. Discovery/isolation/coverage remain
 // separate owners; no successful runner stream is fabricated for missing work.

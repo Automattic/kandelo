@@ -554,6 +554,7 @@
         moduleSyntax(operation, source, filename) { return native.moduleSyntax(operation, source, filename); },
         httpParser(...args) { return native.httpParser(...args); },
         wasiConstructor() { return native.wasiConstructor(); },
+        seaBinding() { return native.seaBinding(); },
         evalScriptAsFunction(source, filename, firstLine = 1) {
             if (typeof native.evalScriptAsFunction === 'function') {
                 return native.evalScriptAsFunction(source, filename, firstLine);

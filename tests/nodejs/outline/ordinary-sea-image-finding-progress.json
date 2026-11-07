@@ -1,0 +1,95 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-004"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/native-integration.md": [
+        "NI-013"
+      ]
+    },
+    "relatedFamilies": [
+      "native-integration",
+      "processes",
+      "loading",
+      "engine"
+    ],
+    "scope": "Partial ordinary executable-image identity/public SEA behavior; positive packaging/resources/startup/format and qualified questions remain open"
+  },
+  "sourceImplemented": [
+    "Exact pinned Node image sentinel/IsSingleExecutable and byte-identical Postject header at the real staged third-party boundary",
+    "Native binding reads actual compiled image fuse, not filename/argv0/execPath/env/outerhost metadata or a fixed JS value",
+    "Entire unchanged pinned public lib/sea.js consumes actual candidate validation/error algorithms with ordinary-image error/admission ordering",
+    "Marked-image activation visibly fails the actual unimplemented resource/startup-profile admission; no unsupported resource finder or fake assets used",
+    "Paired shared bootstrap/engine registration, declared normal inputs/staging, exact selected patch replay and retained real controls"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-sea202-source-r1/report.json",
+    "sha256": "7a19d5f2a06b1bdf7fc1b4a887c3506e767f984b35f7a401ad42302018f46e0c",
+    "guardedInputs": 875,
+    "scope": "Actual ordinary compiled-image fuse identity and unchanged public API algorithms, no positiveSEA admission or guest conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-sea202-affected-r1.json",
+    "sha256": "c60bc9ee7b78a2734dd13d755d0ba72fbd7097eadd66f38ddda74c9523dfd25a",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-sea202-source-r1/report.json",
+    "sha256": "7a19d5f2a06b1bdf7fc1b4a887c3506e767f984b35f7a401ad42302018f46e0c",
+    "ordinarySEAGroupCount": 9,
+    "unchangedUpstreamFilesPerSubject": 2,
+    "nativeAndCandidateFileProcesses": 4,
+    "reusedNativeComponent": {
+      "path": ".context/sea-image-owner-agent/component-r2/component.node",
+      "sha256": "0f621087a68dd2eee560a96af2da7c4e7ea08357c07323119ea9002069c34816"
+    },
+    "newCompilerAttempts": 0,
+    "previousHelperAttemptsIntegrated": 2,
+    "previousHelperFailuresIntegrated": 1,
+    "unchangedStyleCheckerPassed": true,
+    "positiveSEAImplemented": false,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Current candidate public algorithms over exact reused compiled native fuse detector and explicit native dependencies; not production JSAPI/positiveSEA/guest conformance."
+  },
+  "sealedEvidence": {
+    "report": ".context/sea-image-owner-agent/report.json",
+    "sha256": "3d180dc0db289ed176349b914e8d660e33629c26ab4fbaca6fc3f6505140838f",
+    "reusedEvidence": true,
+    "scope": "Immutable ordinary SEA image detector/public algorithms,9groups,2unchanged files eachsubject, actual native compiler input identities. Two helper attempts/one fixture failure integrated once; no production JSAPI/positiveSEA/guest proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/sea-image-owner-agent/compile-r1.stderr",
+      "sha256": "1c23bd7281d8d24b62536032906f519eba19ffe1cdf02796ab258d03eacb571e",
+      "scope": "Initial native component fixture used unavailable Context::GetIsolate; corrected to genuine Isolate::GetCurrent. Real native compile failure retained, no production/runtime defect inferred."
+    },
+    {
+      "report": ".context/sea-image-owner-agent/report.json",
+      "sha256": "3d180dc0db289ed176349b914e8d660e33629c26ab4fbaca6fc3f6505140838f",
+      "scope": "Initial guessed WASI registration spelling failed source setup before tests; corrected canonical spelling. Full positiveSEA/format/resource/startup and guest paths remain implementation gaps, no excluded/pass claims."
+    }
+  ],
+  "remaining": [
+    "real resource/startup positive profile",
+    "versioned portable/native/Wasm format/build/injection decision and implementation",
+    "assets/raw lifetime/copies/decoding/Blob/VFS/ZIP/module/startup/worker ownership",
+    "full config/CLI/execArgv/extensions/mainFormat/snapshot/cache behavior",
+    "guest realm/errors/loaded-image/GC/exit/fault evidence and four-host conformance"
+  ],
+  "at": "2026-11-07T09:26:56.156644+00:00",
+  "recipeRevision": 202,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

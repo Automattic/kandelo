@@ -6996,3 +6996,7 @@ The normal selected199engine build reached native compilation and failed. Source
 ### Captured terminal reads retain their native callback resource
 
 Source201 gives captured terminal I/O leases actual async IDs, trigger/frame ownership and once-only retirement. Read readiness retains its real lease and callback, unlinks before JavaScript reentry and enters the shared native callback/recovery scope. The fd-readable adapter consumes native start/stop/ref operations without manufacturing an extra read Promise. Mode-only leases remain separate. Public tty constructors, shared Socket/StreamBase adoption, WriteWrap and precise failed-init/close ordering remain incomplete. Focused PTY controls use genuine native dependencies; new guest JSAPI is uncompiled and all-four-host behavior is unvalidated.
+
+### SEA identity belongs to its actual compiled executable image
+
+Source202 consumes the pinned Node/Postject compiled-image fuse detector and unchanged public sea.js algorithms. The detector reads actual image data rather than argv0, process.execPath, outer host state or a JavaScript capability flag. Ordinary asset calls use real candidate validators/errors and retain their prescribed admission order. Marked-image module activation fails explicitly while resource/startup ownership is unimplemented; the unsupported resource finder is not used as a Wasm asset provider. Positive SEA packaging/format/injection/assets/VFS/startup and guest execution remain gaps. The guest binding and normal paired registration are source-only and uncompiled.
