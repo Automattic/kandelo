@@ -123,6 +123,61 @@ to discuss before invasive work; do not conceal this boundary in a demo
 patch. Generic recursion instrumentation would address a different issue
 and cannot repair this source-level pointer representation mismatch.
 
+### PHP upstream-candidate evidence — 2026-11-06
+
+The maintainer's performance condition is not established. The iterative
+CFG patch remains experimental in this draft; these results do not approve
+its acceptance or promote the candidate preview.
+
+The Kandelo Node optimizer run (`cf91`, exit 1, 1m03s) inventories all 136
+upstream cases: 12 pass, 78 are classified unsupported and 46 fail. Every
+failure reports the existing requirement for file-cache-only OPcache;
+the INI-only activation cases bypass the harness's preflight classification.
+The 12 passes alone do not establish optimizer coverage. Raw results and
+nonpassing evidence remain in `.context/php-cfg-upstream-zRfGXu/`. No
+expectation, PHP guard or SHM limitation was weakened to make this green.
+
+Two native PHP 8.5.12 NTS builds use the same LLVM 21.1.7, configuration and
+verified source, differing only by the CFG patch (`6070`, 6m34s). The normal
+native `zend_test` extension was built privately to supply one initially
+missing test prerequisite; the CLI binary hashes stayed unchanged. Both
+native optimizer suites run with OPcache enabled and finish with 135
+passes, the same one upstream XFAIL (`verify_return_type.phpt`), no skips
+and no unexpected failures. The original baseline run without that
+extension is retained separately. This is native regression evidence,
+not Kandelo's missing SHM semantics or a complete PHP conformance claim.
+
+Native compilation timings (`977a`, 10s) use five alternating
+baseline/candidate pairs on Darwin 27.2 arm64, fresh PHP processes, the
+same optimizer mask `0x7ffebfff`, disabled JIT in both builds, and no
+concurrent builds/tests from this workspace. One warmup per side precedes
+timing. Every input is compiled and cached. WordPress's mutually exclusive
+declarations require two fixed identical 748-file batches; no file is
+excluded. Native WordPress deprecation diagnostics are retained and must
+match on both sides. Earlier unbatched/deprecation-parser harness failures
+(`e783`, `0802`) precede valid timing and remain recorded.
+
+| Native compilation workload | Original median (range), ms | Iterative median (range), ms | Median change |
+|---|---:|---:|---:|
+| WordPress 7.0, all 1,496 PHP files | 392.23 (391.41–406.05) | 404.28 (390.83–427.67) | +3.07% |
+| 10,000 small four-branch functions | 64.65 (62.86–66.60) | 63.81 (62.22–72.04) | −1.30% |
+| 64 functions with 768 branches each | 66.76 (64.77–68.65) | 65.85 (64.53–67.02) | −1.37% |
+
+These overlapping ranges do not establish a speed improvement or a
+statistically significant regression. Rounded PHP allocator peaks and
+OPcache storage sizes match in each workload; that does not show zero
+extra allocations or equal physical footprint. The patch still allocates
+eight bytes per CFG block and frees them for reuse. One native architecture
+cannot establish an all-platform benefit. These are compilation timings,
+not WordPress request latency, Kandelo timings, or a PHP-FPM comparison.
+
+Evidence lives in `.context/php-cfg-native-nPi7F1/`: source/patch provenance,
+both build and PHPT logs, corpus hashes, fixed batch plans, 36 raw workload
+records (six warmups plus 30 timed records), and `benchmark-summary.json`.
+Native CLI hashes are `7009c08b3869f9bf` (original) and
+`dab823ad4eb91d38` (candidate); patch SHA-256 is
+`cf25f68113697d69d4354bb5b7aaac22a1396e855617de920c8eed96cb7452c2`.
+
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55 and main `21cfba152` (last fetched November 5). The Go consumer
 recipes pin `5834adc306dddf6784c20e402deeabf643ad9c37`. Go's collector and
