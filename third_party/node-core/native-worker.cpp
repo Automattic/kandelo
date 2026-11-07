@@ -1,9 +1,13 @@
 /* Actual per-Worker thread/context/packet lifetime. Native shared owners contain
  * no parent JS roots. Child bootstrap and per-owner join complete before exit.
  */
+#include "kandelo-node-worker-startup-owner.h"
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <map>
 #include <mutex>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -12,27 +16,37 @@ struct KandeloWorkerControl {
   uint64_t id;
   uint32_t gcBudget;
   std::mutex mutex;
+  kandelo::worker::StartupGate<KandeloPortPacketHandle> startup;
   JSContext* child = nullptr;
   std::atomic<bool> stopping{false}, ready{false}, finished{false};
   bool referenced = true, joined = false, abandoned = false;
   int exitCode = 1;
   const char* failure = nullptr;
   unsigned secondaryErrors = 0;
-  KandeloPortPacketHandle bootstrap, input, error;
+  KandeloPortPacketHandle error;
   KandeloPortEndpointOwner parentPort, childPort;
   js::UniquePtr<js::Thread> thread;
   KandeloWorkerControl(JSRuntime* runtime, uint64_t identity, uint32_t budget)
       : parentRuntime(runtime), id(identity), gcBudget(budget) {}
   void Stop() {
     stopping.store(true);
-    std::lock_guard<std::mutex> lock(mutex);
-    if (child) JS_RequestInterruptCallback(child);
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (child) JS_RequestInterruptCallback(child);
+    }
+    // A real child can be alive with no LOAD_SCRIPT packet. Wake that native
+    // publication gate as well as interrupting an executing JS context.
+    startup.Stop();
   }
   void Join() {
     if (!joined && thread) { thread->join(); joined = true; thread.reset(); }
   }
   void RetireTransport() noexcept {
-    parentPort.reset(); childPort.reset(); bootstrap.reset(); input.reset(); error.reset();
+    parentPort.reset(); childPort.reset();
+    startup.Clear([](auto& packet) {
+      if (packet) { packet->consumed.store(true); packet->ClearContent(); }
+    });
+    error.reset();
   }
 };
 using KandeloWorkerOwner = std::shared_ptr<KandeloWorkerControl>;
@@ -53,7 +67,11 @@ static void KandeloCaptureWorkerException(JSContext* cx) {
   try {
     auto packet = KandeloNewPortPacket();
     if (!packet) { owner->failure = "Worker error ownership was retired"; return; }
-    if (packet->content->data.write(cx, error, UndefinedHandleValue, KandeloMessageClonePolicy())) {
+    KandeloMessageWriteOutcome outcome(cx);
+    // The existing worker-error fallback owns unsuccessful serialization;
+    // sender exception roots must never be retained in a cross-thread packet.
+    if (KandeloWriteMessageData(cx, packet.get(), error, UndefinedHandleValue, outcome) &&
+        !outcome.noResult && !outcome.hasDeferred) {
       packet->content->AccountMemory(); packet->AdoptMemory(KandeloNativeMemoryOwner(cx));
       KandeloFlushNativeMemory(cx); owner->error = std::move(packet);
     }
@@ -115,13 +133,27 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
   if (!strcmp(operation.get(), "environment") || !strcmp(operation.get(), "data")) {
     if (!kandeloCurrentWorker) { args.rval().setNull(); return true; }
     const bool bootstrap = !strcmp(operation.get(), "environment");
-    auto input = bootstrap ? std::move(kandeloCurrentWorker->bootstrap) : std::move(kandeloCurrentWorker->input);
-    if (!input) { JS_ReportErrorASCII(cx, "Worker environment already consumed"); return false; }
+    KandeloPortPacketHandle input;
+    auto& owner = kandeloCurrentWorker;
+    using Startup = kandelo::worker::StartupGate<KandeloPortPacketHandle>;
+    const auto read = owner->startup.Take(bootstrap, &input, [&] { return js::CheckForInterrupt(cx); });
+    if (read == Startup::Read::Interrupted) return false;
+    if (read == Startup::Read::Stopped) {
+      if (!KandeloWorkerInterrupt(cx)) return false;
+      JS_ReportErrorASCII(cx, "Worker startup was retired"); return false;
+    }
+    if (read == Startup::Read::Repeated) {
+      JS_ReportErrorASCII(cx, "Worker startup slot already consumed"); return false;
+    }
+    if (!input || input->noResult || !input->content) {
+      JS_ReportErrorASCII(cx, "Worker startup material is unavailable"); return false;
+    }
     if (input->consumed.exchange(true)) return cx->reportKandeloCloneError("Worker input already consumed");
     input->AdoptMemory(KandeloNativeMemoryOwner(cx));
     auto clear = mozilla::MakeScopeExit([&] { input->ClearContent(); KandeloFlushNativeMemory(cx); });
     RootedValue config(cx);
-    if (!KandeloReadMessage(cx, input->content.get(), &config) || !config.isObject()) return false;
+    if (!KandeloReadMessage(cx, input->content.get(), &config)) return false;
+    if (!config.isObject()) { JS_ReportErrorASCII(cx, "Worker startup record is not an object"); return false; }
     if (!bootstrap) { args.rval().set(config); return true; }
     RootedObject object(cx, &config.toObject());
     RootedValue port(cx);
@@ -140,18 +172,48 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
     auto packet = KandeloPortPacketOwner(cx, args.get(1));
     auto bootstrap = KandeloPortPacketOwner(cx, args.get(2));
     if (!packet || !bootstrap) return false;
-    if (packet->enqueued.exchange(true) || packet->consumed.load())
-      return cx->reportKandeloCloneError("Worker input already published or consumed");
-    auto releaseInputBox = mozilla::MakeScopeExit([&] { KandeloReleasePortPacketBox(args.get(1)); });
-    if (bootstrap->enqueued.exchange(true) || bootstrap->consumed.load())
-      return cx->reportKandeloCloneError("Worker bootstrap already published or consumed");
-    auto releaseBootstrapBox = mozilla::MakeScopeExit([&] { KandeloReleasePortPacketBox(args.get(2)); });
-    auto owner = std::make_shared<KandeloWorkerControl>(JS_GetParentRuntime(cx), kandeloWorkerNextId.fetch_add(1), JS_GetGCParameter(cx, JSGC_MAX_BYTES));
-    owner->input = std::move(packet);
-    owner->bootstrap = std::move(bootstrap);
-    owner->input->ReleaseMemory(); owner->bootstrap->ReleaseMemory();
+    // Admit both real source-local boxes completely before changing state or
+    // consuming saved exceptions. No JS call occurs between this and retirement.
+    if (packet.get() == bootstrap.get() || packet->enqueued.load() || packet->consumed.load() ||
+        bootstrap->enqueued.load() || bootstrap->consumed.load())
+      return cx->reportKandeloCloneError("Worker startup already published or consumed");
+    if ((!packet->noResult && !packet->content) || (!bootstrap->noResult && !bootstrap->content))
+      return cx->reportKandeloCloneError("Worker startup material is unavailable");
+    KandeloMessageCallerOutcome outcome(cx), metadataOutcome(cx);
+    outcome.Take(args.get(1)); metadataOutcome.Take(args.get(2));
+    KandeloWorkerOwner owner;
+    bool launched = false;
+    auto releaseBoxes = mozilla::MakeScopeExit([&] {
+      if (!launched && owner) owner->RetireTransport();
+      if (!launched) {
+        if (packet) { packet->consumed.store(true); packet->ClearContent(); }
+        if (bootstrap) { bootstrap->consumed.store(true); bootstrap->ClearContent(); }
+      }
+      KandeloReleasePortPacketBox(args.get(1)); KandeloReleasePortPacketBox(args.get(2));
+    });
+    // Native env/CLI metadata contains no user host graph; reject neither a
+    // missing LOAD nor its valid undefined outcome as fabricated default data.
+    if (metadataOutcome.deferred) return metadataOutcome.Finish();
+    if (outcome.deferred) return outcome.Finish();
+    owner = std::make_shared<KandeloWorkerControl>(JS_GetParentRuntime(cx), kandeloWorkerNextId.fetch_add(1), JS_GetGCParameter(cx, JSGC_MAX_BYTES));
+    const bool dropped = packet->noResult || bootstrap->noResult;
+    if (packet->noResult) { packet->consumed.store(true); packet->ClearContent(); packet.reset(); }
+    if (bootstrap->noResult) {
+      bootstrap->consumed.store(true); bootstrap->ClearContent(); bootstrap.reset();
+      // Defensive metadata admission: no null packet content enters a reader.
+      // Publish neither slot when actual early metadata was not produced.
+      if (packet) { packet->consumed.store(true); packet->ClearContent(); packet.reset(); }
+    }
+    if (packet) { packet->ReleaseMemory(); packet->enqueued.store(true); }
+    if (bootstrap) { bootstrap->ReleaseMemory(); bootstrap->enqueued.store(true); }
+    if (!owner->startup.Publish(std::move(bootstrap), std::move(packet))) {
+      JS_ReportErrorASCII(cx, "Worker startup publication was retired"); return false;
+    }
     KandeloFlushNativeMemory(cx);
     auto pair = KandeloPortEndpoint::Pair(); owner->parentPort = pair.first; owner->childPort = pair.second;
+    // The startup message also owns its public child endpoint. If no load was
+    // published, retire that peer while the private LOAD gate stays pending.
+    if (dropped) owner->childPort->Abandon();
     // Public Worker ref state owns liveness. Its private parent port never
     // independently keeps an unreferenced Worker alive in the parent loop.
     owner->parentPort->Ref(false); owner->childPort->Ref(false);
@@ -172,7 +234,7 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
       children.pop_back(); owner->thread.reset();
       JS_ReportErrorASCII(cx, "Could not start guest Worker thread"); return false;
     }
-    args.rval().setObject(*result); return true;
+    launched = true; args.rval().setObject(*result); return true;
   }
   auto* handle = KandeloWorkerGet(cx, args.get(1)); if (!handle) return false;
   auto owner = handle->owner;
@@ -219,5 +281,8 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
 static bool KandeloNativeWorker(JSContext* cx, unsigned argc, Value* vp) {
   try { return KandeloWorkerDispatch(cx, argc, vp); }
   catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
+  catch (const std::system_error& error) {
+    JS_ReportErrorASCII(cx, "Worker native wait failed: %s", error.what()); return false;
+  }
 }
 }  // namespace

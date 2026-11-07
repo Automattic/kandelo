@@ -109340,12 +109340,14 @@ module.exports = {
         message => new (platform.getDOMException())(message, 'DataCloneError'),
         (object, transfer = false) => {
             const method = transfer ? symbols.messaging_transfer_symbol : symbols.messaging_clone_symbol;
-            const result = ReflectApply(object[method], object, []);
-            // Node gets data before converting deserializeInfo to a string.
-            // Keep these reads in that order, even for accessor properties.
+            const callback = object[method];
+            if (typeof callback !== 'function') return undefined;
+            const result = ReflectApply(callback, object, []);
+            if (result === null || (typeof result !== 'object' && typeof result !== 'function')) return undefined;
+            // Read data then info here; native write owns UTF-8 conversion and
+            // the resulting packet/drop/deferred-error transaction.
             const data = result.data;
-            const info = `${result.deserializeInfo}`;
-            return [info, data];
+            return [result.deserializeInfo, data];
         },
         createDeserializer,
         (object, data) => {
@@ -110985,10 +110987,29 @@ function _createNodeWorkerPlatform(platform) {
     'use strict';
     const P = _createNodePrimordials();
     const { SafeMap, SafeSet, SafeWeakMap, ObjectAssign, ObjectEntries, ObjectCreate, ArrayPrototypeMap,
-        ObjectKeys, ObjectDefineProperty, ObjectGetOwnPropertyNames, Promise, ReflectApply, String, SymbolFor } = P;
+        ObjectKeys, ObjectDefineProperty, ObjectGetOwnPropertyNames, ObjectFreeze, ArrayIsArray, ArrayPrototypeSlice, Promise, ReflectApply, String, SymbolFor } = P;
     const { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_WORKER_PATH } = platform.values.errors.codes;
     const { validateArray, validateString } = platform.values.validators;
     const environment = platform.environment;
+    // Factory initialization precedes user LOAD/main execution. Capture only
+    // the actual native CLI data schema now; later public argv/prototype
+    // mutation cannot turn early metadata into a second user host graph.
+    const startupCLI = ObjectCreate(null);
+    for (const key of ObjectGetOwnPropertyNames(platform.cliOptions || {})) {
+        if (key === 'evalSource') continue;
+        const value = platform.cliOptions[key];
+        if (ArrayIsArray(value)) {
+            const copy = ArrayPrototypeSlice(value);
+            for (const item of copy) if (typeof item !== 'string')
+                throw new platform.values.errors.codes.ERR_INVALID_STATE('Native Worker CLI array is not string data');
+            startupCLI[key] = ObjectFreeze(copy);
+        } else {
+            if (value !== null && typeof value === 'object' || typeof value === 'function' || typeof value === 'symbol')
+                throw new platform.values.errors.codes.ERR_INVALID_STATE('Native Worker CLI metadata is not primitive data');
+            startupCLI[key] = value;
+        }
+    }
+    ObjectFreeze(startupCLI);
     const workerStates = new SafeWeakMap(), live = new SafeSet();
     let environmentData = new SafeMap();
     const SHARE_ENV = SymbolFor('nodejs.worker_threads.SHARE_ENV');
@@ -111040,14 +111061,16 @@ function _createNodeWorkerPlatform(platform) {
                 throw new ERR_INVALID_ARG_TYPE('options.env', ['object', 'undefined', 'null', 'worker_threads.SHARE_ENV'], options.env);
             const env = ObjectCreate(null);
             for (const [key, value] of ObjectEntries(options.env == null ? platform.process.env : options.env)) env[key] = `${value}`;
-            const cliOptions = ObjectCreate(null);
-            for (const key of ObjectGetOwnPropertyNames(platform.cliOptions || {})) cliOptions[key] = platform.cliOptions[key];
-            cliOptions.evalSource = doEval ? source : '';
+            const cliOptions = startupCLI;
             // The engine's bootstrap consumes an array-like startup value;
             // undefined means no user suffix, represented by an empty list.
-            const config = { source, path, eval: doEval, argv: argv === undefined ? [] : argv, env, cliOptions };
-            const bootstrap = platform.native.serializeMessage(config, []);
-            const serialized = platform.native.serializeMessage({ environmentData, workerData: options.workerData }, options.transferList || []);
+            const bootstrap = platform.native.serializeMessage({ env, cliOptions }, []);
+            // One graph/transfer registry owns all user LOAD values. Target
+            // Finish runs transfer hosts, then argv clones, then data clones;
+            // serializing config separately changes hooks/errors/AB commits.
+            const load = { argv, filename: doEval ? source : path,
+                doEval: doEval ? 'classic' : false, workerData: options.workerData, environmentData };
+            const serialized = platform.native.serializeMessage(load, options.transferList || []);
             const launched = operation('create', serialized, bootstrap);
             let port;
             try {
@@ -111106,7 +111129,11 @@ function _createNodeWorkerPlatform(platform) {
     // public worker_threads assignment/shadowing. This view is never exported.
     const internal = { threadId: api.threadId };
     return { api, internal, dispatch,
-        initializeData(data) { environmentData = new SafeMap(data.environmentData); api.workerData = data.workerData; } };
+        initializeData(data) {
+            const startup = platform.initializeStartup(data);
+            environmentData = new SafeMap(data.environmentData); api.workerData = data.workerData;
+            return startup;
+        } };
 }
 
 // Native ownership is process-shared, while callbacks/promises below are

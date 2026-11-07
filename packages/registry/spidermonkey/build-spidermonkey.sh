@@ -354,6 +354,7 @@ PYDNS
 python3 "$REPO_ROOT/third_party/node-core/generate-dns-constants.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-dns-constants.h"
 cp "$REPO_ROOT/third_party/node-core/process-state.h" "$SRC_DIR/js/src/shell/kandelo-node-process-state.h"
+cp "$REPO_ROOT/third_party/node-core/worker-startup-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-worker-startup-owner.h"
 cp "$REPO_ROOT/third_party/node-core/os-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-os-operations.h"
 cp "$REPO_ROOT/third_party/node-core/default-locale.h" "$SRC_DIR/js/src/shell/kandelo-node-default-locale.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-sea.py" --check

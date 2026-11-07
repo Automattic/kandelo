@@ -1,5 +1,7 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0153-node-late-detached-arraybuffer-owner.patch",
+  "packages/registry/spidermonkey/patches/0152-node-host-outcome-publication.patch",
   "packages/registry/spidermonkey/patches/0151-node-registered-host-sender.patch",
   "packages/registry/spidermonkey/patches/0150-node-host-receiver-order.patch",
   "packages/registry/spidermonkey/patches/0149-node-tls-plaintext-owner.patch",
@@ -193,6 +195,7 @@ inputs = [
   "third_party/node-core/upstream/testing",
   "third_party/node-core/worker-platform-adapter.js",
   "third_party/node-core/native-worker.cpp",
+  "third_party/node-core/worker-startup-owner.h",
   "third_party/node-core/native-locks.cpp",
   "third_party/node-core/lock-manager.h",
   "third_party/node-core/provider-rotation.h",
@@ -717,4 +720,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 206
+revision = 207

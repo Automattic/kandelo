@@ -12,6 +12,9 @@ struct KandeloHistogramCloneData {
   // Logical registered-JS moves also forbid repeated/broadcast reads even
   // when the engine native-transfer map is empty. Set before publication.
   uint32_t registeredTransfers = 0;
+  // Borrowed write transaction only; cleared on every path before publication.
+  // Sender exception roots belong to that local transaction/opaque JS box.
+  void* writingOutcome = nullptr;
   // Borrowed only during the synchronous write/read operation. These never
   // survive publication of a packet or contain a cross-thread JS reference.
   kandelo::ports::transit::Node* graphOwner = nullptr;

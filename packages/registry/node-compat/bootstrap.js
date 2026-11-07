@@ -10,7 +10,7 @@ import * as os from 'qjs:os';
 import * as _nodeNative from 'qjs:node';
 
 const _nodeMonotonicStart = os.timerNow();
-const _nodeParsedEvalSource = _nodeNative.cliOptions?.evalSource;
+const _nodeParsedEvalSource = _nodeNative.workerEnvironment ? undefined : _nodeNative.cliOptions?.evalSource;
 const _nodeDispose = Symbol.dispose;
 let _nodeEventPlatform;
 let _nodeValues;
@@ -5127,6 +5127,7 @@ function _getNodeTestingPlatform() {
 
 const _nodeWorkerPlatform = _createNodeWorkerPlatform({
     native: _nodeNative, environment: _nodeNative.workerEnvironment, cliOptions: _nodeNative.cliOptions,
+    initializeStartup: data => _initializeNodeWorkerStartup(data),
     process, EventEmitter: events.EventEmitter, values: _nodeValues, ports: _nodePortsPlatform,
     path, url, isURL: value => util.types.isURL ? util.types.isURL(value) : value instanceof _nodeWebPlatform.URL,
 });
@@ -6187,7 +6188,7 @@ if (typeof globalThis.Intl === 'undefined') {
 
 // __dirname and __filename for the main module (set when running a file)
 const _mainScriptArg = _nodeNative.mainScriptPath || '';
-const _mainScriptPath = _mainScriptArg ? _moduleRealpath(_mainScriptArg) : '';
+let _mainScriptPath = _mainScriptArg ? _moduleRealpath(_mainScriptArg) : '';
 globalThis.__filename = _mainScriptPath;
 globalThis.__dirname = _mainScriptPath ? path.dirname(_mainScriptPath) : '';
 
@@ -6446,12 +6447,33 @@ function _installNodeGlobalScope() {
 _installNodeGlobalScope();
 
 
+let _nodeWorkerStartupInitialized = false;
+function _initializeNodeWorkerStartup(data) {
+    if (!_nodeNative.workerEnvironment || _nodeWorkerStartupInitialized)
+        throw new _nodeValues.errors.codes.ERR_INVALID_STATE('Worker startup was already initialized');
+    _nodeWorkerStartupInitialized = true;
+    const P = _createNodePrimordials();
+    // Apply the actual decoded array-like value, including Array species
+    // results. No iterator conversion/default argv substitutes for LOAD data.
+    if (data.argv !== undefined) P.ArrayPrototypePushApply(process.argv, data.argv);
+    if (data.doEval === 'classic') {
+        P.ArrayPrototypeSplice(process.argv, 1, 0, '[worker eval]');
+        return { source: data.filename, eval: true };
+    }
+    _mainScriptPath = _moduleRealpath(data.filename);
+    _nodeNative.mainScriptPath = _mainScriptPath;
+    P.ArrayPrototypeSplice(process.argv, 1, 0, data.filename);
+    // File entry receives lexical wrapper bindings. Initialization before
+    // LOAD deliberately used the real pre-entry require/global scope.
+    for (const name of ['require', 'module', 'exports', '__filename', '__dirname'])
+        delete globalThis[name];
+    return { eval: false };
+}
 if (_nodeNative.workerEnvironment) {
-    // Host deserializers depend on the actual builtin/Blob/File/stream owners,
-    // so user data is decoded only after those owners have been initialized.
-    _nodeWorkerPlatform.initializeData(_nodeNative.worker('data'));
+    // Host deserializers depend on actual builtin/Blob/File/stream owners.
+    // All user startup values are decoded once through that same LOAD graph.
+    const startup = _nodeWorkerPlatform.initializeData(_nodeNative.worker('data'));
     _nodeNative.worker('ready');
-    if (_nodeNative.workerEnvironment.eval) {
-        _nodeNative.evalScriptAsFunction(_nodeNative.workerEnvironment.source, '[worker eval]', 1);
-    } else _runMainScriptIfPresent();
+    if (startup.eval) _nodeNative.evalScriptAsFunction(startup.source, '[worker eval]', 1);
+    else _runMainScriptIfPresent();
 } else _runMainScriptIfPresent();

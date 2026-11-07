@@ -5,9 +5,10 @@ registered-JavaScript transfer path in source. Whole-list admission, nested
 registry expansion, graph identities, ArrayBuffer-first detachment, combined
 JS/native endpoint commit and receiver order/finalization use actual owners.
 Production JSAPI is uncompiled/unrun and this is not complete stream/messaging
-compatibility. Incomplete native host types (notably FileHandle) and the exact
-malformed/no-result/deferred-exception outcomes below remain valid failing public
-cases, not accepted boundaries or green unsupported results.
+compatibility. Incomplete native host types (notably FileHandle), full Worker
+startup/termination ordering and all identified runtime failures remain open.
+The source outcome transaction below is a candidate implementation, not passing
+conformance evidence or an accepted exclusion of valid public cases.
 
 Pinned Node26.13.0 `src/node_messaging.cc` validates explicit entries, expands
 NestedTransferables/kTransferList, serializes the main graph, detaches all listed
@@ -51,15 +52,17 @@ Raw SpiderMonkey graphs do not allocate this embedding's order metadata. Ordinar
 transfer-free broadcast creates independent per-reader metadata/root vectors;
 no JS context pointer is installed in shared immutable clone data.
 
-Focused evidence exercises the actual portable HostOrder header: current native/
+The receiver prerequisite's historical focused evidence exercises the actual portable HostOrder header: current native/
 clone order, interleaved descriptor scheduling, invalid kinds/bounds/duplicates/
 missing coverage, actual native slot mismatch, constructor failure, uncommitted
 native failure, late mutation, empty order and allocation-denied phase delivery.
 Deliberate metadata validation/constructor omissions fail the same assertions.
 This does not compile or execute the production JSAPI parser/decoder. Exact
 pinned native Node controls independently establish two valid public mixed/nested
-stream and aborted-signal/ArrayBuffer cases still source-rejected by Kandelo.
-No original public finding is closed or runtime conformance claimed.
+stream and aborted-signal/ArrayBuffer cases source-rejected at that historical
+receiver-only revision. Later sender/outcome source removes that rejection but
+has no compiled guest evidence. No original finding or runtime conformance is
+closed by these portable/reference controls.
 
 ## Sender and native identity ownership
 
@@ -92,34 +95,68 @@ FileHandle movement is still absent and its upstream registration remains
 separately disabled. Histogram/native clone creation order also remains its
 existing distinct callback owner, not newly covered by this transfer schedule.
 
-## Remaining concrete outcome owner
+## Sender outcome and caller ownership
 
-Pinned native controls establish distinct outcomes, not a universal throw:
-missing/nonobject private transfer results detach buffers but structuredClone
-returns undefined and MessagePort drops the packet (a following actual FIFO
-sentinel arrives alone). A throwing deserializeInfo string conversion detaches
-buffers; structuredClone reports the receiver's empty-info module error, while
-postMessage rethrows the original sender error **and** delivers a malformed
-packet that produces receiver messageerror before the FIFO sentinel. The
-candidate hook currently throws/preserves its original exception; these are
-explicit nonpasses, not preferred policy or a justified exclusion.
+Pinned native controls establish distinct outcomes, not a universal throw.
+Missing/nonobject private transfer results detach buffers but structuredClone
+returns undefined and MessagePort drops the packet (an actual FIFO sentinel
+arrives alone). Throwing deserializeInfo conversion detaches buffers and later
+transfer hooks still execute. StructuredClone reports the receiver's empty-info
+module error; postMessage rethrows the sender error and delivers malformed data,
+causing receiver messageerror before its FIFO sentinel. Later ordinary throws
+supersede earlier conversion errors; later conversion throws replace the deferred
+sender error; a later no-result makes structuredClone return undefined while
+postMessage still throws its last deferred sender error and drops the packet.
 
-The required next owner must distinguish successful packet, no-result/drop and
-prepared-packet/deferred-sender-exception states. It must own string conversion,
-original exception stack, publication and caller outcomes; no special-case JS
-catch or fabricated successful value suffices. Sender exception roots must stay
-in the sender context/transaction or opaque local wrapper, never the native
-cross-thread packet. Worker startup requires its actual LOAD_SCRIPT transaction:
-pinned internal/worker.js posts its private/public ports plus data before
-startThread, so no-result can consume/close transferred peers yet still start a
-thread without a load message. Candidate bootstrap/input splitting needs a real
-waiting-for-load/termination owner, not fake undefined workerData. Native immediate
-termination evidence proves only constructor/thread retirement, not absence of
-user startup.
+The source now implements a real local write transaction for these outcomes.
+The JS extraction callback reads data then raw info without coercing; missing or
+nonobject results return no-result to its C++ owner. C++ performs actual ToString
+and UTF-8 normalization, preserving embedded NULs/replacing lone surrogates like
+pinned Utf8Value. A normal pending conversion exception is stolen into a rooted
+sender-local ExceptionStack and the empty descriptor is retained; subsequent
+hooks/payloads continue normally. OOM/uncatchable paths still abort. Later errors
+have their actual owners, not a JS special-case catch or fabricated successful
+undefined message.
 
-Other remaining work: exact JS-host duplicate constructor-name diagnostics;
-full private-hook malformed/result/UTF8/exception policy; native host classes
-beyond endpoints; compile actual C++ glue; unchanged upstream/native controls
-for streams/AbortSignal/backpressure/cancel/abort/close/messageerror, graph
-getters/reentry/GC/OOM/fatal/foreign realms/Worker and every identified artifact
-on all four hosts. No original STR-003/STR-004 finding is closed.
+A failed no-result write retires partial clone/transfer material but retains an
+opaque consume-once caller transaction. A prepared write retains its real packet.
+The opaque box's reserved JS slots hold any sender exception/stack in that same
+context; native packets/queues/worker graphs never contain JS roots or exception
+pointers. Actual post publishes then restores its deferred exception; a no-result
+post dispatches nothing. Actual deserialize owns receiver-error precedence and
+discards deferred state on no-result. Every direct packet writer, including the
+existing worker-error fallback, uses the shared write scope so no borrowed outcome
+pointer survives publication or context teardown. Worker-error serialization
+fallback parity remains a separate gap, not a conformance claim.
+
+## Worker LOAD publication gate
+
+Pinned internal/worker.js posts LOAD_SCRIPT with private/public ports and data
+before startThread. A no-result can retire transferred public peers yet start a
+thread without a load message. Bounded native observation saw no online/message/
+error for two seconds before explicit termination returned1. Another actual
+peer-close control terminated earlier and returned0. Neither deadline nor absence
+of an event is counted passing compatibility or proof of never running.
+
+The source create owner consumes a deferred constructor throw before launching a
+child, retiring all prepared material through existing owners. No-result leaves
+its input unpublished and retires the startup public child peer. The actual
+WorkerControl now owns an interruptible condition-variable LOAD gate: child
+bootstrap initializes genuine builtins, then waits for input or Stop before any
+user source/online event. This is not workerData=undefined. Stop notifies the gate;
+periodic waits are interrupt checkpoints only, never success/timeouts; JS/engine
+interrupt checks run outside the mutex. Ordinary context/port teardown and join
+remain the retirement owners. No JS callback runs under this gate's lock.
+
+Full startup parity is still incomplete: the current bridge creates its public
+pair after user serialization rather than transferring pinned internal/public
+pairs in their exact original order; exact termination races/status, option/
+resource/stdio/profiling semantics and worker error transport remain unresolved.
+The new gate/transaction is uncompiled/unrun and does not close those gaps.
+
+Remaining validation: actual C++ ABI/API/GC/realm/OOM/reentry/abort/fatal paths,
+full malformed results/descriptor UTF-8 and error diagnostics, unchanged upstream
+and native public stream/AbortSignal/backpressure/cancel/abort/close/messageerror/
+Worker controls, native hosts beyond endpoints and identified artifacts on all
+four hosts. Previous immutable nonpasses remain preserved, not relabeled as
+passing or accepted boundaries. No original STR-003/STR-004 finding is closed.

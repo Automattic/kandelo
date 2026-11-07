@@ -47,12 +47,14 @@ function _createNodeClonePlatform(platform) {
         message => new (platform.getDOMException())(message, 'DataCloneError'),
         (object, transfer = false) => {
             const method = transfer ? symbols.messaging_transfer_symbol : symbols.messaging_clone_symbol;
-            const result = ReflectApply(object[method], object, []);
-            // Node gets data before converting deserializeInfo to a string.
-            // Keep these reads in that order, even for accessor properties.
+            const callback = object[method];
+            if (typeof callback !== 'function') return undefined;
+            const result = ReflectApply(callback, object, []);
+            if (result === null || (typeof result !== 'object' && typeof result !== 'function')) return undefined;
+            // Read data then info here; native write owns UTF-8 conversion and
+            // the resulting packet/drop/deferred-error transaction.
             const data = result.data;
-            const info = `${result.deserializeInfo}`;
-            return [info, data];
+            return [result.deserializeInfo, data];
         },
         createDeserializer,
         (object, data) => {

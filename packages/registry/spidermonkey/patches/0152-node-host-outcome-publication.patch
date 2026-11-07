@@ -1,0 +1,87 @@
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -48,4 +48,5 @@
+ #include "js/ArrayBuffer.h"  // JS::{ArrayBufferHasData,DetachArrayBuffer,IsArrayBufferObject,New{,Mapped}ArrayBufferWithContents,ReleaseMappedArrayBufferContents}
+ #include "js/CallAndConstruct.h"  // JS::Call
++#include "js/CharacterEncoding.h"
+ #include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin, JS::TaggedColumnNumberOneOrigin
+ #include "js/Date.h"
+@@ -59,4 +60,5 @@
+ #include "js/ScalarType.h"          // js::Scalar::Type
+ #include "js/SharedArrayBuffer.h"   // JS::IsSharedArrayBufferObject
++#include "js/String.h"
+ #include "js/WeakMap.h"
+ #include "js/Wrapper.h"
+@@ -2861,10 +2863,32 @@
+   RootedValue hook(context(), context()->kandeloCloneSerialize()), result(context());
+   if (!CallKandeloCloneHook(context(), hook, arguments, &result)) return false;
+-  if (!result.isObject()) return context()->reportKandeloCloneError("Invalid host clone payload");
++  if (!result.isObject()) {
++    // Native Node Finish returns no result without inventing an exception when
++    // a private transfer/clone method is absent or returns a primitive.
++    context()->observeKandeloCloneOutcome(callbacks, closure, JSContext::KandeloCloneOutcome::NoResult);
++    return false;
++  }
+   RootedObject record(context(), &result.toObject());
+   RootedValue info(context()), payload(context());
+   if (!JS_GetElement(context(), record, 0, &info) ||
+       !JS_GetElement(context(), record, 1, &payload)) return false;
+-  if (!info.isString()) return context()->reportKandeloCloneError("Invalid host constructor info");
++  RootedString descriptor(context(), ToString<CanGC>(context(), info));
++  if (!descriptor) {
++    // A catchable coercion error can leave prepared data in pinned Node's
++    // Utf8Value/Finish transaction. Its caller owns publication and exception
++    // precedence. Fatal/uncatchable/OOM paths must still abort normally.
++    if (!context()->observeKandeloCloneOutcome(callbacks, closure,
++            JSContext::KandeloCloneOutcome::DeferredError)) return false;
++    descriptor = context()->names().empty_;
++  }
++  // Node stores Utf8Value bytes, including embedded NULs, rather than raw UTF-16.
++  Rooted<JSLinearString*> linear(context(), descriptor->ensureLinear(context()));
++  if (!linear) return false;
++  const size_t length = JS::GetDeflatedUTF8StringLength(linear);
++  JS::UniqueChars encoded(JS_EncodeStringToUTF8(context(), descriptor));
++  if (!encoded) return false;
++  descriptor = JS_NewStringCopyUTF8N(context(), JS::UTF8Chars(encoded.get(), length));
++  if (!descriptor) return false;
++  info.setString(descriptor);
+   return kandeloHostInfo.append(info) && writeValue(payload);
+ }
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -630,4 +630,9 @@
+   using KandeloTransferObserver = bool (*)(JSContext*, const JSStructuredCloneCallbacks*, void*, uint32_t);
+   js::ContextData<KandeloTransferObserver> kandeloTransferObserver_;
++ public:
++  enum class KandeloCloneOutcome { NoResult, DeferredError };
++ private:
++  using KandeloCloneOutcomeObserver = bool (*)(JSContext*, const JSStructuredCloneCallbacks*, void*, KandeloCloneOutcome);
++  js::ContextData<KandeloCloneOutcomeObserver> kandeloCloneOutcomeObserver_;
+
+  public:
+@@ -680,4 +685,9 @@
+     auto observer = kandeloTransferObserver_.ref();
+     return observer ? observer(this, callbacks, closure, count) : reportKandeloCloneError("Registered transfer packet ownership is unavailable");
++  }
++  void setKandeloCloneOutcomeObserver(KandeloCloneOutcomeObserver observer) { kandeloCloneOutcomeObserver_.ref() = observer; }
++  bool observeKandeloCloneOutcome(const JSStructuredCloneCallbacks* callbacks, void* closure, KandeloCloneOutcome outcome) {
++    auto observer = kandeloCloneOutcomeObserver_.ref();
++    return observer ? observer(this, callbacks, closure, outcome) : reportKandeloCloneError("Host clone outcome ownership is unavailable");
+   }
+   double& kandeloAsyncParentId() { return kandeloAsyncParentId_.ref(); }
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -1216,4 +1216,5 @@
+       kandeloNativeHostProbe_(this, nullptr),
+       kandeloTransferObserver_(this, nullptr),
++      kandeloCloneOutcomeObserver_(this, nullptr),
+       unwrappedException_(this),
+       unwrappedExceptionStack_(this),
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3846,4 +3846,5 @@
+   cx->setKandeloNativeHostProbe(KandeloPortIsTransferHost);
+   cx->setKandeloTransferObserver(KandeloPortObserveRegisteredTransfers);
++  cx->setKandeloCloneOutcomeObserver(KandeloPortObserveCloneOutcome);
+   args.rval().setUndefined();
+   return true;

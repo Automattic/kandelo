@@ -732,18 +732,14 @@
         tlsClose(handle) { return native.tlsClose(handle); },
     };
 
-    const entryPath = workerEnvironment ? workerEnvironment.path : (typeof scriptPath === 'string' && scriptPath ? scriptPath : '');
-    const args = workerEnvironment ? workerEnvironment.argv : (typeof scriptArgs !== 'undefined' ? Array.from(scriptArgs) : []);
+    const entryPath = workerEnvironment ? '' : (typeof scriptPath === 'string' && scriptPath ? scriptPath : '');
+    const args = workerEnvironment ? [] : (typeof scriptArgs !== 'undefined' ? Array.from(scriptArgs) : []);
     _nodeNative.mainScriptPath = entryPath;
     _nodeNative.cliOptions = workerEnvironment ? workerEnvironment.cliOptions : (globalThis.__kandeloNodeCliOptions || {});
 
     const argv0 = 'node';
     let execArgv;
-    if (workerEnvironment) {
-        // Pinned main/worker_thread.js inserts the classic eval name and uses
-        // ArrayPrototypePushApply: mapped argv may be a non-iterable array-like
-        // value returned by Array species. No user code has run in this realm.
-        execArgv = workerEnvironment.eval ? ['node', '[worker eval]'] :
-            entryPath ? ['node', entryPath] : ['node'];
-        Reflect.apply(Array.prototype.push, execArgv, args);
-    } else execArgv = entryPath ? ['node', entryPath, ...args] : ['node', ...args];
+    // Native Worker preparation has no user LOAD argv/entry yet. The actual
+    // decoded graph applies them after builtin clone owners initialize.
+    if (workerEnvironment) execArgv = ['node'];
+    else execArgv = entryPath ? ['node', entryPath, ...args] : ['node', ...args];

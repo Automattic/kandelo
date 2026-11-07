@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "67bb29b5075ff504de21eabee61825b1d619f4b83278664aeb06f3fca6b9b8d5",
+    "packages/registry/node-compat/bootstrap.js": "7e0448432312ad8fa286e6d42f2b4f0d0ed609adc7006e7d632382cd7e9e02fc",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
@@ -19,7 +19,7 @@
     "third_party/node-core/buffer-unpooled-adapter.js": "6a56f8b03503e94e2299bfda6b90eaf8225639d5786c455ff47ea0d2a7461272",
     "third_party/node-core/builtin-policy-adapter.js": "eb9fe694745a467f0c8770c60cc4cad0610a558bdc7fc6334399c47edd82d550",
     "third_party/node-core/cipher-platform-adapter.js": "c57ec4209b09e29127902d76d494447181098b8d47ea380d04c89ea7e9ae88b1",
-    "third_party/node-core/clone-platform-adapter.js": "f5f0c1671415be257c1ff1adf1d46676009b8cd5946e9b79a0487fd7f0cc1041",
+    "third_party/node-core/clone-platform-adapter.js": "72dfcf79726ae25da43f0c134ab8df3b5babda51cb6fa05684721257c27d3bdf",
     "third_party/node-core/compression-binding-adapter.js": "3bc33adbddf590f5fe39961e34a30be294ed0e1f2a50ac133336d4475d5385b2",
     "third_party/node-core/console-platform-adapter.js": "1526ef0902131023edbd806983e3c8565155dd20b8a27a803cd2dde6b731ebe0",
     "third_party/node-core/copy-directory-platform-adapter.js": "91810dafa31579407ef421133ea0c3f0f445cb88503a5d3331ceb583abb64713",
@@ -116,7 +116,7 @@
     "third_party/node-core/vm-platform-adapter.js": "a272063884d8438e61cb53e25ddf33dd5abfe47ddc241994dd2a34d0424ea43c",
     "third_party/node-core/warning-platform-adapter.js": "63e20e6db2e5dfc77e1499b08956158a4a74f1d77295bce7cd6509f200f068df",
     "third_party/node-core/wasi-platform-adapter.js": "e8589d5fba307272d8fc21bb8113dbb1d5a31b70d39f571a0bf3fe4461803169",
-    "third_party/node-core/worker-platform-adapter.js": "b88251d2f6a91b5e00bb19d6bca33dbcfdd254fc220262bc824f3a8e09502466",
+    "third_party/node-core/worker-platform-adapter.js": "cc4fea70fadd0858b75e30019410c9525d16320f1df68acc6bd3f620507b664a",
     "third_party/node-core/x509-platform-adapter.js": "41b250f14534f65b0c165999f4ad2325541219924a1c695b4d71e9a559a1c06a",
     "third_party/node-core/upstream/query-codecs/lib/punycode.js": "c5c75d5f31323affefa3595e63b3c50bca8bf7a2766936699e20460398e61717"
   },

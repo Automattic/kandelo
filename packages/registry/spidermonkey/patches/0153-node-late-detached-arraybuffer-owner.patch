@@ -1,0 +1,19 @@
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -2635,4 +2635,14 @@
+         if (arrayBuffer->isDetached()) {
+-          reportDataCloneError(JS_SCERR_TYPED_ARRAY_DETACHED);
+-          return false;
++          if (!nodeOrder) {
++            reportDataCloneError(JS_SCERR_TYPED_ARRAY_DETACHED);
++            return false;
++          }
++          // Admission rejected buffers already detached in the transfer list.
++          // A main-graph getter can subsequently detach this source. Node then
++          // transfers its actual empty backing store, not the allocation that
++          // the reentrant operation already moved elsewhere. Use a fresh fixed
++          // empty owner in the existing table slot, preserving graph identity.
++          RootedObject empty(cx, JS::NewArrayBuffer(cx, 0));
++          if (!empty) return false;
++          arrayBuffer = &empty->as<ArrayBufferObject>();
+         }

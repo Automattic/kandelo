@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source207 adds real clone outcomes and one Worker LOAD graph with native startup packet ownership. Narrow JavaScript/native dependency controls are distinct from uncompiled guest C++ and unestablished four-host conformance. Original transfer nonpasses remain preserved; no finding closes.
+See [source scope](host-transfer-outcome-integration.md).
+
 Source206 integrates normal generic registered-JS sender ownership over205receiver order. Current actual JS callbacks have7matching observations and2explicit differential nonpasses; normal877inputs/style/bootstrap/staging and14package checks pass. Real outcome/Worker LOAD owner is next; no new compiler or guest run.
 See [source scope](registered-host-sender-integration.md).
 

@@ -1,0 +1,119 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/streams.md",
+    "findingIds": [
+      "STR-003",
+      "STR-004"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/family-survey.md": [
+        "R-001"
+      ],
+      "tests/nodejs/audit/worker-contracts.md": [
+        "R-013"
+      ]
+    },
+    "relatedFamilies": [
+      "workers",
+      "streams",
+      "web",
+      "engine",
+      "async"
+    ],
+    "scope": "Partial generic clone outcome/publication and actual Worker startup ownership prerequisite; no full Worker/stream lifecycle or guest closure"
+  },
+  "sourceImplemented": [
+    "Actual private extraction keeps missing/nonfunction/nonobject results absent; data and raw descriptor are read in target order without premature string coercion",
+    "Real C++ ToString/UTF8 and rooted sender-local ExceptionStack transaction preserve deferred sender error without putting roots in cross-thread packet bytes or native owners",
+    "Actual caller consumes prepared data/no-result and owns publication/retirement/receiver-error precedence; source-local opaque box is consumed once",
+    "One user LOAD graph and transfer registry contains argv, filename, doEval, workerData and environmentData in target-relative order; early metadata excludes user argv/entry/source",
+    "Child startup initializer consumes actual decoded array-like argv and real loader entry before ready/user execution; native gate owns once-only packet slots and interruptible absence/Stop",
+    "Actual empty fixed ArrayBuffer ownership fills an outer transfer slot after a reentrant inner detach; original moved bytes remain inner, without weakening admission or non-Node behavior"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-hostoutcome207-source-r1/report.json",
+    "sha256": "7ce3fbaa1098b9484269edcc70c6ea5fcbd85a618900088b16962587cdec930c",
+    "guardedInputs": 878,
+    "scope": "Normal sender-local packet outcome/receiver precedence and Worker startup ownership source. Actual JS extraction only; separately identified frontend/native gate controls. No candidate JSAPI compile/guest/four-host conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-hostoutcome207-affected-r1.json",
+    "sha256": "a66ab9dd990ec148640468ed1687dd80931af5d7e02a2a6d01b132711e1847a5",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-hostoutcome207-source-r1/report.json",
+    "sha256": "7ce3fbaa1098b9484269edcc70c6ea5fcbd85a618900088b16962587cdec930c",
+    "actualJSExtractionCases": 15,
+    "actualWorkerFrontendNativeDependencyCases": 18,
+    "actualIsolatedStartupInitializerCases": 2,
+    "actualNativeStartupGateReused": true,
+    "previousGateHelperCompilesIntegrated": 2,
+    "currentControlExit": 0,
+    "newCompilerAttempts": 0,
+    "unchangedStyleCheckerPassed": true,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "15 actual extraction cases;18 frontend comparisons over native MessagePort stopping before Kandelo create;2 isolated initializer cases;exact-byte native gate artifact reused. New guest JSAPI remains uncompiled; old transfer/publication nonpasses are not reclassified.",
+    "previousCompilerAttemptsIntegrated": 2,
+    "actualWorkerNativeCreateExecuted": false,
+    "workerCorrectionRootSeal": ".context/host-transfer-review-agent/worker-handoff/ROOT-SEAL.json",
+    "workerCorrectionRootSealSha256": "fe25daa49aaa95f75d8e0dda33c32fd45dff5462b62e40045fc61c5bf0ff0594",
+    "originalOutcomeCompilerAttempts": 0,
+    "arrayBufferReferenceCases": 8,
+    "arrayBufferCandidateGuestExecuted": false
+  },
+  "sealedEvidence": {
+    "report": ".context/host-transfer-outcome-agent/handoff/report.json",
+    "sha256": "bbe1d0215816ef58be6bba5d7d710c33dc399a7b941bc73e0133bfb99dd053b8",
+    "reusedEvidence": true,
+    "scope": "Original outcome implementation plus separately sealed adversarial Worker and ArrayBuffer corrections; old wrong two-store startup and proposed phase compensation remain preserved historical source, not current behavior."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-hostsender206-source-r1/controls/actual-js-protocol-vs-native.stdout",
+      "sha256": "03edb8f88c6ae2a3330ecc7b6f2ad9c6a9b7bf717bf4ad7f7d57adc074756dbb",
+      "scope": "Historical206 seven matching observations and two differential nonpasses are preserved; this207 source/component work does not retroactively turn them into guest passes."
+    },
+    {
+      "report": ".context/node26-hostoutcome207-source-r1/integration-before-review-fixes.json",
+      "sha256": "1475528243a93beec8b7e02c487a18da74cac1902b3433ed839395cd736b5683",
+      "scope": "Exact original207 source identities before corrections, including the source-verified split-graph/absent bootstrap null-content crash path; not executed as a guest control."
+    },
+    {
+      "report": ".context/node26-hostoutcome207-workerfix-r1.log",
+      "sha256": "82f7ca7e7fad9cbbe0d0119a48ef87da9bcf2fa7500e4a6ac25a2e9e67a4ce76",
+      "scope": "Root preparation failed before any application because the verifier omitted postimage/source directory. Original helper retained; corrected layout verifier subsequently checked exact bytes. Not a candidate runtime result."
+    },
+    {
+      "report": ".context/node26-hostoutcome207-checkpoint-r1.log",
+      "sha256": "7bc3f80052feac32a6a519967b9f5a20920c8a4ab9c54526b48d0772997b1132",
+      "scope": "Staged whitespace check rejected trailing blank patch context; corrected representation produces byte-identical engine source. No runtime assertion or checker changed."
+    },
+    {
+      "report": ".context/node26-hostoutcome207-source-r1/patch-format-repair/report.json",
+      "sha256": "fd4fea1b41c3001f228a4c863f2817dbddcc0be5afd2a05badf057a7879efcf2",
+      "scope": "Staged whitespace check rejected trailing blank patch context; corrected representation produces byte-identical engine source. No runtime assertion or checker changed."
+    }
+  ],
+  "remaining": [
+    "Compile the actual new guest C++ JSAPI and run genuine clone/Worker publication, receiver, exception, interrupt, retirement and backing-store paths",
+    "Exact pinned private/public channel transfer and AsyncWrap/init ordering, complete eval/CJS/ESM loader/global metadata, stdio/options/CLI/ref/error/termination behavior",
+    "Retain admitted host kind through nested mode mutation without freezing later dynamic main-graph classification; source-reviewed generic sender finding remains open",
+    "Other native transferable classes, exact diagnostics/UTF8 edge cases, foreign wrappers/security/realm/GC/OOM/fatal/reentry/abort and partial commit cleanup",
+    "Complete WebStream/AbortSignal backpressure/cancellation/lifecycle and unchanged upstream validation on identified artifacts across Node/Chromium/Firefox/WebKit"
+  ],
+  "at": "2026-11-07T10:54:58.282148+00:00",
+  "recipeRevision": 207,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

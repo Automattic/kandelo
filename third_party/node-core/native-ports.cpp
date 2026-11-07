@@ -30,6 +30,9 @@ struct KandeloPortPacket final : PortTransit::Node {
   std::shared_ptr<KandeloPortMessageData> content;
   PortTransit::Edge contentEdge;
   std::atomic<bool> enqueued{false}, consumed{false};
+  // Immutable after serialization. An aborted no-result packet owns no clone
+  // material but still has an actual consume-once caller transaction.
+  bool noResult = false;
   kandelo::memory::Allocation retained{sizeof(KandeloPortPacket)};
   kandelo::memory::Claims memoryClaims;
   std::mutex ownershipMutex;
@@ -90,7 +93,7 @@ static const JSClassOps KandeloPortPacketClassOps = {
   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, KandeloPortPacketFinalize,
   nullptr, nullptr, nullptr};
 static const JSClass KandeloPortPacketClass = {"KandeloMessagePacket",
-  JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_FOREGROUND_FINALIZE, &KandeloPortPacketClassOps};
+  JSCLASS_HAS_RESERVED_SLOTS(4) | JSCLASS_FOREGROUND_FINALIZE, &KandeloPortPacketClassOps};
 static bool KandeloPortPacketObject(JSContext* cx, KandeloPortPacketHandle packet,
                                     MutableHandleValue result) {
   auto account = KandeloNativeMemoryOwner(cx);
@@ -125,11 +128,75 @@ static void KandeloReleasePortPacketBox(HandleValue value) noexcept {
   const auto& box = *static_cast<KandeloPortPacketBoxHandle*>(slot.toPrivate());
   box->Release();
 }
+// These roots are sender-context state, never members of native graph/packet
+// material. The opaque box holds them only until a public caller consumes it.
+struct KandeloMessageWriteOutcome {
+  JS::ExceptionStack deferred;
+  bool hasDeferred = false, noResult = false;
+  explicit KandeloMessageWriteOutcome(JSContext* cx) : deferred(cx) {}
+  bool Capture(JSContext* cx) {
+    if (!JS_IsExceptionPending(cx) || JS_IsThrowingOutOfMemory(cx)) return false;
+    if (!JS::StealPendingExceptionStack(cx, &deferred)) return false;
+    hasDeferred = true;return true;
+  }
+  bool Save(JSContext* cx, HandleValue wrapper) {
+    if (!hasDeferred) return true;
+    RootedValue exception(cx, deferred.exception());RootedObject stack(cx, deferred.stack());
+    if (!JS_WrapValue(cx, &exception) || !JS_WrapObject(cx, &stack)) return false;
+    JS::SetReservedSlot(&wrapper.toObject(), 1, exception);
+    JS::SetReservedSlot(&wrapper.toObject(), 2, ObjectOrNullValue(stack));
+    JS::SetReservedSlot(&wrapper.toObject(), 3, BooleanValue(true));return true;
+  }
+};
+struct KandeloMessageCallerOutcome {
+  JSContext* cx;
+  RootedValue exception;
+  RootedObject stack;
+  bool deferred = false;
+  explicit KandeloMessageCallerOutcome(JSContext* cx) : cx(cx), exception(cx), stack(cx) {}
+  // Caller has already validated the genuine private packet box/context.
+  void Take(HandleValue wrapper) {
+    auto* object = &wrapper.toObject();
+    const auto flag = JS::GetReservedSlot(object, 3);
+    deferred = flag.isBoolean() && flag.toBoolean();
+    if (deferred) {
+      exception = JS::GetReservedSlot(object, 1);
+      stack = JS::GetReservedSlot(object, 2).toObjectOrNull();
+    }
+    JS::SetReservedSlot(object, 1, UndefinedValue());
+    JS::SetReservedSlot(object, 2, UndefinedValue());
+    JS::SetReservedSlot(object, 3, BooleanValue(false));
+  }
+  bool Finish() {
+    if (!deferred) return true;
+    JS::ExceptionStack error(cx, exception, stack);
+    JS::SetPendingExceptionStack(cx, error);return false;
+  }
+};
+static bool KandeloPortObserveCloneOutcome(JSContext* cx,
+    const JSStructuredCloneCallbacks* callbacks, void* closure, JSContext::KandeloCloneOutcome outcome) {
+  if (callbacks != &KandeloHistogramCloneCallbacks || !closure)
+    return cx->reportKandeloCloneError("Host clone outcome requires an owned packet");
+  auto* data = static_cast<KandeloHistogramCloneData*>(closure);
+  auto* transaction = static_cast<KandeloMessageWriteOutcome*>(data->writingOutcome);
+  if (!data->graphOwner || !transaction) return cx->reportKandeloCloneError("Host clone outcome transaction is unavailable");
+  if (outcome == JSContext::KandeloCloneOutcome::NoResult) {
+    transaction->noResult = true;return true;
+  }
+  return transaction->Capture(cx);
+}
 static JS::CloneDataPolicy KandeloMessageClonePolicy() {
   JS::CloneDataPolicy policy;
   policy.allowSharedMemoryObjects();
   policy.allowIntraClusterClonableSharedObjects();
   return policy;
+}
+static bool KandeloWriteMessageData(JSContext* cx, KandeloPortPacket* packet,
+    HandleValue value, HandleValue transfer, KandeloMessageWriteOutcome& outcome) {
+  auto* data = packet->content.get();
+  data->histogramData.writingOutcome = &outcome;
+  auto clear = mozilla::MakeScopeExit([&] { data->histogramData.writingOutcome = nullptr; });
+  return data->data.write(cx, value, transfer, KandeloMessageClonePolicy());
 }
 static bool KandeloNativeSerializeMessage(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -147,11 +214,20 @@ static bool KandeloNativeSerializeMessage(JSContext* cx, unsigned argc, Value* v
     auto clearSource = mozilla::MakeScopeExit([&] {
       packet->content->histogramData.sourcePort = nullptr; packet->content->histogramData.validatedPorts.clear();
     });
-    const bool written = packet->content->data.write(cx, args.get(0), args.get(1), KandeloMessageClonePolicy());
+    KandeloMessageWriteOutcome outcome(cx);
+    const bool written = KandeloWriteMessageData(cx, packet.get(), args.get(0), args.get(1), outcome);
     packet->content->histogramData.sourcePort = nullptr;
     packet->content->histogramData.validatedPorts.clear(); clearSource.release();
     packet->content->AccountMemory();
-    if (!written) { packet->ClearContent(); KandeloFlushNativeMemory(cx); return false; }
+    if (!written) {
+      if (!outcome.noResult || JS_IsExceptionPending(cx)) {
+        packet->ClearContent(); KandeloFlushNativeMemory(cx); return false;
+      }
+      // Release partial move/clone material now. No-result is not a valid
+      // undefined message, and must never enter a receiver/broadcast queue.
+      packet->noResult = true;packet->ClearContent();
+    }
+    if (!outcome.Save(cx, wrapper)) return false;
     packet->AdoptMemory(KandeloNativeMemoryOwner(cx)); KandeloFlushNativeMemory(cx);
     args.rval().set(wrapper); abortPacket.release(); return true;
   } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
@@ -164,11 +240,15 @@ static bool KandeloNativeDeserializeMessage(JSContext* cx, unsigned argc, Value*
   // No lock is held over deserializer hooks, which may reenter JS or collect.
   if (packet->consumed.exchange(true))
     return cx->reportKandeloCloneError("Message packet has already been consumed");
+  KandeloMessageCallerOutcome outcome(cx);outcome.Take(args.get(0));
   KandeloReleasePortPacketBox(args.get(0));
   auto clear = mozilla::MakeScopeExit([&] { packet->ClearContent(); KandeloFlushNativeMemory(cx); });
   try {
+    if (packet->noResult) { args.rval().setUndefined();return true; }
     packet->AdoptMemory(KandeloNativeMemoryOwner(cx));
-    return KandeloReadMessage(cx, packet->content.get(), args.rval(), args.get(1).isBoolean() && args[1].toBoolean());
+    // StructuredClone's receiver exception supersedes a deferred sender error.
+    if (!KandeloReadMessage(cx, packet->content.get(), args.rval(), args.get(1).isBoolean() && args[1].toBoolean())) return false;
+    return outcome.Finish();
   } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
 }
 using KandeloPortEndpoint = kandelo::ports::TransitEndpoint<KandeloPortPacket>;
@@ -527,8 +607,10 @@ static bool KandeloPortDispatch(JSContext* cx, unsigned argc, Value* vp) {
       if (!packet) return false;
       if (packet->enqueued.exchange(true) || packet->consumed.exchange(true))
         return cx->reportKandeloCloneError("Message packet has already been published or consumed");
+      KandeloMessageCallerOutcome outcome(cx);outcome.Take(args.get(2));
       KandeloReleasePortPacketBox(args.get(2));
       packet->ClearContent(); KandeloFlushNativeMemory(cx); args.rval().setUndefined();
+      return outcome.Finish();
     } else {
       if (!strcmp(operation.get(), "ackClose")) { owner->transferredClose = false; owner->closeRoot = nullptr; }
       args.rval().setUndefined();
@@ -540,18 +622,19 @@ static bool KandeloPortDispatch(JSContext* cx, unsigned argc, Value* vp) {
     if (!packet) return false;
     if (packet->enqueued.exchange(true) || packet->consumed.load())
       return cx->reportKandeloCloneError("Message packet has already been published or consumed");
+    KandeloMessageCallerOutcome outcome(cx);outcome.Take(args.get(2));
     KandeloReleasePortPacketBox(args.get(2));
     auto discard = mozilla::MakeScopeExit([&] {
       packet->consumed.store(true); packet->ClearContent();
     });
-    if (endpoint->IsClosed()) { args.rval().setUndefined(); return true; }
+    if (packet->noResult || endpoint->IsClosed()) { args.rval().setUndefined(); return outcome.Finish(); }
     for (const auto& transfer : packet->content->histogramData.ports) {
       if (transfer && transfer->TargetsPeerOf(*endpoint)) {
         // Pinned SiblingGroup::Dispatch discards this undeliverable packet;
         // enqueuing it would make the endpoint own its own transfer record.
         RootedString status(cx, JS_NewStringCopyZ(cx, "target-self"));
         if (!status) return false;
-        args.rval().setString(status); return true;
+        args.rval().setString(status); return outcome.Finish();
       }
     }
     // Publish no source-context claim nodes to another thread. The packet's
@@ -575,12 +658,12 @@ static bool KandeloPortDispatch(JSContext* cx, unsigned argc, Value* vp) {
       });
       if (posted == KandeloBroadcastRegistry::Posted::Closed) args.rval().setUndefined();
       else args.rval().setBoolean(posted == KandeloBroadcastRegistry::Posted::Delivered);
-      return true;
+      return outcome.Finish();
     }
     const bool sent = endpoint->Send(packet);
     if (sent) discard.release();
     KandeloFlushNativeMemory(cx);
-    args.rval().setBoolean(sent); return true;
+    args.rval().setBoolean(sent); return outcome.Finish();
   }
   if (!strcmp(operation.get(), "receive")) {
     auto result = endpoint->Receive((args.get(2).isBoolean() && args.get(2).toBoolean()));
