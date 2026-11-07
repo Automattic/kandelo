@@ -4292,7 +4292,7 @@ const _nodeTlsContextTrust = _createNodeTlsContextTrust({
 
 const tls = (() => {
     const nat = _nodeNative;
-    const { SafeWeakMap: TlsWeakMap, ReflectApply: tlsApply } = _createNodePrimordials();
+    const { SafeWeakMap: TlsWeakMap, ReflectApply: tlsApply, PromisePrototypeThen: tlsThen } = _createNodePrimordials();
     const nativeTLS = new TlsWeakMap();
     const toU8 = (b) => {
         if (b instanceof Uint8Array) return b;
@@ -4354,12 +4354,28 @@ const tls = (() => {
             const state = nativeTLS.get(this), owner = state.owner;
             if (!owner || state.handshakePending || state.destroyed || state.reading) return;
             state.reading = true;
-            nat.tlsRead(owner, 64 * 1024).then(bytes => {
+            let pending;
+            try { pending = nat.tlsRead(owner, 64 * 1024); }
+            catch (error) { state.reading = false; throw error; }
+            tlsThen(pending, bytes => {
+                let buffer;
+                try { if (bytes.byteLength > 0) buffer = Buffer.from(bytes); }
+                catch (error) {
+                    // Preserve the actual fulfilled Promise/material for retry;
+                    // do not acknowledge bytes the consumer could not own.
+                    state.reading = false; throw error;
+                }
+                // Only the actual settled Promise can retire this ticket. A
+                // stale completion cannot acknowledge a newer allocation/read.
+                try { nat.tlsReadRelease(owner, pending); }
+                catch (error) { state.reading = false; throw error; }
                 state.reading = false;
                 if (state.destroyed || state.owner !== owner) return;
                 if (bytes.byteLength === 0) { this.push(null); return; }
-                if (this.push(Buffer.from(bytes))) this._scheduleRead();
+                if (this.push(buffer)) this._scheduleRead();
             }, error => {
+                try { nat.tlsReadRelease(owner, pending); }
+                catch (releaseError) { error ||= releaseError; }
                 state.reading = false;
                 if (!state.destroyed) this.destroy(error);
             });

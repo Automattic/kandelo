@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source204 integrates real retained TLS plaintext/EOF/error material and actual settled-Promise acknowledgement. Three current native cases,27TLS-policy groups,12constant groups,876normal inputs and14package checks pass. An invalid retry-dependent fixture threshold is replaced by actual completed semantic checks; all ownership conditions and upstream assertions stay unchanged. Guest C++ remains uncompiled; HTTPS stays blocked.
+See [source scope](tls-plaintext-read-integration.md).
+
 Source203 integrates real opaque TLS ownership with its paired bootstrap. Current native loopback/SSL/free/fd-reuse control passes, along with27TLS-policy groups,12constant groups,876normal inputs and14package checks. Prior2tiny attempts/1fixture failure are integrated once. New guest C++ remains uncompiled; HTTPS activation stays blocked.
 See [source scope](opaque-tls-owner-integration.md).
 

@@ -1,0 +1,189 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2342,5 +2342,6 @@
+   KandeloTlsState* next = nullptr;
+   kandelo::tls::Owner owner;
+-  bool detached = false;
++  bool detached = false, preparingRead = false;
++  std::unique_ptr<kandelo::memory::Claim> readClaim;
+   kandelo::memory::Allocation allocation{sizeof(KandeloTlsState)};
+   kandelo::memory::Claims claims;
+@@ -2369,5 +2370,5 @@
+   KandeloTlsFinalize, nullptr, nullptr, nullptr};
+ static const JSClass KandeloTlsClass = {"KandeloTlsOwner",
+-  JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_FOREGROUND_FINALIZE, &KandeloTlsClassOps};
++  JSCLASS_HAS_RESERVED_SLOTS(2) | JSCLASS_FOREGROUND_FINALIZE, &KandeloTlsClassOps};
+ static KandeloTlsState* KandeloTlsStateFor(JSContext* cx, HandleValue value,
+                                           MutableHandleObject actual) {
+@@ -2396,4 +2397,5 @@
+   KandeloTlsOperation kind;
+   std::vector<uint8_t> buffer;
++  std::shared_ptr<kandelo::tls::PlaintextRead> read;
+   size_t offset = 0;
+   short events = POLLOUT;
+@@ -2442,4 +2444,5 @@
+ static bool KandeloTlsPublish(KandeloTlsWatch* watch) {
+   using Result = KandeloTlsWatch::Result;
++  if (watch->read) watch->read->BeginDelivery();
+   bool ok = false;
+   switch (watch->result) {
+@@ -2449,5 +2452,5 @@
+     }
+     case Result::Bytes:
+-      ok = KandeloResolvePromiseWithBytes(watch->cx, watch->promise, watch->buffer.data(), watch->count); break;
++      ok = KandeloResolvePromiseWithBytes(watch->cx, watch->promise, watch->read ? watch->read->bytes.data() : watch->buffer.data(), watch->count); break;
+     case Result::Count:
+       ok = KandeloResolvePromiseWithInt(watch->cx, watch->promise, int32_t(watch->offset)); break;
+@@ -2461,5 +2464,20 @@
+   // again. If allocation failed before settlement, keep the exact consumed
+   // bytes/count/error and actual roots for retry after the owning fatal fence.
+-  return ok || JS::GetPromiseState(watch->promise) != JS::PromiseState::Pending;
++  const bool terminal = ok || JS::GetPromiseState(watch->promise) != JS::PromiseState::Pending;
++  if (watch->read) {
++    if (terminal) watch->read->Published(); else watch->read->AbortDelivery();
++  }
++  return terminal;
++}
++static void KandeloTlsCaptureReadResult(KandeloTlsWatch* watch) {
++  using Outcome = kandelo::tls::PlaintextRead::Outcome;
++  MOZ_RELEASE_ASSERT(watch->read && watch->read->Complete());
++  if (watch->read->outcome == Outcome::Data || watch->read->outcome == Outcome::Eof) {
++    watch->count = watch->read->count; watch->result = KandeloTlsWatch::Result::Bytes;
++  } else {
++    watch->result = KandeloTlsWatch::Result::Error;
++    watch->error = watch->read->systemError;
++    watch->message = watch->error == ECANCELED ? "TLS owner closed" : "TLS read failed";
++  }
+ }
+ static bool KandeloTlsDispatchWatch(KandeloTlsWatch* watch) {
+@@ -2467,4 +2485,7 @@
+   using Result = KandeloTlsWatch::Result;
+   if (watch->result != Result::Waiting) return KandeloTlsPublish(watch);
++  if (watch->read && watch->read->Complete()) {
++    KandeloTlsCaptureReadResult(watch); return KandeloTlsPublish(watch);
++  }
+   auto& owner = watch->state->owner;
+   auto fail = [&](int error, const char* message) {
+@@ -2490,13 +2511,6 @@
+   if (!owner.Open()) return fail(ECANCELED, "TLS handshake is not open");
+   if (watch->kind == KandeloTlsOperation::Read) {
+-    const int result = SSL_read(ssl, watch->buffer.data(), int(watch->buffer.size()));
+-    if (result > 0) {
+-      watch->count = size_t(result); watch->result = Result::Bytes; return KandeloTlsPublish(watch);
+-    }
+-    const int error = SSL_get_error(ssl, result);
+-    if (error == SSL_ERROR_WANT_READ) { watch->events = POLLIN; return false; }
+-    if (error == SSL_ERROR_WANT_WRITE) { watch->events = POLLOUT; return false; }
+-    if (error != SSL_ERROR_ZERO_RETURN) return fail(0, "TLS read failed");
+-    watch->result = Result::Bytes; watch->count = 0; return KandeloTlsPublish(watch);
++    if (!owner.ProgressRead(watch->read)) { watch->events = watch->read->events; return false; }
++    KandeloTlsCaptureReadResult(watch); return KandeloTlsPublish(watch);
+   }
+   while (watch->offset < watch->buffer.size()) {
+@@ -2515,5 +2529,6 @@
+     pollfd descriptor = {};
+     descriptor.fd = watch->state->owner.Fd(); descriptor.events = watch->events;
+-    const int ready = watch->result != KandeloTlsWatch::Result::Waiting || descriptor.fd < 0
++    const int ready = watch->result != KandeloTlsWatch::Result::Waiting ||
++        (watch->read && watch->state->owner.ReadMayProgress(watch->read)) || descriptor.fd < 0
+         ? 1 : poll(&descriptor, 1, 0);
+     if (ready == 0 || (ready < 0 && errno == EINTR)) continue;
+@@ -2529,6 +2544,8 @@
+ }
+ static bool KandeloCloseTlsOwner(JSContext* cx, KandeloTlsState* state,
+-                                 bool settle = true) {
++                                 bool settle = true, JSObject* capability = nullptr) {
+   state->owner.Close();
++  state->readClaim.reset();
++  if (capability) JS::SetReservedSlot(capability, 1, UndefinedValue());
+   KandeloTlsWatch* retiring = nullptr;
+   auto** link = &gKandeloTlsWatches;
+@@ -2545,4 +2562,6 @@
+     // terminal settlement returns; reentry cannot find/delete it in a registry.
+     if (settle) {
++      if (watch->result == KandeloTlsWatch::Result::Waiting && watch->read && watch->read->Complete())
++        KandeloTlsCaptureReadResult(watch);
+       if (watch->result == KandeloTlsWatch::Result::Waiting) {
+         watch->result = KandeloTlsWatch::Result::Error;
+@@ -2640,12 +2659,67 @@
+     if (argc > 1 && !JS::ToInt32(cx, args[1], &length)) return false;
+     if (length <= 0) length = 16384;
++    if (state->owner.Open()) {
++      RootedValue existing(cx, JS::GetReservedSlot(capability, 1));
++      if (existing.isObject()) {
++        (void)state->owner.BeginRead(size_t(length));
++        if (!JS_WrapValue(cx, &existing)) return false;
++        args.rval().set(existing); return true;
++      }
++    }
++    if (state->preparingRead) {
++      JS_ReportErrorASCII(cx, "TLS read admission is already being prepared"); return false;
++    }
++    state->preparingRead = true;
++    auto preparing = mozilla::MakeScopeExit([&] { state->preparingRead = false; });
+     RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr)); if (!promise) return false;
+     args.rval().setObject(*promise);
+     if (!state->owner.Open()) return KandeloResolvePromiseWithErrno(cx, promise, ECANCELED, "TLS owner is not open");
+     auto watch = std::make_unique<KandeloTlsWatch>(cx, state, capability, promise, KandeloTlsOperation::Read);
+-    watch->buffer.resize(size_t(length)); watch->RefreshMemory(); watch->events = POLLIN;
++    watch->read = state->owner.BeginRead(size_t(length));
++    if (!watch->read) return KandeloResolvePromiseWithErrno(cx, promise, ECANCELED, "TLS read owner unavailable");
++    bool submitted = false;
++    auto rollback = mozilla::MakeScopeExit([&] {
++      if (!submitted && state->owner.AbortRead(watch->read)) state->readClaim.reset();
++    });
++    state->readClaim = std::make_unique<kandelo::memory::Claim>(watch->read->allocation.Handle(), KandeloNativeMemoryOwner(cx));
++    watch->claims.Add(watch->read->allocation.Handle(), KandeloNativeMemoryOwner(cx));
++    bool closedDuringAdmission = false;
++    {
++      JSAutoRealm realm(cx, capability);
++      RootedValue value(cx, ObjectValue(*promise));
++      if (!JS_WrapValue(cx, &value)) return false;
++      closedDuringAdmission = !state->owner.Open();
++      if (!closedDuringAdmission) JS::SetReservedSlot(capability, 1, value);
++    }
++    // The actual Promise belongs to the calling realm. Restore it before
++    // allocating/settling a close error after an owner-realm wrapping hook.
++    if (closedDuringAdmission)
++      return KandeloResolvePromiseWithErrno(cx, promise, ECANCELED, "TLS owner closed during read admission");
++    watch->events = POLLIN; submitted = true;
++    // Publication may fail after actual SSL consumption. Both the exact ticket
++    // and actual Promise identity stay owned until accepted/acknowledged/closed.
+     if (!KandeloTlsDispatchWatch(watch.get())) KandeloTlsWatchLink(watch.release());
+     return !JS_IsExceptionPending(cx);
+   } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
++    catch (const std::length_error& error) { JS_ReportErrorASCII(cx, "%s", error.what()); return false; }
++}
++static bool KandeloNativeTlsReadRelease(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp); args.rval().setBoolean(false);
++  RootedObject capability(cx); auto* state = KandeloTlsStateFor(cx, args.get(0), &capability);
++  if (!state) return false;
++  RootedValue stored(cx, JS::GetReservedSlot(capability, 1));
++  if (!stored.isObject() || !args.get(1).isObject()) return true;
++  RootedObject actual(cx, js::CheckedUnwrapDynamic(&args[1].toObject(), cx));
++  RootedObject expected(cx, js::CheckedUnwrapDynamic(&stored.toObject(), cx));
++  if (!actual || !expected) {
++    if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);
++    return false;
++  }
++  if (actual != expected || JS::GetPromiseState(actual) == JS::PromiseState::Pending) return true;
++  auto read = state->owner.CurrentRead();
++  if (read && !state->owner.AcknowledgeRead(read)) return true;
++  state->readClaim.reset();
++  JS::SetReservedSlot(capability, 1, UndefinedValue());
++  args.rval().setBoolean(true); return true;
+ }
+ static bool KandeloNativeTlsWrite(JSContext* cx, unsigned argc, Value* vp) {
+@@ -2670,5 +2744,5 @@
+   RootedObject capability(cx); auto* state = KandeloTlsStateFor(cx, args.get(0), &capability);
+   if (!state) return false;
+-  args.rval().setUndefined(); return KandeloCloseTlsOwner(cx, state);
++  args.rval().setUndefined(); return KandeloCloseTlsOwner(cx, state, true, capability);
+ }
+
+@@ -4315,4 +4389,5 @@
+       JS_FN("tlsConnect", KandeloNativeTlsConnect, 3, 0),
+       JS_FN("tlsRead", KandeloNativeTlsRead, 2, 0),
++      JS_FN("tlsReadRelease", KandeloNativeTlsReadRelease, 2, 0),
+       JS_FN("tlsWrite", KandeloNativeTlsWrite, 2, 0),
+       JS_FN("tlsClose", KandeloNativeTlsClose, 1, 0),

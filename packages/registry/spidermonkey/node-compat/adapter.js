@@ -727,6 +727,7 @@
         tlsConnect(fd, servername, options) { return native.tlsConnect(fd, servername, options); },
         tlsInfo(handle, operation) { return native.tlsInfo(handle, operation); },
         tlsRead(handle, length) { return native.tlsRead(handle, length); },
+        tlsReadRelease(...args) { return native.tlsReadRelease(...args); },
         tlsWrite(handle, bytes) { return native.tlsWrite(handle, bytes); },
         tlsClose(handle) { return native.tlsClose(handle); },
     };
