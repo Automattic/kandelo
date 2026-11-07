@@ -1912,6 +1912,47 @@ fn exact_mapping_partial_replacement_preserves_new_middle_and_retires_only_old_f
     sys_exit(&mut proc, &mut host, 0);
 }
 #[test]
+fn exact_mapping_same_bo_prefix_preserves_replacement_through_old_cleanup_recovery() {
+    let mut proc = Process::new(1); let mut host = MockHostIO::new();
+    let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+    let token = acquire(&mut proc, &mut host, fd, 1);
+    let mut create_packet = operation(token, 1, DRM_IOCTL_MODE_CREATE_DUMB, 32);
+    create_packet.flags = W::CAPTURE_BO;
+    create_packet.body[..4].copy_from_slice(&192u32.to_le_bytes());
+    create_packet.body[4..8].copy_from_slice(&256u32.to_le_bytes());
+    create_packet.body[8..12].copy_from_slice(&32u32.to_le_bytes());
+    let created = call(&mut proc, &mut host, create_packet); assert_eq!(created.result, 0);
+    let bo = created.source_token;
+    let first = call(&mut proc, &mut host, exact_map_packet(token, bo, 2, 0, 0x30000, false));
+    assert_eq!(first.result, 0);
+    let first_id = exact_mapping_id(&first);
+    let addr = u64::from_le_bytes(first.body[..8].try_into().unwrap()) as usize;
+    let replacement = call(&mut proc, &mut host,
+        exact_map_packet(token, bo, 3, addr + 0x10000, 0x10000, true));
+    assert_eq!(replacement.result, 0);
+    let replacement_id = exact_mapping_id(&replacement);
+    assert!(replacement_id > first_id);
+    sys_close(&mut proc, &mut host, fd).unwrap();
+    // Same address/BO is insufficient authority: only the old mapping's two
+    // surviving fragments belong to this receipt, including after recovery.
+    let before = host.gbm_bo_unbind_calls.len();
+    let cleanup = exact_unmap_packet(token, bo, 4, first_id);
+    assert_eq!(call(&mut proc, &mut host, cleanup).result, 0);
+    let spans: Vec<_> = host.gbm_bo_unbind_calls[before..].iter().map(|v| (v.2, v.3)).collect();
+    assert_eq!(spans, [(addr, 0x10000), (addr + 0x20000, 0x10000)]);
+    assert_eq!(call(&mut proc, &mut host, cleanup).result, 0);
+    let recovered = call(&mut proc, &mut host, W::Packet { action: W::READ_LAST,
+        token, transaction: 4, ..Default::default() });
+    assert_eq!(recovered.action, W::UNMAP_EXACT); assert_eq!(recovered.result, 0);
+    assert_eq!(host.gbm_bo_unbind_calls.len(), before + 2);
+    assert_eq!(proc.dri_bindings.len(), 1);
+    assert_eq!((proc.dri_bindings[0].addr, proc.dri_bindings[0].len), (addr + 0x10000, 0x10000));
+    assert_eq!(call(&mut proc, &mut host,
+        exact_unmap_packet(token, bo, 5, replacement_id)).result, 0);
+    assert!(proc.dri_bindings.is_empty());
+    sys_exit(&mut proc, &mut host, 0);
+}
+#[test]
 fn exact_mapping_failed_constructor_burns_identity_and_preserves_old_vma() {
     use wasm_posix_shared::mmap::*;
     for backing_failure in [false, true] {

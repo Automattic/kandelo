@@ -823,12 +823,12 @@ pub(crate) fn owned_resource_prepare_mmap(
         return Err(Errno::EINVAL);
     }
     let ofd = proc.ofd_table.get(target.index).ok_or(Errno::EBADF)?;
-    let (bo, partial) = if let Some(Kind::Bo { file, bo, .. }) = source {
+    let bo = if let Some(Kind::Bo { file, bo, .. }) = source {
         owned_resource_validate(proc, file)?;
         if file.id != target.id || (offset != 0 && offset as u64 != u64::from(bo) << 12) {
             return Err(Errno::EACCES);
         }
-        (bo, false)
+        bo
     } else if source.is_some() {
         return Err(Errno::EINVAL);
     } else if let Some(prime) = ofd.prime_bo() {
@@ -841,7 +841,7 @@ pub(crate) fn owned_resource_prepare_mmap(
         {
             return Err(Errno::EACCES);
         }
-        (prime.bo_id, true)
+        prime.bo_id
     } else {
         let dri = dri_state(proc, target.index)?;
         if offset == 0 {
@@ -879,18 +879,15 @@ pub(crate) fn owned_resource_prepare_mmap(
         if bo == 0 || !dri_fd_has_bo_handle(dri, bo) {
             return Err(Errno::EACCES);
         }
-        (bo, false)
+        bo
     };
     let (size, tier) =
         crate::dri::with_registry(|r| r.get(bo).map(|b| (b.size, b.tier))).ok_or(Errno::EBADF)?;
     let rounded = size.checked_add(0xffff).ok_or(Errno::EINVAL)? & !0xffff;
-    if tier == crate::dri::BoTier::GpuTexture
-        || if partial {
-            len as u64 > rounded
-        } else {
-            len as u64 != size && len as u64 != rounded
-        }
-    {
+    // Exact FILE/BO authority changes custody, not mmap range semantics.
+    // Accept the same bounded prefix through owned and public entry points;
+    // the staged constructor still preserves every replacement mapping.
+    if tier == crate::dri::BoTier::GpuTexture || len as u64 > rounded {
         return Err(Errno::EINVAL);
     }
     let identity = if packet.action == W::MMAP_EXACT {

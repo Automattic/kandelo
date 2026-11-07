@@ -13351,7 +13351,7 @@ fn mmap_region_for_ofd(
         // /dev/dri/{renderD128,card0}: the caller obtained `offset` from
         // `DRM_IOCTL_MODE_MAP_DUMB`, which encodes the target bo id as
         // `(bo_id as u64) << 12`. Decode, validate the bo is live and
-        // the requested `len` matches the bo's backing size, allocate
+        // the requested `len` fits the bo's backing size, allocate
         // wasm pages, then ask the host to point that region at the
         // bo's SAB slice via `gbm_bo_bind`.
         if ofd.dri_state.is_some()
@@ -13438,18 +13438,16 @@ fn mmap_region_for_ofd(
             if !has_local_handle {
                 return Err(Errno::EACCES);
             }
-            // Accept either the raw bo size (matching what DRM_IOCTL_MODE_
-            // CREATE_DUMB returned and what the libgbm stub + direct
-            // mmap callers pass) or the wasm-page-aligned size some
-            // consumers round to. `mmap_anonymous` rounds to a wasm
-            // page internally, so either request maps the same number
-            // of pages; we just track the binding length the caller
-            // asked for.
+            // A GEM mapping may cover a prefix, as a PRIME mapping does.
+            // Requiring the whole BO prevented a legal MAP_FIXED replacement
+            // from reaching the exact VMA/BO retirement transaction. Bound the
+            // request by page-rounded storage; the mapping plan preserves the
+            // requested binding length and retires only overlapping fragments.
             let aligned_bo_size = (bo_size as usize)
                 .checked_add(0xFFFF)
                 .ok_or(Errno::EINVAL)?
                 & !0xFFFF;
-            if len != bo_size as usize && len != aligned_bo_size {
+            if len == 0 || len > aligned_bo_size {
                 return Err(Errno::EINVAL);
             }
             return mmap_dri_bo(proc, host, addr, len, prot, flags, bo_id);
@@ -56918,7 +56916,43 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
-    fn mmap_dri_with_wrong_length_returns_einval_and_skips_host() {
+    fn mmap_dri_prefix_replaces_only_its_interval_and_retains_the_bo() {
+        use wasm_posix_shared::mmap::{MAP_FIXED, MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 256, 192);
+        let page = 0x10000;
+        assert_eq!(size, 3 * page);
+        let prot = PROT_READ | PROT_WRITE;
+        let original = sys_mmap(&mut proc, &mut host, 0, size, prot, MAP_SHARED, fd, offset as i64).unwrap();
+        let replacement = original + page;
+        assert_eq!(sys_mmap(&mut proc, &mut host, replacement, page, prot,
+            MAP_SHARED | MAP_FIXED, fd, offset as i64), Ok(replacement));
+        let bo_id = proc.dri_bindings[0].bo_id;
+        let mut fragments: Vec<_> = proc.dri_bindings.iter()
+            .map(|binding| (binding.addr, binding.len, binding.bo_offset)).collect();
+        fragments.sort_unstable();
+        assert_eq!(fragments, [(original, page, 0), (replacement, page, 0),
+            (original + 2 * page, page, 2 * page as u64)]);
+        assert!(proc.dri_bindings.iter().all(|binding| binding.bo_id == bo_id));
+        // Each fragment owns storage independently of the numeric descriptor.
+        // Closing the file cannot destroy the BO before the last VMA retires.
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(host.gbm_bo_destroy_calls.is_empty());
+        sys_munmap(&mut proc, &mut host, replacement, page).unwrap();
+        assert_eq!(proc.dri_bindings.len(), 2);
+        assert!(host.gbm_bo_destroy_calls.is_empty());
+        sys_munmap(&mut proc, &mut host, original, page).unwrap();
+        sys_munmap(&mut proc, &mut host, original + 2 * page, page).unwrap();
+        assert!(proc.dri_bindings.is_empty());
+        assert_eq!(host.gbm_bo_destroy_calls, [(proc.pid as i32, bo_id)]);
+    }
+
+    #[test]
+    fn mmap_dri_past_storage_returns_einval_and_skips_host() {
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK
             .lock()
@@ -56929,13 +56963,12 @@ impl HostIO for RelSymlinkMock {
         let mut host = MockHostIO::new();
         let (fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
 
-        // Wrong length (single page < page-aligned bo size) → EINVAL,
-        // no host call.
+        // Requests past the page-rounded BO must fail before any host effect.
         let err = sys_mmap(
             &mut proc,
             &mut host,
             0,
-            4096,
+            0x10001,
             PROT_READ | PROT_WRITE,
             MAP_SHARED,
             fd,

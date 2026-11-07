@@ -1474,3 +1474,11 @@ transfer. Finish raw-client entry/callback enforcement, coherent normal target
 linkage/execution and the full B1 gates in this iteration. The old opaque queue
 observations have stronger fixture assertions; they do not establish actual
 browser or native-feel acceptance and are not a deferral of either requirement.
+
+The latest normal component build succeeds, but its actual target ownership
+checks expose a full-size-only GEM mmap rejection on same-BO partial replacement.
+The kernel source now accepts bounded prefixes through both ordinary and exact
+owned paths, with native fragment/lifetime and receipt-recovery coverage.
+Rebuild the kernel and repeat the unchanged Node/three-engine target cases in
+this iteration; normal components and native tests do not replace that proof
+or the remaining complete B1/application/native-feel gates.

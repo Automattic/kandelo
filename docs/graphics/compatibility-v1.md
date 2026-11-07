@@ -26291,3 +26291,40 @@ These are composed source/native checks, not normal target linkage/execution,
 full raw-client enforcement, complete B1 or measured performance. Coherent
 SDK/package/application builds, actual Node/browser ownership checks and all
 stage/final gates remain required. ABI56/3/17/21 and upstream clients unchanged.
+
+### Normal components and partial GEM mappings, 2026-11-07
+
+Frozen source65855132d4 normal component job
+`graphics-normal-components-r650-1107-021753-f1ff` passes6m48s. Commands are
+`./run.sh build sdk`, `./run.sh build sysroot64`, `./run.sh build kernel`,
+`./run.sh build host`, the worktree's compiled `xtask bootstrap libwayland
+--jobs 4`, and `xtask dump-abi --kernel-wasm ... --check`, sequentially through
+the canonical dev shell. All8438 source inputs remain unchanged;60 product
+hashes are recorded in `.context/graphics-normal-components-r650/`. Kernel
+SHA256 is711936ba232cf5c6c17093edb486034e50c13e365f3ec86c26f8520172f77341.
+This compiles normal components, not a complete application/image preview.
+
+Actual newly compiled target ownership job
+`graphics-target-ownership-r651-1107-022509-2511` fails1m56s: Node14/16 and
+browser42/48 pass, with no skipped/flaky cases and6390 frozen inputs unchanged.
+Only the same-BO partial MAP_FIXED case fails, on both widths and all engines,
+before cleanup: the public kernel path requires the entire BO size. The
+descriptor-reuse and fork/image controls pass; this does not waive the failed
+mapping case. Node uses an explicit renderer protocol double and minimal
+kernel device mounts; browser cases exercise real rendering and memory probes.
+
+The public and exact-owned mapping paths now accept bounded nonempty prefixes,
+retaining GPU-tier refusal, exact OFD/BO authorization and staged VMA retirement.
+This matches the size bound in upstream
+[drm_gem_mmap_obj](https://github.com/torvalds/linux/blob/v6.6/drivers/gpu/drm/drm_gem.c#L979-L985).
+New Rust controls prove same-BO middle replacement preserves the remaining
+fragments, storage after descriptor close, and the replacement through old
+exact cleanup and receipt recovery. Oversized requests still fail before host
+effects. `graphics-dri-prefix-full-r652-1107-023227-2683` passes45s:2910
+runtime-core tests and6 doc tests. Rebuilt target ownership rerun is next;
+these native tests alone do not close the observed platform failure.
+
+Exact scripts/results are in `.context/graphics-target-ownership-r651/` and
+`.context/graphics-dri-prefix-r652/`. No application patch, new mapping offset
+encoding, ABI family bump or performance claim. Raw-client enforcement,
+coherent full previews and every stage/final acceptance requirement remain.

@@ -7660,6 +7660,11 @@ matching generation. Only creation and final retirement perform this work.
 Private mapping actions13/14 additionally bind cleanup to a nonzero,
 monotonic Rust-owned mapping identity. Splitting/shrinking a mapping keeps
 that identity; a new mapping at the same address and BO gets another one.
+Both public GEM and owned FILE/BO mappings accept a nonempty prefix bounded
+by page-rounded CPU storage, as PRIME mappings already do. Requiring a whole
+BO would reject legal partial replacement before its ownership could be
+tested. The constructor retains the requested binding length, and its staged
+overlap transaction preserves every unaffected fragment and exact identity.
 Conditional retirement preflights every remaining original fragment before
 native effects and leaves replacement VMAs untouched. Ordinary POSIX
 `mmap`/`munmap` and established action4 retain their semantics. Rust copies
