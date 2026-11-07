@@ -1,0 +1,17 @@
+diff --git a/Makefile b/Makefile
+index 729fb18..fe11f82 100644
+--- a/Makefile
++++ b/Makefile
+@@ -37,6 +37,13 @@ ifneq ($(ISWIN),)
+   LDFLAGS := -Wl,--gc-sections -fno-ident
+   COMMONFLAGS += -pthread
++else ifeq ($(platform),kandelo)
++  OUTNAME := libdosbox_pure.a
++  CXX     := wasm32posix-c++
++  AR      := llvm-ar
++  COMMONFLAGS += -DDISABLE_DYNAREC=1 -DDBP_KANDELO=1
++  CPUFLAGS :=
++  STATIC_LINKING = 1
+ else ifneq (,$(findstring ios,$(platform)))
+   ifeq ($(IOSSDK),)
+     IOSSDK := $(shell xcodebuild -version -sdk iphoneos Path)

@@ -54,6 +54,7 @@ test("the partial image boots as its own machine with only its activities", asyn
   for (const [pkg, command, expected] of [
     ["tmux", "tmux -V", /tmux \d/],
     ["less", "less --version | head -n 1", /less \d+/],
+    ["dosbox-pure", "dosbox-pure --info", /CPU: x86 interpreter/],
   ] as const) {
     if (!manifest!.packages.includes(pkg)) continue;
     expect((await runTerminalCommand(page, command)).output).toMatch(expected);

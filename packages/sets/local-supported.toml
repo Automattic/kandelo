@@ -167,6 +167,10 @@ name = "diffutils"
 class = "user-software"
 
 [[packages]]
+name = "dosbox-pure"
+class = "user-software"
+
+[[packages]]
 name = "dinit"
 class = "user-software"
 
