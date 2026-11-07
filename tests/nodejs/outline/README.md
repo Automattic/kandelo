@@ -1,5 +1,11 @@
 # Node 26 core implementation outline
 
+Source166 corrects five reusable persistent-root clears and two owning
+engine declaration/access errors exposed by the actual failed165production
+build. Frozen inputs were unchanged; no artifact was accepted. Current source
+checks and14package checks pass.166compilation/GC/guest/fourhost remain open.
+See [native root/backing scope](native-root-and-backing-integration.md).
+
 Source165 integrates real UDP endpoint/original-allocation request owners
 and private bare-buffer captures while preserving current signal/TTY/HTTP2
 source.786inputs,24source/staging checks,3adaptercontrols and14package checks

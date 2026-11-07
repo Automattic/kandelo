@@ -1,0 +1,76 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/engine-contracts.md",
+    "findingIds": [],
+    "relatedDocuments": [
+      "tests/nodejs/audit/network.md",
+      "tests/nodejs/audit/processes.md",
+      "tests/nodejs/audit/filesystem.md"
+    ],
+    "relatedFamilies": [
+      "engine",
+      "values",
+      "network",
+      "processes",
+      "filesystem",
+      "async",
+      "workers"
+    ],
+    "scope": "Owning compilation and GC registration prerequisites, not individual API closure"
+  },
+  "sourceImplemented": [
+    "Preserve initialization of reusable UDP/Signal/failed-start StatWatcher persistent roots by clearing values rather than unregistering roots",
+    "Keep all terminal closed/detached resets and recreated unique_ptr-root owners unchanged; retained failed StatWatcher path distinguished from ordinary retry",
+    "Declare backing TrackMetadata consistently through real JS_PUBLIC_API in Transfers without duplicating default argument or importing RootingAPI",
+    "Use exact fixed/resizable maximum branch semantics in real retained structured cloning, preserving capability/transfer/read-side ownership"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-native166-source-r1/report.json",
+    "sha256": "28242097f04e1a083a456e5b5b9a711859e31d8de41d11b7aa1384ba4ddd88b1",
+    "guardedInputs": 786,
+    "sourceChecks": 13,
+    "scope": "Current exact reviewed native-root and engine-declaration/access source corrections, normal input/unity checks; no new compilation or JSAPI/GC/guest/fourhost conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-native166-affected-r1.json",
+    "sha256": "5ecfcc26f4291cdf9ba68d57bccf19fdfd5efd46fd8a67199093841b0f36ff83",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0
+  },
+  "sourceReview": {
+    "report": ".context/node26-udp165-review-agent/SEAL.json",
+    "sha256": "6ebd52e8477ff9b2bd02f43f530782781b94448d30347a7b125ff99af5e6dedb",
+    "runtimeTests": 0,
+    "scope": "Exact source/call-path/root-contract review and minimal proposals; not demonstrated guest GC failure/success"
+  },
+  "targetedEngineFailure": {
+    "report": "tests/nodejs/outline/engine165-build-result.json",
+    "sha256": "018bfe139cd39c908e749a84974849ea588410ca7203ea811aae9404413757b6",
+    "recipeRevision": 165,
+    "exitCode": 1,
+    "scope": "Normal selected engine165 production compiler failure;8dependencies reused, no kernel/rootfs/app/product build. Actual engine compile is incomplete, not an accepted artifact or runtime evidence.166source corrections require later compilation."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-engine165-failure-final/output.log",
+      "sha256": "199b1f180245ebe8ceccdb5d9f4b56f1405924a8b0536eee51f6e594c67905f2",
+      "kind": "actual-production-compile-failure",
+      "reason": "2actual compiler errors, no accepted artifact, frozen inputs unchanged"
+    }
+  ],
+  "remaining": [
+    "Normal current selected-engine compilation and complete engine/binding compiler acceptance; further errors may remain",
+    "Actual JSAPI/GC/fatal/realm/lifecycle and fixed/resizable transfer validation, allfourhosts identified artifacts",
+    "All19families partial, overall suites/fullproduct deferred; DNS/Child.kill/snapshot/acceptedTCP and webBodyInit capsules pending"
+  ],
+  "at": "2026-11-07T01:17:15.850438+00:00",
+  "recipeRevision": 166,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

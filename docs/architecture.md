@@ -6804,6 +6804,17 @@ outcomes and retained nonpasses are in the SQLite dependency/finding records.
 SQLite/testing/process and four-host conformance remain partial; no overall
 suite or full product rebuild ran.
 
+### Native reusable roots and backing transfer source corrections
+
+Source166 clears reusable UDP, Signal and failed-start StatWatcher root values
+without unregistering their persistent GC roots. Terminal teardown still
+unregisters them. This repairs an embedding ownership error, not a browser
+engine defect. It also aligns backing metadata declarations with the actual
+public visibility macro and uses the public resizable/fixed capacity paths for
+retained cloning after two real165compiler errors. These are source fixes;
+no166production compilation or guest/four-host GC acceptance is established.
+See [scope and preserved build evidence](../tests/nodejs/outline/native-root-and-backing-integration.md).
+
 ### Node datagram source foundation
 
 The source candidate selects unchanged Node 26.13.0 `lib/dgram.js` and

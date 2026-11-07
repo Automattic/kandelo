@@ -134,11 +134,11 @@ static bool KandeloNativeSignals(JSContext* cx,unsigned argc,Value* vp){
       // Failed replacement can leave real pending records from the old
       // subscription; retain its original owner until those records retire.
       if(!error || watch.HasPending())state->root=owner;
-      else if(!watch.signum)state->root.reset();
+      else if(!watch.signum)state->root=nullptr;
       args.rval().setInt32(-error);return true;
     }
     if(!strcmp(op,"stop")){
-      const int error=watch.Stop();if(!error&&!watch.HasPending())state->root.reset();args.rval().setInt32(-error);return true;
+      const int error=watch.Stop();if(!error&&!watch.HasPending())state->root=nullptr;args.rval().setInt32(-error);return true;
     }
     JS_ReportErrorASCII(cx,"Unknown native Signal operation");return false;
   }catch(const std::bad_alloc&){JS_ReportOutOfMemory(cx);return false;}
@@ -172,7 +172,7 @@ static int KandeloDispatchSignals(JSContext* cx,bool closePhase){
   // its callback. Native state remains rooted until the last such record.
   watch->RetireMessage();
   if(watch->closing||watch->closed||watch->signum!=message.signum){
-    if(!watch->signum&&!watch->closing&&!watch->HasPending())state->root.reset();return 1;
+    if(!watch->signum&&!watch->closing&&!watch->HasPending())state->root=nullptr;return 1;
   }
   RootedObject owner(cx,state->root);JSAutoRealm realm(cx,owner);
   RootedValue callback(cx);if(!JS_GetProperty(cx,owner,"onsignal",&callback))return -1;

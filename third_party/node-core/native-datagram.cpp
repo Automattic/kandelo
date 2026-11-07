@@ -60,7 +60,7 @@ struct KandeloUdpState {
     if (!retired) { retired = true; if (lifetime) lifetime->Finalized(id); }
   }
   void UpdateRoot(JSObject* owner) {
-    if (receiving || closing || !sends.empty()) active = owner; else active.reset();
+    if (receiving || closing || !sends.empty()) active = owner; else active = nullptr;
   }
   ~KandeloUdpState() {
     Retire();

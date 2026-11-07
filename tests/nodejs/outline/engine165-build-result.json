@@ -1,0 +1,56 @@
+{
+  "at": "2026-11-07T01:16:43.647825+00:00",
+  "jobId": "node26-engine165-1106-200320-0848",
+  "recipeRevision": 165,
+  "sourceCommit": "dd69fcf25d6ddbf6c578330966d872cd8473aeee",
+  "sourceWasFrozen": true,
+  "changedFrozenSourcePaths": [],
+  "exitCode": 1,
+  "durationSeconds": 490.6,
+  "selectedPlan": {
+    "nodes": 9,
+    "cached": 8,
+    "willRun": 1
+  },
+  "firstActualError": {
+    "path": "js/public/experimental/KandeloBackingStore.h",
+    "line": 14,
+    "message": "visibility does not match previous declaration",
+    "owningCause": "Hidden TrackMetadata forward declaration in public KandeloBackingTransfers.h conflicts with JS_PUBLIC_API declaration"
+  },
+  "additionalActualErrors": [
+    {
+      "path": "js/src/vm/StructuredClone.cpp",
+      "line": 2523,
+      "message": "maxByteLength is a protected member of js::ArrayBufferObject",
+      "owningCause": "Retained transfer must use actual public resizable subclass getter or fixed current byte length"
+    }
+  ],
+  "diagnosticCount": 2,
+  "evidence": {
+    "output.log": {
+      "path": ".context/node26-engine165-failure-final/output.log",
+      "sha256": "199b1f180245ebe8ceccdb5d9f4b56f1405924a8b0536eee51f6e594c67905f2"
+    },
+    "meta.json": {
+      "path": ".context/node26-engine165-failure-final/meta.json",
+      "sha256": "b04803b41386fb7ec0bc7cd6f1eacb1a22dd5bfc6d5e92a141629287520e610f"
+    },
+    "result.json": {
+      "path": ".context/node26-engine165-failure-final/result.json",
+      "sha256": "b08a2404fd5cacb8173fa48c1718a3c516931553c4fd5b50ae1976d5cf08f32b"
+    },
+    "preflight-report.json": {
+      "path": ".context/node26-engine165-failure-final/preflight-report.json",
+      "sha256": "6bcd5b2cbcfd31d240b3fbaf986f4672406b2ce87ebf00ebe2181cab071dc9ec"
+    },
+    "preflight-terminal.json": {
+      "path": ".context/node26-engine165-failure-final/preflight-terminal.json",
+      "sha256": "6e4d75249f7ba9392ec9f0f036beaa8347501d78b362adb708ef9faf2f403be6"
+    }
+  },
+  "acceptedArtifact": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "scope": "Normal selected engine165 production compiler failure;8dependencies reused, no kernel/rootfs/app/product build. Actual engine compile is incomplete, not an accepted artifact or runtime evidence.166source corrections require later compilation."
+}

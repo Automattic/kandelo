@@ -251,7 +251,7 @@ static bool KandeloNativeStatWatcher(JSContext* cx,unsigned argc,Value* vp) {
   if(!args.get(3).isNumber() || args[3].toNumber()<0 || args[3].toNumber()>UINT32_MAX || std::trunc(args[3].toNumber())!=args[3].toNumber()) {JS_ReportErrorASCII(cx,"StatWatcher interval must be uint32");return false;}
   state->root=owner;auto* loop=state->loop;loop->starting=state;
   const int status=StatPoll::StartPoll(&state->handle,KandeloStatWatcherChanged,path.get(),uint32_t(args[3].toNumber()),KandeloNativeMemoryOwner(cx));
-  loop->starting=nullptr;if(status && !state->work)state->root.reset();
+  loop->starting=nullptr;if(status && !state->work)state->root=nullptr;
   if(status)args.rval().setInt32(status);else args.rval().setUndefined();return true;
   } catch(const std::bad_alloc&) { JS_ReportOutOfMemory(cx);return false; }
 }

@@ -1,0 +1,16 @@
+--- a/js/public/experimental/KandeloBackingTransfers.h
++++ b/js/public/experimental/KandeloBackingTransfers.h
+@@ -5,0 +6 @@
++#include "jstypes.h"
+@@ -8 +9 @@
+-MetadataRef TrackMetadata(size_t, const AccountRef&);
++extern JS_PUBLIC_API MetadataRef TrackMetadata(size_t, const AccountRef&);
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -2520,0 +2521,3 @@
++          const size_t maximum = arrayBuffer->isResizable()
++              ? arrayBuffer->as<ResizableArrayBufferObject>().maxByteLength()
++              : arrayBuffer->byteLength();
+@@ -2523 +2526 @@
+-              arrayBuffer->maxByteLength(), arrayBuffer->isResizable(), contents.freeFunc(), contents.freeUserData());
++              maximum, arrayBuffer->isResizable(), contents.freeFunc(), contents.freeUserData());
