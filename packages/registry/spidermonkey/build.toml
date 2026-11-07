@@ -1,5 +1,7 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/codec-pledge.h",
+  "third_party/node-core/codec-pledge.md",
   "packages/registry/spidermonkey/patches/0145-node-context-watch-owner.patch",
   "packages/registry/spidermonkey/patches/0144-node-port-transit-collector.patch",
   "third_party/node-core/port-transit-graph.h",
@@ -697,4 +699,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 198
+revision = 199

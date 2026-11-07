@@ -1,0 +1,133 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/compression-contracts.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "compression",
+      "streams",
+      "async",
+      "engine"
+    ],
+    "publicRequirementRecords": [
+      {
+        "inventory": "tests/nodejs/audit/compression-requirements.json",
+        "document": "doc/api/zlib.md",
+        "line": 784,
+        "endLine": 793,
+        "title": "Pledged Source Size",
+        "sha256": "8cccaefa21e5fe00f4f6c63fd22509eba3a331edaac54dda8be611c5f7c4541f"
+      },
+      {
+        "inventory": "tests/nodejs/audit/compression-requirements.json",
+        "document": "doc/api/zlib.md",
+        "line": 2224,
+        "endLine": 2273,
+        "title": "Class: `ZstdOptions`",
+        "sha256": "0c145f0bc7f6d0379284ae357eed3ec3feccdb0606af1c8964264ea283f825e8"
+      }
+    ],
+    "scope": "Exact audited public Zstd pledge requirement records and native admission/error owner. No exact standalone original finding ID is invented. Original ZIP-008/009 absence prose is historical: real converted-integer admission and optional init callback handling already exist; complete error/lifecycle/guest reconciliation remains open."
+  },
+  "sourceImplemented": [
+    "Shared portable exact primitive-number/safe-integer/nonnegative Zstd pledge policy, with undefined unknown sentinel and valid negative zero",
+    "Actual native CodecInit consumes policy for both Zstd modes, no ToNumber or fractional truncation",
+    "Genuine intrinsic native TypeError/RangeError and exact messages/codes, ordinary checked native code assignment semantics",
+    "Normal header staging/input closure; existing real codec/stream/byte/async owners and pinned public wrappers preserved"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-zstd199-source-r1/report.json",
+    "sha256": "c35221d053e89a0112a364879cb07ce900fb6047e5d4b336520f894aa7b248a3",
+    "guardedInputs": 866,
+    "scope": "Actual Zstd primitive/safe-integer/nonnegative policy and genuine typed native error code semantics; scoped native component, no production JSAPI/error/GC/init chronology/fourhost closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-zstd199-affected-r1.json",
+    "sha256": "99be948e1d692b327675995b6cb0c91a15b381b1ae2d1e2a8503e511a4cbdabb",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-zstd199-source-r1/report.json",
+    "sha256": "c35221d053e89a0112a364879cb07ce900fb6047e5d4b336520f894aa7b248a3",
+    "pledgedSizePolicyGroups": 52,
+    "wholeUnchangedUpstreamFiles": 1,
+    "subjectsPerFile": 2,
+    "compiledInputsVerified": 1019,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Actual portable policy over genuine native codecs/private InitStream/streams/async/Buffer dependencies, not production error/realm/stack/GC, hook chronology or setter-count proof"
+  },
+  "sealedEvidence": {
+    "report": ".context/zstd-pledge-owner-agent/report.json",
+    "sha256": "e10c96b95dab918deaae98e9d7ffffae1f1a27d675e37d106abb592c9921010e",
+    "reusedEvidence": true,
+    "scope": "1tiny compile0fail,52focused groups/full unchanged file per subject;4original fixture abort134runs retained, native-only rejected NaN/string plusGC survive, no Node defect/workaround."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/zstd-pledge-owner-agent/report.json",
+      "sha256": "e10c96b95dab918deaae98e9d7ffffae1f1a27d675e37d106abb592c9921010e",
+      "kind": "preserved-four-mixed-fixture-aborts",
+      "aborts": [
+        {
+          "run": "r1",
+          "exit": 134,
+          "ordinaryPass": false
+        },
+        {
+          "run": "r2",
+          "exit": 134,
+          "ordinaryPass": false
+        },
+        {
+          "run": "r3",
+          "exit": 134,
+          "ordinaryPass": false
+        },
+        {
+          "run": "r4",
+          "exit": 134,
+          "ordinaryPass": false
+        }
+      ],
+      "nativeOnlyControls": [
+        {
+          "case": "NaN",
+          "exit": 0,
+          "signal": null,
+          "pass": true,
+          "meaning": "does not reproduce mixed fixture abort; no Node fault established"
+        },
+        {
+          "case": "string",
+          "exit": 0,
+          "signal": null,
+          "pass": true,
+          "meaning": "does not reproduce mixed fixture abort; no Node fault established"
+        }
+      ],
+      "reason": "Named init capture recursion and invalid uninitialized native handle lifetime caused stack overflow/GC aborts in fixture; corrected fixture/unchanged assertions, no production workaround or outside-runtime fault established."
+    }
+  ],
+  "remaining": [
+    "native codec/stream/async/Buffer/private InitStream are explicit component dependencies",
+    "production JSAPI error/realm/stack/GC is uncompiled/unexecuted",
+    "compound fixture does not establish initialization/hook chronology or setter counts",
+    "throwing-code-setter fatal policy source-traced only",
+    "complete provider allocator/fault/ZIP/iterable/Web/worker conformance",
+    "no identified-artifact four-host runtime validation",
+    "Existing converted-integer zlib admission and optional init onerror handling supersede original ZIP-008/009 absence prose; their remaining guest/error/lifecycle reconciliation is distinct from pledged-size policy",
+    "Complete public Zstd/codec reset/dictionary/frame modes, ZIP/iterable/Web/worker behavior and native allocation accounting"
+  ],
+  "at": "2026-11-07T08:13:15.051201+00:00",
+  "recipeRevision": 199,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

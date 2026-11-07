@@ -5,6 +5,10 @@
  */
 #include <cmath>
 #include <cstring>
+#include "kandelo-node-codec-pledge.h"
+#include "js/Exception.h"
+#include "js/PropertyAndElement.h"
+#include "js/Stack.h"
 
 namespace {
 namespace codec = kandelo::codecs;
@@ -271,6 +275,32 @@ static bool KandeloCodecError(JSContext* cx, HandleObject owner, const codec::Co
   return KandeloCodecCall(cx, owner, callback, arguments, &ignored);
 }
 
+static bool KandeloCodecPledgedSizeError(JSContext* cx, const codec::PledgedSizeError& failure) {
+  if (JS_IsExceptionPending(cx)) return false;
+  RootedString message(cx, JS_NewStringCopyZ(cx, failure.message));
+  RootedString file(cx, JS_GetEmptyString(cx));
+  RootedObject stack(cx);
+  RootedValue error(cx);
+  const JSExnType type = failure.kind == codec::PledgedSizeError::Kind::TypeError ? JSEXN_TYPEERR : JSEXN_RANGEERR;
+  if (!message || !JS::CaptureCurrentStack(cx, &stack) ||
+      !JS::CreateError(cx, type, stack, file, 0, JS::ColumnNumberOneOrigin(1), nullptr,
+                      message, JS::NothingHandleValue, &error)) return false;
+  RootedObject object(cx, &error.toObject());
+  RootedString code(cx, JS_NewStringCopyZ(cx, failure.code));
+  if (!code) return false;
+  RootedValue value(cx, StringValue(code)), receiver(cx, ObjectValue(*object));
+  RootedString name(cx, JS_NewStringCopyZ(cx, "code"));
+  RootedId id(cx);
+  if (!name || !JS_StringToId(cx, name, &id)) return false;
+  JS::ObjectOpResult result;
+  // Node's checked native error Set invokes inherited setters and ignores a
+  // nonthrowing false result. A genuine setter exception is a fatal CHECK
+  // path, not permission to replace the public error with generic metadata.
+  const bool applied = JS_ForwardSetPropertyTo(cx, object, id, value, receiver, result);
+  if (!applied) MOZ_CRASH("Checked native codec error code assignment failed");
+  JS_SetPendingException(cx, error); return false;
+}
+
 static bool KandeloCodecInit(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   auto* state = KandeloCodecThis(cx, args, false);
@@ -328,9 +358,9 @@ static bool KandeloCodecInit(JSContext* cx, unsigned argc, Value* vp) {
       }
     }
     if (!brotli && !args[1].isUndefined()) {
-      int64_t value;
-      if (!KandeloCodecInteger(cx, args[1], 0, 9007199254740991LL, &value)) return false;
-      pledge = static_cast<uint64_t>(value);
+      const auto number = args[1].isNumber() ? std::optional<double>(args[1].toNumber()) : std::nullopt;
+      if (const auto error = codec::CheckPledgedSize(number, &pledge))
+        return KandeloCodecPledgedSizeError(cx, *error);
     }
   }
   auto writeBacking = KandeloCodecStateBacking(cx, writeState, zlib);

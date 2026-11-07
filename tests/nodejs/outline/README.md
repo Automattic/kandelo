@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source199 integrates actual Zstd pledged-size numeric/typed-error policy.52focused groups, one complete unchanged upstream file per subject and19affected checks pass; four original fixture aborts remain nonpasses. Current guest/four-host conformance is unestablished.
+See [source scope](zstd-pledged-size-integration.md).
+
 Source198 corrects actual native watch-registry thread ownership with a narrow declaration. Full consumer/Worker/shutdown source trace, exact engine replay, unchanged checker and14package checks pass; no new runtime test or compile ran.
 See [source scope](context-thread-watch-integration.md).
 

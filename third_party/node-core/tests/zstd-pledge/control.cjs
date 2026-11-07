@@ -1,0 +1,20 @@
+'use strict';
+const assert=require('node:assert/strict'),native=require('node:zlib');
+assert.equal(process.version,'v26.13.0');
+const candidate=require('./platform.cjs').create(),rows=[],failures=[];
+function output(api,method,value,absent=false){try{const stream=api[method](absent?{}:{pledgedSrcSize:value});stream.destroy();return{accepted:true}}catch(error){const fields=Object.fromEntries(['name','message','code'].map(k=>[k,error[k]]));fields.ownCode=Object.hasOwn(error,'code');for(const key of ['message','code']){const d=Object.getOwnPropertyDescriptor(error,key);fields[key+'Descriptor']=d&&{writable:d.writable,enumerable:d.enumerable,configurable:d.configurable}}return fields}}
+async function judge(name,body){process.stderr.write("case: "+name+"\n");try{await body();rows.push({name,pass:true})}catch(error){process.stderr.write('failure: '+error.stack+'\n');rows.push({name,pass:false});failures.push({name,message:error.message})}}
+(async()=>{
+ const cases=[['string','1'],['null',null],['boolean',true],['boxed Number',new Number(1)],['BigInt',1n],['symbol',Symbol('size')],['object',{}],['NaN',NaN],['infinity',Infinity],['negative infinity',-Infinity],['positive fraction',1.5],['negative fraction',-1.5],['too large',2**53],['too negative',-(2**53)],['negative integer',-1],['min safe integer',Number.MIN_SAFE_INTEGER],['zero',0],['negative zero',-0],['positive integer',1],['max safe integer',Number.MAX_SAFE_INTEGER],['undefined',undefined]];
+ for(const method of ['createZstdCompress','createZstdDecompress']){
+  await judge(method+' omitted pledge',()=>assert.deepEqual(output(candidate,method,undefined,true),output(native,method,undefined,true)));
+  for(const [name,value]of cases)await judge(method+' '+name,()=>assert.deepEqual(output(candidate,method,value),output(native,method,value)));
+  await judge(method+' does not coerce rejected objects',()=>{for(const api of [native,candidate]){let calls=0;const result=output(api,method,{valueOf(){calls++;return 1},toString(){calls++;return'1'}});assert.equal(result.name,'TypeError');assert.equal(result.message,'pledgedSrcSize must be a number');assert.equal(calls,0)}});
+  await judge(method+' preserves ordinary inherited readonly code',()=>{const descriptor=Object.getOwnPropertyDescriptor(Error.prototype,'code');Object.defineProperty(Error.prototype,'code',{configurable:true,value:'inherited',writable:false});try{const actual=output(candidate,method,NaN),expected=output(native,method,NaN);assert.deepEqual(actual,expected);assert.equal(actual.code,'inherited');assert.equal(actual.ownCode,false)}finally{if(descriptor)Object.defineProperty(Error.prototype,'code',descriptor);else delete Error.prototype.code}});
+ }
+ const data=Buffer.from('genuine zstd provider bytes '.repeat(50));
+ await judge('actual public sync round trip after admission',()=>{const options={pledgedSrcSize:data.length};const actual=candidate.zstdCompressSync(data,options);assert.deepEqual(native.zstdDecompressSync(actual),data);assert.deepEqual(candidate.zstdDecompressSync(native.zstdCompressSync(data,options)),data)});
+ await judge('actual public async round trip after admission',async()=>{const compressed=await new Promise((resolve,reject)=>candidate.zstdCompress(data,{pledgedSrcSize:data.length},(error,value)=>error?reject(error):resolve(value)));assert.deepEqual(native.zstdDecompressSync(compressed),data)});
+ for(const method of ['zstdCompressSync','zstdDecompressSync'])await judge(method+' validation remains before provider work',()=>{let actual,expected;try{candidate[method](Buffer.alloc(0),{pledgedSrcSize:-1})}catch(error){actual={name:error.name,message:error.message,code:error.code}}try{native[method](Buffer.alloc(0),{pledgedSrcSize:-1})}catch(error){expected={name:error.name,message:error.message,code:error.code}}assert.deepEqual(actual,expected)});
+ console.log(JSON.stringify({scope:'actual portable Zstd admission over unchanged public wrappers/real native codec dependency; not production JSAPI/guest/four-host conformance',rows,failures}));if(failures.length)process.exitCode=1;
+})().catch(error=>{console.error(error);process.exitCode=1});
