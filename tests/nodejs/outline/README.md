@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source205 integrates actual versioned host receiver-order ownership. Nine current portable groups, exact engine replay/normal staging/877inputs/unchanged style/pinned bootstrap syntax and14package checks pass. Two native-only public cases remain candidate gaps until sender/outcome integration; new guest JSAPI is uncompiled.
+See [source scope](host-receiver-order-integration.md).
+
 Source204 integrates real retained TLS plaintext/EOF/error material and actual settled-Promise acknowledgement. Three current native cases,27TLS-policy groups,12constant groups,876normal inputs and14package checks pass. An invalid retry-dependent fixture threshold is replaced by actual completed semantic checks; all ownership conditions and upstream assertions stay unchanged. Guest C++ remains uncompiled; HTTPS stays blocked.
 See [source scope](tls-plaintext-read-integration.md).
 

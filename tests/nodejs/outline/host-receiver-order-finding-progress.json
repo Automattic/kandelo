@@ -1,0 +1,103 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/streams.md",
+    "findingIds": [
+      "STR-003",
+      "STR-004"
+    ],
+    "relatedFamilies": [
+      "workers",
+      "streams",
+      "web",
+      "engine",
+      "async"
+    ],
+    "scope": "Partial actual ordered receiver/native map/constructor/phase prerequisite; no generic registered sender, WebStream transfer or Worker lifetime closure; combined original streams-contracts.md STR-003/STR-004 reference preserved as narrative"
+  },
+  "sourceImplemented": [
+    "SameProcess private version2wire carries actual native transfer-map indices and local JS constructor indices; version1 remains readable",
+    "Preflight complete descriptor strings/schedule before constructors; require unique complete JS coverage and exact actual custom native slots",
+    "Actual context-rooted receiver placeholders are created in scheduled order around real native transfer reads; main graph and payload finalization consume the frozen order",
+    "Unique noncopyable/nonmovable phase owner advances native completion only after real success; constructor/native failure and late mutation stop later work",
+    "Existing native packet/read owners keep rollback; no JS roots/pointers/global public registration tokens cross packets",
+    "Actual source204TLS/201terminal/197collector/200Root fixes are retained; normal declared/staged VM header and paired private writer/reader patch"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-hostorder205-source-r1/report.json",
+    "sha256": "d2c76f89be6f35142380d1a54337b97df1cdde2144038acd014337fef9ae6f5d",
+    "guardedInputs": 877,
+    "scope": "Actual ordered receiver/privatewire/phase owner prerequisite, not generic registered host/stream transfer support or guest/four-host conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-hostorder205-affected-r1.json",
+    "sha256": "cca1ea49b84c7d26797c3aea772a11f3d5a96f6a239f12c0f47b3b249c270dec",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-hostorder205-source-r1/report.json",
+    "sha256": "d2c76f89be6f35142380d1a54337b97df1cdde2144038acd014337fef9ae6f5d",
+    "portableOwnerGroups": 9,
+    "nativeOnlyPublicCases": 2,
+    "genericRegisteredSenderEnabled": false,
+    "newCompilerAttempts": 1,
+    "newCompilerFailures": 0,
+    "previousCompilerAttemptsIntegrated": 9,
+    "previousCompilerFailuresIntegrated": 0,
+    "historicalExpectedMutationAborts": 6,
+    "compiledControl": {
+      "report": ".context/node26-hostorder205-source-r1/controls-r2/compiled-inputs.json",
+      "sha256": "e74ed460536eefa69fe80c4d4be184f36e82a6824e1e15e790ed9fb3995fcf7c",
+      "inputCount": 782,
+      "artifact": {
+        "path": ".context/node26-hostorder205-source-r1/controls-r2/control",
+        "sha256": "a9ddad41a4f0171c0a2271872796ef8a528fdc2d087e09a9cec2183918ae4652",
+        "bytes": 38200
+      }
+    },
+    "unchangedStyleCheckerPassed": true,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Actual portable receiver-order owner and source/staging checks; native public controls establish valid cases, not candidate transfer or guest conformance."
+  },
+  "sealedEvidence": {
+    "report": ".context/host-transfer-order-agent/handoff/report.json",
+    "sha256": "eddf2c084b0a1f4be7be02eb0fb8bc924abc3a48a54931493cf9d63268f716b9",
+    "reusedEvidence": true,
+    "scope": "Immutable ordered receiver wire/phase prerequisite;9portable groups overlap across3source revisions,9successful tiny compiles/3positive executions/6expected mutation aborts. Native-only public cases establish validity, not candidate support; no JSAPI compiler/guest proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/host-transfer-order-agent/handoff/report.json",
+      "sha256": "eddf2c084b0a1f4be7be02eb0fb8bc924abc3a48a54931493cf9d63268f716b9",
+      "scope": "Six historical expected mutation aborts are rejection observations, not passing compatibility; old positive-header identity limits retained. Valid generic sender cases remain actual implementation gaps."
+    },
+    {
+      "report": ".context/node26-hostorder205-source-r1.log",
+      "sha256": "9ccaf097e5a0af5ea14d7828455a1a30e0cd80bd3d2e135089e4a930f415875a",
+      "scope": "Initial root setup referenced sealed postimage without its source/ directory and stopped before any compiler/runtime test; corrected only local evidence path, raw failure/commands retained."
+    }
+  ],
+  "remaining": [
+    "Complete generic explicit host admission/private identity/source/duplicate/mark/error order and nested kTransferList registry; no type-name or AbortSignal-specific allowances",
+    "Register all transferred JS graph identities including unreachable entries without JS roots crossing packets",
+    "Serialize main graph, detach all buffers, invoke actual JS kTransfer/native moves in combined order and serialize deferred payloads with same memory graph; emit that real combined version2 schedule",
+    "Then validate actual context-local constructors/deserializers/once-only finalization/abort and source/native/receiver mutations through compiled engine and unchanged upstream/native controls",
+    "Actual FileHandle transferable fd/native lease owner, complete stream cancellation/backpressure/messageerror/fatal/GC/OOM/realm/Worker behavior and all4host artifact conformance remain gaps",
+    "Version2 format is private SameProcess, not persistent V8/SM bytes. Old readers reject version2; normal artifact coherence and recipe revision required. No kernel ABI/pin change.",
+    "The pure owner can schedule interleaved constructors; current local writer still emits only native-then-clone order because sender JS transfers remain disabled. This prerequisite is not generic transfer support.",
+    "Actual native read/pointer/sidecar identity validation and rollback remain in existing owners; no portable phase test establishes production JSAPI execution."
+  ],
+  "at": "2026-11-07T09:50:41.972627+00:00",
+  "recipeRevision": 205,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

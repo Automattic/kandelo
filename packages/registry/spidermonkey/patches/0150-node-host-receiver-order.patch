@@ -1,0 +1,296 @@
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -66,4 +66,5 @@
+ #include "vm/JSContext.h"
+ #include "vm/KandeloBackingStore.h"
++#include "vm/KandeloHostOrder.h"
+ #include "vm/PlainObject.h"  // js::PlainObject
+ #include "vm/RegExpObject.h"
+@@ -544,6 +545,20 @@
+   // one `undefined` placeholder value (the readTypedArray hack).
+   RootedValueVector allObjs;
+-  // Allocated before graph decoding, populated only by a host-reference tag.
++  // Descriptor-created receivers stay rooted before graph decoding. Only a
++  // graph host-reference tag adds them to the separate allObjs identity map.
+   RootedValueVector kandeloHostObjects;
++  RootedValueVector kandeloHostInfo;
++  kandelo::clone::HostOrder kandeloHostOrder;
++  uint32_t kandeloHostVersion = 0;
++  mozilla::Maybe<SCInput::BufferIterator> kandeloGraphStart, kandeloPayloadStart;
++  mozilla::Maybe<SCInput::BufferIterator> kandeloTableStart, kandeloTableEnd;
++  bool prepareKandeloHostEnvelope();
++  bool createKandeloHost(uint32_t index);
++  bool badKandeloHostEnvelope(const char* message) {
++    if (!context()->isExceptionPending())
++      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
++                                JSMSG_SC_BAD_SERIALIZED_DATA, message);
++    return false;
++  }
+
+   size_t numItemsRead;
+@@ -778,4 +793,5 @@
+ // or V8 serialization format. Version 1 carries the graph, deferred host payloads,
+ // and a string-only constructor table addressed by a checked relative offset.
++static constexpr uint32_t SCTAG_KANDELO_HOST_ORDER = JS_SCTAG_USER_MAX - 3;
+ static constexpr uint32_t SCTAG_KANDELO_HOST_HEADER = JS_SCTAG_USER_MAX - 2;
+ static constexpr uint32_t SCTAG_KANDELO_HOST_OBJECT = JS_SCTAG_USER_MAX - 1;
+@@ -2744,5 +2760,5 @@
+       output().scope() == JS::StructuredCloneScope::SameProcess;
+   uint64_t headerOffset = out.tell();
+-  if (hostProtocol && (!out.writePair(SCTAG_KANDELO_HOST_HEADER, 1) ||
++  if (hostProtocol && (!out.writePair(SCTAG_KANDELO_HOST_HEADER, 2) ||
+                        !out.write(0) || !out.write(0))) {
+     return false;
+@@ -2772,9 +2788,31 @@
+     }
+     uint64_t tableOffset = out.tell();
+-    if (!out.writePair(SCTAG_KANDELO_HOST_TABLE, kandeloHostInfo.length())) return false;
++    if (kandeloHostInfo.length() > UINT32_MAX) return reportDataCloneError(JS_SCERR_TRANSFERABLE);
++    if (!out.writePair(SCTAG_KANDELO_HOST_TABLE, uint32_t(kandeloHostInfo.length()))) return false;
+     for (size_t i = 0; i < kandeloHostInfo.length(); ++i) {
+       RootedString info(context(), kandeloHostInfo[i].toString());
+       if (!writeString(SCTAG_STRING, info)) return false;
+     }
++    // The current sender admits native transfers followed by cloned JS hosts.
++    // Encode this actual creation order, retaining native transfer-map indices
++    // independently from JS constructor/graph identities. Generic registered
++    // JS sender admission/nested commit will consume this same ordered owner.
++    try {
++      kandelo::clone::HostOrder order;
++      uint32_t index = 0;
++      for (auto* object : transferableObjects) {
++        RootedObject item(context(), object);ESClass cls;
++        if (!GetBuiltinClass(context(), item, &cls)) return false;
++        if (cls != ESClass::ArrayBuffer)
++          order.Append(kandelo::clone::HostOrder::Kind::Native, index);
++        ++index;
++      }
++      for (size_t i = 0; i < kandeloHostInfo.length(); ++i)
++        order.Append(kandelo::clone::HostOrder::Kind::JavaScript, uint32_t(i));
++      if (order.Entries().size() > UINT32_MAX) return reportDataCloneError(JS_SCERR_TRANSFERABLE);
++      if (!out.writePair(SCTAG_KANDELO_HOST_ORDER, uint32_t(order.Entries().size()))) return false;
++      for (const auto& entry : order.Entries())
++        if (!out.writePair(uint32_t(entry.kind), entry.index)) return false;
++    } catch (const std::bad_alloc&) { ReportOutOfMemory(context());return false; }
+     // Reacquire the iterator after appending; growth can invalidate it.
+     auto point = out.iter();
+@@ -2801,4 +2839,5 @@
+       allObjs(in.context()),
+       kandeloHostObjects(in.context()),
++      kandeloHostInfo(in.context()),
+       numItemsRead(0),
+       callbacks(cb),
+@@ -3862,4 +3901,8 @@
+         return false;
+       }
++      if (kandeloHostVersion == 2 &&
++          !kandeloHostOrder.BeforeNative(uint32_t(i),
++              [&](uint32_t index) { return createKandeloHost(index); }))
++        return badKandeloHostEnvelope("invalid host creation order");
+       if (!callbacks->readTransfer(cx, this, cloneDataPolicy, tag, content,
+                                    extraData, closure, &obj)) {
+@@ -3871,4 +3914,6 @@
+       MOZ_ASSERT(obj);
+       MOZ_ASSERT(!cx->isExceptionPending());
++      if (kandeloHostVersion == 2 && !kandeloHostOrder.CommitNative(uint32_t(i)))
++        return badKandeloHostEnvelope("invalid native host completion");
+     }
+
+@@ -4373,4 +4418,102 @@
+ }
+
++// SameProcess preflight invokes no protocol/constructor hooks and retains no
++// context pointer in bytes. Normal GC/OOM safepoints remain. Strings and wrappers live only
++// in this reader's rooted vectors. Native packet/read transactions own abort.
++bool JSStructuredCloneReader::prepareKandeloHostEnvelope() {
++  const auto saved = in.tell();
++  auto restore = mozilla::MakeScopeExit([&] { in.seekTo(saved); });
++  uint32_t tag, data;uint64_t nativeCount = 0;
++  uint32_t transferState = SCTAG_TM_UNREAD;
++  Maybe<SCInput::BufferIterator> transferEntries;
++  Vector<uint32_t, 0, SystemAllocPolicy> nativeSlots;
++  if (!in.getPair(&tag, &data)) return false;
++  if (tag == SCTAG_TRANSFER_MAP_HEADER) {
++    transferState = data;
++    if (!in.readPair(&tag, &data) || !in.read(&nativeCount)) return false;
++    if (nativeCount > UINT32_MAX || nativeCount > SIZE_MAX / (3 * sizeof(uint64_t)))
++      return badKandeloHostEnvelope("invalid transfer table size");
++    transferEntries = mozilla::Some(in.tell());
++    if (!in.seekBy(size_t(nativeCount) * 3 * sizeof(uint64_t))) return false;
++  }
++  if (!in.getPair(&tag, &data)) return false;
++  if (tag != SCTAG_KANDELO_HOST_HEADER) return true;
++  if (allowedScope != JS::StructuredCloneScope::SameProcess || (data != 1 && data != 2))
++    return badKandeloHostEnvelope("invalid host envelope");
++  if (transferState >= SCTAG_TM_END)
++    return badKandeloHostEnvelope("invalid transfer map header");
++  if (transferState != SCTAG_TM_UNREAD) {
++    ReportDataCloneError(context(), callbacks, JS_SCERR_TRANSFERABLE_TWICE, closure);return false;
++  }
++  kandeloHostVersion = data;
++  // Raw SpiderMonkey graphs never allocate this embedding's order metadata.
++  const auto envelopeStart = in.tell();
++  if (transferEntries.isSome()) {
++    in.seekTo(*transferEntries);
++    for (uint32_t i = 0; i < nativeCount; ++i) {
++      if (!in.readPair(&tag, &data) || !in.seekBy(2 * sizeof(uint64_t))) return false;
++      if (tag != SCTAG_TRANSFER_MAP_ARRAY_BUFFER && tag != SCTAG_TRANSFER_MAP_STORED_ARRAY_BUFFER &&
++          tag != SCTAG_TRANSFER_MAP_KANDELO_BACKING && !nativeSlots.append(i)) {
++        ReportOutOfMemory(context());return false;
++      }
++    }
++    in.seekTo(envelopeStart);
++  }
++  uint64_t offset, payloadOffset;
++  if (!in.readPair(&tag, &data) || !in.read(&offset) || !in.read(&payloadOffset)) return false;
++  kandeloGraphStart = mozilla::Some(in.tell());
++  if (offset > SIZE_MAX || offset % sizeof(uint64_t) ||
++      payloadOffset > offset || payloadOffset % sizeof(uint64_t))
++    return badKandeloHostEnvelope("invalid host offsets");
++  if (!in.seekBy(size_t(payloadOffset))) return false;
++  kandeloPayloadStart = mozilla::Some(in.tell());
++  if (!in.seekBy(size_t(offset - payloadOffset))) return false;
++  kandeloTableStart = mozilla::Some(in.tell());
++  uint32_t count;
++  if (!in.readPair(&tag, &count) || tag != SCTAG_KANDELO_HOST_TABLE)
++    return badKandeloHostEnvelope("invalid host table");
++  if (count && !context()->hasKandeloCloneErrors())
++    return badKandeloHostEnvelope("host clone protocol is not initialized");
++  for (uint32_t i = 0; i < count; ++i) {
++    uint32_t length;
++    if (!in.readPair(&tag, &length) || tag != SCTAG_STRING)
++      return badKandeloHostEnvelope("invalid host constructor info");
++    RootedString info(context(), readString(length, DontAtomizeStrings));
++    if (!info || !kandeloHostInfo.append(StringValue(info)) ||
++        !kandeloHostObjects.append(UndefinedValue())) return false;
++  }
++  try {
++    if (kandeloHostVersion == 1) {
++      // Old clone-only envelopes constructed JS hosts after native transfers.
++      for (uint32_t i = 0; i < count; ++i)
++        kandeloHostOrder.Append(kandelo::clone::HostOrder::Kind::JavaScript, i);
++    } else {
++      uint32_t orderCount;
++      if (!in.readPair(&tag, &orderCount) || tag != SCTAG_KANDELO_HOST_ORDER)
++        return badKandeloHostEnvelope("missing host creation order");
++      for (uint32_t i = 0; i < orderCount; ++i) {
++        uint32_t kind, index;if (!in.readPair(&kind, &index)) return false;
++        kandeloHostOrder.Append(kandelo::clone::HostOrder::Kind(kind), index);
++      }
++    }
++    if (!kandeloHostOrder.Prepare(nativeCount, count) ||
++        (kandeloHostVersion == 2 && !kandeloHostOrder.MatchesNativeSlots(nativeSlots.begin(), nativeSlots.length())))
++      return badKandeloHostEnvelope("invalid host creation order");
++  } catch (const std::bad_alloc&) { ReportOutOfMemory(context());return false; }
++  kandeloTableEnd = mozilla::Some(in.tell());return true;
++}
++bool JSStructuredCloneReader::createKandeloHost(uint32_t index) {
++  if (index >= kandeloHostInfo.length() || !kandeloHostObjects[index].isUndefined())
++    return badKandeloHostEnvelope("invalid host constructor index");
++  RootedValue argument(context(), kandeloHostInfo[index]);
++  RootedValue hook(context(), context()->kandeloCloneCreate()), object(context());
++  if (!CallKandeloCloneHook(context(), hook, JS::HandleValueArray(argument), &object)) return false;
++  if (!object.isObject()) return context()->reportKandeloCloneError("Invalid host deserializer result");
++  RootedObject host(context(), &object.toObject());int32_t mode;
++  if (!context()->getKandeloCloneMode(host, &mode)) return false;
++  if (mode < 0) return context()->reportKandeloCloneError("Unregistered host deserializer result");
++  kandeloHostObjects[index].set(object);return true;
++}
++
+ bool JSStructuredCloneReader::read(MutableHandleValue vp, size_t nbytes) {
+   if (!readHeader()) {
+@@ -4380,5 +4523,5 @@
+              "allowedScope should have been resolved by now");
+
+-  if (!readTransferMap()) {
++  if (!prepareKandeloHostEnvelope() || !readTransferMap()) {
+     return false;
+   }
+@@ -4387,66 +4530,14 @@
+   MOZ_ASSERT(objState.length() == 1);
+
+-  // Read the string-only table ahead of the graph. Construct every official
+-  // host object first so payloads can point to hosts not yet encountered in the
+-  // main graph. This table never consumes object IDs from allObjs.
+-  Maybe<SCInput::BufferIterator> hostTableStart, hostTableEnd, hostPayloadStart;
+-  uint32_t tag, version;
+-  // The envelope is a wire property, independent of receiver initialization.
+-  // Plain bootstrap graphs can be read before host constructors are installed.
+-  if (!in.getPair(&tag, &version)) return false;
+-  if (tag == SCTAG_KANDELO_HOST_HEADER) {
+-    if (allowedScope != JS::StructuredCloneScope::SameProcess || version != 1) {
+-      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
+-                                JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host envelope");
+-      return false;
+-    }
+-    uint64_t offset, payloadOffset;
+-    if (!in.readPair(&tag, &version) || !in.read(&offset) || !in.read(&payloadOffset)) return false;
+-    auto graphStart = in.tell();
+-    if (offset > SIZE_MAX || offset % sizeof(uint64_t) != 0 ||
+-        payloadOffset > offset || payloadOffset % sizeof(uint64_t) != 0) {
+-      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
+-                                JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host offsets");
+-      return false;
+-    }
+-    if (!in.seekBy(static_cast<size_t>(payloadOffset))) return false;
+-    hostPayloadStart = mozilla::Some(in.tell());
+-    if (!in.seekBy(static_cast<size_t>(offset - payloadOffset))) return false;
+-    hostTableStart = mozilla::Some(in.tell());
+-    uint32_t count;
+-    if (!in.readPair(&tag, &count) || tag != SCTAG_KANDELO_HOST_TABLE) {
+-      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
+-                                JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host table");
+-      return false;
+-    }
+-    if (count && !context()->hasKandeloCloneErrors()) {
+-      JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
+-                                JSMSG_SC_BAD_SERIALIZED_DATA,
+-                                "host clone protocol is not initialized");
+-      return false;
+-    }
+-    for (uint32_t i = 0; i < count; ++i) {
+-      uint32_t length;
+-      if (!in.readPair(&tag, &length)) return false;
+-      if (tag != SCTAG_STRING) {
+-        JS_ReportErrorNumberASCII(context(), GetErrorMessage, nullptr,
+-                                  JSMSG_SC_BAD_SERIALIZED_DATA, "invalid host constructor info");
+-        return false;
+-      }
+-      RootedString info(context(), readString(length, DontAtomizeStrings));
+-      if (!info) return false;
+-      RootedValue arg(context(), StringValue(info));
+-      RootedValue hook(context(), context()->kandeloCloneCreate()), object(context());
+-      if (!CallKandeloCloneHook(context(), hook, JS::HandleValueArray(arg), &object)) return false;
+-      if (!object.isObject()) return context()->reportKandeloCloneError("Invalid host deserializer result");
+-      RootedObject host(context(), &object.toObject());
+-      int32_t mode;
+-      if (!context()->getKandeloCloneMode(host, &mode)) return false;
+-      if (mode < 0) return context()->reportKandeloCloneError("Unregistered host deserializer result");
+-      if (!kandeloHostObjects.append(object)) return false;
+-    }
+-    hostTableEnd = mozilla::Some(in.tell());
+-    in.seekTo(graphStart);
+-  }
++  // Every descriptor and order entry was validated before native transfers
++  // could run init hooks. Only trailing JS constructors remain after the last
++  // actual native host, and none consumes graph/allObjs IDs.
++  if (kandeloHostVersion && !kandeloHostOrder.Finish(
++          [&](uint32_t index) { return createKandeloHost(index); }))
++    return badKandeloHostEnvelope("incomplete host creation order");
++  auto& hostTableStart = kandeloTableStart;
++  auto& hostTableEnd = kandeloTableEnd;
++  auto& hostPayloadStart = kandeloPayloadStart;
++  if (kandeloGraphStart.isSome()) in.seekTo(*kandeloGraphStart);
+   if (!readValue(vp)) return false;
+   if (hostPayloadStart.isSome()) {
+@@ -4464,5 +4555,9 @@
+     tailEndPos.reset();
+   }
+-  for (size_t i = 0; i < kandeloHostObjects.length(); ++i) {
++  // Payload/finalization order follows the same frozen host schedule rather
++  // than descriptor index. Native MessagePort finalization owns no JS payload.
++  for (const auto& entry : kandeloHostOrder.Entries()) {
++    if (entry.kind != kandelo::clone::HostOrder::Kind::JavaScript) continue;
++    const uint32_t i = entry.index;
+     RootedValue payload(context());
+     if (!readValue(&payload)) return false;

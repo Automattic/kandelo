@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0150-node-host-receiver-order.patch",
   "packages/registry/spidermonkey/patches/0149-node-tls-plaintext-owner.patch",
   "packages/registry/spidermonkey/patches/0148-node-tls-opaque-owner.patch",
   "third_party/node-core/tls-owner.h",
@@ -10,6 +11,7 @@ inputs = [
   "packages/registry/spidermonkey/patches/0144-node-port-transit-collector.patch",
   "third_party/node-core/port-transit-graph.h",
   "third_party/node-core/port-transit-owner.h",
+  "third_party/node-core/host-transfer-order.h",
   "third_party/node-core/upstream/tls-context/lib/tls.js",
   "third_party/node-core/upstream/tls-context/lib/internal/tls/common.js",
   "packages/registry/spidermonkey/patches/0143-node-sign-job-resource-info.patch",
@@ -714,4 +716,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 204
+revision = 205

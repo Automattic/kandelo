@@ -394,6 +394,7 @@ cp "$REPO_ROOT/third_party/node-core/monotonic-clock.h" "$SRC_DIR/js/src/shell/k
 cp "$REPO_ROOT/third_party/node-core/port-queue.h" "$SRC_DIR/js/src/shell/kandelo-node-port-queue.h"
 cp "$REPO_ROOT/third_party/node-core/port-transit-graph.h" "$SRC_DIR/js/src/shell/kandelo-node-port-transit-graph.h"
 cp "$REPO_ROOT/third_party/node-core/port-transit-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-port-transit-owner.h"
+cp "$REPO_ROOT/third_party/node-core/host-transfer-order.h" "$SRC_DIR/js/src/vm/KandeloHostOrder.h"
 cp "$REPO_ROOT/third_party/node-core/lock-manager.h" "$SRC_DIR/js/src/shell/kandelo-node-lock-manager.h"
 cp "$REPO_ROOT/third_party/node-core/provider-rotation.h" "$SRC_DIR/js/src/shell/kandelo-node-provider-rotation.h"
 cp "$REPO_ROOT/third_party/node-core/sqlite-store.h" \
