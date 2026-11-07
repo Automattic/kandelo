@@ -41,6 +41,7 @@ clang -g -O1 -pthread -std=gnu11 -fsanitize=undefined -fno-sanitize-recover=all 
  -I"$out/include" -I"$src/src" -I"$src" -I"$root/libc/glue" \
  "$root/tests/graphics/libc/wayland-log-retirement.c" "$root/tests/graphics/libc/wayland-log-util.c" \
  "$src/src/connection.c" "$out/server-setter.c" "$out/protocol.c" \
+ "$root/tests/graphics/libc/wayland-raw-inactive.c" \
  "${ffi_flags[@]}" "$link_gc" -o "$out/control"
 python3 - "$out/control" "$@" <<'PY'
 import json,os,pathlib,signal,subprocess,sys

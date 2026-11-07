@@ -9,6 +9,10 @@
 #include "drm_owned.h"
 #include "wayland-retirement.h"
 #include <limits.h>
+#ifndef WPK_WL_NATIVE_METADATA_BEGIN
+#define WPK_WL_NATIVE_METADATA_BEGIN() ((void)0)
+#define WPK_WL_NATIVE_METADATA_END() ((void)0)
+#endif
 
 struct wpk_wl_connection {
     struct wl_display *display;
@@ -68,11 +72,19 @@ static struct wl_display *wpk_wl_register(struct wl_display *display) {
 WL_EXPORT struct wl_display *wl_display_connect(const char *name) {
     int prior;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&prior);
     if(!_wpk_drm_actor_prepare()){pthread_setcancelstate(prior,NULL);return NULL;}
+#ifdef WPK_WL_RAW_ENTRY_ENABLED
+    struct wpk_wl_raw_entry entry;
+    wpk_wl_raw_entry_begin(&entry,NULL);
+    struct wl_display *display=NULL;
+    pthread_cleanup_push(wpk_wl_raw_entry_abandon,&entry);
+    wpk_wl_drain_releases();
+    display=wpk_wl_register(_wpk_upstream_display_connect(name));
+    if(!wpk_wl_raw_entry_end(&entry,display,WPK_RAW_DISPLAY))display=NULL;
+    pthread_cleanup_pop(0);
+#else
     wpk_wl_drain_releases();
     struct wl_display *display=wpk_wl_register(_wpk_upstream_display_connect(name));
-    /* A pending deferred cancellation can fire while restoring its state.
-     * Publish abandonment into the cold queue rather than losing an unreturned
-     * native connection or invoking user logs from a pthread cleanup handler. */
+#endif
     pthread_cleanup_push(wpk_wl_abandon_constructor,display);
     pthread_setcancelstate(prior,NULL);pthread_cleanup_pop(0);return display;
 }
@@ -81,8 +93,19 @@ WL_EXPORT struct wl_display *wl_display_connect_to_fd(int fd) {
     if(!_wpk_drm_actor_prepare()){
         int error=errno;close(fd);pthread_setcancelstate(prior,NULL);errno=error;return NULL;
     }
+#ifdef WPK_WL_RAW_ENTRY_ENABLED
+    struct wpk_wl_raw_entry entry;
+    wpk_wl_raw_entry_begin(&entry,NULL);
+    struct wl_display *display=NULL;
+    pthread_cleanup_push(wpk_wl_raw_entry_abandon,&entry);
+    wpk_wl_drain_releases();
+    display=wpk_wl_register(_wpk_upstream_display_connect_to_fd(fd));
+    if(!wpk_wl_raw_entry_end(&entry,display,WPK_RAW_DISPLAY))display=NULL;
+    pthread_cleanup_pop(0);
+#else
     wpk_wl_drain_releases();
     struct wl_display *display=wpk_wl_register(_wpk_upstream_display_connect_to_fd(fd));
+#endif
     pthread_cleanup_push(wpk_wl_abandon_constructor,display);
     pthread_setcancelstate(prior,NULL);pthread_cleanup_pop(0);return display;
 }
@@ -170,6 +193,11 @@ WL_EXPORT void wl_display_disconnect(struct wl_display *display) {
     _wpk_drm_mutex_unlock(&wpk_wl_mutex);
     if(transferred)wpk_wl_boundary_diagnose(report);
     else if(prepared)wpk_wl_drain_releases();
+#ifdef WPK_WL_RAW_ENTRY_ENABLED
+    /* Incoming public withdrawal is durable before draining unrelated custom
+     * diagnostics, whose handler may end this thread. */
+    (void)wpk_wl_raw_drain();
+#endif
     pthread_setcancelstate(prior,NULL);
 }
 int _wpk_wl_display_metadata(const void *native,uint64_t *identity) {
@@ -190,11 +218,10 @@ void *_wpk_wl_display_acquire(const void *native,uint64_t identity) {
     int inherited=record&&record->process_epoch!=_wpk_drm_process_generation();
     int boundary=inherited&&wpk_wl_boundary_required_locked(record);
     int report=boundary&&wpk_wl_boundary_mark_locked(record);
+    _wpk_drm_owned_publication_begin();
     if(!record||!record->alive||inherited||record->identity!=identity||record->users==UINT_MAX)record=NULL;
-    else{
-        _wpk_drm_owned_publication_begin();record->users++;
-        _wpk_drm_owned_publication_end();
-    }
+    else record->users++;
+    _wpk_drm_owned_publication_end();
     _wpk_drm_mutex_unlock(&wpk_wl_mutex);
     if(boundary)wpk_wl_boundary_diagnose(report);else if(inherited)errno=ECHILD;
     return record;
@@ -278,7 +305,7 @@ int _wpk_wl_surface_acquire_pending(const void *native,const void **display,uint
     if(!hold){pthread_setcancelstate(prior,NULL);return 0;}
     _wpk_drm_mutex_lock(&wpk_wl_mutex);
     for(struct wpk_wl_connection *p=wpk_wl_connections;p;p=p->next)
-        if(p->alive&&p->process_epoch==_wpk_drm_process_generation()&&p->users<UINT_MAX){
+        if(p->alive&&p->process_epoch==_wpk_drm_process_generation()){
             struct wpk_wl_lookup lookup={.native=native};
             pthread_mutex_lock(&p->display->mutex);
             wl_map_for_each(&p->display->objects,wpk_wl_find_surface,&lookup);
@@ -287,10 +314,12 @@ int _wpk_wl_surface_acquire_pending(const void *native,const void **display,uint
                  * publish into its already-rooted caller slot together. A
                  * detached return value cannot own this constructor effect. */
                 _wpk_drm_owned_publication_begin();
-                lookup.found->refcount++;p->users++;
-                hold->connection=p;hold->proxy=lookup.found;
-                *display=p->display;*identity=p->identity;
-                hold->constructing=0;_wpk_drm_actor_release_locked(&hold->construction_claim);
+                if(p->users<UINT_MAX){
+                    lookup.found->refcount++;p->users++;
+                    hold->connection=p;hold->proxy=lookup.found;
+                    *display=p->display;*identity=p->identity;
+                    hold->constructing=0;_wpk_drm_actor_release_locked(&hold->construction_claim);
+                }
                 _wpk_drm_owned_publication_end();
             }
             pthread_mutex_unlock(&p->display->mutex);
@@ -393,7 +422,9 @@ static enum wpk_wl_retire_result wpk_wl_surface_release_pending_impl(struct wpk_
         /* WHY: unref is callback-free for this valid retained proxy. Consume
          * that exact slot with the decrement, then keep its FILE/display edge
          * in a persistent nested capsule through last-disconnect/log callbacks. */
-        wl_proxy_unref(hold->proxy);hold->proxy=NULL;
+        WPK_WL_NATIVE_METADATA_BEGIN();
+        wl_proxy_unref(hold->proxy);
+        WPK_WL_NATIVE_METADATA_END();hold->proxy=NULL;
         hold->display_retirement.live=record;hold->connection=NULL;
         state->live=NULL;state->retired=hold;
         _wpk_drm_owned_publication_end();
@@ -487,5 +518,8 @@ void _wpk_wl_queue_discard_inherited(void *lease,void *native) {
     if(hold&&_wpk_wl_surface_transfer_boundary(hold))return;
     if(!hold||hold->connection->process_epoch==_wpk_drm_process_generation()||
        queue->display!=hold->connection->display)abort();
+#ifdef WPK_WL_RAW_ENTRY_ENABLED
+    wpk_wl_private_queue_forget(queue);
+#endif
     wl_event_queue_release(queue);free(queue->name);free(queue);
 }

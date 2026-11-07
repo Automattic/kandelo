@@ -428,6 +428,14 @@ enum wpk_wl_retire_result _wpk_wl_proxy_destroy_pending(struct wpk_wl_proxy_reti
 }
 enum wpk_wl_retire_result _wpk_wl_proxy_destroy_local_pending(struct wpk_wl_proxy_retirement *s){int prior=window_local_destroy;window_local_destroy=1;enum wpk_wl_retire_result r=_wpk_wl_proxy_destroy_pending(s,0);window_local_destroy=prior;return r;}
 enum wpk_wl_retire_result _wpk_wl_proxy_discard_pending(struct wpk_wl_proxy_retirement *s){return _wpk_wl_proxy_destroy_local_pending(s);}
+int _wpk_wl_private_queue_register(struct wpk_wl_private_queue_token *token,void *queue,void *hold,void *owner,struct wpk_drm_actor_claim *claim,struct wpk_wl_log_scope *logs){
+    assert(queue&&hold==&surface_holds&&surface_holds&&owner&&logs&&!token->active);
+    _wpk_drm_owned_publication_begin();assert(_wpk_drm_actor_claim_current_locked(claim));
+    token->queue=queue;token->connection=hold;token->owner=owner;token->owner_claim=claim;token->owner_logs=logs;token->active=1;
+    _wpk_drm_owned_publication_end();return 1;
+}
+void _wpk_wl_private_queue_withdraw_locked(struct wpk_wl_private_queue_token *token){memset(token,0,sizeof *token);}
+void _wpk_wl_private_queue_withdraw(struct wpk_wl_private_queue_token *token){_wpk_drm_owned_publication_begin();_wpk_wl_private_queue_withdraw_locked(token);_wpk_drm_owned_publication_end();}
 enum wpk_wl_retire_result _wpk_wl_queue_destroy_pending(struct wpk_wl_queue_retirement *s){
     if(s->live){wl_event_queue_destroy(s->live);s->live=NULL;}return WPK_WL_RETIRE_COMPLETE;
 }

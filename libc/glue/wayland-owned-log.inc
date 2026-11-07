@@ -29,6 +29,18 @@ __attribute__((weak)) void _wpk_egl_request_native_drain(void);
 #endif
 
 
+#if defined(__APPLE__)
+__attribute__((weak_import)) struct wpk_wl_log_scope *_wpk_wl_raw_log_scope(void);
+__attribute__((weak_import)) int _wpk_wl_raw_drain_deferred(void);
+__attribute__((weak_import)) void *_wpk_wl_raw_entry_suspend(void);
+__attribute__((weak_import)) void _wpk_wl_raw_entry_resume(void *);
+#else
+__attribute__((weak)) struct wpk_wl_log_scope *_wpk_wl_raw_log_scope(void);
+__attribute__((weak)) int _wpk_wl_raw_drain_deferred(void);
+__attribute__((weak)) void *_wpk_wl_raw_entry_suspend(void);
+__attribute__((weak)) void _wpk_wl_raw_entry_resume(void *);
+#endif
+
 static _Noreturn void wpk_wl_log_bookkeeping_failed(void) {
     /* WHY: falling back to an arbitrary handler here can end the thread while
      * upstream owns its display mutex. Exact capture OOM is a loud fatal
@@ -70,6 +82,24 @@ void _wpk_wl_log_capture_end_locked(struct wpk_wl_log_scope *scope) {
 void _wpk_wl_log_capture_end(struct wpk_wl_log_scope *scope) {
     _wpk_drm_owned_publication_begin();_wpk_wl_log_capture_end_locked(scope);
     _wpk_drm_owned_publication_end();
+}
+int _wpk_wl_log_capture_abandon_locked(struct wpk_wl_log_scope *scope) {
+    if(!scope)return 0;
+    if(!scope->capturing)return 1;
+    /* WHY: this only consumes a proven ended capture actor's metadata. It
+     * cannot declare a native effect complete, replay it, or traverse an old
+     * parent scope. The owning continuation still retires its real resources.
+     * A continuing same-thread fork retains its live claim and is refused. */
+    if(_wpk_drm_actor_claim_live_locked(&scope->capture_claim))return 0;
+    scope->capturing=0;scope->previous=NULL;
+    _wpk_drm_actor_release_locked(&scope->capture_claim);return 1;
+}
+struct wpk_wl_log_scope *_wpk_wl_log_capture_current(void) {return wpk_wl_capture;}
+struct wpk_wl_log_scope *_wpk_wl_log_capture_suspend(void) {
+    struct wpk_wl_log_scope *scope=wpk_wl_capture;wpk_wl_capture=NULL;return scope;
+}
+void _wpk_wl_log_capture_resume(struct wpk_wl_log_scope *scope) {
+    if(wpk_wl_capture)abort();wpk_wl_capture=scope;
 }
 static void wpk_wl_log_invoke(wl_log_func_t handler,const char *fmt,...) {
     va_list args;va_start(args,fmt);handler(fmt,args);va_end(args);
@@ -118,7 +148,9 @@ int _wpk_wl_log_deliver(struct wpk_wl_log_scope *scope) {
              * retain the normal public path. */
             struct wpk_wl_log_scope *prior=wpk_wl_capture,*suppressed=wpk_wl_suppressed_scope;
             wpk_wl_capture=NULL;wpk_wl_suppressed_scope=scope;
+            void *raw_entry=_wpk_wl_raw_entry_suspend?_wpk_wl_raw_entry_suspend():NULL;
             wpk_wl_log_invoke(message->handler,"%s",message->text);
+            if(_wpk_wl_raw_entry_resume)_wpk_wl_raw_entry_resume(raw_entry);
             wpk_wl_capture=prior;wpk_wl_suppressed_scope=suppressed;
         }
         _wpk_drm_owned_publication_begin();
@@ -207,7 +239,9 @@ int _wpk_wl_log_drain_deferred(void) {
     for(struct wpk_wl_deferred_log *p=wpk_wl_deferred_logs;p;p=p->next)
         if(_wpk_drm_actor_claim_live_locked(&p->logs.origin_claim)&&
            !_wpk_drm_actor_claim_current_locked(&p->logs.origin_claim)){live_origin=1;break;}
-    _wpk_drm_owned_publication_end();return live_origin;
+    _wpk_drm_owned_publication_end();
+    if(_wpk_wl_raw_drain_deferred&&_wpk_wl_raw_drain_deferred())live_origin=1;
+    return live_origin;
 }
 void _wpk_wl_logv(const char *fmt,va_list args) {
     struct wpk_wl_log_scope *scope=wpk_wl_capture;
@@ -221,6 +255,11 @@ void _wpk_wl_logv(const char *fmt,va_list args) {
             if(scope==wpk_wl_suppressed_scope)scope=NULL;
             if(scope&&!_wpk_wl_log_capture_begin(scope))wpk_wl_log_bookkeeping_failed();
         }
+    }
+    if(!scope&&_wpk_wl_raw_log_scope){
+        scope=_wpk_wl_raw_log_scope();
+        if(scope==wpk_wl_suppressed_scope)scope=NULL;
+        if(scope&&!_wpk_wl_log_capture_begin(scope))wpk_wl_log_bookkeeping_failed();
     }
     if(!scope){wl_log_handler(fmt,args);return;}
     int saved_errno=errno;

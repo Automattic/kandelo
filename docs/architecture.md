@@ -7686,8 +7686,9 @@ Heap ActorScope identities distinguish a continuing callback stack from a
 dead/vanished peer. EGL outer surface/generation queues use independent
 claims and bounded cold retries. Durable native leaf APIs distinguish pending
 custody, completion and explicit inherited-boundary transfer; unknown progress
-cannot be inferred from a void return. Full raw-client D-59 enforcement remains
-unfinished. These focused controls do not establish full B1 acceptance. Libc
+cannot be inferred from a void return. Raw-client D-59 entry and callback-return
+enforcement now has source/native controls; rebuilt target and application
+acceptance remains required. These controls do not establish full B1. Libc
 preserves a child-only multithreaded-fork epoch
 before rebinding its copied thread list; this primitive alone does not
 implement the approved Wayland boundary.
@@ -7702,8 +7703,10 @@ callback may end its thread. Cached unlocks add no new native hook.
 D-59's foundation classifies inherited Wayland custody using the private libc
 multithread-fork epoch and platform-owned metadata, without following an old
 native graph. A transferred heap owner is distinct from completed cleanup or
-a Worker acknowledgement. Full raw native-entry and callback-return rejection
-is still being integrated; these helpers alone do not enforce the boundary.
+a Worker acknowledgement. Raw client wrappers check object admission before
+native dereference. Ordinary parent allocations keep the epoch-zero fast path;
+after multithreaded fork, only newly allocated native ranges enter the child's
+balanced provenance index. The copied native graph is never used as proof.
 
 Wayland native continuations retain caller-rooted live/retired capsules across
 proxy, queue, surface and connection release. Owned ordinary logging captures
@@ -7724,7 +7727,38 @@ COMPLETE and BOUNDARY_TRANSFERRED remain distinct, and either permits shell
 retirement only after every child slot is empty. Optional native backends must
 provide the pending contract before acquisition; no opaque void release can
 substitute for it. Both pending references remain weak for KMS-only linkage.
-No hot draw/frame retry or diagnostic scan is added. Full raw-client
-entry/callback enforcement and normal-target acceptance remain unfinished;
-neither an opaque native return nor explicit boundary transfer acknowledges
-completed native cleanup.
+No hot draw/frame retry or diagnostic scan is added. Normal-target runtime and
+application acceptance remains pending; neither an opaque native return nor
+explicit boundary transfer acknowledges completed native cleanup.
+
+
+Raw callback continuations capture original native object references before
+upstream validation can replace a destroyed argument with NULL. Application
+arguments retain native semantics; only the original native unref tail is
+completed after a callback ends. Delivered file descriptors are marked before
+user code runs and cannot be closed by later closure cleanup after number reuse.
+Cancellation is suspended only around actual undelivered descriptor closure,
+then restored after native unlock. An exact cold token permits the audited
+hidden EGL queue to use its retained owner instead of public callback custody;
+queue identity, epochs, owner claim and current log capture must all agree.
+A generic log capture does not authorize this exception. An entry with no
+callback roots does not traverse the callback-completion list. The package
+build checks the exact reviewed upstream layouts before compiling these hooks.
+
+Cold EGL buffer transfers keep acquired FILE, PRIME and up to three BO owners
+in a persistent capsule on the already rooted target session. A claim is
+published before effects, and completed capture outputs never live only on a
+vanished peer's stack. The capsule spans the final native consumer and all
+YUV planes; every remaining edge moves to durable exact retirement before its
+claim is cleared. A separate generation-rooted receiver owns import/format
+validation until it atomically publishes the public record. It avoids a second
+anonymous public-BO retain. Unknown outcomes remain rooted and loud.
+
+Foreign-fork cleanup adopts vanished-peer receivers but retains a continuing
+forkcaller's entire old operation, including session and storage owner fields.
+Fresh initialization can proceed with its normal independent storage retain;
+it does not reuse the old receiver or replace its namespace. Only an old graph
+with no live operation can be unlinked. These are cold ownership operations;
+warmed selectors and unused graphics features acquire no added scans or native
+queries. Node/browser execution, coherent application builds, conformance and
+native-feel measurements remain separate acceptance requirements.

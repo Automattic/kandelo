@@ -39,8 +39,9 @@ replacement; replaying its destructor cannot prove exact cleanup. Preserve
 the parent connection and exact kernel resource ownership. This approval
 does not waive ordinary callback/thread-exit cleanup, single-threaded or
 fresh-child graphics, ABI compatibility, stage order or any final gate.
-The boundary detector, loud rejection and ownership regressions are still
-being implemented; this decision is not an implementation claim.
+The boundary detector, loud rejection and ownership regressions now have
+source/native evidence; coherent normal runtime and application acceptance
+remain required. This decision alone is not a completion claim.
 
 On 2026-11-07 the maintainer approved D-60, a narrow exception to the
 no-ported-software-patches rule: ship a potentially upstreamable SDL2 KMSDRM
@@ -26500,3 +26501,74 @@ Exact controls, failures, commands and identities are retained under
 `.context/graphics-terminal-lifecycle-r680-r3-runs/`. Full current-normal
 application, memory, POSIX, conformance and performance gates remain required.
 No physical-reclamation, native-feel or complete-B1 claim is made.
+
+
+### Raw Wayland and cold EGL receiver composition, 2026-11-07
+
+Raw-client D-59 enforcement now guards native objects before dereference and
+preserves callback object references, delivered descriptors and unfinished
+native tails. The exact hidden-queue token requires current owner/connection/
+epoch/log identity; generic logging does not exempt a public queue. An entry
+without callback roots does not scan completion state. The normal revision7
+recipe declares its reviewed-layout checker, Python host tool and all inputs.
+
+Persistent session capsules cover all seven surface/raw/CPU/YUV BO transfer
+paths through their native consumer. A generation-rooted import/format receiver
+publishes its public record only after format validation, eliminating a second
+anonymous retain. Vanished peers retire exact captured edges; continuing
+forkcallers retain old graphs and owner fields while fresh initialization
+takes its ordinary independent storage retain. No common/wire/ABI change,
+numeric-descriptor cleanup authority or warmed-selector work is introduced.
+
+Root job `graphics-b1-custody-composition-r689-1107-043100-273b` finishes57s
+with19/22 stages passing and151 source inputs unchanged. The aggregate remains
+FAILED: two legacy narrow fixtures lack inactive raw peer symbols, and the
+importer runner exposes target fcntl.h to a native compiler. A test-only
+supplement explicitly supplies the inactive peer to those controls and stages
+only graphics headers. `graphics-b1-custody-follow-up-r689-1107-043738-bdfe`
+passes10s:20 log modes, four constructor modes and eight importer modes;152
+inputs unchanged. All production C bytes match the first run. The only other
+change declares Python preflight. No failed case or assertion is dropped.
+
+The library log independently matches508/508 declared cases exactly once,
+including15 new transfer/fork/replacement/YUV cases; the importer adds eight
+independent modes. Producer checks cover actual pinned-native raw logs/
+callbacks,47 entries, provenance/private queues, normal SDK objects on both
+widths (raw10 objects/522 immutable inputs; final EGL/537 inputs), exact
+forward/reverse patch application and Why comments. Exact commands, failures,
+inventories and hashes remain under the R643 raw, R676 transfer, R684 import,
+R690 fixture and R689 composition directories. These are source/native/compile
+controls, not linked normal archives or Node/browser execution of this new C
+tree. All coherent builds, application/memory/conformance/POSIX/performance
+gates remain required. B1 is not complete; no new preview is announced.
+
+### Rebuilt Freeciv and SDL target restore checks, 2026-11-07
+
+Normal Freeciv/browser-bundle stage R680 passes1273s against corrected SDL13.
+Its aggregate fails21m17s at the NEXT stage's20GiB guard with19.3GiB free;
+ScummVM never starts. Read-only R684 verifies8,442 source inputs and685
+existing products unchanged, then the unmodified Freeciv Node suite passes2/2
+in10s: both executable versions, ruleset/AI turns/save/reload, zero skips.
+Bundle SHA256 `d31ea3b0af9676b060e5abcc6eded937592acf3530ffc42e4d0691d920cbcd59`;
+client `dd2dc1e1b2e498dfe1abed325360f5a2e9f355abe54588dc2db29b9cc48a25c6`;
+server `cfc020003ba0fe3c9779519828d51100c27bdd37be15ba53e435c4453cdd7df9`.
+This is component functionality at7eb, not application rendering or timing.
+
+Maintained SDL `window-restore.c` additionally passes on Chromium, Firefox and
+WebKit using normally resolved SDL, SDK compilation, normal instrumentation
+and the stamped contract. It observes disabled scanout, creates a GLES2 window,
+checks an actual magenta pixel, swaps/destroys and observes disabled scanout
+again, with no SDL/host diagnostics. Job
+`graphics-sdl-window-browser-r682-r3-1107-043510-88d2` passes11s:3/3 cases,
+5,913 pre-frozen inputs unchanged. Earlier missing-include compilation and
+un-instrumented-artifact rejection (before any guest execution) are preserved.
+No loader requirement is weakened. This runs coherent7eb components, not the
+new B1 C tree. Freeciv/ScummVM rendering/interaction, three-engine timing,
+main/native comparisons and a coherent latest preview remain required.
+
+Safe R683 cleanup removes only four inactive native-debug intermediate dirs
+(8,011,383,867 logical bytes),65 top-level tool/SDK/kernel hashes unchanged.
+Volume free20.126→26.686GB is qualified by APFS/concurrent activity. Release,
+source, products and evidence remain. Canonical R688 collection again removes
+0bytes under a foreign build's lock;19.9GiB dry-plan space is not reclaimed.
+Exact preflight/plan/removed ledger/results remain in R683.

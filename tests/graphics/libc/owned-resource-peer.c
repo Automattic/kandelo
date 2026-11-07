@@ -210,3 +210,8 @@ int graphics_peer_ioctl(const struct graphics_peer_ops *ops,struct wpk_drm_owned
     if(graphics_peer_lose_action==action){graphics_peer_lose_action=0;pthread_mutex_unlock(&peer_lock);errno=EIO;return -1;}
     pthread_mutex_unlock(&peer_lock);return 0;
 }
+
+#include <stdio.h>
+void graphics_peer_dump_live(void){
+    for(unsigned i=0;i<PEER_MAX;i++)if(caps[i].live)fprintf(stderr,"LIVE cap=%u kind=%s handle=%u file=%p tx=%llu\n",i,caps[i].bo?"BO":"FILE",caps[i].bo?caps[i].bo->handle:0,(void *)caps[i].file,(unsigned long long)caps[i].tx);
+}

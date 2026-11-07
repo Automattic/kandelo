@@ -84,6 +84,7 @@ struct wpk_wlegl {
     struct wpk_wl_queue_retirement queue_retirement;
     struct wpk_wl_surface_retirement surface_retirement;
     struct wpk_wl_log_scope logs;
+    struct wpk_wl_private_queue_token private_queue;
     struct wpk_drm_actor_claim actor;
     struct wpk_wl_boundary_hold boundary;
     struct wpk_wlegl_retirement *release_request;
@@ -136,6 +137,7 @@ static int boundary_window(struct wpk_wlegl *w) {
      * owner. Transfer its entire rooted graph, never walk it or close a
      * numeric descriptor that could now name replacement storage. */
     _wpk_drm_owned_publication_begin();
+    _wpk_wl_private_queue_withdraw_locked(&w->private_queue);
     _wpk_wl_boundary_transfer_locked(&w->boundary);
     /* An EMPTY caller capsule may retire immediately; the retained boundary
      * graph must drop its borrowed callback slot in the same publication. */
@@ -407,6 +409,9 @@ static int cleanup_window(struct wpk_wlegl *w) {
     w->dmabuf=NULL;
     if(boundary_window(w))return WPK_WL_RETIRE_BOUNDARY_TRANSFERRED;
     inherited=w->process_epoch!=_wpk_drm_process_generation();
+    /* The token borrows the retained connection. Withdraw it before queue
+     * release and before dropping that hold, including constructor failure. */
+    _wpk_wl_private_queue_withdraw(&w->private_queue);
     enum wpk_wl_retire_result r=inherited?_wpk_wl_queue_discard_pending(&w->queue_retirement):_wpk_wl_queue_destroy_pending(&w->queue_retirement);
     if(r!=WPK_WL_RETIRE_COMPLETE)return r;
     w->queue=NULL;
@@ -421,7 +426,9 @@ static int cleanup_window(struct wpk_wlegl *w) {
 static int finish_claimed_window(struct wpk_wlegl *w) {
     int result=cleanup_window(w);
     _wpk_drm_mutex_lock(&window_mutex);_wpk_drm_owned_publication_begin();
-    if(result==WPK_WL_RETIRE_BOUNDARY_TRANSFERRED&&!w->boundary.transferred)_wpk_wl_boundary_transfer_locked(&w->boundary);
+    if(result==WPK_WL_RETIRE_BOUNDARY_TRANSFERRED&&!w->boundary.transferred){
+        _wpk_wl_private_queue_withdraw_locked(&w->private_queue);_wpk_wl_boundary_transfer_locked(&w->boundary);
+    }
     if(result==WPK_WL_RETIRE_COMPLETE||result==WPK_WL_RETIRE_BOUNDARY_TRANSFERRED){
         struct wpk_wlegl **p=&windows;while(*p&&*p!=w)p=&(*p)->next;
         if(*p)*p=w->next;
@@ -502,7 +509,11 @@ struct wl_egl_window *wl_egl_window_create(struct wl_surface *surface,int width,
         if(acquired&&w->surface_hold){
             w->queue=wl_display_create_queue((void *)w->display);
             _wpk_drm_owned_publication_begin();w->queue_retirement.live=w->queue;_wpk_drm_owned_publication_end();
-            ok=w->queue&&bind_dmabuf(w)&&alloc_buffer(w,width,height)==0;
+            /* Only this hidden queue has audited platform listeners. Its
+             * exact current owner/log capture remains a separate live proof;
+             * generic logger deferral cannot classify an application queue. */
+            ok=w->queue&&_wpk_wl_private_queue_register(&w->private_queue,w->queue,w->surface_hold,w,&w->actor,&w->logs)
+                &&bind_dmabuf(w)&&alloc_buffer(w,width,height)==0;
             if(ok&&!finish_native_scratch(w,w->allocation))ok=0;
         }else ok=0;
         _wpk_drm_owned_publication_begin();_wpk_wl_log_capture_end_locked(&w->logs);_wpk_drm_owned_publication_end();

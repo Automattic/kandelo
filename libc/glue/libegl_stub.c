@@ -100,6 +100,9 @@ static struct egl_display_record g_default_display = {.handle = (EGLDisplay)(uin
 static _Atomic(struct egl_display_record *) g_native_displays;
 
 static void retire_imported_images(struct egl_generation *generation);
+static int retire_dmabuf_import(struct egl_generation *);
+static int dmabuf_import_live(struct egl_generation *);
+static int generation_live_operation(struct egl_generation *);
 static void invalidate_generation_images(struct egl_generation *generation);
 
 static _Thread_local EGLint g_last_error = EGL_SUCCESS;
@@ -115,7 +118,20 @@ struct imported_bo_reference;
 struct egl_thread_binding;
 /* Generation ownership outlives public display initialization when a current
  * context still retains it. Never route old current GL through the new root. */
+/* WHY: a completed exact capability is no longer linked to its constructor
+ * receipt. These session-rooted receivers must therefore survive a vanished
+ * transfer caller until its native consumer and cleanup have both completed.
+ * One capsule covers all YUV planes; stack-only intermediates lose custody at
+ * foreign fork even though their immutable identities remain perfectly valid. */
+struct egl_bo_transfer {
+    struct wpk_drm_mutex mutex;
+    struct wpk_drm_actor_claim claim;
+    struct wpk_drm_owner *acquired,*prime,*bo[3];
+    uint64_t epoch;
+    unsigned active;
+};
 struct egl_session {
+    struct egl_bo_transfer transfer;
     struct egl_generation *generation;
     int fd, base, context_used, surface_used;
     struct wpk_drm_owner *owner;
@@ -192,9 +208,20 @@ struct egl_surface_record {
     uint64_t release_visit;
     struct egl_surface_record *next;
 };
+/* WHY: this cold public import has effects after generation initialization
+ * sealed. Its exact receivers must outlive a vanished peer independently of
+ * the generation/session constructors and of a completed capture receipt. */
+struct egl_dmabuf_import {
+    struct wpk_drm_owner *prime,*bo;
+    struct imported_bo_reference *record;
+    struct wpk_drm_actor_claim claim;
+    uint64_t epoch;
+    int active;
+};
 struct egl_generation {
+    struct egl_dmabuf_import import;
     int fd, display_fd, native_fd, initialized, terminate_pending,fork_retired;
-    int constructing;
+    int constructing,cleanup_deferred;
     struct wpk_drm_actor_claim construction_claim;
     struct wpk_drm_actor_claim release_claim;
     struct wpk_wl_display_retirement wayland_retirement;
@@ -231,6 +258,7 @@ static int g_image_retire_pending;
  * publication must share the transaction withdrawing the original graph edge:
  * a fork between unlink and enqueue would otherwise lose its only owner. */
 static void free_generation_locked(struct egl_generation *generation) {
+    if(generation->import.active||generation->import.prime||generation->import.bo||generation->import.record)abort();
     /* Move legacy admission edges into persistent capsules BEFORE publishing
      * this queue node; a child must never inherit an unrooted transfer gap. */
     if(generation->wayland_hold){
@@ -997,7 +1025,11 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
         for(struct wpk_egl_image *image=g_images;image;image=image->next)
             if(image->generation==inherited)image->generation=generation;
         _wpk_drm_mutex_unlock(&g_image_mutex);
-        display->inherited_storage=NULL;_wpk_drm_owned_retire(&inherited->storage_owner);
+        display->inherited_storage=NULL;
+        /* A continuing fork caller still owns this old operation/namespace.
+         * Fresh initialization has its own storage retain and may proceed;
+         * only the old generation's last edge/free must wait for its actor. */
+        if(!generation_live_operation(inherited))_wpk_drm_owned_retire(&inherited->storage_owner);
         retire_inherited_skeletons_locked();
     }
     if(major)*major=1;if(minor)*minor=5;return EGL_TRUE;
@@ -1289,10 +1321,68 @@ static struct egl_surface_record *find_surface(struct egl_generation *generation
             return p;
     return NULL;
 }
-static uint32_t transfer_bo_handle(struct wpk_drm_owner *,struct wpk_drm_owner *,int,
-                                     struct wpk_drm_owner *,uint32_t,struct wpk_drm_owner **);
+/* The caller already disables cancellation through its EGL/dispatch guard.
+ * This independent metadata mutex also serializes GL image uploads against
+ * another thread creating/updating a surface in that same native session. */
+static int begin_bo_transfer(struct egl_session *session) {
+    if(!_wpk_drm_actor_prepare())return 0;
+    struct egl_bo_transfer *transfer=&session->transfer;
+    _wpk_drm_owned_publication_begin();
+    int reentry=transfer->active&&_wpk_drm_actor_claim_current_locked(&transfer->claim);
+    _wpk_drm_owned_publication_end();
+    if(reentry){errno=EBUSY;return 0;}
+    _wpk_drm_mutex_lock(&transfer->mutex);
+    _wpk_drm_owned_publication_begin();
+    if(transfer->active||transfer->acquired||transfer->prime||transfer->bo[0]||transfer->bo[1]||transfer->bo[2])abort();
+    if(!_wpk_drm_actor_try_claim_locked(&transfer->claim))abort();
+    transfer->epoch=_wpk_drm_process_generation();transfer->active=1;
+    _wpk_drm_owned_publication_end();return 1;
+}
+static void finish_bo_transfer(struct egl_session *session) {
+    int error=errno;
+    struct egl_bo_transfer *transfer=&session->transfer;
+    /* Withdrawal and transfer into the durable owner queue are ONE pure
+     * transaction. Unlinking first would strand a fork snapshot; raw numeric
+     * close/GEM_CLOSE could instead destroy an unrelated replacement. */
+    _wpk_drm_owned_publication_begin();
+    if(!transfer->active)abort();
+    for(unsigned p=0;p<3;p++)_wpk_drm_owned_defer_locked(&transfer->bo[p]);
+    _wpk_drm_owned_defer_locked(&transfer->prime);
+    _wpk_drm_owned_defer_locked(&transfer->acquired);
+    transfer->active=0;transfer->epoch=0;
+    _wpk_drm_actor_release_locked(&transfer->claim);
+    _wpk_drm_owned_publication_end();
+    _wpk_drm_mutex_unlock(&transfer->mutex);_wpk_drm_owned_drain();errno=error;
+}
+static int bo_transfer_occupied(struct egl_session *session) {
+    struct egl_bo_transfer *transfer=&session->transfer;
+    _wpk_drm_owned_publication_begin();
+    int occupied=transfer->active||transfer->acquired||transfer->prime||transfer->bo[0]||transfer->bo[1]||transfer->bo[2];
+    _wpk_drm_owned_publication_end();return occupied;
+}
+static int bo_transfer_live_caller(struct egl_session *session) {
+    _wpk_drm_owned_publication_begin();
+    int live=session->transfer.active&&_wpk_drm_actor_claim_live_locked(&session->transfer.claim);
+    _wpk_drm_owned_publication_end();return live;
+}
+static void retire_inherited_bo_transfer(struct egl_session *session) {
+    struct egl_bo_transfer *transfer=&session->transfer;
+    _wpk_drm_owned_publication_begin();
+    if(transfer->active){
+        /* Only a vanished peer can be adopted. A same-thread fork preserves
+         * its outer stack, so preflight refuses cleanup until that stack ends. */
+        if(_wpk_drm_actor_claim_live_locked(&transfer->claim))abort();
+        for(unsigned p=0;p<3;p++)_wpk_drm_owned_defer_locked(&transfer->bo[p]);
+        _wpk_drm_owned_defer_locked(&transfer->prime);
+        _wpk_drm_owned_defer_locked(&transfer->acquired);
+        transfer->active=0;transfer->epoch=0;
+        _wpk_drm_actor_release_locked(&transfer->claim);
+    }
+    _wpk_drm_owned_publication_end();_wpk_drm_owned_drain();
+}
+static uint32_t transfer_bo_handle(struct egl_session *,struct wpk_drm_owner *,
+    struct wpk_drm_owner *,int,uint32_t,unsigned);
 static int egl_bo_ioctl(struct wpk_drm_owner *,struct wpk_drm_owner *,unsigned long,void *,uint32_t);
-static struct wpk_drm_owner *public_bo_owner(struct egl_generation *,uint32_t);
 static void retire_empty_sessions(struct egl_generation *);
 static struct egl_session *object_session(struct egl_generation *generation,int context) {
     for(struct egl_session *p=generation->sessions;p;p=p->next)
@@ -1329,7 +1419,7 @@ static void retire_empty_sessions(struct egl_generation *generation) {
     struct egl_session **link = &generation->sessions;
     while (*link) {
         struct egl_session *p = *link;
-        if (p->constructing || p->base || p->context_used || p->surface_used || p->sync_references) {
+        if (p->constructing || p->base || p->context_used || p->surface_used || p->sync_references || bo_transfer_occupied(p)) {
             link = &p->next;
             continue;
         }
@@ -1689,13 +1779,12 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
         if(target && _wpk_wlegl_device_fd){source_fd=_wpk_wlegl_device_fd((void *)win);source_owner=NULL;}
         if(target && _wpk_wlegl_dimensions)_wpk_wlegl_dimensions((void *)win,&request.attrs.width,&request.attrs.height);
     }
-    struct wpk_drm_owner *local_bo=NULL;
-    uint32_t local_target=target?transfer_bo_handle(source_owner,source_bo,source_fd,session->owner,target,&local_bo):0;
-    if (target && !local_target)
-        goto fail;
-    request.attrs.reserved[0] = local_target;
-    int created=egl_bo_ioctl(session->owner,local_bo,GLIO_CREATE_SURFACE,&request,16)==0;
-    _wpk_drm_owned_retire(&local_bo);
+    if(target&&!begin_bo_transfer(session))goto fail;
+    uint32_t local_target=target?transfer_bo_handle(session,source_owner,source_bo,source_fd,target,0):0;
+    if(target&&!local_target){finish_bo_transfer(session);goto fail;}
+    request.attrs.reserved[0]=local_target;
+    int created=egl_bo_ioctl(session->owner,target?session->transfer.bo[0]:NULL,GLIO_CREATE_SURFACE,&request,16)==0;
+    if(target)finish_bo_transfer(session);
     if (!created)
         goto fail;
     if (!request.surface_id || request.attrs.width > INT32_MAX ||
@@ -1820,14 +1909,14 @@ int _wpk_egl_window_retarget(void *window) {
             if(_wpk_wlegl_dimensions)_wpk_wlegl_dimensions(window,&frame.width,&frame.height);
         }
         if(!target) {accepted=0;goto done;}
-        struct wpk_drm_owner *local_bo=NULL;
-        uint32_t local=transfer_bo_handle(frame.owner,frame.bo_owner,source_fd,p->session->owner,target,&local_bo);
-        if(!local) {accepted=0;goto done;}
+        if(!begin_bo_transfer(p->session)){accepted=0;goto done;}
+        uint32_t local=transfer_bo_handle(p->session,frame.owner,frame.bo_owner,source_fd,target,0);
+        if(!local){finish_bo_transfer(p->session);accepted=0;goto done;}
         _wpk_gl_flush();
         struct gl_surface_attrs attrs={.kind=WPK_SURFACE_DEFAULT,.config_id=1,
             .width=frame.width,.height=frame.height,.reserved={local,0,0,0}};
-        accepted=egl_bo_ioctl(p->session->owner,local_bo,GLIO_UPDATE_SURFACE,&attrs,16)==0;
-        _wpk_drm_owned_retire(&local_bo);
+        accepted=egl_bo_ioctl(p->session->owner,p->session->transfer.bo[0],GLIO_UPDATE_SURFACE,&attrs,16)==0;
+        finish_bo_transfer(p->session);
         if(accepted && attrs.width && attrs.height) {p->width=attrs.width;p->height=attrs.height;}
         goto done;
     }
@@ -2174,16 +2263,16 @@ static int swap_gbm_window_locked(struct egl_generation *g, struct egl_surface_r
         g_last_error = EGL_BAD_ALLOC;
         return 0;
     }
-    struct wpk_drm_owner *local_bo=NULL;
-    uint32_t local=transfer_bo_handle(frame.owner,frame.bo_owner,frame.fd,surface->session->owner,frame.handle,&local_bo);
+    if(!begin_bo_transfer(surface->session)){_wpk_gbm_window_finish(surface->gbm_lease,0);g_last_error=EGL_BAD_ALLOC;return 0;}
+    uint32_t local=transfer_bo_handle(surface->session,frame.owner,frame.bo_owner,frame.fd,frame.handle,0);
     int accepted = 0;
     if (local) {
         struct gl_surface_front_copy attrs = {.kind = WPK_SURFACE_DEFAULT, .config_id = 1,
             .width = frame.width, .height = frame.height, .copy_target_bo = local,
             .format = frame.format, .pitch = frame.pitch};
-        accepted=egl_bo_ioctl(surface->session->owner,local_bo,GLIO_UPDATE_SURFACE,&attrs,20)==0;
-        _wpk_drm_owned_retire(&local_bo);
+        accepted=egl_bo_ioctl(surface->session->owner,surface->session->transfer.bo[0],GLIO_UPDATE_SURFACE,&attrs,20)==0;
     }
+    finish_bo_transfer(surface->session);
     _wpk_gbm_window_finish(surface->gbm_lease, accepted);
     if (!accepted) g_last_error = current_binding_error();
     return accepted;
@@ -2209,16 +2298,16 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
             else if (_wpk_gl_flush_checked() != 0)
                 g_last_error = current_binding_error();
             else if (p->wayland_lease) {
-                struct wpk_drm_owner *local_bo=NULL;
-                uint32_t local=transfer_bo_handle(frame.owner,frame.bo_owner,frame.fd,p->session->owner,frame.handle,&local_bo);
+                int transferring=begin_bo_transfer(p->session);
+                uint32_t local=transferring?transfer_bo_handle(p->session,frame.owner,frame.bo_owner,frame.fd,frame.handle,0):0;
                 if(local) {
                     /* GPU front copy is top-row-first, preserving the private
                      * render back and the caller's default-FBO semantics. */
                     struct gl_surface_front_copy attrs={.kind=WPK_SURFACE_DEFAULT,.config_id=1,
                         .width=frame.width,.height=frame.height,.copy_target_bo=local};
-                    if(egl_bo_ioctl(p->session->owner,local_bo,GLIO_UPDATE_SURFACE,&attrs,20)==0)result=EGL_TRUE;
-                    _wpk_drm_owned_retire(&local_bo);
+                    if(egl_bo_ioctl(p->session->owner,p->session->transfer.bo[0],GLIO_UPDATE_SURFACE,&attrs,20)==0)result=EGL_TRUE;
                 }
+                if(transferring)finish_bo_transfer(p->session);
                 if(result!=EGL_TRUE)g_last_error=current_binding_error();
             }
             else if (p->gbm_lease)
@@ -2398,10 +2487,11 @@ static void retire_pending_resources_locked(struct egl_generation *g) {
     retire_empty_sessions(g);
     if (!g->terminate_pending || g->contexts || g->surfaces || g->syncs)
         return;
+    if(!retire_dmabuf_import(g))return;
     retire_imported_images(g);
     while (g->sessions) {
         struct egl_session *p=g->sessions;
-        if(p->constructing)return;
+        if(p->constructing||bo_transfer_occupied(p))return;
         if(_wpk_drm_owned_unmap_exact(&p->mapping)<0){
             fprintf(stderr,"Kandelo EGL: base mapping retirement failed; generation retained\n");return;
         }
@@ -2512,11 +2602,17 @@ static void free_sync(struct egl_sync_record *sync) {
     free(sync);
     _wpk_drm_owned_drain();
 }
+static int generation_live_operation(struct egl_generation *generation) {
+    if(dmabuf_import_live(generation))return 1;
+    for(struct egl_session *session=generation->sessions;session;session=session->next)
+        if(bo_transfer_live_caller(session))return 1;
+    return 0;
+}
 static void retire_inherited_skeletons_locked(void) {
     struct egl_generation **slot=&g_generations;
     while(*slot){
         struct egl_generation *g=*slot;int image_live=0;
-        if(!g->fork_retired||g->contexts||g->surfaces||g->sessions||g->syncs||g->imported_bos||
+        if(!g->fork_retired||g->import.active||g->contexts||g->surfaces||g->sessions||g->syncs||g->imported_bos||
            g->storage_owner||g->display->inherited_storage==g){slot=&g->next;continue;}
         lock_images();
         for(struct wpk_egl_image *image=g_images;image;image=image->next)if(image->generation==g){image_live=1;break;}
@@ -2533,17 +2629,28 @@ static int cleanup_inherited_generations_locked(void) {
         for(struct egl_session *session=g->sessions;session;session=session->next)
             if(session->constructing){errno=EBUSY;return 0;}
     }
+    /* WHY: a live continuing caller retains ONLY its old generation graph.
+     * Fresh generation creation must remain possible. Snapshot selection for
+     * this cold pass before any receiver cleanup; later actor death can wait
+     * for the next lifecycle pass, never bypass required slot retirement. */
+    for(struct egl_generation *g=g_generations;g;g=g->next)
+        g->cleanup_deferred=g->fork_retired&&generation_live_operation(g);
+    for(struct egl_generation *g=g_generations;g;g=g->next)if(g->fork_retired&&!g->cleanup_deferred){
+        if(!retire_dmabuf_import(g))abort();
+        for(struct egl_session *session=g->sessions;session;session=session->next)
+            retire_inherited_bo_transfer(session);
+    }
     lock_images();
     _wpk_drm_mutex_unlock(&g_image_mutex);
     size_t count=0;
-    for(struct egl_generation *g=g_generations;g;g=g->next)if(g->fork_retired)
+    for(struct egl_generation *g=g_generations;g;g=g->next)if(g->fork_retired&&!g->cleanup_deferred)
         for(struct egl_context_record *c=g->contexts;c;c=c->next)if(c->encoder){
             if(count==SIZE_MAX/sizeof(struct wpk_gles_context *)){errno=ENOMEM;return 0;}count++;
         }
     struct wpk_gles_context **states=count?calloc(count,sizeof *states):NULL;
     if(count&&!states)return 0;
     size_t at=0;
-    for(struct egl_generation *g=g_generations;g;g=g->next)if(g->fork_retired)
+    for(struct egl_generation *g=g_generations;g;g=g->next)if(g->fork_retired&&!g->cleanup_deferred)
         for(struct egl_context_record *c=g->contexts;c;c=c->next)if(c->encoder)states[at++]=c->encoder;
     /* Atfork serialization covers only pure C graph retirement and publishing
      * the authoritative NULL slots. Resource/image reconciliation above must
@@ -2554,11 +2661,11 @@ static int cleanup_inherited_generations_locked(void) {
         int error=errno;_wpk_gl_inherited_cleanup_end();free(states);errno=error;
         fprintf(stderr,"Kandelo graphics: inherited renderer cleanup refused (errno=%d); custody retained\n",error);return 0;
     }
-    for(struct egl_generation *g=g_generations;g;g=g->next)if(g->fork_retired)
+    for(struct egl_generation *g=g_generations;g;g=g->next)if(g->fork_retired&&!g->cleanup_deferred)
         for(struct egl_context_record *c=g->contexts;c;c=c->next)c->encoder=NULL;
     _wpk_gl_inherited_cleanup_end();
     free(states);
-    for(struct egl_generation *g=g_generations;g;g=g->next)if(g->fork_retired){
+    for(struct egl_generation *g=g_generations;g;g=g->next)if(g->fork_retired&&!g->cleanup_deferred){
         /* The kernel copied only resource custody, never renderer authority.
          * Retire exact child pins without GL destroy/terminate, old journals,
          * or mutexes belonging to vanished parent threads. */
@@ -2581,7 +2688,7 @@ static int cleanup_inherited_generations_locked(void) {
         }
         while(g->sessions){
             struct egl_session *session=g->sessions;
-            if(session->constructing){errno=EBUSY;return 0;}
+            if(session->constructing||bo_transfer_occupied(session)){errno=EBUSY;return 0;}
             if(_wpk_drm_owned_unmap_exact(&session->mapping)<0){
                 fprintf(stderr,"Kandelo EGL: inherited mapping retirement failed; custody retained\n");return 0;
             }
@@ -3595,13 +3702,6 @@ struct imported_bo_reference {
     struct wpk_drm_owner *owner;
     struct imported_bo_reference *next;
 };
-static struct wpk_drm_owner *public_bo_owner(struct egl_generation *generation,uint32_t handle) {
-    struct wpk_drm_owner *owner=NULL;
-    lock_images();
-    for(struct imported_bo_reference *p=generation->imported_bos;p;p=p->next)if(p->handle==handle){owner=p->owner;break;}
-    if(owner&&_wpk_drm_owned_retain(owner)!=0)owner=NULL;
-    _wpk_drm_mutex_unlock(&g_image_mutex);return owner;
-}
 static int egl_bo_ioctl(struct wpk_drm_owner *file,struct wpk_drm_owner *bo,
                          unsigned long request,void *body,uint32_t offset) {
     struct wpk_drm_bo_binding binding={offset,bo};
@@ -3612,73 +3712,114 @@ static int egl_bo_ioctl(struct wpk_drm_owner *file,struct wpk_drm_owner *bo,
 /* Export and import capture their exact returned resources in the same
  * kernel entries. An intermediate numeric fd would reintroduce close/reuse
  * races between the two operations. Public handles keep their usual values. */
-static uint32_t transfer_bo_handle(struct wpk_drm_owner *source,struct wpk_drm_owner *bo,
-                                     int source_fd,struct wpk_drm_owner *target,uint32_t handle,
-                                     struct wpk_drm_owner **local) {
-    *local=NULL;if(!handle)return 0;
-    if(source==target&&bo){if(_wpk_drm_owned_retain(bo)!=0)return 0;*local=bo;return handle;}
-    struct wpk_drm_owner *acquired=NULL,*prime=NULL;
+static uint32_t transfer_bo_handle(struct egl_session *session,struct wpk_drm_owner *source,
+                                     struct wpk_drm_owner *bo,int source_fd,uint32_t handle,unsigned plane) {
+    struct egl_bo_transfer *transfer=&session->transfer;
+    if(!transfer->active||plane>=3||transfer->bo[plane]||transfer->acquired||transfer->prime)abort();
+    if(!handle)return 0;
+    if(source==session->owner&&bo){
+        int cancel_state;if(_wpk_drm_owned_retain_begin(bo,&cancel_state)!=0)return 0;
+        transfer->bo[plane]=bo;
+        _wpk_drm_owned_retain_end(bo,cancel_state);
+        if(transfer->epoch!=_wpk_drm_process_generation()){errno=ECHILD;return 0;}
+        return handle;
+    }
+    int rc=0;
     if(!source){
-        if(_wpk_drm_owned_acquire(source_fd,0,&acquired)!=0){_wpk_drm_owned_retire(&acquired);return 0;}
-        source=acquired;
+        rc=_wpk_drm_owned_acquire(source_fd,0,&transfer->acquired);
+        source=transfer->acquired;
     }
     struct wpk_drm_prime_handle exported={.handle=handle,.flags=O_CLOEXEC|O_RDWR,.fd=-1};
     struct wpk_drm_bo_binding proof={0,bo};
-    int rc=_wpk_drm_owned_ioctl_bo(source,WPK_DRM_IOCTL_PRIME_HANDLE_TO_FD,&exported,sizeof exported,
-        NULL,WPK_DRM_OWNED_CAPTURE_FD,&prime,bo?&proof:NULL,bo?1:0);
+    if(!rc&&transfer->epoch==_wpk_drm_process_generation())
+        rc=_wpk_drm_owned_ioctl_bo(source,WPK_DRM_IOCTL_PRIME_HANDLE_TO_FD,&exported,sizeof exported,
+            NULL,WPK_DRM_OWNED_CAPTURE_FD,&transfer->prime,bo?&proof:NULL,bo?1:0);
+    else rc=-1;
     struct wpk_drm_prime_handle imported={.fd=-1};
-    if(!rc)rc=_wpk_drm_owned_ioctl(target,WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE,&imported,sizeof imported,
-        prime,WPK_DRM_OWNED_CAPTURE_BO,local);
-    int error=errno;_wpk_drm_owned_retire(&prime);_wpk_drm_owned_retire(&acquired);
-    if(rc)_wpk_drm_owned_retire(local);errno=error;return !rc?imported.handle:0;
+    if(!rc&&transfer->epoch==_wpk_drm_process_generation())
+        rc=_wpk_drm_owned_ioctl(session->owner,WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE,&imported,sizeof imported,
+            transfer->prime,WPK_DRM_OWNED_CAPTURE_BO,&transfer->bo[plane]);
+    else rc=-1;
+    int error=errno;_wpk_drm_owned_retire(&transfer->prime);_wpk_drm_owned_retire(&transfer->acquired);
+    if(transfer->epoch!=_wpk_drm_process_generation()){rc=-1;error=ECHILD;}
+    if(rc)_wpk_drm_owned_retire(&transfer->bo[plane]);errno=error;
+    return !rc?imported.handle:0;
 }
-static unsigned import_dmabuf_handle(struct egl_generation *generation,int prime_fd,
-                                       struct wpk_drm_owner **capture) {
+/* Publication-only occupancy test; a continuing fork caller is not a dead
+ * peer. Cold fresh initialization may proceed while this old owner remains. */
+static int dmabuf_import_live(struct egl_generation *generation) {
+    _wpk_drm_owned_publication_begin();
+    int live=generation->import.active&&_wpk_drm_actor_claim_live_locked(&generation->import.claim);
+    _wpk_drm_owned_publication_end();return live;
+}
+static void defer_dmabuf_import_locked(struct egl_generation *generation) {
+    struct egl_dmabuf_import *operation=&generation->import;
+    _wpk_drm_owned_defer_locked(&operation->prime);
+    _wpk_drm_owned_defer_locked(&operation->bo);
+    free(operation->record);operation->record=NULL;operation->active=0;operation->epoch=0;
+    _wpk_drm_actor_release_locked(&operation->claim);
+}
+/* The context mutex serializes metadata selection. Physical retirement stays
+ * outside publication and unknown outcomes remain on the common rooted queue. */
+static int retire_dmabuf_import(struct egl_generation *generation) {
+    if(!generation->import.active)return 1;
+    _wpk_drm_owned_publication_begin();
+    if(generation->import.active&&_wpk_drm_actor_claim_live_locked(&generation->import.claim)){
+        _wpk_drm_owned_publication_end();return 0;
+    }
+    if(generation->import.active)defer_dmabuf_import_locked(generation);
+    _wpk_drm_owned_publication_end();_wpk_drm_owned_drain();return 1;
+}
+static unsigned import_dmabuf_handle(struct egl_generation *generation,int prime_fd,uint32_t fourcc) {
     if(!generation||prime_fd<0)return 0;
-    struct imported_bo_reference *record=capture?NULL:calloc(1,sizeof *record);
-    if(!capture&&!record)return 0;
-    struct wpk_drm_owner *prime=NULL,*bo=NULL;
-    int rc=_wpk_drm_owned_acquire(prime_fd,0,&prime);
+    if(!retire_dmabuf_import(generation)){errno=EBUSY;return 0;}
+    if(!_wpk_drm_actor_prepare())return 0;
+    struct imported_bo_reference *record=calloc(1,sizeof *record);if(!record)return 0;
+    struct egl_dmabuf_import *operation=&generation->import;
+    uint64_t epoch=_wpk_drm_process_generation();
+    /* WHY: publish exact pending record/FILE/BO custody BEFORE ACQUIRE. The
+     * common receipt ceases to own completed captures; generation initialization
+     * has already sealed and cannot recover these separate accepted edges. */
+    _wpk_drm_owned_publication_begin();
+    if(operation->active||operation->prime||operation->bo||operation->record)abort();
+    operation->record=record;operation->epoch=epoch;operation->active=1;
+    if(!_wpk_drm_actor_try_claim_locked(&operation->claim))abort();
+    _wpk_drm_owned_publication_end();
+    int rc=_wpk_drm_owned_acquire(prime_fd,0,&operation->prime);
     struct wpk_drm_prime_handle req={.fd=-1};
     if(!rc)rc=_wpk_drm_owned_ioctl(generation->storage_owner,WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE,&req,sizeof req,
-        prime,WPK_DRM_OWNED_CAPTURE_BO,&bo);
-    int error=errno;_wpk_drm_owned_retire(&prime);
-    if(rc){_wpk_drm_owned_retire(&bo);free(record);errno=error;return 0;}
-    if(capture)*capture=bo;
-    else{
-        record->handle=req.handle;record->owner=bo;
-        lock_images();record->next=generation->imported_bos;
-        generation->imported_bos=record;_wpk_drm_mutex_unlock(&g_image_mutex);
+        operation->prime,WPK_DRM_OWNED_CAPTURE_BO,&operation->bo);
+    if(!rc){
+        struct wpk_drm_check_bo_format check={.handle=req.handle,.format=fourcc};
+        rc=egl_bo_ioctl(generation->storage_owner,operation->bo,WPK_DRM_IOCTL_CHECK_BO_FORMAT,&check,0);
     }
-    return req.handle;
+    int error=errno;
+    if(operation->epoch!=_wpk_drm_process_generation()||generation->fork_retired||!generation->initialized){rc=-1;error=EIO;}
+    if(!rc){
+        lock_images();
+        _wpk_drm_owned_publication_begin();
+        /* No anonymous public retain: the receiver owns this exact BO until
+         * the successful format seal atomically hands it to the public list. */
+        record->handle=req.handle;record->owner=operation->bo;operation->bo=NULL;
+        record->next=generation->imported_bos;generation->imported_bos=record;operation->record=NULL;
+        defer_dmabuf_import_locked(generation);
+        _wpk_drm_owned_publication_end();_wpk_drm_mutex_unlock(&g_image_mutex);
+    }else{
+        _wpk_drm_owned_publication_begin();defer_dmabuf_import_locked(generation);_wpk_drm_owned_publication_end();
+    }
+    _wpk_drm_owned_drain();errno=error;return rc?0:req.handle;
 }
 
 static void close_bo_handle(struct egl_generation *generation, unsigned bo_handle);
-/* Import `prime_fd` as a bo the caller will sample as DRM format `fourcc`.
- * As for an EGL_LINUX_DMA_BUF_EXT image, a GPU-tier bo must have been made
- * in storage that `fourcc` names (DRM_IOCTL_WPK_CHECK_BO_FORMAT); otherwise
- * the import fails with errno EINVAL and returns 0. CPU-tier bytes take any
- * format. */
-unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd, uint32_t fourcc) {
+/* Import and validate the sampling format before atomically publishing the
+ * public name. All exact intermediate ownership stays on the generation. */
+unsigned wpkEglImportDmabufHandle(EGLDisplay dpy,int prime_fd,uint32_t fourcc) {
     lock_context();
-    struct egl_generation *generation = display_record(dpy) ? active_generation(dpy) : NULL;
-    unsigned handle = generation ? import_dmabuf_handle(generation,prime_fd,NULL) : 0;
-    if (handle) {
-        struct wpk_drm_check_bo_format check = {.handle = handle, .format = fourcc};
-        struct wpk_drm_owner *bo=public_bo_owner(generation,handle);
-        int checked=egl_bo_ioctl(generation->storage_owner,bo,WPK_DRM_IOCTL_CHECK_BO_FORMAT,&check,0);
-        _wpk_drm_owned_retire(&bo);
-        if (checked != 0) {
-            int error = errno;
-            lock_images();
-            close_bo_handle(generation, handle);
-            _wpk_drm_mutex_unlock(&g_image_mutex);
-            errno = error;
-            handle = 0;
-        }
-    }
-    unlock_context();
-    return handle;
+    struct egl_generation *generation=display_record(dpy)?active_generation(dpy):NULL;
+    unsigned handle=generation?import_dmabuf_handle(generation,prime_fd,fourcc):0;
+    int error=errno;
+    if(generation&&generation->fork_retired)cleanup_inherited_generations_locked();
+    unlock_context();errno=error;return handle;
 }
 
 /* (Re)bind an imported bo as a GL_TEXTURE_2D texture in the current
@@ -3702,15 +3843,13 @@ static unsigned bind_bo_texture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_
      * draws execute in program order. */
     if (_wpk_gl_flush_checked() != 0)
         return 0;
-    struct wpk_drm_owner *local_bo=NULL;
+    if(!begin_bo_transfer(context->session))return 0;
     /* A fresh raw-handle bind must still prove the public namespace entry.
      * Only an already-owned EGLImage may use its retained generation after
      * the public name is removed. The captured transfer then owns accepted
      * storage through the destination native operation. */
-    uint32_t local_handle=transfer_bo_handle(generation->storage_owner,image_bo,-1,
-        context->session->owner,bo_handle,&local_bo);
-    if (!local_handle)
-        return 0;
+    uint32_t local_handle=transfer_bo_handle(context->session,generation->storage_owner,image_bo,-1,bo_handle,0);
+    if(!local_handle){finish_bo_transfer(context->session);return 0;}
     struct wpk_drm_bind_foreign_texture req = {
         .bo_handle = local_handle,
         .gl_target = gl_target,
@@ -3720,7 +3859,7 @@ static unsigned bind_bo_texture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_
     unsigned result = 0;
     for (;;) {
         req.gl_texture_id = 0;
-        if (egl_bo_ioctl(context->session->owner,local_bo,WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE,&req,0) != 0 ||
+        if (egl_bo_ioctl(context->session->owner,context->session->transfer.bo[0],WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE,&req,0) != 0 ||
             !req.gl_texture_id)
             break;
         if (!publish) {
@@ -3743,7 +3882,7 @@ static unsigned bind_bo_texture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_
             break;
         }
     }
-    _wpk_drm_owned_retire(&local_bo);
+    finish_bo_transfer(context->session);
     return result;
 }
 
@@ -3873,14 +4012,6 @@ static int gl_image_target(EGLenum target, uint32_t *gl_target, uint32_t *kind, 
     if (kind) *kind = type;
     if (object_target) *object_target = object;
     return 1;
-}
-/* Take ownership of a bo handle from a context session into the generation's
- * image descriptor, where every image handle lives. */
-static uint32_t adopt_bo_handle(struct egl_generation *generation,struct wpk_drm_owner *source,
-                                  uint32_t handle,struct wpk_drm_owner **original,
-                                  struct wpk_drm_owner **adopted) {
-    uint32_t local=transfer_bo_handle(source,*original,-1,generation->storage_owner,handle,adopted);
-    _wpk_drm_owned_retire(original);return local;
 }
 /* Constructor scratch receivers belong to the already-rooted private image.
  * A temporary PRIME descriptor/capability on a peer's stack disappears at
@@ -4620,13 +4751,12 @@ static uint32_t planar_image_source(const struct wpk_egl_image *image) {
     struct wpk_drm_import_planar_image req = {.ctx_id = context->backend_id, .width = image->width,
         .height = image->height, .format = image->fourcc, .color_space = image->color_space,
         .full_range = image->full_range, .chroma_siting = image->chroma_siting};
-    uint32_t local[3] = {0};
-    struct wpk_drm_owner *local_bo[3]={0};struct wpk_drm_bo_binding proofs[3];
+    if(!begin_bo_transfer(context->session))return 0;
+    uint32_t local[3]={0};struct wpk_drm_bo_binding proofs[3];
     int transferred = 1;
     for (unsigned p = 0; p < image->plane_count && transferred; p++) {
-        local[p]=transfer_bo_handle(image->source_owner,image->planes[p].owner,-1,
-            context->session->owner,image->planes[p].handle,&local_bo[p]);
-        proofs[p]=(struct wpk_drm_bo_binding){16+p*4,local_bo[p]};
+        local[p]=transfer_bo_handle(context->session,image->source_owner,image->planes[p].owner,-1,image->planes[p].handle,p);
+        proofs[p]=(struct wpk_drm_bo_binding){16+p*4,context->session->transfer.bo[p]};
         transferred = local[p] != 0;
         req.bo_handles[p] = local[p];
         req.pitches[p] = image->planes[p].pitch;
@@ -4634,7 +4764,7 @@ static uint32_t planar_image_source(const struct wpk_egl_image *image) {
     }
     int rc=transferred?_wpk_drm_owned_ioctl_bo(context->session->owner,WPK_DRM_IOCTL_IMPORT_PLANAR_IMAGE,
         &req,sizeof req,NULL,0,NULL,proofs,image->plane_count):-1;
-    for(unsigned p=0;p<image->plane_count;p++)_wpk_drm_owned_retire(&local_bo[p]);
+    finish_bo_transfer(context->session);
     return rc == 0 ? req.source : 0;
 }
 
@@ -4645,16 +4775,15 @@ uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image) {
         return bind_bo_texture(image->generation->display->handle,image->handle,WPK_GL_IMAGE_SOURCE_TARGET,0,image->bo_owner);
     struct egl_context_record *context = g_thread_binding.object;
     if (!context || !context->session->owner || _wpk_gl_flush_checked() != 0) return 0;
-    struct wpk_drm_owner *local_bo=NULL;
-    uint32_t local=transfer_bo_handle(image->source_owner,image->bo_owner,-1,
-        context->session->owner,image->handle,&local_bo);
-    if (!local) return 0;
+    if(!begin_bo_transfer(context->session))return 0;
+    uint32_t local=transfer_bo_handle(context->session,image->source_owner,image->bo_owner,-1,image->handle,0);
+    if(!local){finish_bo_transfer(context->session);return 0;}
     /* A CPU image can select a subrectangle, row pitch and channel layout
      * independently of the allocator's geometry. Carry every field. */
     uint32_t req[8] = {local, context->backend_id, image->width, image->height,
         image->fourcc, image->pitch, (uint32_t)(image->pixels - (const uint8_t *)image->map), 0};
-    int rc=egl_bo_ioctl(context->session->owner,local_bo,0xc02064e2u,req,0);
-    _wpk_drm_owned_retire(&local_bo);
+    int rc=egl_bo_ioctl(context->session->owner,context->session->transfer.bo[0],0xc02064e2u,req,0);
+    finish_bo_transfer(context->session);
     return rc == 0 ? req[7] : 0;
 }
 

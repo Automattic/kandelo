@@ -15,6 +15,7 @@ assert hashlib.sha256(payload.read_bytes()).hexdigest()==manifest['source']['sha
 with tarfile.open(payload) as archive:archive.extractall(sys.argv[3],filter='data')
 PY
 source_root="$output_dir/wayland-1.24.0"
+python3 "$repo_root/libc/glue/check-wayland-client-layout.py" "$source_root/src"
 mkdir -p "$output_dir/include"
 printf '#define PACKAGE_VERSION "1.24.0"\n' > "$source_root/config.h"
 wayland-scanner client-header "$source_root/protocol/wayland.xml" "$output_dir/include/wayland-client-protocol.h"
@@ -27,14 +28,29 @@ cat > "$output_dir/util-owned.c" <<EOF
 #include "$source_root/src/wayland-util.c"
 #include "$repo_root/libc/glue/wayland-owned-log.inc"
 EOF
+cat > "$output_dir/client-native-allocated.c" <<EOF
+#include "$repo_root/libc/glue/wayland-client-raw-prelude.inc"
+#include "$source_root/src/wayland-client.c"
+#include "$repo_root/libc/glue/wayland-client-raw-undef.inc"
+#include "$repo_root/libc/glue/wayland-client-raw-entry.inc"
+EOF
+connection_source="$output_dir/connection-owned.c"
+if [ "${KANDELO_WAYLAND_RAW_BEFORE:-0}" = 1 ];then
+ connection_source="$source_root/src/connection.c"
+else
+ cat > "$connection_source" <<EOF
+#include "$repo_root/libc/glue/wayland-connection-callback-prelude.inc"
+#include "$source_root/src/connection.c"
+EOF
+fi
 read -r -a ffi_flags <<< "$(pkg-config --cflags --libs libffi)"
 clang -g -O1 -pthread -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" \
     -fno-sanitize-recover=all -fno-omit-frame-pointer -DHAVE_CONFIG_H -DKANDELO_WAYLAND_NATIVE_EPOCH_DOUBLE \
-    "-DWPK_WAYLAND_CLIENT_SOURCE=\"$source_root/src/wayland-client.c\"" \
+    "-DWPK_WAYLAND_CLIENT_SOURCE=\"$output_dir/client-native-allocated.c\"" \
     -I"$output_dir/include" -I"$source_root/src" -I"$source_root" -I"$repo_root/libc/glue" \
     "$repo_root/tests/graphics/libc/wayland-connection.c" "$repo_root/libc/glue/drm_owned.c" \
     "$repo_root/tests/graphics/libc/native-egl-ready-noop.c" \
-    "$output_dir/util-owned.c" "$source_root/src/connection.c" "$output_dir/protocol.c" \
+    "$output_dir/util-owned.c" "$connection_source" "$output_dir/protocol.c" \
     "${ffi_flags[@]}" -o "$output_dir/connection"
 python3 - "$output_dir/connection" <<'PYTHON'
 import subprocess,sys

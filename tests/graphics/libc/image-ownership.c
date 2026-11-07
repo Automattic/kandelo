@@ -249,6 +249,7 @@ static struct {
 } prime_exports[8];
 static uint32_t transferred_handles[8];
 static uint32_t transferred_sources[8];
+static int transferred_origins[8];
 static int imported_owners[8];
 static unsigned transfers, transfer_closes, export_closes;
 static unsigned same_file_export_closes,prime_export_calls,prime_import_calls,prime_descriptor_closes;
@@ -950,6 +951,9 @@ static pthread_mutex_t mapping_constructor_gate=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t mapping_constructor_changed=PTHREAD_COND_INITIALIZER;
 static int mapping_constructor_enabled,mapping_constructor_after,mapping_constructor_image;
 static int mapping_constructor_ready,mapping_constructor_resume;
+static int foreign_bind_pause,foreign_bind_after;
+static uint32_t foreign_bind_request=UINT32_C(0xc01064e1);
+static unsigned foreign_bind_skip,foreign_bind_seen,foreign_import_fail_count;
 static void mapping_constructor_stop(void){
     pthread_mutex_lock(&mapping_constructor_gate);mapping_constructor_ready=1;
     pthread_cond_broadcast(&mapping_constructor_changed);
@@ -960,11 +964,14 @@ int graphics_ioctl(int fd,unsigned long request,...){
     va_list args;va_start(args,request);void *arg=va_arg(args,void *);va_end(args);
     if(fd==-1&&request==WPK_DRM_IOCTL_OWNED_RESOURCE){
         struct wpk_drm_owned_packet *packet=arg;
+        int foreign=foreign_bind_pause&&packet->action==WPK_DRM_OWNED_IOCTL&&packet->request==foreign_bind_request&&foreign_bind_seen++==foreign_bind_skip;
+        if(foreign&&!foreign_bind_after)mapping_constructor_stop();
         int stop=mapping_constructor_enabled&&packet->action==WPK_DRM_OWNED_MMAP_EXACT&&
             !!packet->source_token==mapping_constructor_image;
         if(stop&&!mapping_constructor_after)mapping_constructor_stop();
         int rc=graphics_peer_ioctl(&image_peer_ops,packet);
         if(stop&&mapping_constructor_after)mapping_constructor_stop();
+        if(foreign&&foreign_bind_after)mapping_constructor_stop();
         return rc;
     }
     struct graphics_peer_file *f=fd>=0&&fd<512?peer_aliases[fd]:NULL;
@@ -1204,6 +1211,7 @@ static int backend_ioctl(int fd, unsigned long request, void *arg) {
         prime_exports[i].source_fd = fd;
         words[2] = 200 + i;
     } else if (request == 0xc00c642eu) {
+        if(foreign_import_fail_count&&!--foreign_import_fail_count){errno=EIO;return -1;}
         prime_import_calls++;
         uint32_t *words = arg;
         if (words[2] == 100) {
@@ -1222,7 +1230,17 @@ static int backend_ioctl(int fd, unsigned long request, void *arg) {
                 words[0] = 77;
                 return 0;
             }
+            /* PRIME import is idempotent for the same actual resource. The
+             * source coordinate is the retained peer's PRIVATE resource slot,
+             * never a guest descriptor; equal GEM numbers on other files do
+             * not establish storage identity. YUV can import one allocation
+             * into this destination once for EACH independently owned plane. */
+            if(transferred_handles[fd-10]&&transferred_sources[fd-10]==prime_exports[words[2]-200].handle&&
+               transferred_origins[fd-10]==prime_exports[words[2]-200].source_fd){
+                words[0]=transferred_handles[fd-10];return 0;
+            }
             assert(!transferred_handles[fd - 10]);
+            transferred_origins[fd-10]=prime_exports[words[2]-200].source_fd;
             words[0] = transferred_handles[fd - 10] = 1000 + fd;
             transferred_sources[fd - 10] = prime_exports[words[2] - 200].handle;
             transfers++;
@@ -1239,7 +1257,7 @@ static int backend_ioctl(int fd, unsigned long request, void *arg) {
         } else if (handle >= 1000) {
             assert(handle == transferred_handles[fd - 10]);
             transferred_handles[fd - 10] = 0;
-            transferred_sources[fd - 10] = 0;
+            transferred_sources[fd - 10] = 0;transferred_origins[fd-10]=0;
             transfer_closes++;
         } else {
             assert(handle == 77 && imported_owners[fd - 10]);
@@ -1278,6 +1296,12 @@ static int backend_ioctl(int fd, unsigned long request, void *arg) {
             if (raw_reply_fail_calloc) fail_calloc = 1;
             egl_trace(13,fd,words,16);
         }
+    } else if(request==UINT32_C(0xc02064e2)){
+        /* Actual CPU-image consumer returns a hidden converted source. Its
+         * output is distinct from the public C texture name/namespace. */
+        uint32_t *words=arg;
+        assert(words[0]&&words[1]==slot->context&&words[2]&&words[3]&&words[5]&&!words[7]);
+        words[7]=0x61;
     } else if (request == WPK_DRM_IOCTL_IMPORT_PLANAR_IMAGE) {
         struct wpk_drm_import_planar_image *req = arg;
         assert(req->ctx_id == slot->context && !req->source && !req->reserved);
@@ -3660,12 +3684,103 @@ static void mapping_constructor_case(EGLDisplay dpy,const char *name){
     else assert(args.initialized);
     assert(eglTerminate(dpy)&&!graphics_peer_live_capabilities()&&!allocation_count());
 }
+struct foreign_bind_args {EGLDisplay display;EGLContext context,anchor;EGLImageKHR image;unsigned handle,name;int fd;};
+static void *foreign_bind_thread(void *opaque){
+    struct foreign_bind_args *args=opaque;
+    assert(eglMakeCurrent(args->display,EGL_NO_SURFACE,EGL_NO_SURFACE,args->context));
+    args->fd=_wpk_gl_fd();assert(args->fd>=0);
+    if(args->image){
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES,17);
+        if(!foreign_import_fail_count){
+            /* A non-YUV CPU image is an ordinary TEXTURE_2D view. */
+            if(foreign_bind_request==UINT32_C(0xc02064e2))glBindTexture(GL_TEXTURE_2D,18);
+        }
+        glEGLImageTargetTexture2DOES(foreign_bind_request==UINT32_C(0xc02064e2)?GL_TEXTURE_2D:GL_TEXTURE_EXTERNAL_OES,args->image);
+        args->name=glGetError()==GL_NO_ERROR;
+    }else args->name=wpkEglBindBoTexture(args->display,args->handle,GL_TEXTURE_2D);
+    assert(eglReleaseThread());return NULL;
+}
+static void foreign_bind_case(EGLDisplay dpy,const char *name){
+    const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
+    assert(eglInitialize(dpy,NULL,NULL));
+    struct foreign_bind_args args={.display=dpy};
+    int yuv=strstr(name,"yuv")!=NULL,cpu=strstr(name,"cpu")!=NULL;
+    if(yuv||cpu){
+        /* Force a different destination FILE, so YUV needs real per-plane
+         * export/import rather than merely retaining a same-FILE C owner. */
+        args.anchor=eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs);assert(args.anchor);
+        dmabuf_cpu_tier=1;
+        if(yuv){
+            EGLint nv12[]={EGL_WIDTH,64,EGL_HEIGHT,32,EGL_LINUX_DRM_FOURCC_EXT,0x3231564e,
+                EGL_DMA_BUF_PLANE0_FD_EXT,100,EGL_DMA_BUF_PLANE0_OFFSET_EXT,0,EGL_DMA_BUF_PLANE0_PITCH_EXT,64,
+                EGL_DMA_BUF_PLANE1_FD_EXT,100,EGL_DMA_BUF_PLANE1_OFFSET_EXT,2048,EGL_DMA_BUF_PLANE1_PITCH_EXT,64,EGL_NONE};
+            args.image=eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,nv12);
+        }else args.image=image(dpy);
+        assert(args.image);
+    }else {args.handle=wpkEglImportDmabufHandle(dpy,100,0x34324258);assert(args.handle==77);}
+    args.context=eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs);assert(args.context);
+    if(strstr(name,"yuv-plane2")){foreign_bind_request=UINT32_C(0xc00c642e);foreign_bind_skip=1;}
+    else if(strstr(name,"export"))foreign_bind_request=UINT32_C(0xc00c642d);
+    else if(strstr(name,"import"))foreign_bind_request=UINT32_C(0xc00c642e);
+    else if(cpu)foreign_bind_request=UINT32_C(0xc02064e2);
+    else if(yuv)foreign_bind_request=WPK_DRM_IOCTL_IMPORT_PLANAR_IMAGE;
+    foreign_bind_after=strstr(name,"after")!=NULL;
+    if(strstr(name,"failure")){
+        foreign_import_fail_count=2;
+        foreign_bind_thread(&args);assert(!args.name&&!foreign_import_fail_count&&!planar_imports);
+    }else{
+        foreign_bind_pause=1;
+        pthread_t binder;assert(!pthread_create(&binder,NULL,foreign_bind_thread,&args));
+        assert(!pthread_mutex_lock(&mapping_constructor_gate));
+        while(!mapping_constructor_ready)assert(!pthread_cond_wait(&mapping_constructor_changed,&mapping_constructor_gate));
+        assert(!pthread_mutex_unlock(&mapping_constructor_gate));
+        pid_t child=fork();assert(child>=0);
+        if(!child){
+            alarm(10);foreign_bind_pause=0;
+            int replacement_slot=-1;
+            if(strstr(name,"replace")){
+                struct graphics_peer_file *original=peer_aliases[args.fd];assert(original&&!graphics_close(args.fd));
+                int opened=graphics_open(WPK_GL_DEVICE,O_RDWR);assert(opened>=0&&opened!=args.fd);
+                struct graphics_peer_file *replacement=peer_aliases[opened];assert(replacement&&replacement!=original);
+                assert(!peer_aliases[args.fd]);peer_aliases[args.fd]=replacement;peer_aliases[opened]=NULL;
+                uint32_t imported[3]={0,0,100};assert(!graphics_ioctl(args.fd,UINT32_C(0xc00c642e),imported)&&imported[0]==77);
+                replacement_slot=replacement->slot-10;assert(replacement_slot>=0&&replacement_slot<8);
+            }
+            assert(!eglQueryString(dpy,EGL_VERSION)&&eglGetError()==EGL_NOT_INITIALIZED);
+            assert(eglInitialize(dpy,NULL,NULL)&&eglTerminate(dpy)&&eglReleaseThread());
+            if(replacement_slot>=0){
+                assert(imported_owners[replacement_slot]);
+                uint32_t close_words[2]={77,0};assert(!graphics_ioctl(args.fd,UINT32_C(0x40086409),close_words));
+                assert(!imported_owners[replacement_slot]&&!graphics_close(args.fd));
+            }
+            fprintf(stderr,"TRANSFER CHILD CAPS=%u ALLOC=%u RAW=%u\n",graphics_peer_live_capabilities(),allocation_count(),allocation_count_raw());
+            extern void graphics_peer_dump_live(void);graphics_peer_dump_live();
+            for(unsigned i=0;i<1024;i++)if(allocations[i].pointer&&allocations[i].pointer!=fixture_tls_scope)fprintf(stderr,"ALLOC %p size=%zu\n",allocations[i].pointer,allocations[i].size);
+            assert(allocation_count_raw()==allocation_count()+1); /* actual caller TLS root */
+            _exit(graphics_peer_live_capabilities()||allocation_count()?41:0);
+        }
+        int status;assert(waitpid(child,&status,0)==child&&WIFEXITED(status));
+        assert(!pthread_mutex_lock(&mapping_constructor_gate));mapping_constructor_resume=1;
+        assert(!pthread_cond_broadcast(&mapping_constructor_changed));assert(!pthread_mutex_unlock(&mapping_constructor_gate));
+        assert(!pthread_join(binder,NULL));foreign_bind_pause=0;assert(args.name);
+        if(args.image)assert(eglDestroyImageKHR(dpy,args.image));else wpkEglCloseBoHandle(dpy,args.handle);
+        assert(eglDestroyContext(dpy,args.context));
+        if(args.anchor)assert(eglDestroyContext(dpy,args.anchor));
+        assert(eglTerminate(dpy));
+        assert(!graphics_peer_live_capabilities()&&!allocation_count());
+        assert(!WEXITSTATUS(status));return;
+    }
+    assert(eglDestroyImageKHR(dpy,args.image)&&eglDestroyContext(dpy,args.context));
+    if(args.anchor)assert(eglDestroyContext(dpy,args.anchor));
+    assert(eglTerminate(dpy)&&!graphics_peer_live_capabilities()&&!allocation_count());
+}
 static int fixture_case_main(int argc,char **argv) {
     /* These controls measure the checked transport. Real guest/browser
      * controls separately exercise default automatic admission. */
     assert(!setenv("KANDELO_GL_CHECKED_PROGRAM_SELECTION","1",1));
     assert(argc == 2 || (argc == 3 && !strcmp(argv[1],"encoder-inline-export")));
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if(!strncmp(argv[1],"foreign-bind-",13)||!strncmp(argv[1],"foreign-transfer-",17)){foreign_bind_case(dpy,argv[1]);printf("PASS %s\n",argv[1]);return 0;}
     if(!strncmp(argv[1],"mapping-constructor-",20)){
 #ifdef KANDELO_GRAPHICS_ACTOR_SCOPE
         mapping_constructor_case(dpy,argv[1]);printf("PASS %s\n",argv[1]);return 0;

@@ -1482,3 +1482,25 @@ the original full-size-only rejection and its failure evidence remain recorded.
 Finish raw-client enforcement and complete B1/application/native-feel gates in
 this iteration. Selected target controls do not replace full application,
 browser-memory, conformance or performance acceptance.
+
+
+### Graphics source checkpoint and remaining acceptance, 2026-11-07
+
+The latest B1 source now includes raw native Wayland entry/callback custody
+and the approved D-59 rejection, plus session-rooted BO transfers and
+generation-rooted import/format receivers. These prevent completed native
+capture outputs from surviving only on a vanished peer's C stack. Ordinary
+callback cleanup, exact replacement isolation and fresh-child initialization
+remain required behavior. Source/native controls do not establish complete B1.
+Finish combined checks and coherent normal target/application builds, then
+execute the full Node/browser memory, desktop, conformance, POSIX, benchmark
+and native-feel requirements in this iteration. The distinct older teardown
+warning and missing-main diagnostics are not explained by a passing cohort.
+
+D-60 carries a generic potentially upstreamable SDL2 disabled-CRTC restore
+correction with genuine error logging intact. Normal SDL and rebuilt Freeciv
+Node functionality have passed; application rendering/error admission and
+three-engine timing remain required. It is not submitted or accepted upstream.
+All B2–B6 and C1–C3 stages, Freeciv/ScummVM workloads and existing numeric bars
+remain in this iteration. Next-iteration proposals remain the remaining driver
+work, GLES3, IGT and multiple displays; none removes a current requirement.

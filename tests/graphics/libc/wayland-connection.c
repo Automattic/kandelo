@@ -14,6 +14,15 @@ static int wpk_native_ppoll(struct pollfd *,nfds_t,const struct timespec *,const
 #define WPK_WAYLAND_LIFETIME_SOURCE "../../../libc/glue/wayland-client-lifetime.inc"
 #endif
 #include WPK_WAYLAND_LIFETIME_SOURCE
+#ifdef WPK_WL_RAW_ENTRY_ENABLED
+#include "wayland-private-queue.inc"
+#include "wayland-client-retirement.inc"
+#include "wayland-client-entry-retirement.inc"
+#ifndef WPK_WAYLAND_CALLBACK_SOURCE
+#define WPK_WAYLAND_CALLBACK_SOURCE "wayland-client-callback-retirement.inc"
+#endif
+#include WPK_WAYLAND_CALLBACK_SOURCE
+#endif
 #include <assert.h>
 #include "../../../libc/glue/drm_owned.h"
 #include <sys/wait.h>

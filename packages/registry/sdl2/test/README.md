@@ -30,3 +30,14 @@ This source control does not replace normal SDL/application rebuilds,
 Node/browser tests, three-engine Freeciv/ScummVM rendering checks or native-feel
 measurements. Upstream submission should include a native KMS reproduction;
 no native-hardware validation is claimed here.
+
+`window-restore.c` is the target-side companion: on a fresh Kandelo machine,
+it observes the initially disabled CRTC, creates an ordinary SDL2 GLES2 window,
+checks a rendered pixel, swaps, destroys the window and verifies disabled
+scanout again. Its log callback forwards every diagnostic and counts genuine
+errors. Build against the normal resolved SDL2/Wayland/xkbcommon/libffi/libdrm
+closure, fork-instrument the linked module, then stamp the ABI contract as for
+normal packages. SDL's linked support code requires that instrumentation even
+though the probe itself does not call fork. Execute it on all three browser
+engines; it does not require a full desktop image. This checks the SDL/KMS path,
+not Freeciv/ScummVM interactions, physical display timing or native feel.

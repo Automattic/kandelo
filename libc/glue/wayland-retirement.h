@@ -23,6 +23,24 @@ void _wpk_wl_logv(const char *,va_list);
 int _wpk_wl_log_capture_begin(struct wpk_wl_log_scope *);
 void _wpk_wl_log_capture_end_locked(struct wpk_wl_log_scope *);
 void _wpk_wl_log_capture_end(struct wpk_wl_log_scope *);
+int _wpk_wl_log_capture_abandon_locked(struct wpk_wl_log_scope *);
+struct wpk_wl_log_scope *_wpk_wl_log_capture_suspend(void);
+void _wpk_wl_log_capture_resume(struct wpk_wl_log_scope *);
+struct wpk_wl_log_scope *_wpk_wl_log_capture_current(void);
+/* Intrusive cold registration of an audited hidden platform queue. Connection
+ * is borrowed from the retained surface hold: withdraw before dropping that
+ * lifetime, before queue free/reuse, and before whole-owner boundary transfer. */
+struct wpk_wl_private_queue_token {
+    struct wpk_wl_private_queue_token *next;
+    void *queue,*display,*connection,*owner;
+    struct wpk_drm_actor_claim *owner_claim;
+    struct wpk_wl_log_scope *owner_logs;
+    uint64_t identity,process_epoch,native_epoch;
+    unsigned active;
+};
+int _wpk_wl_private_queue_register(struct wpk_wl_private_queue_token *,void *,void *,void *,struct wpk_drm_actor_claim *,struct wpk_wl_log_scope *);
+void _wpk_wl_private_queue_withdraw_locked(struct wpk_wl_private_queue_token *);
+void _wpk_wl_private_queue_withdraw(struct wpk_wl_private_queue_token *);
 int _wpk_wl_log_defer(struct wpk_wl_log_scope *);
 int _wpk_wl_log_drain_deferred(void);
 int _wpk_wl_log_deliver(struct wpk_wl_log_scope *);

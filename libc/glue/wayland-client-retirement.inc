@@ -39,7 +39,9 @@ enum wpk_wl_retire_result _wpk_wl_proxy_discard_pending(struct wpk_wl_proxy_reti
     if(!_wpk_drm_actor_prepare()){pthread_setcancelstate(prior,NULL);return WPK_WL_RETIRE_PENDING;}
     _wpk_drm_owned_publication_begin();
     struct wl_proxy *proxy=state->live;
+    WPK_WL_NATIVE_METADATA_BEGIN();
     if(proxy&&!(proxy->flags&WL_PROXY_FLAG_DESTROYED))proxy_destroy(proxy);
+    WPK_WL_NATIVE_METADATA_END();
     state->live=NULL;_wpk_drm_owned_publication_end();
     enum wpk_wl_retire_result result=_wpk_wl_log_deliver(&state->logs)?WPK_WL_RETIRE_COMPLETE:WPK_WL_RETIRE_PENDING;
     pthread_setcancelstate(prior,NULL);return result;
@@ -50,6 +52,9 @@ enum wpk_wl_retire_result _wpk_wl_queue_discard_pending(struct wpk_wl_queue_reti
     if(state->live){
         if(!_wpk_wl_log_capture_begin(&state->logs)){pthread_setcancelstate(prior,NULL);return WPK_WL_RETIRE_PENDING;}
         struct wl_event_queue *queue=state->live;
+#ifdef WPK_WL_RAW_ENTRY_ENABLED
+        wpk_wl_private_queue_forget(queue);
+#endif
         wl_event_queue_release(queue);
         _wpk_drm_owned_publication_begin();
         free(queue->name);free(queue);state->live=NULL;

@@ -35,6 +35,7 @@ clang -g -O1 -pthread -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" \
     -I"$output_dir/include" -I"$source_root/src" -I"$source_root" -I"$repo_root/libc/glue" \
     "$repo_root/tests/graphics/libc/wayland-constructor-custody.c" \
     "$output_dir/util-owned.c" "$source_root/src/connection.c" "$output_dir/protocol.c" \
+    "$repo_root/tests/graphics/libc/wayland-raw-inactive.c" \
     "${ffi_flags[@]}" -o "$output_dir/connection"
 python3 - "$output_dir/connection" "${@:2}" <<'PYTHON'
 import json,os,pathlib,subprocess,sys

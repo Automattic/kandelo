@@ -42,6 +42,13 @@ version_constraint = ">=1.24"
 probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); or apt install libwayland-bin" }
 
+[[host_tools]]
+# The platform adapter checks reviewed native layouts before compilation.
+name = "python3"
+version_constraint = ">=3.11"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
 [source]
 # wayland 1.24.0 release tarball (freedesktop GitLab). sha256 matches the
 # nixpkgs-pinned artifact used during PR3 development.
