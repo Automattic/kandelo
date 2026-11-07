@@ -1467,3 +1467,10 @@ lifecycle messages. Their composed source checks do not explain historical
 Chromium missing acknowledgements; finish that investigation and the actual
 full browser-memory contract in this iteration, without turning an additional
 per-generation diagnostic into a new acceptance rule or waiving real failures.
+
+The EGL pending-capsule consumer is now integrated with native source-level
+coverage for actual completion, retained pending/error work and explicit D-59
+transfer. Finish raw-client entry/callback enforcement, coherent normal target
+linkage/execution and the full B1 gates in this iteration. The old opaque queue
+observations have stronger fixture assertions; they do not establish actual
+browser or native-feel acceptance and are not a deferral of either requirement.

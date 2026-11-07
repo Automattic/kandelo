@@ -26267,3 +26267,27 @@ The new fixture executes actual complete adapter/listener functions with mock
 message delivery; these are source controls, not normal guest/browser launches.
 Full browser-memory, coherent rebuilt consumers and B1/final acceptance remain
 required. No ABI family, deadline or native event policy changes.
+
+### EGL outer pending cleanup integration, 2026-11-07
+
+Surface and generation queues now own persistent native live/retired capsules
+and independent outer claims. Publish custody before queue admission; retain it
+through PENDING, ERROR and callback-thread exit. An ERROR diagnoses loudly and
+retries only at a later cold lifecycle event. COMPLETE and explicit D-59 transfer
+remain distinct, and neither frees an EGL shell while any child slot remains.
+The earlier8 opaque unresolved fixture observations now have independent-peer
+completion or explicit boundary-owner assertions; these do not replace actual
+pinned-native boundary or callback tests.
+
+Root `graphics-pending-native-composition-r648-1107-021238-67fc` passes1m14s:
+all34 queue modes, original and optional5-mode EGL bridges, empty optional
+capsules and4 required fatal nonempty optional cases, wasm32/wasm64 actual EGL
+object compilation with both pending references weak/undefined, image/facade/
+GBM checks, actual pinned-native client/log/window controls and all493 expected
+libc consumers. All126 source inputs remain unchanged. Exact stage statuses,
+case coverage and hashes are in `.context/graphics-pending-composition-r648/`.
+
+These are composed source/native checks, not normal target linkage/execution,
+full raw-client enforcement, complete B1 or measured performance. Coherent
+SDK/package/application builds, actual Node/browser ownership checks and all
+stage/final gates remain required. ABI56/3/17/21 and upstream clients unchanged.

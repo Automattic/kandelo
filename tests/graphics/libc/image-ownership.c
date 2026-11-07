@@ -23,6 +23,7 @@
 #include "gbm_window.h"
 #include "owned-resource-peer.h"
 #include "wayland-native.h"
+#include "wayland-retirement.h"
 /* Wire tag is independent of the selected production revision in baseline runs. */
 #define GRAPHICS_EGL_TRACE_CHECKED_QUERY 0x100u
 #define GRAPHICS_SURFACE_CAPABILITIES 0x002du
@@ -172,6 +173,24 @@ int _wpk_wlegl_finish(void *lease,int present) {
 }
 void _wpk_wlegl_release(void *lease) {assert(lease==&native_window && native_window_holds);native_window_holds--;if(!native_window_holds)fixture_frame_release(lease);}
 void _wpk_wlegl_release_inherited(void *lease){_wpk_wlegl_release(lease);}
+/* This fixture's native peer has finite counter/frame-owner effects and no
+ * native logging callback. Retain its frame-owner tail separately; real native
+ * continuations and ended callbacks belong to the queue/native-client tests. */
+enum wpk_wl_retire_result _wpk_wlegl_release_pending(struct wpk_wlegl_retirement *p){
+    assert(p);_wpk_drm_owned_publication_begin();
+    if(p->live){
+        assert(!p->retired&&p->live==&native_window&&native_window_holds);
+        if(!--native_window_holds)p->retired=p->live;
+        p->live=NULL;
+    }
+    void *tail=p->retired;_wpk_drm_owned_publication_end();
+    if(tail){
+        fixture_frame_release(tail);
+        _wpk_drm_owned_publication_begin();p->retired=NULL;_wpk_drm_owned_publication_end();
+    }
+    return WPK_WL_RETIRE_COMPLETE;
+}
+
 
 int _wpk_gbm_surface_dimensions(const void *window, uint32_t *w, uint32_t *h) {
     for (unsigned i = 0; i < 3; i++)
@@ -756,6 +775,12 @@ void *_wpk_wl_display_acquire(const void *native,uint64_t identity) {
 int _wpk_wl_display_alive(void *hold) {assert(hold==&wayland_holds && wayland_holds);return wayland_native_live;}
 void _wpk_wl_display_release(void *hold) {assert(hold==&wayland_holds && wayland_holds);wayland_holds--;}
 void _wpk_wl_display_release_inherited(void *hold){_wpk_wl_display_release(hold);}
+enum wpk_wl_retire_result _wpk_wl_display_release_pending(struct wpk_wl_display_retirement *p){
+    assert(p);_wpk_drm_owned_publication_begin();assert(!p->retired);
+    if(p->live){assert(p->live==&wayland_holds&&wayland_holds);wayland_holds--;p->live=NULL;}
+    _wpk_drm_owned_publication_end();return WPK_WL_RETIRE_COMPLETE;
+}
+
 int _wpk_wl_display_metadata(const void *native,uint64_t *identity) {
     if(native!=wayland_native_display || !wayland_native_live)return 0;
     *identity=wayland_native_identity;return 1;

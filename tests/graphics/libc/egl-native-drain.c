@@ -24,6 +24,10 @@ void _wpk_wl_display_release(void *p){(void)p;abort();}
 void _wpk_wl_display_release_inherited(void *p){(void)p;abort();}
 void _wpk_wlegl_release(void *p){(void)p;abort();}
 void _wpk_wlegl_release_inherited(void *p){(void)p;abort();}
+#ifndef WPK_EGL_PENDING_OPTIONAL
+enum wpk_wl_retire_result _wpk_wlegl_release_pending(struct wpk_wlegl_retirement *p){(void)p;abort();}
+enum wpk_wl_retire_result _wpk_wl_display_release_pending(struct wpk_wl_display_retirement *p){(void)p;abort();}
+#endif
 static int mode,window_calls,log_calls;
 int _wpk_wlegl_drain_deferred(void){
  ++window_calls;
@@ -44,6 +48,25 @@ static void *exit_on_log(void *unused){
 }
 int main(int argc,char **argv){
  assert(argc==2);alarm(10);
+#ifdef WPK_EGL_PENDING_OPTIONAL
+ if(!strcmp(argv[1],"optional-empty")){
+  struct wpk_wlegl_retirement window={0};struct wpk_wl_display_retirement display={0};
+  assert(_wpk_wlegl_release_pending(&window)==WPK_WL_RETIRE_COMPLETE);
+  assert(_wpk_wl_display_release_pending(&display)==WPK_WL_RETIRE_COMPLETE);
+  puts("PASS optional native peer accepts only exact empty capsules");return 0;
+ }
+ if(!strncmp(argv[1],"unsupported-",12)){
+  int retired=strstr(argv[1],"retired")!=NULL;
+  if(strstr(argv[1],"window")){
+   struct wpk_wlegl_retirement p={0};if(retired)p.retired=(void*)1;else p.live=(void*)1;
+   _wpk_wlegl_release_pending(&p);
+  }else{
+   struct wpk_wl_display_retirement p={0};if(retired)p.retired=(void*)1;else p.live=(void*)1;
+   _wpk_wl_display_release_pending(&p);
+  }
+  return 77; /* An unsupported live native owner must fail loudly. */
+ }
+#endif
  mode=atoi(argv[1]);
  for(int n=0;n<40;n++){lock_context();unlock_context();}
  assert(!window_calls&&!log_calls&&!actor_current_scope);

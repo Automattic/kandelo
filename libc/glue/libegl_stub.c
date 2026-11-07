@@ -44,6 +44,11 @@
 #define WPK_WAYLAND_OPTIONAL __attribute__((weak))
 #endif
 #include "wayland-native.h"
+#include "wayland-retirement.h"
+/* Optional native backends must not become link requirements for KMS-only EGL.
+ * Capsules are private same-module C ownership, never guest/kernel ABI. */
+WPK_WAYLAND_OPTIONAL enum wpk_wl_retire_result _wpk_wlegl_release_pending(struct wpk_wlegl_retirement *);
+WPK_WAYLAND_OPTIONAL enum wpk_wl_retire_result _wpk_wl_display_release_pending(struct wpk_wl_display_retirement *);
 __attribute__((weak)) int _wpk_gbm_window_acquire(const void *, void **, struct wpk_gbm_frame *);
 __attribute__((weak)) int _wpk_gbm_window_prepare(void *, struct wpk_gbm_frame *);
 __attribute__((weak)) void _wpk_gbm_window_finish(void *, int);
@@ -169,11 +174,9 @@ struct egl_context_record {
     /* Created with EGL robust buffer access (host robust-access.ts). */
     int robust_access;
 };
-/* WHY: opaque Wayland cleanup cannot report which native steps survived an ended
- * callback. ACTIVE may only be completed by its original continuing stack;
- * an abandoned ACTIVE needs an owning progress-slot API before it can retry.
- * UNRESOLVED is an explicit incomplete repair, never successful retirement. */
-enum egl_native_release_phase { EGL_RELEASE_IDLE, EGL_RELEASE_ACTIVE, EGL_RELEASE_UNRESOLVED };
+/* WHY: each outer record roots the callee's exact unfinished continuation.
+ * A native callback may end its thread after an effect; retrying an opaque
+ * void release would replay it, while freeing this parent would lose custody. */
 struct egl_surface_record {
     EGLSurface handle;
     struct egl_session *session;
@@ -185,7 +188,7 @@ struct egl_surface_record {
     void *native_window, *gbm_lease, *wayland_lease;
     struct wpk_gbm_window_retirement gbm_retirement;
     struct wpk_drm_actor_claim release_claim;
-    enum egl_native_release_phase wayland_release_phase;
+    struct wpk_wlegl_retirement wayland_retirement;
     uint64_t release_visit;
     struct egl_surface_record *next;
 };
@@ -194,7 +197,7 @@ struct egl_generation {
     int constructing;
     struct wpk_drm_actor_claim construction_claim;
     struct wpk_drm_actor_claim release_claim;
-    enum egl_native_release_phase wayland_release_phase;
+    struct wpk_wl_display_retirement wayland_retirement;
     uint64_t release_visit;
     struct wpk_drm_owner *owner,*display_owner,*native_owner,*storage_owner;
     void *wayland_hold;
@@ -228,13 +231,27 @@ static int g_image_retire_pending;
  * publication must share the transaction withdrawing the original graph edge:
  * a fork between unlink and enqueue would otherwise lose its only owner. */
 static void free_generation_locked(struct egl_generation *generation) {
-    if(!generation->wayland_hold) {free(generation);return;}
+    /* Move legacy admission edges into persistent capsules BEFORE publishing
+     * this queue node; a child must never inherit an unrooted transfer gap. */
+    if(generation->wayland_hold){
+        if(generation->wayland_retirement.live||generation->wayland_retirement.retired)abort();
+        generation->wayland_retirement.live=generation->wayland_hold;generation->wayland_hold=NULL;
+    }
+    if(!generation->wayland_retirement.live&&!generation->wayland_retirement.retired){free(generation);return;}
     generation->next=g_generation_releases;g_generation_releases=generation;
     atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
 }
 static void free_surface_record_locked(struct egl_surface_record *surface) {
-    if (!surface->gbm_lease && !surface->wayland_lease) { free(surface); return; }
-    surface->gbm_retirement.live=surface->gbm_lease;surface->gbm_lease=NULL;
+    if(surface->gbm_lease){
+        if(surface->gbm_retirement.live||surface->gbm_retirement.retired)abort();
+        surface->gbm_retirement.live=surface->gbm_lease;surface->gbm_lease=NULL;
+    }
+    if(surface->wayland_lease){
+        if(surface->wayland_retirement.live||surface->wayland_retirement.retired)abort();
+        surface->wayland_retirement.live=surface->wayland_lease;surface->wayland_lease=NULL;
+    }
+    if(!surface->gbm_retirement.live&&!surface->gbm_retirement.retired&&
+       !surface->wayland_retirement.live&&!surface->wayland_retirement.retired){free(surface);return;}
     surface->next = g_surface_releases;
     g_surface_releases = surface;
     atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
@@ -302,39 +319,44 @@ static void drain_egl_releases(void) {
      * at another lifecycle/enqueue event, never on every draw/frame unlock. */
     while(surface_budget--){
         struct egl_surface_record *surface=NULL;
-        int unresolved=0;
+        int gbm_pending=0,wayland_pending=0;
+        enum wpk_wl_retire_result wayland_result=WPK_WL_RETIRE_COMPLETE;
         _wpk_drm_owned_publication_begin();
         for(struct egl_surface_record *p=g_surface_releases;p;p=p->next){
-            if(p->release_visit==visit || p->wayland_release_phase==EGL_RELEASE_UNRESOLVED)continue;
+            if(p->release_visit==visit)continue;
             if(!_wpk_drm_actor_try_claim_locked(&p->release_claim))continue;
             surface=p;p->release_visit=visit;
-            if(p->wayland_release_phase==EGL_RELEASE_ACTIVE || (p->inherited&&p->wayland_lease)){
-                p->wayland_release_phase=EGL_RELEASE_UNRESOLVED;unresolved=1;
-            }
+            gbm_pending=p->gbm_retirement.live||p->gbm_retirement.retired;
+            wayland_pending=p->wayland_retirement.live||p->wayland_retirement.retired;
             break;
         }
         _wpk_drm_owned_publication_end();
         if(!surface)break;
-        if(unresolved)fprintf(stderr,"Kandelo EGL: Wayland surface release lacks durable ended/inherited native progress; custody unresolved\n");
-        if(!unresolved && (surface->gbm_retirement.live || surface->gbm_retirement.retired)){
+        if(gbm_pending){
             if(!_wpk_gbm_window_release_pending)abort();
             _wpk_gbm_window_release_pending(&surface->gbm_retirement);
         }
-        if(!unresolved && surface->wayland_lease){
-            _wpk_drm_owned_publication_begin();
-            surface->wayland_release_phase=EGL_RELEASE_ACTIVE;
-            _wpk_drm_owned_publication_end();
-            if(surface->inherited){
-                if(!_wpk_wlegl_release_inherited)abort();
-                _wpk_wlegl_release_inherited(surface->wayland_lease);
-            }else _wpk_wlegl_release(surface->wayland_lease);
-            _wpk_drm_owned_publication_begin();
-            surface->wayland_lease=NULL;surface->wayland_release_phase=EGL_RELEASE_IDLE;
-            _wpk_drm_owned_publication_end();
+        if(wayland_pending){
+            if(!_wpk_wlegl_release_pending)abort();
+            /* Keep the independent outer claim across all native work and
+             * callbacks. The callee seals progress in this rooted capsule. */
+            wayland_result=_wpk_wlegl_release_pending(&surface->wayland_retirement);
         }
+        if(wayland_result==WPK_WL_RETIRE_ERROR){
+            /* A fork child can inherit a stdio mutex from an ended thread.
+             * Failure diagnostics must not wait on that copied native lock. */
+            static const char message[]="Kandelo EGL: Wayland surface retirement failed; custody retained\n";
+            (void)write(STDERR_FILENO,message,sizeof message-1);
+        }
+        else if(wayland_result!=WPK_WL_RETIRE_PENDING&&wayland_result!=WPK_WL_RETIRE_COMPLETE&&
+                wayland_result!=WPK_WL_RETIRE_BOUNDARY_TRANSFERRED)abort();
         _wpk_drm_owned_publication_begin();
         _wpk_drm_actor_release_locked(&surface->release_claim);
-        if(!surface->gbm_retirement.live && !surface->gbm_retirement.retired && !surface->wayland_lease){
+        /* COMPLETE and an accepted D-59 boundary are distinct terminal results;
+         * neither authorizes freeing a parent with any live/retired child. */
+        if((wayland_result==WPK_WL_RETIRE_COMPLETE||wayland_result==WPK_WL_RETIRE_BOUNDARY_TRANSFERRED)&&
+           !surface->gbm_retirement.live&&!surface->gbm_retirement.retired&&
+           !surface->wayland_retirement.live&&!surface->wayland_retirement.retired){
             struct egl_surface_record **link=&g_surface_releases;
             while(*link && *link!=surface)link=&(*link)->next;
             if(!*link)abort();
@@ -344,35 +366,32 @@ static void drain_egl_releases(void) {
     }
     while(generation_budget--){
         struct egl_generation *generation=NULL;
-        int unresolved=0;
+        int wayland_pending=0;
+        enum wpk_wl_retire_result wayland_result=WPK_WL_RETIRE_COMPLETE;
         _wpk_drm_owned_publication_begin();
         for(struct egl_generation *p=g_generation_releases;p;p=p->next){
-            if(p->release_visit==visit || p->wayland_release_phase==EGL_RELEASE_UNRESOLVED)continue;
+            if(p->release_visit==visit)continue;
             if(!_wpk_drm_actor_try_claim_locked(&p->release_claim))continue;
             generation=p;p->release_visit=visit;
-            if(p->wayland_release_phase==EGL_RELEASE_ACTIVE || (p->fork_retired&&p->wayland_hold)){
-                p->wayland_release_phase=EGL_RELEASE_UNRESOLVED;unresolved=1;
-            }
+            wayland_pending=p->wayland_retirement.live||p->wayland_retirement.retired;
             break;
         }
         _wpk_drm_owned_publication_end();
         if(!generation)break;
-        if(unresolved)fprintf(stderr,"Kandelo EGL: Wayland display release lacks durable ended/inherited native progress; custody unresolved\n");
-        else if(generation->wayland_hold){
-            _wpk_drm_owned_publication_begin();
-            generation->wayland_release_phase=EGL_RELEASE_ACTIVE;
-            _wpk_drm_owned_publication_end();
-            if(generation->fork_retired){
-                if(!_wpk_wl_display_release_inherited)abort();
-                _wpk_wl_display_release_inherited(generation->wayland_hold);
-            }else _wpk_wl_display_release(generation->wayland_hold);
-            _wpk_drm_owned_publication_begin();
-            generation->wayland_hold=NULL;generation->wayland_release_phase=EGL_RELEASE_IDLE;
-            _wpk_drm_owned_publication_end();
+        if(wayland_pending){
+            if(!_wpk_wl_display_release_pending)abort();
+            wayland_result=_wpk_wl_display_release_pending(&generation->wayland_retirement);
         }
+        if(wayland_result==WPK_WL_RETIRE_ERROR){
+            static const char message[]="Kandelo EGL: Wayland display retirement failed; custody retained\n";
+            (void)write(STDERR_FILENO,message,sizeof message-1);
+        }
+        else if(wayland_result!=WPK_WL_RETIRE_PENDING&&wayland_result!=WPK_WL_RETIRE_COMPLETE&&
+                wayland_result!=WPK_WL_RETIRE_BOUNDARY_TRANSFERRED)abort();
         _wpk_drm_owned_publication_begin();
         _wpk_drm_actor_release_locked(&generation->release_claim);
-        if(!generation->wayland_hold){
+        if((wayland_result==WPK_WL_RETIRE_COMPLETE||wayland_result==WPK_WL_RETIRE_BOUNDARY_TRANSFERRED)&&
+           !generation->wayland_retirement.live&&!generation->wayland_retirement.retired){
             struct egl_generation **link=&g_generation_releases;
             while(*link && *link!=generation)link=&(*link)->next;
             if(!*link)abort();
@@ -929,7 +948,7 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
     _wpk_drm_owned_publication_end();
     EGLint failure=EGL_NOT_INITIALIZED;
     if(display->native_kind==NATIVE_WAYLAND){
-        if(!_wpk_wl_display_acquire||!_wpk_wl_display_release||!_wpk_wl_display_alive)goto fail;
+        if(!_wpk_wl_display_acquire||!_wpk_wl_display_release_pending||!_wpk_wl_display_alive)goto fail;
         if(!(generation->wayland_hold=_wpk_wl_display_acquire(display->native_device,display->native_identity)))goto resource_fail;
         if(_wpk_drm_owned_open(WPK_DRM_OWNED_CARD_NODE,&generation->native_owner)!=0)goto resource_fail;
     }else if(display==&g_default_display){
@@ -1652,7 +1671,7 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
         request.attrs.width = frame.width;
         request.attrs.height = frame.height;
     }
-    if(!is_gbm && win && _wpk_wlegl_acquire && _wpk_wlegl_prepare && _wpk_wlegl_prepare_present && _wpk_wlegl_finish && _wpk_wlegl_release) {
+    if(!is_gbm && win && _wpk_wlegl_acquire && _wpk_wlegl_prepare && _wpk_wlegl_prepare_present && _wpk_wlegl_finish && _wpk_wlegl_release_pending) {
         struct wpk_wlegl_frame frame;
         const struct egl_display_record *display=generation->display;
         const void *native_display=display->native_kind==NATIVE_WAYLAND ? display->native_device : NULL;

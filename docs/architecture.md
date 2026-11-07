@@ -7710,7 +7710,15 @@ scan diagnostic state. Single-thread child disconnect performs local cleanup
 without shutting down the parent's shared socket OFD. Inherited rendering
 admission remains revoked independently of the multithread native boundary.
 
-These native helpers and window queues are source foundations. Full raw-client
-entry/callback enforcement and the EGL outer queue's pending-capsule consumer
-remain active integration work; neither an opaque native return nor an explicit
-boundary transfer is an acknowledgement of completed native cleanup.
+EGL's outer surface/generation queues now retain these exact live/retired
+capsules, publishing custody before enqueue and keeping an independent actor
+claim across native effects and callbacks. PENDING or ERROR retains the shell
+for another cold lifecycle event; ERROR emits a raw diagnostic outside locks.
+COMPLETE and BOUNDARY_TRANSFERRED remain distinct, and either permits shell
+retirement only after every child slot is empty. Optional native backends must
+provide the pending contract before acquisition; no opaque void release can
+substitute for it. Both pending references remain weak for KMS-only linkage.
+No hot draw/frame retry or diagnostic scan is added. Full raw-client
+entry/callback enforcement and normal-target acceptance remain unfinished;
+neither an opaque native return nor explicit boundary transfer acknowledges
+completed native cleanup.

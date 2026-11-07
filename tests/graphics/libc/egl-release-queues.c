@@ -1,6 +1,7 @@
 /* Actual EGL outer queues + actual GBM continuation + common ActorScope.
  * The transport peer supplies independent native capability accounting. The
- * opaque Wayland peer deliberately cannot report partial native progress. */
+ * Wayland peer seals each native effect and callback claim independently.
+ * Actual pinned native client/log semantics are proved by their own controls. */
 #include "drm-owned-double.h"
 #include "drm_owned.c"
 #define main transport_fixture_main
@@ -30,19 +31,27 @@ void _wpk_gl_retire_encoder_programs(struct wpk_gles_context *p){(void)p;abort()
 
 static pthread_mutex_t queue_gate=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t queue_changed=PTHREAD_COND_INITIALIZER;
-static unsigned queue_callbacks,queue_pause_at,wayland_tokens[4];
+struct queue_native_peer {
+    unsigned native_epoch,native_live,callback_started,effects;
+    struct wpk_drm_actor_claim callback_claim;
+    struct wpk_wl_boundary_hold boundary;
+};
+static struct queue_native_peer *wayland_tokens[4];
+static unsigned queue_callbacks,queue_pause_at,queue_effects,queue_boundary_transfers,queue_native_epoch;
+static int queue_pending_once,queue_error_once,queue_retired_pending;
 static int queue_ready,queue_proceed,queue_kind,queue_action,queue_child,queue_nested,queue_mixed,queue_inherited;
 static struct gbm_device *queue_device;
 static struct gbm_bo *queue_held_bo;
 static struct egl_surface_record *queue_surface;
 static struct egl_generation *queue_generation;
 static int queue_clear_control,queue_pause_after_clear;
-/* Interpose only the actual EGL publication return. This exposes a real
- * durable progress boundary, after hold=NULL but before exact-node unlink. */
+/* Observe publication return from EGL and the independent native peer.
+ * The peer can finish its capsule before returning to its still-claimed
+ * EGL caller; a foreign fork must then collect that empty outer shell. */
 static void queue_publication_end(void){
     _wpk_drm_owned_publication_end();
     if(queue_pause_after_clear&&g_generation_releases==queue_generation&&queue_generation&&
-       !queue_generation->wayland_hold){
+       !queue_generation->wayland_retirement.live&&!queue_generation->wayland_retirement.retired){
         queue_pause_after_clear=0;
         pthread_mutex_lock(&queue_gate);queue_ready=1;pthread_cond_broadcast(&queue_changed);
         while(!queue_proceed)pthread_cond_wait(&queue_changed,&queue_gate);
@@ -61,12 +70,12 @@ static void assert_queue_root(void){
     if(queue_kind==2){
         struct egl_generation *p=g_generation_releases;
         while(p&&p!=queue_generation)p=p->next;
-        assert(p&&p->wayland_hold==&wayland_tokens[0]);
+        assert(p&&!p->wayland_hold&&(p->wayland_retirement.live==wayland_tokens[0]||p->wayland_retirement.retired==wayland_tokens[0]));
     }else{
         struct egl_surface_record *p=g_surface_releases;
         while(p&&p!=queue_surface)p=p->next;
         assert(p);
-        if(queue_kind==1)assert(p->wayland_lease==&wayland_tokens[0]);
+        if(queue_kind==1)assert(!p->wayland_lease&&(p->wayland_retirement.live==wayland_tokens[0]||p->wayland_retirement.retired==wayland_tokens[0]));
         else {
 #ifdef WPK_EGL_QUEUE_BEFORE
             assert(p->gbm_lease);
@@ -78,13 +87,17 @@ static void assert_queue_root(void){
 }
 static void enqueue_wayland(int kind,unsigned token){
     lock_context();_wpk_drm_owned_publication_begin();
+    assert(!wayland_tokens[token]);
+    wayland_tokens[token]=owned_calloc(1,sizeof *wayland_tokens[token]);assert(wayland_tokens[token]);
+    wayland_tokens[token]->native_live=1;wayland_tokens[token]->native_epoch=queue_native_epoch+!!(token==3||queue_inherited);
+    wayland_tokens[token]->boundary.owner=wayland_tokens[token];
     if(kind==2){
         struct egl_generation *p=owned_calloc(1,sizeof *p);assert(p);
-        p->wayland_hold=&wayland_tokens[token];p->fork_retired=token==3||queue_inherited;
+        p->wayland_hold=wayland_tokens[token];p->fork_retired=token==3||queue_inherited;
         free_generation_locked(p);if(!token)queue_generation=p;
     }else{
         struct egl_surface_record *p=owned_calloc(1,sizeof *p);assert(p);
-        p->wayland_lease=&wayland_tokens[token];p->inherited=token==3||queue_inherited;
+        p->wayland_lease=wayland_tokens[token];p->inherited=token==3||queue_inherited;
         free_surface_record_locked(p);if(!token)queue_surface=p;
     }
     _wpk_drm_owned_publication_end();
@@ -137,14 +150,50 @@ static void queue_bo_destructor(struct gbm_bo *bo,void *data){
     assert(bo->planes[0].owner&&caps[bo->planes[0].owner->token].live);
     queue_callback(1);
 }
-static void queue_wayland_callback(void *p){
-    assert(p>= (void *)&wayland_tokens[0]&&p<= (void *)&wayland_tokens[3]);
-    queue_callback(p==&wayland_tokens[0]);
+/* This protocol peer is intentionally independent of EGL's queue algorithm:
+ * the native effect and callback-start bit seal BEFORE user code. The caller
+ * must keep the exact live/retired capsule and its outer claim across it. */
+static enum wpk_wl_retire_result queue_native_release(void **live,void **retired){
+    _wpk_drm_owned_publication_begin();
+    struct queue_native_peer *p=*live?*live:*retired;
+    if(!p){_wpk_drm_owned_publication_end();return WPK_WL_RETIRE_COMPLETE;}
+    int outer=p==wayland_tokens[0];
+    if(outer){
+        if(queue_kind==2)assert(_wpk_drm_actor_claim_current_locked(&queue_generation->release_claim));
+        else assert(_wpk_drm_actor_claim_current_locked(&queue_surface->release_claim));
+    }
+    if(queue_error_once){queue_error_once=0;_wpk_drm_owned_publication_end();return WPK_WL_RETIRE_ERROR;}
+    if(queue_pending_once&&!queue_retired_pending){queue_pending_once=0;_wpk_drm_owned_publication_end();return WPK_WL_RETIRE_PENDING;}
+    if(p->native_live&&(p->native_epoch!=queue_native_epoch)){
+        _wpk_wl_boundary_transfer_locked(&p->boundary);*live=*retired=NULL;++queue_boundary_transfers;
+        _wpk_drm_owned_publication_end();return WPK_WL_RETIRE_BOUNDARY_TRANSFERRED;
+    }
+    if(*live){assert(!*retired);*retired=*live;*live=NULL;}
+    if(queue_pending_once){queue_pending_once=0;_wpk_drm_owned_publication_end();return WPK_WL_RETIRE_PENDING;}
+    if(!_wpk_drm_actor_try_claim_locked(&p->callback_claim)){
+        _wpk_drm_owned_publication_end();return WPK_WL_RETIRE_PENDING;
+    }
+    int deliver=!p->callback_started;
+    if(deliver){assert(p->native_live);p->native_live=0;p->effects++;queue_effects++;p->callback_started=1;}
+    _wpk_drm_owned_publication_end();
+    if(deliver){
+        /* Reenter the ACTUAL context mutex. Calling this under the EGL lock
+         * deadlocks the deadline rather than passing a facade-lock double. */
+        lock_context();unlock_context();queue_callback(outer);
+    }
+    _wpk_drm_owned_publication_begin();
+    assert(*retired==p&&!p->native_live&&p->effects==1);
+    _wpk_drm_actor_release_locked(&p->callback_claim);*retired=NULL;
+    for(unsigned i=0;i<4;i++)if(wayland_tokens[i]==p)wayland_tokens[i]=NULL;
+    owned_free(p);queue_publication_end();return WPK_WL_RETIRE_COMPLETE;
 }
-void _wpk_wlegl_release(void *p){queue_wayland_callback(p);}
-void _wpk_wlegl_release_inherited(void *p){assert(p==&wayland_tokens[3]||p==&wayland_tokens[0]);queue_wayland_callback(p);}
-void _wpk_wl_display_release(void *p){queue_wayland_callback(p);}
-void _wpk_wl_display_release_inherited(void *p){assert(p==&wayland_tokens[3]||p==&wayland_tokens[0]);queue_wayland_callback(p);}
+enum wpk_wl_retire_result _wpk_wlegl_release_pending(struct wpk_wlegl_retirement *p){return queue_native_release(&p->live,&p->retired);}
+enum wpk_wl_retire_result _wpk_wl_display_release_pending(struct wpk_wl_display_retirement *p){return queue_native_release(&p->live,&p->retired);}
+/* Opaque native release is never an admissible fallback. */
+void _wpk_wlegl_release(void *p){(void)p;abort();}
+void _wpk_wlegl_release_inherited(void *p){(void)p;abort();}
+void _wpk_wl_display_release(void *p){(void)p;abort();}
+void _wpk_wl_display_release_inherited(void *p){(void)p;abort();}
 static void finish_queue_scope(void){
     if(actor_current_scope){
         struct wpk_drm_actor_scope *p=actor_current_scope;
@@ -176,12 +225,16 @@ static void enqueue_gbm(void){
     queue_surface->gbm_lease=s;free_surface_record_locked(queue_surface);
     if(queue_mixed){
         struct egl_surface_record *extra=owned_calloc(1,sizeof *extra);assert(extra);
-        extra->wayland_lease=&wayland_tokens[1];free_surface_record_locked(extra);
+        wayland_tokens[1]=owned_calloc(1,sizeof *wayland_tokens[1]);assert(wayland_tokens[1]);
+        wayland_tokens[1]->native_live=1;wayland_tokens[1]->native_epoch=queue_native_epoch;wayland_tokens[1]->boundary.owner=wayland_tokens[1];
+        extra->wayland_lease=wayland_tokens[1];free_surface_record_locked(extra);
         /* Keep the GBM callback first, with independently rooted work behind
          * it in both queues when that callback ends the whole worker. */
         g_surface_releases=queue_surface;queue_surface->next=extra;extra->next=NULL;
         struct egl_generation *g=owned_calloc(1,sizeof *g);assert(g);
-        g->wayland_hold=&wayland_tokens[1];free_generation_locked(g);
+        wayland_tokens[2]=owned_calloc(1,sizeof *wayland_tokens[2]);assert(wayland_tokens[2]);
+        wayland_tokens[2]->native_live=1;wayland_tokens[2]->native_epoch=queue_native_epoch;wayland_tokens[2]->boundary.owner=wayland_tokens[2];
+        g->wayland_hold=wayland_tokens[2];free_generation_locked(g);
     }
     _wpk_drm_owned_publication_end();unlock_context();
     if(queue_action==6){
@@ -201,18 +254,14 @@ static void *queue_withdraw(void *unused){
     if(queue_kind)enqueue_wayland(queue_kind,0);else enqueue_gbm();
     return NULL;
 }
-static void assert_unresolved(void){
-#ifndef WPK_EGL_QUEUE_BEFORE
-    if(queue_kind==2){assert(g_generation_releases==queue_generation&&queue_generation->wayland_release_phase==EGL_RELEASE_UNRESOLVED&&!queue_generation->release_claim.scope);}
-    else {assert(g_surface_releases==queue_surface&&queue_surface->wayland_release_phase==EGL_RELEASE_UNRESOLVED&&!queue_surface->release_claim.scope);}
-    unsigned callbacks=queue_callbacks;
-    /* There is no new native call, no assumed success and no hot retry. */
+static void assert_boundary_transfer(void){
+    assert(!g_surface_releases&&!g_generation_releases&&queue_boundary_transfers==1);
+    struct queue_native_peer *peer=wayland_tokens[0];
+    assert(peer&&peer->native_live&&!peer->effects&&peer->boundary.transferred);
+    assert(wayland_boundary_roots==&peer->boundary&&peer->boundary.owner==peer);
     assert(!atomic_load_explicit(&g_release_work,memory_order_relaxed));
-    cold_drain();assert(callbacks==queue_callbacks);assert_queue_root();
+    unsigned calls=queue_callbacks;cold_drain();assert(calls==queue_callbacks);
     finish_queue_scope();assert(allocations==1&&!actor_scopes);
-#else
-    assert_queue_root();
-#endif
 }
 int main(int argc,char **argv){
     assert(argc==2);alarm(12);
@@ -221,13 +270,22 @@ int main(int argc,char **argv){
     queue_clear_control=queue_pause_after_clear=strstr(argv[1],"after-clear")!=NULL;
     queue_action=strstr(argv[1],"idle-fork")?7:strstr(argv[1],"prepare-fail")?5:strstr(argv[1],"pending")?6:strstr(argv[1],"nested-self")?4:strstr(argv[1],"nested")?1:strstr(argv[1],"self")?2:strstr(argv[1],"exit")?3:0;
     queue_inherited=strstr(argv[1],"inherited")!=NULL;
+    queue_pending_once=queue_kind&&strstr(argv[1],"pending")!=NULL;
+    queue_retired_pending=strstr(argv[1],"retired-pending")!=NULL;
+    queue_error_once=strstr(argv[1],"error")!=NULL;
+    if(queue_kind&&queue_action==6)queue_action=0;
     if(queue_inherited){
-        enqueue_wayland(queue_kind,0);assert(!queue_callbacks);assert_unresolved();
-        puts("OBSERVED UNRESOLVED: inherited Wayland native leaf; no retirement claim");return 0;
+        enqueue_wayland(queue_kind,0);assert(!queue_callbacks);assert_boundary_transfer();
+        puts("PASS explicit D59 transfer: native owner remains rooted independently of retired EGL parent");return 0;
     }else if(queue_action==7){
         queue_withdraw(NULL);assert(!queue_callbacks);assert_queue_root();
         pid_t child=fork();assert(child>=0);
-        if(!child){cold_drain();assert(!queue_callbacks);assert_unresolved();_exit(0);}
+        if(!child){
+            /* Explicit copied-libc D59 epoch double, independent of the real
+             * PID/ActorScope fork semantics. Native-client controls own the
+             * actual libc detector and single-thread inherited local cleanup. */
+            queue_native_epoch++;cold_drain();assert(!queue_callbacks);assert_boundary_transfer();_exit(0);
+        }
         int status;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&!WEXITSTATUS(status));
         queue_action=0;cold_drain();
     }else if(strstr(argv[1],"foreign")){
@@ -237,7 +295,6 @@ int main(int argc,char **argv){
         pid_t child=fork();assert(child>=0);
         if(!child){
             queue_pause_at=0;queue_proceed=1;cold_drain();
-            if(queue_kind&&!queue_clear_control){assert_unresolved();_exit(0);}
             finish_queue_scope();assert(queue_callbacks==(queue_kind?1u:2u)&&!live_caps()&&!allocations&&!g_surface_releases&&!g_generation_releases);_exit(0);
         }
         int status;assert(waitpid(child,&status,0)==child);
@@ -245,11 +302,20 @@ int main(int argc,char **argv){
         assert(!pthread_join(worker,NULL));assert(WIFEXITED(status)&&!WEXITSTATUS(status));
     }else if(queue_action==3){
         pthread_t worker;assert(!pthread_create(&worker,NULL,queue_withdraw,NULL));assert(!pthread_join(worker,NULL));queue_action=0;
-        cold_drain();if(queue_kind){assert_unresolved();puts("OBSERVED UNRESOLVED: opaque Wayland leaf; no retirement claim");return 0;}
-    }else queue_withdraw(NULL);
+        cold_drain();
+    }else {
+        int deferred=queue_pending_once||queue_error_once;
+        queue_withdraw(NULL);
+        if(deferred){
+            assert(!queue_callbacks&&!queue_effects);assert_queue_root();
+            assert(!atomic_load_explicit(&g_release_work,memory_order_relaxed));
+            lock_context();unlock_context();assert(!queue_callbacks);cold_drain();
+        }
+    }
     finish_queue_scope();
     assert(!g_surface_releases&&!g_generation_releases&&!live_surfaces&&!live_bos&&!live_devices&&!retired_bos&&!live_caps()&&!allocations&&!actor_scopes);
     assert(queue_callbacks==(queue_kind?1u:2u)+(queue_nested?1u:0u)+(queue_mixed?2u:0u));
+    if(queue_kind)assert(queue_effects==queue_callbacks&&!queue_boundary_transfers);
     printf("PASS actual EGL release queues %s\n",argv[1]);
     if(queue_child)_exit(0);return 0;
 }
