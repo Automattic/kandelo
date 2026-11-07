@@ -72,6 +72,13 @@ must pin the source-derived program contract digest and reject ABI-55
 executables clearly. This intentionally supports one program family and
 retains every conformance, parity and normal-build acceptance requirement.
 
+The combined source through main `faf9b31720` is committed at `39aadd1338`.
+Kernel compilation, regenerated ABI/resolver and the source-derived baseline
+checks pass (R814). R815 normally compiles/stamps seven fresh ABI-56 fixtures
+from that clean producer; their manifest records measured output identities.
+The archived ABI-55 manifest is unchanged. These source/artifact checks do not
+establish merged-runtime admission, a new preview, complete B1 or native feel.
+
 Retain the existing pointer, typing, ScummVM and idle-worker ship bar.
 Additional targets are pointer input to display within one refresh interval
 p50 and two refresh intervals p95; desktop motion, dragging, resizing and
