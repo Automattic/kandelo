@@ -1,4 +1,4 @@
-import type { BrowserContext } from "@playwright/test";
+import type { BrowserContext } from "../../playwright-test";
 
 export async function installPcmRetirementTrace(context: BrowserContext): Promise<void> {
   await context.addInitScript(() => {

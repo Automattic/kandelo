@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { zipSync, type Zippable } from "fflate";
 
 import { resolveBinary } from "../../../host/src/binary-resolver";

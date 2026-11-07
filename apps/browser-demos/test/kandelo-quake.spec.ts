@@ -1,5 +1,5 @@
 import { setInternalsOpen } from "./support/dock";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 import { QUAKE_ZIP_URL } from "../../../web-libs/kandelo-session/src/demo-guides";
 

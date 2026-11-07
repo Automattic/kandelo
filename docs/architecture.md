@@ -5219,6 +5219,12 @@ A kernel-worker relay copies newly produced ring bytes and producer metadata
 into the mirror, and returns worklet-owned cursor/error publications to the
 canonical transport. Seqlocks, generation fences and monotonic discard floors
 preserve the single queue's capacity and reset semantics. The relay never
+republishes unchanged producer/discard cursors: leaving their sequence locks
+readable avoids silent quanta during idle relay ticks. If a new producer
+publication overlaps rendering, the worklet can consume PCM up to its last
+confirmed producer position within the current generation. Discard reads and
+configuration/generation fences remain mandatory; reset invalidates that cached
+bound. The relay never
 advances playback; the worklet remains its clock. Audio demand reaches the UI
 as a plain notification sampled in the kernel worker. Main is not the audio
 clock and does not drain through a timer. At 48 kHz one render quantum is about 2.7 ms; browser

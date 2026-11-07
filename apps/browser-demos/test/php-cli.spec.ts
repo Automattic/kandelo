@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { readFileSync } from "node:fs";
 import { gotoMachine } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";

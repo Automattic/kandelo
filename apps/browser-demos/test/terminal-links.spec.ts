@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "../playwright-test";
 import { encodeBootDescriptor } from "../../../web-libs/kandelo-session/src/boot-descriptor";
 import { createInlineBootInput } from "../../../web-libs/kandelo-session/src/boot-inputs";
 import type { BootDescriptor } from "../../../web-libs/kandelo-session/src/kernel-host";

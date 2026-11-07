@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page } from "../playwright-test";
 import { test } from "./support/persistent-page";
 import { confirmKeepComputer, currentComputerMetadata, keepComputerDialog } from "./support/computer-library";
 import { runTerminalCommand } from "./support/terminal-command";

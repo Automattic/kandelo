@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { expectRunningMachineAudio } from "./support/machine-audio";
 
 test("audio activation observes running after its enable control disappears", async ({ page }) => {

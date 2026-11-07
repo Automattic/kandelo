@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { inspectionImage, INSPECTION_MUTATION } from "../../../host/test/support/inspection-image";
 

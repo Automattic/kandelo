@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 // ELinks is a lazy /usr/bin binary in the shell image. These tests drive it

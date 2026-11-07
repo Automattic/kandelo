@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Integrate one reviewed, pinned change. See docs/agent-integration.md."""
+from agent_integration.cli import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())

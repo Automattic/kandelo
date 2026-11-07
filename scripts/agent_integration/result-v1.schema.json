@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Integration evidence import v1 (not a runner plan)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "source_binding",
+    "check_id",
+    "argv",
+    "cwd",
+    "job_id",
+    "state",
+    "outcome",
+    "exit_code",
+    "log",
+    "reused"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "source_binding": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "check_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "cwd": {
+      "type": "string",
+      "minLength": 1
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "waiting",
+        "finished",
+        "lost"
+      ]
+    },
+    "outcome": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        null,
+        "pass",
+        "fail",
+        "skip",
+        "unsupported",
+        "timeout",
+        "harness-error"
+      ]
+    },
+    "exit_code": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 255
+    },
+    "reused": {
+      "type": "boolean"
+    },
+    "log": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

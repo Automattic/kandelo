@@ -20,6 +20,7 @@ export class BrowserPcmMirror {
   private readonly targetRing: Uint8Array;
   private generation = -1;
   private copiedProducer = 0n;
+  private copiedDiscard = 0n;
   private consumerWake = 0;
   private timer: ReturnType<typeof setInterval> | null;
 
@@ -93,8 +94,16 @@ export class BrowserPcmMirror {
       C.fragmentBytes, C.fragments, C.state, C.transportMode]) {
       Atomics.store(t, field, Atomics.load(s, field));
     }
-    writeSeqlockedU64(t, C.producerSeq, C.producerLo, C.producerHi, producer);
-    writeSeqlockedU64(t, C.discardSeq, C.discardLo, C.discardHi, readDiscardPosition(s));
+    // An unchanged cursor must remain readable. Republishing it every relay
+    // tick creates odd-sequence windows that can silence an audio quantum,
+    // particularly for discard, whose in-flight updates must fence playback.
+    if (changed || producer !== this.copiedProducer) {
+      writeSeqlockedU64(t, C.producerSeq, C.producerLo, C.producerHi, producer);
+    }
+    const discard = readDiscardPosition(s);
+    if (changed || discard !== this.copiedDiscard) {
+      writeSeqlockedU64(t, C.discardSeq, C.discardLo, C.discardHi, discard);
+    }
     Atomics.store(t, C.generation, config.generation);
     // FatalError is latched by either owner; never overwrite a worklet error
     // that arrived while the producer snapshot was being copied.
@@ -105,5 +114,6 @@ export class BrowserPcmMirror {
     if (changed) Atomics.and(t, C.flags, ~F.Configuring);
     this.generation = config.generation;
     this.copiedProducer = producer;
+    this.copiedDiscard = discard;
   }
 }

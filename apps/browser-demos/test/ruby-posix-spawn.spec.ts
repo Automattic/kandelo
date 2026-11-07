@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { devServerAssetUrl } from "./support/dev-server-assets";
 import { buildProgramsFixture, requireBuiltFixtures } from "./support/program-fixtures";
 import { readFileSync } from "node:fs";

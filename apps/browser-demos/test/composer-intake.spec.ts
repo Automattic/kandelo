@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { ERRNO } from "../../../host/src/generated/abi";
 import { sparseComposerFileImage } from "../../../host/test/fixtures/sparse-composer-file-image";
 import { MAX_COMPOSER_FILE_BYTES } from "../pages/kandelo/kernel-host/composer-file";

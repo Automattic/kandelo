@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 const appUrl = (path: string): string => {
   const baseUrl = process.env.KANDELO_TEST_BASE_URL;

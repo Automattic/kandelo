@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { buildProgramsFixture, requireBuiltFixtures } from "./support/program-fixtures";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

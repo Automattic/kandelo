@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { BrowserContext } from "@playwright/test";
+import type { BrowserContext } from "../../playwright-test";
 
 const repository = resolve(import.meta.dirname, "../../../..");
 

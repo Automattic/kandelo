@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { runTerminalCommand } from "./support/terminal-command";
 
 const strict = process.env.KANDELO_SOURCE_ROOTFS_SHELL_STRICT === "1";

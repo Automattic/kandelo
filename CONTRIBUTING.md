@@ -111,6 +111,19 @@ For new packages, follow the [Porting Guide](docs/porting-guide.md).
 For changes to the binary interface between programs and the kernel, follow
 [ABI Versioning](docs/abi-versioning.md) before changing its version or snapshot.
 
+### Integrate a reviewed patch
+
+For changes prepared in another checkout, the optional
+[reviewed integration CLI](docs/agent-integration.md) checks pinned source
+and patch identities, preserves unrelated work, and records progress in a
+resumable ledger. It needs Python and Git, with no project binaries built.
+
+Start with `scripts/agent-integrate preflight manifest.json`; the reference
+includes a complete example and a reproducible isolated demonstration.
+`run` applies the patch and stops for reviewed check results. Import them
+with `record` to checkpoint only the owned paths. Check execution is
+separate, and commits/pushes require explicit invocation and task authority.
+
 ## Prepare to run tests
 
 Initialize the test submodules, build all supported packages, and build test fixtures:

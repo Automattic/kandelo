@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { expect } from "@playwright/test";
+import { expect } from "../playwright-test";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { test } from "./support/persistent-page";
 import { machineUrl, vfsImageUrlForProduct } from "./support/kandelo-machine";

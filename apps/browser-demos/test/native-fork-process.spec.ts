@@ -1,5 +1,5 @@
 /** Run the same native guest probes as the Node process gate. */
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";

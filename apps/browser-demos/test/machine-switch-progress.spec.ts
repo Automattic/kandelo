@@ -2,7 +2,7 @@
 // cannot prove this: which pane is mounted during a switch is chosen at
 // runtime, so a correctly-built overlay can still be invisible.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { configureNewComputer } from "./support/computer-library";
 
 const appUrl = (path: string): string => {

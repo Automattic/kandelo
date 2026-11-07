@@ -54,6 +54,7 @@ export class KandeloPcmProcessor extends WorkletBase {
     this.closed = false;
     if (config.buffer) this.attachTransport(config);
     this.generation = -1;
+    this.publishedProducer = null;
     this.sourcePhase = 0;
     this.lastError = "";
     this.port.onmessage = event => {
@@ -105,6 +106,7 @@ export class KandeloPcmProcessor extends WorkletBase {
     const generation = loadU32(this.words, l.generation);
     if (generation !== this.generation) {
       this.generation = generation;
+      this.publishedProducer = null;
       this.sourcePhase = 0;
     }
 
@@ -129,6 +131,7 @@ export class KandeloPcmProcessor extends WorkletBase {
       (configFlags & (this.flags.configuring | this.flags.fatalError)) !== 0
     ) {
       this.generation = confirmedConfigGeneration;
+      this.publishedProducer = null;
       this.sourcePhase = 0;
       return true;
     }
@@ -145,12 +148,18 @@ export class KandeloPcmProcessor extends WorkletBase {
       return true;
     }
 
-    const producer = readU64(
+    const freshProducer = readU64(
       this.words,
       l.producerSeq,
       l.producerLo,
       l.producerHi,
     );
+    // A producer publication can overlap this quantum. Its last confirmed
+    // cursor still bounds valid queued PCM; emitting silence would cut a hole
+    // in that audio. Discard/configuration still require a fresh read and the
+    // final generation fence, so reset never replays the prior stream.
+    if (freshProducer !== null) this.publishedProducer = freshProducer;
+    const producer = this.publishedProducer;
     let consumer = readU64(
       this.words,
       l.consumerSeq,
@@ -218,6 +227,7 @@ export class KandeloPcmProcessor extends WorkletBase {
     ) {
       for (const channel of output) channel.fill(0);
       this.generation = confirmedGeneration;
+      this.publishedProducer = null;
       this.sourcePhase = 0;
       return true;
     }

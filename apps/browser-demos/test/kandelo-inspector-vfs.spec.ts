@@ -4,7 +4,7 @@ import { clickDockTool } from "./support/dock";
 // listing or a file preview only appears if the worker answered the request.
 // This is the browser half of the read path that host/test covers for Node.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 test("the inspector lists directories and previews files from the kernel-owned VFS", async ({ page }) => {

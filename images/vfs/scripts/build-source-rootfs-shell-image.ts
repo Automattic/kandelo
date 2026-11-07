@@ -263,6 +263,10 @@ function loadDemoConfig(path: string, label: string): KandeloDemoConfig {
 }
 
 const SOURCE_ROOTFS_DEMO_COMMANDS = {
+  "dos-games": {
+    executable: "/usr/bin/dos-play",
+    command: "/usr/bin/dos-play keen1",
+  },
   freeciv: {
     executable: "/usr/bin/freeciv-play",
     command: "/usr/bin/freeciv-play",
@@ -366,10 +370,9 @@ supervise /run/user/1000/doom-launch.pid "$@"
 
 /**
  * The Kandelo exchange handlers for the game machines, run by kxchgd as the
- * handler account with the batch directory as $1. Each acts only while its
- * game's wrapper runs (its pid file names a live process); otherwise the
- * batch goes to the catch-all, which saves it to ~/Downloads, so dropping a
- * .zip on a plain shell is never mistaken for a game upload.
+ * handler account with the batch directory as $1. DOOM and Quake act only
+ * while their wrapper runs. The shared importer inspects ZIPs, directories
+ * and executable/ROM contents; unrecognized input goes to exchange-save.
  */
 const GAME_HANDLER_PRELUDE = `#!/bin/sh
 batch="$1"
@@ -403,16 +406,14 @@ status "loading $(basename "$pak")"
 kill -HUP "$pid"
 `;
 
-const SCUMMVM_LOAD_ZIP_HANDLER = `${GAME_HANDLER_PRELUDE}
-wrapper_pid /run/user/1000/scummvm-launch.pid >/dev/null || exec /usr/libexec/kandelo/exchange-save "$batch"
-GAMES=/var/games/scummvm
-for zip in "$batch"/*; do
-    if ! unzip -o -q "$zip" -d "$GAMES"; then
-        status "failed: $(basename "$zip") is not a zip archive"
-        exit 1
-    fi
-done
-status "extracted into $GAMES; add it from the launcher"
+const GAME_IMPORT_SOURCE = fileURLToPath(new URL("../runtime/game-import.py", import.meta.url));
+const GAME_CONTENT_HANDLER = `#!/bin/sh
+export PYTHONHOME=/usr
+exec /usr/bin/python3 /usr/libexec/kandelo/game-import.py exchange "$@"
+`;
+const GAME_PLAY_SCRIPT = `#!/bin/sh
+export PYTHONHOME=/usr
+exec /usr/bin/python3 /usr/libexec/kandelo/game-import.py play "$@"
 `;
 
 /**
@@ -714,11 +715,11 @@ const GAME_EXCHANGE_RULES: ReadonlyArray<{
     rule: "# A pak0.pak for Quake: it restarts with it.\nmatch extension .pak\nkind file\nmax-bytes 33554432\nrun /usr/libexec/kandelo/quake-load-pak\n",
   },
   {
-    name: "50-scummvm-zip.handler",
-    handler: "/usr/libexec/kandelo/scummvm-load-zip",
-    owner: "scummvm",
-    script: SCUMMVM_LOAD_ZIP_HANDLER,
-    rule: "# Game data for ScummVM, zipped: extracted for its launcher.\nmatch extension .zip\nkind file\nmax-bytes 536870912\nrun /usr/libexec/kandelo/scummvm-load-zip\n",
+    name: "60-game-content.handler",
+    handler: "/usr/libexec/kandelo/game-import",
+    owner: "python-browser-bundle",
+    script: GAME_CONTENT_HANDLER,
+    rule: "# Inspect ZIP, DOS, ScummVM and console ROM contents before choosing a runtime.\nkind any\nmax-bytes 536870912\nrun /usr/libexec/kandelo/game-import\n",
   },
   {
     // Sorted after the game machines' rules and before the 99-save
@@ -811,10 +812,9 @@ exec /usr/libexec/fbdoom "$@"
  *   computes from the physical size the kernel reports on the connector
  *   (KMSDRM) or the compositor reports on wl_output (Wayland).
  *
- * The engine runs under the shared supervisor. Zipped game data sent to the
- * machine (Kandelo exchange) is extracted into $GAMES by the scummvm zip
- * handler while ScummVM keeps running, so the user keeps their place in the
- * launcher; the handler acts only while this wrapper's pid file names it.
+ * The engine runs under the shared supervisor. The shared content importer
+ * inspects uploads and starts detected games with an isolated config through
+ * this wrapper. Unknown input is saved without replacing the display owner.
  *
  * Because the engine runs as an asynchronous list in a non-interactive shell,
  * POSIX has it start with SIGINT and SIGQUIT ignored, so Ctrl+C at the
@@ -2168,6 +2168,11 @@ export async function buildSourceRootfsShellImage(
   // retro ROM exchange handler below).
   if (includes("retro-emulators")) {
     writeVfsBinary(fs, "/usr/bin/retro-run", new TextEncoder().encode(RETRO_RUN_SCRIPT), 0o755);
+  }
+  if (includes("python-browser-bundle")) {
+    writeVfsBinary(fs, "/usr/bin/game-play", new TextEncoder().encode(GAME_PLAY_SCRIPT), 0o755);
+    ensureDirRecursive(fs, "/usr/libexec/kandelo");
+    writeVfsBinary(fs, "/usr/libexec/kandelo/game-import.py", readFileSync(GAME_IMPORT_SOURCE), 0o644);
   }
   writeVfsBinary(fs, "/usr/bin/kandelo-terminal", new TextEncoder().encode(KANDELO_TERMINAL_SCRIPT), 0o755);
   // The image's Kandelo exchange handlers and their rules. The rules
