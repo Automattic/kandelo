@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T15:14:51.028355+00:00",
+  "updatedAt": "2026-11-07T16:03:07.713267+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -48248,10 +48248,7 @@
       "openHandles": 0,
       "action": "Discard only regenerable local Cargo incremental state; preserve deps/binaries, source, all evidence and shared caches"
     },
-    "filesystemAvailableObservedGiB": {
-      "before": 23,
-      "after": 67
-    },
+    "filesystemAvailableObservedGiB": 20.45,
     "filesystemMeasurementLimit": "Concurrent other-worktree activity means not all filesystem free-space change is attributable to this cleanup",
     "preserved": [
       "All source and unrelated dirty work",
@@ -48347,6 +48344,21 @@
       "archiveBytes": 1961375028,
       "observedFreeBytesChange": 4057378816,
       "scope": "32,758idle debug-cache files round-trip verified before unlink. Root tools/release outputs/accepted engine/evidence preserved. Free-space change includes other APFS activity;not exact uniquely reclaimed bytes."
+    },
+    "cleanup222": {
+      "at": "2026-11-07T16:03:07.712139+00:00",
+      "report": "tests/nodejs/outline/disk-maintenance222.json",
+      "sha256": "da1f9196fabac37f9a456da5469ec695e71232fc614cc87db6937ac0b1a67015",
+      "document": "tests/nodejs/outline/disk-maintenance222.md",
+      "documentSha256": "f12bd392b224ca5c18e40dbac0fcccaecb6874cc3feae56370b5117d3d954016",
+      "scope": "Only scoped inactive cache, archive-backed expanded stage payloads and one clean recoverable worktree removed. Precise volume categories and restore indexes retained; no physical delta attribution or runtime/API claim.",
+      "metadataArchive": {
+        "path": ".context/node26-disk-maintenance222-evidence.tar.gz",
+        "sha256": "a04fb4df4d00b6e5e99d9aa1989bb03788bce0aa69f7fd5885d6a224c4fb1858",
+        "bytes": 10681799,
+        "scope": "Lossless cleanup reports, immutable per-file audit/index data, journals, scripts and saved worktree admin metadata; compatibility source snapshot remains unchanged.",
+        "stateFileNote": "State archived before this metadata reference was injected"
+      }
     }
   },
   "intermediateRandomControlHistory": [
@@ -51872,7 +51884,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Reused complete pinned Buffer view/JSON algorithms in actual installer, verified current generated source/native controls and unchanged upstream assertions, preserving fullBuffer/guest gaps."
+    "reason": "Decoder, TTY rollback and Buffer source slices committed/pushed with scoped checks; user-authorized scoped cleanup removed inactive caches/archive-backed stages/clean recoverable worktree while preserving source/evidence. Goal remains incomplete."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",

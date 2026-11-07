@@ -1,0 +1,78 @@
+{
+  "at": "2026-11-07T15:59:33.553317+00:00",
+  "authorization": "User explicitly requested freeing disk from this work; supported shared cacheGC and scoped private cache/expanded artifact retirement.",
+  "sourceRevision": 222,
+  "runtimeTests": 0,
+  "compilations": 0,
+  "fullProductBuilds": 0,
+  "integratedCompilationCounterUnaffected": 286,
+  "actions": [
+    {
+      "report": ".context/node26-udp-incremental222/result.json",
+      "sha256": "1d485fdc56d71ec93165018a65883e17b1adea69cebbded5b112d5ecbb5411b1"
+    },
+    {
+      "report": ".context/node26-old-stage-retirement222/result.json",
+      "sha256": "59fe90c2ea08b884fba42cb9761ea793f4f2f6d86b7c22bd478a780a664ff213"
+    },
+    {
+      "report": ".context/node26-old-stage-extension-applied222/result.json",
+      "sha256": "8c45821c5f29810eb128ba38a6a63c07611d6d606c3d800b9154e752bee274d1"
+    },
+    {
+      "report": ".context/retired-clean-unlink-worktree222/result.json",
+      "sha256": "6374e62fa81e9937b90c344ae130accd596d72d04f9f346fdce5f80aec7d8978"
+    }
+  ],
+  "counts": {
+    "privateIncrementalFilesRemoved": 703,
+    "privateIncrementalLogicalBytes": 1097504258,
+    "archiveBackedOldStagesRetired": 59,
+    "stageRegularPayloadFilesRemoved": 130735,
+    "stageLogicalBytes": 3691055977,
+    "stageAllocatedBytesEstimate": 3974119424,
+    "stageDirectoriesKept": 8145,
+    "cleanLinkedWorktreesRemoved": 1,
+    "cleanWorktreeAllocatedBytesEstimate": 248193024,
+    "dirtyOrExtraBearingWorktreesPreserved": 73
+  },
+  "protectedSourceIdentitiesVerified": 2212,
+  "filesystemFreeBytesObserved": 21955735552,
+  "physicalReclamationAttribution": false,
+  "measurementScope": "Incremental volume is logical file bytes; stages/worktree also have st_blocks/du allocation estimates. APFS sharing/compression and concurrent other work prevent attribution of the total filesystem free-space change. About4.7GiB logical/copy volume or5.0GiB mixed allocation estimate removed, not a measured5GiB physical delta.",
+  "restorePlans": {
+    "stages": [
+      ".context/node26-old-stage-retirement-audit222/REPORT.md",
+      ".context/node26-old-stage-retirement-extension222/REPORT.md"
+    ],
+    "cleanWorktree": [
+      "git",
+      "worktree",
+      "add",
+      "--detach",
+      "/Users/brandon/conductor/workspaces/kandelo/davao/.context/agent-worktrees/unlink-rmdir",
+      "refs/kandelo/retired-worktrees/unlink-rmdir-222"
+    ],
+    "incremental": "Reproducible inactive compiler cache only; actual compiled binaries/libs/dependencies/fingerprints and executed evidence retained."
+  },
+  "preserved": [
+    "All current source and immutable audit deliverables",
+    "Current220\u2013222stages/canonicals and every canonical/pinned reference",
+    "Accepted/executed binaries/libraries, frozen fixtures, sysroots and original evidence archives",
+    "All stage directory skeletons/modes, exact archive member restore indexes and originals",
+    "73dirty/extra-bearing worktrees and all unrelated local work",
+    "Separate Claude/npm/Bun remainder and shared cache generations"
+  ],
+  "sharedCacheGc": {
+    "report": ".context/node26-native220-maintenance/result.json",
+    "sha256": "f57da5623883cbc8921c63e169e5e16f5fc09efd5a4971534db55ae37398a360",
+    "removedEntries": 0,
+    "scope": "Skipped in-use cache lock; no lock/cache bypass. Its1native freshness build was already counted at source220, not again here."
+  },
+  "declined": {
+    "report": ".context/root-target-cache-audit-agent/REPORT.md",
+    "sha256": "750532f27120b7a8a76ee812ba43685b8355a095f340a8dd8526c8276dfc9c04",
+    "scope": "Referenced debug-map objects retained; other object/rmeta candidates provisional without complete external-consumer proof. Rejected staged hardlinks/missing archive coverage retained."
+  },
+  "goalComplete": false
+}
