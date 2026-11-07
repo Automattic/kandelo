@@ -1452,3 +1452,12 @@ callback-return enforcement in this iteration, then prove ordinary and child
 lifetimes on rebuilt targets. Explicit retained custody remains distinct from
 completion; native test doubles and unresolved queue observations cannot close
 those requirements or establish performance.
+
+Native Wayland client/window continuation source now has pinned-native and
+independent window/GBM coverage. Complete the pending-capsule EGL consumer and
+raw-client D-59 callback/entry enforcement before final B1 validation. The latest
+matched host lifecycle run still has Chromium PHP-startup missing-main proof on
+both sides; this remains distinct from sealed main absence and needs the full
+memory contract and focused investigation. Native Freeciv3.2.6 SDL2 control is
+now built with the frozen saved world/assets and exact SDL library versions;
+visible rendering, interaction comparability and latency remain unmeasured.

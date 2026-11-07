@@ -145,7 +145,17 @@ compile() {
 }
 
 echo "==> Compiling shared TUs (util + private + generated protocol)..."
-UTIL_OBJ="$(compile wayland-util.c)"
+# WHY: keep upstream wl_abort/setters canonical while only owned cold teardown
+# defers ordinary logs until native locks/progress have sealed. The adapter is
+# platform lifetime behavior; upstream utility source remains unchanged.
+UTIL_WRAPPER="$BUILD_DIR/wayland-util-owned.c"
+cat > "$UTIL_WRAPPER" <<EOF
+#define wl_log _wpk_upstream_wl_log
+#include "$WLSRC/wayland-util.c"
+#include "$REPO_ROOT/libc/glue/wayland-owned-log.inc"
+EOF
+UTIL_OBJ="$BUILD_DIR/wayland-util.o"
+wasm32posix-cc -c "${CFLAGS[@]}" -I"$REPO_ROOT/libc/glue" "$UTIL_WRAPPER" -o "$UTIL_OBJ"
 CONN_OBJ="$(compile connection.c)"
 OS_OBJ="$(compile wayland-os.c)"
 PROTO_OBJ="$(compile wayland-protocol.c)"
@@ -162,6 +172,7 @@ cat > "$CLIENT_WRAPPER" <<EOF
 #define wl_display_disconnect _wpk_upstream_display_disconnect
 #include "$WLSRC/wayland-client.c"
 #include "$REPO_ROOT/libc/glue/wayland-client-lifetime.inc"
+#include "$REPO_ROOT/libc/glue/wayland-client-retirement.inc"
 EOF
 CLIENT_OBJ="$BUILD_DIR/wayland-client.o"
 wasm32posix-cc -c "${CFLAGS[@]}" -I"$REPO_ROOT/libc/glue" "$CLIENT_WRAPPER" -o "$CLIENT_OBJ"

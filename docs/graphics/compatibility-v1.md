@@ -26191,3 +26191,59 @@ lookup depends on that ordering. They change no predicate or runtime policy;
 no artificial direct-map mutation is claimed as a production race. Actual
 browser-memory, coherent new-C/kernel consumers and all B1/final gates remain
 required.
+
+### Native client/window continuation integration, 2026-11-07
+
+The pinned Wayland utility/client platform adapters now provide persistent
+native release capsules and ordinary owned-log capture. Proxy/queue progress
+and capture end seal together before synchronous user handlers. Native logs
+retain the canonical selected handler and immutable formatted text; independent
+heap owners preserve FIFO and exact actor routing across reentry, fork and
+thread exit. Cold surface acquisition roots its hold before native effects,
+then publishes native references and its caller slot in one transaction.
+
+Single-thread child disconnect now skips shutdown of the parent's shared OFD;
+actual child socket controls prove bidirectional parent I/O survives. Private
+rendering metadata independently rejects inherited process epochs. Multithread
+inherited graphs retain explicit D-59 transfer semantics. Full raw-client API
+entry and callback-return enforcement is still being implemented; synchronous
+logging from an unreturned raw constructor and raw listener tails remain open
+requirements. No broader native callback-safety claim is made here.
+
+The window shim roots constructors, candidate/previous/retired allocations,
+native capsules and exact front holds. Cleanup selection and final owner handoff
+are synchronized; resize retarget accepts only its exact continuing actor.
+Native classification is refreshed after callbacks. Error-only present capture
+uses existing active operation metadata, while successful cached frames add no
+capture, resolver call or global queue scan. The cold caller-lease reference
+and matching rooted receiver publish together under the common guard.
+
+Root `graphics-native-composition-r645-1107-015812-9904` passes41s on the actual
+composed source:20 pinned native log/leaf controls,4 native custody/admission
+controls, existing native client identity/retirement, original window semantics,
+20 window actor modes,5 actual EGL bridge modes, full native libc consumers,
+GBM and exact/concurrent/VM mapping checks. All126 source inputs remain unchanged.
+Exact commands, statuses and composition hashes are in
+`.context/graphics-native-composition-r645/`. Producer R642 separately proves
+old unrooted acquire child41 and old single-thread parent socket failure, then
+corrected controls; R636's preserved causal before controls cover thread exit,
+retarget, successful-dispatch logging, last-owner handoff and actual-log resolver
+routing. Test-layer protocol doubles are distinguished from pinned native code.
+
+The libwayland recipe remains on unmodified pinned upstream sources with private
+platform TU wrappers; revision6 and declared glue inputs invalidate its cache.
+No ABI family changes (56/3/17/21), ported-client patch or Mac launcher change.
+EGL's outer opaque queue consumer is still being replaced with the new pending
+capsules; its earlier8 unresolved observations are not waived. Normal SDK/package
+linkage, target Node/browser execution, complete B1 preview, all final suites and
+performance/native-feel acceptance remain required.
+
+The R634 matched lifecycle comparison finishes FAILED4m40s: strict ownership
+passes5/6 before and5/6 after, on identical coherent R494 normal products. Both
+sides retain an adverse Chromium PHP-startup main (before2, after1), with missing
+ACK and complete zero-thread fences. The candidate reports mainAbsentfalse;
+this is not the never-constructed case. All other engine/mode cases pass. Frozen
+input integrity, strict scalar decoding and exact outgoing realm identities
+pass. No causal missing-ACK repair or performance/reclamation improvement is
+claimed. Full browser-memory acceptance remains open. Exact results and hashes
+are in `.context/graphics-main-browser-r634/judgment.json`.

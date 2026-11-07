@@ -10,10 +10,27 @@ static int wpk_native_ppoll(struct pollfd *,nfds_t,const struct timespec *,const
 #define wl_display_connect_to_fd _wpk_upstream_display_connect_to_fd
 #define wl_display_disconnect _wpk_upstream_display_disconnect
 #include WPK_WAYLAND_CLIENT_SOURCE
-#include "../../../libc/glue/wayland-client-lifetime.inc"
+#ifndef WPK_WAYLAND_LIFETIME_SOURCE
+#define WPK_WAYLAND_LIFETIME_SOURCE "../../../libc/glue/wayland-client-lifetime.inc"
+#endif
+#include WPK_WAYLAND_LIFETIME_SOURCE
 #include <assert.h>
 #include "../../../libc/glue/drm_owned.h"
 #include <sys/wait.h>
+#ifdef KANDELO_WAYLAND_NATIVE_EPOCH_DOUBLE
+/* Explicit native control input, not a substitute for the separately tested
+ * target libc thread-count detector. Only named multi-thread fork phases set
+ * this flag; each child advances its own copied scalar before adapter use. */
+static _Atomic uint64_t wpk_native_fixture_epoch;
+static _Atomic int wpk_native_fixture_multithread;
+uint64_t __wasm_posix_native_fork_epoch(void){return atomic_load(&wpk_native_fixture_epoch);}
+static void wpk_fixture_native_epoch_child(void){
+    if(atomic_load(&wpk_native_fixture_multithread))atomic_fetch_add(&wpk_native_fixture_epoch,1);
+}
+__attribute__((constructor)) static void wpk_fixture_native_epoch_install(void){
+    assert(!pthread_atfork(NULL,NULL,wpk_fixture_native_epoch_child));
+}
+#endif
 
 static pthread_mutex_t fixture_wait_mutex=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t fixture_wait_cond=PTHREAD_COND_INITIALIZER;
@@ -50,7 +67,13 @@ static void inherited_private_cleanup(struct wl_display *display,void *surface_h
     struct wl_proxy *buffer=proxy_create(&display->proxy,&wl_buffer_interface,1);assert(buffer);wl_proxy_set_queue(buffer,queue);
     pthread_t holder;assert(!pthread_create(&holder,NULL,hold_inherited_locks,display));
     pthread_mutex_lock(&fixture_wait_mutex);while(!fork_lock_held)pthread_cond_wait(&fixture_wait_cond,&fixture_wait_mutex);pthread_mutex_unlock(&fixture_wait_mutex);
+#ifdef KANDELO_WAYLAND_NATIVE_EPOCH_DOUBLE
+    atomic_store(&wpk_native_fixture_multithread,1);
+#endif
     pid_t child=fork();assert(child>=0);
+#ifdef KANDELO_WAYLAND_NATIVE_EPOCH_DOUBLE
+    if(child)atomic_store(&wpk_native_fixture_multithread,0);
+#endif
     if(!child){
         alarm(5);
         assert(!_wpk_wl_surface_alive(surface_hold));

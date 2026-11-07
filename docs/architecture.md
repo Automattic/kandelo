@@ -7689,3 +7689,19 @@ multithread-fork epoch and platform-owned metadata, without following an old
 native graph. A transferred heap owner is distinct from completed cleanup or
 a Worker acknowledgement. Full raw native-entry and callback-return rejection
 is still being integrated; these helpers alone do not enforce the boundary.
+
+Wayland native continuations retain caller-rooted live/retired capsules across
+proxy, queue, surface and connection release. Owned ordinary logging captures
+immutable formatted text and the selected canonical handler; native progress
+seals before handlers run outside native/window/EGL locks. Separate diagnostic
+owners preserve FIFO per origin, and independent actor claims prevent replay
+of a handler that ended its thread. The event/error-only resolver uses an
+existing claimed window operation; cached successful frames do not prepare or
+scan diagnostic state. Single-thread child disconnect performs local cleanup
+without shutting down the parent's shared socket OFD. Inherited rendering
+admission remains revoked independently of the multithread native boundary.
+
+These native helpers and window queues are source foundations. Full raw-client
+entry/callback enforcement and the EGL outer queue's pending-capsule consumer
+remain active integration work; neither an opaque native return nor an explicit
+boundary transfer is an acknowledgement of completed native cleanup.
