@@ -64,6 +64,7 @@ struct KandeloNativeAsyncState {
   // Environment anchor in the process realm; foreign realm globals are weak
   // keys, so TCP prototypes do not keep otherwise-dead realms alive.
   JS::PersistentRootedObject socketPrototypes;
+  JS::PersistentRootedObject terminalPrototypes;
   bool handlingUncaught = false;
   Vector<KandeloNativeDestroyRecord, 0, SystemAllocPolicy> destroyIds;
   Vector<KandeloNativeDestroyRecord, 0, SystemAllocPolicy> retryIds;
@@ -309,6 +310,7 @@ static void KandeloShutdownNativeAsync(ShellContext* sc) {
   state->trackingDestroy = false;
   state->execution.Clear();
   state->socketPrototypes.reset();
+  state->terminalPrototypes.reset();
   state->domainTrampoline.reset();
   state->domainTrampolineGate.reset();
   state->process.reset();

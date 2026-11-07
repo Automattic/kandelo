@@ -1,0 +1,170 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -624,2 +624,4 @@
+   KandeloTerminalLease* terminalLease = nullptr;
++  std::shared_ptr<kandelo::terminal::ReadTicket> terminalRead;
++  std::unique_ptr<kandelo::memory::Claim> terminalClaim;
+   std::vector<uint8_t> buffer;
+@@ -638,2 +640,6 @@
+   }
++  ~KandeloSocketWatch() {
++    // The actual owner root outlives this decrement and its read allocation.
++    if (terminalLease) { MOZ_RELEASE_ASSERT(terminalLease->requests);--terminalLease->requests; }
++  }
+ };
+@@ -671,5 +677,6 @@
+ static bool KandeloSocketHasWatches(JSContext* cx) {
+-  if (KandeloSocketOwnersHaveReferences(cx) || KandeloTlsHasReferences(cx)) return true;
++  if (KandeloSocketOwnersHaveReferences(cx) || KandeloTlsHasReferences(cx) || KandeloTerminalHasReferences(cx)) return true;
+   for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
+     if ((watch->kind == KandeloSocketWatchKind::Child) && watch->cx != cx) continue;
++    if (watch->terminalRead && !watch->terminalLease->reads.Reading()) continue;
+     if (watch->referenced) return true;
+@@ -960,4 +967,54 @@
+
++// A successful read callback may fail later in after hooks or tick/jobs.
++// Preserve actual continuous demand through outer fatal recovery; never create
++// its next fallible reservation while the original exception is pending.
++static int KandeloDispatchTerminalDemand(JSContext* cx) {
++  if (cx->isExceptionPending()) return 0;
++  auto* state = KandeloGetNativeAsyncState(cx);if (!state) return -1;
++  for (auto* lease = state->terminalLeases; lease; lease = lease->next) {
++    if (lease->cx != cx || lease->inputClosing || !lease->readRoot ||
++        !lease->reads.Reading() || lease->requests) continue;
++    RootedObject owner(cx, *lease->readRoot);RootedValue status(cx);
++    if (!KandeloTerminalStreamStart(cx, owner, lease, &status)) return -1;
++    if (status.toInt32()) { JS_ReportErrorASCII(cx, "TTY read continuation failed");return -1; }
++    return 1; // One actual request armed; no callback was synthesized.
++  }
++  return 0;
++}
++static int KandeloDispatchTerminalReady(JSContext* cx) {
++  for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
++    if (watch->cx != cx || !watch->terminalRead || !watch->terminalLease->reads.Ready()) continue;
++    auto* lease = watch->terminalLease;auto ticket = watch->terminalRead;
++    if (!lease->reads.BeginDelivery(ticket)) continue;
++    RootedObject owner(cx, watch->terminalOwner);
++    KandeloSocketWatchUnlink(watch);
++    bool admitted = false;
++    const bool ok = KandeloTerminalDeliverStream(cx, owner, lease, ticket, &admitted);
++    if (!admitted && !lease->closing && !lease->closed) {
++      // Allocation/security/realm failures before admission cannot consume or
++      // replay a later ticket. Retain precisely these already-read bytes.
++      lease->reads.AbortDelivery(ticket);KandeloSocketWatchLink(watch);return ok ? 0 : -1;
++    }
++    ticket->phase = kandelo::terminal::ReadTicket::Phase::Retired;
++    js_delete(watch); // after native callback/after hooks/checkpoint unwind
++    if (!lease->reads.Reading()) lease->readRoot.reset();
++    if (!ok) return -1;
++    if (lease->reads.Reading() && !lease->closing && !lease->closed) {
++      RootedValue status(cx);
++      if (!KandeloTerminalStreamStart(cx, owner, lease, &status)) return -1;
++      if (status.toInt32()) { JS_ReportErrorASCII(cx, "TTY read rearm failed");return -1; }
++    }
++    return 1; // No list-next pointer crosses callback/after/job reentry.
++  }
++  return 0;
++}
+ static int KandeloSocketDispatch(JSContext* cx) {
++  const int terminalClosed = KandeloDispatchTerminalOwners(cx);
++  if (terminalClosed) return terminalClosed;
++  const int terminalDemand = KandeloDispatchTerminalDemand(cx);
++  if (terminalDemand < 0) return -1;
++  const int terminalRead = KandeloDispatchTerminalReady(cx);
++  if (terminalRead) return terminalRead;
+   int processed = KandeloDispatchSocketOwners(cx);
++  if (processed >= 0) processed += terminalDemand;
+   if (processed < 0) return -1;
+@@ -998,3 +1055,3 @@
+     pollfd pfd = {};
+-    pfd.fd = watch->fd;
++    pfd.fd = watch->terminalRead && !watch->terminalLease->reads.Reading() ? -1 : watch->fd;
+     pfd.events = watch->events;
+@@ -1058,2 +1115,11 @@
+       if (watch->cx != cx) { watch = next; continue; }
++      if (watch->terminalRead) {
++        // Read from the captured live owner now, not a recyclable public fd.
++        auto* lease = watch->terminalLease;
++        if (lease->reads.Progress(lease->input.Descriptor(), watch->terminalRead)) {
++          const int delivered = KandeloDispatchTerminalReady(cx);
++          return delivered < 0 ? -1 : processed + delivered;
++        }
++        watch = next;continue;
++      }
+       ssize_t n;do { n = read(watch->fd, watch->buffer.data(), watch->buffer.size()); }
+@@ -1365,3 +1431,3 @@
+ // Captured TTY input uses the real fd-read reactor, with actual opaque owner
+-// roots and exact request matching. It is not a TCPWRAP or TTYWRAP identity.
++// roots and exact request matching. Only actual TTY input acquires TTYWRAP.
+ static KandeloSocketWatch* KandeloTerminalPendingRead(KandeloTerminalLease* lease) {
+@@ -1370,2 +1436,40 @@
+   return nullptr;
++}
++static bool KandeloTerminalHasPendingRead(KandeloTerminalLease* lease) {
++  return KandeloTerminalPendingRead(lease) != nullptr || lease->requests != 0;
++}
++static bool KandeloTerminalStreamStart(JSContext* cx, HandleObject owner,
++    KandeloTerminalLease* lease, MutableHandleValue result) {
++  if (lease->inputClosing || lease->input.Descriptor() < 0) { result.setInt32(-EBADF);return true; }
++  if (JS::GetReservedSlot(owner, TerminalDispatch).isUndefined() ||
++      JS::GetReservedSlot(owner, TerminalOnRead).isUndefined()) {
++    JS_ReportErrorASCII(cx, "TTY read requires its actual configured dispatcher/onread");return false;
++  }
++  auto* queued = KandeloTerminalPendingRead(lease);
++  if (queued && !queued->terminalRead) { result.setInt32(-EALREADY);return true; }
++  const bool wasReading = lease->reads.Reading();
++  try {
++    if (!lease->readRoot) lease->readRoot = std::make_unique<PersistentRootedObject>(cx, owner);
++    auto ticket = lease->reads.Start(65536);
++    if (!ticket) { lease->readRoot.reset();result.setInt32(-EBADF);return true; }
++    // A detached pre-admission publication still owns its exact material.
++    // Reentrant demand may resume it but must not queue the same ticket twice.
++    if (ticket->phase == kandelo::terminal::ReadTicket::Phase::Delivering) {
++      result.setInt32(0);return true;
++    }
++    if (queued) { queued->referenced = lease->referenced;result.setInt32(0);return true; }
++    RootedObject noPromise(cx);
++    auto watch = mozilla::MakeUnique<KandeloSocketWatch>(cx, lease->input.Descriptor(), KandeloSocketWatchKind::Read, noPromise);
++    watch->terminalRead = ticket;
++    watch->terminalClaim = std::make_unique<kandelo::memory::Claim>(ticket->allocation.Handle(), KandeloNativeMemoryOwner(cx));
++    watch->terminalOwner = owner;watch->terminalLease = lease;++lease->requests;
++    watch->referenced = lease->referenced;
++    KandeloSocketWatchLink(watch.release());result.setInt32(0);return true;
++  } catch (const std::bad_alloc&) {
++    if (!wasReading) { lease->reads.Stop();lease->readRoot.reset(); }
++    JS_ReportOutOfMemory(cx);return false;
++  } catch (const std::length_error&) {
++    if (!wasReading) { lease->reads.Stop();lease->readRoot.reset(); }
++    JS_ReportErrorASCII(cx, "TTY read sequence exhausted");return false;
++  }
+ }
+@@ -1384,3 +1488,3 @@
+     if (!watch) { JS_ReportOutOfMemory(cx);return false; }
+-    watch->buffer = std::move(bytes);watch->terminalOwner = owner;watch->terminalLease = lease;
++    watch->buffer = std::move(bytes);watch->terminalOwner = owner;watch->terminalLease = lease;++lease->requests;
+     watch->terminalCallback = wrapped;watch->referenced = lease->referenced;
+@@ -1391,3 +1495,13 @@
+   auto* watch = KandeloTerminalPendingRead(lease);
+-  if (!watch || watch->terminalCallback.isUndefined()) return false;
++  lease->reads.Stop();lease->readRoot.reset();
++  if (!watch) return false; // Detached admitted callback still owns its data.
++  if (watch->terminalRead) {
++    if (watch->terminalRead->phase == kandelo::terminal::ReadTicket::Phase::Retired) {
++      KandeloSocketWatchUnlink(watch);js_delete(watch);
++    }
++    // Already-consumed material remains rooted for a later readStart(), but
++    // demand and its loop reference are genuinely stopped.
++    return true;
++  }
++  if (watch->terminalCallback.isUndefined()) return false;
+   KandeloSocketWatchUnlink(watch);js_delete(watch);return true;
+@@ -1418,3 +1532,3 @@
+     if (!watch) { JS_ReportOutOfMemory(cx);return false; }
+-    watch->buffer = std::move(bytes);watch->terminalOwner = owner;watch->terminalLease = lease;
++    watch->buffer = std::move(bytes);watch->terminalOwner = owner;watch->terminalLease = lease;++lease->requests;
+     KandeloSocketWatchLink(watch);return true;
+@@ -1427,3 +1541,3 @@
+   KandeloSocketWatchUnlink(watch);
+-  if (!notify || !watch->terminalCallback.isUndefined()) { js_delete(watch);return true; }
++  if (!notify || watch->terminalRead || !watch->terminalCallback.isUndefined()) { js_delete(watch);return true; }
+   MOZ_RELEASE_ASSERT(cx && watch->cx == cx);

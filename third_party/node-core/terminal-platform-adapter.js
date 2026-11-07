@@ -1,7 +1,7 @@
 // Borrowed stdio mode ownership. This is not a public Socket/TTY constructor.
 function _createNodeTerminalPlatform(platform) {
     'use strict';
-    const { SafeWeakMap, ObjectAssign } = _createNodePrimordials();
+    const { SafeWeakMap, ObjectAssign, ReflectApply, Uint8Array } = _createNodePrimordials();
     const { ErrnoException, codes: { ERR_INVALID_ARG_VALUE, ERR_TTY_INIT_FAILED } } = platform.values.errors;
     const entries = new SafeWeakMap();
     const outputOwners = new SafeWeakMap();
@@ -72,20 +72,40 @@ function _createNodeTerminalPlatform(platform) {
                 message: platform.uv.getSystemErrorMessage(packet.error), syscall: 'uv_tty_init' });
         }
         const owner = packet.value;
+        const { streamBaseState, kReadBytesOrError, kArrayBufferOffset } = platform.streamBinding;
+        // This is the real shared pinned stream-state binding also consumed
+        // by native TCP. It is not a TTY-shaped handle or synthetic metadata.
+        try {
+            owner.configureRead(function(_status, buffer, onread) {
+                return ReflectApply(onread, this, [buffer]);
+            }, streamBaseState);
+        } catch (error) {
+            try { owner.close(); } catch (_) {}
+            throw error;
+        }
         return {
             bind(input) { entries.set(input, owner); },
-            // Callback mode belongs to the real captured native read owner.
-            // No extra Promise changes the public data callback's async owner.
-            start(length, callback) {
-                const status = platform.native.operatingSystem('tty-input-start', owner, length, callback);
+            // Native readStart is continuous. The borrowed fd-readable consumer
+            // requests one completion at a time, so stop real native demand
+            // before invoking it; Readable alone decides whether to rearm.
+            start(_length, callback) {
+                owner.onread = function(buffer) {
+                    const count = streamBaseState[kReadBytesOrError];
+                    const offset = streamBaseState[kArrayBufferOffset];
+                    owner.readStop();
+                    if (count > 0) callback(0, new Uint8Array(buffer, offset, count));
+                    else if (count === -4095) callback(0, new Uint8Array(0));
+                    else callback(count);
+                };
+                const status = owner.readStart();
                 return status ? new ErrnoException(status, 'read') : undefined;
             },
             stop() { return platform.native.operatingSystem('tty-input-stop', owner); },
             error(status) { return new ErrnoException(status, 'read'); },
-            ref(value) { platform.native.operatingSystem('tty-input-ref', owner, value); },
+            ref(value) { if (value) owner.ref();else owner.unref(); },
             read(length) { return platform.native.operatingSystem('tty-input-read', owner, length); },
             control(promise, value) { return platform.native.operatingSystem('tty-input-control', owner, promise, value).value; },
-            close() { platform.native.operatingSystem('tty-input-close', owner); },
+            close() { owner.close(); },
         };
     }
     // Exact pinned uv_tty_mode_t values, not capability or terminal-state data.

@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source213 integrates real captured TTY read material and request-counted queued close consumed by stdin. Normal staging/880-input closure/style and bounded portable/native-backed factory checks pass. Public TTY/guest C++/four-host conformance remain incomplete.
+See [source scope](terminal-read-material-integration.md).
+
 Source212 integrates actual Socket receiver/native TCP-handle/ref/manualStart/encoding/failure/reinit owners.8 strict native/component groups match, getter traces equal and other compared traces show0 differences. Real native requests/bytes/close are component dependencies; new guest validator/TTY/four-host remain unvalidated.
 See [source scope](socket-receiver-adoption-integration.md).
 

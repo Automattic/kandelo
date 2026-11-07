@@ -2623,8 +2623,16 @@ const _nodeStreamPlatform = _createNodeStreamPlatform({
     getBodyData: () => _nodeBodyData,
 });
 const stream = _nodeStreamPlatform.api;
+// Shared stream state also carries reads from actual captured TTY owners.
+const _nodeSocketStream = _createNodeSocketStream({
+    Buffer, FastBuffer: _FastBuffer, async: _nodeAsyncPlatform,
+    values: _nodeValues, types: util.types, native: _nodeNative, stream,
+    markResource: receiver => _nodeClonePlatform.setMode(receiver, 0),
+});
+
 const _nodePortIO = _nodePortsPlatform.initialize(stream);
 const _nodeTerminalPlatform = _createNodeTerminalPlatform({
+    streamBinding: _nodeSocketStream.binding,
     native: _nodeNative, values: _nodeValues, uv: _nodeUv,
     isTTY: fd => os.isatty(fd), getReadline: () => _nodeReadlinePlatform.api,
 });
@@ -3548,11 +3556,6 @@ const _nodeDatagram = _createNodeDatagramPlatform({
 // Shared TCP dialing policy. Defaults are consumed by actual connection
 // attempts, including callers such as TLS; they are not harness overrides.
 let _nodeBeginSocketConnection;
-const _nodeSocketStream = _createNodeSocketStream({
-    Buffer, FastBuffer: _FastBuffer, async: _nodeAsyncPlatform,
-    values: _nodeValues, types: util.types, native: _nodeNative, stream,
-    markResource: receiver => _nodeClonePlatform.setMode(receiver, 0),
-});
 
 const net = (() => {
     const nat = _nodeNative;

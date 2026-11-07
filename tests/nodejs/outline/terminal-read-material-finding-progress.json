@@ -1,0 +1,120 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/terminal.md",
+    "findingIds": [
+      "T-002",
+      "T-007",
+      "T-009"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "terminal",
+      "streams",
+      "async",
+      "engine",
+      "processes"
+    ],
+    "scope": "Partial native input/read/material/queued-close/stdin prerequisite; no complete public tty constructors, writes, StreamBase or guest/four-host closure"
+  },
+  "sourceImplemented": [
+    "Retain actual captured InputHandle read allocation, generation/sequence/status through stop and failed pre-admission publication",
+    "Configure real shared stream state and rooted onread/dispatcher on the actual native TTY I/O owner; no TTY shape or synthetic handle admission",
+    "Reactor owns read tickets and native-memory claim plus actual resource roots until callback/after/checkpoint unwinds; stopped requests do not poll or keep loop referenced",
+    "Request-counted native close releases captured descriptors and queues actual callback/retirement after active requests, preserving borrowed public descriptor replacements",
+    "Share actual socket stream-state binding before terminal construction and consume native configure/readStart/readStop/ref/onread in stdio input without private read Promises",
+    "Declare/stage the new terminal-read-owner header and compose additive0159 engine patch over preserved212 Socket/TLS/worker/module owners",
+    "Preserve actual continuous read-demand root across recoverable callback checkpoint failure; only ordinary exception-free dispatch arms the next real request",
+    "Guard detached Delivering ticket against duplicate-watch admission; stop/close/EOF/error/teardown clear genuine demand root"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tty213-source-r2/report.json",
+    "sha256": "3437b105df28b91a08ebc9e2788e2649685e7a36826d14f9b1c9370621541932",
+    "guardedInputs": 880,
+    "scope": "Captured TTY retained read material/configure/onread/start/stop/ref/request-counted close and actual stdin JS consumption. Portable owner/native-backed factory controls only; new guest JSAPI/public TTY/write/shutdown/init-order/full four-host behavior remains incomplete."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tty213-affected-r2.json",
+    "sha256": "6c74b577b3d425f6c2ab6089c39fe90f9c19e8fc376f3c364cbd01ca33ba41f7",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tty213-source-r2/report.json",
+    "sha256": "3437b105df28b91a08ebc9e2788e2649685e7a36826d14f9b1c9370621541932",
+    "portableNamedChecks": 27,
+    "nativeFactoryScenarios": 2,
+    "positiveNativeProcesses": 4,
+    "intentionalNegativeNativeProcesses": 1,
+    "negativeExit": 1,
+    "newCompilerAttempts": 0,
+    "previousPortableCompilerAttemptsIntegrated": 1,
+    "unchangedStyleCheckerPassed": true,
+    "productionJSAPICompiled": false,
+    "publicTTYConstructorsActivated": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "sourceChecks": [
+      "exact production portable owner/dependency: terminal-read-owner.h",
+      "exact production portable owner/dependency: terminal-operations.h",
+      "exact production portable owner/dependency: native-retained-memory.h"
+    ],
+    "portableArtifactSha256": "2d09b8f73b0cabc675df78b85bfe7df1136b1acfd92aa8e8f3d4f6636d1ca687",
+    "scope": "Actual current JS factories with real native Node TTY dependencies and exact portable C++ owner artifact. Guest JSAPI/callback/GC/realm/queued-close remains uncompiled and unexecuted."
+  },
+  "sealedEvidence": {
+    "report": ".context/tty-stream-read-owner-agent/handoff/HANDOFF.json",
+    "sha256": "0ddc1eda1df352b8655b066c37dfe9eda51be067ef281f909ada34f5b30ad906",
+    "reusedEvidence": true,
+    "scope": "Original sealed actual captured TTY material/native stream/queued-close input prerequisite;1 successful tiny portable C++ compile,27 named PTY checks and2 native-backed JS scenarios. Guest C++ uncompiled. Original setup failures and negative disabled route retained."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tty-stream-read-owner-agent/handoff/HANDOFF.json",
+      "sha256": "0ddc1eda1df352b8655b066c37dfe9eda51be067ef281f909ada34f5b30ad906",
+      "scope": "Original bootstrap hunk silently skipped by filtered Git application and omitted-codec private setup failure preserved; corrected before final checks. No runtime defect inferred."
+    },
+    {
+      "report": ".context/node26-tty213-source-r1/controls/pty/bytes-candidate-no-callback.stderr",
+      "sha256": "cd0faaa83f302eefa84327be341b10d2756a437aac5b687f519561e8ef839204",
+      "scope": "Expected disabled-callback route rejection, exit1; unchanged assertions detect forbidden legacy Promise operation. Negative control is not a passing compatibility case."
+    },
+    {
+      "report": ".context/node26-tty213-source-r2/pre-control-recorded-doc-order-failure.log",
+      "sha256": "99f5a406552536974e1b8447574fb2005a25e29e9f9bce0d81e35dbdccc9f5c2",
+      "scope": "Strict controller rejected intended already-recorded docs before controls; exact owned document identities added to integration manifest. No runtime/test assertion changed."
+    },
+    {
+      "report": ".context/node26-tty213-source-r2/pre-control-unexpected-root-doc-failure.log",
+      "sha256": "850a6a70ab1c9910ef949902e2c2b179875dbd3a940872b3aad4621f3dc61659",
+      "scope": "Strict controller rejected accidental root POSIX document replacement before controls. Unexpected bytes preserved; exact previously clean HEAD/state bytes restored."
+    },
+    {
+      "report": ".context/fsnotify-root-doc-incident213/restoration.json",
+      "sha256": "09e55feab65947b6d187744664a9fb7bb673726d266dad2329d30e9a99a99d3c",
+      "scope": "Definite agent metadata writer path-variable reuse, not runtime failure. Root POSIX doc restored exactly; original sealed composition metadata read-only claim requires separate correction."
+    }
+  ],
+  "remaining": [
+    "Public callable tty.ReadStream/WriteStream constructors, inherited Socket/prototype/descriptors, actual native kind admission and directional/init-error/AsyncWrap birth contract",
+    "Native write/WriteWrap/shutdown/control and full StreamBase methods; early constructor/native-init failure ordering and reentry",
+    "Actual new guest C++ JSAPI/realm/CCW/GC/OOM/fatal/reentry/Worker/context teardown and queued-close runtime validation",
+    "Preserve original raw-mode/master/unreopenable/output-backpressure/SIGWINCH/drain and restoration nonpasses; no accepted platform exclusion",
+    "Complete terminal/stdio/readline/REPL public behavior and identified-artifact conformance on all four hosts"
+  ],
+  "reviewCorrection": {
+    "report": ".context/tty-read-integration-review213/handoff/HANDOFF.json",
+    "sha256": "4b08261502c7f99b04fae0085a20c2bd6bc58c4fbd3739007404ac6df6e77d30",
+    "scope": "Actual continuous read-demand root survives recovered after/checkpoint failure and rearms only on ordinary exception-free native dispatch; delivering-ticket guard avoids duplicate watch. One pinned native recovery control is target evidence only, not guest execution."
+  },
+  "at": "2026-11-07T12:46:23.910290+00:00",
+  "recipeRevision": 213,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

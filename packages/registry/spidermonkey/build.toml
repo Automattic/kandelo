@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0159-node-terminal-read-material.patch",
   "packages/registry/spidermonkey/patches/0158-node-socket-receiver-adoption.patch",
   "packages/registry/spidermonkey/patches/0157-node-retained-tls-parent.patch",
   "packages/registry/spidermonkey/patches/0156-node-retained-transfer-kind.patch",
@@ -270,6 +271,7 @@ inputs = [
   "third_party/node-core/native-os.cpp",
   "third_party/node-core/native-terminal.cpp",
   "third_party/node-core/terminal-operations.h",
+  "third_party/node-core/terminal-read-owner.h",
   "third_party/node-core/terminal-platform-adapter.js",
   "third_party/node-core/fd-stream-platform-adapter.js",
   "third_party/node-core/upstream/terminal",
@@ -728,4 +730,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 212
+revision = 213

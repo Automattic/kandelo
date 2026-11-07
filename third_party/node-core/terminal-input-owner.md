@@ -149,3 +149,82 @@ TTY callable constructors and inherited options/descriptor/init/error order
 remain incomplete. The source slice adds no fake TTY handle or provider data.
 Native TCP component evidence does not compile or execute the guest admission
 or terminal owners and does not establish four-host conformance.
+
+
+## Captured TTY read material and partial native stream owner
+
+The next additive source slice consumes actual native configureRead/onread,
+readStart/readStop, ref/unref/hasRef, getAsyncId/fd and queued-close methods on
+this genuine TTY I/O class. These are a partial native owner, not admission as
+an implemented public StreamBase or activation of public tty constructors.
+Non-TTY input and unsupported reopen paths keep their existing real fallback;
+no TTY resource is manufactured for a pipe, file or failed descriptor open.
+
+The actual captured InputHandle remains read authority. A generation/sequence
+read ticket owns its real native byte allocation, actual count/EOF/errno and
+waiting/ready/delivering/admitted lifetime. Stopping an unread reservation
+retires it; already-consumed material stays rooted for resume and pre-admission
+publication retry. Actual ArrayBuffer/callback arguments are rooted before
+admission. Once admitted, an exception does not replay bytes. Native requests
+retain original material/accounting through callback/after/checkpoint retirement.
+The real pinned shared stream-state binding derives count/error/offset from
+that material; it is not a new fabricated TTY state array. Wrapper checks occur
+before entering the actual view realm; JS errors are reported outside no-GC
+raw-storage scopes.
+
+The private fd-readable stdio factory now consumes this route. Its one-shot
+consumer stops actual continuous native demand before calling Readable and
+rearms only when real demand returns. There is no private read Promise on that
+route. Stopped consumed material has no active loop reference but remains
+rooted until resumed or closed. A queued close first closes owned extra fds,
+never the borrowed public number, then cancels exactly queued requests. Its
+native resource/root survives detached in-flight requests and closes through
+the actual native callback scope before roots are cleared and destroy queued.
+Repeated close does not replace its first completion callback. Silent context
+teardown cancels exact requests and unregisters roots while the context lives.
+
+Evidence is bounded: one tiny native C++20 control compiles the production
+portable read queue and captured InputHandle against real Darwin PTYs; 27 named
+material/OFD/stop/resume/admission/error/EOF checks pass. Two native-Node-backed
+factory scenarios match the pinned26.13.0 reference for bytes/errors/close and
+create no private read Promise; an intentional callback-disabled negative still
+fails. That fixture's explicit adapter uses Node's real native TTY, shared
+stream state, bytes, async resource and transport. It does not compile or execute
+Kandelo's native JSAPI, realm, callback recovery, queued-close or GC paths.
+Normal source generation/staging, bootstrap syntax, unchanged Mozilla style
+and the conservative880-file input check pass separately. A first private
+source setup attempt failed on an omitted codec patch file; its failure remains
+recorded. No engine/product build or overall/four-host runtime suite ran.
+
+Public callable/new/subclass TTY construction, early public TTYWrap birth and
+failed-open init order, genuine generic kind admission, TTY writes/WriteWrap,
+shutdown, full control/prototype/descriptors, GC-close ordering, fatal/OOM/CCW/
+foreign-realm and Worker conformance remain implementation/validation gaps.
+Legacy private Promise/callback operations are preserved and have not acquired
+the new stream material publication retry guarantees. The original raw-mode
+SIGABRT/restoration interpretation, master/unreopenable/backpressure and guest
+termios/drain/SIGWINCH gaps are unchanged. No TTY audit finding is closed here.
+
+
+## Continuous read demand across callback checkpoint failure
+
+The additive integration review found that deleting an admitted read watch
+before returning a failed after/checkpoint result could leave Reading=true
+without a reactor request. The outer process loop can recover that exception
+and continue. A genuine per-owner read-demand root now survives that boundary;
+ordinary exception-free native dispatch arms its next actual reservation.
+No JS or fallible rearm runs while the original exception is pending. Active
+read demand controls its real loop reference; stop/close/EOF/terminal error and
+context teardown clear that anchor when demand actually ends. Existing stopped
+ready material remains independently rooted by its exact request. Native rearm
+allocation failure preserves previously active demand/material for continuation.
+
+Reentrant start during detached pre-admission delivery may resume demand but
+cannot queue a second watch for the same delivering ticket. This guards the
+native ownership invariant; no guest wrapper-reentry reproduction is claimed.
+
+The diagnosis is source-level over source213 and pinned callback/loop owners.
+A focused pinned native TTY continuous-read/nextTick exception recovery control
+is independent target evidence. It does not execute the new Kandelo JSAPI or
+recovery path. Guest C++/GC/realm/fatal/Worker validation remains pending; public
+TTY constructors/kind admission/write/shutdown and prior nonpasses remain open.

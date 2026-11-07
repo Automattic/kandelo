@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "442a80b7d0c9e83ce579920413abcd1404ecc9fd82a75534baad4ddc63928a14",
+    "packages/registry/node-compat/bootstrap.js": "15a1a0997e6723bf6300ece57da2f65556673bf515a675fae9ec75a70248af5a",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
@@ -102,7 +102,7 @@
     "third_party/node-core/string-decoder-adapter.js": "7e1e21f39f36fcf0e7228afd85beeb581caf6fec095eb5c9f91bee798b772e13",
     "third_party/node-core/sys-platform-adapter.js": "795f104873cdfb340667f160d358f548984b3fe73b7f4db335624f4073774b44",
     "third_party/node-core/tempdir-platform-adapter.js": "5102bbeeeb0ca8ffe47dec42d4edad3a91e0e8c6842903b3d3fb904b237afa39",
-    "third_party/node-core/terminal-platform-adapter.js": "673126377deaafdb327fa2311ba9e99304be427de42f336b6f4c2f387b25363e",
+    "third_party/node-core/terminal-platform-adapter.js": "becdf7637a95b6e60d12cf7d20a359ae992ca00abc1348520583c1b9f25aed8c",
     "third_party/node-core/testing-platform-adapter.js": "eaee35db45a98b90c761628a322e51b90cbd6563ed9376d9e36ff3ab233658f9",
     "third_party/node-core/testing-runner-adapter.js": "22eb03e53a82385215a23a6f382cf85101afcee1d86762a29b05e2812c02e7e6",
     "third_party/node-core/tls-context-adapter.js": "345706068e55beb99e0fe3fc747ad675b2bbc3091166766fb80970bafec3f767",
@@ -2390,7 +2390,7 @@
       "selectedAdapterLiteralOccurrences": [
         {
           "path": "packages/registry/node-compat/bootstrap.js",
-          "line": 2922
+          "line": 2930
         }
       ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",
