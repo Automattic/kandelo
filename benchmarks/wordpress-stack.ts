@@ -238,11 +238,11 @@ async function measureNode(profile: Profile, round: number, options: Options, im
       }
       // Preserve the shipped service log; the demo helper routes it to stdio.
       writeVfsFile(fs, serviceConfigPath, serviceConfig);
-      const smtpScript = "/usr/local/bin/start-msmtpd";
+      const smtpScript = "/usr/bin/start-msmtpd";
       const originalScript = readVfsText(fs, smtpScript);
       if (!originalScript.includes("--port=1025")) throw new Error("SMTP startup port contract changed");
       writeVfsFile(fs, smtpScript, originalScript.replace("--port=1025", `--port=${smtpPort}`), 0o755);
-      const mailPlugin = "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php";
+      const mailPlugin = "/srv/www/html/wp-content/mu-plugins/wasm-optimizations.php";
       const originalPlugin = readVfsText(fs, mailPlugin);
       if (!originalPlugin.includes("$phpmailer->Port = 1025;")) {
         throw new Error("WordPress SMTP plugin port contract changed");

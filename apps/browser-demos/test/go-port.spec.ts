@@ -11,7 +11,7 @@ import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
-const fixtureDir = resolve(here, "../../../.context/go-browser");
+const fixtureDir = resolve(process.env.KANDELO_GO_FIXTURE_DIR ?? resolve(here, "../../../.context/go-browser"));
 const browserKernelModulePath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
 
 type ProbeResult = {
@@ -686,7 +686,7 @@ if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
 
 async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<ProbeResult> {
   const programBytes = readFileSync(resolve(fixtureDir, probe.file));
-  const kernelBytes = readFileSync(resolveBinary("kernel.wasm"));
+  const kernelBytes = readFileSync(process.env.KANDELO_GO_KERNEL_WASM ?? resolveBinary("kernel.wasm"));
   const programDigest = readWasmCustomSectionPayload(
     Uint8Array.from(programBytes).buffer, ABI_CONTRACT_SECTION,
   );

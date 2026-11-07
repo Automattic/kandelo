@@ -87,12 +87,6 @@ stage_go_module readline "$WASM_POSIX_BUILD_GIT_READLINE_DIR" github.com/chzyer/
 stage_go_module logrus "$WASM_POSIX_BUILD_GIT_LOGRUS_DIR" github.com/sirupsen/logrus
 stage_go_module certificate-transparency "$WASM_POSIX_BUILD_GIT_CERTIFICATE_TRANSPARENCY_DIR" github.com/google/certificate-transparency-go
 
-# Caddy 2.10.2 compares JSON type names and panics with Go 1.28's JSONv2
-# aliases (upstream caddyserver/caddy#7274). Upgrade the released dependency;
-# keep both application sources and the compiler's JSON defaults unchanged.
-(cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" get github.com/caddyserver/caddy/v2@v2.11.9)
-(cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" mod tidy)
-
 (cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" build -tags nowatcher \
     -o "$WORK_DIR/frankenphp-caddy.wasm" ./cmd/kandelo)
 unset CC CXX AR RANLIB CFLAGS CXXFLAGS CPPFLAGS LDFLAGS

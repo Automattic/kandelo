@@ -1,18 +1,18 @@
 kind = "program"
 name = "frankenphp-caddy"
-version = "1.11.0"
+version = "1.13.5"
 kernel_abi = 55
 arches = ["wasm32"]
 depends_on = ["go-bootstrap-source@1.26.10", "php-zts@8.5.12", "zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8", "libiconv@1.17", "libzip@1.11.4", "libcurl@8.11.1", "icu@74.2", "libcxx@21.1.7"]
 
 [source]
-url = "https://github.com/dunglas/frankenphp/archive/refs/tags/v1.11.0.tar.gz"
-sha256 = "18ec919af5bfdd65a1224c7e8bbf46b00412c5357cd96663fcf73b61c002e1ff"
+url = "https://github.com/dunglas/frankenphp/archive/refs/tags/v1.13.5.tar.gz"
+sha256 = "c853ae46bfa87a355a8dd3f18e25fb7e986a9fbff4b0ae70139b7fe6662f4a83"
 provider = "archive"
 
 [license]
 spdx = "MIT"
-url = "https://github.com/dunglas/frankenphp/blob/v1.11.0/LICENSE"
+url = "https://github.com/dunglas/frankenphp/blob/v1.13.5/LICENSE"
 
 [build]
 script_path = "packages/registry/frankenphp-caddy/build-frankenphp-caddy.sh"

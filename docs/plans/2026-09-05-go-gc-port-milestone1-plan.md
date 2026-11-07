@@ -9,10 +9,24 @@ source is
 Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
 Kandelo checkpoint `beef7d811` is pushed to draft PR #1492, including the
 classic application proof and the selected upstream Caddy dependency upgrade.
-The full WordPress service goal remains unfinished. A maintainer decision
-is pending on evaluating a general iterative regexp traversal as an upstream
-candidate versus researching a general instrumentation transform. No such
-algorithm or compiler transformation is being implemented while pending.
+The full WordPress service goal remains unfinished. The maintainer approved
+developing and evaluating a shared upstream regexp improvement. Candidate
+[`06870345`](https://github.com/kandelo-dev/go/commit/06870345)
+on `kandelo-wasm32-regexp-candidate` uses one iterative traversal, with no
+collector or code-generator changes. Native regexp suites pass; complete
+bytecode matches the recursive reference for 2,022 expressions. The exact
+URL regression passes both WASI architectures in three browsers and the
+Kandelo Node/three-browser gate (3/3, 13.5 seconds). The first timing iteration adds deep-stack allocations and regresses some
+compilation workloads (Node/WASI URL compilation +40.7%). A pooled iteration
+reduces that allocation cost but makes the inline array escape, adding an
+allocation even to shallow patterns. The next local iteration separates
+pooled storage from the inline array; escape analysis and a literal smoke
+check confirm the original four allocations. Both native regexp suites and
+the 2,022-program comparison still pass. Full timing rechecks and a clean
+candidate-toolchain rebuild remain pending, so package pins stay A0.
+The first browser timing run was invalid because its WASI host lacked
+`poll_oneoff`; a clock implementation now honors deadlines and passes a
+three-engine smoke run. Retain the invalid rows separately from measurements.
 
 **Normal build integration:** the declared Nix Go 1.25.8 builds verified
 Go 1.26.10 source, which bootstraps the pinned Go 1.28 compiler. These are
@@ -20,8 +34,9 @@ bootstrap versions, not a target downgrade. Native compilers remain private
 and target builds use `-trimpath`. All four Go recipes select the new target.
 Normal `go-hello` revisions 28, 29 and 30 passed publication; revision 30
 (`5954fb32`) passed Node VFS/`posix_spawn` launch. Revision 31 selects
-`a0b048e1` and still needs publication. The earlier revision-28 package
-passed all three browser launch tests. An independent byte-for-byte
+`a0b048e1` and now passes normal publication and the Node VFS/posix_spawn
+launcher, with empty stderr/diagnostics and zero fork count. Revision 31 also passes all three browser VFS/posix_spawn launch tests
+(3/3, 33.7 seconds). An independent byte-for-byte
 reproducibility build remains unrecorded.
 
 **General corrections preserve upstream's collector and code generator:**
@@ -73,9 +88,9 @@ Node, Chromium and Firefox; both overflow WebKit's native call stack in
 `regexp/syntax.(*compiler).compile`. The isolated browser WASI host reports
 no unimplemented imports on the final control. Earlier incomplete-host
 attempts remain recorded separately. This establishes an upstream Wasm
-native-depth boundary, not an engine specification defect. Do not restore
-the legacy iterative regexp algorithm or change code generation without
-maintainer discussion. Caddy revision 13 also exits 139 on WebKit with
+native-depth boundary, not an engine specification defect. The maintainer approved evaluating a single iterative traversal as an
+upstream candidate; do not restore the older hybrid fallback or change
+code generation. Candidate evaluation is described above. Caddy revision 13 also exits 139 on WebKit with
 repeated unnamed native frames; its exact frame identity is not established
 by that stripped trace alone.
 
@@ -139,16 +154,41 @@ FrankenPHP+Caddy revision 16 and standalone Caddy revision 13 select the
 new x/sys pin. A maintained Node Caddy package test now covers PHP/static
 HTTP, static OPcache cache files, concurrent CGI/GC lifetimes and normal
 SIGTERM exit. It still needs to execute on the new published service.
-Active job `cargo-xtask-bootstrap-1107-001634-d8da` runs the normal
-revision-16 build, maintained Node Caddy test, normal go-hello revision-31
-build and VFS launch in that order. Collect each actual result; a later
-step does not execute if an earlier one fails.
+Job `cargo-xtask-bootstrap-1107-001634-d8da` stopped after 8m43s because
+FrankenPHP 1.11.0's Caddy command API expects three `LoadConfig` results,
+where Caddy 2.11.9 returns four. Its queued runtime/GoHello steps did not
+execute. No application patch was added.
+
+Both FrankenPHP recipes now select released 1.13.5, whose upstream module
+already pins Caddy 2.11.9; the temporary `go get`/`go mod tidy` override is
+removed. Classic revision 36, Caddy revision 17 and WordPress revision 43
+select the new sources/dependencies. Active job
+`cargo-xtask-bootstrap-1107-002742-daed` first completed normal GoHello31
+publication and Node VFS launch. FrankenPHP+Caddy17 then built, instrumented and published normally; the
+combined sequence finished in 15m22s. Its maintained Node test passes
+PHP/static HTTP, OPcache compilation/cache files, 32 requests at concurrency
+four, observed collections 16→32, no host diagnostics and normal SIGTERM
+exit 0. The PHP pool starts and remains at two threads. Chromium and Firefox
+pass the matching HTTP/lifetime/GC/exit browser test; WebKit exits 139 before
+readiness on native call-stack overflow (2 pass/1 fail, 25.7 seconds).
+The exact stripped native frame identity is not established by that trace.
+Artifact: 184,964,868 bytes, SHA-256
+`20c10f8ec00cea0ae470ea6a58eb408383d4e3d38da89be17e738e3a79aeb79d`.
+GoHello31 SHA-256:
+`45dbb5928ff635f05a69fbe65c16a7f43fa83b270168f90411133def4024da86`.
+The now-unused FrankenPHP accessor/scalar-registration patch file is removed;
+both recipes build upstream sources without it. Classic36 and the
+new WordPress image have not been built. Preserve the historical unadapted
+classic35 and Caddy13 evidence as scoped to FrankenPHP 1.11.0.
 The standalone Caddy recipe has not yet been built on this target.
 
 **Layout and memory:** WordPress uses latest main's `/srv/www/html` layout;
 custom classic defaults, Caddy configuration and related probes now agree.
-WordPress revision 42 invalidates the old configuration, but no replacement
-image or new preview is claimed. The PHP CFG traversal remains an unpromoted
+The remaining held-request shutdown helper and benchmark now also use
+main's `/usr/bin/kandelo-service`, `/usr/bin/start-msmtpd` and
+`/srv/www/html` paths, matching the actual image builders. Those final
+image/runtime/benchmark checks remain unrun. WordPress revision 43 invalidates
+the old configuration, but no replacement image or new preview is claimed. The PHP CFG traversal remains an unpromoted
 candidate, with no established speed benefit. On the new target the memory
 fixture starts with about 535 MiB linear memory versus 19 MiB Go-accounted
 system memory. Go's ordinary 32-bit 512 MiB reservation interacts with

@@ -16,8 +16,10 @@ and each package's `go_toolchain` pin first.
 
 All four Go recipes and the SDK wrapper now select `kandelo/wasm32`.
 Normal classic FrankenPHP revision 35 passes HTTP, bulk CGI/GC and normal
-shutdown on Node and three browsers. Real Caddy links, but its request
-validation and an upstream Caddy dependency upgrade remain pending. The authoritative record
+shutdown on Node and three browsers. Unmodified FrankenPHP 1.13.5/Caddy 2.11.9 now also passes real
+request/GC/OPcache/shutdown checks on Node, Chromium and Firefox. Its WebKit
+native-stack failure remains; the approved upstream regexp candidate is
+being evaluated separately from normal package pins. The authoritative record
 is `docs/plans/2026-09-05-go-gc-port-milestone1-plan.md`; `docs/go.md` maps
 consumers to targets. Do not describe historical legacy service evidence as
 validation of the replacement compiler or image.

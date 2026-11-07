@@ -102,7 +102,7 @@ echo ${JSON.stringify(body)};
       response.then(result => { throw new Error(`PHP request finished before SIGTERM: ${result.status}`); }),
     ]);
     stage = "waiting for service SIGTERM";
-    const stop = await Promise.race([host.spawnFromVfs("/usr/local/bin/kandelo-service", [
+    const stop = await Promise.race([host.spawnFromVfs("/usr/bin/kandelo-service", [
       "kandelo-service", "stop", service,
     ]), timeout]);
     await Promise.race([

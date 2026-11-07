@@ -11,8 +11,8 @@ migration is not complete.
 | Consumer | Selected compiler/target |
 | --- | --- |
 | `go-hello`, `wasm32posix-go` | Go 1.28 development, `kandelo/wasm32`; four-byte Go/C pointers |
-| Custom classic FrankenPHP recipe | Same wasm32 target; unadapted revision 35 passes HTTP, bulk CGI/GC and shutdown on Node and all three browsers |
-| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; normal real-Caddy linking passes, request validation and upstream Caddy upgrade remain in progress |
+| Custom classic FrankenPHP recipe | Same wasm32 target; selected 1.13.5/revision 36 awaits rebuild. Historical 1.11.0/revision 35 passes Node and three-browser request/GC/exit checks |
+| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; unadapted FrankenPHP 1.13.5/Caddy 2.11.9 passes Node/Chromium/Firefox requests and shutdown; WebKit native-stack failure remains. Standalone Caddy build is pending |
 
 The [implementation checkpoint](plans/2026-09-05-go-gc-port-milestone1-plan.md)
 records the exact source pins, validation and remaining release gates.
@@ -123,15 +123,18 @@ The current unmodified regexp compiler still exceeds WebKit's native Wasm
 call depth on the bounded-repeat fixture. Both upstream WASI architectures
 reproduce it without Kandelo imports; Chromium and Firefox pass. The full
 wasm32 browser inventory is 254/255 passing, with that failure retained.
-Resolving it may require an upstream library improvement or general
-instrumentation, which needs maintainer discussion before implementation.
+The maintainer approved evaluating a shared iterative regexp compiler as
+an upstream candidate. It passes the focused regression on Node and three
+browsers, but compilation/allocation tradeoffs are still under evaluation;
+the normal package pins have not adopted it.
 
 Caddy 2.10.2 also rejects Go 1.28's default JSON type alias during module
 configuration. Upstream corrected this in
 [caddyserver/caddy#7274](https://github.com/caddyserver/caddy/pull/7274).
-The recipes select released Caddy 2.11.9 rather than changing application
-source or disabling the compiler's JSON defaults; new compile/request
-validation is pending.
+The selected FrankenPHP 1.13.5 release already pins Caddy 2.11.9. Its
+normal source build applies no application patch or JSON experiment override.
+Real requests, OPcache and bulk CGI strings during observed collection pass
+on Node, Chromium and Firefox; WebKit still fails on native call depth.
 
 ## FrankenPHP and WordPress
 
