@@ -70,7 +70,10 @@ function _createNodeCryptoKeys(platform) {
             if (slots === undefined) throw new ERR_INVALID_THIS('CryptoKey');
             return slots;
         },
-        parsePKCS12() { throw new ERR_METHOD_NOT_IMPLEMENTED('PKCS12 key and certificate owners'); },
+        parsePKCS12(bundle, passphrase) {
+            return call('parsePKCS12', KeyObjectHandle.prototype,
+                platform.getX509().nativeHandlePrototype, bundle, passphrase);
+        },
     };
     function missingWebCrypto() { throw new ERR_METHOD_NOT_IMPLEMENTED('WebCrypto algorithm/import owner'); }
     /* NODE_KEY_BIGINT */
@@ -80,6 +83,7 @@ function _createNodeCryptoKeys(platform) {
     };
     function require(name) {
         if (modules.has(name)) return modules.get(name).exports;
+        if (name === 'internal/crypto/x509') return platform.getX509();
         if (name === 'buffer') return { Buffer: platform.Buffer };
         if (name === 'internal/validators') return platform.values.validators;
         if (name === 'internal/errors') return platform.values.errors;
@@ -105,6 +109,7 @@ function _createNodeCryptoKeys(platform) {
     }
     const keys = require('internal/crypto/keys');
     return { ...keys, api: { KeyObject: keys.KeyObject, createSecretKey: keys.createSecretKey,
-        createPublicKey: keys.createPublicKey, createPrivateKey: keys.createPrivateKey },
+        createPublicKey: keys.createPublicKey, createPrivateKey: keys.createPrivateKey,
+        parsePKCS12: keys.parsePKCS12 },
         keyOperation: call, nativeHandlePrototype: KeyObjectHandle.prototype };
 }

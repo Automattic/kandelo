@@ -3395,6 +3395,7 @@ Object.assign(crypto, _createNodeCryptoDigest({
 }));
 const _nodeKeyURLHref = Object.getOwnPropertyDescriptor(_nodeWebPlatform.URL.prototype, 'href').get;
 const _nodeCryptoKeys = _createNodeCryptoKeys({
+    getX509: () => _nodeX509,
     native: _nodeNative, values: _nodeValues, Buffer, types: util.types,
     codecs: _nodeBufferCodecs, inspection: _nodeInspection, digestHelpers: _nodeDigestHelpers,
     url: {

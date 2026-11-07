@@ -28,6 +28,76 @@ static KandeloX509Box* KandeloX509BoxOf(JSObject* object) {
   if(!object||JS::GetClass(object)!=&KandeloX509Class)return nullptr;
   const auto slot=JS::GetReservedSlot(object,0);return slot.isUndefined()?nullptr:static_cast<KandeloX509Box*>(slot.toPrivate());
 }
+// This branch of the existing keyOperation bridge is defined after the real
+// key and X509 classes. It transfers native objects, never PEM/DER stand-ins.
+static bool KandeloKeyParsePKCS12(JSContext* cx, const CallArgs& args, MutableHandleValue output) {
+  if (!args.get(1).isObject() || !args.get(2).isObject()) {
+    JS_ReportErrorASCII(cx,"PKCS12 requires actual key and certificate prototypes");return false;
+  }
+  RootedObject keyPrototype(cx,&args[1].toObject()),certPrototype(cx,&args[2].toObject());
+  KandeloCryptoByteSource bundle(cx);
+  if (!bundle.Init(args.get(3))) {
+    if(!JS_IsExceptionPending(cx))throw kandelo::crypto::KeyError("Unable to read PKCS#12 data","ERR_CRYPTO_OPERATION_FAILED");
+    return false;
+  }
+  ncrypto::BIOPointer bio;
+  if (!bundle.WithBytes([&](SharedMem<uint8_t*> data,size_t length) {
+    // SharedMem intentionally has no release-build sharedness predicate.
+    // A cleansing-owned atomic byte snapshot is valid for both storage kinds.
+    if(length>INT_MAX){bio=kandelo::crypto::LoadPKCS12BIO(data.unwrap(),length);return true;}
+    auto copy=ncrypto::DataPointer::Alloc(length);
+    if(length&&!copy)throw std::bad_alloc();
+    for(size_t i=0;i<length;i++)copy.get<unsigned char>()[i]=__atomic_load_n(data.unwrap()+i,__ATOMIC_RELAXED);
+    bio=kandelo::crypto::LoadPKCS12BIO(copy.get<unsigned char>(),length);return true;
+  })) {
+    if(!JS_IsExceptionPending(cx))throw kandelo::crypto::KeyError("Unable to read PKCS#12 data","ERR_CRYPTO_OPERATION_FAILED");
+    return false;
+  }
+  if (!bio) throw kandelo::crypto::KeyError("Unable to read PKCS#12 data","ERR_CRYPTO_OPERATION_FAILED");
+  // The BIO owns its copy before any later source/realm/security operation.
+  // The password copy is NUL-terminated and cleansing-owned through parsing.
+  ncrypto::DataPointer password;const char* pass=nullptr;bool containsNull=false;
+  if (!args.get(4).isUndefined()) {
+    KandeloCryptoByteSource source(cx);if(!source.Init(args.get(4))) {
+      if(!JS_IsExceptionPending(cx))JS_ReportErrorASCII(cx,"PKCS12 passphrase requires actual buffer storage");return false;
+    }
+    if(!source.WithBytes([&](SharedMem<uint8_t*> data,size_t length) {
+      if(length==SIZE_MAX)throw std::bad_alloc();password=ncrypto::DataPointer::Alloc(length+1);
+      if(!password)throw std::bad_alloc();auto* bytes=password.get<unsigned char>();
+      for(size_t i=0;i<length;i++){bytes[i]=__atomic_load_n(data.unwrap()+i,__ATOMIC_RELAXED);containsNull|=bytes[i]==0;}
+      bytes[length]=0;return true;
+    })) {
+      if(!JS_IsExceptionPending(cx))JS_ReportErrorASCII(cx,"PKCS12 passphrase has no actual backing storage");return false;
+    }
+    if(containsNull)throw kandelo::crypto::KeyError("passphrase must not contain null bytes","ERR_INVALID_ARG_VALUE");
+    pass=password.get<char>();
+  }
+  auto parsed=kandelo::crypto::ParseCryptoPKCS12(bio,pass);
+  RootedValue key(cx,NullValue()),cert(cx,NullValue());
+  if(parsed.key) {
+    auto material=std::make_unique<kandelo::crypto::KeyMaterial>();material->asymmetric=std::move(parsed.key);
+    RootedObject handle(cx,JS_NewObjectWithGivenProto(cx,&KandeloKeyHandleClass,keyPrototype));
+    if(!handle||!KandeloKeyOwn(cx,handle,2,std::move(material)))return false;key.setObject(*handle);
+  }
+  auto certificate=[&](ncrypto::X509Pointer owned,MutableHandleValue value) {
+    auto material=std::shared_ptr<kandelo::crypto::X509Material>(new kandelo::crypto::X509Material(std::move(owned),KandeloNativeMemoryOwner(cx)));
+    RootedObject object(cx,JS_NewObjectWithGivenProto(cx,&KandeloX509Class,certPrototype));if(!object)return false;
+    auto box=std::make_unique<KandeloX509Box>(std::move(material),KandeloNativeMemoryOwner(cx));
+    JS::AddAssociatedMemory(object,sizeof(KandeloX509Box),JS::MemoryUse::Embedding3);
+    JS::SetReservedSlot(object,0,PrivateValue(box.release()));value.setObject(*object);return true;
+  };
+  if(parsed.cert&&!certificate(std::move(parsed.cert),&cert))return false;
+  RootedObject others(cx,JS::NewArrayObject(cx,0));if(!others)return false;
+  const int count=parsed.ca?sk_X509_num(parsed.ca.get()):0;uint32_t written=0;
+  for(int i=0;i<count;i++) {
+    X509* ca=sk_X509_value(parsed.ca.get(),i);if(!ca)continue;
+    if(X509_up_ref(ca)!=1)kandelo::crypto::Fail("Failed to retain PKCS#12 certificate");
+    ncrypto::X509Pointer owned(ca);
+    RootedValue value(cx);if(!certificate(std::move(owned),&value)||!JS_DefineElement(cx,others,written++,value,JSPROP_ENUMERATE))return false;
+  }
+  JS::RootedValueArray<3> fields(cx);fields[0].set(key);fields[1].set(cert);fields[2].setObject(*others);
+  RootedObject result(cx,JS::NewArrayObject(cx,fields));if(!result)return false;output.setObject(*result);return true;
+}
 static bool KandeloX509Dispatch(JSContext* cx,const CallArgs& args,MutableHandleValue result) {
   UniqueChars operation;if(!KandeloGetString(cx,args.get(0),&operation))return false;
   const std::string_view name(operation.get());

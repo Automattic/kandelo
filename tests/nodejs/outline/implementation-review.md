@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source172 integrates real PKCS12 material ownership:47current native-dependent comparisons, unchanged upstream file eachsubject and14package checks pass.171native compilation/link succeeded but normalstyle failed;172newcode/guest/fourhost uncompiled/unvalidated.
+See [source scope](pkcs12-parser-integration.md).
+
 Focused DNS setup at unchangedsource171 now supplies genuine native histogram/ELD owners.26unchanged current resolver cases pass; original pre-DNS harness error retained. No runtime/recipe change or guest/fourhost conformance.
 See [source scope](dns-fixture-dependency-integration.md).
 

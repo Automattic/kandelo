@@ -57,5 +57,5 @@ function _createNodeX509Platform(platform) {
     (function(module, exports, require, internalBinding, primordials) {
         /* NODE_X509_MODULE */
     })(module, module.exports, require, internalBinding, primordials);
-    return module.exports;
+    return { ...module.exports, nativeHandlePrototype: NativeX509Certificate.prototype };
 }

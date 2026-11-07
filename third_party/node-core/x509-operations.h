@@ -4,13 +4,73 @@
 #include "native-retained-memory.h"
 #include <ncrypto.h>
 #include <openssl/buffer.h>
+#include <openssl/pkcs12.h>
 #include <openssl/x509v3.h>
+#include <climits>
 #include <limits>
 #include <string_view>
 namespace kandelo::crypto {
 struct X509Error : Error {
   X509Error(const char* message, const char* code) : Error(message) { this->code = code; }
 };
+// Pinned Node26.13.0 crypto_pkcs12.cc parser policy, shared by public crypto
+// and the distinct TLS-pfx caller. The helper owns every OpenSSL result; its
+// callers decide whether key-only/cert-only bundles satisfy their API.
+struct PKCS12Contents {
+  ncrypto::EVPKeyPointer key;
+  ncrypto::X509Pointer cert;
+  ncrypto::StackOfX509 ca;
+};
+enum class PKCS12ParseError { NOT_RECOGNIZED, UNSUPPORTED_ALGORITHM, FAILED };
+using PKCS12ParseResult = ncrypto::Result<PKCS12Contents, PKCS12ParseError>;
+inline ncrypto::BIOPointer LoadPKCS12BIO(const unsigned char* bytes, size_t length) {
+  auto bio = ncrypto::BIOPointer::NewSecMem();
+  if (!bio || length > INT_MAX) return {};
+  const char empty = 0;
+  const int written = ncrypto::BIOPointer::Write(&bio,
+      std::string_view(length ? reinterpret_cast<const char*>(bytes) : &empty, length));
+  if (written < 0 || size_t(written) != length) return {};
+  return bio;
+}
+inline PKCS12ParseResult ParsePKCS12Bundle(const ncrypto::BIOPointer& bio, const char* pass) {
+  using PKCS12Pointer = ncrypto::DeleteFnPtr<PKCS12, PKCS12_free>;
+  ncrypto::ClearErrorOnReturn clear;
+  if (!bio) return PKCS12ParseResult(PKCS12ParseError::FAILED, ERR_get_error());
+  PKCS12* raw = nullptr;
+  if (!d2i_PKCS12_bio(bio.get(), &raw) || !raw)
+    return PKCS12ParseResult(PKCS12ParseError::NOT_RECOGNIZED, ERR_get_error());
+  PKCS12Pointer p12(raw);
+  EVP_PKEY* key = nullptr;X509* cert = nullptr;STACK_OF(X509)* ca = nullptr;
+  const int status = PKCS12_parse(p12.get(), pass, &key, &cert, &ca);
+  // OpenSSL clears failed key/cert outputs, but a partially built CA stack
+  // still belongs to the caller. Adopt all non-null outputs on either result.
+  PKCS12Contents contents;contents.key.reset(key);contents.cert.reset(cert);contents.ca.reset(ca);
+  if (!status) {
+    const unsigned long error = ERR_get_error();
+#ifdef OPENSSL_IS_BORINGSSL
+    if (ERR_GET_LIB(error) == ERR_LIB_PKCS8 && ERR_GET_REASON(error) == PKCS8_R_BAD_PKCS12_DATA)
+      return PKCS12ParseResult(PKCS12ParseError::NOT_RECOGNIZED, error);
+#endif
+#if OPENSSL_VERSION_MAJOR >= 3
+    if (ERR_GET_REASON(error) == ERR_R_UNSUPPORTED)
+      return PKCS12ParseResult(PKCS12ParseError::UNSUPPORTED_ALGORITHM, error);
+#endif
+    return PKCS12ParseResult(PKCS12ParseError::FAILED, error);
+  }
+  return PKCS12ParseResult(std::move(contents));
+}
+inline PKCS12Contents ParseCryptoPKCS12(const ncrypto::BIOPointer& bio, const char* pass) {
+  if (!bio) throw X509Error("Unable to read PKCS#12 data", "ERR_CRYPTO_OPERATION_FAILED");
+  auto parsed = ParsePKCS12Bundle(bio, pass);
+  if (parsed) return std::move(parsed.value);
+  if (parsed.error == PKCS12ParseError::NOT_RECOGNIZED)
+    throw X509Error("Input is not a valid PKCS#12 structure", "ERR_CRYPTO_OPERATION_FAILED");
+  if (parsed.error == PKCS12ParseError::UNSUPPORTED_ALGORITHM)
+    throw X509Error("PKCS#12 bundle uses an unsupported algorithm; it may require the OpenSSL legacy provider", "ERR_CRYPTO_UNSUPPORTED_OPERATION");
+  const unsigned long error = parsed.openssl_error.value_or(0);
+  if (error) { char message[256];ERR_error_string_n(error,message,sizeof(message));throw Error(message,error); }
+  throw Error("Unable to parse PKCS#12 data");
+}
 // The parser owns an actual ncrypto/OpenSSL certificate after this call. No
 // caller bytes, JS roots, context or guessed certificate metadata are retained.
 class X509Material {

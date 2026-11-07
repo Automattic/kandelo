@@ -6868,3 +6868,7 @@ Source171 selects unchanged pinned Undici Request and complete Body extraction o
 ### Focused DNS component dependency evidence
 
 The focused DNS fixture supplies genuine native histogram and event-loop-delay owners to its existing candidate Performance dependency. This changes test setup only, with no runtime module, engine recipe or target mutation.26unchanged resolver cases pass over current source with real loopback/native request boundaries; the original pre-DNS setup error is preserved. See [evidence scope](../tests/nodejs/outline/dns-fixture-dependency-integration.md).
+
+### Public PKCS12 material source ownership
+
+Source172 wires unchanged public PKCS12 validation/wrappers to actual OpenSSL parsing and native KeyMaterial/X509Material ownership, with cleansing-owned byte/password snapshots. Production transfers references directly, while component controls explicitly transport PEM/DER into real native Node owners. TLS PFX credential installation remains a separate unimplemented SSL_CTX consumer. Source171compiled/linked but its normal package check failed;172new native source is uncompiled. See [scope](../tests/nodejs/outline/pkcs12-parser-integration.md).

@@ -1,0 +1,53 @@
+{
+  "at": "2026-11-07T02:07:55.404312+00:00",
+  "jobId": "node26-engine171-1106-204434-fbf2",
+  "recipeRevision": 171,
+  "sourceCommit": "0d262a286edb2754ec6e9f9e0d6751dd16a8bf8b",
+  "sourceWasFrozen": true,
+  "changedFrozenSourcePaths": [],
+  "exitCode": 1,
+  "durationSeconds": 499.9,
+  "selectedPlan": {
+    "nodes": 9,
+    "cached": 8,
+    "willRun": 1
+  },
+  "productionCompilationSucceeded": true,
+  "productionLinkSucceeded": true,
+  "normalChecksSucceeded": false,
+  "normalBuildAccepted": false,
+  "acceptedArtifact": false,
+  "firstFailingStage": "unchanged upstream check_spidermonkey_style.py",
+  "additionalStyleDiagnosticLines": 75,
+  "uniqueAdditionalLocations": 74,
+  "failureCause": "Canonical staged header paths/order, normal-header inline inclusion and imported/source excerpt placement did not satisfy unchanged engine checker. No compiler/link error observed; no accepted package published.",
+  "evidence": {
+    "output.log": {
+      "path": ".context/node26-engine171-failure-final/output.log",
+      "sha256": "198ee1c3ab9d53cf0a0983ab3bfc8b1f46b03cfcdc506bf1f7f3e4d9b3053532"
+    },
+    "meta.json": {
+      "path": ".context/node26-engine171-failure-final/meta.json",
+      "sha256": "ce79a14cfd566fcd0d2beee38453a96a3e6182faf007b4c1f16ee3ef15e1974f"
+    },
+    "result.json": {
+      "path": ".context/node26-engine171-failure-final/result.json",
+      "sha256": "5cfae942f9c585e6419b431a379cb9d7f6751e92664826923e7959a5effef513"
+    },
+    "preflight-report.json": {
+      "path": ".context/node26-engine171-failure-final/preflight-report.json",
+      "sha256": "5a2d64a5152ab384e8a3c1a605eb675f88385cef03aab031a14253350ea3bb0e"
+    },
+    "preflight-terminal.json": {
+      "path": ".context/node26-engine171-failure-final/preflight-terminal.json",
+      "sha256": "c75682cd2bc7e00995d9a9c14669b16b1d102ec0377050f1464ba18b04f3c338"
+    },
+    "style-diagnostics.json": {
+      "path": ".context/node26-engine171-failure-final/style-diagnostics.json",
+      "sha256": "6f1a3ee018b43934f958f4154f8e222b642e74a24e9f89bed4603fb421900417"
+    }
+  },
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "scope": "Normal selected171engine production C++ compilation and shell link succeeded; original include-style gate failed.8dependencies reused, no kernel/rootfs/app/product build. Raw linked product not accepted/published; no runtime/API conformance evidence."
+}

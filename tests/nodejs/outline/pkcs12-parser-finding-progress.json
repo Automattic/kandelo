@@ -1,0 +1,88 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto.md",
+    "findingIds": [
+      "C-001",
+      "C-008",
+      "C-015"
+    ],
+    "relatedFamilies": [
+      "crypto",
+      "secure-network",
+      "engine"
+    ],
+    "scope": "Public PKCS12 parser/material subset; TLS pfx and full crypto findings remain open"
+  },
+  "sourceImplemented": [
+    "Real OpenSSL PKCS12 parse/error policy with RAII-owned private key/certificate/CA material and independent chain references",
+    "Direct production KeyMaterial/X509Material transfer, own-data additional certificate array, lazy public wrappers preserving real classes",
+    "Checked rooted no-GC input snapshots with cleansing bundle/password ownership; no borrowed bytes survive JS/allocation work",
+    "Preserve all prior172base source and actual171failed normal-build evidence; no TLS capability fabricated"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-pkcs172-source-r1/report.json",
+    "sha256": "838c97f67e07c77cd481b0fb1f3311f4f40b1debcd38da315740366698e682a0",
+    "guardedInputs": 790,
+    "scope": "Current real publicPKCS12/parser/keyX509 source with exact reused native parser and real native material boundary;47comparisons and unchanged upstream file eachsubject, no productionSM/guest/TLS/fourhost conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-pkcs172-affected-r1.json",
+    "sha256": "6de57150ad1b3036f374e7d4818b3e9aa507f3baa0eac3b40b6485766a44a279",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-pkcs172-source-r1/report.json",
+    "sha256": "838c97f67e07c77cd481b0fb1f3311f4f40b1debcd38da315740366698e682a0",
+    "nativeComparisons": 47,
+    "wholeUnchangedUpstreamFilesEachSubject": 1,
+    "subjects": 2,
+    "productionSMExecuted": false,
+    "scope": "Current actual public wrappers/native parser with genuine Node key/X509 PEM-DER material boundary; no guest/TLS/GC proof"
+  },
+  "sealedEvidence": {
+    "report": ".context/pkcs12-owner-agent/REPORT.json",
+    "sha256": "b3413d805d5554a0eca54b61513144754fd8d664efff3f0947aeb5f6126be755",
+    "reusedEvidence": true,
+    "scope": "47finalnative comparisons+unchanged upstream eachsubject,3tinycompiles, actual OpenSSL3.5.9; productionSM/guest/TLS unvalidated"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/pkcs12-owner-agent/SEAL.json",
+      "sha256": "b28bb6569f7be762ffc373285a9c9a629369c4183cc05ade1989aa1618ff2492",
+      "kind": "component-fixture-and-initial-global-leak-failures",
+      "reason": "All initial boundary/harness failures, raw-key init arity abort and unchanged upstream global-leak failure preserved; corrected only fixture setup"
+    },
+    {
+      "report": ".context/node26-engine171-failure-final/report.json",
+      "sha256": "be9df6fabfe923965a17ac13b44b0b4f5afb339b1d23d5b1a5791afbd9b524ea",
+      "kind": "normal-engine-style-check-failure",
+      "reason": "Production171compile/link succeeded, unchanged style gate failed75additional diagnostics, no accepted artifact"
+    }
+  ],
+  "remaining": [
+    "Production172SMpointer/slot/prototype/GC/OOM/security-wrapper/error-reentry/backend/provider/FIPS/legacy behavior",
+    "Actual TLS pfx SSL_CTX key/certificate/chain/trust installation and pinned error/password policy",
+    "Full crypto/WebCrypto/generation/exchange/signature/STORE and fourhost identified-artifact conformance"
+  ],
+  "targetedEngineBuildResult": {
+    "report": "tests/nodejs/outline/engine171-build-result.json",
+    "sha256": "be9df6fabfe923965a17ac13b44b0b4f5afb339b1d23d5b1a5791afbd9b524ea",
+    "recipeRevision": 171,
+    "productionCompilationSucceeded": true,
+    "productionLinkSucceeded": true,
+    "normalBuildAccepted": false,
+    "scope": "Actual normal171compile/link succeeded; unchanged style gate failed75added diagnostics; no artifact or runtime acceptance"
+  },
+  "at": "2026-11-07T02:08:25.765951+00:00",
+  "recipeRevision": 172,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

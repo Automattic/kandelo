@@ -1512,3 +1512,14 @@ init can reenter JS and returns before using a stale list-next pointer. Listener
 resource/trigger and native onconnection/fatal-vs-Promise semantics remain
 implementation gaps; source-only JSAPI changes do not close them. See [TCP
 owner scope](../../tests/nodejs/outline/tcp-agent-integration.md).
+
+### Public PKCS12 parser source followup
+
+crypto.parsePKCS12 uses the unchanged pinned validation/wrapper algorithm over
+actual parsed OpenSSL private-key/certificate/chain ownership. It accepts
+key-only, cert-only and empty bundles, preserves native malformed/unsupported/
+MAC error policy and rejects NUL passwords before parsing. Native results enter
+existing KeyMaterial/X509Material owners directly; no serialized certificate
+record or export-only implementation is supplied. Focused native/parser/public
+controls do not validate production JSAPI or guest libraries. TLS pfx context
+installation remains a distinct implementation gap. See [PKCS12 scope](../../tests/nodejs/outline/pkcs12-implementation-dependencies.md).
