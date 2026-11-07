@@ -4373,9 +4373,14 @@ const _nodeHttpIncoming = _createNodeHttpIncoming({
     stream, abort: _nodeEventPlatform.abort, process,
 });
 
-const HTTP_METHODS = [
-    'GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'CONNECT', 'TRACE',
-];
+const _nodeHttpServerResponse = _createNodeHttpServerResponse({
+    process, Buffer, outgoing: _nodeHttpOutgoing, incoming: _nodeHttpIncoming,
+    STATUS_CODES, values: _nodeValues, assert,
+    observation: _nodePerformance.observation, trace: _nodeConsolePlatform.trace,
+    diagnostics: _nodeDiagnostics,
+});
+
+const HTTP_METHODS = _nodeNative.httpParser('methods').toSorted();
 
 const makeResponseParser = _createNodeHttpParser({
     native: _nodeNative, incoming: _nodeHttpIncoming, Buffer,
@@ -4864,6 +4869,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol, agentOwner }) {
         STATUS_CODES, METHODS: HTTP_METHODS,
         ...(protoLower === 'http:' ? {
             IncomingMessage: _nodeHttpIncoming.IncomingMessage,
+            ServerResponse: _nodeHttpServerResponse.ServerResponse,
             OutgoingMessage: _nodeHttpOutgoing.module.OutgoingMessage,
             validateHeaderName: _nodeHttpHeaders.validateHeaderName,
             validateHeaderValue: _nodeHttpHeaders.validateHeaderValue,

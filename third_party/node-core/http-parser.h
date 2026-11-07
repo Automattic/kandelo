@@ -1,4 +1,4 @@
-// Streaming HTTP/1 response framing over the exact Node-vendored llhttp.
+// Streaming HTTP/1 request/response framing over the exact Node-vendored llhttp.
 // This owner is independent of JS engines; it never retains borrowed input.
 #ifndef KANDELO_NODE_HTTP_PARSER_H
 #define KANDELO_NODE_HTTP_PARSER_H
@@ -6,15 +6,28 @@
 #include <exception>
 #include <llhttp.h>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 namespace kandelo::http {
+// These are the linked parser's actual catalogs. Node distinguishes the
+// public HTTP method set from the larger parser method-index table.
+inline std::span<const char* const> GetMethods(bool all) {
+#define KANDELO_HTTP_METHOD(num, name, spelling) #spelling,
+  static constexpr const char* methods[] = { HTTP_METHOD_MAP(KANDELO_HTTP_METHOD) };
+  static constexpr const char* allMethods[] = { HTTP_ALL_METHOD_MAP(KANDELO_HTTP_METHOD) };
+#undef KANDELO_HTTP_METHOD
+  return all ? std::span<const char* const>(allMethods)
+             : std::span<const char* const>(methods);
+}
 struct Event {
   enum class Type { Headers, Body, Complete } type;
   std::vector<std::string> headers;
-  std::string statusMessage;
+  std::string statusMessage, url;
+  unsigned method = 0;
+  bool request = false;
   std::vector<uint8_t> body;
   unsigned major = 0, minor = 0, status = 0;
   bool keepAlive = false, upgrade = false, informational = false;
@@ -27,14 +40,15 @@ struct Step {
   bool complete = false, upgrade = false;
   std::string code, reason;
 };
-class ResponseParser final {
+class Parser final {
  public:
-  explicit ResponseParser(std::string method = "GET", uint64_t limit = 0,
-                          bool insecure = false, bool relaxed = false)
-      : method_(std::move(method)), limit_(limit ? limit : 16 * 1024) {
+  explicit Parser(std::string method = "GET", uint64_t limit = 0,
+                          bool insecure = false, bool relaxed = false, bool request = false)
+      : request_(request), method_(std::move(method)), limit_(limit ? limit : 16 * 1024) {
     llhttp_settings_init(&settings_);
     settings_.on_message_begin = Begin;
     settings_.on_status = Status;
+    settings_.on_url = Url;
     settings_.on_header_field = Field;
     settings_.on_header_value = Value;
     settings_.on_header_value_complete = ValueComplete;
@@ -45,7 +59,7 @@ class ResponseParser final {
     settings_.on_chunk_extension_value = Extension;
     settings_.on_chunk_header = Chunk;
     settings_.on_chunk_complete = ChunkComplete;
-    llhttp_init(&parser_, HTTP_RESPONSE, &settings_);
+    llhttp_init(&parser_, request_ ? HTTP_REQUEST : HTTP_RESPONSE, &settings_);
     parser_.data = this;
     // Exactly Node's kLenientAll (bits 0..9). Header-value relaxation is a
     // separate option, not implicitly enabled by insecureHTTPParser.
@@ -63,10 +77,10 @@ class ResponseParser final {
     }
     if (relaxed) llhttp_set_lenient_header_value_relaxed(&parser_, 1);
   }
-  ResponseParser(const ResponseParser&) = delete;
-  ResponseParser& operator=(const ResponseParser&) = delete;
-  ResponseParser(ResponseParser&&) = delete;
-  ResponseParser& operator=(ResponseParser&&) = delete;
+  Parser(const Parser&) = delete;
+  Parser& operator=(const Parser&) = delete;
+  Parser(Parser&&) = delete;
+  Parser& operator=(Parser&&) = delete;
 
   Step Feed(const uint8_t* bytes, size_t length) {
     if (oom_) throw std::bad_alloc();
@@ -118,7 +132,7 @@ class ResponseParser final {
     Error(step); return step;
   }
   size_t AllocationBytes() const {
-    size_t bytes = sizeof(*this) + HeapString(method_) + HeapString(status_) +
+    size_t bytes = sizeof(*this) + HeapString(method_) + HeapString(status_) + HeapString(url_) +
         HeapString(field_) + HeapString(value_) + HeapString(errorCode_) + HeapString(errorReason_);
     bytes += headers_.capacity() * sizeof(std::string);
     for (const auto& item : headers_) bytes += HeapString(item);
@@ -127,7 +141,8 @@ class ResponseParser final {
  private:
   llhttp_t parser_{};
   llhttp_settings_t settings_{};
-  std::string method_, status_, field_, value_, errorCode_, errorReason_;
+  const bool request_;
+  std::string method_, status_, url_, field_, value_, errorCode_, errorReason_;
   std::vector<std::string> headers_;
   uint64_t limit_, headerBytes_ = 0, extensionBytes_ = 0;
   bool complete_ = false, upgrade_ = false, informational_ = false;
@@ -157,7 +172,7 @@ class ResponseParser final {
   }
   // No C++ exception may unwind through unchanged C parser frames.
   template <typename Callback> static int Guard(llhttp_t* parser, Callback callback) noexcept {
-    auto& self = *static_cast<ResponseParser*>(parser->data);
+    auto& self = *static_cast<Parser*>(parser->data);
     try { return callback(self); }
     catch (const std::bad_alloc&) { self.oom_ = true; }
     catch (const std::length_error&) { self.oom_ = true; }
@@ -173,54 +188,62 @@ class ResponseParser final {
     headerBytes_ += length; return 0;
   }
   static int Begin(llhttp_t* parser) noexcept {
-    return Guard(parser, [](ResponseParser& s) {
-      s.status_.clear(); s.field_.clear(); s.value_.clear(); s.headers_.clear();
+    return Guard(parser, [](Parser& s) {
+      s.status_.clear(); s.url_.clear(); s.field_.clear(); s.value_.clear(); s.headers_.clear();
       s.informational_ = false; s.upgrade_ = false; return 0;
     });
   }
   static int Status(llhttp_t* p, const char* at, size_t size) noexcept {
-    return Guard(p, [&](ResponseParser& s) {
+    return Guard(p, [&](Parser& s) {
       if (int error = s.Track(size)) return error;
       s.status_.append(at, size); return 0;
     });
   }
+  static int Url(llhttp_t* p, const char* at, size_t size) noexcept {
+    return Guard(p, [&](Parser& s) {
+      if (int error = s.Track(size)) return error;
+      s.url_.append(at, size); return 0;
+    });
+  }
   static int Field(llhttp_t* p, const char* at, size_t size) noexcept {
-    return Guard(p, [&](ResponseParser& s) {
+    return Guard(p, [&](Parser& s) {
       if (int error = s.Track(size)) return error;
       s.field_.append(at, size); return 0;
     });
   }
   static int Value(llhttp_t* p, const char* at, size_t size) noexcept {
-    return Guard(p, [&](ResponseParser& s) {
+    return Guard(p, [&](Parser& s) {
       if (int error = s.Track(size)) return error;
       s.value_.append(at, size); return 0;
     });
   }
   static int ValueComplete(llhttp_t* p) noexcept {
-    return Guard(p, [](ResponseParser& s) {
+    return Guard(p, [](Parser& s) {
       while (!s.value_.empty() && (s.value_.back() == ' ' || s.value_.back() == '\t')) s.value_.pop_back();
       s.headers_.push_back(std::move(s.field_)); s.headers_.push_back(std::move(s.value_));
       s.field_.clear(); s.value_.clear(); return 0;
     });
   }
   static int Headers(llhttp_t* p) noexcept {
-    return Guard(p, [](ResponseParser& s) {
+    return Guard(p, [](Parser& s) {
       s.headerBytes_ = 0;
-      s.informational_ = s.parser_.status_code >= 100 && s.parser_.status_code < 200 && s.parser_.status_code != 101;
-      s.upgrade_ = s.parser_.upgrade || s.method_ == "CONNECT";
+      s.informational_ = !s.request_ && s.parser_.status_code >= 100 && s.parser_.status_code < 200 && s.parser_.status_code != 101;
+      s.upgrade_ = s.parser_.upgrade || (!s.request_ && s.method_ == "CONNECT");
       Event event(Event::Type::Headers);
       event.headers = std::move(s.headers_); event.statusMessage = std::move(s.status_);
       event.major = s.parser_.http_major; event.minor = s.parser_.http_minor;
+      event.request = s.request_; event.method = s.parser_.method;
+      event.url = std::move(s.url_);
       event.status = s.parser_.status_code; event.keepAlive = llhttp_should_keep_alive(&s.parser_);
       event.upgrade = s.upgrade_; event.informational = s.informational_;
       s.step_->events.push_back(std::move(event));
       if (s.upgrade_) return 2;
-      if (s.informational_ || s.method_ == "HEAD") return 1;
+      if (!s.request_ && (s.informational_ || s.method_ == "HEAD")) return 1;
       return 0;
     });
   }
   static int Body(llhttp_t* p, const char* at, size_t size) noexcept {
-    return Guard(p, [&](ResponseParser& s) {
+    return Guard(p, [&](Parser& s) {
       if (size) {
         Event event(Event::Type::Body);
         event.body.assign(reinterpret_cast<const uint8_t*>(at), reinterpret_cast<const uint8_t*>(at) + size);
@@ -230,7 +253,7 @@ class ResponseParser final {
     });
   }
   static int Complete(llhttp_t* p) noexcept {
-    return Guard(p, [](ResponseParser& s) {
+    return Guard(p, [](Parser& s) {
       Event event(Event::Type::Complete);
       event.headers = std::move(s.headers_); event.informational = s.informational_;
       event.upgrade = s.upgrade_; s.step_->events.push_back(std::move(event));
@@ -240,7 +263,7 @@ class ResponseParser final {
     });
   }
   static int Extension(llhttp_t* p, const char*, size_t size) noexcept {
-    return Guard(p, [&](ResponseParser& s) {
+    return Guard(p, [&](Parser& s) {
       if (size > 16384 - s.extensionBytes_) {
         llhttp_set_error_reason(&s.parser_, "HPE_CHUNK_EXTENSIONS_OVERFLOW:Chunk extensions overflow");
         return int(HPE_USER);
@@ -249,11 +272,12 @@ class ResponseParser final {
     });
   }
   static int Chunk(llhttp_t* p) noexcept {
-    return Guard(p, [](ResponseParser& s) { s.headerBytes_ = 0; s.extensionBytes_ = 0; return 0; });
+    return Guard(p, [](Parser& s) { s.headerBytes_ = 0; s.extensionBytes_ = 0; return 0; });
   }
   static int ChunkComplete(llhttp_t* p) noexcept {
-    return Guard(p, [](ResponseParser& s) { s.headerBytes_ = 0; return 0; });
+    return Guard(p, [](Parser& s) { s.headerBytes_ = 0; return 0; });
   }
 };
+using ResponseParser = Parser; // Preserve the existing response owner interface.
 }  // namespace kandelo::http
 #endif

@@ -1563,3 +1563,20 @@ transfer. The owner checks actual serialized SQLite mutex support. Current
 frontend and portable-owner controls are scoped evidence; production JSAPI,
 guest VFS/thread/GC/realm behavior and full SQLite compatibility remain open.
 The isolated plain-object native reference crash remains an unresolved nonpass.
+
+### HTTP request framing, ServerResponse and actual method catalogs
+
+The single real llhttp owner now parses requests and responses, retaining
+method/Latin1 URL/body/trailer/error/upgrade/remainder state. Pinned
+IncomingMessage callbacks consume that state. Public ServerResponse reuses
+the existing genuine OutgoingMessage, socket, diagnostic, trace and
+performance owners. Full Server/admission/ConnectionsList and synchronous
+parser callback/reentry/aliasing policy remain implementation gaps.
+The malformed-URL automatic400 native comparison remains a nonpass.
+
+The public HTTP method array now sorts the actual compiled HTTP_METHOD_MAP;
+the parser's larger index table separately uses HTTP_ALL_METHOD_MAP. No
+guessed names or reduced static capability list is used. HTTPS namespace
+aliases and all remaining secure/server/HTTP2 obligations remain open.
+Current source/component evidence does not establish new guest JSAPI or
+four-host behavior. Earlier accepted173predates the new native source.

@@ -84,6 +84,6 @@ function _createNodeConsolePlatform(platform) {
     const api = require('console');
     require('internal/console/constructor').initializeGlobalConsole(api);
     /* NODE_CONSOLE_EXPOSE_NAMESPACE */
-    return { api, collect, traceBinding,
+    return { api, collect, traceBinding, trace: require('internal/trace_events'),
         install(target) { exposeNamespace(target, 'console', api); } };
 }

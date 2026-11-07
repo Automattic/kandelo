@@ -6888,3 +6888,7 @@ Source174 routes pinned positive VM script timeouts into a joined steady-clock n
 ### Asynchronous SQLite backup ownership
 
 Source175 implements the public backup frontend over real SQLite backup state and fresh per-batch shared work-queue jobs. Only page stepping executes on workers; native finish/close, public callback graph ownership, progress and Promise settlement stay on the creating context thread. Real serialized connection mutexes are required and checked. Current portable-owner and frontend/native dependency controls do not execute new production JSAPI/queue/GC/VFS behavior. Exact backing/version policy and unresolved reference nonpasses remain explicit. See [scope](../tests/nodejs/outline/sqlite-backup-integration.md).
+
+### HTTP request framing and shared response ownership
+
+Source176 extends the single actual llhttp owner to request framing and preserves response behavior. Pinned ServerResponse reuses existing OutgoingMessage/IncomingMessage/socket/trace/performance/diagnostic owners. The real compiled HTTP_METHOD_MAP and larger HTTP_ALL_METHOD_MAP remain distinct; public HTTP METHODS sorts the former exactly as the target. Full Server/connection/admission/ConnectionsList and synchronous parser reentry remain missing. A malformed-URL live comparison stays a nonpass rather than fabricating a400. See [scope](../tests/nodejs/outline/http-request-server-response-integration.md).

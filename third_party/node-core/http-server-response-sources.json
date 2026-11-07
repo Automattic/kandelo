@@ -1,0 +1,37 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "server": {
+      "path": "upstream/http/server.js",
+      "upstreamPath": "lib/_http_server.js",
+      "sha256": "b8878d4357201af985c07685ef62383a91cf9fc80ed42c1715623a30b0a9e8e9"
+    },
+    "internalHTTP": {
+      "path": "upstream/http-outgoing/lib/internal/http.js",
+      "upstreamPath": "lib/internal/http.js",
+      "sha256": "7340c282d028e6aa6b3813084ad0e7fea22e33478706b295e746f29e02558f37"
+    }
+  },
+  "sections": {
+    "response": {
+      "source": "server",
+      "start": "function ServerResponse(req, options) {",
+      "length": 9248,
+      "sha256": "f5fdc66408c630905c3d501d1b69314c0aeb9ed6ccac5ab5166c59d2eef911e9"
+    },
+    "close": {
+      "source": "server",
+      "start": "function emitCloseNT(self) {",
+      "length": 135,
+      "sha256": "256cc353d27cbf606ff59c3598842480ed954203a4b785b394d1eaa2858f6cc0"
+    },
+    "trace": {
+      "source": "internalHTTP",
+      "start": "let traceEventId = 0;",
+      "length": 380,
+      "sha256": "8253d6a0fe33b8f74d090981659971e1af5b56d517e5a8a440460cd96192ff13"
+    }
+  },
+  "scope": "Actual ServerResponse over existing outgoing/socket owners; full server/request tracking/consume/reentry remains an implementation gap"
+}

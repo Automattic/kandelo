@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source176 integrates actual request framing, pinned ServerResponse and compiled35public/47parser method catalogs.27request/25response/12ServerResponse groups,4unchanged-upstream executions and14package checks pass. Live native socket primitives remain8/9with real automatic400 admission gap;176JSAPI/fullserver/guest/fourhost unvalidated.
+See [source scope](http-request-server-response-integration.md).
+
 Source175 integrates genuine async SQLite backup/page-step/native-job ownership.11fresh portable-owner cases,13current public/native comparison groups,14package checks and unchanged style pass.175productionJSAPI/queue/GC/guest/fourhost remain uncompiled/unvalidated; malformed-source native crash remains a nonpass.
 See [source scope](sqlite-backup-integration.md).
 

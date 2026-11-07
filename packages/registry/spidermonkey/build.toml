@@ -121,6 +121,9 @@ inputs = [
   "third_party/node-core/http-parser.h",
   "third_party/node-core/native-http-parser.cpp",
   "third_party/node-core/upstream/http-parser",
+  "third_party/node-core/http-server-response-adapter.js",
+  "third_party/node-core/http-server-response-sources.json",
+  "third_party/node-core/generate-http-server-response.py",
   "third_party/node-core/upstream/http-incoming/lib/_http_incoming.js",
   "third_party/node-core/licenses/on-exit-leak-free.txt",
   "third_party/node-core/fs-system-errors-adapter.js",
@@ -620,4 +623,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 175
+revision = 176

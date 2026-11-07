@@ -1,0 +1,103 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/http.md",
+    "findingIds": [
+      "H-001",
+      "H-003",
+      "H-004",
+      "H-013"
+    ],
+    "relatedFamilies": [
+      "http",
+      "network",
+      "streams",
+      "observability",
+      "engine"
+    ],
+    "scope": "Request/parser/ServerResponse/method catalog source subset; full Server and complete finding obligations remain open"
+  },
+  "sourceImplemented": [
+    "Real shared llhttp request mode with actual method/URL/body/trailer/budget/error/upgrade/remainder ownership; existing response mode preserved",
+    "Pinned ServerResponse algorithms over actual existing OutgoingMessage/IncomingMessage/socket/trace/performance and diagnostic producer owners",
+    "Shared compiled HTTP_METHOD_MAP vs HTTP_ALL_METHOD_MAP catalogs, actual public METHODS.toSorted policy yielding35rather than9names",
+    "Preserve current VM174/SQLite175/style173 source and real full-server/automatic400 nonpass; no substitute Server"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-http176-source-r1/report.json",
+    "sha256": "63ed05e701c4069c040364379f8ffbdf5b210d05ddf1e4469d2a19e148286f27",
+    "guardedInputs": 795,
+    "scope": "Actual request/parser/ServerResponse/compiled method catalogs, fresh portableCXX owners and current native-dependentfrontend/upstream/live native-socket controls;1real server-admission nonpass preserved,176JSAPI/fullserver/guest/fourhost open."
+  },
+  "packageChecks": {
+    "report": ".context/node26-http176-affected-r1.json",
+    "sha256": "937fee22b99fe1401e31834a568c8a80d595381f88b934ff44a3aa208fd0a5b1",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-http176-source-r1/report.json",
+    "sha256": "63ed05e701c4069c040364379f8ffbdf5b210d05ddf1e4469d2a19e148286f27",
+    "requestParserCases": 27,
+    "unchangedResponseParserCases": 25,
+    "serverResponseGroups": 12,
+    "unchangedUpstreamExecutions": 4,
+    "publicHttpMethods": 35,
+    "parserAllMethods": 47,
+    "liveNativeSocketCases": 9,
+    "liveNativeSocketPasses": 8,
+    "liveNativeSocketNonpasses": 1,
+    "freshNativeCompilerAttempts": 2,
+    "productionSMExecuted": false,
+    "scope": "Current actual portable parser/catalog; public/frontend over genuine native dependencies and actual native accepted sockets, not productionSM/fullServer/guest/fourhost",
+    "nonpassMeaning": "1of9currentliveprimitive comparisons fails; wrapper0only verifies exact preserved failure accounting, not allpass"
+  },
+  "sealedEvidence": {
+    "report": ".context/http-request-server-owner-agent/report.json",
+    "sha256": "2e2372f0e45b3c7f7e2819b7e3b2e407061fcc64ad152058f20203aa788ba96f",
+    "reusedEvidence": true,
+    "scope": "27request/25response/12ServerResponse groups,4unchangedupstream executions,8/9liveprimitive comparisons,4tiny compiles and38sourcechecks; JSAPI/fullserver not established"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/http-request-server-owner-agent/candidate-response-r1.stderr",
+      "sha256": "870bfa481a788536c609bb381e0b8226f08c1393a7185efb3aa724794eefada7",
+      "kind": "initial-source-bundle-syntax-failure",
+      "reason": "Property predicate initially emitted as statement; corrected owning binding preserves original selected source/failed evidence"
+    },
+    {
+      "report": ".context/http-request-server-owner-agent/candidate-test-http-server-response-standalone.js.stderr",
+      "sha256": "da9e999525048194920f89f23bea302793510d2334ee38df159c2d9a9fb4a157",
+      "kind": "introduced-test-binding-globals",
+      "reason": "Initial fixture leaked globals; only exact introduced configurable globals retired, unchanged upstream assertions preserved"
+    },
+    {
+      "report": ".context/node26-http176-source-r1/controls/live-accepted-socket-primitives.stdout",
+      "sha256": "eb515bed5fe1c86ce595946835d32a27302b4173868ca1560fc24dcfbb71d3c6",
+      "kind": "current-live-server-admission-nonpass",
+      "reason": "Raw0xff URL actual parse error versus nativeServer automatic400; source owner missing, not platform boundary or pass"
+    },
+    {
+      "report": ".context/http-request-server-owner-agent/source-check-ordering-note.json",
+      "sha256": "fa149580124ec6274a950b841a2675c7244208a93c881b4a4742d9bb23597aeb",
+      "kind": "private-preparation-ordering-uncertainty",
+      "reason": "Final serial preflight repeated after restoring immutable style composition; original note retained"
+    }
+  ],
+  "remaining": [
+    "Real full Server/admission/ConnectionsList/timeout/pipeline and net.Server actual receiver/transport integration",
+    "Synchronous parser consume/pause/reentry and borrowed aliases/errorpositions/rawPacket/transient memory/GC/realm/request lifecycle",
+    "Current malformed-URL native server automatic400 nonpass, HTTPS/HTTP2/export aliases/performance/client/Agent gaps and allfourhosts",
+    "Production176JSAPI currentengine compilation/artifact and identified guest conformance"
+  ],
+  "at": "2026-11-07T03:23:23.881340+00:00",
+  "recipeRevision": 176,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

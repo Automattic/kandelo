@@ -10,10 +10,12 @@ function _createNodeHttpParser(platform) {
     const kSkipPendingData = Symbol('SkipPendingData');
     /* NODE_HTTP_PARSER_CALLBACKS */
     /* NODE_HTTP_PREPARE_ERROR */
-    return function makeResponseParser(options) {
+    let allMethods;
+    function makeParser(options, request) {
+        if (request) allMethods ??= platform.native.httpParser('allMethods');
         const insecure = options.httpValidation === 'insecure' ||
             (options.httpValidation === undefined && options.insecureHTTPParser === true);
-        const owner = platform.native.httpParser('create', options.method || 'GET',
+        const owner = platform.native.httpParser(request ? 'createRequest' : 'create', options.method || 'GET',
             options.maxHeaderSize || 0, insecure, options.httpValidation === 'relaxed');
         let message = null, completed = false, failed = false, remainder = null;
         let keepAlive = false, upgraded = false;
@@ -25,6 +27,10 @@ function _createNodeHttpParser(platform) {
                 message = incoming;
                 keepAlive = shouldKeepAlive;
                 if (incoming.upgrade) return 2;
+                if (request) {
+                    if (options.onHeaders) options.onHeaders(incoming);
+                    return 0;
+                }
                 if (incoming.statusCode >= 100 && incoming.statusCode < 200 && incoming.statusCode !== 101) {
                     if (options.onInformation) options.onInformation({
                         statusCode: incoming.statusCode, statusMessage: incoming.statusMessage,
@@ -44,7 +50,7 @@ function _createNodeHttpParser(platform) {
                 const event = packet.events[i];
                 if (event.type === 0) {
                     ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
-                        event.headers, undefined, undefined, event.status, event.statusMessage,
+                        event.headers, event.request ? event.method : undefined, event.request ? event.url : undefined, event.status, event.statusMessage,
                         event.upgrade, event.keepAlive]);
                 } else if (event.type === 1) {
                     ReflectApply(parserOnBody, parser, [Buffer.from(event.body)]);
@@ -83,5 +89,9 @@ function _createNodeHttpParser(platform) {
                 consume(platform.native.httpParser('finish', owner));
             },
         };
-    };
+    }
+    function makeResponseParser(options) { return makeParser(options, false); }
+    makeResponseParser.request = options => makeParser(options, true);
+    makeResponseParser.kIncomingMessage = kIncomingMessage;
+    return makeResponseParser;
 }

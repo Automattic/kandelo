@@ -4,12 +4,13 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <iterator>
 namespace {
 struct KandeloHttpOwner {
   kandelo::http::ResponseParser parser;
   size_t accounted = 0;
-  KandeloHttpOwner(std::string method, uint64_t limit, bool insecure, bool relaxed)
-      : parser(std::move(method), limit, insecure, relaxed) {}
+  KandeloHttpOwner(std::string method, uint64_t limit, bool insecure, bool relaxed, bool request)
+      : parser(std::move(method), limit, insecure, relaxed, request) {}
   size_t Bytes() const { return sizeof(*this) - sizeof(parser) + parser.AllocationBytes(); }
 };
 static void KandeloHttpAccount(JSObject* object, KandeloHttpOwner* owner) {
@@ -67,6 +68,9 @@ static bool KandeloHttpPacket(JSContext* cx, const kandelo::http::Step& step, Mu
           !JS_DefineProperty(cx, item, "upgrade", event.upgrade, JSPROP_ENUMERATE)) return false;
       if (event.type == kandelo::http::Event::Type::Headers &&
           (!KandeloHttpText(cx, item, "statusMessage", event.statusMessage) ||
+           !KandeloHttpText(cx, item, "url", event.url) ||
+           !JS_DefineProperty(cx, item, "request", event.request, JSPROP_ENUMERATE) ||
+           !JS_DefineProperty(cx, item, "method", int(event.method), JSPROP_ENUMERATE) ||
            !JS_DefineProperty(cx, item, "status", int(event.status), JSPROP_ENUMERATE) ||
            !JS_DefineProperty(cx, item, "major", int(event.major), JSPROP_ENUMERATE) ||
            !JS_DefineProperty(cx, item, "minor", int(event.minor), JSPROP_ENUMERATE) ||
@@ -85,7 +89,18 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
   if (!args.get(0).isString()) { JS_ReportErrorASCII(cx, "HTTP parser requires an operation"); return false; }
   RootedString name(cx, args[0].toString());
   JS::UniqueChars operation = JS_EncodeStringToUTF8(cx, name); if (!operation) return false;
-  if (strcmp(operation.get(), "create") == 0) {
+  if (strcmp(operation.get(), "methods") == 0 || strcmp(operation.get(), "allMethods") == 0) {
+    const auto methods = kandelo::http::GetMethods(strcmp(operation.get(), "allMethods") == 0);
+    RootedObject array(cx, JS::NewArrayObject(cx, methods.size())); if (!array) return false;
+    for (size_t i = 0; i < methods.size(); ++i) {
+      RootedString method(cx, JS_NewStringCopyZ(cx, methods[i])); RootedValue value(cx);
+      if (!method) return false; value.setString(method);
+      if (!JS_DefineElement(cx, array, uint32_t(i), value, JSPROP_ENUMERATE)) return false;
+    }
+    args.rval().setObject(*array); return true;
+  }
+  const bool request = strcmp(operation.get(), "createRequest") == 0;
+  if (request || strcmp(operation.get(), "create") == 0) {
     if (!args.get(1).isString() || !args.get(2).isNumber() || !args.get(3).isBoolean() || !args.get(4).isBoolean() ||
         !std::isfinite(args[2].toNumber()) || args[2].toNumber() < 0 ||
         args[2].toNumber() > 9007199254740991.0 || std::floor(args[2].toNumber()) != args[2].toNumber()) {
@@ -93,7 +108,7 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
     }
     RootedString method(cx, args[1].toString());
     JS::UniqueChars text = JS_EncodeStringToUTF8(cx, method); if (!text) return false;
-    auto owner = std::make_unique<KandeloHttpOwner>(text.get(), uint64_t(args[2].toNumber()), args[3].toBoolean(), args[4].toBoolean());
+    auto owner = std::make_unique<KandeloHttpOwner>(text.get(), uint64_t(args[2].toNumber()), args[3].toBoolean(), args[4].toBoolean(), request);
     RootedObject object(cx, JS_NewObjectWithGivenProto(cx, &KandeloHttpClass, nullptr));
     if (!object) return false;
     KandeloHttpAccount(object, owner.get());

@@ -29999,7 +29999,7 @@ module.exports = {
   });
 }
 
-    return { api, collect, traceBinding,
+    return { api, collect, traceBinding, trace: require('internal/trace_events'),
         install(target) { exposeNamespace(target, 'console', api); } };
 }
 
@@ -31666,6 +31666,389 @@ module.exports = {
 
 
     return { module: module.exports, kOutHeaders: state.kOutHeaders, onSocketDrain: ondrain };
+}
+
+// Pinned ServerResponse uses the existing real OutgoingMessage and socket
+// ownership. Full Server/connection tracking/parser admission remains separate.
+function _createNodeHttpServerResponse(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { ArrayIsArray, ObjectKeys, ObjectSetPrototypeOf, Symbol } = primordials;
+    const { OutgoingMessage, validateHeaderName, validateHeaderValue } = platform.outgoing.module;
+    const kOutHeaders = platform.outgoing.kOutHeaders;
+    const { getRawHeader } = platform.incoming;
+    const { hasObserver, startPerf, stopPerf } = platform.observation;
+    const { categoryEnabledChecker, trace, nodeTraceEventCategory, kAsyncBegin, kAsyncEnd } = platform.trace;
+    const { codes: { ERR_HTTP_HEADERS_SENT, ERR_HTTP_INVALID_STATUS_CODE,
+        ERR_HTTP_SOCKET_ASSIGNED, ERR_INVALID_ARG_VALUE, ERR_INVALID_CHAR } } = platform.values.errors;
+    const { validateInteger, validateObject, validateLinkHeaderValue } = platform.values.validators;
+    const assert = platform.assert;
+    const STATUS_CODES = platform.STATUS_CODES;
+    const kServerResponseStatistics = Symbol('ServerResponseStatistics');
+    const statusLineCache = [];
+    const HTTP_SERVER_TRACE_EVENT_NAME = 'http.server.request';
+    const onResponseCreatedChannel = platform.diagnostics.registerProducer('http.server.response.created');
+    const strictHeaderCharRegex = /[^\t\x20-\x7e\x80-\xff]/;
+
+// Lenient header value regex per Fetch spec (https://fetch.spec.whatwg.org/#header-value):
+// - Must contain no 0x00 (NUL) or HTTP newline bytes (0x0a LF, 0x0d CR)
+// - Must be byte sequences (0x00-0xff), not arbitrary unicode
+// This allows most control characters except NUL, CR, and LF.
+// eslint-disable-next-line no-control-regex
+const lenientHeaderCharRegex = /[\x00\x0a\x0d]|[^\x00-\xff]/;
+
+/**
+ * True if val contains an invalid header value character.
+ * By default uses strict validation per RFC 7230.
+ * When lenient=true, uses relaxed validation per Fetch spec.
+ * @param {string} val
+ * @param {boolean} [lenient] - Use lenient validation (Fetch spec rules)
+ * @returns {boolean}
+ */
+function checkInvalidHeaderChar(val, lenient = false) {
+  const regex = lenient ? lenientHeaderCharRegex : strictHeaderCharRegex;
+  return regex.test(val);
+}
+
+    const { chunkExpression } = {
+          chunkExpression: /(?:^|\W)chunked(?:$|\W)/i,
+    };
+    let traceEventId = 0;
+
+function getNextTraceEventId() {
+  return ++traceEventId;
+}
+
+const isTraceHTTPEnabled = categoryEnabledChecker('node.http');
+
+const traceEventCategory = nodeTraceEventCategory('node.http');
+
+function traceBegin(...args) {
+  trace(kAsyncBegin, traceEventCategory, ...args);
+}
+
+function traceEnd(...args) {
+  trace(kAsyncEnd, traceEventCategory, ...args);
+}
+
+
+    function ServerResponse(req, options) {
+  OutgoingMessage.call(this, options);
+
+  if (req.method === 'HEAD') this._hasBody = false;
+
+  this.req = req;
+  this.sendDate = true;
+  this._sent100 = false;
+  this._expect_continue = false;
+
+  if (req.httpVersionMajor < 1 || req.httpVersionMinor < 1) {
+    this.useChunkedEncodingByDefault =
+      chunkExpression.test(getRawHeader(req, 'te', true));
+    this.shouldKeepAlive = false;
+  }
+
+  if (hasObserver('http')) {
+    startPerf(this, kServerResponseStatistics, {
+      type: 'http',
+      name: 'HttpRequest',
+      detail: {
+        req: {
+          method: req.method,
+          url: req.url,
+          headers: req.headers,
+        },
+      },
+    });
+  }
+  if (isTraceHTTPEnabled()) {
+    this._traceEventId = getNextTraceEventId();
+    traceBegin(HTTP_SERVER_TRACE_EVENT_NAME, this._traceEventId);
+  }
+  if (onResponseCreatedChannel.hasSubscribers) {
+    onResponseCreatedChannel.publish({
+      request: req,
+      response: this,
+    });
+  }
+}
+ObjectSetPrototypeOf(ServerResponse.prototype, OutgoingMessage.prototype);
+ObjectSetPrototypeOf(ServerResponse, OutgoingMessage);
+
+ServerResponse.prototype._finish = function _finish() {
+  if (this[kServerResponseStatistics] && hasObserver('http')) {
+    stopPerf(this, kServerResponseStatistics, {
+      detail: {
+        res: {
+          statusCode: this.statusCode,
+          statusMessage: this.statusMessage,
+          headers: typeof this.getHeaders === 'function' ? this.getHeaders() : {},
+        },
+      },
+    });
+  }
+  OutgoingMessage.prototype._finish.call(this);
+  if (isTraceHTTPEnabled() && typeof this._traceEventId === 'number') {
+    const data = {
+      url: this.req?.url,
+      statusCode: this.statusCode,
+    };
+    traceEnd(HTTP_SERVER_TRACE_EVENT_NAME, this._traceEventId, data);
+  }
+};
+
+
+ServerResponse.prototype.statusCode = 200;
+ServerResponse.prototype.statusMessage = undefined;
+
+function onServerResponseClose() {
+  // EventEmitter.emit makes a copy of the 'close' listeners array before
+  // calling the listeners. detachSocket() unregisters onServerResponseClose
+  // but if detachSocket() is called, directly or indirectly, by a 'close'
+  // listener, onServerResponseClose is still in that copy of the listeners
+  // array. That is, in the example below, b still gets called even though
+  // it's been removed by a:
+  //
+  //   const EventEmitter = require('events');
+  //   const obj = new EventEmitter();
+  //   obj.on('event', a);
+  //   obj.on('event', b);
+  //   function a() { obj.removeListener('event', b) }
+  //   function b() { throw "BAM!" }
+  //   obj.emit('event');  // throws
+  //
+  // Ergo, we need to deal with stale 'close' events and handle the case
+  // where the ServerResponse object has already been deconstructed.
+  // Fortunately, that requires only a single if check. :-)
+  if (this._httpMessage) {
+    emitCloseNT(this._httpMessage);
+  }
+}
+
+ServerResponse.prototype.assignSocket = function assignSocket(socket) {
+  if (socket._httpMessage) {
+    throw new ERR_HTTP_SOCKET_ASSIGNED();
+  }
+  socket._httpMessage = this;
+  socket.on('close', onServerResponseClose);
+  this.socket = socket;
+  this.emit('socket', socket);
+  this._flush();
+};
+
+ServerResponse.prototype.detachSocket = function detachSocket(socket) {
+  assert(socket._httpMessage === this);
+  socket.removeListener('close', onServerResponseClose);
+  socket._httpMessage = null;
+  this.socket = null;
+};
+
+ServerResponse.prototype.writeInformation = function writeInformation(
+  statusCode, headers, cb) {
+  if (this._header) {
+    throw new ERR_HTTP_HEADERS_SENT('write');
+  }
+
+  validateInteger(statusCode, 'statusCode', 100, 199);
+  if (statusCode === 101) {
+    throw new ERR_HTTP_INVALID_STATUS_CODE(statusCode);
+  }
+
+  const statusMessage = STATUS_CODES[statusCode] || 'unknown';
+  let head = `HTTP/1.1 ${statusCode} ${statusMessage}\r\n`;
+
+  const lenient = this._isLenientHeaderValidation();
+  if (headers !== undefined && headers !== null) {
+    if (ArrayIsArray(headers)) {
+      if (headers.length && ArrayIsArray(headers[0])) {
+        for (let i = 0; i < headers.length; i++) {
+          const entry = headers[i];
+          head += processInformationHeader(entry[0], entry[1], lenient);
+        }
+      } else {
+        if (headers.length % 2 !== 0) {
+          throw new ERR_INVALID_ARG_VALUE('headers', headers);
+        }
+        for (let i = 0; i < headers.length; i += 2) {
+          head += processInformationHeader(headers[i], headers[i + 1], lenient);
+        }
+      }
+    } else {
+      validateObject(headers, 'headers');
+      const keys = ObjectKeys(headers);
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        head += processInformationHeader(key, headers[key], lenient);
+      }
+    }
+  }
+
+  head += '\r\n';
+
+  return this._writeRaw(head, 'ascii', cb);
+};
+
+function processInformationHeader(name, value, lenient) {
+  validateHeaderName(name);
+  validateHeaderValue(name, value, lenient);
+  return `${name}: ${value}\r\n`;
+}
+
+ServerResponse.prototype.writeContinue = function writeContinue(cb) {
+  this.writeInformation(100, null, cb);
+  this._sent100 = true;
+};
+
+ServerResponse.prototype.writeProcessing = function writeProcessing(cb) {
+  this.writeInformation(102, null, cb);
+};
+
+ServerResponse.prototype.writeEarlyHints = function writeEarlyHints(hints, cb) {
+  validateObject(hints, 'hints');
+
+  if (hints.link === null || hints.link === undefined) {
+    return;
+  }
+
+  const link = validateLinkHeaderValue(hints.link);
+
+  if (link.length === 0) {
+    return;
+  }
+
+  if (checkInvalidHeaderChar(link)) {
+    throw new ERR_INVALID_CHAR('header content', 'Link');
+  }
+
+  const headers = { __proto__: null, Link: link };
+  const keys = ObjectKeys(hints);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key !== 'link') {
+      headers[key] = hints[key];
+    }
+  }
+
+  this.writeInformation(103, headers, cb);
+};
+
+ServerResponse.prototype._implicitHeader = function _implicitHeader() {
+  this.writeHead(this.statusCode);
+};
+
+ServerResponse.prototype.writeHead = writeHead;
+function writeHead(statusCode, reason, obj) {
+
+  if (this._header) {
+    throw new ERR_HTTP_HEADERS_SENT('write');
+  }
+
+  const originalStatusCode = statusCode;
+
+  statusCode |= 0;
+  if (statusCode < 100 || statusCode > 999) {
+    throw new ERR_HTTP_INVALID_STATUS_CODE(originalStatusCode);
+  }
+
+
+  if (typeof reason === 'string') {
+    // writeHead(statusCode, reasonPhrase[, headers])
+    this.statusMessage = reason;
+  } else {
+    // writeHead(statusCode[, headers])
+    this.statusMessage ||= STATUS_CODES[statusCode] || 'unknown';
+    obj ??= reason;
+  }
+  this.statusCode = statusCode;
+
+  let headers;
+  if (this[kOutHeaders]) {
+    // Slow-case: when progressive API and header fields are passed.
+    let k;
+    if (ArrayIsArray(obj)) {
+      if (obj.length % 2 !== 0) {
+        throw new ERR_INVALID_ARG_VALUE('headers', obj);
+      }
+
+      // Headers in obj should override previous headers but still
+      // allow explicit duplicates. To do so, we first remove any
+      // existing conflicts, then use appendHeader.
+
+      for (let n = 0; n < obj.length; n += 2) {
+        k = obj[n + 0];
+        this.removeHeader(k);
+      }
+
+      for (let n = 0; n < obj.length; n += 2) {
+        k = obj[n + 0];
+        if (k) this.appendHeader(k, obj[n + 1]);
+      }
+    } else if (obj) {
+      const keys = ObjectKeys(obj);
+      // Retain for(;;) loop for performance reasons
+      // Refs: https://github.com/nodejs/node/pull/30958
+      for (let i = 0; i < keys.length; i++) {
+        k = keys[i];
+        if (k) this.setHeader(k, obj[k]);
+      }
+    }
+    // Only progressive api is used
+    headers = this[kOutHeaders];
+  } else {
+    // Only writeHead() called
+    headers = obj;
+  }
+
+  let statusLine;
+  if (this.statusMessage === STATUS_CODES[statusCode]) {
+    // Default reason phrases contain no invalid characters and are shared
+    // across responses: cache the whole status line.
+    statusLine = statusLineCache[statusCode] ??=
+      `HTTP/1.1 ${statusCode} ${this.statusMessage}\r\n`;
+  } else {
+    if (checkInvalidHeaderChar(this.statusMessage))
+      throw new ERR_INVALID_CHAR('statusMessage');
+
+    statusLine = `HTTP/1.1 ${statusCode} ${this.statusMessage}\r\n`;
+  }
+
+  if (statusCode === 204 || statusCode === 304 ||
+      (statusCode >= 100 && statusCode <= 199)) {
+    // RFC 2616, 10.2.5:
+    // The 204 response MUST NOT include a message-body, and thus is always
+    // terminated by the first empty line after the header fields.
+    // RFC 2616, 10.3.5:
+    // The 304 response MUST NOT contain a message-body, and thus is always
+    // terminated by the first empty line after the header fields.
+    // RFC 2616, 10.1 Informational 1xx:
+    // This class of status code indicates a provisional response,
+    // consisting only of the Status-Line and optional headers, and is
+    // terminated by an empty line.
+    this._hasBody = false;
+  }
+
+  // Don't keep alive connections where the client expects 100 Continue
+  // but we sent a final status; they may put extra bytes on the wire.
+  if (this._expect_continue && !this._sent100) {
+    this.shouldKeepAlive = false;
+  }
+
+  this._storeHeader(statusLine, headers);
+
+  return this;
+}
+
+
+    function emitCloseNT(self) {
+  if (!self._closed) {
+    self.destroyed = true;
+    self._closed = true;
+    self.emit('close');
+  }
+}
+
+
+    return { ServerResponse };
 }
 
 // Client method/path setup shares the actual OutgoingMessage private header
@@ -106848,10 +107231,12 @@ function parserOnMessageComplete() {
   if (typeof err.reason === 'string')
     err.message = `Parse Error: ${err.reason}`;
 }
-    return function makeResponseParser(options) {
+    let allMethods;
+    function makeParser(options, request) {
+        if (request) allMethods ??= platform.native.httpParser('allMethods');
         const insecure = options.httpValidation === 'insecure' ||
             (options.httpValidation === undefined && options.insecureHTTPParser === true);
-        const owner = platform.native.httpParser('create', options.method || 'GET',
+        const owner = platform.native.httpParser(request ? 'createRequest' : 'create', options.method || 'GET',
             options.maxHeaderSize || 0, insecure, options.httpValidation === 'relaxed');
         let message = null, completed = false, failed = false, remainder = null;
         let keepAlive = false, upgraded = false;
@@ -106863,6 +107248,10 @@ function parserOnMessageComplete() {
                 message = incoming;
                 keepAlive = shouldKeepAlive;
                 if (incoming.upgrade) return 2;
+                if (request) {
+                    if (options.onHeaders) options.onHeaders(incoming);
+                    return 0;
+                }
                 if (incoming.statusCode >= 100 && incoming.statusCode < 200 && incoming.statusCode !== 101) {
                     if (options.onInformation) options.onInformation({
                         statusCode: incoming.statusCode, statusMessage: incoming.statusMessage,
@@ -106882,7 +107271,7 @@ function parserOnMessageComplete() {
                 const event = packet.events[i];
                 if (event.type === 0) {
                     ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
-                        event.headers, undefined, undefined, event.status, event.statusMessage,
+                        event.headers, event.request ? event.method : undefined, event.request ? event.url : undefined, event.status, event.statusMessage,
                         event.upgrade, event.keepAlive]);
                 } else if (event.type === 1) {
                     ReflectApply(parserOnBody, parser, [Buffer.from(event.body)]);
@@ -106921,7 +107310,11 @@ function parserOnMessageComplete() {
                 consume(platform.native.httpParser('finish', owner));
             },
         };
-    };
+    }
+    function makeResponseParser(options) { return makeParser(options, false); }
+    makeResponseParser.request = options => makeParser(options, true);
+    makeResponseParser.kIncomingMessage = kIncomingMessage;
+    return makeResponseParser;
 }
 
 // Unchanged public marking guards, with real engine-private object state.
