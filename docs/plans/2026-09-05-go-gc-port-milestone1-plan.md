@@ -6,9 +6,24 @@
 four-byte Go/C pointers and eight-byte scalar alignment. Latest selected Go
 source is
 [`f60530600f70`](https://github.com/kandelo-dev/go/commit/f60530600f70a5ea905a907ac311ec8bd2ae8ac4).
-Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
-Implementation/evaluation checkpoints are pushed to draft PR #1492.
+Latest main `f762afc10308` is merged as `296c883bd`; ABI remains 55.
+Implementation/evaluation checkpoints are tracked in draft PR #1492.
 The full WordPress service goal remains unfinished.
+
+**Platform corrections integrated for combined validation:** the guest TCP
+namespace correction, mmap fresh-page clearing and thread-private startup
+buffer retirement are now on the primary branch. Their separate focused
+gates are recorded below. Combined final-image, memory/lifecycle and
+performance validation remain open; integration does not complete those
+gates. The main merge retains both Vite dependency-cache isolation and
+main's new partial-image plugin. The plugin's five unit tests pass. The
+inventory check exposes two newly merged, unclassified tests; they are
+now classified as prepared-product and source-only according to their
+actual inputs.
+The exact inventory now covers all 667 files. Shell-selection and
+registry checks pass all 12 cases with no skips. This invocation also
+performs normal SDK fixture preparation, so the concurrent browser run
+must not be described as having an entirely idle machine throughout.
 
 **Image build stopped at input drift, not compilation:** job
 `wordpress-wasm32-final-1107-054136-cf6a` terminates after 5h43m. Shell
@@ -35,12 +50,27 @@ observations under build load do not establish a stable reduction. Node
 RSS overlaps the exploratory baseline observations, so no Node improvement
 is established.
 
-The expanded browser run has 298 passes and two outer two-minute timeouts
+The first expanded browser run has 298 passes and two outer two-minute timeouts
 in the full os.Root sweep (Firefox and WebKit), zero skips/flakes. Separate
 fresh Firefox invocations of that exact fixture pass on unchanged and
 experimental hosts in 87.0s and 88.7s overall, respectively. Those focused
-passes do not replace the mixed full result. Keep the candidate isolated
-pending a coherent full gate and final memory/lifecycle measurements.
+passes do not replace the mixed full result. A fresh 300-case browser run
+is now running with both expensive builds terminal, without increasing
+the timeout. It uses the same isolated host implementation and selected
+fixtures. Its result and final memory/lifecycle measurements remain open.
+
+**Benchmark baseline preparation stopped at missing SDK prerequisites:**
+the separate clean main checkout completed its SDK cores, kernel, rootfs
+and host preparation. Its full product build then reports 146 successful
+nodes, 12 failures and five blocked nodes. Failed graphics consumers lack
+normal sysroot DRI/GL archives; ffmpeg rejects its SDL link probe. Its
+missing `stdbit.h` message belongs to an optional configure probe and is
+not established as the cause of that failure.
+This is incomplete baseline preparation, not evidence of a Go regression.
+The next attempt must provision the baseline's own complete SDK through
+normal bootstrap, preserving the failed report and cached successes.
+That checkout has now advanced cleanly to `f762afc10308`; no benchmark
+timings have run. Heavy preparation waits for the browser run to finish.
 
 **Pthread fork regressions refreshed:** both nested and concurrent pthread
 fork fixtures are compiled through the normal SDK fixture helper, fork
@@ -71,10 +101,11 @@ normal requests/shutdown. Its WebContent RSS is 7,640,170,496 bytes and
 vmmap physical footprint is `5.9G`. This is an instrumented tiny-service
 observation under build load, not WordPress or a stable production bound.
 The large gap remains after proving inexpensive compiled-module transfer.
-Normal thread initialization still structured-clones the complete
-185,049,722-byte source buffer into each thread; source ownership and
-per-instance costs need separate investigation before attributing the
-whole gap to Go or an engine defect.
+The observed baseline structured-clones the complete 185,049,722-byte
+source buffer into each thread. The integrated ownership correction
+retires each thread's private copy after startup. Per-instance costs and
+final WordPress attribution remain open; these observations do not
+attribute the whole gap to Go or an engine defect.
 
 The native sampler now pairs the browser's own launchd PID domain with
 the OS process table. A parent-only attempt misses macOS XPC content
@@ -148,8 +179,8 @@ on this compiled host without native listener-collision messages. The same
 Go programs pass the updated 12-case browser selection on this kernel,
 zero skipped/flaky, in 53.0 seconds. The ABI gate confirms an unchanged
 program digest and consistent snapshot/version; all 663 test files are
-classified. Source and artifacts remain isolated from the primary image
-build until it terminates. Final WordPress and performance gates remain.
+classified. The source is now integrated into the primary branch after
+that image build terminated. Final WordPress and performance gates remain.
 
 Evidence is `.context/offline-egress-listeners/.context/`: the original
 backend exposes three tested IPv4 listeners, the first backend correction

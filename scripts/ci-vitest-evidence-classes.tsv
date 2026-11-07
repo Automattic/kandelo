@@ -323,6 +323,7 @@ host/test/owned-job-reap.test.ts	source-only
 host/test/owned-jobs.test.ts	source-only
 host/test/package-runtime-file.test.ts	prepared-product
 host/test/pango-cairo-smoke.test.ts	prepared-product
+host/test/partial-image.test.ts	prepared-product
 host/test/patch-wasm-for-thread-gc.test.ts	source-only
 host/test/pathconf.test.ts	prepared-product
 host/test/pcm-audio-worklet.test.ts	source-only
@@ -627,6 +628,7 @@ tests/package-system/installed-host-package.test.ts	prepared-product
 tests/package-system/kandelo-build-image.test.ts	prepared-product
 tests/package-system/kernel-test-fixtures.test.ts	prepared-product
 tests/package-system/local-build-wrapper.test.ts	source-only
+tests/package-system/partial-shell-selection.test.ts	source-only
 tests/package-system/playwright-server-policy.test.ts	prepared-product
 tests/package-system/program-resolver-literals.test.ts	prepared-product
 tests/package-system/qtbase-package.test.ts	source-only
