@@ -55,7 +55,9 @@ export class BrowserComputerStore {
       || !Number.isSafeInteger(record.createdAt) || record.createdAt < 0
       || !Number.isSafeInteger(record.lastOpenedAt) || record.lastOpenedAt < record.createdAt
       || (record.retention === "saved" ? record.expiresAt !== null
-        : !Number.isSafeInteger(record.expiresAt) || record.expiresAt! < record.lastOpenedAt)) {
+        : !Number.isSafeInteger(record.expiresAt) || record.expiresAt! < record.lastOpenedAt)
+      || (record.partialImageSha256 !== undefined
+        && (typeof record.partialImageSha256 !== "string" || !/^[0-9a-f]{64}$/.test(record.partialImageSha256)))) {
       throw new Error(`Computer ${id} has invalid metadata`);
     }
     validateBootDescriptor(record.descriptor);
@@ -130,9 +132,13 @@ export class BrowserComputerStore {
     });
   }
 
-  update(id: string, change: { title?: string; retention?: "saved"; opened?: boolean; profileId?: string }): Promise<StoredComputer> {
+  update(id: string, change: { title?: string; retention?: "saved"; opened?: boolean; profileId?: string; partialImageSha256?: string }): Promise<StoredComputer> {
     return this.locked(async () => {
       const record = await this.readUnlocked(id);
+      if (change.partialImageSha256 !== undefined) {
+        if (!/^[0-9a-f]{64}$/.test(change.partialImageSha256)) throw new Error("Invalid partial image digest");
+        record.partialImageSha256 = change.partialImageSha256;
+      }
       if (change.profileId !== undefined) {
         if (typeof change.profileId !== "string" || !change.profileId || change.profileId.length > 128) throw new Error("Invalid computer profile ID");
         if (record.filesystemProfileId === undefined) record.filesystemProfileId = record.profileId;
@@ -161,6 +167,21 @@ export class BrowserComputerStore {
     const directory = await browserComputerDirectory(id, false);
     try { await directory.removeEntry("provisioning"); }
     catch (error) { if (!missing(error)) throw error; }
+  }
+
+  /**
+   * Discard a computer's saved filesystem so its next boot starts from its
+   * image again, keeping the computer itself. The caller must hold the
+   * computer's persistence runtime lease, as a booting computer does.
+   */
+  resetFilesystem(id: string): Promise<void> {
+    assertBrowserComputerId(id);
+    return this.locked(async () => {
+      const directory = await browserComputerDirectory(id, false);
+      await directory.getDirectoryHandle("provisioning", { create: true });
+      try { await directory.removeEntry("filesystem", { recursive: true }); }
+      catch (error) { if (!missing(error)) throw error; }
+    });
   }
 
   remove(id: string): Promise<void> {

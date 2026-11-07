@@ -36,6 +36,12 @@ export interface StoredComputer {
   createdAt: number;
   lastOpenedAt: number;
   expiresAt: number | null;
+  /**
+   * For a computer made from a worktree's partial image (a development build,
+   * `./run.sh partial`): the build its saved filesystem was copied from. A
+   * different build resets the filesystem instead of booting on stale state.
+   */
+  partialImageSha256?: string;
 }
 
 export interface ComputerLibrarySnapshot {

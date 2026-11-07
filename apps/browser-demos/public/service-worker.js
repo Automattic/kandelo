@@ -1423,6 +1423,11 @@ if (typeof window !== "undefined") {
     return match !== null && match[1] === match[3];
   }
 
+  function isPartialImageRequest(url) {
+    return url.origin === self.location.origin &&
+      url.pathname.startsWith(SCOPE_PATH + "@kandelo-partial/");
+  }
+
   function isScopedLazyVfsRequest(request, url) {
     return request.method === "GET" &&
       request.mode !== "navigate" &&
@@ -1991,6 +1996,15 @@ if (typeof window !== "undefined") {
     // owns and notifies viewers. There is no navigation-branch teardown here:
     // event.clientId is the empty string for a navigation request, so keying a
     // teardown off it never matched an owning client.
+
+    // A worktree's partial image (`./run.sh partial`, dev server only) is
+    // rebuilt in place at one URL, so it must never be served from a cache:
+    // straight to the network, never into Cache Storage, before any other
+    // route could cache it. vite/dev-partial-image.ts answers it no-store.
+    if (isPartialImageRequest(url)) {
+      event.respondWith(fetch(event.request, { cache: "no-store" }));
+      return;
+    }
 
     // Group assets have an immutable deployment-local identity. Cache only
     // their complete native responses before bridge/proxy/header rewriting.

@@ -9,6 +9,7 @@ import {
   galleryItemUrl,
   readKandeloBootQuery,
   vfsImageUrlFromDescriptor,
+  galleryItemKey,
 } from "../url-state";
 import { galleryItemMatchesCurrent } from "./gallery-current";
 import { encodeBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
@@ -75,10 +76,10 @@ export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare, compact = f
     try {
       const url = await shareUrlForGalleryItem(item, currentDescriptor);
       await writeClipboardText(url);
-      setCopyState({ itemId: item.id, status: "copied" });
+      setCopyState({ itemId: galleryItemKey(item), status: "copied" });
     } catch (err) {
       console.warn("Could not copy gallery URL:", err);
-      setCopyState({ itemId: item.id, status: "error" });
+      setCopyState({ itemId: galleryItemKey(item), status: "error" });
     }
 
     if (copyResetTimer.current !== null) {
@@ -133,7 +134,7 @@ export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare, compact = f
             <tbody>
               {filtered.map((item) => (
                 <GalleryRow
-                  key={item.id}
+                  key={galleryItemKey(item)}
                   item={item}
                   current={galleryItemMatchesCurrent(
                     item,
@@ -141,12 +142,12 @@ export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare, compact = f
                     currentVfsImageUrl,
                     requestedProfileId,
                   )}
-                  descriptionExpanded={expandedDescriptions.has(item.id)}
-                  copyStatus={copyState?.itemId === item.id ? copyState.status : null}
+                  descriptionExpanded={expandedDescriptions.has(galleryItemKey(item))}
+                  copyStatus={copyState?.itemId === galleryItemKey(item) ? copyState.status : null}
                   onLaunch={() => onLaunch(item)}
                   onShare={onShare ? () => onShare(item) : undefined}
                   onCopyShareUrl={() => copyGalleryUrl(item)}
-                  onToggleDescription={() => toggleDescription(item.id)}
+                  onToggleDescription={() => toggleDescription(galleryItemKey(item))}
                 />
               ))}
             </tbody>
@@ -201,7 +202,7 @@ const GalleryRow: React.FC<{
       <td className="kgal-description-cell">
         <div
           className={`kgal-description${descriptionExpanded ? " is-expanded" : ""}`}
-          id={`kgal-desc-${item.id}`}
+          id={`kgal-desc-${galleryItemKey(item)}`}
         >
           {item.summary}
         </div>
@@ -210,7 +211,7 @@ const GalleryRow: React.FC<{
             type="button"
             className="kgal-description-toggle"
             aria-expanded={descriptionExpanded}
-            aria-controls={`kgal-desc-${item.id}`}
+            aria-controls={`kgal-desc-${galleryItemKey(item)}`}
             onClick={(event) => {
               event.stopPropagation();
               onToggleDescription();

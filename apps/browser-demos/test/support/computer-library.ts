@@ -15,7 +15,9 @@ export async function configureNewComputer(page: Page, profileId: string, title?
   await page.getByRole("button", { name: "Library", exact: true }).click();
   await page.getByRole("button", { name: "+ New computer", exact: true }).click();
   await page.getByRole("searchbox", { name: "Find starting computers" }).fill(profileId);
-  const image = page.locator("[data-image-id]");
+  // A worktree's partial image (`./run.sh partial`) is listed too; these
+  // helpers start from the canonical images.
+  const image = page.locator('[data-image-id]:not([data-image-id^="partial-"])');
   await expect(image).toHaveCount(1);
   await image.getByRole("button").click();
   await page.getByRole("combobox", { name: "Boot profile", exact: true }).selectOption(profileId);

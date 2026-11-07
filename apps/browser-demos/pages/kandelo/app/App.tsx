@@ -1,5 +1,5 @@
 import { type ThemeFamily, type ResolvedThemeMode, type ThemeMode, type ThemePreference, type StoredThemePreference, THEME_STORAGE_KEY, THEME_STORAGE_VERSION, readThemePreference, getSystemThemeMode, applyTheme } from "./theme";
-import activityClientImageUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
+import { CANONICAL_SHELL_IMAGE_URL } from "../kernel-host/canonical-shell-image";
 // Top-level Kandelo app. The machine remains the primary canvas; the dock
 // switches machine views and opens exploratory panes for gallery and overlays.
 
@@ -466,7 +466,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     assertCurrent();
     } finally { activityTransition.current = false; }
   };
-  const packageSessions = usePackageSessions(host, networkSession, launchActivity, activityClientImageUrl);
+  const packageSessions = usePackageSessions(host, networkSession, launchActivity, CANONICAL_SHELL_IMAGE_URL ?? undefined);
 
   // A program in the machine asked for a terminal running a command (a
   // dropped ROM's handler does, through kandelo-terminal). It opens as an

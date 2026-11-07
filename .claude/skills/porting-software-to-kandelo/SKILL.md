@@ -73,6 +73,38 @@ with "package registry changed while generating program-packages.json;
 retry from one stable registry snapshot", even when every node built.
 Stop the build, make the edit, and start it again.
 
+### Try it in a machine: a partial image, by default
+
+Unless the user asked for the full build (or a canonical image by name),
+port and test against a partial image, not the whole shell. **Tell the user
+before you build**, in one sentence, for example: "I'll test this on a
+partial shell (the rootfs base plus <pkg>) rather than building the whole
+shell; say if you want the full build." Announce and proceed; do not wait
+for permission, and do not switch silently. When to use the full build
+instead, and what the final report must say: `docs/agent-guidance/packages-and-builds.md`
+"Partial images are development builds".
+
+Once the package builds, put
+it in the canonical shell's contract (its role in
+`packages/registry/shell/source-rootfs-shell-dependencies.json`, the same
+`name@version` in `packages/registry/shell/package.toml` `depends_on`, and
+its entry in the composer table that installs it: `SHELL_LAZY_BINARY_SPECS`
+or `SHELL_LAZY_ARCHIVE_SPECS`), then compose a shell carrying only the
+rootfs base and your package:
+
+```bash
+./run.sh partial shell <pkg> [<pkg>...]   # --with-tests runs packages/registry/<pkg>/test/
+./run.sh browser --partial                # its own gallery machine; no full local-build
+```
+
+The image lands in `local-binaries/partial/`; its output names the
+activities it kept and the packages each left-out activity needs. It is a
+development build: never cached, not evidence for the canonical image. Build
+the canonical shell (`./run.sh local-build`) once, as the integration check
+before the PR, and say in the final report which partial image the evidence
+came from and whether the canonical build ran. Details:
+`docs/package-management.md` "Partial images".
+
 When a build fails, fix the first error, not the last: later errors and `BLOCKED` packages are usually fallout. Search the log (`rg -n`) and read around the hit rather than reading it whole. The resolver deletes the work directory on failure, so `config.log` is gone; to see it, re-run configure by hand in a scratch directory.
 
 A recipe that builds inside Kandelo runs its compiles in the guest, so
