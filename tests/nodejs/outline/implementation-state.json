@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T22:16:08.427592+00:00",
+  "updatedAt": "2026-11-07T22:26:03.774800+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "57003dd2dae2eec783e93762f10481809d0cad84f33e4e39abcc58391bf6d569",
+    "tests/nodejs/outline/status-by-family.md": "971a5404874dde340381fe20e0b4e0e93a7fa8ad9031a53bf4275bce029cc297",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -2566,7 +2566,8 @@
     "third_party/node-core/clone-config-forwarding.md": "e84bde8ac998b5e79157e603d74751c5f9a3373ae7195045b1d98bc69f312e7e",
     "third_party/node-core/tests/clone-config-forwarding/control.cjs": "8737b632a8d22ed4ae625865274734d5f78faa3f14290620a728a463bb35185d",
     "tests/nodejs/outline/clone-configuration-forwarding-finding-progress.json": "1e5d37993ef89df67bedc001be820335988218a65930b2a4064dabee507f93f8",
-    "tests/nodejs/outline/clone-configuration-forwarding-integration.md": "3ac9d83a15e728fa445b7d2b2a810edd46ffb15f03bf6cecbfb90b6bfbafca50"
+    "tests/nodejs/outline/clone-configuration-forwarding-integration.md": "3ac9d83a15e728fa445b7d2b2a810edd46ffb15f03bf6cecbfb90b6bfbafca50",
+    "tests/nodejs/outline/engine239-build-result.json": "f919c792036f879ad3f41eef7ac418634b07adde3c9edea99d885dd0c55a9fed"
   },
   "changes": [
     {
@@ -50305,11 +50306,11 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/clone-configuration-forwarding239-20261107T221610Z.tar.gz",
-    "sha256": "050e1a2942e7af15b9788325a2289af9d678098bdeaabc8ba1480e0028d20ac0",
-    "bytes": 18080587,
-    "scope": "Source239 actual full curated/native forwarding boundary; exact source/component evidence and preserved guest failure. Zero finding closure or guest conformance.",
-    "stateFileNote": "Archived state precedes snapshot reference injection"
+    "path": ".context/node26-implementation-snapshots/engine239-preflight-failed-20261107T222603800833Z.tar.gz",
+    "sha256": "fb966ee961ce00cb0bb6b4aacdf08ea0e25ece0b8fd10c48543d2aaef9b752f9",
+    "bytes": 13790259,
+    "scope": "Source239 actual terminal/build accounting and unchanged source/audit/finding identities. Prior238 failures preserved; no new guest execution, API closure or four-host conformance.",
+    "stateFileNote": "Archived state precedes snapshot-reference injection. No239Wasm was built by this invocation; accepted238Wasm remains separately retained under its unchanged historical receipt."
   },
   "currentScopedStaticChecks": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -52803,14 +52804,14 @@
   },
   "nativeCompilationAccountingThisTurn": {
     "acceptedEngineBuilds": 0,
+    "guestEngineBuildAttempts": 0,
     "guestEngineBuildFailures": 0,
-    "guestPackageAttempts": 0,
-    "guestDependencyCompilations": 0,
-    "kernelWasmCompilations": 0,
     "nativeHelperCompileAttempts": 0,
     "nativeHelperCompileFailures": 0,
+    "guestDependencyCompilations": 0,
+    "kernelWasmCompilations": 0,
     "productRebuilds": 0,
-    "scope": "No root, producer helper, guest engine, package or product compilation. Existing total310 remains; accepted238 artifact retains historical startup failure."
+    "scope": "Actual raw Cargo fresh:false completed targets plus failed compiler targets; one selected normal engine package attempt only when real recipe-entry evidence and terminal prove it. Internal engine TUs/Rust archive are raw-log detail, not separate package builds. Preflight failure adds zero guest attempts."
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -60785,6 +60786,13 @@
       "bytes": 14044683,
       "scope": "Accepted source238 normal engine compile/cache evidence and unchanged source/audit/finding identities. Maintenance preserved payloads; no guest execution, API closure or four-host conformance.",
       "stateFileNote": "Archived state precedes snapshot-reference injection. Exact Wasm is separately retained and hashed by engine238 terminal receipt."
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/clone-configuration-forwarding239-20261107T221610Z.tar.gz",
+      "sha256": "050e1a2942e7af15b9788325a2289af9d678098bdeaabc8ba1480e0028d20ac0",
+      "bytes": 18080587,
+      "scope": "Source239 actual full curated/native forwarding boundary; exact source/component evidence and preserved guest failure. Zero finding closure or guest conformance.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
   "processLifetimeImplementation": {
@@ -65325,6 +65333,18 @@
       "kernelWasmCompilations": 0,
       "productRebuilds": 0,
       "scope": "Actual raw Cargo fresh:false completed targets plus failed compiler targets; one selected normal engine package attempt only when real recipe-entry evidence and terminal prove it. Internal engine TUs/Rust archive are raw-log detail, not separate package builds. Preflight failure adds zero guest attempts."
+    },
+    {
+      "at": "2026-11-07T22:26:03.068834+00:00",
+      "acceptedEngineBuilds": 0,
+      "guestEngineBuildFailures": 0,
+      "guestPackageAttempts": 0,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "nativeHelperCompileAttempts": 0,
+      "nativeHelperCompileFailures": 0,
+      "productRebuilds": 0,
+      "scope": "No root, producer helper, guest engine, package or product compilation. Existing total310 remains; accepted238 artifact retains historical startup failure."
     }
   ],
   "cryptoKdfImplementation": {
@@ -132615,6 +132635,11 @@
       "report": "tests/nodejs/outline/engine238-build-result.json",
       "sha256": "69b645fd41b997596410227c7a58f800e3c71cae4bce047ff7ce43dca01170a2",
       "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior228 failures and source229 correction remain unchanged."
+    },
+    {
+      "report": "tests/nodejs/outline/engine239-build-result.json",
+      "sha256": "f919c792036f879ad3f41eef7ac418634b07adde3c9edea99d885dd0c55a9fed",
+      "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior238 build and three guest bootstrap failures remain unchanged and nonpassing."
     }
   ],
   "engine228PreflightR1": {
@@ -133642,5 +133667,14 @@
     "individualApiClosure": false,
     "implementationComplete": false,
     "acceptedPlatformLimits": []
+  },
+  "engine239TerminalResult": {
+    "report": "tests/nodejs/outline/engine239-build-result.json",
+    "sha256": "f919c792036f879ad3f41eef7ac418634b07adde3c9edea99d885dd0c55a9fed",
+    "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior238 build and three guest bootstrap failures remain unchanged and nonpassing.",
+    "jobId": "node26-engine239-1107-171715-56ac",
+    "guestEngineAttempted": false,
+    "acceptedArtifact": false,
+    "evidenceDirectory": ".context/node26-engine239-terminal"
   }
 }
