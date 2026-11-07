@@ -77,6 +77,13 @@ sha256 = "ccc69cada05983e6c2dac8c0962b548c437b4c96c00ea41b0e130fc128671391"
 role = "runtime"
 materialization = "embedded"
 
+[[software.archive]]
+id = "wordpress-super-cache"
+url = "https://downloads.wordpress.org/plugin/wp-super-cache.3.1.5.zip"
+sha256 = "5a1af59e8a8289083de64d28ded9fb1dfb56ee996d4a84d3ed1f76c5f2224eb6"
+role = "runtime"
+materialization = "embedded"
+
 [[mounts]]
 path = "/"
 source = "built-image"

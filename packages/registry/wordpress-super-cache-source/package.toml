@@ -1,0 +1,12 @@
+kind = "source"
+name = "wordpress-super-cache-source"
+version = "3.1.5"
+
+[source]
+url = "https://downloads.wordpress.org/plugin/wp-super-cache.3.1.5.zip"
+sha256 = "5a1af59e8a8289083de64d28ded9fb1dfb56ee996d4a84d3ed1f76c5f2224eb6"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://wordpress.org/plugins/wp-super-cache/"

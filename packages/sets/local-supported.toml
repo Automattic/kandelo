@@ -18,6 +18,7 @@ dependency_only = [
   "sqlite-amalgamation-source",
   "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
+  "wordpress-super-cache-source",
 ]
 registry_non_roots = []
 

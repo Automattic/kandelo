@@ -387,6 +387,15 @@ Build requirements: `wasm32posix-cc` SDK. The PHP build script automatically bui
 
 #### wordpress-stack
 
+The WordPress image includes unchanged WP Super Cache 3.1.5 as an
+initially inactive plugin. Its pinned source uses the normal resolver
+and image pipeline. Cache activation, expiry, authenticated bypass and
+edit invalidation still require validation before visitor-cache results
+can be reported. The runtime comparison below uses the inactive state;
+cache-enabled measurements must record their WordPress settings and
+report their results separately. This plugin is a different cache from
+[FrankenWP's Sidekick module](https://github.com/StephenMiracle/frankenwp).
+
 `benchmarks/wordpress-stack.ts` compares the preinstalled WordPress nginx/PHP-FPM
 and FrankenPHP classic services, or FrankenPHP+Caddy with
 `--alternative=caddy`, from the **same** resolver-selected

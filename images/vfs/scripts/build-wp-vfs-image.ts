@@ -64,8 +64,10 @@ import { preinstallWordPressSqlite } from "./wordpress-preinstall";
 import {
   copyWordPressCoreSource,
   materializeWordPressSqlitePlugin,
+  materializeWordPressSuperCache,
   resolveWordPressCoreSource,
   resolveWordPressSqlitePluginSource,
+  resolveWordPressSuperCacheSource,
 } from "./wordpress-source-layout";
 
 const REPO_ROOT = findRepoRoot();
@@ -367,6 +369,7 @@ export interface WordPressVfsImageBuildInputs {
   shellImage?: Uint8Array;
   wordpressDirectory: string;
   sqliteDirectory: string;
+  superCacheDirectory: string;
   nginx: Uint8Array;
   phpFpm: Uint8Array;
   frankenphpClassic: Uint8Array;
@@ -480,6 +483,11 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
   );
   console.log(`  SQLite plugin: ${sqliteCount} files`);
   wpCount += sqliteCount;
+  // Ship the upstream plugin inactive. Runtime and visitor-cache comparisons
+  // must select and record ordinary WordPress activation/settings separately.
+  const cacheCount = materializeWordPressSuperCache(fs, inputs.superCacheDirectory);
+  console.log(`  WP Super Cache plugin: ${cacheCount} unchanged files`);
+  wpCount += cacheCount;
   ensureWritableByPhpFpm(fs, "/srv/www/html/wp-content/uploads");
 
   // Drop-in db.php → routes WP_DB_HOST to the SQLite plugin instead of
@@ -536,6 +544,7 @@ async function main(): Promise<void> {
       : new Uint8Array(readFileSync(join(shellRoot, "shell.vfs.zst"))),
     wordpressDirectory: resolveWordPressCoreSource(REPO_ROOT),
     sqliteDirectory: resolveWordPressSqlitePluginSource(REPO_ROOT),
+    superCacheDirectory: resolveWordPressSuperCacheSource(REPO_ROOT),
     nginx: new Uint8Array(readFileSync(nginxRoot === undefined
       ? resolveBinary("programs/nginx.wasm")
       : join(nginxRoot, "nginx.wasm"))),

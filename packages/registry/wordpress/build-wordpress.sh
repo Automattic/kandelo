@@ -16,6 +16,10 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
             wordpress-sqlite-integration-source
     )"
     export WORDPRESS_SQLITE_SOURCE_DIR
+    WORDPRESS_SUPER_CACHE_SOURCE_DIR="$(
+        kandelo_package_source_dependency_dir wordpress-super-cache-source
+    )"
+    export WORDPRESS_SUPER_CACHE_SOURCE_DIR
 fi
 
 # Resolver builds receive the verified WordPress and SQLite plugin sources;

@@ -17,6 +17,7 @@ depends_on = [
     "msmtpd@1.8.32",
     "kernel@0.1.0",
     "wordpress-sqlite-integration-source@2.1.16",
+    "wordpress-super-cache-source@3.1.5",
     "service-activity-tools@0.1.0",
 ]
 
