@@ -215,7 +215,7 @@ The end-to-end integration test for the whole syslog layer is then: `logger -t t
 
 `/dev/console` is currently aliased to `/dev/null` (`crates/runtime-core/src/syscalls.rs:267`), so console writes are discarded. It is in scope here because it is musl's `LOG_CONS` fallback: with no daemon running, musl's documented escape hatch currently leads to the bit bucket.
 
-It becomes a real device that writes to the machine's console. This is a new `VirtualDevice` variant and therefore rides the same ABI bump.
+It becomes a real device that writes to the machine's console. This needs a new `VirtualDevice` variant, which — contrary to an earlier draft of this spec — is **not** ABI surface: the snapshot records nothing about `VirtualDevice`, its `host_handle` sentinels, or the devfs entry list, so no bump and no snapshot regeneration follow from it.
 
 **Flow is one-way, console-ward.** Kernel ring records are echoed *to* the console, the way `printk` writes both the ring and the console. Writes arriving *at* `/dev/console` from userspace reach the console only and never enter the ring — routing them into it would be userspace injection by a second path, contradicting the `EACCES` rule above and ending the guarantee that every ring record is kernel-sourced. This also matches Linux, where `/dev/console` writes do not appear in `dmesg`.
 
