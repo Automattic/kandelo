@@ -829,6 +829,18 @@ impl ProcessTable {
         self.remove_process_inner(pid, true, io)
     }
 
+    /// Make the next allocation hand out `pid` again, so a test can observe
+    /// what a process that reuses a departed pid does.
+    ///
+    /// WHY: `allocate_task_id` only ever moves `next_task_id` forward, so a
+    /// pid is reused in practice after the sequence wraps at `MAX_TASK_ID` --
+    /// reachable on a long-lived machine, but not constructible in a test.
+    /// Nothing outside tests may rewind identity allocation.
+    #[cfg(test)]
+    pub fn force_next_task_id(&mut self, pid: u32) {
+        self.next_task_id = pid;
+    }
+
     #[cfg(test)]
     pub fn remove_process(&mut self, pid: u32) -> Option<RemoveProcessResult> {
         let mut io = CollectedRemovalIo::default();

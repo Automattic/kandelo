@@ -43803,6 +43803,87 @@ impl HostIO for NetMock {
         }
 
         #[test]
+        /// Slot reuse is one route to a stale association; a reused pid is the
+        /// other, and `endpoint_id` is what refuses both. Here pid, socket
+        /// slot and pathname all match what the sender recorded, so endpoint
+        /// identity is the only thing left to tell the endpoints apart.
+        fn a_departed_peer_whose_pid_was_reused_is_refused() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let mut release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let path = b"/tmp/xp-dgram-pid-reuse.sock";
+            let (_recv_fd, recv_addr) =
+                bind_dgram_in(&mut table, &mut host, receiver_pid, path);
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+            cross_process_unix_dgram_connect(&mut table, sender_pid, &mut host, send_fd, &recv_addr)
+                .unwrap();
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table, sender_pid, &mut host, send_fd, b"one", 0, None,
+                )
+                .unwrap(),
+                3,
+            );
+
+            // The daemon dies and a new process comes up with its pid.
+            table.remove_process(receiver_pid).unwrap();
+            table.force_next_task_id(receiver_pid);
+            let reborn_pid = table.create_process().unwrap();
+            assert_eq!(
+                reborn_pid, receiver_pid,
+                "the test needs the pid actually reused",
+            );
+            release.also(reborn_pid);
+
+            // A pathname socket's name outlives its owner until `unlink`, as
+            // POSIX requires, so the replacement must clear it first or bind
+            // reports EADDRINUSE. Every real syslog daemon does exactly this
+            // (sysklogd's src/socket.c unlinks before bind), so model it
+            // rather than letting the stale name decide the test.
+            unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(path);
+
+            // It binds the same name, and its first socket lands in the slot
+            // the old one freed.
+            let (_reborn_fd, reborn_addr) =
+                bind_dgram_in(&mut table, &mut host, reborn_pid, path);
+
+            // The recorded association named a socket, not a pid and slot.
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table, sender_pid, &mut host, send_fd, b"two", 0, None,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+            // Nothing was delivered to the replacement by that refused send.
+            assert_eq!(
+                receive(&mut table, &mut host, reborn_pid, _reborn_fd).unwrap_err(),
+                Errno::EAGAIN,
+            );
+            // Addressing the replacement by name is a fresh resolution, so a
+            // restarted daemon is reachable to a sender that re-addresses it.
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"three",
+                    0,
+                    Some(&reborn_addr),
+                )
+                .unwrap(),
+                5,
+            );
+            assert_eq!(
+                receive(&mut table, &mut host, reborn_pid, _reborn_fd).unwrap(),
+                b"three".to_vec(),
+            );
+        }
+
+        #[test]
         fn the_peer_exiting_makes_further_sends_fail_truthfully() {
             let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let (mut table, receiver_pid, sender_pid) = two_process_table();
