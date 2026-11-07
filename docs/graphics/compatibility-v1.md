@@ -26572,3 +26572,59 @@ Volume free20.126→26.686GB is qualified by APFS/concurrent activity. Release,
 source, products and evidence remain. Canonical R688 collection again removes
 0bytes under a foreign build's lock;19.9GiB dry-plan space is not reclaimed.
 Exact preflight/plan/removed ledger/results remain in R683.
+
+
+### Current normal components and build-space protection, 2026-11-07
+
+Normal job `graphics-normal-current-r691-1107-044900-3e43` passes3m51s
+on committed6d534846427447d1d4377e77d49066779c5d6c01: own release xtask,
+SDK32/64, kernel, host, libwayland and the actual generated ABI check.
+All8,471 frozen source files remain unchanged;76 products are hashed in
+R691's product-manifest.json. This establishes normal archives for the new
+raw/session/generation source, not linked application execution, a complete
+image or B1 acceptance. The public6271 preview remains unchanged.
+
+Fresh read-only R697 uses immutable copies of that normal kernel/image writer
+and473 unchanged committed source paths. Actual Node and Chromium/Firefox/
+WebKit controls pass12s: a genuinely stale service-worker-cached declared body
+is rejected by native size/digest admission with EIO, no materialization or
+automatic retry, and a persistent attributed production error. A deliberate
+read replaces the exact cache body with verified bytes; undeclared optional
+font absence remains ordinary ENOENT without a fetch/error. These mechanisms
+were already fixed by960d889a04 andedc82b3ec3. No new production change is
+warranted. The original retained-profile tofu incident's cause, actual font
+rendering and final desktop/manual acceptance remain unproved. The initial
+Firefox fixture-home provisioning failure is retained, not called a runtime
+fault. Exact trace, artifacts, commands and limits: R697 REPORT.md.
+
+Canonical `./run.sh cache-gc --apply` R692 passes11s and really removes296
+unused generations (reported7.1GiB),594 sidecars and one dead checkout root.
+It retains43 live roots, their referenced generations and age-policy entries;
+all43.2GiB of below-ABI55 protected cache belongs to foreign workspaces and
+is left untouched. R695 independently verifies all295 protected R494/R524
+product hashes and HTTP200 on6271/5693 after collection. APFS clones and
+concurrent workspace growth prevent equating logical sizes with volume gain.
+
+The portable musl probe fix preserves the existing invocation-private EXIT
+cleanup/rollback owner by placing the probe below BUILD_ROOT. It does not
+replace that trap, alter copy flags or add a platform-specific launcher.
+R691's24 filesystem controls prove cleanup/restoration and original exit
+status; R694 root shell/state checks pass3s. Real both-width builds remain
+required. Opt-in local-build disk admission validates a positive reserve
+before SDK preparation, then checks checkout/cache/output available bytes
+before each noncached node child. Unset makes no filesystem query. A refusal
+fails the node and blocks dependents through the existing scheduler; it does
+not reserve capacity or constrain admitted-node peaks, aggregate preparation
+or unrelated processes. R694 passes6 guard and6 scheduler controls plus4
+actual CLI malformed-budget refusals with5,773 frozen inputs unchanged.
+The broader private unprovisioned R694 full run fails1m19s:845 unit
+passes/10 failures, zero ignored/filtered; integration binaries do not run.
+Three existing public-resolver controls enter SDK ensure and fail without a
+stamped core; four catalog/clean/partial/rootfs controls lack the initialized
+musl COPYRIGHT. All5,773 source files remain unchanged. Exact remaining
+failures and commands remain in the full-runs log; this is not a full-xtask
+pass or a guard regression attribution. Full xtask must run on the provisioned
+normal tree. Workspace formatting check also remains failed on existing
+unformatted Rust; no wholesale formatting is applied. New guard module
+formatting, shell syntax and whitespace checks are separate. No ABI or
+functional/performance acceptance requirement changes.

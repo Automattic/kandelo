@@ -552,8 +552,9 @@ fi
 # otherwise need; coupling to them would make this gate fail spuriously on a
 # perfectly good sysroot, which is worse than not gating at all. Truncation is
 # covered by the member check above, which reads the archive itself.
-probe_dir="$(mktemp -d)"
-trap 'rm -rf "$probe_dir"' EXIT
+# WHY: the existing EXIT trap owns private-tree removal and sysroot rollback.
+# Keep the probe inside that tree instead of replacing its cleanup trap.
+probe_dir="$(mktemp -d "$BUILD_ROOT/probe.XXXXXX")"
 cat >"$probe_dir/probe.c" <<'PROBE'
 #include <dirent.h>
 /* WHY <stddef.h>: POSIX requires <dirent.h> to declare DIR, opendir, readdir,
