@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T16:11:43.948065+00:00",
+  "updatedAt": "2026-11-07T16:12:22.160430+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -691,7 +691,7 @@
     "third_party/node-core/upstream/string-decoder/lib/internal/util.js": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951",
     "third_party/node-core/upstream/random-jobs/src/crypto/crypto_util.cc": "78f87b6979b666fb49d74698333e79c40aef549dfa362e3a040caeebf8edde3c",
     "third_party/node-core/native-random.cpp": "c7f6aae50716bfac569e50f921ed0641fe67cdaefa191907a92ac71ee780bba4",
-    "docs/package-management.md": "41492354ae2a72a702ab9721010f1dc92a3859669a440232b126386c2b765555",
+    "docs/package-management.md": "c6653a359e048ed3dc324d758c97df803bfea0d8bdb1c7554ef4b8b913241b9f",
     "third_party/node-core/upstream/string-decoder/src/string_decoder.cc": "34bedf8a3d3b455c89b59fdda5fa622f4c2c9e6eceeb72c7cbfee17e7f62fced",
     "packages/registry/spidermonkey/patches/0072-kandelo-node-random-jobs.patch": "491ae7723c9afc5aba5c3c3abf532fbdaaed3afd3c1ab5074ed789c3a5210188",
     "third_party/node-core/upstream/random-jobs/src/crypto/crypto_random.cc": "03d441e91c8656235de3ec2da735fb92dcb88b0baa4e3a1d97497090b37df9b8",
@@ -941,7 +941,7 @@
     "host/test/fixtures/node-path-metadata-reference.cjs": "b3ac867cf38d6305383f9cb83c2b39b1a738816e6dceda895ed3201f1fa50a67",
     "tests/nodejs/outline/path-metadata-implementation-dependencies.md": "3c02300563b032996d8906bbf4ea7257b983a53cc7714ce642b3af5dd4f9ab42",
     "tests/nodejs/outline/path-metadata-finding-progress.json": "a39dd16478114b475c2a3d348b4d900d4af99d5fd12bdbd2cb02ffc35ebd5941",
-    "docs/browser-support.md": "f05814c38625987d813bf75774025a8d5ed89bd1f86860ef1fbd6a68b12468be",
+    "docs/browser-support.md": "3b1e2021a37447e15446fea6a5970d83aceeae3398b2264be6c304cee13ec1d6",
     "crates/runtime-core/src/hostdir.rs": "f5a9e09fc5dceff205b735de8c549d6e2615f04e09fcf27ba7e7839b925e8593",
     "third_party/node-core/upstream/path-metadata/lib/fs.js": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3",
     "third_party/node-core/upstream/path-metadata/lib/internal/fs/promises.js": "bdb9f9c75509dbaade2ef68e7d8b1c6fff345f356b1459c8969696d48180ea49",
@@ -1710,14 +1710,14 @@
     "apps/browser-demos/deployment-base-vite-config.test.ts": "5ed0c8f712dde6f34103e2d09ff84ff2a4246c495dd3959ba6b9ee571cc73afa",
     "apps/browser-demos/lib/init/service-worker-bridge.test.ts": "9c75332df0c7498e81a39454f4e3327c62c42333f8bd239b13e97881204a0773",
     "apps/browser-demos/lib/init/service-worker-bridge.ts": "8f8a5353238485529b14adb81a38c5b947dd7e53c33431b0173891a5d3328dc3",
-    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "694927ae9d48658ad34468b80550559bf130331eb4fb54a675337b8ed89623c7",
+    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "bd003f68c6d4e5aef8d8b2264e5df8e31a283e2690359afedce7045bc9ab3ad2",
     "apps/browser-demos/test/harper.spec.ts": "76cc98e92799826f76c07c441bb85e66b2dec1191f38115b99d08718bbe63794",
-    "apps/browser-demos/vite.config.ts": "3fa0de51067f2e7160be87a3add1c5b9366cea361504b1a1ad555845b9a2b224",
-    "docs/porting-guide.md": "0a235dbf96c141b584b8719c7816b701d4094c561dc73468b22a87e53455cb16",
+    "apps/browser-demos/vite.config.ts": "619dbf9063b1b80647c5b6bf3d452a4b13189451122f1c9ebe377e95127546ca",
+    "docs/porting-guide.md": "b8b0fbb3c238fbe5378192e3d20f1cfcce5c567942e995fd4d0416988b6f08a6",
     "host/test/harper-smoke.test.ts": "75aa2efd8dc424446e3a85ba8dd3de9eb902b32795b3c54ad77a5e65567caf90",
     "host/test/kernel-scratch-contract.test.ts": "b605c17f538726189c12d4416098710418e8714f8f0987dc39704331e9dac080",
     "host/test/support/harper-lsp-probe.ts": "80c2b91092e14a8928cb121e2f2de7d7410a7ea2ea6cd38e1c9e4e977c71afb0",
-    "images/vfs/scripts/shell-lazy-archives.ts": "0be0e2e904a7b94000a25e96f7d76efe46854fdf4ec81560ab8df110944a9592",
+    "images/vfs/scripts/shell-lazy-archives.ts": "8359cd02078b7a3d1839bd91cb5045a5f28acd2cf87d8cfd32607c81ab9d95a3",
     "packages/registry/harper-browser-bundle/build-harper-browser-bundle.sh": "b8945577b0ef6e38d71fb644d9da578a12bcb00eed2ccaf6db25880ecee9da60",
     "packages/registry/harper-browser-bundle/build.toml": "9580e72fec886b497a7c7723414d66014d43fe2f9d96aee09f0ee6cea81c7950",
     "packages/registry/harper-browser-bundle/package.toml": "d7bbf00a51a8941a293480429929cd7f2df90e46a43971446a9c1ec08a6cf086",
@@ -48202,13 +48202,102 @@
     "Shared callback policy compiles with explicit hook/context/queue boundary adapters and matches real native Node-API/libuv behavior in eight scenarios, with expected termination codes 1/17 retained. SpiderMonkey rooted/context/checkpoint adapter, engine/root-entry patch and changed DNS/FS/codec owners remain uncompiled. Full rejection events/modes/uncaught recovery, weak-reference/zero-ID/VM/worker and complete loop phases remain missing or unvalidated. Native addon loading in the reference does not imply a guest addon implementation."
   ],
   "mainReconciliation": {
-    "at": "2026-11-07T15:02:39.343942+00:00",
-    "fetchedMain": "afeedd583ca5b9169e32a2d316e49d589c0476c4",
+    "at": "2026-11-07T16:12:22.160430+00:00",
+    "fetchedMain": "f762afc103086b6b37ee2cfbb7306be1c1aa707a",
+    "headBefore": "2f33f9e319a407c6c22cce528a62d00fe627e4d3",
+    "mergeCommit": "476bf0b4303ebf0623f06705fc27be7825b5ffa0",
     "mainIsAncestor": true,
-    "action": "Fetched unchanged main; existing branch remains reconciled by ancestry, no merge required. Unrelated local source and separate remainder preserved.",
+    "action": "Normal non-fast-forward merge of partial-image support; six already-owned image/docs inputs updated explicitly, no current compatibility source/pin/test changes. Dirty unrelated leaves remain byte-identical. No runtime/compiler/product validation of merged main claimed.",
+    "protectedIdentityChanges": {
+      "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": {
+        "beforeSha256": "694927ae9d48658ad34468b80550559bf130331eb4fb54a675337b8ed89623c7",
+        "afterSha256": "bd003f68c6d4e5aef8d8b2264e5df8e31a283e2690359afedce7045bc9ab3ad2"
+      },
+      "apps/browser-demos/vite.config.ts": {
+        "beforeSha256": "3fa0de51067f2e7160be87a3add1c5b9366cea361504b1a1ad555845b9a2b224",
+        "afterSha256": "619dbf9063b1b80647c5b6bf3d452a4b13189451122f1c9ebe377e95127546ca"
+      },
+      "docs/browser-support.md": {
+        "beforeSha256": "f05814c38625987d813bf75774025a8d5ed89bd1f86860ef1fbd6a68b12468be",
+        "afterSha256": "3b1e2021a37447e15446fea6a5970d83aceeae3398b2264be6c304cee13ec1d6"
+      },
+      "docs/package-management.md": {
+        "beforeSha256": "41492354ae2a72a702ab9721010f1dc92a3859669a440232b126386c2b765555",
+        "afterSha256": "c6653a359e048ed3dc324d758c97df803bfea0d8bdb1c7554ef4b8b913241b9f"
+      },
+      "docs/porting-guide.md": {
+        "beforeSha256": "0a235dbf96c141b584b8719c7816b701d4094c561dc73468b22a87e53455cb16",
+        "afterSha256": "b8b0fbb3c238fbe5378192e3d20f1cfcce5c567942e995fd4d0416988b6f08a6"
+      },
+      "images/vfs/scripts/shell-lazy-archives.ts": {
+        "beforeSha256": "0be0e2e904a7b94000a25e96f7d76efe46854fdf4ec81560ab8df110944a9592",
+        "afterSha256": "8359cd02078b7a3d1839bd91cb5045a5f28acd2cf87d8cfd32607c81ab9d95a3"
+      }
+    },
+    "changedMainLeaves": {
+      ".claude/skills/porting-software-to-kandelo/SKILL.md": "1d7a217c4eaa10134c70f251c8f8d90988b734bbff36eccac4a589e5363adbb5",
+      "CLAUDE.md": "2e193fb5a0a0189c76ef7098e1223345d9aad469adf66413c674ef6c4286bbb2",
+      "CONTRIBUTING.md": "dc1aed910164f7afd579b153b05df54dcc6edd17178375fc77ee81247ae348e9",
+      "README.md": "6fcbe6b020c10f0bd6e9d61e2866343da2b8425c260ad20187e374750ee43115",
+      "apps/browser-demos/pages/kandelo/app/App.tsx": "b6351ed395673bf42ba1b4a35b2018e9ff2590a12604ea8c4f56190ecb359dc4",
+      "apps/browser-demos/pages/kandelo/app/NetworkPanel.tsx": "dd9c1d86de364d04f5f75e764487f6c1dd2ebfbac155d8a8b085e67ebd4c272b",
+      "apps/browser-demos/pages/kandelo/app/NewMachinePane.tsx": "98c2d3a35b95d93c52060d1ef987863a4deedb8315927b27948074b64f38ed55",
+      "apps/browser-demos/pages/kandelo/app/use-package-sessions.ts": "af7cbfc533a46c66e42802827ec8e488d5595c38f6e1e6b579b5795fbcee2645",
+      "apps/browser-demos/pages/kandelo/kernel-host/canonical-shell-image.ts": "77c19e2b5e05099afd397f07f62ab2790d8dccd8b09674d213d14525ad17e16b",
+      "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "bd003f68c6d4e5aef8d8b2264e5df8e31a283e2690359afedce7045bc9ab3ad2",
+      "apps/browser-demos/pages/kandelo/url-state.ts": "d1f91de69a2504549c0d72623bb0c9fd9b7f79e0de0956426d06d558f4821e3b",
+      "apps/browser-demos/pages/kandelo/views/Gallery.tsx": "5eb4040eedbd0c9e60d1a4cb29fcb7783cd6a7263b4e53f58fe43af729f73268",
+      "apps/browser-demos/public/service-worker.js": "6ded6eb3ee409900d4cbc4bf14ced444d46acb38149151593e0bbc009340f470",
+      "apps/browser-demos/test/partial-image-reset.spec.ts": "98b1a86408c155b0ef04641777e68fb1175fd75f9a36fa07bd69771dac2281fa",
+      "apps/browser-demos/test/partial-image.spec.ts": "d3dc7f9572b36900d7e88507d0def4d0b7f4dfa0834e8c3a3bcace766440b948",
+      "apps/browser-demos/test/support/computer-library.ts": "983cc5dae37b31e6fb18dcb2f67cbfa0d6ca9b78fe0c7c540fe2c163d5aa98b7",
+      "apps/browser-demos/vite.config.ts": "619dbf9063b1b80647c5b6bf3d452a4b13189451122f1c9ebe377e95127546ca",
+      "apps/browser-demos/vite/dev-partial-image.test.ts": "701023736c737a3bc3c1d95a6377d73f47dc5947df45311e598cd457d833ae09",
+      "apps/browser-demos/vite/dev-partial-image.ts": "a949a0f41c8edf447b06a5f5bc16ac737ff94a207952105445ff78f83a14ce7a",
+      "docs/agent-guidance/build-docs-and-prs.md": "575fcdb15745319a015f25f0d86f18cd7c3d21a8ef68ed7c07b4f04bc3785385",
+      "docs/agent-guidance/packages-and-builds.md": "9359db1587a9d9b2d3de75bd62d59781db10f7579692936d827de5f566291d4c",
+      "docs/agent-guidance/validation.md": "79660ca6ece31767fdfa63fe7bb57e7fa1e48e06bddc9b305a2d3e4d04d1a2ae",
+      "docs/browser-support.md": "3b1e2021a37447e15446fea6a5970d83aceeae3398b2264be6c304cee13ec1d6",
+      "docs/package-management.md": "c6653a359e048ed3dc324d758c97df803bfea0d8bdb1c7554ef4b8b913241b9f",
+      "docs/package-sessions.md": "6f0346f3536d175aacd36e28645ba67dd1eb19e27e5fb37308f96c6a4df05fd3",
+      "docs/porting-guide.md": "b8b0fbb3c238fbe5378192e3d20f1cfcce5c567942e995fd4d0416988b6f08a6",
+      "docs/superpowers/plans/2026-11-07-partial-image-builds.md": "8c108aa469c7b8cf13379ccb6dede4efb4ef249faf42e70c2ac151c77f705af0",
+      "docs/superpowers/specs/2026-11-07-partial-image-builds-design.md": "5525c62014b986165a5e41399464d3e43a13bcc5a12edd9b702480d585b16966",
+      "evals/agent-skills/tasks.json": "4ad08181c2bccb0f5d3a7ef492cd8013c0098b42fbce9382a134924a54d5d9fe",
+      "host/test/partial-image.test.ts": "40bd0cc4d085d1aea72a7f26b3b41d8f24e0f66fb053f7409885de5728e35064",
+      "images/vfs/scripts/build-source-rootfs-shell-image.ts": "35f74a98e324284ca3e3b65624fef48de1f6fa4d0202e055886537c0c2dab46b",
+      "images/vfs/scripts/describe-partial-image.ts": "c63994cefbc7486a354066f6f7cd8cca5ddd9cad660771c4c7e49bef1abc1cc8",
+      "images/vfs/scripts/package-session-files.ts": "1e63b27f71acd03091c2356a699e275efe1c95bf7993548196f8fa64dbab9411",
+      "images/vfs/scripts/package-shell-vfs-build.ts": "9080ede726004ba2700c27bf1b513e9128cbf6bce03825683d2647a3f4dc1c82",
+      "images/vfs/scripts/program-originals.ts": "41cb18f1edd80fe237a7d30cc6c0abf0ad8d01ac81e65e457e8664fc785b550d",
+      "images/vfs/scripts/shell-lazy-archives.ts": "8359cd02078b7a3d1839bd91cb5045a5f28acd2cf87d8cfd32607c81ab9d95a3",
+      "images/vfs/scripts/shell-selection.ts": "415745e20bb51ed985031590e8320d512852819443cd308f32c1dfef5e889bbd",
+      "images/vfs/scripts/source-rootfs-shell-overlay.ts": "fde0c0cb51d04f05ad0353a2653115c59679fb7d5863bb333fa4feae08df494d",
+      "packages/registry/shell/build-shell.sh": "aa5a325f6f67ac2b65c4b1086352dfe0e8881915f223a5b3b0a4feb865c8ca84",
+      "packages/registry/shell/source-rootfs-shell-demo-profiles.json": "9dfa9e363c03a86c3e29ccf72f867bdb0a8e5b0dd02c8e49b716f11e0e048838",
+      "packages/registry/shell/source-rootfs-shell-demo.json": "ceabf330a223cf432ca879d86fa8f1b638de950dcc89b73ae0e5168d7bdea46c",
+      "run.sh": "c64ffcfc5289e9d337708170119830d7b1ebaaf9e18b44db665198fe7c770afb",
+      "scripts/check-image-demo-config.ts": "d13a2ac646e2ac3879978271dbc7ed85f630e2280aac4c0c9d4058e5f3989e81",
+      "tests/package-system/partial-shell-selection.test.ts": "e4c0b5ab0086afc565786a623e22ca7baa34378ecab7293979ad336a0b87a0f1",
+      "tools/xtask/src/local_build.rs": "54861ae2e3141a7c947a0fe96a65c7576950a43073e9f267374f585371064a80",
+      "tools/xtask/src/main.rs": "7f05a6898dcdd9f2d03cb0be66361cea7387609564920fee157ac9bc8ecd450f",
+      "tools/xtask/src/partial_image.rs": "d9c2b4307c21365cfec799aa3f799e55ee23050aec0409a71fcf329e3bd69485",
+      "web-libs/kandelo-session/src/browser-computer-store.ts": "6b3c5cb7547b635f8372b3fa4b4b05bcbb6a898beb3b72c1acdfa89c90e1faa4",
+      "web-libs/kandelo-session/src/computer-library.ts": "d2a59ec36b32f93894a67e36e68abca6b4d912707375fcdfeb9712bf5b927379",
+      "web-libs/kandelo-session/src/demo-config.ts": "b832c1c22fa7ee904d37d0b4e906f016290cacc38ae1314e2bbcd213bb5304e5",
+      "web-libs/kandelo-session/test/demo-config.test.ts": "07bbf06981835bff462306829275dc835ef3fe1698342151588dacc42800471c"
+    },
+    "dirtyIdentitiesPreserved": {
+      "apps/browser-demos/test/node-core-compat.spec.ts": "d595f9cc14d5bc836fb1baec855081611e8be96fde76650ad6d8f74675cfc9e3",
+      "host/test/node-core-compat.test.ts": "2425f8e35e947a1f0fce8c60bf546c9368122f677e86468e726e505126fce733",
+      "scripts/nodejs-guest-runner.ts": "27d60d8632ac29d8d3eacc48c1b8b0579519d519b9f42dcc54c60c9677a80009"
+    },
+    "runtimeTests": 0,
+    "compilations": 0,
+    "productRebuilds": 0,
     "evidence": {
-      "report": ".context/node26-decoder220-source-r1/main-reconciliation.json",
-      "sha256": "552ae93997f3510f71ec0ebef5dac796f6abfc4429e2f0f74e1aef16b149a4e2"
+      "report": ".context/node26-main223/report.json",
+      "sha256": "b65a31bd8b4f3092a37827686a8a4a13f0f530129fef6f6fced45e13427b9a37"
     }
   },
   "storageMaintenance": {
@@ -48587,10 +48676,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/finding-overlay222-20261107T161144436988Z.tar.gz",
-    "sha256": "a77078bbef0277a5bf7ec024f1865dae80732f5e529d8452fcddbc5c76afe35f",
-    "bytes": 11647568,
-    "scope": "Current222qualified decoder-state/TTY-publication/Buffer-view finding links. Metadata only; no new runtime/compiler/closure.",
+    "path": ".context/node26-implementation-snapshots/main223-reconciliation-20261107T161222190108Z.tar.gz",
+    "sha256": "6804071cc6862b3ef77b2917ae871109ab751e2b597e0833e565f75f068954b8",
+    "bytes": 11659096,
+    "scope": "Source222 plus reconciled main f762afc partial-image support. Metadata identity accounting, no new runtime/compile/closure.",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -58652,6 +58741,13 @@
       "sha256": "f81dab845a120b94bf4a704e47a1a566ab9fa9f4aa22c51b1877b30aab335c5c",
       "bytes": 37725566,
       "scope": "222actual Buffer JSON/views selection/installer,14native-dependent groups/4unchanged upstream subjects, original failures/independent review; no guest/fullBuffer closure.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/finding-overlay222-20261107T161144436988Z.tar.gz",
+      "sha256": "a77078bbef0277a5bf7ec024f1865dae80732f5e529d8452fcddbc5c76afe35f",
+      "bytes": 11647568,
+      "scope": "Current222qualified decoder-state/TTY-publication/Buffer-view finding links. Metadata only; no new runtime/compiler/closure.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -113685,6 +113781,16 @@
       "evidence": {
         "report": ".context/node26-main-reconcile207.json",
         "sha256": "b2695c4abc7f70dff1edd51939cd93b17d7c9c77bc4d317ac2fcfea71cf0aff8"
+      }
+    },
+    {
+      "at": "2026-11-07T15:02:39.343942+00:00",
+      "fetchedMain": "afeedd583ca5b9169e32a2d316e49d589c0476c4",
+      "mainIsAncestor": true,
+      "action": "Fetched unchanged main; existing branch remains reconciled by ancestry, no merge required. Unrelated local source and separate remainder preserved.",
+      "evidence": {
+        "report": ".context/node26-decoder220-source-r1/main-reconciliation.json",
+        "sha256": "552ae93997f3510f71ec0ebef5dac796f6abfc4429e2f0f74e1aef16b149a4e2"
       }
     }
   ],
