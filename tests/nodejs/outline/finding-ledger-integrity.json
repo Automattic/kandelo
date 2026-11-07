@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T06:44:45.981982+00:00",
-  "sourceHead": "eda35ad147790a5b519224ce7429ac929b91b8d5",
-  "recipeRevision": 191,
+  "at": "2026-11-07T07:32:26.088680+00:00",
+  "sourceHead": "53993982acfa5e479e99537b8dfd84a5a56efce5",
+  "recipeRevision": 193,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 109,
+    "sourceSliceRecords": 111,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 238
+    "findingsWithoutExplicitOrProposedSourceSlice": 236
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,21 +26,22 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 109,
+  "sourceSliceIdentitiesVerified": 111,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "742198d454fa39503a5472fd98cd618b730593ecd6e15f43fbc1387877e63e6e"
+    "sha256": "5ffbeb3bb1791cd6fe09c594aa8a465cacfb7497368977dc559a99c7112b40bc"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "3178e0d156dbb8bbd3747db60e98f98c43599bdf14ac206bbcfbbde0caf6c2ab",
-    "sourceHead": "b960dac57b43373809e3d6039c8fdffd57ff50d6",
+    "sha256": "9945200fa2c1b9ab5c02fe8c035ff02ef48a24984d05db0642a674fb71855c24",
+    "sourceHead": "eda35ad147790a5b519224ce7429ac929b91b8d5",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "captured-terminal-input"
+    "shared-public-constants",
+    "streaming-signature-owner"
   ]
 }

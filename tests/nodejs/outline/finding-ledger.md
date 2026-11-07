@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 109 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 111 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 238 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 236 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -274,3 +274,28 @@ The original strict abort, nine restoration nonpasses, master/backpressure gaps
 and uncompiled guest reactor/realm/GC/fatal/teardown remain explicit. No mode
 fix, outside-runtime defect or platform exclusion is inferred. No finding/family
 closes; accepted173predates191 and all-four-host conformance is unestablished.
+
+## Source192–193 constants and streaming signature overlay
+
+V-012 and legacy V-026 link to one actual SDK/OpenSSL-backed constants owner,
+public lazy initialization and distinct frozen legacy aggregation. C-008/009/015
+link to genuine streaming digest/key/byte/error state and the unchanged public
+Sign/Verify algorithms. These are partial contributions, not API closures.
+
+Constants controls include12module,4key/OS,71RSA and11CLI groups plus unchanged
+aggregate assertions. Initial39affected checks had11failures matching the exact
+source191 baseline; the stale native-Error fixtures were corrected without
+changing assertions, then39passed. Root accidentally overwrote the original
+source192raw broad report. The loss journal, original baseline and separately
+identified exact consumed-source pre-fix replay remain explicit; the replay is
+not the lost original evidence.
+
+Streaming signatures pass52component groups and two unchanged upstream files
+per subject. The conditional OpenSSL CLI interoperability block stays skipped;
+those branches are not passing coverage. One-shot jobs retain a separate native
+ALS/frame component nonpass. Actual JSAPI/GC/realm/fatal/teardown and all-four-host
+conformance remain unestablished; accepted173predates both contributions.
+
+All357lexical IDs,417qualified definitions,52original ranges and19families remain.
+Missing exact source links are unknown dispositions, not a proven bug count.
+No finding/family closes. Overall suites and full product rebuild remain deferred.
