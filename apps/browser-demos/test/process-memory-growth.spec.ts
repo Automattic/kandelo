@@ -80,3 +80,48 @@ for (const ptrWidth of [4, 8] as const) {
     });
   });
 }
+
+for (const pointerWidth of [4, 8] as const) {
+  for (const mode of ["append", "covered", "insufficient"] as const) {
+    test(`shared memory${pointerWidth * 8} handles ${mode} growth from another worker`, async ({ page, baseURL }) => {
+      await page.goto("/trap-signal-test.html");
+      const workerUrl = new URL(`/@fs/${repo}/host/test/fixtures/process-memory-growth-browser-worker.ts`, baseURL!).href;
+      const result = await page.evaluate(async ({ workerUrl, pointerWidth, mode }) => {
+        const maximum = mode === "append" ? 8 : mode === "covered" ? 3 : 2;
+        const memory = new WebAssembly.Memory((pointerWidth === 8
+          ? { initial: 1n, maximum: BigInt(maximum), shared: true, address: "i64" }
+          : { initial: 1, maximum, shared: true }) as unknown as WebAssembly.MemoryDescriptor);
+        const gate = new SharedArrayBuffer(4);
+        const worker = new Worker(workerUrl, { type: "module" });
+        const next = () => new Promise<Record<string, unknown>>((resolveMessage, reject) => {
+          const timer = setTimeout(() => reject(new Error("Worker message timed out")), 10_000);
+          worker.onmessage = event => { clearTimeout(timer); resolveMessage(event.data); };
+          worker.onerror = event => { clearTimeout(timer); reject(new Error(event.message)); };
+        });
+        try {
+          const paused = next();
+          worker.postMessage({ memory, pointerWidth, gate });
+          if ((await paused).type !== "paused") throw new Error("Worker did not reach growth barrier");
+          const completed = next();
+          const pages = mode === "covered" ? 2 : 1;
+          memory.grow((pointerWidth === 8 ? BigInt(pages) : pages) as number);
+          new Uint8Array(memory.buffer, 65_536).fill(0x7e);
+          Atomics.store(new Int32Array(gate), 0, 1);
+          Atomics.notify(new Int32Array(gate), 0);
+          return await completed;
+        } finally {
+          worker.terminate();
+        }
+      }, { workerUrl, pointerWidth, mode });
+      if (mode === "insufficient") {
+        expect(result).toMatchObject({ type: "error", name: "RangeError", bytes: 2 * 65_536 });
+      } else {
+        expect(result).toEqual({
+          type: "result", boundary: mode === "append" ? 2 * 65_536 : null,
+          bytes: (mode === "append" ? 4 : 3) * 65_536,
+          peerByte: 0x7e, freshZero: mode === "append" ? true : null,
+        });
+      }
+    });
+  }
+}
