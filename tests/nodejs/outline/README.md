@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source211 prepares SSL before lookup and retains actual TCP fd/ref/request-close ownership.3 portable native cases pass with34/34/35 required semantic names; actual extracted routing uses an explicit recording-only boundary. New guest JSAPI and complete public TLSWrap/HTTPS remain unvalidated/incomplete.
+See [source scope](retained-tls-parent-integration.md).
+
 Source210 retains actual transfer admission kind through nested discovery/partition while preserving dynamic main-graph behavior and the non-Node append path. Six frozen native observations are reference-only; exact source/replay/style and14 package checks pass. No candidate runtime or compiler ran.
 See [source scope](retained-transfer-kind-integration.md).
 

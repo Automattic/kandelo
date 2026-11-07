@@ -23,7 +23,7 @@ struct KandeloSocketState {
   js::shell::KandeloNativeAsyncState* lifetime = nullptr;
   double id = -1, trigger = -1;
   uint64_t writeSequence = 0;
-  bool connect = false, connectSubmitted = false, writeResource = false;
+  bool connect = false, connectSubmitted = false, connectPreparing = false, writeResource = false;
   int connectError = 0;
   bool retired = false, detached = false, closing = false, socketPublished = false, callbackActive = false;
   kandelo::memory::Allocation allocation{sizeof(KandeloSocketState)};
@@ -186,31 +186,6 @@ static KandeloSocketState* KandeloSocketOwnerState(JSContext* cx, HandleObject o
   }
   return state;
 }
-// Transfer only this actual context-owned TCP descriptor. No numeric fd is
-// borrowed across getter/Promise hooks; the caller roots this real owner.
-static bool KandeloTransferSocketLease(JSContext* cx, HandleObject object,
-                                      kandelo::socket::Lease& recipient) {
-  auto* state = KandeloSocketOwnerState(cx, object);
-  if (!state) return false;
-  RootedObject actual(cx, js::CheckedUnwrapDynamic(object, cx));
-  if (!actual) return false;
-  for (auto* child = gKandeloSocketOwners; child; child = child->next) {
-    if (child->cx != cx || !child->pending ||
-        (!child->write && (!child->connect || child->callbackActive))) continue;
-    const Value parent = JS::GetReservedSlot(*child->pending, SocketParent);
-    if (parent == ObjectValue(*actual)) {
-      JS_ReportErrorASCII(cx, "TCP owner has an active native request"); return false;
-    }
-  }
-  if (!state->socket || state->closing || state->callbackActive || state->delivering || state->write ||
-      !state->socket->TransferTo(recipient)) {
-    JS_ReportErrorASCII(cx, "TCP owner is closed, reading, or cannot transfer its descriptor");
-    return false;
-  }
-  // Source TCP retirement still follows its real queued close/init/destroy
-  // lifecycle; its now-empty descriptor cannot close the TLS recipient's fd.
-  state->BeginClose(); return true;
-}
 static KandeloSocketState* KandeloSocketThis(JSContext* cx, const CallArgs& args) {
   if (!args.thisv().isObject()) { JS_ReportErrorASCII(cx, "Invalid native TCP receiver"); return nullptr; }
   RootedObject owner(cx, js::CheckedUnwrapStatic(&args.thisv().toObject()));
@@ -328,7 +303,7 @@ static bool KandeloSocketRootPending(JSContext* cx, HandleObject owner,
 }
 static void KandeloSocketRetireClosed(JSContext* cx, HandleObject owner,
                                        KandeloSocketState* state) {
-  if (!state->socket || !state->socket->Closed() || state->closing) return;
+  if (!state->socket || !state->socket->Closed() || state->closing || state->socket->HasTransportRequests()) return;
   for (auto* work = gKandeloSocketOwners; work; work = work->next) {
     if (work->cx != cx || !work->pending || (!work->write && !work->connect)) continue;
     RootedObject request(cx, *work->pending);
@@ -405,6 +380,7 @@ static bool KandeloSocketPendingReadStatus(JSContext* cx, unsigned argc, Value* 
 static bool KandeloSocketReadStart(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp); auto* state = KandeloSocketThis(cx, args);
   if (!state) return false;
+  if (state->socket->HasTransport()) { args.rval().setInt32(-EBUSY); return true; }
   RootedObject owner(cx, js::CheckedUnwrapStatic(&args.thisv().toObject()));
   const bool priorRoot = bool(state->pending), priorReading = state->socket->Reading();
   if (!KandeloSocketRootPending(cx, owner, state)) return false;
@@ -713,6 +689,13 @@ static bool KandeloCreateSocketOwner(JSContext* cx, MutableHandleObject result,
   if (state->socket->Closed() || (prior && !state->socket->Adopt(*prior))) { JS_ReportErrorASCII(cx, "TCP descriptor adoption failed"); return false; }
   published = true; result.set(owner); return true;
 }
+// TLS construction needs the real empty TCP resource before DNS/connect.
+static bool KandeloNativeCreateSocketOwner(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  RootedObject owner(cx);
+  if (!KandeloCreateSocketOwner(cx, &owner)) return false;
+  args.rval().setObject(*owner); return true;
+}
 static bool KandeloNativeAdoptSocket(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp); int32_t fd;
   if (!JS::ToInt32(cx, args.get(0), &fd)) return false;
@@ -767,96 +750,122 @@ static bool KandeloNativeConnectSocketOwner(JSContext* cx, unsigned argc, Value*
   if (!args[5].isObject() || !JS::IsCallable(&args[5].toObject())) {
     JS_ReportErrorASCII(cx, "TCP connect requires its actual completion callback"); return false;
   }
-  RootedObject owner(cx); if (!KandeloCreateSocketOwner(cx, &owner)) return false;
-  auto* parentState = KandeloSocketOwnerState(cx, owner); if (!parentState) return false;
-  bool submitted = false;
-  auto closeFailure = mozilla::MakeScopeExit([&] { if (!submitted) parentState->BeginClose(); });
-  auto failed = [&](int error, const char* syscall) {
-    if (!KandeloSocketConnectFailure(cx, owner, error, syscall, args.rval())) return false;
-    submitted = true; return true;
-  };
-  if (port < 0 || port > 65535 || localPort < 0 || localPort > 65535) return failed(EINVAL, "connect");
-  addrinfo hints = {}; hints.ai_family = family == 6 ? AF_INET6 : family == 4 ? AF_INET : AF_UNSPEC;
-  hints.ai_socktype = SOCK_STREAM; hints.ai_flags = AI_NUMERICHOST;
-  addrinfo* target = nullptr;
-  if (getaddrinfo(host.get(), nullptr, &hints, &target) != 0 || !target) {
-    if (target) freeaddrinfo(target); return failed(EINVAL, "connect");
-  }
-  auto freeTarget = mozilla::MakeScopeExit([&] { freeaddrinfo(target); });
-  if (target->ai_family == AF_INET6) reinterpret_cast<sockaddr_in6*>(target->ai_addr)->sin6_port = htons(uint16_t(port));
-  else reinterpret_cast<sockaddr_in*>(target->ai_addr)->sin_port = htons(uint16_t(port));
-  auto ensureDescriptor = [&]() -> int {
-    if (parentState->socket->Closed()) return ECANCELED;
-    if (parentState->socket->Fd() >= 0) return 0;
-    kandelo::socket::Lease lease(socket(target->ai_family, SOCK_STREAM, 0));
-    if (lease.Fd() < 0) return errno;
-    const int flags = fcntl(lease.Fd(), F_GETFL, 0);
-    if (flags < 0 || fcntl(lease.Fd(), F_SETFL, flags | O_NONBLOCK) < 0 ||
-        fcntl(lease.Fd(), F_SETFD, FD_CLOEXEC) < 0) return errno;
-    if (parentState->socket->Closed()) return ECANCELED;
-    return parentState->socket->Adopt(lease) ? 0 : errno;
-  };
   const bool hasLocal = !args[3].isNullOrUndefined();
-  if (hasLocal || localPort) {
-    const int error = ensureDescriptor(); if (error) return failed(error, "bind");
-    const int fd = parentState->socket->Fd(), reuse = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) return failed(errno, "bind");
-    const char* name = target->ai_family == AF_INET6 ? "::" : "0.0.0.0";
-    if (hasLocal) { if (!KandeloGetString(cx, args[3], &local)) return false; name = local.get(); }
-    addrinfo localHints = hints; localHints.ai_family = target->ai_family;
-    addrinfo* bindAddress = nullptr;
-    if (getaddrinfo(name, nullptr, &localHints, &bindAddress) != 0 || !bindAddress) {
-      if (bindAddress) freeaddrinfo(bindAddress); return failed(EINVAL, "bind");
-    }
-    auto freeLocal = mozilla::MakeScopeExit([&] { freeaddrinfo(bindAddress); });
-    if (bindAddress->ai_family == AF_INET6) reinterpret_cast<sockaddr_in6*>(bindAddress->ai_addr)->sin6_port = htons(uint16_t(localPort));
-    else reinterpret_cast<sockaddr_in*>(bindAddress->ai_addr)->sin_port = htons(uint16_t(localPort));
-#ifdef IPV6_V6ONLY
-    if (bindAddress->ai_family == AF_INET6) {
-      const int only = 0;
-      if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, sizeof(only)) < 0) return failed(errno, "bind");
-    }
-#endif
-    if (bind(fd, bindAddress->ai_addr, bindAddress->ai_addrlen) < 0)
-      return failed(errno == EAFNOSUPPORT ? EINVAL : errno, "bind");
+  if (hasLocal && !KandeloGetString(cx, args[3], &local)) return false;
+  RootedValue callback(cx, args[5]);
+  RootedObject owner(cx);
+  if (argc > 6 && !args[6].isUndefined()) {
+    if (!args[6].isObject()) { JS_ReportErrorASCII(cx, "TCP connect requires an actual parent"); return false; }
+    owner = js::CheckedUnwrapDynamic(&args[6].toObject(), cx);
+    if (!owner) { if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx); return false; }
+  } else if (!KandeloCreateSocketOwner(cx, &owner)) return false;
+  RootedValue result(cx);
+  bool ok;
+  {
+    // The optional actual parent can be admitted through a security-checked CCW.
+    // Request slots/lifecycle belong to that parent's realm, not the caller's.
+    JSAutoRealm realm(cx, owner);
+    if (!JS_WrapValue(cx, &callback)) return false;
+    auto submit = [&]() -> bool {
+      auto* parentState = KandeloSocketOwnerState(cx, owner); if (!parentState) return false;
+      if (!parentState->socket || parentState->closing || parentState->socket->Closed() ||
+          parentState->socket->Fd() >= 0 || parentState->connectPreparing) {
+        JS_ReportErrorASCII(cx, "TCP parent is closed, connecting, or already has a descriptor"); return false;
+      }
+      parentState->connectPreparing = true;
+      auto preparing = mozilla::MakeScopeExit([&] { parentState->connectPreparing = false; });
+      bool submitted = false;
+      auto closeFailure = mozilla::MakeScopeExit([&] { if (!submitted) parentState->BeginClose(); });
+      auto failed = [&](int error, const char* syscall) {
+        if (!KandeloSocketConnectFailure(cx, owner, error, syscall, &result)) return false;
+        submitted = true; return true;
+      };
+      if (port < 0 || port > 65535 || localPort < 0 || localPort > 65535) return failed(EINVAL, "connect");
+      addrinfo hints = {}; hints.ai_family = family == 6 ? AF_INET6 : family == 4 ? AF_INET : AF_UNSPEC;
+      hints.ai_socktype = SOCK_STREAM; hints.ai_flags = AI_NUMERICHOST;
+      addrinfo* target = nullptr;
+      if (getaddrinfo(host.get(), nullptr, &hints, &target) != 0 || !target) {
+        if (target) freeaddrinfo(target); return failed(EINVAL, "connect");
+      }
+      auto freeTarget = mozilla::MakeScopeExit([&] { freeaddrinfo(target); });
+      if (target->ai_family == AF_INET6) reinterpret_cast<sockaddr_in6*>(target->ai_addr)->sin6_port = htons(uint16_t(port));
+      else reinterpret_cast<sockaddr_in*>(target->ai_addr)->sin_port = htons(uint16_t(port));
+      auto ensureDescriptor = [&]() -> int {
+        if (parentState->socket->Closed()) return ECANCELED;
+        if (parentState->socket->Fd() >= 0) return 0;
+        kandelo::socket::Lease lease(socket(target->ai_family, SOCK_STREAM, 0));
+        if (lease.Fd() < 0) return errno;
+        const int flags = fcntl(lease.Fd(), F_GETFL, 0);
+        if (flags < 0 || fcntl(lease.Fd(), F_SETFL, flags | O_NONBLOCK) < 0 ||
+            fcntl(lease.Fd(), F_SETFD, FD_CLOEXEC) < 0) return errno;
+        if (parentState->socket->Closed()) return ECANCELED;
+        return parentState->socket->Adopt(lease) ? 0 : errno;
+      };
+      if (hasLocal || localPort) {
+        const int error = ensureDescriptor(); if (error) return failed(error, "bind");
+        const int fd = parentState->socket->Fd(), reuse = 1;
+        if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) return failed(errno, "bind");
+        const char* name = target->ai_family == AF_INET6 ? "::" : "0.0.0.0";
+        if (hasLocal) name = local.get();
+        addrinfo localHints = hints; localHints.ai_family = target->ai_family;
+        addrinfo* bindAddress = nullptr;
+        if (getaddrinfo(name, nullptr, &localHints, &bindAddress) != 0 || !bindAddress) {
+          if (bindAddress) freeaddrinfo(bindAddress); return failed(EINVAL, "bind");
+        }
+        auto freeLocal = mozilla::MakeScopeExit([&] { freeaddrinfo(bindAddress); });
+        if (bindAddress->ai_family == AF_INET6) reinterpret_cast<sockaddr_in6*>(bindAddress->ai_addr)->sin6_port = htons(uint16_t(localPort));
+        else reinterpret_cast<sockaddr_in*>(bindAddress->ai_addr)->sin_port = htons(uint16_t(localPort));
+    #ifdef IPV6_V6ONLY
+        if (bindAddress->ai_family == AF_INET6) {
+          const int only = 0;
+          if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, sizeof(only)) < 0) return failed(errno, "bind");
+        }
+    #endif
+        if (bind(fd, bindAddress->ai_addr, bindAddress->ai_addrlen) < 0)
+          return failed(errno == EAFNOSUPPORT ? EINVAL : errno, "bind");
+      }
+      RootedObject request(cx, JS_NewObject(cx, &KandeloSocketConnectClass)); if (!request) return false;
+      KandeloSocketState* state;
+      try {
+        state = new KandeloSocketState(cx);
+        JS::SetReservedSlot(request, SocketState, PrivateValue(state)); state->connect = true;
+        state->claims.Add(state->allocation.Handle(), KandeloNativeMemoryOwner(cx)); state->RefreshMemory();
+      } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
+      JS::SetReservedSlot(request, SocketParent, ObjectValue(*owner));
+      JS::SetReservedSlot(request, SocketDispatch, callback);
+      if (!KandeloSocketRootPending(cx, request, state)) return false;
+      state->next = gKandeloSocketOwners; gKandeloSocketOwners = state;
+      RootedValue execution(cx, ObjectValue(*request));
+      // Like TCPWrap::Connect, nested init work inherits the actual TCP parent.
+      kandelo::async::DefaultTriggerScope triggerScope(cx->kandeloDefaultTrigger(), parentState->id);
+      if (!triggerScope.Ready()) {
+        KandeloRetireSocketRequest(request, state);
+        JS_ReportErrorASCII(cx, "TCP parent has no valid async identity"); return false;
+      }
+      if (!KandeloSocketInitialize(cx, request, execution, parentState->id)) {
+        KandeloRetireSocketRequest(request, state); return false;
+      }
+      const int openError = ensureDescriptor();
+      if (openError) { KandeloRetireSocketRequest(request, state); KandeloSocketRetireClosed(cx, owner, parentState); return failed(openError, "connect"); }
+      int connected;
+      do {
+        errno = 0;
+        connected = connect(parentState->socket->Fd(), target->ai_addr, target->ai_addrlen);
+      } while (connected < 0 && errno == EINTR);
+      if (connected < 0 && errno != 0 && errno != EINPROGRESS) {
+        if (errno == ECONNREFUSED) state->connectError = ECONNREFUSED;
+        else {
+          const int error = errno; KandeloRetireSocketRequest(request, state);
+          KandeloSocketRetireClosed(cx, owner, parentState); return failed(error, "connect");
+        }
+      }
+      state->connectSubmitted = true;
+      submitted = true; result.setObject(*request); return true;
+    };
+    ok = submit();
   }
-  RootedObject request(cx, JS_NewObject(cx, &KandeloSocketConnectClass)); if (!request) return false;
-  KandeloSocketState* state;
-  try {
-    state = new KandeloSocketState(cx);
-    JS::SetReservedSlot(request, SocketState, PrivateValue(state)); state->connect = true;
-    state->claims.Add(state->allocation.Handle(), KandeloNativeMemoryOwner(cx)); state->RefreshMemory();
-  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
-  JS::SetReservedSlot(request, SocketParent, ObjectValue(*owner));
-  JS::SetReservedSlot(request, SocketDispatch, args[5]);
-  if (!KandeloSocketRootPending(cx, request, state)) return false;
-  state->next = gKandeloSocketOwners; gKandeloSocketOwners = state;
-  RootedValue execution(cx, ObjectValue(*request));
-  // Like TCPWrap::Connect, nested init work inherits the actual TCP parent.
-  kandelo::async::DefaultTriggerScope triggerScope(cx->kandeloDefaultTrigger(), parentState->id);
-  if (!triggerScope.Ready()) {
-    KandeloRetireSocketRequest(request, state);
-    JS_ReportErrorASCII(cx, "TCP parent has no valid async identity"); return false;
-  }
-  if (!KandeloSocketInitialize(cx, request, execution, parentState->id)) {
-    KandeloRetireSocketRequest(request, state); return false;
-  }
-  const int openError = ensureDescriptor();
-  if (openError) { KandeloRetireSocketRequest(request, state); KandeloSocketRetireClosed(cx, owner, parentState); return failed(openError, "connect"); }
-  int connected;
-  do {
-    errno = 0;
-    connected = connect(parentState->socket->Fd(), target->ai_addr, target->ai_addrlen);
-  } while (connected < 0 && errno == EINTR);
-  if (connected < 0 && errno != 0 && errno != EINPROGRESS) {
-    if (errno == ECONNREFUSED) state->connectError = ECONNREFUSED;
-    else {
-      const int error = errno; KandeloRetireSocketRequest(request, state);
-      KandeloSocketRetireClosed(cx, owner, parentState); return failed(error, "connect");
-    }
-  }
-  state->connectSubmitted = true;
-  submitted = true; args.rval().setObject(*request); return true;
+  if (!ok || !JS_WrapValue(cx, &result)) return false;
+  args.rval().set(result); return true;
 }
 static KandeloSocketState* KandeloSocketConnectRequest(JSContext* cx, HandleObject token) {
   JSObject* actual = js::CheckedUnwrapStatic(token);
@@ -929,6 +938,9 @@ static int KandeloDispatchSocketConnect(JSContext* cx, KandeloSocketState* state
   return 1;
 }
 static int KandeloDispatchSocketClose(JSContext* cx, KandeloSocketState* state) {
+  // A retained transport's real native requests must retire before the TCP
+  // async close/destroy, including canceled TLS requests awaiting publication.
+  if (state->socket->HasTransportRequests()) return 0;
   RootedObject owner(cx, *state->liveRoot); JSAutoRealm realm(cx, owner);
   // An actual native close completion follows its canceled native requests.
   // No reused numeric fd participates in this admission check.

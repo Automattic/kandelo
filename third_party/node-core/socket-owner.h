@@ -95,8 +95,18 @@ struct Write {
   }
 };
 
+// A transport layer consumes this actual stream exclusively. Its outstanding
+// native requests keep the parent's queued close from completing prematurely.
+class TransportAttachment {
+ public:
+  virtual ~TransportAttachment() = default;
+  virtual void ParentClosed() noexcept = 0;
+  virtual bool HasRequests() const noexcept = 0;
+};
+
 class Owner {
   Lease descriptor_;
+  TransportAttachment* transport_ = nullptr;
   const uint64_t generation_;
   uint64_t nextRead_ = 0;
   bool reading_ = false;
@@ -112,6 +122,15 @@ class Owner {
   int Fd() const noexcept { return descriptor_.Fd(); }
   uint64_t Generation() const noexcept { return generation_; }
   bool Referenced() const noexcept { return referenced_; }
+  bool AttachTransport(TransportAttachment* transport) noexcept {
+    if (!transport || transport_ || closed_ || reading_ || read_) return false;
+    transport_ = transport; return true;
+  }
+  void DetachTransport(TransportAttachment* transport) noexcept {
+    if (transport_ == transport) transport_ = nullptr;
+  }
+  bool HasTransport() const noexcept { return transport_ != nullptr; }
+  bool HasTransportRequests() const noexcept { return transport_ && transport_->HasRequests(); }
   void Ref(bool value) noexcept { referenced_ = value; }
   // All caller coercions must finish before entering this owner operation.
   // No borrowed numeric fd may cross arbitrary JavaScript execution.
@@ -150,19 +169,21 @@ class Owner {
   // A native transport recipient is fully allocated before this no-JS commit.
   // In-flight reads may already own consumed bytes and cannot be transferred.
   bool TransferTo(Lease& recipient) noexcept {
-    if (closed_ || Fd() < 0 || reading_ || read_ || recipient.Fd() >= 0) return false;
+    if (closed_ || transport_ || Fd() < 0 || reading_ || read_ || recipient.Fd() >= 0) return false;
     if (!recipient.Adopt(descriptor_)) return false;
     closed_ = true; return true;
   }
   void Close() noexcept {
     closed_ = true; reading_ = false;
     descriptor_.Close();
+    // This is a no-JS invalidation. SSL must never use a later reuse of the fd.
+    if (transport_) transport_->ParentClosed();
     // A dispatcher's local ticket still owns material through callback reentry.
     read_.reset();
   }
   std::shared_ptr<Read> CurrentRead() const noexcept { return read_; }
   bool StartRead(size_t size = 64 * 1024) {
-    if (Fd() < 0 || !size) return false;
+    if (transport_ || Fd() < 0 || !size) return false;
     if (!read_) {
       auto replacement = std::make_shared<Read>(generation_, nextRead_ + 1, size);
       read_ = std::move(replacement); ++nextRead_;
@@ -219,7 +240,7 @@ class Owner {
   int ValidateWrite(const Write<SpanRef>& write) const noexcept {
     // Pinned uv__check_before_write count guard, before descriptor validation.
     if (write.vectors.empty() || write.vectors.size() > 1024 * 1024) return EINVAL;
-    return Fd() < 0 ? EBADF : 0;
+    return Fd() < 0 ? EBADF : transport_ ? EBUSY : 0;
   }
   // Callers serialize writes in stream order. One actual sendmsg consumes a
   // bounded prefix of the retained vectors; EINTR never changes that prefix.

@@ -1,0 +1,100 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/secure-network.md",
+    "findingIds": [
+      "S-002",
+      "S-004",
+      "S-009"
+    ],
+    "relatedFamilies": [
+      "secure-network",
+      "network",
+      "streams",
+      "async",
+      "processes"
+    ],
+    "scope": "Partial genuine retained TCP/SSL/ref/request lifetime prerequisite; not public TLSSocket/AsyncWrap/StreamBase/HTTPS or guest closure"
+  },
+  "sourceImplemented": [
+    "Actual empty native TCP owner and SSL preparation precede lookup; actual later connect consumes that same retained parent",
+    "TCP keeps descriptor authority; SSL attaches exclusively and roots actual parent through queued close/native request retirement",
+    "Parent close invalidates SSL before fd reuse; real request tickets retain material and hold parent close barrier until retirement",
+    "TLS ref/unref delegates actual parent/watch liveness; attached transport blocks competing raw TCP reads/writes",
+    "Canceled lookup/attempt releases prepared owner; address-family fallback creates fresh parent/SSL authority",
+    "Matched native source/header/adapter/bootstrap/registration signatures and normal staging travel together; no public fake handle/provider or HTTPS activation"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tls211-source-r1/report.json",
+    "sha256": "a32a3b4ecfd5daa4fe46ed6fd39b7b2eb8359b261059014906dcaff6d5539cb0",
+    "guardedInputs": 879,
+    "scope": "Actual SSL preparation/retained real TCP parent descriptor/ref/request close source; portable native owners and actual JS recording-boundary controls only. New guest JSAPI/TLSWrap/HTTPS/four-host unproven."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tls211-affected-r1.json",
+    "sha256": "a5bc4f986bea8cdc70b58969fe1fa7e920b7b201e21c21eb9676c95d92376ab2",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tls211-source-r1/report.json",
+    "sha256": "a32a3b4ecfd5daa4fe46ed6fd39b7b2eb8359b261059014906dcaff6d5539cb0",
+    "portableCases": 3,
+    "requiredSemanticChecks": [
+      34,
+      34,
+      35
+    ],
+    "observedAssertions": [
+      106,
+      102,
+      107
+    ],
+    "recordingBridgeCases": 1,
+    "actualForwarders": 5,
+    "priorHelperCompilesIntegrated": 2,
+    "newCompilerAttempts": 0,
+    "compiledOwnerHeaderAndControlBytesMatch": true,
+    "unchangedStyleCheckerPassed": true,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Actual archived portable component over byte-matching current owner headers/control code and native Node/OpenSSL loopback; system/header/compiler scope remains as original capsule. JS extracted routing has recording-only native boundary. Guest JSAPI/queued close loop/public TLSWrap/HTTPS/fourhost unexecuted.",
+    "previousCompilerAttemptsIntegrated": 2
+  },
+  "sealedEvidence": {
+    "report": ".context/tls-retained-parent-owner-agent/HANDOFF.json",
+    "sha256": "f2c2b3a7256020e1a4b473d6f0a68df27aa25cd669430fd9af9e650a0cbe77a0",
+    "reusedEvidence": true,
+    "scope": "Real retained TCP/SSL source;2 successful prior tiny compiles,3 portable modes and actual JS recording bridge/native reference. Prior D01/D02 failures remain; copied retained-memory header is not copied to root."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-tls204-source-r1/controls-r1-failed/commands.json",
+      "sha256": "eb47935a8eaa463d76fce56e68b4ab988daabc1d29dc71c7253f0da2ab2e6a84",
+      "scope": "Historical D02 retry-dependent assertion threshold failure remains; D03 uses original strict named semantic requirements, not a weakened threshold."
+    },
+    {
+      "report": ".context/tls-socket-composition-review-agent/report.json",
+      "sha256": "3fa42d4260e583375f16eaf8cd4604ee2f3b0dba47ee35e5485624325ac10b49",
+      "scope": "Independent bounded composition review retained3 setup/control failures and skipped-hunk false-positive replay. Corrected genuine composition changed all intended leaves; no new runtime correction or guest claim."
+    }
+  ],
+  "remaining": [
+    "Actual public TLSSocket Socket inheritance/constructor overloads and supplied transport admission",
+    "True TLSWRAP AsyncWrap birth/lineage/destroy and StreamBase encrypted listener/memory BIO/onread/idle read ownership",
+    "Parent controls/timers/full original-allocation write/shutdown and pending callback/reentry lifecycle",
+    "Sessions/tickets/certificates/ALPN/complete verification/options.socket/CONNECT/server/SecureContext and HTTPS activation",
+    "Compile actual guest JSAPI, then current realm/CCW/GC/OOM/fatal/Worker/context-close/fd/fork/publication and identified four-host evidence"
+  ],
+  "at": "2026-11-07T11:40:04.521388+00:00",
+  "recipeRevision": 211,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

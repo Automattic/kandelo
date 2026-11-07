@@ -1,4 +1,4 @@
-// Foreground TLS owns an actual transferred descriptor and real OpenSSL state.
+// Foreground SSL state layers over one actual retained TCP transport owner.
 #ifndef KANDELO_NODE_TLS_OWNER_H_
 #define KANDELO_NODE_TLS_OWNER_H_
 #include "socket-owner.h"
@@ -45,12 +45,15 @@ struct PlaintextRead {
   }
 };
 
-class Owner {
+class Owner : public socket::TransportAttachment {
  public:
   enum class Phase { Preparing, Handshaking, Open, Closed };
  private:
   const uint64_t generation_;
-  socket::Lease descriptor_;
+  socket::Lease descriptor_; // Legacy transferred-lease component path only.
+  socket::Owner* parent_ = nullptr;
+  uint64_t parentGeneration_ = 0;
+  size_t requests_ = 0;
   OwnedContext context_;
   OwnedSSL ssl_;
   Phase phase_ = Phase::Preparing;
@@ -62,17 +65,58 @@ class Owner {
       : generation_(generation), context_(std::move(context)), ssl_(std::move(ssl)) {}
   Owner(const Owner&) = delete;
   Owner& operator=(const Owner&) = delete;
-  ~Owner() { Close(); }
+  ~Owner() { Close(); DetachParent(); }
   uint64_t Generation() const noexcept { return generation_; }
   Phase State() const noexcept { return phase_; }
-  int Fd() const noexcept { return descriptor_.Fd(); }
+  int Fd() const noexcept {
+    if (phase_ == Phase::Closed) return -1;
+    return parent_ ? (ParentLive() ? parent_->Fd() : -1) : descriptor_.Fd();
+  }
+  bool ParentLive() const noexcept {
+    return parent_ && parent_->Generation() == parentGeneration_ && !parent_->Closed();
+  }
+  bool AttachParent(socket::Owner& parent) noexcept {
+    if (phase_ != Phase::Preparing || parent_ || descriptor_.Fd() >= 0 ||
+        !context_ || !ssl_ || !parent.AttachTransport(this)) return false;
+    parent_ = &parent; parentGeneration_ = parent.Generation(); return true;
+  }
+  // All SSL configuration, JS hooks and roots precede this fd binding. TCP
+  // keeps its actual lease and async lifetime; SSL's BIO uses BIO_NOCLOSE.
+  bool BindParent() noexcept {
+    if (phase_ != Phase::Preparing || !ParentLive() || parent_->Fd() < 0 || !ssl_)
+      return false;
+    if (SSL_set_fd(ssl_.get(), parent_->Fd()) != 1) return false;
+    phase_ = Phase::Handshaking; return true;
+  }
+  void DetachParent() noexcept {
+    if (!parent_) return;
+    // The embedding releases its root only after every real request retires.
+    assert(requests_ == 0);
+    parent_->DetachTransport(this); parent_ = nullptr;
+  }
+  bool HasParent() const noexcept { return parent_ != nullptr; }
+  bool Referenced() const noexcept { return parent_ && parent_->Referenced(); }
+  void Ref(bool value) noexcept { if (parent_) parent_->Ref(value); }
+  bool HasRequests() const noexcept override { return requests_ != 0; }
+  class Request {
+    Owner* owner_;
+   public:
+    explicit Request(Owner& owner) noexcept : owner_(&owner) { ++owner_->requests_; }
+    Request(const Request&) = delete;
+    Request& operator=(const Request&) = delete;
+    ~Request() { Complete(); }
+    void Complete() noexcept {
+      if (owner_) { assert(owner_->requests_); --owner_->requests_; owner_ = nullptr; }
+    }
+  };
+  void ParentClosed() noexcept override { Close(false); }
   SSL* Ssl() const noexcept { return ssl_.get(); }
   bool Matches(uint64_t generation) const noexcept {
-    return generation == generation_ && phase_ != Phase::Closed;
+    return generation == generation_ && phase_ != Phase::Closed && (!parent_ || ParentLive());
   }
-  bool Open() const noexcept { return phase_ == Phase::Open; }
+  bool Open() const noexcept { return phase_ == Phase::Open && (!parent_ || ParentLive()); }
   bool Adopt(socket::Lease& prior) noexcept {
-    if (phase_ != Phase::Preparing || !context_ || !ssl_ || !descriptor_.Adopt(prior)) return false;
+    if (phase_ != Phase::Preparing || parent_ || !context_ || !ssl_ || !descriptor_.Adopt(prior)) return false;
     phase_ = Phase::Handshaking; return true;
   }
   bool AdmitHandshake() noexcept {
@@ -129,7 +173,7 @@ class Owner {
     ERR_pop_to_mark();
     return read->Complete();
   }
-  void Close() noexcept {
+  void Close(bool shutdown = true) noexcept {
     if (phase_ == Phase::Closed) return;
     const bool established = phase_ == Phase::Open;
     phase_ = Phase::Closed;
@@ -142,8 +186,9 @@ class Owner {
     // closing the descriptor/context; old tickets cannot name a future read.
     read_.reset();
     // One nonblocking shutdown attempt, followed by actual deterministic release.
-    // BIO_NOCLOSE from SSL_set_fd leaves descriptor retirement with this lease.
-    if (established && ssl_) SSL_shutdown(ssl_.get());
+    // BIO_NOCLOSE leaves descriptor retirement with the retained TCP parent.
+    // The embedding queues that parent close and clears roots after requests retire.
+    if (shutdown && established && ssl_ && (!parent_ || ParentLive())) SSL_shutdown(ssl_.get());
     ssl_.reset(); context_.reset(); descriptor_.Close();
   }
 };

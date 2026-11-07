@@ -3663,7 +3663,7 @@ const net = (() => {
         error.name = 'AbortError'; error.code = 'ABORT_ERR'; error.cause = signal?.reason;
         return error;
     }
-    _nodeBeginSocketConnection = function beginConnection(rawOptions, emit = () => {}, getBlockList, owned = false, complete) {
+    _nodeBeginSocketConnection = function beginConnection(rawOptions, emit = () => {}, getBlockList, owned = false, complete, prepareParent) {
         if (getBlockList === undefined) {
             const owner = {}; assignBlockList(owner, rawOptions);
             getBlockList = () => owner.blockList;
@@ -3715,7 +3715,7 @@ const net = (() => {
                 emit('_attemptedAddress', address + ':' + options.port);
                 if (done) return;
             }
-            let pending;
+            let pending, preparedParent;
             function succeeded(fd, owner) {
                 if (done || active !== pending) {
                     if (owner) nat.socketOwnerAbortAdoption(owner); else nat.socketClose(fd);
@@ -3734,11 +3734,15 @@ const net = (() => {
                 if (!done) attempt();
             }
             try {
+                // A TLS layer can already own SSL state over this actual empty
+                // TCP resource. Ordinary net clients retain their existing path.
+                if (owned && prepareParent) preparedParent = prepareParent();
+                if (done) return;
                 pending = owned ? nat.socketOwnerConnect(address, options.port, family,
                     options.localAddress, options.localPort, (status, owner) => {
                         if (status) failed({ errno: status, syscall: 'connect' });
-                        else succeeded(owner.fd, owner);
-                    }) : nat.socketConnect(address, options.port, family, options.localAddress, options.localPort);
+                        else succeeded(prepareParent ? undefined : owner.fd, owner);
+                    }, preparedParent) : nat.socketConnect(address, options.port, family, options.localAddress, options.localPort);
             } catch (error) { return fail(error); }
             active = pending;
             if (owned) {
@@ -4301,41 +4305,33 @@ const tls = (() => {
         throw new TypeError('tls: chunk must be Buffer, Uint8Array, ArrayBuffer, or string');
     };
 
-    /* TLSSocket layers SSL_read/SSL_write over a fd that net.Socket has
-       already TCP-connected. The underlying fd is owned by the TLS handle
-       once handshake starts — close routes through tlsClose. */
+    /* SSL state is prepared before DNS/connect over an actual empty TCP
+       resource. TCP retains its descriptor; the private TLS owner roots that
+       parent through request retirement. This is not yet Socket/TLSWrap. */
     class TLSSocket extends stream.Duplex {
         constructor(options) {
             super(options);
             nativeTLS.set(this, { owner: null, connect: null, destroyed: false,
-                reading: false, writeQueue: [], handshakePending: true, attaching: false });
+                reading: false, writeQueue: [], handshakePending: true, attaching: false, referenced: true });
             this.servername = options?.servername || null;
             this.authorized = false;
             this.authorizationError = null;
         }
 
-        _attach(tcpOwner, servername, opts) {
-            const state = nativeTLS.get(this);
+        _attach(tcpOwner) {
+            const state = nativeTLS.get(this), owner = state.owner;
             if (state.destroyed) { nat.socketOwnerAbortAdoption(tcpOwner); return; }
-            if (state.owner || state.attaching) throw new Error('TLS socket already owns or is acquiring a transport');
+            if (!owner || state.attaching) throw new Error('TLS socket has no prepared transport or is already starting');
             state.attaching = true;
-            let operation;
-            try {
-                this.servername = servername;
-                operation = nat.tlsConnect(tcpOwner, servername, opts);
-            }
+            let pending;
+            try { pending = nat.tlsConnect(owner); }
             catch (error) {
-                // Precommit failure leaves TCP authority with its real owner;
-                // postcommit failure already retired that now-empty source.
                 state.attaching = false;
-                nat.socketOwnerAbortAdoption(tcpOwner);
                 state.handshakePending = false; this.destroy(error); return;
             }
             state.attaching = false;
-            const owner = operation.owner;
             if (state.destroyed) { nat.tlsClose(owner); return; }
-            state.owner = owner;
-            operation.promise.then(() => {
+            tlsThen(pending, () => {
                 if (state.destroyed || state.owner !== owner) { nat.tlsClose(owner); return; }
                 state.handshakePending = false;
                 try {
@@ -4415,8 +4411,16 @@ const tls = (() => {
         setTimeout(ms, cb) { if (cb) this.once('timeout', cb); return this; }
         setNoDelay() { return this; }
         setKeepAlive() { return this; }
-        ref() { return this; }
-        unref() { return this; }
+        ref() {
+            const state = nativeTLS.get(this); state.referenced = true;
+            state.connect?.ref(true); if (state.owner) nat.tlsRef(state.owner, true);
+            return this;
+        }
+        unref() {
+            const state = nativeTLS.get(this); state.referenced = false;
+            state.connect?.ref(false); if (state.owner) nat.tlsRef(state.owner, false);
+            return this;
+        }
         getProtocol() { return this._metadata(1); }
         getCipher() { return this._metadata(2); }
         isSessionReused() { return this._metadata(3); }
@@ -4455,15 +4459,43 @@ const tls = (() => {
         if (cb) sock.once('secureConnect', cb);
         const servername = options.servername || options.host || 'localhost';
         const state = nativeTLS.get(sock);
-        const operation = _nodeBeginSocketConnection(options, undefined, undefined, true, (error, result) => {
+        let initialParent;
+        function prepareTransport() {
+            if (state.destroyed) throw new Error('TLS socket is destroyed');
+            const previous = state.owner; state.owner = null;
+            if (previous) nat.tlsClose(previous);
+            const parent = nat.socketOwnerCreate();
+            let owner;
+            try { owner = nat.tlsPrepare(parent, servername, nativeOptions); }
+            catch (error) { nat.socketOwnerAbortAdoption(parent); throw error; }
+            if (state.destroyed) { nat.tlsClose(owner); throw new Error('TLS socket is destroyed'); }
+            state.owner = owner;
+            nat.tlsRef(owner, state.referenced);
+            return parent;
+        }
+        // Actual SSL/parent construction precedes lookup, rather than assigning
+        // TLS metadata to a post-connect resource. Retries get fresh authority.
+        initialParent = prepareTransport();
+        let operation;
+        try {
+            operation = _nodeBeginSocketConnection(options, undefined, undefined, true, (error, result) => {
+                state.connect = null;
+                if (error) { if (!state.destroyed) sock.destroy(error); return; }
+                if (state.destroyed) { nat.socketOwnerAbortAdoption(result.owner); return; }
+                tlsApply(attachTLS, sock, [result.owner]);
+            }, () => {
+                if (initialParent) { const parent = initialParent; initialParent = null; return parent; }
+                return prepareTransport();
+            });
+            state.connect = operation;
+            operation.ref(state.referenced);
+            operation.start();
+        } catch (error) {
             state.connect = null;
-            if (error) { if (!state.destroyed) sock.destroy(error); return; }
-            if (state.destroyed) { nat.socketOwnerAbortAdoption(result.owner); return; }
-            tlsApply(attachTLS, sock, [result.owner, servername, nativeOptions]);
-        });
-        state.connect = operation;
-        try { operation.start(); }
-        catch (error) { state.connect = null; operation.cancel(); throw error; }
+            operation?.cancel();
+            if (!state.destroyed) sock.destroy(error);
+            throw error;
+        }
         return sock;
     }
 
