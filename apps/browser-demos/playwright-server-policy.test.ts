@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 
 import {
   playwrightTestIgnoreForEnvironment,
-  shouldReuseExistingPlaywrightServer,
 } from "./playwright-server-policy";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -82,31 +81,6 @@ test("the separate-networks lab runs only when named, on its own server", () => 
   assert.equal(hidden(["test/kandelo-network-session.spec.ts"]), true);
   assert.equal(hidden(["test/kandelo-network-lab.spec.ts"]), false);
   assert.equal(hidden(["/checkout/apps/browser-demos/test/kandelo-network-lab.spec.ts:12"]), false);
-  // The lab's server carries its ICE servers; a running one does not.
-  assert.equal(shouldReuseExistingPlaywrightServer({ KANDELO_NETWORK_LAB: "1" }), false);
-});
-
-test("exact product proofs never reuse another worktree's server", () => {
-  assert.equal(shouldReuseExistingPlaywrightServer({}), true);
-  assert.equal(shouldReuseExistingPlaywrightServer({ CI: "1" }), false);
-  assert.equal(
-    shouldReuseExistingPlaywrightServer({
-      KANDELO_CANONICAL_FLAT_SHELL_STRICT: "1",
-    }),
-    false,
-  );
-  assert.equal(
-    shouldReuseExistingPlaywrightServer({
-      KANDELO_PLAYWRIGHT_SERVE_DIST: "1",
-    }),
-    false,
-  );
-  assert.equal(
-    shouldReuseExistingPlaywrightServer({
-      KANDELO_PLAYWRIGHT_SERVE_DIST: "0",
-    }),
-    true,
-  );
 });
 
 test("broad service-worker scope permission exists only in historical records", async () => {

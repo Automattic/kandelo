@@ -374,6 +374,7 @@ host/test/node-worker-adapter.test.ts	prepared-product
 host/test/node-write-file-platform.test.ts	source-only
 host/test/non-pty-stdio.test.ts	prepared-product
 host/test/nosuid-exec.test.ts	source-only
+host/test/offline-listener-isolation.test.ts	prepared-product
 host/test/opcache-prewarm.test.ts	prepared-product
 host/test/opfs-channel.test.ts	source-only
 host/test/opfs-file-reference.test.ts	source-only

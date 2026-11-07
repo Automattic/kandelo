@@ -22,6 +22,9 @@ Usage (from the repo root):
   python3 evals/build-waiting/run.py [--reps 3] [--model sonnet] [--tasks id,id] [--jobs 4]
 
 Cost: each run is a few cents on Sonnet but takes 2-4 minutes of wall time.
+The opt-in `--tasks subagent-wait --reps 1 --jobs 2 --budget-usd 1.50`
+instead runs an eleven-minute baseline/candidate pair with real subagents;
+see README tool 8b for the pre-registered cost estimate and keep rule.
 """
 import argparse
 import concurrent.futures
@@ -34,11 +37,15 @@ import statistics
 import subprocess
 import tempfile
 import time
+import uuid
+
+import subagent_wait
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 BEFORE = "938b7ae3e"  # the declaration commit, before any tool existed
 TASKS = [
+    subagent_wait.TASK,
     {
         "id": "wait-and-report",
         "env": {"FAKE_BUILD_SECONDS": "150"},
@@ -77,11 +84,12 @@ def make_sandbox(arm):
     (box / "docs/agent-guidance").mkdir(parents=True)
     (box / "evals/build-waiting/fixtures").mkdir(parents=True)
     shutil.copy(HERE / "fixtures/fake-build.sh", box / "evals/build-waiting/fixtures/fake-build.sh")
-    if arm == "tools-on":
+    if arm == "tools-on" or arm in subagent_wait.ARMS:
         shutil.copy(REPO / "CLAUDE.md", box / "CLAUDE.md")
         shutil.copy(REPO / "docs/agent-guidance/validation.md", box / "docs/agent-guidance/validation.md")
         (box / "scripts").mkdir()
         shutil.copy(REPO / "scripts/agent-job", box / "scripts/agent-job")
+        shutil.copy(REPO / "scripts/validation_artifacts.py", box / "scripts/validation_artifacts.py")
         (box / ".claude/hooks").mkdir(parents=True)
         shutil.copy(REPO / ".claude/hooks/wait-guard.py", box / ".claude/hooks/wait-guard.py")
         settings = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
@@ -94,16 +102,54 @@ def make_sandbox(arm):
     return box, settings
 
 
-def run_one(task, arm, rep, model, out_dir, budget):
+def session_usage(events):
+    """(usage, turns) for the whole session.
+
+    A headless session that waits on a background task emits one result
+    event per segment. The last one's `usage` and `num_turns` cover only
+    the final segment, while its `modelUsage` and `total_cost_usd` are
+    session totals (probe, 2026-11-07: two result events; the last
+    reported 36k cache reads in `usage`, 66k in `modelUsage`). Before
+    this, sessions that waited in the background were undercounted.
+    """
+    results = [e for e in events if e.get("type") == "result"]
+    if not results:
+        return {}, 0
+    total = {}
+    for v in (results[-1].get("modelUsage") or {}).values():
+        for ours, theirs in (("input_tokens", "inputTokens"), ("cache_read_input_tokens", "cacheReadInputTokens"),
+                             ("cache_creation_input_tokens", "cacheCreationInputTokens"),
+                             ("output_tokens", "outputTokens")):
+            total[ours] = total.get(ours, 0) + (v.get(theirs) or 0)
+    return total or (results[-1].get("usage") or {}), sum(r.get("num_turns") or 0 for r in results)
+
+
+def input_equivalent(usage):
+    # Same weighting as evals/agent-skills and wait-impact.py.
+    return round((usage.get("input_tokens") or 0) + 0.1 * (usage.get("cache_read_input_tokens") or 0)
+                 + 2 * (usage.get("cache_creation_input_tokens") or 0) + 5 * (usage.get("output_tokens") or 0))
+
+
+def run_one(task, arm, rep, model, out_dir, budget, claude="claude"):
     box, settings = make_sandbox(arm)
     env = dict(os.environ, **task["env"], KANDELO_AGENT_JOBS_DIR=str(box / ".agent-jobs"))
-    cmd = ["claude", "-p", task["prompt"], "--model", model, "--output-format", "stream-json", "--verbose",
-           "--setting-sources", "project,local", "--strict-mcp-config", "--no-session-persistence",
+    prompt = task.get("prompt", "")
+    extra_args, extra = ["--no-session-persistence"], {}
+    session_id, job_id = str(uuid.uuid4()), None
+    if task["id"] == "subagent-wait":
+        prompt, agents, job_id = subagent_wait.prepare(box, arm, HERE, git_show, env)
+        settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"] = f"python3 {box}/.claude/hooks/capture.py"
+        extra_args = ["--session-id", session_id, "--agents", json.dumps(agents), "--forward-subagent-text"]
+    cmd = [claude, "-p", prompt, "--model", model, "--output-format", "stream-json", "--verbose",
+           "--setting-sources", "project,local", "--strict-mcp-config", *extra_args,
            "--permission-mode", "bypassPermissions", "--settings", json.dumps(settings),
            "--disallowedTools", "Edit Write NotebookEdit", "--max-budget-usd", str(budget)]
     start = time.time()
     proc = subprocess.run(cmd, cwd=box, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     seconds = round(time.time() - start)
+    # Kept so every number below can be re-derived from the transcript.
+    (out_dir / f"{task['id']}.{arm}.{rep}.stream.jsonl").write_text(proc.stdout)
+    (out_dir / f"{task['id']}.{arm}.{rep}.stderr.txt").write_text(proc.stderr)
     events = []
     for line in proc.stdout.splitlines():
         try:
@@ -116,17 +162,24 @@ def run_one(task, arm, rep, model, out_dir, budget):
             for c in (e.get("message", {}).get("content") or []) if isinstance(c, dict)
             and c.get("type") == "tool_use" and c.get("name") == "Bash"]
     passed = {name: bool(re.search(rx, answer, re.I)) for name, rx in task["checks"].items()}
+    if job_id:
+        extra = subagent_wait.collect(box, out_dir, f"{task['id']}.{arm}.{rep}", session_id, job_id)
     record = {
         "task": task["id"], "arm": arm, "rep": rep,
         "score": sum(passed.values()) / len(passed), "checks": passed,
-        "cost_usd": result.get("total_cost_usd") or 0.0, "turns": result.get("num_turns") or 0,
+        "cost_usd": result.get("total_cost_usd") or 0.0, "turns": session_usage(events)[1],
         "bash_calls": len(bash), "wait_calls": sum(1 for c in bash if WAITISH.search(c)),
         "used_agent_job": any("agent-job" in c for c in bash),
-        "seconds": seconds, "error": bool(result.get("is_error")) or not result,
+        "tokens": input_equivalent(session_usage(events)[0]),
+        "usage": session_usage(events)[0],
+        "segments": sum(1 for e in events if e.get("type") == "result"),
+        "seconds": seconds, "error": bool(result.get("is_error")) or not result, **extra,
     }
     (out_dir / f"{task['id']}.{arm}.{rep}.md").write_text(answer + "\n\n--- bash calls ---\n" + "\n".join(bash))
     (out_dir / f"{task['id']}.{arm}.{rep}.json").write_text(json.dumps(record, indent=2))
-    shutil.rmtree(box, ignore_errors=True)
+    # Preserve an incomplete controlled job's sandbox for diagnosis/collection.
+    if not job_id or extra.get("fixture_result"):
+        shutil.rmtree(box, ignore_errors=True)
     return record
 
 
@@ -138,21 +191,23 @@ def main():
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--budget-usd", type=float, default=1.0, help="per-run spending cap")
     ap.add_argument("--out", default="")
+    ap.add_argument("--claude", default="claude", help="Claude Code executable (absolute path in the dev shell)")
     args = ap.parse_args()
 
-    tasks = [t for t in TASKS if not args.tasks or t["id"] in args.tasks.split(",")]
+    tasks = [t for t in TASKS if (t["id"] != "subagent-wait" if not args.tasks
+                                else t["id"] in args.tasks.split(","))]
     out_dir = pathlib.Path(args.out or tempfile.mkdtemp(prefix="kandelo-wait-eval-"))
     out_dir.mkdir(parents=True, exist_ok=True)
     arms = ("tools-on", "tools-off")
-    jobs = [(t, arm, r) for t in tasks for arm in arms for r in range(args.reps)]
+    jobs = [(t, arm, r) for t in tasks for arm in t.get("arms", arms) for r in range(args.reps)]
     print(f"{len(jobs)} runs with {args.model}; answers in {out_dir}", flush=True)
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
-        records = list(pool.map(lambda j: run_one(*j, args.model, out_dir, args.budget_usd), jobs))
+        records = list(pool.map(lambda j: run_one(*j, args.model, out_dir, args.budget_usd, args.claude), jobs))
 
     print(f"\n{'task':18s} {'arm':10s} {'score':>6s} {'cost $':>7s} {'turns':>6s} {'bash':>5s} {'waits':>6s} "
           f"{'secs':>5s} {'agent-job':>9s}")
     for t in tasks:
-        for arm in arms:
+        for arm in t.get("arms", arms):
             rs = [r for r in records if r["task"] == t["id"] and r["arm"] == arm]
             m = lambda k: statistics.mean(r[k] for r in rs)
             errs = sum(r["error"] for r in rs)

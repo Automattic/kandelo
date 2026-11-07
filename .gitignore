@@ -36,6 +36,10 @@ node_modules/
 # Worktrees
 .worktrees/
 
+# Worktree-owned validation evidence and scratch (all editors and agents).
+/.context/
+test-results/
+
 # Claude Code worktree config (added when an agent runs `claude` inside
 # a worktree — never tracked).
 .superset/

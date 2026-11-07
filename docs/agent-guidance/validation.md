@@ -222,9 +222,9 @@ builds the host, and runs:
   runtime errors, forced teardown, unreviewed shared worker messages, and main-thread
   shared Wasm allocations fail the test.
 
-This gate owns its browser server; set `KANDELO_PLAYWRIGHT_PORT` if the
-default port is occupied. Missing products or the Quake archive fail the
-required run instead of becoming skipped coverage. Initial source builds can
+This gate owns its browser server on an automatically selected free port;
+`KANDELO_PLAYWRIGHT_PORT` can pin one explicitly. Missing products or the
+Quake archive fail the required run instead of becoming skipped coverage. Initial source builds can
 take longer than ten minutes: use `scripts/agent-job` for the complete gate
 when inputs are not already built. Later runs reuse the normal build cache.
 The command is independent of whether GitHub Actions is enabled. The CI
@@ -305,7 +305,7 @@ WebKit runner, a new nonpersistent context can reject even
 `navigator.storage.getDirectory()` with an `UnknownError`; a subsequent
 cleanup request can then stall. Diagnose the fixture's storage access before
 attributing that failure to filesystem recovery or masking it with retries.
-Firefox's separate home-directory workaround is unchanged: macOS privacy
+Firefox retains a separate home directory: macOS privacy
 protection can reject traversal of its standard user directories, even in
 an isolated home. Do not bypass those protections with a blanket sweeper.
 
@@ -333,6 +333,13 @@ retained roots and preexisting shared-directory files need separate, explicit
 inspection before removal. Do not delete an active browser's profile or OPFS
 store to reclaim test space. This housekeeping does not change Kandelo's
 persistence, durability or crash-recovery semantics.
+
+Run-owned homes and browser temporary profiles now live below
+`.context/validation-scratch/<run-uuid>/tmp` in the Git worktree. A runner
+changes only its own `TMPDIR`. Retained local roots can be explicitly
+released with `scripts/agent-job release <run-uuid>` after the runner exits;
+removing the worktree removes these roots even if teardown was skipped.
+This does not redirect Darwin-managed staging files described above.
 
 `npm run test:unit` includes the cleanup safety tests. On macOS, run
 `npx playwright test test/playwright-storage.spec.ts --project=webkit` to
@@ -386,8 +393,11 @@ run used the wrong config and toolchain, and its results are invalid.
   `run_in_background` and acts on its single completion notification.
   Never write Monitor, `until`, or `sleep` loops over status files or
   `agent-job list`; expiring waiters create re-arm turns. A headless
-  session or subagent repeats foreground `agent-job wait <id>` until it
-  returns the job's status. Repeat only when the wait-window notice says
+  main session repeats foreground `agent-job wait <id>` (540 s default).
+  A subagent waiting on targeted work uses foreground
+  `agent-job wait <id> --timeout 240`, one wait per Bash call, until it
+  returns the job's status. Keep the explicit timeout on retries, including
+  waits by peer id. Repeat only when the wait-window notice says
   `agent-job: still running`. Exit 124 alone is ambiguous: a finished
   command can itself exit 124 (for example, when killed by `timeout`).
   `FAILED (exit 124)` is a completed failure, not a retry. It must not end
@@ -395,10 +405,14 @@ run used the wrong config and toolchain, and its results are invalid.
   agent client yields a running terminal session, resume that session to
   collect the result.
 - **Subagents** must not wait on whole-tree builds or full suites. A
-  subagent's prompt cache expires after 5 minutes, so every long blocking
-  call rewrites its whole context. Build what a subagent needs before
-  dispatching it. A subagent that discovers it needs one reports the command
-  back instead of running it.
+  subagent's prompt cache was observed to expire after about 5 minutes,
+  so long blocking calls can rewrite its whole context. Return other known
+  long test and benchmark jobs to the parent too: report an existing job's
+  id and command rather than starting a duplicate. Build what a subagent
+  needs before dispatching it. A subagent that discovers it needs one reports the command
+  back instead of running it. For targeted work it must finish itself,
+  keep each blocking call below that cache boundary; a foreground command
+  expected to exceed four minutes should use a job with 240 s waits.
 - **Progress:** for `./run.sh setup`, `local-build`, and `build <target>`,
   `agent-job status` shows nodes done out of the total. Start them as
   `./run.sh …`, not under `scripts/dev-shell.sh`, which drops the events
@@ -413,9 +427,37 @@ run used the wrong config and toolchain, and its results are invalid.
 - **Stable inputs:** never mutate a tree while a job validates it. Mixed
   inputs invalidate evidence and can break program-index publication.
   Finish or stop the job before editing, then validate the final tree.
-- **Browser server:** always choose a free worktree-specific
-  `KANDELO_PLAYWRIGHT_PORT` for Playwright suites. `reuseExistingServer`
-  can otherwise silently attach to another tree's server on a shared port.
+- **Browser server and evidence:** repository Playwright configs select a
+  free loopback port per run and never reuse an existing server. Pin
+  `KANDELO_PLAYWRIGHT_PORT` only when needed; an occupied explicit port
+  fails loudly. Vite retains `--strictPort`, so losing the free-port probe's
+  bind race also fails rather than moving silently to a different origin.
+  Each run owns `test-results/<run-id>/artifacts` and default HTML, blob,
+  JSON and JUnit reports beside it. CI uploads the enclosing `test-results`
+  directory. Explicit `--output`, reporter options or reporter environment
+  paths remain caller-owned: allocate a fresh directory for every process,
+  including base/after runs. A unique worktree alone does not isolate two
+  runs in that worktree. For `--last-failed`, explicitly select that run's
+  artifact directory with `--output`; there is no shared last-run file.
+- **Logs and scratch:** a job exports its private, retained
+  `KANDELO_AGENT_SCRATCH_DIR` through the dev shell. For example, redirect
+  inside the job with `> "$KANDELO_AGENT_SCRATCH_DIR/integ.log" 2>&1`.
+  Every nested `agent-job start` gets a new directory, even if it inherits
+  its parent's scratch variable. For short foreground runs, first allocate
+  a fresh directory with `mktemp -d` and keep the returned path when reading
+  the results. Never use fixed host paths such as `/tmp/integ.log`, or a
+  shared `.context/check.log`, for concurrent runs. The job's own stdout
+  and stderr are already retained in its `output.log`.
+- **Evidence lifecycle:** keep evidence until it has been reviewed, then use
+  `scripts/agent-job release <job-id|playwright-run-uuid>`. Bulk job output
+  lives in `.context/agent-jobs/<job-id>`; Playwright scratch and reports also
+  stay in the worktree. `cleanup` closes the current tree to new runs and
+  refuses active writers. Use `reopen` if work will continue after cleanup.
+  `gc --dry-run` previews reconciliation of removed worktrees and recovery
+  of interrupted releases. UUID ownership prevents a reused worktree path
+  from claiming old evidence; shared caches are outside this cleanup.
+  These commands work independently of any editor or workspace manager.
+  See [contributor cleanup commands](../../CONTRIBUTING.md#retain-and-clean-validation-evidence).
 - **Suite environment:** `scripts/dev-shell.sh` clears outer variables
   outside its keep-list. Export suite variables inside `bash -c` when
   they must reach a test. `KANDELO_PLAYWRIGHT_PORT` is explicitly kept;
@@ -425,9 +467,9 @@ run used the wrong config and toolchain, and its results are invalid.
   scripts/agent-job start -- scripts/dev-shell.sh bash -c 'export KANDELO_PLAYWRIGHT_PORT=5197; cd apps/browser-demos && npx playwright test'
   ```
 
-  Choose a free port for this worktree; 5197 is only an example.
+  Omit the export for automatic selection; 5197 is only a pinned example.
 - **Another workspace's build:** waiting on a build that another worktree
-  (another Conductor workspace) is running is supported, and `agent-job` is
+  is running is supported, and `agent-job` is
   the tool for it. Do not hand-roll a `kill -0 <pid>`, `pgrep`, or `sleep`
   loop on its process. Job records are machine-wide, so every command
   accepts a peer's job id:
@@ -479,7 +521,11 @@ run used the wrong config and toolchain, and its results are invalid.
 - **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
   patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
   `pgrep -f` waiters, and subagents running whole-tree builds or full
-  suites, and every denial says what to do instead. It is opt-in.
+  suites. Subagent `agent-job wait` calls require an explicit positive
+  literal timeout, at most 270 s total per Bash call; wait loops are denied.
+  Use 240 s for scheduling margin, or return the long job to the parent.
+  Main-session wait windows are unchanged. Every denial says what to do
+  instead. It is opt-in.
   - **Install or update** with
     `python3 .claude/hooks/install-hooks.py --user` (all your sessions) or
     `--project-local` (this checkout only). It edits only its own entry,
@@ -488,9 +534,20 @@ run used the wrong config and toolchain, and its results are invalid.
     installed hook is out of date. `--uninstall` removes it. The installed
     hook also tells you itself, once per session, when the checkout you
     work in has a newer `HOOK_VERSION`.
+  - **Automatic maintenance after opting in:** main agents fetch
+    `origin main` and run
+    `python3 .claude/hooks/install-hooks.py --user --update-from-main`
+    at task start and after merging a hook change. Do this directly,
+    without handing the command back to the user. It skips absent
+    installations, never downgrades, serializes concurrent agent updates,
+    and takes both the hook and installer from fetched `origin/main`.
+    It never promotes feature-branch code into the user hook. Existing
+    unversioned copies predate v3 and are eligible for an update.
+    Project-local installations already follow their checkout.
   - **Changing the hook:** bump `HOOK_VERSION` in `wait-guard.py` with any
-    change to a rule or message, and say in the PR to re-run the
-    installer.
+    change to a rule or message. The merging agent refreshes an existing
+    user installation from main and verifies it with `--user --check`
+    from the merged revision. Initial installation remains opt-in.
   - **Scope:** the hook acts only in checkouts that contain
     `scripts/agent-job`.
 
