@@ -533,11 +533,14 @@ pipe pair.
   caches while later opens reclaim abandoned stores after worker termination;
   shutdown cancels pending downloads before draining admitted process creators
   and removes its cache. This lets blocked lazy exec work release its creator
-  token before the normal dirty-file sync. Each active persistent transfer
-  fails with `ETIMEDOUT` after 30 seconds without successfully staged bytes;
-  empty chunks and retries do not renew that deadline. Inspection and prepared
-  exec follow monotonic byte progress, allowing healthy downloads longer than
-  30 seconds. Cancellation releases the queue even if a custom fetcher ignores
+  token before the normal dirty-file sync. Every deferred transfer, persistent
+  or not, fails with `ETIMEDOUT` after 30 seconds without received bytes;
+  empty chunks and retries do not renew that deadline. Transport preparation
+  (Node's repository path resolution) runs before that deadline starts, under
+  its own 10-minute ceiling. Inspection, prepared exec, and spawn wait for a
+  fetch in flight to settle rather than timing it themselves, so healthy
+  downloads and preparations longer than 30 seconds succeed. Cancellation
+  releases the queue even if a custom fetcher ignores
   its signal; late responses cannot write or become readable. It cannot force
   that fetcher to release resources it owns or interrupt synchronous work.
   The 96 MiB fixture
