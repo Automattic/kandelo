@@ -389,33 +389,6 @@ static int util_locale(int argc, char **argv) {
     return 0;
 }
 
-static int util_logger(int argc, char **argv) {
-    const char *tag = program_name(argv[0]);
-    int to_stderr = 0;
-    int first = 1;
-    for (; first < argc; first++) {
-        if (streq(argv[first], "-s")) {
-            to_stderr = 1;
-        } else if ((streq(argv[first], "-t") || streq(argv[first], "-p")) && first + 1 < argc) {
-            if (streq(argv[first], "-t")) {
-                tag = argv[first + 1];
-            }
-            first++;
-        } else if (argv[first][0] == '-') {
-            continue;
-        } else {
-            break;
-        }
-    }
-    FILE *out = to_stderr ? stderr : stdout;
-    fprintf(out, "%s:", tag);
-    for (int i = first; i < argc; i++) {
-        fprintf(out, " %s", argv[i]);
-    }
-    fputc('\n', out);
-    return 0;
-}
-
 struct ps_fields {
     int pid;
     int nice;
@@ -2051,7 +2024,6 @@ static int dispatch(const char *name, int argc, char **argv) {
     if (streq(name, "ipcrm")) return util_ipcrm(argc, argv);
     if (streq(name, "ipcs")) return util_ipcs(argc, argv);
     if (streq(name, "locale")) return util_locale(argc, argv);
-    if (streq(name, "logger")) return util_logger(argc, argv);
     if (streq(name, "man")) return util_man(argc, argv);
     if (streq(name, "more")) return util_more(argc, argv);
     if (streq(name, "msgfmt")) return util_msgfmt(argc, argv);

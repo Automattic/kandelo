@@ -629,7 +629,6 @@ Berkeley yacc (`byacc`) and flex now replace its `yacc` and `lex`.
 | `xgettext` | Extracts every string literal, not only the ones passed to `gettext` calls. |
 | `ar` | `r` and `q` rewrite the archive with only the named members (existing members are lost); writes no symbol index. |
 | `uuencode`, `uudecode` | `uuencode` always writes base64 (as with `-m`); `uudecode` decodes only base64. |
-| `logger` | Writes the message to standard output or standard error, not the system log (Kandelo has no `/dev/log` receiver). |
 | `cflow`, `cxref` | List function definitions found by a line pattern; no call graph and no cross-reference. |
 | `more` | Copies its input without paging. |
 | `getconf` | Prints built-in fallback values when `sysconf` fails. |
