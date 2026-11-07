@@ -7552,12 +7552,15 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         ),
 
         // -- Memory/sync stubs --
-        // membarrier answers 0 to every command without issuing a barrier. The
-        // old justification, "single-threaded per process in Wasm", does not
-        // hold: clone(CLONE_VM|CLONE_THREAD) gives a process real threads, each
-        // its own Worker over one shared memory. Behaviour is unchanged here;
-        // the finding and the open question are in docs/posix-status.md.
-        257 => 0, // SYS_MEMBARRIER
+        // membarrier: QUERY reports an empty command mask and every barrier
+        // command is EINVAL. Threads are real Workers over one shared memory, so
+        // the old "single-threaded" no-op was false, and answering 0 also hid the
+        // failure musl's signal-based fallback keys on. See sys_membarrier and
+        // docs/posix-status.md.
+        257 => match syscalls::sys_membarrier(a1 as i32, a2 as i32) {
+            Ok(mask) => mask,
+            Err(e) => -(e as i32),
+        }, // SYS_MEMBARRIER
         273 => match sync_rootfs_mappings_and_persistence() {
             Ok(()) => 0,
             Err(error) => -(error as i32),

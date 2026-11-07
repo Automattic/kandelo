@@ -17964,6 +17964,30 @@ pub fn sys_futex(
     }
 }
 
+/// membarrier(2). Kandelo issues no cross-thread memory barrier: threads are
+/// separate Workers over one shared memory, and the kernel cannot run a barrier
+/// on another Worker's behalf. So it advertises that, and refuses to pretend.
+///
+/// `MEMBARRIER_CMD_QUERY` (0) returns the mask of supported commands, which is
+/// empty: the discovery path tells a caller to use its own fallback. Every
+/// barrier command is `EINVAL`, Linux's answer for an unsupported or
+/// unregistered command. Answering 0 instead is worse than failing: musl's
+/// `membarrier()` emulates `PRIVATE_EXPEDITED` with signals only when the
+/// syscall fails, so a fake success removes the one working barrier.
+///
+/// `flags` must be 0 for `QUERY`, as on Linux.
+pub fn sys_membarrier(cmd: i32, flags: i32) -> Result<i32, Errno> {
+    const MEMBARRIER_CMD_QUERY: i32 = 0;
+    const SUPPORTED_COMMANDS: i32 = 0;
+    if flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+    match cmd {
+        MEMBARRIER_CMD_QUERY => Ok(SUPPORTED_COMMANDS),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
 /// clone — spawn a new thread.
 ///
 /// Allocates a TID, stores thread state, and returns the TID. The host's
@@ -44698,6 +44722,39 @@ impl HostIO for NetMock {
         let removed = proc.remove_thread(tid);
         assert!(removed.is_some());
         assert!(proc.get_thread(tid).is_none());
+    }
+
+    // membarrier(2): Kandelo issues no cross-thread barrier, so it says so.
+    // The commands are the values musl's <sys/membarrier.h> defines.
+    const MEMBARRIER_CMD_QUERY: i32 = 0;
+    const MEMBARRIER_BARRIER_COMMANDS: [i32; 9] = [1, 2, 4, 8, 16, 32, 64, 128, 256];
+
+    #[test]
+    fn membarrier_query_advertises_no_barrier_commands() {
+        // The discovery path: a caller that asks learns Kandelo provides
+        // nothing and can choose its own fallback. A mask of 0 is accurate;
+        // any bit would promise a command that EINVALs below.
+        assert_eq!(sys_membarrier(MEMBARRIER_CMD_QUERY, 0), Ok(0));
+    }
+
+    #[test]
+    fn membarrier_refuses_every_barrier_command_with_einval() {
+        // Linux's answer for an unsupported or unregistered command. It also
+        // lets musl's signal-based fallback (which runs only when the syscall
+        // fails) provide the barrier, which a fake 0 would suppress.
+        for cmd in MEMBARRIER_BARRIER_COMMANDS {
+            assert_eq!(sys_membarrier(cmd, 0), Err(Errno::EINVAL), "command {cmd}");
+        }
+        // An unknown command and a negative one are equally unsupported.
+        assert_eq!(sys_membarrier(1 << 20, 0), Err(Errno::EINVAL));
+        assert_eq!(sys_membarrier(-1, 0), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn membarrier_rejects_flags_even_on_query() {
+        // Linux requires flags == 0 for QUERY; a nonzero value is the caller's
+        // error, not a request for the (empty) mask.
+        assert_eq!(sys_membarrier(MEMBARRIER_CMD_QUERY, 1), Err(Errno::EINVAL));
     }
 
     #[test]
