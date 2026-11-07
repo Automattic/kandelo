@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source182 integrates real shared TLS certificate/key/PFX owners before TCP.57credential differential groups/5native handshake-lifetime groups and14package checks pass. Guest JSAPI/GC and full SecureContext/error setter/four-host conformance remain open.
+See [source scope](tls-credential-owner-integration.md).
+
 Source181 integrates actual synchronous HTTP request-header decisions over original-storage ownership.16request groups/11native differentials and25unchanged response cases plus14package checks pass. NativeSpan/JSAPI/shared consumption/fullServer/guest/fourhost remain unvalidated or missing.
 See [source scope](http-synchronous-headers-integration.md).
 

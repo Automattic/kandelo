@@ -4215,7 +4215,7 @@ net.Stream = net.Socket;
 // ============================================================
 
 const _nodeTlsContextTrust = _createNodeTlsContextTrust({
-    native: _nodeNative, values: _nodeValues, types: util.types,
+    native: _nodeNative, values: _nodeValues, types: util.types, Buffer,
 });
 
 const tls = (() => {

@@ -21,6 +21,10 @@
     "src/crypto/crypto_common.cc": {
       "path": "upstream/tls-context/src/crypto/crypto_common.cc",
       "sha256": "7ba47367625b9d3c96bdfec2a968f1161e3785212c1d1a375183b8bc7f54eadc"
+    },
+    "lib/internal/crypto/util.js": {
+      "path": "upstream/tls-context/lib/internal/crypto/util.js",
+      "sha256": "79c2825d2173435a80f914aeca952032826bb61ea5a2835c315f08ced5963337"
     }
   },
   "selections": {
@@ -47,6 +51,36 @@
       "start": "  if (allowPartialTrustChain)",
       "length": 76,
       "sha256": "a788ae7c624b6a2e9003d20e710d4e7d8e0e1897dd2ec97175f028db5034ee19"
+    },
+    "setCerts": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "function setCerts(",
+      "length": 162,
+      "sha256": "92df34214f41f70d4cd991882c1b639f1660033940a0bf82e037b7de7c228a3a"
+    },
+    "setKey": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "function setKey(",
+      "length": 244,
+      "sha256": "d4cb82af467c55474e2a49ebf4dcc1f28c3e8a02bbda740f1f876898da180915"
+    },
+    "configureCert": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "  if (cert) {",
+      "length": 94,
+      "sha256": "a8ef0db77bf7a56ac6f8788b73780480bb331bbef0e04d6ed295a90b49e8cc25"
+    },
+    "configureKey": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "  // Set the key after the cert.",
+      "length": 625,
+      "sha256": "2fec2bd3c1b65ac288c55362ad2e0573ab201dfceb5370023030e715e295b2e6"
+    },
+    "configurePFX": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "  if (pfx !== undefined && pfx !== null) {",
+      "length": 536,
+      "sha256": "3316a3e53dea748f4aff7e2ac9ab02fff47a0906acc6752ba513d43135011203"
     }
   },
   "errorReason": {

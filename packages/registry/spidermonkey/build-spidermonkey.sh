@@ -412,6 +412,8 @@ cp "$REPO_ROOT/third_party/node-core/dir-cursor.h" "$SRC_DIR/js/src/shell/kandel
 cp "$REPO_ROOT/third_party/node-core/package-config.h" "$SRC_DIR/js/src/shell/kandelo-node-package-config.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-tls-context.py" \
     --header "$SRC_DIR/js/src/shell/kandelo-node-tls-context-trust.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-tls-credentials.py" \
+    --header "$SRC_DIR/js/src/shell/kandelo-node-tls-credential-operations.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-tls-state.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-tls-state.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-package-parser.py" \

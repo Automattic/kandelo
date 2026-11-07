@@ -4,6 +4,7 @@ from pathlib import Path
 import argparse
 import hashlib
 import json
+import runpy
 
 
 def generate(root):
@@ -19,7 +20,10 @@ def generate(root):
         sources[name] = raw.decode()
     adapter = (root / 'tls-context-adapter.js').read_text()
     markers = {'validation': '/* NODE_TLS_CA_VALIDATION */', 'addCA': '/* NODE_TLS_ADD_CA_CERTS */',
-               'configureCA': '/* NODE_TLS_CONFIGURE_CA */', 'partial': '/* NODE_TLS_PARTIAL_CHAIN */'}
+               'configureCA': '/* NODE_TLS_CONFIGURE_CA */', 'partial': '/* NODE_TLS_PARTIAL_CHAIN */',
+               'setCerts': '/* NODE_TLS_SET_CERTS */', 'setKey': '/* NODE_TLS_SET_KEY */',
+               'configureCert': '/* NODE_TLS_CONFIGURE_CERT */', 'configureKey': '/* NODE_TLS_CONFIGURE_KEY */',
+               'configurePFX': '/* NODE_TLS_CONFIGURE_PFX */'}
     for name, selector in identity['selections'].items():
         source = sources[selector['source']]
         if source.count(selector['start']) != 1:
@@ -32,6 +36,9 @@ def generate(root):
         if adapter.count(marker) != 1:
             raise ValueError('TLS trust adapter marker mismatch: ' + marker)
         adapter = adapter.replace(marker, text)
+    marker = '/* NODE_TLS_TO_BUF */'
+    if adapter.count(marker) != 1: raise ValueError('TLS credential toBuf marker')
+    adapter = adapter.replace(marker, runpy.run_path(str(root / 'generate-tls-credentials.py'))['to_buf']())
     return adapter
 
 

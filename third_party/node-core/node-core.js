@@ -30692,6 +30692,17 @@ function _createNodeTlsContextTrust(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
     const { ArrayIsArray, ArrayPrototypeForEach } = primordials;
+    const { validateString } = platform.values.validators;
+    const Buffer = platform.Buffer;
+    function toBuf(val, encoding) {
+  if (typeof val === 'string') {
+    if (encoding === 'buffer')
+      encoding = 'utf8';
+    return Buffer.from(val, encoding);
+  }
+  return val;
+}
+
     const { ERR_INVALID_ARG_TYPE } = platform.values.errors.codes;
     const { isArrayBufferView } = platform.types;
     function validateKeyOrCertOption(name, value) {
@@ -30714,14 +30725,33 @@ function _createNodeTlsContextTrust(platform) {
     context.addCACert(cert);
   });
 }
+    function setCerts(context, certs, name) {
+  ArrayPrototypeForEach(certs, (cert) => {
+    validateKeyOrCertOption(name, cert);
+    context.setCert(cert);
+  });
+}
+
+
+    function setKey(context, key, passphrase, name) {
+  validateKeyOrCertOption(`${name}.key`, key);
+  if (passphrase !== undefined && passphrase !== null)
+    validateString(passphrase, `${name}.passphrase`);
+  context.setKey(key, passphrase);
+}
+
+
     function create(options) {
         const owner = platform.native.tlsContext('create');
         const context = {
             addCACert(cert) { platform.native.tlsContext('addCA', owner, cert); },
+            setCert(cert) { platform.native.tlsContext('setCert', owner, cert); },
+            setKey(key, passphrase) { platform.native.tlsContext('setKey', owner, key, passphrase); },
+            loadPKCS12(...args) { platform.native.tlsContext('loadPFX', owner, ...args); },
             addRootCerts() { platform.native.tlsContext('addDefault', owner); },
             setAllowPartialTrustChain() { platform.native.tlsContext('partial', owner); },
         };
-        const { allowPartialTrustChain, ca } = options;
+        const { allowPartialTrustChain, ca, cert, key, passphrase, pfx } = options;
         const name = 'options';
           if (ca) {
     addCACerts(context, ArrayIsArray(ca) ? ca : [ca], `${name}.ca`);
@@ -30731,6 +30761,50 @@ function _createNodeTlsContextTrust(platform) {
           if (allowPartialTrustChain) {
     context.setAllowPartialTrustChain();
   }
+          if (cert) {
+    setCerts(context, ArrayIsArray(cert) ? cert : [cert], `${name}.cert`);
+  }
+
+
+          // Set the key after the cert.
+  // `ssl_set_pkey` returns `0` when the key does not match the cert, but
+  // `ssl_set_cert` returns `1` and nullifies the key in the SSL structure
+  // which leads to the crash later on.
+  if (key) {
+    if (ArrayIsArray(key)) {
+      for (let i = 0; i < key.length; ++i) {
+        const val = key[i];
+        const pem = (
+          val?.pem !== undefined ? val.pem : val);
+        const pass = (
+          val?.passphrase !== undefined ? val.passphrase : passphrase);
+        setKey(context, pem, pass, name);
+      }
+    } else {
+      setKey(context, key, passphrase, name);
+    }
+  }
+
+
+          if (pfx !== undefined && pfx !== null) {
+    if (ArrayIsArray(pfx)) {
+      ArrayPrototypeForEach(pfx, (val) => {
+        const raw = val.buf || val;
+        const pass = val.passphrase || passphrase;
+        if (pass !== undefined && pass !== null) {
+          context.loadPKCS12(toBuf(raw), toBuf(pass));
+        } else {
+          context.loadPKCS12(toBuf(raw));
+        }
+      });
+    } else if (passphrase) {
+      context.loadPKCS12(toBuf(pfx), toBuf(passphrase));
+    } else {
+      context.loadPKCS12(toBuf(pfx));
+    }
+  }
+
+
         return owner;
     }
     return { create };

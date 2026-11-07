@@ -6912,3 +6912,7 @@ Source180 shares synchronous resolve/load hooks and CLI-gated MockTracker with a
 ### Synchronous request-header decisions over original storage
 
 Source181 lets the actual request headers callback determine llhttp body/upgrade consumption inside its current C frame. The native path retains the original unshared allocation through a real backing Span and preserves pending JS/coercion failures. The existing request consumer and actual curated variadic forwarder use it. Target int64 saturation precedes narrowing; actual shared atomic parsing, remaining synchronous callbacks/parser reuse/ConnectionsList/fullServer and production JSAPI/guest semantics remain open. See [scope](../tests/nodejs/outline/http-synchronous-headers-integration.md).
+
+### Shared TLS context owns real certificate and key material
+
+Source182 extends the same private SSL_CTX trust owner consumed by tls.connect with actual certificate chains, private keys and PFX credentials before TCP starts. The native handshake retains an independent SSL_CTX reference; certificate and issuer state comes from real X509 objects and the actual context store. Exact pinned validation/configuration segments preserve selected cert/key/PFX ordering and failure semantics. Full public SecureContext, other configuration, ordinary OpenSSL error-property setters and guest lifecycle remain implementation gaps. Native OpenSSL3.5.9 component evidence is a distinct artifact/configuration from the selected guest dependency. See [scope](../tests/nodejs/outline/tls-credential-owner-integration.md).

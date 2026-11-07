@@ -1,6 +1,7 @@
 /* A real SSL_CTX captures trust before TCP startup; each handshake claims its
  * own OpenSSL reference, independent of this foreground GC-owned wrapper. */
 #include "kandelo-node-tls-context-trust.h"
+#include "kandelo-node-tls-credential-operations.h"
 #include "kandelo-node-tls-state.h"
 #include "js/ErrorReport.h"
 #include "js/Exception.h"
@@ -14,6 +15,7 @@
 namespace {
 struct KandeloTlsContextOwner {
   kandelo::tls::ContextPointer context;
+  ncrypto::X509Pointer certificate, issuer;
   explicit KandeloTlsContextOwner(kandelo::tls::ContextPointer value)
       : context(std::move(value)) {}
 };
@@ -49,23 +51,74 @@ static bool KandeloTlsContextError(JSContext* cx, const char* fallback,
   ERR_clear_error();
   JS_ReportErrorASCII(cx, "%s", fallback); return false;
 }
-static bool KandeloTlsTrustBytes(JSContext* cx, HandleValue value,
-                                   kandelo::crypto::Bytes* bytes) {
-  if (value.isString()) return KandeloCryptoInput(cx, value, bytes);
-  RootedObject view(cx, value.isObject() ? js::CheckedUnwrapDynamic(&value.toObject(), cx) : nullptr);
-  if (!view || !JS_IsArrayBufferViewObject(view)) {
-    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "TLS CA must be a string or actual array buffer view");
+// Admission remains the exact string/ArrayBufferView LoadBIO contract. The
+// common checked byte source owns real cross-realm roots and no-GC borrows.
+// A genuine oversized source is not copied: pinned LoadBIO returns empty.
+static bool KandeloTlsMaterialBytes(JSContext* cx, HandleValue value,
+    kandelo::crypto::Bytes* bytes, size_t* length, bool* admitted, bool bioLimit = true, bool terminate = false) {
+  *admitted = false; *length = 0;
+  if (value.isString()) {
+    if (!KandeloCryptoInput(cx,value,bytes)) return false;
+    *admitted = true; *length = bytes->value.size(); return true;
+  }
+  RootedObject view(cx, value.isObject() ? js::CheckedUnwrapDynamic(&value.toObject(),cx) : nullptr);
+  if (value.isObject() && !view) {
+    if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);
     return false;
   }
-  // JSAPI returns the complete view range, including DataView offsets and
-  // zero-length detached/out-of-bounds views. No public JS getters are read.
-  JS::AutoCheckCannotGC nogc;
-  const size_t length = JS_GetArrayBufferViewByteLength(view);
-  bool shared;
-  auto* data = static_cast<const uint8_t*>(JS_GetArrayBufferViewData(view, &shared, nogc));
-  bytes->value.resize(length);
-  for (size_t i = 0; i < length; i++) bytes->value[i] = __atomic_load_n(data + i, __ATOMIC_RELAXED);
-  return true;
+  if (!view || !JS_IsArrayBufferViewObject(view)) return true;
+  KandeloCryptoByteSource source(cx);
+  if (!source.Init(value)) return false;
+  *admitted = true;
+  return source.WithBytes([&](SharedMem<uint8_t*> data,size_t size) {
+    *length = size;
+    if (!bioLimit || size <= INT_MAX) {
+      if (!terminate) KandeloCryptoCopy(data,size,bytes);
+      else {
+        if (size == SIZE_MAX) throw std::bad_alloc();
+        // Allocate the terminator before copying secrets: push_back after a
+        // full copy could reallocate and free an uncleansed old password.
+        bytes->value.resize(size+1);
+        for (size_t i=0;i<size;++i) bytes->value[i]=__atomic_load_n(data.unwrap()+i,__ATOMIC_RELAXED);
+        bytes->value[size]=0;
+      }
+    }
+    return true;
+  });
+}
+static bool KandeloTlsTrustBytes(JSContext* cx, HandleValue value,
+    kandelo::crypto::Bytes* bytes, size_t* length) {
+  bool admitted;
+  if (!KandeloTlsMaterialBytes(cx,value,bytes,length,&admitted)) return false;
+  if (admitted) return true;
+  JS_ReportErrorASCII(cx,"TLS CA must be a string or actual array buffer view");return false;
+}
+static bool KandeloTlsCredentialError(JSContext* cx,const kandelo::crypto::Error& failure, JSExnType type = JSEXN_ERR) {
+  if (JS_IsExceptionPending(cx)) return false;
+  RootedString message(cx,JS_NewStringCopyZ(cx,failure.what())),file(cx,JS_GetEmptyString(cx));
+  RootedObject stack(cx);RootedValue value(cx);
+  if (!message || !JS::CaptureCurrentStack(cx,&stack) ||
+      !JS::CreateError(cx,type,stack,file,0,JS::ColumnNumberOneOrigin(1),nullptr,
+                       message,JS::NothingHandleValue,&value)) return false;
+  RootedObject object(cx,&value.toObject());
+  auto text = [&](const char* name,const std::string& field) {
+    if (field.empty()) return true;
+    RootedString string(cx,JS_NewStringCopyN(cx,field.data(),field.size()));
+    return string && JS_DefineProperty(cx,object,name,string,JSPROP_ENUMERATE);
+  };
+  if (!text("code",failure.code) || !text("library",failure.library) || !text("reason",failure.reason)) return false;
+  if (!failure.stack.empty()) {
+    RootedObject entries(cx,JS::NewArrayObject(cx,failure.stack.size()));
+    if (!entries) return false;
+    for (uint32_t i=0;i<failure.stack.size();++i) {
+      RootedString string(cx,JS_NewStringCopyN(cx,failure.stack[i].data(),failure.stack[i].size()));
+      if (!string) return false;
+      RootedValue entry(cx,StringValue(string));
+      if (!JS_SetElement(cx,entries,i,entry)) return false;
+    }
+    if (!JS_DefineProperty(cx,object,"opensslErrorStack",entries,JSPROP_ENUMERATE)) return false;
+  }
+  JS_SetPendingException(cx,value);return false;
 }
 // Called by the existing fd/SSL handshake owner. Claim an independent native
 // reference before any JS wrapper may be collected; no JS root crosses threads.
@@ -106,12 +159,44 @@ static bool KandeloNativeTlsContextOperationImpl(JSContext* cx, unsigned argc, V
     return false;
   }
   if (operation == "addCA" && argc == 3) {
-    kandelo::crypto::Bytes bytes;
-    if (!KandeloTlsTrustBytes(cx, args[2], &bytes)) return false;
+    kandelo::crypto::Bytes bytes;size_t length;
+    if (!KandeloTlsTrustBytes(cx, args[2], &bytes, &length)) return false;
     unsigned long error = 0;
-    if (!kandelo::tls::AddTrustCertificates(owner->context.get(), bytes.value.data(), bytes.value.size(), &error))
+    if (!kandelo::tls::AddTrustCertificates(owner->context.get(), bytes.value.data(), length, &error))
       return KandeloTlsContextError(cx, "OpenSSL rejected a CA certificate", error);
     return true;
+  }
+  if ((operation == "setCert" && argc == 3) ||
+      (operation == "setKey" && argc == 4) ||
+      (operation == "loadPFX" && (argc == 3 || argc == 4))) {
+    kandelo::crypto::Bytes bytes,password;size_t length;bool admitted;
+    if (!KandeloTlsMaterialBytes(cx,args[2],&bytes,&length,&admitted)) return false;
+    if (operation == "setCert") {
+      if (admitted) kandelo::tls::credentials::SetCertificate(owner->context.get(),owner->certificate,owner->issuer,bytes.value.data(),length);
+    } else if (operation == "setKey") {
+      if (admitted) {
+        if (args[3].isString() && !KandeloCryptoInput(cx,args[3],&password)) return false;
+        kandelo::tls::credentials::SetPrivateKey(owner->context.get(),bytes.value.data(),length,password.value.data(),password.value.size());
+      }
+    } else {
+      ncrypto::ClearErrorOnReturn clear;
+      // LoadBIO failure precedes password validation, exactly as the pin.
+      auto bio=kandelo::tls::credentials::LoadPFXBIO(bytes.value.data(),length,admitted);
+      const char* pass=nullptr;
+      if (argc == 4) {
+        bool passAdmitted;size_t passLength;
+        if (!KandeloTlsMaterialBytes(cx,args[3],&password,&passLength,&passAdmitted,false,true)) return false;
+        // The unchanged public toBuf converts strings; the private PFX binding
+        // accepts actual views only for its supplied password argument.
+        if (!passAdmitted || args[3].isString()) {
+          const kandelo::crypto::X509Error error("Pass phrase must be a buffer","ERR_INVALID_ARG_TYPE");
+          return KandeloTlsCredentialError(cx,error,JSEXN_TYPEERR);
+        }
+        pass=reinterpret_cast<const char*>(password.value.data());
+      }
+      kandelo::tls::credentials::LoadPFX(owner->context.get(),owner->certificate,owner->issuer,bio,pass);
+    }
+    args.rval().setUndefined();return true;
   }
   if (operation == "addDefault" && argc == 2) {
     kandelo::tls::AddDefaultTrust(owner->context.get()); return true;
@@ -125,6 +210,7 @@ static bool KandeloNativeTlsContextOperationImpl(JSContext* cx, unsigned argc, V
 }
 static bool KandeloNativeTlsContextOperation(JSContext* cx, unsigned argc, Value* vp) {
   try { return KandeloNativeTlsContextOperationImpl(cx, argc, vp); }
+  catch (const kandelo::crypto::Error& error) { return KandeloTlsCredentialError(cx,error); }
   catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
 }
 }  // namespace

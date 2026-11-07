@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "f4f33c3c446cec695b62007990942e561b2552ebcd773b025e48e130d7eef1da",
+    "packages/registry/node-compat/bootstrap.js": "9aa67159819426191e832756d40c7519498db30627698bf58f4c5ba4ff1b46e3",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
@@ -99,7 +99,7 @@
     "third_party/node-core/tempdir-platform-adapter.js": "5102bbeeeb0ca8ffe47dec42d4edad3a91e0e8c6842903b3d3fb904b237afa39",
     "third_party/node-core/terminal-platform-adapter.js": "9aa2a1a70dcc46a872589562a30a10009a0deea57d5a8becd4b34f7e7e1ea3cc",
     "third_party/node-core/testing-platform-adapter.js": "5d2a2d63baeb3c847f3670ebfa88377cbe94c5c58426fed905cb6c64ca9f88c1",
-    "third_party/node-core/tls-context-adapter.js": "c072933785d58f03a21c2672a34bf2e480533feea7a6ac5213d3fd5f36b123dc",
+    "third_party/node-core/tls-context-adapter.js": "a08bde53fa77e8f8e389bfbf2fc8118d9b4b33a2035addb194f08d0f1287a270",
     "third_party/node-core/tls-identity-adapter.js": "7e1688bff98af17878908679a8c58fc084730e4c1dd6daa03975e0fcdb525760",
     "third_party/node-core/url-path-platform-adapter.js": "bf72745440f0b19df5ba74f3989aa16951e2e64d478ab8d7d6835c92b1e036c0",
     "third_party/node-core/util-algorithms-adapter.js": "ced00af953445ee5af90fd2b77afad95a4e0f09713514d7e1a27de79d4a251d0",
