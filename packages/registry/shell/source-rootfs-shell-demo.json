@@ -4,6 +4,7 @@
   "defaultProfile": "shell",
   "profiles": {
     "shell": {
+      "requires": [],
       "identity": {
         "title": "Bare shell",
         "summary": "Bash, dash, coreutils, and the full utility set from the shell image.",
@@ -31,6 +32,7 @@
       }
     },
     "node": {
+      "requires": ["node-browser-bundle"],
       "identity": {
         "title": "Node.js",
         "summary": "SpiderMonkey-backed Node.js compatibility runtime; node, npm and npx arrive from the shell image's lazy node archive on first use.",
@@ -112,6 +114,7 @@
       }
     },
     "sdl2": {
+      "requires": ["sdl2-demo"],
       "identity": {
         "title": "SDL2 GLSL playground",
         "summary": "SDL2 GLSL shader playground: a live-coding editor (left) beside a GLES2 fragment shader rendered on a 1920×1080 /dev/dri/card0 surface (right), auto-recompiling 250 ms after you stop typing. F1/F2 switch between the image and sound shader, Ctrl+L cycles presets, Ctrl+S persists, ESC quits.",
@@ -150,6 +153,7 @@
       }
     },
     "wayland": {
+      "requires": ["wayland-demo"],
       "identity": {
         "title": "Wayland desktop",
         "summary": "A real Wayland stack on /dev/dri/card0: wlcompositor (a wl_shm and xdg-shell server driving KMS) composites three clients — wlclock, wlpaint, and wlterm, a VT100 terminal on the in-tree libkwl toolkit running a forkpty'd shell. Type to drive the shell; drag a titlebar to move a window.",
@@ -190,6 +194,7 @@
       }
     },
     "omarchy": {
+      "requires": ["wayland-demo", "quickshell", "dbus", "foot"],
       "identity": {
         "title": "Omarchy-style desktop",
         "summary": "An Omarchy-style shell on Kandelo's Hyprland-compatible compositor. One Quickshell process draws the wallpaper, bar, launcher (CTRL+Space), menu (CTRL+ALT+Space), notifications, on-screen display and lock screen (CTRL+Escape). Six live colour themes also style the Qt Theme Gallery. The desktop starts bare: open clients from the launcher, CTRL+Return (terminal), or CTRL+K (clock).",

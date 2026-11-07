@@ -1859,6 +1859,14 @@ caller can fall back.
 
 #### Computer library and retention
 
+A computer made from the worktree's partial image keeps its saved
+filesystem across reloads but not across rebuilds. The computer records the
+build it was copied from (`partialImageSha256`); booting it after
+`./run.sh partial` produced a different image discards the saved
+filesystem, logs a warning in the boot log, and starts from the new image.
+The persistence identity also includes that digest, so saved state can never
+be opened against a different build.
+
 The dock's **Web** button opens guest websites; **Graphics** shows graphical
 output. **Guide** opens the image-provided instructions and actions.
 New visitors default to the **Kandelo Dark** theme, regardless of the system
@@ -2774,6 +2782,21 @@ both the browser and Node hosts. The app consumes those paths from image
 metadata rather than recreating a second layout after boot.
 
 ### Consumer-owned product selection
+
+A worktree's [partial image](package-management.md#partial-images) is not a
+product and has no place in these registries. On the dev server only,
+`vite/dev-partial-image.ts` lists it as its own gallery machine, first,
+titled `Partial <image> + <packages>`, with its listing read from the
+image's own `demo.json`. It is served at one URL
+(`<base>@kandelo-partial/image.vfs.zst`) with `Cache-Control: no-store`, the
+service worker passes that route straight to the network and never into
+Cache Storage, and a rebuild reloads the page so it always describes the
+image on disk. A production build never carries it. The canonical shell is
+optional on the dev server: when this worktree has not built it, its entry
+shows the ordinary not-built state, the page still loads, and activity
+invitations that need it as the guests' default computer say so instead of
+offering a link. `./run.sh browser --partial` serves what is built without
+first running the full local build.
 
 VFS product definitions live under `images/vfs/products/` and describe what
 an image is. They do not decide where that image appears.

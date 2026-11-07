@@ -798,7 +798,7 @@ fn supported_tree_run_args(
 /// loop and single-target selection, so a target built alone (e.g.
 /// `bootstrap kernel`) and the same step run as part of `bootstrap all` do
 /// exactly the same thing.
-fn run_bootstrap_step(
+pub(crate) fn run_bootstrap_step(
     repo: &Path,
     name: &str,
     jobs: usize,
@@ -6756,7 +6756,7 @@ fn absolute_authored_path(value: String, flag: &str) -> Result<PathBuf, String> 
     Ok(path)
 }
 
-fn select_job_count(
+pub(crate) fn select_job_count(
     explicit: Option<&str>,
     environment: Option<&str>,
     available: Option<std::num::NonZeroUsize>,

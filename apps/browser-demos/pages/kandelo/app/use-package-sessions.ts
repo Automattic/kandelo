@@ -263,13 +263,22 @@ export function usePackageSessions(
     network.dismissInvitation();
     network.setOpen(false);
   });
+  // An invitation whose guests join on the default computer (the canonical
+  // shell) cannot be offered from a worktree that never built that image,
+  // such as one that built only a partial image. Say so instead of linking
+  // guests to an image this server cannot serve.
+  let linkUnavailable: string | null = null;
   function invitationLink(link: string | null, offered: SessionOffer | null) {
     if (!link || !offered) return link;
     const url = new URL(link);
     const manifest = catalog.find(entry => entry.manifest.package === offered.package)?.manifest;
     const type = manifest?.offers.find(type => type.id === offered.offer);
     if (manifest?.joins.find(join => join.id === type?.join)?.computer === "default") {
-      if (!clientImageUrl) throw new Error("No default client computer is available");
+      if (!clientImageUrl) {
+        linkUnavailable = "Guests join this activity on the default shell computer, which is not built here. "
+          + "Build it with ./run.sh local-build to invite them.";
+        return null;
+      }
       url.searchParams.set("vfs", clientImageUrl);
       url.searchParams.delete("profile");
     }
@@ -279,7 +288,7 @@ export function usePackageSessions(
   const link = invitationLink(network.state.link, offered);
   const copyStatus = copyResult.link === link ? copyResult.status : "idle";
   const offeredTitle = offered ? catalog.find(entry => entry.manifest.package === offered.package)?.manifest.offers.find(type => type.id === offered.offer)?.title : null;
-  return { catalog, imageCatalog, ready, error, busy, progress, transfer, remoteChoices, cancel, offered, offeredTitle, offer, invited, invitation, invitationError, join, link, copyStatus, copySequence,
+  return { catalog, imageCatalog, ready, error, busy, progress, transfer, remoteChoices, cancel, offered, offeredTitle, offer, invited, invitation, invitationError, join, link, linkUnavailable, copyStatus, copySequence,
     startImage: (id: string) => run(async assertCurrent => {
       if (!host.imageActivities) throw new Error("This computer has no image activity controller");
       const activity = await host.imageActivities.prepare(id, setProgress, assertCurrent);

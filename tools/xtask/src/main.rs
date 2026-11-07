@@ -92,6 +92,7 @@ mod local_build_executor;
 mod local_build_timing;
 mod package_archive_limits;
 mod package_matrix;
+mod partial_image;
 mod pkg_manifest;
 mod program_env_imports;
 mod package_imports;
@@ -124,6 +125,7 @@ fn main() -> ExitCode {
         sub.as_str(),
         "bootstrap"
             | "local-build"
+            | "partial-image"
             | "build-deps"
             | "bundle-program"
             | "stamp-abi-contract"
@@ -155,6 +157,7 @@ fn main() -> ExitCode {
         "local-build" => local_build::run(rest),
         "check-determinism" => determinism_check::run(rest),
         "bootstrap" => local_build::run_bootstrap(rest),
+        "partial-image" => partial_image::run(rest),
         "clean" => local_build::run_clean(rest),
         #[cfg(unix)]
         "cache-gc" => cache_gc::run(rest),

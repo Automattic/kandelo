@@ -26,6 +26,8 @@ outside the interactive shell.
 |---------|---------|
 | `./run.sh setup` | Prepare the SDK, browser-required packages, root filesystem, and host runtime |
 | `./run.sh setup --all` | Also build every supported package, including test-only packages |
+| `./run.sh partial shell <pkg>...` | Compose a shell with only the rootfs base and the named packages, for fast iteration ([Partial images](docs/package-management.md#partial-images)) |
+| `./run.sh browser --partial` | Serve what is built, starting from the partial image, without the full build |
 | `./run.sh browser` | Build/reuse browser images and start the development server |
 | `./run.sh run <example>` | Run a Node.js demo, such as `shell`, `nginx`, or `wordpress` |
 | `./run.sh build <target>` | Build a kernel, package, or image, such as `kernel`, `php`, or `shell-vfs` |
@@ -46,6 +48,12 @@ The selected outputs appear under `local-binaries/source-only-v1/`.
 Set `KANDELO_SOURCE_CACHE_ROOT` to an absolute path if you need an isolated
 cache. There is no remote prebuilt-binary fallback or separate fetch step.
 See [Package Management](docs/package-management.md) for cache details.
+
+Working on one or two packages? Start with a partial image instead of the
+full setup: `./run.sh partial shell <pkg>` builds the kernel, the SDK, the
+rootfs base and only those packages, and `./run.sh browser --partial` boots
+it as its own machine. Build the full set (`./run.sh setup`) before you open
+a pull request; a partial image is not evidence for the canonical images.
 
 After changing kernel code, run `./run.sh setup` before runtime tests. After
 changing libc inputs, run `./run.sh setup --all` to refresh linked package

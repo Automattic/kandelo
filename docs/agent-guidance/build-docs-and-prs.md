@@ -317,7 +317,9 @@ evidence explicit:
 - Was ABI affected? If yes, was `ABI_VERSION` bumped or was the snapshot
   additive?
 - Were package artifacts, revisions, VFS images, or indexes affected?
-- What validation was run?
+- What validation was run? If the evidence came from a partial image
+  (`./run.sh partial`), name the image and its packages, and say whether the
+  canonical products were built.
 - What validation was not run?
 - What known gaps remain?
 

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useGalleryItems } from "../kernel-host/react";
+import { galleryItemKey } from "../url-state";
 import { decodeBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import type {
   BootDescriptor,
@@ -79,7 +80,7 @@ export const NewMachinePane: React.FC<{
             <div className="knew-presets">
               {featured.map((item) => (
                 <button
-                  key={item.id}
+                  key={galleryItemKey(item)}
                   type="button"
                   className="knew-preset"
                   onClick={() => onLaunchItem(item)}

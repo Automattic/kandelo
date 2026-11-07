@@ -195,8 +195,17 @@ export const SHELL_LAZY_DATA_ARCHIVE_SPECS = withArchiveAddresses([
  * terminal type, and TLS trust anchors. Adding a script here reaches both
  * images by construction; there is no second list to keep in step.
  */
-export function registerShellProfileScripts(fs: VfsImageFilesystem): void {
-  for (const script of SHELL_PROFILE_SCRIPTS) script.register(fs);
+export function registerShellProfileScripts(
+  fs: VfsImageFilesystem,
+  includesPackage: (pkg: string) => boolean = () => true,
+): void {
+  for (const script of SHELL_PROFILE_SCRIPTS) {
+    // A partial shell (images/vfs/scripts/shell-selection.ts) omits a script
+    // whose package it does not carry: python.sh pointing PYTHONHOME at an
+    // absent interpreter would describe software the image does not have.
+    if ("owner" in script && !includesPackage(script.owner)) continue;
+    script.register(fs);
+  }
 }
 
 /**
@@ -209,12 +218,26 @@ const SHELL_PROFILE_SCRIPTS = [
     path: "/etc/profile.d/00-kandelo-shell.sh",
     register: registerDemoShellProfile,
   },
-  { path: "/etc/profile.d/python.sh", register: registerPythonShellProfile },
-  { path: "/etc/profile.d/node.sh", register: registerNodeShellProfile },
-  { path: "/etc/profile.d/man.sh", register: registerManShellProfile },
+  {
+    path: "/etc/profile.d/python.sh",
+    register: registerPythonShellProfile,
+    owner: "python-browser-bundle",
+  },
+  {
+    path: "/etc/profile.d/node.sh",
+    register: registerNodeShellProfile,
+    owner: "node-browser-bundle",
+  },
+  {
+    path: "/etc/profile.d/man.sh",
+    register: registerManShellProfile,
+    owner: "mandoc-browser-bundle",
+  },
 ] as const satisfies ReadonlyArray<{
   path: string;
   register: (fs: VfsImageFilesystem) => void;
+  /** The package the script configures, when it configures one. */
+  owner?: string;
 }>;
 
 /** Guest paths of every script `registerShellProfileScripts` writes. */

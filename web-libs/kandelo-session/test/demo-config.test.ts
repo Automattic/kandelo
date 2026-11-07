@@ -17,12 +17,45 @@ import {
   resolveDemoDisplay,
   resolveDemoPresentation,
   resolveDemoExchange,
+  resolveDemoRequires,
   type KandeloDemoConfig,
 } from "../src/demo-config";
 
 function withProfile(profile: Record<string, unknown>): KandeloDemoConfig {
   return { version: 1, profiles: { m: profile } } as unknown as KandeloDemoConfig;
 }
+
+describe("requires", () => {
+  it("accepts resolver package names and resolves them", () => {
+    const config = withProfile({ requires: ["fbdoom", "sdl2-demo", "love"] });
+    expect(() => validateKandeloDemoConfig(config)).not.toThrow();
+    expect(resolveDemoRequires(config, "m")).toEqual(["fbdoom", "sdl2-demo", "love"]);
+  });
+
+  it("resolves an absent list as no requirements", () => {
+    expect(resolveDemoRequires(withProfile({}), "m")).toEqual([]);
+  });
+
+  it("rejects a non-array", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({ requires: "fbdoom" })))
+      .toThrow(/profiles\.m\.requires must be an array/);
+  });
+
+  it("rejects something that is not a package name", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({ requires: ["fbdoom@local"] })))
+      .toThrow(/profiles\.m\.requires\[0\] must be a package name/);
+  });
+
+  it("rejects duplicates", () => {
+    expect(() => validateKandeloDemoConfig(withProfile({ requires: ["ffmpeg", "ffmpeg"] })))
+      .toThrow(/profiles\.m\.requires lists ffmpeg twice/);
+  });
+
+  it("rejects requires at the top level", () => {
+    expect(() => validateKandeloDemoConfig({ version: 1, requires: ["x"] } as unknown as KandeloDemoConfig))
+      .toThrow(/requires at the top level/);
+  });
+});
 
 describe("runtime block", () => {
   it("accepts a well-formed runtime block", () => {

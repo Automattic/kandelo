@@ -556,6 +556,22 @@ part of the task. Build what is missing:
    scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only --arch wasm64posix
    ```
 
+**Iterating on a few packages first (the default for package work).** Steps
+2, 4 and 5 build the whole supported graph. When the task is porting or
+iterating on one or a few packages, compose a
+[partial image](../package-management.md#partial-images) carrying the rootfs
+base and only those packages instead, and tell the user you are doing so
+(see [Partial images are development builds](packages-and-builds.md#partial-images-are-development-builds)):
+```bash
+scripts/dev-shell.sh ./run.sh partial shell <pkg> [<pkg>...] [--with-tests]
+./run.sh browser --partial
+```
+That builds the kernel, the SDK, the rootfs closure and the named packages,
+and skips the test fixtures of step 5. It supports claims about the named
+packages on the base image only: "the shell works", "the browser works" or
+"the suites pass" still need the full build above and the suites run
+against it. Name the partial image in the report when it is the evidence.
+
 After that the full suites run. Do **not** report "I can't run Vitest / the
 conformance suites / the browser" because a fresh worktree lacks artifacts —
 build them with the steps above, then run the suite and report the real

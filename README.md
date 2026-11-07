@@ -48,6 +48,11 @@ The first setup downloads tools and builds the software needed by the browser.
 Later runs reuse cached builds. Run `./run.sh setup` again after pulling changes.
 For full test preparation, use `./run.sh setup --all`; see [Contributing](CONTRIBUTING.md).
 
+To try a package without building everything, compose a small shell that
+carries only it: `./run.sh partial shell <package>`, then
+`./run.sh browser --partial`. See
+[Partial images](docs/package-management.md#partial-images).
+
 The development server supplies the browser isolation settings Kandelo needs.
 For custom hosting, see [Browser Support](docs/browser-support.md#directory-scoped-production-hosting).
 
