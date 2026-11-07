@@ -255,6 +255,8 @@ describe("development CORS proxy", () => {
         "HEAD",
         "POST",
       ]);
+      expect(observed.map(({ headers }) => headers["sec-fetch-mode"]))
+        .toEqual(["same-origin", "same-origin", "same-origin"]);
       expect(observed[0]!.url).toBe(
         "/repo.git/info/refs?service=git-upload-pack",
       );
@@ -278,6 +280,34 @@ describe("development CORS proxy", () => {
       expect(observed[2]!.headers["x-forwarded-for"]).toBeUndefined();
     } finally {
       await Promise.all([close(relay), close(upstream)]);
+    }
+  });
+
+  it("follows GET redirects between origins with server-side request metadata", async () => {
+    const modes: Array<string | string[] | undefined> = [];
+    const destination = createServer((request, response) => {
+      modes.push(request.headers["sec-fetch-mode"]);
+      response.end("archive bytes");
+    });
+    const destinationRoot = await listen(destination);
+    const origin = createServer((request, response) => {
+      modes.push(request.headers["sec-fetch-mode"]);
+      response.writeHead(302, { Location: `${destinationRoot}/archive.zip` });
+      response.end();
+    });
+    const originRoot = await listen(origin);
+    const relay = relayServer();
+    const relayRoot = await listen(relay);
+    try {
+      const result = await sendRequest({
+        url: proxyUrl(relayRoot, `${originRoot}/redirect`), method: "GET",
+        headers: { "Sec-Fetch-Mode": "cors", Cookie: "ambient=private" },
+      });
+      expect(result.status).toBe(200);
+      expect(result.body.toString()).toBe("archive bytes");
+      expect(modes).toEqual(["same-origin", "same-origin"]);
+    } finally {
+      await Promise.all([close(relay), close(origin), close(destination)]);
     }
   });
 

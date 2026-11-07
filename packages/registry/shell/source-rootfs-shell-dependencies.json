@@ -202,6 +202,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "dosbox-pure",
+      "version": "1.0-preview8",
+      "role": "lazy-file"
+    },
+    {
       "name": "love",
       "version": "11.5-kandelo-kms",
       "role": "lazy-archive"

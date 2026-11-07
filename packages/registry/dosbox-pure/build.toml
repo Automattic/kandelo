@@ -1,0 +1,13 @@
+script_path = "packages/registry/dosbox-pure/build-dosbox-pure.sh"
+inputs = [
+  "packages/registry/dosbox-pure/build-dosbox-pure.sh",
+  "packages/registry/dosbox-pure/kandelo-libretro.cpp",
+  "packages/registry/dosbox-pure/dos-play",
+  "packages/registry/dosbox-pure/games.tsv",
+  "packages/registry/dosbox-pure/DOSDEF-UNLICENSE.txt",
+  "packages/registry/dosbox-pure/patches",
+  "scripts/package-build-roots.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 8

@@ -1,0 +1,58 @@
+--- a/Lib/subprocess.py
++++ b/Lib/subprocess.py
+@@ -75,7 +75,11 @@
+     _mswindows = True
+ 
+ # some platforms do not support subprocesses
+-_can_fork_exec = sys.platform not in {"emscripten", "wasi", "ios", "tvos", "watchos"}
++# Kandelo uses the WASI configure target with a POSIX libc that provides
++# fork/exec. Test those capabilities instead of rejecting that runtime by name.
++_can_fork_exec = (sys.platform not in {"emscripten", "wasi", "ios", "tvos", "watchos"}
++                  or (sys.platform == "wasi" and hasattr(os, "fork")
++                      and hasattr(os, "execv")))
+ 
+ if _mswindows:
+     import _winapi
+--- a/configure.ac
++++ b/configure.ac
+@@ -7517,7 +7517,6 @@
+       [_gdbm],
+       [_multiprocessing],
+       [_posixshmem],
+-      [_posixsubprocess],
+       [_scproxy],
+       [_tkinter],
+       [_interpreters],
+@@ -7528,6 +7527,10 @@
+       [resource],
+       [syslog],
+     )
++    dnl A POSIX libc on WebAssembly can provide real fork/exec (Kandelo).
++    AS_IF([test "$ac_cv_func_fork" != yes || test "$ac_cv_func_execv" != yes], [
++      PY_STDLIB_MOD_SET_NA([_posixsubprocess])
++    ])
+     AS_CASE([$ac_sys_system/$ac_sys_emscripten_target],
+       [Emscripten/browser*], [
+         dnl These modules are not particularly useful in browsers.
+--- a/configure
++++ b/configure
+@@ -28769,7 +28769,6 @@
+     py_cv_module__gdbm=n/a
+     py_cv_module__multiprocessing=n/a
+     py_cv_module__posixshmem=n/a
+-    py_cv_module__posixsubprocess=n/a
+     py_cv_module__scproxy=n/a
+     py_cv_module__tkinter=n/a
+     py_cv_module__interpreters=n/a
+@@ -28780,6 +28779,11 @@
+     py_cv_module_resource=n/a
+     py_cv_module_syslog=n/a
+     py_cv_module_=n/a
++
++    # Kandelo's POSIX libc provides fork/exec despite the WASI target name.
++    if test "$ac_cv_func_fork" != yes || test "$ac_cv_func_execv" != yes; then
++      py_cv_module__posixsubprocess=n/a
++    fi
+ 
+     case $ac_sys_system/$ac_sys_emscripten_target in #(
+   Emscripten/browser*) :

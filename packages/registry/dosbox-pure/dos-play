@@ -1,0 +1,65 @@
+#!/bin/sh
+# Catalog downloads are verified before extraction. Uploaded/local content is
+# passed to DOSBox Pure directly; this script never extracts an arbitrary ZIP.
+set -eu
+CATALOG=/usr/share/dos-play/games.tsv
+say() { echo "dos-play: $*" >&2; }
+usage() { echo 'usage: dos-play GAME|PATH [DOSBOX_OPTIONS] (dos-play --list shows demos)' >&2; exit 2; }
+[ "$#" -gt 0 ] || usage
+case "$1" in
+    --list) cut -f1,8,9 "$CATALOG"; exit 0 ;;
+    --help|-h) usage ;;
+    /*|./*|../*) exec /usr/bin/dosbox-pure "$@" ;;
+    *[!a-z0-9-]*|'') usage ;;
+esac
+TAB=$(printf '\t')
+LINE=$(grep "^$1$TAB" "$CATALOG" || true)
+[ -n "$LINE" ] || { say "Unknown game: $1 (use --list, or ./PATH for local content)"; exit 2; }
+shift
+IFS="$TAB" read -r ID BYTES SHA256 URL FORMAT ROOT EXE TITLE LICENSE <<ROW
+$LINE
+ROW
+DATA=${XDG_DATA_HOME:-${HOME:?HOME or XDG_DATA_HOME is required}/.local/share}
+case "$DATA" in /*) ;; *) say 'HOME or XDG_DATA_HOME must be absolute'; exit 2 ;; esac
+GAMES="$DATA/dos-play"
+DIR="$GAMES/$ID"
+mkdir -p "$GAMES"
+# The checksum marker is committed last. Failed/interrupted installs are not
+# reusable, and a changed catalog hash causes a fresh download.
+if [ "$(cat "$DIR/.download-sha256" 2>/dev/null || true)" != "$SHA256" ] ||
+   [ ! -f "$DIR/$EXE" ]; then
+    LOCK="$GAMES/.$ID.lock"
+    mkdir "$LOCK" 2>/dev/null || { say "Another download is in progress: $ID ($LOCK)"; exit 1; }
+    cleanup() { rm -rf "$LOCK"; }
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    say "Downloading $TITLE ($BYTES bytes)..."
+    curl -fSL --retry 2 --connect-timeout 30 --max-time 180 "$URL" -o "$LOCK/download"
+    if [ "$(wc -c < "$LOCK/download")" -ne "$BYTES" ] ||
+       ! printf '%s  %s\n' "$SHA256" "$LOCK/download" | sha256sum -c - >/dev/null 2>&1; then
+        say 'Download size or SHA-256 mismatch; refusing to run it'
+        exit 1
+    fi
+    mkdir "$LOCK/unpacked"
+    case "$FORMAT" in
+        com)
+            cp "$LOCK/download" "$LOCK/unpacked/$EXE"
+            cp /usr/share/dos-play/DOSDEF-UNLICENSE.txt "$LOCK/unpacked/UNLICENSE.txt"
+            ;;
+        zip) unzip -q "$LOCK/download" -d "$LOCK/unpacked" ;;
+        *) say "Unsupported catalog format: $FORMAT"; exit 1 ;;
+    esac
+    SOURCE="$LOCK/unpacked"
+    if [ "$ROOT" != . ]; then SOURCE="$SOURCE/$ROOT"; fi
+    [ -f "$SOURCE/$EXE" ] || { say 'Executable missing from download'; exit 1; }
+    printf '%s\n' "$SHA256" > "$SOURCE/.download-sha256"
+    # Keep every upstream file, including licenses and DOS extenders. The
+    # downloaded archive itself is discarded after the installation commits.
+    rm -rf "$DIR"
+    mv "$SOURCE" "$DIR"
+    cleanup
+    trap - EXIT INT TERM HUP
+fi
+say "Starting $TITLE ($LICENSE)... Ctrl+Shift+F12 quits"
+exec /usr/bin/dosbox-pure "$DIR/$EXE" "$@"

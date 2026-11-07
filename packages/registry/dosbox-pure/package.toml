@@ -1,0 +1,37 @@
+kind = "program"
+name = "dosbox-pure"
+version = "1.0-preview8"
+kernel_abi = 55
+depends_on = ["libcxx@21.1.7"]
+arches = ["wasm32"]
+
+# The normal interpreter core runs DOS x86 binaries inside one Kandelo process.
+# Native dynarec backends emit host CPU code and cannot execute in Wasm.
+[source]
+provider = "archive"
+url = "https://codeberg.org/schelling/dosbox-pure/archive/1.0-preview8.tar.gz"
+sha256 = "1e1f2b6dcc7a6c591614be5689067f67859ffd5bfa8be48580ab570c7149d9cb"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://codeberg.org/schelling/dosbox-pure/src/tag/1.0-preview8/LICENSE"
+
+[build]
+script_path = "packages/registry/dosbox-pure/build-dosbox-pure.sh"
+
+[[outputs]]
+name = "dosbox-pure"
+wasm = "dosbox-pure.wasm"
+fork_instrumentation = "disabled"
+
+[[runtime_files]]
+artifact = "bin/dos-play"
+guest_path = "/usr/bin/dos-play"
+
+[[runtime_files]]
+artifact = "share/dos-play/games.tsv"
+guest_path = "/usr/share/dos-play/games.tsv"
+
+[[runtime_files]]
+artifact = "share/dos-play/DOSDEF-UNLICENSE.txt"
+guest_path = "/usr/share/dos-play/DOSDEF-UNLICENSE.txt"

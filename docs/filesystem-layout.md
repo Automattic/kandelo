@@ -76,6 +76,20 @@ Public game launchers live in `/usr/bin`; their private engines live in
 `/usr/libexec`. This avoids two different programs named `scummvm`, `fbdoom`
 or `quake` relying on PATH precedence between `/usr/local/bin` and `/usr/bin`.
 
+`dos-play` keeps downloaded games, their license files and mutable DOS files
+in the invoking user's `$XDG_DATA_HOME/dos-play`, defaulting to
+`$HOME/.local/share/dos-play`. These are per-user game installations rather
+than shared system data. DOSBox Pure's ZIP write overlays use the adjacent
+`dosbox-pure/saves` directory. Static catalogs and license notices belong
+under `/usr/share/dos-play`; neither command writes to `/usr`.
+
+The base shell's shared game importer stores complete bundles, original ZIPs,
+unpacked files and detection configurations under
+`$XDG_DATA_HOME/kandelo/game-imports` (default
+`$HOME/.local/share/kandelo/game-imports`). `/usr/bin/game-play` is the public
+launcher; its guest Python helper and exchange handler live in
+`/usr/libexec/kandelo`. Raw-ROM-only imports retain `~/roms`.
+
 Image builders validate common layout errors before saving products. The
 base-rootfs build also audits its artifact before stamping success. For a
 manual audit, run under the repository dev shell:
