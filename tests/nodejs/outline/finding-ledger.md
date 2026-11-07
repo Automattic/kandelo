@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 105 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 106 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 244 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -216,3 +216,19 @@ Buffer-boundary and key-export arity aborts stay recorded. STORE, backend/provid
 opaque accounting and broader signatures/keygen/exchange/WebCrypto gaps remain.
 Accepted173predates current187; all-four-host conformance is unestablished.
 Nested guest Wasm execution stays in scope, scheduled last.
+
+## Source188 FFI memory and retirement progress overlay
+
+NI-001/NI-005 and the document-qualified NI-008 now link to actual typed/raw/
+copy/borrowed-memory source and real consumer-before-library-unload retirement.
+Borrowed aliases own metadata, not caller payload/free rights. Workers/jobs
+actually retire before unloading; shutdown admission is not quiescence.
+
+Current portable and selected-frontend evidence preserves native private-boundary
+limits; the structural teardown executable uses explicit provider instrumentation.
+New guest JSAPI, actual Worker/DLL/GC/realm/transfer and four-host behavior remain
+unvalidated. Blocking I/O cancellation, generic calls/signatures/callbacks,
+permissions, mounted images, Node-API and exact FFI coded-error policy remain
+implementation gaps. No finding/family closes; original nonpasses remain.
+Accepted173predates current188. Nested guest Wasm execution stays in scope,
+scheduled last; no full product rebuild or overall suite is authorized yet.

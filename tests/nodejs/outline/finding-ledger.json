@@ -25,7 +25,7 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 105,
+    "sourceSliceRecords": 106,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 244
@@ -9381,6 +9381,13 @@
           "auditDocument": "tests/nodejs/audit/native-integration.md",
           "scope": "Actual portable library/symbol/registry/CLI/lifecycle prerequisite; not full FFI/libffi/addon or finding closure",
           "closure": false
+        },
+        {
+          "slice": "ffi-memory-retirement",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Actual typed/raw/copy/borrowed-memory and consumer-before-unload foundation; no generic FFI calls/callbacks/Node-API/full permissions/API closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -9492,6 +9499,13 @@
           "auditDocument": "tests/nodejs/audit/native-integration.md",
           "scope": "Actual portable library/symbol/registry/CLI/lifecycle prerequisite; not full FFI/libffi/addon or finding closure",
           "closure": false
+        },
+        {
+          "slice": "ffi-memory-retirement",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Actual typed/raw/copy/borrowed-memory and consumer-before-unload foundation; no generic FFI calls/callbacks/Node-API/full permissions/API closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -9578,6 +9592,13 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/native-integration.md",
           "scope": "Actual portable library/symbol/registry/CLI/lifecycle prerequisite; not full FFI/libffi/addon or finding closure",
+          "closure": false
+        },
+        {
+          "slice": "ffi-memory-retirement",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-public-contracts.md",
+          "scope": "Actual typed/raw/copy/borrowed-memory and consumer-before-unload foundation; no generic FFI calls/callbacks/Node-API/full permissions/API closure",
           "closure": false
         }
       ],
@@ -19698,6 +19719,87 @@
       "auditDocument": "tests/nodejs/audit/crypto.md",
       "findingScope": "Actual four one-shot RSA cipher transforms and material/range/guard prerequisite; not public signatures/keygen/STORE/WebCrypto, all per-callsite semantics or finding closure",
       "additionalAuditDocuments": {}
+    },
+    "ffi-memory-retirement": {
+      "document": "tests/nodejs/outline/ffi-memory-retirement-finding-progress.json",
+      "sha256": "025e4093dba717e8063c8b3fc98b989664c27472768c91b69b5fd211060000af",
+      "recordedRevision": 188,
+      "explicitFindingIds": [
+        "NI-001",
+        "NI-005"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-ffi188-source-r1/report.json",
+          "sha256": "4501bdf0beddb5380da5870e3cbcdc9a96f3a2377b4b631b5d6f1f0642ac3a80",
+          "guardedInputs": 842,
+          "scope": "Real FFI memory owners and shared consumer-before-unload teardown; scoped portable/native-dependent frontend/structural controls, no current guest JSAPI/GC/realm/lifetime/cancellation/full FFI/fourhost conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-ffi188-affected-r1.json",
+          "sha256": "86ac9c6f9dd651d52b8d24ee1d6b42909effdace873ae8ca5dd26ca650fb442a",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-ffi188-source-r1/report.json",
+          "sha256": "4501bdf0beddb5380da5870e3cbcdc9a96f3a2377b4b631b5d6f1f0642ac3a80",
+          "scalarByteObservations": 10,
+          "errorObservations": 61,
+          "functionShapes": 28,
+          "teardownStatusCases": 8,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "teardownSealedReport": {
+            "report": ".context/ffi-teardown-agent/handoff/report.json",
+            "sha256": "99a7330396993bff28733f93cc197b9f4050bb7535846475d0bcbc4f793ab9a8"
+          },
+          "scope": "Current portable memory source and selected frontend over native private boundary; exact structural queue/coordinator compiler input; not guest JSAPI/Worker/DLL/fourhost conformance"
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/ffi-memory-agent/handoff/report.json",
+          "sha256": "b0fb5b071b19b420316a81de83b81615d40888375d4f97075773c43b0136bbd7",
+          "reusedEvidence": true,
+          "scope": "Actual memory source, native-dependent selected frontend, portable owner/metadata and tiny native/SDK evidence; original failures retained. Teardown report separately identified in currentFocusedEvidence. No new JSAPI compile/guest conformance."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/ffi-memory-retirement-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/ffi-memory-retirement-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "20actual unaligned scalar accessors with pointer/size/value admission over guest address space",
+        "Raw pointer/original backing and view offset, real null-terminated UTF8, default copy and actual caller-owned zero-copy AB/Buffer aliases",
+        "Borrowed Allocation/Owner/Span track actual metadata only; private native Buffer prototype rooting and real null-backing detach/untransferability",
+        "Complete unchanged selected export helpers and exact types/suffix source; missing calls/callbacks/loop providers stay absent",
+        "Shared main/Worker/destructor consumer retirement waits actual jobs/joins before library unload, native async last, completion after return",
+        "Normalize/preserve durable final exit status and reset terminal state at fresh REPRL boundary",
+        "Preserve root184 checked-wrapper/mounted-reader/GetSymbol ordering fixes; declare actual inputs and exact zero-fuzz0137; regenerate normal combined source"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/ffi-memory-retirement-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile/execute actual guest memory/registration/backing/prototype/realm/GC/security/OOM/resize/detach/shared/transfer/error paths and all-four-host conformance",
+        "Interruptible blocking native I/O and worker cancellation; actual Worker/dynamic-linker status/teardown proof",
+        "Generic FFI signatures/calls/function/callback/closure/current-loop providers and complete namespace",
+        "Enabled permission model, Node mounted-VFS library materialization and real Node-API/addon/embedding owners",
+        "Exact native FFI code-property setter/name/stack/getter error policy; physical/native/opaque accounting",
+        "Caller-owned unsafe pointer/free/explicit-close lifetime remains actual target contract, not synthesized safety",
+        "Nested guest Wasm backend remains in scope for final phase; independent outer memory/loader work continues"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/native-integration.md",
+      "findingScope": "Actual typed/raw/copy/borrowed-memory and consumer-before-unload foundation; no generic FFI calls/callbacks/Node-API/full permissions/API closure",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/native-public-contracts.md": [
+          "NI-008"
+        ]
+      }
     }
   },
   "dependencyNarratives": {
@@ -21678,6 +21780,26 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current187actual RSA transform source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T06:17:23.713998+00:00",
+        "sourceCheckpoint": 188,
+        "sourceHead": "7917dcdd63f37a53da9dfd07d1451d15bdb68c7c",
+        "addedSourceSlices": [
+          "ffi-memory-retirement"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "283414b6e70e63d9a26209ec7ae5009c309923931c57f7a668f8d3bf0ffd02af"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current188actual FFI memory/retirement source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }
