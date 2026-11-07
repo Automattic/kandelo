@@ -1,0 +1,22 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "source": {
+    "path": "upstream/child-process/lib/child_process.js",
+    "upstreamPath": "lib/child_process.js",
+    "sha256": "27b75e3b55a59eb5cb9c734ddc762de35ade2e1d1ca25589a35227f07b88f551"
+  },
+  "sections": {
+    "collector": {
+      "start": "function normalizeExecArgs(command, options, callback) {",
+      "length": 8158,
+      "sha256": "3f3853680e68c0a83c89156a3f702f6956ab61d97f1f5f91f48cdccf9e9e4898"
+    },
+    "validators": {
+      "start": "function validateArgumentNullCheck(arg, propName) {",
+      "length": 998,
+      "sha256": "322bfa1632a49f494d66701e8ef3f3df626de5d14d3e03a1d11b43aa38bf3abd"
+    }
+  },
+  "scope": "Complete unchanged public exec/execFile normalizers, collector/custom promises and exact validation helpers over existing spawn, Buffer, timer and values owners; lower spawn remains separate."
+}

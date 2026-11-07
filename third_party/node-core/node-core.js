@@ -52432,6 +52432,408 @@ function rmSync(path, options) {
     return { api: publicAPIs(), promises: promiseAPIs(), binding, lazyRimRaf };
 }
 
+// Pinned exec/execFile collection over the existing real child/stdio owner.
+function _createNodeChildExecPlatform(platform) {
+    'use strict';
+    const { ArrayIsArray, ArrayPrototypeSlice, ArrayPrototypeJoin,
+        ArrayPrototypePush, ObjectDefineProperty, PromiseWithResolvers,
+        StringPrototypeIncludes, StringPrototypeSlice } = _createNodePrimordials();
+    const { assignFunctionName, convertToValidSignal, getSystemErrorName,
+        kEmptyObject, promisify } = platform.values.util;
+    const { genericNodeError, codes: { ERR_CHILD_PROCESS_STDIO_MAXBUFFER,
+        ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE } } = platform.values.errors;
+    const { validateObject, validateFunction, validateString, validateInteger,
+        validateNumber } = platform.values.validators;
+    const { Buffer, spawn } = platform;
+    const { clearTimeout, setTimeout } = platform.timers;
+    const MAX_BUFFER = 1024 * 1024;
+    // Keep exec's public module.exports.execFile lookup live and receiver-local.
+    const module = { exports: platform.api };
+    function normalizeExecArgs(command, options, callback) {
+  validateString(command, 'command');
+  validateArgumentNullCheck(command, 'command');
+
+  if (typeof options === 'function') {
+    callback = options;
+    options = undefined;
+  }
+
+  // Make a shallow copy so we don't clobber the user's options object.
+  options = { __proto__: null, ...options };
+  options.shell = typeof options.shell === 'string' ? options.shell : true;
+
+  return {
+    file: command,
+    options: options,
+    callback: callback,
+  };
+}
+
+/**
+ * Spawns a shell executing the given command.
+ * @param {string} command
+ * @param {{
+ *   cmd?: string;
+ *   env?: Record<string, string>;
+ *   encoding?: string;
+ *   shell?: string;
+ *   signal?: AbortSignal;
+ *   timeout?: number;
+ *   maxBuffer?: number;
+ *   killSignal?: string | number;
+ *   uid?: number;
+ *   gid?: number;
+ *   windowsHide?: boolean;
+ *   }} [options]
+ * @param {(
+ *   error?: Error,
+ *   stdout?: string | Buffer,
+ *   stderr?: string | Buffer
+ *   ) => any} [callback]
+ * @returns {ChildProcess}
+ */
+function exec(command, options, callback) {
+  const opts = normalizeExecArgs(command, options, callback);
+  return module.exports.execFile(opts.file,
+                                 opts.options,
+                                 opts.callback);
+}
+
+const customPromiseExecFunction = (orig) => {
+  return assignFunctionName(orig.name, function(...args) {
+    const { promise, resolve, reject } = PromiseWithResolvers();
+
+    promise.child = orig(...args, (err, stdout, stderr) => {
+      if (err !== null) {
+        err.stdout = stdout;
+        err.stderr = stderr;
+        reject(err);
+      } else {
+        resolve({ stdout, stderr });
+      }
+    });
+
+    return promise;
+  });
+};
+
+ObjectDefineProperty(exec, promisify.custom, {
+  __proto__: null,
+  enumerable: false,
+  value: customPromiseExecFunction(exec),
+});
+
+function normalizeExecFileArgs(file, args, options, callback) {
+  if (ArrayIsArray(args)) {
+    args = ArrayPrototypeSlice(args);
+  } else if (args != null && typeof args === 'object') {
+    callback = options;
+    options = args;
+    args = null;
+  } else if (typeof args === 'function') {
+    callback = args;
+    options = null;
+    args = null;
+  }
+
+  args ??= [];
+
+  if (typeof options === 'function') {
+    callback = options;
+  } else if (options != null) {
+    validateObject(options, 'options');
+  }
+
+  options ??= kEmptyObject;
+
+  if (callback != null) {
+    validateFunction(callback, 'callback');
+  }
+
+  // Validate argv0, if present.
+  if (options.argv0 != null) {
+    validateString(options.argv0, 'options.argv0');
+    validateArgumentNullCheck(options.argv0, 'options.argv0');
+  }
+
+  return { file, args, options, callback };
+}
+
+/**
+ * Spawns the specified file as a shell.
+ * @param {string} file
+ * @param {string[]} [args]
+ * @param {{
+ *   cwd?: string | URL;
+ *   env?: Record<string, string>;
+ *   encoding?: string;
+ *   timeout?: number;
+ *   maxBuffer?: number;
+ *   killSignal?: string | number;
+ *   uid?: number;
+ *   gid?: number;
+ *   windowsHide?: boolean;
+ *   windowsVerbatimArguments?: boolean;
+ *   shell?: boolean | string;
+ *   signal?: AbortSignal;
+ *   }} [options]
+ * @param {(
+ *   error?: Error,
+ *   stdout?: string | Buffer,
+ *   stderr?: string | Buffer
+ *   ) => any} [callback]
+ * @returns {ChildProcess}
+ */
+function execFile(file, args, options, callback) {
+  ({ file, args, options, callback } = normalizeExecFileArgs(file, args, options, callback));
+
+  options = {
+    __proto__: null,
+    encoding: 'utf8',
+    timeout: 0,
+    maxBuffer: MAX_BUFFER,
+    killSignal: 'SIGTERM',
+    cwd: null,
+    env: null,
+    shell: false,
+    ...options,
+  };
+
+  // Validate the timeout, if present.
+  validateTimeout(options.timeout);
+
+  // Validate maxBuffer, if present.
+  validateMaxBuffer(options.maxBuffer);
+
+  options.killSignal = sanitizeKillSignal(options.killSignal);
+
+  const child = spawn(file, args, {
+    cwd: options.cwd,
+    env: options.env,
+    gid: options.gid,
+    shell: options.shell,
+    signal: options.signal,
+    uid: options.uid,
+    windowsHide: !!options.windowsHide,
+    windowsVerbatimArguments: !!options.windowsVerbatimArguments,
+  });
+
+  let encoding;
+  const _stdout = [];
+  const _stderr = [];
+  if (options.encoding !== 'buffer' && Buffer.isEncoding(options.encoding)) {
+    encoding = options.encoding;
+  } else {
+    encoding = null;
+  }
+  let stdoutLen = 0;
+  let stderrLen = 0;
+  let killed = false;
+  let exited = false;
+  let timeoutId;
+
+  let ex = null;
+
+  let cmd = file;
+
+  function exithandler(code, signal) {
+    if (exited) return;
+    exited = true;
+
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+
+    if (!callback) return;
+
+    // merge chunks
+    let stdout;
+    let stderr;
+    if (encoding ||
+      (
+        child.stdout?.readableEncoding
+      )) {
+      stdout = ArrayPrototypeJoin(_stdout, '');
+    } else {
+      stdout = Buffer.concat(_stdout);
+    }
+    if (encoding ||
+      (
+        child.stderr?.readableEncoding
+      )) {
+      stderr = ArrayPrototypeJoin(_stderr, '');
+    } else {
+      stderr = Buffer.concat(_stderr);
+    }
+
+    if (!ex && code === 0 && signal === null) {
+      callback(null, stdout, stderr);
+      return;
+    }
+
+    if (args?.length)
+      cmd += ` ${ArrayPrototypeJoin(args, ' ')}`;
+
+    ex ||= genericNodeError(`Command failed: ${cmd}\n${stderr}`, {
+      code: code < 0 ? getSystemErrorName(code) : code,
+      killed: child.killed || killed,
+      signal: signal,
+    });
+
+    ex.cmd = cmd;
+    callback(ex, stdout, stderr);
+  }
+
+  function errorhandler(e) {
+    ex = e;
+
+    if (child.stdout)
+      child.stdout.destroy();
+
+    if (child.stderr)
+      child.stderr.destroy();
+
+    exithandler();
+  }
+
+  function kill() {
+    if (child.stdout)
+      child.stdout.destroy();
+
+    if (child.stderr)
+      child.stderr.destroy();
+
+    killed = true;
+    try {
+      child.kill(options.killSignal);
+    } catch (e) {
+      ex = e;
+      exithandler();
+    }
+  }
+
+  if (options.timeout > 0) {
+    timeoutId = setTimeout(function delayedKill() {
+      kill();
+      timeoutId = null;
+    }, options.timeout);
+  }
+
+  if (child.stdout) {
+    if (encoding)
+      child.stdout.setEncoding(encoding);
+
+    child.stdout.on('data', function onChildStdout(chunk) {
+      // Do not need to count the length
+      if (options.maxBuffer === Infinity) {
+        ArrayPrototypePush(_stdout, chunk);
+        return;
+      }
+      const encoding = child.stdout.readableEncoding;
+      const length = encoding ?
+        Buffer.byteLength(chunk, encoding) :
+        chunk.length;
+      const slice = encoding ? StringPrototypeSlice :
+        (buf, ...args) => buf.slice(...args);
+      stdoutLen += length;
+
+      if (stdoutLen > options.maxBuffer) {
+        const truncatedLen = options.maxBuffer - (stdoutLen - length);
+        ArrayPrototypePush(_stdout, slice(chunk, 0, truncatedLen));
+
+        ex = new ERR_CHILD_PROCESS_STDIO_MAXBUFFER('stdout');
+        kill();
+      } else {
+        ArrayPrototypePush(_stdout, chunk);
+      }
+    });
+  }
+
+  if (child.stderr) {
+    if (encoding)
+      child.stderr.setEncoding(encoding);
+
+    child.stderr.on('data', function onChildStderr(chunk) {
+      // Do not need to count the length
+      if (options.maxBuffer === Infinity) {
+        ArrayPrototypePush(_stderr, chunk);
+        return;
+      }
+      const encoding = child.stderr.readableEncoding;
+      const length = encoding ?
+        Buffer.byteLength(chunk, encoding) :
+        chunk.length;
+      stderrLen += length;
+
+      if (stderrLen > options.maxBuffer) {
+        const truncatedLen = options.maxBuffer - (stderrLen - length);
+        ArrayPrototypePush(_stderr,
+                           chunk.slice(0, truncatedLen));
+
+        ex = new ERR_CHILD_PROCESS_STDIO_MAXBUFFER('stderr');
+        kill();
+      } else {
+        ArrayPrototypePush(_stderr, chunk);
+      }
+    });
+  }
+
+  child.addListener('close', exithandler);
+  child.addListener('error', errorhandler);
+
+  return child;
+}
+
+ObjectDefineProperty(execFile, promisify.custom, {
+  __proto__: null,
+  enumerable: false,
+  value: customPromiseExecFunction(execFile),
+});
+
+    function validateArgumentNullCheck(arg, propName) {
+  if (typeof arg === 'string' && StringPrototypeIncludes(arg, '\u0000')) {
+    throw new ERR_INVALID_ARG_VALUE(propName, arg, 'must be a string without null bytes');
+  }
+}
+
+
+function validateArgumentsNullCheck(args, propName) {
+  for (let i = 0; i < args.length; ++i) {
+    validateArgumentNullCheck(args[i], `${propName}[${i}]`);
+  }
+}
+
+
+function validateTimeout(timeout) {
+  if (timeout != null) {
+    validateInteger(timeout, 'timeout', 0);
+  }
+}
+
+
+function validateMaxBuffer(maxBuffer) {
+  if (maxBuffer != null) {
+    validateNumber(maxBuffer, 'options.maxBuffer', 0);
+  }
+}
+
+
+function sanitizeKillSignal(killSignal) {
+  if (typeof killSignal === 'string' || typeof killSignal === 'number') {
+    return convertToValidSignal(killSignal);
+  } else if (killSignal != null) {
+    throw new ERR_INVALID_ARG_TYPE('options.killSignal',
+                                   ['string', 'number'],
+                                   killSignal);
+  }
+}
+
+    module.exports.exec = exec;
+    module.exports.execFile = execFile;
+    return module.exports;
+}
+
 // Actual pinned reader/cache over the real native parser and POSIX file owner.
 function _createNodePackageReader(platform) {
     'use strict';

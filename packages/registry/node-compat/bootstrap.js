@@ -3364,67 +3364,12 @@ const child_process = (() => {
         return child;
     }
 
-    // Shared by exec/execFile: accumulate stdout/stderr and invoke `cb` once
-    // the child is fully done. Callers MUST wait for 'close', not 'exit':
-    // 'exit' fires as soon as the child is reaped, independently of whether
-    // the async pipe-read promises filling `out`/`err` have settled yet, so
-    // reading accumulated output from an 'exit' handler risks delivering
-    // TRUNCATED stdout/stderr to the callback (a real race, confirmed
-    // directly — see child-process-guest.test.ts's header comment).
-    // 'close' only fires after the process has been reaped AND every stdio
-    // stream has reached EOF/error (`_spawn`'s `_maybeClose` gate), which is
-    // exactly when the accumulated strings are guaranteed complete.
-    //
-    // A non-zero exit code OR a non-null termination signal is a failure —
-    // `code` is `null` when the child was killed by a signal, so a naive
-    // `code ? err : null` check would misreport a signal-killed child as
-    // success. Mirrors Node's own exec() error shape: `.code`/`.signal` are
-    // the reaped values, `.killed` reflects whether this ChildProcess's own
-    // `.kill()` was called.
-    function _runWithCallback(child, label, cb) {
-        // exec/execFile never write to the child's stdin. End it immediately:
-        // this both delivers stdin EOF to the child (matching Node, whose exec
-        // closes stdin) AND closes the parent-side write fd (legs[0]) via the
-        // stdin stream's `final` — otherwise that fd leaks one per successful
-        // call, accumulating to EMFILE under heavy shell-out. `.end()` runs
-        // the upstream Writable final hook, with descriptor ownership shared
-        // by final/destroy so it is closed once.
-        if (child.stdin) child.stdin.end();
-        let out = '', err = '';
-        if (child.stdout) child.stdout.on('data', d => out += d);
-        if (child.stderr) child.stderr.on('data', d => err += d);
-        let completed = false;
-        function complete(error) {
-            if (completed || !cb) return;
-            completed = true; cb(error, out, err);
-        }
-        child.on('error', complete);
-        child.on('close', (code, signal) => {
-            if (completed || !cb) return;
-            if (code !== 0 || signal !== null) {
-                const e = Object.assign(new Error('Command failed: ' + label), {
-                    code: code, signal: signal, killed: !!child.killed,
-                });
-                complete(e);
-            } else {
-                complete(null);
-            }
-        });
-        return child;
-    }
-    function exec(command, options, cb) {
-        if (typeof options === 'function') { cb = options; options = {}; }
-        const child = _spawn(command, [], { ...(options || {}), shell: true });
-        return _runWithCallback(child, command, cb);
-    }
-    function execFile(file, args, options, cb) {
-        if (typeof args === 'function') { cb = args; args = []; options = {}; }
-        else if (typeof options === 'function') { cb = options; options = {}; }
-        const child = _spawn(file, args || [], options || {});
-        return _runWithCallback(child, file, cb);
-    }
-
-    return { execSync, execFileSync, spawnSync, exec, execFile, spawn: _spawn };
+    const api = _createNodeChildExecPlatform({
+        api: { execSync, execFileSync, spawnSync },
+        spawn: _spawn, Buffer, timers, values: _nodeValues,
+    });
+    api.spawn = _spawn;
+    return api;
 })();
 
 // spawn() creates this shared public class. Direct .spawn(), IPC and native

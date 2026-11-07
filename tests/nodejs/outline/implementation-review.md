@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source226 integrates actual pinned child exec/execFile collectors and custom promises;23current native-dependent groups/8upstream subjects pass. Lower guest spawn and full process/four-host behavior remain open.
+See [source scope](child-exec-integration.md).
+
 Source225 adds real SQLite statement counters/resetStats and reviewed receiver/counter admission.11native-owner+8current frontend groups match; new guest TypeError bridge and fullSQLite/four-host behavior remain unvalidated.
 See [source scope](sqlite-statement-status-integration.md).
 

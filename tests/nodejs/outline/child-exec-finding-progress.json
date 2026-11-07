@@ -1,0 +1,93 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/process-contracts.md",
+    "findingIds": [
+      "CP-010"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "processes",
+      "async",
+      "streams",
+      "values"
+    ],
+    "scope": "Partial actual exec/execFile normalization/output/limits/callback/custom-promise ownership; lower spawn/stdio/signal/abort/wait and full process findings remain open."
+  },
+  "sourceImplemented": [
+    "Consume complete8158byte pinned collector/normalizer and998byte validators through real generated adapter",
+    "Wire actual bootstrap public factory to existing _spawn/Buffer/timers/values; preserve live public execFile lookup and export order",
+    "Use actual per-stream decoder/Buffer output and byte limits, real timeout/kill/error/close callback-once ownership",
+    "Preserve custom Promise descriptors, actual child identity, output values and original rejected errors",
+    "Retire old unconditional stdin.end collector behavior; caller stdin stays open under actual caller/child terminal ownership"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-childexec226-source-r1/report.json",
+    "sha256": "fef0c281069b22ddc13fe44253efa543a7f40fc338244eb4f528b0e2d3c4c5d4",
+    "guardedInputs": 887,
+    "scope": "Actual pinned child exec collection/custom-promise/validation owner consumed by current bootstrap over explicit native spawn/stdio/timer/value dependencies. Lower guest child lifecycle/transport and full process/fourhost compatibility remain open."
+  },
+  "packageChecks": {
+    "report": ".context/node26-childexec226-affected-r1.json",
+    "sha256": "91e07112fab8b22205ca22c516ec5d990e48ab7e424d73ccf8903c1b72da61fb",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-childexec226-source-r1/report.json",
+    "sha256": "fef0c281069b22ddc13fe44253efa543a7f40fc338244eb4f528b0e2d3c4c5d4",
+    "nativeDependentGroups": 23,
+    "unchangedUpstreamFiles": 4,
+    "upstreamSubjectsPassed": 8,
+    "upstreamSkipMarkers": 0,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "engineCXXChanged": false,
+    "scope": "Fresh actual current bootstrap IIFE/factory23groups and4unchanged upstream files/native+candidate over explicit native spawn/stdio/decoder/Buffer/timers/errors/VM. No guest lower ownership validation."
+  },
+  "sealedEvidence": {
+    "report": ".context/child-exec-owner-agent/handoff/report.json",
+    "sha256": "57b6af758636d7fa35b970ff05b4bc8d2abe644c3d1468ae791468a1d67f89fb",
+    "reusedEvidence": true,
+    "scope": "Original native23/23,baseline5/23,candidate23/23 and8unchanged upstream subjects. Earlier factory-only evidence separate; required companion addendum corrects baseline timeout attribution without changing source/results."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/child-exec-owner-agent/handoff/report.json",
+      "sha256": "57b6af758636d7fa35b970ff05b4bc8d2abe644c3d1468ae791468a1d67f89fb",
+      "scope": "Original baseline18mismatches, real forced-stdin ERR_STREAM_WRITE_AFTER_END aggregate exit, missing _nodeNative fixture capture and two private missing-input generator failures retained.0compiles."
+    },
+    {
+      "report": ".context/child-exec-owner-agent/evidence-interpretation-addendum.json",
+      "sha256": "056cc47cb5019e7d799133802d1b1c14bfb22088540a91e11b400e21ef8554cc",
+      "scope": "Mandatory correction: no final fixtureSafetyKill; native spawn consumed timeout even with old collector. Baseline timeout difference only establishes error shape/cmd mismatch, not missing guest timeout execution. Original immutable report retained."
+    },
+    {
+      "report": ".context/child-exec-review-agent/REPORT.md",
+      "sha256": "9a3dbcccd06c823ea7a2cd594b75501c05865e0a968fd2f12de6193c06015624",
+      "scope": "Independent pinned section/actual bootstrap/overload/encoding/maxBuffer/timer/error/promise ownership review and verified addendum; no new P1/P2. No tests/builds or guest proof."
+    },
+    {
+      "report": ".context/node26-childexec226-checkpoint-unknown-family.log",
+      "sha256": "6ce8c73fc9dccd369db36213181d1d1e8c9d6881b8e539deefafb7b9e2e08c0e",
+      "scope": "Root metadata checkpoint rejected noncanonical family key process before saving state or staging. Corrected to existing processes family. No source algorithm, runtime test or compilation changed."
+    }
+  ],
+  "remaining": [
+    "Actual lower spawn options/AbortSignal/shell/argv0/stdio-kind/error/IPC/fork behavior",
+    "Guest original Buffer/decoder/stream/timer and signal/kill/pipe/read-cancel/ref/wait/reap/close/error/fatal/GC/realm conformance",
+    "Current identified guest engine/package/kernel/image and Node/Chromium/Firefox/WebKit evidence",
+    "Complete CP-010 and broader process/native lifecycle audit findings; no API/family closure"
+  ],
+  "at": "2026-11-07T16:40:13.799622+00:00",
+  "recipeRevision": 226,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

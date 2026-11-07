@@ -1247,6 +1247,24 @@ for name, item in manifest['moduleRecordNativeReference']['sources'].items():
 for name, item in manifest['childProcessReference']['sources'].items():
     if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:
         raise ValueError('Child process native reference mismatch: ' + name)
+# Public exec/execFile uses complete unchanged pinned collector algorithms.
+child_exec_spec = json.loads((root / 'child-exec-sources.json').read_text())
+if child_exec_spec['version'] != manifest['version'] or child_exec_spec['commit'] != manifest['commit']:
+    raise ValueError('Child exec source target mismatch')
+child_exec_raw = (root / child_exec_spec['source']['path']).read_bytes()
+if hashlib.sha256(child_exec_raw).hexdigest() != child_exec_spec['source']['sha256']:
+    raise ValueError('Child exec complete source identity mismatch')
+child_exec_adapter = (root / 'child-exec-platform-adapter.js').read_text()
+for name, item in child_exec_spec['sections'].items():
+    begin = child_exec_raw.index(item['start'].encode())
+    selected = child_exec_raw[begin:begin + item['length']]
+    if hashlib.sha256(selected).hexdigest() != item['sha256']:
+        raise ValueError('Child exec unchanged section mismatch: ' + name)
+    marker = '/* NODE_CHILD_EXEC_' + name.upper() + ' */'
+    if child_exec_adapter.count(marker) != 1:
+        raise ValueError('Child exec section marker mismatch: ' + name)
+    child_exec_adapter = child_exec_adapter.replace(marker, selected.decode())
+bundle += child_exec_adapter + '\n'
 # These target fields are native private symbols, not public JS Symbols.
 # WeakMap owners preserve their unobservable storage in this embedding.
 adaptations = {
