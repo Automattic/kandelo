@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { test, type ServeArtifacts } from "./support/streamed-artifacts";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -684,9 +685,13 @@ if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
   }
 }
 
-async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<ProbeResult> {
-  const programBytes = readFileSync(resolve(fixtureDir, probe.file));
-  const kernelBytes = readFileSync(process.env.KANDELO_GO_KERNEL_WASM ?? resolveBinary("kernel.wasm"));
+async function runProbe(
+  page: Page, baseURL: string, probe: Probe, serveArtifacts: ServeArtifacts,
+): Promise<ProbeResult> {
+  const programPath = resolve(fixtureDir, probe.file);
+  const kernelPath = process.env.KANDELO_GO_KERNEL_WASM ?? resolveBinary("kernel.wasm");
+  const programBytes = readFileSync(programPath);
+  const kernelBytes = readFileSync(kernelPath);
   const programDigest = readWasmCustomSectionPayload(
     Uint8Array.from(programBytes).buffer, ABI_CONTRACT_SECTION,
   );
@@ -695,20 +700,7 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
   );
   expect(kernelDigest?.length).toBe(32);
   expect(programDigest).toEqual(kernelDigest);
-  const programUrl = new URL("/__kandelo_go_probe__.wasm", baseURL).href;
-  const kernelUrl = new URL("/__kandelo_go_kernel__.wasm", baseURL).href;
-  const imageUrl = new URL("/__kandelo_go_probe__.vfs", baseURL).href;
   const browserKernelUrl = new URL(`/@fs/${browserKernelModulePath}`, baseURL).href;
-  await page.route(programUrl, (route) => route.fulfill({
-    status: 200,
-    contentType: "application/wasm",
-    body: programBytes,
-  }));
-  await page.route(kernelUrl, (route) => route.fulfill({
-    status: 200,
-    contentType: "application/wasm",
-    body: kernelBytes,
-  }));
   const imageCapacity = probe.selfExecPath
     ? Math.max(probe.imageCapacity ?? 8 * 1024 * 1024, programBytes.byteLength + 2 * 1024 * 1024)
     : (probe.imageCapacity ?? 2 * 1024 * 1024);
@@ -732,11 +724,11 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     image.createFileWithOwner(file.path, 0o644, 0, 0, new Uint8Array(file.data));
   }
   const vfsImage = await image.saveImage();
-  await page.route(imageUrl, (route) => route.fulfill({
-    status: 200,
-    contentType: "application/octet-stream",
-    body: Buffer.from(vfsImage),
-  }));
+  const { program: programUrl, kernel: kernelUrl, image: imageUrl } = await serveArtifacts({
+    program: { path: programPath, contentType: "application/wasm" },
+    kernel: { path: kernelPath, contentType: "application/wasm" },
+    image: { bytes: vfsImage, contentType: "application/octet-stream" },
+  });
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
 
   return page.evaluate(async ({ programUrl, kernelUrl, imageUrl, browserKernelUrl, argv, env, cwd, launchFromVfs, selfExecPath, expectedExports, traceOutput }) => {
@@ -814,21 +806,21 @@ test.describe("native Go port milestones", () => {
   );
 
   for (const probe of probes) {
-    test(probe.name, async ({ page, baseURL }) => {
+    test(probe.name, async ({ page, baseURL, serveArtifacts }) => {
       expect(baseURL).toBeTruthy();
 
       const runtimeErrors: string[] = [];
       page.on("pageerror", (error) => runtimeErrors.push(`pageerror: ${error.message}`));
       page.on("console", (message) => {
         if (message.type() === "error") {
-          runtimeErrors.push(`console: ${message.text()}`);
+          runtimeErrors.push(`console: ${message.text()} (${message.location().url})`);
         }
         if (process.env.KANDELO_GO_TRACE_TESTS === "1") {
           process.stdout.write(`${message.text()}\n`);
         }
       });
 
-      const result = await runProbe(page, baseURL!, probe);
+      const result = await runProbe(page, baseURL!, probe, serveArtifacts);
       expect(result.exitCode, JSON.stringify(result)).toBe(0);
       for (const marker of probe.stdout) {
         expect(result.stdout).toContain(marker);
@@ -856,7 +848,7 @@ test.describe("native Go port milestones", () => {
     });
   }
 
-  test("Go thread-slot ceiling reports exhaustion", async ({ page, baseURL }) => {
+  test("Go thread-slot ceiling reports exhaustion", async ({ page, baseURL, serveArtifacts }) => {
     expect(baseURL).toBeTruthy();
     const runtimeErrors: string[] = [];
     page.on("pageerror", (error) => runtimeErrors.push(`pageerror: ${error.message}`));
@@ -865,7 +857,7 @@ test.describe("native Go port milestones", () => {
       file: "one-slot-second-m.wasm",
       argv: ["go-one-slot-second-m"],
       stdout: [],
-    });
+    }, serveArtifacts);
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("newosproc: kernel_clone failed");
     expect(JSON.stringify(result.hostDiagnostics)).toContain("pthread slot limit exhausted (limit=1");

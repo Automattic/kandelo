@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { test as base } from "@playwright/test";
 
 type Artifact = { contentType: string } & ({ path: string } | { bytes: Uint8Array });
-type ServeArtifacts = (artifacts: Record<string, Artifact>) => Promise<Record<string, string>>;
+export type ServeArtifacts = (artifacts: Record<string, Artifact>) => Promise<Record<string, string>>;
 
 // Large route.fulfill bodies are base64-encoded on the debugging protocol.
 // Stream bytes over HTTP so a large Wasm fixture never fills that transport.

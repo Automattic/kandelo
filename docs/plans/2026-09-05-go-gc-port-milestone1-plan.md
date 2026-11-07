@@ -38,6 +38,17 @@ seconds candidate, with overlapping ranges; this small sample does not
 establish a performance difference or measure request throughput. Normal
 pins remain unchanged pending broad coherent compiler validation.
 
+The next candidate gate rebuilds a fresh f605 compiler, all five standard
+library modes and every fixture in an expanded 297-case browser inventory.
+It enables the previously omitted 14 cgo-runtime/PHP probes per engine.
+Go-port fixtures now use the shared HTTP artifact streamer, preserving
+ABI/content checks. A smoke exposed Chromium's unrelated implicit favicon
+404 on the bare test page; that fixture now declares an empty icon, with
+console errors still asserted and their resource URLs included. The
+corrected regexp smoke passes all three engines (3/3, 9.7 seconds). Full
+candidate validation and promotion remain pending.
+
+
 **Normal build integration:** the declared Nix Go 1.25.8 builds verified
 Go 1.26.10 source, which bootstraps the pinned Go 1.28 compiler. These are
 bootstrap versions, not a target downgrade. Native compilers remain private
