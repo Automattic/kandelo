@@ -1,5 +1,11 @@
 # Node 26 core implementation outline
 
+Source160 integrates reviewed native TCP ownership/async aliases and plain
+HTTP Agent source. The focused HTTP regression exposed and corrected timeout
+reset ordering; actual Socket fixture dependencies preserve all assertions.
+Current source checks,14 HTTP cases and14 package checks pass. See [TCP/Agent
+scope](tcp-agent-integration.md). No accepted current engine/four-host closure.
+
 Source159 integrates checked rooted crypto byte consumption and original-
 allocation random work ownership. Exact source/staging/740input and14package
 checks pass; twelve reused native references are target expectations only.

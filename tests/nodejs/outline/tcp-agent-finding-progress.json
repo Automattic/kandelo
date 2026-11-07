@@ -1,0 +1,116 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network-contracts.md",
+    "findingIds": [
+      "N-008",
+      "N-009",
+      "N-010",
+      "N-011",
+      "N-013",
+      "N-015",
+      "N-018",
+      "N-020"
+    ],
+    "relatedDocuments": [
+      {
+        "document": "tests/nodejs/audit/http-contracts.md",
+        "findingIds": [
+          "H-006",
+          "H-007",
+          "H-008",
+          "H-010",
+          "H-011",
+          "H-013"
+        ]
+      }
+    ],
+    "relatedFamilies": [
+      "network",
+      "http",
+      "async",
+      "streams",
+      "values"
+    ],
+    "scope": "Substantive source dependencies for findings; no finding/API/family closure"
+  },
+  "sourceImplemented": [
+    "Actual TCP descriptor/read/write original-allocation and stream-state owners with real native dispatch/retirement",
+    "Authoritative execution/public aliases, private callback slot/shared realm prototypes and parent default trigger scopes",
+    "Real accepted-fd token before fallible publication, same-lease adoption, actual-owner rollback and keepalive coercion ordering",
+    "Pinned plain HTTP Agent and actual request reuse timeout-reset ordering, actual Socket fixture dependency with unchanged assertions"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tcp160-source-r3/report.json",
+    "sha256": "1e250f069487f9b491a581ed525489d21244e854d70bd4eab3d02b3d33f615d0",
+    "guardedInputs": 748,
+    "scope": "Current exact TCP/Agent source integration, normal native staging/bootstrap/header/syntax/input checks; component evidence separately identified. No new production JSAPI compilation or guest/four-host runtime acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tcp160-affected-r2.json",
+    "sha256": "762dbd0deeeee48d6ba2af6ee4f447ac7a40c8e508b194e680450efd8f014757",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing package-source checks within28test run"
+  },
+  "httpRegressions": {
+    "report": ".context/node26-tcp160-affected-r2.json",
+    "sha256": "762dbd0deeeee48d6ba2af6ee4f447ac7a40c8e508b194e680450efd8f014757",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing parser/client assertions over explicit native Socket/stream/parser/loopback dependencies, not guest TCP"
+  },
+  "sealedComponentEvidence": {
+    "report": ".context/tcp-composed157-agent/focused-summary.json",
+    "sha256": "d3884ac89c6c128531bbf1c0c64dc50d9c1e19f0c307f1659cecc9947613a61b",
+    "reusedEvidence": true,
+    "leaseCases": 19,
+    "adapterMethods": 7,
+    "acceptForwarding": 5,
+    "agentShapes": 7,
+    "realTcpRequests": 30,
+    "scope": "Exact sealed portable TCP/Lease/native execution and Agent/client frontend with native Node transport/NAPI; not SM/guest"
+  },
+  "httpFollowup": {
+    "report": ".context/node26-tcp160-http-followup.json",
+    "sha256": "abfa71f874754209e62dc6fe171e54ae0b4da2bb7a5bd290d1e29643c48df59b",
+    "scope": "Real reuse policy source fix and native transport dependency control, preserving original four failures"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-tcp160-affected-r1.json",
+      "sha256": "0dfabba5fb010129a6d0bb9c1e9b6bb40bf4f6cdb293305b04cd80596e43a9c5",
+      "kind": "HTTP-component-failures",
+      "passed": 24,
+      "failed": 4,
+      "reason": "Original TypeError from pre-policy timeout reset and missing native Socket contract retained"
+    },
+    {
+      "report": ".context/tcp-composed157-agent/SEAL.json",
+      "sha256": "b7e61f7cc31f0b673001aac6ab9cc5396cac393f68862b08c5690054acd7f6e3",
+      "kind": "source-review-and-runner-errors",
+      "reason": "Initial EISDIR and guessed X509 source-binding checker error retained; candidate never altered for guessed signature"
+    },
+    {
+      "report": ".context/node26-tcp160-checkpoint-r1.log",
+      "sha256": "c09a0f5d548217d59c9766f69f5f7267839e3101c8b7a508b9a77d1d5404e99b",
+      "kind": "root-patch-context-format",
+      "reason": "Staged new patch blank context whitespace rejected; zero-context serialization preserves exact canonical source/algorithm"
+    }
+  ],
+  "remaining": [
+    "Compile actual production JSAPI/current combined engine and validate Promise/watch/OOM/GC/realm/context and guest networking on all four hosts",
+    "Accepted TCPWRAP init timing, legacy accept callback identity/concurrency/errors and full Socket/Server public lifecycle/metadata remain implementation gaps",
+    "HTTP server/HTTP2/TLS and complete Agent/proxy/public semantics plus all other nineteen-family obligations remain open"
+  ],
+  "at": "2026-11-07T00:01:51.162805+00:00",
+  "recipeRevision": 160,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

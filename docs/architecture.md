@@ -6067,6 +6067,20 @@ inherited-descriptor nonblocking/readiness behavior remain implementation
 and validation work. It does not alter the host/kernel wire ABI or prove
 four-host runtime conformance.
 
+### Native Node TCP and plain Agent source ownership
+
+The source160 TCP owner retains actual descriptors and original write
+allocations through callback and close transitions. Accepted descriptors are
+leased before fallible publication and transfer into the actual socket owner;
+rollback closes that owner rather than releasing a stale numeric descriptor.
+Private read slots, shared realm prototypes and the native execution stack
+own callback/resource identity. Accepted AsyncWrap init timing remains a gap.
+
+Pinned plain HTTP Agent algorithms share these socket owners. Request timeout
+reset occurs on reusable sockets, after close-policy decisions. Source and
+native-component evidence do not validate production JSAPI/guest networking
+or four-host behavior. See [TCP and Agent scope](../tests/nodejs/outline/tcp-agent-integration.md).
+
 ### Node message-port source candidate
 
 The proposed Node message transport owns synchronized entangled endpoints in

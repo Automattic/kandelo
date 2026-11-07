@@ -1,0 +1,104 @@
+{
+  "nodeVersion": "26.13.0",
+  "nodeCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "stream": {
+      "path": "upstream/socket-owner/stream_base_commons.js",
+      "sha256": "e114197ceac878eeb7e61410c5ccdbf3d23071be6d583220260f1364557769e6"
+    },
+    "net": {
+      "path": "upstream/socket-owner/net.js",
+      "sha256": "24db4f4a58808f0935265b1a71150989cec8601e971f07ca531d16004f3d6c43"
+    }
+  },
+  "sections": {
+    "symbols": {
+      "start": "const kMaybeDestroy =",
+      "length": 1065,
+      "sha256": "81dd72bfc2afd2d0641910ef88eabd0a85a199c64683f74c090687e68d6cd6f8"
+    },
+    "afterWrite": {
+      "start": "function afterWriteDispatched(",
+      "length": 1058,
+      "sha256": "501880291131c6a9853cbbbde06a81bc86d340f218357a707e9ee8a29d97aaa7"
+    },
+    "read": {
+      "start": "function onStreamRead(",
+      "length": 1941,
+      "sha256": "feadf86ac821917ce3b4feec7dd09f5106fb56485700651b9e5648a2871bad02"
+    },
+    "netOptions": {
+      "source": "net",
+      "start": "Socket.prototype.setNoDelay =",
+      "length": 1715,
+      "sha256": "f666ae8388b92e5018dc301fc4a339c73552fb4a3f9bf3c747b876520a0abcac"
+    },
+    "netInit": {
+      "source": "net",
+      "start": "  this[kSetNoDelay] = Boolean(options.noDelay);",
+      "length": 177,
+      "sha256": "75b6ce8c10c0b4c5a7f050ab99e84f3adb6e49fbdd8c71bc0f408f116e8b48be"
+    },
+    "netApply": {
+      "source": "net",
+      "start": "    if (self[kSetNoDelay]",
+      "length": 357,
+      "sha256": "529d13dc1e47ef83661d32b09c629da82e732f1e13b2c933d16a748826aeb2a4"
+    }
+  },
+  "tcpProvider": {
+    "path": "upstream/async-native-providers.h",
+    "sha256": "d94f634cad45a98fe6604b38db30b343c208e2ae7b5cb0b0cd7129405c3c61d7",
+    "name": "TCPWRAP",
+    "index": 41
+  },
+  "nativeReferences": {
+    "src/stream_base.cc": {
+      "path": "upstream/socket-owner/src/stream_base.cc",
+      "sha256": "01fec064aec0edb72ee9577ac10c7351b56e0e6159a7a456635d0330dcff6704"
+    },
+    "src/connection_wrap.cc": {
+      "path": "upstream/socket-owner/src/connection_wrap.cc",
+      "sha256": "76a4492674dedda6d5e7699eab9c3903f11da4b46a9c991c628becadfa181cf0"
+    },
+    "src/handle_wrap.cc": {
+      "path": "upstream/socket-owner/src/handle_wrap.cc",
+      "sha256": "20f94b3dc1569f2b90116500dc6c7546b0b92b38f1398281f7b90d5b37f6751b"
+    },
+    "src/stream_base.h": {
+      "path": "upstream/socket-owner/src/stream_base.h",
+      "sha256": "8ad6ff436056bff357c1eef42c8214eeac6cda52f442142f3753f6af690fc039"
+    },
+    "src/stream_base-inl.h": {
+      "path": "upstream/socket-owner/src/stream_base-inl.h",
+      "sha256": "5b25202a2b4eac9b374add0f1c2e4422ee1b16a836e983b144b40ff1d7959387"
+    },
+    "src/stream_wrap.cc": {
+      "path": "upstream/socket-owner/src/stream_wrap.cc",
+      "sha256": "78cd88f8de6d6b8b238fea051f0bd285aab77cab1f84b86f0dda62de9fdd241c"
+    },
+    "src/async_wrap.cc": {
+      "path": "upstream/socket-owner/src/async_wrap.cc",
+      "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709"
+    },
+    "src/async_wrap-inl.h": {
+      "path": "upstream/socket-owner/src/async_wrap-inl.h",
+      "sha256": "ef01e968d801f04679043e57eb8be51c6fbc8c4748f05e74ed5d5e36711473ed"
+    },
+    "deps/uv/src/unix/stream.c": {
+      "path": "upstream/socket-owner/deps/uv/src/unix/stream.c",
+      "sha256": "736cd948a28acdb1544dd683becd78fb744e79de55562229da54923b20f41c7c"
+    }
+  },
+  "streamState": {
+    "source": "src/stream_base.h",
+    "fields": [
+      "kReadBytesOrError",
+      "kArrayBufferOffset",
+      "kBytesWritten",
+      "kLastWriteWasAsync",
+      "kLastWriteErr",
+      "kNumStreamBaseStateFields"
+    ]
+  }
+}

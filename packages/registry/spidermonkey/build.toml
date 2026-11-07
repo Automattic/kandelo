@@ -1,5 +1,15 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/generate-socket-state.py",
+  "third_party/node-core/http-agent-adapter.js",
+  "third_party/node-core/http-agent-sources.json",
+  "third_party/node-core/native-socket-owner.cpp",
+  "third_party/node-core/socket-owner-sources.json",
+  "third_party/node-core/socket-owner.h",
+  "third_party/node-core/socket-stream-adapter.js",
+  "third_party/node-core/socket-stream-state.h",
+  "third_party/node-core/upstream/http-agent",
+  "third_party/node-core/upstream/socket-owner",
   "third_party/node-core/x509-operations.h",
   "third_party/node-core/native-x509.cpp",
   "third_party/node-core/x509-platform-adapter.js",
@@ -590,4 +600,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 159
+revision = 160

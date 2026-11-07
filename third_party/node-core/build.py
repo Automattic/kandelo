@@ -678,6 +678,75 @@ for marker, replacement in [
         raise ValueError('Review HTTP header marker: ' + marker)
     http_adapter = http_adapter.replace(marker, replacement)
 bundle += http_adapter + '\n'
+# Audited socket delivery: unchanged selected pinned stream algorithms.
+socket_spec = json.loads((root / 'socket-owner-sources.json').read_text())
+if (socket_spec['nodeVersion'], socket_spec['nodeCommit']) != (manifest['version'], manifest['commit']):
+    raise ValueError('Socket owner target identity mismatch')
+socket_sources = {}
+for name, item in socket_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Socket stream source identity mismatch: ' + name)
+    socket_sources[name] = raw.decode('utf-8')
+socket_adapter = (root / 'socket-stream-adapter.js').read_text()
+socket_state = runpy.run_path(str(root / 'generate-socket-state.py'))['render']()
+if (root / 'socket-stream-state.h').read_text() != socket_state['header']:
+    raise ValueError('Regenerate the pinned socket stream-state header')
+if socket_adapter.count('/* NODE_SOCKET_STREAM_STATE_LAYOUT */') != 1:
+    raise ValueError('Review socket stream-state layout marker')
+socket_adapter = socket_adapter.replace('/* NODE_SOCKET_STREAM_STATE_LAYOUT */', socket_state['javascript'])
+for name, marker in [('symbols', 'STREAM_SYMBOLS'), ('afterWrite', 'STREAM_AFTER_WRITE'), ('read', 'STREAM_READ'),
+                     ('netOptions', 'NET_OPTIONS'), ('netInit', 'NET_INIT'), ('netApply', 'NET_APPLY')]:
+    item = socket_spec['sections'][name]
+    source = socket_sources[item.get('source', 'stream')]
+    begin = source.index(item['start'])
+    selected = source[begin:begin + item['length']]
+    if hashlib.sha256(selected.encode()).hexdigest() != item['sha256']:
+        raise ValueError('Socket stream selection mismatch: ' + name)
+    token = '/* NODE_SOCKET_' + marker + ' */'
+    if socket_adapter.count(token) != 1:
+        raise ValueError('Socket stream selection marker mismatch: ' + name)
+    socket_adapter = socket_adapter.replace(token, selected)
+provider_item = socket_spec['tcpProvider']
+provider_raw = (root / provider_item['path']).read_bytes()
+if hashlib.sha256(provider_raw).hexdigest() != provider_item['sha256']:
+    raise ValueError('Socket provider list source mismatch')
+provider_body = provider_raw.decode().split('#define NODE_ASYNC_NON_CRYPTO_PROVIDER_TYPES(V)', 1)[1].split('#if HAVE_OPENSSL', 1)[0]
+provider_names = re.findall(r'V\((\w+)\)', provider_body)
+if provider_names.index(provider_item['name']) != provider_item['index']:
+    raise ValueError('Socket provider ID mismatch')
+bundle += socket_adapter + '\n'
+agent_spec = json.loads((root / 'http-agent-sources.json').read_text())
+if (agent_spec['nodeVersion'], agent_spec['nodeCommit']) != (manifest['version'], manifest['commit']):
+    raise ValueError('HTTP Agent target identity mismatch')
+agent_sources = {}
+for name, item in agent_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('HTTP Agent source identity mismatch: ' + name)
+    agent_sources[name] = raw.decode('utf-8')
+agent_adapter = (root / 'http-agent-adapter.js').read_text()
+for name, marker in [('proxy', 'PROXY'), ('selection', 'SELECTION'), ('keepAlive', 'KEEP_ALIVE'),
+                     ('admission', 'ADMISSION'), ('protocol', 'PROTOCOL'), ('protocolCheck', 'PROTOCOL_CHECK'), ('onSocket', 'ON_SOCKET'), ('destroy', 'DESTROY'), ('free', 'FREE'), ('socketTimeout', 'SOCKET_TIMEOUT'), ('setSocketMethods', 'SET_SOCKET_METHODS'),
+                     ('timerDuration', 'TIMER_DURATION'), ('globalAgent', 'GLOBAL_AGENT'), ('requestProxy', 'REQUEST_PROXY'),
+                     ('requestHeaders', 'REQUEST_HEADERS'), ('validateHost', 'VALIDATE_HOST')]:
+    item = agent_spec['sections'][name]
+    source = agent_sources[item['source']]
+    begin = source.index(item['start'])
+    selected = source[begin:begin + item['length']]
+    if hashlib.sha256(selected.encode()).hexdigest() != item['sha256']:
+        raise ValueError('HTTP Agent selection mismatch: ' + name)
+    token = '/* NODE_HTTP_AGENT_' + marker + ' */'
+    if agent_adapter.count(token) != 1:
+        raise ValueError('HTTP Agent selection marker mismatch: ' + name)
+    agent_adapter = agent_adapter.replace(token, selected)
+lazy_item = manifest['pathPlatform']['internal/util/get_lazy']
+lazy_raw = (root / lazy_item['path']).read_bytes()
+if hashlib.sha256(lazy_raw).hexdigest() != lazy_item['sha256']:
+    raise ValueError('HTTP Agent lazy helper source mismatch')
+agent_adapter = agent_adapter.replace('/* NODE_HTTP_AGENT_LAZY */', lazy_raw.decode('utf-8'))
+agent_adapter = agent_adapter.replace('/* NODE_HTTP_AGENT_MODULE */', agent_sources['lib/_http_agent.js'])
+bundle += agent_adapter + '\n'
 incoming_item = manifest['httpIncoming']
 incoming_raw = (root / incoming_item['path']).read_bytes()
 if hashlib.sha256(incoming_raw).hexdigest() != incoming_item['sha256']:

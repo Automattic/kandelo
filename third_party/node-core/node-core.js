@@ -8739,7 +8739,10 @@ class AsyncResource {
             const info = platform.native.getAsyncResourceInfo(resource);
             const id = info[0], triggerId = info[1];
             const nativeType = ObjectPrototypeHasOwnProperty(info, 3) ? info[3] : undefined;
-            record = { id, triggerId, nativeType, isPromise: platform.native.isPromise(resource) };
+            record = { id, triggerId, nativeType,
+                executionResource: ObjectPrototypeHasOwnProperty(info, 4) ? info[4] : resource,
+                hasExecutionResource: ObjectPrototypeHasOwnProperty(info, 4),
+                isPromise: platform.native.isPromise(resource) };
             nativeResources.set(resource, record);
             if (nativeType === undefined && destroyHooksExist()) {
                 finalizers.register(resource, { asyncId: id, destroyed: { destroyed: false }, isPromise: record.isPromise });
@@ -8759,9 +8762,13 @@ class AsyncResource {
         if (kind === 'callback:zero:after') {
             setState(platform.native.popAsyncExecution(0)); return;
         }
+        // A real handle's AsyncReset publishes a new native ID/frame/public
+        // resource before init. Replace only that raw handle's cached epoch;
+        // active callbacks keep the numeric IDs owned by the native stack.
+        if (kind === 'native:init') nativeResources.delete(resource);
         const record = nativeResource(resource);
         if (kind === 'promise:init' || kind === 'task:init' || kind === 'native:init') {
-            emit('init', [record.id, record.nativeType ?? (record.isPromise ? 'PROMISE' : 'Microtask'), record.triggerId, resource], record.isPromise);
+            emit('init', [record.id, record.nativeType ?? (record.isPromise ? 'PROMISE' : 'Microtask'), record.triggerId, record.executionResource], record.isPromise);
         } else if (kind === 'promise:resolve') {
             emit('promiseResolve', [record.id], true);
         } else if (kind === 'before') {
@@ -8849,7 +8856,16 @@ class AsyncResource {
     platform.native.setAsyncDestroyTracking(false);
     function executionAsyncId() { executionState(); return platform.native.executionAsyncId(); }
     function triggerAsyncId() { executionState(); return platform.native.triggerAsyncId(); }
-    function executionAsyncResource() { executionState(); return platform.native.executionAsyncResource() ?? root.resource; }
+    function executionAsyncResource() {
+        executionState();  // Preserve the untracked-entry guard.
+        const resource = platform.native.executionAsyncResource() ?? root.resource;
+        // Like pinned lookupPublicResource(rawResource), resolve the current
+        // actual native public alias at observation time. An active callback's
+        // stack owns its old numeric ID even when AsyncReset replaced this alias.
+        const record = nativeResources.get(resource);
+        return record?.hasExecutionResource && record.executionResource !== undefined
+            ? record.executionResource : resource;
+    }
     const api = {
         get AsyncLocalStorage() {
             return require('internal/async_local_storage/async_context_frame');
@@ -32312,6 +32328,1908 @@ const STATUS_CODES = {
         OutgoingMessage: api.OutgoingMessage,
         validateHeaderName: api.validateHeaderName, validateHeaderValue: api.validateHeaderValue,
         isValidHeaderName: api.isValidHeaderName, isValidHeaderValue: api.isValidHeaderValue };
+}
+
+// Pinned stream read/write delivery over the genuine native TCP owner.
+function _createNodeSocketStream(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { Symbol, ReflectApply } = primordials;
+    const { Buffer, FastBuffer } = platform;
+    const { owner_symbol } = platform.async.symbols;
+    const { ErrnoException } = platform.values.errors;
+    const { isUint8Array } = platform.types;
+    // These fields are written from actual delivered native material. No raw
+    // descriptor or Promise fulfillment is used as an idle/read-state proxy.
+    const kReadBytesOrError = 0, kArrayBufferOffset = 1, kBytesWritten = 2, kLastWriteWasAsync = 3, kLastWriteErr = 4;
+    const streamBaseState = new Int32Array(5);
+    const UV_EOF = -4095;
+    function require(name) {
+        if (name === 'internal/util/debuglog') return platform.values.require(name);
+        throw new primordials.Error('Unsupported socket stream dependency: ' + name);
+    }
+    const kMaybeDestroy = Symbol('kMaybeDestroy');
+const kUpdateTimer = Symbol('kUpdateTimer');
+const kAfterAsyncWrite = Symbol('kAfterAsyncWrite');
+const kHandle = Symbol('kHandle');
+const kBoundSession = Symbol('kBoundSession');
+const kSession = Symbol('kSession');
+
+let debug = require('internal/util/debuglog').debuglog('stream', (fn) => {
+  debug = fn;
+});
+const kBuffer = Symbol('kBuffer');
+const kBufferGen = Symbol('kBufferGen');
+const kBufferCb = Symbol('kBufferCb');
+
+function onWriteComplete(status) {
+  debug('onWriteComplete', status, this.error);
+
+  const stream = this.handle[owner_symbol];
+
+  if (status < 0) {
+    const error = new ErrnoException(status, 'write', this.error);
+    if (typeof this.callback === 'function') {
+      return this.callback(error);
+    }
+
+    return stream.destroy(error);
+  }
+
+  if (stream.destroyed) {
+    if (typeof this.callback === 'function')
+      this.callback(null);
+    return;
+  }
+
+  stream[kUpdateTimer]();
+  stream[kAfterAsyncWrite](this);
+
+  if (typeof this.callback === 'function')
+    this.callback(null);
+}
+
+
+    function afterWriteDispatched(handle, ret, buffer, cb) {
+  const bytes = streamBaseState[kBytesWritten];
+
+  if (typeof ret === 'number') {
+    // The write (or its failure) completed synchronously.
+    if (ret !== 0)
+      cb(new ErrnoException(ret, 'write'));
+    else if (typeof cb === 'function')
+      cb();
+    return { async: false, bytes };
+  }
+
+  const req = ret;
+  const err = streamBaseState[kLastWriteErr];
+  if (err !== 0) {
+    cb(new ErrnoException(err, 'write', req.error));
+    return { async: false, bytes };
+  }
+
+  req.handle = handle;
+  req.oncomplete = onWriteComplete;
+  req.callback = cb;
+  req.async = true;
+  req.bytes = bytes;
+  // Retain the data (or chunks) being written until the write completes.
+  req.buffer = buffer;
+
+  // If the write completed synchronously inside the write call, before
+  // `oncomplete` could be attached, the completion status has been recorded;
+  // deliver it now.
+  const status = req.writeStatus;
+  if (status !== null) {
+    req.writeStatus = null;
+    req.oncomplete(status);
+  }
+
+  return req;
+}
+
+
+    function onStreamRead(arrayBuffer) {
+  const nread = streamBaseState[kReadBytesOrError];
+
+  const handle = this;
+  const stream = this[owner_symbol];
+
+  stream[kUpdateTimer]();
+
+  if (nread > 0 && !stream.destroyed) {
+    let ret;
+    let result;
+    const userBuf = stream[kBuffer];
+    if (userBuf) {
+      result = (stream[kBufferCb](nread, userBuf) !== false);
+      const bufGen = stream[kBufferGen];
+      if (bufGen !== null) {
+        const nextBuf = bufGen();
+        if (isUint8Array(nextBuf))
+          stream[kBuffer] = ret = nextBuf;
+      }
+    } else {
+      const offset = streamBaseState[kArrayBufferOffset];
+      const buf = new FastBuffer(arrayBuffer, offset, nread);
+      result = stream.push(buf);
+    }
+    if (!result) {
+      handle.reading = false;
+      if (!stream.destroyed) {
+        const err = handle.readStop();
+        if (err)
+          stream.destroy(new ErrnoException(err, 'read'));
+      }
+    }
+
+    return ret;
+  }
+
+  if (nread === 0) {
+    return;
+  }
+
+  // After seeing EOF, most streams will be closed permanently,
+  // and will not deliver any more read events after this point.
+  // (equivalently, it should have called readStop on itself already).
+  // Some streams may be reset and explicitly started again with a call
+  // to readStart, such as TTY.
+
+  if (nread !== UV_EOF) {
+    // CallJSOnreadMethod expects the return value to be a buffer.
+    // Ref: https://github.com/nodejs/node/pull/34375
+    stream.destroy(new ErrnoException(nread, 'read'));
+    return;
+  }
+
+  // Defer this until we actually emit end
+  if (stream._readableState.endEmitted) {
+    if (stream[kMaybeDestroy])
+      stream[kMaybeDestroy]();
+  } else {
+    if (stream[kMaybeDestroy])
+      stream.on('end', stream[kMaybeDestroy]);
+
+    // Push a null to signal the end of data.
+    // Do it before `maybeDestroy` for correct order of events:
+    // `end` -> `close`
+    stream.push(null);
+    stream.read(0);
+  }
+}
+
+
+    const kSetNoDelay = Symbol('kSetNoDelay'), kSetKeepAlive = Symbol('kSetKeepAlive');
+    const kSetKeepAliveInitialDelay = Symbol('kSetKeepAliveInitialDelay');
+    const kSetKeepAliveInterval = Symbol('kSetKeepAliveInterval'), kSetKeepAliveCount = Symbol('kSetKeepAliveCount');
+    function installSocket(Socket) {
+        Socket.prototype.setNoDelay = function(enable) {
+  // Backwards compatibility: assume true when `enable` is omitted
+  enable = Boolean(enable === undefined ? true : enable);
+
+  if (!this._handle) {
+    this[kSetNoDelay] = enable;
+    return this;
+  }
+
+  if (this._handle.setNoDelay && enable !== this[kSetNoDelay]) {
+    this[kSetNoDelay] = enable;
+    this._handle.setNoDelay(enable);
+  }
+
+  return this;
+};
+
+
+Socket.prototype.setKeepAlive = function(enable, initialDelayMsecs,
+                                         intervalMsecs, count) {
+  if (enable !== null && typeof enable === 'object') {
+    const options = enable;
+    enable = options.enable;
+    initialDelayMsecs = options.initialDelay;
+    intervalMsecs = options.interval;
+    count = options.count;
+  }
+  enable = Boolean(enable);
+  const initialDelay = ~~(initialDelayMsecs / 1000);
+  const interval = intervalMsecs === undefined ?
+    undefined : ~~(intervalMsecs / 1000);
+
+  if (!this._handle) {
+    this[kSetKeepAlive] = enable;
+    this[kSetKeepAliveInitialDelay] = initialDelay;
+    this[kSetKeepAliveInterval] = interval;
+    this[kSetKeepAliveCount] = count;
+    return this;
+  }
+
+  if (!this._handle.setKeepAlive) {
+    return this;
+  }
+
+  if (enable !== this[kSetKeepAlive] ||
+      (
+        enable &&
+        (this[kSetKeepAliveInitialDelay] !== initialDelay ||
+         this[kSetKeepAliveInterval] !== interval ||
+         this[kSetKeepAliveCount] !== count)
+      )
+  ) {
+    this[kSetKeepAlive] = enable;
+    this[kSetKeepAliveInitialDelay] = initialDelay;
+    this[kSetKeepAliveInterval] = interval;
+    this[kSetKeepAliveCount] = count;
+    this._handle.setKeepAlive(enable, initialDelay, interval, count);
+  }
+
+  return this;
+};
+
+    }
+    function initOptions(socket, options) {
+        ReflectApply(function() {
+              this[kSetNoDelay] = Boolean(options.noDelay);
+  this[kSetKeepAlive] = Boolean(options.keepAlive);
+  this[kSetKeepAliveInitialDelay] = ~~(options.keepAliveInitialDelay / 1000);
+        }, socket, []);
+    }
+    function applyOptions(self) {
+            if (self[kSetNoDelay] && self._handle.setNoDelay) {
+      self._handle.setNoDelay(true);
+    }
+
+    if (self[kSetKeepAlive] && self._handle.setKeepAlive) {
+      self._handle.setKeepAlive(true, self[kSetKeepAliveInitialDelay],
+                                self[kSetKeepAliveInterval],
+                                self[kSetKeepAliveCount]);
+    }
+
+    }
+    function bind(owner, stream) {
+        owner[owner_symbol] = stream;
+        owner.reading = false;
+        owner.onread = onStreamRead;
+        owner.configureRead(function(_status, buffer, onread) {
+            if (typeof onread !== 'function') throw new primordials.TypeError('TCP onread must be callable');
+            return ReflectApply(onread, this, [buffer]);
+        }, streamBaseState);
+        const nativeWrite = owner.write;
+        owner.writeBuffer = function(_request, buffer) {
+            return ReflectApply(nativeWrite, this, [buffer]);
+        };
+        const nativeWriteVector = owner.writeVector;
+        owner.writev = function(_request, chunks, allBuffers) {
+            if (allBuffers !== true) {
+                const error = new primordials.Error('Mixed string TCP vectors require their native encoding owner');
+                error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
+            }
+            return ReflectApply(nativeWriteVector, this, [chunks]);
+        };
+        stream[kUpdateTimer] = stream._unrefTimer;
+        stream[kAfterAsyncWrite] = function() { this._lastWriteQueueSize = 0; };
+        return owner;
+    }
+    return { bind, onStreamRead, afterWriteDispatched, installSocket, initOptions, applyOptions,
+        binding: { kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync, kLastWriteErr, streamBaseState },
+        symbols: { kUpdateTimer, kAfterAsyncWrite, kHandle, kMaybeDestroy } };
+}
+
+// Genuine pinned HTTP Agent queues, native socket admission and idle guards.
+function _createNodeHttpAgent(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { ArrayIsArray, Number, NumberIsFinite, NumberParseInt, ObjectKeys, String, Symbol, decodeURIComponent } = primordials;
+    const { process, Buffer, URL } = platform;
+    const isIPv4 = platform.net.isIPv4;
+    const { ERR_HTTP_HEADERS_SENT, ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_PROXY_INVALID_CONFIG, ERR_OUT_OF_RANGE } = platform.values.errors.codes;
+    const { validateNumber, validatePort } = platform.values.validators;
+    const TIMEOUT_MAX = 2 ** 31 - 1;
+    function getTimerDuration(msecs, name) {
+  validateNumber(msecs, name);
+  if (msecs < 0 || !NumberIsFinite(msecs)) {
+    throw new ERR_OUT_OF_RANGE(name, 'a non-negative finite number', msecs);
+  }
+
+  // Ensure that msecs fits into signed int32
+  if (msecs > TIMEOUT_MAX) {
+    process.emitWarning(`${msecs} does not fit into a 32-bit signed integer.` +
+                        `\nTimer duration was truncated to ${TIMEOUT_MAX}.`,
+                        'TimeoutOverflowWarning');
+    return TIMEOUT_MAX;
+  }
+
+  return msecs;
+}
+
+    function getLazy(initializer) {
+  let value;
+  let initialized = false;
+  return function() {
+    if (initialized === false) {
+      value = initializer();
+      initialized = true;
+    }
+    return value;
+  };
+}
+
+    function ipToInt(ip) {
+  const octets = ip.split('.');
+  let result = 0;
+  for (let i = 0; i < octets.length; i++) {
+    result = (result << 8) + NumberParseInt(octets[i]);
+  }
+  // Force unsigned 32-bit result
+  return result >>> 0;
+}
+
+// There are two factors in play when proxying the request:
+// 1. What the request protocol is, that is, whether users are sending it via
+//    http.request or https.request, or whether they are sending
+//    the request to a https:// URL or a http:// URL. HTTPS requests should be
+//    proxied by the proxy specified using the HTTPS_PROXY environment variable.
+//    HTTP requests should be proxied by the proxy specified using the HTTP_PROXY
+//    environment variable.
+// 2. What the proxy protocol is. This depends on the value of the environment variables,
+//    for example.
+//
+// When proxying a HTTP request, the following needs to be done:
+// https://datatracker.ietf.org/doc/html/rfc7230#section-5.3.2
+// 1. Rewrite the request path to absolute-form.
+// 2. Add proxy-connection and proxy-authorization headers appropriately.
+//
+// When proxying a HTTPS request, the following needs to be done:
+// https://datatracker.ietf.org/doc/html/rfc9110#CONNECT
+// 1. Send a CONNECT request to the proxy server.
+// 2. Wait for 200 connection established response to establish the tunnel.
+// 3. Perform TLS handshake with the endpoint through the tunnel.
+// 4. Tunnel the request using the established connection.
+//
+// When the proxy protocol is HTTP, the modified HTTP request can just be sent over
+// the TCP socket to the proxy server, and the HTTPS request tunnel can be established
+// over the TCP socket to the proxy server.
+// When the proxy protocol is HTTPS, the modified request needs to be sent after
+// TLS handshake with the proxy server. Same goes to the HTTPS request tunnel establishment.
+
+/**
+ * Represents the proxy configuration for an agent. The built-in http and https agent
+ * implementation have one of this when they are configured to use a proxy.
+ * @property {string} href - Proxy server URL with credentials redacted.
+ * @property {string} protocol - Proxy protocol used to talk to the proxy server.
+ * @property {string|undefined} auth - proxy-authorization header value, if username or password is provided.
+ * @property {Array<string>} bypassList - List of hosts to bypass the proxy.
+ * @property {object} proxyConnectionOptions - Options for connecting to the proxy server.
+ */
+class ProxyConfig {
+  constructor(proxyUrl, keepAlive, noProxyList) {
+    let parsedURL;
+    try {
+      parsedURL = new URL(proxyUrl);
+    } catch {
+      throw new ERR_PROXY_INVALID_CONFIG(`Invalid proxy URL: ${proxyUrl}`);
+    }
+    const { hostname, port, protocol, username, password } = parsedURL;
+
+    if (username || password) {
+      parsedURL.username = '';
+      parsedURL.password = '';
+      this.href = parsedURL.href;
+    } else {
+      this.href = proxyUrl;
+    }
+    this.protocol = protocol;
+
+    if (username || password) {
+      // If username or password is provided, prepare the proxy-authorization header.
+      const auth = `${decodeURIComponent(username)}:${decodeURIComponent(password)}`;
+      this.auth = `Basic ${Buffer.from(auth).toString('base64')}`;
+    }
+    if (noProxyList) {
+      this.bypassList = noProxyList.split(',').map((entry) => entry.trim().toLowerCase());
+    } else {
+      this.bypassList = []; // No bypass list provided.
+    }
+
+    this.proxyConnectionOptions = {
+      // The host name comes from parsed URL so if it starts with '[' it must be an IPv6 address
+      // ending with ']'. Remove the brackets for net.connect().
+      host: hostname[0] === '[' ? hostname.slice(1, -1) : hostname,
+      // The port comes from parsed URL so it is either '' or a valid number string.
+      port: port ? Number(port) : (protocol === 'https:' ? 443 : 80),
+    };
+  }
+
+  // See: https://about.gitlab.com/blog/we-need-to-talk-no-proxy
+  // TODO(joyeecheung): share code with undici.
+  shouldUseProxy(hostname, port) {
+    const bypassList = this.bypassList;
+    if (this.bypassList.length === 0) {
+      return true; // No bypass list, always use the proxy.
+    }
+
+    const host = hostname.toLowerCase();
+    const hostWithPort = port ? `${host}:${port}` : host;
+
+    for (let i = 0; i < bypassList.length; i++) {
+      const entry = bypassList[i];
+
+      if (entry === '*') return false;  // * bypasses all hosts.
+      if (entry === host || entry === hostWithPort) return false;  // Matching host and host:port
+
+      // Follow curl's behavior: strip leading dot before matching suffixes.
+      if (entry[0] === '.') {
+        const suffix = entry.substring(1);
+        if (host === suffix || (host.endsWith(suffix) && host[host.length - suffix.length - 1] === '.')) return false;
+      }
+
+      // Handle wildcards like *.example.com
+      if (entry.startsWith('*.') && host.endsWith(entry.substring(1))) return false;
+
+      // Handle IP ranges (simple format like 192.168.1.0-192.168.1.255)
+      // TODO(joyeecheung): support IPv6.
+      if (entry.includes('-') && isIPv4(host)) {
+        let { 0: startIP, 1: endIP } = entry.split('-');
+        startIP = startIP.trim();
+        endIP = endIP.trim();
+        if (startIP && endIP && isIPv4(startIP) && isIPv4(endIP)) {
+          const hostInt = ipToInt(host);
+          const startInt = ipToInt(startIP);
+          const endInt = ipToInt(endIP);
+          if (hostInt >= startInt && hostInt <= endInt) return false;
+        }
+      }
+
+      // It might be useful to support CIDR notation, but it's not so widely supported
+      // in other tools as a de-facto standard to follow, so we don't implement it for now.
+    }
+
+    return true; // If no matches found, use the proxy.
+  }
+}
+
+function parseProxyUrl(env, protocol) {
+  // Get the proxy url - following the most popular convention, lower case takes precedence.
+  // See https://about.gitlab.com/blog/we-need-to-talk-no-proxy/#http_proxy-and-https_proxy
+  const proxyUrl = (protocol === 'https:') ?
+    (env.https_proxy || env.HTTPS_PROXY) : (env.http_proxy || env.HTTP_PROXY);
+  // No proxy settings from the environment, ignore.
+  if (!proxyUrl) {
+    return null;
+  }
+
+  if (proxyUrl.includes('\r') || proxyUrl.includes('\n')) {
+    throw new ERR_PROXY_INVALID_CONFIG(`Invalid proxy URL: ${proxyUrl}`);
+  }
+
+  return proxyUrl;
+}
+
+function parseProxyConfigFromEnv(env, protocol, keepAlive) {
+  // We only support proxying for HTTP and HTTPS requests.
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    return null;
+  }
+
+  const proxyUrl = parseProxyUrl(env, protocol);
+  if (proxyUrl === null) {
+    return null;
+  }
+
+  // Only http:// and https:// proxies are supported.
+  // Ignore instead of throw, in case other protocols are supposed to be
+  // handled by the user land.
+  if (!proxyUrl.startsWith('http://') && !proxyUrl.startsWith('https://')) {
+    return null;
+  }
+
+  const noProxyList = env.no_proxy || env.NO_PROXY;
+  return new ProxyConfig(proxyUrl, keepAlive, noProxyList);
+}
+
+/**
+ * @param {ProxyConfig} proxyConfig
+ * @param {object} reqOptions
+ * @returns {boolean}
+ */
+function checkShouldUseProxy(proxyConfig, reqOptions) {
+  if (!proxyConfig) {
+    return false;
+  }
+  if (reqOptions.socketPath) {
+    // If socketPath is set, the endpoint is a Unix domain socket, which can't
+    // be proxied.
+    return false;
+  }
+  return proxyConfig.shouldUseProxy(reqOptions.host || 'localhost', reqOptions.port);
+}
+
+function filterEnvForProxies(env) {
+  return {
+    __proto__: null,
+    http_proxy: env.http_proxy,
+    HTTP_PROXY: env.HTTP_PROXY,
+    https_proxy: env.https_proxy,
+    HTTPS_PROXY: env.HTTPS_PROXY,
+    no_proxy: env.no_proxy,
+    NO_PROXY: env.NO_PROXY,
+  };
+}
+
+function getGlobalAgent(proxyEnv, Agent) {
+  return new Agent({
+    keepAlive: true, scheduling: 'lifo', timeout: 5000,
+    proxyEnv,
+  });
+}
+
+    const internalHttp = { parseProxyConfigFromEnv, checkShouldUseProxy, getGlobalAgent,
+        kProxyConfig: Symbol('kProxyConfig'), kWaitForProxyTunnel: Symbol('kWaitForProxyTunnel') };
+    const module = { exports: {} };
+    const kError = Symbol('kError');
+    const kAuthority = Symbol('kAuthority'), kProxyRewrittenToAbsolute = Symbol('kProxyRewrittenToAbsolute');
+    const kOutHeaders = platform.outgoing.kOutHeaders;
+    const kProxyConfig = internalHttp.kProxyConfig;
+    const debug = platform.values.require('internal/util/debuglog').debuglog('http');
+    function getHostFromHeaderArray(headers) {
+  let host;
+  const isPairs = headers.length > 0 && ArrayIsArray(headers[0]);
+  if (isPairs) {
+    for (let i = 0; i < headers.length; i++) {
+      const entry = headers[i];
+      if (!ArrayIsArray(entry)) {
+        throw new ERR_INVALID_ARG_VALUE(`options.headers[${i}]`, typeof entry,
+                                        'must be an array when headers is passed as an array of pairs');
+      }
+      if (`${entry[0]}`.toLowerCase() === 'host') {
+        if (host !== undefined) {
+          throw new ERR_INVALID_ARG_VALUE('options.headers', '(redacted)',
+                                          'must not contain duplicate Host headers');
+        }
+        host = `${entry[1]}`;
+      }
+    }
+  } else {
+    for (let i = 0; i + 1 < headers.length; i += 2) {
+      if (`${headers[i]}`.toLowerCase() === 'host') {
+        if (host !== undefined) {
+          throw new ERR_INVALID_ARG_VALUE('options.headers', '(redacted)',
+                                          'must not contain duplicate Host headers');
+        }
+        host = `${headers[i + 1]}`;
+      }
+    }
+  }
+  return host;
+}
+
+function authoritiesMatch(canonicalHost, hostFromHeader) {
+  let parsed;
+  try {
+    parsed = new URL(`http://${hostFromHeader}`);
+  } catch {
+    return false;
+  }
+  if (parsed.username || parsed.password ||
+      parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    return false;
+  }
+  return parsed.host === canonicalHost;
+}
+
+// https://datatracker.ietf.org/doc/html/rfc9112#section-3.2
+// When the request target is in absolute-form, ensure it is consistent with
+// the request authority: same scheme, no userinfo, and an authority
+// component agree with options.host[:port].
+function validateRequestAuthority(pathOption, proxyAuthority, userHostHeader, headerArray) {
+  validatePort(proxyAuthority.port, 'options.port', true);
+  pathOption = `${pathOption}`;
+  const requestBase = new URL(`http://${proxyAuthority.host}`);
+  requestBase.port = proxyAuthority.port;
+
+  const result = { requestBase };
+  if (headerArray !== undefined) {
+    const host = getHostFromHeaderArray(headerArray);
+    // Since we don't mutate the header array to normalize the Host value, unlike
+    // in the case of other shapes of headers provided, we check that it is identical
+    // to the authority from the requestBase.
+    if (host !== undefined && host !== requestBase.host) {
+      throw new ERR_INVALID_ARG_VALUE(
+        'Host in options.headers', host,
+        `must match the request authority (${requestBase.host})`);
+    }
+  } else if (userHostHeader !== undefined) {
+    if (!authoritiesMatch(requestBase.host, userHostHeader)) {
+      throw new ERR_INVALID_ARG_VALUE(
+        'Host in options.headers', userHostHeader,
+        `must match the request authority (${requestBase.host})`);
+    }
+  }
+
+  // Per RFC 9112 Section 3.2, if request target is in absolute-form its authority
+  // must agree with the request authority.
+  let requestURL;
+  let isAbsoluteForm = false;
+  try {
+    requestURL = new URL(pathOption);
+    isAbsoluteForm = true;
+  } catch {
+    if (pathOption.charCodeAt(0) !== 0x2F) {
+      throw new ERR_INVALID_ARG_VALUE(
+        'options.path', pathOption, 'must be in absolute-form or start with /');
+    }
+    requestURL = new URL(requestBase.origin + pathOption);
+  }
+  result.requestURL = requestURL;
+  if (!isAbsoluteForm) {
+    return result;
+  }
+
+  if (requestURL.username || requestURL.password) {
+    requestURL.username = '';
+    requestURL.password = '';
+    throw new ERR_INVALID_ARG_VALUE(
+      'options.path', requestURL.href, 'must not contain userinfo, use options.auth instead');
+  }
+
+  if (requestURL.protocol !== 'http:') {
+    throw new ERR_INVALID_ARG_VALUE(
+      'options.path', requestURL.protocol, 'must use http: scheme when specified as an absolute URL');
+  }
+
+  if (requestBase.host !== requestURL.host) {
+    throw new ERR_INVALID_ARG_VALUE(
+      'options.path', requestURL, `must match the request authority (${requestBase.host})`);
+  }
+
+  return result;
+}
+
+// When proxying a HTTP request, the following needs to be done:
+// https://datatracker.ietf.org/doc/html/rfc9112#section-3.2.2
+// 1. Rewrite the request path to absolute-form.
+// 2. Add proxy-connection and proxy-authorization headers appropriately.
+//
+// This function checks whether the request should be rewritten for proxying
+// and modifies the headers as well as req.path if necessary.
+// The handling of the proxy server connection is done in createConnection.
+// It also validates that the Host header and absolute-form path authority match the
+// request authority specified by reqOptions.
+function rewriteForProxiedHttp(req, reqOptions, proxyAuthority, userHostHeader, headerArray) {
+  if (req._header) {
+    debug('request._header is already sent, skipping rewriteForProxiedHttp', reqOptions);
+    return false;
+  }
+  const agent = req.agent;
+  if (!agent || !agent[kProxyConfig]) {
+    return false;
+  }
+  if ((reqOptions.protocol || agent.protocol) !== 'http:') {
+    return false;
+  }
+  // TODO(joyeecheung): cache this on the req or on the agent.
+  const shouldUseProxy = checkShouldUseProxy(agent[kProxyConfig], reqOptions);
+  debug(`rewriteForProxiedHttp should use proxy for ${reqOptions.host}:${reqOptions.port}:`, shouldUseProxy);
+  if (!shouldUseProxy) {
+    return false;
+  }
+
+  // Per RFC 9112 Section 3.2.2, we don't need to rewrite CONNECT or OPTIONS * requests.
+  let requestURL;
+  if (req.method !== 'CONNECT' && !(req.method === 'OPTIONS' && req.path === '*')) {
+    // Validate Host header values agree with the request authority before mutating req,
+    // so a rejected request doesn't leave proxy-* headers stuck on the outgoing header store.
+    // XXX(joyeecheung): This validates whether the request conforms to the RFC, but here
+    // we only do it for proxied requests for backward compatibility. For non-proxied requests,
+    // ensuring that the request is well formed has been entirely left to the user.
+    const result = validateRequestAuthority(req.path, proxyAuthority, userHostHeader, headerArray);
+    if (headerArray === undefined) {
+      const currentHost = req.getHeader('host');
+      if (currentHost !== undefined && currentHost !== result.requestBase.host) {
+        req.setHeader('Host', result.requestBase.host);
+      }
+    }
+    requestURL = result.requestURL;
+  }
+
+  // Add proxy headers.
+  const { auth, href } = agent[kProxyConfig];
+  if (auth) {
+    req.setHeader('proxy-authorization', auth);
+  }
+  if (req.shouldKeepAlive) {
+    req.setHeader('proxy-connection', 'keep-alive');
+  } else {
+    req.setHeader('proxy-connection', 'close');
+  }
+
+  if (requestURL !== undefined) {
+    // Convert the path to absolute-form. The authority is built from options.
+    req.path = requestURL.href;
+    req[kProxyRewrittenToAbsolute] = true;
+  }
+  debug(`updated request for HTTP proxy ${href} with ${req.path} `, req[kOutHeaders]);
+  return true;
+};
+
+    function validateHost(host, name) {
+  if (host !== null && host !== undefined && typeof host !== 'string') {
+    throw new ERR_INVALID_ARG_TYPE(`options.${name}`,
+                                   ['string', 'undefined', 'null'],
+                                   host);
+  }
+  return host;
+}
+
+    function require(name) {
+        if (name === 'net') return platform.net;
+        if (name === 'events') return platform.events;
+        if (name === 'async_hooks') return platform.async.api;
+        if (name === 'internal/async_hooks') return platform.async;
+        if (name === 'internal/http') return internalHttp;
+        if (name === 'internal/util') return { ...platform.values.util, getLazy };
+        if (name === 'internal/stream_base_commons') return platform.socketStream;
+        if (name === 'internal/validators') return platform.values.validators;
+        if (name === 'internal/assert') return platform.assert;
+        if (name === 'internal/options') return { getOptionValue: platform.getOptionValue };
+        if (name === 'tls') return platform.getTLS();
+        if (name === 'internal/util/debuglog') return platform.values.require(name);
+        throw new primordials.Error('Unsupported HTTP Agent dependency: ' + name);
+    }
+    function internalBinding(name) {
+        if (name === 'stream_wrap') return platform.socketStream.binding;
+        throw new primordials.Error('Unsupported HTTP Agent binding: ' + name);
+    }
+    (function(module, exports, require, internalBinding, primordials, process) {
+        // Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+'use strict';
+
+const {
+  NumberIsFinite,
+  NumberParseInt,
+  ObjectKeys,
+  ObjectSetPrototypeOf,
+  ObjectValues,
+  Symbol,
+} = primordials;
+
+const net = require('net');
+const EventEmitter = require('events');
+let debug = require('internal/util/debuglog').debuglog('http', (fn) => {
+  debug = fn;
+});
+const {
+  parseProxyConfigFromEnv,
+  kProxyConfig,
+  checkShouldUseProxy,
+  kWaitForProxyTunnel,
+  getGlobalAgent,
+} = require('internal/http');
+const { AsyncResource } = require('async_hooks');
+const {
+  async_id_symbol,
+  owner_symbol,
+} = require('internal/async_hooks').symbols;
+const {
+  getLazy,
+  kEmptyObject,
+  once,
+} = require('internal/util');
+const {
+  onStreamRead,
+} = require('internal/stream_base_commons');
+const {
+  kReadBytesOrError,
+  streamBaseState,
+} = internalBinding('stream_wrap');
+const {
+  validateNumber,
+  validateOneOf,
+  validateString,
+} = require('internal/validators');
+const assert = require('internal/assert');
+const { getOptionValue } = require('internal/options');
+
+const kOnKeylog = Symbol('onkeylog');
+const kRequestOptions = Symbol('requestOptions');
+const kRequestAsyncResource = Symbol('requestAsyncResource');
+const kFreeSocketDataGuard = Symbol('freeSocketDataGuard');
+
+// New Agent code.
+
+// The largest departure from the previous implementation is that
+// an Agent instance holds connections for a variable number of host:ports.
+// Surprisingly, this is still API compatible as far as third parties are
+// concerned. The only code that really notices the difference is the
+// request object.
+
+// Another departure is that all code related to HTTP parsing is in
+// ClientRequest.onSocket(). The Agent is now *strictly*
+// concerned with managing a connection pool.
+
+class ReusedHandle {
+  constructor(type, handle) {
+    this.type = type;
+    this.handle = handle;
+  }
+}
+
+function freeSocketErrorListener(err) {
+  const socket = this;
+  debug('SOCKET ERROR on FREE socket:', err.message, err.stack);
+  socket.destroy();
+  socket.emit('agentRemove');
+}
+
+// Guard against unsolicited data arriving while a socket is idle in the
+// freeSockets pool.  When the HTTPParser is detached the data would sit
+// in the TCP buffer and be silently consumed as the response for the
+// *next* request that reuses the socket (response-queue poisoning).
+// See: https://hackerone.com/reports/3582376
+function freeSocketOnReadGuard() {
+  const nread = streamBaseState[kReadBytesOrError];
+  if (nread === 0) return;
+
+  debug('READ on FREE socket - destroying poisoned socket');
+  this[owner_symbol].destroy();
+}
+
+function installFreeSocketDataGuard(socket) {
+  if (socket.readableLength > 0) {
+    debug('BUFFERED DATA on FREE socket - destroying poisoned socket');
+    socket.destroy();
+    return;
+  }
+
+  if (socket.connecting) {
+    socket[kFreeSocketDataGuard] = function onConnect() {
+      socket[kFreeSocketDataGuard] = null;
+      installFreeSocketDataGuard(socket);
+    };
+    socket.once('connect', socket[kFreeSocketDataGuard]);
+    return;
+  }
+
+  const handle = socket._handle;
+  if (handle) {
+    handle.onread = freeSocketOnReadGuard;
+    if (!handle.reading) {
+      handle.reading = true;
+      const err = handle.readStart();
+      if (err) socket.destroy();
+    }
+  }
+}
+
+// The data guard only runs when the event loop polls for I/O. Data that
+// reached the OS socket buffer after the last poll has not been seen by it
+// yet, so check for it directly before handing an idle socket to a request.
+function hasPendingRead(socket) {
+  // A socket that is still connecting has nothing to read yet, and a pending
+  // connect error must be reported to the request rather than swallowed here.
+  if (socket.connecting) return false;
+  const handle = socket._handle;
+  return typeof handle?.hasPendingRead === 'function' &&
+    handle.hasPendingRead() === true;
+}
+
+function removeFreeSocketDataGuard(socket) {
+  if (socket[kFreeSocketDataGuard]) {
+    socket.removeListener('connect', socket[kFreeSocketDataGuard]);
+    socket[kFreeSocketDataGuard] = null;
+  }
+
+  const handle = socket._handle;
+  if (handle?.onread === freeSocketOnReadGuard) {
+    handle.onread = onStreamRead;
+  }
+}
+
+function Agent(options) {
+  if (!(this instanceof Agent))
+    return new Agent(options);
+
+  EventEmitter.call(this);
+
+  this.options = { __proto__: null, ...options };
+
+  this.defaultPort = this.options.defaultPort || 80;
+  this.protocol = this.options.protocol || 'http:';
+
+  if (this.options.noDelay === undefined)
+    this.options.noDelay = true;
+
+  // Don't confuse net and make it think that we're connecting to a pipe
+  this.options.path = null;
+  this.requests = { __proto__: null };
+  this.sockets = { __proto__: null };
+  this.freeSockets = { __proto__: null };
+  this.keepAliveMsecs = this.options.keepAliveMsecs || 1000;
+  this.keepAlive = this.options.keepAlive || false;
+  this.maxSockets = this.options.maxSockets || Agent.defaultMaxSockets;
+  this.maxFreeSockets = this.options.maxFreeSockets || 256;
+  this.scheduling = this.options.scheduling || 'lifo';
+  this.maxTotalSockets = this.options.maxTotalSockets;
+  this.totalSocketCount = 0;
+
+  this.agentKeepAliveTimeoutBuffer =
+    typeof this.options.agentKeepAliveTimeoutBuffer === 'number' &&
+    this.options.agentKeepAliveTimeoutBuffer >= 0 &&
+    NumberIsFinite(this.options.agentKeepAliveTimeoutBuffer) ?
+      this.options.agentKeepAliveTimeoutBuffer :
+      1000;
+
+  const proxyEnv = this.options.proxyEnv;
+  if (typeof proxyEnv === 'object' && proxyEnv !== null) {
+    this[kProxyConfig] = parseProxyConfigFromEnv(proxyEnv, this.protocol, this.keepAlive);
+    debug(`new ${this.protocol} agent with proxy config`, this[kProxyConfig]);
+  }
+
+  validateOneOf(this.scheduling, 'scheduling', ['fifo', 'lifo']);
+
+  if (this.maxTotalSockets !== undefined) {
+    validateNumber(this.maxTotalSockets, 'maxTotalSockets', 1);
+  } else {
+    this.maxTotalSockets = Infinity;
+  }
+
+  this.on('free', (socket, options) => {
+    const name = this.getName(options);
+    debug('agent.on(free)', name);
+
+    // TODO(ronag): socket.destroy(err) might have been called
+    // before coming here and have an 'error' scheduled. In the
+    // case of socket.destroy() below this 'error' has no handler
+    // and could cause unhandled exception.
+
+    if (!socket.writable) {
+      socket.destroy();
+      return;
+    }
+
+    const requests = this.requests[name];
+    if (requests?.length) {
+      if (hasPendingRead(socket)) {
+        // onClose() will create a new socket for the pending request.
+        debug('PENDING DATA on released socket - destroying');
+        socket.destroy();
+        return;
+      }
+      const req = requests.shift();
+      const reqAsyncRes = req[kRequestAsyncResource];
+      if (reqAsyncRes) {
+        // Run request within the original async context.
+        reqAsyncRes.runInAsyncScope(() => {
+          asyncResetHandle(socket);
+          setRequestSocket(this, req, socket);
+        });
+        req[kRequestAsyncResource] = null;
+      } else {
+        setRequestSocket(this, req, socket);
+      }
+      if (requests.length === 0) {
+        delete this.requests[name];
+      }
+      return;
+    }
+
+    // If there are no pending requests, then put it in
+    // the freeSockets pool, but only if we're allowed to do so.
+    const req = socket._httpMessage;
+    if (!req || !req.shouldKeepAlive || !this.keepAlive) {
+      socket.destroy();
+      return;
+    }
+
+    const freeSockets = this.freeSockets[name] || [];
+    const freeLen = freeSockets.length;
+    let count = freeLen;
+    if (this.sockets[name])
+      count += this.sockets[name].length;
+
+    if (this.totalSocketCount > this.maxTotalSockets ||
+        count > this.maxSockets ||
+        freeLen >= this.maxFreeSockets ||
+        !this.keepSocketAlive(socket)) {
+      socket.destroy();
+      return;
+    }
+
+    this.freeSockets[name] = freeSockets;
+    socket[async_id_symbol] = -1;
+    socket._httpMessage = null;
+    this.removeSocket(socket, options);
+
+    socket.once('error', freeSocketErrorListener);
+    installFreeSocketDataGuard(socket);
+    freeSockets.push(socket);
+  });
+
+  // Don't emit keylog events unless there is a listener for them.
+  this.on('newListener', maybeEnableKeylog);
+}
+ObjectSetPrototypeOf(Agent.prototype, EventEmitter.prototype);
+ObjectSetPrototypeOf(Agent, EventEmitter);
+
+function maybeEnableKeylog(eventName) {
+  if (eventName === 'keylog') {
+    this.removeListener('newListener', maybeEnableKeylog);
+    // Future sockets will listen on keylog at creation.
+    const agent = this;
+    this[kOnKeylog] = function onkeylog(keylog) {
+      agent.emit('keylog', keylog, this);
+    };
+    // Existing sockets will start listening on keylog now. Both maps hold
+    // arrays of sockets keyed by name, so each bucket has to be walked.
+    const sets = [this.freeSockets, this.sockets];
+    for (let s = 0; s < sets.length; s++) {
+      const buckets = ObjectValues(sets[s]);
+      for (let b = 0; b < buckets.length; b++) {
+        const sockets = buckets[b];
+        for (let n = 0; n < sockets.length; n++) {
+          sockets[n].on('keylog', this[kOnKeylog]);
+        }
+      }
+    }
+  }
+}
+
+const lazyTLS = getLazy(() => require('tls'));
+
+Agent.defaultMaxSockets = Infinity;
+
+// See ProxyConfig in internal/http.js for how the connection should be handled
+// when the agent is configured to use a proxy server.
+Agent.prototype.createConnection = function createConnection(...args) {
+  const normalized = net._normalizeArgs(args);
+  const options = normalized[0];
+  const cb = normalized[1];
+
+  // Check if this specific request should bypass the proxy
+  const shouldUseProxy = checkShouldUseProxy(this[kProxyConfig], options);
+  debug(`http createConnection should use proxy for ${options.host}:${options.port}:`, shouldUseProxy);
+  if (!shouldUseProxy) {  // Forward to net.createConnection if no proxying is needed.
+    return net.createConnection(...args);
+  }
+
+  // Create a copy of the shared proxy connection options and connect
+  // to the proxy server instead of the endpoint. For Agent.prototype.createConnection
+  // which is used by the http agent, this is enough
+  const connectOptions = {
+    ...this[kProxyConfig].proxyConnectionOptions,
+  };
+  const proxyProtocol = this[kProxyConfig].protocol;
+  if (proxyProtocol === 'http:') {
+    return net.connect(connectOptions, cb);
+  } else if (proxyProtocol === 'https:') {
+    return lazyTLS().connect(connectOptions, cb);
+  }
+  // This should be unreachable because proxy config should be null for other protocols.
+  assert.fail(`Unexpected proxy protocol ${proxyProtocol}`);
+
+};
+
+// Get the key for a given set of request options
+Agent.prototype.getName = function getName(options = kEmptyObject) {
+  let name = options.host || 'localhost';
+
+  name += ':';
+  if (options.port)
+    name += options.port;
+
+  name += ':';
+  if (options.localAddress)
+    name += options.localAddress;
+
+  // Pacify parallel/test-http-agent-getname by only appending
+  // the ':' when options.family is set.
+  if (options.family === 4 || options.family === 6)
+    name += `:${options.family}`;
+
+  if (options.socketPath)
+    name += `:${options.socketPath}`;
+
+  return name;
+};
+
+function handleSocketAfterProxy(err, req) {
+  if (err.code === 'ERR_PROXY_TUNNEL') {
+    if (err.proxyTunnelTimeout) {
+      req.emit('timeout');  // Propagate the timeout from the tunnel to the request.
+    }
+    req.emit('error', err);
+  }
+}
+
+Agent.prototype.addRequest = function addRequest(req, options, port/* legacy */,
+                                                 localAddress/* legacy */) {
+  // Legacy API: addRequest(req, host, port, localAddress)
+  if (typeof options === 'string') {
+    options = {
+      __proto__: null,
+      host: options,
+      port,
+      localAddress,
+    };
+  }
+
+  // Here the agent options will override per-request options.
+  options = { __proto__: null, ...options, ...this.options };
+  if (options.socketPath)
+    options.path = options.socketPath;
+
+  normalizeServerName(options, req);
+
+  const name = this.getName(options);
+  this.sockets[name] ||= [];
+
+  const freeSockets = this.freeSockets[name];
+  let socket;
+  if (freeSockets) {
+    while (freeSockets.length && freeSockets[0].destroyed) {
+      freeSockets.shift();
+    }
+    socket = this.scheduling === 'fifo' ?
+      freeSockets.shift() :
+      freeSockets.pop();
+    while (socket && hasPendingRead(socket)) {
+      debug('PENDING DATA on FREE socket - destroying poisoned socket');
+      socket.destroy();
+      socket = this.scheduling === 'fifo' ?
+        freeSockets.shift() :
+        freeSockets.pop();
+    }
+    if (!freeSockets.length)
+      delete this.freeSockets[name];
+  }
+
+  const freeLen = freeSockets ? freeSockets.length : 0;
+  const sockLen = freeLen + this.sockets[name].length;
+
+  // Reusing a socket from the pool.
+  // If the caller specified a highWaterMark that differs from the pooled
+  // socket's writableHighWaterMark, sync the socket's HWM so that
+  // backpressure semantics match what the caller requested.
+  if (socket && options.highWaterMark != null &&
+      socket.writableHighWaterMark !== options.highWaterMark) {
+    debug('sync reused socket HWM (socket=%d, request=%d)',
+          socket.writableHighWaterMark, options.highWaterMark);
+    socket._writableState.highWaterMark = options.highWaterMark;
+  }
+
+  if (socket) {
+    asyncResetHandle(socket);
+    this.reuseSocket(socket, req);
+    setRequestSocket(this, req, socket);
+    this.sockets[name].push(socket);
+  } else if (sockLen < this.maxSockets &&
+             this.totalSocketCount < this.maxTotalSockets) {
+    // If we are under maxSockets create a new one.
+    this.createSocket(req, options, (err, socket) => {
+      if (err) {
+        handleSocketAfterProxy(err, req);
+        debug('call onSocket', sockLen, freeLen);
+        req.onSocket(socket, err);
+        return;
+      }
+
+      setRequestSocket(this, req, socket);
+    });
+  } else {
+    debug('wait for socket');
+    // We are over limit so we'll add it to the queue.
+    this.requests[name] ||= [];
+
+    // Used to create sockets for pending requests from different origin
+    req[kRequestOptions] = options;
+    // Used to capture the original async context.
+    req[kRequestAsyncResource] = new AsyncResource('QueuedRequest');
+
+    this.requests[name].push(req);
+  }
+};
+
+Agent.prototype.createSocket = function createSocket(req, options, cb) {
+  // Here the agent options will override per-request options.
+  options = { __proto__: null, ...options, ...this.options };
+  if (options.socketPath)
+    options.path = options.socketPath;
+
+  normalizeServerName(options, req);
+
+  // Make sure per-request timeout is respected.
+  const timeout = req.timeout || this.options.timeout || undefined;
+  if (timeout) {
+    options.timeout = timeout;
+  }
+
+  const name = this.getName(options);
+  options._agentKey = name;
+
+  debug('createConnection', name);
+  options.encoding = null;
+
+  const oncreate = once((err, s) => {
+    if (err)
+      return cb(err);
+    this.sockets[name] ||= [];
+    this.sockets[name].push(s);
+    this.totalSocketCount++;
+    debug('sockets', name, this.sockets[name].length, this.totalSocketCount);
+    installListeners(this, s, options);
+    cb(null, s);
+  });
+  // When keepAlive is true, pass the related options to createConnection
+  if (this.keepAlive) {
+    options.keepAlive = this.keepAlive;
+    options.keepAliveInitialDelay = this.keepAliveMsecs;
+  }
+
+  const newSocket = this.createConnection(options, oncreate);
+  // In the case where we are proxying through a tunnel for HTTPS, only add
+  // the socket to the pool and install/invoke the listeners after
+  // the tunnel is successfully established, so that actual operations
+  // on the socket all go through the tunnel. Errors emitted during
+  // tunnel establishment will be handled in the createConnection method
+  // in lib/https.js.
+  if (newSocket && !newSocket[kWaitForProxyTunnel])
+    oncreate(null, newSocket);
+};
+
+function normalizeServerName(options, req) {
+  if (!options.servername && options.servername !== '')
+    options.servername = calculateServerName(options, req);
+}
+
+function calculateServerName(options, req) {
+  let servername = options.host;
+  const hostHeader = req.getHeader('host');
+  if (hostHeader) {
+    validateString(hostHeader, 'options.headers.host');
+
+    // abc => abc
+    // abc:123 => abc
+    // [::1] => ::1
+    // [::1]:123 => ::1
+    if (hostHeader[0] === '[') {
+      const index = hostHeader.indexOf(']');
+      if (index === -1) {
+        // Leading '[', but no ']'. Need to do something...
+        servername = hostHeader;
+      } else {
+        servername = hostHeader.substring(1, index);
+      }
+    } else {
+      servername = hostHeader.split(':', 1)[0];
+    }
+  }
+  // Don't implicitly set invalid (IP) servernames.
+  if (net.isIP(servername))
+    servername = '';
+  return servername;
+}
+
+function installListeners(agent, s, options) {
+  function onFree() {
+    debug('CLIENT socket onFree');
+    agent.emit('free', s, options);
+  }
+  s.on('free', onFree);
+
+  function onClose(err) {
+    debug('CLIENT socket onClose');
+    // This is the only place where sockets get removed from the Agent.
+    // If you want to remove a socket from the pool, just close it.
+    // All socket errors end in a close event anyway.
+    agent.totalSocketCount--;
+    agent.removeSocket(s, options);
+  }
+  s.on('close', onClose);
+
+  function onTimeout() {
+    debug('CLIENT socket onTimeout');
+
+    // Destroy if in free list.
+    // TODO(ronag): Always destroy, even if not in free list.
+    const sockets = agent.freeSockets;
+    if (ObjectKeys(sockets).some((name) => sockets[name].includes(s))) {
+      return s.destroy();
+    }
+  }
+  s.on('timeout', onTimeout);
+
+  function onRemove() {
+    // We need this function for cases like HTTP 'upgrade'
+    // (defined by WebSockets) where we need to remove a socket from the
+    // pool because it'll be locked up indefinitely
+    debug('CLIENT socket onRemove');
+    agent.totalSocketCount--;
+    agent.removeSocket(s, options);
+    s.removeListener('close', onClose);
+    s.removeListener('free', onFree);
+    s.removeListener('timeout', onTimeout);
+    s.removeListener('agentRemove', onRemove);
+  }
+  s.on('agentRemove', onRemove);
+
+  if (agent[kOnKeylog]) {
+    s.on('keylog', agent[kOnKeylog]);
+  }
+}
+
+Agent.prototype.removeSocket = function removeSocket(s, options) {
+  const name = this.getName(options);
+  debug('removeSocket', name, 'writable:', s.writable);
+  const sets = [this.sockets];
+
+  // If the socket was destroyed, remove it from the free buffers too.
+  if (!s.writable)
+    sets.push(this.freeSockets);
+
+  for (let sk = 0; sk < sets.length; sk++) {
+    const sockets = sets[sk];
+
+    if (sockets[name]) {
+      const index = sockets[name].indexOf(s);
+      if (index !== -1) {
+        sockets[name].splice(index, 1);
+        // Don't leak
+        if (sockets[name].length === 0)
+          delete sockets[name];
+      }
+    }
+  }
+
+  let req;
+  if (this.requests[name]?.length) {
+    debug('removeSocket, have a request, make a socket');
+    req = this.requests[name][0];
+  } else {
+    // TODO(rickyes): this logic will not be FIFO across origins.
+    // There might be older requests in a different origin, but
+    // if the origin which releases the socket has pending requests
+    // that will be prioritized.
+    const keys = ObjectKeys(this.requests);
+    for (let i = 0; i < keys.length; i++) {
+      const prop = keys[i];
+      // Check whether this specific origin is already at maxSockets
+      if (this.sockets[prop]?.length) break;
+      debug('removeSocket, have a request with different origin,' +
+        ' make a socket');
+      req = this.requests[prop][0];
+      options = req[kRequestOptions];
+      break;
+    }
+  }
+
+  if (req && options) {
+    req[kRequestOptions] = undefined;
+    // If we have pending requests and a socket gets closed make a new one
+    this.createSocket(req, options, (err, socket) => {
+      if (err) {
+        handleSocketAfterProxy(err, req);
+        req.onSocket(null, err);
+        return;
+      }
+
+      socket.emit('free');
+    });
+  }
+
+};
+
+Agent.prototype.keepSocketAlive = function keepSocketAlive(socket) {
+  socket.setKeepAlive(true, this.keepAliveMsecs);
+  socket.unref();
+
+  let agentTimeout = this.options.timeout || 0;
+  let canKeepSocketAlive = true;
+
+  if (socket._httpMessage?.res) {
+    const keepAliveHint = socket._httpMessage.res.headers['keep-alive'];
+
+    if (keepAliveHint) {
+      const hint = /^timeout=(\d+)/.exec(keepAliveHint)?.[1];
+
+      if (hint) {
+        // Let the timer expire before the announced timeout to reduce
+        // the likelihood of ECONNRESET errors
+        let serverHintTimeout = (NumberParseInt(hint) * 1000) - this.agentKeepAliveTimeoutBuffer;
+        serverHintTimeout = serverHintTimeout > 0 ? serverHintTimeout : 0;
+        if (serverHintTimeout === 0) {
+          // Cannot safely reuse the socket because the server timeout is
+          // too short
+          canKeepSocketAlive = false;
+        } else if (serverHintTimeout < agentTimeout) {
+          agentTimeout = serverHintTimeout;
+        }
+      }
+    }
+  }
+
+  if (socket.timeout !== agentTimeout) {
+    socket.setTimeout(agentTimeout);
+  }
+
+  return canKeepSocketAlive;
+};
+
+Agent.prototype.reuseSocket = function reuseSocket(socket, req) {
+  debug('have free socket');
+  socket.removeListener('error', freeSocketErrorListener);
+  removeFreeSocketDataGuard(socket);
+  req.reusedSocket = true;
+  socket.ref();
+};
+
+Agent.prototype.destroy = function destroy() {
+  const sets = [this.freeSockets, this.sockets];
+  for (let s = 0; s < sets.length; s++) {
+    const set = sets[s];
+    const keys = ObjectKeys(set);
+    for (let v = 0; v < keys.length; v++) {
+      const setName = set[keys[v]];
+      for (let n = 0; n < setName.length; n++) {
+        setName[n].destroy();
+      }
+    }
+  }
+};
+
+function setRequestSocket(agent, req, socket) {
+  req.onSocket(socket);
+  const agentTimeout = agent.options.timeout || 0;
+  if (req.timeout === undefined || req.timeout === agentTimeout) {
+    return;
+  }
+  socket.setTimeout(req.timeout);
+}
+
+function asyncResetHandle(socket) {
+  // Guard against an uninitialized or user supplied Socket.
+  const handle = socket._handle;
+  if (handle && typeof handle.asyncReset === 'function') {
+    // Assign the handle a new asyncId and run any destroy()/init() hooks.
+    handle.asyncReset(new ReusedHandle(handle.getProviderType(), handle));
+    socket[async_id_symbol] = handle.getAsyncId();
+  }
+}
+
+module.exports = {
+  Agent,
+  globalAgent: getGlobalAgent(getOptionValue('--use-env-proxy') ? process.env : undefined, Agent),
+};
+
+    })(module, module.exports, require, internalBinding, primordials, process);
+    function host(options) {
+        return validateHost(options.hostname, 'hostname') || validateHost(options.host, 'host') || 'localhost';
+    }
+    function prepareHeaders(req, options, host, port, defaultPort) {
+        const optsWithoutSignal = { __proto__: null, ...options, host, port };
+        const method = req.method;
+        const setHost = options.setHost !== undefined ? Boolean(options.setHost) : options.setDefaultHeaders !== false;
+        req._removedConnection = options.setDefaultHeaders === false;
+        req._removedContLen = options.setDefaultHeaders === false;
+        req._removedTE = options.setDefaultHeaders === false;
+        return primordials.ReflectApply(function() {
+              let hostHeaderFromOptions = host;
+  // For the Host header, ensure that IPv6 addresses are enclosed
+  // in square brackets, as defined by URI formatting
+  // https://tools.ietf.org/html/rfc3986#section-3.2.2
+  const posColon = hostHeaderFromOptions.indexOf(':');
+  if (posColon !== -1 &&
+      hostHeaderFromOptions.includes(':', posColon + 1) &&
+      hostHeaderFromOptions.charCodeAt(0) !== 91/* '[' */) {
+    hostHeaderFromOptions = `[${hostHeaderFromOptions}]`;
+  }
+  const proxyAuthority = { host: hostHeaderFromOptions, port };
+
+  if (port && +port !== defaultPort) {
+    hostHeaderFromOptions += ':' + port;
+  }
+  // Preserve the request authority (with the port when non-default) so that
+  // the perf_hooks entry can report a faithful URL.
+  this[kAuthority] = hostHeaderFromOptions;
+  const headersArray = ArrayIsArray(options.headers);
+  if (!headersArray) {
+    if (options.headers) {
+      const keys = ObjectKeys(options.headers);
+      // Retain for(;;) loop for performance reasons
+      // Refs: https://github.com/nodejs/node/pull/30958
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        this.setHeader(key, options.headers[key]);
+      }
+    }
+
+    // Save the Host header before the implicit auto-set below, so the
+    // proxy validator can tell user-explicit values from Node-generated ones.
+    const userHostHeader = this.getHeader('host');
+
+    if (host && !this.getHeader('host') && setHost) {
+      const hostHeader = method === 'CONNECT' && options.path ?
+        String(this.path) : hostHeaderFromOptions;
+      this.setHeader('Host', hostHeader);
+    }
+
+    if (options.auth && !this.getHeader('Authorization')) {
+      this.setHeader('Authorization', 'Basic ' +
+                     Buffer.from(options.auth).toString('base64'));
+    }
+
+    if (this.getHeader('expect')) {
+      if (this._header) {
+        throw new ERR_HTTP_HEADERS_SENT('render');
+      }
+
+      rewriteForProxiedHttp(this, optsWithoutSignal, proxyAuthority, userHostHeader);
+      this._storeHeader(this.method + ' ' + this.path + ' HTTP/1.1\r\n',
+                        this[kOutHeaders]);
+    } else {
+      rewriteForProxiedHttp(this, optsWithoutSignal, proxyAuthority, userHostHeader);
+    }
+  } else {
+    rewriteForProxiedHttp(this, optsWithoutSignal, proxyAuthority, undefined, options.headers);
+    this._storeHeader(this.method + ' ' + this.path + ' HTTP/1.1\r\n',
+                      options.headers);
+  }
+
+        }, req, []);
+    }
+    function select(req, options) {
+        const Agent = module.exports;
+        const { ERR_INVALID_ARG_TYPE, ERR_INVALID_PROTOCOL } = platform.values.errors.codes;
+        // This selection is the unchanged pinned ClientRequest Agent contract.
+        return Reflect.apply(function() {
+              let agent = options.agent;
+  const defaultAgent = options._defaultAgent || Agent.globalAgent;
+  if (agent === false) {
+    agent = new defaultAgent.constructor();
+  } else if (agent === null || agent === undefined) {
+    if (typeof options.createConnection !== 'function') {
+      agent = defaultAgent;
+    }
+    // Explicitly pass through this statement as agent will not be used
+    // when createConnection is provided.
+  } else if (typeof agent.addRequest !== 'function') {
+    throw new ERR_INVALID_ARG_TYPE('options.agent',
+                                   ['Agent-like Object', 'undefined', 'false'],
+                                   agent);
+  }
+  this.agent = agent;
+
+              const protocol = options.protocol || defaultAgent.protocol;
+  let expectedProtocol = defaultAgent.protocol;
+  if (this.agent?.protocol)
+    expectedProtocol = this.agent.protocol;
+
+              if (protocol !== expectedProtocol) {
+    throw new ERR_INVALID_PROTOCOL(protocol, expectedProtocol);
+  }
+
+            this.protocol = protocol;
+            return agent;
+        }, req, []);
+    }
+    function keepAlive(req) {
+        const NumberIsFinite = primordials.NumberIsFinite;
+        return Reflect.apply(function() {
+              if (this.agent) {
+    // If there is an agent we should default to Connection:keep-alive,
+    // but only if the Agent will actually reuse the connection!
+    // If it's not a keepAlive agent, and the maxSockets==Infinity, then
+    // there's never a case where this socket will actually be reused
+    if (!this.agent.keepAlive && !NumberIsFinite(this.agent.maxSockets)) {
+      this._last = true;
+      this.shouldKeepAlive = false;
+    } else {
+      this._last = false;
+      this.shouldKeepAlive = true;
+    }
+  }
+
+        }, req, []);
+    }
+    function admit(req, optsWithoutSignal) {
+        const { once } = platform.values.util;
+        const net = platform.net;
+        const debug = platform.values.require('internal/util/debuglog').debuglog('http');
+        const emitErrorEvent = (request, error) => request._failed(error);
+        return Reflect.apply(function() {
+              // initiate connection
+  if (this.agent) {
+    this.agent.addRequest(this, optsWithoutSignal);
+  } else {
+    // No agent, default to Connection:close.
+    this._last = true;
+    this.shouldKeepAlive = false;
+    let opts = optsWithoutSignal;
+    if (opts.path || opts.socketPath) {
+      opts = { ...optsWithoutSignal };
+      if (opts.socketPath) {
+        opts.path = opts.socketPath;
+      } else {
+        opts.path &&= undefined;
+      }
+    }
+    if (typeof opts.createConnection === 'function') {
+      const oncreate = once((err, socket) => {
+        if (err) {
+          process.nextTick(() => emitErrorEvent(this, err));
+        } else {
+          this.onSocket(socket);
+        }
+      });
+
+      try {
+        const newSocket = opts.createConnection(opts, oncreate);
+        if (newSocket) {
+          oncreate(null, newSocket);
+        }
+      } catch (err) {
+        oncreate(err);
+      }
+    } else {
+      debug('CLIENT use net.createConnection', opts);
+      this.onSocket(net.createConnection(opts));
+    }
+  }
+        }, req, []);
+    }
+    function installRequestPrototype(ClientRequest) {
+        for (const name of ['abort', 'destroy', 'setTimeout', 'setNoDelay', 'setSocketKeepAlive'])
+            delete ClientRequest.prototype[name];
+        const { ConnResetException } = platform.values.errors;
+        const finished = platform.stream.finished;
+        const ReflectApply = primordials.ReflectApply;
+        const emitErrorEvent = (request, error) => request._failed(error);
+        function socketErrorListener(error) {
+            this._hadError = true;
+            const request = this._httpMessage;
+            if (request) request._failed(error);
+            this.destroy();
+        }
+        function tickOnSocket(request, socket) {
+            socket.removeListener('error', socketErrorListener);
+            request._openSocket(socket);
+            if (request.timeout !== undefined || request.agent?.options?.timeout) listenSocketTimeout(request);
+        }
+        function emitRequestTimeout() {
+  const req = this._httpMessage;
+  if (req) {
+    req.emit('timeout');
+  }
+}
+
+function listenSocketTimeout(req) {
+  if (req.timeoutCb) {
+    return;
+  }
+  // Set timeoutCb so it will get cleaned up on request end.
+  req.timeoutCb = emitRequestTimeout;
+  // Delegate socket timeout event.
+  if (req.socket) {
+    req.socket.once('timeout', emitRequestTimeout);
+  } else {
+    req.on('socket', (socket) => {
+      socket.once('timeout', emitRequestTimeout);
+    });
+  }
+}
+
+        ClientRequest.prototype.onSocket = function onSocket(socket, err) {
+  // Attach the error listener synchronously so that any errors emitted on
+  // the socket before onSocketNT runs (e.g. from a blocklist check or other
+  // next-tick error) are forwarded to the request and can be caught by the
+  // user's error handler. socketErrorListener requires socket._httpMessage
+  // to be set so we set it here too.
+  if (socket && !err) {
+    socket._httpMessage = this;
+    socket.on('error', socketErrorListener);
+  }
+  process.nextTick(onSocketNT, this, socket, err);
+};
+
+function onSocketNT(req, socket, err) {
+  if (req.destroyed || err) {
+    req.destroyed = true;
+
+    function _destroy(req, err) {
+      if (!req.aborted && !err) {
+        err = new ConnResetException('socket hang up');
+      }
+      // ERR_PROXY_TUNNEL is handled by the proxying logic.
+      // Skip if the error was already emitted by the early socketErrorListener.
+      if (err && err.code !== 'ERR_PROXY_TUNNEL' &&
+          !socket?._hadError) {
+        emitErrorEvent(req, err);
+      }
+      req._closed = true;
+      req.emit('close');
+    }
+
+    if (socket) {
+      if (!err && req.agent && !socket.destroyed) {
+        socket.emit('free');
+        socket.removeListener('error', socketErrorListener);
+      } else {
+        finished(socket.destroy(err || req[kError]), (er) => {
+          if (er?.code === 'ERR_STREAM_PREMATURE_CLOSE') {
+            er = null;
+          }
+          _destroy(req, er || err);
+        });
+        return;
+      }
+    }
+
+    _destroy(req, err || req[kError]);
+  } else {
+    tickOnSocket(req, socket);
+    req._flush();
+  }
+}
+
+        ClientRequest.prototype._deferToConnect = _deferToConnect;
+function _deferToConnect(method, arguments_) {
+  // This function is for calls that need to happen once the socket is
+  // assigned to this request and writable. It's an important promisy
+  // thing for all the socket calls that happen either now
+  // (when a socket is assigned) or in the future (when a socket gets
+  // assigned out of the pool and is eventually writable).
+
+  const callSocketMethod = () => {
+    if (method)
+      ReflectApply(this.socket[method], this.socket, arguments_);
+  };
+
+  const onSocket = () => {
+    if (this.socket.writable) {
+      callSocketMethod();
+    } else {
+      this.socket.once('connect', callSocketMethod);
+    }
+  };
+
+  if (!this.socket) {
+    this.once('socket', onSocket);
+  } else {
+    onSocket();
+  }
+}
+
+ClientRequest.prototype.setTimeout = function setTimeout(msecs, callback) {
+  if (this._ended) {
+    return this;
+  }
+
+  listenSocketTimeout(this);
+  msecs = getTimerDuration(msecs, 'msecs');
+  if (callback) this.once('timeout', callback);
+
+  if (this.socket) {
+    setSocketTimeout(this.socket, msecs);
+  } else {
+    this.once('socket', (sock) => setSocketTimeout(sock, msecs));
+  }
+
+  return this;
+};
+
+function setSocketTimeout(sock, msecs) {
+  if (sock.connecting) {
+    sock.once('connect', function() {
+      sock.setTimeout(msecs);
+    });
+  } else {
+    sock.setTimeout(msecs);
+  }
+}
+
+ClientRequest.prototype.setNoDelay = function setNoDelay(noDelay) {
+  this._deferToConnect('setNoDelay', [noDelay]);
+};
+
+ClientRequest.prototype.setSocketKeepAlive =
+    function setSocketKeepAlive(enable, initialDelay) {
+      this._deferToConnect('setKeepAlive', [enable, initialDelay]);
+    };
+
+ClientRequest.prototype.clearTimeout = function clearTimeout(cb) {
+  this.setTimeout(0, cb);
+};
+
+        ClientRequest.prototype.abort = function abort() {
+  if (this.aborted) {
+    return;
+  }
+  this.aborted = true;
+  process.nextTick(emitAbortNT, this);
+  this.destroy();
+};
+
+ClientRequest.prototype.destroy = function destroy(err) {
+  if (this.destroyed) {
+    return this;
+  }
+  this.destroyed = true;
+
+  // If we're aborting, we don't care about any more response data.
+  if (this.res) {
+    this.res._dump();
+  }
+
+  // Nothing left to cancel: the request was fully sent and the response was
+  // fully received. Destroying the socket here would emit an error on a
+  // socket that is already being released to the agent, at which point
+  // socketErrorListener has been removed and nothing would handle it.
+  if (this.writableFinished && this.res?.complete) {
+    return this;
+  }
+
+  this[kError] = err;
+  this.socket?.destroy(err);
+
+  return this;
+};
+
+function emitAbortNT(req) {
+  req.emit('abort');
+}
+
+        const destroyRequest = ClientRequest.prototype.destroy;
+        ClientRequest.prototype.destroy = function destroy(error) {
+            if (!(this.writableFinished && this.res?.complete)) this._destroyed = true;
+            return primordials.ReflectApply(destroyRequest, this, [error]);
+        };
+    }
+    function decorateNamespace(namespace) {
+        const ObjectDefineProperty = primordials.ObjectDefineProperty;
+        const module = { exports: namespace }, httpAgent = moduleOwner;
+        ObjectDefineProperty(module.exports, 'globalAgent', {
+  __proto__: null,
+  configurable: true,
+  enumerable: true,
+  get() {
+    return httpAgent.globalAgent;
+  },
+  set(value) {
+    httpAgent.globalAgent = value;
+  },
+});
+    }
+    const moduleOwner = module.exports;
+    function emitFreeNT(req) {
+  req._closed = true;
+  req.emit('close');
+  if (req.socket) {
+    req.socket.emit('free');
+  }
+}
+
+    return { module: module.exports, select, keepAlive, admit, internalHttp,
+        installRequestPrototype, emitFreeNT, kError, decorateNamespace, getTimerDuration, prepareHeaders, host };
 }
 
 // The actual pinned IncomingMessage owns its Readable/header/abort state.

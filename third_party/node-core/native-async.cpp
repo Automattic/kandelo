@@ -59,6 +59,9 @@ struct KandeloNativeAsyncState {
   unsigned callbackDepth = 0;  // Owning-context scopes, including checkpoint jobs.
   KandeloExecutionStack execution;
   JS::PersistentRootedObject process;
+  // Environment anchor in the process realm; foreign realm globals are weak
+  // keys, so TCP prototypes do not keep otherwise-dead realms alive.
+  JS::PersistentRootedObject socketPrototypes;
   bool handlingUncaught = false;
   Vector<KandeloNativeDestroyRecord, 0, SystemAllocPolicy> destroyIds;
   Vector<KandeloNativeDestroyRecord, 0, SystemAllocPolicy> retryIds;
@@ -291,6 +294,7 @@ static void KandeloShutdownNativeAsync(ShellContext* sc) {
   state->detached = true;
   state->trackingDestroy = false;
   state->execution.Clear();
+  state->socketPrototypes.reset();
   state->process.reset();
   state->destroyIds.clearAndFree();
   state->retryIds.clearAndFree();

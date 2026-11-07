@@ -8,7 +8,9 @@ const target = require('../../../packages/registry/node-compat/target.json');
 assert.equal(process.versions.node, target.version);
 const { create } = require('./node-http-incoming-platform.cjs');
 const subject = create();
-function socket() { return new stream.Duplex({ read() {}, write(_b, _e, cb) { cb(); } }); }
+// Synthetic response bytes still use the actual native socket timer/ref/close
+// contract consumed by the Agent; no socket-method shims or fake handle.
+function socket() { return new net.Socket({ read() {}, write(_b, _e, cb) { cb(); } }); }
 function descriptors(ctor) {
   return Object.fromEntries(Object.entries(Object.getOwnPropertyDescriptors(ctor.prototype)).map(([k, d]) => [k, {
     enumerable: d.enumerable, configurable: d.configurable, writable: d.writable,

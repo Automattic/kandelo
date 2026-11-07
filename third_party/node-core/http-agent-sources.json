@@ -1,0 +1,138 @@
+{
+  "nodeVersion": "26.13.0",
+  "nodeCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/_http_agent.js": {
+      "path": "upstream/http-agent/lib/_http_agent.js",
+      "sha256": "e522fe285ce1bf44f90fa71c96530b1d242dc5dd20359c566654f45e88c39428"
+    },
+    "lib/internal/http.js": {
+      "path": "upstream/http-agent/lib/internal/http.js",
+      "sha256": "7340c282d028e6aa6b3813084ad0e7fea22e33478706b295e746f29e02558f37"
+    },
+    "lib/_http_client.js": {
+      "path": "upstream/http-agent/lib/_http_client.js",
+      "sha256": "4591a4d31634c62cc82f883cc60ed547f8a46a6b9dd7bb963f7e54008c6a5d31"
+    },
+    "lib/https.js": {
+      "path": "upstream/http-agent/lib/https.js",
+      "sha256": "509e884481a7f738b3d06fcce5ee80d91eca855a43f2ee95a412862e106ff85a"
+    },
+    "lib/net.js": {
+      "path": "upstream/http-agent/lib/net.js",
+      "sha256": "24db4f4a58808f0935265b1a71150989cec8601e971f07ca531d16004f3d6c43"
+    },
+    "lib/internal/timers.js": {
+      "path": "upstream/http-agent/lib/internal/timers.js",
+      "sha256": "8ef50a8988efbec26a40514518e89789acc2f7085418c2cc526f89f72cf8251e"
+    },
+    "lib/http.js": {
+      "path": "upstream/http-agent/lib/http.js",
+      "sha256": "162ef724b90c1eaf6c3d4f84ecc1c1f21bf519fcd43f4d096df1170e3421795b"
+    }
+  },
+  "sections": {
+    "proxy": {
+      "source": "lib/internal/http.js",
+      "start": "function ipToInt(",
+      "length": 7842,
+      "sha256": "ca1d699d6b483fe3bd310fe4c5150cf77375498b9f2a6fe767621611950748a3"
+    },
+    "selection": {
+      "source": "lib/_http_client.js",
+      "start": "  let agent = options.agent;",
+      "length": 681,
+      "sha256": "0fd7d672e59a78447de3d8381365e5a7eb13db4ba3bc343bf49da7b1c7cac2c5"
+    },
+    "keepAlive": {
+      "source": "lib/_http_client.js",
+      "start": "  if (this.agent) {\n    // If there is an agent",
+      "length": 520,
+      "sha256": "0ceff254d2622be7f10b55a0a4fa9b15a5510842c7181efa83f5fcff52365d6c"
+    },
+    "admission": {
+      "source": "lib/_http_client.js",
+      "start": "  // initiate connection\n",
+      "length": 1032,
+      "sha256": "d79b2e2e9ea62e4621c2073eb0bb17dc891fa442cec58b1ea97637310261a497"
+    },
+    "netOptions": {
+      "source": "lib/net.js",
+      "start": "Socket.prototype.setNoDelay =",
+      "length": 1715,
+      "sha256": "f666ae8388b92e5018dc301fc4a339c73552fb4a3f9bf3c747b876520a0abcac"
+    },
+    "onSocket": {
+      "source": "lib/_http_client.js",
+      "start": "ClientRequest.prototype.onSocket =",
+      "length": 1640,
+      "sha256": "8fa29e308abe3e188e9c5c308e8f678a888ced79f8b073e24f427f94a5c67cf6"
+    },
+    "destroy": {
+      "source": "lib/_http_client.js",
+      "start": "ClientRequest.prototype.abort =",
+      "length": 905,
+      "sha256": "68879b102864561bc37d7903321c3be48077ea6a1bf8e633f986079219bc487d"
+    },
+    "free": {
+      "source": "lib/_http_client.js",
+      "start": "function emitFreeNT(",
+      "length": 125,
+      "sha256": "9c6c292337ff0e2a98a9d1119133ecfe97742d1b27de4e014ed637f8b0e0ae9a"
+    },
+    "protocol": {
+      "source": "lib/_http_client.js",
+      "start": "  const protocol = options.protocol",
+      "length": 182,
+      "sha256": "c16311762444ae3e0d8ff3993b599fb67e26996446eccb5bdcca5a7722c355cf"
+    },
+    "protocolCheck": {
+      "source": "lib/_http_client.js",
+      "start": "  if (protocol !== expectedProtocol)",
+      "length": 107,
+      "sha256": "be958ed528013043c5ab130b989afb0d03302333e6f9cd8abf8b244b2e78269e"
+    },
+    "socketTimeout": {
+      "source": "lib/_http_client.js",
+      "start": "function emitRequestTimeout(",
+      "length": 502,
+      "sha256": "5438212fc9e33f4740463dd9f379c5d13d83dc24ea0a3fb5fb13a0314928f073"
+    },
+    "setSocketMethods": {
+      "source": "lib/_http_client.js",
+      "start": "ClientRequest.prototype._deferToConnect =",
+      "length": 1800,
+      "sha256": "2ad9d383366b04864fe9f1cf23ad6b880d4cefc91c7b9819c6d2458bbd78f7b4"
+    },
+    "timerDuration": {
+      "source": "lib/internal/timers.js",
+      "start": "function getTimerDuration(",
+      "length": 529,
+      "sha256": "a70489e9692150c1f2868f1b98790aeb9d661760b67f8349a44f9b20784a09b7"
+    },
+    "globalAgent": {
+      "source": "lib/http.js",
+      "start": "ObjectDefineProperty(module.exports, 'globalAgent',",
+      "length": 222,
+      "sha256": "8b7f46726212d3863eda15651c527daa5e914097852fdab963277cf0761ee37b"
+    },
+    "requestProxy": {
+      "source": "lib/_http_client.js",
+      "start": "function getHostFromHeaderArray(",
+      "length": 6964,
+      "sha256": "65ba0ef509fbcc4f27fc089d43477e5645e3a419b3cba0f195ea847759ced020"
+    },
+    "requestHeaders": {
+      "source": "lib/_http_client.js",
+      "start": "  let hostHeaderFromOptions = host;",
+      "length": 2455,
+      "sha256": "f772bbad4d2f5748711902a639ce9baefb80a3902684ef1ea2a1dd7e4cfc2123"
+    },
+    "validateHost": {
+      "source": "lib/_http_client.js",
+      "start": "function validateHost(",
+      "length": 294,
+      "sha256": "06ad2aae2567e2a289bb0f8f2fc2ba1b42e5e70f7447ba041dcf05863df701bb"
+    }
+  }
+}

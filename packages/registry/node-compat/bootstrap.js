@@ -3504,6 +3504,10 @@ const _nodeDnsLookup = _nodeDnsPlatform.api;
 // Shared TCP dialing policy. Defaults are consumed by actual connection
 // attempts, including callers such as TLS; they are not harness overrides.
 let _nodeBeginSocketConnection;
+const _nodeSocketStream = _createNodeSocketStream({
+    Buffer, FastBuffer: _FastBuffer, async: _nodeAsyncPlatform,
+    values: _nodeValues, types: util.types, native: _nodeNative,
+});
 
 const net = (() => {
     const nat = _nodeNative;
@@ -3615,7 +3619,7 @@ const net = (() => {
         error.name = 'AbortError'; error.code = 'ABORT_ERR'; error.cause = signal?.reason;
         return error;
     }
-    _nodeBeginSocketConnection = function beginConnection(rawOptions, emit = () => {}, getBlockList) {
+    _nodeBeginSocketConnection = function beginConnection(rawOptions, emit = () => {}, getBlockList, owned = false, complete) {
         if (getBlockList === undefined) {
             const owner = {}; assignBlockList(owner, rawOptions);
             getBlockList = () => owner.blockList;
@@ -3625,17 +3629,17 @@ const net = (() => {
         let multiple = false, lookupCalled = false, started = false, abortDisposable;
         const errors = [];
         let resolveResult, rejectResult;
-        const promise = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
+        const promise = owned ? undefined : new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
         function stopTimer() { if (timer !== null) clearTimeout(timer); timer = null; }
         function cleanup() { stopTimer(); abortDisposable?.[_nodeDispose](); abortDisposable = undefined; }
         function cancelAttempt() {
             const pending = active;
             active = null;
-            if (pending) nat.socketCancelConnect(pending);
+            if (pending) (owned ? nat.socketOwnerCancelConnect : nat.socketCancelConnect)(pending);
         }
         function fail(error) {
             if (done) return;
-            done = true; cleanup(); cancelAttempt(); rejectResult(error);
+            done = true; cleanup(); cancelAttempt(); if (owned) complete(error); else rejectResult(error);
         }
         function onAbort() { fail(abortError(options.signal)); }
         function exhausted() {
@@ -3668,22 +3672,41 @@ const net = (() => {
                 if (done) return;
             }
             let pending;
-            try { pending = nat.socketConnect(address, options.port, family, options.localAddress, options.localPort); }
-            catch (error) { return fail(error); }
-            active = pending;
-            if (!referenced) nat.socketRef(pending, false);
-            pending.then(fd => {
-                if (done || active !== pending) { nat.socketClose(fd); return; }
+            function succeeded(fd, owner) {
+                if (done || active !== pending) {
+                    if (owner) nat.socketOwnerAbortAdoption(owner); else nat.socketClose(fd);
+                    return;
+                }
                 active = null; done = true; cleanup();
-                resolveResult({ fd, address, family, port: options.port });
-            }, reason => {
+                const result = { fd, owner, address, family, port: options.port };
+                if (owned) complete(null, result); else resolveResult(result);
+            }
+            function failed(reason) {
                 if (done || active !== pending) return;
                 active = null; stopTimer();
                 const error = connectError(reason, address, options.port);
                 errors.push(error);
                 emit('connectionAttemptFailed', address, options.port, family, error);
                 if (!done) attempt();
-            });
+            }
+            try {
+                pending = owned ? nat.socketOwnerConnect(address, options.port, family,
+                    options.localAddress, options.localPort, (status, owner) => {
+                        if (status) failed({ errno: status, syscall: 'connect' });
+                        else succeeded(owner.fd, owner);
+                    }) : nat.socketConnect(address, options.port, family, options.localAddress, options.localPort);
+            } catch (error) { return fail(error); }
+            active = pending;
+            if (owned) {
+                const owner = nat.socketOwnerOfConnect(pending);
+                try { emit('_nativeOwner', owner || pending.owner); }
+                catch (error) { fail(error); return; }
+                if (!owner) { failed({ errno: pending.error, syscall: pending.syscall }); return; }
+                if (!referenced) nat.socketOwnerRefConnect(pending, false);
+            } else {
+                if (!referenced) nat.socketRef(pending, false);
+                pending.then(fd => succeeded(fd), failed);
+            }
             // Like Node, a single address and the final address use the socket's
             // normal connection outcome, rather than a family-fallback timer.
             if (multiple && current < destinations.length) timer = setTimeout(() => {
@@ -3742,7 +3765,7 @@ const net = (() => {
         }
         return {
             promise,
-            ref(value) { referenced = value; if (active) nat.socketRef(active, value); },
+            ref(value) { referenced = value; if (active) (owned ? nat.socketOwnerRefConnect : nat.socketRef)(active, value); },
             cancel(error = connectError({ code: 'ECANCELED', errno: -125 }, options.host, options.port)) { fail(error); },
             start() {
                 if (done || started) return;
@@ -3764,20 +3787,13 @@ const net = (() => {
         };
     };
     const socketTimeout = Symbol('socketTimeout');
-    const socketHandleState = Symbol('socketHandleState');
+    const socketNativeOwners = new WeakMap();
     class SocketCore extends stream.Duplex {
         constructor(options) {
-            super(options);
+            super({ ...options, emitClose: false, autoDestroy: true });
             assignBlockList(this, options);
             this._fd = -1;
             this._handle = null;
-            this[socketHandleState] = null;
-            if (options?.fd != null) {
-                if (typeof options.fd !== 'number') throw argumentError('ERR_INVALID_ARG_TYPE', 'The "fd" option must be of type number');
-                if (!Number.isInteger(options.fd) || options.fd < 0 || options.fd > 2147483647) throw argumentError('ERR_OUT_OF_RANGE', 'The "fd" option must be a non-negative int32', true);
-                fs.fstatSync(options.fd);
-                this._ownSocketFd(options.fd);
-            }
             this._socketDestroyed = false;
             this._reading = false;
             this._writeQueue = [];
@@ -3791,6 +3807,7 @@ const net = (() => {
             this._lastWriteQueueSize = 0;
             this._referenced = true;
             this.allowHalfOpen = !!options?.allowHalfOpen;
+            _nodeSocketStream.initOptions(this, options || {});
             this.on('end', () => {
                 if (!this.allowHalfOpen) queueMicrotask(() => {
                     if (!this._socketDestroyed && !this.writableEnded) this.end();
@@ -3801,27 +3818,48 @@ const net = (() => {
             this.once('close', () => {
                 this._onServerSocketClose?.(); this._onServerSocketClose = null;
             });
+            if (options?.fd != null) {
+                if (typeof options.fd !== 'number') throw argumentError('ERR_INVALID_ARG_TYPE', 'The "fd" option must be of type number');
+                if (!Number.isInteger(options.fd) || options.fd < 0 || options.fd > 2147483647) throw argumentError('ERR_OUT_OF_RANGE', 'The "fd" option must be a non-negative int32', true);
+                fs.fstatSync(options.fd);
+                this._ownSocketFd(options.fd);
+                _nodeSocketStream.applyOptions(this);
+            }
         }
 
         _ownSocketFd(fd) {
-            if (this[socketHandleState]) this[socketHandleState].fd = -1;
-            // Own the fd before allocating metadata, so adoption failure
-            // still closes it through destroy().
-            this._fd = fd;
-            this._handle = null;
-            this[socketHandleState] = null;
-            const state = {fd};
-            this[socketHandleState] = state;
-            // This metadata belongs to one owned descriptor. A retained old
-            // handle must not start reporting a newly reused descriptor.
-            this._handle = {
-                get fd() { return state.fd; },
-                get writeQueueSize() { return state.fd < 0 ? 0 : nat.socketWriteQueueSize(state.fd); },
-            };
+            const owner = nat.socketOwnerAdopt(fd);
+            this._ownSocketOwner(owner);
         }
-        _adoptFd(fd) {
-            this._ownSocketFd(fd);
-            const peer = nat.socketAddress(fd, true), local = nat.socketAddress(fd);
+        _ownSocketOwner(owner) {
+            const previous = socketNativeOwners.get(this);
+            if (previous && previous !== owner) previous.close();
+            // The private owner is installed before any fallible JS wrapper
+            // publication. Cleanup never consults mutable public _handle/_fd.
+            socketNativeOwners.set(this, owner);
+            try {
+                _nodeSocketStream.bind(owner, this);
+                this._fd = owner.fd;
+                this._handle = owner;
+                this[_nodeAsyncPlatform.symbols.async_id_symbol] = owner.getAsyncId();
+                owner.ref(this._referenced !== false);
+                nat.socketOwnerCommitAdoption(owner);
+            } catch (error) {
+                nat.socketOwnerAbortAdoption(owner); throw error;
+            }
+        }
+        _adoptAccepted(lease) {
+            const owner = nat.socketOwnerAdoptAccepted(lease);
+            let adopted = false;
+            try { this._adoptFd(undefined, owner); adopted = true; }
+            finally { if (!adopted) nat.socketOwnerAbortAdoption(owner); }
+        }
+        _adoptFd(fd, owner) {
+            if (owner) {
+                if (socketNativeOwners.get(this) !== owner) this._ownSocketOwner(owner);
+            } else this._ownSocketFd(fd);
+            const actual = socketNativeOwners.get(this).fd;
+            const peer = nat.socketAddress(actual, true), local = nat.socketAddress(actual);
             this.remoteAddress = peer.address; this.remoteFamily = peer.family; this.remotePort = peer.port;
             this.localAddress = local.address; this.localFamily = local.family; this.localPort = local.port;
         }
@@ -3830,7 +3868,7 @@ const net = (() => {
         }
         _final(cb) {
             if (this.connecting) { this.once('connect', () => this._final(cb)); return; }
-            try { nat.socketShutdown(this._fd); cb(); }
+            try { nat.socketShutdown(socketNativeOwners.get(this)?.fd ?? -1); cb(); }
             catch (reason) { cb(connectError(reason, this.remoteAddress, this.remotePort, 'shutdown')); }
         }
 
@@ -3844,34 +3882,37 @@ const net = (() => {
             if (this._fd >= 0) throw argumentError('ERR_SOCKET_ALREADY_CONNECTED', 'Socket is already connected');
             this._socketDestroyed = false;
             this._unrefTimer();
-            const operation = _nodeBeginSocketConnection(options, (event, ...values) => {
-                if (event === 'lookup' && values[0] === null) this._unrefTimer();
-                if (event === '_attemptsStarted') this.autoSelectFamilyAttemptedAddresses = [];
-                else if (event === '_attemptedAddress') this.autoSelectFamilyAttemptedAddresses.push(values[0]);
-                else this.emit(event, ...values);
-            }, () => this.blockList);
-            this._connectOperation = operation;
-            operation.ref(this._referenced);
-            this.connecting = true;
-            operation.promise.then(({ fd }) => {
-                if (this._socketDestroyed || this._connectOperation !== operation) { nat.socketClose(fd); return; }
+            const onComplete = (error, result) => {
+                if (error) {
+                    if (!this._socketDestroyed && this._connectOperation === operation) {
+                        this._connectOperation = null; this.connecting = false; this.destroy(error);
+                    }
+                    return;
+                }
+                const { fd, owner } = result;
+                if (this._socketDestroyed || this._connectOperation !== operation) { nat.socketOwnerAbortAdoption(owner); return; }
                 this._connectOperation = null;
-                try { this._adoptFd(fd); }
+                try { this._adoptFd(fd, owner); }
                 catch (error) { this.destroy(error); return; }
                 this.connecting = false;
                 this._unrefTimer();
+                _nodeSocketStream.applyOptions(this);
                 this.emit('connect');
                 if (this._socketDestroyed) return;
                 this.emit('ready');
                 this._scheduleRead();
                 this._flushWriteQueue();
-            }, error => {
-                if (!this._socketDestroyed && this._connectOperation === operation) {
-                    this._connectOperation = null;
-                    this.connecting = false;
-                    this.destroy(error);
-                }
-            });
+            };
+            const operation = _nodeBeginSocketConnection(options, (event, ...values) => {
+                if (event === '_nativeOwner') { this._ownSocketOwner(values[0]); return; }
+                if (event === 'lookup' && values[0] === null) this._unrefTimer();
+                if (event === '_attemptsStarted') this.autoSelectFamilyAttemptedAddresses = [];
+                else if (event === '_attemptedAddress') this.autoSelectFamilyAttemptedAddresses.push(values[0]);
+                else this.emit(event, ...values);
+            }, () => this.blockList, true, onComplete);
+            this._connectOperation = operation;
+            operation.ref(this._referenced);
+            this.connecting = true;
             try { operation.start(); }
             catch (error) {
                 this._connectOperation = null; this.connecting = false; operation.cancel(); throw error;
@@ -3880,33 +3921,18 @@ const net = (() => {
         }
 
         _scheduleRead() {
-            if (this._fd < 0 || this._socketDestroyed || this._reading) return;
-            this._reading = true;
-            const pending = nat.socketRead(this._fd, 64 * 1024);
-            if (!this._referenced) nat.socketRef(this._fd, false);
-            pending.then(
-                (ab) => {
-                    this._reading = false;
-                    if (this._socketDestroyed) return;
-                    this._unrefTimer();
-                    if (ab.byteLength === 0) {
-                        this.push(null); /* EOF — peer closed */
-                        return;
-                    }
-                    if (this.push(Buffer.from(ab))) this._scheduleRead();
-                },
-                (err) => {
-                    this._reading = false;
-                    if (!this._socketDestroyed) this.destroy(err);
-                },
-            );
+            const owner = socketNativeOwners.get(this);
+            if (!owner || owner.fd < 0 || this.connecting || this._socketDestroyed || owner.reading) return;
+            owner.reading = true;
+            const status = owner.readStart();
+            if (status) { owner.reading = false; this.destroy(new _nodeValues.errors.ErrnoException(status, 'read')); }
         }
 
         _read() { this._scheduleRead(); }
 
         _write(chunk, _encoding, cb) {
             const buf = toU8(chunk);
-            if (this._fd < 0) {
+            if (this.connecting || this._fd < 0) {
                 this._writeQueue.push({ buf, cb });
                 return;
             }
@@ -3923,10 +3949,11 @@ const net = (() => {
 
         _writeToSocket(buf, cb) {
             this._unrefTimer();
-            const pending = nat.socketWrite(this._fd, buf);
-            this._lastWriteQueueSize = nat.socketWriteQueueSize(this._fd);
-            pending.then(() => { this._unrefTimer(); cb(null); }, cb);
-            if (!this._referenced) nat.socketRef(this._fd, false);
+            const owner = socketNativeOwners.get(this);
+            if (!owner) { cb(new _nodeValues.errors.ErrnoException(-9, 'write')); return; }
+            const result = owner.writeBuffer(null, buf);
+            this._lastWriteQueueSize = owner.writeQueueSize;
+            _nodeSocketStream.afterWriteDispatched(owner, result, buf, cb);
         }
 
         _unrefTimer() {
@@ -3937,7 +3964,7 @@ const net = (() => {
         _onTimeout() {
             if (this._socketDestroyed) return;
             if (this._lastWriteQueueSize > 0 && this._fd >= 0) {
-                const remaining = nat.socketWriteQueueSize(this._fd);
+                const remaining = socketNativeOwners.get(this)?.writeQueueSize ?? 0;
                 if (remaining !== this._lastWriteQueueSize) {
                     this._lastWriteQueueSize = remaining;
                     this._unrefTimer();
@@ -3957,15 +3984,17 @@ const net = (() => {
             const operation = this._connectOperation;
             this._connectOperation = null;
             if (operation) operation.cancel();
-            if (this._fd >= 0) {
-                try { nat.socketClose(this._fd); }
-                catch (closeError) { err ||= closeError; }
-                finally {
-                    this._fd = -1;
-                    if (this[socketHandleState]) this[socketHandleState].fd = -1;
-                    this._handle = null;
+            const owner = socketNativeOwners.get(this);
+            socketNativeOwners.delete(this);
+            if (owner) {
+                try { owner.close(() => this.emit('close', !!err)); }
+                catch (closeError) {
+                    err ||= closeError;
+                    nat.socketOwnerAbortAdoption(owner);
+                    process.nextTick(() => this.emit('close', !!err));
                 }
-            }
+            } else process.nextTick(() => this.emit('close', !!err));
+            this._fd = -1; this._handle = null;
             for (const { cb } of this._writeQueue) cb(err || new Error('socket destroyed'));
             this._writeQueue = [];
             callback(err);
@@ -3993,9 +4022,9 @@ const net = (() => {
         }
         setNoDelay() { return this; }
         setKeepAlive() { return this; }
-        address() { return this._fd < 0 ? {} : nat.socketAddress(this._fd); }
-        ref() { this._referenced = true; this._connectOperation?.ref(true); if (this._fd >= 0) nat.socketRef(this._fd, true); return this; }
-        unref() { this._referenced = false; this._connectOperation?.ref(false); if (this._fd >= 0) nat.socketRef(this._fd, false); return this; }
+        address() { const fd = socketNativeOwners.get(this)?.fd ?? -1; return fd < 0 ? {} : nat.socketAddress(fd); }
+        ref() { this._referenced = true; this._connectOperation?.ref(true); socketNativeOwners.get(this)?.ref(true); return this; }
+        unref() { this._referenced = false; this._connectOperation?.ref(false); socketNativeOwners.get(this)?.ref(false); return this; }
     }
 
     // Listeners own real kernel fds. A close stops accept immediately and
@@ -4069,43 +4098,39 @@ const net = (() => {
         }
         _accept(generation) {
             if (this._fd < 0 || this._generation !== generation) return;
-            const pending = nat.socketAccept(this._fd);
+            const pending = nat.socketAcceptLease(this._fd);
             if (!this._referenced) nat.socketRef(this._fd, false);
-            pending.then(fd => {
-                if (this._fd < 0 || this._generation !== generation) { nat.socketClose(fd); return; }
-                // Keep accepting while the listener is open, including when
-                // a full server drops this connection instead of publishing it.
-                this._accept(generation);
-                if (this.maxConnections != null && this._connections >= this.maxConnections) {
-                    try {
-                        const local = nat.socketAddress(fd), remote = nat.socketAddress(fd, true);
+            pending.then(accepted => {
+                // Native acceptance already owns this descriptor. Every getter,
+                // constructor, listener and failure leaves only the actual lease
+                // to close; successful adoption empties it without a numeric ABA.
+                try {
+                    if (this._fd < 0 || this._generation !== generation) return;
+                    this._accept(generation);
+                    if (this.maxConnections != null && this._connections >= this.maxConnections) {
+                        const local = nat.socketAddress(nat.socketAcceptedFd(accepted));
+                        const remote = nat.socketAddress(nat.socketAcceptedFd(accepted), true);
                         this.emit('drop', { __proto__: null,
                             localAddress: local.address, localPort: local.port, localFamily: local.family,
                             remoteAddress: remote.address, remotePort: remote.port, remoteFamily: remote.family,
                         });
-                    } finally { nat.socketClose(fd); }
-                    return;
-                }
-                // Filter the actual accepted peer before constructing or
-                // publishing a public socket. Read the live owner each time.
-                if (this.blockList) {
-                    try {
-                        const remote = nat.socketAddress(fd, true);
+                        return;
+                    }
+                    if (this.blockList) {
+                        const remote = nat.socketAddress(nat.socketAcceptedFd(accepted), true);
                         const family = isIP(remote.address);
-                        if (family && this.blockList.check(remote.address, `ipv${family}`)) {
-                            nat.socketClose(fd); return;
-                        }
-                    } catch (error) { nat.socketClose(fd); throw error; }
-                }
-                const socket = new Socket({ allowHalfOpen: this.allowHalfOpen });
-                try { socket._adoptFd(fd); }
-                catch (error) { socket.destroy(); this.emit('error', error); return; }
-                socket.server = this;
-                this._connections++;
-                socket._onServerSocketClose = () => { this._connections--; this._maybeClose(); };
-                this.emit('connection', socket);
-                if (serverSocketChannel.hasSubscribers) serverSocketChannel.publish({ socket });
-                if (!this.pauseOnConnect) socket._scheduleRead();
+                        if (family && this.blockList.check(remote.address, `ipv${family}`)) return;
+                    }
+                    const socket = new Socket({ allowHalfOpen: this.allowHalfOpen });
+                    try { socket._adoptAccepted(accepted); }
+                    catch (error) { socket.destroy(); this.emit('error', error); return; }
+                    socket.server = this;
+                    this._connections++;
+                    socket._onServerSocketClose = () => { this._connections--; this._maybeClose(); };
+                    this.emit('connection', socket);
+                    if (serverSocketChannel.hasSubscribers) serverSocketChannel.publish({ socket });
+                    if (!this.pauseOnConnect) socket._scheduleRead();
+                } finally { nat.socketAcceptedClose(accepted); }
             }, reason => {
                 if (this._fd >= 0 && this._generation === generation) this.emit('error', connectError(reason, undefined, undefined, 'accept'));
             });
@@ -4141,6 +4166,7 @@ const net = (() => {
     Socket.prototype = SocketCore.prototype;
     Object.defineProperty(Socket.prototype, 'constructor', {value:Socket, writable:true, configurable:true});
     Object.setPrototypeOf(Socket, stream.Duplex);
+    _nodeSocketStream.installSocket(Socket);
     function Server(options, listener) { return construct(ServerCore, [options, listener], new.target || Server); }
     Server.prototype = ServerCore.prototype;
     Object.defineProperty(Server.prototype, 'constructor', {value:Server, writable:true, configurable:true});
@@ -4152,7 +4178,7 @@ const net = (() => {
         return socket.connect(options, cb);
     }
     return {
-        Socket, Server,
+        Socket, Server, _normalizeArgs: normalizeArgs,
         createServer(options, listener) { return new Server(options, listener); },
         createConnection,
         connect: createConnection,
@@ -4379,7 +4405,14 @@ const makeResponseParser = _createNodeHttpParser({
     native: _nodeNative, incoming: _nodeHttpIncoming, Buffer,
 });
 
-function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
+const _nodeHttpAgent = _createNodeHttpAgent({
+    process, Buffer, URL: url.URL, net, events, stream, values: _nodeValues,
+    async: _nodeAsyncPlatform, socketStream: _nodeSocketStream, outgoing: _nodeHttpOutgoing,
+    assert: assert, getTLS: () => tls,
+    getOptionValue: name => name === '--use-env-proxy' ? _nodeNative.cliOptions?.useEnvProxy : undefined,
+});
+
+function makeHttpModule({ connect, defaultPort, defaultProtocol, agentOwner }) {
     const protoLower = defaultProtocol.toLowerCase();
 
     // Per-origin keep-alive socket pool. Sequential npm fetches against the
@@ -4460,24 +4493,25 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
     class ClientRequest extends _nodeHttpHeaders.OutgoingMessage {
         constructor(opts, cb) {
             super();
+            if (agentOwner) agentOwner.select(this, opts);
             this.path = opts.path || '/';
-            this._host = opts.hostname || opts.host || 'localhost';
+            this._host = agentOwner ? agentOwner.host(opts) : opts.hostname || opts.host || 'localhost';
             // WHATWG URL gives `port = ''` when default; treat that like missing.
-            this._port = (opts.port != null && opts.port !== '')
-                ? parseInt(opts.port, 10) : defaultPort;
-            this._protocol = (opts.protocol || protoLower).toLowerCase();
+            this._port = agentOwner ? (opts.port || opts.defaultPort || this.agent?.defaultPort || defaultPort) :
+                (opts.port != null && opts.port !== '') ? parseInt(opts.port, 10) : defaultPort;
+            this._protocol = this.protocol || (opts.protocol || protoLower).toLowerCase();
             _nodeHttpHeaders.initialize(this, opts);
 
-            if (opts.headers) {
+            if (!agentOwner && opts.headers) {
                 for (const k of Object.keys(opts.headers)) {
                     this.setHeader(k, opts.headers[k]);
                 }
             }
-            if (!this.getHeader('host')) {
+            if (!agentOwner && !this.getHeader('host')) {
                 const portStr = this._port === defaultPort ? '' : `:${this._port}`;
                 this.setHeader('Host', this._host + portStr);
             }
-            if (!this.getHeader('connection')) {
+            if (!agentOwner && !this.getHeader('connection')) {
                 this.setHeader('Connection', 'keep-alive');
             }
             // Pass-through TLS options for redirected calls and the initial connect.
@@ -4535,7 +4569,10 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
   this.joinDuplicateHeaders = options.joinDuplicateHeaders;
             this._joinDuplicateHeaders = this.joinDuplicateHeaders;
             this.maxHeadersCount = null;
+            this.reusedSocket = false;
+            if (agentOwner && opts.timeout !== undefined) this.timeout = agentOwner.getTimerDuration(opts.timeout, 'timeout');
             this.shouldKeepAlive = true;
+            if (agentOwner) agentOwner.keepAlive(this);
             this.upgradeOrConnect = false;
             this._responseEnded = false;
             this.once('finish', () => {
@@ -4546,19 +4583,25 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             this._origCb = cb;
             // Expect commits/flushes the header before the body, as in the
             // pinned ClientRequest constructor and OutgoingMessage store owner.
-            if (this.getHeader('expect')) this._implicitHeader();
+            if (agentOwner) agentOwner.prepareHeaders(this, opts, this._host, this._port, opts.defaultPort || this.agent?.defaultPort || defaultPort);
+            else if (this.getHeader('expect')) this._implicitHeader();
 
-            queueMicrotask(() => {
+            if (agentOwner) {
+                const connectionOptions = { __proto__: null, ...opts,
+                    host: this._host, port: this._port };
+                delete connectionOptions.signal;
+                agentOwner.admit(this, connectionOptions);
+            } else queueMicrotask(() => {
                 if (this._destroyed) return;
                 this._openSocket();
             });
         }
 
-        _openSocket() {
+        _openSocket(admittedSocket) {
             const key = poolKey(this._host, this._port);
             this._sockPoolKey = key;
-            let sock = popLiveFromPool(key);
-            const fromPool = sock != null;
+            let sock = admittedSocket || popLiveFromPool(key);
+            const fromPool = admittedSocket ? !sock.connecting : sock != null;
             if (!sock) {
                 sock = connect({
                     host: this._host,
@@ -4647,10 +4690,13 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             sock.removeListener('error', lst.onError);
             sock.removeListener('close', lst.onClose);
             sock.removeListener('drain', _nodeHttpOutgoing.onSocketDrain);
-            if (sock._httpMessage === this) sock._httpMessage = null;
             this.destroyed = true;
-            process.nextTick(() => this._closeRequest());
+            if (!agentOwner) {
+                if (sock._httpMessage === this) sock._httpMessage = null;
+                process.nextTick(() => this._closeRequest());
+            }
             if (this._destroyed || this._redirected || this._respConnectionClose || !this.shouldKeepAlive) {
+                if (agentOwner) process.nextTick(() => this._closeRequest());
                 try { sock.destroy(); } catch (_) { /* ignore */ }
                 return;
             }
@@ -4659,12 +4705,21 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             // would emit('data') to zero listeners and be silently dropped.
             // With flowing=false, push buffers; the next claimer's on('data')
             // triggers a drain into the new parser.
-            try { sock.pause(); } catch (_) { /* ignore */ }
+            if (!agentOwner) { try { sock.pause(); } catch (_) { /* ignore */ } }
             // No next request has been sent: extra bytes cannot be its response.
             // Retire the connection instead of assigning unsolicited bytes to it.
             const left = this._parser && this._parser.getRemainder();
-            if (left && left.length > 0) { sock.destroy(); return; }
-            returnToPool(this._sockPoolKey, sock);
+            if (left && left.length > 0) { if (agentOwner) process.nextTick(() => this._closeRequest()); sock.destroy(); return; }
+            if (agentOwner) {
+                // Pinned responseKeepAlive resets only a socket actually being
+                // released for reuse; closing/error paths already detached
+                // the request timeout listener in responseOnEnd.
+                if (this.timeoutCb) {
+                    sock.setTimeout(0, this.timeoutCb); this.timeoutCb = null;
+                }
+                const asyncId = sock._handle ? sock._handle.getAsyncId() : undefined;
+                _nodeAsyncPlatform.defaultTriggerAsyncIdScope(asyncId, process.nextTick, agentOwner.emitFreeNT, this);
+            } else returnToPool(this._sockPoolKey, sock);
         }
 
         _implicitHeader() {
@@ -4703,6 +4758,8 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             msg.once('end', () => {
                 msg[_nodeHttpIncoming.kDetachAbortSignal]();
                 this._responseEnded = true;
+                this._ended = true;
+                if (agentOwner && this.timeoutCb && this.socket) this.socket.removeListener('timeout', this.timeoutCb);
                 process.nextTick(() => this._releaseSocket());
             });
             this._respConnectionClose = /(^|,)\s*close\s*(,|$)/i.test(msg.headers.connection || '');
@@ -4815,6 +4872,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
     }
 
     _nodeHttpHeaders.install(ClientRequest.prototype);
+    if (agentOwner) agentOwner.installRequestPrototype(ClientRequest);
 
     function request(input, maybeOpts, maybeCb) {
         const { opts, cb } = normalize(input, maybeOpts, maybeCb);
@@ -4826,7 +4884,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         return req;
     }
 
-    return {
+    const namespace = {
         STATUS_CODES, METHODS: HTTP_METHODS,
         ...(protoLower === 'http:' ? {
             IncomingMessage: _nodeHttpIncoming.IncomingMessage,
@@ -4838,15 +4896,18 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         } : {}),
         request, get,
         ClientRequest,
-        Agent: class Agent {},
-        globalAgent: {},
+        Agent: agentOwner ? agentOwner.module.Agent : class Agent {},
+        globalAgent: agentOwner ? agentOwner.module.globalAgent : {},
         createServer() {
             throw new Error('http.createServer is not yet implemented (Phase 4 part 2 shipped client-side only)');
         },
     };
+    if (agentOwner) agentOwner.decorateNamespace(namespace);
+    return namespace;
 }
 
 const http = makeHttpModule({
+    agentOwner: _nodeHttpAgent,
     connect: (opts) => {
         const sock = new net.Socket();
         sock.connect(opts.port || 80, opts.host || 'localhost');
@@ -4989,6 +5050,7 @@ const _builtinModules = {
     'http': http,
     '_http_incoming': _nodeHttpIncoming,
     '_http_outgoing': _nodeHttpOutgoing.module,
+    '_http_agent': _nodeHttpAgent.module,
     'https': https,
     get zlib() { return _nodeStreamPlatform.require('zlib'); },
     'tty': {

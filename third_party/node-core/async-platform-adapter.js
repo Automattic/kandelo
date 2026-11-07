@@ -235,7 +235,10 @@ function _createNodeAsyncPlatform(platform) {
             const info = platform.native.getAsyncResourceInfo(resource);
             const id = info[0], triggerId = info[1];
             const nativeType = ObjectPrototypeHasOwnProperty(info, 3) ? info[3] : undefined;
-            record = { id, triggerId, nativeType, isPromise: platform.native.isPromise(resource) };
+            record = { id, triggerId, nativeType,
+                executionResource: ObjectPrototypeHasOwnProperty(info, 4) ? info[4] : resource,
+                hasExecutionResource: ObjectPrototypeHasOwnProperty(info, 4),
+                isPromise: platform.native.isPromise(resource) };
             nativeResources.set(resource, record);
             if (nativeType === undefined && destroyHooksExist()) {
                 finalizers.register(resource, { asyncId: id, destroyed: { destroyed: false }, isPromise: record.isPromise });
@@ -255,9 +258,13 @@ function _createNodeAsyncPlatform(platform) {
         if (kind === 'callback:zero:after') {
             setState(platform.native.popAsyncExecution(0)); return;
         }
+        // A real handle's AsyncReset publishes a new native ID/frame/public
+        // resource before init. Replace only that raw handle's cached epoch;
+        // active callbacks keep the numeric IDs owned by the native stack.
+        if (kind === 'native:init') nativeResources.delete(resource);
         const record = nativeResource(resource);
         if (kind === 'promise:init' || kind === 'task:init' || kind === 'native:init') {
-            emit('init', [record.id, record.nativeType ?? (record.isPromise ? 'PROMISE' : 'Microtask'), record.triggerId, resource], record.isPromise);
+            emit('init', [record.id, record.nativeType ?? (record.isPromise ? 'PROMISE' : 'Microtask'), record.triggerId, record.executionResource], record.isPromise);
         } else if (kind === 'promise:resolve') {
             emit('promiseResolve', [record.id], true);
         } else if (kind === 'before') {
@@ -336,7 +343,16 @@ function _createNodeAsyncPlatform(platform) {
     platform.native.setAsyncDestroyTracking(false);
     function executionAsyncId() { executionState(); return platform.native.executionAsyncId(); }
     function triggerAsyncId() { executionState(); return platform.native.triggerAsyncId(); }
-    function executionAsyncResource() { executionState(); return platform.native.executionAsyncResource() ?? root.resource; }
+    function executionAsyncResource() {
+        executionState();  // Preserve the untracked-entry guard.
+        const resource = platform.native.executionAsyncResource() ?? root.resource;
+        // Like pinned lookupPublicResource(rawResource), resolve the current
+        // actual native public alias at observation time. An active callback's
+        // stack owns its old numeric ID even when AsyncReset replaced this alias.
+        const record = nativeResources.get(resource);
+        return record?.hasExecutionResource && record.executionResource !== undefined
+            ? record.executionResource : resource;
+    }
     const api = {
         get AsyncLocalStorage() {
             return require('internal/async_local_storage/async_context_frame');
