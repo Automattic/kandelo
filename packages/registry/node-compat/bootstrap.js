@@ -4292,6 +4292,8 @@ const _nodeTlsContextTrust = _createNodeTlsContextTrust({
 
 const tls = (() => {
     const nat = _nodeNative;
+    const { SafeWeakMap: TlsWeakMap, ReflectApply: tlsApply } = _createNodePrimordials();
+    const nativeTLS = new TlsWeakMap();
     const toU8 = (b) => {
         if (b instanceof Uint8Array) return b;
         if (b instanceof ArrayBuffer) return new Uint8Array(b);
@@ -4305,93 +4307,92 @@ const tls = (() => {
     class TLSSocket extends stream.Duplex {
         constructor(options) {
             super(options);
-            this._tlsHandle = -1;
-            this._tlsDestroyed = false;
-            this._reading = false;
-            this._writeQueue = [];
-            this._handshakePending = true;
+            nativeTLS.set(this, { owner: null, connect: null, destroyed: false,
+                reading: false, writeQueue: [], handshakePending: true, attaching: false });
             this.servername = options?.servername || null;
             this.authorized = false;
             this.authorizationError = null;
         }
 
-        _attach(fd, servername, opts) {
-            this.servername = servername;
-            let handshake;
-            try { handshake = nat.tlsConnect(fd, servername, opts); }
+        _attach(tcpOwner, servername, opts) {
+            const state = nativeTLS.get(this);
+            if (state.destroyed) { nat.socketOwnerAbortAdoption(tcpOwner); return; }
+            if (state.owner || state.attaching) throw new Error('TLS socket already owns or is acquiring a transport');
+            state.attaching = true;
+            let operation;
+            try {
+                this.servername = servername;
+                operation = nat.tlsConnect(tcpOwner, servername, opts);
+            }
             catch (error) {
-                // A native context/setup exception owns the same socket failure
-                // path as a rejected handshake; retire queued writes as well.
-                this._handshakePending = false;
-                this.destroy(error);
-                return;
+                // Precommit failure leaves TCP authority with its real owner;
+                // postcommit failure already retired that now-empty source.
+                state.attaching = false;
+                nat.socketOwnerAbortAdoption(tcpOwner);
+                state.handshakePending = false; this.destroy(error); return;
             }
-            handshake.then(
-                (handle) => {
-                    if (this._tlsDestroyed) { nat.tlsClose(handle); return; }
-                    this._tlsHandle = handle;
-                    this._handshakePending = false;
-                    try {
-                        const verifyError = nat.tlsInfo(handle, 4);
-                        this.authorized = verifyError === null;
-                        this.authorizationError = verifyError === null ? null : verifyError.code;
-                    } catch (error) { this.destroy(error); return; }
-                    this.emit('secureConnect');
-                    this._scheduleRead();
-                    this._flushWriteQueue();
-                },
-                (err) => { this._handshakePending = false; this.destroy(err); },
-            );
+            state.attaching = false;
+            const owner = operation.owner;
+            if (state.destroyed) { nat.tlsClose(owner); return; }
+            state.owner = owner;
+            operation.promise.then(() => {
+                if (state.destroyed || state.owner !== owner) { nat.tlsClose(owner); return; }
+                state.handshakePending = false;
+                try {
+                    const verifyError = nat.tlsInfo(owner, 4);
+                    this.authorized = verifyError === null;
+                    this.authorizationError = verifyError === null ? null : verifyError.code;
+                } catch (error) { this.destroy(error); return; }
+                this.emit('secureConnect');
+                this._scheduleRead(); this._flushWriteQueue();
+            }, error => {
+                state.handshakePending = false;
+                if (!state.destroyed) this.destroy(error);
+            });
         }
-
         _scheduleRead() {
-            if (this._tlsHandle < 0 || this._tlsDestroyed || this._reading) return;
-            this._reading = true;
-            nat.tlsRead(this._tlsHandle, 64 * 1024).then(
-                (ab) => {
-                    this._reading = false;
-                    if (this._tlsDestroyed) return;
-                    if (ab.byteLength === 0) { this.push(null); return; }
-                    if (this.push(Buffer.from(ab))) this._scheduleRead();
-                },
-                (err) => {
-                    this._reading = false;
-                    if (!this._tlsDestroyed) this.destroy(err);
-                },
-            );
+            const state = nativeTLS.get(this), owner = state.owner;
+            if (!owner || state.handshakePending || state.destroyed || state.reading) return;
+            state.reading = true;
+            nat.tlsRead(owner, 64 * 1024).then(bytes => {
+                state.reading = false;
+                if (state.destroyed || state.owner !== owner) return;
+                if (bytes.byteLength === 0) { this.push(null); return; }
+                if (this.push(Buffer.from(bytes))) this._scheduleRead();
+            }, error => {
+                state.reading = false;
+                if (!state.destroyed) this.destroy(error);
+            });
         }
-
         _read() { this._scheduleRead(); }
-
         _write(chunk, _encoding, cb) {
-            const buf = toU8(chunk);
-            if (this._tlsHandle < 0) {
-                this._writeQueue.push({ buf, cb });
-                return;
-            }
-            nat.tlsWrite(this._tlsHandle, buf).then(() => cb(null), cb);
+            const state = nativeTLS.get(this), buf = toU8(chunk);
+            if (!state.owner || state.handshakePending) { state.writeQueue.push({ buf, cb }); return; }
+            nat.tlsWrite(state.owner, buf).then(() => cb(null), cb);
         }
-
         _flushWriteQueue() {
-            const q = this._writeQueue;
-            this._writeQueue = [];
-            for (const { buf, cb } of q) {
-                nat.tlsWrite(this._tlsHandle, buf).then(() => cb(null), cb);
-            }
+            const state = nativeTLS.get(this), queue = state.writeQueue;
+            state.writeQueue = [];
+            for (const { buf, cb } of queue) nat.tlsWrite(state.owner, buf).then(() => cb(null), cb);
         }
-
         _destroy(err, callback) {
-            if (this._tlsDestroyed) { callback(err); return; }
-            this._tlsDestroyed = true;
-            if (this._connectOperation) { this._connectOperation.cancel(); this._connectOperation = null; }
-            if (this._tlsHandle >= 0) {
-                try { nat.tlsClose(this._tlsHandle); }
+            const state = nativeTLS.get(this);
+            if (state.destroyed) { callback(err); return; }
+            state.destroyed = true;
+            const connect = state.connect; state.connect = null;
+            if (connect) connect.cancel();
+            const owner = state.owner; state.owner = null;
+            if (owner) {
+                try { nat.tlsClose(owner); }
                 catch (closeError) { err ||= closeError; }
-                this._tlsHandle = -1;
             }
-            for (const { cb } of this._writeQueue) cb(err || new Error('tls socket destroyed'));
-            this._writeQueue = [];
+            const queue = state.writeQueue; state.writeQueue = [];
+            for (const { cb } of queue) cb(err || new Error('tls socket destroyed'));
             callback(err);
+        }
+        _metadata(operation) {
+            const state = nativeTLS.get(this);
+            return state.owner && !state.handshakePending ? nat.tlsInfo(state.owner, operation) : null;
         }
 
         setEncoding(enc) { return super.setEncoding(enc); }
@@ -4400,21 +4401,23 @@ const tls = (() => {
         setKeepAlive() { return this; }
         ref() { return this; }
         unref() { return this; }
-        getProtocol() { return this._tlsHandle >= 0 ? nat.tlsInfo(this._tlsHandle, 1) : null; }
-        getCipher() { return this._tlsHandle >= 0 ? nat.tlsInfo(this._tlsHandle, 2) : null; }
-        isSessionReused() { return this._tlsHandle >= 0 ? nat.tlsInfo(this._tlsHandle, 3) : null; }
+        getProtocol() { return this._metadata(1); }
+        getCipher() { return this._metadata(2); }
+        isSessionReused() { return this._metadata(3); }
         getFinished() {
-            if (this._tlsHandle < 0) return null;
-            const bytes = nat.tlsInfo(this._tlsHandle, 5);
+            const bytes = this._metadata(5);
+            if (bytes === null) return null;
             return bytes === undefined ? undefined : Buffer.from(bytes);
         }
         getPeerFinished() {
-            if (this._tlsHandle < 0) return null;
-            const bytes = nat.tlsInfo(this._tlsHandle, 6);
+            const bytes = this._metadata(6);
+            if (bytes === null) return null;
             return bytes === undefined ? undefined : Buffer.from(bytes);
         }
         getPeerCertificate() { return {}; }
     }
+
+    const attachTLS = TLSSocket.prototype._attach;
 
     function connect(options, cb) {
         _nodePublicConstants.load('tls');
@@ -4435,18 +4438,16 @@ const tls = (() => {
         const sock = new TLSSocket(options);
         if (cb) sock.once('secureConnect', cb);
         const servername = options.servername || options.host || 'localhost';
-        const operation = _nodeBeginSocketConnection(options);
-        sock._connectOperation = operation;
-        operation.promise.then(
-            ({ fd }) => {
-                sock._connectOperation = null;
-                if (sock._tlsDestroyed) { nat.socketClose(fd); return; }
-                sock._attach(fd, servername, nativeOptions);
-            },
-            (err) => { if (!sock._tlsDestroyed) sock.destroy(err); },
-        );
+        const state = nativeTLS.get(sock);
+        const operation = _nodeBeginSocketConnection(options, undefined, undefined, true, (error, result) => {
+            state.connect = null;
+            if (error) { if (!state.destroyed) sock.destroy(error); return; }
+            if (state.destroyed) { nat.socketOwnerAbortAdoption(result.owner); return; }
+            tlsApply(attachTLS, sock, [result.owner, servername, nativeOptions]);
+        });
+        state.connect = operation;
         try { operation.start(); }
-        catch (error) { sock._connectOperation = null; operation.cancel(); throw error; }
+        catch (error) { state.connect = null; operation.cancel(); throw error; }
         return sock;
     }
 

@@ -1,0 +1,10 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+assert.equal(process.version,'v26.13.0');
+const source=path.resolve(process.argv[3] || path.resolve(path.dirname(process.execPath),'../../node-v26.13.0'));
+const input=name=>fs.readFileSync(path.join(source,'test/fixtures/keys',name),'utf8');
+const result=require(path.resolve(process.argv[2])).run(input('agent1-cert.pem'),input('agent1-key.pem'));
+assert.equal(result.contextFreeCallbacks,1);assert.equal(result.sslFreeCallbacks,1);
+assert.equal(result.plaintextBytes,Buffer.byteLength('original-owner-TLS-bytes'));
+assert(result.assertions>40);assert(result.actualLoopbackPort>0);assert(result.capturedAndReusedFd>=0);
+console.log(JSON.stringify({passed:true,scope:'Exact portable TCP Lease transfer/TLS Owner header over real native loopback TCP + pinned Node OpenSSL SSL connect/accept/read/write and true free callbacks; JSAPI/guest/worker/GC unexecuted',result}));

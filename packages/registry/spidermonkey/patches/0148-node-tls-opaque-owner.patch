@@ -1,0 +1,797 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -207,4 +207,5 @@
+ #include "shell/kandelo-node-bootstrap.h"
+ #include "shell/kandelo-node-codec-contexts.h"
++#include "shell/kandelo-node-tls-owner.h"
+ #include "shell/kandelo-node-tls-state.h"
+ #include "shell/OSObject.h"
+@@ -610,7 +611,4 @@
+   Read,
+   Write,
+-  TlsConnect,
+-  TlsRead,
+-  TlsWrite,
+   Child,
+ };
+@@ -628,10 +626,5 @@
+   size_t offset = 0;
+   short events = 0;
+-  SSL* tlsSsl = nullptr;
+-  SSL_CTX* tlsCtx = nullptr;
+-  int tlsHandle = -1;
+-  bool closeFdOnCleanup = false;
+   bool leasedAccept = false;
+-  bool tlsRejectUnauthorized = true;
+   bool referenced = true;
+   kandelo::child_wait::State childWait;
+@@ -649,6 +642,7 @@
+ // Worker loops must never publish/poll/unlink another thread's JS roots.
+ static thread_local KandeloSocketWatch* gKandeloSocketWatches = nullptr;
+-static bool KandeloDispatchTlsWatch(KandeloSocketWatch* watch);
+-static void KandeloCleanupTlsWatch(KandeloSocketWatch* watch);
++static bool KandeloTlsHasReferences(JSContext* cx);
++static int KandeloDispatchTlsOwners(JSContext* cx);
++static void KandeloShutdownTlsOwners(JSContext* cx);
+
+ static int KandeloSetNonblocking(int fd) {
+@@ -676,10 +670,7 @@
+
+ static bool KandeloSocketHasWatches(JSContext* cx) {
+-  if (KandeloSocketOwnersHaveReferences(cx)) return true;
++  if (KandeloSocketOwnersHaveReferences(cx) || KandeloTlsHasReferences(cx)) return true;
+   for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
+-    if ((watch->kind == KandeloSocketWatchKind::Child ||
+-         watch->kind == KandeloSocketWatchKind::TlsConnect ||
+-         watch->kind == KandeloSocketWatchKind::TlsRead ||
+-         watch->kind == KandeloSocketWatchKind::TlsWrite) && watch->cx != cx) continue;
++    if ((watch->kind == KandeloSocketWatchKind::Child) && watch->cx != cx) continue;
+     if (watch->referenced) return true;
+   }
+@@ -971,4 +962,7 @@
+   int processed = KandeloDispatchSocketOwners(cx);
+   if (processed < 0) return -1;
++  const int tlsProcessed = KandeloDispatchTlsOwners(cx);
++  if (tlsProcessed < 0) return -1;
++  processed += tlsProcessed;
+
+   // Reap child watches first. Children have no fd to poll, so they are driven
+@@ -1042,5 +1036,5 @@
+         KandeloSocketWatchUnlink(watch);
+         auto retire = mozilla::MakeScopeExit([&] {
+-          KandeloCleanupTlsWatch(watch);js_delete(watch);
++          js_delete(watch);
+         });
+         if (watch->leasedAccept) {
+@@ -1056,17 +1050,9 @@
+         KandeloSocketWatchUnlink(watch);
+         auto retire = mozilla::MakeScopeExit([&] {
+-          KandeloCleanupTlsWatch(watch);js_delete(watch);
++          js_delete(watch);
+         });
+         if (!KandeloRejectSocketOperation(cx, watch->promise, error, "accept")) return -1;
+         return processed + 1;
+       }
+-    } else if (watch->kind == KandeloSocketWatchKind::TlsConnect ||
+-               watch->kind == KandeloSocketWatchKind::TlsRead ||
+-               watch->kind == KandeloSocketWatchKind::TlsWrite) {
+-      if (watch->cx != cx) {
+-        watch = next;
+-        continue;
+-      }
+-      done = KandeloDispatchTlsWatch(watch);
+     } else if (watch->kind == KandeloSocketWatchKind::Read && watch->terminalLease) {
+       if (watch->cx != cx) { watch = next; continue; }
+@@ -1119,5 +1105,5 @@
+     if (done) {
+       KandeloSocketWatchUnlink(watch);
+-      KandeloCleanupTlsWatch(watch);
++
+       js_delete(watch);
+       processed++;
+@@ -1519,6 +1505,5 @@
+         *current = watch->next;
+         KandeloResolvePromiseWithErrno(cx, watch->promise, 0, "socket closed");
+-        watch->closeFdOnCleanup = false;
+-        KandeloCleanupTlsWatch(watch);
++
+         js_delete(watch);
+       } else {
+@@ -2352,315 +2337,338 @@
+ }
+
+-struct KandeloTlsHandle {
+-  bool active = false;
+-  int fd = -1;
+-  SSL* ssl = nullptr;
+-  SSL_CTX* ctx = nullptr;
++// Each TLS capability owns its actual context, SSL and captured descriptor.
++struct KandeloTlsState {
++  JSContext* cx;
++  KandeloTlsState* next = nullptr;
++  kandelo::tls::Owner owner;
++  bool detached = false;
++  kandelo::memory::Allocation allocation{sizeof(KandeloTlsState)};
++  kandelo::memory::Claims claims;
++  KandeloTlsState(JSContext* cx, uint64_t generation,
++                  kandelo::tls::OwnedContext context, kandelo::tls::OwnedSSL ssl)
++      : cx(cx), owner(generation, std::move(context), std::move(ssl)) {}
+ };
+-
+-static constexpr int KandeloMaxTlsHandles = 1024;
+-static KandeloTlsHandle gKandeloTlsHandles[KandeloMaxTlsHandles];
+-
+-static int KandeloAllocTlsHandle(int fd, SSL* ssl, SSL_CTX* ctx) {
+-  for (int i = 0; i < KandeloMaxTlsHandles; i++) {
+-    if (!gKandeloTlsHandles[i].active) {
+-      gKandeloTlsHandles[i].active = true;
+-      gKandeloTlsHandles[i].fd = fd;
+-      gKandeloTlsHandles[i].ssl = ssl;
+-      gKandeloTlsHandles[i].ctx = ctx;
+-      return i + 1;
+-    }
+-  }
+-  return -1;
+-}
+-
+-static KandeloTlsHandle* KandeloGetTlsHandle(int handle) {
+-  if (handle < 1 || handle > KandeloMaxTlsHandles) return nullptr;
+-  auto* h = &gKandeloTlsHandles[handle - 1];
+-  return h->active ? h : nullptr;
+-}
+-
+-static void KandeloCloseTlsHandle(int handle) {
+-  KandeloTlsHandle* h = KandeloGetTlsHandle(handle);
+-  if (!h) return;
+-  KandeloSocketWatch** current = &gKandeloSocketWatches;
+-  while (*current) {
+-    KandeloSocketWatch* watch = *current;
+-    if (watch->tlsHandle == handle) {
+-      *current = watch->next;
+-      KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
+-                                     "TLS socket closed");
+-      KandeloCleanupTlsWatch(watch);
+-      js_delete(watch);
+-    } else {
+-      current = &watch->next;
+-    }
+-  }
+-  if (h->ssl) {
+-    SSL_shutdown(h->ssl);
+-    SSL_free(h->ssl);
+-  }
+-  if (h->ctx) SSL_CTX_free(h->ctx);
+-  if (h->fd >= 0) close(h->fd);
+-  *h = KandeloTlsHandle();
+-}
+-
+-static void KandeloCleanupTlsWatch(KandeloSocketWatch* watch) {
+-  if (watch->kind == KandeloSocketWatchKind::TlsConnect) {
+-    if (watch->tlsSsl) SSL_free(watch->tlsSsl);
+-    if (watch->tlsCtx) SSL_CTX_free(watch->tlsCtx);
+-    if (watch->closeFdOnCleanup && watch->fd >= 0) close(watch->fd);
+-    watch->tlsSsl = nullptr;
+-    watch->tlsCtx = nullptr;
+-    watch->closeFdOnCleanup = false;
+-  }
+-}
+-
+-static bool KandeloTlsWatchNeedsRetry(KandeloSocketWatch* watch, SSL* ssl,
+-                                      int result) {
+-  int error = SSL_get_error(ssl, result);
+-  if (error == SSL_ERROR_WANT_READ) {
+-    watch->events = POLLIN;
+-    return true;
+-  }
+-  if (error == SSL_ERROR_WANT_WRITE) {
+-    watch->events = POLLOUT;
+-    return true;
+-  }
++static thread_local KandeloTlsState* gKandeloTlsOwners = nullptr;
++static thread_local uint64_t gKandeloTlsGeneration = 0;
++static void KandeloTlsUnlink(KandeloTlsState* target) {
++  auto** link = &gKandeloTlsOwners;
++  while (*link) {
++    if (*link == target) { *link = target->next; target->next = nullptr; return; }
++    link = &(*link)->next;
++  }
++}
++static void KandeloTlsFinalize(JS::GCContext*, JSObject* object) {
++  const Value value = JS::GetReservedSlot(object, 0);
++  if (value.isUndefined()) return;
++  auto* state = static_cast<KandeloTlsState*>(value.toPrivate());
++  KandeloTlsUnlink(state);
++  delete state;
++}
++static const JSClassOps KandeloTlsClassOps = {
++  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
++  KandeloTlsFinalize, nullptr, nullptr, nullptr};
++static const JSClass KandeloTlsClass = {"KandeloTlsOwner",
++  JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_FOREGROUND_FINALIZE, &KandeloTlsClassOps};
++static KandeloTlsState* KandeloTlsStateFor(JSContext* cx, HandleValue value,
++                                          MutableHandleObject actual) {
++  RootedObject object(cx, value.isObject()
++      ? js::CheckedUnwrapDynamic(&value.toObject(), cx) : nullptr);
++  if (value.isObject() && !object) {
++    if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);
++    return nullptr;
++  }
++  if (!object || JS::GetClass(object) != &KandeloTlsClass) {
++    JS_ReportErrorASCII(cx, "TLS requires its actual opaque native owner"); return nullptr;
++  }
++  const Value slot = JS::GetReservedSlot(object, 0);
++  auto* state = slot.isUndefined() ? nullptr : static_cast<KandeloTlsState*>(slot.toPrivate());
++  if (!state || state->detached || state->cx != cx) {
++    JS_ReportErrorASCII(cx, "TLS owner belongs to a retired or different context"); return nullptr;
++  }
++  actual.set(object); return state;
++}
++enum class KandeloTlsOperation { Connect, Read, Write };
++struct KandeloTlsWatch {
++  JSContext* cx;
++  KandeloTlsState* state;
++  const uint64_t generation;
++  PersistentRootedObject capability, promise;
++  KandeloTlsOperation kind;
++  std::vector<uint8_t> buffer;
++  size_t offset = 0;
++  short events = POLLOUT;
++  bool rejectUnauthorized = true;
++  enum class Result { Waiting, Connected, Bytes, Count, Error, Verification };
++  Result result = Result::Waiting;
++  int error = 0;
++  long verification = 0;
++  const char* message = nullptr;
++  size_t count = 0;
++  KandeloTlsWatch* next = nullptr;
++  kandelo::memory::Allocation allocation{sizeof(KandeloTlsWatch)};
++  kandelo::memory::Claims claims;
++  void RefreshMemory() { allocation.Resize(sizeof(*this) + buffer.capacity()); }
++  KandeloTlsWatch(JSContext* cx, KandeloTlsState* state, HandleObject owner,
++                  HandleObject promise, KandeloTlsOperation kind)
++      : cx(cx), state(state), generation(state->owner.Generation()),
++        capability(cx, owner), promise(cx, promise), kind(kind) {
++    claims.Add(allocation.Handle(), KandeloNativeMemoryOwner(cx));
++  }
++};
++static thread_local KandeloTlsWatch* gKandeloTlsWatches = nullptr;
++static void KandeloTlsWatchLink(KandeloTlsWatch* watch) {
++  auto** link = &gKandeloTlsWatches;
++  while (*link) link = &(*link)->next;
++  *link = watch; watch->next = nullptr;
++}
++static void KandeloTlsWatchUnlink(KandeloTlsWatch* target) {
++  auto** link = &gKandeloTlsWatches;
++  while (*link) {
++    if (*link == target) { *link = target->next; target->next = nullptr; return; }
++    link = &(*link)->next;
++  }
++}
++static bool KandeloTlsHasReferences(JSContext* cx) {
++  for (auto* watch = gKandeloTlsWatches; watch; watch = watch->next)
++    if (watch->cx == cx) return true;
++  return false; // Ref/unref semantics are a separate real owner prerequisite.
++}
++static bool KandeloTlsRetry(KandeloTlsWatch* watch, int result) {
++  const int error = SSL_get_error(watch->state->owner.Ssl(), result);
++  if (error == SSL_ERROR_WANT_READ) { watch->events = POLLIN; return true; }
++  if (error == SSL_ERROR_WANT_WRITE) { watch->events = POLLOUT; return true; }
+   return false;
+ }
+-
+-static bool KandeloDispatchTlsWatch(KandeloSocketWatch* watch) {
+-  // The rooted operation Promise is the actual completion-realm owner.
+-  // All TLS result objects/errors are constructed here, not in the polling
+-  // caller's realm; no raw realm pointer or foreign-thread root is retained.
++static bool KandeloTlsPublish(KandeloTlsWatch* watch) {
++  using Result = KandeloTlsWatch::Result;
++  bool ok = false;
++  switch (watch->result) {
++    case Result::Connected: {
++      RootedValue value(watch->cx, UndefinedValue());
++      ok = JS::ResolvePromise(watch->cx, watch->promise, value); break;
++    }
++    case Result::Bytes:
++      ok = KandeloResolvePromiseWithBytes(watch->cx, watch->promise, watch->buffer.data(), watch->count); break;
++    case Result::Count:
++      ok = KandeloResolvePromiseWithInt(watch->cx, watch->promise, int32_t(watch->offset)); break;
++    case Result::Error:
++      ok = KandeloResolvePromiseWithErrno(watch->cx, watch->promise, watch->error, watch->message); break;
++    case Result::Verification:
++      ok = KandeloTlsRejectVerification(watch->cx, watch->promise, watch->verification); break;
++    case Result::Waiting: MOZ_CRASH("TLS result is not terminal");
++  }
++  // A hook can throw after actual settlement; that Promise must not be settled
++  // again. If allocation failed before settlement, keep the exact consumed
++  // bytes/count/error and actual roots for retry after the owning fatal fence.
++  return ok || JS::GetPromiseState(watch->promise) != JS::PromiseState::Pending;
++}
++static bool KandeloTlsDispatchWatch(KandeloTlsWatch* watch) {
+   JSAutoRealm realm(watch->cx, watch->promise.get());
+-  SSL* ssl = watch->tlsSsl;
+-  if (watch->kind != KandeloSocketWatchKind::TlsConnect) {
+-    KandeloTlsHandle* h = KandeloGetTlsHandle(watch->tlsHandle);
+-    if (!h) {
+-      KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
+-                                     "TLS socket closed");
+-      return true;
+-    }
+-    ssl = h->ssl;
+-  }
+-
+-  if (watch->kind == KandeloSocketWatchKind::TlsConnect) {
+-    int result = SSL_connect(ssl);
++  using Result = KandeloTlsWatch::Result;
++  if (watch->result != Result::Waiting) return KandeloTlsPublish(watch);
++  auto& owner = watch->state->owner;
++  auto fail = [&](int error, const char* message) {
++    watch->result = Result::Error; watch->error = error; watch->message = message;
++    return KandeloTlsPublish(watch);
++  };
++  if (!owner.Matches(watch->generation)) return fail(ECANCELED, "TLS owner closed");
++  SSL* ssl = owner.Ssl();
++  if (watch->kind == KandeloTlsOperation::Connect) {
++    const int result = SSL_connect(ssl);
+     if (result == 1) {
+-      // Verification state belongs to this real SSL connection. A missing
+-      // certificate is an error except for the pinned authenticated PSK/
+-      // resumed-session cases handled by VerifyPeer.
+       const long verify = kandelo::tls::VerifyPeer(ssl);
+-      if (watch->tlsRejectUnauthorized && verify != X509_V_OK) {
+-        KandeloTlsRejectVerification(watch->cx, watch->promise, verify);
+-        return true;
+-      }
+-      int handle =
+-          KandeloAllocTlsHandle(watch->fd, watch->tlsSsl, watch->tlsCtx);
+-      if (handle < 0) {
+-        KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
+-                                       "TLS handle table full");
+-      } else {
+-        watch->tlsSsl = nullptr;
+-        watch->tlsCtx = nullptr;
+-        watch->closeFdOnCleanup = false;
+-        if (!KandeloResolvePromiseWithInt(watch->cx, watch->promise, handle))
+-          KandeloCloseTlsHandle(handle);
+-      }
+-      return true;
+-    }
+-    if (KandeloTlsWatchNeedsRetry(watch, ssl, result)) return false;
+-    KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
+-                                   "TLS handshake failed");
+-    return true;
+-  }
+-
+-  if (watch->kind == KandeloSocketWatchKind::TlsRead) {
+-    int result = SSL_read(ssl, watch->buffer.data(), int(watch->buffer.size()));
++      if (watch->rejectUnauthorized && verify != X509_V_OK) {
++        owner.Close(); watch->result = Result::Verification; watch->verification = verify;
++      } else if (!owner.AdmitHandshake()) {
++        owner.Close(); return fail(ECANCELED, "TLS handshake owner retired");
++      } else watch->result = Result::Connected;
++      return KandeloTlsPublish(watch);
++    }
++    if (KandeloTlsRetry(watch, result)) return false;
++    owner.Close(); return fail(0, "TLS handshake failed");
++  }
++  if (!owner.Open()) return fail(ECANCELED, "TLS handshake is not open");
++  if (watch->kind == KandeloTlsOperation::Read) {
++    const int result = SSL_read(ssl, watch->buffer.data(), int(watch->buffer.size()));
+     if (result > 0) {
+-      KandeloResolvePromiseWithBytes(watch->cx, watch->promise,
+-                                     watch->buffer.data(), size_t(result));
+-      return true;
+-    }
+-    int error = SSL_get_error(ssl, result);
+-    if (error == SSL_ERROR_WANT_READ) {
+-      watch->events = POLLIN;
+-      return false;
+-    }
+-    if (error == SSL_ERROR_WANT_WRITE) {
+-      watch->events = POLLOUT;
+-      return false;
+-    }
+-    if (error == SSL_ERROR_ZERO_RETURN) {
+-      KandeloResolvePromiseWithBytes(watch->cx, watch->promise,
+-                                     watch->buffer.data(), 0);
+-      return true;
+-    }
+-    KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
+-                                   "TLS read failed");
+-    return true;
+-  }
+-
++      watch->count = size_t(result); watch->result = Result::Bytes; return KandeloTlsPublish(watch);
++    }
++    const int error = SSL_get_error(ssl, result);
++    if (error == SSL_ERROR_WANT_READ) { watch->events = POLLIN; return false; }
++    if (error == SSL_ERROR_WANT_WRITE) { watch->events = POLLOUT; return false; }
++    if (error != SSL_ERROR_ZERO_RETURN) return fail(0, "TLS read failed");
++    watch->result = Result::Bytes; watch->count = 0; return KandeloTlsPublish(watch);
++  }
+   while (watch->offset < watch->buffer.size()) {
+-    int result = SSL_write(ssl, watch->buffer.data() + watch->offset,
+-                           int(watch->buffer.size() - watch->offset));
+-    if (result > 0) {
+-      watch->offset += size_t(result);
+-      continue;
+-    }
+-    if (KandeloTlsWatchNeedsRetry(watch, ssl, result)) return false;
+-    KandeloResolvePromiseWithErrno(watch->cx, watch->promise, 0,
+-                                   "TLS write failed");
+-    return true;
+-  }
+-  KandeloResolvePromiseWithInt(watch->cx, watch->promise,
+-                               int32_t(watch->offset));
+-  return true;
+-}
+-
+-static SSL_CTX* KandeloMakeTlsContext(JSContext* cx, HandleValue optionsValue) {
+-  return KandeloTlsClaimContext(cx, optionsValue);
+-}
+-
++    const size_t remaining = watch->buffer.size() - watch->offset;
++    const int count = int(remaining > size_t(INT_MAX) ? size_t(INT_MAX) : remaining);
++    const int result = SSL_write(ssl, watch->buffer.data() + watch->offset, count);
++    if (result > 0) { watch->offset += size_t(result); continue; }
++    if (KandeloTlsRetry(watch, result)) return false;
++    return fail(0, "TLS write failed");
++  }
++  watch->result = Result::Count; return KandeloTlsPublish(watch);
++}
++static int KandeloDispatchTlsOwners(JSContext* cx) {
++  for (auto* watch = gKandeloTlsWatches; watch; watch = watch->next) {
++    if (watch->cx != cx) continue;
++    pollfd descriptor = {};
++    descriptor.fd = watch->state->owner.Fd(); descriptor.events = watch->events;
++    const int ready = watch->result != KandeloTlsWatch::Result::Waiting || descriptor.fd < 0
++        ? 1 : poll(&descriptor, 1, 0);
++    if (ready == 0 || (ready < 0 && errno == EINTR)) continue;
++    // Detach before ANY Promise hook/error/allocation can reenter close/GC.
++    // No raw list-next pointer crosses that publication boundary.
++    KandeloTlsWatchUnlink(watch);
++    const bool complete = KandeloTlsDispatchWatch(watch);
++    if (!complete) KandeloTlsWatchLink(watch);
++    else js_delete(watch);
++    return JS_IsExceptionPending(cx) ? -1 : complete ? 1 : 0;
++  }
++  return 0;
++}
++static bool KandeloCloseTlsOwner(JSContext* cx, KandeloTlsState* state,
++                                 bool settle = true) {
++  state->owner.Close();
++  KandeloTlsWatch* retiring = nullptr;
++  auto** link = &gKandeloTlsWatches;
++  while (*link) {
++    auto* watch = *link;
++    if (watch->state == state && watch->generation == state->owner.Generation()) {
++      *link = watch->next; watch->next = retiring; retiring = watch;
++    } else link = &watch->next;
++  }
++  bool ok = true;
++  while (retiring) {
++    auto* watch = retiring; retiring = watch->next;
++    // Each detached request owns its actual capability/Promise roots until its
++    // terminal settlement returns; reentry cannot find/delete it in a registry.
++    if (settle) {
++      if (watch->result == KandeloTlsWatch::Result::Waiting) {
++        watch->result = KandeloTlsWatch::Result::Error;
++        watch->error = ECANCELED; watch->message = "TLS owner closed";
++      }
++      if (ok) {
++        const bool delivered = KandeloTlsDispatchWatch(watch);
++        if (!delivered) { KandeloTlsWatchLink(watch); ok = false; }
++        else js_delete(watch);
++        if (JS_IsExceptionPending(cx)) ok = false;
++      } else KandeloTlsWatchLink(watch);
++    } else js_delete(watch);
++  }
++  return ok;
++}
++static void KandeloShutdownTlsOwners(JSContext* cx) {
++  // Environment shutdown stops producers before unregistering their JS roots.
++  // Do not create new user callbacks/jobs while the context is being retired.
++  auto** link = &gKandeloTlsOwners;
++  while (*link) {
++    auto* state = *link;
++    if (state->cx == cx) {
++      KandeloCloseTlsOwner(cx, state, false);
++      state->detached = true; state->cx = nullptr;
++      *link = state->next; state->next = nullptr;
++    } else link = &state->next;
++  }
++}
+ static bool KandeloNativeTlsConnect(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+-  int32_t fd;
+-  if (args.length() < 2 || !JS::ToInt32(cx, args[0], &fd)) return false;
+-  UniqueChars servername;
+-  if (!KandeloGetString(cx, args[1], &servername)) return false;
+-  RootedValue options(cx, args.length() >= 3 ? args[2] : UndefinedValue());
+-  SSL_CTX* ctx = KandeloMakeTlsContext(cx, options);
+-  if (!ctx) {
+-    // The prepared-context owner reports the original JS exception. Do not
+-    // allocate or settle a different Promise with that exception pending.
+-    close(fd);
+-    return false;
+-  }
+-  RootedValue rejectValue(cx);
+-  RootedObject preparedOptions(cx, &options.toObject());
+-  if (!JS_GetProperty(cx, preparedOptions, "rejectUnauthorized", &rejectValue)) {
+-    SSL_CTX_free(ctx);
+-    close(fd);
+-    return false;
+-  }
+-  const bool rejectUnauthorized = !rejectValue.isFalse();
+-  SSL* ssl = SSL_new(ctx);
+-  if (!ssl) {
+-    SSL_CTX_free(ctx);
+-    close(fd);
+-    RootedObject promise(cx, KandeloRejectedPromise(cx, "SSL_new failed"));
+-    if (!promise) return false;
++  try {
++    RootedObject source(cx, args.get(0).isObject()
++        ? js::CheckedUnwrapDynamic(&args[0].toObject(), cx) : nullptr);
++    if (!source) {
++      if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "TLS connect requires its actual TCP owner");
++      return false;
++    }
++    if (!KandeloSocketOwnerState(cx, source)) return false;
++    UniqueChars servername;
++    if (!KandeloGetString(cx, args.get(1), &servername)) return false;
++    RootedValue options(cx, args.get(2));
++    kandelo::tls::OwnedContext context(KandeloTlsClaimContext(cx, options));
++    if (!context) return false;
++    RootedValue rejectValue(cx); RootedObject prepared(cx, &options.toObject());
++    if (!JS_GetProperty(cx, prepared, "rejectUnauthorized", &rejectValue)) return false;
++    kandelo::tls::OwnedSSL ssl(SSL_new(context.get()));
++    if (!ssl) { JS_ReportErrorASCII(cx, "SSL_new failed"); return false; }
++    if (gKandeloTlsGeneration == UINT64_MAX) {
++      JS_ReportErrorASCII(cx, "TLS resource generation exhausted"); return false;
++    }
++    auto state = std::make_unique<KandeloTlsState>(cx, ++gKandeloTlsGeneration,
++        std::move(context), std::move(ssl));
++    state->claims.Add(state->allocation.Handle(), KandeloNativeMemoryOwner(cx));
++    // Null prototype prevents Promise assimilation through a mutable inherited
++    // then getter; actual native state is not published as ordinary properties.
++    RootedObject owner(cx, JS_NewObjectWithGivenProto(cx, &KandeloTlsClass, nullptr));
++    if (!owner) return false;
++    auto* actual = state.release(); JS::SetReservedSlot(owner, 0, PrivateValue(actual));
++    actual->next = gKandeloTlsOwners; gKandeloTlsOwners = actual;
++    bool committed = false;
++    auto rollback = mozilla::MakeScopeExit([&] { if (!committed) actual->owner.Close(); });
++    RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
++    RootedObject operation(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
++    if (!promise || !operation) return false;
++    RootedValue ownerValue(cx, ObjectValue(*owner)), promiseValue(cx, ObjectValue(*promise));
++    if (!JS_DefineProperty(cx, operation, "owner", ownerValue, JSPROP_ENUMERATE) ||
++        !JS_DefineProperty(cx, operation, "promise", promiseValue, JSPROP_ENUMERATE)) return false;
++    auto watch = std::make_unique<KandeloTlsWatch>(cx, actual, owner, promise, KandeloTlsOperation::Connect);
++    watch->rejectUnauthorized = !rejectValue.isFalse();
++    // All getter/Promise hooks/allocation precede this transactional fd commit.
++    // Revalidate the actual rooted source; never close a later reused fd number.
++    kandelo::socket::Lease transfer;
++    if (!KandeloTransferSocketLease(cx, source, transfer) || !actual->owner.Adopt(transfer)) return false;
++    SSL* native = actual->owner.Ssl();
++    SSL_set_verify(native, SSL_VERIFY_NONE, kandelo::tls::ContinueVerification);
++    args.rval().setObject(*operation);
++    if (SSL_set_fd(native, actual->owner.Fd()) != 1 ||
++        SSL_set_tlsext_host_name(native, servername.get()) != 1 ||
++        SSL_set1_host(native, servername.get()) != 1) {
++      actual->owner.Close();
++      committed = true;
++      return KandeloResolvePromiseWithErrno(cx, promise, 0, "TLS connection setup failed");
++    }
++    committed = true;
++    if (!KandeloTlsDispatchWatch(watch.get())) KandeloTlsWatchLink(watch.release());
++    return !JS_IsExceptionPending(cx);
++  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
++}
++static bool KandeloNativeTlsRead(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  try {
++    RootedObject capability(cx); auto* state = KandeloTlsStateFor(cx, args.get(0), &capability);
++    if (!state) return false;
++    int32_t length = 16384;
++    if (argc > 1 && !JS::ToInt32(cx, args[1], &length)) return false;
++    if (length <= 0) length = 16384;
++    RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr)); if (!promise) return false;
+     args.rval().setObject(*promise);
+-    return true;
+-  }
+-  // Pinned client mode completes verification, then enforces rejection at
+-  // the actual handshake completion fence before publishing a TLS handle.
+-  SSL_set_verify(ssl, SSL_VERIFY_NONE, kandelo::tls::ContinueVerification);
+-  if (SSL_set_fd(ssl, fd) != 1 ||
+-      SSL_set_tlsext_host_name(ssl, servername.get()) != 1 ||
+-      SSL_set1_host(ssl, servername.get()) != 1) {
+-    SSL_free(ssl);
+-    SSL_CTX_free(ctx);
+-    close(fd);
+-    RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS connection setup failed"));
+-    if (!promise) return false;
++    if (!state->owner.Open()) return KandeloResolvePromiseWithErrno(cx, promise, ECANCELED, "TLS owner is not open");
++    auto watch = std::make_unique<KandeloTlsWatch>(cx, state, capability, promise, KandeloTlsOperation::Read);
++    watch->buffer.resize(size_t(length)); watch->RefreshMemory(); watch->events = POLLIN;
++    if (!KandeloTlsDispatchWatch(watch.get())) KandeloTlsWatchLink(watch.release());
++    return !JS_IsExceptionPending(cx);
++  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
++}
++static bool KandeloNativeTlsWrite(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  try {
++    RootedObject capability(cx); auto* state = KandeloTlsStateFor(cx, args.get(0), &capability);
++    if (!state) return false;
++    std::vector<uint8_t> bytes;
++    if (!KandeloValueToBytes(cx, args.get(1), &bytes)) return false;
++    if (bytes.size() > INT32_MAX) { JS_ReportErrorASCII(cx, "TLS write exceeds the current completion count"); return false; }
++    RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr)); if (!promise) return false;
+     args.rval().setObject(*promise);
+-    return true;
+-  }
+-  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+-  if (!promise) {
+-    SSL_free(ssl);
+-    SSL_CTX_free(ctx);
+-    close(fd);
+-    return false;
+-  }
+-  args.rval().setObject(*promise);
+-  auto* watch = js_new<KandeloSocketWatch>(
+-      cx, fd, KandeloSocketWatchKind::TlsConnect, promise);
+-  if (!watch) {
+-    SSL_free(ssl);
+-    SSL_CTX_free(ctx);
+-    close(fd);
+-    JS_ReportOutOfMemory(cx);
+-    return false;
+-  }
+-  watch->tlsRejectUnauthorized = rejectUnauthorized;
+-  watch->tlsSsl = ssl;
+-  watch->tlsCtx = ctx;
+-  watch->closeFdOnCleanup = true;
+-  if (KandeloDispatchTlsWatch(watch)) {
+-    KandeloCleanupTlsWatch(watch);
+-    js_delete(watch);
+-  } else {
+-    KandeloSocketWatchLink(watch);
+-  }
+-  return true;
+-}
+-
+-static bool KandeloNativeTlsRead(JSContext* cx, unsigned argc, Value* vp) {
+-  CallArgs args = CallArgsFromVp(argc, vp);
+-  int32_t handle;
+-  int32_t length = 16384;
+-  if (args.length() < 1 || !JS::ToInt32(cx, args[0], &handle)) return false;
+-  if (args.length() >= 2 && !JS::ToInt32(cx, args[1], &length)) return false;
+-  if (length <= 0) length = 16384;
+-  KandeloTlsHandle* h = KandeloGetTlsHandle(handle);
+-  if (!h) return false;
+-  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+-  if (!promise) return false;
+-  args.rval().setObject(*promise);
+-  auto* watch = js_new<KandeloSocketWatch>(
+-      cx, h->fd, KandeloSocketWatchKind::TlsRead, promise);
+-  if (!watch) {
+-    JS_ReportOutOfMemory(cx);
+-    return false;
+-  }
+-  watch->tlsHandle = handle;
+-  watch->buffer.resize(static_cast<size_t>(length));
+-  if (KandeloDispatchTlsWatch(watch)) {
+-    js_delete(watch);
+-  } else {
+-    KandeloSocketWatchLink(watch);
+-  }
+-  return true;
+-}
+-
+-static bool KandeloNativeTlsWrite(JSContext* cx, unsigned argc, Value* vp) {
+-  CallArgs args = CallArgsFromVp(argc, vp);
+-  int32_t handle;
+-  if (args.length() < 2 || !JS::ToInt32(cx, args[0], &handle)) return false;
+-  KandeloTlsHandle* h = KandeloGetTlsHandle(handle);
+-  if (!h) return false;
+-  std::vector<uint8_t> bytes;
+-  if (!KandeloValueToBytes(cx, args[1], &bytes)) return false;
+-  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+-  if (!promise) return false;
+-  args.rval().setObject(*promise);
+-  auto* watch = js_new<KandeloSocketWatch>(
+-      cx, h->fd, KandeloSocketWatchKind::TlsWrite, promise);
+-  if (!watch) {
+-    JS_ReportOutOfMemory(cx);
+-    return false;
+-  }
+-  watch->tlsHandle = handle;
+-  watch->buffer = std::move(bytes);
+-  if (KandeloDispatchTlsWatch(watch)) {
+-    js_delete(watch);
+-  } else {
+-    KandeloSocketWatchLink(watch);
+-  }
+-  return true;
+-}
+-
++    if (!state->owner.Open()) return KandeloResolvePromiseWithErrno(cx, promise, ECANCELED, "TLS owner is not open");
++    auto watch = std::make_unique<KandeloTlsWatch>(cx, state, capability, promise, KandeloTlsOperation::Write);
++    watch->buffer = std::move(bytes); watch->RefreshMemory();
++    if (!KandeloTlsDispatchWatch(watch.get())) KandeloTlsWatchLink(watch.release());
++    return !JS_IsExceptionPending(cx);
++  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
++}
+ static bool KandeloNativeTlsClose(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+-  int32_t handle;
+-  if (args.length() >= 1 && JS::ToInt32(cx, args[0], &handle)) {
+-    KandeloCloseTlsHandle(handle);
+-  }
+-  args.rval().setUndefined();
+-  return true;
++  RootedObject capability(cx); auto* state = KandeloTlsStateFor(cx, args.get(0), &capability);
++  if (!state) return false;
++  args.rval().setUndefined(); return KandeloCloseTlsOwner(cx, state);
+ }
+
+@@ -2669,14 +2677,11 @@
+ {
+   CallArgs args = CallArgsFromVp(argc, vp);
+-  int32_t handle, operation;
+-  if (args.length() < 2 || !JS::ToInt32(cx, args[0], &handle) ||
+-      !JS::ToInt32(cx, args[1], &operation))
+-    return false;
+-  KandeloTlsHandle* owner = KandeloGetTlsHandle(handle);
+-  if (!owner) {
+-    args.rval().setNull();
+-    return true;
+-  }
+-  SSL* ssl = owner->ssl;
++  RootedObject capability(cx);
++  auto* state = KandeloTlsStateFor(cx, args.get(0), &capability);
++  if (!state) return false;
++  int32_t operation;
++  if (!JS::ToInt32(cx, args.get(1), &operation)) return false;
++  if (!state->owner.Open()) { args.rval().setNull(); return true; }
++  SSL* ssl = state->owner.Ssl();
+   auto text = [&](const char* bytes, MutableHandleValue result) {
+     if (!bytes) {
+@@ -2693,5 +2698,5 @@
+     switch (operation) {
+       case 1:
+-        return text(SSL_get_version(ssl), args.rval());
++        return text(std::string(SSL_get_version(ssl)).c_str(), args.rval());
+       case 2: {
+         const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl);
+@@ -2700,14 +2705,19 @@
+           return true;
+         }
++        const char* names[] = { "name", "standardName", "version" };
++        const char* original[] = { SSL_CIPHER_get_name(cipher),
++                                   SSL_CIPHER_standard_name(cipher),
++                                   SSL_CIPHER_get_version(cipher) };
++        std::string values[3];
++        bool present[3];
++        for (size_t i = 0; i < 3; i++) {
++          present[i] = original[i] != nullptr;
++          if (present[i]) values[i] = original[i];
++        }
+         RootedObject object(cx, JS_NewPlainObject(cx));
+-        if (!object)
+-          return false;
+-        const char* names[] = { "name", "standardName", "version" };
+-        const char* values[] = { SSL_CIPHER_get_name(cipher),
+-                                 SSL_CIPHER_standard_name(cipher),
+-                                 SSL_CIPHER_get_version(cipher) };
++        if (!object) return false;
+         for (size_t i = 0; i < 3; i++) {
+           RootedValue value(cx);
+-          if (!text(values[i], &value) ||
++          if (!text(present[i] ? values[i].c_str() : nullptr, &value) ||
+               !JS_DefineProperty(cx, object, names[i], value, JSPROP_ENUMERATE))
+             return false;
+@@ -17127,4 +17137,5 @@
+   KandeloELDShutdown(sc->cx_);
+   KandeloShutdownHistograms(sc->cx_);
++  KandeloShutdownTlsOwners(sc->cx_);
+   KandeloShutdownSocketOwners(sc->cx_);
+   if (!KandeloShutdownFfi(sc)) sc->kandeloNativeTeardownOk = false;

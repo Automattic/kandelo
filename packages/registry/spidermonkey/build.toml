@@ -1,5 +1,7 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0148-node-tls-opaque-owner.patch",
+  "third_party/node-core/tls-owner.h",
   "packages/registry/spidermonkey/patches/0146-node-terminal-callback-owner.patch",
   "third_party/node-core/codec-pledge.h",
   "third_party/node-core/codec-pledge.md",
@@ -711,4 +713,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 202
+revision = 203

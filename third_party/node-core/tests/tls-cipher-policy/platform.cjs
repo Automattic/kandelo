@@ -6,7 +6,7 @@ const bundle=fs.readFileSync(path.join(root,'third_party/node-core/node-core.js'
 const forwardingSource=fs.readFileSync(path.join(root,'packages/registry/spidermonkey/node-compat/adapter.js'),'utf8');
 const forwarding=forwardingSource.match(/    tlsContext\(([^)]*)\) \{ return native\.__kandeloTlsContextOperation\(([^)]*)\); \},/);
 if(!forwarding)throw Error('Missing actual curated TLS native forwarding');
-const factories=Function(bundle+';return {trust:_createNodeTlsContextTrust,modules:_createNodePublicConstantModules};')();
+const factories=Function(bundle+';return {trust:_createNodeTlsContextTrust,modules:_createNodePublicConstantModules,primordials:_createNodePrimordials};')();
 exports.create=function create(){
  const addon=require(process.env.TLS_POLICY_ADDON),binding=require('internal/test/binding').internalBinding('constants');
  const nativeCrypto=require('node:crypto');
@@ -25,8 +25,8 @@ exports.create=function create(){
   trust=factories.trust({native,values,types:util.types,Buffer,constants:binding,require:name=>builtins[name]});
   const a=source.indexOf('const tls = (() => {'),b=source.indexOf('// Trust still comes',a);
   if(a<0||b<a)throw Error('Missing actual TLS owner source');
-  tls=Function('stream','Buffer','_nodeNative','_nodeTlsContextTrust','_nodeBeginSocketConnection','_nodePublicConstants',
-   source.slice(a,b)+';return tls;')(stream,Buffer,native,trust,()=>{trace.push('TCP-fault-boundary');throw fault;},{load:id=>publicOwner.load(id)});
+  tls=Function('stream','Buffer','_nodeNative','_nodeTlsContextTrust','_nodeBeginSocketConnection','_nodePublicConstants','_createNodePrimordials',
+   source.slice(a,b)+';return tls;')(stream,Buffer,native,trust,()=>{trace.push('TCP-fault-boundary');throw fault;},{load:id=>publicOwner.load(id)},factories.primordials);
   publicOwner=factories.modules({process:proc,values,binding,crypto:nativeCrypto,tls,cliOptions,
    require:name=>builtins[name],compileSource:(text,filename)=>vm.runInThisContext(text,{filename})});
   const getters=['tls','https','crypto','constants'].map(id=>{

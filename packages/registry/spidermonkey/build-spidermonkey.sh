@@ -406,6 +406,8 @@ python3 "$REPO_ROOT/third_party/node-core/generate-sqlite-constants.py" \
 cp "$REPO_ROOT/third_party/node-core/callback-scope.h" "$SRC_DIR/js/src/shell/kandelo-node-callback-scope.h"
 cp "$REPO_ROOT/third_party/node-core/callback-execution-stack.h" "$SRC_DIR/js/src/shell/kandelo-node-callback-execution-stack.h"
 cp "$REPO_ROOT/third_party/node-core/socket-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-socket-owner.h"
+sed 's|#include "socket-owner.h"|#include "kandelo-node-socket-owner.h"|' \
+    "$REPO_ROOT/third_party/node-core/tls-owner.h" > "$SRC_DIR/js/src/shell/kandelo-node-tls-owner.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-socket-state.py" --check
 cp "$REPO_ROOT/third_party/node-core/socket-stream-state.h" "$SRC_DIR/js/src/shell/kandelo-node-socket-stream-state.h"
 cp "$REPO_ROOT/third_party/node-core/native-retained-memory.h" "$SRC_DIR/js/src/shell/native-retained-memory.h"

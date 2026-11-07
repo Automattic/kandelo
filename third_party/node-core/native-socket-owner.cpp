@@ -186,6 +186,31 @@ static KandeloSocketState* KandeloSocketOwnerState(JSContext* cx, HandleObject o
   }
   return state;
 }
+// Transfer only this actual context-owned TCP descriptor. No numeric fd is
+// borrowed across getter/Promise hooks; the caller roots this real owner.
+static bool KandeloTransferSocketLease(JSContext* cx, HandleObject object,
+                                      kandelo::socket::Lease& recipient) {
+  auto* state = KandeloSocketOwnerState(cx, object);
+  if (!state) return false;
+  RootedObject actual(cx, js::CheckedUnwrapDynamic(object, cx));
+  if (!actual) return false;
+  for (auto* child = gKandeloSocketOwners; child; child = child->next) {
+    if (child->cx != cx || !child->pending ||
+        (!child->write && (!child->connect || child->callbackActive))) continue;
+    const Value parent = JS::GetReservedSlot(*child->pending, SocketParent);
+    if (parent == ObjectValue(*actual)) {
+      JS_ReportErrorASCII(cx, "TCP owner has an active native request"); return false;
+    }
+  }
+  if (!state->socket || state->closing || state->callbackActive || state->delivering || state->write ||
+      !state->socket->TransferTo(recipient)) {
+    JS_ReportErrorASCII(cx, "TCP owner is closed, reading, or cannot transfer its descriptor");
+    return false;
+  }
+  // Source TCP retirement still follows its real queued close/init/destroy
+  // lifecycle; its now-empty descriptor cannot close the TLS recipient's fd.
+  state->BeginClose(); return true;
+}
 static KandeloSocketState* KandeloSocketThis(JSContext* cx, const CallArgs& args) {
   if (!args.thisv().isObject()) { JS_ReportErrorASCII(cx, "Invalid native TCP receiver"); return nullptr; }
   RootedObject owner(cx, js::CheckedUnwrapStatic(&args.thisv().toObject()));

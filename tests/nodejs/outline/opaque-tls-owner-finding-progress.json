@@ -1,0 +1,127 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/secure-network.md",
+    "findingIds": [
+      "S-004",
+      "S-009"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/network.md": [
+        "N-013"
+      ]
+    },
+    "relatedFamilies": [
+      "secure-network",
+      "network",
+      "async",
+      "engine",
+      "workers"
+    ],
+    "scope": "Partial real TLS native capability/SSL/captured-descriptor/handshake/cancellation prerequisite; not full Node TLSWrap/provider/ref/shutdown/HTTPS closure"
+  },
+  "sourceImplemented": [
+    "Real context/generation/SSL_CTX/SSL/captured-descriptor owner replaces reusable process-global integer handle table",
+    "Transactional real TCP descriptor transfer refuses actual active read/request owners and retires only the emptied source",
+    "Private WeakMap bootstrap retains actual native owner/handshake operation; destroy closes pending handshake rather than waiting for later numeric handle publication",
+    "Separate thread-local watch registry owns actual capability/Promise roots, buffers, generation and completion material; detach before arbitrary publication reentry",
+    "True consumed bytes/count/error are retained for publication retry, with callback-free producer shutdown before context retirement",
+    "Actual source201terminal/197collector/195SignJob/202SEA routes preserved and native names/arities unchanged; new portable header declared/staged normally"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tls203-source-r1/report.json",
+    "sha256": "317aa87d6fface96fca4867e09d44aca24f32beaf11582b2046973f6bf58f2e5",
+    "guardedInputs": 876,
+    "scope": "Real opaque TLS owning source and paired bootstrap; portable/native-dependent controls and preserved policy regressions, not full TLSWrap/HTTPS/JSAPI/guest conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tls203-affected-r1.json",
+    "sha256": "1feceb454f4814598c164f9bf1b4f4115c1a7309be36805104f9e3385d013de0",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tls203-source-r1/report.json",
+    "sha256": "317aa87d6fface96fca4867e09d44aca24f32beaf11582b2046973f6bf58f2e5",
+    "tlsPolicyGroups": 27,
+    "publicConstantRegressionGroups": 12,
+    "reusedNativeUpstreamBaseline": {
+      "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-tls-cipher-list.js",
+      "sha256": "c3b7659807137ace7e492d6eea60bf776d6dd4384fbf830c0ca5f52ab159dbd1",
+      "nativeExit": 0,
+      "reusedNativeStdout": ".context/tls-cipher-policy-owner-agent/upstream-native.stdout",
+      "reusedNativeStdoutSha256": "1d18d16453c25bb131d2ec2e565f2ea7c09aa13a84e0dc8c463f984b9afcf1e3",
+      "candidateExecuted": false,
+      "scope": "Existing unchanged-file native baseline only; no candidate upstream or guest proof."
+    },
+    "artifactsReused": {
+      "component.node": "bb4d2b4bc58d3a39798df107094282e0ffd4934d01ec4fac8d6c9ea3e254a36d",
+      "native-inspector.node": "bebfb3b55fd6813d33fc145ca4a56b4d4bb12bb76cd07b702a4dfda74d26f162"
+    },
+    "historicalPolicyAttemptsAlreadyAccounted": 3,
+    "previousOwnerCompilerAttemptsIntegrated": 2,
+    "previousOwnerCompilerFailuresIntegrated": 1,
+    "nativeTLSOwnerAssertions": 90,
+    "actualNativeTLSOwner": {
+      "passed": true,
+      "scope": "Exact portable TCP Lease transfer/TLS Owner header over real native loopback TCP + pinned Node OpenSSL SSL connect/accept/read/write and true free callbacks; JSAPI/guest/worker/GC unexecuted",
+      "result": {
+        "assertions": 90,
+        "actualLoopbackPort": 62306,
+        "capturedAndReusedFd": 13,
+        "plaintextBytes": 24,
+        "contextFreeCallbacks": 1,
+        "sslFreeCallbacks": 1,
+        "protocol": "TLSv1.3",
+        "cipher": "TLS_AES_256_GCM_SHA384"
+      }
+    },
+    "opaqueNativeInterfacePaired": true,
+    "publicTLSWrapComplete": false,
+    "newCompilerAttempts": 0,
+    "unchangedStyleCheckerPassed": true,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Actual portable TLS lease/SSL owner and SSL_CTX cipher/protocol operations over current paired source; lazy public/CLI/default owners over explicit native constants/VM/stream/Error dependencies. Direct internal connect intentionally stops at original pre-TCP fault, no successful descriptor/handshake manufactured. Full SecureContext/secure Agent/lower TLS/guest incomplete."
+  },
+  "sealedEvidence": {
+    "report": ".context/tls-native-owner-agent/HANDOFF.json",
+    "sha256": "f298635b21d50af9beadce67b710fab89b938b5a89a51653034c7a996d690a70",
+    "reusedEvidence": true,
+    "scope": "Immutable D01 portable TLS owner,105observed assertions at original run/75source checks. Current run has90observed assertions because retry loops vary; not API counts.2prior helper attempts/1fixture failure integrated once; guest bridge uncompiled."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tls-native-owner-agent/preserved-r1/nonpass.json",
+      "sha256": "7d63cd2312fa9ff80faa05ea911f0983b06b25e723d98d4e43dbbdb771d84fea",
+      "scope": "Initial component compile used C++17 despite actual retained-memory header requiring C++20; missing-component follow-on control also failed. Corrected fixture uses actual production C++20 and exact dependency, no production/runtime workaround."
+    },
+    {
+      "report": ".context/tls-plaintext-read-owner-agent/ADDITIVE-DEPENDENCY-CORRECTION.md",
+      "sha256": "5011d9581533026e4b91e714ef7575f8862e13be60de708eb44b585cbce9868c",
+      "scope": "Pinned TLSWrap proxies hasPendingRead from retained TCP parent; earlier absence assumption was wrong. D01 late birth/TCP retirement is not full Node TLSWrap; D02 and early real parent ownership remain separate."
+    }
+  ],
+  "remaining": [
+    "D01 bridge uncompiled/unexecuted; targeted guest/realm/GC/worker/reentry/OOM/fatal/cancel/teardown controls needed.",
+    "D02 actual plaintext pending-read and idle StreamBase/read guard not implemented.",
+    "D03 ref/unref/timers, D04 underlying TCP controls and exact TLS AsyncWrap/provider ownership missing.",
+    "TLS writes still copied; original-allocation/scatter/serialization/full streaming/error parity remains open.",
+    "Full public TLSSocket/server/SecureContext/ALPN/session/ticket/verification/certificate/CONNECT/options.socket/CLI-parser ownership incomplete.",
+    "Existing HTTPS projection/host:port pool unchanged; safe secure Agent activation remains blocked.",
+    "Identified-artifact four-host conformance still required; no implementation gap becomes passing or platform boundary.",
+    "D01native owner is created after actual TCP connection and retires transferred source; exact pinned TLSWrap early birth/retained parent dependency remains a genuine implementation gap, not fabricated metadata",
+    "Current203normal source includes201terminal/202SEAbut new guest native source remains uncompiled; no old accepted200artifact is presented as current runtime conformance"
+  ],
+  "at": "2026-11-07T09:33:00.689796+00:00",
+  "recipeRevision": 203,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

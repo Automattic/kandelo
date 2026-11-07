@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source203 integrates real opaque TLS ownership with its paired bootstrap. Current native loopback/SSL/free/fd-reuse control passes, along with27TLS-policy groups,12constant groups,876normal inputs and14package checks. Prior2tiny attempts/1fixture failure are integrated once. New guest C++ remains uncompiled; HTTPS activation stays blocked.
+See [source scope](opaque-tls-owner-integration.md).
+
 Source202 adds actual ordinary-image node:sea ownership with the exact compiled fuse detector and unchanged public algorithms. Nine current groups and two unchanged upstream files per subject pass over explicit native dependencies;875normal inputs/style/bootstrap and14package checks pass. PositiveSEA and guest conformance remain unimplemented/unvalidated.
 See [source scope](ordinary-sea-image-integration.md).
 

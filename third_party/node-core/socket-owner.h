@@ -147,6 +147,13 @@ class Owner {
     // No allocation or callback is permitted after this ownership commit.
     descriptor_.fd_ = prior.Release(); return true;
   }
+  // A native transport recipient is fully allocated before this no-JS commit.
+  // In-flight reads may already own consumed bytes and cannot be transferred.
+  bool TransferTo(Lease& recipient) noexcept {
+    if (closed_ || Fd() < 0 || reading_ || read_ || recipient.Fd() >= 0) return false;
+    if (!recipient.Adopt(descriptor_)) return false;
+    closed_ = true; return true;
+  }
   void Close() noexcept {
     closed_ = true; reading_ = false;
     descriptor_.Close();
