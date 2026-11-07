@@ -100327,7 +100327,7 @@ module.exports = {
         modules.set(name, module);
         factories[name](module, module.exports, require, primordials, name => {
             if (name === 'crypto') return binding;
-            if (name === 'constants') return { crypto: binding };
+            if (name === 'constants') return platform.constants;
             throw new ERR_METHOD_NOT_IMPLEMENTED('Key binding ' + name);
         });
         return module.exports;
@@ -100721,7 +100721,7 @@ module.exports = {
         if (dependencies.has(name)) return dependencies.get(name);
         throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Cipher dependency ' + name);
     }, primordials, name => name === 'crypto' ? binding :
-        name === 'constants' ? { crypto: call('constants') } : undefined);
+        name === 'constants' ? platform.constants : undefined);
     const { Cipheriv, Decipheriv, getCipherInfo, publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt } = module.exports;
     function createCipheriv(cipher, key, iv, options) {
   return new Cipheriv(cipher, key, iv, options);
@@ -108831,6 +108831,110 @@ class BuiltinModule {
         getAllBuiltinModuleIds: BuiltinModule.getAllBuiltinModuleIds,
         getBuiltinModule,
     };
+}
+
+// Shared real native constant bags, and lazy public-module initialization.
+// Eager internal crypto API consumers retain their existing actual object.
+function _createNodePublicConstantModules(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { ArrayPrototypePush, ObjectDefineProperties, ObjectDefineProperty,
+        SafeMap, StringPrototypeStartsWith } = primordials;
+    const process = platform.process;
+    const moduleLoadList = process.moduleLoadList;
+    const binding = platform.binding;
+    const requireBuiltin = platform.require;
+    const requireWithFallbackInDeps = requireBuiltin;
+    function internalBinding(name) {
+        if (name === 'constants') return binding;
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Legacy constants binding ' + name);
+    }
+    function getOptionValue(name) {
+        if (name === '--tls-cipher-list' && typeof platform.cliOptions.tlsCipherList === 'string')
+            return platform.cliOptions.tlsCipherList;
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Actual crypto CLI option owner ' + name);
+    }
+    const source = "// Copyright Joyent, Inc. and other Node contributors.\n//\n// Permission is hereby granted, free of charge, to any person obtaining a\n// copy of this software and associated documentation files (the\n// \"Software\"), to deal in the Software without restriction, including\n// without limitation the rights to use, copy, modify, merge, publish,\n// distribute, sublicense, and/or sell copies of the Software, and to permit\n// persons to whom the Software is furnished to do so, subject to the\n// following conditions:\n//\n// The above copyright notice and this permission notice shall be included\n// in all copies or substantial portions of the Software.\n//\n// THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN\n// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,\n// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR\n// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE\n// USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n'use strict';\n\nconst {\n  ObjectAssign,\n  ObjectFreeze,\n} = primordials;\n\n// This module is deprecated in documentation only. Users should be directed\n// towards using the specific constants exposed by the individual modules on\n// which they are most relevant.\n// Deprecation Code: DEP0008\nconst constants = internalBinding('constants');\nObjectAssign(exports,\n             constants.os.dlopen,\n             constants.os.errno,\n             constants.os.priority,\n             constants.os.signals,\n             constants.fs,\n             constants.crypto);\nObjectFreeze(exports);\n";
+    function compileFunction(id) {
+        if (id === 'constants')
+            return platform.compileSource('(function(exports, require, module, process, internalBinding, primordials) {' + source + '\n})', 'node:constants');
+        return function(exports, require, module) {
+            const constants = binding.crypto;
+            ObjectDefineProperty(constants, 'defaultCipherList', {
+  __proto__: null,
+  get() {
+    const value = getOptionValue('--tls-cipher-list');
+    ObjectDefineProperty(this, 'defaultCipherList', {
+      __proto__: null,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+      value,
+    });
+    return value;
+  },
+  set(val) {
+    ObjectDefineProperty(this, 'defaultCipherList', {
+      __proto__: null,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+      value: val,
+    });
+  },
+  configurable: true,
+  enumerable: true,
+});
+            ObjectDefineProperties(module.exports, {
+                  constants: {
+    __proto__: null,
+    configurable: false,
+    enumerable: true,
+    value: constants,
+  },
+            });
+        };
+    }
+    class ConstantModule {
+        constructor(id, exports) {
+            this.id = id;
+            this.exports = exports;
+            this.loaded = false;
+            this.loading = false;
+        }
+          compileForInternalLoader() {
+    if (this.loaded || this.loading) {
+      return this.exports;
+    }
+
+    const id = this.id;
+    this.loading = true;
+
+    try {
+      const requireFn = StringPrototypeStartsWith(this.id, 'internal/deps/') ?
+        requireWithFallbackInDeps : requireBuiltin;
+
+      const fn = compileFunction(id);
+      // Arguments must match the parameters specified in
+      // BuiltinLoader::LookupAndCompile().
+      fn(this.exports, requireFn, this, process, internalBinding, primordials);
+
+      this.loaded = true;
+    } finally {
+      this.loading = false;
+    }
+
+    // "NativeModule" is a legacy name of "BuiltinModule". We keep it
+    // here to avoid breaking users who parse process.moduleLoadList.
+    ArrayPrototypePush(moduleLoadList, `NativeModule ${id}`);
+    return this.exports;
+  }
+    }
+    const records = new SafeMap([
+        ['constants', new ConstantModule('constants', {})],
+        ['crypto', new ConstantModule('crypto', platform.crypto)],
+    ]);
+    return { load(id) { return records.get(id).compileForInternalLoader(); } };
 }
 
 // A lazy real builtin record retains its actual exports during reentry and

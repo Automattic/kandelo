@@ -45,7 +45,7 @@ function _createNodeCipherPlatform(platform) {
         if (dependencies.has(name)) return dependencies.get(name);
         throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Cipher dependency ' + name);
     }, primordials, name => name === 'crypto' ? binding :
-        name === 'constants' ? { crypto: call('constants') } : undefined);
+        name === 'constants' ? platform.constants : undefined);
     const { Cipheriv, Decipheriv, getCipherInfo, publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt } = module.exports;
     /* NODE_CIPHER_CREATORS */
     // Fetch a fresh provider list and apply the unchanged target duplicate/

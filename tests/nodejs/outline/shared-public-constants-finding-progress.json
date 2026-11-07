@@ -1,0 +1,128 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/values.md",
+    "findingIds": [
+      "V-012"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/values-legacy-modules.md": [
+        "V-026"
+      ]
+    },
+    "relatedFamilies": [
+      "values",
+      "processes",
+      "crypto",
+      "secure-network",
+      "loading",
+      "engine"
+    ],
+    "scope": "Actual conditional OS/crypto constants, public load-order/identity/cache and distinct legacy aggregate; no operation capability, TLS policy or guest closure. V-024 already fixed186."
+  },
+  "sourceImplemented": [
+    "Complete pinned conditional OS/crypto definitions over actual SDK/OpenSSL headers with real macro hygiene, no host numeric capture",
+    "One environment-owned binding reuses actual FS/signals and feeds OS/key/cipher consumers",
+    "Genuine existing crypto API receives pinned constants/defaultCipherList descriptor/accessor lazily on actual public initialization",
+    "Unchanged legacy aggregation and pinned loaded/loading/retry/reentry/moduleLoadList own distinct frozen exports",
+    "Real TLS-cipher-list default/string CLI/environment state and publication via narrow0140, not claimed as TLS policy",
+    "Preserve191 direct read Promise/variadic OS dispatch, prior FFI/spawn/sys source and normal generation/input ownership",
+    "Correct stale native-dependent key/cipher fixtures to preserve genuine native Errors without assertion changes; retain all earlier outcomes and explicit lost-original-report limitation"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-constants192-source-r1/report.json",
+    "sha256": "57c9945686c6cf419c8ef669af8dad82ef83f90094ea98275f0b525877329ee7",
+    "guardedInputs": 856,
+    "scope": "Actual shared header-derived OS/crypto constants, real public lazy crypto/legacy init/cache/CLI state; scoped native/component controls and unchanged aggregate file, no guest JSAPI/TLS-policy/fourhost closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-constants192-affected-post-fixture-r3.json",
+    "sha256": "f83e63b5c49c16f6b256887c8632704f02c4d8926bcb8d3a47fe7e101a8a0d2a",
+    "passed": 39,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false,
+    "scope": "39existing scoped checks:14package-source,20key and5cipher, original assertions retained; actual native error boundary correction, no global product setup or guest proof."
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-constants192-source-r1/report.json",
+    "sha256": "57c9945686c6cf419c8ef669af8dad82ef83f90094ea98275f0b525877329ee7",
+    "pairedConstantModuleGroups": 12,
+    "keyAndForwardingGroups": 4,
+    "rsaConsumerGroups": 71,
+    "cliParserPairs": 11,
+    "wholeUnchangedUpstreamFiles": 1,
+    "subjectsPerFile": 2,
+    "affectedChecksPassed": 39,
+    "rawHeaderMatchesIdentifiedCollector": true,
+    "normalCanonicalHeaderVerified": true,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "baselineComparison": {
+      "report": ".context/node26-constants192-source-r1/baseline-comparison.json",
+      "sha256": "700a5d57dba6db74796ff3bf1df32c82a7b4f52190291d5b4a89c461c25829b6"
+    },
+    "originalRawReportUnavailable": true,
+    "scope": "Actual current conditional/native module/consumer/CLI source over explicit native boundaries; original source191 baseline and separate exact pre-fix replay preserve11failed case statuses. Guest JSAPI/TLS policy/fourhost unvalidated."
+  },
+  "sealedEvidence": {
+    "report": ".context/public-constants-owner-agent/HANDOFF.json",
+    "sha256": "f7e23d9855ef0f1897ce0350b8c639ad553bb2e32d906decf33717310c523d2b",
+    "reusedEvidence": true,
+    "scope": "12paired/71RSA/4key/11CLI/unchanged aggregate/source checks; initial frozen-signals mismatch and missing12inputs retained;3host+2SDKsyntax compiler invocations. New JSAPI/guest/TLS policy open."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/public-constants-owner-agent/evidence/controls-r1/report.json",
+      "sha256": "95f206f761e0f666d8e49ea599b531f3bbad3a123b19dddfda5f189c206be38c",
+      "kind": "frozen-native-signal-setup-nonpass",
+      "reason": "Initial11pass/1candidate setup failure; both sides now load OS and retain actual frozen signals, assertions unchanged."
+    },
+    {
+      "report": ".context/public-constants-owner-agent/preflights.json",
+      "sha256": "b6074e7e7e83ee3db8b5778953ee66301a9a6de469c5be045922373f8d87e64e",
+      "kind": "private-missing12-declared-inputs",
+      "reason": "Initial source preflight fails exactly2producer/adapter+10reference inputs; actual declarations supplied at root."
+    },
+    {
+      "report": ".context/node26-constants192-raw-vs-staged-header-r1.log",
+      "sha256": "888ca22b85b1db5f5da507b19804d61514d63819e35e6a5f94b5cdf27c34bb26",
+      "kind": "raw-vs-normal-staged-header-guard",
+      "reason": "Root compared raw generator output to correctly sorted normal stage; now exact raw input and unchanged canonical sorter are independently verified."
+    },
+    {
+      "report": ".context/node26-constants192-before-results.json",
+      "sha256": "5df5c596f40b00c5f36db6d12903049bdf7509ad2500594b2f04b4ab783a2019",
+      "kind": "source191-native-error-fixture-nonpasses",
+      "reason": "Exact unchanged25key/cipher cases yield14pass/11fail; stale plain-record error boundary, not a new constants regression."
+    },
+    {
+      "report": ".context/node26-constants192-fixture-before-replay-results.json",
+      "sha256": "b8b0d38c3cc3ad851850b6679a269f8b617dc705669e4f05f5c6c32f1c4de206",
+      "kind": "separate-source192-pre-fixture-replay-nonpasses",
+      "reason": "Fresh exact consumed-source replay independently reproduces14pass11fail; not relabeled the initial overwritten source192 run."
+    },
+    {
+      "report": ".context/node26-constants192-source-r1/report-overwrite-journal.json",
+      "sha256": "792f314fb44a7ee5a09becc5fd790b13255c3f7acfe164bd3660e71703028f48",
+      "kind": "initial-broad-report-overwritten",
+      "reason": "Fixed output name reused by successful rerun; original source192 full raw JSON unavailable. Original outcome/case statuses, full source191 baseline and separately identified replay retained transparently."
+    }
+  ],
+  "remaining": [
+    "Compile actual native OS allocation/property and engine CLI publication; actual guest/realm/GC/header applicability and all-four-host conformance",
+    "Real TLS defaults and SSL_CTX split-cipher/protocol/option consumer; CLI value is not handshake-policy proof",
+    "Full crypto operations/providers/STORE/keygen/one-shot/permissions and OS measurements/metadata remain separate gaps",
+    "Actual guest ESM imports/module cache/lifecycle and full warning/error behavior; native VM/Error boundary does not validate SM renderer",
+    "Initial broad raw-report loss remains an evidence limitation; new replay is not the original run",
+    "No constant presence/native count/platform identity may be used to manufacture operation support or closure"
+  ],
+  "at": "2026-11-07T07:03:51.890179+00:00",
+  "recipeRevision": 192,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

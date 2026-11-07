@@ -1934,19 +1934,12 @@ const fs = (() => {
 // os module (Node.js)
 // ============================================================
 
-// OS constants remain a separately audited partial owner. The public
-// methods below install the actual pinned frontend after shared errors/codecs.
-const nodeOs = {
-        constants: {
-            signals: _nodeNative.signalOperation('constants'),
-            errno: {
-                EPERM: 1, ENOENT: 2, ESRCH: 3, EINTR: 4,
-                EIO: 5, EBADF: 9, EAGAIN: 11, ENOMEM: 12,
-                EACCES: 13, EEXIST: 17, ENOTDIR: 20, EISDIR: 21,
-                EINVAL: 22,
-            },
-        },
-};
+// One environment-owned native binding supplies every OS errno/priority/dlopen
+// and crypto constant consumer. FS and signals retain their real existing bags.
+const _nodeConstantResult = _nodeNative.operatingSystem('constants', fs.constants, _nodeNative.signalOperation('constants'));
+if (_nodeConstantResult.error !== 0) throw new Error('Native constants initialization failed: ' + _nodeConstantResult.error);
+const _nodeConstantBinding = _nodeConstantResult.value;
+const nodeOs = { constants: _nodeConstantBinding.os };
 
 // ============================================================
 // util module
@@ -3466,6 +3459,7 @@ Object.assign(crypto, _createNodeCryptoDigest({
 }));
 const _nodeKeyURLHref = Object.getOwnPropertyDescriptor(_nodeWebPlatform.URL.prototype, 'href').get;
 const _nodeCryptoKeys = _createNodeCryptoKeys({
+    constants: _nodeConstantBinding,
     getX509: () => _nodeX509,
     native: _nodeNative, values: _nodeValues, Buffer, types: util.types,
     codecs: _nodeBufferCodecs, inspection: _nodeInspection, digestHelpers: _nodeDigestHelpers,
@@ -3490,6 +3484,7 @@ const _nodeIncrementalCrypto = _createNodeIncrementalCrypto({
 });
 Object.assign(crypto, _nodeIncrementalCrypto.api);
 Object.assign(crypto, _createNodeCipherPlatform({
+    constants: _nodeConstantBinding,
     native: _nodeNative, values: _nodeValues, keys: _nodeCryptoKeys,
     streams: _nodeStreamPlatform, types: util.types, codecs: _nodeBufferCodecs,
     digestHelpers: _nodeDigestHelpers, stringDecoder: string_decoder,
@@ -5126,6 +5121,12 @@ const _nodeSys = _createNodeSysPlatform({
     require: id => _builtinModules[id],
     compileSource: (source, filename) => _nodeNative.evalScriptAsFunction(source, filename, 1),
 });
+const _nodePublicConstants = _createNodePublicConstantModules({
+    process, values: _nodeValues, binding: _nodeConstantBinding, crypto,
+    cliOptions: _nodeNative.cliOptions,
+    require: id => _builtinModules[id],
+    compileSource: (source, filename) => _nodeNative.evalScriptAsFunction(source, filename, 1),
+});
 let _nodeDomain, _nodeFfi;
 const _builtinModules = {
     'path': path,
@@ -5148,7 +5149,7 @@ const _builtinModules = {
     // Standalone protocol settings only; session/stream/server owners remain gaps.
     'http2': _nodeHttp2Settings,
     'child_process': child_process,
-    'crypto': crypto,
+    get crypto() { return _nodePublicConstants.load('crypto'); },
     'net': net,
     'tls': tls,
     'http': http,
@@ -5163,7 +5164,7 @@ const _builtinModules = {
         WriteStream: class WriteStream extends stream.Writable {},
     },
     'module': null, // set below
-    'constants': fs.constants,
+    get constants() { return _nodePublicConstants.load('constants'); },
     get punycode() { return _nodeQueryCodecs.require('punycode'); },
     'dns': _nodeDnsPlatform.api,
     'dgram': _nodeDatagram.api,

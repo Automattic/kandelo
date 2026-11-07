@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "ec8a09b78521b1c5dac0371a54aec53e50eea208daa1f4e5001f915086192212",
+    "packages/registry/node-compat/bootstrap.js": "1de650648c82f6a71e3c2ef09d8debeecbc27be560d35ce66d758702d386ce9e",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
@@ -18,7 +18,7 @@
     "third_party/node-core/buffer-numeric-adapter.js": "effd6c36613a73490521cdd7e2ee80057800174d8677af9c7278a78e28416ecd",
     "third_party/node-core/buffer-unpooled-adapter.js": "6a56f8b03503e94e2299bfda6b90eaf8225639d5786c455ff47ea0d2a7461272",
     "third_party/node-core/builtin-policy-adapter.js": "eb9fe694745a467f0c8770c60cc4cad0610a558bdc7fc6334399c47edd82d550",
-    "third_party/node-core/cipher-platform-adapter.js": "cae4d8cf5d3209dbeab591ca722a80a65da451ab6f541a18d3c0b34f811e03b6",
+    "third_party/node-core/cipher-platform-adapter.js": "c57ec4209b09e29127902d76d494447181098b8d47ea380d04c89ea7e9ae88b1",
     "third_party/node-core/clone-platform-adapter.js": "3885c8d5adb151cb2d8ab48a2a1bd5ffd135db4f63e4151bb41d178b56e6efc0",
     "third_party/node-core/compression-binding-adapter.js": "3bc33adbddf590f5fe39961e34a30be294ed0e1f2a50ac133336d4475d5385b2",
     "third_party/node-core/console-platform-adapter.js": "1526ef0902131023edbd806983e3c8565155dd20b8a27a803cd2dde6b731ebe0",
@@ -64,7 +64,7 @@
     "third_party/node-core/incremental-crypto-adapter.js": "de8d3498d03635694120adefadba9d2929cb002192a3ee5a14014e435d8109e8",
     "third_party/node-core/inspection-adapter.js": "c090c337276d93d5dc4762c932666ed18232400904d331bb3444a3b28a9b6eb7",
     "third_party/node-core/kdf-platform-adapter.js": "eb3545cf338837c65daea74d6c52c127c35ef6bfffb09a2a0424ae1c59758ea5",
-    "third_party/node-core/keys-platform-adapter.js": "b821ac8ed1c1400c34baffd6e6dbeb40d51c23766a178abe0fcaae70534968ef",
+    "third_party/node-core/keys-platform-adapter.js": "4e48da8c048f97e4bdaa528bf26affd305a926c4bcaefda585e08aa93ddcecca",
     "third_party/node-core/locks-platform-adapter.js": "cd26661d86138bb1b6db799eda051f544176fb8cc28bac63d5fd564a0076b532",
     "third_party/node-core/module-hooks-platform-adapter.js": "a241506687a307fa48c26de60502b1c53fba0490ffae6394e7a8bac95a900e6d",
     "third_party/node-core/module-record-platform-adapter.js": "32fa5db00fcc0979d57c67b3d460ad002cdb7fa8f63f8cc9163ecc6c36ce4e57",
@@ -85,6 +85,7 @@
     "third_party/node-core/process-signals-platform-adapter.js": "f1e3e1dcfbb46b6b0f38638eb9e6390d19023b808238a68dcee8086bc5eeb521",
     "third_party/node-core/process-state-adapter.js": "44aaeb3cb8504ff1f7c7fcf94954d9874e283df6668bc75ebcc78dd7414d8792",
     "third_party/node-core/process-usage-adapter.js": "ad4a506a23019556ac4557a8198c4f0f03e6e360490a2cc82124b577361a22ae",
+    "third_party/node-core/public-constants-platform-adapter.js": "7d315012a7d2ebe3d5857375f1b07fcef74cd4933d11fe3453bc7198e4c36df0",
     "third_party/node-core/query-codecs-platform-adapter.js": "38065f1cb667ab06a30f3a337ad8fbb771882ae28b2b233def2e1705c90a9766",
     "third_party/node-core/readdir-platform-adapter.js": "8e2b2ee29161ef7d4182e501a03eae3631d457bbeae87a6f777cdedc468925cf",
     "third_party/node-core/readline-platform-adapter.js": "d57d4c2fd7f188398987ce21e8591458714c5ac5d7e42c1ecc184e8d909000ae",
@@ -2386,7 +2387,7 @@
       "selectedAdapterLiteralOccurrences": [
         {
           "path": "packages/registry/node-compat/bootstrap.js",
-          "line": 2929
+          "line": 2922
         }
       ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",

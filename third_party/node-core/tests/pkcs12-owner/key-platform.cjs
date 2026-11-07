@@ -86,7 +86,7 @@ exports.create = function create(options = {}) {
     }
   } };
   const url = require('internal/url');
-  const keys = factories.keys({ values, Buffer: storage.Buffer, types: util.types,
+  const keys = factories.keys({constants:{crypto:require('node:crypto').constants},  values, Buffer: storage.Buffer, types: util.types,
     native, getX509: getX509 = () => x509 ||= factories.x509({
       keys, values, Buffer: storage.Buffer, types: util.types, inspection, codecs: storage.codecs,
       native: { x509Operation(name, ...args) {

@@ -1,0 +1,39 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -11559,6 +11559,7 @@
+   bool traceWarnings = false;
+   std::string redirectWarnings;
+   std::string diagnosticDir;
++  std::string tlsCipherList = kandelo::node_constants::DefaultCipherList();
+   std::vector<std::string> disableWarnings;
+   bool testUpdateSnapshots = false;
+   bool experimentalTestModuleMocks = false;
+@@ -11659,7 +11660,8 @@
+   const auto name = KandeloNodeOptionName(arg);
+   return name == "--conditions" || name == "-C" ||
+          name == "--experimental-package-map" || name == "--redirect-warnings" ||
+-         name == "--diagnostic-dir" || name == "--disable-warning";
++         name == "--diagnostic-dir" || name == "--disable-warning" ||
++         name == "--tls-cipher-list";
+ }
+
+ static void ApplyKandeloNodeStringOption(const std::string& arg,
+@@ -11673,6 +11675,8 @@
+     kandeloNodeCLI.diagnosticDir = value;
+   } else if (name == "--disable-warning") {
+     kandeloNodeCLI.disableWarnings.push_back(value);
++  } else if (name == "--tls-cipher-list") {
++    kandeloNodeCLI.tlsCipherList = value;
+   } else {
+     kandeloNodeCLI.packageMapPath = value;
+   }
+@@ -16611,7 +16615,8 @@
+     return text && JS_DefineProperty(cx, cli, name, text, 0);
+   };
+   if (!stringOption("redirectWarnings", kandeloNodeCLI.redirectWarnings) ||
+-      !stringOption("diagnosticDir", kandeloNodeCLI.diagnosticDir)) return false;
++      !stringOption("diagnosticDir", kandeloNodeCLI.diagnosticDir) ||
++      !stringOption("tlsCipherList", kandeloNodeCLI.tlsCipherList)) return false;
+   RootedObject disabled(cx, JS::NewArrayObject(cx, 0));
+   if (!disabled) return false;
+   uint32_t index = 0;

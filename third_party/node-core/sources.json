@@ -5864,5 +5864,133 @@
         "sha256": "20586a04eb8f2f144c44b8b0877267ad4dba3c26dd9944961e6055fe9b2c1740"
       }
     }
+  },
+  "publicConstants": {
+    "sources": {
+      "src/node_constants.cc": {
+        "path": "upstream/public-constants/src/node_constants.cc",
+        "upstreamPath": "src/node_constants.cc",
+        "sha256": "9e22dc6f106498895367e01bc02e00b3cedb8beef004b8b11f62f4a961a6891c"
+      },
+      "src/node_constants.h": {
+        "path": "upstream/public-constants/src/node_constants.h",
+        "upstreamPath": "src/node_constants.h",
+        "sha256": "2d6ad6acdba0376bf8286eb3ebd03fd3706bd7fd78f799527fa4ecaca216cec8"
+      },
+      "src/node.h": {
+        "path": "upstream/public-constants/src/node.h",
+        "upstreamPath": "src/node.h",
+        "sha256": "83185475268b1b2d9f5ffdbec1bb2062ebe70674869dde96fe6cd526dc9b2a79"
+      },
+      "src/util.h": {
+        "path": "upstream/public-constants/src/util.h",
+        "upstreamPath": "src/util.h",
+        "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
+      },
+      "deps/uv/include/uv.h": {
+        "path": "upstream/public-constants/deps/uv/include/uv.h",
+        "upstreamPath": "deps/uv/include/uv.h",
+        "sha256": "bb9ed99b80cd22c58361bffdfbb2aa7029ce0391cde616745c0072a6f3c03219"
+      },
+      "lib/constants.js": {
+        "path": "upstream/public-constants/lib/constants.js",
+        "upstreamPath": "lib/constants.js",
+        "sha256": "91c9af0602f8f474055e7d87d3138daa18d0cd2912c93940687d9db0af696f9a"
+      },
+      "lib/crypto.js": {
+        "path": "upstream/public-constants/lib/crypto.js",
+        "upstreamPath": "lib/crypto.js",
+        "sha256": "2624db34b212d51f1410a9ff8720abd2f28298ead04c388135d36228d9910f2d"
+      },
+      "src/node_options.cc": {
+        "path": "upstream/public-constants/src/node_options.cc",
+        "upstreamPath": "src/node_options.cc",
+        "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279"
+      },
+      "src/node_options.h": {
+        "path": "upstream/public-constants/src/node_options.h",
+        "upstreamPath": "src/node_options.h",
+        "sha256": "4241ccbfddad1f227888204f998427fa79e8c8332e9ea3f19b93b7a433ea3046"
+      },
+      "lib/internal/bootstrap/realm.js": {
+        "path": "upstream/public-constants/lib/internal/bootstrap/realm.js",
+        "upstreamPath": "lib/internal/bootstrap/realm.js",
+        "sha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b"
+      }
+    },
+    "selections": {
+      "errno": {
+        "source": "src/node_constants.cc",
+        "start": "void DefineErrnoConstants(Local<Object> target) {",
+        "length": 5161,
+        "sha256": "171f15466ddfd2ba2f589f9fed2bc655f1a7c17a82342a271b656059e1e05f81"
+      },
+      "windowserror": {
+        "source": "src/node_constants.cc",
+        "start": "void DefineWindowsErrorConstants(Local<Object> target) {",
+        "length": 4476,
+        "sha256": "afe4cdad07105b76d2ef4a9dd40f5b736d96a70faf7759a1f63e1321263f1c9b"
+      },
+      "priority": {
+        "source": "src/node_constants.cc",
+        "start": "void DefinePriorityConstants(Local<Object> target) {",
+        "length": 1000,
+        "sha256": "a854a32ba7e041011b835e1251d542ac803943b74cff9651009cb246ae51ac45"
+      },
+      "crypto": {
+        "source": "src/node_constants.cc",
+        "start": "void DefineCryptoConstants(Local<Object> target) {",
+        "length": 5447,
+        "sha256": "f36e72604899114cd60f6d544cef8ab79d63b05154dda52bc8d281e49f3efd8f"
+      },
+      "dlopen": {
+        "source": "src/node_constants.cc",
+        "start": "void DefineDLOpenConstants(Local<Object> target) {",
+        "length": 404,
+        "sha256": "4143be027b24c5b2c5e0e97ac1f6a27492fb96efcbcbd0735bf172ea30e4a175"
+      },
+      "cryptoPreamble": {
+        "source": "src/node_constants.cc",
+        "start": "#if HAVE_OPENSSL\n#include <openssl/ec.h>",
+        "length": 1874,
+        "sha256": "14ce233a092aca74303670fee128a70d1cbcbc12d0a224d99b28aa41081f39e6"
+      },
+      "cryptoHeader": {
+        "source": "src/node_constants.h",
+        "start": "#if HAVE_OPENSSL\n\n#ifndef RSA_PSS_SALTLEN_DIGEST",
+        "length": 2260,
+        "sha256": "aa35953578382b67562ad7f42ab870483b8f3e84259d55d50330ceb120bd4fca"
+      },
+      "priorities": {
+        "source": "deps/uv/include/uv.h",
+        "start": "#if defined(__PASE__)\n/* On IBM i PASE",
+        "length": 608,
+        "sha256": "de9be1ee72eeecafccfeed041d9a15952786bb71dbf36dddcd8d3085e03f283a"
+      },
+      "udpEnum": {
+        "source": "deps/uv/include/uv.h",
+        "start": "enum uv_udp_flags {",
+        "length": 2410,
+        "sha256": "d5e5067ff37eed60d8542a46f8b3b7453d0e92efba0b0e969e1de075c6f8a7fa"
+      },
+      "defaultCipherAccessor": {
+        "source": "lib/crypto.js",
+        "start": "ObjectDefineProperty(constants, 'defaultCipherList', {",
+        "length": 570,
+        "sha256": "ed18b9f4daecc7b5f70d9eb4b3ec6611b66cdbfa410ae698bad31134eb56eaea"
+      },
+      "publicCryptoConstants": {
+        "source": "lib/crypto.js",
+        "start": "  constants: {",
+        "length": 109,
+        "sha256": "40963fd8460b942af6cfad4af3ecfc0a606678c232925014a4f252d55e2ea732"
+      },
+      "compileForInternalLoader": {
+        "source": "lib/internal/bootstrap/realm.js",
+        "start": "  compileForInternalLoader() {",
+        "length": 824,
+        "sha256": "20586a04eb8f2f144c44b8b0877267ad4dba3c26dd9944961e6055fe9b2c1740"
+      }
+    }
   }
 }

@@ -31,6 +31,6 @@ exports.create=function(){
   for(const n of [1,4,6,9])if(util.types.isSharedArrayBuffer(args[n]))args[n]=new Uint8Array(args[n]);
   return component.operation(...args);
  }
- const api=factories.cipher({native:{cipherOperation:nativeOperation},values,codecs:storage.codecs,types:util.types,keys:require('internal/crypto/keys'),digestHelpers:helpers,kHandle:Symbol('kHandle'),stringDecoder:require('node:string_decoder'),streams:{require:require}});
+ const api=factories.cipher({constants:{crypto:require('node:crypto').constants}, native:{cipherOperation:nativeOperation},values,codecs:storage.codecs,types:util.types,keys:require('internal/crypto/keys'),digestHelpers:helpers,kHandle:Symbol('kHandle'),stringDecoder:require('node:string_decoder'),streams:{require:require}});
  return{...api,Buffer:storage.Buffer};
 };

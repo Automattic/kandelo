@@ -1,7 +1,9 @@
 /* Actual POSIX OS state. Resource/CPU/interface measurement has no fake path. */
 #include "kandelo-node-os-operations.h"
 #include "kandelo-node-default-locale.h"
+#include "kandelo-node-public-constants.h"
 #include "js/LocaleSensitive.h"
+#include <type_traits>
 namespace {
 static bool KandeloOSBytes(JSContext* cx,const std::string& text,MutableHandleValue value) {
   RootedObject bytes(cx,KandeloNewUint8ArrayCopy(cx,
@@ -15,6 +17,44 @@ static bool KandeloOSResult(JSContext* cx,int status,HandleValue value,MutableHa
   if (!result || !JS_DefineProperty(cx,result,"error",error,JSPROP_ENUMERATE) ||
       !JS_DefineProperty(cx,result,"value",value,JSPROP_ENUMERATE)) return false;
   output.setObject(*result); return true;
+}
+// The result is consumed once by the environment's shared binding owner.
+// FS and signal objects are supplied by their existing actual owners in JS.
+static bool KandeloPublicConstants(JSContext* cx,HandleObject fs,HandleObject signals,MutableHandleValue output) {
+  RootedObject binding(cx,JS_NewObjectWithGivenProto(cx,nullptr,nullptr));
+  RootedObject os(cx,JS_NewObjectWithGivenProto(cx,nullptr,nullptr));
+  RootedObject errors(cx,JS_NewObjectWithGivenProto(cx,nullptr,nullptr));
+  RootedObject priority(cx,JS_NewObjectWithGivenProto(cx,nullptr,nullptr));
+  RootedObject dlopen(cx,JS_NewObjectWithGivenProto(cx,nullptr,nullptr));
+  RootedObject crypto(cx,JS_NewObjectWithGivenProto(cx,nullptr,nullptr));
+  if(!binding || !os || !errors || !priority || !dlopen || !crypto)return false;
+  constexpr unsigned attributes=JSPROP_ENUMERATE|JSPROP_READONLY|JSPROP_PERMANENT;
+  auto numeric=[&](HandleObject object){
+    return [&,object](const char* name,double number){
+      return JS_DefineProperty(cx,object,name,number,attributes);
+    };
+  };
+  auto cryptoDefine=[&](const char* name,auto value){
+    if constexpr(std::is_same_v<decltype(value),double>)
+      return JS_DefineProperty(cx,crypto,name,value,attributes);
+    else {
+      RootedString string(cx,JS_NewStringCopyZ(cx,value));
+      return string && JS_DefineProperty(cx,crypto,name,string,attributes);
+    }
+  };
+  using namespace kandelo::node_constants;
+  if(!DefineErrnoConstants(numeric(errors)) || !DefineWindowsErrorConstants(numeric(errors)) ||
+      !DefinePriorityConstants(numeric(priority)) || !DefineDLOpenConstants(numeric(dlopen)) ||
+      !DefineCryptoConstants(cryptoDefine) ||
+      !JS_DefineProperty(cx,os,"UV_UDP_REUSEADDR",int(kandelo::node_constants::uv::UV_UDP_REUSEADDR),attributes) ||
+      !JS_DefineProperty(cx,os,"dlopen",dlopen,JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx,os,"errno",errors,JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx,os,"signals",signals,JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx,os,"priority",priority,JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx,binding,"os",os,JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx,binding,"fs",fs,JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx,binding,"crypto",crypto,JSPROP_ENUMERATE))return false;
+  output.setObject(*binding);return true;
 }
 static bool KandeloNativeOS(JSContext* cx,unsigned argc,Value* vp) {
   CallArgs args = CallArgsFromVp(argc,vp);
@@ -30,7 +70,13 @@ static bool KandeloNativeOS(JSContext* cx,unsigned argc,Value* vp) {
   if (strcmp(name, "tty-input-read") == 0) {
     return KandeloTerminalDispatch(cx, args, name, args.rval(), &error);
   }
-  if (strncmp(name, "tty-", 4) == 0) {
+  if (strcmp(name,"constants") == 0) {
+    if(!args.get(1).isObject() || !args.get(2).isObject()) {
+      JS_ReportErrorASCII(cx,"Constants require the real FS and signal bags");return false;
+    }
+    RootedObject fs(cx,&args[1].toObject()),signals(cx,&args[2].toObject());
+    if(!KandeloPublicConstants(cx,fs,signals,&value))return false;
+  } else if (strncmp(name, "tty-", 4) == 0) {
     if (!KandeloTerminalDispatch(cx, args, name, &value, &error)) return false;
   } else if (strcmp(name,"info") == 0) {
     const auto result = kandelo::node_os::Information(); error = result.error;

@@ -34,13 +34,14 @@ exports.create = function create() {
       }
       return { value, error: undefined };
     } catch (error) {
-      const record = { message: error.message };
-      for (const field of ['code', 'library', 'reason', 'opensslErrorStack'])
-        if (Object.hasOwn(error, field)) record[field] = error[field];
-      return { error: record };
+      // Current native owners carry genuine Error objects, not flattened
+      // records. Preserve the native value/identity and inherited metadata.
+      // Undefined cannot be represented by the packet's no-error marker.
+      if (error === undefined) throw error;
+      return { error, value: undefined };
     }
   } };
-  const api = factories.cipher({ native, values, codecs: storage.codecs, types: util.types,
+  const api = factories.cipher({constants:{crypto:require('node:crypto').constants},  native, values, codecs: storage.codecs, types: util.types,
     keys: require('internal/crypto/keys'), digestHelpers: helpers, kHandle: Symbol('kHandle'),
     stringDecoder: require('node:string_decoder'), streams: { require(name) {
       if (name !== 'internal/streams/lazy_transform') throw Error(name);

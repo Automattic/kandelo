@@ -36,7 +36,7 @@ SHELL_HEADERS = (
     'kandelo-node-child-wait.h', 'kandelo-node-dns-lookup.h',
     'kandelo-node-fs-constants.h', 'kandelo-node-monotonic-clock.h',
     'kandelo-node-performance-clock.h', 'kandelo-node-process-state.h',
-    'kandelo-node-uv-error-table.h',
+    'kandelo-node-uv-error-table.h', 'kandelo-node-public-constants.h',
 )
 
 INCLUDE = re.compile(r'^#include ([<"])([^>"\n]+)[>"]\n', re.M)

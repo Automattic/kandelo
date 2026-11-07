@@ -95,7 +95,7 @@ function _createNodeCryptoKeys(platform) {
         modules.set(name, module);
         factories[name](module, module.exports, require, primordials, name => {
             if (name === 'crypto') return binding;
-            if (name === 'constants') return { crypto: binding };
+            if (name === 'constants') return platform.constants;
             throw new ERR_METHOD_NOT_IMPLEMENTED('Key binding ' + name);
         });
         return module.exports;

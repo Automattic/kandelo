@@ -1937,6 +1937,21 @@ for marker, key in [('/* NODE_BUILTIN_POLICY */', 'builtinPolicy'), ('/* NODE_GE
     policy_platform = policy_platform.replace(marker, (root / manifest[key]['path']).read_text())
 bundle += policy_platform + '\n'
 
+public_constants_spec = manifest['publicConstants']
+for name in public_constants_spec['sources']:
+    selected_platform_source(public_constants_spec, name)
+constant_adapter = (root / 'public-constants-platform-adapter.js').read_text()
+for marker, text in {
+    '/* NODE_LEGACY_CONSTANTS_SOURCE */': json.dumps(selected_platform_source(public_constants_spec, 'lib/constants.js')),
+    '/* NODE_CRYPTO_DEFAULT_CIPHER */': selected_platform_section(public_constants_spec, 'defaultCipherAccessor'),
+    '/* NODE_CRYPTO_CONSTANTS_PROPERTY */': selected_platform_section(public_constants_spec, 'publicCryptoConstants'),
+    '/* NODE_CONSTANTS_COMPILE */': selected_platform_section(public_constants_spec, 'compileForInternalLoader'),
+}.items():
+    if constant_adapter.count(marker) != 1:
+        raise ValueError('Public constants module marker mismatch: ' + marker)
+    constant_adapter = constant_adapter.replace(marker, text)
+bundle += constant_adapter + '\n'
+
 sys_spec = manifest['sysPlatform']
 for name in sys_spec['sources']:
     selected_platform_source(sys_spec, name)

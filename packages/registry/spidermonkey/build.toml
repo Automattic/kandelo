@@ -1,5 +1,9 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/generate-public-constants.py",
+  "third_party/node-core/public-constants-platform-adapter.js",
+  "third_party/node-core/upstream/public-constants",
+  "packages/registry/spidermonkey/patches/0140-node-public-constants-cli.patch",
   "packages/registry/spidermonkey/patches/0139-node-captured-tty-input.patch",
   "packages/registry/spidermonkey/patches/0138-node-pipe-own-publication.patch",
   "third_party/node-core/sys-platform-adapter.js",
@@ -675,4 +679,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 191
+revision = 192

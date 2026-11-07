@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source192 integrates actual conditional shared OS/crypto constants, pinned public initialization/legacy aggregation and real CLI state.12paired groups,71RSA/4key consumers,11CLI pairs, unchanged constants test and39scoped checks pass. New JSAPI/TLS policy/guest/four-host conformance remains open.
+See [source scope](shared-public-constants-integration.md).
+
 Source191 integrates real captured terminal input/OFD/request ownership and the consumed OS forwarding correction. Fourteen actual native PTY ownership checks,2forwarding groups and18scoped package/fd-stream checks pass; exact prior matched mode evidence preserves9literal nonpasses and the original abort. Guest/public TTY/four-host conformance remains open.
 See [source scope](captured-terminal-input-integration.md).
 

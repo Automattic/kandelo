@@ -67,17 +67,15 @@ exports.create = function create(options = {}) {
       }
       return { value, error: undefined };
     } catch (error) {
-      // Getter exceptions propagate directly through the guest JSAPI owner.
-      if (!error || !Object.hasOwn(error, 'code')) throw error;
-      // Match the guest native error packet: constructor names are not carried.
-      const record = { message: error.message };
-      for (const key of ['code', 'library', 'reason', 'opensslErrorStack'])
-        if (Object.hasOwn(error, key)) record[key] = error[key];
-      return { error: record, value: undefined };
+      // Current native owners carry genuine Error objects, not flattened
+      // records. Preserve the native value/identity and inherited metadata.
+      // Undefined cannot be represented by the packet's no-error marker.
+      if (error === undefined) throw error;
+      return { error, value: undefined };
     }
   } };
   const url = require('internal/url');
-  const keys = factories.keys({ values, Buffer: storage.Buffer, types: util.types,
+  const keys = factories.keys({constants:{crypto:require('node:crypto').constants},  values, Buffer: storage.Buffer, types: util.types,
     native, codecs: options.forbidJwkCodecCallbacks ? new Proxy(storage.codecs, {
       get(target, key) {
         if (key === 'fromString' || key === 'decodeBytes')

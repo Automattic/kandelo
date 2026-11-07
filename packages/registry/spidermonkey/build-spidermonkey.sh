@@ -413,6 +413,8 @@ cp "$REPO_ROOT/third_party/node-core/removal-operations.h" "$SRC_DIR/js/src/shel
 cp "$REPO_ROOT/third_party/node-core/directory-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-directory-operations.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-fs-constants.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-fs-constants.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-public-constants.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-public-constants.h"
 
 cp "$REPO_ROOT/third_party/node-core/readdir-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-readdir-operations.h"
 cp "$REPO_ROOT/third_party/node-core/dir-cursor.h" "$SRC_DIR/js/src/shell/kandelo-node-dir-cursor.h"
