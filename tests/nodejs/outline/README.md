@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+The normal selected199engine build failed at native compilation after6m36s, with all frozen source identities unchanged. Source200 fixes the actual Root/namespace/FFI API errors;9current portable groups and25affected checks pass. Complete200engine/guest acceptance remains pending.
+See [source scope](native-bridge-compilation-integration.md).
+
 Source199 integrates actual Zstd pledged-size numeric/typed-error policy.52focused groups, one complete unchanged upstream file per subject and19affected checks pass; four original fixture aborts remain nonpasses. Current guest/four-host conformance is unestablished.
 See [source scope](zstd-pledged-size-integration.md).
 

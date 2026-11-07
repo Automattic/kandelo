@@ -172,11 +172,11 @@ static bool KandeloDefineFfi(JSContext* cx, HandleObject native) {
     JS_FN("getSymbols", KandeloFfiSymbols, 0, JSPROP_ENUMERATE),
     JS_FN("close", KandeloFfiClose, 0, JSPROP_ENUMERATE), JS_FS_END
   };
-  RootedObject prototype(cx, JS_InitClass(cx, native, nullptr, &KandeloFfiClass,
+  RootedObject prototype(cx, JS_InitClass(cx, native, &KandeloFfiClass, nullptr, "DynamicLibrary",
       KandeloFfiNew, 0, nullptr, methods, nullptr, nullptr));
   if (!prototype) return false;
   RootedValue close(cx);
-  RootedId dispose(cx, SYMBOL_TO_JSID(JS::GetWellKnownSymbol(cx, JS::SymbolCode::dispose)));
+  RootedId dispose(cx, JS::PropertyKey::Symbol(JS::GetWellKnownSymbol(cx, JS::SymbolCode::dispose)));
   return JS_GetProperty(cx, prototype, "close", &close) &&
       JS_DefinePropertyById(cx, prototype, dispose, close, JSPROP_ENUMERATE);
 }

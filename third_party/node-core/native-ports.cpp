@@ -207,7 +207,6 @@ struct KandeloPortHandle {
     else closeRoot = nullptr;
   }
 };
-namespace {
 using KandeloPortBinding = std::shared_ptr<KandeloPortHandle>;
 struct KandeloPortEnvironment {
   JS::PersistentRootedObject adopt;

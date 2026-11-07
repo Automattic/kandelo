@@ -1,0 +1,84 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-001"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/workers.md": [
+        "R-001",
+        "R-013"
+      ]
+    },
+    "relatedFamilies": [
+      "engine",
+      "native-integration",
+      "workers",
+      "streams"
+    ],
+    "scope": "Actual native bridge compile prerequisites for owning transit/FFI classes, not new public semantics or finding closure"
+  },
+  "sourceImplemented": [
+    "Transit Root exposes the dereference used by the actual destination-peer bridge without changing owner lifetime",
+    "Redundant second native-port anonymous namespace removed, restoring shared forward-declaration and global js::shell registry identity",
+    "DynamicLibrary uses actual140JS_InitClass parameter order/name and PropertyKey::Symbol; owner/access/prototype alias checks preserved",
+    "Actual failed normal engine attempt retained with preflight9nodes8cached, frozen source identities, raw compiler output and no cache promotion"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-compile200-source-r1/report.json",
+    "sha256": "4752eb7a41c6b60e9d5454d3ccf4a2ea375f7975eb1c4a198609d6c33d07d422",
+    "guardedInputs": 866,
+    "scope": "Actual engine199compile failure owner corrections, not workaround/access-check weakening. One current portable compile; complete200native bridge/guest/fourhost acceptance pending."
+  },
+  "packageChecks": {
+    "report": ".context/node26-compile200-affected-r1.json",
+    "sha256": "b168b541e8c1203dca98e43e23f6163f41d247273c0e3116807394cc4b7f7ab5",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-compile200-source-r1/report.json",
+    "sha256": "4752eb7a41c6b60e9d5454d3ccf4a2ea375f7975eb1c4a198609d6c33d07d422",
+    "portableGraphGroups": 9,
+    "publicationRaces": 100,
+    "newCompilerAttempts": 1,
+    "newCompilerFailures": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Actual current portable headers compiled; complete bridge native compilation retry pending, prior199engine failed"
+  },
+  "sealedEvidence": {
+    "report": ".context/node26-engine199-failed-r1/terminal.json",
+    "sha256": "411e6e0a2a3da1de85d7f76f855b073bf6b6ce9553260854796d6aaac4f23628",
+    "reusedEvidence": true,
+    "scope": "Actual normal engine199failure after6m36s,9node closure8cached, no changed frozen sources, no kernel/rootfs/app/fullproduct or overall suite; actual source work deleted by normal resolver after failure."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-engine199-failed-r1/output.log",
+      "sha256": "ff7e115d0640dfbd16f20c4262bd2e8813730f55a99acd6b3d7417c440843925",
+      "kind": "actual-selected-engine-native-compilation-failure",
+      "jobId": "node26-engine199-1107-032352-01c0",
+      "exit": 1,
+      "firstError": "Root<TransitEndpoint> lacks operator*",
+      "cascade": "Redundant native-port namespace leaks later js::shell declarations; real FFI API signature/macro mismatches also reported",
+      "compilerErrorLimitReached": true,
+      "reconstructedUnitNotClaimedAsRetainedCompilerFile": true
+    }
+  ],
+  "remaining": [
+    "Normal selected200engine compiler/link/cache acceptance; later diagnostics may expose further errors after prior compiler error limit",
+    "Actual owning transfer/FFI/VM/WASI/queue/byte/realm/GC/fatal/teardown behavior on identified artifacts across all four hosts",
+    "All previously retained core/family implementation gaps, native ALS/frame nonpass, skipped branches and historical host failures remain open"
+  ],
+  "at": "2026-11-07T08:47:04.068795+00:00",
+  "recipeRevision": 200,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

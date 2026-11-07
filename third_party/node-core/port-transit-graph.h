@@ -133,6 +133,7 @@ template<class T> class Root {
   explicit operator bool() const noexcept { return bool(value_); }
   T* get() const noexcept { return value_.get(); }
   T* operator->() const noexcept { return value_.get(); }
+  T& operator*() const noexcept { return *value_; }
   std::shared_ptr<T> Share() const noexcept { return value_; }
 };
 class Edge {
