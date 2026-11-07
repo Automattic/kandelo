@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T04:05:13.278730+00:00",
-  "sourceHead": "e9e3a7a21271677988043686651214e8775c151f",
-  "recipeRevision": 178,
+  "at": "2026-11-07T04:18:18.588925+00:00",
+  "sourceHead": "4ea5ff6ad5ce2ce4a71e31bd083c65be97859eb4",
+  "recipeRevision": 179,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 96,
+    "sourceSliceRecords": 97,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 257
+    "findingsWithoutExplicitOrProposedSourceSlice": 255
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,22 +26,21 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 96,
+  "sourceSliceIdentitiesVerified": 97,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "9e5f2e4a694c8f967e40769e73f3da43f2228cd41dc6924946344c9ef4562fcf"
+    "sha256": "f1537a4d01f37439e6747b784204afc3f06d93186b2b6157f98a32845e0ad718"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "f6dd01453fad30b281f5306682925965b9ec421cae277d365cfb63d3dd37aa79",
-    "sourceHead": "6b359387563aced534a3c2bb97bb05609ca8d50c",
+    "sha256": "d62be6b0860176114034c17ced6a0a9e3b6b943de37d6ea9faecc70d1a86a230",
+    "sourceHead": "e9e3a7a21271677988043686651214e8775c151f",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "net-server-receiver",
-    "domain-owner"
+    "wasi-owner"
   ]
 }

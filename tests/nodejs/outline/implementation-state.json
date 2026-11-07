@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T04:15:37.334623+00:00",
+  "updatedAt": "2026-11-07T04:18:18.588925+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "9e5f2e4a694c8f967e40769e73f3da43f2228cd41dc6924946344c9ef4562fcf",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "d62be6b0860176114034c17ced6a0a9e3b6b943de37d6ea9faecc70d1a86a230",
-    "tests/nodejs/outline/finding-ledger.md": "c48860fe0eae1012ae0aea7f375fe76f5f1c772c2fba317f2ca077381536d754",
+    "tests/nodejs/outline/finding-ledger.json": "f1537a4d01f37439e6747b784204afc3f06d93186b2b6157f98a32845e0ad718",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "ec9688542aa92df6bff959fa5812780ca60d4ba0f3bdfb95f2a5c3bd403dc471",
+    "tests/nodejs/outline/finding-ledger.md": "d62fe0edd3d0fc02bf3c92ee3dd9cba7e8e5a8165600a67b4c616b6e428a6842",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -6475,7 +6475,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Reconciled canonical finding navigation with two integrated source slices, preserving document-qualified definitions, exact nonpasses and unknown dispositions without API closure."
+    "reason": "Integrated real25import WASI/public lifecycle with actual curated native routing, exact source/engine composition and scoped current positive/nonpass controls; retained full missing-import/guestbackend/JSAPI obligations."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -42843,10 +42843,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/wasi-owner-20261107T041539Z.tar.gz",
-    "sha256": "9902c2962e97c5832f2e950aff1736078f4e4baac439a3f97295c2019d2e50ef",
-    "bytes": 46680817,
-    "scope": "179realboundedWASI/front/native/curatedrouting and identified focused evidence/nonpasses;21imports/directWasmconversion/guestbackend/JSAPI/fourhost unproven",
+    "path": ".context/node26-implementation-snapshots/finding-overlay179-20261107T041818Z.tar.gz",
+    "sha256": "97212a81a3b48e27c64e829d5dd121b4cd65e64c97d8bea437d30d9aa0d183d0",
+    "bytes": 10126601,
+    "scope": "Current179source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -46140,7 +46140,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real25import WASI/public lifecycle with actual curated native routing, exact source/engine composition and scoped current positive/nonpass controls; retained full missing-import/guestbackend/JSAPI obligations."
+    "reason": "Reconciled canonical finding navigation with integrated WASI source and scoped nonpass evidence, preserving document-qualified definitions, exact nonpasses and unknown dispositions without API closure."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -51828,6 +51828,13 @@
       "sha256": "232d24a3b82220a4e2d98152a4c09db962e49f33c3323a37a6781b355a61e12b",
       "bytes": 10189280,
       "scope": "Current178source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/wasi-owner-20261107T041539Z.tar.gz",
+      "sha256": "9902c2962e97c5832f2e950aff1736078f4e4baac439a3f97295c2019d2e50ef",
+      "bytes": 46680817,
+      "scope": "179realboundedWASI/front/native/curatedrouting and identified focused evidence/nonpasses;21imports/directWasmconversion/guestbackend/JSAPI/fourhost unproven",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -57653,7 +57660,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "93a0bcbfa0119e9a403975397c218d6eae1a1ea7",
+    "pushedThrough": "4ea5ff6ad5ce2ce4a71e31bd083c65be97859eb4",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -88461,22 +88468,22 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "9e5f2e4a694c8f967e40769e73f3da43f2228cd41dc6924946344c9ef4562fcf",
+    "sha256": "f1537a4d01f37439e6747b784204afc3f06d93186b2b6157f98a32845e0ad718",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "d62be6b0860176114034c17ced6a0a9e3b6b943de37d6ea9faecc70d1a86a230"
+      "sha256": "ec9688542aa92df6bff959fa5812780ca60d4ba0f3bdfb95f2a5c3bd403dc471"
     },
-    "sourceCheckpoint": 178,
+    "sourceCheckpoint": 179,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 96,
+      "sourceSliceRecords": 97,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
-      "findingsWithoutExplicitOrProposedSourceSlice": 257
+      "findingsWithoutExplicitOrProposedSourceSlice": 255
     },
     "individualApiClosure": false,
     "fourHostConformance": false
@@ -88893,6 +88900,28 @@
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 258
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "9e5f2e4a694c8f967e40769e73f3da43f2228cd41dc6924946344c9ef4562fcf",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "d62be6b0860176114034c17ced6a0a9e3b6b943de37d6ea9faecc70d1a86a230"
+      },
+      "sourceCheckpoint": 178,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 96,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 257
       },
       "individualApiClosure": false,
       "fourHostConformance": false

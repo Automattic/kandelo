@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 96 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 97 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 257 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 255 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -101,3 +101,17 @@ an implementation gap; no engine/platform exclusion has been approved.
 
 No finding/family is closed. Exact links describe scoped contributions;
 unknown dispositions and all retained failures remain visible.
+
+## Source179 progress overlay
+
+NI-003/NI-007 now link to the integrated unchanged public WASI lifecycle,
+25real POSIX-backed import owners, explicit production constructor routing,
+and identified portable/component evidence. Twenty-one imports remain
+missing. The strict direct-Wasm conversion assertion still fails28versus61.
+The configured guest engine has no WebAssembly execution backend; this is
+an implementation prerequisite, not an approved platform exclusion.
+
+Current179combined source has no accepted build or guest/four-host evidence.
+The native component uses identified host artifacts and host WebAssembly;
+it does not execute production SpiderMonkey JSAPI or supply a guest backend.
+The ledger closes no API/family findings and preserves all nonpasses.

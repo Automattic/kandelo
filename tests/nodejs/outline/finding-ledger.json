@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 96,
+    "sourceSliceRecords": 97,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 257
+    "findingsWithoutExplicitOrProposedSourceSlice": 255
   },
   "families": [
     {
@@ -755,7 +755,7 @@
         "NI-013",
         "NI-014"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 2,
+      "findingsWithExplicitOrProposedSourceSlices": 4,
       "sourceRouteAsRecorded": "SQLite scalar/aggregate/window registrations and GC-traced native callback/parent/accumulator owners compiled in113; real SQLite statement/iterator/column/limit/defensive/session/change-set and rooted synchronous callback owners, native virtual limits and actual activation; source154 actual statement close/dispose, executing-VM guards and reentrant-safe native retirement",
       "remainingAsRecorded": "Database disposal suppression/serialization and remaining Statement receiver/reset/iterator semantics; complete scalar/aggregate/window error/reentry/GC policy, authorizer/virtual-table callbacks; complete limits/reflection/storage/GC/realm/accounting, tag cache/backup/extensions, FFI/WASI/SEA/addons/embedding and ABI/loader",
       "remainingOwner": "Actual SQLite/FFI/WASI/SEA/Node-API/embedding native ABI and loader owners",
@@ -9246,7 +9246,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "WASI construction/imports/start/initialize/finalizeBindings",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "wasi-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Unchanged public WASI lifecycle and25real POSIX/native import source owners only; no complete import set/guest execution/numeric dispatch/API closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "public WASI instance/import/start/initialize owner over real guest WebAssembly/kernel imports",
@@ -9336,7 +9344,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Distinguish existing host WASI execution from Node WASI API",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "wasi-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Unchanged public WASI lifecycle and25real POSIX/native import source owners only; no complete import set/guest execution/numeric dispatch/API closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "public WASI instance/import/start/initialize owner over real guest WebAssembly/kernel imports",
@@ -18812,6 +18828,76 @@
       "rootOverlay": true,
       "auditDocument": "tests/nodejs/audit/async.md",
       "findingScope": "Complete public Domain algorithms plus bounded native invocation consumers, not all Domain/provider/Promise/GC/fatal obligations or finding closure"
+    },
+    "wasi-owner": {
+      "document": "tests/nodejs/outline/wasi-owner-finding-progress.json",
+      "sha256": "b5692317f27e88a9ee6dffe7aa1fd83b073c7997d1a3464a37f027286f4809b3",
+      "recordedRevision": 179,
+      "explicitFindingIds": [
+        "NI-003",
+        "NI-007"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-wasi179-source-r1/report.json",
+          "sha256": "14ec83b0049705161e270e6b47de2b0774a2425682bc2095abb3d1d985932650",
+          "guardedInputs": 809,
+          "scope": "Current realWASI portable/frontend source, actual curated native routing and normal staging; strict28vs61 nonpass and21missingimports/guestbackend/JSAPI/fourhost remain open."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-wasi179-affected-r1.json",
+          "sha256": "e57461ac454e3fa8a714aae67ebda0da024776859f78c7963f1b89562656cc8c",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-wasi179-source-r1/report.json",
+          "sha256": "14ec83b0049705161e270e6b47de2b0774a2425682bc2095abb3d1d985932650",
+          "nativePublicGroups": 34,
+          "componentPublicGroups": 34,
+          "nativeDirectImportAssertions": 2,
+          "strictDirectWasmNonpasses": 1,
+          "productionAdapterGroups": 4,
+          "identifiedOwnerAllocationFaultAdmissionsCleaned": 18,
+          "identifiedSuccessfulAdmissions": 62,
+          "newNativeCompilerAttempts": 0,
+          "productionSMExecuted": false,
+          "scope": "Current exact public frontend and actual curated adapter over identified previously compiled native portable Context, actual hostWasm memory/instance; strict conversion failure retained. No productionJSAPI/guestbackend/four-host execution."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/wasi-owner-agent/report.json",
+          "sha256": "fb96d944abfed580568e30570b95e19760e65082b05fbbb18dd3966e459329c1",
+          "reusedEvidence": true,
+          "scope": "32source checks/private798inputs;34public groups per subject, strict28vs61nonpass,18allocationfault cleanup/62successfuladmissions and original-memory batching;15tinycompiles/1initialfailure. Native frontend/portable only."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/wasi-owner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/wasi-owner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Whole pinned public WASI constructor/validation/coercion/lazy warning/start/initialize/finalize/returnOnExit/import identity algorithms",
+        "25genuine import operations over guest-local actual UTF8/args/env, fd/type/fullrights/preopen lifecycle, original-memory vectored/positioned I/O, clocks/random/yield/exit owners",
+        "Rooted checked real WasmMemoryObject identity, realm-wrapped traced edge and current backing/volatile length under synchronous no-GC borrow; atomic scalar serialization for shared memory",
+        "Exact unchanged uvwasi wire serializers and source-derived rights/error policies, truthful absent imports rather than stubbed success or metadata masking",
+        "Actual curated production wasiConstructor forwarding corrected during root review; current recipe/0133registration/C11serialization composed with174VM/175SQLite/177Net/178Domain"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/wasi-owner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "21missing path/poll/socket/other import operations, permission/preopen resolver and full WASI capability model",
+        "Genuine engine direct-Wasm uint32 provenance/signature/context dispatch; current strict28versus61failure remains an implementation gap",
+        "Actual guest WebAssembly validation/module/memory/instance/execution backend; no namespace/HasSupport/config flag spoofing and no exclusion approved",
+        "ProductionJSAPI/realm/CCW/GC/worker/memory/exit/cancellation/descriptor/libc/kernel/host conformance and allfourhosts"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/native-integration.md",
+      "findingScope": "Unchanged public WASI lifecycle and25real POSIX/native import source owners only; no complete import set/guest execution/numeric dispatch/API closure"
     }
   },
   "dependencyNarratives": {
@@ -20650,6 +20736,26 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current177Server/178Domain source contributions and bounded evidence. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T04:18:18.588925+00:00",
+        "sourceCheckpoint": 179,
+        "sourceHead": "4ea5ff6ad5ce2ce4a71e31bd083c65be97859eb4",
+        "addedSourceSlices": [
+          "wasi-owner"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "b6c306dda3f3c443d83607b8d637c1ae95d5b24773bb45778cd0b005c3d16154"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current179WASI source contribution and bounded evidence/nonpasses. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }
