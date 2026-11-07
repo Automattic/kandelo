@@ -1422,3 +1422,9 @@ changing the JavaScriptCore workaround. Combined browser-memory and normal
 guest checks remain current work. The older full six-leg CTS audit has
 finished with adverse results fully accounted; its completion does not
 admit current source or replace final per-case comparisons.
+
+Maintainer decision D-59 permits an explicit exec/exit-only boundary for
+inherited native Wayland connections after multithreaded fork. Implement
+its loud rejection and exact child/parent resource guarantees now. Ordinary
+Wayland callback/thread-exit cleanup and the remaining graphics/native-feel
+gates remain current work; this is not a general graphics-fork deferral.

@@ -32,6 +32,16 @@ B1's other correctness, audit and measurement requirements, separate
 stage landing order, cross-engine checks and final native-feel targets
 remain required. It does not establish B1 completion.
 
+On 2026-11-06 the maintainer approved D-59: reject use and cleanup of
+inherited native Wayland connections after a multithreaded fork until
+exec/exit. A copied native graph can contain an interrupted peer's buffer
+replacement; replaying its destructor cannot prove exact cleanup. Preserve
+the parent connection and exact kernel resource ownership. This approval
+does not waive ordinary callback/thread-exit cleanup, single-threaded or
+fresh-child graphics, ABI compatibility, stage order or any final gate.
+The boundary detector, loud rejection and ownership regressions are still
+being implemented; this decision is not an implementation claim.
+
 Retain the existing pointer, typing, ScummVM and idle-worker ship bar.
 Additional targets are pointer input to display within one refresh interval
 p50 and two refresh intervals p95; desktop motion, dragging, resizing and

@@ -2144,6 +2144,15 @@ uncertain rollback remains fatal. Node and browser share this path without
 a guest ABI or channel-wire change. Cross-engine lifecycle and memory
 acceptance remains required for the combined graphics candidate.
 
+Maintainer decision D-59 approves an exec/exit-only boundary for inherited
+native Wayland connections after multithreaded fork: reject their use and
+cleanup loudly rather than traversing a peer's interrupted native graph.
+The parent connection and exact kernel resource ownership must remain
+intact. Detector and regression work is pending; ordinary Wayland cleanup,
+single-threaded/fresh-child graphics and the remaining acceptance criteria
+are not waived. See the current shipping decisions in
+[`graphics/compatibility-v1.md`](graphics/compatibility-v1.md).
+
 ### Compiled module sharing
 
 Every program a process runs is a `WebAssembly.Module` compiled by the
