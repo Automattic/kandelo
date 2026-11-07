@@ -15613,13 +15613,32 @@ fn transfer_send_pipe(proc: &Process, fd: i32) -> Option<u32> {
     }
 }
 
+// Internal representational admission, not a guest result or a wire flag.
+// A newly admitted backing read must not turn otherwise exact larger
+// requests into an EIO merely because this bounded retry cannot own them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransferParkAdmission { Park, HostRetry, CorruptSnapshot }
+fn transfer_park_admission(
+    backing_read: bool, caller_fd: i32, staged_fd: i32,
+    caller_count: u64, staged_count: u64, maximum: u64,
+) -> TransferParkAdmission {
+    if caller_fd != staged_fd || caller_count != staged_count {
+        return TransferParkAdmission::CorruptSnapshot;
+    }
+    if caller_count > maximum {
+        return if backing_read { TransferParkAdmission::HostRetry }
+               else { TransferParkAdmission::CorruptSnapshot };
+    }
+    TransferParkAdmission::Park
+}
+
 /// Park a `read`/`write`/`recv`/`send` (or `recvfrom`/`sendto` with no
-/// address) that answered EAGAIN for a blocking caller on a kernel pipe or
-/// pipe-backed socket. Returns the dispatch result to publish instead (the
+/// address) that answered EAGAIN for a blocking caller on a kernel pipe,
+/// pipe-backed socket or genuinely reactive eventfd/notification backing. Returns the dispatch result to publish instead (the
 /// park, or the error that prevented it), or `None` when the EAGAIN is the
 /// caller's own answer: a non-blocking descriptor, `MSG_DONTWAIT`, or an
 /// endpoint whose readiness the kernel does not see (a host-delegated
-/// socket, a PCM stream, a terminal), which stays on the host's retry path
+/// socket, a PCM stream, a terminal or lazy timerfd), which stays on the host's retry path
 /// for now.
 ///
 /// The first attempt ran on the host's staged copy of the buffer. The park
@@ -15675,11 +15694,9 @@ fn park_blocked_transfer(syscall_nr: u32, staged: &[i64; 6]) -> Option<i32> {
     } else {
         0
     };
-    let pipe = if reads {
-        transfer_recv_pipe(proc, fd)
-    } else {
-        transfer_send_pipe(proc, fd)
-    }?;
+    let backing_read = if syscall_nr == SYS_READ { crate::wait_retry::backing_read_source(proc, fd) } else { None };
+    let pipe = if reads { transfer_recv_pipe(proc, fd) } else { transfer_send_pipe(proc, fd) };
+    if backing_read.is_none() && pipe.is_none() { return None; }
     // The park re-reads the caller's request from its channel; a task whose
     // channel the kernel does not know (a pthread, whose channel the host
     // places) stays on the host's retry path.
@@ -15687,7 +15704,7 @@ fn park_blocked_transfer(syscall_nr: u32, staged: &[i64; 6]) -> Option<i32> {
 
     let mut host = WasmHostIO;
     let task = channel_guest_task(proc);
-    let outcome = (|| -> Result<syscalls::ParkOutcome, Errno> {
+    let outcome = (|| -> Result<Option<syscalls::ParkOutcome>, Errno> {
         // The caller's request as it wrote it. Its descriptor and count must
         // be the ones the host staged; anything else is a broken channel.
         let mut raw = [0u8; ARGS_COUNT * ARG_SIZE];
@@ -15699,8 +15716,13 @@ fn park_blocked_transfer(syscall_nr: u32, staged: &[i64; 6]) -> Option<i32> {
             if task.pointer_width == 4 { v as u32 as u64 } else { v }
         };
         let (caller_fd, buf, count) = (arg(0) as u32 as i32, arg(1), arg(2));
-        if caller_fd != fd || count != staged[2] as u64 || count > MAX_PARKED_TRANSFER {
-            return Err(Errno::EIO);
+        match transfer_park_admission(backing_read.is_some(), caller_fd, fd,
+            count, staged[2] as u64, MAX_PARKED_TRANSFER) {
+            TransferParkAdmission::Park => {},
+            // Preserve the original EAGAIN/host retry owner. Do not pin an
+            // OFD, publish a park, truncate a count or manufacture completion.
+            TransferParkAdmission::HostRetry => return Ok(None),
+            TransferParkAdmission::CorruptSnapshot => return Err(Errno::EIO),
         }
         let token = syscalls::ensure_blocking_retry_ofd_binding(
             proc, locks, &mut host, tid, syscall_nr, fd, None,
@@ -15710,16 +15732,18 @@ fn park_blocked_transfer(syscall_nr: u32, staged: &[i64; 6]) -> Option<i32> {
         } else {
             None
         };
-        let op = crate::wait_retry::RetryOp::Transfer {
+        let op = if let Some(source) = backing_read {
+            crate::wait_retry::RetryOp::BackingRead { fd, buf, count, token, source }
+        } else { crate::wait_retry::RetryOp::Transfer {
             syscall: syscall_nr,
             fd,
             buf,
             count,
             flags,
-            pipe,
+            pipe: pipe.expect("transfer source was admitted"),
             token,
             restartable: timeout_ns == 0,
-        };
+        } };
         let operation = crate::blocked_retry::BlockingRetryOperation::from_syscall(syscall_nr)?;
         let parked = crate::wait_park::with(|parks| {
             parks.park(
@@ -15732,14 +15756,18 @@ fn park_blocked_transfer(syscall_nr: u32, staged: &[i64; 6]) -> Option<i32> {
             )
         });
         match parked {
-            Ok(generation) => Ok(syscalls::ParkOutcome::Parked(generation)),
+            Ok(generation) => Ok(Some(syscalls::ParkOutcome::Parked(generation))),
             Err(error) => {
                 let _ = syscalls::release_blocking_retry_binding(proc, locks, &mut host, tid, token);
                 Err(error)
             }
         }
     })();
-    Some(report_park(outcome))
+    match outcome {
+        Ok(None) => None,
+        Ok(Some(parked)) => Some(report_park(Ok(parked))),
+        Err(error) => Some(report_park(Err(error))),
+    }
 }
 
 /// Re-execute every parked call whose source fired (`wait_retry`). A call
@@ -15803,7 +15831,7 @@ fn settle_retry_waits() {
 /// - A stopped process, a dead or unknown task, or an unregistered channel
 ///   address takes the queued path.
 fn publish_transfer_directly(pid: u32, tid: u32, op: &crate::wait_retry::RetryOp, value: i32) -> u32 {
-    if !matches!(op, crate::wait_retry::RetryOp::Transfer { .. }) || value < 0 {
+    if !matches!(op, crate::wait_retry::RetryOp::Transfer { .. } | crate::wait_retry::RetryOp::BackingRead { .. }) || value < 0 {
         return 0;
     }
     let table = unsafe { &*PROCESS_TABLE.0.get() };
@@ -15847,7 +15875,7 @@ fn settle_retry_waits_once() -> bool {
             Err(error) => -(error as i32),
         };
         let flags = match op {
-            crate::wait_retry::RetryOp::Transfer { .. } => publish_transfer_directly(pid, tid, &op, value),
+            crate::wait_retry::RetryOp::Transfer { .. } | crate::wait_retry::RetryOp::BackingRead { .. } => publish_transfer_directly(pid, tid, &op, value),
             _ => 0,
         };
         crate::wait_park::with(|p| p.finish_retry_waiter_with_flags(id, op, value, flags));

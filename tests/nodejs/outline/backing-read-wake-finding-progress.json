@@ -1,0 +1,100 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem.md",
+    "findingIds": [
+      "FS-005"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "filesystem",
+      "processes",
+      "async"
+    ],
+    "scope": "Partial real reactive read/producer/retry/wake prerequisite. Not public FSWatcher, timer/poll, metadata, fork, ABI baseline or four-host closure."
+  },
+  "sourceImplemented": [
+    "Classify actual live managed blocking FsNotify/eventfd OFDs, retaining a typed backing source and original exact retry binding",
+    "Publish source dirties from actual queue/eventfd mutations only for live interested retries, with capacity reserved before park publication and retained across settle",
+    "Re-execute actual sys_read, keep EAGAIN parked, and route real results through existing task/channel completion ownership",
+    "Preserve fd/count snapshot corruption errors; exact requests beyond bounded new backing capacity keep the original host retry without truncation or fabricated errno",
+    "Verify actual native producer-to-park-to-pinned-read/completion behavior, including descriptor reuse and original queue data",
+    "Compile native runtime consumers and typecheck actual Wasm kernel admission/settlement/publication without a linked kernel or product rebuild"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-backing-wake216-source-r1/report.json",
+    "sha256": "44118ed9aa075e039f31f81adb74dbd660db0f9b4df74a0f792c6cbe04ceff4a",
+    "guardedInputs": 885,
+    "scope": "Real FsNotify/eventfd typed backing-read retry and pre-admitted producer dirties; reviewed capacity fallback preserves corrupt snapshot errors. Native consumer build and focused native controls; actual Wasm kernel typecheck only, no linked kernel/guest/four-host or public watcher closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-capture216-affected-r1.json",
+    "sha256": "232b6dbdc7cb58c775a068bba52e1316a2d5f55d6389b2ef71c91f60beb013a4",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": true
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-backing-wake216-source-r1/report.json",
+    "sha256": "44118ed9aa075e039f31f81adb74dbd660db0f9b4df74a0f792c6cbe04ceff4a",
+    "actualBackingWakeCases": 2,
+    "affectedRetryAndParkCases": 31,
+    "readySourceCases": 4,
+    "finalAdmissionPolicyCases": 6,
+    "matchedRepositorySourceInputs": 706,
+    "nativeRuntimeCompiled": true,
+    "wasmKernelTypechecked": true,
+    "wasmKernelLinked": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "newCompilerAttemptsDuringEvidenceRead": 0,
+    "engineRecipeChanged": false,
+    "packageEvidenceReused": true,
+    "scope": "Actual native producer/park/pinned-read/completion controls plus affected native units. Admission/helper cases are narrower; one helper is expected invariant rejection. No host drain, guest, public watcher or four-host acceptance.",
+    "productionReceipts": {
+      "report": ".context/node26-backing-wake216-source-r1/production-receipts.json",
+      "sha256": "22f718ab997b3eee750262c0bd3c0bcb64596156d4dd96a2640adb30c4868a46"
+    },
+    "repositoryInputsByteIdentical": 705,
+    "terminalBlankOnlyNormalizedInputs": 1,
+    "terminalWhitespaceNormalization": {
+      "report": ".context/node26-backing-wake216-source-r1/final-whitespace-normalization/record.json",
+      "sha256": "b1e7a0a8bf1c53eb94619cf85e93dd5d33f5a57e2867b41e34fa50c3393b667e"
+    }
+  },
+  "sealedEvidence": {
+    "report": ".context/fsnotify-wake-owner-agent/handoff/RUNS.json",
+    "sha256": "a553454cf9e769a467da4d36141c3908951c5a0545f49f4d6bda6bf2b40a00d1",
+    "reusedEvidence": true,
+    "scope": "Original80-member producer seal: actual helper4cases,1tiny compile,47source checks and exact10-leaf replay; full consumers uncompiled at that seal. Separate reviewed scalar correction has2tiny compiles (one superseded assumption), final6cases; root native build/typecheck/current tests are separate evidence."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/fsnotify-wake-review-agent/handoff/HANDOFF.json",
+      "sha256": "6a22591c409710fbd003fff2f2aa661f2d6dcf31f7b0c189ca4f0c8c29cab3dd",
+      "scope": "Initial permissive staged clipping assumption was rejected by actual host-source inspection; superseded source/binary/six passing scalar cases preserved, not correct shipped behavior. Final policy preserves all corruption errors. No end-to-end large-read regression claimed."
+    },
+    {
+      "report": ".context/node26-backing-wake216-source-r1/production-receipts.json",
+      "sha256": "22f718ab997b3eee750262c0bd3c0bcb64596156d4dd96a2640adb30c4868a46",
+      "scope": "Original helper-only evidence is superseded in scope by actual native consumer compilation/Wasm typecheck, not guest validation. Initial targeted native test compilation used a generic test park kind; aligned to actual transfer kind before any runtime run. Both successful compile receipts/source images retained; no production behavior changed."
+    }
+  ],
+  "remaining": [
+    "Actual linked kernel/task-channel/host drain/direct publication and guest/four-host lifecycle, signal/restart/cancellation/exit/exec validation",
+    "Real timerfd deadline/refresh owner and host-owned poll/select/epoll registration, masks/timeouts/nesting/descriptor generations/cancellation",
+    "Complete filesystem metadata, SIGIO, watcher policy, directory/rootfs/provider/mount/deletion/order semantics and public activation",
+    "Shared copyback EFAULT/partial-copy, allocation safety outside producer dirties and peer-memory retirement/liveness ownership",
+    "New-kind fork/frozen baseline/ABI activation assessment; structural identity is not dynamic baseline acceptance",
+    "All remaining original FS-005 and other public filesystem findings; no API/family closes"
+  ],
+  "at": "2026-11-07T14:14:33.164044+00:00",
+  "recipeRevision": 216,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

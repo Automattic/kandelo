@@ -241,7 +241,7 @@ pub struct Parks {
     /// Wake sources that fired since the last re-execution pass: advisory
     /// lock state, a pipe's readiness. Parked re-executable calls waiting on
     /// one of them are re-run by the next settle.
-    dirty_sources: Vec<WakeSource>,
+    dirty_sources: crate::retry_ready::ReadySources<WakeSource>,
     /// `(pid, tid, token)` of re-executable calls whose park completed: the
     /// kernel releases each blocked-retry binding (`crate::wait_retry`)
     /// before the completion can reach the guest.
@@ -265,7 +265,7 @@ impl Parks {
             last_park: None,
             children_dirty: false,
             exit_notices: Vec::new(),
-            dirty_sources: Vec::new(),
+            dirty_sources: crate::retry_ready::ReadySources::new(),
             released_retry_bindings: Vec::new(),
         }
     }
@@ -293,6 +293,14 @@ impl Parks {
         deadline: Option<MonotonicNs>,
         resume: Resume,
     ) -> Result<u64, Errno> {
+        if matches!(resume, Resume::Retry(_)) {
+            // Existing stale dirties remain until settle. Reserve additionally
+            // for every live/new retry before publishing this park; matching
+            // producer notifications cannot allocate or fail after mutation.
+            let live = self.resume.values().filter(|resume| matches!(**resume, Resume::Retry(_)))
+                .count().checked_add(1).ok_or(Errno::ENOMEM)?;
+            self.dirty_sources.prepare(live).map_err(|_| Errno::ENOMEM)?;
+        }
         let channel = self.queue.open_channel();
         let id = match self.queue.park(ParkRequest {
             pid,
@@ -500,14 +508,14 @@ impl Parks {
     }
 
     /// The parked re-executable calls whose sources fired since the last
-    /// pass, oldest first. Today the only source is advisory-lock state.
+    /// pass, oldest first. Sources include locks, pipes and reactive backings.
     pub fn take_dirty_retry_waiters(&mut self) -> Vec<(WaiterId, u32, u32, crate::wait_retry::RetryOp)> {
         if self.dirty_sources.is_empty() {
             return Vec::new();
         }
-        let dirty = core::mem::take(&mut self.dirty_sources);
+        let dirty = &self.dirty_sources;
         let resume = &self.resume;
-        self.queue
+        let ready = self.queue
             .iter()
             .filter_map(|s| match resume.get(&s.id) {
                 Some(Resume::Retry(op)) if dirty.contains(&op.source()) => {
@@ -515,13 +523,15 @@ impl Parks {
                 }
                 _ => None,
             })
-            .collect()
+            .collect();
+        self.dirty_sources.clear();
+        ready
     }
 
     /// Record that `source` fired, if anything is parked to care.
     pub fn note_source_ready(&mut self, source: WakeSource) {
-        if !self.queue.is_empty() && !self.dirty_sources.contains(&source) {
-            self.dirty_sources.push(source);
+        if self.resume.values().any(|resume| matches!(resume, Resume::Retry(op) if op.source() == source)) {
+            self.dirty_sources.record(source);
         }
     }
 

@@ -291,6 +291,8 @@ pub(crate) fn remove_description_watch(proc: &crate::process::Process, fd: i32, 
 }
 fn notify_added(index: usize, state: &State, queued_before: usize) {
     if state.queue.len() > queued_before {
+        crate::wait_park::with(|parks| parks.note_source_ready(crate::wait_queue::WakeSource::Backing(
+            crate::wait_queue::BackingReadSource::FsNotify(encode_handle(index).expect("notification handle was pre-admitted")))));
         // Lock order is tmpfs inode -> notification table -> epoll table.
         // The allocation-free candidate marker never queries this table or
         // calls providers; delivery queries queues only after its snapshot

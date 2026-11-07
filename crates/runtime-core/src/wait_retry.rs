@@ -37,6 +37,9 @@ use crate::process::{HostIO, Process};
 /// One parked blocking call, with exactly the arguments it was issued with.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetryOp {
+    /// Ordinary blocking read of an actual reactive kernel backing. It uses
+    /// the same task/channel generation and exact OFD binding as transfers.
+    BackingRead { fd: i32, buf: u64, count: u64, token: i64, source: crate::wait_queue::BackingReadSource },
     /// `fcntl(F_SETLKW / F_SETLKW64 / F_OFD_SETLKW)`. The `struct flock` is
     /// read once, when the call starts: POSIX gives the request the values
     /// at the call, and a set-lock never writes it back.
@@ -87,6 +90,7 @@ impl RetryOp {
     /// The wake source that can change this call's answer.
     pub fn source(&self) -> crate::wait_queue::WakeSource {
         match self {
+            RetryOp::BackingRead { source, .. } => crate::wait_queue::WakeSource::Backing(*source),
             RetryOp::FcntlLock { .. } | RetryOp::Flock { .. } => {
                 crate::wait_queue::WakeSource::AdvisoryLock
             }
@@ -97,6 +101,7 @@ impl RetryOp {
     /// Whether a caught signal's `SA_RESTART` may restart the call.
     pub fn restartable(&self) -> bool {
         match *self {
+            RetryOp::BackingRead { .. } => true,
             RetryOp::Transfer { restartable, .. } => restartable,
             RetryOp::FcntlLock { .. } | RetryOp::Flock { .. } => true,
         }
@@ -107,12 +112,14 @@ impl RetryOp {
         match *self {
             RetryOp::FcntlLock { token, .. }
             | RetryOp::Flock { token, .. }
-            | RetryOp::Transfer { token, .. } => token,
+            | RetryOp::Transfer { token, .. }
+            | RetryOp::BackingRead { token, .. } => token,
         }
     }
 
     fn operation(&self) -> BlockingRetryOperation {
         match self {
+            RetryOp::BackingRead { .. } => BlockingRetryOperation::Read,
             RetryOp::FcntlLock { .. } => BlockingRetryOperation::Fcntl,
             RetryOp::Flock { .. } => BlockingRetryOperation::Flock,
             RetryOp::Transfer { syscall, .. } => BlockingRetryOperation::from_syscall(*syscall)
@@ -131,6 +138,7 @@ impl RetryOp {
     ) -> Result<i32, Errno> {
         proc.blocked_retries.activate(tid, self.token(), self.operation())?;
         let result = match *self {
+            RetryOp::BackingRead { fd, buf, count, .. } => transfer_once(proc, host, SYS_READ, fd, buf, count, 0),
             RetryOp::FcntlLock { fd, cmd, mut flock, .. } => {
                 crate::syscalls::sys_fcntl_lock(proc, locks, fd, cmd, &mut flock, host).map(|()| 0)
             }
@@ -143,6 +151,21 @@ impl RetryOp {
         };
         proc.blocked_retries.clear_active();
         result
+    }
+}
+
+/// Classify only real reactive/readable backings. Socket/pipe admission stays
+/// with its existing owner; lazy timer refresh cannot safely park indefinitely.
+pub fn backing_read_source(proc: &Process, fd: i32) -> Option<crate::wait_queue::BackingReadSource> {
+    use crate::{ofd::FileType, wait_queue::BackingReadSource};
+    let entry = proc.fd_table.get(fd).ok()?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+    if ofd.is_path_only() || ofd.status_flags() & wasm_posix_shared::flags::O_NONBLOCK != 0 { return None; }
+    if !crate::descriptor_backing::is_live_managed_ofd(ofd.file_type, ofd.host_handle) { return None; }
+    match ofd.file_type {
+        FileType::EventFd => Some(BackingReadSource::EventFd(ofd.host_handle)),
+        FileType::FsNotify => Some(BackingReadSource::FsNotify(ofd.host_handle)),
+        _ => None,
     }
 }
 

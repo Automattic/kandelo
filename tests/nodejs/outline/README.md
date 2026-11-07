@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source216 adds real reactive backing-read wake ownership and conservative bounded admission. Actual native consumers compile,37focused native cases pass, and the Wasm kernel typechecks. No linked guest/public watcher or four-host acceptance follows.
+See [source scope](backing-read-wake-integration.md).
+
 Source216 integrates unchanged primary/additive capture over actual native environment suppression and CLI/fatal ownership, preserving215VM imports.12native-dependent groups,8grammar controls and3upstream files pass; default hard-crash/report/guest gaps remain explicit.
 See [source scope](process-capture-owner-integration.md).
 

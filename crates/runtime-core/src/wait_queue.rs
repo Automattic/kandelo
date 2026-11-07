@@ -106,6 +106,9 @@ pub struct ChannelGeneration(pub u64);
 /// unhandled source becomes a compile error instead of a lost wakeup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum WakeSource {
+    /// Actual kernel backing identity. The blocked OFD binding pins it, so a
+    /// numeric handle cannot be recycled while this park still owns it.
+    Backing(BackingReadSource),
     /// A pipe became readable or writable. `idx` is the kernel pipe index.
     Pipe(u32),
     /// A listening socket's accept queue changed. `idx` is from
@@ -145,6 +148,12 @@ impl WakeSource {
         matches!(self, Self::AdvisoryLock | Self::DatagramWritable)
     }
 }
+
+/// Reactive backing read sources, internal to the kernel, never a host wire tag.
+/// Timerfds remain outside this set until their real clock/deadline refresh
+/// owner can schedule a retry without converting expiration into a timeout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum BackingReadSource { EventFd(i64), FsNotify(i64) }
 
 /// Why a task is asleep.
 ///

@@ -6056,6 +6056,8 @@ pub fn sys_write(
                 crate::epoll::Source::Backing(FileType::EventFd, host_handle),
                 0x41,
             );
+            crate::wait_park::with(|parks| parks.note_source_ready(crate::wait_queue::WakeSource::Backing(
+                crate::wait_queue::BackingReadSource::EventFd(host_handle))));
             Ok(8)
         }
         FileType::PtyMaster => {
@@ -21109,6 +21111,9 @@ mod tests {
     }
     mod fsnotify_opened_dentry {
         include!("fsnotify_dentry_tests.rs");
+    }
+    mod backing_read_wake {
+        include!("backing_read_wake_tests.rs");
     }
     use super::*;
     use wasm_posix_shared::abi::extended_syscalls;
