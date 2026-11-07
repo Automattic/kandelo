@@ -26328,3 +26328,29 @@ Exact scripts/results are in `.context/graphics-target-ownership-r651/` and
 `.context/graphics-dri-prefix-r652/`. No application patch, new mapping offset
 encoding, ABI family bump or performance claim. Raw-client enforcement,
 coherent full previews and every stage/final acceptance requirement remain.
+
+The corrective normal kernel rebuild
+`graphics-dri-prefix-normal-r653-1107-023420-8629` passes2m01s, including the
+actual ABI check and5739 unchanged tracked source files. The bootstrap also
+refreshes its import-free image-module prerequisite and projection manifest;
+57/60 recorded component products remain byte-identical, including the SDK
+libraries/tools. New kernel SHA256 is
+69681c92affb5bd33fe6ffc2a5d0eb0466207f83b5a6d40f24cdc3480ad62a6d,
+2070678bytes. The original before kernel is retained independently.
+
+Unchanged target rerun
+`graphics-target-ownership-after-r655-1107-023659-95ee` passes1m29s:
+Node16/16 and browser48/48, no failures/skips/flakes, all6390 frozen inputs
+unchanged. Both pointer widths cover descriptor reuse, inherited GBM storage,
+full/partial/middle/same-BO replacement and fresh-child/image-borrow ownership;
+the browser fork cases check actual pixels. All42 comparable before/after
+program and generated VFS image hashes are identical despite the refreshed
+image-module binary. The original2 Node/6 browser failures remain recorded.
+Exact commands, kernel/component identities, per-case artifacts and independent
+judgment are in `.context/graphics-dri-prefix-normal-r653/` and
+`.context/graphics-target-ownership-after-r655/`.
+
+This closes the observed same-BO prefix rejection and establishes the selected
+normal-target ownership controls. It does not establish full raw Wayland
+callback enforcement, application/desktop acceptance, browser-memory, complete
+B1, final conformance or native feel; those requirements remain in this PR.

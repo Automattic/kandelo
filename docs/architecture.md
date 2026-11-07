@@ -7641,11 +7641,11 @@ uses one fork guard for pointer/reference changes and transfers retiring
 capabilities into a globally rooted, epoch-claimed queue before native work.
 No native operation, receiver lock or driver futex wake runs under that guard.
 
-This is a source checkpoint, not complete B1 admission. The detached EGL deferred-lease queues still require their own repairs and
-regressions. New Node/browser fixtures are registered, but
-must be linked and executed with the coherent normally rebuilt SDK, kernel
-and programs before this ownership connection can be called validated on the
-platform. Full stage, memory, conformance and latency gates remain required.
+The ownership connection now has selected normally built target controls for
+descriptor reuse, replacement mappings and inherited BO/image storage on Node
+and all three browser engines. EGL's outer queues have durable pending native
+capsules. Full raw-client callback enforcement, the complete application/image
+rebuild and stage, memory, conformance and latency gates remain required.
 
 
 An image now retains an independent exact source-file edge as well as its BO
@@ -7684,10 +7684,11 @@ Ordinary frame release acquires no retirement actor or global queue scan.
 
 Heap ActorScope identities distinguish a continuing callback stack from a
 dead/vanished peer. EGL outer surface/generation queues use independent
-claims and bounded cold retries. Opaque Wayland leaves with unknown progress
-remain visibly unresolved; durable native leaf APIs and D-59 enforcement are
-still being implemented. These source controls are not full B1 or normal
-target acceptance. Libc now preserves a child-only multithreaded-fork epoch
+claims and bounded cold retries. Durable native leaf APIs distinguish pending
+custody, completion and explicit inherited-boundary transfer; unknown progress
+cannot be inferred from a void return. Full raw-client D-59 enforcement remains
+unfinished. These focused controls do not establish full B1 acceptance. Libc
+preserves a child-only multithreaded-fork epoch
 before rebinding its copied thread list; this primitive alone does not
 implement the approved Wayland boundary.
 

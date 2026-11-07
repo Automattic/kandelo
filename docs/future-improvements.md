@@ -1475,10 +1475,10 @@ linkage/execution and the full B1 gates in this iteration. The old opaque queue
 observations have stronger fixture assertions; they do not establish actual
 browser or native-feel acceptance and are not a deferral of either requirement.
 
-The latest normal component build succeeds, but its actual target ownership
-checks expose a full-size-only GEM mmap rejection on same-BO partial replacement.
-The kernel source now accepts bounded prefixes through both ordinary and exact
-owned paths, with native fragment/lifetime and receipt-recovery coverage.
-Rebuild the kernel and repeat the unchanged Node/three-engine target cases in
-this iteration; normal components and native tests do not replace that proof
-or the remaining complete B1/application/native-feel gates.
+Normal component builds and the corrected actual target ownership controls
+now pass, including same-BO partial replacement through ordinary and exact
+owned mappings. The unchanged rerun passes16 Node and48 three-engine cases;
+the original full-size-only rejection and its failure evidence remain recorded.
+Finish raw-client enforcement and complete B1/application/native-feel gates in
+this iteration. Selected target controls do not replace full application,
+browser-memory, conformance or performance acceptance.
