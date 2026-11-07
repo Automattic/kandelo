@@ -84,7 +84,8 @@ helper selects upstream's reproducible builder mode. Development bootstrap
 otherwise discards ambient GOFLAGS and retains scratch paths in native tools;
 their content IDs affect target build IDs. Compiler identities are preserved.
 This checks this Mac/development environment, not cross-OS reproducibility.
-Final WordPress and larger consumer reproducibility gates remain open.
+The later stable-prefix checks below complete independent reproduction
+for all four consumers. Final WordPress validation remains open.
 
 ## Normal package integration
 
@@ -121,10 +122,10 @@ and all but two of 196,005 function bodies. The changed bodies export
 fingerprints bound to the exact original bytes. Custom `go:buildid` and
 `kandelo.build.key` differ too. These variants have different native builder
 mode/recipe revisions, so this is a diagnostic, not a same-key reproduction.
-Do not strip identities after instrumentation to force equality. Larger
-C-linked independent
-byte-reproducibility checks remain open; GoHello's completed check is not
-substituted for them. WordPress image, final workflows, memory/lifecycle and
+Do not strip identities after instrumentation to force equality. This
+historical comparison does not prove reproducibility; the later
+stable-prefix checks below do, independently rebuilding both compilers
+and each target. WordPress image, final workflows, memory/lifecycle and
 performance gates remain open. The existing preview is preserved.
 
 Final instrumentation sampled about 8.9 GiB RSS in native `wasm-opt` and
@@ -268,8 +269,10 @@ incorrect binary-resolver path and accidentally captured shell banners;
 it executed no service samples and is retained as an invalid attempt.
 
 Application source and the preserved preview remain unchanged. The normal
-Go recipe pins now select f605; their rebuilds remain pending. Stack safety is established for these service cases; broad
-compiler, cgo, memory/lifecycle and production WordPress gates remain open.
+Go recipes now select f605 and pass the package and compiler gates recorded
+above, including independent reproduction. Stack safety is established
+for these service cases; memory/lifecycle and production WordPress gates
+remain open.
 
 ## Reproduction and remaining decision
 
@@ -300,10 +303,12 @@ artifacts across Node/browser rows; a deliberately mixed cohort is rejected.
 Smoke results do not enter the full comparison above.
 
 Broad coherent compiler validation now passes and normal Go pins select
-f605, with the compilation tradeoff explicit. Normal package rebuilds,
-reproducibility and final image/application validation remain pending. The candidate is a robustness improvement,
-not an established speed improvement. If that cost is unacceptable, further
-profiling or a separate instrumentation design is needed; restoring the old
+f605, with the compilation tradeoff explicit. Normal package rebuilds and
+same-Mac reproduction pass for all four Go consumers. Final image and
+application validation remain pending. The candidate is a robustness
+improvement, not an established speed improvement. If that cost is
+unacceptable, further profiling or a separate instrumentation design is
+needed; restoring the old
 hybrid fallback is not the recommendation. Final image, WordPress workflow,
 lifecycle/memory and fair PHP-FPM performance gates remain in the parent
 plan. PHP's optimizer-recursion candidate remains separate.

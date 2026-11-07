@@ -93,9 +93,10 @@ Vite app-wide dependency-scan warning despite the passing consumer tests.
 The corrected rootfs-inclusive gate passes 12/12, zero skips/failures/flakes,
 in 74.5 seconds without a dependency-scan failure. Its 36-node publication
 rebuilds rootfs and 20 CLI packages; rootfs passes the FHS layout audit.
-The exact Go program and kernel bytes are preserved. Larger C-linked
-independent byte-reproducibility checks remain open; GoHello's
-completed check is not substituted for them.
+The exact Go program and kernel bytes are preserved. At that checkpoint,
+larger C-linked independent byte-reproducibility checks remained open.
+The stable-prefix checks above subsequently complete them for classic 39
+and combined 20, with original Go build IDs retained.
 Standalone Caddy is intentionally outside the default bootstrap set and
 uses the normal explicit source resolver. An initial private orchestration
 attempt used bootstrap for it and stopped before compiling that package.
