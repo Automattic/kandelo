@@ -3958,7 +3958,11 @@ const net = (() => {
         }
         _final(cb) {
             if (this.connecting) { this.once('connect', () => this._final(cb)); return; }
-            try { nat.socketShutdown(socketNativeOwners.get(this)?.fd ?? -1); cb(); }
+            const owner = socketNativeOwners.get(this);
+            // No acquired native stream exists to shut down. Complete the
+            // actual Writable finalization rather than issuing shutdown(-1).
+            if (!owner) return cb();
+            try { nat.socketShutdown(owner.fd); cb(); }
             catch (reason) { cb(connectError(reason, this.remoteAddress, this.remotePort, 'shutdown')); }
         }
 

@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source224 adds actual Socket destroySoon and no-owner final callback completion;7current native TCP-dependent groups match. Production connected shutdown, full socket lifecycle and guest/four-host behavior remain open.
+See [source scope](socket-destroy-soon-integration.md).
+
 Source223 activates actual test-name/skip filtering and shared Node-only UTF8 CLI publication; current native-dependent comparisons pass. New guest bindings, full CLI/runner and four-host behavior remain unvalidated.
 See [source scope](test-pattern-cli-integration.md).
 

@@ -34140,6 +34140,15 @@ Socket.prototype.setKeepAlive = function(enable, initialDelayMsecs,
   return this;
 };
 
+        Socket.prototype.destroySoon = function() {
+  if (this.writable)
+    this.end();
+
+  if (this.writableFinished)
+    this.destroy();
+  else
+    this.once('finish', this.destroy);
+};
     }
     function initOptions(socket, options) {
         ReflectApply(function() {

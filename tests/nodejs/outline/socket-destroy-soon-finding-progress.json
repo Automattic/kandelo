@@ -1,0 +1,88 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network-contracts.md",
+    "findingIds": [
+      "N-010",
+      "N-015"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "network",
+      "streams",
+      "async",
+      "http",
+      "secure-network"
+    ],
+    "scope": "Partial real Socket flush-before-destroy and never-acquired-owner finalization. No full Socket/native async shutdown or finding closure."
+  },
+  "sourceImplemented": [
+    "Select complete unchanged179byte pinned net.js destroySoon method through existing source manifest/build/installer",
+    "Install actual method on the consumed public Socket prototype, using real writable/end/finish/current destroy dispatch",
+    "Consult actual private receiver-to-owner association in _final after connecting deferral; complete no-owner callback without invalid shutdown",
+    "Preserve acquired/closed owner shutdown route, actual native close, error and fd authority rather than using public numeric fields",
+    "Regenerate combined source while preserving current223CLI/UTF8/public-abort C++ and all independent runtime owners"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-socket224-source-r1/report.json",
+    "sha256": "4c1208191b96ffaf911ce5d6b86250c8d6d87f9dfee1cdd9ee2829a41d8a515a",
+    "guardedInputs": 885,
+    "scope": "Proposed spec only; future root-owned control driver must preserve per-row exact native/after comparison, original 0/7 baseline and native ShutdownWrap dependency. No current224 execution receipt."
+  },
+  "packageChecks": {
+    "report": ".context/node26-socket224-affected-r1.json",
+    "sha256": "847072fceb0fdca223911385288d113c9dea01ace55713f01b195f1e6c8ca459",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-socket224-source-r1/report.json",
+    "sha256": "4c1208191b96ffaf911ce5d6b86250c8d6d87f9dfee1cdd9ee2829a41d8a515a",
+    "nativeDependentGroups": 7,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "engineCXXChanged": false,
+    "scope": "Fresh exact native/current generated Socket groups over real native accepted TCP,2MiBpeer EOF, WriteWrap/ShutdownWrap/VM/stream/Buffer/error/brand dependencies. No guest listen/connect or actual production async shutdown acceptance."
+  },
+  "sealedEvidence": {
+    "report": ".context/socket-destroy-soon-owner-agent/handoff/evidence/report.json",
+    "sha256": "e7be0c5812756d54898fa53abe93608c8de9d6577bd6c26a5237785bf5d8df62",
+    "reusedEvidence": true,
+    "scope": "Original native7/7,baseline0/7,candidate7/7, allthreeobservationprocessesexit0. Baseline remains seven nonmatches.0compilers, no guest validation."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/socket-destroy-soon-owner-agent/handoff/evidence/report.json",
+      "sha256": "e7be0c5812756d54898fa53abe93608c8de9d6577bd6c26a5237785bf5d8df62",
+      "scope": "Original0/7baseline matches retained, including explicit failures and differing rows. Invalid-1 assertion is fixture refusal, not claimed guest errno. Native ShutdownWrap dependency differs from production rawfd shutdown."
+    },
+    {
+      "report": ".context/socket-destroy-soon-review-agent/REPORT.md",
+      "sha256": "63ffc9f16295ea6413b7a0c695c9fb9f771411a4415cfa543592eff14ee43711",
+      "scope": "Independent actual owner/connecting/retirement/descriptor/installer/source review; no newly introduced blocker. Existing callback-inside-try, connected async shutdown and lifecycle gaps retained; no new runtime/compiler evidence."
+    },
+    {
+      "report": ".context/socket224-integration-plan-agent/preflight-attempt0-coordination-nonpass.json",
+      "sha256": "5be4a2869b277291087a8094469ac608f337fd416c125be8b71b61834514a634",
+      "scope": "Read-only planning receipt initially refused source223inflight/state222 coordination; later exact finalized223preflight passes. No source replay/runtime/compile failure or waived guard."
+    }
+  ],
+  "remaining": [
+    "Actual connected ShutdownWrap request/completion/error/cancellation ownership, opaque descriptor generation and callback-inside-try exception policy",
+    "Connecting deferral/failure/reuse/closed-owner generation and actual guest read/write/close callback/resource chronology",
+    "Socket counters/reset/TOS/metadata/fd kinds and mixed string writev/original storage encoding behavior",
+    "TLS/TLSWrap/session/HTTPS and HTTP server prerequisites; no server transport activation from this slice",
+    "Current combined guest artifact and identified Node/Chromium/Firefox/WebKit conformance; no API/family closure"
+  ],
+  "at": "2026-11-07T16:20:21.031888+00:00",
+  "recipeRevision": 224,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

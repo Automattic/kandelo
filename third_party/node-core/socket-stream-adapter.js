@@ -52,6 +52,7 @@ function _createNodeSocketStream(platform) {
     }
     function installSocket(Socket) {
         /* NODE_SOCKET_NET_OPTIONS */
+        /* NODE_SOCKET_DESTROY_SOON */
     }
     function initOptions(socket, options) {
         ReflectApply(function() {

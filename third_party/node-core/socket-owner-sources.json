@@ -62,6 +62,12 @@
       "start": "  // If we have a handle, then start the flow of data into the",
       "length": 460,
       "sha256": "e7cde662c8e965b211ecd94bd6462fe43112e701960a7987135b3fdeb22bfdcf"
+    },
+    "destroySoon": {
+      "source": "net",
+      "start": "Socket.prototype.destroySoon = function() {",
+      "length": 179,
+      "sha256": "e70f2c502e1e7c651a9a5f10775a8b8976bc1e2595144bd685d0074ce15e9106"
     }
   },
   "tcpProvider": {
