@@ -6848,3 +6848,7 @@ protocol or program ABI changed for this binding foundation.
 ### DNS scoped byte-address source ownership
 
 Source167 routes local source addresses, resolver server tuples and reverse-address decoding through the same pinned uv_inet_pton-style IPv6 zone rule before actual c-ares operations. The public local-address gate accepts that same prefix policy. Native configuration controls do not prove production JSAPI/query/provider/source-binding or four-host conformance. See [source scope](../tests/nodejs/outline/dns-scoped-address-integration.md).
+
+### Child process public kill error source ownership
+
+Source168 normalizes actual native kill errno through unchanged pinned ErrnoException and the real compiler-selected UV map. ESRCH returns false, EINVAL/ENOSYS throw and other failures emit synchronously; killed changes only after actual success. Existing zero/default/unknown conversion remains intact. Host-boundary controls are separate from guest process/permission/four-host proof. See [scope](../tests/nodejs/outline/child-kill-error-integration.md).

@@ -3257,12 +3257,12 @@ const child_process = (() => {
             try { _nn.__kandeloKill(pid, signum); }
             catch (error) {
                 if (typeof error.errno !== 'number') throw error;
-                const errno = Math.abs(error.errno);
-                if (errno === 3) return false; // ESRCH: the child is already gone.
-                error.errno = -errno;
-                error.syscall = 'kill';
-                if (errno === 22 || errno === 38) throw error; // EINVAL/ENOSYS.
-                child.emit('error', error);
+                // Native errno is real POSIX state. Use the pinned Node error
+                // owner and its compiled UV map for the public error contract.
+                const failure = new _nodeValues.errors.ErrnoException(-Math.abs(error.errno), 'kill');
+                if (failure.code === 'ESRCH') return false; // The child is already gone.
+                if (failure.code === 'EINVAL' || failure.code === 'ENOSYS') throw failure;
+                child.emit('error', failure);
                 return false;
             }
             child.killed = true;

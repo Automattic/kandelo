@@ -1,0 +1,70 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/processes.md",
+    "findingIds": [
+      "CP-001"
+    ],
+    "relatedDocuments": [
+      "tests/nodejs/audit/process-contracts.md"
+    ],
+    "relatedFamilies": [
+      "processes",
+      "engine"
+    ],
+    "scope": "Public error fidelity subset; existing conversion was already fixed and full ChildProcess/runtime finding remains open"
+  },
+  "sourceImplemented": [
+    "Convert real native errno through pinned ErrnoException and compiler-selected UV data rather than mutating native error or hardcoding POSIX numbers",
+    "Preserve ESRCH false/EINVAL+ENOSYS throw/other synchronous errors and success-only killed state",
+    "Keep existing zero/default/unknown/lowercase validation and actual native delegation; preserve all control assertions with repo-root adaptation only"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-child168-source-r1/report.json",
+    "sha256": "005b1820848543d00a809d16c803207a0eb411296d68431c7863b493625ce858",
+    "guardedInputs": 786,
+    "scope": "Current actual ChildProcess kill/spawn frontend and unchanged pinned error/conversion code over explicit native status and real-own-child boundaries; no guest permission/process/JSAPI/fourhost proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-child168-affected-r1.json",
+    "sha256": "541efd349f22ffed54df7576cd276c489e6bf04cb734b385c14760362e485892",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-child168-source-r1/report.json",
+    "sha256": "005b1820848543d00a809d16c803207a0eb411296d68431c7863b493625ce858",
+    "frontendJudgesPassed": 35,
+    "frontendJudgesFailed": 0,
+    "realOwnChildComparisons": 2,
+    "scope": "Current actual bootstrap/error owners over explicit native status and real host-child boundaries, not guest"
+  },
+  "sealedEvidence": {
+    "report": ".context/child-kill-owner-agent/REPORT.json",
+    "sha256": "7e1ac603adb68e216f2246ba6ac8a665c2a5f91d646b1d7e79bd8df522aec186",
+    "reusedEvidence": true,
+    "scope": "Original before10mismatches/after35pass,2realchildren and exact pinned ownership/dependency source; all harness history retained"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/child-kill-owner-agent/SEAL.json",
+      "sha256": "5ae6942608010ab81f86c9c3e87e888f7d3ece25f44feb3f93f65d66071402a2",
+      "kind": "actual-preimage-and-harness-history",
+      "reason": "10before mismatches, initial33case evidence and --live filename harness setup error retained"
+    }
+  ],
+  "remaining": [
+    "Actual guest signal delivery/errors/credentials/process state and allfourhost artifacts",
+    "Complete ChildProcess public type/prototype/descriptor/inherited/Symbol contracts",
+    "IPC/fork/extra stdio/options/abort/timeout/maxBuffer/exceptional wait/nativeGC lifecycle"
+  ],
+  "at": "2026-11-07T01:26:35.001991+00:00",
+  "recipeRevision": 168,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

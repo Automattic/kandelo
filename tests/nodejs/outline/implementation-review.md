@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source168 integrates actual ChildProcess.kill public error ownership.35current differential judges, two real-own-child comparisons and14package checks pass with explicit native boundaries; guest process/permissions/JSAPI/fourhost remain open.
+See [source scope](child-kill-error-integration.md).
+
 Source167 integrates real scopedIPv6 DNS parsing/configuration consumers.44current native-dependent cases and14package checks pass; nativeJSAPI/query/provider/source-bind/guest/fourhost remain open.
 See [source scope](dns-scoped-address-integration.md).
 
