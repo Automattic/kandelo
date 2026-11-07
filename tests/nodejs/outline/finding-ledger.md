@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 150 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 151 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 219 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 218 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -705,3 +705,19 @@ accounting stays292; this overlay runs no runtime test/build/compile. Overall
 suites and full product rebuild stay deferred. Targeted current engine
 compilation is planned separately. Private import-meta and connected shutdown
 source work remains excluded until root integration.
+
+
+## Source228 native import metadata ownership
+
+The original loading-contracts.md L-028 now links this partial real metadata
+initializer/bridge contribution. Genuine native lazy DATA dirname/filename
+cells stay on the actual rooted metadata owner instead of eager copies.
+Seventeen current native-dependent groups/14package checks preserve original
+probe/baseline failures. Patch-context-only normalization changes no actual C++
+pre/post bytes; its style failure and exact replay evidence remain preserved.
+Main/resolve/fullmetadata, source-map compile/cache/stack prerequisites and
+actual new bridge/GC/guest/four-host behavior remain open. No finding closes.
+
+All19families remain partial. This ledger overlay runs no runtime/compiler;
+accounting stays292. Targeted frozen-source current engine build is next,
+separate from full product rebuilding and overall suites, which remain deferred.

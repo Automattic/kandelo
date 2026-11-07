@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T16:54:10.223445+00:00",
-  "sourceHead": "b5879db959c32b72a4fe88d6c0eefaa31b275f50",
-  "recipeRevision": 227,
+  "at": "2026-11-07T17:08:43.860058+00:00",
+  "sourceHead": "86195f14278460e0806c39d9444cdd3b861903db",
+  "recipeRevision": 228,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 150,
+    "sourceSliceRecords": 151,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 219
+    "findingsWithoutExplicitOrProposedSourceSlice": 218
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,23 +26,22 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 150,
+  "sourceSliceIdentitiesVerified": 151,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "48815ae1344e288592fcaa98074a9837a74eee83a52f78b2bcc77d6ea60e2c22"
+    "sha256": "a7e9bd66a36fa0840e54acd87f1f9b91176a70ada21a185385b2b798e81bceeb"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Qualified source/evidence links only; original definitions/ranges and unresolved semantics unchanged.",
   "previousIntegrityIdentity": {
-    "sha256": "6bca32c2cdef476746932328fc035d9d13b4f1f94a1827d8a7e11093af8305bd",
-    "sourceHead": "1b875621d961b7e3bb6a56423af44f3679a58017",
+    "sha256": "c22e87c3fbfddce545b20a965cd3ccfd1642ccf06ef3ad4d3b2b7f4bdb886e4b",
+    "sourceHead": "b5879db959c32b72a4fe88d6c0eefaa31b275f50",
     "scope": "Preserved in prior commit and source snapshot history"
   },
   "sourceProgressOverlaysAdded": [
-    "child-exec",
-    "timers-promises"
+    "import-meta-lazy"
   ],
   "qualifiedReferenceCorrections": [
     {

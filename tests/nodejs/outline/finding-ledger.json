@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 150,
+    "sourceSliceRecords": 151,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 219
+    "findingsWithoutExplicitOrProposedSourceSlice": 218
   },
   "families": [
     {
@@ -494,7 +494,7 @@
         "L-032",
         "L-033"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 9,
+      "findingsWithExplicitOrProposedSourceSlices": 10,
       "sourceRouteAsRecorded": "Partial pinned Module.wrap/wrapper and patched-script source owners with single exports snapshot; Real native parser goals and direct CJS body compilation, pinned filename/package/entry selection and shared ESM source format in103; Module record/require/JSON, package cache/reader, exports/imports/conditions/self/maps and SourceMap algorithms; source153 pinned synchronous CJS hook registration/chaining/disposal, actual supplied-source execution and resolver/cache transactions",
       "remainingAsRecorded": "Actual guest parser/error/source/realm evidence; complete ESM supplied-source execution/hooks, async loader workers, remaining CJS/CLI/cache behavior and ESM URL/namespace/JSON/async/cycle/dynamic-import graphs; TypeScript/Wasm/addon/source-map/cache/preload/CLI/permission/lifecycle owners; four-host conformance",
       "remainingOwner": "Actual CJS/ESM graph/resolver/cache/compiler/hook/CLI owners",
@@ -7418,7 +7418,16 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "import.meta.filename/main are absent; dirname/url are eager copied enumerable properties and require is an extra Bun extension (`bootstrap:6650\u20136670`, patch0016). Target src/module_wrap.cc:1320\u20131384 creates file-only lazy dirname/filename, actual entry main, lazy scoped resolve and actual URL. Resolve-only prevents CJS evaluation, but target missing-file file: URLs, optional parentURL flag, hook restrictions, encoded URLs and correct result/error/descriptor semantics remain incomplete.",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "import-meta-lazy",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/loading-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual import.meta path-property lazy DATA owner/initializer/bridge; main, resolver, full metadata and source-map prerequisites remain open.",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "package-policy",
         "package-reader"
@@ -24648,6 +24657,97 @@
       "auditDocument": "tests/nodejs/audit/timer-contracts.md",
       "findingScope": "Actual Promise timer option/getter/error/listener/reaction and shared timer insertion prerequisites. No full scheduler/native loop/async or finding closure.",
       "additionalAuditDocuments": {}
+    },
+    "import-meta-lazy": {
+      "document": "tests/nodejs/outline/import-meta-lazy-finding-progress.json",
+      "sha256": "88842d4da3d81b00042341ea33adfb550ffb811ad4ca8cb163e8cbac3a014990",
+      "recordedRevision": 228,
+      "explicitFindingIds": [
+        "L-028"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-meta228-source-r1/report.json",
+          "sha256": "fdae0cc6506eaa26f636229ea4a024cbbc7336d507e90dc134290bfd6fa5c9a7",
+          "guardedInputs": 891,
+          "scope": "Actual metadata-object initializer and lazy filename/dirname ownership, existing genuine lazy DATA reference dependency and17native metadata groups. New native ModuleLoader bridge uncompiled; main/resolve/fullshape/guest/fourhost remain open."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-meta228-affected-r1.json",
+          "sha256": "c0c7c5371f28db2b819b3409273c733844e7ead812b12d984223f8d5100fa600",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-meta228-source-r1/report.json",
+          "sha256": "fdae0cc6506eaa26f636229ea4a024cbbc7336d507e90dc134290bfd6fa5c9a7",
+          "nativeDependentGroups": 17,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "newModuleLoaderBridgeCompiled": false,
+          "scope": "Fresh current production initializer/installation over explicit existing V8 lazy addon/URL/CJS/VM and actual native reference ModuleWraps. Candidate-only conversion counts distinguish lazy cells from old eager require owner. No SpiderMonkey bridge/GC/realm/guest or fullmetadata proof."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/import-meta-lazy-owner-agent/handoff/report.json",
+          "sha256": "7690f1738cda13ba73f7d4d9ea743f7ece776f4402eef7969ad8ac96c91435a9",
+          "reusedEvidence": true,
+          "scope": "Original17native/after matches vs14/17baseline, actual native rootedge probe and existing lazy-reference addon reused;0compilers. SourceMap prerequisite remains separate, no fullmetadata activation."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/import-meta-lazy-owner-agent/handoff/report.json",
+          "sha256": "7690f1738cda13ba73f7d4d9ea743f7ece776f4402eef7969ad8ac96c91435a9",
+          "scope": "Original14/17baseline semantic matches and3load-only native URL resolution setup failures retained; genuine resolve+load hooks corrected probe reachability, not path assertions or actual rootedge behavior."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/import-meta-lazy-review-agent/REPORT.md",
+          "sha256": "f7fb125db83b77f6ffeb69c843d97cf36956a3b0b4f6b703eeaf379b8271d4e1",
+          "scope": "Independent rooted call/owner success-cache/lazy payload/property mutation/URL capture review,56members verified, no new P1/P2. No runtime/compiler/build proof."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/source-map-owner-prerequisite-agent/REPORT.md",
+          "sha256": "c6f20f58947d0f066b6cc61cd6ead4e8e494e905bea0a9a0d15e12dd8d0fb4ee",
+          "scope": "L-033actual compile/private weak cache/coverage/stack-formatter/CallSite prerequisites documented. No inert cache export, fake enabled flag or accepted engine exclusion."
+        },
+        {
+          "field": "$.patchRepresentationCorrection",
+          "report": "tests/nodejs/outline/import-meta-patch-encoding-correction.json",
+          "sha256": "84ceb471b45e06d693d86b89375df9511517f752ba786121b052f016b5e6f41c",
+          "scope": "Only unified-diff context encoding changed to zero context; actual pre/post C++bytes unchanged and strict original inverse/new forward/inverse/forward replay verified. Original patch/log/checkpoint snapshot preserved."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/import-meta-lazy-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/import-meta-lazy-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Pass actual rooted native-created metadata object into shared initializer and preserve same-object lazy cells without eager copy",
+        "Install genuine native lazy DATA dirname/filename properties using existing real cell owner/lifecycle",
+        "Capture immutable genuine branded URL/private conversion inputs and real authority before user mutation",
+        "Port exact pinned native path helper separator algorithm, including verified native empty root dirname",
+        "Preserve existing genuine eager require extension and legacy record/default-shell path; declare normal additive engine patch0166 and two runtime inputs"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/import-meta-lazy-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual import.meta.main/isMain module-entry ownership, resolver policy/lazy identity/hooks/thread and full metadata shape/order",
+        "Compile and exercise new native bridge and actual SpiderMonkey lazy DATA/GC/CCW/reentry/OOM/init failure behavior",
+        "Guest canonical URL/path/CJS/ModuleObject lifecycle and identified Node/Chromium/Firefox/WebKit evidence",
+        "Actual source-map compile/private weak cache/coverage/CallSite/native stack formatter prerequisites; no exclusion or finding closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/loading-contracts.md",
+      "findingScope": "Partial actual import.meta path-property lazy DATA owner/initializer/bridge; main, resolver, full metadata and source-map prerequisites remain open.",
+      "additionalAuditDocuments": {}
     }
   },
   "dependencyNarratives": {
@@ -27058,6 +27158,23 @@
         "fourHostConformance": false,
         "individualApiClosure": false,
         "scope": "Actual public child exec/execFile output/callback/custom-promise and complete pinned shared Promise timers/construction/insertion owners. Mandatory timeout evidence addendum and all original/intermediate failures retained. Native components only, no guest/four-host/API/family closure."
+      },
+      {
+        "at": "2026-11-07T17:08:43.860058+00:00",
+        "sourceCheckpoint": 228,
+        "sourceHead": "86195f14278460e0806c39d9444cdd3b861903db",
+        "addedSourceSlices": [
+          "import-meta-lazy"
+        ],
+        "latestAcceptedEngine": 200,
+        "currentCombinedEngineCompiled": false,
+        "currentKernelTypechecked": true,
+        "currentKernelLinked": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "scope": "Actual native-created import metadata/lazy DATA path-property owner, preserved original probe/nonpasses and patch-context correction. Native components/source only; current bridge/guest/fourhost/main/resolve/source-map gaps remain open."
       }
     ]
   }
