@@ -8176,6 +8176,9 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "vfs_metadata" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
+            "channel_scalar_contract" => {
+                classify_channel_scalar_contract(key, old_value, new_value, &mut report)?
+            }
             // A newly added section joins one surface list. Moving an existing
             // section between surfaces changes what programs bind to, so it is
             // a removal from one list and stays breaking.
@@ -8291,6 +8294,82 @@ fn classify_host_adapter(
                     .breaking
                     .push(format!("added host_adapter field {key:?}"));
             }
+        }
+    }
+
+    Ok(())
+}
+
+/// Classify the per-syscall scalar-marshalling table and the defaults an
+/// unlisted syscall falls back to.
+///
+/// WHY `syscalls` here is additive but the defaults are not: an already-linked
+/// libc marshals a call from the entry it was built with, and a syscall number
+/// the table did not list was unreachable through the declared contract — it
+/// had no `syscalls` entry either, so no program could issue it as part of the
+/// contract. Adding such an entry therefore cannot change how an existing
+/// program marshals any call it can already make. This is the same argument
+/// recorded for `ioctl_request_contracts` above. Changing or removing a listed
+/// entry restages a live call's arguments and stays breaking, and so does
+/// changing `default_argument_kind` or `default_result_kind`, which govern
+/// every syscall the table does *not* list.
+///
+/// Whether the newly reachable syscall's *behavior* is safe for programs that
+/// predate it is a separate question no classifier can answer; see
+/// `crate::accepted_program_digests`.
+fn classify_channel_scalar_contract(
+    section: &str,
+    old: &Value,
+    new: &Value,
+    report: &mut CompatReport,
+) -> Result<(), String> {
+    let old_obj = old
+        .as_object()
+        .ok_or_else(|| format!("old {section} section must be a JSON object"))?;
+    let new_obj = new
+        .as_object()
+        .ok_or_else(|| format!("new {section} section must be a JSON object"))?;
+
+    for key in old_obj.keys() {
+        let Some(new_value) = new_obj.get(key) else {
+            report
+                .breaking
+                .push(format!("removed {section} field {key:?}"));
+            continue;
+        };
+        if key == "syscalls" {
+            classify_additive_array(
+                &format!("{section}.syscalls"),
+                &old_obj[key],
+                new_value,
+                report,
+                |entry| {
+                    let number = entry
+                        .get("number")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| {
+                            format!("{section}.syscalls entry missing numeric number: {entry}")
+                        })?;
+                    if entry.get("musl_name").and_then(Value::as_str).is_none() {
+                        return Err(format!(
+                            "{section}.syscalls entry missing string musl_name: {entry}"
+                        ));
+                    }
+                    Ok(number.to_string())
+                },
+            )?;
+        } else if &old_obj[key] != new_value {
+            report
+                .breaking
+                .push(format!("changed {section} field {key:?}"));
+        }
+    }
+    // A field nobody has judged yet is breaking by default.
+    for key in new_obj.keys() {
+        if !old_obj.contains_key(key) {
+            report
+                .breaking
+                .push(format!("added {section} field {key:?}"));
         }
     }
 
@@ -9795,6 +9874,103 @@ mod tests {
             }),
         );
         snapshot
+    }
+
+    fn snapshot_with_channel_scalar_contract() -> Value {
+        let mut snapshot = base_snapshot();
+        snapshot.as_object_mut().unwrap().insert(
+            "channel_scalar_contract".into(),
+            json!({
+                "default_argument_kind": "i32",
+                "default_result_kind": "i32",
+                "syscalls": [{
+                    "arguments": [{"index": 2, "kind": "process-size"}],
+                    "musl_name": "read",
+                    "number": 3,
+                    "result": "i32",
+                }],
+            }),
+        );
+        snapshot
+    }
+
+    #[test]
+    fn adding_a_channel_scalar_contract_syscall_is_compatible() {
+        let old = snapshot_with_channel_scalar_contract();
+        let mut new = snapshot_with_channel_scalar_contract();
+        new["channel_scalar_contract"]["syscalls"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "arguments": [{"index": 2, "kind": "u32"}],
+                "musl_name": "syslog",
+                "number": 304,
+                "result": "i32",
+            }));
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added channel_scalar_contract.syscalls entry \"304\""]
+        );
+    }
+
+    #[test]
+    fn restaging_or_dropping_a_channel_scalar_contract_syscall_is_breaking() {
+        let old = snapshot_with_channel_scalar_contract();
+
+        let mut restaged = snapshot_with_channel_scalar_contract();
+        restaged["channel_scalar_contract"]["syscalls"][0]["arguments"][0]["kind"] = json!("u32");
+        let report = classify_compat_change(&old, &restaged).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["changed channel_scalar_contract.syscalls entry \"3\""]
+        );
+
+        let mut dropped = snapshot_with_channel_scalar_contract();
+        dropped["channel_scalar_contract"]["syscalls"] = json!([]);
+        let report = classify_compat_change(&old, &dropped).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["removed channel_scalar_contract.syscalls entry \"3\""]
+        );
+    }
+
+    /// The defaults govern every syscall the table does NOT list, so an
+    /// existing program's unlisted calls change meaning when one moves.
+    #[test]
+    fn changing_a_channel_scalar_contract_default_or_adding_a_field_is_breaking() {
+        let old = snapshot_with_channel_scalar_contract();
+
+        for field in ["default_argument_kind", "default_result_kind"] {
+            let mut new = snapshot_with_channel_scalar_contract();
+            new["channel_scalar_contract"][field] = json!("i64");
+            let report = classify_compat_change(&old, &new).unwrap();
+            assert_eq!(
+                report.breaking,
+                vec![format!("changed channel_scalar_contract field {field:?}")]
+            );
+        }
+
+        let mut grown = snapshot_with_channel_scalar_contract();
+        grown["channel_scalar_contract"]["default_pointer_kind"] = json!("u32");
+        let report = classify_compat_change(&old, &grown).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["added channel_scalar_contract field \"default_pointer_kind\""]
+        );
+
+        let mut shrunk = snapshot_with_channel_scalar_contract();
+        shrunk["channel_scalar_contract"]
+            .as_object_mut()
+            .unwrap()
+            .remove("default_result_kind");
+        let report = classify_compat_change(&old, &shrunk).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["removed channel_scalar_contract field \"default_result_kind\""]
+        );
     }
 
     #[test]
