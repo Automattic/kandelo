@@ -1,4 +1,5 @@
 #include "kandelo-node-cipher-operations.h"
+#include "kandelo-node-rsa-operations.h"
 #include "kandelo-node-native-encoding.h"
 #include <openssl/rsa.h>
 namespace {
@@ -66,6 +67,83 @@ static bool KandeloCipherInfo(JSContext* cx, const CallArgs& args, MutableHandle
       (iv && !number("ivLength", iv))) return false;
   result.setObject(*object); return true;
 }
+// Public RSA transforms reuse actual immutable key material and original byte
+// allocations. No JS pointer remains live across conversion/getter callbacks.
+static bool KandeloRsaTransform(JSContext* cx,const CallArgs& args,MutableHandleValue result) {
+  using Material=kandelo::crypto::KeyMaterial;
+  using Operation=kandelo::crypto::RsaOperation;
+  int64_t operationNumber;if(!KandeloFsInteger(cx,args.get(1),0,3,&operationNumber))return false;
+  const auto operation=Operation(operationNumber);
+  RootedObject handle(cx,KandeloKeyUnwrap(cx,args.get(2)));if(JS_IsExceptionPending(cx))return false;
+  RootedValue materialOwner(cx);std::unique_ptr<Material> parsed;
+  const Material* material=nullptr;
+  if(handle&&JS::GetClass(handle)==&KandeloKeyHandleClass) {
+    materialOwner=JS::GetReservedSlot(handle,0);material=KandeloKeyMaterial(handle);
+    if(!material||material->isSecret)throw kandelo::crypto::KeyError("Invalid key object type","ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE");
+  } else {
+    int64_t format=1,encoding=1;
+    if(!args.get(3).isNullOrUndefined()&&!KandeloFsInteger(cx,args.get(3),0,6,&format))return false;
+    if(Material::Format(format)==Material::Format::JWK) {
+      if(!args.get(2).isObject()){JS_ReportErrorASCII(cx,"RSA JWK requires an object");return false;}
+      RootedObject jwk(cx,&args[2].toObject());
+      handle=JS_NewObjectWithGivenProto(cx,&KandeloKeyHandleClass,nullptr);RootedValue ignored(cx);
+      // Public-or-private consumption imports either kind. The actual EVP key,
+      // not this temporary handle's projected role, determines the operation.
+      if(!handle||!KandeloKeyImportJwk(cx,handle,1,jwk,&ignored))return false;
+      materialOwner=JS::GetReservedSlot(handle,0);material=KandeloKeyMaterial(handle);
+    } else if(Material::Format(format)==Material::Format::STORE) {
+      if(operation==Operation::Encrypt||operation==Operation::Recover)
+        throw kandelo::crypto::KeyError("URLs for OpenSSL STORE loaders are only accepted for private keys","ERR_INVALID_ARG_VALUE");
+      throw kandelo::crypto::KeyError("OpenSSL STORE key loading is not implemented","ERR_METHOD_NOT_IMPLEMENTED");
+    } else {
+      kandelo::crypto::Bytes bytes,passphrase;
+      if(!KandeloKeyCopyRaw(cx,args.get(2),&bytes))return false;
+      if(Material::Format(format)==Material::Format::RAW_PUBLIC||Material::Format(format)==Material::Format::RAW_PRIVATE||Material::Format(format)==Material::Format::RAW_SEED) {
+        std::string type,curve;if(!KandeloKeyString(cx,args.get(4),&type))return false;
+        if(args.get(6).isString()&&!KandeloKeyString(cx,args.get(6),&curve))return false;
+        parsed=Material::Raw(bytes,Material::Format(format),type,curve);
+      } else {
+        if(!args.get(4).isNullOrUndefined()&&!KandeloFsInteger(cx,args.get(4),0,3,&encoding))return false;
+        const bool hasPassphrase=!args.get(5).isNullOrUndefined();
+        if(hasPassphrase&&!KandeloKeyCopy(cx,args.get(5),&passphrase))return false;
+        parsed=Material::Parse(false,bytes,Material::Configuration(int(format),int(encoding),hasPassphrase?&passphrase:nullptr));
+      }
+      material=parsed.get();
+    }
+  }
+  KandeloCryptoByteSource input(cx);
+  if(!input.Init(args.get(7))) {
+    if(!JS_IsExceptionPending(cx))JS_ReportErrorASCII(cx,"RSA input requires actual buffer storage");return false;
+  }
+  if(input.Length()>INT_MAX)throw kandelo::crypto::KeyError("buffer is too long","ERR_OUT_OF_RANGE");
+  auto original=input.Capture();if(!original)return false;
+  uint32_t padding;if(!JS::ToUint32(cx,args.get(8),&padding))return false;
+  kandelo::crypto::RsaImplicitRejection(material->asymmetric,operation,padding);
+  std::string hashName,mgfName;
+  if(args.get(9).isString()&&!KandeloKeyString(cx,args.get(9),&hashName))return false;
+  auto digest=kandelo::crypto::RsaDigest(args.get(9).isString()?hashName.c_str():nullptr);
+  JS::KandeloBacking::SpanRef label;
+  if(!args.get(10).isUndefined()) {
+    KandeloCryptoByteSource source(cx);
+    if(!source.Init(args.get(10))){if(!JS_IsExceptionPending(cx))JS_ReportErrorASCII(cx,"RSA label requires actual buffer storage");return false;}
+    if(source.Length()>INT_MAX)throw kandelo::crypto::KeyError("oaepLabel is too big","ERR_OUT_OF_RANGE");
+    label=source.Capture();if(!label)return false;
+  }
+  if(args.get(11).isString()&&!KandeloKeyString(cx,args.get(11),&mgfName))return false;
+  auto mgf=kandelo::crypto::RsaDigest(args.get(11).isString()?mgfName.c_str():nullptr);
+  kandelo::crypto::Bytes bytes,labelBytes;
+  KandeloCryptoCopy(original->Shared()?SharedMem<uint8_t*>::shared(original->Data()):SharedMem<uint8_t*>::unshared(original->Data()),original->Length(),&bytes);
+  if(label)KandeloCryptoCopy(label->Shared()?SharedMem<uint8_t*>::shared(label->Data()):SharedMem<uint8_t*>::unshared(label->Data()),label->Length(),&labelBytes);
+  // Use stable real storage for zero-length spans too, as the pinned foreign
+  // ByteSource does. No payload copy precedes reentrant padding conversion.
+  const unsigned char empty=0;
+  auto output=kandelo::crypto::RsaTransform(material->asymmetric,operation,padding,digest,mgf,
+      {labelBytes.value.empty()?&empty:labelBytes.value.data(),labelBytes.value.size()},
+      {bytes.value.empty()?&empty:bytes.value.data(),bytes.value.size()});
+  RootedObject data(cx,KandeloNewUint8ArrayCopy(cx,output.get<unsigned char>(),output.size()));
+  if(!data)return false;result.setObject(*data);return true;
+}
+
 static bool KandeloCipherDispatch(JSContext* cx, const CallArgs& args, MutableHandleValue result) {
   std::string op; if (!KandeloKeyString(cx, args.get(0), &op)) return false;
   if (op == "constants") {
@@ -74,6 +152,7 @@ static bool KandeloCipherDispatch(JSContext* cx, const CallArgs& args, MutableHa
         !JS_DefineProperty(cx, object, "RSA_PKCS1_PADDING", RSA_PKCS1_PADDING, JSPROP_ENUMERATE)) return false;
     result.setObject(*object); return true;
   }
+  if (op == "rsa") return KandeloRsaTransform(cx,args,result);
   if (op == "info") return KandeloCipherInfo(cx, args, result);
   if (op == "list") {
     std::vector<std::string> names;

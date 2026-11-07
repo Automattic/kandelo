@@ -1,0 +1,108 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto.md",
+    "findingIds": [
+      "C-001",
+      "C-015"
+    ],
+    "relatedFamilies": [
+      "crypto",
+      "values",
+      "engine",
+      "secure-network"
+    ],
+    "scope": "Actual four one-shot RSA cipher transforms and material/range/guard prerequisite; not public signatures/keygen/STORE/WebCrypto, all per-callsite semantics or finding closure"
+  },
+  "sourceImplemented": [
+    "Four complete pinned public RSA wrappers are actually exported and call existing curated cipherOperation; throwing unavailable bindings replaced by actual RSA dispatch",
+    "Native dispatch consumes genuine immutable KeyMaterial or existing real PEM/DER/JWK/raw importer and retains its independent rooted material edge through reentrant option conversion",
+    "Capture original input allocation/range before Uint32(padding), read actual bytes afterward, atomically load shared bytes and retain real provider output through engine allocation",
+    "Actual PKCS1 private-decrypt key-context implicit-rejection query and fatal allocation invariant preserve exact pinned ordering before digest/label/MGF1 checks; no unsafe fallback or invented capability",
+    "Actual ncrypto::Cipher encrypt/decrypt/sign/recover operations reuse shared genuine native Error queue/decorations/property behavior; raw RSA sign/recover are not public Sign/Verify support",
+    "Declare/stage actual RSA portable header, preserve source/target/ABI pins and regenerate the combined bundle without overwriting newer source"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-rsa187-source-r1/report.json",
+    "sha256": "eb3504912959dc6068b992475f33f6d48d5b6c4307106bf16beb3c9e0a82ebad",
+    "guardedInputs": 836,
+    "scope": "Four actual RSA transforms over retained original input range/immutable material and real provider guard; scoped native components/upstream controls, no current guest JSAPI/STORE/GC/realm/fourhost conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-rsa187-affected-r1.json",
+    "sha256": "66fb9ecafdd6ca82d731ab2d98323316eef668fcee554ce6ff2fe50b87c451bc",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-rsa187-source-r1/report.json",
+    "sha256": "eb3504912959dc6068b992475f33f6d48d5b6c4307106bf16beb3c9e0a82ebad",
+    "focusedNativeComponentGroups": 71,
+    "wholeUnchangedUpstreamFiles": 2,
+    "subjectsPerFile": 2,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Actual current four RSA methods over identified native ncrypto/OpenSSL artifact and explicit native key/JWK-DER/stream/private Buffer dependencies; not guest private slot/security/GC/material transfer/resize or complete crypto/fourhost conformance."
+  },
+  "sealedEvidence": {
+    "report": ".context/rsa-transforms-owner-agent/report.json",
+    "sha256": "4e81f2771454a23f8c5af7ad314ddbdeff7a2bd90a3d63178a68e608015221a0",
+    "reusedEvidence": true,
+    "scope": "71focused groups and2whole unchanged upstream files per subject,37source checks/825private inputs, exact final compiler dependency/source/header/artifact identities.4tiny compiler attempts/2failures; native key export arity SIGABRT retained as fixture nonpass. GuestJSAPI uncompiled."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/rsa-transforms-owner-agent/initial-source-setup-failure.json",
+      "sha256": "fd2bdfd893148ec728c94c6a6e8e81d63c78e8218403e201de4c2681431cf848",
+      "kind": "source-edit-indentation-assumption",
+      "reason": "Initial editor expected4space input declarations; actual2space insertion corrected with original failed setup retained."
+    },
+    {
+      "report": ".context/rsa-transforms-owner-agent/controls-r1.stderr",
+      "sha256": "cd80e394420871f29afb43c8dcf203a05187cf12ad46754bece0b53cbaf0c682",
+      "kind": "missing-generated-header-native-fixture-compile-failure",
+      "reason": "Tiny fixture initially lacked generated encoding header; exact compiler output retained."
+    },
+    {
+      "report": ".context/rsa-transforms-owner-agent/controls-r2.stderr",
+      "sha256": "e9d3d11a9d8814aa7c05819f9164c2c8c1ed2a0a27940d0d9a1142e20bb8ec34",
+      "kind": "portable-helper-and-fixture-compile-failure",
+      "reason": "Actual helper used deleted Digest move; fixed using pinned allowed copy contract. Fixture Bytes assignment also corrected; production/helper failure not mislabeled as successful compilation."
+    },
+    {
+      "report": ".context/rsa-transforms-owner-agent/controls-r3.stderr",
+      "sha256": "f2ab4a966891e910b40eb0858f31906c11f7801823307b7c35b979ad41c76345",
+      "kind": "native-private-Buffer-prototype-comparison-fixture-failure",
+      "reason": "Compared distinct native/private Buffer prototypes despite equal bytes; now projects exact bytes and separately asserts real candidate Buffer brand/prototype. Upstream assertions unchanged."
+    },
+    {
+      "report": ".context/rsa-transforms-owner-agent/controls-r4.stderr",
+      "sha256": "47d036046103a09db26879784576bc5c350356cacab0b675fc854c92191bddd4",
+      "kind": "incorrect-native-key-export-arity-fixture-SIGABRT",
+      "reason": "Test bridge passed private export arity to public native key handle, hitting pinned CHECK. Corrected to exact public/private contracts, original abort not counted passing or blamed on runtime."
+    },
+    {
+      "report": ".context/rsa-transforms-owner-agent/upstream-report-r1.json",
+      "sha256": "3814d3a961022e847f650301e0d941a1adc813b1da744cff5e666571afaed28d",
+      "kind": "initial-unchanged-upstream-candidate-fixture-SIGABRT",
+      "reason": "Same export-arity mistake aborted candidate private-decrypt run; all initial outcomes retained alongside corrected whole-file results."
+    }
+  ],
+  "remaining": [
+    "Real OpenSSL STORE loading and existing generic key-parser/configuration/per-callsite message gaps",
+    "Actual guest JSAPI/material/private slot/JWK/raw/security-wrapper/realm/GC/OOM/resize/transfer/cancellation/teardown execution",
+    "C++ scratch/vector/control-block and opaque OpenSSL physical allocation/accounting",
+    "Actual selected guest backend/provider configuration and all-four-host identified-artifact conformance; positive native guard is not unsupported-provider or allocation-fault proof",
+    "Public Sign/Verify/keygen/exchange/KEM/provider MAC/WebCrypto/FIPS and remaining crypto/secure-network inventory gaps"
+  ],
+  "at": "2026-11-07T05:55:50.862710+00:00",
+  "recipeRevision": 187,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -4959,6 +4959,12 @@
         "start": "function getStringOption(",
         "length": 165,
         "sha256": "fe8aca84b1092ea75463733b010ef9793c570a2dc081339d4dcc813c2cdace92"
+      },
+      "rsaNative": {
+        "source": "src/crypto/crypto_cipher.cc",
+        "start": "template <PublicKeyCipher::Cipher_t cipher>\nbool PublicKeyCipher::Cipher(",
+        "length": 3549,
+        "sha256": "61d2b5f017e8f3d73745ae3b34d7f461d1c0da8d62999ef6f9ff79a081f01ccc"
       }
     },
     "scope": "Pinned public cipher classes/creators and native state reference;RSA siblings,WebCrypto and FIPS mutation/cache owners remain separate."

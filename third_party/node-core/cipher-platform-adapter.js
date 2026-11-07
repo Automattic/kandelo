@@ -24,9 +24,9 @@ function _createNodeCipherPlatform(platform) {
         setAAD(value, length) { return call('aad', this, value, length); }
         setAutoPadding(value) { return call('padding', this, value); }
     }
-    const unavailable = () => { throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('RSA cipher native owner'); };
+    const rsa = operation => (...args) => platform.codecs.copyBytes(call('rsa', operation, ...args));
     const binding = { CipherBase, getCipherInfo: (...args) => call('info', ...args),
-        privateDecrypt: unavailable, privateEncrypt: unavailable, publicDecrypt: unavailable, publicEncrypt: unavailable };
+        publicEncrypt: rsa(0), privateDecrypt: rsa(1), privateEncrypt: rsa(2), publicDecrypt: rsa(3) };
     const { validateString } = platform.values.validators;
     /* NODE_CIPHER_HELPERS */
     const dependencies = new SafeMap([
@@ -46,11 +46,12 @@ function _createNodeCipherPlatform(platform) {
         throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Cipher dependency ' + name);
     }, primordials, name => name === 'crypto' ? binding :
         name === 'constants' ? { crypto: call('constants') } : undefined);
-    const { Cipheriv, Decipheriv, getCipherInfo } = module.exports;
+    const { Cipheriv, Decipheriv, getCipherInfo, publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt } = module.exports;
     /* NODE_CIPHER_CREATORS */
     // Fetch a fresh provider list and apply the unchanged target duplicate/
     // case policy. No fabricated FIPS generation or cached capability exists.
     function providerArray(fn) { return () => fn(); }
     const getCiphers = providerArray(() => platform.digestHelpers.filterDuplicateStrings(call('list')));
-    return { Cipheriv, Decipheriv, createCipheriv, createDecipheriv, getCipherInfo, getCiphers };
+    return { Cipheriv, Decipheriv, createCipheriv, createDecipheriv, getCipherInfo, getCiphers,
+        publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt };
 }

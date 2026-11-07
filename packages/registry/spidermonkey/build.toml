@@ -223,6 +223,7 @@ inputs = [
   "third_party/node-core/native-keys.cpp",
   "third_party/node-core/native-cipher.cpp",
   "third_party/node-core/cipher-operations.h",
+  "third_party/node-core/rsa-operations.h",
   "third_party/node-core/cipher-platform-adapter.js",
   "third_party/node-core/crypto-digest-adapter.js",
   "third_party/node-core/upstream/cipher",
@@ -663,4 +664,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 186
+revision = 187

@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source187 integrates real publicEncrypt/privateDecrypt/privateEncrypt/publicDecrypt owners over pinned wrappers and existing key/byte/error layers.71focused native/component groups,2unchanged upstream files per subject and14package checks pass. Actual guest JSAPI/STORE/provider/lifecycle and four-host conformance remain open.
+See [source scope](rsa-transform-owner-integration.md).
+
 Source186 integrates genuine native lazy properties for existing util exports, pinned styleText algorithms and the actual fs.constants null-prototype allocation source fix. Focused native-dependent/upstream controls and14package checks pass; current guest/GC/realm/four-host conformance remains open.
 See [source scope](util-style-lazy-integration.md).
 
