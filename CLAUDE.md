@@ -99,6 +99,11 @@ For a reviewed patch integration, use the optional
 pinned inputs, preserve unrelated work, and journal evidence/checkpoints.
 It imports reviewed check results; command execution remains separate.
 
+For long campaigns, maintain phase checkpoints yourself; do not require the
+user to copy context or manage replacement chats. Read the focused
+[campaign guide](docs/agent-guidance/campaigns.md) when preparing a dispatch
+or handoff. Context reminders are advisory; worker rotation remains a trial.
+
 Do not stop at code reasoning for browser demo bugs, syscall semantics, ABI
 changes, package artifacts, or performance claims.
 

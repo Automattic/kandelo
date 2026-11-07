@@ -16,6 +16,7 @@ keeps every other setting; the previous file is saved next to it as
   python3 .claude/hooks/install-hooks.py --project-local  # this checkout's .claude/settings.local.json
   python3 .claude/hooks/install-hooks.py --user --check   # exit 1 if missing or out of date
   python3 .claude/hooks/install-hooks.py --user --uninstall
+  python3 .claude/hooks/install-hooks.py --user --hook context
 
 --user copies the hook to ~/.claude/hooks/kandelo-wait-guard.py and points
 user settings at that copy, rather than at a file inside whichever project is
@@ -30,27 +31,33 @@ Hooks installed:
   wait-guard.py  PreToolUse/Bash: blocks sleep-then-peek polls, `pgrep -f`
                  waiters, and subagents running whole-tree builds or full
                  suites. See evals/build-waiting/README.md (tools 8 and 8b).
+  --hook context selects the independent, advisory context-checkpoint hook.
+                 PreToolUse/all tools, once per agent at 250k context tokens.
+                 Does not enable wait-guard or rotate workers.
 """
 import argparse
 import filecmp
 import json
 import os
+import shlex
 import shutil
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-HOOK = os.path.join(HERE, "wait-guard.py")
 MARKER = "wait-guard.py"  # identifies our entry in either scope
-USER_COPY = os.path.expanduser("~/.claude/hooks/kandelo-wait-guard.py")
+PROFILES = {
+    "wait": ("wait-guard.py", "kandelo-wait-guard.py", "Bash"),
+    "context": ("context-checkpoint.py", "kandelo-context-checkpoint.py", ""),
+}
 
 
-def target(args):
+def target(args, filename, user_copy):
     if args.user:
         return (os.path.expanduser("~/.claude/settings.json"),
-                f"python3 {USER_COPY.replace(os.path.expanduser('~'), '~', 1)}")
+                f"python3 {shlex.quote(user_copy)}")
     return (os.path.join(REPO, ".claude", "settings.local.json"),
-            'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/wait-guard.py"')
+            f'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/{filename}"')
 
 
 def load(path):
@@ -61,17 +68,17 @@ def load(path):
         return {}
 
 
-def ours(hook):
-    return MARKER in (hook.get("command") or "")
+def ours(hook, marker=MARKER):
+    return marker in (hook.get("command") or "")
 
 
-def without_ours(settings):
+def without_ours(settings, marker=MARKER):
     """Settings with every entry of ours removed (empty groups dropped)."""
     out = json.loads(json.dumps(settings))
     groups = out.get("hooks", {}).get("PreToolUse", [])
     kept = []
     for group in groups:
-        hooks = [h for h in group.get("hooks", []) if not ours(h)]
+        hooks = [h for h in group.get("hooks", []) if not ours(h, marker)]
         if hooks:
             kept.append(dict(group, hooks=hooks))
     if "hooks" in out:
@@ -84,10 +91,10 @@ def without_ours(settings):
     return out
 
 
-def with_ours(settings, command):
-    out = without_ours(settings)
+def with_ours(settings, command, marker=MARKER, matcher="Bash"):
+    out = without_ours(settings, marker)
     out.setdefault("hooks", {}).setdefault("PreToolUse", []).append(
-        {"matcher": "Bash", "hooks": [{"type": "command", "command": command, "timeout": 10}]})
+        {"matcher": matcher, "hooks": [{"type": "command", "command": command, "timeout": 10}]})
     return out
 
 
@@ -110,30 +117,35 @@ def main():
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--uninstall", action="store_true")
+    ap.add_argument("--hook", choices=PROFILES, default="wait",
+                    help="independent hook to install/check/remove (default: wait)")
     args = ap.parse_args()
 
-    path, command = target(args)
+    filename, installed_name, matcher = PROFILES[args.hook]
+    source = os.path.join(HERE, filename)
+    user_copy = os.path.expanduser("~/.claude/hooks/" + installed_name)
+    path, command = target(args, filename, user_copy)
     current = load(path)
-    wanted = without_ours(current) if args.uninstall else with_ours(current, command)
+    wanted = without_ours(current, filename) if args.uninstall else with_ours(current, command, filename, matcher)
     settings_ok = current == wanted
     copy_ok = not args.user or args.uninstall or (
-        os.path.exists(USER_COPY) and filecmp.cmp(HOOK, USER_COPY, shallow=False))
+        os.path.exists(user_copy) and filecmp.cmp(source, user_copy, shallow=False))
 
     if args.check:
         if settings_ok and copy_ok:
             print(f"up to date: {path}")
             return 0
-        print(f"out of date: {path}" + ("" if copy_ok else f" (hook copy {USER_COPY} differs or is missing)"))
+        print(f"out of date: {path}" + ("" if copy_ok else f" (hook copy {user_copy} differs or is missing)"))
         print("run without --check to update")
         return 1
 
-    if args.user and args.uninstall and os.path.exists(USER_COPY):
-        os.remove(USER_COPY)
-        print(f"removed {USER_COPY}")
+    if args.user and args.uninstall and os.path.exists(user_copy):
+        os.remove(user_copy)
+        print(f"removed {user_copy}")
     if args.user and not args.uninstall and not copy_ok:
-        os.makedirs(os.path.dirname(USER_COPY), exist_ok=True)
-        shutil.copy2(HOOK, USER_COPY)
-        print(f"copied {HOOK} -> {USER_COPY}")
+        os.makedirs(os.path.dirname(user_copy), exist_ok=True)
+        shutil.copy2(source, user_copy)
+        print(f"copied {source} -> {user_copy}")
     if settings_ok:
         print(f"no change to {path}")
     else:

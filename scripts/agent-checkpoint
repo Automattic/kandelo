@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Store/check campaign notes. See docs/agent-guidance/campaigns.md."""
+from pathlib import Path
+import runpy
+import sys
+
+if len(sys.argv) == 1:
+    sys.argv.append("--help")
+
+runpy.run_path(str(Path(__file__).resolve().parents[1] /
+                  ".claude/hooks/context-checkpoint.py"), run_name="__main__")
