@@ -193,7 +193,7 @@
         "third_party/node-core/read-file-buffer.h": "5cdccef2b95d84be695faecc839a3d3864b505142de31f1eca15edfa96c5b01c",
         "packages/registry/node-compat/bootstrap.js": "87bb5e3cc1615e6ae79a5d3e9c1f1343f4638fd9de66d977e7246227e0fa312c",
         "third_party/node-core/native-work.cpp": "25a2c44fbb5d12fb3b908c6448b8f582ee66e334e6d6784b35abcc7f24296dc0",
-        "crates/runtime-core/src/syscalls.rs": "62bbf854890c0234c1104ca16cd5e646bdcbcddee5cf7a0e6ff8efd0e7c037b3",
+        "crates/runtime-core/src/syscalls.rs": "f1f006b45fefbac49e86f832ce627ec433c4060a9b2ec834f6df86c4cf71c6af",
         "crates/runtime-core/src/hostdir.rs": "f5a9e09fc5dceff205b735de8c549d6e2615f04e09fcf27ba7e7839b925e8593",
         "host/src/kernel.ts": "0781efb89b79d0bcf79426c3cbe93659cc06e78162b62e2f957cd6d96d4e0f05",
         "host/src/types.ts": "01b689dcb74a44f85226b5892496c0db1e4bd6d7c6bf9cbe335d622e17d5dc38",
@@ -204,12 +204,12 @@
         "host/src/vfs/opfs.ts": "eb4247b8b9ecee3057fc6718238941a0d8043d3fbc74793d4994b07641f60988",
         "packages/registry/spidermonkey/node-compat/adapter.js": "2ea2d233f7069016f8ff26067b93d024671f01ecc5aa5657ae4d250abf52333b"
       },
-      "sourceRoute": "Real bounded descriptor/queued copyFile owners with atomic exclusive open and actual zero-size directory type handling;hard-link,temporary-directory,logical/native realpath/readlink and full glob owners join pinned file jobs/handles,Dir/readdir/Dirent,metadata,removal and sync/callback/promise byte algorithms ; source145 metadata polling/StatWatcher owner and source146 original scalar/vector/write-job allocation spans; source147 pinned recursive cp/native worker owner; source152 actual ReadFile allocation/capacity owner through USER_OWNED handoff; source166 reusable native root value clear preserves registration; source207 actual shared epoll readiness uses retained per-instance notification epochs under its existing table lock, avoiding allocation after producer commit; wrap preserves pending events;26 native affected cases pass over698 byte-matched inputs; public notification activation and guest kernel remain unvalidated",
+      "sourceRoute": "Real bounded descriptor/queued copyFile owners with atomic exclusive open and actual zero-size directory type handling;hard-link,temporary-directory,logical/native realpath/readlink and full glob owners join pinned file jobs/handles,Dir/readdir/Dirent,metadata,removal and sync/callback/promise byte algorithms ; source145 metadata polling/StatWatcher owner and source146 original scalar/vector/write-job allocation spans; source147 pinned recursive cp/native worker owner; source152 actual ReadFile allocation/capacity owner through USER_OWNED handoff; source166 reusable native root value clear preserves registration; source207 actual shared epoll readiness uses retained per-instance notification epochs under its existing table lock, avoiding allocation after producer commit; wrap preserves pending events;26 native affected cases pass over698 byte-matched inputs; public notification activation and guest kernel remain unvalidated; source214 dormant bounded notification queue, managed descriptor/OFD/dup/read/readiness/SCM/exec and retained tmpfs opened-dentry event producers; correct hardlink replacement link count;703 root inputs match identified125-case native artifact/rerun; public ENOSYS/host-wake/metadata/providers/fork/ABI activation/guest remain gaps",
       "remainingDependencies": "Current200engine compilation/link/normal checks and cache acceptance passed; current product/runtime acceptance remains unestablished. Source149 recovery routes the historical cp callback mismatch; actual guest after-hook recovery remains unvalidated, actual native class/GC/realm/VFS acceptance, copy/shrink differences, cursor/GC/ref/OOM/realm and fd/byte-path/backend integration; notification watchers/VFS/metadata/permissions/timestamp precision/statfs and FS-022 host-path gaps remain open",
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
-        "node": "Shared actual epoll source integrated alongside unchanged engine recipe207;26 native affected cases pass,698 inputs byte matched. New guest kernel/public notifications/four-host runtime remain unvalidated.",
+        "node": "214 dormant kernel notification owners and exact703-input admission to125-case native evidence, reused not rerun at root. Public ENOSYS and wake/metadata/provider/fork/ABI/guest gaps stay open.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -790,7 +790,7 @@
         "equals": "documentation"
       },
       "selectedCurrentSourceIdentities": {
-        "tests/nodejs/outline/current-capability-reconciliation.md": "36849447f2aca8f64b224247128a720fb013eeaec4f7fb09334e397ae3ccd65d"
+        "tests/nodejs/outline/current-capability-reconciliation.md": "c5f2f3d81ab609d807a5fc1479182ac466f9d7d1ceaf21f86cbdcd4045d34917"
       },
       "sourceRoute": "This reconciliation and original requirements",
       "remainingDependencies": "Actual warning/origin/CLI/environment/activation behavior and unresolved target prose/source questions",

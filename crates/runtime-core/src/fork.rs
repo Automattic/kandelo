@@ -570,8 +570,8 @@ fn read_durable_socket_state(
 
 // ── FileType encoding ───────────────────────────────────────────────────────
 
-fn file_type_to_u32(ft: FileType) -> u32 {
-    match ft {
+fn file_type_to_u32(ft: FileType) -> Result<u32, Errno> {
+    Ok(match ft {
         FileType::Regular => 0,
         FileType::Directory => 1,
         FileType::Pipe => 2,
@@ -585,7 +585,8 @@ fn file_type_to_u32(ft: FileType) -> u32 {
         FileType::PtyMaster => 10,
         FileType::PtySlave => 11,
         FileType::PcmPlayback => 12,
-    }
+        FileType::FsNotify => return Err(Errno::EOPNOTSUPP),
+    })
 }
 
 fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
@@ -952,6 +953,18 @@ impl SerializationFailure {
     }
 }
 
+// This dormant kind has no representation in v20. Inspect only surviving
+// descriptions without allocation, writing or changing references. Existing
+// kind error/output-full precedence remains with its unchanged serializer.
+fn preflight_wire_kinds(proc: &Process, excluded_flags: u32, executable: bool) -> Result<(), Errno> {
+    let unsupported = |index| proc.ofd_table.get(index).is_some_and(|ofd| ofd.file_type == FileType::FsNotify);
+    if proc.fd_table.iter().any(|(_, fd)| fd.fd_flags & excluded_flags == 0 && unsupported(fd.ofd_ref.0))
+        || executable && proc.exe.is_some_and(|ofd| unsupported(ofd.0)) {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    Ok(())
+}
+
 /// Serialize the process state into a binary buffer for fork.
 ///
 /// Returns the number of bytes written on success, or `Errno::ENOMEM` if
@@ -961,6 +974,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 }
 
 pub(crate) fn serialize_fork_state_for_retry(proc: &Process, buf: &mut [u8]) -> Result<usize, SerializationFailure> {
+    preflight_wire_kinds(proc, FD_CLOFORK, true).map_err(SerializationFailure::Resource)?;
     let mut w = Writer::new(buf);
     serialize_fork_state_into(proc, &mut w).map_err(|error| {
         if w.output_full { SerializationFailure::OutputFull } else { SerializationFailure::Resource(error) }
@@ -1028,7 +1042,7 @@ fn serialize_fork_state_into(proc: &Process, mut w: &mut Writer<'_>) -> Result<u
         w.write_u32(index as u32)?;
         w.write_u64(ofd.ofd_id.0)?;
         write_file_id(&mut w, ofd.file_id)?;
-        w.write_u32(file_type_to_u32(ofd.file_type))?;
+        w.write_u32(file_type_to_u32(ofd.file_type)?)?;
         w.write_u32(ofd.status_flags())?;
         w.write_i64(ofd.host_handle)?;
         w.write_i64(ofd.offset())?;
@@ -1808,6 +1822,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 
 #[cfg(test)]
 fn serialize_exec_state_for_retry(proc: &Process, buf: &mut [u8]) -> Result<usize, SerializationFailure> {
+    preflight_wire_kinds(proc, FD_CLOEXEC, false).map_err(SerializationFailure::Resource)?;
     let mut w = Writer::new(buf);
     serialize_exec_state_into(proc, &mut w).map_err(|error| {
         if w.output_full { SerializationFailure::OutputFull } else { SerializationFailure::Resource(error) }
@@ -1880,7 +1895,7 @@ fn serialize_exec_state_into(proc: &Process, mut w: &mut Writer<'_>) -> Result<u
         w.write_u32(index as u32)?;
         w.write_u64(ofd.ofd_id.0)?;
         write_file_id(&mut w, ofd.file_id)?;
-        w.write_u32(file_type_to_u32(ofd.file_type))?;
+        w.write_u32(file_type_to_u32(ofd.file_type)?)?;
         w.write_u32(ofd.status_flags())?;
         w.write_i64(ofd.host_handle)?;
         w.write_i64(ofd.offset())?;

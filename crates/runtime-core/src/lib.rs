@@ -38,6 +38,7 @@ pub mod fd;
 pub mod fifo;
 pub mod fork;
 pub mod fs_changes;
+pub(crate) mod fsnotify;
 pub mod guest_ptr;
 pub mod hostdir;
 pub mod image_build_determinism;

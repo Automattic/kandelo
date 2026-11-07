@@ -1461,8 +1461,9 @@ impl Process {
         assert!(self.fd_table.release_reserved(prepared.fd), "prepared descriptor reservation changed");
     }
 
-    pub fn publish_descriptor(&mut self, prepared: PreparedDescriptor, handle: i64, flags: u32) -> i32 {
+    pub fn publish_descriptor(&mut self, mut prepared: PreparedDescriptor, handle: i64, flags: u32) -> i32 {
         assert_eq!(prepared.pid, self.pid, "prepared descriptor changed process");
+        prepared.ofd.value_mut().publish_opened_dentry();
         let index = self.ofd_table.publish(prepared.ofd, handle);
         self.fd_table.install_reserved(prepared.fd, crate::fd::OpenFileDescRef(index), flags)
             .expect("prepared descriptor reservation changed before publication");

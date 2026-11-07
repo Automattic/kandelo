@@ -445,6 +445,7 @@ pub fn manages_ofd(file_type: FileType, host_handle: i64) -> bool {
     matches!(
         file_type,
         FileType::EventFd
+            | FileType::FsNotify
             | FileType::TimerFd
             | FileType::SignalFd
             | FileType::MemFd
@@ -468,6 +469,7 @@ pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
         FileType::Regular if crate::executable_backing::is_executable_handle(host_handle) => {
             crate::executable_backing::is_live(host_handle)
         }
+        FileType::FsNotify => crate::fsnotify::is_live_handle(host_handle),
         FileType::EventFd => negative_handle_idx(host_handle)
             .is_ok_and(|idx| with_eventfds(|table| table.get(idx).is_some())),
         FileType::TimerFd => negative_handle_idx(host_handle)
@@ -639,6 +641,7 @@ pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64) -> Result<bool, Er
         FileType::Regular if crate::executable_backing::is_executable_handle(host_handle) => {
             crate::executable_backing::add_ref(host_handle)?;
         }
+        FileType::FsNotify => crate::fsnotify::retain_handle(host_handle)?,
         FileType::EventFd => {
             with_eventfds(|table| table.add_ref(negative_handle_idx(host_handle)?))?
         }
@@ -684,6 +687,7 @@ pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
     assert!(file_type != FileType::Regular || !crate::executable_backing::is_executable_handle(host_handle),
         "paired executable backings require an IO-aware release");
     match file_type {
+        FileType::FsNotify => crate::fsnotify::release_handle(host_handle),
         FileType::EventFd => negative_handle_idx(host_handle)
             .is_ok_and(|idx| with_eventfds(|table| table.release(idx))),
         FileType::TimerFd => negative_handle_idx(host_handle)

@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Current214 integrates dormant notification queue/descriptor/opened-dentry source over existing readiness.703 exact root inputs admit125 focused native cases from an identified existing artifact and fresh sealed rerun. No public inotify/fs.watch/guest/four-host acceptance is claimed.
+See [source scope](filesystem-notification-owners-integration.md).
+
 Source214 integrates real process-shared trace categories/file ownership and unchanged public trace_events/Console consumers.8/9 current component comparisons pass; failed-open native timeout remains a nonpass. Guest native bridge/teardown and four-host conformance remain unvalidated.
 See [source scope](process-tracing-owner-integration.md).
 

@@ -316,6 +316,8 @@ pub enum FileType {
     PtySlave,
     /// Playback-only PCM stream backing used by the OSS `/dev/dsp` frontend.
     PcmPlayback,
+    /// Dormant inode-notification owner. No public inotify route or v20 wire tag.
+    FsNotify,
 }
 
 /// Live cmdbuf mapping for a process's GLES2 fd.
@@ -700,6 +702,7 @@ struct SharedOfdStateInner {
     owner_pid: Cell<u32>,
     position_generation: Cell<u64>,
     epoll_identity: Cell<Option<OfdId>>,
+    opened_dentry: RefCell<Option<crate::tmpfs::OpenedDentry>>,
 }
 
 impl Drop for SharedOfdStateInner {
@@ -737,6 +740,7 @@ impl SharedOfdState {
             owner_pid: Cell::new(owner_pid),
             position_generation: Cell::new(0),
             epoll_identity: Cell::new(None),
+            opened_dentry: RefCell::new(None),
         })?))
     }
 
@@ -889,6 +893,16 @@ impl OpenFileDesc {
         self.shared_state.0.epoll_identity.set(Some(self.ofd_id));
     }
 
+    pub(crate) fn set_opened_dentry(&self, dentry: crate::tmpfs::OpenedDentry) {
+        let mut slot = self.shared_state.0.opened_dentry.borrow_mut();
+        assert!(slot.is_none(), "opened dentry replaced on a live description");*slot = Some(dentry);
+    }
+    pub(crate) fn publish_opened_dentry(&self) {
+        if let Some(dentry) = self.shared_state.0.opened_dentry.borrow_mut().as_mut() { dentry.arm(); }
+    }
+    pub(crate) fn notify_opened_dentry(&self, mask: u32, inode_too: bool) {
+        if let Some(dentry) = self.shared_state.0.opened_dentry.borrow().as_ref() { dentry.notify(mask, inode_too); }
+    }
     pub fn shared_state(&self) -> SharedOfdState {
         self.shared_state.clone()
     }

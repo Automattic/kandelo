@@ -3995,6 +3995,41 @@ to Node foreign mounts are not reported, and an inode modified through a
 hard-link name is not reported under every alias. See [WebMCP](webmcp.md)
 for the consumer-facing contract.
 
+### Dormant inode notification ownership
+
+A separate kernel-private fsnotify owner retains bounded inode watches and
+record queues. It is independent of the coalesced refresh hints above.
+An internal FsNotify fd/OFD shares its real queue through dup, SCM_RIGHTS
+and modern exec; whole-record reads and core poll/epoll consume that queue.
+Actual tmpfs producers enqueue records without allocating after their
+mutation. The already-integrated shared epoll candidate marker also avoids
+allocation while propagating producer readiness. Host parked-waiter wake
+publication is still missing; a candidate bit is not a channel wake.
+
+Regular tmpfs descriptions retain their opened dentry through shared OFD
+state while preserving inode-based data/mapping handles. Hardlinks keep
+separate entry identity, rename moves the retained entry, and unlink or
+replacement does not rebind old opens to a reused pathname. Real
+open/read/write/positioned-I/O/ftruncate/final-close producers consume that
+identity. These are partial source owners, not public watcher support.
+
+All public inotify slots still return ENOSYS. Metadata/SIGIO, complete
+watch policy, directory/rootfs/provider/mount and other operation producers,
+precise ordering/deletion retirement, actual host wake and new-kind fork
+inheritance remain implementation gaps. Version 20 tags 0–12/reader stay
+unchanged; serialization preflights surviving internal FsNotify descriptions
+and refuses them before Writer/fd/ref/child commit. Regular-file inheritance
+uses the existing shared-state relink owner. No new tag or ABI 55/snapshot/
+channel/libc change is made by this dormant composition.
+
+See the [descriptor prerequisite](fsnotify-descriptor-prerequisite.md) and
+[opened-dentry prerequisite](fsnotify-opened-dentry-prerequisite.md) for
+source scope, the frozen 55 admission/fork activation decision and remaining
+owners. The identified native component artifact passed 125 focused cases;
+it is not an identified guest kernel or four-host acceptance. A fresh
+identified kernel and guest validation remain necessary before claiming
+public support, within the existing product-rebuild deferral.
+
 ### Inspection of the live filesystem
 
 Both host workers answer `read_vfs_file`, `read_vfs_dir` and
@@ -7056,3 +7091,7 @@ Source213 retains each actual captured-terminal read allocation, generation, seq
 ### Tracing categories and output belong to the actual guest process
 
 Source214 adds a process-shared native category multiset and actual descriptor-backed trace sink, consumed by unchanged pinned trace_events and existing Console producers. Categories, file ownership, PID/TID and monotonic timestamps come from real native state. The sink handles actual short writes/EINTR, sticky errors, lazy file creation and once-only close. Public Worker contexts share process trace state while public createTracing follows pinned main-owner admission. Main teardown finishes the sink after public Node Workers join and native producers retire; this does not establish joining every shell extension thread. Failed-open native timeout remains a differential nonpass. Guest JSAPI/teardown, complete producers/metadata, CLI/file rotation/permissions/Perfetto/inspector and process.report schema remain incomplete.
+
+### Notification source composition preserves dormant activation
+
+Current source214 composes dormant queue, descriptor and retained opened-dentry owners over the existing shared epoll prerequisite. The detailed ownership and activation limits are in the descriptor and opened-dentry prerequisite notes above; all public inotify slots remain ENOSYS. Same engine214 recipe, unchanged program ABI/snapshot/channel source and existing version20 tags do not establish dynamic guest baseline acceptance. Host wake, full producers/metadata/watch policy and coherent public/fork activation remain implementation gaps.

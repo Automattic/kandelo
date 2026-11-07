@@ -258,6 +258,8 @@ struct Inode {
     /// purpose: the last *descriptor* close is the moment POSIX releases the
     /// description's locks, and a live mapping must not postpone that.
     map_pins: u32,
+    /// Real retained opened dentries pin this inode and their actual parent.
+    dentry_pins: u32,
     /// Bumped by every content mutation (see [`content_generation`]).
     content_gen: u64,
     /// Extended attributes, by full name (`user.mime_type`). Only the
@@ -279,6 +281,14 @@ struct Inode {
 }
 
 impl Inode {
+    fn notification_id(&self) -> crate::fsnotify::InodeId {
+        crate::fsnotify::InodeId::new(self.st_dev, self.ino)
+    }
+
+    fn notify(&self, mask: u32) {
+        crate::fsnotify::publish(self.notification_id(), self.is_dir(), mask, 0, b"");
+    }
+
     /// Create an inode, stamping all three timestamps with the current
     /// published wall-clock time (see `set_now`).
     fn new(kind: InodeKind, mode: u32, uid: u32, gid: u32, nlink: u32, st_dev: u64, ino: u64) -> Self {
@@ -291,6 +301,7 @@ impl Inode {
             nlink,
             open_count: 0,
             map_pins: 0,
+            dentry_pins: 0,
             content_gen: 0,
             xattrs: BTreeMap::new(),
             frozen: false,
@@ -389,6 +400,49 @@ struct DirIter {
     cursor: usize,
 }
 
+// Separate from inode-encoded data/mapping handles: hard links identify one
+// inode but distinct opened dentries. Namespace mutations update the retained
+// dentry itself, never a stale OFD pathname or a scan for any alias of an inode.
+struct OpenedDentryState {
+    inode: u32,
+    parent: u32,
+    name: [u8; 255],
+    name_len: usize,
+    linked: bool,
+    refs: u32,
+}
+impl OpenedDentryState {
+    fn name(&self) -> &[u8] { &self.name[..self.name_len] }
+}
+struct PreparedDentry {
+    index: usize,
+    new: Option<OpenedDentryState>,
+}
+/// One actual open-description interest. SharedOfdState owns this value once;
+/// dup/SCM/fork relink share that owner rather than creating spurious closes.
+pub(crate) struct OpenedDentry { index: usize, armed: bool, writable: bool, observable: bool }
+impl OpenedDentry {
+    pub(crate) fn arm(&mut self) {
+        assert!(!self.armed, "opened dentry published twice");
+        self.armed = true;
+        self.notify(crate::fsnotify::OPEN, true);
+    }
+    pub(crate) fn notify(&self, mask: u32, inode_too: bool) {
+        if self.armed && self.observable { TMPFS.with(|state| state.notify_opened(self.index, mask, inode_too)); }
+    }
+}
+impl Drop for OpenedDentry {
+    fn drop(&mut self) {
+        TMPFS.with(|state| {
+            if self.armed && self.observable {
+                let mask = if self.writable { crate::fsnotify::CLOSE_WRITE } else { crate::fsnotify::CLOSE_NOWRITE };
+                state.notify_opened(self.index, mask, true);
+            }
+            state.release_opened(self.index);
+        });
+    }
+}
+
 struct TmpfsState {
     /// Inode slab; index is the inode's stable table index (distinct from `ino`).
     inodes: Vec<Option<Inode>>,
@@ -406,9 +460,70 @@ struct TmpfsState {
     byte_limits: Vec<Option<u64>>,
     free_dir_iters: Vec<u32>,
     next_ino: u64,
+    opened_dentries: crate::IoBuffer<Option<OpenedDentryState>>,
 }
 
 impl TmpfsState {
+    fn notify_child(&self, parent: u32, name: &[u8], is_dir: bool, mask: u32, cookie: u32) {
+        if let Some(inode) = self.get(parent) {
+            crate::fsnotify::publish(inode.notification_id(), is_dir, mask, cookie, name);
+        }
+    }
+
+    fn prepare_opened(&mut self, parent: u32, name: &[u8], target: Option<u32>) -> Result<PreparedDentry, Errno> {
+        if name.len() > 255 { return Err(Errno::ENAMETOOLONG); }
+        if let Some(index) = self.opened_dentries.iter().position(|slot| slot.as_ref().is_some_and(|d|
+            d.linked && d.parent == parent && d.name() == name && Some(d.inode) == target)) {
+            self.opened_dentries[index].as_ref().unwrap().refs.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+            return Ok(PreparedDentry { index, new: None });
+        }
+        self.get(parent).ok_or(Errno::ENOENT)?.dentry_pins.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        if let Some(inode) = target { self.get(inode).ok_or(Errno::ENOENT)?.dentry_pins.checked_add(1).ok_or(Errno::EOVERFLOW)?; }
+        let index = self.opened_dentries.iter().position(Option::is_none).unwrap_or(self.opened_dentries.len());
+        if index == self.opened_dentries.len() { self.opened_dentries.try_reserve(1)?; }
+        let mut bytes = [0; 255];bytes[..name.len()].copy_from_slice(name);
+        Ok(PreparedDentry { index, new: Some(OpenedDentryState { inode: 0, parent, name: bytes, name_len: name.len(), linked: true, refs: 1 }) })
+    }
+    fn publish_opened(&mut self, mut prepared: PreparedDentry, inode: u32, writable: bool, observable: bool) -> OpenedDentry {
+        if let Some(mut entry) = prepared.new.take() {
+            entry.inode = inode;
+            self.get_mut(inode).unwrap().dentry_pins += 1;
+            self.get_mut(entry.parent).unwrap().dentry_pins += 1;
+            if prepared.index == self.opened_dentries.len() { self.opened_dentries.push(Some(entry)); }
+            else { self.opened_dentries[prepared.index] = Some(entry); }
+        } else { self.opened_dentries[prepared.index].as_mut().unwrap().refs += 1; }
+        OpenedDentry { index: prepared.index, armed: false, writable, observable }
+    }
+    fn notify_opened(&self, index: usize, mask: u32, inode_too: bool) {
+        let dentry = self.opened_dentries[index].as_ref().expect("retained opened dentry missing");
+        let inode = self.get(dentry.inode).expect("retained opened inode missing");
+        self.notify_child(dentry.parent, dentry.name(), inode.is_dir(), mask, 0);
+        if inode_too { inode.notify(mask); }
+    }
+    fn release_opened(&mut self, index: usize) {
+        let entry = self.opened_dentries[index].as_mut().expect("retained opened dentry missing");
+        if entry.refs > 1 { entry.refs -= 1;return; }
+        let entry = self.opened_dentries[index].take().unwrap();
+        self.get_mut(entry.inode).unwrap().dentry_pins -= 1;
+        self.get_mut(entry.parent).unwrap().dentry_pins -= 1;
+        self.maybe_free(entry.inode);self.maybe_free(entry.parent);
+    }
+    fn unlink_opened(&mut self, parent: u32, name: &[u8]) {
+        for entry in self.opened_dentries.iter_mut().flatten() {
+            if entry.linked && entry.parent == parent && entry.name() == name { entry.linked = false; }
+        }
+    }
+    fn move_opened(&mut self, old_parent: u32, old_name: &[u8], new_parent: u32, new_name: &[u8]) {
+        let Some(index) = self.opened_dentries.iter().position(|slot| slot.as_ref().is_some_and(|d|
+            d.linked && d.parent == old_parent && d.name() == old_name)) else { return; };
+        if old_parent != new_parent {
+            self.get_mut(new_parent).unwrap().dentry_pins += 1;
+            self.get_mut(old_parent).unwrap().dentry_pins -= 1;
+        }
+        let dentry = self.opened_dentries[index].as_mut().unwrap();
+        dentry.parent = new_parent;dentry.name[..new_name.len()].copy_from_slice(new_name);dentry.name_len = new_name.len();
+        self.maybe_free(old_parent);
+    }
     fn new() -> Self {
         TmpfsState {
             inodes: Vec::new(),
@@ -420,6 +535,7 @@ impl TmpfsState {
             mount_bytes: alloc::vec![0; SCRATCH_MOUNTS.len()],
             byte_limits: SCRATCH_MOUNTS.iter().map(|mount| mount.byte_limit).collect(),
             next_ino: 1,
+            opened_dentries: crate::IoBuffer::new(),
         }
     }
 
@@ -473,9 +589,12 @@ impl TmpfsState {
     fn maybe_free(&mut self, idx: u32) {
         let drop_it = self
             .get(idx)
-            .map(|inode| inode.nlink == 0 && inode.open_count == 0 && inode.map_pins == 0)
+            .map(|inode| inode.nlink == 0 && inode.open_count == 0 && inode.map_pins == 0 && inode.dentry_pins == 0)
             .unwrap_or(false);
         if drop_it {
+            if let Some(inode) = self.get(idx) {
+                crate::fsnotify::inode_deleted(inode.notification_id());
+            }
             if let Some(Some(Inode { kind: InodeKind::HostBacked { source, .. }, .. })) =
                 self.inodes.get(idx as usize)
             {
@@ -802,10 +921,19 @@ pub fn lstat(path: &[u8]) -> Result<WasmStat, Errno> {
 /// and honoring the access mode; `open_count` is incremented here and released
 /// via [`release_handle`].
 pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
+    open_impl(path, flags, mode, uid, gid, false).map(|(handle, _)| handle)
+}
+/// Real OFD creation consumes this retained dentry after fd/OFD preparation.
+pub(crate) fn open_with_dentry(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<(i64, OpenedDentry), Errno> {
+    open_impl(path, flags, mode, uid, gid, true).map(|(handle, dentry)| (handle, dentry.unwrap()))
+}
+fn open_impl(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32, observed: bool) -> Result<(i64, Option<OpenedDentry>), Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
     let comps = split_components(rel);
     TMPFS.with(|state| {
         let (parent, last, target) = state.resolve(mount_idx, &comps)?;
+        let prepared = if observed { Some(state.prepare_opened(parent, last.ok_or(Errno::EISDIR)?, target)?) } else { None };
+        if let Some(index) = target { state.get(index).ok_or(Errno::ENOENT)?.open_count.checked_add(1).ok_or(Errno::EOVERFLOW)?; }
         let st_dev = SCRATCH_MOUNTS[mount_idx].st_dev;
         let inode_idx = match target {
             Some(existing) => {
@@ -852,6 +980,7 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                             // POSIX: an O_TRUNC open of an existing file marks
                             // mtime and ctime for update, as the rootfs does.
                             node.touch_modified();
+                            node.notify(crate::fsnotify::MODIFY);
                         }
                     }
                 }
@@ -880,6 +1009,7 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                 } else {
                     return Err(Errno::ENOTDIR);
                 }
+                state.notify_child(parent, last, false, crate::fsnotify::CREATE, 0);
                 new_idx
             }
         };
@@ -890,12 +1020,13 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
             return Err(Errno::EISDIR);
         }
         state.get_mut(inode_idx).ok_or(Errno::ENOENT)?.open_count += 1;
-        Ok(inode_to_file_handle(inode_idx))
-    }).map(|handle| {
+        let dentry = prepared.map(|prepared| state.publish_opened(prepared, inode_idx, flags & O_ACCMODE != O_RDONLY, flags & wasm_posix_shared::flags::O_PATH == 0));
+        Ok((inode_to_file_handle(inode_idx), dentry))
+    }).map(|(handle, dentry)| {
         if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
             crate::kernel_file_mapping::notify_truncated(crate::ofd::FileType::Regular, handle, 0);
         }
-        handle
+        (handle, dentry)
     })
 }
 
@@ -994,6 +1125,18 @@ fn with_inode_at<R>(path: &[u8], f: impl FnOnce(&mut Inode) -> Result<R, Errno>)
         let inode = state.get_mut(target.ok_or(Errno::ENOENT)?).ok_or(Errno::ENOENT)?;
         f(inode)
     })
+}
+
+/// Internal notification admission under the same authoritative inode lock.
+/// Public pathname policy, credentials and descriptor activation are separate.
+pub(crate) fn watch_notifications(path: &[u8], instance: &crate::fsnotify::Instance, mask: u32) -> Result<i32, Errno> {
+    with_inode_at(path, |inode| instance.watch_inode(inode.notification_id(), mask))
+}
+
+/// Provider admission for real opened-description events, unlike the legacy
+/// raw-inode subset whose direct operations cannot produce OPEN/ACCESS/CLOSE.
+pub(crate) fn watch_opened_notifications(path: &[u8], instance: &crate::fsnotify::Instance, mask: u32) -> Result<i32, Errno> {
+    with_inode_at(path, |inode| instance.watch_opened_inode(inode.notification_id(), mask))
 }
 
 fn with_inode_handle<R>(handle: i64, f: impl FnOnce(&mut Inode) -> Result<R, Errno>) -> Result<R, Errno> {
@@ -1177,6 +1320,7 @@ pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
             inode.clear_setid_on_modify();
         }
         inode.touch_modified();
+        if !buf.is_empty() { inode.notify(crate::fsnotify::MODIFY); }
         Ok(buf.len())
     })
 }
@@ -1303,6 +1447,7 @@ fn truncate_handle_inner(handle: i64, length: i64) -> Result<(), Errno> {
             inode.clear_setid_on_modify();
         }
         inode.touch_modified();
+        inode.notify(crate::fsnotify::MODIFY);
         Ok(())
     })
 }
@@ -1461,6 +1606,7 @@ fn mkdir_on_mount(mount_idx: usize, rel: &[u8], mode: u32, uid: u32, gid: u32) -
         if let Some(parent_inode) = state.get_mut(parent) {
             parent_inode.nlink += 1;
         }
+        state.notify_child(parent, last, true, crate::fsnotify::CREATE, 0);
         Ok(())
     })
 }
@@ -1493,6 +1639,7 @@ pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
         if let Some(inode) = state.get_mut(target) {
             inode.nlink = 0;
         }
+        state.notify_child(parent, last, true, crate::fsnotify::DELETE, 0);
         state.maybe_free(target);
         Ok(())
     })
@@ -1566,6 +1713,9 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
         if let Some(inode) = state.get_mut(target) {
             inode.nlink = inode.nlink.saturating_sub(1);
         }
+        state.unlink_opened(parent, last);
+        state.notify_child(parent, last, false, crate::fsnotify::DELETE, 0);
+        if let Some(inode) = state.get(target) { inode.notify(crate::fsnotify::ATTRIB); }
         state.maybe_free(target);
         Ok(())
     });
@@ -1614,6 +1764,7 @@ pub fn mknod_special(
             }
             _ => return Err(Errno::ENOTDIR),
         }
+        state.notify_child(parent, last, false, crate::fsnotify::CREATE, 0);
         Ok(())
     })
 }
@@ -1683,6 +1834,12 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
         let old_name = old_name.ok_or(Errno::ENOENT)?.to_vec();
         let (new_parent, new_name, new_existing) = state.resolve(new_mount, &new_comps)?;
         let new_name = new_name.ok_or(Errno::ENOENT)?.to_vec();
+        let retained_new_name = new_name.clone();
+        // Retained dentry names and parent pins are admitted before mutation.
+        if state.opened_dentries.iter().flatten().any(|d| d.linked && d.parent == old_parent && d.name() == old_name) {
+            if new_name.len() > 255 { return Err(Errno::ENAMETOOLONG); }
+            if old_parent != new_parent { state.get(new_parent).ok_or(Errno::ENOENT)?.dentry_pins.checked_add(1).ok_or(Errno::EOVERFLOW)?; }
+        }
 
         // Renaming a name to itself (same inode) is a no-op.
         if new_existing == Some(old_target) {
@@ -1709,11 +1866,12 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
                 }
             }
             // Detach and free the replaced destination.
+            state.unlink_opened(new_parent, &new_name);
             if let Some(InodeKind::Dir(entries)) = state.get_mut(new_parent).map(|i| &mut i.kind) {
                 entries.remove(&new_name);
             }
             if let Some(inode) = state.get_mut(existing) {
-                inode.nlink = 0;
+                inode.nlink = if new_is_dir { 0 } else { inode.nlink.saturating_sub(1) };
             }
             state.maybe_free(existing);
         }
@@ -1729,12 +1887,18 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
             _ => return Err(Errno::ENOTDIR),
         }
 
+        state.move_opened(old_parent, &old_name, new_parent, &retained_new_name);
+
         // Parent link counts change when a subdirectory moves or a destination
         // directory is replaced; recompute both robustly.
         state.recompute_dir_nlink(old_parent);
         if new_parent != old_parent {
             state.recompute_dir_nlink(new_parent);
         }
+        let cookie = crate::fsnotify::rename_cookie();
+        state.notify_child(old_parent, &old_name, old_is_dir, crate::fsnotify::MOVED_FROM, cookie);
+        state.notify_child(new_parent, new_comps.last().copied().unwrap(), old_is_dir, crate::fsnotify::MOVED_TO, cookie);
+        if let Some(inode) = state.get(old_target) { inode.notify(crate::fsnotify::MOVE_SELF); }
         Ok(())
     });
     if result.is_ok() {
@@ -1782,6 +1946,8 @@ pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
             inode.nlink += 1;
             inode.touch_changed();
         }
+        state.notify_child(new_parent, new_comps.last().copied().unwrap(), false, crate::fsnotify::CREATE, 0);
+        if let Some(inode) = state.get(old_idx) { inode.notify(crate::fsnotify::ATTRIB); }
         Ok(())
     })
 }
@@ -1862,6 +2028,7 @@ pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
         inode.check_mutable()?;
         inode.mode = mode & 0o7777;
         inode.touch_changed();
+        inode.notify(crate::fsnotify::ATTRIB);
         Ok(())
     })
 }
@@ -1892,6 +2059,7 @@ pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), E
             }
         }
         inode.touch_changed();
+        inode.notify(crate::fsnotify::ATTRIB);
         Ok(())
     })
 }
@@ -1904,6 +2072,7 @@ pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
         inode.check_mutable()?;
         inode.mode = mode & 0o7777;
         inode.touch_changed();
+        inode.notify(crate::fsnotify::ATTRIB);
         Ok(())
     })
 }
@@ -1932,6 +2101,7 @@ pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), 
             }
         }
         inode.touch_changed();
+        inode.notify(crate::fsnotify::ATTRIB);
         Ok(())
     })
 }
@@ -1957,6 +2127,7 @@ pub fn utimensat(
         inode.mtime_nsec = mtime_nsec;
         inode.ctime_sec = ctime_sec;
         inode.ctime_nsec = ctime_nsec;
+        inode.notify(crate::fsnotify::ATTRIB);
         Ok(())
     })
 }
@@ -1994,6 +2165,7 @@ pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(),
             }
             _ => return Err(Errno::ENOTDIR),
         }
+        state.notify_child(parent, last, false, crate::fsnotify::CREATE, 0);
         Ok(())
     })
 }
@@ -2869,3 +3041,8 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+pub(crate) fn test_opened_slots() -> (usize, usize) {
+    TMPFS.with(|state| (state.opened_dentries.iter().flatten().count(), state.opened_dentries.capacity()))
+}

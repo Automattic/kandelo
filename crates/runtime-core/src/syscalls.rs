@@ -3970,7 +3970,10 @@ fn open_kernel_file(proc: &mut Process, resolved: Vec<u8>, oflags: u32, effectiv
     proc.open_descriptor(FileType::Regular, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |proc, description| {
         let handle = match fs {
             KernelExecFs::Rootfs => crate::rootfs::open(&resolved, oflags, effective_mode, proc.effective_uid(), proc.effective_gid())?,
-            KernelExecFs::Tmpfs => crate::tmpfs::open(&resolved, oflags, effective_mode, proc.effective_uid(), proc.effective_gid())?,
+            KernelExecFs::Tmpfs => {
+                let (handle, dentry) = crate::tmpfs::open_with_dentry(&resolved, oflags, effective_mode, proc.effective_uid(), proc.effective_gid())?;
+                description.set_opened_dentry(dentry);handle
+            },
         };
         let stat = match fs {
             KernelExecFs::Rootfs => crate::rootfs::fstat(handle),
@@ -4166,6 +4169,7 @@ pub fn validate_scm_rights_transfer_metadata(
             }
         }
         FileType::EventFd
+        | FileType::FsNotify
         | FileType::TimerFd
         | FileType::SignalFd
         | FileType::MemFd
@@ -4669,7 +4673,7 @@ fn release_ofd_reference_impl(
             FileType::TimerFd => {
                 crate::descriptor_backing::release_for_ofd(file_type, host_handle);
             }
-            FileType::SignalFd => {
+            FileType::SignalFd | FileType::FsNotify => {
                 crate::descriptor_backing::release_for_ofd(file_type, host_handle);
             }
             FileType::MemFd => {
@@ -5347,10 +5351,10 @@ pub fn sys_read(
         return Err(Errno::EBADF);
     }
 
-    // A zero-byte read still validates the descriptor and access mode, but it
-    // must not consult a pipe, socket, timer, terminal, or host backing that
-    // could report EAGAIN or otherwise consume state.
-    if buf.is_empty() {
+    // A zero-byte byte-stream read validates descriptor/access mode without
+    // consulting its backing. Notification records keep their actual minimum-
+    // record/empty-queue rule instead of manufacturing a zero-byte success.
+    if buf.is_empty() && ofd.file_type != FileType::FsNotify {
         return Ok(0);
     }
 
@@ -5364,6 +5368,7 @@ pub fn sys_read(
         // stream handle, and never park (no capture would wake a blocking
         // reader). pcaudiolib/espeak only ever write, so this is a guard for
         // the general OSS-full-duplex case.
+        FileType::FsNotify => crate::fsnotify::read_handle(host_handle, buf),
         FileType::PcmPlayback => Err(Errno::ENXIO),
         FileType::Pipe => {
             if host_handle >= 0 {
@@ -5836,6 +5841,7 @@ pub fn sys_read(
                     .get_mut(ofd_idx)
                     .ok_or(Errno::EBADF)?
                     .set_offset(new_offset);
+                if n > 0 { proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.notify_opened_dentry(crate::fsnotify::ACCESS, true); }
                 return Ok(n);
             }
 
@@ -5916,6 +5922,7 @@ pub fn sys_write(
     }
 
     match file_type {
+        FileType::FsNotify => Err(Errno::EBADF),
         FileType::PcmPlayback => {
             let nonblock = crate::audio::is_nonblock(host_handle)?;
             let result = crate::audio::write(host_handle, buf, nonblock);
@@ -6100,6 +6107,7 @@ pub fn sys_write(
                     .get_mut(ofd_idx)
                     .ok_or(Errno::EBADF)?
                     .set_offset(new_offset);
+                if n > 0 { proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.notify_opened_dentry(crate::fsnotify::MODIFY, false); }
                 return Ok(n);
             }
 
@@ -6330,6 +6338,12 @@ pub fn sys_lseek(
                 .ok_or(Errno::EBADF),
             _ => Err(Errno::EINVAL),
         };
+    }
+
+    // Linux inotify registers noop_llseek: valid whence returns the real
+    // unchanged shared cursor, even for an ignored negative/large offset.
+    if ofd.file_type == FileType::FsNotify {
+        return if whence <= 4 { Ok(ofd.offset()) } else { Err(Errno::EINVAL) };
     }
 
     // Non-seekable file types.
@@ -6663,6 +6677,7 @@ pub fn sys_pread(
             | FileType::Epoll
             | FileType::TimerFd
             | FileType::SignalFd
+            | FileType::FsNotify
             | FileType::PtyMaster
             | FileType::PtySlave
             | FileType::PcmPlayback
@@ -6696,9 +6711,11 @@ pub fn sys_pread(
 
     // In-kernel tmpfs: positioned read from Rust memory, no cursor change.
     if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
-        return crate::tmpfs::read(host_handle, offset, buf, &mut |source, source_offset, bytes| {
+        let n = crate::tmpfs::read(host_handle, offset, buf, &mut |source, source_offset, bytes| {
             host.exchange_source_read(source, source_offset, bytes)
-        });
+        })?;
+        if n > 0 { ofd.notify_opened_dentry(crate::fsnotify::ACCESS, true); }
+        return Ok(n);
     }
 
     // In-kernel rootfs overlay: positioned read; base-file bytes via the byte source.
@@ -6934,6 +6951,7 @@ fn validate_transfer_input(proc: &Process, fd: i32, offset: Option<i64>) -> Resu
                 | FileType::Epoll
                 | FileType::TimerFd
                 | FileType::SignalFd
+                | FileType::FsNotify
                 | FileType::PtyMaster
                 | FileType::PtySlave
                 | FileType::PcmPlayback
@@ -6941,6 +6959,9 @@ fn validate_transfer_input(proc: &Process, fd: i32, offset: Option<i64>) -> Resu
     {
         return Err(Errno::ESPIPE);
     }
+    // The actual notification file operations have no splice-read source.
+    // Never consume its queue through the generic transfer staging fallback.
+    if ofd.file_type == FileType::FsNotify { return Err(Errno::EINVAL); }
     Ok(())
 }
 
@@ -7100,6 +7121,8 @@ pub fn sys_pwrite(
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
+    if ofd.file_type == FileType::FsNotify { return Err(Errno::ESPIPE); }
+
     let access_mode = ofd.status_flags() & O_ACCMODE;
     if access_mode == O_RDONLY {
         return Err(Errno::EBADF);
@@ -7113,6 +7136,7 @@ pub fn sys_pwrite(
             | FileType::Epoll
             | FileType::TimerFd
             | FileType::SignalFd
+            | FileType::FsNotify
             | FileType::PtyMaster
             | FileType::PtySlave
             | FileType::PcmPlayback
@@ -7145,7 +7169,9 @@ pub fn sys_pwrite(
     // In-kernel tmpfs: positioned write into Rust memory, no cursor change.
     if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::write(host_handle, offset, &buf[..writable_len]);
+        let n = crate::tmpfs::write(host_handle, offset, &buf[..writable_len])?;
+        if n > 0 { proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.notify_opened_dentry(crate::fsnotify::MODIFY, false); }
+        return Ok(n);
     }
 
     // In-kernel rootfs overlay: positioned write; first write COWs the base file
@@ -7610,6 +7636,7 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
     let ofd_idx = resolve_io_ofd(proc, fd)?;
 
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+    if ofd.file_type == FileType::FsNotify { return Err(Errno::EOPNOTSUPP); }
 
     if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
         let pipe_idx = (-(ofd.host_handle + 1)) as usize;
@@ -7989,6 +8016,9 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
             let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
             if ofd.is_path_only() {
                 return Err(Errno::EBADF);
+            }
+            if ofd.file_type == FileType::FsNotify && arg & wasm_posix_shared::flags::O_ASYNC != 0 {
+                return Err(Errno::EOPNOTSUPP);
             }
             let pcm_handle =
                 (ofd.file_type == FileType::PcmPlayback).then_some(ofd.host_handle);
@@ -15595,6 +15625,9 @@ fn poll_check_depth(
                     _ => {}
                 }
             }
+            FileType::FsNotify => {
+                if pollfd.events & POLLIN != 0 && crate::fsnotify::readable_handle(ofd.host_handle) { revents |= POLLIN; }
+            }
             FileType::EventFd => {
                 let efd_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some((counter, semaphore_room)) =
@@ -16746,6 +16779,7 @@ pub fn sys_ioctl(
         }
         let val = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
         let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type == FileType::FsNotify && val != 0 { return Err(Errno::EOPNOTSUPP); }
         if val != 0 {
             ofd.set_status_flags_raw(ofd.status_flags() | wasm_posix_shared::flags::O_ASYNC);
         } else {
@@ -16761,6 +16795,7 @@ pub fn sys_ioctl(
         }
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         let avail: i32 = match ofd.file_type {
+            FileType::FsNotify => i32::try_from(crate::fsnotify::queued_handle_bytes(ofd.host_handle)?).map_err(|_| Errno::EOVERFLOW)?,
             FileType::Pipe => {
                 if ofd.host_handle < 0 {
                     let pipe_idx = (-(ofd.host_handle + 1)) as usize;
@@ -18442,6 +18477,9 @@ fn epoll_backing_readiness(
                     }
                 }
             }
+            Source::Backing(FileType::FsNotify, h) => {
+                if crate::fsnotify::readable_handle(h) { ready |= EPOLLIN | EPOLLRDNORM; }
+            }
             Source::Backing(FileType::EventFd, h) => {
                 if let Some(counter) = crate::descriptor_backing::with_eventfds(|t| {
                     t.get((-(h + 1)) as usize).map(|e| e.counter)
@@ -19383,6 +19421,7 @@ pub fn sys_fpathconf(
             }
         }
         FileType::EventFd
+        | FileType::FsNotify
         | FileType::Epoll
         | FileType::TimerFd
         | FileType::SignalFd
@@ -19437,7 +19476,9 @@ pub fn sys_ftruncate(
             return Err(Errno::EFBIG);
         }
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::truncate_handle(host_handle, length);
+        crate::tmpfs::truncate_handle(host_handle, length)?;
+        proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.notify_opened_dentry(crate::fsnotify::MODIFY, false);
+        return Ok(());
     }
 
     // In-kernel rootfs overlay: truncate Rust memory (a base file COWs first,
@@ -19652,6 +19693,8 @@ pub fn sys_fchmod(
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     match ofd.file_type {
+        // No anonymous-inode metadata owner yet: do not accept a fake mutation.
+        FileType::FsNotify => Err(Errno::EOPNOTSUPP),
         FileType::Regular | FileType::Directory => {
             if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
                 let st = crate::tmpfs::fstat(ofd.host_handle)?;
@@ -19751,6 +19794,8 @@ pub fn sys_fchown(
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     match ofd.file_type {
+        // No anonymous-inode metadata owner yet: do not accept a fake mutation.
+        FileType::FsNotify => Err(Errno::EOPNOTSUPP),
         FileType::Regular | FileType::Directory => {
             if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
                 let st = crate::tmpfs::fstat(ofd.host_handle)?;
@@ -20657,6 +20702,8 @@ pub fn sys_fstatfs(
 ) -> Result<WasmStatfs, Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type == FileType::FsNotify { return Err(Errno::EOPNOTSUPP); }
+
 
     if ofd.file_type == FileType::Regular && crate::executable_backing::is_executable_handle(ofd.host_handle) {
         let image = crate::executable_backing::image_handle(ofd.host_handle)?;
@@ -21056,6 +21103,12 @@ pub fn sys_memfd_create(proc: &mut Process, name: &[u8], flags: u32) -> Result<i
 mod tests {
     mod epoll_semantics {
         include!("epoll_tests.rs");
+    }
+    mod fsnotify_descriptor_ownership {
+        include!("fsnotify_descriptor_tests.rs");
+    }
+    mod fsnotify_opened_dentry {
+        include!("fsnotify_dentry_tests.rs");
     }
     use super::*;
     use wasm_posix_shared::abi::extended_syscalls;
