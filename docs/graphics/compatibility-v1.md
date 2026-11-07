@@ -26446,3 +26446,57 @@ Actual application/error/rendering, three-engine and latency acceptance remain
 required. Canonical cache collection R677 is terminal and removes0bytes: the
 source cache is protected by another build's lock and ordinary generations
 remain protected by policy. The earlier19.9GiB dry plan is not reclaimed space.
+
+
+### Exact channel listener and terminal park retirement, 2026-11-07
+
+One pending native listener now owns each exact ChannelInfo recheck. An ordinary
+completion/relisten racing a prior wait's resolved reaction must not install
+a second waiter that can consume notify(1) ahead of the guest-side completion
+import. Four native Node wait controls reproduce the original failure; synchronous
+not-equal and failed-continuation ownership controls preserve their distinct paths.
+
+Teardown also retires the exact Rust-owned park before publishing SIGKILL/EINTR,
+requiring the existing exact-TID cleanup's (0,0) proof and authoritative current
+exec generation. It clears the old host match before terminal publication. An
+already-exited or committed-exec transport clears only that old match, never a
+successor's TID. The authoritative exit handshake likewise cannot be overwritten
+by an old queued completion. Other cancellation callers deliberately retain their
+ordinary FLAG_CANCELLED settlement; there is no blanket clear in the helper.
+Woken inventories now omit stale generations that were actually skipped.
+
+Controlled source transitions use actual host handlers and generated scratch/wake
+wires with bounded modeled Rust exports. Before controls show signal9 becoming0,
+private terminal codes being erased and duplicate completion, plus old queued
+results replacing a terminal0/0 handshake with EINTR. They do not attribute an
+actual application race to Rust. Producer R675 passes221 controls, strict fixture
+and production types, all10 unchanged-limit ownership audits and725-file evidence
+inventory with frozen inputs unchanged. Exact four-path composition from pinned
+`7eb752d899` is byte-verified forward and reverse.
+
+Root R679 passes705 controls/22 files, production/strict fixture TypeScript and
+725-file evidence inventory in22s, but its aggregate fails because the final
+input-manifest file was omitted. That failure is preserved. Read-only follow-up
+`graphics-host-terminal-identity-r679-1107-034646-bea7` passes2s, verifying1,067
+actual paths against immutable Git plus the producer's frozen composed hashes.
+This is post-run source identity, not a before-run timestamp claim.
+
+Matched actual lifecycle job `graphics-terminal-lifecycle-r680-1107-035308-fa26`
+passes4m29s: the same six cases (steady/PHP startup on Chromium153.0.8010.12,
+Firefox155 and WebKit26.6) pass before and after, with no skip, flaky case or
+console/page/content/audio violation. Both sides preserve all12,678 pre-frozen
+source/product/harness inputs. Products are the same older coherent R494/R524
+normal build; this is current host/UI source evidence, not new C/kernel/app or
+full nine-case browser-memory acceptance. Supplemental outgoing main ACK counts
+remain qualified: before PHP15/16,18/20,20/21 by engine; after19/19,20/21,21/21.
+All steady cases acknowledge their outgoing mains. The one Firefox candidate
+adverse retirement remains a diagnostic, not a silently dropped case or a new
+zero-forced gate. The earlier R652 real Chromium teardown warning remains
+unattributed; this passing cohort does not explain or erase it.
+
+Exact controls, failures, commands and identities are retained under
+`.context/graphics-kernel-wait-terminal-r675-runs/`,
+`.context/graphics-host-terminal-composition-r679/` and
+`.context/graphics-terminal-lifecycle-r680-r3-runs/`. Full current-normal
+application, memory, POSIX, conformance and performance gates remain required.
+No physical-reclamation, native-feel or complete-B1 claim is made.

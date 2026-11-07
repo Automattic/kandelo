@@ -11057,6 +11057,11 @@ export class CentralizedKernelWorker {
     // A waitAsync continuation from the discarded exec image may run after a
     // replacement registration with the same pid has been installed.
     if (!this.isRegisteredChannel(channel)) return;
+    // WHY: completion's relisten can race the prior wait's resolved reaction.
+    // Only that exact channel's one pending listener owns the next recheck;
+    // its settlement decrements BEFORE re-entry. A second native waiter can
+    // steal notify(count=1) from the guest and strand a COMPLETE exit request.
+    if ((this.pendingChannelListenerCounts?.get(channel) ?? 0) !== 0) return;
     if (this.deferChannelWhileStopped(channel)) return;
 
     // Re-create Int32Array view in case memory was grown
@@ -12133,6 +12138,10 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     entry?: KernelWorkerEntryContext,
   ): void {
+    // WHY: Rust already owns the authoritative exit, so never cancel a TID
+    // here. Retire only this old host match before its terminal marker: a
+    // previously queued park result must not erase it or publish again.
+    channel.kernelWaitGeneration = undefined;
     const view = new DataView(channel.memory.buffer, channel.channelOffset);
     view.setUint32(CH_SIG_SIGNUM, SIGKILL, true);
     view.setUint32(CH_SIG_HANDLER, 0, true);
@@ -12153,6 +12162,10 @@ export class CentralizedKernelWorker {
     syscallNr: number,
     entry?: KernelWorkerEntryContext,
   ): void {
+    // WHY: Rust exit is authoritative here, but detached old wait records can
+    // outlive it. Retire this exact host match before the terminal handshake;
+    // its result must never be overwritten or re-armed by that old park.
+    channel.kernelWaitGeneration = undefined;
     this.completeChannelRaw(channel, 0, 0, entry);
     if (syscallNr === SYS_EXIT_GROUP) {
       // musl follows a returning EXIT_GROUP with the non-returning SYS_EXIT
@@ -15386,8 +15399,9 @@ export class CentralizedKernelWorker {
         } catch { continue; }
         if (status !== CH_PENDING) continue;
         try {
-          this.wakeChannelForTeardownExit(channel, entry, alreadyExited);
-          woken.add(channel.pid);
+          if (this.wakeChannelForTeardownExit(channel, entry, alreadyExited)) {
+            woken.add(channel.pid);
+          }
         } catch (err) {
           this.#rethrowKernelEntryFatal(err);
           console.error(`[killAllBlockedForTeardown] wake failed for pid=${channel.pid} off=${channel.channelOffset}: ${err}`);
@@ -15504,8 +15518,9 @@ export class CentralizedKernelWorker {
       } catch { continue; }
       if (status !== CH_PENDING) continue;
       try {
-        this.wakeChannelForTeardownExit(channel, entry, alreadyExited);
-        woken.add(channel.pid);
+        if (this.wakeChannelForTeardownExit(channel, entry, alreadyExited)) {
+          woken.add(channel.pid);
+        }
       } catch (err) {
         this.#rethrowKernelEntryFatal(err);
         console.error(`[killBlockedProcessForTeardown] wake failed for pid=${channel.pid} off=${channel.channelOffset}: ${err}`);
@@ -15608,6 +15623,10 @@ export class CentralizedKernelWorker {
         channel.memory.buffer,
         channel.channelOffset,
       );
+      // WHY: exec has committed in Rust, but this exact old ChannelInfo can
+      // remain registered until its Worker unwinds. Revoke its queued-park
+      // match before the marker without cancelling the successor image's TID.
+      channel.kernelWaitGeneration = undefined;
       view.setUint32(CH_SIG_SIGNUM, SIGKILL, true);
       view.setUint32(CH_SIG_HANDLER, 0, true);
       view.setUint32(CH_SIG_SI_CODE, EXEC_RETIRE_SIGNAL_CODE, true);
@@ -15629,10 +15648,38 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     entry: KernelWorkerEntryContext,
     alreadyExited = false,
-  ): void {
+  ): boolean {
     if (alreadyExited || this.hostReaped?.has(channel.pid)) {
       this.wakeExitedChannelForRetirement(channel, entry);
-      return;
+      return true;
+    }
+    if (channel.kernelWaitGeneration !== undefined) {
+      const registration = this.processes.get(channel.pid);
+      if (!registration || registration.memory !== channel.memory
+        || !this.isRegisteredChannel(channel)
+        || this.execHandoffPids?.has(channel.pid)) return false;
+      const generation = this.#processExecGenerationWithinKernelEntry(channel.pid, entry);
+      if (generation instanceof Error) {
+        this.#failBlockingRetryProtocol(
+          `cannot confirm teardown park generation for pid ${channel.pid}`,
+          generation,
+        );
+      }
+      // WHY: Rust exec commit precedes replacement host registration. The
+      // old channel must never cancel a successor image's identically numbered
+      // TID, even while that old host registration is still observable.
+      if (generation !== registration.execGeneration) return false;
+      // WHY: a sigsuspend (for example) can still settle on a later SIGCHLD.
+      // Merely completing its mailbox leaves the Rust park authoritative:
+      // that late decision can erase SIGKILL and publish a second completion.
+      // Retire the exact task first, then its host match, BEFORE the marker;
+      // the queued cancelled record must not re-enter signal delivery.
+      if (!this.#cancelLiveTaskKernelWait(channel, entry)) {
+        this.#failBlockingRetryProtocol(
+          `could not retire teardown park for pid ${channel.pid}`,
+        );
+      }
+      channel.kernelWaitGeneration = undefined;
     }
     const pv = new DataView(channel.memory.buffer, channel.channelOffset);
     // Queue SIGKILL for the glue's post-syscall __deliver_pending_signal. The
@@ -15660,6 +15707,7 @@ export class CentralizedKernelWorker {
       undefined,
       entry,
     );
+    return true;
   }
 
   /**
