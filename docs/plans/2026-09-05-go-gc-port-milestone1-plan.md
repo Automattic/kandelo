@@ -10,6 +10,35 @@ Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
 Implementation/evaluation checkpoints are pushed to draft PR #1492.
 The full WordPress service goal remains unfinished.
 
+**General TCP namespace correction validated:** isolated commit
+[`67a49efe3`](https://github.com/Automattic/kandelo/commit/67a49efe3)
+keeps offline guest listeners out of physical host ports and routes TCP to
+the machine's reported IPv4 address through existing kernel connections.
+It handles the whole loopback network, preserves actual source/accepted
+endpoints and makes IPv4 port-zero allocation skip occupied ports, matching
+IPv6. No Go/PHP/Caddy implementation changes are added by this correction.
+
+The rebuilt isolated cohort (kernel `741aa821cccd`) passes all 3,164
+runtime-core tests and 79 Node checks, including ten same-process/forked
+listener cases and eight tests of unchanged original ABI-55 programs.
+Thirty routing cases pass across all three browsers, zero skipped/flaky,
+in 46.5 seconds. All four expanded Go programs pass in fresh Node parents
+on this compiled host without native listener-collision messages. The same
+Go programs pass the updated 12-case browser selection on this kernel,
+zero skipped/flaky, in 53.0 seconds. The ABI gate confirms an unchanged
+program digest and consistent snapshot/version; all 663 test files are
+classified. Source and artifacts remain isolated from the primary image
+build until it terminates. Final WordPress and performance gates remain.
+
+Evidence is `.context/offline-egress-listeners/.context/`: the original
+backend exposes three tested IPv4 listeners, the first backend correction
+reveals the own-address routing gap, and the first full runtime test exposes
+the occupied-port allocator gap. Those failures remain separate from the
+passing normal publication and gates. Missing original baseline files and
+a wrong constructor in the new test are recorded as preparation corrections;
+only manifest-verified original baseline bytes are copied, without compiling
+or restamping them. The normal verifier then accepts them unchanged.
+
 **Expanded blocking-wait regression gate:** the unchanged f605 runtime now
 has plain-Go and cgo fixtures covering zero, short and multi-checkpoint note
 deadlines, already-notified notes, timed/indefinite wakeups and twelve
@@ -29,8 +58,8 @@ claim its listener namespace. The isolated checkout
 the unchanged backend exposes all three tested IPv4 listeners to the host;
 IPv6 remains private. A backend fix blocks that exposure, then uncovers a
 separate kernel gap routing a connection to its own assigned IPv4 address
-externally. That general routing correction is being evaluated alongside
-the backend fix. Neither change is in the primary host/image build yet;
+externally. The general correction is now validated separately above.
+Neither change is in the primary host/image build yet;
 the initial Node console warnings and both regression observations remain
 separate. No clean final Node networking gate is claimed from them.
 

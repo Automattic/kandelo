@@ -137,6 +137,15 @@ POSIX behavior. Consumer/image rebuilds and final WordPress gates remain.
 
 ## Memory, threads, and syscalls
 
+- White-box wait probes use `runtime.notetsleepg` when called from a user
+  goroutine: it releases the scheduler P while waiting. Calling a raw atomic
+  wait there does not establish correct scheduler behavior. Cover zero,
+  short and multi-checkpoint deadlines, timed/indefinite wakeups and the race
+  between notification and entering the wait. Socket/pipe waits must exceed
+  the checkpoint interval too. The [runtime fixtures](../../tests/go/README.md)
+  keep private linknames and their disabled linkname checks confined to test
+  builds; normal applications and packages retain the upstream checks.
+  Passing deadline/wakeup checks does not prove physical memory reclamation.
 - Runtime clock functions participate in scheduler state transitions.
   `casgstatus` can call `nanotime1` while cgo's `exitsyscall` forbids stack
   growth. Keep Kandelo's monotonic clock path nosplit while preserving its
