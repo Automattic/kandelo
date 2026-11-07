@@ -1937,6 +1937,19 @@ for marker, key in [('/* NODE_BUILTIN_POLICY */', 'builtinPolicy'), ('/* NODE_GE
     policy_platform = policy_platform.replace(marker, (root / manifest[key]['path']).read_text())
 bundle += policy_platform + '\n'
 
+sys_spec = manifest['sysPlatform']
+for name in sys_spec['sources']:
+    selected_platform_source(sys_spec, name)
+sys_adapter = (root / 'sys-platform-adapter.js').read_text()
+for marker, text in {
+    '/* NODE_SYS_SOURCE */': json.dumps(selected_platform_source(sys_spec, 'sys')),
+    '/* NODE_SYS_COMPILE */': selected_platform_section(sys_spec, 'compileForInternalLoader'),
+}.items():
+    if sys_adapter.count(marker) != 1:
+        raise ValueError('Sys builtin owner marker mismatch: ' + marker)
+    sys_adapter = sys_adapter.replace(marker, text)
+bundle += sys_adapter + '\n'
+
 
 
 

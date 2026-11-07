@@ -1,0 +1,85 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/values-legacy-modules.md",
+    "findingIds": [
+      "V-025"
+    ],
+    "relatedFamilies": [
+      "values",
+      "loading",
+      "processes",
+      "engine"
+    ],
+    "scope": "Actual sys alias/load effect and pinned initialization/cache/warning owner; original prose finding ambiguity preserved, no util/ESM/guest closure"
+  },
+  "sourceImplemented": [
+    "Complete unchanged pinned sys body and compileForInternalLoader method with authenticated source/generator wiring",
+    "Actual registry lazy sys getter returns shared util identity/descriptors/mutations; actual compiled node:sys source origin",
+    "Real initialization/reentry/failure-retry/moduleLoadList transaction through pinned method",
+    "Bare/node/process.getBuiltinModule and existing CJS cache override/bypass semantics share actual builtin owner",
+    "Exact pinned process.emitWarning call consumes existing ordinary warning owner and user replacements",
+    "Declare actual adapter/upstream inputs, regenerate current combined bundle and preserve default ESM fixture behavior with explicit focused-CJS option"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-sys189-source-r1/report.json",
+    "sha256": "31118c93864b3258d74e5ebfdc0cc1d2913e7a18ab3dd2a43ee43026cea46ec2",
+    "guardedInputs": 844,
+    "scope": "Actual lazy sys/util identity and pinned module/warning/cache owner; scoped native-dependent CJS controls, default ESM fixture error and guest/realm/four-host gaps remain."
+  },
+  "packageChecks": {
+    "report": ".context/node26-sys189-affected-r1.json",
+    "sha256": "4557038d85f8c8e928dfa1409988bc258606d41eb5303e58cfd2eccfa1e5df35",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-sys189-source-r1/report.json",
+    "sha256": "31118c93864b3258d74e5ebfdc0cc1d2913e7a18ab3dd2a43ee43026cea46ec2",
+    "pairedGroups": 13,
+    "wholeUnchangedUpstreamFiles": 1,
+    "subjectsPerFile": 2,
+    "defaultESMFixtureFailuresPreserved": 13,
+    "explicitCJSFixtureBoundary": true,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Actual current sys/init/cache/warning/CJS registry over declared native dependencies; skipESMResolver:true is an explicit fixture boundary, not ESM or guest conformance"
+  },
+  "sealedEvidence": {
+    "report": ".context/sys-alias-owner-agent/HANDOFF.json",
+    "sha256": "07ddfc5c52094058bebfb87597d3756561737fc42550187cbf3772feb418ed93",
+    "reusedEvidence": true,
+    "scope": "13paired groups, unchanged upstream sys file and22source checks; initial13ESM setup failures and2missing recipe declarations preserved. No compilation/guest or overall suite."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/sys-alias-owner-agent/evidence/controls-r1/report.json",
+      "sha256": "8358f1f2a8e8acdc3416eb6e02ba9e45a0b0c7ff3b6f8a2336deeee5571b9c25",
+      "kind": "default-ESM-fixture-harness-failures",
+      "reason": "All13initial candidate children fail before sys assertions on absent _nodeESMGraph; default path unchanged and no fake graph installed."
+    },
+    {
+      "report": ".context/sys-alias-owner-agent/evidence/input-check.stdout",
+      "sha256": "31d3b3dfa4251e3aa5ce2c5c68823575a55c6373412f21590e0bcf52a3957fb4",
+      "kind": "missing-private-input-declarations",
+      "reason": "Initial private check identifies exactly sys adapter/upstream declaration gaps; root declares actual inputs rather than hiding checker failure."
+    }
+  ],
+  "remaining": [
+    "Actual identified guest native compiler/script/realm/warning and four-host conformance; accepted173stale",
+    "Separate existing default ESM fixture setup gap and actual ESM sys import graph",
+    "Warning redirection/file lifetime, native stack capture, realms and remaining warning-owner CLI/env options",
+    "All public util methods and constants remain their separate audit obligations",
+    "Original V-025 prose/range finding ambiguity remains; no closure inferred from source or selected controls"
+  ],
+  "at": "2026-11-07T06:20:58.494524+00:00",
+  "recipeRevision": 189,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

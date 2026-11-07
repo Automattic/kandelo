@@ -37,6 +37,9 @@ exports.create = function create(options = {}) {
     if (!id.startsWith('node:') && id !== 'module' && id !== 'process') Object.defineProperty(builtinModules, id, {
       enumerable: true, configurable: true, get: () => require('node:' + id) });
   }
+  // Controls may install an actual production builtin owner without delegating
+  // that module to the embedding Node's builtin table.
+  if (options.configureBuiltins) options.configureBuiltins(builtinModules, processBoundary, values);
   const context = vm.createContext({ path, Buffer, TextDecoder, TextEncoder, process: processBoundary, fs: { ...fs, readFileSync: read, realpathSync: name => files ? name : fs.realpathSync(name) },
     url: require('node:url'), _nodeWebPlatform: { URL }, _nodeValues: values,
     _nodeFsTruncation: { vfsState: { handlers: null } },
@@ -69,10 +72,15 @@ exports.create = function create(options = {}) {
     },
   });
   const api = vm.runInContext(source.slice(a, b) + ';({Module,make:_makeRequire,load:_loadCommonJsModule,syntax:_nodeModuleSyntax,looksLikeEsm:_looksLikeEsmMain});', context);
-  const resolveStart = source.indexOf('globalThis.__kandeloResolveBare =');
-  const resolveEnd = source.indexOf('// The native ES-module metadata hook', resolveStart);
-  if (resolveStart < 0 || resolveEnd < resolveStart) throw Error('Missing actual engine resolver source');
-  vm.runInContext(source.slice(resolveStart, resolveEnd), context);
-  const resolveESM = vm.runInContext('__kandeloResolveBare', context);
+  let resolveESM;
+  // A focused CJS/builtin control need not initialize the separately owned
+  // native ESM graph. Its default control remains the complete resolver path.
+  if (!options.skipESMResolver) {
+    const resolveStart = source.indexOf('globalThis.__kandeloResolveBare =');
+    const resolveEnd = source.indexOf('// The native ES-module metadata hook', resolveStart);
+    if (resolveStart < 0 || resolveEnd < resolveStart) throw Error('Missing actual engine resolver source');
+    vm.runInContext(source.slice(resolveStart, resolveEnd), context);
+    resolveESM = vm.runInContext('__kandeloResolveBare', context);
+  }
   return { ...api, resolveESM: (specifier, parent) => resolveESM(specifier, parent, true), proc: processBoundary, files, warnings, context };
 };

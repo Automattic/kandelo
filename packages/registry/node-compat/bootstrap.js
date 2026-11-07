@@ -5053,6 +5053,11 @@ const _nodeLocksPlatform = _createNodeLocksPlatform({
 globalThis.__kandeloDispatchLocks = _nodeLocksPlatform.dispatch;
 
 
+const _nodeSys = _createNodeSysPlatform({
+    process, values: _nodeValues,
+    require: id => _builtinModules[id],
+    compileSource: (source, filename) => _nodeNative.evalScriptAsFunction(source, filename, 1),
+});
 let _nodeDomain, _nodeFfi;
 const _builtinModules = {
     'path': path,
@@ -5062,6 +5067,7 @@ const _builtinModules = {
     'fs/promises': fs.promises,
     'os': nodeOs,
     'util': util,
+    get sys() { return _nodeSys.load(); },
     'util/types': util.types,
     'assert': assert,
     'assert/strict': assert.strict,

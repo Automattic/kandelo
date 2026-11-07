@@ -108800,6 +108800,66 @@ class BuiltinModule {
     };
 }
 
+// A lazy real builtin record retains its actual exports during reentry and
+// retries failed initialization; the pinned sys source owns its warning call.
+function _createNodeSysPlatform(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { ArrayPrototypePush, StringPrototypeStartsWith } = primordials;
+    const process = platform.process;
+    const moduleLoadList = process.moduleLoadList;
+    const requireBuiltin = platform.require;
+    // sys only requires util. Its complete source is compiled with its real
+    // builtin origin, rather than attributing DEP0025 to the bootstrap caller.
+    const source = "// Copyright Joyent, Inc. and other Node contributors.\n//\n// Permission is hereby granted, free of charge, to any person obtaining a\n// copy of this software and associated documentation files (the\n// \"Software\"), to deal in the Software without restriction, including\n// without limitation the rights to use, copy, modify, merge, publish,\n// distribute, sublicense, and/or sell copies of the Software, and to permit\n// persons to whom the Software is furnished to do so, subject to the\n// following conditions:\n//\n// The above copyright notice and this permission notice shall be included\n// in all copies or substantial portions of the Software.\n//\n// THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN\n// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,\n// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR\n// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE\n// USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n'use strict';\n\n// The sys module was renamed to 'util'. This shim remains to keep old programs\n// working. `sys` is deprecated and shouldn't be used.\n\n// Note to maintainers: Although this module has been deprecated for a while\n// we do not plan to remove it. See: https://github.com/nodejs/node/pull/35407#issuecomment-700693439\nmodule.exports = require('util');\nprocess.emitWarning('sys is deprecated. Use `node:util` instead.',\n                    'DeprecationWarning', 'DEP0025');\n";
+    function compileFunction(id) {
+        return platform.compileSource('(function(exports, require, module, process, internalBinding, primordials) {' + source + '\n})', 'node:' + id);
+    }
+    function requireWithFallbackInDeps(id) {
+        return requireBuiltin(id);
+    }
+    function internalBinding(name) {
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('sys internal binding ' + name);
+    }
+    class SysModule {
+        constructor() {
+            this.id = 'sys';
+            this.exports = {};
+            this.loaded = false;
+            this.loading = false;
+        }
+          compileForInternalLoader() {
+    if (this.loaded || this.loading) {
+      return this.exports;
+    }
+
+    const id = this.id;
+    this.loading = true;
+
+    try {
+      const requireFn = StringPrototypeStartsWith(this.id, 'internal/deps/') ?
+        requireWithFallbackInDeps : requireBuiltin;
+
+      const fn = compileFunction(id);
+      // Arguments must match the parameters specified in
+      // BuiltinLoader::LookupAndCompile().
+      fn(this.exports, requireFn, this, process, internalBinding, primordials);
+
+      this.loaded = true;
+    } finally {
+      this.loading = false;
+    }
+
+    // "NativeModule" is a legacy name of "BuiltinModule". We keep it
+    // here to avoid breaking users who parse process.moduleLoadList.
+    ArrayPrototypePush(moduleLoadList, `NativeModule ${id}`);
+    return this.exports;
+  }
+    }
+    const module = new SysModule();
+    return { load() { return module.compileForInternalLoader(); } };
+}
+
 // The full pinned SourceMap class owns decoding and queries. Loader capture,
 // cached source/URL lifetime and stack remapping require separate real owners.
 function _createNodeSourceMapPlatform(platform) {

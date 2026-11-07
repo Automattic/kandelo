@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "684e9ddc5d5abc955b0cc26c319f710912ea3fa59203e6b98a8e810728067ed3",
+    "packages/registry/node-compat/bootstrap.js": "f3cceb700cf6ad7128a2f2247715d053b1415e85ce90b52acfc86cba7cbcbd99",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
@@ -97,6 +97,7 @@
     "third_party/node-core/stat-watcher-platform-adapter.js": "a39ff9c4d95f076284eb1b3f74e2d3b1a6fd34854cc41e1f1789900904456602",
     "third_party/node-core/stream-platform-adapter.js": "2073a7b29238c6feb09667e76806e6f42ad725f321758b9514699812223e4ac9",
     "third_party/node-core/string-decoder-adapter.js": "7e1e21f39f36fcf0e7228afd85beeb581caf6fec095eb5c9f91bee798b772e13",
+    "third_party/node-core/sys-platform-adapter.js": "795f104873cdfb340667f160d358f548984b3fe73b7f4db335624f4073774b44",
     "third_party/node-core/tempdir-platform-adapter.js": "5102bbeeeb0ca8ffe47dec42d4edad3a91e0e8c6842903b3d3fb904b237afa39",
     "third_party/node-core/terminal-platform-adapter.js": "9aa2a1a70dcc46a872589562a30a10009a0deea57d5a8becd4b34f7e7e1ea3cc",
     "third_party/node-core/testing-platform-adapter.js": "5d2a2d63baeb3c847f3670ebfa88377cbe94c5c58426fed905cb6c64ca9f88c1",
@@ -413,7 +414,12 @@
       "declaredCurrentType": "Runtime",
       "ownerFamily": "values",
       "originalOwnerReport": "tests/nodejs/audit/values.md",
-      "selectedAdapterLiteralOccurrences": [],
+      "selectedAdapterLiteralOccurrences": [
+        {
+          "path": "third_party/node-core/sys-platform-adapter.js",
+          "line": 11
+        }
+      ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",
       "completeImplementationEstablished": false,
       "runtimeConformanceEstablished": false

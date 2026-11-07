@@ -5842,5 +5842,27 @@
       }
     },
     "scope": "Library/symbol + typed/raw/copy/borrowed/export memory helpers; calls/signatures/callbacks/current-loop/public permission activation still missing."
+  },
+  "sysPlatform": {
+    "sources": {
+      "sys": {
+        "path": "upstream/sys.js",
+        "upstreamPath": "lib/sys.js",
+        "sha256": "69903611817dc78f3f430b720425602bc5d50eeba6bee2a2a9a562cc88d078fa"
+      },
+      "realm": {
+        "path": "upstream/worker-lazy/lib/internal/bootstrap/realm.js",
+        "upstreamPath": "lib/internal/bootstrap/realm.js",
+        "sha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b"
+      }
+    },
+    "selections": {
+      "compileForInternalLoader": {
+        "source": "realm",
+        "start": "  compileForInternalLoader() {",
+        "length": 824,
+        "sha256": "20586a04eb8f2f144c44b8b0877267ad4dba3c26dd9944961e6055fe9b2c1740"
+      }
+    }
   }
 }

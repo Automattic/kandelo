@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source189 integrates the genuine sys/util alias and pinned lazy initialization/warning owner. Current focused CJS/native differential and unchanged test-sys.js controls pass, with the separate default ESM fixture failures retained. Current guest/four-host conformance is unestablished.
+See [source scope](sys-alias-owner-integration.md).
+
 Source188 integrates real FFI memory operations and native-consumer-before-library-unload retirement. Focused controls and normal source/package checks pass; accepted engine173 is stale. Current JSAPI/guest/four-host conformance, blocking cancellation and full FFI remain open.
 See [source scope](ffi-memory-retirement-integration.md).
 
