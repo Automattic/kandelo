@@ -10,6 +10,26 @@ Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
 Implementation/evaluation checkpoints are pushed to draft PR #1492.
 The full WordPress service goal remains unfinished.
 
+**Cgo package reproducibility — stable archive prefixes:** the independent
+same-key classic 38 rebuild fails byte equivalence while preserving the
+canonical generation. Native Go 1.25.8 and Kandelo/wasm32 f605 controls both
+show that changing unused absolute cgo search paths changes binary identity,
+even with trimpath. Stable flags produce identical output in both controls.
+The optional linker build-ID setting was evaluated only as a control; normal
+recipes retain their original Go build IDs.
+
+The two PHP recipes now use `scripts/go-cgo-static-libs.sh` to validate and
+link directly from declared dependency prefixes. SDK compatibility archives
+use the existing compiler lookup, verified for libm, libutil and unsupported
+ucontext. No staging symlinks or temporary library search paths remain;
+compiler, library and application algorithms are unchanged in this step.
+Classic 39 publishes, passes Node PHP/static/OPcache and 32 lifetime checks
+at concurrency four (Go collections 1 to 3, no host diagnostics, normal
+shutdown), then passes an independent compiler/bootstrap/target byte-for-byte
+rebuild. Combined Caddy 20 is undergoing the same normal build/Node/rebuild
+gate. The new browser cohort and WordPress 43 rebuild follow that gate.
+Historical 38/19 results below remain scoped to their original artifacts.
+
 **Approved shared regexp improvement is selected for normal rebuilds:**
 The prototype branch and all four Go recipes now select f605. It has one
 iterative traversal, no collector/code-generator changes, native regexp/race

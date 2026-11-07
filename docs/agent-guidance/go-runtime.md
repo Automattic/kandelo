@@ -595,7 +595,16 @@ Trace the complete link path:
   pointer identity, `errno`, C TLS and both callback ownership paths.
 
 Static archive search paths work through upstream `#cgo LDFLAGS` and
-`CGO_LDFLAGS` on the current target. FrankenPHP's recipes use its documented
+`CGO_LDFLAGS` on the current target.
+Use `scripts/go-cgo-static-libs.sh` to validate and link from declared
+immutable dependency prefixes. Do not collect symlinks under a temporary
+`-L` directory: cgo search flags enter Go build identities despite trimpath.
+The linker already queries the selected SDK compiler for compatibility
+archives, so an explicit worktree sysroot `-L` is unnecessary. Native and
+wasm32 controls reproduce the path-sensitive identity; the new classic
+recipe also passes full independent reproduction with Go IDs retained.
+The combined Caddy reproduction and new browser gates are still running.
+ FrankenPHP's recipes use its documented
 static closure through the latter, with no source patch. Keep upstream's
 normal `-lm` and `-lutil` compatibility archives; the linker accepts strictly
 object-free GNU and empty BSD32-index forms. A library-name exception or

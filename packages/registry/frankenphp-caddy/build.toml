@@ -7,11 +7,12 @@ inputs = [
   "scripts/build-programs-abi-stamp.sh",
   "scripts/package-build-roots.sh",
   "scripts/build-kandelo-go-toolchain.sh",
+  "scripts/go-cgo-static-libs.sh",
   "sdk/activate.sh",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 19
+revision = 20
 
 [[git_inputs]]
 name = "go_toolchain"

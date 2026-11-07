@@ -6,14 +6,14 @@ C/C++ compiled by the Kandelo SDK into that program.
 
 All four Go consumers now build with upstream's Go 1.28 development
 `wasm32` architecture and the immutable `go_toolchain` pin f6053060.
-Their normal artifacts pass Node and the focused three-engine browser
-gate. WordPress replacement-image and release validation remain open.
+The previous normal artifact cohort passes Node and the focused
+three-engine browser gate; the new cgo path revisions are being validated. WordPress replacement-image and release validation remain open.
 
 | Consumer | Selected compiler/target |
 | --- | --- |
 | `go-hello`, `wasm32posix-go` | Go 1.28 development, `kandelo/wasm32`; four-byte Go/C pointers |
-| Custom classic FrankenPHP recipe | Same wasm32 target; 1.13.5/revision 38 builds and passes Node/three browsers |
-| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; standalone Caddy 2.11.9/revision 15 and combined FrankenPHP 1.13.5/revision 19 build and pass Node/three browsers |
+| Custom classic FrankenPHP recipe | Same wasm32 target; 1.13.5/revision 39 builds, passes Node and independent byte reproduction; new browser gate pending |
+| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; standalone Caddy 2.11.9/revision 15 and combined FrankenPHP 1.13.5/revision 20 is in the build/reproduction gate (revision 19 passed Node/three browsers) |
 
 The [implementation checkpoint](plans/2026-09-05-go-gc-port-milestone1-plan.md)
 records the exact source pins, validation and remaining release gates.
@@ -37,6 +37,15 @@ even when the target uses `-trimpath`. No compiler identity is suppressed.
 The normal installer records the program's ABI contract and package identity.
 Keep that path for maintained packages; rebuilding only a Wasm file does not
 update its package or VFS image.
+
+For static cgo dependencies, use declared library prefixes directly.
+`scripts/go-cgo-static-libs.sh` checks each archive and collects its `-L`
+flag. Go includes cgo flags in build identities even with `-trimpath`, so a
+symlink directory under a temporary work root breaks byte reproducibility.
+The internal linker queries the selected SDK compiler for SDK compatibility
+archives; it does not need an explicit worktree sysroot search flag. Keep
+Go build IDs and artifact bindings intact and verify an independent normal
+resolver rebuild.
 
 The SDK's `wasm32posix-go` convenience command takes an absolute
 `KANDELO_GO_ROOT` pointing to a built fork. It selects

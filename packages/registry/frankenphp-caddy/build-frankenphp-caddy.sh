@@ -37,29 +37,23 @@ GO_ROOT="$KANDELO_BUILT_GO_ROOT"
 kandelo_package_stage_verified_source frankenphp-caddy "$SOURCE_DIR" \
     "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$WASM_POSIX_DEP_SOURCE_URL" \
     "$WASM_POSIX_DEP_SOURCE_SHA256" "$WORK_DIR"
-mkdir -p "$SOURCE_DIR/caddy/cmd/kandelo" "$SOURCE_DIR/lib"
+mkdir -p "$SOURCE_DIR/caddy/cmd/kandelo"
 cp "$SCRIPT_DIR/main.go" "$SOURCE_DIR/caddy/cmd/kandelo/main.go"
 
-link_archive() {
-    local prefix="$1" archive="$2"
-    test -f "$prefix/lib/$archive"
-    ln -s "$prefix/lib/$archive" "$SOURCE_DIR/lib/$archive"
-}
-link_archive "$WASM_POSIX_DEP_PHP_ZTS_DIR" libphp.a
-for archive in libicui18n.a libicuio.a libicuuc.a libicudata.a; do
-    link_archive "$WASM_POSIX_DEP_ICU_DIR" "$archive"
-done
-link_archive "$WASM_POSIX_DEP_LIBCXX_DIR" libc++.a
-link_archive "$WASM_POSIX_DEP_LIBCXX_DIR" libc++abi.a
-link_archive "$WASM_POSIX_DEP_LIBCURL_DIR" libcurl.a
-link_archive "$WASM_POSIX_DEP_LIBZIP_DIR" libzip.a
-link_archive "$WASM_POSIX_DEP_LIBXML2_DIR" libxml2.a
-link_archive "$WASM_POSIX_DEP_OPENSSL_DIR" libssl.a
-link_archive "$WASM_POSIX_DEP_OPENSSL_DIR" libcrypto.a
-link_archive "$WASM_POSIX_DEP_SQLITE_DIR" libsqlite3.a
-link_archive "$WASM_POSIX_DEP_LIBICONV_DIR" libiconv.a
-link_archive "$WASM_POSIX_DEP_ZLIB_DIR" libz.a
-link_archive "$REPO_ROOT/sysroot" libkandelo-ucontext-unsupported.a
+source "$REPO_ROOT/scripts/go-cgo-static-libs.sh"
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_PHP_ZTS_DIR" libphp.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_ICU_DIR" \
+    libicui18n.a libicuio.a libicuuc.a libicudata.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_LIBCXX_DIR" libc++.a libc++abi.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_LIBCURL_DIR" libcurl.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_LIBZIP_DIR" libzip.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_LIBXML2_DIR" libxml2.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_OPENSSL_DIR" libssl.a libcrypto.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_SQLITE_DIR" libsqlite3.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_LIBICONV_DIR" libiconv.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_ZLIB_DIR" libz.a
+# SDK compatibility archives use the linker's normal compiler lookup.
+test -f "$REPO_ROOT/sysroot/lib/libkandelo-ucontext-unsupported.a"
 
 stage_go_module() {
     local name="$1" source="$2" module="$3"
@@ -80,7 +74,7 @@ php_include="$WASM_POSIX_DEP_PHP_ZTS_DIR/include/php"
 export CGO_CFLAGS="-I$php_include -I$php_include/main -I$php_include/Zend -I$php_include/TSRM -I$php_include/sapi/embed -I$php_include/ext"
 # Keep upstream pointer access and bulk CGI registration. Supply its documented
 # static PHP linkage through build flags instead of an application source patch.
-export CGO_LDFLAGS="-L$SOURCE_DIR/lib -L$REPO_ROOT/sysroot/lib -lphp -licui18n -licuio -licuuc -licudata -lc++ -lc++abi -lcurl -lzip -lxml2 -lssl -lcrypto -lsqlite3 -liconv -lz -lkandelo-ucontext-unsupported -ldl"
+export CGO_LDFLAGS="${KANDELO_GO_STATIC_LIBRARY_FLAGS[*]} -lphp -licui18n -licuio -licuuc -licudata -lc++ -lc++abi -lcurl -lzip -lxml2 -lssl -lcrypto -lsqlite3 -liconv -lz -lkandelo-ucontext-unsupported -ldl"
 stage_go_module xsys "$WASM_POSIX_BUILD_GIT_XSYS_DIR" golang.org/x/sys
 stage_go_module bbolt "$WASM_POSIX_BUILD_GIT_BBOLT_DIR" go.etcd.io/bbolt
 stage_go_module readline "$WASM_POSIX_BUILD_GIT_READLINE_DIR" github.com/chzyer/readline
