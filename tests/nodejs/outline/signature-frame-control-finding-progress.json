@@ -1,0 +1,134 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto.md",
+    "findingIds": [
+      "C-015",
+      "C-008",
+      "C-009"
+    ],
+    "relatedFamilies": [
+      "crypto",
+      "values",
+      "async",
+      "engine"
+    ],
+    "scope": "Control-only native reference callback/frame evidence correction for existing one-shot source; not new production semantics, original-baseline reclassification or finding closure"
+  },
+  "sourceImplemented": [
+    "Control-only component captures genuine V8 continuation frame immediately before actual native resource init",
+    "Exact source/binary-pinned private callback overload receives actual AsyncResource ID/trigger/resource/receiver/destroy and captured frame, matching target CryptoJob route",
+    "Original40assertion groups remain byte-identical; added3paired native/candidate lifecycle controls exercise init/before/callback frame mutation/restoration and destruction",
+    "Standalone no-Kandelo native public-vs-explicit-frame/crypto experiment preserves the observed mismatch without upstream fault attribution",
+    "No runtime/engine/bundle/registry/pin/source revision or guest implementation behavior changes; actual production FsRequestFrame source trace remains unvalidated at runtime"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-signframe205-source-r1/report.json",
+    "sha256": "b9b7bb6e7625482ccf63dfc6dc81e326ea94e0f71e21b32d9939208f3a0a7151",
+    "guardedInputs": 877,
+    "scope": "Control-only actual captured native callback frame/IDs/resources, not production runtime change, original-baseline reclassification or guest/four-host conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-hostorder205-affected-r1.json",
+    "sha256": "cca1ea49b84c7d26797c3aea772a11f3d5a96f6a239f12c0f47b3b249c270dec",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": true
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-signframe205-source-r1/report.json",
+    "sha256": "b9b7bb6e7625482ccf63dfc6dc81e326ea94e0f71e21b32d9939208f3a0a7151",
+    "oneShotGroups": 40,
+    "oneShotPass": 40,
+    "oneShotNonpass": 0,
+    "originalAssertionsUnchanged": true,
+    "capturedFrameLifecyclePairs": 3,
+    "streamingSignatureGroups": 52,
+    "unchangedUpstreamFilesPerSubject": 2,
+    "upstreamResults": [
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-sign-verify.js",
+        "sha256": "42870204ed904f967d973efbdef6a0430c2af0d7b141d143ceb8c837e43a1912",
+        "subject": "native",
+        "exit": 0,
+        "assertionsUnchanged": true,
+        "cliBlockSkipped": true,
+        "skipCountsAsPassingCoverage": false
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-sign-verify.js",
+        "sha256": "42870204ed904f967d973efbdef6a0430c2af0d7b141d143ceb8c837e43a1912",
+        "subject": "candidate",
+        "exit": 0,
+        "assertionsUnchanged": true,
+        "cliBlockSkipped": true,
+        "skipCountsAsPassingCoverage": false
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-verify-failure.js",
+        "sha256": "b288011b7753da4230cb744399515574a82e359b5a4875c6ef2464068f44dbbb",
+        "subject": "native",
+        "exit": 0,
+        "assertionsUnchanged": true,
+        "cliBlockSkipped": false,
+        "skipCountsAsPassingCoverage": false
+      },
+      {
+        "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-verify-failure.js",
+        "sha256": "b288011b7753da4230cb744399515574a82e359b5a4875c6ef2464068f44dbbb",
+        "subject": "candidate",
+        "exit": 0,
+        "assertionsUnchanged": true,
+        "cliBlockSkipped": false,
+        "skipCountsAsPassingCoverage": false
+      }
+    ],
+    "original39of40Preserved": true,
+    "productionRuntimeChanged": false,
+    "engineInputOrRevisionChanged": false,
+    "newCompilerAttempts": 0,
+    "previousHelperCompilerAttemptsIntegrated": 2,
+    "previousHelperCompilerFailuresIntegrated": 0,
+    "compilerIdentityScope": "Exact native artifact, dependency file and frozen local snapshots; full contemporaneous system-header hashes were not recorded by this capsule.",
+    "unchangedStyleCheckerPassed": true,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Control-only callback route/frame owner correction over genuine native Node/V8/libuv/OpenSSL dependencies. No production runtime fix or guest conformance follows."
+  },
+  "sealedEvidence": {
+    "report": ".context/signjob-frame-owner-agent/report.json",
+    "sha256": "f51e12e66f76ad9b92cdb87db53ad36cb1f956dabef3ddff7a4c0cbf6114a773",
+    "reusedEvidence": true,
+    "scope": "Immutable control-only source/evidence, standalone native route observation, preserved39/40and corrected40/40/3paired lifecycle controls. Two prior successful tiny helper compiles integrated once; no production engine or guest proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/signjob-frame-owner-agent/baseline-r3-40.stdout",
+      "sha256": "7fc846c7e1343196326d0248daf6b0f14fa3ddc82737b8d0fef696255bb65c00",
+      "scope": "Reproduced original39/40with unchanged original assertion file and old native component; remains a historical nonpass, not reclassified."
+    },
+    {
+      "report": ".context/signjob-frame-owner-agent/report.json",
+      "sha256": "f51e12e66f76ad9b92cdb87db53ad36cb1f956dabef3ddff7a4c0cbf6114a773",
+      "scope": "Retain initial sparse/env setup failures, focused-control destroy timeout from tracking nested verification job, and private replay prefix error. Corrected harness tracks first intended real job; no assertions removed or runtime fault inferred."
+    }
+  ],
+  "remaining": [
+    "Actual guest FsRequestFrame capture/root/realm/exception/fatal semantics require identified-artifact runtime execution",
+    "Guest callback scope restoration under hooks, GC, result conversion failure, shutdown and workers unvalidated",
+    "No four-host runtime acceptance inferred from current compiled engine200 or portable native component",
+    "Target/source/ABI/registry/package/engine/runtime/TLS/terminal/clone production inputs unchanged",
+    "Private native callback entry is a precisely pinned control dependency, not production Kandelo code; contemporaneous full system-header content hashes were not retained by the sealed helper, only dependency-file and frozen local source identities",
+    "Conditional OpenSSL CLI block in sign-verify remains skipped in each subject and is not credited as compatibility coverage"
+  ],
+  "at": "2026-11-07T09:57:22.056032+00:00",
+  "recipeRevision": 205,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

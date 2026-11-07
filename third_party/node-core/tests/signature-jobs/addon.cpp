@@ -1,6 +1,7 @@
 // Actual portable one-shot owner. V8 backing leases, Node async resources and
 // libuv CPU work are explicit native control dependencies, never production.
 #include "../../signature-job-operations.h"
+#include "node-frame-reference.h"
 #include <node.h>
 #include <v8.h>
 #include <uv.h>
@@ -59,6 +60,7 @@ struct Job {
   Span data, signature, context;
   Global<Object> owner;
   Global<Context> creationContext;
+  Global<Value> callbackFrame;
   Global<Function> completion;
   std::unique_ptr<node::AsyncResource> async;
   node::async_context identity{};
@@ -67,7 +69,7 @@ struct Job {
   std::unique_ptr<Error> error;
   bool sync, dispatched = false, verified = false;
   Job(Isolate* isolate, bool sync) : isolate(isolate), sync(sync) { request.data = this; creationContext.Reset(isolate, isolate->GetCurrentContext()); }
-  ~Job() { if (!owner.IsEmpty()) owner.Get(isolate)->SetAlignedPointerInInternalField(0, nullptr, kEmbedderDataTypeTagDefault); completion.Reset(); owner.Reset(); async.reset(); if (sync && identity.async_id) node::EmitAsyncDestroy(isolate, identity); creationContext.Reset(); }
+  ~Job() { if (!owner.IsEmpty()) owner.Get(isolate)->SetAlignedPointerInInternalField(0, nullptr, kEmbedderDataTypeTagDefault); completion.Reset(); owner.Reset(); async.reset(); callbackFrame.Reset(); if (sync && identity.async_id) node::EmitAsyncDestroy(isolate, identity); creationContext.Reset(); }
   static void WeakSecond(const WeakCallbackInfo<Job>& info) { auto* job = info.GetParameter(); HandleScope handles(job->isolate); Context::Scope context(job->creationContext.Get(job->isolate)); delete job; }
   static void Weak(const WeakCallbackInfo<Job>& info) { info.GetParameter()->owner.Reset(); info.SetSecondPassCallback(WeakSecond); }
   void Invoke() {
@@ -104,7 +106,15 @@ struct Job {
       }
       if (packet.IsEmpty()) return;
       Local<Value> args[]{Integer::New(isolate, status), Text(isolate, job->operation->verify ? "verify" : "sign"), packet};
-      const auto completed = job->async->MakeCallback(job->completion.Get(isolate), 3, args); (void)completed;
+      // CryptoJob's AsyncWrap passes its actual captured frame to this exact
+      // callback entry. The public C++ AsyncResource MakeCallback route clears
+      // that frame in the pinned reference; it was not an equivalent owner.
+      // This private native dependency is pinned and control-only, not a guest
+      // runtime fallback, bound callback or fabricated hook/frame metadata.
+      const auto completed = node::InternalMakeCallback(isolate, owner,
+          job->completion.Get(isolate), 3, args,
+          {job->async->get_async_id(), job->async->get_trigger_async_id()},
+          job->callbackFrame.Get(isolate)); (void)completed;
     }
     owner->SetAlignedPointerInInternalField(0, nullptr, kEmbedderDataTypeTagDefault);
   }
@@ -136,6 +146,10 @@ static void Create(const FunctionCallbackInfo<Value>& a) {
     auto object = shape->NewInstance(isolate->GetCurrentContext()).ToLocalChecked();
     if (object->SetPrototypeV2(isolate->GetCurrentContext(), a[0]).IsNothing()) throw Pending{};
     object->SetAlignedPointerInInternalField(0, job.get(), kEmbedderDataTypeTagDefault); job->owner.Reset(isolate, object); job->completion.Reset(isolate, a[1].As<Function>());
+    // Actual continuation storage is captured immediately before init, as in
+    // AsyncWrap and KandeloInitializeFsResource. Init hooks may change ambient
+    // context; they must not choose the job's already captured callback frame.
+    job->callbackFrame.Reset(isolate, isolate->GetContinuationPreservedEmbedderDataV2().As<Value>());
     if (sync) { job->identity = node::EmitAsyncInit(isolate, object, "SIGNREQUEST"); job->owner.SetWeak(job.get(), Job::Weak, WeakCallbackType::kParameter); }
     else job->async = std::make_unique<node::AsyncResource>(isolate, object, "SIGNREQUEST");
     result = object; job.release();

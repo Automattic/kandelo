@@ -1,5 +1,8 @@
 # Broad implementation review
 
+A control-only signature-frame correction now passes the original byte-identical40groups and3native/candidate lifecycle pairs. Current52streaming groups and2unchanged upstream files per subject pass with existing CLI-block skips retained. Original39/40is preserved. Production/engine inputs and revision205are unchanged; guest conformance remains open.
+See [source scope](signature-frame-control-integration.md).
+
 Source205 integrates actual versioned host receiver-order ownership. Nine current portable groups, exact engine replay/normal staging/877inputs/unchanged style/pinned bootstrap syntax and14package checks pass. Two native-only public cases remain candidate gaps until sender/outcome integration; new guest JSAPI is uncompiled.
 See [source scope](host-receiver-order-integration.md).
 

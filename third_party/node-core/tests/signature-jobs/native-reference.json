@@ -1,0 +1,10 @@
+{
+  "scope": "exact native control only; not a production/runtime dependency",
+  "nativeExecutableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceHeader": "src/node_internals.h",
+  "sourceHeaderSha256": "3674f02a2b459ee579815761816bc450349aef9ff231349f39bca7b6c19ae0c7",
+  "declarationStart": "v8::MaybeLocal<v8::Value> InternalMakeCallback(\n    v8::Isolate* isolate,",
+  "declarationLength": 269,
+  "declarationSha256": "18ae45fd32343b6bdfd3c81c27dcab967c450ec82c81de87313747f8c7dc39f5"
+}
