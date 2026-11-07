@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T11:02:37.257439+00:00",
-  "sourceHead": "e4598c906955b727460f070ae5e9ac3b260aa8c8",
-  "recipeRevision": 207,
+  "at": "2026-11-07T11:20:52.755184+00:00",
+  "sourceHead": "ee296dcd11fb632e4048794d0e743bc046aa180f",
+  "recipeRevision": 209,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 127,
+    "sourceSliceRecords": 129,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 231
+    "findingsWithoutExplicitOrProposedSourceSlice": 230
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,24 +26,23 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 127,
+  "sourceSliceIdentitiesVerified": 129,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "758183eea1d7360dd12f502b3af7790e61dd80ab414413d7d0c59e82f6682776"
+    "sha256": "db941bc93834b30c70873da41e399ddb075ccde7a3564e33b841abcf894f818d"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/qualified-link verification only; immutable audit unchanged, no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "6a7621ea0b9cb7faa2d7ec7f3f5eecdca3d9e33cead45df7eacc92eb05e6a7c0",
-    "sourceHead": "480041701b2054536426883b4453139a4dfb9b75",
+    "sha256": "b537e9f72919e7cb05493b404fe02213b0d4cffb4c1babbe8f2774bc3caaa13b",
+    "sourceHead": "e4598c906955b727460f070ae5e9ac3b260aa8c8",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "registered-host-sender",
-    "host-transfer-outcome",
-    "filesystem-readiness"
+    "testing-runner",
+    "module-import"
   ],
   "qualifiedReferenceCorrections": [
     {

@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T11:18:49.429642+00:00",
+  "updatedAt": "2026-11-07T11:20:52.755184+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "758183eea1d7360dd12f502b3af7790e61dd80ab414413d7d0c59e82f6682776",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "b537e9f72919e7cb05493b404fe02213b0d4cffb4c1babbe8f2774bc3caaa13b",
-    "tests/nodejs/outline/finding-ledger.md": "e15c6acb873952c0ee04428c7d8c5b9ef6af51cae65bed9d5e110acce46339ed",
+    "tests/nodejs/outline/finding-ledger.json": "db941bc93834b30c70873da41e399ddb075ccde7a3564e33b841abcf894f818d",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "b2d53784d6a608700a85eefe37f3349557d85233ba4f6f69fa5bb6b2103adf1b",
+    "tests/nodejs/outline/finding-ledger.md": "bd4445ddc2d1d0ed8e6d5a162d9aa0bfeeb96f51511461ba788d9add649209f3",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -8032,16 +8032,17 @@
     }
   ],
   "nextSourceWork": [
-    "Commit/push209 actual original-request imports plus verified attrs/empty-specifier correction",
-    "Integrate retained admission-kind engine correction and independently reviewed retained TCP/Socket prerequisites",
-    "Integrate bounded-reviewed tracing, preserving failed-open timeout nonpass and public Node Worker versus shell-extension limits",
-    "Integrate dormant notification queue/descriptor ownership after shared epoll; wake/dentry/rootfs/fork/ABI/public activation remain gaps",
-    "Reconcile source/finding evidence and select exact focused build batch; fullproduct/overall-suite deferrals remain",
-    "Nested guest Wasm execution backend stays in scope for final phase"
+    "Integrate sealed retained admission-kind engine correction without freezing later dynamic classification",
+    "Integrate independently reviewed retained TCP/TLS and Socket receiver/native-handle prerequisites; keep actual TTY/HTTPS/StreamBase gaps explicit",
+    "Integrate reviewed process-wide tracing/category/file sink with failed-open timeout nonpass and public Node Worker versus shell extension scope",
+    "Integrate dormant notification queue and descriptor owners after shared epoll; implement real wake/dentry/rootfs/fork/ABI/public activation prerequisites",
+    "Choose coherent targeted engine/kernel build batch and inspect native API/compilation errors; preserve full-product and overall-suite deferrals",
+    "Continue dependency-ordered audited public API gaps across all19families; source presence/native components do not establish guest conformance",
+    "Defer nested guest Wasm backend to final phase while keeping it in scope"
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Implemented real explicit nonisolated public runner/discovery/setup/import/report ownership over pinned algorithms, with genuine native dependency controls and explicit default-process/watch/coverage/CLI failures."
+    "reason": "Implemented actual rooted original-request/module completion and consumed request-keyed hooks/source transaction plus real empty-specifier resolver forwarding; preserved all source/control failures and uncompiled guest evidence limits."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -46936,10 +46937,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/module-import-20261107T111850Z.tar.gz",
-    "sha256": "eb51962869f8cc8b60299706e553d8daa0f352c2e80ae45118afc0d339e8cc8a",
-    "bytes": 48665820,
-    "scope": "209 actual original native import request/module completion with independently corrected attrs/source/empty-specifier ownership; exact staged images and scoped JS/native dependencies, no guest/four-host closure.",
+    "path": ".context/node26-implementation-snapshots/finding-overlay209-20261107T112053Z.tar.gz",
+    "sha256": "446f7fa3691ad7fd18fcd81b8022461b8e8aaa2e7f92c0acc2d579f5e2482396",
+    "bytes": 11120434,
+    "scope": "Current209 canonical runner/import qualified links and identified source; documentation/identity only. Prior raw native/source failures preserved.",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -50233,7 +50234,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Implemented actual rooted original-request/module completion and consumed request-keyed hooks/source transaction plus real empty-specifier resolver forwarding; preserved all source/control failures and uncompiled guest evidence limits."
+    "reason": "Canonical qualified finding links now include actual runner and original-request graph/completion source with scoped native dependencies and valid-public missing-owner failures; no closure inferred."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -56682,6 +56683,13 @@
       "sha256": "c6036ad533bd7f5352ea167a55ba04c391c848ce18264926abc577946076957b",
       "bytes": 30491096,
       "scope": "208 actual pinned explicit isolation:none runner/test tree/discovery/import/report source; scoped native dependency evidence and valid-public implementation failures preserved, no guest/four-host closure.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/module-import-20261107T111850Z.tar.gz",
+      "sha256": "eb51962869f8cc8b60299706e553d8daa0f352c2e80ae45118afc0d339e8cc8a",
+      "bytes": 48665820,
+      "scope": "209 actual original native import request/module completion with independently corrected attrs/source/empty-specifier ownership; exact staged images and scoped JS/native dependencies, no guest/four-host closure.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -63255,7 +63263,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "68a152b033815846bd9f8cb3226505a9e2b7e27b",
+    "pushedThrough": "ee296dcd11fb632e4048794d0e743bc046aa180f",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -63366,7 +63374,8 @@
       ".context/node26-hostoutcome207-push.log": "a8021a92d12e848e698dd1002d64f6d67b61137abe0e2b23d7c35c124c2d8ca5",
       ".context/node26-epoll207-push.log": "088542248c3d27b318962b5798ae59f84219dfbdee95608e669651b1bbb34c46",
       ".context/node26-finding-ledger207-push.log": "8db1a54923c68c490407741d86ef3f01d53b4d833a3186c53dd072249d1129f4",
-      ".context/node26-runner208-push.log": "32d0fa1729ad7b7dc9948b9417db3ac2e6bbd7bea4ae5e9788c4f7d6913eeefe"
+      ".context/node26-runner208-push.log": "32d0fa1729ad7b7dc9948b9417db3ac2e6bbd7bea4ae5e9788c4f7d6913eeefe",
+      ".context/node26-import209-push.log": "1911083d72c601e1eb61bc187964642f9d69901c50cbc145f4d001facac52f0c"
     }
   },
   "sourceLedgerCoverageCorrection": {
@@ -106902,22 +106911,22 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "758183eea1d7360dd12f502b3af7790e61dd80ab414413d7d0c59e82f6682776",
+    "sha256": "db941bc93834b30c70873da41e399ddb075ccde7a3564e33b841abcf894f818d",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "b537e9f72919e7cb05493b404fe02213b0d4cffb4c1babbe8f2774bc3caaa13b"
+      "sha256": "b2d53784d6a608700a85eefe37f3349557d85233ba4f6f69fa5bb6b2103adf1b"
     },
-    "sourceCheckpoint": 207,
+    "sourceCheckpoint": 209,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 127,
+      "sourceSliceRecords": 129,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
-      "findingsWithoutExplicitOrProposedSourceSlice": 231
+      "findingsWithoutExplicitOrProposedSourceSlice": 230
     },
     "individualApiClosure": false,
     "fourHostConformance": false
@@ -107727,6 +107736,28 @@
         "documentQualifiedDefinitionRecords": 417,
         "originalRangeRecords": 52,
         "sourceSliceRecords": 124,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 231
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "758183eea1d7360dd12f502b3af7790e61dd80ab414413d7d0c59e82f6682776",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "b537e9f72919e7cb05493b404fe02213b0d4cffb4c1babbe8f2774bc3caaa13b"
+      },
+      "sourceCheckpoint": 207,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 127,
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 231

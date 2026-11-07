@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 127 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 129 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 231 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 230 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -466,3 +466,30 @@ No finding or family closes. Inventory/source progress/native components and
 actual guest conformance stay separate. Accepted engine200 excludes201–207.
 No overall suite, full rebuild, merge or deployment ran in this reconciliation.
 Nested guest Wasm execution remains in scope for the final phase.
+
+## Source208–209 actual runner and original import requests
+
+The explicit isolation:none runner consumes pinned discovery/run algorithms over
+real Glob, setup, import, test tree, hooks and TestsStream reporting. Eleven
+current native/component scenario pairs match; valid default process/watch/
+coverage modes remain a separate missing-owner nonpass group. CLI/child/IPC/
+measured coverage/benchmark and actual guest lifecycle remain incomplete.
+
+Original specifier/referrer/raw attributes enter the genuine native module graph.
+Captured ModuleObject/promise ownership avoids a second resolution at completion.
+A consumed request-keyed transaction retains hook-replaced attributes/supplied
+source without original type getter reads or same-URL aliasing. Empty primitive
+specifiers reach the actual Node resolver. These new C++ owners are uncompiled.
+
+Nine forwarding/native loader groups, three actual graph/native-hook groups and
+one exact bootstrap function group pass. Four prior fixtures and two unchanged
+upstream files per subject pass. These are explicit native dependencies, not
+candidate guest C++ execution. Original sparse/setup/cache-path/graph/empty-guard
+failures and the disproved sticky-link-error hypothesis remain preserved. No
+assertion was weakened and no false cache workaround was added.
+
+The immutable357 finding IDs,417 qualified definitions,52 ranges and19 families
+remain separate from source slices and conformance. No finding/family closes.
+Accepted engine200 excludes201–209; current kernel and engine still need actual
+guest acceptance. No new compiler/runtime test ran in this documentation overlay.
+Full product/overall suites remain deferred; nested guest Wasm remains in scope.

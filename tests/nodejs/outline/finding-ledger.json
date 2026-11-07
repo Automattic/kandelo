@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 127,
+    "sourceSliceRecords": 129,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 231
+    "findingsWithoutExplicitOrProposedSourceSlice": 230
   },
   "families": [
     {
@@ -494,7 +494,7 @@
         "L-032",
         "L-033"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 7,
+      "findingsWithExplicitOrProposedSourceSlices": 8,
       "sourceRouteAsRecorded": "Partial pinned Module.wrap/wrapper and patched-script source owners with single exports snapshot; Real native parser goals and direct CJS body compilation, pinned filename/package/entry selection and shared ESM source format in103; Module record/require/JSON, package cache/reader, exports/imports/conditions/self/maps and SourceMap algorithms; source153 pinned synchronous CJS hook registration/chaining/disposal, actual supplied-source execution and resolver/cache transactions",
       "remainingAsRecorded": "Actual guest parser/error/source/realm evidence; complete ESM supplied-source execution/hooks, async loader workers, remaining CJS/CLI/cache behavior and ESM URL/namespace/JSON/async/cycle/dynamic-import graphs; TypeScript/Wasm/addon/source-map/cache/preload/CLI/permission/lifecycle owners; four-host conformance",
       "remainingOwner": "Actual CJS/ESM graph/resolver/cache/compiler/hook/CLI owners",
@@ -6563,7 +6563,17 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Package exports/imports, conditions and self references",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "module-import",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/loading.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual original-request/import completion and hooks/source/namespace identity prerequisite, not complete resolver/loader/cache/CLI or guest/four-host closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "package-policy",
         "package-reader"
@@ -6743,6 +6753,15 @@
           "auditDocument": "tests/nodejs/audit/loading.md",
           "scope": "Bounded real syncresolve/load/fullURL/source/native synthetic/CJS-preparse/mock/CLI owners; no complete finding/family closure",
           "closure": false
+        },
+        {
+          "slice": "module-import",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/loading.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual original-request/import completion and hooks/source/namespace identity prerequisite, not complete resolver/loader/cache/CLI or guest/four-host closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -6800,6 +6819,15 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/loading.md",
           "scope": "Bounded real syncresolve/load/fullURL/source/native synthetic/CJS-preparse/mock/CLI owners; no complete finding/family closure",
+          "closure": false
+        },
+        {
+          "slice": "module-import",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/loading.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual original-request/import completion and hooks/source/namespace identity prerequisite, not complete resolver/loader/cache/CLI or guest/four-host closure",
           "closure": false
         }
       ],
@@ -9668,6 +9696,15 @@
         {
           "slice": "testing-owner",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "testing-runner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/testing.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial real isolation:none runner/discovery/import/report prerequisite; default process/CLI/watch/coverage/benchmark and guest/four-host gaps stay open",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -9733,6 +9770,15 @@
         {
           "slice": "testing-owner",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "testing-runner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/testing.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial real isolation:none runner/discovery/import/report prerequisite; default process/CLI/watch/coverage/benchmark and guest/four-host gaps stay open",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -22363,6 +22409,165 @@
       "findingScope": "Shared producer/readiness prerequisite only; not FSWatcher activation, API closure or an accepted platform exclusion",
       "additionalAuditDocuments": {},
       "publicRequirementRecords": []
+    },
+    "testing-runner": {
+      "document": "tests/nodejs/outline/testing-runner-finding-progress.json",
+      "sha256": "2d94145caf7c662937c2047fcf15402502347d570fa96b67b68cfde9514cf341",
+      "recordedRevision": 208,
+      "explicitFindingIds": [
+        "TEST-001",
+        "TEST-003"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-runner208-source-r1/report.json",
+          "sha256": "fc6451aba68386388f56804134e1b8eb9e9f03c89c1886552c0e81e0f9a5aeb5",
+          "guardedInputs": 879,
+          "scope": "Actual explicit none-isolated runner source and native-dependency component controls; default process/watch/coverage/CLI remain implementation gaps, no guest/four-host closure."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-runner208-affected-r1.json",
+          "sha256": "8bd414de253ea86cd5979a392b52614e74a108cbab67dfffcd4c2e3d84608c6b",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-runner208-source-r1/report.json",
+          "sha256": "fc6451aba68386388f56804134e1b8eb9e9f03c89c1886552c0e81e0f9a5aeb5",
+          "nativeCandidateMatchingPairs": 11,
+          "focusedProcesses": 23,
+          "implementationGapDiagnosticGroups": 1,
+          "missingOwnerOutcomesAreNotPassingCompatibility": true,
+          "priorFixtureCases": 4,
+          "unchangedUpstreamFilesEachSubject": 2,
+          "unchangedUpstreamProcesses": 4,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "unchangedStyleCheckerPassed": true,
+          "scope": "Actual current generated JS runner/test tree over native Node process/async/stream/fs/module dependencies. Narrow two upstream files are not an overall suite or guest conformance. Three admitted valid-public runner modes remain implementation failures in one separately reported group."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/testing-runner-owner-agent/report.json",
+          "sha256": "dc861cff7f5eeb9728689ab8868ee297b8d9f15d7fe5b7d7f5187c69f640d58b",
+          "reusedEvidence": true,
+          "scope": "Original bounded runner source and exact native/component/upstream controls with sparse-generation, native helper leak/setup and source-doc provenance failures preserved.0 compilation attempts; original225 qualified navigation rows unchanged."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/testing-runner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/testing-runner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Consume exact pinned runner primordials/worker-pool/discovery/run sections with byte/hash guarded generation",
+        "Actual directory/glob/default-pattern/node_modules/sorting/shard/validation algorithms use the same genuine Glob class as public fs.glob",
+        "Actual none-isolated root/setup/module import/registration/hooks/cancellation/placeholder and TestsStream owners execute and report real success/failure",
+        "Original absolute file URL enters existing native graph exactly once; no duplicate hook resolution, require-as-import or fabricated successful stream",
+        "After original validation, fail honestly before root/resources for still-missing process isolation/watch/coverage/CLI owners; no claimed boundary",
+        "Native component setup routes fixture imports to the actual generated candidate test tree while preserving original unchanged upstream assertions and native helper global descriptors"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/testing-runner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "General original-specifier/parent/raw-attributes native import bridge and verified request-identity/empty-specifier corrections; runner bridge currently supports absolute file URLs only",
+        "Default process isolation and actual child/IPC/structured report/error/stdio/resource transport",
+        "Full CLI/preload/watch restart/measured coverage/benchmark owners and public reporting destinations/exit behavior",
+        "Actual guest module/parser/source/async-frame/phase/fatal/realm/GC/fault/cleanup behavior and all-four-host identified artifacts",
+        "Complete runner/test/mock/snapshot/timer/reporter lifecycle, discovery/option/error semantics and unchanged relevant upstream coverage beyond this slice"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "runner-implementation-prerequisite",
+      "auditDocument": "tests/nodejs/audit/testing.md",
+      "findingScope": "Partial real isolation:none runner/discovery/import/report prerequisite; default process/CLI/watch/coverage/benchmark and guest/four-host gaps stay open",
+      "additionalAuditDocuments": {},
+      "publicRequirementRecords": []
+    },
+    "module-import": {
+      "document": "tests/nodejs/outline/module-import-finding-progress.json",
+      "sha256": "990ad48b6d8fede2757b5032fafde399a4863bbc7eda6caad642cf5e83e28786",
+      "recordedRevision": 209,
+      "explicitFindingIds": [
+        "L-003",
+        "L-009",
+        "L-011"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-import209-source-r1/report.json",
+          "sha256": "6b5d475dec2642a63f6385b921406f1df84145575ada944cebbd0b3e92ada650",
+          "guardedInputs": 879,
+          "scope": "Actual original import request/referrer/attributes and captured module completion source plus real request-keyed resolve/record and empty-specifier correction. Native loader is an explicit component dependency; guest C++ uncompiled."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-import209-affected-r1.json",
+          "sha256": "129a88fe3c961ee535f53b4dd79900121effcd10dabc677302fde294acfb24ac",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-import209-source-r1/report.json",
+          "sha256": "6b5d475dec2642a63f6385b921406f1df84145575ada944cebbd0b3e92ada650",
+          "originalForwardingNativeLoaderGroups": 9,
+          "actualGraphNativeDependencyGroups": 3,
+          "exactBootstrapEmptySpecifierGroups": 1,
+          "originalAttributeTypeReads": 0,
+          "runnerNativeCandidatePairs": 11,
+          "runnerImplementationGapNonpassGroups": 1,
+          "priorFixtureCases": 4,
+          "unchangedUpstreamFilesEachSubject": 2,
+          "unchangedUpstreamProcesses": 4,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "unchangedStyleCheckerPassed": true,
+          "scope": "Actual generated JS forwarding over native loader; actual graph resolve/record/load with native hooks/request-report dependencies; exact bootstrap function. C++ opaque request/realm/promise/GC and guest execution not run. Native reports are held component keys, not claims of native internal identity."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/general-import-owner-agent/report.json",
+          "sha256": "c483af5e59c2c313d269ec53e0e103008b19db331350df9e3c55bf425d27bdb1",
+          "reusedEvidence": true,
+          "scope": "Original general import source plus independently sealed verified request-identity/empty-specifier correction;0 compiles, native loader dependencies explicit. Initial cache-path fixture/control errors and disproved sticky-link hypothesis remain."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/module-import-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/module-import-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Forward one string-hint conversion plus original parent/raw attribute record to the actual native graph; no pre-resolve/URL substitution, require surrogate or production host import",
+        "Actual rooted ModuleRequest carries raw Node attributes without premature type reads or syntax-only filtering; existing resolver/load/source/URL-type registry owners consume it",
+        "Real ModuleObject/import promise are retained in traced native-function slots through deferred evaluation and actual TLA completion; return genuine namespace through real promise assimilation without re-resolving hooks",
+        "Ordinary syntax dynamic imports consume the same captured module completion owner while retaining existing delay and separate VM consumer",
+        "Pass the same realm-wrapped actual native request to resolve/record callbacks; consume a weak request-keyed transaction retaining hook-replaced attrs, parent, supplied source and same-URL request distinction",
+        "Empty primitive specifier reaches the actual Node resolver/error owner; legacy requestless preparation keeps its existing URL/type path instead of an invented opaque identity",
+        "General runner import bridge now consumes original requests; authored component diagnostics check real native missing-module/type errors, with original upstream assertions unchanged"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/module-import-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile actual guest C++ request/realm wrapping/native-function slots/promise/GC APIs against coherent engine inputs and validate actual syntax/internal import consumers",
+        "Full Node job/linking/evaluation/cache/error/reentry/termination/fatal chronology, raw attribute/parser admission, arbitrary phases and async loader workers",
+        "Legacy requestless URL/type preparation/getter behavior, full CJS/ESM/JSON/builtin/mock/cache/namespace/symlink/condition/format semantics",
+        "TypeScript/Wasm/addon/source-map/cache/preload/permission/CLI and broader public loader coverage",
+        "Actual guest async/realm/GC/OOM/fault/Worker/context teardown and identified artifacts across all four hosts; complete runner process/IPC/stdio/watch/coverage/benchmark dependencies"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "request-graph-completion-prerequisite",
+      "auditDocument": "tests/nodejs/audit/loading.md",
+      "findingScope": "Partial actual original-request/import completion and hooks/source/namespace identity prerequisite, not complete resolver/loader/cache/CLI or guest/four-host closure",
+      "additionalAuditDocuments": {},
+      "publicRequirementRecords": []
     }
   },
   "dependencyNarratives": {
@@ -24610,6 +24815,31 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current206\u2013207links genuine sender/publication/Worker LOAD and shared kernel readiness prerequisites. Exact source/evidence scopes and all preserved nonpasses remain; no definition/API closure invented. Accepted200excludes newer engine source and current kernel source lacks guest acceptance."
+      },
+      {
+        "at": "2026-11-07T11:20:52.755184+00:00",
+        "sourceCheckpoint": 209,
+        "sourceHead": "ee296dcd11fb632e4048794d0e743bc046aa180f",
+        "addedSourceSlices": [
+          "testing-runner",
+          "module-import"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "ae37bf8e7e7e0aa7c896b2a5fd134d02ff0bc8540d6dc65b14838a03fa9b89c5"
+        },
+        "latestAcceptedEngine": 200,
+        "acceptedEngineEvidence": {
+          "path": "tests/nodejs/outline/engine200-build-result.json",
+          "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5"
+        },
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current208\u2013209links actual none-isolated runner and original-request/module completion with verified attrs/empty-specifier transaction corrections. Explicit native dependencies and missing-owner nonpasses remain; no API/family/runtime closure. Accepted200excludes newer source."
       }
     ]
   }
