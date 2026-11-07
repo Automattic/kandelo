@@ -38,6 +38,7 @@ host/test/browser-worker-node-globals.test.ts	source-only
 host/test/bun-extract-guest.test.ts	prepared-product
 host/test/bun-run-guest.test.ts	prepared-product
 host/test/byte-range-fetch.test.ts	source-only
+host/test/cargo-in-guest.test.ts	prepared-product
 host/test/catch-ref-fresh-worker.test.ts	prepared-product
 host/test/centralized-spawn.test.ts	prepared-product
 host/test/channel-listener-reclamation.test.ts	source-only

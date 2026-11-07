@@ -1,0 +1,12 @@
+# Kandelo is a Unix target on WebAssembly and supports the native tempfile backend.
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -145,7 +145,7 @@
+ version = "^0.23.0"
+ features = ["sha256"]
+ 
+-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.gix-tempfile]
++[target.'cfg(any(unix, not(target_arch = "wasm32")))'.dependencies.gix-tempfile]
+ version = "^21.0.0"
+ optional = true
+ default-features = false

@@ -1,0 +1,11 @@
+# Kandelo uses musl msghdr.msg_iovlen (c_int).
+--- a/src/sys/unix.rs
++++ b/src/sys/unix.rs
+@@ -387,6 +387,7 @@
+             all(target_env = "uclibc", target_pointer_width = "32")
+         )
+     ),
++    target_os = "kandelo",
+     target_os = "aix",
+     target_os = "dragonfly",
+     target_os = "freebsd",
