@@ -426,7 +426,9 @@ or round from conflicting with another.
 The preparation runs in a disposable process before any measured round.
 It changes only the ordinary FPM and FrankenPHP pool settings, preserves
 the source image, and retains both source and configured image hashes in
-the report. Node and Chromium load that same configured input. The local
+the report. The disposable input uses level 3 Zstandard compression and
+retains preparation-stage evidence beside it. Node and Chromium load that
+same configured input. The local
 Vite server streams it through its normal filesystem route, so serve this
 checkout when running browser comparisons. Its selected lazy-asset cohort
 must match the source image. The browser input's SHA-256 must match the

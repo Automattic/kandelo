@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync, fork, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { cpus, platform, arch } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -376,12 +376,21 @@ function measureNodeIsolated(measurement: NodeMeasurement): Promise<RoundResult>
   });
 }
 
-async function browserImageDigest(page: Page, machine: string): Promise<string> {
+async function browserImageDigest(machine: string): Promise<string> {
   const imageUrl = new URL(machine).searchParams.get("vfs");
   if (!imageUrl) throw new Error("Browser machine URL has no VFS image");
-  const response = await page.request.get(new URL(imageUrl, page.url()).href);
-  if (!response.ok()) throw new Error(`Browser VFS image fetch failed: ${response.status()}`);
-  return createHash("sha256").update(await response.body()).digest("hex");
+  const response = await fetch(new URL(imageUrl, machine), { signal: AbortSignal.timeout(30_000), cache: "no-store" });
+  if (!response.ok || !response.body) throw new Error(`Browser VFS image fetch failed: ${response.status}`);
+  const reader = response.body.getReader();
+  const hash = createHash("sha256");
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      hash.update(value);
+    }
+  } finally { reader.releaseLock(); }
+  return hash.digest("hex");
 }
 
 async function measureBrowser(
@@ -524,29 +533,16 @@ async function main(): Promise<void> {
   }
 
   if (options.host === "browser" || options.host === "both") {
-    let sharedMachineUrl: string;
-    const browser = await chromium.launch();
-    try {
-      const context = await browser.newContext({ baseURL: options.browserBaseUrl });
-      const probe = await context.newPage();
-      try {
-        await probe.goto(new URL("/trap-signal-test.html", options.browserBaseUrl).href);
-        const machine = new URL(options.browserBaseUrl);
-        // Vite streams the exact selected local fixture. Do not send large
-        // image bodies through Playwright's JSON protocol or rewrite assets.
-        const fixturePath = imagePath.replaceAll("\\", "/").replace(/^\//, "");
-        machine.searchParams.set("vfs", new URL(`/@fs/${fixturePath}`, options.browserBaseUrl).href);
-        machine.searchParams.set("profile", options.profiles[1]!);
-        sharedMachineUrl = machine.href;
-        const browserDigest = await browserImageDigest(probe, sharedMachineUrl);
-        if (browserDigest !== imageDigest) {
-          throw new Error(`Node/browser VFS image mismatch: ${imageDigest} != ${browserDigest}`);
-        }
-      } finally {
-        await probe.close();
-      }
-    } finally {
-      await browser.close();
+    const machine = new URL(options.browserBaseUrl);
+    // Vite streams the exact selected local fixture. Do not send large
+    // image bodies through Playwright's JSON protocol or rewrite assets.
+    const fixturePath = imagePath.replaceAll("\\", "/").replace(/^\//, "");
+    machine.searchParams.set("vfs", new URL(`/@fs/${fixturePath}`, options.browserBaseUrl).href);
+    machine.searchParams.set("profile", options.profiles[1]!);
+    const sharedMachineUrl = machine.href;
+    const browserDigest = await browserImageDigest(sharedMachineUrl);
+    if (browserDigest !== imageDigest) {
+      throw new Error(`Node/browser VFS image mismatch: ${imageDigest} != ${browserDigest}`);
     }
     for (let round = 0; round < options.rounds; round++) {
       for (const profile of orderForRound(round, options.profiles)) {
@@ -599,15 +595,24 @@ if (process.env.KANDELO_WORDPRESS_STACK_PREPARE) {
   const { sourceImagePath, inputDirectory, phpWorkers } = JSON.parse(process.env.KANDELO_WORDPRESS_STACK_PREPARE) as {
     sourceImagePath: string; inputDirectory: string; phpWorkers: number;
   };
+  const stage = (name: string) => appendFileSync(join(inputDirectory, "preparation.jsonl"), JSON.stringify({
+    name, recordedAt: new Date().toISOString(), monotonicMs: performance.now(), pid: process.pid,
+  }) + "\n");
+  stage("reading source image");
   const source = readFileSync(sourceImagePath);
   KandeloImageFs.installModuleBytes(new Uint8Array(readFileSync(resolveBinary("kandelo_image_module32.wasm"))));
   const fs = KandeloImageFs.create();
+  stage("loading source image");
   fs.loadImage(source, { maxDecompressedBytes: 1024 * 1024 * 1024 });
+  stage("configuring PHP pools");
   const pools = comparisonWorkerPools(readVfsText(fs, "/etc/php-fpm.conf"), readVfsText(fs, "/etc/dinit.d/env-frankenphp"), phpWorkers);
   writeVfsFile(fs, "/etc/php-fpm.conf", pools.fpm);
   writeVfsFile(fs, "/etc/dinit.d/env-frankenphp", pools.franken);
-  const configured = zstdCompressSync(await fs.saveImage(), {
-    params: { [zlibConstants.ZSTD_c_compressionLevel]: 19 },
+  stage("exporting configured image");
+  const raw = await fs.saveImage();
+  stage("compressing configured image");
+  const configured = zstdCompressSync(raw, {
+    params: { [zlibConstants.ZSTD_c_compressionLevel]: 3 },
   });
   const path = join(inputDirectory, "wordpress-comparison.vfs.zst");
   writeFileSync(path, configured, { flag: "wx" });
@@ -615,9 +620,11 @@ if (process.env.KANDELO_WORDPRESS_STACK_PREPARE) {
     source: { path: sourceImagePath, sha256: createHash("sha256").update(source).digest("hex") },
     configured: { path, sha256: createHash("sha256").update(configured).digest("hex") },
     phpWorkers,
+    compressionLevel: 3,
     scope: "Controlled PHP capacity on a normal image; not a canonical build or a visitor-cache comparison.",
   };
   writeFileSync(join(inputDirectory, "inputs.json"), JSON.stringify(inputs, null, 2) + "\n", { flag: "wx" });
+  stage("prepared comparison image");
 } else if (process.env.KANDELO_WORDPRESS_STACK_WORKER === "1") {
   if (!process.send || !process.disconnect) throw new Error("Node measurement worker requires IPC");
   const send = process.send.bind(process);
