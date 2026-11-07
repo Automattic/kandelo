@@ -26670,3 +26670,27 @@ this exercises the committed portable cleanup fix through the actual builder.
 The full supported graph is still RUNNING at this checkpoint. It is not a
 completed image, r9 availability or acceptance claim. Public6271 remains the
 immutable earlier normal preview. The guard does not guarantee peak space.
+
+
+### Full-build prerequisite correction, 2026-11-07
+
+R703 subsequently records a real failed kandelo-cc node: the pinned
+sdk/rust/libc-upstream submodule is uninitialized in the normal tree. The
+owned producer is stopped after24m04s to initialize that missing input before
+freezing a restart; no unrelated process/server is signalled. Agent-job's
+143/SIGTERM status and the failed node are authoritative. The old private
+runner's EXIT trap writes0 on that interruption; this is explicitly rejected
+as an aggregate result in R703 judgment.json. All8,472 frozen source files
+remain unchanged,147 products are hashed, and successful cache results remain.
+No full image, freshness or application acceptance is inferred from them.
+
+Prerequisite job `graphics-normal-prereqs-r713-1107-061120-c6ec` passes6s:
+normal8e65 remains clean and sdk/rust/libc-upstream is checked out at its exact
+committed71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8. No source patch or
+main-workspace submodule change is needed. Restart
+`graphics-full-normal-r703-r2-1107-061254-d8d2` freezes8,980 source paths,
+including both initialized input submodules and separately prehashed private
+runners. It uses the same source, admission floor and serialized normal graph.
+It preserves canonical watcher events and explicit TERM/INT failure status.
+The previously failing compiler and its SDK node now succeed. The complete
+graph is still RUNNING; no later-stage or complete B1 claim is made.
