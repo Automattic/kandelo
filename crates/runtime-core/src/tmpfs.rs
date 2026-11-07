@@ -2432,6 +2432,20 @@ mod tests {
     }
 
     #[test]
+    fn var_log_is_not_a_scratch_mount() {
+        // `/var/log` is served by the rootfs journal, so the tmpfs must not
+        // claim it: a claim would shadow the durable directory with RAM, and
+        // the logs a crash left behind would be the first thing lost.
+        // `ownership_matches_scratch_prefixes_only` covers the bare path; what
+        // is pinned here is the table that decides it, and the nested paths a
+        // daemon actually writes.
+        assert!(SCRATCH_MOUNTS.iter().all(|mount| mount.prefix != b"/var/log"));
+        assert!(!owns_path(b"/var/log/messages"));
+        assert!(!owns_path(b"/var/log/nginx/error.log"));
+        // The rootfs bounds it instead; see `rootfs::VAR_LOG_BYTE_LIMIT`.
+    }
+
+    #[test]
     fn ownership_matches_scratch_prefixes_only() {
         assert!(owns_path(b"/tmp"));
         assert!(owns_path(b"/tmp/a"));
