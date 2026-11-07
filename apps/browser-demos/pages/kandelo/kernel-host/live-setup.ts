@@ -2077,7 +2077,20 @@ async function bootProfile(
           kernelBytes,
           vfsImageBytes,
         );
-      await kernel.initFromImage(kernelInitOptions);
+      if (profile.candidateEvidence !== undefined) {
+        await kernel.initFromImage(kernelInitOptions);
+      } else {
+        // The composer transferred this image to us solely for this boot.
+        // Forward ownership so the persistent page never keeps a full copy.
+        if (!(vfsImageBytes.buffer instanceof ArrayBuffer)
+          || vfsImageBytes.byteOffset !== 0
+          || vfsImageBytes.byteLength !== vfsImageBytes.buffer.byteLength) {
+          throw new Error("Image composer must return one whole ordinary buffer");
+        }
+        await kernel.initFromOwnedImage({
+          ...kernelInitOptions, vfsImage: vfsImageBytes.buffer,
+        });
+      }
     }
     assertCurrent();
     await markFilesystemInitialized?.();

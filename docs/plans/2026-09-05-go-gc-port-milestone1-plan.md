@@ -2,6 +2,18 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Workflow update:** main's campaign checkpoints and per-run validation
+isolation are merged. Both offline-listener fixtures are retained under
+distinct names, with one shared backend implementation. Post-merge checks
+pass 102 Node cases, all 675 file classifications and three real WordPress
+browser-host cases, zero skips/flaky. The browser run selects port 49381
+and UUID-owned output. The existing wait-guard registration is refreshed
+from the exact main installer and checks current. No new optional client
+hook or worker rotation is installed. The generic composer-to-kernel owned
+handoff passes its focused composer/lifecycle selection; rendered partial
+WordPress UI verification remains next.
+
+
 **Kernel/process memory separation candidate:** a normal-SDK regression
 reproduces redundant kernel growth on Node and all three browser engines,
 for both pointer widths. Its guest mappings reach 278,724,608 bytes while
@@ -103,7 +115,7 @@ benchmark acceptance remain open.
 four-byte Go/C pointers and eight-byte scalar alignment. Latest selected Go
 source is
 [`f60530600f70`](https://github.com/kandelo-dev/go/commit/f60530600f70a5ea905a907ac311ec8bd2ae8ac4).
-Latest main `28ba128310b5` is merged as `4dc6d9a77` in this evaluation
+Latest main `faf9b31720e8` is merged as `c4a197271` in this evaluation
 branch; ABI remains 55. The primary preview stays on its verified source.
 Implementation/evaluation checkpoints are tracked in draft PR #1492.
 The full WordPress service goal remains unfinished.

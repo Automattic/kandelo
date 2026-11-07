@@ -718,6 +718,11 @@ fetched default image likewise needs no second full-image copy. The browser
 captures the initial input before awaiting startup, preserving this ownership
 decision even if the caller subsequently replaces the options object.
 The explicit ownership-taking APIs also accept a whole ordinary raw buffer.
+The app's normal ephemeral boot forwards the image composer's transferred
+raw buffer through that ownership-taking API. It does not retain another
+whole decoded image on the persistent page; protected candidate-evidence
+boot keeps its existing input contract. Positioned persistent boot reads
+its storage through the separate existing path.
 These handoffs avoid duplicate decoded storage; they do not establish a bound
 on guest heaps, compiled code, image caches or native process footprint.
 
