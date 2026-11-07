@@ -1,0 +1,11 @@
+script_path = "packages/registry/rust-llvm/build.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = [
+  "packages/registry/rust-llvm/build.sh",
+  "packages/registry/rust-llvm/patches",
+  "scripts/package-build-roots.sh",
+  "sdk/cmake/Platform/Kandelo.cmake",
+  "sdk/activate.sh",
+]

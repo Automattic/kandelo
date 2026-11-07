@@ -831,6 +831,14 @@ name = "texlive"
 reason = "deferred software"
 
 [[exclusions]]
+name = "rustc"
+reason = "experimental guest Rust compiler; Cargo and procedural macros are not included"
+
+[[exclusions]]
+name = "rust-llvm"
+reason = "experimental guest Rust compiler dependency"
+
+[[exclusions]]
 name = "erlang"
 reason = "deferred software"
 

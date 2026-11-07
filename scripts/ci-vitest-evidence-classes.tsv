@@ -388,6 +388,7 @@ host/test/remote-segment.test.ts	source-only
 host/test/remote-session-network.test.ts	source-only
 host/test/remote-tcp-guest.test.ts	prepared-product
 host/test/remote-tcp.test.ts	source-only
+host/test/retro-emulators-cli-smoke.test.ts	prepared-product
 host/test/reusable-kernel-export-stack.test.ts	prepared-product
 host/test/rlimit-as.test.ts	prepared-product
 host/test/rlimit-fsize.test.ts	prepared-product
@@ -407,6 +408,7 @@ host/test/run-example-vfs.test.ts	source-only
 host/test/runtime-memory-profile.test.ts	source-only
 host/test/rust-c-interop.test.ts	prepared-product
 host/test/rust-std.test.ts	prepared-product
+host/test/rustc-in-guest.test.ts	prepared-product
 host/test/sched-getaffinity.test.ts	prepared-product
 host/test/scm-rights-pipe-lifetime.test.ts	prepared-product
 host/test/scm-rights-semantics.test.ts	prepared-product
@@ -656,6 +658,7 @@ web-libs/kandelo-session/test/package-sessions.test.ts	source-only
 web-libs/kandelo-session/test/peer-connection.test.ts	source-only
 web-libs/kandelo-session/test/sized-download.test.ts	source-only
 web-libs/kandelo-session/test/terminal-links.test.ts	source-only
+web-libs/kandelo-session/test/terminal-request.test.ts	source-only
 web-libs/kandelo-session/test/tracked-demo-parity.test.ts	prepared-product
 web-libs/kandelo-session/test/vfs-asset-group.test.ts	source-only
 web-libs/kandelo-session/test/web-preview-address.test.ts	source-only

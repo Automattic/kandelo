@@ -56,7 +56,13 @@ rustc drives the SDK driver and its `lang_start` entry connects to
 Kandelo's crt1). `cargo build` produces a runnable `.wasm` directly — no
 staticlib or separate link step. `scripts/build-rust-sysroot.sh`
 installs the target spec into the private sysroot and compiles `std` for
-it once, so the target is selected by name with no `-Z build-std`:
+it once, so the target is selected by name with no `-Z build-std`.
+
+The SDK supplies the linker and CRT objects; the target disables Rust's
+self-contained linker fallback. It does not require a separate Rust-bundled
+`gcc-ld` directory in the sysroot.
+
+For example:
 
 ```
 RUSTC=$HOME/.kandelo/rust/rustc-kandelo \

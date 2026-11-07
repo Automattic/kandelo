@@ -33,6 +33,57 @@ Verified on the kernel (see `programs/rust/*`):
 | networking | `std::net` TCP | loopback + Node external TCP |
 | processes | `std::process::Command` | fork+exec (see below) |
 
+## Experimental compiler inside Kandelo
+
+The experimental `rustc` package builds the compiler itself for Kandelo,
+separately from host-side `wasm32posix-cargo`. It pins the repository's
+nightly compiler revision, statically links its matching LLVM 22 WebAssembly
+backend through the `rust-llvm` library package, and supplies matching
+prebuilt `std` in `rust-std.zip`. These packages are outside the default
+supported software set. Cargo, rustup, registry downloads and procedural
+macros are not included.
+
+Build it through the package resolver (this is a substantial cold build):
+
+```bash
+bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh rustc wasm32
+```
+
+A guest image needs `/usr/bin/rustc`, `rust-std.zip` mounted at `/usr`,
+and `kandelo-sdk.zip` mounted at `/usr` for the existing
+`wasm32posix-cc` linker driver, Clang and wasm-ld. Compiler and standard
+library must come from the same pinned revision. Select the installed
+target by name:
+
+```bash
+RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 rustc -Zunstable-options --sysroot /usr \
+  --target wasm32-unknown-kandelo-std hello.rs -o hello.wasm
+./hello.wasm
+```
+
+`--emit=metadata --crate-type=lib` type-checks without invoking the linker;
+`--emit=obj` exercises LLVM code generation without linking. Node and the
+Chromium, Firefox and WebKit desktop test engines compile, link and execute a
+program using `Vec`, iterators and `println!`, then reopen its persistent
+disk and execute the saved program again. The existing process-memory
+limits are unchanged.
+Persistent disks retain sources, standard-library files and build outputs;
+compiler and linker processes still need their own memory.
+
+The compiler inherits the target's abort-only panic strategy. Fatal type
+errors print Rust diagnostics (including error codes) and terminate by
+`SIGABRT` (134), rather than rustc's usual status 1. Compiler panic recovery,
+procedural macros, dynamic backends, arbitrary crates and Cargo builds remain
+unvalidated. Programs reaching `fork` still require normal fork
+instrumentation before guest execution.
+
+The acceptance fixtures are `host/test/rustc-in-guest.test.ts` and
+`apps/browser-demos/test/rustc-in-guest.spec.ts`. Set
+`KANDELO_REQUIRE_GUEST_RUSTC=1` when running them to fail on missing
+experimental artifacts rather than skip. They cover type-checking,
+compilation, execution, diagnostics and reopening the compiled program from
+its persistent root filesystem. The browser fixture uses an OPFS disk.
+
 ## Sharing libraries with C and C++
 
 Rust and C/C++ code link into one program against one musl, so static
@@ -117,7 +168,9 @@ in a private sysroot:
 - `sdk/rust/wasm32-unknown-kandelo{,-std}.json` — target specs. The std
   spec uses `target-family = ["unix","wasm"]`, links via the SDK driver
   (`linker = wasm32posix-cc`, `entry-name = __main_argc_argv`), and bakes
-  in `+atomics,+bulk-memory`.
+  in `+atomics,+bulk-memory`. Self-contained CRT/linker fallback is disabled:
+  the SDK driver supplies those files. Rust's own bundled `gcc-ld` directory
+  is not required, including when rustc itself runs inside Kandelo.
 - `sdk/rust/libc-upstream/` (submodule, `rust-lang/libc` pinned to the
   version `std` uses) + `sdk/rust/libc-kandelo.patch` (our delta:
   `kandelo` arms reusing linux-musl bindings + a reconciled wasm32 arch
