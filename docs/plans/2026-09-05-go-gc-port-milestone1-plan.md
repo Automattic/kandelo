@@ -33,14 +33,53 @@ SHA-256 `464d553bb3e5c37910b3c5910fa6d2d7a404d535e6781b387682376a74ddb703`.
 The layout audit passes; image inspection verifies both embedded daemons
 equal their normal selected package outputs and all 92 cache-plugin files
 equal the pinned upstream archive. The ZTS archive contains the original
-`compute_postnum_recursive` symbol. Sequential Node, browser-host and real
-editor tests are running with separate reports; no runtime result is
-claimed yet. This partial leaves unrelated shell applications out and is
-not canonical acceptance. The selected kernel remains `6f5410ea67d0`.
+`compute_postnum_recursive` symbol. Both Node service cases, all three
+Caddy browser-host cases and all nine real Caddy UI cases pass, with zero
+skips or flaky cases. Chromium, Firefox and WebKit each exercise login,
+Appearance → Editor, authenticated post edits and a saved site template.
+The separate host cases include cold/warm 96- and 768-condition optimizer
+probes at the default optimization level. Keep the upstream PHP optimizer
+selected: these current cases provide no reason to restore the candidate.
+They do not establish unlimited recursion depth or prove pointer width
+alone caused the difference. Reports remain separate under
+`.context/php-upstream-optimizer-partial-v1/`; the combined evaluation job
+`php-upstream-partial-runtime-1107-143137-b1b1` passes in 13m30s.
+This partial leaves unrelated shell applications out and is not canonical
+acceptance. The selected kernel remains `6f5410ea67d0`.
 The separate benchmark checkout now matches selected main
 `1b6f3783d`; its SDK inputs are unchanged from the completed bootstrap.
 The benchmark driver requires an explicit final candidate projection.
 No new full build or benchmark timing has started.
+
+**Verified development preview:** the normal `./run.sh browser --partial`
+server runs at
+`http://127.0.0.1:5464/?vfs=http%3A%2F%2F127.0.0.1%3A5464%2F%40kandelo-partial%2Fimage.vfs.zst&profile=wordpress-frankenphp-caddy`.
+A separate Chromium check verifies the served image identity, uses the
+demo's login button and opens the real template editor. The preserved
+older static preview remains available. This new URL serves the mutable
+development partial, not a canonical release artifact.
+
+**Instance-only memory control:** exact new Caddy bytes `f5771507fe1e`
+instantiate with diagnostic imports but no program entry/export calls.
+All imported functions throw if called; the call count stays zero. Node
+passes one instance. WebKit passes two instances in one worker plus one
+in each of two additional workers, sharing one 76,087,296-byte linear
+memory. Native samples from one fresh WebKit content process report:
+
+| Phase | Physical footprint, vmmap units |
+| --- | ---: |
+| Compiled module; source reference released | 859.1M |
+| Four instances across three workers | 873.3M |
+| Worker termination requested | 20.2M |
+| Same page after 60 seconds | 18.5M |
+
+This is one diagnostic run, not a service benchmark or a proven bound.
+Kandelo host activation setup and Go/PHP execution are absent. It narrows
+the several-GiB investigation toward setup/execution costs rather than
+module holding or bare instance creation alone. No forced collection,
+engine flags or application changes are used. Paired real WordPress
+HTTP-workload memory observations on the same artifacts are running;
+the full UI memory/lifecycle gate remains separate and unfinished.
 
 **Visitor-cache configuration follow-up:** both current WordPress stacks
 disable OPcache timestamp validation. Stock cache-plugin activation edits
