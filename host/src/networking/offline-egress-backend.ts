@@ -32,6 +32,10 @@ export class OfflineEgressBackend implements NetworkIO {
   unbindUdp(id: string): void { this.egress.unbindUdp(id); }
   sendDatagram(): number { return this.egress.sendDatagram(); }
 
+  // The whole machine is offline, including its listeners. Loopback, its
+  // assigned address and wildcard binds must not open physical host ports.
+  ownsTcpListener(_addr: Uint8Array): boolean { return true; }
+
   connect(_handle: number, _addr: Uint8Array, _port: number, _source?: NetworkAddress): void {
     throw Object.assign(new Error("EHOSTUNREACH"), { errno: EHOSTUNREACH });
   }
