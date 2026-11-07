@@ -200,6 +200,7 @@ const TEST_PROGRAMS = [
   "kmsg_tail_test.c",
   "honest_stub_returns_test.c",
   "unix_dgram_cross_process_test.c",
+  "syslog_client_test.c",
   "thread-exit-group.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
@@ -228,6 +229,8 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "kmsg_tail_test.c",
   // Forks to get a sender that never bound the path it sends to.
   "unix_dgram_cross_process_test.c",
+  // Forks a client so the daemon half is a different process.
+  "syslog_client_test.c",
 ]);
 
 /** WAT fixtures used by host runtime tests. */

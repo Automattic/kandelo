@@ -10,6 +10,7 @@ import { findRepoRoot } from "../src/binary-resolver";
 import {
   addDinitBaseSystemFiles,
   addDinitInit,
+  addSyslogService,
   DINIT_SERVICE_ENV,
   DINIT_SERVICE_ENV_PATH,
 } from "../../images/vfs/scripts/dinit-image-helpers";
@@ -510,5 +511,87 @@ describe("dinit-derived image binary ownership", () => {
         KandeloImageFs.readImageCapacity(shellImage).maxByteLength,
       ),
     ).rejects.toThrow("package shell base image has invalid metadata");
+  });
+});
+
+/**
+ * Userspace logging is optional per image. These cover the contract from both
+ * sides: what a product gets when it opts in, and what it must NOT get when
+ * it does not.
+ */
+describe("optional syslog daemon", () => {
+  const syslogdBytes = encoder.encode("exact syslogd bytes");
+
+  it("stages the daemon and a config a user can read inside the machine", () => {
+    const fs = createFs();
+    const service = addSyslogService(fs, { binary: syslogdBytes });
+
+    const staged = fs.readFile("/sbin/syslogd");
+    expect(new TextDecoder().decode(staged)).toBe("exact syslogd bytes");
+    expect(fs.stat("/sbin/syslogd").mode & 0o7777).toBe(0o755);
+
+    // -F keeps syslogd in the foreground. Without it the daemon forks and
+    // exits, and dinit would treat a supervised service as having died.
+    expect(service.name).toBe("syslogd");
+    expect(service.command).toContain("/sbin/syslogd");
+    expect(service.command).toContain("-F");
+    expect(service.restart).toBe(true);
+
+    const conf = new TextDecoder().decode(fs.readFile("/etc/syslog.conf"));
+    expect(conf).toContain("/var/log/messages");
+    // Rotation is in the file rather than on the command line so it can be
+    // changed from inside the machine; sysklogd lets argv override the file,
+    // not the reverse.
+    expect(conf).toContain("rotate_size\t256k");
+    expect(conf).toContain("rotate_count\t5");
+  });
+
+  it("creates /var/log, which the image now owns rather than a scratch mount", () => {
+    const fs = createFs();
+    addSyslogService(fs, { binary: syslogdBytes });
+    expect(fs.stat("/var/log").mode & 0o7777).toBe(0o755);
+  });
+
+  it("carries the configured rotation into the file", () => {
+    const fs = createFs();
+    addSyslogService(fs, { binary: syslogdBytes, rotateSize: "1M", rotateCount: 2 });
+    const conf = new TextDecoder().decode(fs.readFile("/etc/syslog.conf"));
+    expect(conf).toContain("rotate_size\t1M");
+    expect(conf).toContain("rotate_count\t2");
+  });
+
+  it("refuses inputs that would ship a daemon that cannot work", () => {
+    const fs = createFs();
+    // An image must not resolve a daemon binary ambiently.
+    expect(() => addSyslogService(fs, { binary: new Uint8Array() })).toThrow(
+      /exact staged package bytes/,
+    );
+    // A malformed rotation would be accepted silently by sysklogd and leave
+    // the log unbounded, which /var/log's cap cannot afford.
+    expect(() =>
+      addSyslogService(fs, { binary: syslogdBytes, rotateSize: "lots" }),
+    ).toThrow(/k\/M\/G/);
+    expect(() =>
+      addSyslogService(fs, { binary: syslogdBytes, rotateCount: 0 }),
+    ).toThrow(/positive integer/);
+  });
+
+  it("declares no syslogd service in an image that did not opt in", () => {
+    // The bare-bones case. Nothing binds /dev/log, so syslog(3) drops its
+    // messages without failing the caller (POSIX gives it no way to report
+    // that; see host/test/syslog-client.test.ts). dmesg and /dev/kmsg still
+    // work, because those are kernel surfaces and do not need a daemon.
+    const fs = createFs();
+    addDinitInit(fs, [], {
+      binaries: {
+        dinit: encoder.encode("exact dinit"),
+        dinitctl: encoder.encode("exact dinitctl"),
+      },
+      services: encoder.encode("exact standalone services\n"),
+    });
+
+    expect(() => fs.stat("/etc/dinit.d/syslogd")).toThrow();
+    expect(() => fs.stat("/sbin/syslogd")).toThrow();
+    expect(() => fs.stat("/etc/syslog.conf")).toThrow();
   });
 });

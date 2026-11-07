@@ -334,4 +334,12 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "lhasa", resolverPath: "programs/lha.wasm", vfsPath: "/usr/bin/lha", symlinks: [] },
   { id: "tyrquake", resolverPath: "programs/tyrquake/quake.wasm", vfsPath: "/usr/libexec/quake", symlinks: [] },
   { id: "elinks", resolverPath: "programs/elinks.wasm", vfsPath: "/usr/bin/elinks", symlinks: [] },
+  // Reading and writing the system log. `dmesg` reads the kernel message
+  // ring through /dev/kmsg and klogctl; `logger` writes through musl's
+  // syslog(3) to /dev/log, so it reaches whatever daemon is listening and
+  // fails honestly when none is. Both are toybox applets of a few hundred
+  // lines, but lazy like the rest: a machine that never inspects its log
+  // should not carry them in the eager image every visitor downloads.
+  { id: "dmesg", dependency: "toybox", resolverPath: "programs/toybox/dmesg.wasm", vfsPath: "/usr/bin/dmesg", symlinks: [] },
+  { id: "logger", dependency: "toybox", resolverPath: "programs/toybox/logger.wasm", vfsPath: "/usr/bin/logger", symlinks: [] },
 ] as const satisfies readonly VfsBinarySpec[];

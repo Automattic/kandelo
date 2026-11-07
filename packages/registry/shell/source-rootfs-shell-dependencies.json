@@ -280,6 +280,11 @@
       "name": "kandelo-sdk-browser-bundle",
       "version": "21.1.7",
       "role": "lazy-archive"
+    },
+    {
+      "name": "toybox",
+      "version": "0.8.15",
+      "role": "lazy-file"
     }
   ]
 }

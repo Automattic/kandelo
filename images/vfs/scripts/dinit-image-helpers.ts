@@ -427,6 +427,101 @@ function shellSingleQuote(value: string): string {
  * ["/sbin/dinit", "--container", "nginx"].
  * With boot=false, demos must pass the target service name explicitly.
  */
+/** Options for {@link addSyslogService}. */
+export interface SyslogServiceOptions {
+  /**
+   * Exact staged `syslogd.wasm` bytes. Required rather than resolved here:
+   * an image must not pick up a daemon binary ambiently, for the same reason
+   * {@link AddDinitInitOptions.binaries} exists.
+   */
+  binary: Uint8Array;
+  /**
+   * Size a log file may reach before syslogd rotates it, in sysklogd's own
+   * syntax (a `k`, `M` or `G` qualifier, e.g. `"256k"`).
+   */
+  rotateSize?: string;
+  /** Rotated generations to keep. */
+  rotateCount?: number;
+}
+
+/**
+ * Stage sysklogd's `syslogd` and return the dinit service that supervises it.
+ *
+ * Logging is optional per image. A product that calls this gets a daemon
+ * bound to `/dev/log`, so `syslog(3)` from any process reaches
+ * `/var/log/messages`; a product that does not gets no `/dev/log` receiver,
+ * and `syslog(3)` still succeeds silently because POSIX gives it no way to
+ * report a failure. `dmesg` and the kernel ring behind it work either way —
+ * they are kernel surfaces, not daemon ones.
+ *
+ * The caller adds the returned service to {@link addDinitInit}'s list, and
+ * should put `waitsFor: ["syslogd"]` on services whose early messages matter:
+ * dinit starts services in parallel otherwise, and anything logged before the
+ * daemon binds its socket is lost.
+ *
+ * Rotation is written into `/etc/syslog.conf` rather than passed as
+ * `syslogd -r`, so a user can read and change it inside the machine;
+ * sysklogd lets the command line override the file, not the reverse. It is
+ * not optional in practice: `/var/log` is durable and capped
+ * (`VAR_LOG_BYTE_LIMIT` in `crates/runtime-core/src/rootfs.rs`), so an
+ * unrotated log would eventually spend the whole budget and the cap would
+ * start refusing writes for everything.
+ */
+export function addSyslogService(
+  fs: VfsImageFilesystem,
+  opts: SyslogServiceOptions,
+): DinitService {
+  if (!(opts.binary instanceof Uint8Array) || opts.binary.byteLength === 0) {
+    throw new Error("syslogd requires exact staged package bytes");
+  }
+  const rotateSize = opts.rotateSize ?? "256k";
+  const rotateCount = opts.rotateCount ?? 5;
+  if (!/^[0-9]+[kMG]?$/.test(rotateSize)) {
+    throw new Error(
+      `syslogd rotate size must be a number with an optional k/M/G qualifier, got ${rotateSize}`,
+    );
+  }
+  if (!Number.isInteger(rotateCount) || rotateCount < 1) {
+    throw new Error(`syslogd rotate count must be a positive integer, got ${rotateCount}`);
+  }
+
+  // Create every directory this writes into. addDinitInit happens to make
+  // /etc and /var/log too, but a helper that only worked when called after it
+  // would be a trap for the next product.
+  ensureDirRecursive(fs, "/sbin");
+  writeVfsBinary(fs, "/sbin/syslogd", opts.binary, 0o755);
+  ensureDirRecursive(fs, "/etc");
+  ensureDirRecursive(fs, "/var/log");
+  fs.chmod("/var/log", 0o755);
+
+  // One file for everything. Kandelo has no mail, cron or news daemons to
+  // separate out, and `*.emerg *` is left out deliberately: writing to every
+  // logged-in terminal needs utmp, which would fail rather than warn.
+  // The `-` prefix means "do not sync after every line".
+  writeVfsFile(
+    fs,
+    "/etc/syslog.conf",
+    [
+      "# Kandelo system log. See syslog.conf(5).",
+      "#",
+      "# Everything at info and above goes to one file; /var/log is durable on",
+      "# a saved computer, so this is what survives a crash.",
+      "*.info\t\t\t-/var/log/messages",
+      "",
+      "# /var/log is capped, so the daemon bounds the files it owns.",
+      `rotate_size\t${rotateSize}`,
+      `rotate_count\t${rotateCount}`,
+      "",
+    ].join("\n"),
+  );
+
+  return {
+    name: "syslogd",
+    command: "/sbin/syslogd -F -s",
+    restart: true,
+  };
+}
+
 export function addDinitInit(
   fs: VfsImageFilesystem,
   services: DinitService[],
