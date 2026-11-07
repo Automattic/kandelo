@@ -1,14 +1,14 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T09:28:51.793992+00:00",
-  "sourceHead": "3099bea13c063fb44ae54a9db9b7d59a7d11e434",
-  "recipeRevision": 202,
+  "at": "2026-11-07T09:42:19.145552+00:00",
+  "sourceHead": "e633099c39cf4e7b4cf77999f12e20c78a677116",
+  "recipeRevision": 204,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 120,
+    "sourceSliceRecords": 122,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 231
@@ -26,24 +26,23 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 120,
+  "sourceSliceIdentitiesVerified": 122,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "5d2f52c43add8df8dd0aac151068f343e2fb22ecda31662e0a3ff8758e87496f"
+    "sha256": "145b91b339871095752c7e0b52dc1dea680eb3aec4659a7726b29d3bfaddfeba"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/qualified-link verification only; immutable audit unchanged, no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "27c4f551e2a678b7c1a4c40d8dcd8eddf908388b72e53bfb11b90daded24c834",
-    "sourceHead": "c1f8e947e0a0ce83867db1119275775b49e57f12",
+    "sha256": "cd875e211d7cf71fdbc16105763447f4ca50f657e5eb977271f24256ae8713d9",
+    "sourceHead": "3099bea13c063fb44ae54a9db9b7d59a7d11e434",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "native-bridge-compilation",
-    "terminal-callback-resource",
-    "ordinary-sea-image"
+    "opaque-tls-owner",
+    "tls-plaintext-read"
   ],
   "qualifiedReferenceCorrections": [
     {

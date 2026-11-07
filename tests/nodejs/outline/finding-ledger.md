@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 120 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 122 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 231 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -378,3 +378,30 @@ All357lexical IDs,417qualified definitions,52ranges and19families remain. No
 finding or family closes. Old failures/skips/timeouts and the signature ALS/frame
 nonpass stay visible. This overlay adds0runtime controls and0compiles; overall
 suites/fullproduct rebuild remain deferred and nested guest Wasm remains in scope.
+
+## Source203–204 actual TLS lifetime and read-material overlay
+
+S-004/S-009 and shared N-013 gain actual opaque context/generation/SSL/captured
+lease ownership, paired bootstrap cancellation and thread-local rooted watches.
+Real allocation/getter/Promise work precedes descriptor commit; the old numeric
+TLS table is removed. Separate read tickets retain consumed plaintext/EOF/error
+through failed publication/close/reentry and require the actual settled Promise
+identity before acknowledgement. Stale completions cannot release newer data.
+
+One native D01loopback/SSL/free/reused-fd scenario and three D02material cases
+pass with explicit real native dependencies, along with27TLS-policy/12constants
+per slice and14package checks. Source204initially failed its own retry-dependent
+assertion-count guard; raw inputs/stderr remain. The corrected own fixture
+requires actual completed semantic checks. Every native ownership condition and
+upstream assertion remains unchanged;1085new compiler-input identities are saved.
+Counts vary with retry loops and are not API coverage. Exactly4helper attempts
+(3success,1earlier D01fixture compile failure) are integrated across203/204.
+
+True TLSWrap early construction/retained TCP parent, Socket/StreamBase/onread/
+AsyncWrap/ref/timer/session/server/SecureContext and HTTPS remain implementation
+gaps. hasPendingRead is a real pinned TCP-parent proxy; earlier absence prose
+was wrong and stays corrected. No fake parent/provider/probe is introduced.
+The accepted200engine excludes201–204; new guest JSAPI remains uncompiled and
+all-four-host conformance unestablished. No finding/family closes, no accepted
+boundary is invented and no overall/fullproduct rebuild ran. The nested guest
+Wasm backend remains in scope for the final phase.

@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T09:39:31.352399+00:00",
+  "updatedAt": "2026-11-07T09:43:48.424444+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "84106790bf8305279125a3e9c1f2a847e85ae510319ca1af390497d9f3aa4879",
+    "tests/nodejs/outline/status-by-family.md": "41bd00410889a20f49cbf0f6dbfd618d64197c5312c6bd45e0b81b6f2e88b4dc",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "5d2f52c43add8df8dd0aac151068f343e2fb22ecda31662e0a3ff8758e87496f",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "cd875e211d7cf71fdbc16105763447f4ca50f657e5eb977271f24256ae8713d9",
-    "tests/nodejs/outline/finding-ledger.md": "c2df6b242d6ffc52aaf37531bc0b1ee0cf074d7c5ffeab83771ec28c5b8d9782",
+    "tests/nodejs/outline/finding-ledger.json": "145b91b339871095752c7e0b52dc1dea680eb3aec4659a7726b29d3bfaddfeba",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "67157a652b7deb107bc86020295a02449a40c7812f2e55d194b4df13f416778a",
+    "tests/nodejs/outline/finding-ledger.md": "f72ace3861e644496b5b8ddf82a80d6454a13b286590d96045b72284fb1db9e8",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -7676,6 +7676,7 @@
     }
   ],
   "nextSourceWork": [
+    "Integrate sealed control-only SignJob real-frame correction; account2pending tiny attempts without claiming production/guest closure",
     "Commit/push204read-material source and reconcile203/204finding/evidence links",
     "Integrate ordered host receiver then generic sender/true outcome/Worker publication owners, preserving actual differential nonpasses until fixed",
     "Integrate none-isolated runner before general dynamic-import owner; all full public families remain partial",
@@ -7685,7 +7686,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Replaced actual global reusable TLS numeric slots with context/generation/captured-descriptor/SSL ownership and paired cancellation/publication/shutdown consumers, preserving missing full TLSWrap/parent/ref/HTTPS semantics."
+    "reason": "Implemented actual consumed TLS read material/Promise acknowledgement ownership and retained close/reentry results; corrected an invalid own retry-count guard without changing runtime ownership conditions or upstream assertions."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -45630,17 +45631,17 @@
     "Shared callback policy compiles with explicit hook/context/queue boundary adapters and matches real native Node-API/libuv behavior in eight scenarios, with expected termination codes 1/17 retained. SpiderMonkey rooted/context/checkpoint adapter, engine/root-entry patch and changed DNS/FS/codec owners remain uncompiled. Full rejection events/modes/uncaught recovery, weak-reference/zero-ID/VM/worker and complete loop phases remain missing or unvalidated. Native addon loading in the reference does not imply a guest addon implementation."
   ],
   "mainReconciliation": {
-    "at": "2026-11-07T09:28:51.793992+00:00",
-    "head": "3099bea13c063fb44ae54a9db9b7d59a7d11e434",
+    "at": "2026-11-07T09:42:19.145552+00:00",
+    "head": "e633099c39cf4e7b4cf77999f12e20c78a677116",
     "originMain": "afeedd583ca5b9169e32a2d316e49d589c0476c4",
     "relation": "ancestor",
-    "sourceRevision": 202,
+    "sourceRevision": 204,
     "action": "already-contained-no-merge-required",
     "unrelatedLocalWorkPreserved": true,
-    "fetchLog": ".context/node26-main-fetch201.log",
+    "fetchLog": ".context/node26-main-fetch204.log",
     "evidence": {
-      "report": ".context/node26-main-reconcile202.json",
-      "sha256": "517f2282f347ef05e4bee87fb28f8e0bb8e05938698ccad1d1c92cd699dc7635"
+      "report": ".context/node26-main-reconcile204.json",
+      "sha256": "bb8e6857bc4c5eb3654cb8b12cffcedbdfe916b60a2fdef34c46564e10a3a1e1"
     }
   },
   "storageMaintenance": {
@@ -46007,10 +46008,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/tls-plaintext-read-20261107T093932Z.tar.gz",
-    "sha256": "5730ac2a698594d938fdb9c1d2eede031ca4158654f857a3c7a4774251cf2b0c",
-    "bytes": 30490385,
-    "scope": "204actual TLS plaintext/material/acknowledgement source over203opaque owner with paired bootstrap, native component/compiler-input identities and original failed fixture observations. New guest JSAPIuncompiled; no four-host closure.",
+    "path": ".context/node26-implementation-snapshots/pending-frame204-20261107T094348Z.tar.gz",
+    "sha256": "cf9ffc15027a188982d2bd1edadbc5af511c31064205ba2df12db60d79673946",
+    "bytes": 11577846,
+    "scope": "Current204identified source and pending control-only signature-frame evidence; no new production/runtime control or compilation",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -49304,7 +49305,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Implemented actual consumed TLS read material/Promise acknowledgement ownership and retained close/reentry results; corrected an invalid own retry-count guard without changing runtime ownership conditions or upstream assertions."
+    "reason": "Reconciled203opaque TLS/204retained read material with exact immutable findings and current compiler/native-dependent controls; preserved initial fixture failure and genuine TLSWrap/HTTPS/guest gaps without closure."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -55597,6 +55598,20 @@
       "sha256": "7ebe89835930ba76be7f38413064a7e38b586fc5dc97d78a7327a8674b704b60",
       "bytes": 30230123,
       "scope": "203real opaque TLS ownership/pairedbootstrap over201terminal and202SEA; normal source/policy controls, preserved native failures/qualified boundaries; new guest C++uncompiled.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/tls-plaintext-read-20261107T093932Z.tar.gz",
+      "sha256": "5730ac2a698594d938fdb9c1d2eede031ca4158654f857a3c7a4774251cf2b0c",
+      "bytes": 30490385,
+      "scope": "204actual TLS plaintext/material/acknowledgement source over203opaque owner with paired bootstrap, native component/compiler-input identities and original failed fixture observations. New guest JSAPIuncompiled; no four-host closure.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/finding-overlay204-20261107T094219Z.tar.gz",
+      "sha256": "2e66474a859cf257a8e82f771de496375dc06ddb8ff533762a59e6b0eb895723",
+      "bytes": 10938190,
+      "scope": "Current204canonical qualified finding overlay and identified source, no new runtime control/compiler; prior full raw slice evidence preserved",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -61994,7 +62009,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "a0ab7832f8bffb102d3248a7d9c86bde031a7f4f",
+    "pushedThrough": "e633099c39cf4e7b4cf77999f12e20c78a677116",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -100777,6 +100792,20 @@
         "report": ".context/node26-main-reconcile199.json",
         "sha256": "178ec82ad42d1ea7993749b2f44925539ac500afbbaffce2b3c94dcc9b17dabd"
       }
+    },
+    {
+      "at": "2026-11-07T09:28:51.793992+00:00",
+      "head": "3099bea13c063fb44ae54a9db9b7d59a7d11e434",
+      "originMain": "afeedd583ca5b9169e32a2d316e49d589c0476c4",
+      "relation": "ancestor",
+      "sourceRevision": 202,
+      "action": "already-contained-no-merge-required",
+      "unrelatedLocalWorkPreserved": true,
+      "fetchLog": ".context/node26-main-fetch201.log",
+      "evidence": {
+        "report": ".context/node26-main-reconcile202.json",
+        "sha256": "517f2282f347ef05e4bee87fb28f8e0bb8e05938698ccad1d1c92cd699dc7635"
+      }
     }
   ],
   "sqliteLifecycleImplementation": {
@@ -101981,6 +102010,24 @@
       "scope": "Normal generic registered-JS host sender ownership/order/nested lists/logical transfer sidecar and Broadcast protection over receiver-order prerequisite;7matching observations/2explicit differential nonpasses,0compiles. True drop/deferred-error/publication/Worker LOAD_SCRIPT remains incomplete.",
       "status": "sealed-pending-root-integration",
       "currentGuestConformance": false
+    },
+    {
+      "path": ".context/host-transfer-outcome-agent/handoff",
+      "sealSha256": "773081fe99eceeb8445f26ca89cdc4a7aebcfbee4ae7c10b955d466c4e003563",
+      "status": "sealed-pending-root-integration",
+      "scope": "Actual packet/drop/deferred sender error/receiver precedence and interruptible Worker LOAD publication source over receiver+sender prerequisites;15raw JS cases and native references,0compiles. C++/guest/unified worker ordering/termination races/lifetime remain open.",
+      "nativeHelperAttemptsPendingIntegration": 0,
+      "nativeHelperFailuresPendingIntegration": 0,
+      "currentGuestConformance": false
+    },
+    {
+      "path": ".context/signjob-frame-owner-agent",
+      "sealSha256": "74d626d88a2d2b257b06c1b3f28f7bd3e63a60f845b889590a3c8ec8decce0b4",
+      "status": "sealed-pending-root-control-integration",
+      "scope": "Control-only actual captured-frame/InternalMakeCallback native fixture correction. Original39/40nonpass retained; unchanged40/40and3paired lifecycle controls pass,2unchanged files eachsubject retain conditional CLI skip. No production change justified; actual guest FsRequestFrame/CallbackScope/fatal/Worker conformance remains unvalidated.",
+      "nativeHelperAttemptsPendingIntegration": 2,
+      "nativeHelperFailuresPendingIntegration": 0,
+      "currentGuestConformance": false
     }
   ],
   "dnsScopedAddressImplementation": {
@@ -102519,19 +102566,19 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "5d2f52c43add8df8dd0aac151068f343e2fb22ecda31662e0a3ff8758e87496f",
+    "sha256": "145b91b339871095752c7e0b52dc1dea680eb3aec4659a7726b29d3bfaddfeba",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "cd875e211d7cf71fdbc16105763447f4ca50f657e5eb977271f24256ae8713d9"
+      "sha256": "67157a652b7deb107bc86020295a02449a40c7812f2e55d194b4df13f416778a"
     },
-    "sourceCheckpoint": 202,
+    "sourceCheckpoint": 204,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 120,
+      "sourceSliceRecords": 122,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
       "findingsWithoutExplicitOrProposedSourceSlice": 231
@@ -103281,6 +103328,28 @@
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 233
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "5d2f52c43add8df8dd0aac151068f343e2fb22ecda31662e0a3ff8758e87496f",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "cd875e211d7cf71fdbc16105763447f4ca50f657e5eb977271f24256ae8713d9"
+      },
+      "sourceCheckpoint": 202,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 120,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 231
       },
       "individualApiClosure": false,
       "fourHostConformance": false
