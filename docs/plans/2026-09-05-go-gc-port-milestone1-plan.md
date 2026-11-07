@@ -22,6 +22,25 @@ three-file upstream review patch applies to the preserved baseline and
 matches the evaluated source hashes. No upstream submission is made.
 See the [full evaluation](2026-11-07-go-regexp-upstream-evaluation.md).
 
+**Further validation preparation:** the alternating benchmark driver now
+selects the clean `afeedd583ca5` checkout instead of the historical signal
+baseline, verifies that commit, and rejects source movement during a run.
+Its syntax and no-timing plan check pass. WordPress 7.0 and SQLite plugin
+2.1.16 archives are independently staged and checksum-verified outside
+both frozen registries; both checkouts' manifests match. Installation into
+the baseline is guarded on successful completion of its normal product
+build. No new benchmark timings are claimed.
+
+The isolated memory branch's extra libc/POSIX selection first fails before
+guest execution: Node lacks its normal image-writer module, and the browser
+projection lacks dash required by the conformance runner. All six runner
+logs, contexts and imported nonpassing records remain separate under
+`.context/go-mmap-fresh-pages/.context/mmap-vendor-conformance/`. These are
+preparation failures, not evidence of a guest mapping regression or a
+conformance pass. Job `mmap-vendor-prerequisites-1107-080049-c9e4` builds the
+normal kernel/rootfs/exec-support closure in that worktree before a separate
+rerun. Primary host/package sources remain frozen during their image build.
+
 **Memory experiment: maintained and compiled-host validation:** follow-up
 [`f9360b2c3`](https://github.com/Automattic/kandelo/commit/f9360b2c362172e15dfa18f55627c077191b9029)
 adds real worker interleavings and maintained C zeroing tests on the isolated
