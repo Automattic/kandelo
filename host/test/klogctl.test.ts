@@ -6,7 +6,7 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 /**
  * klogctl() used to be a fake success: the kernel's channel dispatch answered
  * SYS_SYSLOG with a bare 0, so a program asking for the kernel log was told
- * it had succeeded and handed nothing. ABI 56 routes Kandelo syscall 304 to
+ * it had succeeded and handed nothing. Kandelo syscall 304 now routes to
  * the kernel message ring, and this is the end-to-end evidence for that route
  * — a real guest, a real libc klogctl(), the channel glue, host argument
  * staging and kernel dispatch.

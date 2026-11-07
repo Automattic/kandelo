@@ -18,23 +18,22 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
-Program ABI 56 is the declared supported baseline; ABI 55 was the first one
-and ABI 56 replaced it, because routing `klogctl` added a syscall to the
-program surface and this gate is exact. The separate
+Program ABI 55 is the declared supported baseline. The separate
 `abi/supported-program-baseline.json` gate preserves the declared program
 digest across kernel/host rebuilds; ordinary snapshot regeneration or a
-program version bump does not bypass it. The current gate also refuses
-additive program changes until an explicit required-extension contract is
-implemented. Kernel-host-only changes remain independently versioned and do
-not affect this baseline.
+program version bump does not bypass it. The gate itself is exact: it refuses
+an additive program-surface change as firmly as a changed one. What gets past
+it is not a relaxation of the gate but a separate, derived record of affirmed
+predecessors — see "Affirmed prior program contracts" below. Kernel-host-only
+changes remain independently versioned and do not affect this baseline.
 
 Run `cargo xtask check-program-baseline` for the focused check. The ordinary
 ABI check and package/build/stamping entry points enforce it as well.
 Already-built fixtures under `abi/program-fixtures/v55` must not be rebuilt to
-make compatibility tests pass. Since the baseline moved to ABI 56 they are a
-refusal cohort: `crates/wasm-artifact/tests/supported_program_baseline_refusal.rs`
-proves the declared baseline turns each of them away by epoch and by contract
-digest. See the [persistent-program compatibility
+make compatibility tests pass; `host/test/supported-program-baseline.test.ts`
+runs those exact bytes on the current kernel, which is the end-to-end evidence
+that the declared baseline plus its affirmed predecessor keeps the cohort
+running. See the [persistent-program compatibility
 contract](persistent-program-compatibility.md) for exact scope and remaining
 release validation.
 
@@ -150,7 +149,7 @@ update a GitHub Check, create or protect an ABI branch, or deploy Pages. Those
 operations require the later staging layers and their hosted evidence.
 Existing ABI release and VFS behavior is unchanged.
 
-## ABI 56 klogctl reaches the kernel message ring
+## klogctl reaches the kernel message ring (ABI 55, affirmed predecessor)
 
 `klogctl` (`SYS_SYSLOG`, Kandelo syscall 304 — Kandelo's own numbering, not
 Linux's 103) now reads the kernel message ring. It previously had a
@@ -174,49 +173,57 @@ header-plus-text bytes, because a caller sizes a buffer from it and then
 reads; reporting the stored count would under-size the buffer and lose
 records. Action 10 (`SIZE_BUFFER`) reports the ring's fixed 128 KiB.
 
-### Why the kernel's memory minimum moved without a kernel-host bump
+### Why the kernel's memory minimum bumped HOST_ADAPTER_VERSION
 
 Regenerating the snapshot raised `kernel_imports.minimum_pages` from 19 to 21:
 the two pages (128 KiB) the kernel message ring occupies as static data. That
-section is kernel-host surface, so the question is whether it needs a
-`HOST_ADAPTER_VERSION` bump. It does not, and the reasoning is worth recording
-because the next static-data growth will raise the same question.
+section is kernel-host surface, so the question is which version it moves, and
+the answer is `HOST_ADAPTER_VERSION` — 4 to 5. Programs are unaffected; the
+kernel and the host must be rebuilt together, which they always are.
 
-`HOST_ADAPTER_VERSION` is bumped for a kernel-host change that is
-*incompatible* — a new or changed kernel export, a new kernel host import, a
-wire format, host-adapter metadata. `minimum_pages` is none of those. It is a
-recorded observation of the kernel Wasm's linker-derived size, not an enforced
-contract term: nothing reads it. `xtask dump-abi` writes it as evidence and
-`wasm_artifact::imported_memory_minimum_pages` has no callers.
+The reasoning is worth recording because the next static-data growth will
+raise the same question. `minimum_pages` on the `env.memory` import is a
+*demand the kernel makes of the host*: supply a memory of at least this many
+pages at instantiation, or the kernel does not instantiate. Raising it
+strengthens that demand, and a host that satisfied the old one does not
+necessarily satisfy the new one. The classifier judges `kernel_imports` with
+exactly that polarity — dropping a demand is additive, adding or changing one
+is breaking — and reports this as `changed kernel_imports entry "env.memory"`.
+That is what `HOST_ADAPTER_VERSION` exists for: the kernel records it in its
+host-adapter manifest and the host refuses any other value at boot, so a stale
+pairing fails loudly instead of failing at instantiation with a `LinkError`.
 
-The only real requirement is that the memory the host supplies is at least the
-minimum the kernel declares. The host creates kernel memory with
-`initial: 24` (`host/src/kernel.ts`), unchanged since the kernel moved back to
-wasm32, and its comment states the intent directly: the figure "must remain
-above the kernel Wasm's linker-derived minimum and leaves headroom for future
-static data without re-tuning host construction each time." Twenty-one pages
-sit inside that with three pages spare, and no host that can legally pair with
-this kernel supplies fewer — the kernel and host ship from one tree and check
-each other's `HOST_ADAPTER_VERSION` exactly at boot.
+In practice no host that can pair with this kernel supplies fewer: the host
+creates kernel memory with `initial: 24` (`host/src/kernel.ts`), whose comment
+states the intent directly — the figure "must remain above the kernel Wasm's
+linker-derived minimum and leaves headroom for future static data without
+re-tuning host construction each time." Twenty-one pages sit inside that with
+three to spare, so nothing observable breaks today. That is an argument that
+the bump is *cheap*, not an argument that it is unnecessary: the pairing should
+be decided by a declared contract rather than by how much headroom happens to
+be left, and precedent agrees — the only previous move, 18 to 19, also shipped
+with a `HOST_ADAPTER_VERSION` bump.
 
-Precedent agrees. The only previous move, 18 to 19, rode along in a commit
-that added sixteen host imports and changed `kernel_exports` and
-`host_adapter`; those are what earned that bump, not the page count. A
-`minimum_pages` rise that stays under the host's `initial` has never been
-treated as breaking, and treating it as breaking would bump the kernel-host
-epoch on almost every kernel change that adds static data.
+A rise that reached or passed `initial: 24` would be a different matter again:
+it would make instantiation fail outright, and it needs the host's figure
+raised — with the `WebAssembly.Memory` reservation cost that implies on WebKit
+— rather than a version bump alone.
 
-A rise that reached or passed `initial: 24` would be a different matter: it
-would make instantiation fail, and it needs the host's figure raised — with
-the `WebAssembly.Memory` reservation cost that implies on WebKit — rather than
-a version bump alone.
+### Why this did not take a new program epoch
 
 Routing the syscall adds its number, its pointer-argument descriptor and that
-descriptor's copy-out bound to the program surface, and the program contract
-digest is exact, so this is a deliberately new supported program baseline.
-Every program, package archive and ABI-bound VFS image must be rebuilt. See
+descriptor's channel scalar contract to the program surface. The program
+contract digest is exact, so it changes, and the declared baseline is the new
+ABI-55 digest. `ABI_VERSION` stayed at 55 because the predecessor digest is
+admitted beside it under "Affirmed prior program contracts" above: the
+classifier reports all three moved sections as additions, and the recorded
+affirmation argues the behavioral half — at ABI 55 the kernel answered 304
+with a hardcoded `0` and an untouched buffer, which nothing can usefully
+depend on. Programs, package archives and ABI-bound VFS images built against
+the predecessor keep running; `host/test/supported-program-baseline.test.ts`
+runs the frozen v55 cohort on this kernel as the evidence. See
 [persistent-program compatibility](persistent-program-compatibility.md) for
-what that costs and what evidence it leaves missing.
+the scope of that evidence and what it does not promise.
 
 ## ABI 52 futex deadlines and multicast delivery
 

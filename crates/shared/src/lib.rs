@@ -2203,7 +2203,16 @@ pub mod abi {
     /// 1: the host accepted any kernel requiring at most its own version.
     /// 2: the check is exact, and this version (not `ABI_VERSION`) is the
     ///    epoch for kernel-host-only changes (ABI 55).
-    pub const HOST_ADAPTER_VERSION: u32 = 4;
+    /// 5: the kernel message ring raised the kernel Wasm's own
+    ///    `env.memory` minimum from 19 pages to 21. The kernel asks the host
+    ///    for at least that much at instantiation, so a raised minimum is a
+    ///    strengthened demand on the host and the snapshot classifier
+    ///    reports it as a changed `kernel_imports` entry. Every host that
+    ///    can pair with this kernel already supplies 24 pages
+    ///    (`host/src/kernel.ts`), so nothing observable breaks; the bump is
+    ///    what keeps a kernel/host pairing from being decided by that
+    ///    headroom rather than by a declared contract.
+    pub const HOST_ADAPTER_VERSION: u32 = 5;
     pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
 
     pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;

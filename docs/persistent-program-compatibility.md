@@ -69,22 +69,48 @@ is the prerequisite for this work, not evidence that all older binaries now
 run unchanged. An exact current-program digest is still a strict admission
 rule, not a supported-baseline compatibility policy.
 
-The declared baseline is program ABI 56 and the exact digest recorded in
-`abi/supported-program-baseline.json`. ABI 55 was the first declared baseline;
-ABI 56 replaced it. `xtask check-program-baseline` checks the declared baseline
-against the source-derived program surface, independently of ordinary snapshot
-regeneration, and refuses a stale snapshot. Bootstrap, local package
-builds, image commands, package bundling and program stamping also enforce it. The baseline
-does not include kernel-host-only sections: the kernel and host can change
-together without forcing user programs to be rebuilt.
+The declared baseline is program ABI 55 and the exact digest recorded in
+`abi/supported-program-baseline.json`. `xtask check-program-baseline` checks
+that declared baseline against the source-derived program surface,
+independently of ordinary snapshot regeneration, and refuses a stale snapshot.
+Bootstrap, local package builds, image commands, package bundling and program
+stamping also enforce it. The baseline does not include kernel-host-only
+sections: the kernel and host can change together without forcing user
+programs to be rebuilt.
 
-This first gate is deliberately exact. It refuses new program-surface fields
-as well as changed or removed fields, even if the ordinary snapshot classifier
-calls the change additive. A required-extension mechanism is not implemented;
-do not work around that by accepting arbitrary old digests or giving new
-requirements the old identity. Future extensions need explicit admission and
-negative tests before this restriction can be relaxed. Existing syscall IDs,
-structures and directly accessed libc layouts retain their meaning.
+That gate stays deliberately exact by default: it refuses a new
+program-surface field as firmly as a changed or removed one, so a program
+whose digest is neither the declared baseline nor an admitted predecessor is
+turned away.
+
+There is exactly one way past it, and it is not a list someone can extend by
+hand. `abi/accepted-program-digests.json` records prior program contracts the
+*current* epoch still admits beside its own, and an entry is authorized on
+every build by two independent conditions that must both hold:
+
+1. the snapshot compatibility classifier, run over the program-surface view of
+   the entry's stored prior snapshot and of today's surface — exactly the data
+   the digest hashes — reports no breaking change; and
+2. a named author has recorded, in prose, why the addition is behaviorally
+   safe for programs that predate it.
+
+The digest in an entry is recomputed from a stored copy of the snapshot that
+produced it, with the same function that stamps programs, so a hand-written
+digest resolves to no snapshot and an edited snapshot no longer hashes to its
+digest. The classifier's verdict is re-derived every build rather than
+remembered, so an entry contradicted by today's surface fails today. An entry
+recorded under an epoch `ABI_VERSION` has since replaced is superseded:
+reported by name and admitting nothing, because an `ABI_VERSION` bump is a
+deliberate declaration that every program is rebuilt. `docs/abi-versioning.md`
+("Affirmed prior program contracts") carries the full mechanism.
+
+So this is still not a required-extension mechanism: nothing lets a *program*
+declare which parts of the surface it needs, and that remains unimplemented.
+What exists is an affirmed-predecessor set — narrower, and derived rather than
+asserted. The prohibition it replaces still stands for everything outside it:
+do not accept arbitrary old digests, and do not give new requirements the old
+identity. Existing syscall IDs, structures and directly accessed libc layouts
+retain their meaning.
 
 `abi/program-fixtures/v55/manifest.json` pins six ABI-55 executables and one
 raw fork program by source revision, source hashes and expected output hashes.
@@ -110,31 +136,53 @@ These examples do not replace semantic conformance suites or prove every
 program compatible.
 
 An incompatible change needs either a bounded Rust adapter that preserves the
-old guest representation/semantics or a deliberately new program baseline.
-Do not add a list of old digests without those tests.
+old guest representation/semantics or a deliberately new program baseline. An
+*additive* change has the third route above, which is neither: the affirmed
+predecessor set. It still may not be reached by adding a list of old digests
+without the two conditions and the tests.
 
-ABI 56 took the second route. Routing `klogctl` (`SYS_SYSLOG`, Kandelo syscall
-304) to the kernel message ring adds a syscall number, its pointer-argument
-descriptor and that descriptor's copy-out bound to the program surface, and
-this gate is exact: it refuses a new
-program-surface field as firmly as a changed one. No adapter applies, because
-nothing old is being preserved — a syscall that previously did not exist now
-does — so the baseline moved to ABI 56 rather than the gate being widened.
-The accompanying negative test is
-`crates/wasm-artifact/tests/supported_program_baseline_refusal.rs`: every
-frozen ABI-55 artifact is refused by the declared baseline, and refused with a
-reason naming both the epoch and the contract digest. The ABI-55 cohort is
-therefore now a refusal cohort. `host/test/supported-program-baseline.test.ts`
-still executes those bytes and expects them to run, which an ABI-56 kernel will
-not do: all eight of its cases now fail with `prepared exec target is not
-runnable: ABI 55, expected 56 (errno 8)`. That failure is the truthful state of
-a deliberately new baseline, not a defect to silence — the suite asserts a
-promise the platform no longer makes for this cohort. It needs re-pointing at
-an ABI-56 cohort reproduced from a pinned ABI-56 producer revision; the frozen
-v55 bytes must not be restamped to make it green. Until that cohort exists
-there is no end-to-end evidence that any previously compiled program keeps
-running. In particular, changes
-to signal or channel layouts cannot be solved by a JavaScript version check.
+Routing `klogctl` (`SYS_SYSLOG`, Kandelo syscall 304) to the kernel message
+ring took that third route. It adds a syscall number, its pointer-argument
+descriptor and that descriptor's channel scalar contract to the program
+surface, which changes the exact program digest — so the gate alone would turn
+away every program built before it, including the frozen cohort. No adapter
+applies, because nothing old is being preserved: a syscall that previously did
+not exist now does. But nothing old is being *contradicted* either, which is
+what the two conditions test. The classifier reports all three moved sections
+as additions:
+
+```text
+abi: additive-compatible change: added channel_scalar_contract.syscalls entry "304"
+abi: additive-compatible change: added syscall_arg_descriptors entry "304"
+abi: additive-compatible change: added syscalls entry "304"
+```
+
+and the recorded affirmation argues the behavioral half the classifier cannot
+see: at ABI 55 syscall 304 was absent from the declared contract, yet reachable
+(`__NR_syslog` was already in `bits/syscall.h.in`, so musl's `klogctl`
+compiled), and the kernel answered every such call with a hardcoded `0` and an
+untouched buffer. Nothing can usefully depend on that fake success, so
+replacing it with real behavior cannot regress a program built against it. The
+one declared argument kind, `{index 2, u32}`, reinterprets the sign of a length
+argument that previously could not affect the answer at all.
+
+So the epoch stayed at ABI 55, the declared baseline is the new ABI-55 digest,
+and the predecessor digest `1358eca04a8d33fa5bcc27d1c672af2f6e7aaf466a398ad598d991347b1a4415`
+is admitted beside it. `xtask check-program-baseline` prints that admission on
+every build:
+
+```text
+abi: accepted prior program contract 1358eca0… (additive surface, affirmed)
+```
+
+`host/test/supported-program-baseline.test.ts` is the end-to-end evidence: its
+eight cases load the frozen v55 bytes unchanged and run them on this kernel,
+so the cohort is still a *running* cohort rather than a refusal cohort. That
+remains evidence about these programs and this change, not a general promise:
+the cohort is six executables and one raw fork program, and an additive
+program-surface change is the only kind the two conditions can admit. In
+particular, changes to signal or channel layouts cannot be solved by a
+JavaScript version check.
 Moving libc to a smaller stable gateway can hide future internal layouts, but
 does not retroactively decouple programs linked against today's channel.
 

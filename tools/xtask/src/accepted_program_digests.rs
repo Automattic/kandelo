@@ -693,24 +693,25 @@ mod tests {
         }
     }
 
-    /// The committed ABI-55 contract is inert at ABI 56 and becomes accepted
-    /// the moment the declared epoch returns to 55 — with no edit to the
-    /// record. This is the state the epoch revert produces, exercised against
-    /// the real stored snapshot and the real current surface.
+    /// The one recorded contract, against the real stored snapshot and the
+    /// real declared epoch: accepted, named, and announced.
+    ///
+    /// This is the live state rather than a constructed one, so it is also
+    /// what pins the record to one entry. Routing syscall 304 moved three
+    /// program-surface sections additively within ABI 55; the predecessor
+    /// digest below is main's, and it stays admitted beside the current one.
     #[test]
-    fn the_recorded_abi_55_contract_is_accepted_once_the_epoch_returns_to_55() {
+    fn the_recorded_abi_55_contract_is_accepted_under_the_declared_epoch() {
         let repo = crate::repo_root();
         let record_bytes = std::fs::read(repo.join(RECORD_PATH)).unwrap();
         assert_eq!(record_entry_count(&record_bytes).unwrap(), 1);
-        let mut load = |digest: &str| -> Result<Value, String> {
-            let path = repo.join(SNAPSHOT_DIR).join(format!("{digest}.json"));
-            serde_json::from_slice(&std::fs::read(&path).unwrap())
-                .map_err(|error| format!("{}: {error}", path.display()))
-        };
-
-        let mut surface = crate::dump_abi::source_program_surface_view().unwrap();
-        surface["abi_version"] = json!(55);
-        let verdicts = authorize_record(&record_bytes, &mut load, &surface, 55).unwrap();
+        assert_eq!(
+            wasm_posix_shared::ABI_VERSION,
+            55,
+            "the recorded entry is admitted within ABI 55; a bump supersedes it \
+             and this case should then assert Superseded"
+        );
+        let verdicts = authorize(&repo).unwrap();
         assert_eq!(
             verdicts,
             vec![Verdict::Accepted {
@@ -720,7 +721,12 @@ mod tests {
         );
         assert!(
             verdicts[0].widens_admission(),
-            "once live, the build gate must announce it"
+            "a live accepted contract is what the build gate announces"
+        );
+        assert!(
+            accepted_digests(&repo).unwrap()
+                == vec!["1358eca04a8d33fa5bcc27d1c672af2f6e7aaf466a398ad598d991347b1a4415"],
+            "the generated host constant is rendered from exactly this set"
         );
     }
 }

@@ -3,7 +3,7 @@
  *
  * klogctl() used to be a lie: the kernel's channel dispatch answered
  * SYS_SYSLOG with a bare 0, so a program asking for the kernel log was told
- * it had succeeded and handed nothing. ABI 56 routes Kandelo syscall 304 to
+ * it had succeeded and handed nothing. Kandelo syscall 304 now routes to
  * the kernel message ring, and this program is the end-to-end half of that
  * proof. The handler's action table is unit-tested in Rust
  * (crates/runtime-core/src/syscalls.rs); what can only be shown from a guest
