@@ -1,0 +1,105 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/secure-network-contracts.md",
+    "findingIds": [
+      "S-009"
+    ],
+    "relatedFamilies": [
+      "secure-network",
+      "network",
+      "streams",
+      "async",
+      "engine"
+    ],
+    "scope": "Consumed retained TLS write callback-ticket ownership prerequisite only; new C++ unvalidated and actual SSL shutdown/_final/provider/fullSocket semantics remain incomplete"
+  },
+  "sourceImplemented": [
+    "Retain actual TLS write Promise/capability/generation/material/request until consumer callback acknowledgment",
+    "Index actual write tickets independently of pending dispatch; active publication and detached close batches remain visible without deleting native-stack-owned tickets",
+    "Preserve pending callback ownership on ordinary close; context teardown retires without invoking new JS; admission failure abandons SSL before freeing WANT retry material",
+    "Consume actual acknowledgment in ordinary write and handshake-queue helpers with captured primordial then; preserve original callback throw over secondary cleanup failure",
+    "Compose normal0170engine patch over actual232keygen class admission and preserved stdio/Meta/shutdown/eval; generic tool journals reviewed source/check receipts/checkpoint"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tls233-source-r1/report.json",
+    "sha256": "6a2b8e1c7da385c8b8a1e41237bb5dae0c9392dd7d4c0c63241b1897473e6552",
+    "guardedInputs": 896,
+    "scope": "Partial S009 actual TLS write callback ticket prerequisite;5native-TLS JS-helper components with record-only ack seam, no new C++ or guest proof; close_notify/SSL_shutdown/_final/provider remain unactivated."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tls233-affected-r1.json",
+    "sha256": "4bd40a732fc4ffb69a83fbf2efed7a04f48f14e81bb68fbe19ed1a9f859b5cf6",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tls233-source-r1/report.json",
+    "sha256": "6a2b8e1c7da385c8b8a1e41237bb5dae0c9392dd7d4c0c63241b1897473e6552",
+    "componentGroups": 5,
+    "recordOnlyAckSeam": true,
+    "nativeCppExecuted": false,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "deterministicToolCompleted": true,
+    "declaredChecksImported": 2,
+    "toolEnvelopeRejections": 1,
+    "pendingPrivateCompileAccounting": {
+      "tls-async-owner-agent": 1,
+      "tls-shutdown-owner-agent": 1,
+      "scope": "Distinct unintegrated private helper attempts, not included in current integrated-source counter302 or source233support; shutdown proposal is blocked/not authorized for integration."
+    },
+    "scope": "Fresh actual root TLS helper over genuine native TLS writes/close/cancellation with record-onlyack seam; normal896input/bootstrap/staging plus14package tests. Toolactualsourcebinding/process/log receipts retained; no guest C++ or fourhost proof.",
+    "domainPreparationGuardFailures": 1
+  },
+  "sealedEvidence": {
+    "report": ".context/tls-write-callback-owner-agent/report.json",
+    "sha256": "033496e94467322c5e40fbffdd9964ae918b55783b5adeedaa60aa8adf1a7492",
+    "reusedEvidence": true,
+    "scope": "Producer5actual-helper/nativeTLS groups,0helpercompiles; final3parserchecks/10sourcepredicates and original setup/fragment/packaging/coordinator failures retained. New native ticket/index/provider is not executed."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tls-write-callback-owner-agent/report.json",
+      "sha256": "033496e94467322c5e40fbffdd9964ae918b55783b5adeedaa60aa8adf1a7492",
+      "scope": "Preserve missingenv harness attempt, intentionally open adapter standalone parse failure, misclassified no-index difference packaging assertion and concurrent root drift. An initial pre-write scoped-editor assertion has no separate durable raw log; producer report/transcript context only, not passing evidence."
+    },
+    {
+      "report": ".context/tls-write-callback-review-agent/REPORT.md",
+      "sha256": "d484f49252f6c30474f564a6b3c029e80789bb387688eae82a17f19285499e2b",
+      "scope": "Independent bounded source review, no newP1/P2. Five JS/nativeTLS groups use record-onlyack and do not prove native tickets; actual GC/realm/close/fatal/provider still open."
+    },
+    {
+      "report": ".context/node26-tls233-tool-job-id-correction.json",
+      "sha256": "751ad6540a691de23e925422012546f0f45dcb4ee51dd6ebb52c757e65c73ef6",
+      "scope": "First tool evidence import rejected slash in job_id before accepting check evidence. Only delimiter corrected while retaining exact original exec sessions/pids/binding/argv/cwd/exit/log; rejected report and import log retained, no test rerun."
+    },
+    {
+      "report": ".context/tls233-agent-integrate/preparation-commands.json",
+      "sha256": "a6a578d149a251b4688adeda150e161c9d99ca2ea7142e10798f46a86273917d",
+      "scope": "Initial private sparse-source devshell entry failed before generator because sparse checkout lacked flake.nix; corrected invocation ran absolute private generator from realroot declared shell, no tool/config/runtime edits."
+    },
+    {
+      "report": ".context/node26-tls233-record-preparation-correction.json",
+      "sha256": "3f654ab78763abc58546f795cecc354d7f1405a4066e3c44e10ef6e8193875d3",
+      "scope": "Wrong human display-row label guard stopped before any tracked writer; selected actual row, canonical family unchanged. No runtime/source/test assertion change."
+    }
+  ],
+  "remaining": [
+    "Compile/execute actual native ticket/index/root/frame/admission/GC/realm/Worker/cancellation/close-batch/teardown owner with identified artifacts on allfourhosts",
+    "Complete actual TLSWRAP/WriteWrap/ShutdownWrap native provider/callback/fatal/after/destroy ownership; provider foundation is reviewed privately, not current source",
+    "Implement encrypted output/flush/handshake/error ownership and true close_notify/parent shutdown/public _final; blocked direct-BIO proposal must not be applied",
+    "Complete full Socket/TLSWrap constructor/inheritance/error/span semantics and S-009; no API/family closure"
+  ],
+  "at": "2026-11-07T19:40:56.213676+00:00",
+  "recipeRevision": 233,
+  "lastAcceptedEngine": 230,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

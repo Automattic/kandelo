@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source233 retains genuine TLS write callback tickets and uses the merged deterministic integration workflow.5native-TLS JS-helper components and14package checks pass; newC++/SSLshutdown/publicfinalization/fourhost remain open.
+See [source scope](tls-write-callback-integration.md).
+
 Source232 wires actual symmetric generateKey/generateKeySync to real owned entropy/native jobs.16native-dependent groups, unchanged upstream two subjects and14package checks pass; new guest bridge/provider/fullcrypto/fourhost remain open.
 See [source scope](symmetric-keygen-integration.md).
 

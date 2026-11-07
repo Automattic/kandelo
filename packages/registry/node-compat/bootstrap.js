@@ -4230,6 +4230,35 @@ const tls = (() => {
         throw new TypeError('tls: chunk must be Buffer, Uint8Array, ArrayBuffer, or string');
     };
 
+    // A fulfilled native write is still owned through the real stream callback.
+    // Its acknowledgment is a private same-owner/Promise capability, not a fd.
+    function finishNativeWrite(owner, pending, callback, error) {
+        let returned = false;
+        try { callback(error); returned = true; }
+        finally {
+            if (returned) nat.tlsWriteRelease(owner, pending);
+            else {
+                // A cleanup failure must not replace an original callback throw.
+                try { nat.tlsWriteRelease(owner, pending); } catch (_) {}
+            }
+        }
+    }
+    function writeNative(owner, bytes, callback) {
+        let pending;
+        try { pending = nat.tlsWrite(owner, bytes); }
+        catch (error) { callback(error); return; }
+        try {
+            tlsThen(pending,
+                () => finishNativeWrite(owner, pending, callback, null),
+                error => finishNativeWrite(owner, pending, callback, error));
+        } catch (error) {
+            // No reaction owns this operation if species/allocation admission
+            // failed. Abort SSL before releasing its pending retry material.
+            try { nat.tlsWriteRelease(owner, pending, true); } catch (_) {}
+            callback(error);
+        }
+    }
+
     /* SSL state is prepared before DNS/connect over an actual empty TCP
        resource. TCP retains its descriptor; the private TLS owner roots that
        parent through request retirement. This is not yet Socket/TLSWrap. */
@@ -4305,12 +4334,12 @@ const tls = (() => {
         _write(chunk, _encoding, cb) {
             const state = nativeTLS.get(this), buf = toU8(chunk);
             if (!state.owner || state.handshakePending) { state.writeQueue.push({ buf, cb }); return; }
-            nat.tlsWrite(state.owner, buf).then(() => cb(null), cb);
+            writeNative(state.owner, buf, cb);
         }
         _flushWriteQueue() {
             const state = nativeTLS.get(this), queue = state.writeQueue;
             state.writeQueue = [];
-            for (const { buf, cb } of queue) nat.tlsWrite(state.owner, buf).then(() => cb(null), cb);
+            for (const { buf, cb } of queue) writeNative(state.owner, buf, cb);
         }
         _destroy(err, callback) {
             const state = nativeTLS.get(this);

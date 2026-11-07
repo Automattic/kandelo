@@ -743,6 +743,7 @@
         tlsRead(handle, length) { return native.tlsRead(handle, length); },
         tlsReadRelease(...args) { return native.tlsReadRelease(...args); },
         tlsWrite(handle, bytes) { return native.tlsWrite(handle, bytes); },
+        tlsWriteRelease(...args) { return native.tlsWriteRelease(...args); },
         tlsClose(handle) { return native.tlsClose(handle); },
     };
 

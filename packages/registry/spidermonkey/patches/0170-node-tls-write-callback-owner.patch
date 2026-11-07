@@ -1,0 +1,126 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2469,0 +2470 @@
++struct KandeloTlsWatch;
+@@ -2477,0 +2479,3 @@
++  // Non-owning index of actual write tickets, independent of dispatch-list
++  // placement. Includes in-flight publication and callback-retiring writes.
++  KandeloTlsWatch* writes = nullptr;
+@@ -2487 +2491 @@
+-    if (owner.State() != kandelo::tls::Owner::Phase::Closed || owner.HasRequests()) return;
++    if (owner.State() != kandelo::tls::Owner::Phase::Closed || owner.HasRequests() || writes) return;
+@@ -2491,2 +2495,2 @@
+-  void BeginClose() {
+-    owner.Close();
++  void BeginClose(bool graceful = true) {
++    owner.Close(graceful);
+@@ -2547,0 +2552,5 @@
++  // A settled write is still a native request until its real JS consumer's
++  // callback returns. The actual Promise is its consume-once acknowledgment.
++  bool awaitingWriteCallback = false, publishingWrite = false;
++  bool writeCallbackAcknowledged = false, dispatchLinked = false;
++  KandeloTlsWatch* nextWrite = nullptr;
+@@ -2564,0 +2574,5 @@
++    // Index after the final fallible constructor operation. On allocation
++    // failure, only the fully constructed Request member needs rollback.
++    if (kind == KandeloTlsOperation::Write) {
++      nextWrite = state->writes; state->writes = this;
++    }
+@@ -2566,0 +2581,5 @@
++    if (kind == KandeloTlsOperation::Write) {
++      auto** link = &state->writes;
++      while (*link && *link != this) link = &(*link)->nextWrite;
++      MOZ_RELEASE_ASSERT(*link == this); *link = nextWrite;
++    }
+@@ -2576 +2595 @@
+-  *link = watch; watch->next = nullptr;
++  *link = watch; watch->next = nullptr; watch->dispatchLinked = true;
+@@ -2581 +2600,3 @@
+-    if (*link == target) { *link = target->next; target->next = nullptr; return; }
++    if (*link == target) {
++      *link = target->next; target->next = nullptr; target->dispatchLinked = false; return;
++    }
+@@ -2585,0 +2607,4 @@
++  // Actual writes remain requests while detached for hooks or while awaiting
++  // callback acknowledgment, independently of transport handle unref.
++  for (auto* state = gKandeloTlsOwners; state; state = state->next)
++    if (state->cx == cx && state->writes) return true;
+@@ -2598,0 +2624,5 @@
++  const bool write = watch->kind == KandeloTlsOperation::Write;
++  if (write) watch->publishingWrite = true;
++  auto leavePublication = mozilla::MakeScopeExit([&] {
++    if (write) watch->publishingWrite = false;
++  });
+@@ -2622,0 +2653,2 @@
++  if (terminal && write)
++    watch->awaitingWriteCallback = !watch->writeCallbackAcknowledged;
+@@ -2681,0 +2714,4 @@
++    if (watch->writeCallbackAcknowledged) {
++      KandeloTlsWatchUnlink(watch); js_delete(watch); return 1;
++    }
++    if (watch->awaitingWriteCallback) continue;
+@@ -2692 +2728 @@
+-    if (!complete) KandeloTlsWatchLink(watch);
++    if (!complete || watch->awaitingWriteCallback) KandeloTlsWatchLink(watch);
+@@ -2708,0 +2745 @@
++      watch->dispatchLinked = false;
+@@ -2715 +2752,2 @@
+-    // terminal settlement returns; reentry cannot find/delete it in a registry.
++    // terminal settlement returns. The write index permits acknowledgment, but
++    // dispatchLinked=false prevents reentry from deleting this batch's ticket.
+@@ -2716,0 +2755,5 @@
++      // Ordinary close cannot retire a write callback that is already queued
++      // on the real Promise. Its request/parent barrier ends at acknowledgment.
++      // Final environment teardown (settle=false) instead invokes no JS.
++      if (watch->writeCallbackAcknowledged) { js_delete(watch); continue; }
++      if (watch->awaitingWriteCallback) { KandeloTlsWatchLink(watch); continue; }
+@@ -2725,0 +2769 @@
++        else if (watch->awaitingWriteCallback) KandeloTlsWatchLink(watch);
+@@ -2910,2 +2954,10 @@
+-    if (!KandeloTlsDispatchWatch(watch.get())) KandeloTlsWatchLink(watch.release());
+-    return !JS_IsExceptionPending(cx);
++    const bool complete = KandeloTlsDispatchWatch(watch.get());
++    if (JS_IsExceptionPending(cx)) {
++      // The call never published a Promise to its consumer. Abort SSL before
++      // releasing any pending retry buffer; no nonexistent callback may own
++      // this acknowledgment. Preserve the original pending JS exception.
++      state->BeginClose(false);
++      return false;
++    }
++    if (!complete || watch->awaitingWriteCallback) KandeloTlsWatchLink(watch.release());
++    return true;
+@@ -2912,0 +2965,32 @@
++}
++// Called only by the real TLS write consumer after its callback, or when
++// reaction admission fails and it must abort instead of losing an SSL retry.
++static bool KandeloNativeTlsWriteRelease(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp); args.rval().setBoolean(false);
++  RootedObject capability(cx); auto* state = KandeloTlsStateFor(cx, args.get(0), &capability);
++  if (!state) return false;
++  if (!args.get(1).isObject()) return true;
++  RootedObject promise(cx, js::CheckedUnwrapDynamic(&args[1].toObject(), cx));
++  if (!promise) {
++    if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);
++    return false;
++  }
++  const bool abandon = args.get(2).isTrue();
++  for (auto* watch = state->writes; watch; watch = watch->nextWrite) {
++    if (watch->generation != state->owner.Generation() || watch->promise.get() != promise.get())
++      continue;
++    if (!abandon && !watch->awaitingWriteCallback &&
++        !(watch->publishingWrite &&
++          JS::GetPromiseState(watch->promise) != JS::PromiseState::Pending)) return true;
++    // No JS, root allocation or borrowed public descriptor crosses retirement.
++    // Abandonment first destroys SSL, so an OpenSSL WANT retry cannot outlive
++    // its retained write buffer. Other requests keep their own cancellation.
++    if (abandon) state->BeginClose(false);
++    watch->writeCallbackAcknowledged = true;
++    // A dispatch frame or detached close batch still owns an unlinked ticket.
++    // Mark it without deleting a raw pointer that the native frame will use.
++    if (!watch->dispatchLinked) { args.rval().setBoolean(true); return true; }
++    KandeloTlsWatchUnlink(watch); js_delete(watch);
++    args.rval().setBoolean(true); return true;
++  }
++  return true;
+@@ -4619,0 +4704 @@
++      JS_FN("tlsWriteRelease", KandeloNativeTlsWriteRelease, 2, 0),
