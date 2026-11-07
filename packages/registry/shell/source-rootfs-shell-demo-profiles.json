@@ -2,6 +2,7 @@
   "version": 1,
   "profiles": {
     "freeciv": {
+      "requires": ["freeciv-browser-bundle"],
       "identity": {
         "title": "Freeciv",
         "summary": "Build a civilization with the SDL2 client and a networked Freeciv server.",
@@ -67,6 +68,7 @@
       }
     },
     "doom": {
+      "requires": ["fbdoom"],
       "identity": {
         "title": "fbDOOM",
         "summary": "DOOM on /dev/fb0 with OSS audio through /dev/dsp.",
@@ -125,6 +127,7 @@
       }
     },
     "quake": {
+      "requires": ["tyrquake", "lhasa", "unzip"],
       "identity": {
         "title": "Quake (software)",
         "summary": "TyrQuake's software renderer on /dev/fb0, extracted from id's shareware archive inside Kandelo.",
@@ -167,6 +170,7 @@
       }
     },
     "ffmpeg-fbdev": {
+      "requires": ["ffmpeg"],
       "identity": {
         "title": "FFmpeg to /dev/fb0",
         "summary": "FFmpeg drawing a test pattern into the framebuffer with a tone on /dev/dsp.",
@@ -198,6 +202,7 @@
       }
     },
     "ffplay": {
+      "requires": ["ffmpeg"],
       "identity": {
         "title": "ffplay",
         "summary": "ffplay showing a test pattern through SDL2 on /dev/dri/card0, with a tone.",
@@ -229,6 +234,7 @@
       }
     },
     "modeset": {
+      "requires": ["modeset"],
       "identity": {
         "title": "DRM/KMS fluid sim",
         "summary": "Pavel-style EGL/GLES fluid simulation presented through /dev/dri/card0 page flips.",
@@ -259,6 +265,7 @@
       }
     },
     "scummvm": {
+      "requires": ["scummvm", "curl", "unzip"],
       "identity": {
         "title": "ScummVM",
         "summary": "ScummVM fullscreen on /dev/dri/card0: SDL2's KMSDRM backend takes the display as DRM master and renders GLES2 directly, with OSS audio on /dev/dsp. Play a freeware game fetches any of the freeware adventures the ScummVM project distributes, from inside the machine, and starts it; Load game data takes your own zipped SCUMM title, which you then add from the launcher.",
@@ -464,6 +471,7 @@
       "exchange": {"label": "Load game data", "accept": [".zip"]}
     },
     "love": {
+      "requires": ["love"],
       "identity": {
         "title": "LÖVE games",
         "summary": "Play Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX. Choose a game from the Games menu and enable audio to hear sound. Steam features are unavailable in this port.",
@@ -533,6 +541,7 @@
       ]
     },
     "ffmpeg-video": {
+      "requires": ["ffmpeg"],
       "identity": {
         "title": "FFmpeg video",
         "summary": "Watch a Big Buck Bunny clip with sound. © 2008 Blender Foundation · CC BY 3.0.",
