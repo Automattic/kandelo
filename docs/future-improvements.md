@@ -1436,3 +1436,12 @@ finish native Wayland continuations, D-59 enforcement and fork-shutdown
 ownership. The private libc fork-epoch primitive is available; boundary
 enforcement is still pending. Keep all native-feel, Freeciv/ScummVM and
 final Node/browser requirements in this iteration.
+
+The B1 fork-completion source checkpoint preserves child allocation custody
+independently of a retired parent request and closes failed-launch inherited
+network mirrors before returning failure. Main Worker absence is still being
+proved separately from actual acknowledgements; the historical missing-main
+browser outcomes are not attributed or waived. Complete native Wayland
+retirement and approved D-59 enforcement, then rebuild and execute the full
+Node/browser workloads before calling B1 complete. These remain work in this
+iteration, alongside every native-feel and final acceptance requirement.

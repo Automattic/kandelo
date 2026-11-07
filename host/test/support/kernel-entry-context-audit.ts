@@ -89,6 +89,7 @@ const ROOT_INGRESS_METHODS = new Map([
   ["#runOrDeferChannelKernelEntry", 2],
   ["#runOrDeferPendingSpawnCompletionKernelEntry", 2],
   ["#runOrDeferAllocatedCloneCompletionKernelEntry", 2],
+  ["#runOrDeferAllocatedForkCompletionKernelEntry", 2],
   // This private constructor supplies the facade to an operation while the
   // canonical gate callback still owns its scope. Its call sites are checked
   // separately below; it cannot open an entry from an arbitrary caller.
@@ -104,6 +105,8 @@ const TRANSACTION_COMPLETION_INGRESS_METHODS = new Set([
   // The canonical ingress still supplies fresh lexical entry authority; its
   // completion body must separately prove the original request and image.
   "#runOrDeferAllocatedCloneCompletionKernelEntry",
+  // Fork likewise owns an allocated child after its parent mailbox retires.
+  "#runOrDeferAllocatedForkCompletionKernelEntry",
 ]);
 const ENTRY_SELECTORS = new Set([
   "#kernelInstanceForEntry",
@@ -551,6 +554,7 @@ export function auditKernelEntryContext(
     ["CentralizedKernelWorker.#runImmediateKernelEntry", "runImmediateVoidIngress"],
     ["CentralizedKernelWorker.#runOrDeferPendingSpawnCompletionKernelEntry", "runOrDeferVoidIngress"],
     ["CentralizedKernelWorker.#runOrDeferAllocatedCloneCompletionKernelEntry", "runOrDeferVoidIngress"],
+    ["CentralizedKernelWorker.#runOrDeferAllocatedForkCompletionKernelEntry", "runOrDeferVoidIngress"],
   ]);
   const isCanonicalEntryConstruction = (
     call: ts.CallExpression,

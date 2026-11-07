@@ -1044,8 +1044,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         continuation,
         borrowedReplay,
       }) => {
-        ownedJobs.inherit(parentPid, childPid);
         const launch = (releaseCreatorAdmission?: () => void) => {
+          // Publish job-family custody only after creator admission succeeds;
+          // a terminal refusal has no host child to publish or report exited.
+          ownedJobs.inherit(parentPid, childPid);
           // Tell the main thread a kernel-side fork happened so Inspector
           // panes can refresh their process table without polling.
           post({

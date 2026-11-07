@@ -26071,3 +26071,45 @@ passes10s: standalone wasm32/wasm64 object compilation against existing
 sysroot headers plus the GBM retirement and front-hold actor controls.
 This is source/component evidence; normal foundations and target execution
 remain pending. Both original build failures are preserved.
+
+### Fork completion and preview-probe ownership checkpoint, 2026-11-07
+
+Fork allocation cleanup now has fresh canonical ingress independent of the
+parent mailbox. Result publication separately requires the original request,
+registration, Memory and Rust image. Successful host adoption transfers the
+child's independent lifetime; failed publication cannot remove a replacement.
+Before returning an expected private admission refusal, rollback proves exact
+child ownership and retires its pre-publication network mirrors as well as
+the Rust task. Node/browser job inheritance occurs inside admitted launch.
+
+HTTP preview readiness belongs to one activation. Disposal aborts its fetch
+and retry timer before retiring the bridge; genuine current-generation HTTP
+failures retain their existing deadline and diagnostic behaviour. The matched
+browser run remains adverse (candidate3/6, strict retirement3/6); it does not
+prove the historical503 cause or close missing-main/WordPress failures.
+
+Root `graphics-fork-integration-r2-r627-1107-010842-514a` passes19s:395
+controls across11 files, source and strict new-fixture TypeScript,721-file
+evidence inventory and12 frozen composed paths. A private index proves the
+current baseline plus the two frozen supplements produces those exact paths;
+the mapping changes already landed after the producer's base are preserved.
+The first root wrapper fails only its missing manifest after scoped checks;
+its logs remain failed. Producer R587 separately passes228 focused controls
+and10 unchanged-limit ownership-audit controls, with22 matched old-source
+failures and6 preserved passes. Exact commands, source hashes and judgments
+are in `.context/graphics-fork-integration-r627/` and R587's handoff.
+Main Worker absence remains a separate investigation; no synthetic main ACK
+was introduced. Full browser-memory, normal target and complete B1 acceptance
+remain required.
+
+R616 normal foundations at `33aa089fccd7` now build SDK32/64, kernel and
+host, and the fork tool through the normal path. The original R4 aggregate
+stops at its disk guard before ABI verification; all producing phases pass.
+The separate read-only completion job
+`graphics-owned-normal-readonly-r616-1107-010842-2f66` passes5s: actual
+kernel ABI generator check,8,415 unchanged source files and60 product hashes.
+Kernel SHA256 is
+`3b5778046867031c57c7d2b752e0bff4034f17c4f945b89334fa0a9bd43459d2`
+(2,070,720 bytes). This is foundations only, excludes the new fork/Wayland
+changes and does not rebuild application packages or provide a new preview.
+All failed build/launcher/disk attempts remain recorded in R616's run dirs.

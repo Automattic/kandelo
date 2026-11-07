@@ -2518,6 +2518,19 @@ graceful detach attempt fails or times out. That realm boundary is the final
 release fallback; a false graceful result never asks the main thread to keep a
 partially detached kernel Worker alive.
 
+An asynchronously launched fork owns its newly allocated Rust child and
+pre-publication descriptor mirrors until its host callback transfers custody.
+Cleanup uses a fresh kernel entry even if the caller's original mailbox has
+completed or its image has changed. A private creator-gate refusal is expected
+only after the exact child image and its unpublished mirrors are retired;
+matching error text is not proof, and uncertain cleanup remains fatal. A
+replacement child registration or image is never removed by numeric PID alone.
+The original caller receives a result only while its exact registration,
+Memory, pending request and Rust exec generation still agree. A transferred
+child retains its independent lifetime when that caller has already woken.
+Both host adapters publish job-family custody only after creator admission.
+These ownership checks run on fork launch/completion, not unrelated syscalls.
+
 A pthread Worker is terminated when its `memory_quiescent` arrives, except on
 JavaScriptCore browsers: there the exited thread's Worker stays idle, holding
 its instances, and is terminated with its process (exit, exec, forced
@@ -5413,6 +5426,13 @@ Main Thread                              Kernel Worker
 The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY routing, framebuffer registry mirroring, HTTP bridge handoff) are pid-addressed and work the same in both boot paths.
 
 **Browser kernel worker** (`host/src/browser-kernel-worker-entry.ts`): Dedicated web worker that hosts `CentralizedKernelWorker`, following the standard architecture requirement. Process workers are sub-workers created by the kernel worker. Syscall notification remains event-driven through `Atomics.waitAsync`, not channel polling. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue; this keeps syscall handling and worker messages progressing together under multi-process bridge load. Node.js retains its native/default batching unchanged.
+
+**HTTP readiness ownership:** the page reuses its host while replacing machine
+activations, so each activation owns a distinct abort controller for preview
+readiness. Preview disposal cancels the active request and retry delay before
+removing the HTTP bridge. Guarding only the final UI update would leave the
+outgoing activation issuing requests to a retired machine. The current
+activation retains its original readiness/request deadlines and error reporting.
 
 **dinit service supervisor** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first user process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. It receives the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit reaps its directly supervised children. A service that daemonizes by double fork leaves its grandchild to synthetic init, which the kernel reaps (see "Orphan adoption"); dinit is not a subreaper here because it requests `PR_SET_CHILD_SUBREAPER` only under `__linux__`. dinit disables restarts by default and enforces inter-service `depends-on` ordering.
 

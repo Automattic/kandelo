@@ -66,6 +66,26 @@ describe("kernel entry-context static audit", () => {
     ]));
   });
 
+  it("requires exact canonical gate construction for allocated-fork completion", () => {
+    const forkFixture = (body: string) => constructionFixture(body).replace(
+      "#runOrDeferKernelEntry(label: string,",
+      "#runOrDeferAllocatedForkCompletionKernelEntry(_childPid: number, label: string,",
+    );
+    expect(auditKernelEntryContext(forkFixture(`
+      this.#kernelEntryGate.runOrDeferVoidIngress(label, (scope, effects) => {
+        return this.#runKernelEntryOperation(scope, effects, operation);
+      });
+    `))).toEqual([]);
+    const fabricated = auditKernelEntryContext(forkFixture(`
+      this.#kernelEntryGate.runOrDeferVoidIngress(label, (scope, effects) => {
+        return this.#runKernelEntryOperation({}, effects, operation);
+      });
+    `));
+    expect(fabricated).toEqual(expect.arrayContaining([
+      expect.objectContaining({kind: "nonlexical-entry-operation"}),
+    ]));
+  });
+
   it("rejects an alias in place of the gateway's original operation", () => {
     const violations = auditKernelEntryContext(constructionFixture(`
       const stored = operation;
@@ -691,6 +711,11 @@ describe("kernel entry-context static audit", () => {
           _label: string,
           _operation: (entry: KernelWorkerEntryContext) => void,
         ): void {}
+        #runOrDeferAllocatedForkCompletionKernelEntry(
+          _childPid: number,
+          _label: string,
+          _operation: (entry: KernelWorkerEntryContext) => void,
+        ): void {}
         #kernelInstanceForEntry(
           entry?: KernelWorkerEntryContext,
         ): WebAssembly.Instance {
@@ -879,6 +904,48 @@ describe("kernel entry-context static audit", () => {
       });
     `));
     expect(nonlexicalCloneCleanup).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "nonlexical-entry-operation" }),
+    ]));
+    const safeForkCleanup = auditKernelEntryContext(source(`
+      entry.deferProtocolTransactionStart(() => {
+        this.#continuePromise(this.callbacks.launch(), () => {
+          this.#runOrDeferAllocatedForkCompletionKernelEntry(
+            73, "complete allocated fork", (innerEntry) => this.#finish(innerEntry),
+          );
+        }, (_cause) => {
+          this.#runOrDeferAllocatedForkCompletionKernelEntry(
+            73, "rollback allocated fork", (innerEntry) => this.#finish(innerEntry),
+          );
+        });
+        return undefined;
+      });
+    `));
+    expect(safeForkCleanup).toEqual([]);
+
+    const capturedForkEntry = auditKernelEntryContext(source(`
+      entry.deferProtocolTransactionStart(() => {
+        this.#continuePromise(this.callbacks.launch(), () => {
+          this.#runOrDeferAllocatedForkCompletionKernelEntry(
+            73, "bad outer authority", (_innerEntry) => this.#finish(entry),
+          );
+        });
+        return undefined;
+      });
+    `));
+    expect(capturedForkEntry).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "context-detached-capture" }),
+    ]));
+
+    const nonlexicalForkCleanup = auditKernelEntryContext(source(`
+      entry.deferProtocolTransactionStart(() => {
+        const finish = (innerEntry: KernelWorkerEntryContext) => this.#finish(innerEntry);
+        this.#continuePromise(this.callbacks.launch(), () => {
+          this.#runOrDeferAllocatedForkCompletionKernelEntry(73, "bad alias", finish);
+        });
+        return undefined;
+      });
+    `));
+    expect(nonlexicalForkCleanup).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "nonlexical-entry-operation" }),
     ]));
   });

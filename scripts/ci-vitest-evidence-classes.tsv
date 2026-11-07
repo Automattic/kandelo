@@ -136,6 +136,7 @@ host/test/fork-host-import-retirement.test.ts	source-only
 host/test/fork-host-import-runtime.test.ts	source-only
 host/test/fork-imported-globals.test.ts	source-only
 host/test/fork-instrument-coverage.test.ts	prepared-product
+host/test/fork-launch-ownership.test.ts	source-only
 host/test/fork-mechanism-trace.test.ts	source-only
 host/test/fork-memory-clone-guest.test.ts	prepared-product
 host/test/fork-module-state.test.ts	source-only
@@ -203,6 +204,7 @@ host/test/host-file-offset.test.ts	source-only
 host/test/host-owned-process-reap.test.ts	prepared-product
 host/test/host-process-pointer-width.test.ts	source-only
 host/test/host-stdin-pipe.test.ts	prepared-product
+host/test/http-preview-readiness.test.ts	source-only
 host/test/ifhwaddr.test.ts	prepared-product
 host/test/image-build-determinism.test.ts	prepared-product
 host/test/image-owned-runtime-urls.test.ts	source-only

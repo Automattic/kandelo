@@ -1033,8 +1033,10 @@ async function handleInit(msg: InitMessage) {
         continuation,
         borrowedReplay,
       }) => {
-        ownedJobs.inherit(parentPid, childPid);
         const launch = (releaseCreatorAdmission?: () => void) => {
+          // Publish job-family custody only after creator admission succeeds;
+          // a terminal refusal has no host child to publish or report exited.
+          ownedJobs.inherit(parentPid, childPid);
           // Notify the main thread of every kernel-side process event so
           // Inspector-style UIs (Kandelo) can refresh their process table
           // event-driven. Mirrors the browser-side worker entry.

@@ -2020,6 +2020,18 @@ interface PendingThreadChannelAttachment {
   attachedChannel?: ChannelInfo;
 }
 
+/** One Rust fork allocation owns cleanup independently of its caller mailbox. */
+interface ForkRollbackState {
+  readonly registration: ProcessRegistration | undefined;
+  readonly request: FrozenChannelRequest | undefined;
+  readonly memory: WebAssembly.Memory;
+  readonly origArgs: number[];
+  readonly childPid: number;
+  readonly childExecGeneration: bigint;
+  childOwned: boolean;
+  transferred: boolean;
+}
+
 interface CloneRollbackState {
   readonly registration: ProcessRegistration | undefined;
   readonly request: FrozenChannelRequest | undefined;
@@ -2177,6 +2189,11 @@ export interface CentralizedKernelCallbacks {
    * Called when a process forks. The kernel has already cloned the Process
    * in its ProcessTable. The callback should spawn a child Worker with
    * a copy of the parent's Memory and register it with the kernel.
+   * Resolve only after the child's started or job-control-deferred Worker,
+   * Memory and host owners are published. Success transfers that independent
+   * child lifetime before the parent's result is delivered. Rejection must
+   * first retire any partial host publication; the kernel still owns rollback
+   * of its allocated child Process and pre-publication fd mirrors.
    * Returns the channel offsets allocated for the child.
    *
    * `request.continuation.kind` is `"thread"` when the parent issued the
@@ -7513,9 +7530,10 @@ export class CentralizedKernelWorker {
         [pid, lease.exportPointer(0, 8), 8],
       );
       if (result !== 8) {
-        return new Error(result < 0
-          ? `Cannot read kernel process ${pid} exec generation: errno ${-result}`
-          : `Invalid kernel process ${pid} exec generation byte count ${result}`);
+        return new KernelTaskBindingError(pid, undefined, result < 0 ? -result : EIO,
+          result < 0
+            ? `Cannot read kernel process ${pid} exec generation: errno ${-result}`
+            : `Invalid kernel process ${pid} exec generation byte count ${result}`);
       }
       const bytes = lease.copyOut(0, 8);
       return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(0, true);
@@ -20698,64 +20716,149 @@ export class CentralizedKernelWorker {
     );
   }
 
+  #isCurrentForkRequest(channel: ChannelInfo, state: ForkRollbackState): boolean {
+    const registration = state.registration;
+    if (!registration || !state.request
+      || (state.request.syscallNr !== SYS_FORK && state.request.syscallNr !== SYS_VFORK)
+      || this.processes.get(channel.pid) !== registration
+      || registration.memory !== state.memory || channel.memory !== state.memory
+      || this.execHandoffPids?.has(channel.pid) || !this.isRegisteredChannel(channel)
+      || channel.handling !== true || this.activeChannelRequests.get(channel) !== state.request) return false;
+    const buffer = state.memory.buffer;
+    return Atomics.load(new Int32Array(buffer, channel.channelOffset),
+      CH_STATUS / Int32Array.BYTES_PER_ELEMENT) === CH_PENDING
+      && new DataView(buffer, channel.channelOffset).getUint32(CH_SYSCALL, true) === state.request.syscallNr;
+  }
+
+  #isCurrentForkImageWithinKernelEntry(
+    channel: ChannelInfo,
+    state: ForkRollbackState,
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    if (!this.#isCurrentForkRequest(channel, state)
+      || !this.#isProcessExecutionActiveWithinKernelEntry(channel.pid, entry)) return false;
+    const generation = this.#processExecGenerationWithinKernelEntry(channel.pid, entry);
+    if (generation instanceof Error) {
+      const error = new Error(`cannot confirm fork caller generation: ${generation.message}`);
+      console.error(`[handleSyscall] FATAL ${error.message}`);
+      this.#failKernelInstance(error);
+      return false;
+    }
+    return generation === state.registration!.execGeneration;
+  }
+
+  /** A completed/replaced caller never revokes cleanup of an allocated child.
+   * Each continuation receives fresh lexical authority, not an entry captured
+   * while Rust allocated the child. Publication separately checks its ticket. */
+  #runOrDeferAllocatedForkCompletionKernelEntry(
+    childPid: number,
+    label: string,
+    operation: (entry: KernelWorkerEntryContext) => undefined,
+    state: ForkRollbackState,
+  ): void {
+    try {
+      this.#kernelEntryGate.runOrDeferVoidIngress(
+        `${label} child=${childPid}`,
+        (scope, effects) => {
+          if (this.#vfsChangeListeners.size && !this.#nativeFsDrainPending) {
+            return this.#runKernelEntryOperation(scope, effects, (entry) =>
+              this.#runNativeFsObservedOperation(entry, operation),
+            );
+          }
+          return this.#runKernelEntryOperation(scope, effects, operation);
+        },
+        state,
+      );
+    } catch (error) {
+      // A deliberately poisoned generation already has its fatal observer
+      // scheduled. Do not turn that same exact fault into an unowned Promise
+      // rejection; every other ingress failure must still propagate loudly.
+      if (error !== this.#kernelFatalError) throw error;
+    }
+  }
+
+  #rollbackForkAllocationWithinKernelEntry(
+    state: ForkRollbackState,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    if (!state.childOwned) return;
+    const generation = this.#processExecGenerationWithinKernelEntry(state.childPid, entry);
+    if (generation instanceof Error) {
+      if (!(generation instanceof KernelTaskBindingError) || generation.errno !== ESRCH) throw generation;
+    } else if (generation !== state.childExecGeneration) {
+      // A new image may already be observable as this child. Never roll it
+      // back or return an ordinary failed fork while that child survives:
+      // failed callback publication is now an ownership protocol fault.
+      throw new Error(`fork child ${state.childPid} changed image ownership before failed launch cleanup`);
+    }
+    // WHY: callback rejection must finish its own partial host publication
+    // before returning. A live registration here could instead belong to a
+    // replacement; numeric PID equality cannot authorize removing its Memory.
+    if (this.processes.has(state.childPid)) {
+      throw new Error(`fork child ${state.childPid} retains an unconfirmed host Memory registration`);
+    }
+    // Rust task IDs never reuse/wrap within this kernel instance. Together
+    // with the exact image check and absent host registration, that proves
+    // these pre-publication fd mirrors belong to this allocation, even if
+    // another teardown already reaped the Rust child (ESRCH).
+    // Deactivation has no host registration to visit yet, but inheritance
+    // already retained listener backends. Explicitly retire those mirrors;
+    // otherwise a failed fork can keep its parent's last backend alive.
+    this.#cleanupProcessNetworkWithinKernelEntry(state.childPid, entry);
+    this.#removeFromKernelProcessTableWithinKernelEntry(state.childPid, entry);
+    state.childOwned = false;
+  }
+
+  #failForkProtocolWithinKernelEntry(
+    channel: ChannelInfo,
+    state: ForkRollbackState,
+    reason: string,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    if (this.#isCurrentForkImageWithinKernelEntry(channel, state, entry)) {
+      this.#terminateForKernelProtocolFailureWithinKernelEntry(channel, reason, entry);
+    } else if (this.#kernelFatalError === null) {
+      // The caller may already be a replacement image. Do not signal its
+      // numeric PID for an old continuation's failure; uncertain ownership
+      // instead uses the existing poisoned-kernel containment boundary.
+      const error = new Error(reason);
+      console.error(`[handleSyscall] FATAL ${error.message}`);
+      this.#failKernelInstance(error);
+    }
+  }
+
   #rollbackForkWithinKernelEntry(
     channel: ChannelInfo,
-    origArgs: number[],
-    childPid: number,
+    state: ForkRollbackState,
     cause: unknown,
     entry: KernelWorkerEntryContext,
   ): void {
-    if (cause !== undefined) {
-      entry.deferObserverEffect(() => {
-        console.error(
-          `[kernel-worker] fork worker launch failed: ${String(cause)}`,
-        );
-        return undefined;
-      });
-    }
-    try {
-      this.#rollbackChildHostRegistrationWithinKernelEntry(childPid, entry);
-    } catch (hostRollbackError) {
-      this.#rethrowKernelEntryFatal(hostRollbackError);
-      entry.deferObserverEffect(() => {
-        console.error(
-          `[kernel-worker] fork child ${childPid} host rollback failed:`,
-          hostRollbackError,
-        );
-        return undefined;
-      });
-    }
-    try {
-      this.#removeFromKernelProcessTableWithinKernelEntry(childPid, entry);
-    } catch (rollbackError) {
-      this.#rethrowKernelEntryFatal(rollbackError);
-      this.#terminateForKernelProtocolFailureWithinKernelEntry(
-        channel,
-        `could not roll back fork child ${childPid}: ${
-          rollbackError instanceof Error
-            ? rollbackError.message
-            : String(rollbackError)
-        }`,
-        entry,
-      );
+    if (state.transferred) {
+      this.#failForkProtocolWithinKernelEntry(channel, state,
+        `fork completion failed after host adoption of child ${state.childPid}: ${String(cause)}`, entry);
       return;
     }
-    if (
-      this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)
-    ) {
-      const errno =
-        cause instanceof ProcessMemoryRetirementBacklogError
-        || cause instanceof VforkAddressSpaceBusyError
-          ? 11 // EAGAIN: bounded debt or vfork workspace denied admission.
-          : 12; // ENOMEM: worker launch or ordinary allocation failure.
-      this.#completeForkWithinKernelEntry(
-        channel,
-        origArgs,
-        -1,
-        errno,
-        entry,
-      );
+    try {
+      this.#rollbackForkAllocationWithinKernelEntry(state, entry);
+    } catch (rollbackError) {
+      this.#rethrowKernelEntryFatal(rollbackError);
+      this.#failForkProtocolWithinKernelEntry(channel, state,
+        `could not roll back fork child ${state.childPid}: ${String(rollbackError)}`, entry);
+      return;
     }
+    // Admission closure is an expected terminal refusal only after every
+    // exact child owner was released. A matching error message
+    // is not the private gate brand, and unknown rollback remains fatal.
+    if (!isProcessMemoryCreatorAdmissionClosed(cause)) {
+      entry.deferObserverEffect(() => {
+        console.error(`[kernel-worker] fork worker launch failed: ${String(cause)}`);
+        return undefined;
+      });
+    }
+    if (!this.#isCurrentForkImageWithinKernelEntry(channel, state, entry)) return;
+    const errno = cause instanceof ProcessMemoryRetirementBacklogError
+      || cause instanceof VforkAddressSpaceBusyError ? 11 : 12;
+    this.#completeForkWithinKernelEntry(channel, state.origArgs, -1, errno, entry);
   }
 
   /**
@@ -20892,6 +20995,32 @@ export class CentralizedKernelWorker {
     }
     const childPid = forkResult >>> 0;
 
+    const childExecGeneration = this.#processExecGenerationWithinKernelEntry(childPid, entry);
+    if (childExecGeneration instanceof Error) {
+      // No callback or yield has occurred: this fresh Rust allocation is
+      // still ours, but a missing identity query is a fatal host contract fault.
+      let rollbackDetail = "";
+      try { this.#removeFromKernelProcessTableWithinKernelEntry(childPid, entry); }
+      catch (rollbackError) {
+        this.#rethrowKernelEntryFatal(rollbackError);
+        rollbackDetail = `; initial child rollback failed: ${String(rollbackError)}`;
+      }
+      const error = new Error(`cannot confirm allocated fork child ${childPid}: ${childExecGeneration.message}${rollbackDetail}`);
+      console.error(`[handleSyscall] FATAL ${error.message}`);
+      this.#failKernelInstance(error);
+      return;
+    }
+    const forkState: ForkRollbackState = {
+      registration: this.processes.get(parentPid),
+      request: this.activeChannelRequests.get(channel),
+      memory: channel.memory,
+      origArgs: [..._origArgs],
+      childPid, childExecGeneration, childOwned: true, transferred: false,
+    };
+    // Fork alone retains this existing request identity through async launch;
+    // no extra state or classification hook runs on unrelated syscalls.
+    channel.handling = true;
+
     // Clear fork_child flag immediately. With wpk_fork instrumentation, the
     // child resumes from the fork point and never checks this flag. Without
     // clearing it, a nested fork() from the child would hit the isForkChild
@@ -20953,8 +21082,7 @@ export class CentralizedKernelWorker {
       this.#rethrowKernelEntryFatal(err);
       this.#rollbackForkWithinKernelEntry(
         channel,
-        _origArgs,
-        childPid,
+        forkState,
         err,
         entry,
       );
@@ -20975,63 +21103,68 @@ export class CentralizedKernelWorker {
           }),
         );
       } catch (cause) {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
+        this.#runOrDeferAllocatedForkCompletionKernelEntry(
+          childPid,
           "fork launch failure",
           (rollbackEntry) => {
             this.#rollbackForkWithinKernelEntry(
               channel,
-              _origArgs,
-              childPid,
+              forkState,
               cause,
               rollbackEntry,
             );
             return undefined;
           },
+          forkState,
         );
         return undefined;
       }
       this.#continuePromise(launch, () => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
+        // Callback success publishes all child Worker/Memory owners. The
+        // child's independent lifetime survives an already-woken caller.
+        forkState.transferred = true;
+        forkState.childOwned = false;
+        this.#runOrDeferAllocatedForkCompletionKernelEntry(
+          childPid,
           "fork launch completion",
           (completionEntry) => {
-            this.#finalizePendingChildTerminationWithinKernelEntry(
-              childPid,
-              completionEntry,
-            );
-            if (
-              !this.#isAsyncChannelProcessActiveWithinKernelEntry(
-                channel,
+            try {
+              this.#finalizePendingChildTerminationWithinKernelEntry(
+                childPid,
                 completionEntry,
-              )
-            ) {
-              return undefined;
+              );
+              if (!this.#isCurrentForkImageWithinKernelEntry(channel, forkState, completionEntry)) {
+                return undefined;
+              }
+              this.#completeForkWithinKernelEntry(
+                channel,
+                forkState.origArgs,
+                childPid,
+                0,
+                completionEntry,
+              );
+            } catch (cause) {
+              this.#rethrowKernelEntryFatal(cause);
+              this.#rollbackForkWithinKernelEntry(channel, forkState, cause, completionEntry);
             }
-            this.#completeForkWithinKernelEntry(
-              channel,
-              _origArgs,
-              childPid,
-              0,
-              completionEntry,
-            );
             return undefined;
           },
+          forkState,
         );
       }, (cause) => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
+        this.#runOrDeferAllocatedForkCompletionKernelEntry(
+          childPid,
           "fork launch rejection",
           (rollbackEntry) => {
             this.#rollbackForkWithinKernelEntry(
               channel,
-              _origArgs,
-              childPid,
+              forkState,
               cause,
               rollbackEntry,
             );
             return undefined;
           },
+          forkState,
         );
       });
       return undefined;
