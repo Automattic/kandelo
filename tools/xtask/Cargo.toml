@@ -40,7 +40,7 @@ toml = "0.8"
 # (Phase A-bis Task 5). Preserves comments and formatting; the parsing
 # crate (`toml`) is value-only and would lose layout on round-trip.
 toml_edit = "0.22"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # Remote-fetch path (Task A.9). `ureq` is used because the resolver only
 # needs sync, blocking HTTP and ureq pulls a much smaller transitive
 # tree than reqwest. `zstd` + `tar` decode the binary-cache archive.
