@@ -1021,6 +1021,7 @@ async function handleInit(msg: InitMessage) {
       msg.config.maxProcessMemoryBytes,
     ),
     retirementPressureHook: processMemoryRetirementPressureHook,
+    forkCopy: msg.config.forkCopy,
   });
   workerAdapter = new NodeWorkerAdapter();
   if (!hasRootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {

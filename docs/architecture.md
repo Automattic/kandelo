@@ -1383,6 +1383,27 @@ program memory. Kandelo's
 non-forking `posix_spawn()` path avoids that copy when the caller can describe
 the requested child entirely with spawn actions and attributes.
 
+The copy has two modes, selected with the `forkCopy` option of
+`NodeKernelHost` and `BrowserKernel` and passed to the kernel worker's
+`ProcessMemoryAllocator`. Both modes give the child the same bytes; they
+trade memory for fork latency:
+
+- `"sparse"` (the default) skips each 64 KiB page that is all zero in the
+  parent. The child's Memory is new, so those pages are already zero, and
+  the operating system does not commit them until the child writes them.
+  A large, mostly empty address space, such as each php-fpm child of a
+  WordPress machine, therefore holds much less memory. Checking every page
+  makes fork slower: one Node benchmark measured `fork_ms` and `clone_ms`
+  about 5-7% slower than dense.
+- `"dense"` writes every byte, which is faster but commits every page of the
+  child at once. Choose it when fork latency matters more than memory, for
+  example fork-heavy builds (`configure`, `make`) on Node.
+
+Sparse copying is correct only because the destination is new. Any future
+reuse or pooling of process memory must zero the destination first or use
+the dense copy; otherwise a child would keep the previous owner's bytes
+wherever its parent's page is zero.
+
 Kandelo releases its references to an exited or replaced process generation
 only after the exact Worker, channel, thread, and framebuffer ownership fences
 complete. JavaScript engines still decide when the unreachable shared backing

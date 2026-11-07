@@ -5,6 +5,7 @@ import type {
   ExchangeRequestMessage,
 } from "./exchange-host";
 import type { RemoteSegmentInit } from "./networking/remote-segment-port";
+import type { ForkAddressSpaceCopy } from "./process-memory";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
@@ -227,6 +228,8 @@ export interface InitMessage {
      * cross it until the next allocation observes current byte lengths.
      */
     maxProcessMemoryBytes: number;
+    /** Fork address-space copy mode; the allocator defaults to `"sparse"`. */
+    forkCopy?: ForkAddressSpaceCopy;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
     /** Bytes Kandelo exchange's `work/` and `outbox/` may hold. */
