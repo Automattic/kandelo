@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 135 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 139 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 229 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 225 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -557,3 +557,32 @@ stale. Overall suites and full product rebuild remain deferred. The separate
 REPL plan requires real additive process capture/abort suppression, then actual
 VM import-callback ownership before public activation. Nested guest WebAssembly
 execution remains in scope for the final phase.
+
+
+## Source214–216 filesystem, VM import and process capture owners
+
+The real tmpfs zero-length write no longer grows files or changes timestamps/
+content generation after successful validation. Four native differential cases
+and45affected native units include its new regression; original bug, failed link
+setup and stale-library evidence remain. VM import callbacks belong to compiled
+Script/function source and preserve public referrer/attributes/native Promise
+ownership. Native-dependent controls do not compile the new guest JSAPI.
+
+Capture/fatal algorithms use real rooted per-environment native suppression and
+CLI/Worker policy. Default hard-crash signal, diagnostics, getter-throw exit and
+actual report-provider behavior remain open. Independent VM/capture reviews found
+no new verified blocker within their stated scope, without guest runtime proof.
+
+Typed FsNotify/eventfd reads retain real OFD/task/channel retry owners; actual
+mutations publish only live interested sources into pre-admitted dirties. Native
+runtime compilation,37scoped native cases and an actual Wasm kernel typecheck pass.
+There is no linked current kernel/engine or guest acceptance. A reviewed exact
+capacity fallback preserves host retry without hiding corrupt snapshots; the
+superseded permissive clipping assumption remains rejected. One terminal blank
+normalization is explicitly separated from byte-identical compiled inputs.
+
+All19categories remain partial; no finding closes. Public watchers, timer/poll,
+metadata/fork/ABI lifecycle, current guest bindings and four-host conformance stay
+open. Overall suites/full product rebuild remain deferred. New private Blob,
+CommonJS warning and public-abort candidates require root review/integration.
+Nested guest Wasm execution remains in scope for the final phase.

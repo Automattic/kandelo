@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T12:58:15.873311+00:00",
-  "sourceHead": "610fb274f999d973e303b126a728c42cc11ee6d8",
-  "recipeRevision": 214,
+  "at": "2026-11-07T14:19:14.127480+00:00",
+  "sourceHead": "45749b2451cf5c55ec13b47c15c92881826998d3",
+  "recipeRevision": 216,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 135,
+    "sourceSliceRecords": 139,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 229
+    "findingsWithoutExplicitOrProposedSourceSlice": 225
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,24 +26,25 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 135,
+  "sourceSliceIdentitiesVerified": 139,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "793a76549d1cfefebd7c9ec64aa657961f2023f93e933d8ab43b713ce2063f72"
+    "sha256": "9cfcf833339554ed10581940ef0285ccbf727de06f2996d02ddd8add523c54e1"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
-  "scope": "Qualified source/identity audit links only; immutable audit unchanged, no API/runtime closure",
+  "scope": "Qualified source/evidence identity links only; immutable audit and all remaining finding semantics preserved.",
   "previousIntegrityIdentity": {
-    "sha256": "7fe5ed089bd7225e2273a7d73b40536ca1d727f593094cdcf5f96b8fecb37108",
-    "sourceHead": "a4dea36e9d12f6a77a9b51839fcdbf0a8c4ac43e",
-    "scope": "Preserved in prior committed source and sourceSnapshotHistory"
+    "sha256": "be0416114261cd33d4997cb5abd2a272a4bdb85b80a3dd4a086822fc70a3f169",
+    "sourceHead": "610fb274f999d973e303b126a728c42cc11ee6d8",
+    "scope": "Preserved in prior commit and source snapshot history"
   },
   "sourceProgressOverlaysAdded": [
-    "terminal-read-material",
-    "process-tracing-owner",
-    "filesystem-notification-owners"
+    "empty-tmpfs-write",
+    "vm-import-callback",
+    "process-capture-owner",
+    "backing-read-wake"
   ],
   "qualifiedReferenceCorrections": [
     {
