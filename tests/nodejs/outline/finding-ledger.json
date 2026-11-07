@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 101,
+    "sourceSliceRecords": 103,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 249
+    "findingsWithoutExplicitOrProposedSourceSlice": 246
   },
   "families": [
     {
@@ -755,7 +755,7 @@
         "NI-013",
         "NI-014"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 4,
+      "findingsWithExplicitOrProposedSourceSlices": 7,
       "sourceRouteAsRecorded": "SQLite scalar/aggregate/window registrations and GC-traced native callback/parent/accumulator owners compiled in113; real SQLite statement/iterator/column/limit/defensive/session/change-set and rooted synchronous callback owners, native virtual limits and actual activation; source154 actual statement close/dispose, executing-VM guards and reentrant-safe native retirement",
       "remainingAsRecorded": "Database disposal suppression/serialization and remaining Statement receiver/reset/iterator semantics; complete scalar/aggregate/window error/reentry/GC policy, authorizer/virtual-table callbacks; complete limits/reflection/storage/GC/realm/accounting, tag cache/backup/extensions, FFI/WASI/SEA/addons/embedding and ABI/loader",
       "remainingOwner": "Actual SQLite/FFI/WASI/SEA/Node-API/embedding native ABI and loader owners",
@@ -4868,6 +4868,13 @@
           "auditDocument": "tests/nodejs/audit/secure-network.md",
           "scope": "Actual shared prepared SSL_CTX credential/reference prerequisite; not full public SecureContext/TLS or finding closure",
           "closure": false
+        },
+        {
+          "slice": "shared-crypto-error-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "scope": "Shared actual Error/queue/property/identity prerequisite for consumed crypto/TLS paths; not complete public API/per-callsite errors or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -5028,6 +5035,13 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/secure-network.md",
           "scope": "Actual shared prepared SSL_CTX credential/reference prerequisite; not full public SecureContext/TLS or finding closure",
+          "closure": false
+        },
+        {
+          "slice": "shared-crypto-error-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "scope": "Shared actual Error/queue/property/identity prerequisite for consumed crypto/TLS paths; not complete public API/per-callsite errors or finding closure",
           "closure": false
         }
       ],
@@ -5240,6 +5254,13 @@
         {
           "slice": "pkcs12-parser",
           "relation": "explicit-original-finding-id"
+        },
+        {
+          "slice": "shared-crypto-error-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "scope": "Shared actual Error/queue/property/identity prerequisite for consumed crypto/TLS paths; not complete public API/per-callsite errors or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -5271,6 +5292,13 @@
         {
           "slice": "crypto-byte-source",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "shared-crypto-error-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "scope": "Shared actual Error/queue/property/identity prerequisite for consumed crypto/TLS paths; not complete public API/per-callsite errors or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -5319,6 +5347,13 @@
         {
           "slice": "crypto-byte-source",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "shared-crypto-error-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "scope": "Shared actual Error/queue/property/identity prerequisite for consumed crypto/TLS paths; not complete public API/per-callsite errors or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -5344,6 +5379,13 @@
         {
           "slice": "crypto-byte-source",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "shared-crypto-error-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "scope": "Shared actual Error/queue/property/identity prerequisite for consumed crypto/TLS paths; not complete public API/per-callsite errors or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -5445,6 +5487,13 @@
         {
           "slice": "pkcs12-parser",
           "relation": "explicit-original-finding-id"
+        },
+        {
+          "slice": "shared-crypto-error-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "scope": "Shared actual Error/queue/property/identity prerequisite for consumed crypto/TLS paths; not complete public API/per-callsite errors or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -9295,7 +9344,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "FFI DynamicLibrary/dlopen/dlclose/dlsym, typed memory access, buffer/string export, conversion, type signatures and callback/handle lifetime",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "ffi-library-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Actual portable library/symbol/registry/CLI/lifecycle prerequisite; not full FFI/libffi/addon or finding closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "actual libffi call/closure/native memory and dynamic-library owner",
@@ -9398,7 +9455,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Node-API/addon admission and embedding contracts",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "ffi-library-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Actual portable library/symbol/registry/CLI/lifecycle prerequisite; not full FFI/libffi/addon or finding closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Node-API admission/native ABI and module loader",
@@ -9477,7 +9542,15 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "NI-008\u2013NI-010. The [addon/embedding review](native-addon-contracts.md) records",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "ffi-library-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "scope": "Actual portable library/symbol/registry/CLI/lifecycle prerequisite; not full FFI/libffi/addon or finding closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Node-API admission/native ABI and module loader",
@@ -19296,6 +19369,160 @@
       "auditDocument": "tests/nodejs/audit/web.md",
       "findingScope": "Real Response constructor/statics/private body/header/clone and consumed HTTP publication source contribution; not complete Fetch/dependency semantics or finding closure",
       "additionalAuditDocuments": {}
+    },
+    "ffi-library-owner": {
+      "document": "tests/nodejs/outline/ffi-library-owner-finding-progress.json",
+      "sha256": "5868867743bc753b40018c8ef850c45a4e46943e701e1a0cf8dcdab05e195b14",
+      "recordedRevision": 184,
+      "explicitFindingIds": [
+        "NI-001",
+        "NI-005",
+        "NI-008"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-ffi184-source-r1/report.json",
+          "sha256": "20872832efb73b286472774ef39e76606b11dec6ca9df36bfbb9e317838c5e5a",
+          "guardedInputs": 830,
+          "scope": "Real library-symbol/registry/CLI/shutdown source over existing outer guest loader, checked-wrapper denial preserved; native controls separate from new JSAPI/guest/fourhost/fullFFI."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-ffi184-affected-r1.json",
+          "sha256": "ca10b68bad81235fe94ce92d2ae4f0dc97fae98edd280155a7579e56727a6519",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-ffi184-source-r1/report.json",
+          "sha256": "20872832efb73b286472774ef39e76606b11dec6ca9df36bfbb9e317838c5e5a",
+          "portableOwnerGroups": 8,
+          "frontendRecordedErrorCases": 11,
+          "frontendManualAnnotationNotCaseCount": 18,
+          "nativeCLIComparisons": 14,
+          "productionVfsAdmissionGroups": 4,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "scope": "Actual portable host-libc owner and current extracted CLI parser over exact reused artifacts; unchanged selected frontend and exact builtin getter over explicitly pinned native DynamicLibrary. The printed18is a manual annotation, not a discovered-test count. New guest JSAPI/loader/GC/realm/fourhost unexecuted."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/ffi-library-agent/handoff/report.json",
+          "sha256": "7e0a0d73d104b627bc381a89d862653da273889ccea1019f103fac110310f62e",
+          "reusedEvidence": true,
+          "scope": "Actual host-libc owner8labeled groups; selected public frontend11error observations plus positive assertions;14CLIcomparisons;827private input closure and exact source/engine patch replay.6successful tiny compiles, no guest JSAPI/full FFI conformance."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/ffi-library-owner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/ffi-library-owner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Real DynamicLibrary holder owns libc dlopen/dlsym/dlclose state and actual symbol cache; null symbol address distinguishes real dlerror, consumed handles are not closed twice after unload errors",
+        "Actual ShellContext registry owns open handles, foreground finalizer only marks retirement, owner-thread loop drains and shutdown runs after exit listeners before main/worker status capture with destructor fallback",
+        "Exact pinned public constructor, Symbol.dispose identity and dlclose/dlsym aliases consume real native owners; actual experimental FFI CLI state/default/negation/Node-options and builtin policy route retained",
+        "Actual checked-wrapper failures preserve pending exceptions or report access denial; type/NUL validation remains before closed lookup exactly as pinned source/native evidence",
+        "Mounted-VFS reader only runs for string paths; null/main-library and nonstring native argument validation no longer hit missing private-image owner prematurely",
+        "Actual -ldl recipe input, native fragment/header staging and zero-fuzz0136engine registration over current source; regenerate current bundle without stale whole-file replacement"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/ffi-library-owner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Full FFI getFunction/getFunctions/functions/dlopen convenience, generic signatures/libffi admission/calls/callbacks, typed/raw memory/export/loop APIs and public types/suffix; private memory follow-up is not yet integrated",
+        "Permission activation and real mounted-VFS private-image reader; actual existing guest VFS/libc loading path and errors remain distinct",
+        "Target dlclose policy ignores uv unload errors while guest owner reports actual error after consumed handle; keep this real deviation visible, never retry numeric handle",
+        "Guest JSAPI compile/link and actual dynamic loader execution, checked-wrapper/realm/GC/finalization/thread/shutdown cancellation behavior on all four hosts",
+        "Exact native Error code/property setter/name/stack/getter semantics and actual allocation-ledger projection; current define-own code field is not complete Node coded-error policy",
+        "Portable Node-API/addon/embedding opaque bridge and CPU-native artifact ABI remain separate unresolved contracts; nested guest WebAssembly execution stays in scope for the final phase"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/native-integration.md",
+      "findingScope": "Actual portable library/symbol/registry/CLI/lifecycle prerequisite; not full FFI/libffi/addon or finding closure",
+      "additionalAuditDocuments": {}
+    },
+    "shared-crypto-error-owner": {
+      "document": "tests/nodejs/outline/shared-crypto-error-owner-finding-progress.json",
+      "sha256": "d2bc28830e6bdaf5d74ebc101a1dbf9a7d1553e383d5e2d44c19a7143dd9e539",
+      "recordedRevision": 185,
+      "explicitFindingIds": [
+        "C-001",
+        "C-002",
+        "C-004",
+        "C-005",
+        "C-008"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-errors185-source-r1/report.json",
+          "sha256": "46277faf23ae7089a0e64132c67e0f46c1849cc9e74a3cfbcf3d2f5b18392936",
+          "guardedInputs": 834,
+          "scope": "Shared genuine native Error/queue/ordinary Set across7adapters and actual sync-random bootstrap; no guest JSAPI/GC/async-context/fullcrypto/fourhost conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-errors185-affected-r1.json",
+          "sha256": "b2ee87964dec64327d7d6eca6db24b7f1767c44f77745560e3aceaac5eae768b",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-errors185-source-r1/report.json",
+          "sha256": "46277faf23ae7089a0e64132c67e0f46c1849cc9e74a3cfbcf3d2f5b18392936",
+          "TLSCredentialGroups": 57,
+          "TLSOwnerLifetimeGroups": 5,
+          "PKCS12Groups": 47,
+          "ordinarySetRealmGCGroups": 55,
+          "queueWorkerOwnerGroups": 5,
+          "syncRandomOriginalErrorGroups": 10,
+          "checkedFatalPolicyHistoricalEvidenceReused": true,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "scope": "Current shared portable OpenSSL owner and actual consumers over exact identified native components; NAPI is test-only. Sync error deliberately admitted through actual forwarder, not an induced RNG/provider failure. No guest GC/realm/async-context/fourhost execution."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/crypto-errors-owner-agent/report.json",
+          "sha256": "2d8e155d7be1fc70a30db3e088d65d80a3513c9c441f0aa5c1f84e30ccaba897",
+          "reusedEvidence": true,
+          "scope": "36source checks/816private inputs;57TLS/5ownership/47PKCS12/55property-realm-GC/5queue controls; distinct checked-fatal subprocess evidence.7tiny native attempts/1unused-fixture-helper compile failure; guestJSAPI uncompiled."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/shared-crypto-error-owner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/shared-crypto-error-owner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Capture actual operation/worker-local OpenSSL queue, primary number and owned text with pinned Capture/Decorate/ToUpper algorithms; no JS/provider-owned pointer crosses worker handoff",
+        "Create genuine owning-realm intrinsic Error/TypeError/RangeError and retained native kinds; assign actual properties through ordinary [[Set]], preserving false refusal and original setter exceptions",
+        "Create own OpenSSL stack-array elements and preserve ordered secondary-then-explicit-primary decorations without inherited Array setters or rebuilt Error records",
+        "Keep Node native ERR macro Set(...).Check fatal-exception policy distinct from unchecked CryptoErrorStore property setting; exact isolated historical SIGABRT evidence retained",
+        "Seven actual adapters forward native Errors; KDF captures full provider queue with real typed constructor/result policy, TLS credential failures share the genuine owner",
+        "Exact sync-random bootstrap/curated forwarder preserves the original native Error for randomFillSync/getRandomValues, including frozen/nonenumerable/throwing-message-getter and inherited-setter behavior"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/shared-crypto-error-owner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual guest JSAPI compile/link, security-wrapper/realm/GC/termination/cancellation and all-four-host identified-artifact execution",
+        "Exact async-hooks execution contexts during native error-property setters, stack formatting and C++ unwind/reentrancy timing",
+        "Per-API choice of native error number/fallback/message, unrelated validation/comparison/TLS verification helpers and remaining backend/provider differences",
+        "Broader crypto/WebCrypto/keygen/signatures/exchange/STORE/FIPS and complete TLS/SecureContext/protocol owners",
+        "Opaque OpenSSL/C++ allocator/capacity accounting; migrated fixtures/native component evidence is not guest memory-pressure or complete errors conformance"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/crypto.md",
+      "findingScope": "Shared actual Error/queue/property/identity prerequisite for consumed crypto/TLS paths; not complete public API/per-callsite errors or finding closure",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/secure-network.md": [
+          "S-003",
+          "S-009"
+        ]
+      }
     }
   },
   "dependencyNarratives": {
@@ -21215,6 +21442,27 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current183Response shared private owner source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T05:35:05.767463+00:00",
+        "sourceCheckpoint": 185,
+        "sourceHead": "277c62c3b9c41ca6ec48f6e82dafc427e99f8ebb",
+        "addedSourceSlices": [
+          "ffi-library-owner",
+          "shared-crypto-error-owner"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "9c09a95d32c861725225fa0191bca5580188032710f24f05b357a39b282d88b8"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current184FFI/185shared crypto-error source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }

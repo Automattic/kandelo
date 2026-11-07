@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T05:15:14.202980+00:00",
-  "sourceHead": "229616bfffb91ab46259952f8ad3ee113e094655",
-  "recipeRevision": 183,
+  "at": "2026-11-07T05:35:05.767463+00:00",
+  "sourceHead": "277c62c3b9c41ca6ec48f6e82dafc427e99f8ebb",
+  "recipeRevision": 185,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 101,
+    "sourceSliceRecords": 103,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 249
+    "findingsWithoutExplicitOrProposedSourceSlice": 246
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,21 +26,22 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 101,
+  "sourceSliceIdentitiesVerified": 103,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "a645e836353387991afb2fccdef03c68245ede7a919743fe18707f72436f1353"
+    "sha256": "19293e006260d142c4f1fb80d0679e3fb06d7e2daa5fd93c4002b02cdd9ec00b"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "ab5b48595ba0a02aa61db8584493912212bd2f5b3268e962a84b38b143399ab6",
-    "sourceHead": "014552ea41478bc44c708d035477626697d824e3",
+    "sha256": "f11c2b7e38bede8d13e4adb8d179f2ac76c02809c59e7af1a07785f861cc1503",
+    "sourceHead": "229616bfffb91ab46259952f8ad3ee113e094655",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "response-owner"
+    "ffi-library-owner",
+    "shared-crypto-error-owner"
   ]
 }

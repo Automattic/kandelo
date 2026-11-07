@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 101 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 103 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 249 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 246 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -163,3 +163,23 @@ ordinary-function failure remain open. Accepted173predates current183; guest
 finalization/dependencies/realm/worker behavior and four-host conformance are
 unestablished. No finding or family closes. Nested guest Wasm execution stays
 in scope, scheduled after independent core-module work.
+
+## Source185 FFI and shared crypto-error progress overlay
+
+NI-001/NI-005/NI-008 now link to the actual library/symbol/CLI/registry/retirement
+source prerequisite from184. Actual host-libc and pinned native frontend controls
+do not execute the new SpiderMonkey binding. Full calls/callbacks/memory/libffi,
+permission/private-image loading, unload policy and guest lifecycle remain open.
+The sealed typed-memory work and environment unload/consumer ordering review
+are pending, not integrated compatibility or accepted boundaries.
+
+C-001/C-002/C-004/C-005/C-008 and document-qualified S-003/S-009 now link to the
+shared owned OpenSSL queue/genuine Error/ordinary property setter prerequisite
+and consumed sync-random identity route from185. Native and component evidence
+is distinct from guest JSAPI/GC/realm/async setter-context conformance. Original
+preparation/compile/fixture failures and exact checked-fatal policy remain
+recorded. Wider crypto/TLS/per-callsite/error/accounting gaps stay explicit.
+
+Accepted173predates current185. No finding/family closes and all four-host
+identified-artifact obligations remain. Nested guest Wasm execution stays in
+scope, scheduled after independent core-module work.
