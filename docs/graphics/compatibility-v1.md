@@ -26874,3 +26874,48 @@ failures remain recorded; neither supports a Wasm32 layout claim. Public
 creation remains ENOSYS before native work, and ingress/backend/parking,
 revocation wake and final receipt integration remain unactivated. No B5
 landing, kernel-Wasm, SDK, browser or performance acceptance is inferred.
+
+
+### Storage recovery and actual target-layout check, 2026-11-07 (R764–R766)
+
+Further maintenance prioritizes macOS-reported private allocation rather
+than assuming copied files own their apparent blocks. R765 retires 294
+inactive historical-main program leaves with 1,346,519,040 private bytes at
+admission; 468 retained source/note/metadata and selected preview tool hashes
+remain exact. Observed free space rises 1,477,570,560 bytes during that run,
+with concurrent activity still preventing isolated attribution. The current
+normal source, SDK, programs and preview closures are outside its scope.
+
+R764 then losslessly compresses 1,954 old diagnostic files, reducing file
+bytes by 4,223,209,230. R766-r2 repacks 1,326 original browser trace ZIPs into
+39 bounded archive groups so repeated payloads compress across recordings;
+this reduces storage by another 4,397,562,454 bytes. Every original ZIP SHA256
+is checked both while creating its group and while independently decoding
+the complete group before prior envelopes are removed. The first decoder
+attempt refuses its insufficient memory cap before any source envelope is
+removed; the corrected run passes 64 seconds with an explicit decode budget.
+An actual restore control passes 3 seconds and reproduces its original ZIP
+bytes exactly. No recorded observation, failure or sample content is dropped.
+
+Together with R760, historical evidence file sizes shrink by 11.15 GiB.
+Original paths have `.zst` envelopes or `.BUNDLED.json` restore locators;
+private `graphics-own-disk-r760/RESTORE.md` and the per-group indices record
+restoration. This is storage maintenance, not new runtime validation.
+Whole-volume availability also reflects other builds and APFS sharing.
+The resumed normal build reaches 185 of 222 nodes with no failed or blocked
+nodes at the recorded checkpoint; full acceptance and preview admission
+remain pending.
+
+The private B5 layout probe now also compiles actual Wasm32 successfully
+under unchanged production target flags, including immediate-abort. A small
+no_std fixture preserves the mechanically extracted declarations and imports
+the exact fingerprint-pinned candidate runtime-core archive. It emits LLVM
+IR rather than linking a std test harness. Compiler-only run
+`graphics-b5-layout-nostd-r761-1107-112022-a47b` passes 6 seconds; all 5,790
+frozen source inputs and pinned artifacts remain unchanged. The decoded
+32-bit target/binding sizes are 56/72 bytes with 8-byte alignment, equal to
+the baseline. The causal inline holder would require 120/136 bytes.
+This establishes the unused-row footprint on that target and compiler,
+not execution of a Wasm test, Wasm64 layout, compilation of the kernel
+wasm_api integration, SDK/browser behavior, B5 activation or performance.
+Both earlier std-harness failures remain preserved separately.
