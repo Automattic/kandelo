@@ -616,9 +616,11 @@ volume, and run the normal suite with that source root:
 ```bash
 scripts/dev-shell.sh env KANDELO_SORTIX_SOURCE_ROOT=/absolute/os-test \
   bash scripts/ci-run-test-suite.sh sortix
+scripts/dev-shell.sh env KANDELO_SORTIX_SOURCE_ROOT=/absolute/os-test \
+  bash scripts/run-browser-sortix-tests.sh --all
 ```
 
-The runner keeps its build directory below the selected source root;
+Both runners keep their build directory below the selected source root;
 SDK, kernel, overrides, and runtime still come from the current worktree.
 
 Before blaming a suite failure on your change, confirm it actually is your

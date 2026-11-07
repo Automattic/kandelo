@@ -21,14 +21,15 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # also needs this cwd; it used to set it just before the npx call.)
 cd "$REPO_ROOT"
 SYSROOT="$REPO_ROOT/sysroot"
-OS_TEST="$REPO_ROOT/tests/sortix/os-test"
+# Match the Node runner's source selection for upstream's case-distinct files.
+OS_TEST="${KANDELO_SORTIX_SOURCE_ROOT:-$REPO_ROOT/tests/sortix/os-test}"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
 # Upstream tests that do not test a POSIX requirement on Kandelo are
 # reported as SKIP; see scripts/sortix-not-applicable.sh.
 source "$REPO_ROOT/scripts/sortix-not-applicable.sh"
 # shellcheck source=scripts/browser-runner-accounting.sh
 source "$REPO_ROOT/scripts/browser-runner-accounting.sh"
-BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
+BUILD_DIR="$OS_TEST/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # Expected failures, their recorded reasons, and how expected output is
