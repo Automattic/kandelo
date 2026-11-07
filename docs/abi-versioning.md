@@ -187,11 +187,15 @@ raise the same question. `minimum_pages` on the `env.memory` import is a
 pages at instantiation, or the kernel does not instantiate. Raising it
 strengthens that demand, and a host that satisfied the old one does not
 necessarily satisfy the new one. The classifier judges `kernel_imports` with
-exactly that polarity — dropping a demand is additive, adding or changing one
-is breaking — and reports this as `changed kernel_imports entry "env.memory"`.
-That is what `HOST_ADAPTER_VERSION` exists for: the kernel records it in its
-host-adapter manifest and the host refuses any other value at boot, so a stale
-pairing fails loudly instead of failing at instantiation with a `LinkError`.
+exactly that polarity — `classify_compat_change` routes the section through
+`classify_removal_only_array_by_module_name`, whose changed-entry arm makes
+*any* field change on an existing import breaking, while a dropped import is
+additive — and so reports this as `changed kernel_imports entry "env.memory"`.
+This is the whole reason for the bump, and it is the part to check rather than
+take on trust. A strengthened kernel-host demand is what
+`HOST_ADAPTER_VERSION` exists for: the kernel records it in its host-adapter
+manifest and the host refuses any other value at boot, so a stale pairing
+fails loudly instead of failing at instantiation with a `LinkError`.
 
 In practice no host that can pair with this kernel supplies fewer: the host
 creates kernel memory with `initial: 24` (`host/src/kernel.ts`), whose comment
@@ -201,8 +205,20 @@ re-tuning host construction each time." Twenty-one pages sit inside that with
 three to spare, so nothing observable breaks today. That is an argument that
 the bump is *cheap*, not an argument that it is unnecessary: the pairing should
 be decided by a declared contract rather than by how much headroom happens to
-be left, and precedent agrees — the only previous move, 18 to 19, also shipped
-with a `HOST_ADAPTER_VERSION` bump.
+be left.
+
+There is no precedent either way, and it is worth being exact about that,
+because this subsection exists for whoever grows the kernel's static data next.
+`minimum_pages` has moved once before, 18 to 19 in `a1f8442718`, and that
+commit did bump `HOST_ADAPTER_VERSION` (2 to 4) — but it earned the bump
+independently: the same snapshot change added fifteen `env` kernel imports
+(`host_overlay_*`, `host_overlay_target_*`, `host_overlay_compaction_*`), each
+breaking on its own under the polarity above, and `env.memory` was the only
+*changed* existing import in it. Twenty-five added `kernel_exports` rode along
+too, and those are additive and earn nothing. So a page-count rise has never by
+itself moved the kernel-host version. **This change is the one setting that
+precedent, not following one** — which is why the argument above has to stand
+on the classifier's polarity rather than on history.
 
 A rise that reached or passed `initial: 24` would be a different matter again:
 it would make instantiation fail outright, and it needs the host's figure
