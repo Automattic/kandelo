@@ -1,0 +1,81 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network.md",
+    "findingIds": [
+      "N-014",
+      "N-021"
+    ],
+    "relatedFamilies": [
+      "network",
+      "values",
+      "async",
+      "engine"
+    ],
+    "scope": "Datagram native/source foundation; full findings and kernel packet limits remain open"
+  },
+  "sourceImplemented": [
+    "Pinned public dgram modules with actual UDP descriptors/receive metadata/atomic sendmsg vectors/zero-byte messages",
+    "Original caller allocation spans captured per list element before init, with actual request roots/credits and deferred completion/cancellation ownership",
+    "Private actual whole-buffer allocation capability without temporary view/copy, unchanged public view admission",
+    "Explicit callback failure recovery, exact Signal162 composition retaining one legacy checkpoint/quitting boundary, actual ref/shutdown/resource export registration",
+    "Normal current generation/staging and earlier TCP/crypto/Body/CJS/TTY/HTTP2 source retained; separate kernel proposal not adopted"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-udp165-source-r1/report.json",
+    "sha256": "ec77f27257fb454a43c00d4e367fcc808e78d3c30b21bcf751b36a3dddc61915",
+    "guardedInputs": 786,
+    "sourceChecks": 24,
+    "scope": "Current real UDP/backing/signals source composition, normal generation/staging and3unchanged adapter controls; private actual native component evidence separate; no productionJSAPI/engine/kernel/guest/fourhost acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-udp165-affected-r1.json",
+    "sha256": "59cf964f3cac6772b318a9d9a69e0d62591996898a76c4c07b0681ce46f92014",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0
+  },
+  "currentAdapterEvidence": {
+    "report": ".context/node26-udp165-source-r1/report.json",
+    "sha256": "ec77f27257fb454a43c00d4e367fcc808e78d3c30b21bcf751b36a3dddc61915",
+    "passed": 3,
+    "failed": 0,
+    "scope": "Actual conversion/count/native forwarding source with explicit dependencies, not guest transport"
+  },
+  "sealedNativeEvidence": {
+    "report": ".context/udp-integration-current161/report.json",
+    "sha256": "85d8c5aaf3e3c48da9dd74569b393012b876ade6053d8133b215b215dedb2749",
+    "reusedEvidence": true,
+    "nativeComponentPasses": 1,
+    "compileAttempts": 1,
+    "compileFailures": 0,
+    "scope": "Actual portable endpoint/SendSpans/backing and extracted queued-owner code with explicit root/accounting/syscall-fault dependencies; no JSAPI/GC/guest"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/udp-original-spans-agent/SEAL.json",
+      "sha256": "c4c49f9a5de92c8d946f63bb1ce43210f66642b411979db14e5a2724bb91725f",
+      "kind": "actual-native-abort-and-preparation-failures",
+      "reason": "Forced-queue close-in-init SIGABRT-6 retained, four other ordering passes distinct; original Rust/component/setup failures retained"
+    },
+    {
+      "report": ".context/udp-integration-current161/SEAL.json",
+      "sha256": "a2a373675574f4211423d67475092ca425a34d9f58f752f87cf92514f9a3b9c9",
+      "kind": "preparation-and-prerequisite-evidence",
+      "reason": "Prior selective replay/preflight errors and ordinary UDP kernel before failures preserved"
+    }
+  ],
+  "remaining": [
+    "Current productionJSAPI/engine/GC/realm/fatal/shared races and guest/four-host artifacts",
+    "Ordinary UDP packet-limit kernel change requires explicit ABI classification/new kernel artifact; no JS cap",
+    "Registry/deque allocator accounting, full options/memberships/buffer budgets/readback/N-014/N-021, multicast/dualstack/worker/cluster/fd/externalUDP"
+  ],
+  "at": "2026-11-07T01:02:18.827163+00:00",
+  "recipeRevision": 165,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

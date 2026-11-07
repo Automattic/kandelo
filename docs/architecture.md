@@ -6803,3 +6803,33 @@ process beforeExit idle/revival state. Exact focused native/Node-host guest
 outcomes and retained nonpasses are in the SQLite dependency/finding records.
 SQLite/testing/process and four-host conformance remain partial; no overall
 suite or full product rebuild ran.
+
+### Node datagram source foundation
+
+The source candidate selects unchanged Node 26.13.0 `lib/dgram.js` and
+`lib/internal/dgram.js` over an actual guest POSIX UDP owner. The portable
+`datagram-operations.h` owns nonblocking, close-on-exec datagram descriptors;
+`native-datagram.cpp` owns readiness, retained receives/sends, references,
+native async resources, callback checkpoints and shutdown. It uses
+`socket`/`bind`/`connect`/`sendmsg`/`recvfrom` and real socket options, rather
+than relabeling TCP stream watches or substituting an embedding host module.
+Zero-byte datagrams remain messages with sender metadata. Pending sends own
+their request and leased original byte spans until completion or cancellation.
+
+This is a source foundation, not a four-host conformance claim. The native
+endpoint controls and the pinned native Node reference fixture pass on
+Darwin arm64. The new SpiderMonkey native fragment, linked guest package,
+Node host and Chromium/Firefox/WebKit controls still require validation.
+Kernel receive queues retain their fixed packet limit; buffer size requests
+remain advisory and read back the fixed default (audit N-021). IPv6
+multicast transport, IPv6 source-specific membership, cluster sharing,
+worker/child transfer and full audit N-014 remain open. The default
+`EgressLink.sendDatagram()` still returns `EHOSTUNREACH` for external raw
+UDP on both hosts. That transport/configuration boundary is separate from
+guest-local IPv4/IPv6 and virtual/session networking.
+
+Exact source scope and remaining controls are recorded in
+`tests/nodejs/outline/datagram-source-status.json` and
+`tests/nodejs/outline/datagram-verification-obligations.json`. Frozen audit
+requirements and existing nonpasses are unchanged. No syscall, kernel-host
+protocol or program ABI changed for this binding foundation.

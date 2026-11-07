@@ -1,5 +1,11 @@
 # Node 26 core implementation outline
 
+Source165 integrates real UDP endpoint/original-allocation request owners
+and private bare-buffer captures while preserving current signal/TTY/HTTP2
+source.786inputs,24source/staging checks,3adaptercontrols and14package checks
+pass. Production JSAPI/guest/fourhost, ordinary packet limits and N-014/N-021
+remain open. See [datagram scope](datagram-integration.md).
+
 Source164 integrates standalone HTTP2 settings and protocol constants over
 real private Buffer owners.87semantic cases,74assertions per subject in an
 unchanged selected upstream file and14package checks pass with explicit

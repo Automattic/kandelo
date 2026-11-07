@@ -2027,6 +2027,25 @@ bundle += '\n' + runpy.run_path(str(root / 'generate-process-signals.py'))['asse
 # Public HTTP/2 protocol settings are independent of native sessions.
 bundle += runpy.run_path(str(root / 'generate-http2-settings.py'))['render']()['bundle'].rstrip('\n') + '\n'
 
+
+datagram_spec = manifest['datagramPlatform']
+if datagram_spec['version'] != manifest['version'] or datagram_spec['commit'] != manifest['commit']:
+    raise ValueError('Datagram sources must retain the audited Node target')
+datagram_adapter = (root / 'datagram-platform-adapter.js').read_text()
+datagram_factories = []
+for name, item in datagram_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Datagram source identity mismatch: ' + name)
+    module_name = name.removeprefix('lib/').removesuffix('.js')
+    datagram_factories.append(repr(module_name) + ': function(module, require, internalBinding, primordials, process) {\n' + raw.decode() + '\n}')
+for name, item in datagram_spec['references'].items():
+    if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:
+        raise ValueError('Datagram native reference mismatch: ' + name)
+if datagram_adapter.count('/* NODE_DATAGRAM_MODULES */') != 1:
+    raise ValueError('Review datagram module marker')
+bundle += datagram_adapter.replace('/* NODE_DATAGRAM_MODULES */', ',\n'.join(datagram_factories)).rstrip('\n') + '\n'
+
 dest = root / 'node-core.js'
 if '--check' in sys.argv:
     if dest.read_text() != bundle:

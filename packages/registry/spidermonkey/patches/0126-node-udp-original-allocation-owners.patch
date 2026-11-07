@@ -1,0 +1,81 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3543,0 +3544,3 @@
++  if (unwrapped && (JS::GetClass(unwrapped) == &KandeloUdpClass || JS::GetClass(unwrapped) == &KandeloUdpRequestClass)) {
++    return KandeloUdpResourceInfo(cx, unwrapped, args.rval());
++  }
+@@ -4015,0 +4019 @@
++      JS_FN("udp", KandeloNativeUdp, 2, 0),
+@@ -5566 +5570 @@
+-      if (!timerReferences && !KandeloSocketHasWatches(cx) &&
++      if (!timerReferences && !KandeloSocketHasWatches(cx) && !KandeloUdpHasReferences(cx) &&
+@@ -5615 +5619,5 @@
+-    // A real signal callback or the preceding checkpoint may request exit.
++    if (ranNative >= 0 && !sc->quitting) {
++      const int ranUdp = KandeloUdpDispatch(cx);
++      ranNative = ranUdp < 0 ? -1 : ranNative + ranUdp;
++    }
++    // A real signal/UDP callback or the preceding checkpoint may request exit.
+@@ -5714 +5722 @@
+-        !KandeloSocketHasWatches(cx) && !timersPending &&
++        !KandeloSocketHasWatches(cx) && !KandeloUdpHasReferences(cx) && !timersPending &&
+@@ -16906,0 +16915 @@
++  KandeloShutdownUdp(this);
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -187,0 +188 @@
++struct KandeloUdpRegistry;
+@@ -205,0 +207 @@
++  KandeloUdpRegistry* kandeloUdp = nullptr;
+--- a/js/public/experimental/KandeloBackingStore.h
++++ b/js/public/experimental/KandeloBackingStore.h
+@@ -20,0 +21,3 @@
++// Capture the actual initial whole-buffer allocation span for private native
++// BufferSource consumers. No temporary view, JS byteLength getter, or copy.
++extern JS_PUBLIC_API SpanRef AcquireBuffer(JSContext*, JS::HandleObject buffer);
+--- a/js/src/vm/KandeloBackingStore.cpp
++++ b/js/src/vm/KandeloBackingStore.cpp
+@@ -51,0 +52,12 @@
++// Both callers have checked/unwrapped the buffer and entered its realm.
++static SpanRef CaptureBufferOwner(JSContext* cx, HandleObject buffer, bool shared,
++                                 size_t offset, size_t length) {
++    if (shared) {
++      Rooted<SharedArrayBufferObject*> backing(cx, &buffer->as<SharedArrayBufferObject>());
++      if (!EnsureKandeloBackingOwner(cx, backing)) return {};
++      return backing->kandeloBackingOwner()->Store()->Capture(offset, length, ResolveAccount(cx));
++    }
++    Rooted<ArrayBufferObject*> backing(cx, &buffer->as<ArrayBufferObject>());
++    if (!EnsureKandeloBackingOwner(cx, backing)) return {};
++    return backing->kandeloBackingOwner()->Store()->Capture(offset, length, ResolveAccount(cx));
++}
+@@ -66,8 +78 @@
+-    if (shared) {
+-      Rooted<SharedArrayBufferObject*> backing(cx, &buffer->as<SharedArrayBufferObject>());
+-      if (!EnsureKandeloBackingOwner(cx, backing)) return {};
+-      return backing->kandeloBackingOwner()->Store()->Capture(offset, length, ResolveAccount(cx));
+-    }
+-    Rooted<ArrayBufferObject*> backing(cx, &buffer->as<ArrayBufferObject>());
+-    if (!EnsureKandeloBackingOwner(cx, backing)) return {};
+-    return backing->kandeloBackingOwner()->Store()->Capture(offset, length, ResolveAccount(cx));
++    return CaptureBufferOwner(cx, buffer, shared, offset, length);
+@@ -76,0 +82,20 @@
++SpanRef AcquireBuffer(JSContext* cx, HandleObject input) {
++  try {
++    RootedObject buffer(cx, JS::UnwrapSharedArrayBuffer(input));
++    const bool shared = bool(buffer);
++    if (!buffer) buffer = JS::UnwrapArrayBuffer(input);
++    if (!buffer) {
++      if (!cx->isExceptionPending() && !cx->isThrowingOutOfMemory() &&
++          !cx->isThrowingOverRecursed() && !cx->isPropagatingForcedReturn()) {
++        JS_ReportErrorASCII(cx, "Backing lease requires an accessible actual buffer");
++      }
++      return {};
++    }
++    JSAutoRealm realm(cx, buffer);
++    const size_t length = shared ? buffer->as<SharedArrayBufferObject>().byteLength() :
++                                  buffer->as<ArrayBufferObject>().byteLength();
++    return CaptureBufferOwner(cx, buffer, shared, 0, length);
++  } catch (const std::bad_alloc&) { ReportOutOfMemory(cx); return {}; }
++  catch (const std::exception& error) { JS_ReportErrorASCII(cx, "Backing lease: %s", error.what()); return {}; }
++}
++

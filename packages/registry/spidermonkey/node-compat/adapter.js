@@ -522,6 +522,7 @@
         drainNativeAsyncDestroyIds: () => native.drainNativeAsyncDestroyIds(),
         enqueueAsyncDestroyId: (id, promise) => native.enqueueAsyncDestroyId(id, promise),
         getAsyncResourceInfo: resource => native.getAsyncResourceInfo(resource),
+        udp(...args) { return native.udp(...args); },
         asyncHookFatal: error => native.asyncHookFatal(error),
         enqueueMicrotask: callback => native.enqueueMicrotask(callback),
         setAsyncContext: value => native.setAsyncContext(value),

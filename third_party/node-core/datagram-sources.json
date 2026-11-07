@@ -1,0 +1,28 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/dgram.js": {
+      "path": "upstream/datagram/lib/dgram.js",
+      "sha256": "10766e375a415e444691d5cc5affd7bfcf6a2fe94b9acaa919be7a88cfda3149"
+    },
+    "lib/internal/dgram.js": {
+      "path": "upstream/datagram/lib/internal/dgram.js",
+      "sha256": "ebfaa844cc0363c61468c8a7af43aec2dfcbb1479334d97295f364e46d28c8d9"
+    }
+  },
+  "references": {
+    "src/udp_wrap.cc": {
+      "path": "upstream/datagram/src/udp_wrap.cc",
+      "sha256": "270de282c7855996c43865f34727208216d894ce20359241433ad870ecc03200"
+    },
+    "src/udp_wrap.h": {
+      "path": "upstream/datagram/src/udp_wrap.h",
+      "sha256": "79d54ba724a83d2f70c873a99e7d83e04faafc3cad626b2b62c037402b844a6a"
+    },
+    "deps/uv/src/unix/udp.c": {
+      "path": "upstream/datagram/deps/uv/src/unix/udp.c",
+      "sha256": "81c58307bb111bfd09cbfa91d206b4bf4d4179e422e2fc174ae88e111bbe36b1"
+    }
+  }
+}

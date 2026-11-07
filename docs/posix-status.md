@@ -1182,3 +1182,10 @@ process beforeExit idle/revival state. Exact focused native/Node-host guest
 outcomes and retained nonpasses are in the SQLite dependency/finding records.
 SQLite/testing/process and four-host conformance remain partial; no overall
 suite or full product rebuild ran.
+
+The Node datagram source foundation uses the existing guest POSIX socket
+path; it does not change the UDP, socket-option or external-egress limits
+above. Public `node:dgram` conformance remains unestablished for the new
+guest package on every host. See the
+[source scope](../tests/nodejs/outline/datagram-source-status.json) and
+[verification obligations](../tests/nodejs/outline/datagram-verification-obligations.json).

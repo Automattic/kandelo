@@ -333,6 +333,8 @@ cp "$REPO_ROOT/third_party/node-core/upstream/uv-errors/deps/uv/include/uv/errno
     "$SRC_DIR/js/src/shell/kandelo-node-uv-errno.h"
 cp "$REPO_ROOT/third_party/node-core/dns-errors.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-errors.h"
 cp "$REPO_ROOT/third_party/node-core/dns-lookup.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-lookup.h"
+cp "$REPO_ROOT/third_party/node-core/datagram-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-datagram-operations.h"
+cp "$REPO_ROOT/third_party/node-core/datagram-send-spans.h" "$SRC_DIR/js/src/shell/kandelo-node-datagram-send-spans.h"
 cp "$REPO_ROOT/third_party/node-core/dns-records.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-records.h"
 cp "$REPO_ROOT/third_party/node-core/dns-resolver.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-resolver.h"
 # Canonical staged names preserve the portable backend/control header owner.

@@ -1,5 +1,11 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/datagram-platform-adapter.js",
+  "third_party/node-core/datagram-sources.json",
+  "third_party/node-core/datagram-operations.h",
+  "third_party/node-core/native-datagram.cpp",
+  "third_party/node-core/datagram-send-spans.h",
+  "third_party/node-core/upstream/datagram",
   "third_party/node-core/generate-http2-settings.py",
   "third_party/node-core/http2-settings-adapter.js",
   "third_party/node-core/upstream/http2-settings",
@@ -609,4 +615,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 164
+revision = 165

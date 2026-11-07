@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "target": {
+    "version": "26.13.0",
+    "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+  },
+  "scope": "Source candidate for public node:dgram over guest POSIX UDP; not current-package or four-host conformance",
+  "publicAlgorithms": {
+    "lib/dgram.js": "unchanged pinned complete file",
+    "lib/internal/dgram.js": "unchanged pinned complete file"
+  },
+  "owners": {
+    "endpoint": "third_party/node-core/datagram-operations.h",
+    "nativeLifetimeAndReadiness": "third_party/node-core/native-datagram.cpp",
+    "binding": "third_party/node-core/datagram-platform-adapter.js",
+    "sendSpanStorage": "third_party/node-core/datagram-send-spans.h"
+  },
+  "positiveSourcePaths": [
+    "Actual AF_INET/AF_INET6 SOCK_DGRAM endpoints, nonblocking/close-on-exec flags, ephemeral bind and bind-error retry",
+    "Real connect/default-peer association, disconnect, getsockname/getpeername, validated descriptor adoption",
+    "One real sendmsg per complete datagram; caller-captured count, each entry read once, actual original allocation/pointer/offset/length captured before later getters/init",
+    "Queued original spans and real iovec/SpanRef capacities; init precedes publication, original sizes, actual submitted completion distinguished from unsubmitted cancellation",
+    "Native poll/recvfrom message delivery including zero-length packets and actual sender family/address/port",
+    "Context-owned descriptor registry, receive/send roots, ref/unref, close and context shutdown retirement without reused-fd cancellation",
+    "UDPWRAP/UDPSENDWRAP providers, captured context, native callback checkpoints and destroy ownership",
+    "Pinned public bindSync/connectSync/async lookup/event policy, send overloads, abort, live BlockList checks and disposal",
+    "Actual setsockopt/getsockopt routes for broadcast/TTL/multicast/interface/group controls and buffer requests"
+  ],
+  "notEstablished": [
+    "Compiled native SpiderMonkey integration and linked guest node artifact",
+    "Node-host or Chromium/Firefox/WebKit execution of the new guest bridge",
+    "Kernel SO_RCVBUF/SO_SNDBUF byte-budget enforcement or truthful requested-size readback (N-021 remains open)",
+    "External raw UDP delivery through default EgressLink, which still returns EHOSTUNREACH",
+    "Guest IPv6 multicast transport (existing kernel options alone do not provide it)",
+    "IPv6 source-specific membership bridge (returns ENOTSUP)",
+    "Cluster worker sharing, child/worker UDP descriptor transfer and exact private native prototype/descriptor compatibility",
+    "Guest forced EAGAIN queue completion/cancel/reentrancy or exceptional allocation controls",
+    "Full UDP conformance or closure of audit N-014",
+    "Kernel ordinary UDP size rejection: existing local routes accept oversized payloads; separate proposed kernel patch requires explicit ABI decision",
+    "Actual shared-buffer race behavior, request registry/deque allocator accounting and recovered callback-throw paths"
+  ],
+  "frozenAudit": "tests/nodejs/audit/network-contracts.md and network-requirements.json remain unchanged",
+  "scopeEvidence": "See datagram-original-spans.md; source and native/component evidence only, no guest conformance"
+}

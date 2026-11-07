@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "findings": [
+    "N-014",
+    "N-021"
+  ],
+  "state": "source candidate; no current guest package pass",
+  "nativeControls": [
+    {
+      "fixture": "tests/nodejs/datagram-owner-native.cpp",
+      "status": "passed in canonical dev shell on Darwin arm64",
+      "claim": "exact portable POSIX endpoint owner only"
+    },
+    {
+      "fixture": "tests/nodejs/datagram-public-controls.cjs",
+      "status": "passed in canonical dev shell with pinned native Node v26.13.0 Darwin arm64",
+      "claim": "unchanged reference fixture/native differential baseline only"
+    },
+    {
+      "fixture": "tests/nodejs/datagram-unref-control.cjs",
+      "status": "passed and exited 0 in canonical dev shell with pinned native Node v26.13.0 Darwin arm64",
+      "claim": "live unreferenced receive endpoint native baseline only"
+    }
+  ],
+  "requiredGuestHosts": [
+    "Node.js",
+    "Chromium",
+    "Firefox",
+    "WebKit"
+  ],
+  "pending": [
+    "Build generated native unity source with unchanged Mozilla source/style checks",
+    "Regenerate source/build identities and guest node artifact before running the public controls",
+    "Run same public control fixture on every guest host without weakening assertions",
+    "Run selected unchanged upstream dgram tests and preserve every failure/unsupported row",
+    "Observe active receive refs, unref exit, close-before-bind/lookup and reentrant close races",
+    "Force EAGAIN and validate request retention, native send queue accounting, callback order, cancellation, async destroy and fd reuse",
+    "Exercise numeric and custom DNS/default DNS errors and asynchronous ordering",
+    "Exercise actual multicast delivery/membership removal/interface/source filters, with IPv6 gaps kept visible",
+    "Implement kernel buffer budgets/readback at the owner before claiming N-021 resolved",
+    "Verify raw external UDP refusal separately from guest-local/virtual/session UDP support",
+    "Consider libc/POSIX/Sortix and browser conformance before any later syscall/ABI change",
+    "Run unchanged send-multi-buffer-copy, send-callback-multi-buffer, send-callback-buffer-length, send-queue-info, send-empty-buffer, send-empty-array and related dgram tests on current artifacts",
+    "Separate completed physical submission from pending cancel under reentrant init/close and preserve actual allocation spans across mutations/transfers",
+    "Validate JSAPI GC/realm/shutdown, actual registry/deque allocation ownership and shared-buffer concurrency"
+  ],
+  "preservedNonpasses": [
+    "Exact native Node26.13.0 --test-udp-no-try-send close during UDPSENDWRAP init aborts signal6, within8s/reaped/core-disabled; not accepted as compatibility or external engine boundary"
+  ],
+  "sourceDependencies": [
+    "Actual root native default-trigger owner, retained allocation/span capabilities and real private AcquireBuffer extension",
+    "Explicit program-ABI classification and newly identified kernel artifact before accepting ordinary transport-limit proposal"
+  ]
+}

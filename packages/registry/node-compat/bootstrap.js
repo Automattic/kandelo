@@ -3465,6 +3465,13 @@ const _nodeDnsPlatform = _createNodeDnsLookupPlatform({
     observation: _nodePerformance.observation, asyncProviders: _nodeAsyncPlatform.api.asyncWrapProviders,
 });
 const _nodeDnsLookup = _nodeDnsPlatform.api;
+const _nodeDatagram = _createNodeDatagramPlatform({
+    native: _nodeNative, values: _nodeValues, process, Buffer, FastBuffer: _FastBuffer,
+    ip: _nodeNetworkIP, types: util.types, util, uv: _nodeUv, events,
+    event: _nodeEventPlatform, async: _nodeAsyncPlatform,
+    addressRules: _nodeAddressRules, diagnostics: _nodeDiagnostics.api,
+    dns: _nodeDnsPlatform.api, cluster: () => _builtinModules.cluster,
+});
 
 // Shared TCP dialing policy. Defaults are consumed by actual connection
 // attempts, including callers such as TLS; they are not harness overrides.
@@ -5029,6 +5036,7 @@ const _builtinModules = {
     'constants': fs.constants,
     get punycode() { return _nodeQueryCodecs.require('punycode'); },
     'dns': _nodeDnsPlatform.api,
+    'dgram': _nodeDatagram.api,
     'readline': _nodeReadlinePlatform.api,
     'readline/promises': _nodeReadlinePlatform.promises,
     'perf_hooks': _nodePerformance.api,
