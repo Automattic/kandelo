@@ -61,6 +61,24 @@ function _createNodeTerminalPlatform(platform) {
             },
         };
     }
+    function openInput(fd) {
+        if (!platform.isTTY(fd)) return null;
+        const packet = platform.native.operatingSystem('tty-input-open', fd);
+        if (packet.error) {
+            const code = platform.uv.getSystemErrorName(packet.error);
+            // Preserve existing master/unreopenable fallback as an explicit gap.
+            if (code === 'ENOTSUP' || code === 'EOPNOTSUPP') return null;
+            throw new ERR_TTY_INIT_FAILED({ errno: packet.error, code,
+                message: platform.uv.getSystemErrorMessage(packet.error), syscall: 'uv_tty_init' });
+        }
+        const owner = packet.value;
+        return {
+            bind(input) { entries.set(input, owner); },
+            read(length) { return platform.native.operatingSystem('tty-input-read', owner, length); },
+            control(promise, value) { return platform.native.operatingSystem('tty-input-control', owner, promise, value).value; },
+            close() { platform.native.operatingSystem('tty-input-close', owner); },
+        };
+    }
     // Exact pinned uv_tty_mode_t values, not capability or terminal-state data.
     const UV_TTY_MODE_NORMAL = 0, UV_TTY_MODE_IO = 2, UV_TTY_MODE_RAW_VT = 3;
     function setMode(input, mode) {
@@ -72,7 +90,8 @@ function _createNodeTerminalPlatform(platform) {
     function ReadStream() {}
     /* NODE_TERMINAL_SET_RAW */
     function bindInput(input, fd) {
-        const packet = platform.native.operatingSystem('tty-open', fd);
+        const packet = entries.has(input) ? { error: 0, value: entries.get(input) } :
+            platform.native.operatingSystem('tty-open', fd);
         if (packet.error) throw new ERR_TTY_INIT_FAILED({
             errno: packet.error, code: platform.uv.getSystemErrorName(packet.error),
             message: platform.uv.getSystemErrorMessage(packet.error), syscall: 'uv_tty_init',
@@ -89,5 +108,5 @@ function _createNodeTerminalPlatform(platform) {
         // Actual binding identity, not the mutable public isTTY convenience flag.
         if (outputOwners.has(output)) output._refreshSize();
     }
-    return { bindInput, bindOutput, refreshOutput, openOutput };
+    return { bindInput, bindOutput, refreshOutput, openOutput, openInput };
 }

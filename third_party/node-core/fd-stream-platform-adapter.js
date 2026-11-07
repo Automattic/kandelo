@@ -44,6 +44,11 @@ function _createNodeFdStreamPlatform(platform) {
     }
 
     function readable(fd, options, onRetire) {
+        const terminalInput = platform.openTerminalInput ? platform.openTerminalInput(fd) : null;
+        const read = terminalInput ? length => terminalInput.read(length) :
+            length => platform.native.__kandeloFdRead(fd, length, true);
+        const control = terminalInput ? (promise, value) => terminalInput.control(promise, value) :
+            (promise, value) => platform.native.__kandeloFdReadControl(promise, value);
         let pending = null, requested = false, stopped = false;
         let referenced = true, ended = false, retired = false;
         function start() {
@@ -51,9 +56,9 @@ function _createNodeFdStreamPlatform(platform) {
             requested = false;
             let request;
             try {
-                request = { promise: platform.native.__kandeloFdRead(fd, 4096, true), cancelled: false };
+                request = { promise: read(4096), cancelled: false };
                 pending = request;
-                if (!referenced) platform.native.__kandeloFdReadControl(request.promise, false);
+                if (!referenced) control(request.promise, false);
             } catch (error) { pending = null; result.destroy(error); return; }
             PromisePrototypeThen(request.promise, data => {
                 if (pending === request) pending = null;
@@ -80,10 +85,11 @@ function _createNodeFdStreamPlatform(platform) {
             requested = false;
             result._readableState.reading = false;
             if (pending && !pending.cancelled) {
-                pending.cancelled = platform.native.__kandeloFdReadControl(pending.promise, null);
+                pending.cancelled = control(pending.promise, null);
             }
         }
-        const result = new Readable({
+        let result;
+        try { result = new Readable({
             ...options,
             read() { requested = true; stopped = false; start(); },
             destroy(error, callback) {
@@ -93,11 +99,19 @@ function _createNodeFdStreamPlatform(platform) {
                 catch (cancelError) { failure = failure || cancelError; }
                 // Resource retirement follows the actual transport owner,
                 // never a user-emitted public close notification.
-                try { if (onRetire) onRetire(); }
+                try { if (terminalInput) terminalInput.close();if (onRetire) onRetire(); }
                 catch (retireError) { failure = failure || retireError; }
                 callback(failure);
             },
         });
+            if (terminalInput) terminalInput.bind(result);
+        } catch (error) {
+            // Preserve the original constructor/publication failure after
+            // closing the actual owner; cleanup allocation errors cannot
+            // replace the exception that prevented stream publication.
+            try { if (terminalInput) terminalInput.close(); } catch (_) {}
+            throw error;
+        }
         result.fd = fd;
         result.on('pause', () => process.nextTick(() => {
             // As in Node's process-stdin policy, stop only if still paused
@@ -106,12 +120,12 @@ function _createNodeFdStreamPlatform(platform) {
         }));
         result.ref = function ref() {
             referenced = true;
-            if (pending) platform.native.__kandeloFdReadControl(pending.promise, true);
+            if (pending) control(pending.promise, true);
             return this;
         };
         result.unref = function unref() {
             referenced = false;
-            if (pending) platform.native.__kandeloFdReadControl(pending.promise, false);
+            if (pending) control(pending.promise, false);
             return this;
         };
         return result;

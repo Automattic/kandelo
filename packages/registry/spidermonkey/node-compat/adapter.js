@@ -484,7 +484,7 @@
         defineNativeLazyDataProperty(...args) { return native.defineNativeLazyDataProperty(...args); },
         setCloneMode(object, mode) { return native.setCloneMode(object, mode); },
         hrtime() { return native.hrtime(); },
-        operatingSystem(operation, first, second) { return native.operatingSystem(operation, first, second); },
+        operatingSystem(...args) { return native.operatingSystem(...args); },
         getUvErrorData() { return native.getUvErrorData(); },
         environment(operation, key, value) { return environmentOperation(operation, key, value); },
         createEnvironmentObject(callbacks, prototype) { return native.createEnvironmentObject(callbacks, prototype); },

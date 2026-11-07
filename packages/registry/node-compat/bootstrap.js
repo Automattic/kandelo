@@ -2638,6 +2638,7 @@ const _nodeTerminalPlatform = _createNodeTerminalPlatform({
 const _nodeFdStreamPlatform = _createNodeFdStreamPlatform({
     stream, Buffer, process, native: _nodeNative,
     openTerminalOutput: _nodeTerminalPlatform.openOutput,
+    openTerminalInput: _nodeTerminalPlatform.openInput,
 });
 // Public styling consumes actual classic/Web predicates and the shared guest
 // inspection, byte, stdio and color-policy owners; no host capability shim.

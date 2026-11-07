@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source191 integrates real captured terminal input/OFD/request ownership and the consumed OS forwarding correction. Fourteen actual native PTY ownership checks,2forwarding groups and18scoped package/fd-stream checks pass; exact prior matched mode evidence preserves9literal nonpasses and the original abort. Guest/public TTY/four-host conformance remains open.
+See [source scope](captured-terminal-input-integration.md).
+
 Source190 integrates real async-spawn preparation/rollback, own-property pipe publication and ordered source lifetime. Nineteen actual-POSIX groups, unchanged alias diagnostic/upstream spawn-error file and23package/child checks pass. Current JSAPI/kernel/guest/four-host conformance and remaining child semantics stay open.
 See [source scope](spawn-preparation-action-order-integration.md).
 

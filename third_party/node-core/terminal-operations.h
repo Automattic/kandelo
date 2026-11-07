@@ -105,6 +105,13 @@ class OutputHandle {
     }
     fd_ = owned;return 0;
   }
+  int SetBlocking(bool blocking) {
+    if (fd_ < 0) return -EBADF;
+    int flags;do { flags = fcntl(fd_, F_GETFL); } while (flags < 0 && errno == EINTR);
+    if (flags < 0) return -errno;
+    int status;do { status = fcntl(fd_, F_SETFL, blocking ? flags & ~O_NONBLOCK : flags | O_NONBLOCK); } while (status < 0 && errno == EINTR);
+    return status < 0 ? -errno : 0;
+  }
   int GetWindowSize(std::array<unsigned, 2>* result) const {
     if (fd_ < 0) return -EBADF;
     return WindowSize(fd_, result);
@@ -180,6 +187,37 @@ class BorrowedInputMode {
     const int fd = fd_;fd_ = -1;mode_ = 0;
     close(fd);  // Never retry a close against a potentially reused number.
   }
+};
+// Captured stdio input prerequisite, not a TTYWRAP/StreamBase constructor.
+// Reopen/identity/dup2 follows the same verified slave path as output. Only
+// that separate OFD becomes nonblocking; mode and reads share its terminal.
+class InputHandle {
+  OutputHandle input_;
+  BorrowedInputMode mode_;
+ public:
+  InputHandle() = default;
+  InputHandle(const InputHandle&) = delete;
+  InputHandle& operator=(const InputHandle&) = delete;
+  ~InputHandle() { Close(); }
+  int Descriptor() const noexcept { return input_.Descriptor(); }
+  int Open(int supplied) {
+    int saved;do { saved = fcntl(supplied, F_GETFL); } while (saved < 0 && errno == EINTR);
+    if (saved < 0) return -errno;
+    int status = input_.Open(supplied);
+    if (status) return status;
+    status = mode_.Open(input_.Descriptor());
+    if (!status) status = input_.SetBlocking(false);
+    if (status) {
+      mode_.Close();input_.Close();
+      // Reopen already preserved the public descriptor. Restore its original
+      // status on post-publication failure; never close a borrowed stdio fd.
+      int restored;do { restored = fcntl(supplied, F_SETFL, saved); } while (restored < 0 && errno == EINTR);
+      return status;
+    }
+    return 0;
+  }
+  int SetMode(int mode) { return mode_.SetMode(mode); }
+  void Close() { mode_.Close();input_.Close(); }
 };
 }  // namespace kandelo::terminal
 #endif

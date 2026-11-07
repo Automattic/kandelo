@@ -1,0 +1,77 @@
+# Captured stdio input ownership prerequisite
+
+This source implements a genuinely consumed captured TTY-input prerequisite.
+It does **not** implement public tty.ReadStream/WriteStream constructors,
+Socket/TTYWRAP identity, or complete Node core/TTY compatibility.
+
+## Why a prerequisite
+
+Pinned26.13.0 lib/tty.js constructs ordinary callable functions whose native
+TTY handle is admitted by net.Socket.call(..., {handle, manualStart, ...options}).
+Current SocketCore ignores that handle/manualStart route and fd admission always
+creates a TCPWRAP owner with socket-specific shutdown/write operations. Existing
+public TTY exports are generic stream subclasses. Putting the pinned TTY frontend
+on that transport would not create a real TTY. The next implementation gap is
+shared StreamBase/TTY handle admission and native lifecycle, followed by the
+public constructors with the actual Socket/Duplex hierarchy/options/descriptors.
+
+Existing borrowed stdin mode captured a descriptor only for termios; ordinary
+reads still used future numeric fd0 and directly set O_NONBLOCK on its OFD.
+A close/reuse could redirect later reads and aliases shared its flag changes.
+
+## Source behavior
+
+InputHandle reuses the existing verified OutputHandle slave reopen, actual
+terminal identity checks, dup2 initialization and same-number reopen protection.
+Only the actual isolated OFD becomes nonblocking. Mode uses a real duplicate of
+that same captured terminal; teardown closes only owned extras and preserves the
+borrowed supplied number, including a later replacement at that number.
+Master/unreopenable paths return their real ENOTSUP and retain the existing
+borrowed fallback; their alias/backpressure/identity gaps are not fixed.
+
+The native opaque terminal lease routes reads directly into the existing actual
+fd-read reactor. No private numeric fd escapes to JavaScript. Actual pending
+request storage retains the opaque lease and exact read Promise. Control checks
+that pair, changes its real loop reference or detaches/cancels that exact read.
+Close marks admission closed, unlinks the request before Promise hooks can
+reenter, then releases the captured fd. Reactor completion detaches before
+publishing and does not carry a raw next pointer across JS. Promise hooks cannot
+make a preallocation cached fd valid after reentrant close. Reusable roots live
+until actual watch deletion. Silent context teardown does not enter JS.
+
+The actual fd-readable path consumes this owner for supported stdin TTYs and
+binds mode operations to the same lease. Public .fd mutation and public close
+events do not select transport or retire resources. Non-TTY/unsupported fallback
+keeps the original generic path. Constructor/publication errors close the real
+new owner while preserving the original exception. This source adds no new ABI,
+FileType, kernel/host API, provider identity or public Socket facade.
+
+## Evidence and remaining gaps
+
+The separate canonical-mode descriptor test passes14 actual PTY/OFD/read/reuse/
+close checks. Exact pinned native Node reference also reads the original PTY
+after public fd replacement, keeps the replacement open and observes actual
+native TTY material. These controls do not compile/run the production JSAPI
+reactor, cancellation/ref/GC/OOM/realm/fatal/shutdown/Worker code. Five tiny
+native compiles succeeded; no engine/kernel/package/product build or overall
+suite ran. Focused source checks/staging are recorded separately.
+
+**The original strict mode comparison remains nonpassing.** All three portable
+raw-to-normal control versions still abort; their exact sources and stderr remain
+in the immutable handoff. Later matched diagnostics use the same operations and
+readiness setup for actual Node, the portable owner and a direct-libc branch in
+one shared addon. All22full-attribute phase comparisons and93resource/I/O checks
+agree. With no persistent watcher all three retain PENDIN immediately after
+normal mode; the same real kqueue setup restores initial words for all three,
+and the same later poll clears the bit for all three. Nine literal restoration
+nonpasses and the original R3 SIGABRT remain separately recorded. No masking,
+candidate-only flush/read, mode algorithm change or external-runtime defect/
+platform exclusion is justified. This is native diagnostic evidence, not guest
+termios/reactor or full TTY conformance. See the integration record and exact
+immutable tty-restoration-diagnostic-agent results/analysis.
+
+Master/unreopenable/backpressure nonpasses from earlier seals are unchanged.
+Concurrent guest close/fork, late failure transaction details, per-context native
+lifecycle, partial initialization/exception races, shared StreamBase/TTY admission,
+public constructors/Socket inheritance/options, private SIGWINCH and all four
+identified guest hosts remain incomplete. Do not report the TTY family complete.

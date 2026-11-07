@@ -1,0 +1,116 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/terminal.md",
+    "findingIds": [
+      "T-002",
+      "T-007",
+      "T-009"
+    ],
+    "relatedFamilies": [
+      "terminal",
+      "streams",
+      "processes",
+      "engine",
+      "async"
+    ],
+    "scope": "Consumed captured-input/OFD/read request/mode lease and correct OS tuple prerequisite; public TTY classes/master/mode/JSAPI/fourhost still open"
+  },
+  "sourceImplemented": [
+    "Actual slave input capture reuses verified reopen/device identity/same-number owner; nonblocking state is isolated from preexisting aliases",
+    "Native read reactor roots actual opaque lease/exact Promise and supports matching ref/cancel/close",
+    "Completion unlinks before Promise hooks and avoids raw next across reentry; Promise creation rechecks close/fd state",
+    "OS tty-input-read returns actual Promise directly with no allocation packet after pending linkage",
+    "Actual fd-readable stdin consumes owner; mode binds same captured lease; construction failure closes actual owner preserving original Error",
+    "Curated OS adapter forwards complete tuple including false/null; fsEvent half intentionally remains pending real owner",
+    "Integrate actual patch0139 and normal generation, retaining unchanged raw-mode source and all strict/master/backpressure failures"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tty191-source-r1/report.json",
+    "sha256": "07860b80c56067ca85bfe1c3ca5e148368f29d4e5f38999fcd145a4c9d107982",
+    "guardedInputs": 844,
+    "scope": "Real captured input/OFD/read request/lease and exact Promise/control/ref/cancel/close source; actual portable PTY/forwarding and reused matched native diagnostic evidence, no new JSAPI/public TTY/guest/fourhost closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tty191-affected-r1.json",
+    "sha256": "e1e933c2c372ffd0fde6c1d7b38debe943dab5a03d785123aeb1a98385e04d87",
+    "passed": 18,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false,
+    "scope": "18scoped existing checks:14package-source and4fd-stream native-boundary groups; no global product setup or guest acceptance."
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tty191-source-r1/report.json",
+    "sha256": "07860b80c56067ca85bfe1c3ca5e148368f29d4e5f38999fcd145a4c9d107982",
+    "actualPtyOwnershipChecks": 14,
+    "curatedOsForwardingGroups": 2,
+    "reusedMatchedFullAttributeComparisons": 22,
+    "reusedMatchedResourceChecks": 93,
+    "literalRestorationNonpassesPreserved": 9,
+    "originalR3SigabrtPreserved": true,
+    "matchedDiagnosticNewRuns": 0,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "matchedDiagnosticReport": {
+      "report": ".context/tty-restoration-diagnostic-agent/HANDOFF.json",
+      "sha256": "bb5a1cc4217152f55352e19a923a79f9b29bf33b3a458efae6b4f50034fcf742"
+    },
+    "scope": "Current byte-identical portable header/descriptor executable and curated tuple checks; exact prior native matched diagnostic identities. No production reactor/GC/realm/native JSAPI/public TTY/guest/fourhost proof"
+  },
+  "sealedEvidence": {
+    "report": ".context/tty-input-owner-agent/HANDOFF.json",
+    "sha256": "1b0ca116ec2adbf97fe88013035b4fe7b45a6082e4f40633b5931e648b2f33b2",
+    "reusedEvidence": true,
+    "scope": "Consumed partial input owner;14native descriptor checks/32source checks/5tiny successful compiles; original3strict mode failures preserved. Later matched diagnostic separate2compiles,1neverexecuted; no guest JSAPI."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tty-input-owner-agent/input-r1.stderr",
+      "sha256": "1f35706daae22b85b19e87658b8bac24dab05e7de1537d83169853ed888a3824",
+      "kind": "original-raw-mode-control-abort",
+      "reason": "Initial strict portable mode comparison abort, original source/log retained."
+    },
+    {
+      "report": ".context/tty-input-owner-agent/input-r2.stderr",
+      "sha256": "c4e840a31897a8a0cba6ea4a25dd0870e7576130e3aff9b58fb8f53496b97aa3",
+      "kind": "strict-mode-control-actual-word-diagnostic",
+      "reason": "Second abort records536872395versus1483 without assertion masking; later matched setup explains differing conditions, not a production fix."
+    },
+    {
+      "report": ".context/tty-input-owner-agent/input-r3-process.json",
+      "sha256": "5c98a6a2148bb5d2bbd5244b6986be929ac82a1aca0df89d2cbf8ea64a9f85a8",
+      "kind": "strict-native-word-mode-control-SIGABRT",
+      "reason": "Final original R3 exits-6 before close assertion; exact binary/control/header/stderr retained."
+    },
+    {
+      "report": ".context/tty-restoration-diagnostic-agent/analysis.json",
+      "sha256": "306887615b7c0060a4b4e7e34baf136e08b34d3bf22684e628885465a1792e3f",
+      "kind": "matched-diagnostic-literal-restoration-nonpasses",
+      "reason": "All22matched actor attributes agree and93resource checks pass, while9literal initial/restored comparisons are false and retained independently."
+    },
+    {
+      "report": ".context/node26-tty191-integration-bootstrap-context-r1.log",
+      "sha256": "df3c179e5f485dbc01f073699c88476f5b003487d2b0faa7b617dd5c186a355a",
+      "kind": "root-additive-preflight-context",
+      "reason": "Initial bootstrap context changed after private171 handoff; no patch applied then, narrow current insertion preserves newer source."
+    }
+  ],
+  "remaining": [
+    "Compile/run actual production JSAPI read/reactor/Promise/ref/cancel/GC/realm/wrapper/fatal/shutdown and all-four-host conformance",
+    "Generic StreamBase/TTY handle admission and native TTYWRAP lifecycle before full callable public classes/Socket hierarchy/options/descriptors",
+    "Master/unreopenable/fallback ownership/backpressure and partial writes remain real implementation gaps",
+    "Actual guest termios/readiness, concurrency/fork, late allocation/initialization/OOM and per-context/worker cleanup",
+    "Original strict mode failures and9literal matched diagnostic nonpasses remain; no mode fix or platform exclusion justified",
+    "Private SIGWINCH and remaining terminal/readline/REPL family obligations",
+    "Separate fsEvent forwarding and actual notification export/kernel activation remain pending; OS tuple half alone is integrated"
+  ],
+  "at": "2026-11-07T06:40:57.246502+00:00",
+  "recipeRevision": 191,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

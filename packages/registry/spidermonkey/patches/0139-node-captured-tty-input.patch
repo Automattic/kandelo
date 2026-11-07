@@ -1,0 +1,103 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -620,6 +620,9 @@
+   KandeloSocketWatchKind kind;
+   JSContext* cx = nullptr;
+   PersistentRootedObject promise;
++  // Only captured-terminal reads populate these real request/lease owners.
++  PersistentRootedObject terminalOwner;
++  KandeloTerminalLease* terminalLease = nullptr;
+   std::vector<uint8_t> buffer;
+   size_t offset = 0;
+   short events = 0;
+@@ -635,7 +638,7 @@
+
+   KandeloSocketWatch(JSContext* cx, int fd, KandeloSocketWatchKind kind,
+                      HandleObject promise)
+-      : fd(fd), kind(kind), cx(cx), promise(cx, promise) {
++      : fd(fd), kind(kind), cx(cx), promise(cx, promise), terminalOwner(cx) {
+     events = (kind == KandeloSocketWatchKind::Read ||
+               kind == KandeloSocketWatchKind::Accept) ? POLLIN : POLLOUT;
+   }
+@@ -1062,6 +1065,21 @@
+         continue;
+       }
+       done = KandeloDispatchTlsWatch(watch);
++    } else if (watch->kind == KandeloSocketWatchKind::Read && watch->terminalLease) {
++      if (watch->cx != cx) { watch = next; continue; }
++      ssize_t n;do { n = read(watch->fd, watch->buffer.data(), watch->buffer.size()); }
++      while (n < 0 && errno == EINTR);
++      if (n >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
++        const int error = n < 0 ? errno : 0;
++        // Promise hooks may close this or another owner and reenter. Retire
++        // list membership before publication; never retain next across JS.
++        KandeloSocketWatchUnlink(watch);
++        auto retire = mozilla::MakeScopeExit([&] { js_delete(watch); });
++        const bool ok = n >= 0
++            ? KandeloResolvePromiseWithBytes(cx, watch->promise, watch->buffer.data(), size_t(n))
++            : KandeloResolvePromiseWithErrno(cx, watch->promise, error, nullptr);
++        return ok ? processed + 1 : -1;
++      }
+     } else if (watch->kind == KandeloSocketWatchKind::Read) {
+       ssize_t n = read(watch->fd, watch->buffer.data(), watch->buffer.size());
+       if (n >= 0) {
+@@ -1346,6 +1364,59 @@
+   watch->buffer = std::move(buffer);
+   KandeloSocketWatchLink(watch);
+   return true;
++}
++
++// Captured TTY input uses the real fd-read reactor, with actual opaque owner
++// roots and exact request matching. It is not a TCPWRAP or TTYWRAP identity.
++static KandeloSocketWatch* KandeloTerminalPendingRead(KandeloTerminalLease* lease) {
++  for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next)
++    if (watch->terminalLease == lease) return watch;
++  return nullptr;
++}
++static bool KandeloTerminalRead(JSContext* cx, HandleObject owner,
++    KandeloTerminalLease* lease, int32_t length, MutableHandleValue result) {
++  try {
++    RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));if (!promise) return false;
++    result.setObject(*promise);
++    // Promise creation can run hooks. Re-read the actual lease after that
++    // allocation, never use a previously captured numeric fd after reentry.
++    if (lease->inputClosing || lease->input.Descriptor() < 0)
++      return KandeloResolvePromiseWithErrno(cx, promise, EBADF, nullptr);
++    if (KandeloTerminalPendingRead(lease))
++      return KandeloResolvePromiseWithErrno(cx, promise, EALREADY, nullptr);
++    std::vector<uint8_t> bytes(size_t(length), uint8_t(0));
++    const int fd = lease->input.Descriptor();
++    ssize_t size;do { size = read(fd, bytes.data(), bytes.size()); } while (size < 0 && errno == EINTR);
++    if (size >= 0) return KandeloResolvePromiseWithBytes(cx, promise, bytes.data(), size_t(size));
++    if (errno != EAGAIN && errno != EWOULDBLOCK)
++      return KandeloResolvePromiseWithErrno(cx, promise, errno, nullptr);
++    auto* watch = js_new<KandeloSocketWatch>(cx, fd, KandeloSocketWatchKind::Read, promise);
++    if (!watch) { JS_ReportOutOfMemory(cx);return false; }
++    watch->buffer = std::move(bytes);watch->terminalOwner = owner;watch->terminalLease = lease;
++    KandeloSocketWatchLink(watch);return true;
++  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx);return false; }
++}
++static bool KandeloTerminalCancelRead(JSContext* cx, KandeloTerminalLease* lease,
++                                      bool notify, bool* cancelled) {
++  auto* watch = KandeloTerminalPendingRead(lease);*cancelled = watch != nullptr;
++  if (!watch) return true;
++  KandeloSocketWatchUnlink(watch);
++  if (!notify) { js_delete(watch);return true; }
++  MOZ_RELEASE_ASSERT(cx && watch->cx == cx);
++  RootedObject promise(cx, watch->promise);
++  // Caller holds its admitted actual lease. Remove reactor/root bookkeeping
++  // before rejected-Promise hooks can close/reuse anything in this context.
++  js_delete(watch);
++  return KandeloResolvePromiseWithErrno(cx, promise, ECANCELED, nullptr);
++}
++static bool KandeloTerminalReadControl(JSContext* cx, KandeloTerminalLease* lease,
++    HandleObject promise, HandleValue control, MutableHandleValue result) {
++  result.setBoolean(false);
++  auto* watch = KandeloTerminalPendingRead(lease);
++  if (!watch || watch->cx != cx || watch->promise.get() != promise) return true;
++  result.setBoolean(true);
++  if (control.isBoolean()) { watch->referenced = control.toBoolean();return true; }
++  bool cancelled;return KandeloTerminalCancelRead(cx, lease, true, &cancelled);
+ }
+
+ // Report pending bytes from the actual write operations, including partial

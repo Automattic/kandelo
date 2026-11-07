@@ -24,6 +24,12 @@ static bool KandeloNativeOS(JSContext* cx,unsigned argc,Value* vp) {
   if (!operation) return false;
   RootedValue value(cx,UndefinedValue()); int error = 0;
   const char* name = operation.get();
+  // Promise publication is the terminal allocation boundary for captured
+  // input reads. Do not allocate a packet after linking an actual read watch:
+  // packet OOM would otherwise leave a request the JS caller never received.
+  if (strcmp(name, "tty-input-read") == 0) {
+    return KandeloTerminalDispatch(cx, args, name, args.rval(), &error);
+  }
   if (strncmp(name, "tty-", 4) == 0) {
     if (!KandeloTerminalDispatch(cx, args, name, &value, &error)) return false;
   } else if (strcmp(name,"info") == 0) {
