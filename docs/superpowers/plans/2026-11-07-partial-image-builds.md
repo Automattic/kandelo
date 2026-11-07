@@ -19,13 +19,18 @@ service worker), Vitest, Playwright.
 
 **Spec:** `docs/superpowers/specs/2026-11-07-partial-image-builds-design.md`
 
-**Design amendment (implementer's call, recorded here):** the spec's §2
-proposed generated overlay packages. Instead the driver composes the image
-directly from resolver-built member outputs. Members still go through the
-normal resolver and shared on-disk cache; only the partial image itself has
-no package identity. This is strictly stronger for the anti-goals: it cannot
-enter the package cache, cannot be published, and cannot shadow a canonical
-artifact path.
+**As built (recorded after implementation):** the first version composed
+the partial shell directly from resolver-built member outputs. That could not
+reach derived images (LAMP, WordPress, ...), whose builders take the shell as
+a resolver dependency. The final version follows the spec's §2: `xtask
+partial-image` writes a gitignored registry root
+(`local-binaries/partial/registry/`) whose only package is a `shell` recipe
+narrowed to the selection, and builds the requested image package through
+the ordinary resolver with that root first. The narrowed recipe runs the
+canonical `build-shell.sh --selection`. Both paths produced the same
+sha256 for the same selection. The partial image is copied into
+`local-binaries/partial/` and never into the worktree's published program
+view, so it cannot stand in for a canonical artifact.
 
 ## Global Constraints
 

@@ -282,3 +282,20 @@ through the normal package resolver for their declared architectures. A passing
 default build does not establish that those recipes still work. Dormant status
 controls product exposure; retain it while checking build compatibility. Do not
 add a dormant product to the shipped projection just to validate its recipe.
+
+## Partial images are development builds
+
+`./run.sh partial shell <pkg>...` composes the shell from the rootfs base and
+only the named packages ([Partial images](../package-management.md#partial-images)).
+Use it to iterate on a port without building the whole shell. Keep three
+rules:
+
+- A package enters a partial image only the way it enters the canonical
+  shell. Add it to the shell's contract and composer table; do not teach the
+  partial path to install something the canonical shell does not.
+- The shell composer's partial mode is a selection, not a relaxation. Every
+  installation step it guards must name the package that owns it, and the
+  canonical shell (no selection) must keep every completeness check.
+- A partial image is evidence for its named packages on the base image only.
+  It is never cached, published or a substitute for building the canonical
+  products before a PR.
