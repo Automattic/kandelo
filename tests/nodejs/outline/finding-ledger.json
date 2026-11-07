@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 139,
+    "sourceSliceRecords": 142,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 225
+    "findingsWithoutExplicitOrProposedSourceSlice": 222
   },
   "families": [
     {
@@ -251,7 +251,7 @@
         "PROC-014",
         "PROC-015"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 9,
+      "findingsWithExplicitOrProposedSourceSlices": 10,
       "sourceRouteAsRecorded": "bootstrap process/ChildProcess, process-clock/state/usage validation and explicit absent numeric providers, dotenv/child-wait, pinned OS frontend with native POSIX state, unchanged weak finalization/lazy descriptor and Refable dispatch; actual linked dependency versions with read-only/configurable version descriptors; native live environment virtual Object/property hooks and inherited-receiver policy ; source148 real runtime-owned original locale/ICU canonicalization and private bootstrap capture; source162 actual main-only sigaction/self-pipe SignalWrap and pinned first/last-listener activation with target-compiled signal names, real native close/async roots and reviewed loop fences; source166 reusable native root value clear preserves registration; source168 ChildProcess.kill public errors use pinned ErrnoException and actual compiled UV map",
       "remainingAsRecorded": "Complete environment prototype/constructor/keys/warnings/GC/JIT/clone and worker/TZ/CLI behavior, fatal/rejection/GC/exit/worker/resource reference integration, signal/IPC and exceptional wait/close policy, measurements, permissions and OS metadata; guest lifecycle/mask/parent/env conformance pending; custom/coverage handler EBUSY, privateTTYactivation and actual SignalWrap/guest/four-host semantics remain open",
       "remainingOwner": "Guest process/kernel state, native spawn/wait/signals/IPC and process/OS adapters",
@@ -439,7 +439,7 @@
         "WEB-011",
         "WEB-012"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 5,
+      "findingsWithExplicitOrProposedSourceSlices": 6,
       "sourceRouteAsRecorded": "File/FormData/Headers, private header guard/list consumers, Blob/clone and Web Stream owners; source156 pinned Body consumption/MIME/multipart owners over existing actual Response/header/stream state; source171 complete pinned Request/Body algorithms share actual Headers/WebIDL/Blob/FormData/abort/streams; HTTP consumer publishes actual body stream",
       "remainingAsRecorded": "Request/extraction and FormData BodyInit encoding, Response static constructors, Fetch transport/policy, remaining Body/stream/clone/WebIDL/global/encoding/URL semantics, transfer and network/crypto dependencies",
       "remainingOwner": "Shared Request/Response/Body/Header/WebIDL/stream/clone owners and actual Fetch transport",
@@ -494,7 +494,7 @@
         "L-032",
         "L-033"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 8,
+      "findingsWithExplicitOrProposedSourceSlices": 9,
       "sourceRouteAsRecorded": "Partial pinned Module.wrap/wrapper and patched-script source owners with single exports snapshot; Real native parser goals and direct CJS body compilation, pinned filename/package/entry selection and shared ESM source format in103; Module record/require/JSON, package cache/reader, exports/imports/conditions/self/maps and SourceMap algorithms; source153 pinned synchronous CJS hook registration/chaining/disposal, actual supplied-source execution and resolver/cache transactions",
       "remainingAsRecorded": "Actual guest parser/error/source/realm evidence; complete ESM supplied-source execution/hooks, async loader workers, remaining CJS/CLI/cache behavior and ESM URL/namespace/JSON/async/cycle/dynamic-import graphs; TypeScript/Wasm/addon/source-map/cache/preload/CLI/permission/lifecycle owners; four-host conformance",
       "remainingOwner": "Actual CJS/ESM graph/resolver/cache/compiler/hook/CLI owners",
@@ -3699,7 +3699,16 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Termination distinguishes signal death from ordinary exit",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "public-abort",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/processes.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial real public abort signal-death prerequisite. Complete termination/fatal/rejection/beforeExit/signal/Worker/diagnostics/guest behavior remains open.",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Guest process/kernel state, native spawn/wait/signals/IPC and process/OS adapters",
@@ -6497,7 +6506,16 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "Encoding, URL, Blob and internationalization semantics",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "blob-construction",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/web-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial real Blob construction and slice behavior over existing shared byte/WebIDL owners. Encoding/object URLs/full Blob/File/clone/stream/guest obligations remain open.",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Shared Request/Response/Body/Header/WebIDL/stream/clone owners and actual Fetch transport",
@@ -7136,7 +7154,16 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Applicable access to unfinished circular CommonJS exports emits a warning",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "cjs-circular-warning",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/loading-public-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial real CommonJS circular-warning/cache/cleanup behavior and observable getter chronology; no ESM/whole loading/warning/CLI/REPL/guest closure.",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "package-policy",
         "package-reader"
@@ -23557,6 +23584,223 @@
       "auditDocument": "tests/nodejs/audit/filesystem.md",
       "findingScope": "Partial real reactive read/producer/retry/wake prerequisite. Not public FSWatcher, timer/poll, metadata, fork, ABI baseline or four-host closure.",
       "additionalAuditDocuments": {}
+    },
+    "blob-construction": {
+      "document": "tests/nodejs/outline/blob-construction-finding-progress.json",
+      "sha256": "8d54b86db1bf3414b9b6d4af4fb9855faea093b1459b2046ef9c01f1ccddce51",
+      "recordedRevision": 217,
+      "explicitFindingIds": [
+        "WEB-008"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-blob217-source-r1/report.json",
+          "sha256": "a2fa04ddf7a623724010bf7f71692a4e8101542d938bd3fc3fd17646fd222a09",
+          "guardedInputs": 885,
+          "scope": "Actual Blob sequence/dictionary/coercion/byte snapshot and slice WebIDL semantics. Native-dependent groups only; unchanged upstream custom inspection failure remains, no guest/fourhost closure."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-blob217-affected-r1.json",
+          "sha256": "a5e60d80266031bfb4cd49e3dca2fdeff7ee2c8ca816955ff207aed07e067887",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-blob217-source-r1/report.json",
+          "sha256": "a2fa04ddf7a623724010bf7f71692a4e8101542d938bd3fc3fd17646fd222a09",
+          "nativeDependentGroups": 19,
+          "focusedFailures": 0,
+          "unchangedUpstreamPassing": false,
+          "unchangedUpstreamEvidence": ".context/blob-construction-owner-agent/upstream-report-r2.json",
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "engineCXXChanged": false,
+          "scope": "Actual root Blob IIFE executes over explicit native WebIDL/errors/brands/encoding/streams/clone dependencies. Nineteen matches do not validate guest dependencies; unchanged upstream still fails at missing custom inspection."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/blob-construction-owner-agent/report.json",
+          "sha256": "65cbcc1aa30286c87b8d0b69820b46f2c2a4df8c861ea8438966be8cdfda055a",
+          "reusedEvidence": true,
+          "scope": "19final native-dependent matches versus6/19baseline,16source/staging/replay checks;0compiles. Native unchanged upstream passes; candidate remains nonpassing at custom inspection after bounded slice conversion correction. Exact raw evidence and provenance limitations retained."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/blob-construction-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/blob-construction-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Consume the complete existing pinned WebIDL source sequence before options access and real byte snapshots",
+        "Use actual shared dictionary/errors/BufferSource brands and maximum-length owners; read endings/type once in pinned order",
+        "Copy actual bytes after sequence/coercion/getter mutations; defer MIME type string coercion until after byte assembly",
+        "Use genuine shared WebIDL long-long slice conversion and clamp/range/type order over actual private byte storage",
+        "Retain unchanged upstream assertions and record the remaining custom-inspection failure rather than declaring full Blob support"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/blob-construction-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual Blob custom inspection (unchanged upstream candidate failure), complete public branding/descriptors/subclass/reflective metadata",
+        "Prototype mutation, concurrent shared bytes and complete large-allocation/OOM/error semantics",
+        "Full Blob/File/Fetch/stream/clone/transfer/message/encoding/object URL ownership and lifecycle",
+        "Actual guest WebIDL/brands/encoding/streams/native storage/GC/realm/worker and identified-artifact four-host validation",
+        "No API/family closure or accepted exclusion; all unrelated public-core findings remain"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/web-contracts.md",
+      "findingScope": "Partial real Blob construction and slice behavior over existing shared byte/WebIDL owners. Encoding/object URLs/full Blob/File/clone/stream/guest obligations remain open.",
+      "additionalAuditDocuments": {}
+    },
+    "public-abort": {
+      "document": "tests/nodejs/outline/public-abort-finding-progress.json",
+      "sha256": "4ddc651bbcddd8f5e7147491e653be59b853b28ff0b3070c1a74cf44a6d12bd8",
+      "recordedRevision": 218,
+      "explicitFindingIds": [
+        "PROC-003"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-abort218-source-r1/report.json",
+          "sha256": "4850a7294f17fb544db64263a091f382bbdbd4fae7476cf14ce2992b6c2563cf",
+          "guardedInputs": 885,
+          "scope": "Real public main abort/native libc owner and pinned public Worker refusal; normal staging/style/source checks plus scoped native-dependent controls, not new guest JSAPI/signal/wait/diagnostics/fourhost proof."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-abort218-affected-r1.json",
+          "sha256": "cda9d7d4886e10c861c49bfd1b63272e58306c7f62fa433bbdcebe335f526ea6",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-abort218-source-r1/report.json",
+          "sha256": "4850a7294f17fb544db64263a091f382bbdbd4fae7476cf14ce2992b6c2563cf",
+          "freshNativeDependentGroups": 2,
+          "reusedNativeFatalGroup": 1,
+          "reusedActualNativeHeaderCases": 4,
+          "compilerAttemptsIntegrated": 2,
+          "newRootCompilerAttempts": 0,
+          "unchangedStyleCheckerPassed": true,
+          "productionJSAPICompiled": false,
+          "guestSignalWaitValidated": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Main native alias/Worker algorithms over explicit native Node errors/abort; actual shared C++ header4cases native libc only. Fresh2groups plus reused fatal1/header4 do not validate new guest JSAPI, musl signal death/wait or diagnostics."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/process-abort-owner-agent/report.json",
+          "sha256": "bba12ef53cbdb5b4936ffaa89c54a3be0fa4e64c8a9a1efe93edd4f213760d80",
+          "reusedEvidence": true,
+          "scope": "Actual C++ shared header4native-libc cases plus3native-dependent public groups;2tiny successful compiles, original helper exit31/invalid syntax harness attempts retained. New guest JSAPI uncompiled; diagnostics/musl/kernel/parent wait/fourhost unvalidated."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/public-abort-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/public-abort-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Replace std.exit(134) with the actual native abort alias, retaining real callable name/arity/receiver semantics",
+        "Invoke actual engine frame dump and shared process-state std::abort owner without ordinary exit listeners or numeric status fabrication",
+        "Use unchanged pinned Worker unavailable factory after actual error-owner initialization, with independent native Worker ownership refusal",
+        "Retain real libc signal unblock/reset/re-raise and existing kernel exact-task signal/wait ownership rather than inventing termination metadata",
+        "Compose additive engine patch0163 and regenerate real current core/bootstrap, preserving217Blob and215/216VM/capture owners",
+        "Remove only a trailing whitespace line identified by independent review; original seal/patch and native algorithm tokens unchanged"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/public-abort-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual new JSAPI compilation and identified guest signal death/parent wait/Worker/private guard across all four hosts",
+        "Complete native stack diagnostics, exact abort output/core dump/report production and error behavior",
+        "Separate default uncaught hard_abort SIGTRAP versus guest SIGABRT and other fatal/report/getter-throw/beforeExit/rejection gaps",
+        "Complete original PROC-003/process/signal/IPC/lifecycle/resource/realm/GC obligations; no API/family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/processes.md",
+      "findingScope": "Partial real public abort signal-death prerequisite. Complete termination/fatal/rejection/beforeExit/signal/Worker/diagnostics/guest behavior remains open.",
+      "additionalAuditDocuments": {}
+    },
+    "cjs-circular-warning": {
+      "document": "tests/nodejs/outline/cjs-circular-warning-finding-progress.json",
+      "sha256": "bd941f62321b86b55e250727ca048df1b801a64668cfb63e1a94d64ae37de7f9",
+      "recordedRevision": 219,
+      "explicitFindingIds": [
+        "L-020"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-cjs219-source-r1/report.json",
+          "sha256": "0ce177e17dec246d3d9d349d02a1fbd28d44d46436ef751ca33f7aa2ea2c621c",
+          "guardedInputs": 885,
+          "scope": "Actual CJS circular warning/prototype/cache/cleanup plus reviewed single-getter admission owner. Explicit native VM/filesystem/URL/isProxy/warnings boundaries; pendingESM stays unsupported, guest/fourhost unvalidated."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-cjs219-affected-r1.json",
+          "sha256": "d4007df7fa31a75953c9c5382583a7ba0f0d9f452a0eaeb947d358314509736e",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-cjs219-source-r1/report.json",
+          "sha256": "0ce177e17dec246d3d9d349d02a1fbd28d44d46436ef751ca33f7aa2ea2c621c",
+          "circularNativeDependentGroups": 8,
+          "loadedGetterNativeDependentGroups": 5,
+          "pendingErrorOwnerCases": 1,
+          "unchangedUpstreamFiles": 1,
+          "upstreamSubjectsPassed": 2,
+          "upstreamSourceSha256": "e9f5ba20d095131c378fd4fc11a5c5fbeeaad70692cd84ba6292204574f77043",
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "engineCXXChanged": false,
+          "scope": "Actual current generated CJS cache/loader/warning owners over explicit native VM/filesystem/URL/isProxy/error/warning dependencies.13groups and one private-format error owner; unchanged upstream file native/candidate passes. No new guest JSAPI/ESM/realm/lifecycle or four-host evidence."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/cjs-circular-warning-owner-agent/handoff/HANDOFF.json",
+          "sha256": "9d476480837b8f5499f546e8fd2dd3ae43765d33cce139a92c1d6355cc5f6be0",
+          "reusedEvidence": true,
+          "scope": "Original8native-dependent groups and unchanged upstream file per subject; independent getter correction5groups/two private-format error controls. Root fresh13groups/current unchanged file and normal package/source checks.0toolchain compiles; fixture/native boundaries explicit."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/cjs-circular-warning-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/cjs-circular-warning-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Select complete pinned circular warning/prototype/emitter/admission and successful-load cleanup algorithms with exact source hashes",
+        "Consume actual shared isProxy and original __esModule/plain-object/class/custom-prototype/descriptor/Symbol rules at real cached() owner",
+        "Call successful-load-only complete(module) in actual loader, preserving failure/cache/children rollback and escaped partial-export warning behavior",
+        "Keep explicit unsupported pending-ESM status admission rather than inventing native status/cycle success",
+        "Remove independently verified redundant public loaded getter in private ESM adaptation; preserve original throw/exports/accessor order on warmed actual cache route",
+        "Regenerate actual current combined bundle and preserve217Blob/218abort/earlier VM and process owners"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/cjs-circular-warning-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual guest proxy/primordials/VM/error/warning/loader/frame/realm/GC/Worker and identified-artifact four-host validation",
+        "Native required-ESM status/cycle/TLA and full ESM/CJS graphs/hooks/cache/source/CLI/preload behavior",
+        "Complete warning scheduling/stack/suppression/fatal/resource lifecycle and all other L-020 obligations",
+        "Source maps/compile cache/REPL/default loader and broader public-core findings; no API/family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/loading-public-contracts.md",
+      "findingScope": "Partial real CommonJS circular-warning/cache/cleanup behavior and observable getter chronology; no ESM/whole loading/warning/CLI/REPL/guest closure.",
+      "additionalAuditDocuments": {}
     }
   },
   "dependencyNarratives": {
@@ -25892,6 +26136,25 @@
         "fourHostConformance": false,
         "individualApiClosure": false,
         "scope": "Actual tmpfs empty-write fix; VM compiled-source import callbacks; rooted native capture/fatal suppression; typed backing-read wake and exact-capacity fallback. Actual native artifacts and kernel typecheck have precise scopes; guest JSAPI/host lifecycle/public watchers/full report/loader remain incomplete."
+      },
+      {
+        "at": "2026-11-07T14:37:14.172335+00:00",
+        "sourceCheckpoint": 219,
+        "sourceHead": "bb9a9567dbbd16a6fc882bc3ba21a251341f9a85",
+        "addedSourceSlices": [
+          "blob-construction",
+          "public-abort",
+          "cjs-circular-warning"
+        ],
+        "latestAcceptedEngine": 200,
+        "currentCombinedEngineCompiled": false,
+        "currentKernelTypechecked": true,
+        "currentKernelLinked": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "scope": "Actual shared Blob construction/slice, real public native/libc abort/Worker refusal and pinned circular CJS warning/cleanup with reviewed single-getter admission. Existing216kernel typecheck has explicit terminal-blank normalization; no current guest engine/kernel link or four-host acceptance."
       }
     ]
   }

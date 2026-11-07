@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 139 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 142 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 225 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 222 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -586,3 +586,34 @@ metadata/fork/ABI lifecycle, current guest bindings and four-host conformance st
 open. Overall suites/full product rebuild remain deferred. New private Blob,
 CommonJS warning and public-abort candidates require root review/integration.
 Nested guest Wasm execution remains in scope for the final phase.
+
+
+## Source217–219 Blob, public abort and circular CommonJS owners
+
+The actual Blob byte owner now preserves pinned sequence/dictionary/getter/byte-
+snapshot/type chronology and real WebIDL slice conversion. Nineteen current
+native-dependent groups match; the unchanged upstream Blob file still fails on
+missing custom inspection. Original slice failure and dependency/provenance
+limits remain visible. No complete Blob or guest acceptance follows.
+
+Public process.abort retains the actual named native function and shared libc
+abort owner, with a real frame dump and pinned Worker unavailable factory. Native
+libc header4 and frontend3 groups have explicit fixture limits; guest JSAPI/real
+signal death/parent wait/diagnostics/core dump and separate fatal gaps stay open.
+Independent review's trailing whitespace correction changes no algorithm token.
+
+Actual CJS cache/load owners consume pinned circular-warning/prototype admission
+and successful-load-only cleanup. Independent review found a newly introduced
+second public loaded getter read; the integrated private ESM adaptation removes
+only that read. Current13native-dependent groups and one unchanged upstream file
+per subject pass. Pending required-ESM status remains explicitly unsupported, not
+passing compatibility. Original control/provisioning/stale-bundle/regression
+nonpasses and all source/review/correction seals remain preserved.
+
+The source219 engine remains uncompiled, accepted200 stale, current guest and
+four-host conformance unestablished. Earlier216native build/kernel typecheck and
+37focused cases retain their exact source/artifact and whitespace-normalization
+scope. All19categories remain partial; no audit finding closes. Full product
+rebuild and overall suites stay deferred. Independent decoder state, terminal
+output rollback and test-filter CLI owners are active privately, outside current
+root source claims. Nested guest Wasm stays in scope for the final phase.

@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T14:19:14.127480+00:00",
-  "sourceHead": "45749b2451cf5c55ec13b47c15c92881826998d3",
-  "recipeRevision": 216,
+  "at": "2026-11-07T14:37:14.172335+00:00",
+  "sourceHead": "bb9a9567dbbd16a6fc882bc3ba21a251341f9a85",
+  "recipeRevision": 219,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 139,
+    "sourceSliceRecords": 142,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 225
+    "findingsWithoutExplicitOrProposedSourceSlice": 222
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,25 +26,24 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 139,
+  "sourceSliceIdentitiesVerified": 142,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "9cfcf833339554ed10581940ef0285ccbf727de06f2996d02ddd8add523c54e1"
+    "sha256": "2e3fb24bdf4d10d2e6460e45c895403c89e53623c54f7c431627317c63109622"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Qualified source/evidence identity links only; immutable audit and all remaining finding semantics preserved.",
   "previousIntegrityIdentity": {
-    "sha256": "be0416114261cd33d4997cb5abd2a272a4bdb85b80a3dd4a086822fc70a3f169",
-    "sourceHead": "610fb274f999d973e303b126a728c42cc11ee6d8",
+    "sha256": "104bca4458c51a459a23535007b3d891909f2ca96825626ba1bb7c19a6b53c72",
+    "sourceHead": "45749b2451cf5c55ec13b47c15c92881826998d3",
     "scope": "Preserved in prior commit and source snapshot history"
   },
   "sourceProgressOverlaysAdded": [
-    "empty-tmpfs-write",
-    "vm-import-callback",
-    "process-capture-owner",
-    "backing-read-wake"
+    "blob-construction",
+    "public-abort",
+    "cjs-circular-warning"
   ],
   "qualifiedReferenceCorrections": [
     {
