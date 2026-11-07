@@ -63,6 +63,15 @@ export function readKandeloBootQuery(search = currentSearch()): KandeloBootQuery
   };
 }
 
+/**
+ * A gallery item's identity within one listing. `item.id` is the profile the
+ * item boots, which is unique only within its image: the canonical shell and
+ * a worktree's partial shell both boot a `shell` profile.
+ */
+export function galleryItemKey(item: Pick<GalleryItem, "id" | "image">): string {
+  return item.image === undefined ? item.id : `${item.image.id}/${item.id}`;
+}
+
 export function galleryItemUrl(
   item: Pick<GalleryItem, "id" | "vfsImageUrl">,
   href = currentHref(),

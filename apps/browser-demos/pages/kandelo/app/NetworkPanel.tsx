@@ -53,7 +53,7 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; activity: Package
           {active && <>
             {canChange && <button className="kshare-btn" onClick={() => { setName(state.name ?? randomSessionName()); setEditing({ mode: "activity" }); }}>Change activity</button>}
             {joined && <button className="kshare-btn" onClick={() => { setName(randomSessionName()); setEditing({ mode: "new" }); }}>New session</button>}
-            <button className="kshare-btn kshare-btn-primary" disabled={busy} onClick={() => void activity.copyLink()}>Copy link</button>
+            <button className="kshare-btn kshare-btn-primary" disabled={busy || activity.link === null} onClick={() => void activity.copyLink()}>Copy link</button>
           </>}
           {!active && !invitation && state.phase === "connected" && <button className="kshare-btn" disabled={busy} onClick={() => setEditing(null)}>Back to active session</button>}
         </>}>
@@ -81,7 +81,9 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; activity: Package
             <ActivityMetadata activity={activity} />
             <div>
               <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Invite link</div>
-              <div className="kshare-url" data-network-link={activity.link}>{activity.link}</div>
+              {activity.linkUnavailable === null
+                ? <div className="kshare-url" data-network-link={activity.link}>{activity.link}</div>
+                : <p className="knetwork-note">{activity.linkUnavailable}</p>}
             </div>
             <div>
               <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Computers</div>
