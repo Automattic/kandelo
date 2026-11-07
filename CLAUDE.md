@@ -94,6 +94,11 @@ For nontrivial work:
 6. Run validation that supports the exact claim you will make.
 7. Report what changed, what was run, and what was not run.
 
+For a reviewed patch integration, use the optional
+[`scripts/agent-integrate` workflow](docs/agent-integration.md) to validate
+pinned inputs, preserve unrelated work, and journal evidence/checkpoints.
+It imports reviewed check results; command execution remains separate.
+
 Do not stop at code reasoning for browser demo bugs, syscall semantics, ABI
 changes, package artifacts, or performance claims.
 
@@ -419,6 +424,9 @@ details, or validation. Explain the current problem, who or what it affects,
 and why fixing it matters before describing the mechanics.
 
 Prefer concise PR titles that remain suitable as merge subjects.
+Keep PR descriptions as concise and focused as reasonable while giving a
+junior developer enough clear context to understand the problem, change,
+and relevant validation. See the focused guide for the writing contract.
 Manually wrap prose in PR descriptions and commit-message bodies at
 72 columns. Do not reflow Markdown tables, code blocks, generated
 text, or indivisible URLs and identifiers when wrapping would damage
