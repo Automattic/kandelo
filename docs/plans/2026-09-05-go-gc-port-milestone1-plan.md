@@ -28,6 +28,23 @@ ordinary FPM/process-budget handling. Twenty-two configuration cases pass;
 the corrected real browser rerun is still required. This changes Kandelo's
 configuration handling, not PHP or FrankenPHP source.
 
+The corrected run passes all four functional cases in 1m58s as
+`wordpress-comparison-functional-v4-1107-182848-56ee`: FPM and real Caddy on
+Node and Chromium, with two effective PHP workers in every case. The source
+is `8fa97d2e493e`; it uses retained partial image `464d553bb3e5` and kernel
+`6f5410ea67d0`. The controlled image is
+`7e2a102c02fc57e5ba65650a287bd588c4c08f9d614a3585c91a0bcb876665da`.
+Its disposable preparation process completes in 2,993 ms with level 3
+compression; the release image remains unchanged. Earlier attempts retain
+the missing-writer error, rejected browser capacity and preparation timeout.
+The final source selection passes 82 cases: 25 configuration, 14 composer
+client and 43 memory-profile checks, plus its host/declaration build. Raw
+evidence is under the comparison checkout's `.context/agent-jobs/` and
+`.context/wordpress-pool-source-gates-v2/`. The smoke runs alongside the
+package build, so its timing samples are not performance evidence. It does
+not validate the pending replacement kernel/image, all-three-engine editor
+workflows, visitor caching or final acceptance.
+
 **Workflow update:** main's campaign checkpoints and per-run validation
 isolation are merged. Both offline-listener fixtures are retained under
 distinct names, with one shared backend implementation. Post-merge checks
