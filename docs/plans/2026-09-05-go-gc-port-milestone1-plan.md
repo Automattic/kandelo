@@ -45,7 +45,14 @@ rootfs is `f833b30d83c21ba541772eafbd4a83eed2a4c0f5430307d2c31ec7c9df4bb877`
 and passes the layout audit. Full benchmark-product preparation now runs
 separately as `benchmark-main-products-1107-063730-874a`, including its own
 PHP, both MariaDB architectures, database images, WordPress and micro
-fixtures. The private set enables the dormant MariaDB image only for
+fixtures. That first product attempt finds the baseline's uninitialized
+Rust libc submodule: Harper, the guest SDK, modeset and termchat fail, so
+WordPress is blocked while independent C products continue into the cache.
+Stop that owned job at a cheap tar-configure phase (recorded exit 143),
+initialize the pinned `71d5bfcc` submodule without changing main, and retry
+as `benchmark-main-products-ready-1107-074030-53fd`. The first log remains
+`benchmark-products-before-rust-libc-init.log`; completed cache entries are
+preserved. The private set enables the dormant MariaDB image only for
 validation. No timings run under compilation load. WordPress 43's primary
 normal build is still in its full shell graph, currently LLVM/Clang.
 
