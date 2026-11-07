@@ -257,6 +257,7 @@ import {
   ProcessMemoryRetirementBacklogError,
   PROCESS_MMAP_BASE,
   growMemoryToCover,
+  growMemoryToCoverWithFreshBoundary,
 } from "./process-memory";
 import { VforkAddressSpaceBusyError } from "./vfork-lifetime";
 import { readForkContinuationAnchor } from "./fork-continuation";
@@ -24260,9 +24261,10 @@ export class CentralizedKernelWorker {
     }
 
     const currentBytes = processMemory.buffer.byteLength;
+    let freshBoundary: number | undefined;
 
     if (endAddr > 0 && endAddr > currentBytes) {
-      growMemoryToCover(processMemory, endAddr, ptrWidth);
+      freshBoundary = growMemoryToCoverWithFreshBoundary(processMemory, endAddr, ptrWidth);
       const grownBuffer = processMemory.buffer;
       entry.deferObserverEffect(() => {
         this.observeProcessMemoryTarget(processMemory, grownBuffer);
@@ -24292,7 +24294,9 @@ export class CentralizedKernelWorker {
       const alignedLen = Math.ceil(mmapLen / PAGE_SIZE) * PAGE_SIZE;
       const newBytes = processMemory.buffer.byteLength;
       let zeroStart = mmapAddr;
-      const zeroEnd = Math.min(mmapAddr + alignedLen, newBytes);
+      // memory.grow already zeroes our appended pages. Clear all reused
+      // storage, including pages another thread grew before our operation.
+      const zeroEnd = Math.min(mmapAddr + alignedLen, freshBoundary ?? newBytes);
       if (syscallNr === SYS_MREMAP) {
         const oldAddr = origArgs[0];
         const oldLen = origArgs[1];

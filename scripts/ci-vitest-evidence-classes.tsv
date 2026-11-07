@@ -355,6 +355,7 @@ host/test/process-generation-detach.test.ts	source-only
 host/test/process-memory-allocator.test.ts	source-only
 host/test/process-memory-async-allocation.test.ts	source-only
 host/test/process-memory-creator-gate.test.ts	source-only
+host/test/process-memory-growth.test.ts	source-only
 host/test/process-memory-reclamation-rss.test.ts	prepared-product
 host/test/process-memory-retained-wrapper.test.ts	source-only
 host/test/process-memory.test.ts	source-only

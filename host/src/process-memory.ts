@@ -1512,13 +1512,36 @@ export function growMemoryToCover(
   endOffset: number,
   ptrWidth: 4 | 8 = 4,
 ): void {
+  growMemoryToCoverWithFreshBoundary(memory, endOffset, ptrWidth);
+}
+
+/**
+ * Grow through endOffset and return the first byte appended by this call.
+ * Undefined means this call appended no pages. Only our own growth proves
+ * pages are fresh: another thread may have populated pages it appended.
+ */
+export function growMemoryToCoverWithFreshBoundary(
+  memory: WebAssembly.Memory,
+  endOffset: number,
+  ptrWidth: 4 | 8 = 4,
+): number | undefined {
   const requiredPages = Math.ceil(endOffset / WASM_PAGE_SIZE);
   const currentPages = Math.ceil(memory.buffer.byteLength / WASM_PAGE_SIZE);
   const delta = requiredPages - currentPages;
-  if (delta <= 0) return;
-  if (ptrWidth === 8) {
-    memory.grow(BigInt(delta) as any);
-  } else {
-    memory.grow(delta);
+  if (delta <= 0) return undefined;
+  try {
+    // The result belongs to the actual grow operation, unlike currentPages,
+    // which can become stale while another thread grows shared memory.
+    const previousPages = ptrWidth === 8
+      ? memory.grow(BigInt(delta) as any)
+      : memory.grow(delta);
+    return Number(previousPages) * WASM_PAGE_SIZE;
+  } catch (error) {
+    // A racing grow can satisfy the request but leave too little capacity
+    // for our stale delta. Its pages are existing storage and need clearing.
+    if (error instanceof RangeError && memory.buffer.byteLength >= endOffset) {
+      return undefined;
+    }
+    throw error;
   }
 }
