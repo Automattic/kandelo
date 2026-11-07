@@ -113,6 +113,41 @@ for (const source of ["freedoom1", "freedoom2", "freedm"]) {
     } finally { await other.context.close(); }
   });
 }
+test("a Doom host starts its waiting room's game before every player has joined", async ({ browser, page, browserName }) => {
+  test.skip(browserName !== "chromium", "local WebRTC requires Chromium loopback candidates");
+  test.setTimeout(480_000);
+  /** Key presses into the display, as a player at the keyboard makes them. */
+  const press = async (p: Page, keys: string[]) => {
+    await p.bringToFront();
+    await p.getByRole("button", { name: "Graphics", exact: true }).click();
+    await p.locator("canvas.kframebuffer-canvas").first().focus();
+    for (const key of keys) {
+      await p.keyboard.press(key);
+      await p.waitForTimeout(700);
+    }
+  };
+  // Room for four; only one other computer comes.
+  const link = await offer(page, "fbdoom/game", form => form.getByLabel("Players", { exact: true }).fill("4"));
+  const other = await guest(browser, link, "Join and play Doom");
+  try {
+    await expect.poll(() => terminal(page), { timeout: 120_000 }).toContain("2 of 4 players have joined");
+    await page.screenshot({ path: "../../.context/doom-waiting-room.png" });
+    // Esc leaves the waiting room; the host's room sees the player go.
+    await press(other.page, ["Escape"]);
+    await expect.poll(() => terminal(other.page), { timeout: 30_000 }).toContain("NET_WaitForLaunch: cancelled.");
+    await expect.poll(() => terminal(page), { timeout: 60_000 }).toMatch(/1 of 4 players have joined\.\s*$/);
+    // Quitting Doom leaves the activity's shell. The player starts it again
+    // there, finding the host's game by LAN broadcast this time.
+    await other.page.locator(".kshell-host:visible").click();
+    await other.page.keyboard.insertText("/usr/bin/fbdoom -iwad /tmp/kandelo-doom.wad -autojoin");
+    await other.page.keyboard.press("Enter");
+    await expect.poll(() => terminal(page), { timeout: 90_000 }).toMatch(/2 of 4 players have joined\.\s*$/);
+    // The waiting room starts the game with Space, as chocolate-doom's does.
+    await press(page, ["Space"]);
+    await expect.poll(() => terminal(page), { timeout: 60_000 }).toContain("player 1 of 2 (2 nodes)");
+    await expect.poll(() => terminal(other.page), { timeout: 30_000 }).toContain("player 2 of 2 (2 nodes)");
+  } finally { await other.context.close(); }
+});
 for (const source of ["shareware", "librequake", "openquartz"]) {
   test(`Quake ${source} starts and joins from a bare-shell activity invitation`, async ({ browser, page, browserName }) => {
     test.skip(browserName !== "chromium", "local WebRTC requires Chromium loopback candidates");

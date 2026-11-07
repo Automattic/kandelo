@@ -132,12 +132,11 @@ IPv4 UDP and TCP between members. Leaving or replacing a hosted room
 disconnects its members; their programs keep running. See
 [package-declared sessions](https://github.com/Automattic/kandelo/blob/main/docs/package-sessions.md).
 
-Doom's **LAN game** dock menu can host a private game or join one in the
-session. Its waiting room shows joined players; the host can press Space
-to start early or Esc to quit. Quake's multiplayer menus can discover session
-peers. Freeciv's **Multiplayer** dock menu can host a server or join the
-session host; its launcher uses a direct TCP connection rather than depending
-on discovery. See [Freeciv multiplayer](https://github.com/Automattic/kandelo/blob/main/docs/freeciv.md#multiplayer).
+Doom, Quake and Freeciv offer game activities in the network panel. Doom's
+waiting room shows joined players; the host can press Space to start early
+or Esc to quit. Quake's own multiplayer menus can also discover session
+peers. Freeciv's launcher uses a direct TCP connection to the session host
+rather than depending on discovery. See [Freeciv multiplayer](https://github.com/Automattic/kandelo/blob/main/docs/freeciv.md#multiplayer).
 These are LAN links, not arbitrary internet UDP access. The default connection setup
 uses STUN without a TURN relay, so some network layouts cannot connect.
 Current guest-session validation covers Chromium; Firefox/WebKit guest

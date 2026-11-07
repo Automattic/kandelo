@@ -43,8 +43,9 @@ class WaitGuardTest(unittest.TestCase):
     def checkout_hook(self, text):
         pathlib.Path(self.checkout, ".claude", "hooks", "wait-guard.py").write_text(text)
 
-    def run_hook(self, command="ls", session="s1", cwd=None):
+    def run_hook(self, command="ls", session="s1", cwd=None, agent_id=None):
         payload = dict(tool_name="Bash", session_id=session, cwd=cwd or self.checkout,
+                       agent_id=agent_id,
                        tool_input=dict(command=command))
         r = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload), capture_output=True, text=True,
                            env=dict(os.environ, KANDELO_AGENT_JOBS_DIR=self.state), timeout=30)
@@ -97,6 +98,50 @@ class WaitGuardTest(unittest.TestCase):
         # pattern. Reformatting the line would silence every stale notice.
         self.assertGreaterEqual(VERSION, 3)
         self.assertEqual(len(re.findall(r"^HOOK_VERSION = \d+$", HOOK.read_text(), re.M)), 1)
+
+    def test_subagent_wait_windows_and_main_session_controls(self):
+        unsafe = [
+            "scripts/agent-job wait job", "scripts/agent-job wait --peer build",
+            "scripts/agent-job wait job --timeout 0", "scripts/agent-job wait job --timeout 271",
+            "scripts/agent-job wait job --timeout=540", "scripts/agent-job wait job --timeout $WINDOW",
+            "bash -lc 'scripts/agent-job wait --peer build --timeout 540'",
+            "scripts/dev-shell.sh python3 scripts/agent-job wait job --timeout 540",
+            "scripts/agent-job wait a --timeout 240; scripts/agent-job wait b --timeout 240",
+            "while true; do scripts/agent-job wait job --timeout 240; done",
+            "until scripts/agent-job wait job --timeout 240; do true; done",
+        ]
+        for command in unsafe:
+            with self.subTest(command=command):
+                out = self.run_hook(command, agent_id="worker")
+                reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn("--timeout 240", reason)
+                self.assertIn("parent", reason)
+                self.assertIn("FAILED (exit 124)", reason)
+                self.assertEqual(self.run_hook(command), {})
+        entries = [json.loads(l) for l in pathlib.Path(self.state, "hook-log.jsonl").read_text().splitlines()]
+        self.assertTrue(all(e["rule"] == "subagent-wait-window" and e["agent_id"] == "worker" for e in entries))
+
+    def test_subagent_short_waits_and_mentions_pass(self):
+        safe = [
+            "scripts/agent-job wait job --timeout 240", "scripts/agent-job wait job --timeout=270",
+            "python3 scripts/agent-job wait --peer build --timeout 120",
+            "scripts/agent-job wait a --timeout 120 && scripts/agent-job wait b --timeout 120",
+            "scripts/agent-job wait --help", "scripts/agent-job status job",
+            "rg 'scripts/agent-job wait job' README.md", "echo 'scripts/agent-job wait job --timeout 0'",
+            "cat <<'EOF'\nscripts/agent-job wait job\nEOF",
+            "scripts/agent-job wait job --timeout 0 # agent-job: allow-wait",
+            "scripts/agent-job wait job --timeout 240; for f in one two; do echo $f; done",
+            "for f in one two; do echo $f; done; scripts/agent-job wait job --timeout 240",
+        ]
+        for command in safe:
+            with self.subTest(command=command):
+                self.assertEqual(self.run_hook(command, agent_id="worker"), {})
+
+    def test_existing_whole_tree_rule_still_returns_work_to_parent(self):
+        for command in ("./run.sh setup", "npx vitest run"):
+            out = self.run_hook(command, agent_id="worker")
+            self.assertIn("report back to your parent", out["hookSpecificOutput"]["permissionDecisionReason"])
+            self.assertEqual(self.run_hook(command), {})
 
 
 if __name__ == "__main__":

@@ -251,15 +251,7 @@ test("graphical image activities switch between KMS and framebuffer without rebo
         return colors.size;
       }), { timeout: 120_000 }).toBeGreaterThan(8);
       const framebufferTitle = page.locator(".kdemo-surface-title").filter({ hasText: "/DEV/FB0" });
-      const previousTitle = await framebufferTitle.textContent();
-      const menu = page.getByRole("button", { name: /^LAN game/ });
-      await menu.click();
-      await page.getByTestId("fb-dock-menu-entry-single").click();
-      await expect(menu).toBeEnabled({ timeout: 60_000 });
-      await expect(framebufferTitle).not.toHaveText(previousTitle!, { timeout: 60_000 });
       await expect(framebufferTitle).toContainText(/pid \d+/, { timeout: 60_000 });
-      await expect(canvas).toBeVisible({ timeout: 60_000 });
-      await expect(page.locator('[data-testid="fb-dock-action-error"]')).toHaveCount(0);
     } else {
       const surface = page.locator(".kmodeset-surface");
       await expect(surface).toBeVisible({ timeout: 120_000 });
