@@ -1,5 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { findRepoRoot, tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -10,9 +12,16 @@ import {
 } from "../../web-libs/kandelo-session/src/demo-config";
 
 // Boots the worktree's partial image (`./run.sh partial <image> <pkg>...`,
-// docs/superpowers/specs/2026-11-07-partial-image-builds-design.md) the way a
-// developer would: Bash from the image, lazy programs fetched on first use
-// from this worktree's package view. Skipped until a partial image exists.
+// docs/package-management.md "Partial images") the way a developer would:
+// Bash from the image, lazy programs fetched on first use from this
+// worktree's published package view. Skipped until a partial image exists.
+//
+// WHY a file:// lazy-asset directory: without one, the Node host resolves
+// every lazy address the image records in one batch on the first lazy read.
+// For an image with many lazy entries (a partial LAMP) that batch can outlast
+// the spawn path's 30 s no-progress backstop (RootfsReadTimeoutError), which
+// says nothing about the image. Serving members straight from the view, as
+// other host tests do with their own directories, tests the image itself.
 const repoRoot = findRepoRoot();
 const partialDir = join(repoRoot, "local-binaries/partial");
 const manifestPath = join(partialDir, "partial.json");
@@ -60,9 +69,13 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
     let stdout = "";
     let stderr = "";
     const lazy: string[] = [];
+    const assets = mkdtempSync(join(tmpdir(), "kandelo-partial-assets-"));
+    symlinkSync(join(repoRoot, "local-binaries/source-only-v1"), join(assets, "assets"));
+    const lazyDirectory = `${pathToFileURL(assets).href}/`;
     const host = new NodeKernelHost({
       maxWorkers: 4,
       rootfsImage: imageBytes(),
+      rootfsLazyAssetDirectory: lazyDirectory,
       onStdout: (_pid, data) => { stdout += new TextDecoder().decode(data); },
       onStderr: (_pid, data) => { stderr += new TextDecoder().decode(data); },
       onLazyDownload: (event) => {
@@ -88,6 +101,7 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
       if (manifest!.packages.includes("fbdoom")) expect(stdout).toContain("fbdoom-wrapper-ok");
     } finally {
       await host.destroy().catch(() => {});
+      rmSync(assets, { recursive: true, force: true });
     }
   }, 180_000);
 

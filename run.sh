@@ -23,6 +23,8 @@
 #   ./run.sh build-browser [--base /p/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]
 #                                 Build the deployable static browser app
 #   ./run.sh browser [args]       Start the Vite browser dev server
+#   ./run.sh browser --partial    ...serving only what is built, starting from
+#                                 the partial image (no full local-build)
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
 #
@@ -2746,7 +2748,7 @@ cmd_setup() {
 cmd_partial() {
     if [ $# -eq 0 ]; then
         err "Usage: $0 partial <image> [package...] [--with-tests] [--jobs N]"
-        err "Images: shell"
+        err "Images: shell, nginx, nginx-php, nginx-python, wordpress, lamp, web-stack, wordpress-family"
         exit 1
     fi
     local_build_events_env
@@ -2951,7 +2953,22 @@ cmd_build_browser() {
 cmd_browser() {
     local BROWSER_DIR="$REPO_ROOT/apps/browser-demos"
 
-    cmd_prepare_browser
+    if [ "${1:-}" = "--partial" ]; then
+        # Serve what this worktree already built, starting from its partial
+        # image, without first building every package the canonical machines
+        # need. Images that are not built show as such in the gallery.
+        shift
+        if [ ! -f "$REPO_ROOT/local-binaries/partial/partial.json" ]; then
+            err "No partial image is built. Run: ./run.sh partial <image> [package...]"
+            exit 1
+        fi
+        export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+        export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$REPO_ROOT/local-binaries/source-only-v1"
+        unset KANDELO_PAGES_PRODUCT_MAP KANDELO_PAGES_VFS_ASSET_GROUP_DIR
+        info "Serving this worktree's partial image (no full local-build)"
+    else
+        cmd_prepare_browser
+    fi
 
     # Install browser deps if needed (re-run if package.json is newer than node_modules)
     if [ ! -d "$BROWSER_DIR/node_modules" ] || [ "$BROWSER_DIR/package.json" -nt "$BROWSER_DIR/node_modules" ]; then
@@ -3140,6 +3157,7 @@ cmd_list() {
     echo "  ./run.sh partial shell [pkg...]     Compose the shell from the rootfs base"
     echo "                                        plus only the named packages; the"
     echo "                                        browser lists it as its own machine"
+    echo "  ./run.sh browser --partial          Serve it without the full local-build"
     echo "  ./run.sh partial shell pkg --with-tests"
     echo "                                        ...then run those packages' tests"
     echo ""
