@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 106 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 107 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 244 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 243 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -232,3 +232,17 @@ permissions, mounted images, Node-API and exact FFI coded-error policy remain
 implementation gaps. No finding/family closes; original nonpasses remain.
 Accepted173predates current188. Nested guest Wasm execution stays in scope,
 scheduled last; no full product rebuild or overall suite is authorized yet.
+
+## Source189 sys alias progress overlay
+
+V-025 now links to the actual sys/util identity and pinned initialization,
+warning, cache, retry/reentry and moduleLoadList owner. Its original prose/range
+scope remains an unresolved definition-recovery issue, not an absent audit or
+passing runtime result. No finding/family closes.
+
+Thirteen paired groups and the whole unchanged sys test pass through declared
+native/CJS boundaries. The original thirteen default ESM fixture setup failures
+remain; an explicit focused-CJS option omits only that separate installation.
+It does not repair ESM or supply a fake graph. Actual guest warning/script/realm,
+ESM imports, warning redirection and remaining util behavior remain open.
+Accepted173predates current189; no four-host current conformance is established.

@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T06:17:23.713998+00:00",
-  "sourceHead": "7917dcdd63f37a53da9dfd07d1451d15bdb68c7c",
-  "recipeRevision": 188,
+  "at": "2026-11-07T06:22:04.792906+00:00",
+  "sourceHead": "21dc4398e6754d09b5e15770086c9f29b0cdd12d",
+  "recipeRevision": 189,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 106,
+    "sourceSliceRecords": 107,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 244
+    "findingsWithoutExplicitOrProposedSourceSlice": 243
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,21 +26,21 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 106,
+  "sourceSliceIdentitiesVerified": 107,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "c59385535a36fd5d370e0a29963be1368a53a33f307809ed8bbd6fa8fc03c622"
+    "sha256": "3287086a3ab1e32dbd3038de8267af56dfad644617680adf4053c9fcc97191b0"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "37f6416a30b20d81dad7b93a68d3041ec095e29c43cc4fc8a7928466b9696566",
-    "sourceHead": "f914f373252c247dbc6a7e934c9cb3666b7152da",
+    "sha256": "7da9e6858d16c9ace80eaae2cccc76d01591f35f98f9c8b0ec708e1061236d95",
+    "sourceHead": "7917dcdd63f37a53da9dfd07d1451d15bdb68c7c",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "ffi-memory-retirement"
+    "sys-alias-owner"
   ]
 }
