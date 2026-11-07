@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T17:21:08.909956+00:00",
+  "updatedAt": "2026-11-07T17:43:32.927848+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -46,7 +46,7 @@
   "deployAuthorized": false,
   "overallSuitesRun": 0,
   "productRebuildsRun": 0,
-  "packageOrEngineCompilationsRun": 293,
+  "packageOrEngineCompilationsRun": 295,
   "families": {
     "values": {
       "breadthState": "started",
@@ -51730,16 +51730,15 @@
     "state": "OS lookup source and raw c-ares channel plus owned record decoder; public Resolver/channel/request/loop/JSAPI/guest linking/transport/error/malformed and four-host obligations remain open"
   },
   "nativeCompilationAccountingThisTurn": {
+    "acceptedEngineBuilds": 0,
+    "guestEngineBuildAttempts": 1,
+    "guestEngineBuildFailures": 1,
     "nativeHelperCompileAttempts": 1,
     "nativeHelperCompileFailures": 0,
-    "guestEngineAttempts": 0,
-    "guestEngineBuildFailures": 0,
-    "guestPackageAttempts": 0,
     "guestDependencyCompilations": 0,
     "kernelWasmCompilations": 0,
     "productRebuilds": 0,
-    "preflightFailures": 1,
-    "scope": "Actual successful native xtask compilation plus main-review preflight failure. Never counted as failed guest C++build or native/four-host compatibility."
+    "scope": "One actual native xtask build and one normal guest engine package build attempt. Internal translation units/Rust archive remain detailed in raw build log, not counted as separate package builds."
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -63699,6 +63698,19 @@
       "nativeHelperCompileFailures": 0,
       "productRebuilds": 0,
       "scope": "0newcompiler/engine/kernel/library/product builds in source slice. Existing lazy-reference addon reused,17native-dependent groups and14package checks. Separate targeted engine compilation is next."
+    },
+    {
+      "at": "2026-11-07T17:43:32.927848+00:00",
+      "nativeHelperCompileAttempts": 1,
+      "nativeHelperCompileFailures": 0,
+      "guestEngineAttempts": 0,
+      "guestEngineBuildFailures": 0,
+      "guestPackageAttempts": 0,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "productRebuilds": 0,
+      "preflightFailures": 1,
+      "scope": "Actual successful native xtask compilation plus main-review preflight failure. Never counted as failed guest C++build or native/four-host compatibility."
     }
   ],
   "cryptoKdfImplementation": {
@@ -123535,7 +123547,7 @@
   },
   "previousModelTurnReview": {
     "classification": "no progress",
-    "scope": "Previous model turn answered user-requested token-cost reflection and inspected existing automation; no source/checkpoint/build was advanced in that reflection. Current continuation completes actual metadata source checks/checkpoint and targeted build preparation."
+    "scope": "Previous model turn provided a user-requested tooling goal prompt. This continuation records actual failed compiler evidence and proceeds with owning source fix/integration."
   },
   "filesystemReadinessImplementation": {
     "auditRequirements": {
@@ -126032,11 +126044,27 @@
       "report": "tests/nodejs/outline/engine228-preflight-r1.json",
       "sha256": "04d96552b140b39297c3bd6af090f6e4cce87f0c1d408dc005efef9451adfa08",
       "scope": "Actual successful native xtask compilation plus main-review preflight failure. Never counted as failed guest C++build or native/four-host compatibility."
+    },
+    {
+      "report": "tests/nodejs/outline/engine228-build-failure-r2.json",
+      "sha256": "94731ba23888bd0100b1de5509f4380b8cc7ff361548ace4b152c4e2db956c48",
+      "scope": "Actual frozen228 normal C++build failure; no accepted artifact or runtime compatibility."
     }
   ],
   "engine228PreflightR1": {
     "report": "tests/nodejs/outline/engine228-preflight-r1.json",
     "sha256": "04d96552b140b39297c3bd6af090f6e4cce87f0c1d408dc005efef9451adfa08",
     "guestEngineAttempted": false
+  },
+  "engine228BuildFailureR2": {
+    "report": "tests/nodejs/outline/engine228-build-failure-r2.json",
+    "sha256": "94731ba23888bd0100b1de5509f4380b8cc7ff361548ace4b152c4e2db956c48",
+    "guestEngineAttempted": true,
+    "acceptedArtifact": false,
+    "metadataArchive": {
+      "path": ".context/node26-engine228-r2-failure/failure-accounting-evidence.tar.gz",
+      "sha256": "eb1355114d2ed9c7387436be86762e1dd7259acc2dcfbb6a77f177a558c942e5",
+      "stateFileNote": "Archived before archive-reference injection; runtime source snapshot unchanged."
+    }
   }
 }

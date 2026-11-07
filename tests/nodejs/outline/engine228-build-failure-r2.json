@@ -1,0 +1,90 @@
+{
+  "at": "2026-11-07T17:43:32.927848+00:00",
+  "recipeRevision": 228,
+  "jobId": "node26-engine228-r2-1107-122351-c7b7",
+  "sourceCommit": "70769cbf1ac3f3d4c93b96fef7adbc3a08717859",
+  "exitCode": 1,
+  "durationSeconds": 527.5,
+  "sourceWasFrozen": true,
+  "changedFrozenSourcePaths": [],
+  "selectedPlan": {
+    "nodes": 9,
+    "cached": 8,
+    "builtAttempts": 1
+  },
+  "nativeToolBuildAttempts": 1,
+  "nativeToolBuildFailures": 0,
+  "nativeArtifactsFreshFalse": [
+    {
+      "packageId": "path+file:///Users/brandon/conductor/workspaces/kandelo/davao/tools/xtask#0.1.0",
+      "target": "xtask",
+      "kind": [
+        "bin"
+      ],
+      "filenames": [
+        "/Users/brandon/conductor/workspaces/kandelo/davao/target/aarch64-apple-darwin/release/xtask"
+      ],
+      "executable": "/Users/brandon/conductor/workspaces/kandelo/davao/target/aarch64-apple-darwin/release/xtask"
+    }
+  ],
+  "guestEngineBuildAttempts": 1,
+  "guestEngineBuildFailures": 1,
+  "guestDependencyBuilds": 0,
+  "acceptedArtifact": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "overallSuites": 0,
+  "productRebuilds": 0,
+  "diagnostic": " 0:58.41 /Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/.spidermonkey-140.11.0esr-rev228-wasm32-abi55-d79f507aa7ab871e2c8dd7a328d8e5e0b2e54f7b016e454d7799c5903294792b.work-21824-1/recipe-work/spidermonkey-source/js/src/shell/kandelo-node-datagram-operations.h:100:14: error: unexpected namespace name 'socket': expected expression",
+  "rootCause": "Sibling kandelo::socket namespace hides unqualified libc socket() in kandelo::datagram::Endpoint::Ensure under real combined unity inclusion. Owning fix is explicit ::socket, not flags/identity/assertion changes.",
+  "sourceSnapshotBeforeBuild": {
+    "path": ".context/node26-implementation-snapshots/main228-preflight-r2-20261107T172108951436Z.tar.gz",
+    "sha256": "b593dbbec359b5fd3af1188b019280d010ae3aa73a6923d0eb9e991be9704b22",
+    "bytes": 11784096,
+    "scope": "Current228plus reconciled maina5e131, actual native xtask compilation/preflight failure evidence. Guest C++not attempted; all19partial.",
+    "stateFileNote": "Archived state precedes snapshot reference injection"
+  },
+  "compilerAccountingScope": "One actual native xtask build and one normal guest engine package build attempt. Internal translation units/Rust archive remain detailed in raw build log, not counted as separate package builds.",
+  "evidence": {
+    "plan.json": {
+      "path": ".context/node26-engine228-r2-failure/plan.json",
+      "sha256": "252b891b279f5bcc7011df95da634d8bfc6a8c68bfac07b0bb4981e21e82e2ec"
+    },
+    "result.json": {
+      "path": ".context/node26-engine228-r2-failure/result.json",
+      "sha256": "4a7e3be423096285297026b9fa4c4c27ad5a19d5f32bf590392f9f78b53fc254"
+    },
+    "output.log": {
+      "path": ".context/node26-engine228-r2-failure/output.log",
+      "sha256": "5aa202b3275f809d7aa3a6259f86eecef52aa12c856105e4e25bac38f68e1459"
+    },
+    "native-cargo.stderr": {
+      "path": ".context/node26-engine228-r2-failure/native-cargo.stderr",
+      "sha256": "4abfdd8edd91808d91ea8e01969ccc2fbb285df4cc4150d74ee54f0c3a08e247"
+    },
+    "native-source-preflight.json": {
+      "path": ".context/node26-engine228-r2-failure/native-source-preflight.json",
+      "sha256": "af0097fc3bf2adc5b0b2074ba55b8e81cc5efc1c07869bbb7a3f729a553915d2"
+    },
+    "native-cargo.jsonl": {
+      "path": ".context/node26-engine228-r2-failure/native-cargo.jsonl",
+      "sha256": "40c5eab4fe04c8c36701d36280384cf45695753d94b4f178351ff6b14ada0b94"
+    },
+    "native-result.json": {
+      "path": ".context/node26-engine228-r2-failure/native-result.json",
+      "sha256": "16d81446087ff8e427fe8e5c5911e51d527b380abc24213feefb9c5b9bbe9826"
+    },
+    "terminal.json": {
+      "path": ".context/node26-engine228-r2-failure/terminal.json",
+      "sha256": "4b6bd8a6a4a217947918cf159098998337ce5f1a0f004b00b6224a5d8ed2d4f2"
+    },
+    "preflight.json": {
+      "path": ".context/node26-engine228-r2-failure/preflight.json",
+      "sha256": "f872e5d90b5f2ac78a999f5ee782ba0f6224e87da315d62d0ef22ff42de7e239"
+    },
+    "meta.json": {
+      "path": ".context/node26-engine228-r2-failure/meta.json",
+      "sha256": "4861025d302eda5e95b97fbd38f2bb44682fc506f7e00566180ab5feea1a56e6"
+    }
+  }
+}
