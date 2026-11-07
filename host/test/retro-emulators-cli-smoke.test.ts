@@ -100,9 +100,10 @@ describe("retro-emulators CLI", () => {
     image.setImageCapacity(4 * 1024 * 1024);
     ensureDirRecursive(image, "/roms");
     ensureDirRecursive(image, "/tmp", 0o1777);
+    ensureDirRecursive(image, "/home/player", 0o777);
     writeVfsBinary(image, "/roms/240pee.nes", Uint8Array.from(readFileSync(rom!)), 0o644);
     const EV_SYN = 0x00, EV_KEY = 0x01, SYN_REPORT = 0x00;
-    const KEY_ESC = 1, KEY_LEFTCTRL = 29, KEY_C = 46;
+    const KEY_ESC = 1, KEY_LEFTCTRL = 29, KEY_C = 46, KEY_F2 = 60, KEY_F4 = 62;
     const tap = (kernel: { injectInputEvent(d: 0 | 1, t: number, c: number, v: number): void }, ...keys: number[]) => {
       for (const key of keys) {
         kernel.injectInputEvent(0, EV_KEY, key, 1);
@@ -119,16 +120,20 @@ describe("retro-emulators CLI", () => {
       const result = await runCentralizedProgram({
         programPath: nes!,
         argv: ["fceumm", "/roms/240pee.nes"],
+        env: ["HOME=/home/player"],
         rootfsImage: await image.saveImage(),
         timeout: 60_000,
         // An event reaches only descriptors already open on the device, and
         // nothing says from outside when the emulator has opened it. So Esc
-        // is tapped for the first few seconds (it must not quit), then
-        // Ctrl+C until the emulator exits.
+        // is tapped for the first few seconds (it must not quit), then F2
+        // (save state), then F4 (load it), then Ctrl+C until it exits.
         onKernelReady: (kernel) => {
           started = Date.now();
           timer = setInterval(() => {
-            if (Date.now() - started < 4_000) tap(kernel, KEY_ESC);
+            const elapsed = Date.now() - started;
+            if (elapsed < 4_000) tap(kernel, KEY_ESC);
+            else if (elapsed < 5_000) tap(kernel, KEY_F2);
+            else if (elapsed < 6_000) tap(kernel, KEY_F4);
             else tap(kernel, KEY_LEFTCTRL, KEY_C);
           }, 250);
         },
@@ -139,7 +144,14 @@ describe("retro-emulators CLI", () => {
       expect(result.stderr, detail).toContain("[retro] quit");
       expect(result.exitCode, detail).toBe(0);
       // It ran through the Esc taps: only Ctrl+C, sent after them, ended it.
-      expect(Date.now() - started, detail).toBeGreaterThanOrEqual(4_000);
+      expect(Date.now() - started, detail).toBeGreaterThanOrEqual(6_000);
+      // F2 saved this game's state in the player's data directory; F4
+      // loaded it back.
+      const state = "/home/player/.local/share/retro-emulators/states/240pee.state";
+      expect(result.stderr, detail).toContain(`[retro] saved state: ${state}`);
+      expect(result.stderr, detail).toContain(`[retro] loaded state: ${state}`);
+      expect(result.stderr.indexOf("[retro] saved state:"), detail)
+        .toBeLessThan(result.stderr.indexOf("[retro] loaded state:"));
       expect(result.stderr, detail).toMatch(/^Keys for FCEUmm:$/m);
     } finally {
       if (timer !== undefined) clearInterval(timer);
@@ -186,7 +198,55 @@ describe("retro-emulators CLI", () => {
       for (const [key, button] of lines) {
         expect(result.stdout, detail).toMatch(new RegExp(`^  ${key.padEnd(12)} ${button}$`, "m"));
       }
+      expect(result.stdout, detail).toMatch(/^  F2 {11}save state$/m);
+      expect(result.stdout, detail).toMatch(/^  F4 {11}load state$/m);
       expect(result.stdout, detail).toMatch(/^  Ctrl\+C {7}quit$/m);
+      expect(result.stdout, detail).not.toMatch(/F5/);
     }, 60_000);
   }
+
+  // The cartridge's own save memory is loaded when a game starts and written
+  // back when it quits. The starter ROMs have none, so the NES suite's header
+  // is marked battery-backed (iNES flags 6, bit 1), which gives FCEUmm 8 KiB
+  // of save RAM; a save file is put where the frontend looks for it.
+  it.skipIf(!nes || !rom || !existsSync(rom))("loads a game's battery save at start and writes it on quit", async () => {
+    const bytes = Uint8Array.from(readFileSync(rom!));
+    bytes[6] |= 0x02;
+    const saves = "/home/player/.local/share/retro-emulators/saves";
+    const save = new Uint8Array(8192).fill(0x5a);
+    const image = KandeloImageFs.create();
+    image.setImageCapacity(8 * 1024 * 1024);
+    ensureDirRecursive(image, "/roms");
+    ensureDirRecursive(image, "/tmp", 0o1777);
+    ensureDirRecursive(image, saves, 0o777);
+    writeVfsBinary(image, "/roms/Battery Test.nes", bytes, 0o644);
+    writeVfsBinary(image, `${saves}/Battery Test.srm`, save, 0o666);
+    const EV_SYN = 0x00, EV_KEY = 0x01, SYN_REPORT = 0x00, KEY_LEFTCTRL = 29, KEY_C = 46;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    try {
+      const result = await runCentralizedProgram({
+        programPath: nes!,
+        argv: ["fceumm", "/roms/Battery Test.nes"],
+        env: ["HOME=/home/player"],
+        rootfsImage: await image.saveImage(),
+        timeout: 60_000,
+        onKernelReady: (kernel) => {
+          const started = Date.now();
+          timer = setInterval(() => {
+            if (Date.now() - started < 2_000) return;
+            for (const [key, value] of [[KEY_LEFTCTRL, 1], [KEY_C, 1], [KEY_C, 0], [KEY_LEFTCTRL, 0]]) {
+              kernel.injectInputEvent(0, EV_KEY, key, value);
+              kernel.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+            }
+          }, 250);
+        },
+      });
+      const detail = `exit=${result.exitCode} stderr=${result.stderr}`;
+      expect(result.exitCode, detail).toBe(0);
+      expect(result.stderr, detail).toContain(`[retro] loaded game save: ${saves}/Battery Test.srm`);
+      expect(result.stderr, detail).not.toContain("ignoring game save");
+    } finally {
+      if (timer !== undefined) clearInterval(timer);
+    }
+  }, 90_000);
 });

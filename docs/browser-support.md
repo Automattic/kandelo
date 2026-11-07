@@ -1744,7 +1744,23 @@ What each key is on a given system comes from the core itself: every
 libretro core names its buttons (`RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS`),
 so Genesis Plus GX calls Right Shift "Mode" and X "C". The emulator prints
 that list when a game starts, before it takes the keyboard, and `--keys`
-prints it and exits. F5 saves a state and Ctrl+C quits.
+prints it and exits. F2 saves a state, F4 loads it, and Ctrl+C quits.
+
+Saves are kept per game in the user's data directory,
+`$XDG_DATA_HOME/retro-emulators` or `~/.local/share/retro-emulators`, named
+after the ROM's file name without its extension, so they last as long as
+the computer does (across reboots for a saved computer, until it closes for
+a temporary one):
+
+- `saves/GAME.srm` is the cartridge's own save memory, the battery-backed
+  RAM a game writes when the player saves inside it. It is loaded when the
+  game starts, and written back within a few seconds of the game changing it
+  and when the game quits (Ctrl+C, or SIGTERM or SIGHUP, which is how the
+  page and the drop handler stop a game). A file of the wrong size is left
+  alone and reported.
+- `states/GAME.state` is the snapshot F2 saves and F4 loads. It is not
+  loaded at start, so a game begins from its title screen or its own save;
+  `retro-run ROM --state FILE` starts from a snapshot.
 
 `retro-run ROM` (eager, `/usr/bin/retro-run`) chooses the emulator from
 the ROM's own bytes, not its name: the iNES magic, the Mega Drive `SEGA`
@@ -1785,19 +1801,20 @@ An emulator started in the background has no terminal (kxchgd starts
 handlers with stdin on `/dev/null`), so it reads keys from
 `/dev/input/event0`, which the framebuffer canvas feeds while it has focus
 (see "Framebuffer (`/dev/fb0`)"). Started from a terminal, including one a
-drop opened, the emulator reads the terminal instead. Either way Ctrl+C quits it. The keyboard is read raw, so no
-terminal turns Ctrl+C into a signal; the emulator acts on the chord itself.
+drop opened, the emulator reads the terminal instead. Either way Ctrl+C
+quits it. The keyboard is read raw, so no terminal turns Ctrl+C into a
+signal; the emulator acts on the chord itself.
 Esc alone does nothing, so a stray press does not end a game. The emulator
 keeps its boot-lifetime files in the user's runtime directory,
-`$XDG_RUNTIME_DIR` or `/run/user/<uid>`: its pid in `retro.pid`, and the
-state F5 saves in `retro.state`, which
-`retro-run ROM --state FILE` restores. The drop handler logs the
-emulator's output to `retro.log` there.
+`$XDG_RUNTIME_DIR` or `/run/user/<uid>`: its pid in `retro.pid`. A
+background game's output goes to `retro.log` there.
 
 Gated in Node by `host/test/retro-emulators-cli-smoke.test.ts` (each
 emulator initialises its core and lists its keys by the core's button
-names; a European ROM's name sets PAL timing; with no terminal the emulator
-reads `/dev/input/event0`, ignores Esc and quits on Ctrl+C there)
+names, including F2 and F4; a European ROM's name sets PAL timing; with no
+terminal the emulator reads `/dev/input/event0`, ignores Esc, saves and
+loads a state on F2 and F4 and quits on Ctrl+C there; a battery-backed
+game's save file is loaded at start)
 and in the browser by `apps/browser-demos/test/retro-rom-drop.spec.ts` (a
 dropped ROM opens a terminal with its command and plays, takes keys, keeps
 running on Esc and quits on Ctrl+C, after which Up and Enter in that

@@ -142,7 +142,9 @@ test("a dropped ROM runs as a command in its own terminal, which can run it agai
   await expect.poll(async () => (await frameSummary(canvas)).digest, { timeout: 30_000 })
     .not.toBe(settled);
 
-  // Esc alone does nothing: the game keeps the display.
+  // F2 saves this game's state; Esc alone does nothing: the game keeps the
+  // display.
+  await page.keyboard.press("F2");
   await page.keyboard.press("Escape");
   await page.waitForTimeout(2_000);
   expect(await boundPid(page)).toBe(nesPid);
@@ -156,7 +158,11 @@ test("a dropped ROM runs as a command in its own terminal, which can run it agai
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await expect.poll(() => activeTerminalText(page), { timeout: 30_000 })
     .toContain("retro-run ~/roms/'Test Suite (U).nes'");
-  expect(await activeTerminalText(page)).toContain("Keys for FCEUmm:");
+  const shown = await activeTerminalText(page);
+  expect(shown).toContain("Keys for FCEUmm:");
+  expect(shown).toMatch(/F2 +save state/);
+  expect(shown).toMatch(/F4 +load state/);
+  expect(shown).toContain("[retro] saved state: /home/maker/.local/share/retro-emulators/states/Test Suite (U).state");
   await expect.poll(() => activeTerminalText(page), { timeout: 30_000 })
     .toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-screen").click();

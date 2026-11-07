@@ -20,9 +20,11 @@
  * --keys prints which key is which of the core's buttons and exits; the same
  * list is printed to stderr when a game starts.
  *
- * SIGUSR1 (or F5) writes a save state to $XDG_RUNTIME_DIR/retro.state (by
- * default /run/user/<uid>/retro.state), which
- * --state restores; see the save-request protocol below. Ctrl+C quits.
+ * Saves, per game, under $XDG_DATA_HOME/retro-emulators (by default
+ * ~/.local/share/retro-emulators): the cartridge's own save memory in
+ * saves/GAME.srm, loaded when the game starts and written back while it runs
+ * and when it quits; and the state F2 saves and F4 loads in states/GAME.state.
+ * --state FILE starts from a saved state.
  */
 
 #define _DEFAULT_SOURCE
@@ -42,6 +44,7 @@
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <linux/fb.h>
 #include <linux/input.h>
 
@@ -84,24 +87,12 @@ static bool g_have_av = false;
 static uint8_t g_keystate[128];
 static uint8_t g_keylatch[128];
 
-/* A save is requested by SIGUSR1 (or F5 at the keyboard) and performed after
- * the current retro_run() completes. The requester first writes a fresh
- * 16-byte nonce to SAVE_REQUEST_PATH, and treats the snapshot as its own only
- * once SAVE_DONE_PATH holds that same nonce: the state file is renamed into
- * place before the marker, so a matching marker proves a complete state newer
- * than the request. A requester finds this process through PID_PATH. */
-/* These live in the user's runtime directory: boot-lifetime state belongs
- * under /run (docs/filesystem-layout.md), and $XDG_RUNTIME_DIR is that
- * directory when the session names it. Set by runtime_paths_init(). */
+/* The pid file lives in the user's runtime directory: boot-lifetime state
+ * belongs under /run (docs/filesystem-layout.md), and $XDG_RUNTIME_DIR is that
+ * directory when the session names it. The ROM exchange handler reads it to
+ * stop a game it started before starting another. */
 static char g_pid_path[512], g_pid_tmp[512];
-static char g_state_path[512], g_state_tmp[512];
-static char g_request_path[512], g_done_path[512], g_done_tmp[512];
-#define PID_PATH          g_pid_path
-#define SAVE_STATE_PATH   g_state_path
-#define SAVE_STATE_TMP    g_state_tmp
-#define SAVE_REQUEST_PATH g_request_path
-#define SAVE_DONE_PATH    g_done_path
-#define SAVE_DONE_TMP     g_done_tmp
+#define PID_PATH g_pid_path
 
 static void runtime_paths_init(void)
 {
@@ -113,20 +104,68 @@ static void runtime_paths_init(void)
     }
     snprintf(g_pid_path, sizeof g_pid_path, "%s/retro.pid", dir);
     snprintf(g_pid_tmp, sizeof g_pid_tmp, "%s/retro.pid.tmp", dir);
-    snprintf(g_state_path, sizeof g_state_path, "%s/retro.state", dir);
-    snprintf(g_state_tmp, sizeof g_state_tmp, "%s/retro.state.tmp", dir);
-    snprintf(g_request_path, sizeof g_request_path, "%s/retro.request", dir);
-    snprintf(g_done_path, sizeof g_done_path, "%s/retro.complete", dir);
-    snprintf(g_done_tmp, sizeof g_done_tmp, "%s/retro.complete.tmp", dir);
 }
-#define SAVE_REQUEST_SIZE 16u
-#define MAX_STATE_BYTES   (2u * 1024u * 1024u)
-static volatile sig_atomic_t g_save_requested = 0;
 
-static void on_save_signal(int signo)
+/* Saves are the player's data, so they live in the user's data directory,
+ * which lasts as long as the computer does, named after the game: the ROM's
+ * file name without its extension (retro-run keeps the ROM's own name). */
+#define MAX_STATE_BYTES   (2u * 1024u * 1024u)
+static char g_sram_path[1024], g_sram_tmp[1024];
+static char g_state_path[1024], g_state_tmp[1024];
+
+static int make_dirs(char *path)
+{
+    for (char *p = path + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = '\0';
+        int rc = mkdir(path, 0755);
+        *p = '/';
+        if (rc != 0 && errno != EEXIST) return -1;
+    }
+    if (mkdir(path, 0755) != 0 && errno != EEXIST) return -1;
+    return 0;
+}
+
+/* Fills the save paths and creates their directories; false (with a message)
+ * when there is no home to keep saves in, in which case nothing is saved. */
+static bool save_paths_init(const char *rom_path)
+{
+    char base[256], data[512], dir[768];
+    const char *name = strrchr(rom_path, '/');
+    snprintf(base, sizeof base, "%s", name ? name + 1 : rom_path);
+    char *dot = strrchr(base, '.');
+    if (dot && dot != base) *dot = '\0';
+
+    const char *xdg = getenv("XDG_DATA_HOME");
+    const char *home = getenv("HOME");
+    if (xdg && xdg[0] == '/') snprintf(data, sizeof data, "%s/retro-emulators", xdg);
+    else if (home && home[0] == '/') snprintf(data, sizeof data, "%s/.local/share/retro-emulators", home);
+    else {
+        fprintf(stderr, "[retro] no HOME or XDG_DATA_HOME: this game's saves will not be kept\n");
+        return false;
+    }
+    snprintf(dir, sizeof dir, "%s/saves", data);
+    if (make_dirs(dir) != 0) { perror(dir); return false; }
+    snprintf(g_sram_path, sizeof g_sram_path, "%s/%s.srm", dir, base);
+    snprintf(g_sram_tmp, sizeof g_sram_tmp, "%s/.%s.srm.tmp", dir, base);
+    snprintf(dir, sizeof dir, "%s/states", data);
+    if (make_dirs(dir) != 0) { perror(dir); return false; }
+    snprintf(g_state_path, sizeof g_state_path, "%s/%s.state", dir, base);
+    snprintf(g_state_tmp, sizeof g_state_tmp, "%s/.%s.state.tmp", dir, base);
+    return true;
+}
+
+/* Requests from the keyboard and from signals, acted on between frames. */
+static volatile sig_atomic_t g_quit_requested = 0;
+static volatile sig_atomic_t g_state_save_requested = 0;
+static volatile sig_atomic_t g_state_load_requested = 0;
+
+/* SIGTERM (how the page and the drop handler stop a game) and SIGHUP end the
+ * game the way Ctrl+C does, so its save memory is written before it exits. */
+static void on_quit_signal(int signo)
 {
     (void)signo;
-    g_save_requested = 1;
+    g_quit_requested = 1;
 }
 
 /* Extended game info handed to the core via GET_GAME_INFO_EXT. Providing the
@@ -248,8 +287,8 @@ static bool g_input_evdev = false;
  * keyboard raw (a terminal in raw mode, or the evdev device), so no terminal
  * turns Ctrl+C into SIGINT for it: the frontend sees the two keys and acts on
  * the chord itself. A lone Esc does nothing; it was too easy to press by
- * accident in the middle of a game. */
-static volatile sig_atomic_t g_quit_requested = 0;
+ * accident in the middle of a game. F2 saves a state and F4 loads it
+ * (RetroArch's keys; F5 would reload the browser page). */
 
 static void key_event(unsigned kc, bool pressed)
 {
@@ -259,8 +298,11 @@ static void key_event(unsigned kc, bool pressed)
         g_quit_requested = 1;
         return;
     }
-    if (kc == KEY_F5) {
-        if (pressed && !g_keystate[kc]) g_save_requested = 1;
+    if (kc == KEY_F2 || kc == KEY_F4) {
+        if (pressed && !g_keystate[kc]) {
+            if (kc == KEY_F2) g_state_save_requested = 1;
+            else g_state_load_requested = 1;
+        }
         g_keystate[kc] = pressed ? 1 : 0;
         return;
     }
@@ -561,7 +603,8 @@ static void print_keys(FILE *out, const char *core)
         if (!g_button_name[id][0]) continue;
         fprintf(out, "  %-12s %s\n", g_joypad_keys[id].key, g_button_name[id]);
     }
-    fprintf(out, "  %-12s %s\n", "F5", "save a state");
+    fprintf(out, "  %-12s %s\n", "F2", "save state");
+    fprintf(out, "  %-12s %s\n", "F4", "load state");
     fprintf(out, "  %-12s %s\n", "Ctrl+C", "quit");
 }
 
@@ -795,60 +838,90 @@ static int write_atomic_file(const char *path, const char *tmp_path,
     return 0;
 }
 
-static int write_save_state(void)
+/* F2: snapshot the whole machine into this game's state file. */
+static void save_state(void)
 {
-    void *request = NULL;
-    long request_size = load_file_limited(
-        SAVE_REQUEST_PATH, &request, SAVE_REQUEST_SIZE);
-    if (request_size != SAVE_REQUEST_SIZE) {
-        fprintf(stderr, "[retro] cannot save state: missing %u-byte request at %s\n",
-                SAVE_REQUEST_SIZE, SAVE_REQUEST_PATH);
-        free(request);
-        return -1;
-    }
-
+    if (!g_state_path[0]) return;
     size_t size = retro_serialize_size();
     if (size == 0 || size > MAX_STATE_BYTES) {
         fprintf(stderr, "[retro] cannot save state: core requested %zu bytes (max %u)\n",
                 size, MAX_STATE_BYTES);
-        free(request);
-        return -1;
+        return;
     }
-
     /* Some cores intentionally leave unused tail bytes untouched. Zero the
-     * complete advertised buffer before retro_serialize so a shared state can
-     * never contain stale heap contents and remains highly compressible. */
+     * complete advertised buffer so a state never holds stale heap contents. */
     void *state = calloc(1, size);
     if (!state) {
         fprintf(stderr, "[retro] cannot save state: allocation failed\n");
-        free(request);
-        return -1;
+        return;
     }
     if (!retro_serialize(state, size)) {
-        fprintf(stderr, "[retro] retro_serialize failed\n");
-        free(state);
-        free(request);
-        return -1;
+        fprintf(stderr, "[retro] cannot save state: the core could not serialize\n");
+    } else if (write_atomic_file(g_state_path, g_state_tmp, state, size) == 0) {
+        fprintf(stderr, "[retro] saved state: %s\n", g_state_path);
     }
-
-    int state_result = write_atomic_file(
-        SAVE_STATE_PATH, SAVE_STATE_TMP, state, size);
     free(state);
-    if (state_result != 0) {
-        free(request);
-        return -1;
-    }
+}
 
-    /* Publish completion only after the state rename. An older marker remains
-     * harmless because the browser waits for this request's exact nonce. */
-    if (write_atomic_file(
-            SAVE_DONE_PATH, SAVE_DONE_TMP, request, SAVE_REQUEST_SIZE) != 0) {
-        free(request);
-        return -1;
+/* F4: return to this game's saved state, if there is one. */
+static void load_state(void)
+{
+    if (!g_state_path[0]) return;
+    if (access(g_state_path, F_OK) != 0) {
+        fprintf(stderr, "[retro] no saved state yet (F2 saves one): %s\n", g_state_path);
+        return;
     }
-    free(request);
-    fprintf(stderr, "[retro] saved state: %s (%zu bytes)\n", SAVE_STATE_PATH, size);
-    return 0;
+    void *state = NULL;
+    long size = load_file_limited(g_state_path, &state, MAX_STATE_BYTES);
+    if (size < 0) {
+        fprintf(stderr, "[retro] cannot load state: %s is unreadable or over %u bytes\n",
+                g_state_path, MAX_STATE_BYTES);
+    } else if (!retro_unserialize(state, (size_t)size)) {
+        fprintf(stderr, "[retro] cannot load state: the core rejected %s\n", g_state_path);
+    } else {
+        fprintf(stderr, "[retro] loaded state: %s\n", g_state_path);
+    }
+    free(state);
+}
+
+/* The cartridge's save memory (battery-backed SRAM): the core owns it, and
+ * the frontend keeps it in a file. g_sram_written is what the file holds, so
+ * a write happens only when the game changed something. */
+static uint8_t *g_sram_written = NULL;
+static size_t g_sram_size = 0;
+
+static void sram_load(void)
+{
+    size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    uint8_t *data = retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    if (!g_sram_path[0] || size == 0 || !data) return;
+    g_sram_written = malloc(size);
+    if (!g_sram_written) return;
+    g_sram_size = size;
+    if (access(g_sram_path, F_OK) == 0) {
+        void *saved = NULL;
+        long saved_size = load_file_limited(g_sram_path, &saved, size);
+        if (saved_size == (long)size) {
+            memcpy(data, saved, size);
+            fprintf(stderr, "[retro] loaded game save: %s\n", g_sram_path);
+        } else {
+            /* Not this game's size: keep the file, start without it. */
+            fprintf(stderr, "[retro] ignoring game save %s: expected %zu bytes\n",
+                    g_sram_path, size);
+        }
+        free(saved);
+    }
+    memcpy(g_sram_written, data, size);
+}
+
+static void sram_flush(void)
+{
+    uint8_t *data = retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    if (!g_sram_written || !data || memcmp(data, g_sram_written, g_sram_size) == 0) return;
+    if (write_atomic_file(g_sram_path, g_sram_tmp, data, g_sram_size) == 0) {
+        memcpy(g_sram_written, data, g_sram_size);
+        fprintf(stderr, "[retro] wrote game save: %s\n", g_sram_path);
+    }
 }
 
 int main(int argc, char **argv)
@@ -911,6 +984,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    if (!info_only && !keys_only && save_paths_init(argv[1])) sram_load();
+
     if (state_path) {
         void *state = NULL;
         long state_size = load_file_limited(state_path, &state, MAX_STATE_BYTES);
@@ -953,33 +1028,48 @@ int main(int argc, char **argv)
     dsp_open(srate);
     input_open();
 
-    /* Publish the pid only once a save can actually be served. */
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
-    sa.sa_handler = on_save_signal;
+    sa.sa_handler = on_quit_signal;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
-    if (sigaction(SIGUSR1, &sa, NULL) != 0) perror("sigaction(SIGUSR1)");
+    if (sigaction(SIGTERM, &sa, NULL) != 0) perror("sigaction(SIGTERM)");
+    if (sigaction(SIGHUP, &sa, NULL) != 0) perror("sigaction(SIGHUP)");
+    /* Publish the pid once the game holds the display, sound and keyboard:
+     * the drop handler takes it as the sign the game started. */
     char pid_text[32];
     int pid_len = snprintf(pid_text, sizeof pid_text, "%ld\n", (long)getpid());
     if (write_atomic_file(PID_PATH, g_pid_tmp, pid_text, (size_t)pid_len) != 0)
-        fprintf(stderr, "[retro] could not publish %s; checkpoints unavailable\n", PID_PATH);
+        fprintf(stderr, "[retro] could not publish %s\n", PID_PATH);
 
     int64_t target_ns = (int64_t)(1e9 / fps);
     fprintf(stderr, "[retro] running (%.3f fps, %lld ns/frame)\n", fps, (long long)target_ns);
 
+    /* The game's own saves are written within a few seconds of the game
+     * changing them, so a closed tab loses little. */
+    const unsigned sram_flush_frames = (unsigned)(fps * 3.0);
+    unsigned frames = 0;
     while (!g_quit_requested) {
         struct timespec frame_start;
         now_ts(&frame_start);
         retro_run();
         memset(g_keylatch, 0, sizeof g_keylatch);
-        if (g_save_requested) {
-            g_save_requested = 0;
-            (void)write_save_state();
+        if (g_state_save_requested) {
+            g_state_save_requested = 0;
+            save_state();
+        }
+        if (g_state_load_requested) {
+            g_state_load_requested = 0;
+            load_state();
+        }
+        if (++frames >= sram_flush_frames) {
+            frames = 0;
+            sram_flush();
         }
         if (!pace_by_audio(target_ns)) pace_to(&frame_start, target_ns);
     }
 
+    sram_flush();
     fprintf(stderr, "[retro] quit\n");
     unlink(PID_PATH);
     if (g_termios_saved) tcsetattr(STDIN_FILENO, TCSANOW, &g_saved_termios);
