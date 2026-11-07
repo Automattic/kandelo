@@ -81,6 +81,10 @@ Using the real syslog `pri = facility * 8 + level` encoding from the start means
 
 Derivation rather than precedent: a ~24-byte header plus 60–100 bytes of text is ~110 bytes per record, so 128 KiB holds roughly 1,200 records. A Kandelo boot produces an estimated 20–50 (boot identity, image mounts, about six device attaches, host capabilities) — roughly 5 KiB. 128 KiB is therefore about 25× the boot log, and protecting the boot log from eviction is the entire purpose of the sizing.
 
+**Correction (2026-11-06), after implementation.** The sentence above overstates what the sizing buys. The rate limiter bounds a flood's *rate*, not its *total*, and the ring is a ring — so the boot log survives bounded bursts but not sustained pressure. Measured after the limiter work: a guest looping over the ~45 named stub syscall numbers writes roughly 50 KB per 60-second window, which evicts the boot records in about three minutes; a guest confined to the shared unknown-number slot takes about 131 minutes. No ring size fixes that, and it was true of the design from the start.
+
+Deliberately not fixed by pinning the boot records. A ring that refuses to evict part of itself is a different data structure with its own failure mode — what happens when the pinned region plus the live records exceed capacity — and Linux has exactly this property without special-casing it. **The architecture already answers it elsewhere:** once the syslog daemon tails the ring into a durable `/var/log/messages`, the boot records are persisted and ring eviction stops being the thing that matters. The ring is the live window; the daemon is the record. What the sizing actually buys is that a *burst* cannot cost you the boot log before the daemon has read it.
+
 The memory cost is charged to kernel memory, flat per machine, and is negligible against the browser memory envelope. It is **not** configurable in v1: a boot-time knob means new boot-descriptor surface, and descriptors are untrusted input requiring validation and caps.
 
 ### What gets recorded
