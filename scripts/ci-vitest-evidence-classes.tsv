@@ -321,6 +321,7 @@ host/test/owned-job-reap.test.ts	source-only
 host/test/owned-jobs.test.ts	source-only
 host/test/package-runtime-file.test.ts	prepared-product
 host/test/pango-cairo-smoke.test.ts	prepared-product
+host/test/partial-image.test.ts	prepared-product
 host/test/patch-wasm-for-thread-gc.test.ts	source-only
 host/test/pathconf.test.ts	prepared-product
 host/test/pcm-audio-worklet.test.ts	source-only
@@ -388,6 +389,7 @@ host/test/remote-segment.test.ts	source-only
 host/test/remote-session-network.test.ts	source-only
 host/test/remote-tcp-guest.test.ts	prepared-product
 host/test/remote-tcp.test.ts	source-only
+host/test/retro-emulators-cli-smoke.test.ts	prepared-product
 host/test/reusable-kernel-export-stack.test.ts	prepared-product
 host/test/rlimit-as.test.ts	prepared-product
 host/test/rlimit-fsize.test.ts	prepared-product
@@ -622,6 +624,7 @@ tests/package-system/installed-host-package.test.ts	prepared-product
 tests/package-system/kandelo-build-image.test.ts	prepared-product
 tests/package-system/kernel-test-fixtures.test.ts	prepared-product
 tests/package-system/local-build-wrapper.test.ts	source-only
+tests/package-system/partial-shell-selection.test.ts	prepared-product
 tests/package-system/playwright-server-policy.test.ts	prepared-product
 tests/package-system/program-resolver-literals.test.ts	prepared-product
 tests/package-system/qtbase-package.test.ts	source-only
@@ -656,6 +659,7 @@ web-libs/kandelo-session/test/package-sessions.test.ts	source-only
 web-libs/kandelo-session/test/peer-connection.test.ts	source-only
 web-libs/kandelo-session/test/sized-download.test.ts	source-only
 web-libs/kandelo-session/test/terminal-links.test.ts	source-only
+web-libs/kandelo-session/test/terminal-request.test.ts	source-only
 web-libs/kandelo-session/test/tracked-demo-parity.test.ts	prepared-product
 web-libs/kandelo-session/test/vfs-asset-group.test.ts	source-only
 web-libs/kandelo-session/test/web-preview-address.test.ts	source-only
