@@ -50,7 +50,11 @@ PHP lifetimes and final application gates are separate requirements.
 
 Preserve eight-byte continuation slots when porting four-byte ABI0
 arguments. Convert logical PCs to table handles for clone/signal dispatch;
-never retain the old `PC >> 16` shortcut on wasm32. C bindings use table
+never retain the old `PC >> 16` shortcut on wasm32. This also applies to
+handwritten assembly fixtures: use four-byte ABI0 value/result slots and
+direct C table handles. Rebuild every enabled fixture from the selected
+compiler; an ABI-contract stamp and an existing file do not prove compiler
+source/version provenance. C bindings use table
 handles directly. Wasm indirect calls require exact types: ordinary cgo
 frame wrappers return void, while errno wrappers return i32. Record that
 distinction in linker metadata instead of rewriting frontend frame layouts.

@@ -593,7 +593,10 @@ then executes C functions through the exported Wasm function table in Node
 and Chromium. The `weighted` and `cross_weighted` C objects read `offset`
 from a data-only fourth object;
 both its direct table call and its Go assembly call return 13. The checked-in
-Go assembly checks these return values in a Kandelo process on both hosts.
+`stub_wasm32.s` uses four-byte ABI0 values and direct C table handles;
+it does not shift legacy logical PCs. It checks the return values in a
+Kandelo process on both hosts. The independent direct-object controls reject
+any unexpected host-function call instead of returning a synthetic result.
 The `tls_weighted` C object increments an initialized `_Thread_local` value;
 direct tests verify that separate Wasm instances over shared memory retain
 distinct TLS bases, and the Go assembly process checks the same variable.

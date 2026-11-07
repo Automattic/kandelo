@@ -48,6 +48,21 @@ console errors still asserted and their resource URLs included. The
 corrected regexp smoke passes all three engines (3/3, 9.7 seconds). Full
 candidate validation and promotion remain pending.
 
+The first broad build (`go-regexp-broad-gates-1107-020110-fdfb`) reaches all
+five standard-library passes, native regexp/race passes, seven focused
+runtime/cgo Node passes and a fresh PHP-embed build, then stops at the
+handwritten Go/C link-only process fixture. Fresh A0 and f605 source builds
+both fail its indirect call: the assembly still shifts C handles by 16 and
+uses legacy eight-byte value/result slots. The target-specific wasm32
+fixture now uses direct handles and four-byte values, preserving Go's
+separate eight-byte continuation slot. Direct C controls pass Node and
+Chromium, and the corrected actual Kandelo Node process exits 0 with its
+expected data marker and no diagnostics. Neither compiler nor app source
+changes. Earlier broad runs loaded a preexisting link-only artifact and do
+not establish its fresh-source provenance. The remaining Node/browser
+phases will resume from the completed f605 builds, retaining both failures.
+
+
 
 **Normal build integration:** the declared Nix Go 1.25.8 builds verified
 Go 1.26.10 source, which bootstraps the pinned Go 1.28 compiler. These are
@@ -78,7 +93,7 @@ reproducibility build remains unrecorded.
   Nonempty/malformed or otherwise unsupported BSD archives still fail.
   Eight parser cases and real archive execution pass on Node and browsers.
 
-**Coherent compiler validation:** clean `a0b048e1` passes seven focused
+**Earlier compiler validation:** clean `a0b048e1` passes seven focused
 Node cases, five standard-library builds, host cgo/object-reader/platform
 checks and two eight-check WASI controls. Selected Node OS coverage has
 60 top-level passes and six nested capability skips; selected syscall
@@ -95,7 +110,7 @@ The broad browser inventories remain **not green**:
 | --- | ---: | ---: | ---: | --- |
 | Initial migration, 243 planned | 130 | 5 | 108 | Old Root count, sync display-name argv[0], overlapping package publication |
 | Clean `5954fb32`, 255 planned | 135 | 5 | 115 | Two nosplit-only preemption-fixture failures, two valid negative bbolt seed mismatches, one cgo HTTP/SIGTERM stall |
-| Clean `a0b048e1`, 255 planned | 254 | 1 | 0 | WebKit native stack overflow in unchanged Go regexp compilation; 15.3 minutes |
+| Clean `a0b048e1`, 255 planned | 254 | 1 | 0 | WebKit regexp native stack overflow; 15.3 minutes; link-only artifact preexisting |
 
 Retain all reports. The Root assertion now retains all 65 cases, and sync
 re-exec uses its actual VFS executable path. The preemption fixture

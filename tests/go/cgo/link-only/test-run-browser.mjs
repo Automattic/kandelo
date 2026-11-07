@@ -39,7 +39,9 @@ try {
     for (const entry of WebAssembly.Module.imports(module)) {
       if (entry.kind === 'function') {
         imports[entry.module] ??= {};
-        imports[entry.module][entry.name] = () => 0;
+        imports[entry.module][entry.name] = () => {
+          throw new Error(`Unexpected host call in direct C-object control: ${entry.module}.${entry.name}`);
+        };
       }
     }
     const instance = await WebAssembly.instantiate(module, imports);
