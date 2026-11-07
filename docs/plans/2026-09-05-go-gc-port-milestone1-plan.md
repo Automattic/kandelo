@@ -3,10 +3,14 @@
 ## Current checkpoint — 2026-11-06
 
 **Maintainer priority clarification:** improve Kandelo rather than adapting
-applications around incomplete platform support. Further package adaptations
-and promotion of the candidate PHP image are on hold for discussion. The
-already-running build may finish; its output is evidence, not approval of
-the approach. No requested behavior is considered complete on that basis.
+applications around incomplete platform support. First audit and fix general
+cgo gaps, removing FrankenPHP adaptations those fixes replace. The maintainer
+approved that order. Keep the PHP traversal change as an upstream candidate
+only if correctness, fragility and performance evidence support the argument
+across native platforms as well as browsers. A finite set of measurements
+cannot establish that it is faster on every platform. The 184-node build
+finished (`8a14`, 30m17s; 170 cached, 14 published), but no final runtime
+pass-after is established and the candidate preview is not promoted.
 
 The audit identifies three distinct cases:
 
@@ -28,6 +32,65 @@ The audit identifies three distinct cases:
   of behavior does not by itself settle whether these adaptations fit the
   maintainer's intended portability policy. Go's code generator and
   collector remain unchanged, but its standard library is modified.
+
+The maintainer also suggested a general recursion-to-iteration
+instrumentation pass. Assess it after the cgo audit, without changing Go's
+collector or code generator. LLVM's existing tail-recursion elimination
+handles narrower shapes; PHP's postorder traversal resumes work after the
+recursive call and needs explicit continuation frames. Kandelo's fork
+continuations are not already a general execution-stack replacement.
+Before implementing such a pass, define the accepted call shapes and prove
+operand/local preservation, successor and side-effect order, indirect and
+cross-instance calls, exceptions/nonlocal exits, cgo reentrancy, thread-local
+frame ownership, allocation failure, and coexistence with fork
+instrumentation. Reject unsupported shapes explicitly. A direct LLVM
+21.1.7 `tailcallelim` check after `-O2` retains the recursive call in the
+unchanged standalone PHP traversal; enabling that existing pass alone
+does not solve this case. Evidence is
+`.context/php-cfg-tailcallelim-assessment.log`. Compare code size,
+compile cost, native stack depth, guest allocations and request latency
+against unchanged upstream inputs on Node and all three browsers. Prefer
+an existing reviewed transformation if it satisfies that contract; do not
+introduce a large new execution model just to clear this demo's gate.
+
+References: [LLVM tail-call elimination](https://llvm.org/docs/Passes.html#tailcallelim-tail-call-elimination)
+and the [WebAssembly tail-call semantics](https://github.com/WebAssembly/tail-call/blob/main/proposals/tail-call/Overview.md).
+
+### Current cgo adaptation audit — 2026-11-06
+
+The corrected isolated compile audit (`b72e`, 36s) compares verified
+FrankenPHP 1.11.0 source with the complete package patch, using pinned Go
+`5834adc` and normally built PHP ZTS 9 headers. Unchanged source produces
+18 errors in pointer-bearing struct initializers, assignments, nil
+comparisons and linked-list access. The patched control compiles. This is
+compile-only evidence, not final linking or service execution. The earlier
+`91e6` diagnostic did not apply its control patch correctly inside the parent
+Git worktree; explicit patch-content guards fix that setup error in `b72e`.
+
+The new general aggregate regression sends 24 distinct 12-byte structs by
+value, with C pointer arguments before and after them. It verifies field
+order, lengths, pointer identity and every C-owned pointee. Node passes
+with empty stderr/diagnostics, and Chromium/Firefox/WebKit pass all three
+cases (`063d`, 17s; browser execution 7.5s). The smaller first version also
+passed (`d633`, 22s). No Go toolchain or production package changes were
+needed for these results.
+
+Restoring the original FrankenPHP bulk call in an isolated source copy
+also compiles with explicit 32-bit field conversions. That is not a safe
+release fix yet: `toUnsafeChar` addresses Go string storage, and raw
+integer fields do not retain Go GC roots. The generic test's C-owned
+storage deliberately does not establish that lifetime contract. No bulk
+call restoration or recipe revision change is retained in the registry.
+
+The remaining direct-field errors are a structural cross-ABI issue:
+stock Go/Wasm pointers are 64-bit, while the C SDK's pointers are 32-bit.
+Using ordinary Go pointer fields changes the C struct layout; keeping
+32-bit raw fields changes the source-level field operations and GC
+visibility. A kernel/POSIX fix cannot reconcile those representations.
+Transparent field translation or a shared pointer-width ABI needs a
+separate design assessment before invasive toolchain changes. The
+maintainer has been asked which boundary to adopt. The current explicit
+accessors remain in place, with no claim of unchanged-source cgo support.
 
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55 and main `21cfba152` (last fetched November 5). The Go consumer
@@ -80,7 +143,9 @@ traversal agrees with the original on 2,000 generated graphs and handles
 regression fails before the correction on WebKit; both Node controls pass.
 PHP revision 23 and PHP ZTS revision 9 now share that scoped algorithm patch,
 and WordPress advances to revision 40. The normal 184-node rebuild (`8a14`)
-is running. Real package pass-after and final-image gates remain pending.
+finished in 30m17s (170 cached, 14 published). Real package pass-after and
+final-image gates remain pending, and candidate promotion is held under
+the upstream-benefit criterion above.
 
 The prior revision-39 memory/lifecycle gate passed all 18 browser, 239
 ownership, seven boundary, three Node and seven Bun cases (`ba3c`, 20m20s).

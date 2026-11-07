@@ -482,11 +482,19 @@ Trace the whole link path before changing flags or package recipes:
   struct literal or compare a raw `Bucket.key` field with `nil`: cgo exposes
   those C addresses as `uint32` on this target. Build the value with a typed
   C constructor and retrieve the hash key through a typed C accessor.
-- FrankenPHP's CGI bulk registration passed a pointer-bearing C struct by
-  value, another unsupported mixed-width case. Its Kandelo package patch
-  uses the existing scalar/pointer `frankenphp_register_single` entry until
-  a general packed-struct cgo bridge exists. This makes extra Go-to-C calls
-  per request; measure the app before making performance claims.
+- FrankenPHP's CGI bulk registration originally exposed an unsupported
+  pointer-bearing C struct passed by value. Its package patch still uses
+  the scalar/pointer `frankenphp_register_single` entry. The current general
+  bridge now passes 24 consecutive 12-byte pointer-bearing structs, with
+  pointer arguments before and after them, on Node and all three browsers.
+  This test uses C-owned storage. An isolated restoration of the original
+  bulk call compiles with explicit field-width conversions, but compilation
+  is not sufficient to remove the adaptation: those integer fields do not
+  retain Go GC roots for Go-backed strings. Prove argument lifetime and
+  real request behavior before restoring it. Do not call the whole
+  aggregate ABI unsupported on the basis of the older failure, or silently
+  convert Go-managed pointers into raw integers. The remaining scalar path
+  makes extra Go-to-C calls; measure the app before performance claims.
 - Static libraries must be declared through `#cgo LDFLAGS` with
   `-L${SRCDIR}/lib -l...`; environment-only `CGO_LDFLAGS` does not give the
   internal linker a search path and can force unsupported external linking.

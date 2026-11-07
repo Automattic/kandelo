@@ -67,6 +67,55 @@ static int check_packed(struct packed value) {
     return value.tag == 13 && value.pointer == &target &&
         value.wide == 0x8877665544332211ULL && value.tail == 17;
 }
+
+struct bulk_pair {
+    unsigned char *key;
+    unsigned char *value;
+    uint32_t length;
+};
+
+static unsigned char bulk_values[24][2];
+
+static struct bulk_pair make_bulk_pair(unsigned int index) {
+    bulk_values[index][0] = (unsigned char)(index + 1);
+    bulk_values[index][1] = (unsigned char)(index + 37);
+    struct bulk_pair pair = {
+        &bulk_values[index][0], &bulk_values[index][1], index + 101
+    };
+    return pair;
+}
+
+// A long sequence of 12-byte aggregates exercises successive argument offsets,
+// unlike one aggregate round-trip. Every pointer refers to C-owned storage.
+static int check_bulk_pairs(
+    int *prefix,
+    struct bulk_pair p0, struct bulk_pair p1, struct bulk_pair p2,
+    struct bulk_pair p3, struct bulk_pair p4, struct bulk_pair p5,
+    struct bulk_pair p6, struct bulk_pair p7, struct bulk_pair p8,
+    struct bulk_pair p9, struct bulk_pair p10, struct bulk_pair p11,
+    struct bulk_pair p12, struct bulk_pair p13, struct bulk_pair p14,
+    struct bulk_pair p15, struct bulk_pair p16, struct bulk_pair p17,
+    struct bulk_pair p18, struct bulk_pair p19, struct bulk_pair p20,
+    struct bulk_pair p21, struct bulk_pair p22, struct bulk_pair p23,
+    int *suffix
+) {
+    if (prefix != &target || suffix != &target) {
+        return 0;
+    }
+    struct bulk_pair pairs[] = {
+        p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11,
+        p12, p13, p14, p15, p16, p17, p18, p19, p20, p21, p22, p23
+    };
+    for (unsigned int i = 0; i < 24; i++) {
+        if (pairs[i].key != &bulk_values[i][0] ||
+            pairs[i].value != &bulk_values[i][1] ||
+            *pairs[i].key != i + 1 || *pairs[i].value != i + 37 ||
+            pairs[i].length != i + 101) {
+            return 0;
+        }
+    }
+    return 1;
+}
 */
 import "C"
 
@@ -113,6 +162,20 @@ func main() {
 		binary.LittleEndian.Uint64(packedBytes[5:13]) != 0x8877665544332211 ||
 		packedBytes[13] != 17 || C.check_packed(packed) != 1 {
 		panic("C packed aggregate return or by-value argument failed")
+	}
+	var pairs [24]C.struct_bulk_pair
+	for i := range pairs {
+		pairs[i] = C.make_bulk_pair(C.uint(i))
+	}
+	if unsafe.Sizeof(pairs[0]) != 12 || C.check_bulk_pairs(
+		C.target_address(),
+		pairs[0], pairs[1], pairs[2], pairs[3], pairs[4], pairs[5],
+		pairs[6], pairs[7], pairs[8], pairs[9], pairs[10], pairs[11],
+		pairs[12], pairs[13], pairs[14], pairs[15], pairs[16], pairs[17],
+		pairs[18], pairs[19], pairs[20], pairs[21], pairs[22], pairs[23],
+		C.target_address(),
+	) != 1 {
+		panic("C bulk pointer-bearing aggregate arguments failed")
 	}
 	fmt.Println("CGO MIXED STRUCT PASS")
 }

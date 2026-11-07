@@ -450,7 +450,11 @@ pointer array, returned from C and passed back by value. On Kandelo/Wasm,
 generated Go struct fields that hold C addresses are 4-byte `uint32` values,
 not native Go pointers; explicit conversion is required to use a C-owned
 address. It also checks a packed 14-byte struct with an unaligned pointer
-and 64-bit integer, returned from C and passed back by value. Do not store
+and 64-bit integer, returned from C and passed back by value. A bulk call
+passes 24 consecutive 12-byte pointer-bearing structs, with ordinary pointer
+arguments before and after them, and verifies every field and C pointee.
+The bulk test uses C-owned storage; it does not establish lifetime safety
+for Go-backed strings represented as raw C addresses. Do not store
 a Go-managed pointer in these raw fields. Build,
 instrument, stamp, and run this focused probe with:
 
