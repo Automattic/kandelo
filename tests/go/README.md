@@ -613,3 +613,35 @@ test pass through the normal kernel/VFS process path with matching ABI
 digests and no host diagnostics. See `roadrunner/README.md` for commands
 and scope. This is not yet a registry package, Composer SDK test, all-plugin
 CLI, or full Go conformance. UDP, DNS, and TLS are not the first blockers.
+
+## Isolated 32-bit Go/Wasm prototype
+
+The `kandelo-wasm32-prototype` branch of `kandelo-dev/go` ports Kandelo's
+runtime onto upstream's Go 1.28 development `wasm32` review stack. It is
+separate from the pinned Go 1.25.6 compiler and production packages. The
+implementation log records its exact base and checkpoint revision. Build
+that compiler with the verified Go 1.26.10 bootstrap described there; a
+Go 1.25 bootstrap is too old for this source tree.
+
+The new architecture uses four-byte Go pointers and integers, with
+upstream's eight-byte registers, stack alignment and continuation slots.
+The prototype currently validates plain Go. It does not yet provide a
+validated cgo runtime, FrankenPHP build or replacement production preview.
+
+Run its separate fixture inventory without replacing `.context/go-browser`:
+
+```sh
+scripts/dev-shell.sh bash -c 'export GO_KANDELO_BIN=/absolute/path/to/prototype/bin/go; bash tests/go/wasm32-prototype/build.sh'
+scripts/dev-shell.sh node --import tsx tests/go/wasm32-prototype/run.ts
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_PLAYWRIGHT_PORT=5461 KANDELO_GO_WASM32_TESTS=1 npx playwright test test/go-wasm32.spec.ts --project=chromium --project=firefox --project=webkit --workers=1'
+```
+
+The runtime probe checks real target layout, interior GC roots, escaping
+pointer-field addresses, reflection and function PCs, closures/interfaces,
+stack growth, panic/recover, goroutine communication, concurrent locked
+kernel threads and pointer/32-bit/64-bit atomic operations. It checks the
+adjacent word to detect an eight-byte pointer store on this four-byte
+target. Its explicit `runtime.GC` calls test root retention, not physical
+memory reclamation. The second probe reuses the existing startup/VFS,
+nanosecond timestamp, randomness and clock checks. These bounded tests do
+not establish general Go conformance or application performance.

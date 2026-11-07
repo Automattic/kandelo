@@ -44,6 +44,20 @@ checks on both WASI32 and legacy Wasm under Node; a real cgo probe rejects
 its unrecognized pointer size. This is investigation evidence, not Kandelo
 runtime, cgo or browser support.
 
+The maintainer subsequently approved the isolated Kandelo runtime
+prototype. Its separate `kandelo-wasm32-prototype` branch now passes plain
+Go runtime/thread and VFS/startup probes in Node and all three browsers;
+the implementation log pins checkpoint `2b16bffd237d`. The full standard
+library builds for Kandelo32, both WASI variants and legacy js/Wasm. Cgo
+execution remains unfinished and production recipes still pin `5834adc`.
+Use `tests/go/wasm32-prototype` and `go-wasm32.spec.ts` for that separate
+inventory. Preserve eight-byte registers and continuation slots when
+porting four-byte ABI0 arguments. Convert logical PCs to table handles for
+clone/signal dispatch; never retain the old `PC >> 16` shortcut on wasm32.
+Do not restore the removed mixed-width pointer-field/frame adaptations
+in this homogeneous target. Frontend type tests do not prove callbacks,
+C-pthread lifetime, archive linking or the final application.
+
 Kandelo is a Unix target for Go build constraints. Register it in both
 `src/internal/syslist/syslist.go` and `src/cmd/dist/build.go`; changing only
 one leaves `go/build` and the toolchain disagreeing. Then inspect files newly

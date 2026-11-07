@@ -2,14 +2,16 @@
 
 ## Current checkpoint — 2026-11-06
 
-**Latest investigation:** the maintainer authorized investigating a proper
-32-bit-pointer Go/Wasm target. Upstream already has an accepted proposal
-and partial implementation. The layout study below supports following
-that work. An unmodified upstream Go/WASI32 compiler and focused Node
-probe now build and pass in an isolated checkout. No Kandelo Go/Wasm32
-runtime or cgo support is implemented, and no production source, recipe
-pin, ABI or preview has changed. This is an
-investigation result, not completion of the original service goal.
+**Latest prototype:** the maintainer authorized implementing the isolated
+32-bit-pointer Go/Wasm target. Plain Go now runs as `kandelo/wasm32` in
+Kandelo's Node, Chromium, Firefox and WebKit hosts. Nine runtime checks and
+the existing VFS/startup probe pass; the full standard library builds for
+all four control targets. Source is pushed separately at
+[`2b16bffd237d`](https://github.com/kandelo-dev/go/commit/2b16bffd237d2949aab3763b5181325c0b775f7b).
+Cgo execution and application migration remain unfinished. Production Go
+source `5834adc`, recipe pins, ABI 55 and the revision-39 preview remain
+unchanged. This is a runtime prototype checkpoint, not completion of the
+original service goal.
 
 **Maintainer priority clarification:** improve Kandelo rather than adapting
 applications around incomplete platform support. First audit and fix general
@@ -64,6 +66,78 @@ introduce a large new execution model just to clear this demo's gate.
 
 References: [LLVM tail-call elimination](https://llvm.org/docs/Passes.html#tailcallelim-tail-call-elimination)
 and the [WebAssembly tail-call semantics](https://github.com/WebAssembly/tail-call/blob/main/proposals/tail-call/Overview.md).
+
+### Isolated Kandelo/wasm32 runtime prototype — 2026-11-06
+
+The maintainer approved proceeding after the investigation below. The
+prototype branch is
+[`kandelo-wasm32-prototype`](https://github.com/kandelo-dev/go/tree/kandelo-wasm32-prototype),
+with upstream base `5e196a61a223f2590d576909992bea8803d770f9` and initial
+Kandelo checkpoint `2b16bffd237d2949aab3763b5181325c0b775f7b`. It remains in
+`.context/go-wasm32-study-7VN0Qm/upstream`, separate from `../go-kandelo`.
+The compiler builds with the study's verified Go 1.26.10 bootstrap through
+`scripts/dev-shell.sh`. No package selects it yet.
+
+The port reuses the existing Kandelo OS/runtime, syscall channel, kernel
+mapping allocator, shared-memory atomics and C archive object reader. Its
+256 changed paths primarily forward-port that existing target onto Go 1.28
+development sources; this is not a new private compiler backend. Upstream
+supplies the architecture and code generation. Kandelo adds atomic Wasm
+instructions and retains the existing overflow-safe large-frame guard.
+The upstream collector remains intact. The legacy regexp algorithm change
+is deliberately omitted from this branch.
+
+Pointers, integers and pointer atomics are four bytes; virtual registers,
+64-bit alignment and return/resume slots stay eight bytes. Thread startup,
+signal registration and C relocations distinguish upstream's dense logical
+Go PCs from Wasm function-table handles. Thread startup still captures each
+M's own syscall channel, and heap mappings use the shared kernel allocator.
+Go 1.28's lock-accounting delta, scavenger zeroing hook and directory-stat
+selection are implemented for Kandelo. Scavenged bytes remain reusable;
+these changes do not establish physical memory reclamation.
+
+The prototype removes the mixed-width cgo pointer-field mapping and
+export-frame marshalling. C pointer fields now retain ordinary typed Go
+pointers. Frontend tests require typed pointer elements and an ordinary
+16-byte scalar/pointer frame. This does not establish cgo execution: the
+first full cgo build currently stops at `cmd/cgo`'s dynamic-import scan,
+which still lacks a Wasm object case. The 32-bit runtime C-call bridge,
+callback continuations, C-created pthreads, archive/TLS linking and ordinary
+FrankenPHP source still require validation before replacing recipes.
+
+Validation through the declared dev shell:
+
+- Host compiler build passes using the verified bootstrap.
+- `go build std` passes for `kandelo/wasm32`, `wasip1/wasm32`,
+  `wasip1/wasm` and `js/wasm`. Host `cmd/cgo`,
+  `cmd/link/internal/loadwasm` and generated `internal/platform` tests pass.
+- Both WASI variants retain the eight functional investigation checks on
+  Node, including reflection and continuation/stack-growth behavior.
+- The new `tests/go/wasm32-prototype` Node inventory passes its runtime
+  and VFS/startup programs. The runtime program adds four concurrently
+  live locked Ms, shared 32/64-bit bitwise atomics, pointer exchange/CAS
+  and an adjacent-word guard against oversized pointer stores.
+- `go-wasm32.spec.ts` passes 6/6 cases in Chromium, Firefox and WebKit
+  (15.7 seconds). It runs those same runtime and existing startup/VFS
+  programs through real kernel/process workers and verifies the program's
+  contract digest against the selected kernel. The runtime test checks
+  eleven layout values and nine functional categories.
+
+Commands are in `tests/go/README.md`. Runtime GC calls test root retention,
+not memory reclamation. No full Go conformance, cgo/browser application,
+performance or WordPress readiness claim follows from these focused tests.
+Build/control logs are in `.context/go-wasm32-study-7VN0Qm/`; final Node
+results are `.context/go-wasm32-prototype/{node,basic-node}.json`.
+The first compiler build failed on an unregenerated opcode-name file;
+subsequent target gates exposed upstream API/file-selection changes and
+obsolete mixed-width unit expectations. Those failures are retained in
+the study logs, followed by the successful final runs.
+
+Next: port the general cgo object scan and 32-bit C-call/callback bridge,
+prove ordinary typed struct field access and GC lifetimes, then remove the
+corresponding FrankenPHP adaptations. Do not promote this compiler based
+on plain-Go or frontend tests alone. PHP native call depth and WebKit
+memory costs remain independent release gates.
 
 ### 32-bit Go/Wasm target investigation — 2026-11-06
 
