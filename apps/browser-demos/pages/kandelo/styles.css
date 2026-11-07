@@ -732,6 +732,9 @@
   flex: 0 0 auto;
 }
 
+/* Match the 34px demo-controls row: terminal tabs are 26px high plus
+   padding and borders. A taller row would resize the guest monitor merely
+   when switching views, including between a mode query and its first flip. */
 .kdock-view-tabs {
   width: 100%;
   min-height: 34px;
@@ -739,7 +742,7 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 4px;
+  padding: 3px 4px;
   border: 1px solid var(--kdock-border);
   border-radius: 10px;
   background: var(--kdock-bg-sunk);

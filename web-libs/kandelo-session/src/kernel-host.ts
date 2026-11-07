@@ -669,6 +669,13 @@ export type MachineAudioState =
   | "closed"
   | "error";
 
+export interface KmsDisplayAttachOptions {
+  mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout";
+  /** Stable physical/layout viewport when the canvas is aspect-fitted to a
+   * guest framebuffer. Kept on this host; never transported to a worker. */
+  displayViewport?: HTMLElement;
+}
+
 /**
  * Handle returned by `attachKmsDisplay`. The wrapped canvas is wired up
  * as the scanout target for a KMS CRTC; whatever wasm process holds
@@ -1110,7 +1117,7 @@ export interface KernelHost {
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId?: number,
-    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
+    opts?: KmsDisplayAttachOptions,
   ): KmsDisplayHandle | null;
   // The one canvas a display pane mounts for a CRTC, kept for the kernel's
   // lifetime so a pane remount cannot strand a program's WebGL context on
@@ -1476,6 +1483,9 @@ export class LiveKernelHost implements KernelHost {
    *  the pane closes its handle, reconnected when the cached handle is
    *  reused (StrictMode's mount → cleanup → mount). */
   private kmsResizeObservers = new WeakMap<HTMLCanvasElement, ResizeObserver>();
+  /** The host-local layout authority. close() deletes it so a cached canvas
+   * does not keep an extra old-pane reference after a later remount. */
+  private kmsResizeTargets = new WeakMap<HTMLCanvasElement, HTMLElement>();
   private kmsObservedCanvases = new Set<HTMLCanvasElement>();
   private kmsDisplayScale: number | null = null;
   /**
@@ -1599,6 +1609,7 @@ export class LiveKernelHost implements KernelHost {
     // Waiters on the detached kernel will never see a report: release them.
     for (const canvas of this.kmsObservedCanvases) this.kmsResizeObservers.get(canvas)?.disconnect();
     this.kmsObservedCanvases.clear();
+    this.kmsResizeTargets = new WeakMap();
     this.kmsDisplayScale = null;
     this.kmsDisplaySizes.clear();
     this.settleKmsDisplaySizeWaiters(undefined, undefined);
@@ -3104,7 +3115,9 @@ export class LiveKernelHost implements KernelHost {
     for (const canvas of this.kmsObservedCanvases) {
       const observer = this.kmsResizeObservers.get(canvas)!;
       observer.disconnect();
-      observer.observe(canvas);
+      const target = this.kmsResizeTargets.get(canvas);
+      if (!target) throw new Error("KMS display has no layout observation target");
+      observer.observe(target);
     }
   }
 
@@ -3209,10 +3222,15 @@ export class LiveKernelHost implements KernelHost {
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId: number = KMS_PRIMARY_CRTC,
-    opts: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" } = {},
+    opts: KmsDisplayAttachOptions = {},
   ): KmsDisplayHandle | null {
     if (!this.kernel?.kmsAttachCanvas) return null;
     if (typeof canvas.transferControlToOffscreen !== "function") return null;
+    // A canvas can itself be an embedder's physical surface. An aspect-fitted
+    // canvas instead needs an explicit containing viewport: guest backing or
+    // fit changes must not mutate the connector mode it already selected.
+    const { displayViewport, ...rendererOptions } = opts;
+    const resizeTarget = displayViewport ?? canvas;
     // A remounted pane hits this method again on the same DOM canvas: React
     // 18 StrictMode double-invokes effects (mount → cleanup → mount), and a
     // pane using kmsDisplayCanvas gets the same element on every mount.
@@ -3224,16 +3242,22 @@ export class LiveKernelHost implements KernelHost {
       // The earlier close() disconnected the observer; the reused handle
       // must keep feeding display sizes.
       const observer = this.kmsResizeObservers.get(canvas);
-      if (observer) { observer.observe(canvas); this.kmsObservedCanvases.add(canvas); }
+      if (observer) {
+        observer.disconnect();
+        this.kmsResizeTargets.set(canvas, resizeTarget);
+        observer.observe(resizeTarget);
+        this.kmsObservedCanvases.add(canvas);
+      }
       return cached;
     }
     // Reserve 64 bytes for bounded display counters and ownership metadata.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
-    const mode = opts.mode ?? this.kmsDisplayModeDefault ?? "webgl2";
+    const mode = rendererOptions.mode ?? this.kmsDisplayModeDefault ?? "webgl2";
     const offscreen = canvas.transferControlToOffscreen();
     this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, {
-      ...opts,
+      // DOM layout authority is not a transferable renderer option.
+      ...rendererOptions,
       mode,
       ...(globalThis.document ? {
         cursorCanvas: this.kmsCursorCanvas(crtcId).transferControlToOffscreen(),
@@ -3241,8 +3265,9 @@ export class LiveKernelHost implements KernelHost {
     });
     const kernel = this.kernel;
     // The webgl2-scanout presenter renders at display resolution: track
-    // the canvas element's device-pixel size and forward it so the pump
-    // sizes its drawing buffer to the pixels the user actually sees.
+    // the physical/layout viewport's device-pixel size and forward it. The
+    // guest canvas may fit a different aspect and must not feed back into
+    // connector identity when its own backing dimensions change.
     // `devicePixelContentBoxSize` gives exact device pixels where
     // supported; fall back to CSS size × devicePixelRatio.
     if (
@@ -3250,12 +3275,16 @@ export class LiveKernelHost implements KernelHost {
       kernel.kmsSetDisplaySize &&
       typeof ResizeObserver !== "undefined"
     ) {
+      this.kmsResizeTargets.set(canvas, resizeTarget);
       const resizeObserver = new ResizeObserver((entries) => {
         if (this.kernel !== kernel) {
           resizeObserver.disconnect();
           return;
         }
         const entry = entries[entries.length - 1];
+        // A queued delivery from the old pane may follow StrictMode remount.
+        // Only the current layout owner's report may change this connector.
+        if (!entry || entry.target !== this.kmsResizeTargets.get(canvas)) return;
         const dp = entry.devicePixelContentBoxSize?.[0];
         const scale = this.kmsDisplayScale ?? this.getPresentation().displayScale;
         // WHY: bitmap clients must see one readable pixel grid, including
@@ -3283,7 +3312,7 @@ export class LiveKernelHost implements KernelHost {
         kernel.kmsSetDisplaySize?.(crtcId, width, height, physicalMm);
         this.settleKmsDisplaySizeWaiters(crtcId, { width, height });
       });
-      resizeObserver.observe(canvas);
+      resizeObserver.observe(resizeTarget);
       this.kmsResizeObservers.set(canvas, resizeObserver);
       this.kmsObservedCanvases.add(canvas);
     }
@@ -3362,6 +3391,7 @@ export class LiveKernelHost implements KernelHost {
         // (an observer on a removed element need not fire again to notice).
         // A remount reuses the cached handle and reconnects it.
         this.kmsResizeObservers.get(canvas)?.disconnect();
+        this.kmsResizeTargets.delete(canvas);
         this.kmsObservedCanvases.delete(canvas);
       },
     };

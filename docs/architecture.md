@@ -4941,8 +4941,18 @@ The browser shell image carries cage as a lazy file, and its `cage` machine
 runs `cage -- wlterm`. The machine declares `kms-gl-scanout`, so the vblank
 pump's WebGL2 scanout presenter shows the CRTC whenever no GL context owns
 the canvas: before cage's GLES2 context claims it, after that context ends,
-and for a session on the pixman renderer. The connector mode follows the
-pane's device pixels.
+and for a session on the pixman renderer. The connector's preferred mode
+follows the containing layout viewport's device pixels (or its explicit
+bitmap render scale). The fitted guest canvas is not display authority:
+changing a guest framebuffer's backing size or aspect must not withdraw
+the monitor mode that the guest selected before its first page flip.
+`LiveKernelHost.attachKmsDisplay` accepts a host-local `displayViewport`
+element for this purpose, observes genuine viewport resizing, and never
+sends that DOM element to a worker. Standalone canvas embedders may retain
+the canvas itself as their physical surface. Closing or remounting a pane
+retires or replaces the observation target. Terminal and demo dock
+controls reserve the same row height, so switching views does not invent
+a monitor resize while a hidden KMS pane is being measured.
 
 Gates: `host/test/cage-smoke.test.ts` (a raw libwayland client gets a
 configure, a presentation feedback after a real page flip, the keymap, a key

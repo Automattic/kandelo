@@ -1392,3 +1392,11 @@ Freeciv display correctness, content latency and teardown failures remain
 part of this iteration; focused controls cannot waive native-feel or final
 three-engine acceptance. Remaining driver work, GLES3, IGT and multiple
 displays remain the proposed subsequent iteration.
+
+
+The current-iteration viewport repair separates monitor layout authority
+from guest canvas fitting and prevents terminal/demo row-height changes
+from altering connector modes. Its matched18-case three-engine functional
+comparison passes, but does not establish Freeciv responsiveness. Resolve
+the observed host teardown failures and rerun the final memory, application
+and latency gates in this iteration; those checks are not future deferrals.

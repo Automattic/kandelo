@@ -2887,11 +2887,17 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
   class FakeResizeObserver {
     static instances: FakeResizeObserver[] = [];
     disconnected = false;
-    constructor(public cb: (entries: unknown[]) => void) {
+    target: unknown;
+    cb: (entries: any[]) => void;
+    constructor(callback: (entries: any[]) => void) {
+      this.cb = (entries) => callback(entries.map((entry) => ({
+        ...entry, target: entry.target ?? this.target,
+      })));
       FakeResizeObserver.instances.push(this);
     }
     observing = false;
-    observe(): void {
+    observe(target: unknown): void {
+      this.target = target;
       this.observing = true;
       this.disconnected = false;
     }
@@ -2932,6 +2938,45 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       (globalThis as { ResizeObserver?: unknown }).ResizeObserver = real;
     }
   };
+
+  it("observes explicit layout authority, never sends it to the worker, and ignores a stale canvas report", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost(), kernel = makeKmsKernel();
+      host.attachKernel(kernel as any); host.setKmsDisplayMode("webgl2-scanout");
+      const canvas = makeCanvas(), viewport = {} as HTMLElement;
+      host.attachKmsDisplay(canvas, 1, { displayViewport: viewport });
+      const ro = FakeResizeObserver.instances[0];
+      expect(ro.target).toBe(viewport);
+      expect(kernel.kmsAttachCanvas.mock.calls[0][3]).not.toHaveProperty("displayViewport");
+      fireResize(ro, 1280, 720);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 1280, height: 720 });
+      ro.cb([{ target: canvas, contentRect: { width: 640, height: 480 } }]);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 1280, height: 720 });
+      fireResize(ro, 1440, 900);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 1440, height: 900 });
+      host.detachKernel();
+    });
+  });
+
+  it("rebinds a cached canvas and scale remeasurement to its current viewport", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost(); host.attachKernel(makeKmsKernel() as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const canvas = makeCanvas(), oldViewport = {} as HTMLElement, nextViewport = {} as HTMLElement;
+      const handle = host.attachKmsDisplay(canvas, 1, { displayViewport: oldViewport })!;
+      const ro = FakeResizeObserver.instances[0]; handle.close();
+      expect((host as any).kmsResizeTargets.has(canvas)).toBe(false);
+      expect(host.attachKmsDisplay(canvas, 1, { displayViewport: nextViewport })).toBe(handle);
+      expect(ro.target).toBe(nextViewport);
+      ro.cb([{ target: oldViewport, contentRect: { width: 640, height: 480 } }]);
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+      host.setKmsDisplayScale(1.5); expect(ro.target).toBe(nextViewport);
+      fireResize(ro, 1440, 810);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 960, height: 540 });
+      host.detachKernel();
+      expect((host as any).kmsResizeTargets.has(canvas)).toBe(false);
+    });
+  });
 
   it.each([1, 2, 3])("uses the same bitmap grid at browser density %s", (density) => {
     withFakeResizeObserver(() => {

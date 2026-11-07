@@ -25814,3 +25814,36 @@ Actual Node/browser guest ownership, fork/lifecycle, full conformance,
 desktop, memory and performance gates remain required. Public port6271
 continues to serve the unchanged R494 prototype, with the baseline ownership
 defect disclosed; it is not a complete B1 preview.
+
+
+### Display viewport authority checkpoint, 2026-11-06
+
+The host now derives a pane's connector mode from its containing viewport,
+independently of the guest framebuffer's fitted canvas. Previously a guest
+resize could withdraw the advertised mode between Freeciv's connector query
+and first modeset. Terminal/demo dock rows also reserve equal height, so a
+view switch cannot invent a monitor resize. Strict kernel mode validation
+and upstream clients are unchanged. The DOM viewport stays in the browser
+session owner and never enters a Worker message; close/remount revokes the
+old observer target.
+
+The frozen functional comparison uses the same normal R494 products and
+18 cases on Chromium/Firefox/WebKit at two densities. Original source fails
+18/18; candidate passes18/18, with no skips or retries. All six original
+application cases do reach first presentation, then expose the transient
+viewport change; this is not evidence of universal startup failure. Exact
+commands and per-case results are in
+`.context/graphics-display-viewport-r556-r557-runs/{before-r9,after-r8}/run.sh`
+and `frozen-r8/per-case-before-after.json`. Integration verification
+`graphics-viewport-integration-r578-1106-212057-6b79` passes161 session tests,
+strict changed-source/spec types and frozen-input integrity.
+
+These are rendering/layout correctness results, not a performance claim.
+The full browser-memory gate remains failed: its corrected ordinary input
+fixture exposes teardown failures. A separate matched WordPress-to-fbDOOM
+reproduction reports the same WebKit destroy-drain warning in both original
+and viewport-fixed source. The owning host lifecycle repair, final combined
+memory gate, full Freeciv workload comparisons and manual browser check
+remain required in this iteration. No boundary or acceptance change is made.
+Public6271 remains the unchanged normal R494 prototype until a new coherent
+normal build is admitted.
