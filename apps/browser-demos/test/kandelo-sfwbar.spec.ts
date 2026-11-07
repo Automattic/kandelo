@@ -559,7 +559,8 @@ async function workspaceRoundTrip(page: Page, initial: Paint) {
 for (const compositor of ["sway", "labwc"] as const) {
   test(`${compositor}: SFWBar native Start launches Terminal, focuses and closes clients, and exits with its compositor`, async ({ page }) => {
     test.setTimeout(600_000);
-    await gotoMachine(page, compositor);
+    // Why: the GTK panel is an explicit preset; plain Sway owns its native bar.
+    await gotoMachine(page, compositor === "sway" ? "sway-sfwbar" : compositor);
     await surface(page, "Demo");
     await expect.poll(async () => (await page.locator(".kdemo-surface-controls").allInnerTexts()).join(" "),
       { timeout: 180_000 }).toMatch(/webgl2-gl/i);

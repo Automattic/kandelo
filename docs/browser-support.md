@@ -777,6 +777,41 @@ PAGE_FLIP counter, and flicker stability via canvas PNG-size
 distribution) and the node-side twins under `host/test/wl*-smoke.test.ts`
 (including `wldesktop-liveness-smoke.test.ts`).
 
+### Browser desktop keys
+
+The browser presets use **Alt (Option on Mac)** for window/workspace actions.
+Cmd/Win and Ctrl have host/browser and application meanings; replacing one
+with the other does not make a usable cross-platform desktop. These presets
+avoid direct Alt+Space/Tab/F4, Alt+arrows and browser menu/address-bar chords.
+They leave ordinary Ctrl application input and the desktop's explicit
+clipboard routes intact. They do not remap evdev modifier identities.
+
+Plain **Sway** runs its own Swaybar, including native clickable workspace
+buttons. **Sway with SFWBar** is a separate `sway-sfwbar` profile. Both use
+Alt+Return, Alt+1–0 and Alt+Shift+1–0 for terminals, workspaces and moving
+windows, and Alt+H/J/K/L for directional focus. Alt+M enters Sway's native
+Desktop command mode: release Alt, then Return opens a terminal, W/S/E
+changes layout, F toggles fullscreen, V toggles floating, Space changes
+focus mode, C reloads and Q asks to exit. R enters resize mode with H/J/K/L;
+Return or Escape leaves it. Programs can be launched from the terminal.
+The browser config declares its modifier before any bindings; setting it
+only after including upstream would leave earlier Mod4 bindings unchanged.
+
+**Labwc** uses Alt+Return for a terminal, Alt+J/K for next/previous window,
+Alt+Shift+Q to close and Alt+Shift+E to exit. Its root menu remains available
+by right-click. Hyprland-style and Omarchy shortcuts are described below.
+Advanced users can select their own ordinary guest compositor config.
+
+No modifier is guaranteed free under every OS, keyboard layout or user
+shortcut setting. Real Windows shortcut delivery still needs qualification;
+macOS headless browser checks do not establish it. Fullscreen alone does
+not guarantee capture: Chrome's optional Keyboard Lock API requires API
+fullscreen and permission, and captures only keys the OS allows. These
+presets do not implement or claim a fullscreen/keyboard-lock control.
+See [Chrome shortcuts](https://support.google.com/chrome/answer/157179?hl=en),
+[Windows shortcuts](https://support.microsoft.com/en-us/accessibility/windows/keyboard-shortcuts-in-windows)
+and [Keyboard Lock](https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock).
+
 ### Hyprland tiling demo
 
 **Not in the shell image by default.** The Omarchy desktop below is the
@@ -808,27 +843,18 @@ two `wlterm` terminals. The foreground terminal's exit ends the desktop.
 - **Server-side decorations.** Under `dwindle` the compositor negotiates
   `SERVER_SIDE` decorations, so tiled windows have no titlebar (a floating
   layout keeps client-side CSD).
-- **Keybinds.** `Return` launches a terminal, `W` kills the focused window,
-  and `1..9` switch workspaces — bound on both `SUPER` (real Hyprland) and
-  `CTRL` in the image's `wlcompositor.conf`. Use **`CTRL`** in the browser:
-  the OS/browser reserve `SUPER` (Cmd/Win) — `Cmd+W` closes the tab,
-  `Cmd+1..9` switch browser tabs — so those never reach the page, while
-  `Ctrl+…` does. The compositor also supports move-to-workspace, focus
-  cycling, and a `kwlctl` control socket (the `hyprctl` analog), which this
-  demo doesn't bind — see architecture.md.
-- **New-pane launch keybinds.** Opening a new pane is done Hyprland-style —
-  each app has its own `exec` bind rather than a launcher/`rofi` UI:
-  `Return`→`wlterm`, `K`→`wlclock` (K as in clo**K** — see the caveat),
-  `P`→`wlpaint` (again on both `SUPER` and `CTRL`). Pressing the combo makes
-  the compositor `posix_spawnp` the binary from `/usr/local/bin`, and the new
-  client tiles into the layout. Unlike on the Wayland desktop, `wlpaint`
-  is not started in the initial layout, so `Ctrl+P` is how you summon it.
-  **Caveat:** the compositor grabs a bound combo before the focused client,
-  so a `CTRL`+letter launch bind shadows the terminal's like-named control key.
-  The clock is bound to `K` (not `C`) precisely to leave `Ctrl+C` (SIGINT) to
-  the terminal; `Ctrl+W` (killactive) does still shadow `wlterm`'s werase.
-  That is the cost of using `CTRL` as the WM modifier in-browser; a real
-  Hyprland session on `SUPER` has no such clash.
+- **Keybinds.** Alt (Option on Mac) is the desktop modifier in the image's
+  `wlcompositor.conf`. `Alt+Return` launches a terminal, `Alt+C` a clock,
+  `Alt+P` a paint canvas and `Alt+Shift+Q` closes the focused window.
+  `Alt+1..9` switches workspace; adding Shift moves the focused window.
+  `Alt+J/K` cycles focus and `Alt+Shift+H/J/K/L` swaps neighbours left,
+  down, up and right. Applications retain their ordinary Ctrl keys.
+  These are real compositor bindings, not a host-side modifier translation.
+- **New panes.** Each application has an ordinary `exec` binding. The
+  compositor uses `posix_spawnp` to launch the actual executable, and its
+  new client tiles into the layout. Paint is not started in the initial
+  layout; `Alt+P` opens it. The compositor also exposes its `kwlctl` control
+  socket for ordinary guest commands; see architecture.md.
 
 See
 [architecture.md](architecture.md#tiling-window-manager-wlc_layout-workspaces-kwlctl-keybinds).
@@ -870,7 +896,7 @@ below or the launcher. The demo stays alive on the compositor's own
 process rather than on a foreground terminal.
 
 The shell reaches the compositor three ways, each a protocol real Hyprland
-serves: **hyprland-global-shortcuts-v1**, so a `bind = SUPER, space,
+serves: **hyprland-global-shortcuts-v1**, so a `bind = ALT, G,
 global, quickshell:launcher` line in the compositor's config fires the
 shortcut the shell registered under that name (the shell never sees the
 key, only the press and release); the **Hyprland IPC** socket pair at
@@ -904,7 +930,7 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   that expires after five seconds or on click. The bus address
   (`DBUS_SESSION_BUS_ADDRESS`) is in every desktop process's
   environment, so `notify-send` also works from any terminal.
-- **The launcher.** `Ctrl+Space` opens the launcher (`Launcher.qml`), an
+- **The launcher.** `Alt+G` opens the launcher (`Launcher.qml`), an
   overlay-layer surface that takes the keyboard exclusively — so what you
   type filters its list instead of reaching the terminal underneath. Type
   to narrow, `Up`/`Down` to move, `Enter` to launch (`dispatch exec` over
@@ -914,7 +940,7 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   from `XDG_DATA_DIRS`. The registry offers real software from the shell
   image alongside the demo clients: Vim, NetHack and Nano run unmodified
   inside foot (their binaries lazy-fetch from the image's archives on
-  first launch), as does the terminal `Ctrl+Return` opens. foot rather
+  first launch), as does the terminal `Alt+Return` opens. foot rather
   than `wlterm`: `wlterm` advertises `TERM=vt100` but does not implement
   the VT100 line-drawing character set, so curses borders come out as
   letters. foot is stock upstream foot 1.17.2, a Wayland client of its own
@@ -932,7 +958,7 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   `/usr/share/kandelo/fonts/fonts.conf`, which aliases `sans-serif`
   alongside `monospace` to the image's Inconsolata for it. `Esc` or `Q`
   closes it.
-- **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same
+- **The menu.** `Alt+M` opens the Omarchy menu — the same
   launcher at its root level (Apps, Theme). `Enter` descends; the Theme
   submenu lists the installed themes and `Enter` switches live. `Esc` in a
   submenu goes back to the root; `Esc` at the root dismisses.
@@ -941,7 +967,7 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   volume, brightness and caps-lock triggers have no source on this
   machine: the kernel exposes no mixer or backlight, and the compositor
   reports no lock-key state.
-- **The lock screen.** `Ctrl+Escape` locks the session (`LockScreen.qml`)
+- **The lock screen.** `Alt+X` locks the session (`LockScreen.qml`)
   through ext-session-lock: the compositor blanks the output, renders only
   the lock surface (the clock, the user, a password field), gives it the
   keyboard, and sends `locked` once a blanked frame has flipped. The
@@ -954,7 +980,7 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   locks the session after ten minutes without input — hypridle's job.
   hyprlock authenticates through PAM; there is no PAM here, and `login -c`
   is the same `crypt(3)` check the image's login program runs.
-- **Themes.** `Ctrl+Shift+Space` cycles Tokyo Night, Catppuccin, Gruvbox,
+- **Themes.** `Alt+Shift+Y` cycles Tokyo Night, Catppuccin, Gruvbox,
   Nord, Everforest and Rosé Pine. One palette file drives the whole
   desktop at once: the compositor's window borders, gaps and wallpaper,
   and everything the shell draws. The compositor emits `theme>><name>` on
@@ -964,18 +990,13 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   switch also shows as a notification. The themes paint gradient
   wallpapers; their real Omarchy backgrounds are a short-term follow-up
   (see the wallpaper note in the Wayland section above).
-- **The rest of the keybinds:** `Ctrl+Return` a terminal, `Ctrl+K` a
-  clock, `Ctrl+P` a paint canvas; `Ctrl+W` or `Ctrl+Shift+W` closes the
-  focused window (the second form leaves a terminal's `Ctrl+W` word-erase
-  alone, since the compositor takes a bound key before the client sees
-  it); `Ctrl+1..9` switches workspace and `Ctrl+Shift+1..9` moves the
-  focused window there; `Ctrl+J` / `Ctrl+Shift+J` cycle focus; and
-  `Ctrl+Shift+arrows` swaps the focused window with its neighbour in that
-  direction (Hyprland's `swapwindow`, Omarchy's `Super+Shift+arrows`).
-  Every bind is mirrored on `SUPER`, as Omarchy binds them; use `CTRL` in
-  the browser, which reserves `SUPER` (see the caveat above). Tiled
-  windows receive xdg-shell's `tiled_*` states, so a client that keeps
-  its own size when floating — SDL, and so ScummVM — takes the tile's.
+- **The rest of the keybinds:** `Alt+Return` opens a terminal, `Alt+C` a
+  clock and `Alt+P` a paint canvas; `Alt+Shift+Q` closes the focused window.
+  `Alt+1..9` switches workspace and `Alt+Shift+1..9` moves the focused window
+  there. `Alt+J/K` cycles focus; `Alt+Shift+H/J/K/L` swaps neighbours left,
+  down, up and right. Ctrl remains application input. Tiled windows receive
+  xdg-shell's `tiled_*` states, so clients such as SDL and ScummVM use their
+  actual tile size rather than retaining a floating window size.
 - **Copy and paste inside the desktop.** The compositor keeps a real
   Wayland clipboard, so text copied in one window pastes in another.
   Omarchy's universal-clipboard binds are in the image: `Super+C` copies,
@@ -1991,7 +2012,7 @@ and both travel one code path.
 
 An image may declare several profiles — the shell image carries `shell`,
 `node`, `doom`, `quake`, `freeciv`, `modeset`, `sdl2`, `scummvm`, `love`,
-`cage`, `sway`, `wayland`, and `omarchy` — so one channel selects one:
+`cage`, `sway`, `sway-sfwbar`, `labwc`, `wayland`, and `omarchy` — so one channel selects one:
 
 1. `&profile=<id>` on the page URL.
 2. else the image's own `defaultProfile`.

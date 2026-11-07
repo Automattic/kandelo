@@ -7,12 +7,13 @@
     </titlebar>
   </theme>
   <keyboard>
-    <keybind key="C-Return"><action name="Execute" command="foot --config=/etc/xdg/labwc/foot.ini" /></keybind>
-    <keybind key="C-S-e"><action name="Exit" /></keybind>
-    <keybind key="W-Return"><action name="Execute" command="foot --config=/etc/xdg/labwc/foot.ini" /></keybind>
-    <keybind key="A-Tab"><action name="NextWindow" /></keybind>
-    <keybind key="A-F4"><action name="Close" /></keybind>
-    <keybind key="W-S-q"><action name="Exit" /></keybind>
+    <!-- Why: use real Alt/Option bindings without stealing terminal Control
+         chords or the host's Alt+Tab/F4 window management. -->
+    <keybind key="A-Return"><action name="Execute" command="foot --config=/etc/xdg/labwc/foot.ini" /></keybind>
+    <keybind key="A-j"><action name="NextWindow" /></keybind>
+    <keybind key="A-k"><action name="PreviousWindow" /></keybind>
+    <keybind key="A-S-q"><action name="Close" /></keybind>
+    <keybind key="A-S-e"><action name="Exit" /></keybind>
   </keyboard>
   <mouse>
     <default />

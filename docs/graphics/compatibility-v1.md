@@ -27140,3 +27140,15 @@ each retirement failure and same-BO dual holds; declared LLVM wasm32 syntax
 checking passes. These scoped controls do not establish browser rendering.
 The first normal rebuild is running on frozen 9ed8021c03; this later GBM
 consumer correction still requires its own rebuilt normal artifact checks.
+
+The next desktop configuration checkpoint restores plain Sway's native
+workspace bar and gives SFWBar a separately named profile. Real guest
+Alt/Option bindings replace desktop Ctrl/Super aliases in Sway, Labwc and
+Hyprland-style/Omarchy presets; application clipboard routes are retained.
+Sway uses its native command mode for otherwise conflicting layout actions.
+The actual source composer/schema/gallery admission passes, as do 137
+focused metadata tests and the declared app typecheck. Supplemental semantic
+typechecking covers the full app roots plus the desktop specs. The initial
+curated-roster expectation and two preexisting helper type errors are
+recorded and corrected. Actual new normal config/browser/Windows delivery
+checks remain required; no universal shortcut or complete-B1 claim follows.

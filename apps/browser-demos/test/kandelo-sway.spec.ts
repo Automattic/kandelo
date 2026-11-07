@@ -117,7 +117,7 @@ async function meanColor(page: Page, png: Buffer): Promise<Rgb> {
 /** The middle of the output, where the tiled windows are. */
 const middle = (out: Output) => outputShot(out, out.width / 4, out.height / 4, out.width / 2, out.height / 2);
 
-/** The painted bands belong to different normal clients: SFWBar's GTK panel
+/** The painted bands belong to different normal clients: native Swaybar
  * is at the bottom; Sway's focused 12pt title remains at the top. */
 async function paintedBandHeight(out: Output, edge: "top" | "bottom", color: Rgb): Promise<number> {
   const height = Math.min(128, out.height);
@@ -160,6 +160,93 @@ const barHeight = (out: Output) => paintedBandHeight(out, "bottom", [50, 50, 50]
 // Sway 1.12 config.c: focused.background = 0x285577FF; the shipped config
 // preserves that title color while choosing the readable 12pt font.
 const titleHeight = (out: Output) => paintedBandHeight(out, "top", [40, 85, 119]);
+
+/** Native Swaybar's focused-workspace background and its real text ink. */
+async function workspaceButton(out: Output) {
+  const height = await barHeight(out);
+  const png = await outputShot(out, 0, out.height - height, out.width / 2, height);
+  return out.canvas.page().evaluate(async ([base64, width, height, bottom]) => {
+    const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+    ctx.drawImage(bitmap, 0, 0);
+    const image = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+    bitmap.close();
+    let left = image.width, right = -1, top = image.height, last = -1;
+    for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
+      const at = (y * image.width + x) * 4;
+      if (Math.abs(image.data[at] - 40) <= 2 && Math.abs(image.data[at + 1] - 85) <= 2
+        && Math.abs(image.data[at + 2] - 119) <= 2) {
+        left = Math.min(left, x); right = Math.max(right, x);
+        top = Math.min(top, y); last = Math.max(last, y);
+      }
+    }
+    if (right - left < 8 || last - top < 8) return null;
+    let ink = 0;
+    for (let y = top; y <= last; y++) for (let x = left; x <= right; x++) {
+      const at = (y * image.width + x) * 4;
+      if (Math.min(image.data[at], image.data[at + 1], image.data[at + 2]) > 180) ink++;
+    }
+    if (ink < 4) return null;
+    return { x: left * width / image.width, y: bottom + top * height / image.height,
+      width: (right - left + 1) * width / image.width,
+      height: (last - top + 1) * height / image.height };
+  }, [png.toString("base64"), out.width / 2, height, out.height - height] as const);
+}
+
+async function nativeBarProcess(page: Page) {
+  await releasePointer(page);
+  await openSurface(page, "Internals");
+  await page.getByRole("tab", { name: "Procs", exact: true }).click();
+  const commands = page.locator(".ktable tbody tr > td:last-child");
+  await expect(commands.filter({ hasText: /^(?:\/\S*\/)?swaybar(?:\s|$)/ }))
+    .toHaveCount(1, { timeout: 120_000 });
+  await expect(commands.filter({ hasText: /^(?:\/\S*\/)?sfwbar(?:\s|$)/ })).toHaveCount(0);
+  await openSurface(page, "Demo");
+  await canvasLocator(page).focus();
+}
+
+/** Inspector clicks must not become relative captured guest pointer input. */
+async function releasePointer(page: Page) {
+  await page.evaluate(() => {
+    const scope = globalThis as typeof globalThis & { __swayReleaseCapture?: () => void };
+    if (!scope.__swayReleaseCapture) {
+      scope.__swayReleaseCapture = () => {
+        if (document.pointerLockElement) document.exitPointerLock();
+      };
+      // Handle the preceding real click's asynchronous capture completion too.
+      document.addEventListener("pointerlockchange", scope.__swayReleaseCapture);
+    }
+    scope.__swayReleaseCapture();
+  });
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement === null)).toBe(true);
+}
+
+/** Read Sway's own IPC result through the shipped kernel-owned VFS view. */
+async function workspaceEvidence(page: Page, file: string, focused: string) {
+  await releasePointer(page);
+  await openSurface(page, "Internals");
+  await page.getByRole("tab", { name: "VFS", exact: true }).click();
+  await page.getByRole("button", { name: "/", exact: true }).click();
+  const row = (name: string) => page.locator(".ktable tbody tr").filter({
+    has: page.locator("td:first-child", { hasText: new RegExp(`^${name}$`) }),
+  }).first();
+  await row("tmp/").click();
+  const preview = page.locator("pre").filter({ hasText: /^\s*\[[\s\S]*\]\s*$/ });
+  await expect.poll(async () => {
+    await page.getByRole("button", { name: "refresh", exact: true }).click();
+    if (await row(file).count() !== 1) return false;
+    await row(file).click();
+    return preview.isVisible();
+  }, { timeout: 60_000, intervals: [500, 1_000] }).toBe(true);
+  const text = await preview.innerText();
+  await test.info().attach(file, { body: text, contentType: "application/json" });
+  const workspaces = JSON.parse(text) as { name: string; focused: boolean; visible: boolean }[];
+  expect(workspaces.filter(workspace => workspace.focused).map(workspace => workspace.name)).toEqual([focused]);
+  expect(workspaces.find(workspace => workspace.name === focused)?.visible).toBe(true);
+  await openSurface(page, "Demo");
+  await canvasLocator(page).focus();
+}
 
 async function statusLine(out: Output) {
   const height = await barHeight(out), width = Math.min(out.width / 2, height * 5);
@@ -222,6 +309,32 @@ async function clickOutput({ canvas, ...size }: Output, x: number, y: number) {
   await canvas.click({ position: { x: (x * box.width) / size.width, y: (y * box.height) / size.height } });
 }
 
+/** Exit through Sway's actual confirmation action, then observe its shell. */
+async function exitSway(page: Page, out: Output, marker: string) {
+  await canvasLocator(page).focus();
+  await page.keyboard.press("Alt+m");
+  await page.keyboard.press("q");
+  // swaynag lays out Yes, exit sway about 56–155 pixels from the right edge.
+  const top = 120;
+  let band: number[] = [];
+  await expect.poll(async () => {
+    const rows = await lineColors(page, await outputShot(out, 0, 0, out.width, top), "row");
+    band = rows.flatMap((row, y) => isWarning(row) ? [(y * top) / rows.length] : []);
+    return band.length;
+  }, { timeout: 120_000, intervals: [1_000] }).toBeGreaterThan(0);
+  await clickOutput(out, out.width - 105, (band[0] + band[band.length - 1]) / 2);
+  // A signal/window close or a visible prompt is not this completion proof.
+  // Require native authority release and automatic terminal handback first.
+  await expect.poll(() => displayOwner(page), { timeout: 60_000 }).toBe(0);
+  await expect(page.getByLabel("Computer views")
+    .getByRole("button", { name: "Terminal", exact: true }))
+    .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
+  await releasePointer(page);
+  await page.locator(".xterm").first().click();
+  await typePhysicalText(page, `echo ${marker}=$?\n`, { delay: 40 });
+  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(new RegExp(`${marker}=0(?:\\s|$)`));
+}
+
 /**
  * Browser gate for the sway machine: upstream sway on wlroots' GLES2
  * renderer, which reaches the host's WebGL2 bridge through libEGL's GBM
@@ -231,22 +344,22 @@ async function clickOutput({ canvas, ...size }: Output, x: number, y: number) {
  * Gates:
  *   1. The machine runs sway, and sway's GL context owns the canvas: the
  *      Modeset chip reports the `webgl2-gl` renderer.
- *   2. The normal SFWBar GTK panel paints its clock glyphs and redraws
+ *   2. The native Swaybar paints its clock glyphs and redraws
  *      HH:MM:SS every second, without input.
  *   3. The config's `exec $term` starts foot, whose window fills the
  *      output. Once its prompt holds still, a keystroke reaches it: the
  *      shell's echo changes it.
- *   4. Super+2 shows an empty workspace, where swaybg's wallpaper is
- *      visible, and Super+1 brings foot back.
- *   5. Ctrl+Return opens a second foot, and sway tiles the two: the new
+ *   4. Alt+2 shows an empty workspace. Native workspace buttons return to
+ *      the first Foot; real swaymsg IPC confirms both workspace identities.
+ *   5. Alt+Return opens a second foot, and sway tiles the two: the new
  *      window's focused border runs down the middle of the output.
- *   6. Ctrl+Shift+E starts swaynag, and its "Yes, exit sway" button runs
+ *   6. Alt+M then Q starts swaynag, and its "Yes, exit sway" button runs
  *      `swaymsg exit`: sway exits with status 0 to the machine's shell.
  *   7. A sway started next on the pixman renderer reaches the canvas that
  *      the GLES2 session gave up: the vblank pump presents its CPU frames,
- *      so the same normal SFWBar clock moves again.
+ *      so the same native Swaybar clock moves again.
  */
-test("Kandelo sway tiles foot terminals above SFWBar with wlroots' GLES2 renderer", async ({ page }) => {
+test("Kandelo sway tiles foot terminals above its native workspace bar with wlroots' GLES2 renderer", async ({ page }) => {
   test.setTimeout(420_000);
 
   await gotoMachine(page, "sway");
@@ -270,6 +383,7 @@ test("Kandelo sway tiles foot terminals above SFWBar with wlroots' GLES2 rendere
 
   // Gate 2.
   await expectClockTicks(page, out);
+  await nativeBarProcess(page);
 
   // Gate 3. foot is lazy and large, so its first frame can take a while.
   await expect
@@ -295,52 +409,56 @@ test("Kandelo sway tiles foot terminals above SFWBar with wlroots' GLES2 rendere
     .toBe(false);
 
   // Gate 4.
-  await page.keyboard.press("Meta+2");
+  const buttons: { first: Awaited<ReturnType<typeof workspaceButton>>;
+    second: Awaited<ReturnType<typeof workspaceButton>> } = { first: null, second: null };
+  await expect.poll(async () => {
+    buttons.first = await workspaceButton(out);
+    return buttons.first !== null;
+  }, { timeout: 60_000 }).toBe(true);
+  const firstWorkspace = buttons.first!;
+  await page.keyboard.press("Alt+2");
   await expect
     .poll(async () => isBlue(await meanColor(page, await middle(out))), { timeout: 120_000, intervals: [2_000] })
     .toBe(true);
-  await page.keyboard.press("Meta+1");
+  // Swaybar is a separate native client: wait for its own workspace repaint.
+  await expect.poll(async () => {
+    buttons.second = await workspaceButton(out);
+    return buttons.second !== null && buttons.second.x > firstWorkspace.x;
+  }, { timeout: 60_000 }).toBe(true);
+  // Query from an actual terminal on workspace two, then close that client.
+  // This observes compositor state rather than inferring it from blue paint.
+  await page.keyboard.press("Alt+Enter");
+  await expect.poll(async () => isFoot(await meanColor(page, await middle(out))),
+    { timeout: 180_000, intervals: [1_000] }).toBe(true);
+  await typePhysicalText(page, "swaymsg -r -t get_workspaces > /tmp/sway-workspace-two\n", { delay: 40 });
+  await workspaceEvidence(page, "sway-workspace-two", "2");
+  await page.keyboard.press("Alt+Shift+Q");
+  await expect.poll(async () => isBlue(await meanColor(page, await middle(out))),
+    { timeout: 60_000, intervals: [1_000] }).toBe(true);
+  // Click the actual painted workspace-one button, not a guessed coordinate
+  // or a host-side workspace setter. Its Foot and IPC must both return.
+  await clickOutput(out, firstWorkspace.x + firstWorkspace.width / 2,
+    firstWorkspace.y + firstWorkspace.height / 2);
   await expect
     .poll(async () => isFoot(await meanColor(page, await middle(out))), { timeout: 30_000, intervals: [1_000] })
     .toBe(true);
+  await canvas.focus();
+  await typePhysicalText(page, "swaymsg -r -t get_workspaces > /tmp/sway-workspace-returned\n", { delay: 40 });
+  await workspaceEvidence(page, "sway-workspace-returned", "1");
 
   // Gate 5.
   const tiled = async () => (await lineColors(page, await seam(out), "column")).some(isBlue);
   expect(await tiled()).toBe(false);
-  await page.keyboard.press("Control+Enter");
+  await page.keyboard.press("Alt+Enter");
   await expect.poll(tiled, { timeout: 180_000, intervals: [2_000] }).toBe(true);
 
-  // Gate 6. swaynag lays its buttons out from the right edge: the dismiss
-  // button, a gap, then "Yes, exit sway", which spans about 56-155 pixels
-  // left of the edge.
-  await page.keyboard.press("Control+Shift+E");
-  const top = 120;
-  let band: number[] = [];
-  await expect
-    .poll(async () => {
-      const rows = await lineColors(page, await outputShot(out, 0, 0, out.width, top), "row");
-      band = rows.flatMap((row, y) => (isWarning(row) ? [(y * top) / rows.length] : []));
-      return band.length;
-    }, { timeout: 120_000, intervals: [1_000] })
-    .toBeGreaterThan(0);
-  await clickOutput(out, out.width - 105, (band[0] + band[band.length - 1]) / 2);
-  // Display release must hand the visible view back to the launching
-  // terminal automatically. Do not select it manually or count prompts:
-  // disconnected foot clients can interleave stderr within a shell prompt.
-  // A real command below proves the parent shell resumed and records the
-  // foreground job's status without relying on that prompt's presentation.
-  await expect.poll(() => displayOwner(page), { timeout: 60_000 }).toBe(0);
-  await expect(page.getByLabel("Computer views")
-    .getByRole("button", { name: "Terminal", exact: true }))
-    .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
-  await page.locator(".xterm").first().click();
-  await typePhysicalText(page, "echo sway-exit=$?\n", { delay: 40 });
-  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/sway-exit=0/);
+  // Gate 6: real swaynag action, owner release, terminal return and exit0.
+  await exitSway(page, out, "sway-exit");
 
   // Gate 7.
   await typePhysicalText(page,
     "WLR_RENDERER=pixman LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo"
-      + " FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/sway -c /etc/xdg/sfwbar/sway.config\n",
+      + " FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/sway -c /usr/share/kandelo/sway/config\n",
     { delay: 20 },
   );
   await openSurface(page, "Demo");
@@ -355,6 +473,16 @@ test("Kandelo sway tiles foot terminals above SFWBar with wlroots' GLES2 rendere
     .poll(async () => isFoot(await meanColor(page, await middle(out))), { timeout: 180_000, intervals: [2_000] })
     .toBe(true);
   await expectClockTicks(page, out);
+  await nativeBarProcess(page);
+  // This second foreground compositor must retire too; context closure is
+  // not a substitute for its real exit or the display's authority release.
+  await exitSway(page, out, "sway-pixman-exit");
+  await openSurface(page, "Internals");
+  await page.getByRole("tab", { name: "Procs", exact: true }).click();
+  await expect(page.locator(".ktable tbody tr > td:last-child").filter({
+    hasText: /^(?:\/\S*\/)?(?:sway|swaybar|swaynag|swaybg|foot)(?:\s|$)/,
+  })).toHaveCount(0, { timeout: 90_000 });
+  expect(await displayOwner(page)).toBe(0);
 });
 
 
@@ -418,7 +546,15 @@ for (const deviceScaleFactor of [1, 2]) {
       expect(member("sway/config")).toContain("font pango:monospace 12");
       expect(member("sway/config")).toContain("set $term foot --config=/usr/share/kandelo/sway/foot.ini");
       expect(member("sway/config")).toContain("bindsym --no-warn $mod+Return exec $term");
-      expect(member("sway/config")).toContain("bindsym Ctrl+Return exec $term");
+      const config = member("sway/config");
+      expect(config).toContain("set $mod Mod1");
+      expect(config).not.toMatch(/^include \/etc\/sway\/config$/m);
+      expect(config).not.toMatch(/^bindsym .*Ctrl\+/m);
+      expect(config).toContain("bindsym $mod+1 workspace number 1");
+      expect(config).toContain("bindsym $mod+Shift+1 move container to workspace number 1");
+      expect(config).toContain("position bottom");
+      expect(config).toContain("height 32");
+      expect(config).not.toContain("kandelo-sfwbar");
       expect(member("sway/foot.ini")).toContain("font=monospace:size=14");
       expect(member("sway/foot.ini")).toContain("dpi-aware=no");
 
@@ -464,7 +600,7 @@ for (const deviceScaleFactor of [1, 2]) {
       expect(Math.abs(out.width - box.width * deviceScaleFactor)).toBeLessThanOrEqual(2);
       if (deviceScaleFactor === 2) expect(out.height).toBeLessThan(1200);
       const cssBarHeight = await barHeight(out) * box.height / out.height;
-      expect(cssBarHeight, "14px SFWBar plus padding remains readable in CSS pixels").toBeGreaterThanOrEqual(30);
+      expect(cssBarHeight, "native Swaybar remains readable in CSS pixels").toBeGreaterThanOrEqual(30);
       expect(cssBarHeight).toBeLessThan(50);
       const cssTitleHeight = await titleHeight(out) * box.height / out.height;
       expect(cssTitleHeight, "12pt Sway title remains readable in CSS pixels").toBeGreaterThanOrEqual(18);

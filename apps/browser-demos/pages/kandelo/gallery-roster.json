@@ -71,6 +71,10 @@
     },
     {
       "product": "browser-main-shell",
+      "profile": "sway-sfwbar"
+    },
+    {
+      "product": "browser-main-shell",
       "profile": "labwc"
     },
     {

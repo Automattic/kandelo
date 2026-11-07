@@ -1552,3 +1552,10 @@ other Omarchy cases and every B1 ownership/audit/conformance/memory/measurement
 gate remain required before calling the stage complete. Waybar/full-all
 verification remains required after preview-priority scheduling. B2–B6/C1–C3
 remain in this goal, and physical/native-feel qualification is unfinished.
+
+Desktop shortcut usability: qualify the Alt/Option presets on real Windows
+as well as macOS, including international layouts and user-reserved chords.
+Optional fullscreen/Keyboard Lock and an explicit guest-config modifier
+selector remain proposed product controls, not implemented features or
+substitutes for working windowed bindings. Current graphics acceptance still
+requires the new desktop configs and native Swaybar on all three engines.

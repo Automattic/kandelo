@@ -198,14 +198,17 @@ test("SDL's default cursor uses the shared KMS cursor plane", async ({ page, bro
   await worker!.evaluate(() => {
     const proto = OffscreenCanvasRenderingContext2D.prototype;
     const put = proto.putImageData;
-    proto.putImageData = function (...args: Parameters<typeof put>) {
+    // Parameters<> selects only the final overload. Preserve both actual
+    // call shapes, including the three-argument cursor upload, unchanged.
+    proto.putImageData = function (...args:
+      [ImageData, number, number] | [ImageData, number, number, number, number, number, number]) {
       const image = args[0];
       if (image.width <= 64 && image.height <= 64) {
         let opaque = 0;
         for (let i = 3; i < image.data.length; i += 4) if (image.data[i]) opaque++;
         (globalThis as any).__kmsCursorProbe = { x: args[1], y: args[2], opaque };
       }
-      return put.apply(this, args);
+      return Reflect.apply(put, this, args);
     };
   });
   const box = (await canvas.boundingBox())!;

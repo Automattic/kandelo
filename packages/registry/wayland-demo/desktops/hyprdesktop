@@ -4,9 +4,9 @@
 #
 # The same compositor as wldesktop, in dwindle mode: it tiles every window
 # and dictates each one's size through xdg configure, and reads its
-# keybindings (CTRL+Return terminal, CTRL+K clock, CTRL+P paint, CTRL+W
-# close, CTRL+1..9 workspaces; each mirrored on SUPER) from the config below.
-# A browser reserves SUPER, so CTRL is the modifier that reaches the page.
+# keybindings (Alt/Option+Return terminal, +C clock, +P paint, +Shift+Q
+# close, +J/K focus, +1..9 workspaces) from the config below. Ctrl remains
+# available to terminal/editor applications; Cmd/Super is not a desktop alias.
 #
 # The socket is fixed at /tmp/wayland-0 (see wldesktop for why /tmp); waiting
 # on it rather than sleeping keeps a slow first boot correct.

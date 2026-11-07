@@ -7,7 +7,8 @@
 # /usr/share/kandelo/quickshell — the way Omarchy v4 runs its shell — and
 # kclipd, which turns host clipboard text into the desktop's selection. The
 # desktop comes up bare, wallpaper and bar; the visitor opens clients through
-# the keybindings or the launcher (CTRL+Space).
+# the keybindings or the launcher (Alt/Option+G). Desktop actions use Alt,
+# leaving Ctrl for applications and Cmd/Super clipboard editing intact.
 #
 # Everything this desktop reads is image data under /usr/share/kandelo: the
 # compositor config, themes (/usr/share/kandelo/themes, the compositor's

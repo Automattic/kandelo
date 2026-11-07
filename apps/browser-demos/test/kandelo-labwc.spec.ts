@@ -186,12 +186,12 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
       && Math.abs(foreground.y - movedBounds.y) > 25;
   }, { timeout: 60_000, intervals: [500] }).toBe(true);
   await footProcesses(page, 2);
-  await page.keyboard.press("Alt+F4");
+  await page.keyboard.press("Alt+Shift+Q");
   await footProcesses(page, 1);
 
   // Open another real terminal. Distinct shell variables then prove each
   // focus change reached the intended PTY, not only a repaint or key echo.
-  await page.keyboard.press("Control+Enter");
+  await page.keyboard.press("Alt+Enter");
   await footProcesses(page, 2);
   // A process row precedes Wayland map/activation. Typing at that point
   // splits the command across the old and new PTYs (Firefox trace: "mar"
@@ -205,7 +205,7 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   const secondBounds = (await footFrame(page)).foot!;
   await typePhysicalText(page, "mark=second; printf '\\033[48;2;30;50;220mSECOND_READY\\033[0m\\n'\n", { delay: 40 });
   await expect.poll(async () => (await footFrame(page)).blue, { timeout: 60_000 }).toBeGreaterThan(200);
-  await page.keyboard.press("Alt+Tab");
+  await page.keyboard.press("Alt+j");
   await expect.poll(async () => {
     const frame = await footFrame(page);
     return frame.foot !== null && Math.abs(frame.foot.x - movedBounds.x) < 5
@@ -213,7 +213,7 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   }, { timeout: 60_000, intervals: [500] }).toBe(true);
   await typePhysicalText(page, "echo FIRST:$mark > /tmp/labwc-first && printf '\\033[48;2;30;180;60mFIRST_WRITTEN\\033[0m\\n'\n", { delay: 40 });
   await expect.poll(async () => (await footFrame(page)).green, { timeout: 60_000 }).toBeGreaterThan(200);
-  await page.keyboard.press("Alt+Tab");
+  await page.keyboard.press("Alt+k");
   await expect.poll(async () => {
     const frame = await footFrame(page);
     return frame.foot !== null && Math.abs(frame.foot.x - secondBounds.x) < 5
@@ -221,7 +221,7 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   }, { timeout: 60_000, intervals: [500] }).toBe(true);
   await typePhysicalText(page, "echo SECOND:$mark > /tmp/labwc-second && printf '\\033[48;2;180;30;180mSECOND_WRITTEN\\033[0m\\n'\n", { delay: 40 });
   await expect.poll(async () => (await footFrame(page)).purple, { timeout: 60_000 }).toBeGreaterThan(200);
-  await page.keyboard.press("Control+Shift+E");
+  await page.keyboard.press("Alt+Shift+E");
 
   // Observe real display release and automatic return to the launching shell.
   // A prompt, hidden xterm text or host termination is not compositor exit.

@@ -21,6 +21,7 @@ import { parseGalleryRoster } from "../../../../web-libs/kandelo-session/src/gal
 import { readLocalSupportedSet } from "../../../../scripts/local-supported-set.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
+type VfsProductImages = typeof import("../fixtures/vfs-product-images");
 
 export const GALLERY_ROSTER = parseGalleryRoster(
   readFileSync(join(here, "../../pages/kandelo/gallery-roster.json"), "utf8"),
@@ -90,9 +91,12 @@ async function resolveVfsImageUrl(
       waitUntil: "domcontentloaded",
     });
     const result = await probe.evaluate(async (id) => {
-      const { vfsProductImageUrl, VfsProductImageNotBuiltError } = await import(
-        "/test/fixtures/vfs-product-images.ts"
-      );
+      // The browser resolves this server-root URL, while TypeScript checks
+      // the real source module. Making the URL relative would resolve it
+      // beneath the page instead of Vite's test-fixture endpoint.
+      const fixtureUrl = "/test/fixtures/vfs-product-images.ts";
+      const { vfsProductImageUrl, VfsProductImageNotBuiltError } =
+        await import(fixtureUrl) as VfsProductImages;
       try {
         return { url: await vfsProductImageUrl(id), notBuilt: null };
       } catch (error) {
