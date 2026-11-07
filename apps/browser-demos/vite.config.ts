@@ -47,6 +47,7 @@ import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
 import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
 import { devServerCache } from "./vite/dev-server-cache";
+import { devPartialImage } from "./vite/dev-partial-image";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -1126,6 +1127,7 @@ export default defineConfig(() => {
       devServerCache(),
       rejectUncontrolledComputerRoutes(base),
       vfsProductsPlugin(base),
+      devPartialImage({ partialDir: path.resolve(repoRoot, "local-binaries/partial") }),
       react(),
       muteBrowserTestAudio(),
       // Before the SourceOnly store, and like it `enforce: "pre"`: the

@@ -296,3 +296,47 @@ through the normal package resolver for their declared architectures. A passing
 default build does not establish that those recipes still work. Dormant status
 controls product exposure; retain it while checking build compatibility. Do not
 add a dormant product to the shipped projection just to validate its recipe.
+
+## Partial images are development builds
+
+`./run.sh partial <image> <pkg>...` composes an image from the rootfs base and
+only the named packages ([Partial images](../package-management.md#partial-images)).
+
+**It is the default way to port and iterate.** When you port a package, or
+iterate on one or a few packages that the shell (or an image built on it)
+carries, build and test against a partial image instead of the full shell:
+`./run.sh partial shell <pkg>...`, or `./run.sh partial <image> <pkg>...` for
+an image such as `lamp`. Use the full build instead when:
+
+- the user asked for it, or for a canonical image by name;
+- the claim you need is about the canonical shell, a canonical image, the
+  browser as a whole, or the test suites; or
+- the change is to shared platform code (kernel, libc, SDK, host runtime,
+  image builders) rather than to the packages you would name.
+
+**Say so to the user, before you build.** One plain sentence naming the
+image and the packages, that it leaves the rest of the shell out, and that
+they can ask for the full build instead. For example: "I'll test this on a
+partial shell (the rootfs base plus tmux and libevent) rather than building
+the whole shell; say if you want the full build." Do not switch silently,
+and do not ask permission first: announce and proceed, so the user can
+redirect you.
+
+**Name it in the final report.** Say which partial image the evidence came
+from (image, packages, the `sha256` in `local-binaries/partial/partial.json`),
+which activities it left out, and that the canonical images were or were not
+built. A port is not finished until the canonical products have been built
+once (`./run.sh local-build`) before the PR, or the report says plainly that
+they were not.
+
+Keep three rules:
+
+- A package enters a partial image only the way it enters the canonical
+  shell. Add it to the shell's contract and composer table; do not teach the
+  partial path to install something the canonical shell does not.
+- The shell composer's partial mode is a selection, not a relaxation. Every
+  installation step it guards must name the package that owns it, and the
+  canonical shell (no selection) must keep every completeness check.
+- A partial image is evidence for its named packages on the base image only.
+  It is never cached, published or a substitute for building the canonical
+  products before a PR.

@@ -86,6 +86,7 @@ import {
   resolveDemoExchange,
   resolveDemoInit,
   resolveDemoPresentation,
+  validateKandeloDemoConfig,
   type DemoInitConfig,
   type DemoWebConfig,
   type KandeloDemoConfig,
@@ -138,7 +139,13 @@ import { createCoiReloadSessionState } from "./coi-reload-session-state";
 import { DinitBootStatusTracker } from "./dinit-boot-status";
 
 import kernelWasmUrl from "@kernel-wasm?url";
-import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
+// @ts-expect-error Vite owns this virtual module (vite/dev-partial-image.ts).
+import partialImageModule from "virtual:kandelo-partial-image";
+import {
+  CANONICAL_SHELL_IMAGE_URL as shellVfsUrl,
+  CANONICAL_SHELL_REL_PATHS,
+  CANONICAL_SHELL_URL_LOADERS,
+} from "./canonical-shell-image";
 // @ts-expect-error Vite owns this virtual module in both canonical and normal mode.
 import canonicalPagesVfsProducts from "virtual:kandelo-pages-vfs-products";
 
@@ -152,6 +159,25 @@ const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
     (url, init) => fetch(url, init),
     { prefetchEager: false },
   );
+
+/**
+ * The worktree's partial image (`./run.sh partial <image> <pkg>...`), when
+ * one is built and this is the dev server: a machine composed from the rootfs
+ * base plus a few named packages, listed as its own gallery entry. Never
+ * present in a production build. See vite/dev-partial-image.ts.
+ */
+export const PARTIAL_IMAGE = partialImageModule as {
+  imageUrl: string;
+  manifest: {
+    image: string;
+    sha256: string;
+    packages: string[];
+    activities: string[];
+    excludedActivities: Array<{ profile: string; missing: string[] }>;
+  };
+  demoConfig: unknown;
+} | null;
+
 
 const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/web-stack-vfs.vfs.zst", { query: "?url", import: "default" }),
@@ -227,7 +253,8 @@ async function optionalBinaryUrl(
   label: string,
 ): Promise<string> {
   for (const relPath of relPaths) {
-    const loader = OPTIONAL_BINARY_URLS[relPath];
+    const loader = (OPTIONAL_BINARY_URLS as Record<string, () => Promise<string>>)[relPath]
+      ?? CANONICAL_SHELL_URL_LOADERS[relPath];
     if (loader) return loader();
   }
   throw new Error(
@@ -380,11 +407,18 @@ const VFS_PRODUCTS: Record<GalleryProductId, VfsProductSource> = {
     kind: "optional-binary", label: "wordpress-family-vfs.vfs.zst", productId: "browser-wordpress-family",
     relPaths: ["../../../../../local-binaries/programs/wasm32/wordpress-family-vfs.vfs.zst", "../../../../../binaries/programs/wasm32/wordpress-family-vfs.vfs.zst"],
   },
-  "browser-main-shell": {
-    kind: "url",
-    productId: "browser-main-shell",
-    url: shellVfsUrl,
-  },
+  "browser-main-shell": shellVfsUrl === null
+    ? {
+      kind: "optional-binary",
+      label: "shell.vfs.zst",
+      productId: "browser-main-shell",
+      relPaths: CANONICAL_SHELL_REL_PATHS,
+    }
+    : {
+      kind: "url",
+      productId: "browser-main-shell",
+      url: shellVfsUrl,
+    },
   "browser-redis": {
     kind: "optional-binary", label: "redis-vfs.vfs.zst", productId: "browser-redis",
     relPaths: ["../../../../../local-binaries/programs/wasm32/redis-vfs.vfs.zst", "../../../../../binaries/programs/wasm32/redis-vfs.vfs.zst"],
@@ -934,6 +968,31 @@ async function createLiveHostWithLease(
   }
   return host;
 
+  /**
+   * A computer made from the partial image keeps its saved filesystem across
+   * reloads, but not across rebuilds: the image it was copied from is gone.
+   * Discard it (the caller holds the computer's runtime lease) and say so,
+   * rather than boot the new build on top of the old one.
+   */
+  async function resetComputerForPartialRebuild(
+    h: LiveKernelHost,
+    computer: StoredComputer,
+    bootStartedAt: number,
+  ): Promise<StoredComputer> {
+    const sha256 = PARTIAL_IMAGE!.manifest.sha256;
+    if (computer.partialImageSha256 === sha256) return computer;
+    if (await computerStore!.filesystemInitialized(computer.id)) {
+      await computerStore!.resetFilesystem(computer.id);
+      h.pushDmesg({
+        t: bootElapsedMs(bootStartedAt),
+        level: "warn",
+        facility: "kandelo",
+        msg: "the partial image was rebuilt (./run.sh partial); this computer's saved state was reset",
+      });
+    }
+    return computerStore!.update(computer.id, { partialImageSha256: sha256 });
+  }
+
   async function startBoot(
     h: LiveKernelHost,
     profile: LiveProfile,
@@ -1047,6 +1106,9 @@ async function createLiveHostWithLease(
             catch (error) { openedMetadataWarning = `Computer opened, but its last-opened timestamp could not be saved: ${String(error)}`; }
           }
           if (seq !== bootSeq) throw new BootSuperseded();
+        }
+        if (computer !== null && isPartialImageUrl(profile.vfsUrl || vfsImageUrlFromDescriptor(descriptor))) {
+          computer = await resetComputerForPartialRebuild(h, computer, bootStartedAt);
         }
         const requireExistingFilesystem = computer !== null && await computerStore!.filesystemInitialized(computer.id);
         const managedComputerId = computer?.id;
@@ -1205,6 +1267,11 @@ async function descriptorForBootQuery(
  * it identically to `&profile=` naming it explicitly.
  */
 async function defaultVfsImageUrl(): Promise<string> {
+  // A worktree that built only its partial image boots that by default,
+  // rather than failing on a canonical shell it never built.
+  if (shellVfsUrl === null && PARTIAL_IMAGE !== null) {
+    return new URL(PARTIAL_IMAGE.imageUrl, location.href).href;
+  }
   const entry = GALLERY_ROSTER.entries[0];
   const source = galleryProductSource(entry.product);
   if (source === undefined) {
@@ -1506,6 +1573,12 @@ function persistenceIdentity(
 ): string {
   return JSON.stringify({
     vfsUrl: profile.vfsUrl,
+    // A partial image's URL stays the same across rebuilds; its bytes do not.
+    // Binding saved state to the build keeps a rebuilt image from booting on
+    // the previous build's filesystem (startBoot resets it first).
+    ...(isPartialImageUrl(profile.vfsUrl)
+      ? { partialImageSha256: PARTIAL_IMAGE!.manifest.sha256 }
+      : {}),
     profileId: storageProfileId,
     appPath: APP_PATH,
     proto: PROTO,
@@ -2899,9 +2972,78 @@ function descriptorForMachine(
  * a generic "not built".
  */
 function liveGalleryItems(): GalleryItem[] {
-  return GALLERY_ROSTER.entries.flatMap((entry) => {
-    const item = galleryItemForRosterEntry(entry);
-    return item === null ? [] : [item];
+  return [
+    ...partialGalleryItems(),
+    ...GALLERY_ROSTER.entries.flatMap((entry) => {
+      const item = galleryItemForRosterEntry(entry);
+      return item === null ? [] : [item];
+    }),
+  ];
+}
+
+/** The partial image's absolute URL, or null when none is built here. */
+function partialImageUrl(): string | null {
+  return PARTIAL_IMAGE === null ? null : new URL(PARTIAL_IMAGE.imageUrl, location.href).href;
+}
+
+/** Whether `vfsUrl` names this worktree's partial image. */
+function isPartialImageUrl(vfsUrl: string | null | undefined): boolean {
+  const partial = partialImageUrl();
+  if (partial === null || !vfsUrl) return false;
+  try {
+    return withoutUrlHash(vfsUrl) === partial;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The worktree's partial image as its own gallery entries, listed first. Its
+ * machines and activities come from the image itself (the demo.json it
+ * bakes), and the default machine's summary says what it is: a development
+ * build carrying only the named packages, rebuilt rather than cached.
+ */
+function partialGalleryItems(): GalleryItem[] {
+  if (PARTIAL_IMAGE === null) return [];
+  const config = PARTIAL_IMAGE.demoConfig as KandeloDemoConfig;
+  validateKandeloDemoConfig(config);
+  const { manifest } = PARTIAL_IMAGE;
+  const defaultProfileId = resolveDefaultProfileId(config);
+  const named = manifest.packages.length === 0 ? "the base only" : manifest.packages.join(", ");
+  const image = {
+    id: `partial-${manifest.image}`,
+    title: `Partial ${manifest.image}`,
+    defaultProfileId,
+  };
+  // Every machine the image itself declares, default first: the image's
+  // demo.json already holds only the profiles its packages can run.
+  const profileIds = Object.keys(config.profiles ?? {})
+    .sort((left, right) => Number(right === defaultProfileId) - Number(left === defaultProfileId));
+  return profileIds.flatMap((profileId): GalleryItem[] => {
+    const identity = resolveDemoIdentity(config, profileId);
+    if (identity === null) return [];
+    const init = resolveDemoInit(config, profileId);
+    const isDefault = profileId === defaultProfileId;
+    const item: GalleryItem = {
+      id: profileId,
+      image,
+      title: isDefault ? `Partial ${manifest.image} + ${named}` : identity.title,
+      summary: isDefault
+        ? `Built in this worktree by ./run.sh partial: the rootfs base plus ${named}. `
+          + `Activities: ${manifest.activities.join(", ")}. `
+          + "Never cached; a rebuild resets this machine's saved state."
+        : identity.summary,
+      base: `kandelo:shell@abi${ABI_VERSION}`,
+      packages: manifest.packages,
+      bootCommand: (init === null ? null : initLaunchForMachine(init))?.argv
+        ?? DEFAULT_LOGIN_SESSION_ARGV,
+      vfsImageUrl: partialImageUrl()!,
+      accent: identity.accent,
+      glyph: identity.glyph,
+      estimatedUrlBytes: 0,
+    };
+    item.estimatedUrlBytes = JSON.stringify(item).length;
+    return [item];
   });
 }
 
@@ -3004,11 +3146,13 @@ function localProductArtifactExists(source: VfsProductSource): boolean {
   if (source.kind === "optional-demo") {
     return optionalDemoVfsIsBuilt(source.image);
   }
+  if (source.productId === "browser-main-shell") return shellVfsUrl !== null;
   return source.relPaths.some((relPath) => relPath in OPTIONAL_BINARY_URLS);
 }
 
 function localProductBuildCommand(source: VfsProductSource): string | undefined {
   if (source.kind === "url") return undefined;
+  if (source.productId === "browser-main-shell") return "./run.sh local-build";
   return source.kind === "optional-demo"
     ? "./run.sh local-build"
     : "./run.sh build programs";

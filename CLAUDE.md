@@ -283,6 +283,16 @@ and default source-build hook. `build.toml` owns Kandelo project build/publish
 state: selected script path, source provenance, publish revision, cache
 invalidation, and binary index location.
 
+Port and iterate on packages against a partial image by default:
+`./run.sh partial <image> <pkg>...` builds the rootfs base plus only the named
+packages. Announce it to the user in one sentence before you build (image,
+packages, and that they can ask for the full build), and name it in the final
+report. Use the full build when the user asks for it or the claim is about
+canonical images, the browser as a whole, the suites, or shared platform
+code. A partial image is evidence only for its named packages; build the
+canonical products before a PR. See `docs/agent-guidance/packages-and-builds.md`
+"Partial images are development builds".
+
 Build scripts must honor the resolver contract, use the worktree-local SDK,
 declare every dependency they use, install only into `WASM_POSIX_DEP_OUT_DIR`,
 and produce the outputs declared in package metadata. Fork-using packages must

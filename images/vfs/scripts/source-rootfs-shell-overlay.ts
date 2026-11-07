@@ -32,8 +32,9 @@ export function populateSourceRootfsShellOverlay(
   resolveArtifact: ShellLazyArchiveResolver,
   options: ProgramOriginalImageOptions = {},
 ): void {
+  const includes = options.includesPackage ?? (() => true);
   populateShellRuntimeLayout(fs);
-  installPackageSessionFiles(fs, resolveArtifact);
+  installPackageSessionFiles(fs, resolveArtifact, includes);
 
   // WHY: every ncurses/termcap-linked guest program resolves $TERM against
   // /usr/share/terminfo on every run, so the shared database must be present
@@ -42,6 +43,7 @@ export function populateSourceRootfsShellOverlay(
 
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     const dependency = shellLazySpecDependency(spec);
+    if (!includes(dependency)) continue;
     const existing = imageFileStat(fs, spec.vfsPath);
     if (existing !== null && !options.existingProgramDependencies?.has(dependency)) continue;
     const source = resolveArtifact(spec.resolverPath, dependency);
@@ -74,6 +76,7 @@ export function populateSourceRootfsShellOverlay(
   // because it names a path the archive must provide, so "already registered"
   // is "that path is here and still deferred".
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
+    if (!includes(spec.dependency)) continue;
     if (!fs.isPathDeferred(`${spec.mountPrefix}${spec.requiredMember}`)) {
       // posix-utils-lite's raw `man` applet may already occupy /usr/bin/man
       // on the imported rootfs; clear it first so mandoc's formatting `man`
@@ -82,17 +85,13 @@ export function populateSourceRootfsShellOverlay(
       registerDeclaredShellLazyArchive(fs, spec, resolveArtifact);
     }
   }
-  installNethackGames(fs);
+  if (includes("nethack-browser-bundle")) installNethackGames(fs);
 
-  for (const [target, alias] of [
-    ["/usr/bin/vim", "/usr/bin/vi"],
-  ] as const) {
-    symlink(fs, target, alias);
-  }
+  if (includes("vim-browser-bundle")) symlink(fs, "/usr/bin/vim", "/usr/bin/vi");
 
   // Every /etc/profile.d script this image ships, from the one list both
   // shell-family builders call. Listing individual registrations here is what
   // let the maker account's identity script ship in the layered base image
   // but not in this one.
-  registerShellProfileScripts(fs);
+  registerShellProfileScripts(fs, includes);
 }
