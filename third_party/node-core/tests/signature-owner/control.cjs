@@ -1,0 +1,44 @@
+'use strict';
+const assert=require('node:assert/strict'),crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:path'),stream=require('node:stream');
+assert.equal(process.version,'v26.13.0');
+const api=require('./platform.cjs').create();
+const fixture=name=>fs.readFileSync(path.join(process.env.NODE26_SOURCE,'test/fixtures/keys',name));
+const rsa=fixture('rsa_private.pem'),rsaPublic=crypto.createPublicKey(rsa),rsaObject=crypto.createPrivateKey(rsa);
+const ec=fixture('ec-key.pem'),ecPublic=crypto.createPublicKey(ec),data=Buffer.from('actual signature\0bytes');
+const rows=[],failures=[];async function judge(name,fn){try{await fn();rows.push({name,pass:true})}catch(error){rows.push({name,pass:false});failures.push({name,message:error.message,stack:error.stack})}}
+function project(error){return Object.fromEntries(['name','message','code','library','function','reason','opensslErrorStack'].filter(k=>error[k]!==undefined).map(k=>[k,error[k]]))}
+function failed(fn){try{fn();return undefined}catch(e){return project(e)}}
+function compare(name,fn){return judge(name,()=>assert.deepEqual(failed(()=>fn(api)),failed(()=>fn(crypto))))}
+(async()=>{
+ await judge('callable constructors and genuine Writable ancestry',()=>{for(const name of ['Sign','Verify']){const owner=api[name]('SHA256');assert(owner instanceof api[name]);assert(owner instanceof stream.Writable);assert.equal(Object.getPrototypeOf(api[name]),stream.Writable);assert.deepEqual(Object.getOwnPropertyDescriptor(api[name].prototype,'update'),Object.getOwnPropertyDescriptor(crypto[name].prototype,'update')&&{...Object.getOwnPropertyDescriptor(crypto[name].prototype,'update'),value:api[name].prototype.update})}});
+ for(const hash of ['SHA256','RSA-SHA256','sha512'])await judge('RSA deterministic bytes '+hash,()=>{assert.deepEqual(Buffer.from(api.createSign(hash).update(data).sign(rsa)),crypto.createSign(hash).update(data).sign(rsa));});
+ for(const [label,privateKey,publicKey]of[
+  ['PEM',rsa,rsaPublic],['KeyObject',rsaObject,rsaPublic],
+  ['DER',{key:rsaObject.export({format:'der',type:'pkcs8'}),format:'der',type:'pkcs8'},{key:rsaPublic.export({format:'der',type:'spki'}),format:'der',type:'spki'}],
+  ['JWK',{key:rsaObject.export({format:'jwk'}),format:'jwk'},{key:rsaPublic.export({format:'jwk'}),format:'jwk'}],
+ ])await judge('actual key ownership '+label,()=>{const signed=api.createSign('sha256').update(data).sign(privateKey);assert.equal(crypto.createVerify('sha256').update(data).verify(publicKey,signed),true);assert.equal(api.createVerify('sha256').update(data).verify(publicKey,crypto.createSign('sha256').update(data).sign(privateKey)),true)});
+ for(const encoding of ['der','ieee-p1363'])await judge('ECDSA '+encoding+' cross verification',()=>{const options={key:ec,dsaEncoding:encoding},publicOptions={key:ecPublic,dsaEncoding:encoding};const actual=api.createSign('sha256').update(data).sign(options);assert.equal(crypto.createVerify('sha256').update(data).verify(publicOptions,actual),true);const expected=crypto.createSign('sha256').update(data).sign(options);assert.equal(api.createVerify('sha256').update(data).verify(publicOptions,expected),true)});
+ for(const saltLength of [0,20,crypto.constants.RSA_PSS_SALTLEN_MAX_SIGN])await judge('RSA PSS actual salt policy '+saltLength,()=>{const a={key:rsa,padding:crypto.constants.RSA_PKCS1_PSS_PADDING,saltLength};const b={key:rsaPublic,padding:crypto.constants.RSA_PKCS1_PSS_PADDING,saltLength};const signature=api.createSign('sha256').update(data).sign(a);assert.equal(crypto.createVerify('sha256').update(data).verify(b,signature),true);assert.equal(api.createVerify('sha256').update(data).verify(b,crypto.createSign('sha256').update(data).sign(a)),true)});
+ await judge('RSA PSS pinned default salt',()=>{const a={key:rsa,padding:crypto.constants.RSA_PKCS1_PSS_PADDING},b={key:rsaPublic,padding:crypto.constants.RSA_PKCS1_PSS_PADDING};const sig=api.createSign('sha256').update(data).sign(a);assert.equal(crypto.createVerify('sha256').update(data).verify(b,sig),true);assert.equal(api.createVerify('sha256').update(data).verify(b,crypto.createSign('sha256').update(data).sign(a)),true)});
+ const encrypted=rsaObject.export({format:'pem',type:'pkcs8',cipher:'aes-256-cbc',passphrase:'päss\0word'});
+ await judge('actual encrypted private key',()=>assert.deepEqual(Buffer.from(api.createSign('sha256').update(data).sign({key:encrypted,passphrase:'päss\0word'})),crypto.createSign('sha256').update(data).sign({key:encrypted,passphrase:'päss\0word'})));
+ for(const [label,view]of [['offset',Buffer.concat([Buffer.from('xx'),data,Buffer.from('yy')]).subarray(2,data.length+2)],['DataView',new DataView(Uint8Array.from(data).buffer)],['shared',new Uint8Array(new SharedArrayBuffer(data.length))]])await judge('actual update byte span '+label,()=>{if(label==='shared')view.set(data);assert.deepEqual(Buffer.from(api.createSign('sha256').update(view).sign(rsa)),crypto.createSign('sha256').update(data).sign(rsa))});
+ for(const [encoding,text]of [['hex',data.toString('hex')],['base64',data.toString('base64')],['utf16le','ab\0cd'],['latin1','abé']])await judge('native stream string decoding '+encoding,()=>assert.deepEqual(Buffer.from(api.createSign('sha256').update(text,encoding).sign(rsa)),crypto.createSign('sha256').update(text,encoding).sign(rsa)));
+ await judge('Writable consumption before sign',async()=>{const sign=api.createSign('sha256');await new Promise((resolve,reject)=>{sign.once('error',reject);sign.end(data,resolve)});assert.deepEqual(Buffer.from(sign.sign(rsa)),crypto.createSign('sha256').update(data).sign(rsa))});
+ await judge('actual invalid signature mismatch false',()=>{const signature=crypto.createSign('sha256').update(data).sign(rsa);signature[1]^=1;assert.equal(api.createVerify('sha256').update(data).verify(rsaPublic,signature),false)});
+ await judge('verify accepts actual private key',()=>{const signature=crypto.createSign('sha256').update(data).sign(rsa);assert.equal(api.createVerify('sha256').update(data).verify(rsaObject,signature),true)});
+ for(const algorithm of [null,undefined,1,{},'no-such-digest'])await compare('algorithm validation '+String(algorithm),c=>c.createSign(algorithm));
+ for(const value of [null,{},new ArrayBuffer(1),1])await compare('update validation '+String(value),c=>c.createSign('sha256').update(value));
+ for(const [label,options]of [['padding-null',{padding:null}],['padding-object',{padding:{}}],['salt-null',{saltLength:null}],['salt-outofrange',{saltLength:2**32}],['encoding',{dsaEncoding:'invalid'}],['provider-padding',{padding:crypto.constants.RSA_PKCS1_OAEP_PADDING}],['malformed',{key:Buffer.from('invalid')}],['missing-password',{key:encrypted}],['wrong-password',{key:encrypted,passphrase:'wrong'}]])await compare('final option/error '+label,c=>c.createSign('sha256').update(data).sign({key:rsa,...options}));
+ await compare('missing sign key',c=>c.createSign('sha256').sign());
+ await compare('public key object rejected for sign',c=>c.createSign('sha256').sign(rsaPublic));
+ await compare('sign consumed state',c=>{const owner=c.createSign('sha256').update(data);owner.sign(rsa);owner.sign(rsa)});
+ await compare('update consumed state',c=>{const owner=c.createSign('sha256').update(data);owner.sign(rsa);owner.update('later')});
+ await compare('verify consumed state',c=>{const sig=crypto.createSign('sha256').update(data).sign(rsa);const owner=c.createVerify('sha256').update(data);owner.verify(rsaPublic,sig);owner.verify(rsaPublic,sig)});
+ await compare('bad key error before consumed state',c=>{const owner=c.createSign('sha256').update(data);owner.sign(rsa);owner.sign('bad')});
+ await judge('malformed P1363 leaves digest available',()=>{const key={key:ecPublic,dsaEncoding:'ieee-p1363'},sig=crypto.createSign('sha256').update(data).sign({key:ec,dsaEncoding:'ieee-p1363'});for(const c of [api,crypto]){const owner=c.createVerify('sha256').update(data);assert.throws(()=>owner.verify(key,Buffer.alloc(3)),{code:'ERR_CRYPTO_OPERATION_FAILED',message:'Malformed signature'});assert.equal(owner.verify(key,sig),true)}});
+ const ed=crypto.generateKeyPairSync('ed25519');
+ await compare('streaming one-shot-only key rejection',c=>c.createSign('sha256').update(data).sign(ed.privateKey));
+ await judge('key getter exception identity and unconsumed state',()=>{for(const c of [api,crypto]){const marker={original:true},owner=c.createSign('sha256').update(data);let actual;try{owner.sign({get key(){throw marker}})}catch(e){actual=e}assert.equal(actual,marker);assert.equal(crypto.createVerify('sha256').update(data).verify(rsaPublic,owner.sign(rsa)),true)}});
+ console.log(JSON.stringify({scope:'streaming signatures over actual portable owner with native key/stream acquisition dependencies; no guest/four-host conformance',rows,failures}));if(failures.length)process.exitCode=1;
+})().catch(error=>{console.error(error);process.exitCode=1});

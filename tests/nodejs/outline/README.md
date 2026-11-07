@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source193 integrates actual Sign/Verify/createSign/createVerify over pinned algorithms and native digest/key owners.52focused groups,2whole unchanged upstream files per subject and14package checks complete; the existing CLI interoperability block remains skipped and is not passing coverage. Current guest/four-host conformance is unestablished.
+See [source scope](streaming-signature-owner-integration.md).
+
 Source192 integrates actual conditional shared OS/crypto constants, pinned public initialization/legacy aggregation and real CLI state.12paired groups,71RSA/4key consumers,11CLI pairs, unchanged constants test and39scoped checks pass. New JSAPI/TLS policy/guest/four-host conformance remains open.
 See [source scope](shared-public-constants-integration.md).
 

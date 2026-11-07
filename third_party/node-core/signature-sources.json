@@ -1,0 +1,28 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/internal/crypto/sig.js": {
+      "path": "upstream/signature/lib/internal/crypto/sig.js",
+      "sha256": "2a5598f37a57751756c2bbbc2273a2f563e3cd29684b3e60dda7357be188d474"
+    },
+    "lib/crypto.js": {
+      "path": "upstream/signature/lib/crypto.js",
+      "sha256": "2624db34b212d51f1410a9ff8720abd2f28298ead04c388135d36228d9910f2d"
+    },
+    "src/crypto/crypto_sig.cc": {
+      "path": "upstream/signature/src/crypto/crypto_sig.cc",
+      "sha256": "4419bf054a4d8c400ee8af6a41f88fbcd8edf9e76261ab5f4dca1a595cb172a4"
+    },
+    "src/crypto/crypto_sig.h": {
+      "path": "upstream/signature/src/crypto/crypto_sig.h",
+      "sha256": "a03c4e7560b3e2dfcec2d3ecb3f77e1ada04d117bae030c8b47c5291b6423a27"
+    }
+  },
+  "creators": {
+    "source": "lib/crypto.js",
+    "start": "function createSign(",
+    "length": 171,
+    "sha256": "e27a9f382657acf50a5544113cca76872096e6273c329ddfd6168ebe71257b72"
+  }
+}

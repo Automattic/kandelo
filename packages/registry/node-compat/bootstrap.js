@@ -3490,7 +3490,13 @@ Object.assign(crypto, _createNodeCipherPlatform({
     digestHelpers: _nodeDigestHelpers, stringDecoder: string_decoder,
     kHandle: _nodeIncrementalCrypto.symbols.kHandle,
 }));
-// Key generation and signature consumers still need native owners.
+Object.assign(crypto, _createNodeSignaturePlatform({
+    native: _nodeNative, values: _nodeValues, keys: _nodeCryptoKeys,
+    Buffer, types: util.types, codecs: _nodeBufferCodecs, streams: stream,
+    digestHelpers: _nodeDigestHelpers, kHandle: _nodeIncrementalCrypto.symbols.kHandle,
+    constants: _nodeConstantBinding,
+}));
+// Key generation and one-shot signature consumers still need native owners.
 // Imported keys above own real ncrypto material; their presence does not
 // establish those separate consumers or WebCrypto algorithm compatibility.
 crypto.generateKeyPairSync = _notImpl('crypto', 'generateKeyPairSync');

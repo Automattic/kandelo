@@ -1695,6 +1695,33 @@ for marker, replacement in [
     cipher_adapter = cipher_adapter.replace(marker, replacement)
 bundle += cipher_adapter + '\n'
 
+signature_spec = json.loads((root / 'signature-sources.json').read_text())
+if signature_spec['version'] != target['version'] or signature_spec['commit'] != target['source']['commit']:
+    raise ValueError('Signature source target identity mismatch')
+signature_sources = {}
+for name, item in signature_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Signature source identity mismatch: ' + name)
+    signature_sources[name] = raw.decode('utf-8')
+selection = signature_spec['creators']
+text = signature_sources[selection['source']]
+if text.count(selection['start']) != 1:
+    raise ValueError('Review signature creator selection')
+offset = text.index(selection['start'])
+signature_creators = text[offset:offset + selection['length']]
+if hashlib.sha256(signature_creators.encode()).hexdigest() != selection['sha256']:
+    raise ValueError('Signature creator identity mismatch')
+signature_adapter = (root / 'signature-platform-adapter.js').read_text()
+for marker, replacement in [
+    ('/* NODE_SIGNATURE_PUBLIC */', signature_sources['lib/internal/crypto/sig.js']),
+    ('/* NODE_SIGNATURE_CREATORS */', signature_creators),
+]:
+    if signature_adapter.count(marker) != 1:
+        raise ValueError('Review signature embedding marker: ' + marker)
+    signature_adapter = signature_adapter.replace(marker, replacement)
+bundle += signature_adapter + '\n'
+
 kdf_spec = manifest['kdfPlatform']
 kdf_factories = []
 for name, item in kdf_spec['sources'].items():

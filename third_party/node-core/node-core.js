@@ -100740,6 +100740,381 @@ function createDecipheriv(cipher, key, iv, options) {
         publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt };
 }
 
+// Complete pinned Sign/Verify wrappers over actual private native digest/key owners.
+function _createNodeSignaturePlatform(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    function call(operation, ...args) {
+        const packet = platform.native.signatureOperation(operation, ...args);
+        if (packet.error !== undefined) throw packet.error;
+        return packet.value;
+    }
+    class SignHandle {
+        constructor() { return call('new', new.target.prototype, false); }
+        init(algorithm) { return call('init', this, algorithm); }
+        update(data, encoding) { return call('update', this, data, encoding); }
+        sign(...args) { return platform.codecs.copyBytes(call('sign', this, ...args)); }
+    }
+    class VerifyHandle {
+        constructor() { return call('new', new.target.prototype, true); }
+        init(algorithm) { return call('init', this, algorithm); }
+        update(data, encoding) { return call('update', this, data, encoding); }
+        verify(...args) { return call('verify', this, ...args); }
+    }
+    const binding = { Sign: SignHandle, Verify: VerifyHandle,
+        kSigEncDER: 0, kSigEncP1363: 1 };
+    const module = { exports: {} };
+    const dependencies = new primordials.SafeMap([
+        ['internal/errors', platform.values.errors], ['internal/validators', platform.values.validators],
+        ['internal/crypto/util', { ...platform.digestHelpers, kHandle: platform.kHandle }],
+        ['internal/crypto/keys', platform.keys], ['stream', platform.streams],
+        ['buffer', { Buffer: platform.Buffer }], ['internal/util/types', platform.types],
+    ]);
+    (function(module, exports, require, primordials, internalBinding) {
+        'use strict';
+
+const {
+  FunctionPrototypeCall,
+  ObjectSetPrototypeOf,
+} = primordials;
+
+const {
+  codes: {
+    ERR_CRYPTO_SIGN_KEY_REQUIRED,
+    ERR_INVALID_ARG_TYPE,
+    ERR_INVALID_ARG_VALUE,
+  },
+} = require('internal/errors');
+
+const {
+  validateFunction,
+  validateEncoding,
+  validateString,
+} = require('internal/validators');
+
+const {
+  Sign: _Sign,
+  SignJob,
+  Verify: _Verify,
+  kCryptoJobAsync,
+  kCryptoJobSync,
+  kSigEncDER,
+  kSigEncP1363,
+  kSignJobModeSign,
+  kSignJobModeVerify,
+} = internalBinding('crypto');
+
+const {
+  getArrayBufferOrView,
+  kHandle,
+} = require('internal/crypto/util');
+
+const {
+  preparePrivateKey,
+  preparePublicOrPrivateKey,
+} = require('internal/crypto/keys');
+
+const { Writable } = require('stream');
+
+const { Buffer } = require('buffer');
+
+const {
+  isArrayBufferView,
+} = require('internal/util/types');
+
+const constants = internalBinding('constants').crypto;
+
+function Sign(algorithm, options) {
+  if (!(this instanceof Sign))
+    return new Sign(algorithm, options);
+  validateString(algorithm, 'algorithm');
+  this[kHandle] = new _Sign();
+  this[kHandle].init(algorithm);
+
+  FunctionPrototypeCall(Writable, this, options);
+}
+
+ObjectSetPrototypeOf(Sign.prototype, Writable.prototype);
+ObjectSetPrototypeOf(Sign, Writable);
+
+Sign.prototype._write = function _write(chunk, encoding, callback) {
+  this.update(chunk, encoding);
+  callback();
+};
+
+Sign.prototype.update = function update(data, encoding) {
+  if (typeof data === 'string') {
+    validateEncoding(data, encoding);
+  } else if (!isArrayBufferView(data)) {
+    throw new ERR_INVALID_ARG_TYPE(
+      'data', ['string', 'Buffer', 'TypedArray', 'DataView'], data);
+  }
+
+  this[kHandle].update(data, encoding);
+  return this;
+};
+
+function getPadding(options) {
+  return getIntOption('padding', options);
+}
+
+function getSaltLength(options) {
+  let saltLength = getIntOption('saltLength', options);
+  if (options.padding === constants.RSA_PKCS1_PSS_PADDING && saltLength === undefined) {
+    saltLength = constants.RSA_PSS_SALTLEN_MAX_SIGN;
+  }
+  return saltLength;
+}
+
+function getDSASignatureEncoding(options) {
+  if (typeof options === 'object') {
+    const { dsaEncoding = 'der' } = options;
+    if (dsaEncoding === 'der')
+      return kSigEncDER;
+    else if (dsaEncoding === 'ieee-p1363')
+      return kSigEncP1363;
+    throw new ERR_INVALID_ARG_VALUE('options.dsaEncoding', dsaEncoding);
+  }
+
+  return kSigEncDER;
+}
+
+function getContext(options) {
+  if (options?.context === undefined) {
+    return undefined;
+  }
+
+  if (!isArrayBufferView(options.context)) {
+    throw new ERR_INVALID_ARG_TYPE(
+      'options.context', ['Buffer', 'TypedArray', 'DataView'], options.context);
+  }
+
+  return options.context;
+}
+
+function getIntOption(name, options) {
+  const value = options[name];
+  if (value !== undefined) {
+    if (value === value >> 0) {
+      return value;
+    }
+    throw new ERR_INVALID_ARG_VALUE(`options.${name}`, value);
+  }
+  return undefined;
+}
+
+Sign.prototype.sign = function sign(privateKey, encoding) {
+  if (!privateKey)
+    throw new ERR_CRYPTO_SIGN_KEY_REQUIRED();
+
+  const { data, format, type, passphrase, namedCurve } =
+    preparePrivateKey(privateKey, 'privateKey');
+
+  // Options specific to RSA
+  const rsaPadding = getPadding(privateKey);
+  const pssSaltLength = getSaltLength(privateKey);
+
+  // Options specific to (EC)DSA
+  const dsaSigEnc = getDSASignatureEncoding(privateKey);
+
+  const ret = this[kHandle].sign(data, format, type,
+                                 passphrase, namedCurve,
+                                 rsaPadding,
+                                 pssSaltLength, dsaSigEnc);
+
+  if (encoding && encoding !== 'buffer')
+    return ret.toString(encoding);
+
+  return ret;
+};
+
+function signOneShot(algorithm, data, key, callback) {
+  if (algorithm != null)
+    validateString(algorithm, 'algorithm');
+
+  if (callback !== undefined)
+    validateFunction(callback, 'callback');
+
+  data = getArrayBufferOrView(data, 'data');
+
+  if (!key)
+    throw new ERR_CRYPTO_SIGN_KEY_REQUIRED();
+
+  // Options specific to RSA
+  const rsaPadding = getPadding(key);
+  const pssSaltLength = getSaltLength(key);
+
+  // Options specific to (EC)DSA
+  const dsaSigEnc = getDSASignatureEncoding(key);
+
+  // Options specific to Ed448 and ML-DSA
+  const context = getContext(key);
+
+  const {
+    data: keyData,
+    format: keyFormat,
+    type: keyType,
+    passphrase: keyPassphrase,
+    namedCurve: keyNamedCurve,
+  } = preparePrivateKey(key);
+
+  const job = new SignJob(
+    callback ? kCryptoJobAsync : kCryptoJobSync,
+    kSignJobModeSign,
+    keyData,
+    keyFormat,
+    keyType,
+    keyPassphrase,
+    keyNamedCurve,
+    data,
+    algorithm,
+    pssSaltLength,
+    rsaPadding,
+    dsaSigEnc,
+    context,
+    undefined);
+
+  if (!callback) {
+    const { 0: err, 1: signature } = job.run();
+    if (err !== undefined)
+      throw err;
+
+    return Buffer.from(signature);
+  }
+
+  job.ondone = (error, signature) => {
+    if (error) return FunctionPrototypeCall(callback, job, error);
+    FunctionPrototypeCall(callback, job, null, Buffer.from(signature));
+  };
+  job.run();
+}
+
+function Verify(algorithm, options) {
+  if (!(this instanceof Verify))
+    return new Verify(algorithm, options);
+  validateString(algorithm, 'algorithm');
+  this[kHandle] = new _Verify();
+  this[kHandle].init(algorithm);
+
+  FunctionPrototypeCall(Writable, this, options);
+}
+
+ObjectSetPrototypeOf(Verify.prototype, Writable.prototype);
+ObjectSetPrototypeOf(Verify, Writable);
+
+Verify.prototype._write = Sign.prototype._write;
+Verify.prototype.update = Sign.prototype.update;
+
+Verify.prototype.verify = function verify(key, signature, sigEncoding) {
+  const {
+    data,
+    format,
+    type,
+    passphrase,
+    namedCurve,
+  } = preparePublicOrPrivateKey(key, 'key');
+
+  // Options specific to RSA
+  const rsaPadding = getPadding(key);
+  const pssSaltLength = getSaltLength(key);
+
+  // Options specific to (EC)DSA
+  const dsaSigEnc = getDSASignatureEncoding(key);
+
+  signature = getArrayBufferOrView(signature, 'signature', sigEncoding);
+
+  return this[kHandle].verify(data, format, type,
+                              passphrase, namedCurve,
+                              signature,
+                              rsaPadding, pssSaltLength, dsaSigEnc);
+};
+
+function verifyOneShot(algorithm, data, key, signature, callback) {
+  if (algorithm != null)
+    validateString(algorithm, 'algorithm');
+
+  if (callback !== undefined)
+    validateFunction(callback, 'callback');
+
+  data = getArrayBufferOrView(data, 'data');
+
+  // Options specific to RSA
+  const rsaPadding = getPadding(key);
+  const pssSaltLength = getSaltLength(key);
+
+  // Options specific to (EC)DSA
+  const dsaSigEnc = getDSASignatureEncoding(key);
+
+  // Options specific to Ed448 and ML-DSA
+  const context = getContext(key);
+
+  signature = getArrayBufferOrView(signature, 'signature');
+
+  const {
+    data: keyData,
+    format: keyFormat,
+    type: keyType,
+    passphrase: keyPassphrase,
+    namedCurve: keyNamedCurve,
+  } = preparePublicOrPrivateKey(key);
+
+  const job = new SignJob(
+    callback ? kCryptoJobAsync : kCryptoJobSync,
+    kSignJobModeVerify,
+    keyData,
+    keyFormat,
+    keyType,
+    keyPassphrase,
+    keyNamedCurve,
+    data,
+    algorithm,
+    pssSaltLength,
+    rsaPadding,
+    dsaSigEnc,
+    context,
+    signature);
+
+  if (!callback) {
+    const { 0: err, 1: result } = job.run();
+    if (err !== undefined)
+      throw err;
+
+    return result;
+  }
+
+  job.ondone = (error, result) => {
+    if (error) return FunctionPrototypeCall(callback, job, error);
+    FunctionPrototypeCall(callback, job, null, result);
+  };
+  job.run();
+}
+
+module.exports = {
+  Sign,
+  signOneShot,
+  Verify,
+  verifyOneShot,
+};
+
+    })(module, module.exports, name => {
+        if (dependencies.has(name)) return dependencies.get(name);
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Signature dependency ' + name);
+    }, primordials, name => name === 'crypto' ? binding :
+        name === 'constants' ? platform.constants : undefined);
+    const { Sign, Verify } = module.exports;
+    function createSign(algorithm, options) {
+  return new Sign(algorithm, options);
+}
+
+function createVerify(algorithm, options) {
+  return new Verify(algorithm, options);
+}
+
+    // SignJob/one-shot and its native async ownership are separate consumers;
+    // do not expose the unbound one-shot wrappers as working implementations.
+    return { Sign, Verify, createSign, createVerify };
+}
+
 // Pinned public password-KDF algorithms over native owned sync/queued work.
 function _createNodeCryptoKdf(platform) {
     'use strict';

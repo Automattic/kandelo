@@ -1,0 +1,101 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto.md",
+    "findingIds": [
+      "C-015",
+      "C-008",
+      "C-009"
+    ],
+    "relatedFamilies": [
+      "crypto",
+      "values",
+      "streams",
+      "async",
+      "engine"
+    ],
+    "scope": "Four actual public streaming signature APIs and genuine digest/key/byte/error/state prerequisites; no one-shot/STORE/keygen/provider/guest closure"
+  },
+  "sourceImplemented": [
+    "Complete unchanged public streaming Sign/Verify algorithms and exact creator functions are now actually exported",
+    "Real GC-finalized native SignatureState owns EVP digest context and genuine RSA/PSS/DSA/ECDSA operations",
+    "Actual DER/P1363 conversion, malformed-signature and terminal-consumption/error ordering",
+    "Rooted real handle and independent immutable material edge across parsing/getters; existing checked byte capture, no persistent JS payload pointer",
+    "Shared source192 constant binding and genuine source185 Error owner; actual0141guarded registration/curated forwarding/staging",
+    "One-shot APIs remain their separate missing owner rather than delegating to incompatible streaming algorithms"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-signature193-source-r1/report.json",
+    "sha256": "b20e3ff8daab9db9fb451d4682e3d50260f49e58bcc4dfde3bd29bb1022dc7c7",
+    "guardedInputs": 860,
+    "scope": "Four actual streaming signatures over unchanged pinned algorithms and real native state/material/bytes/error owners; scoped native-dependent controls/unchanged upstream, existing CLI-block skips preserved and not passing; guestJSAPI/one-shot/fourhost open."
+  },
+  "packageChecks": {
+    "report": ".context/node26-signature193-affected-r1.json",
+    "sha256": "06abe74ab3bfa50e97ca09cb79d7cdd430be122f8dd55c3066bc9b9736020c54",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-signature193-source-r1/report.json",
+    "sha256": "b20e3ff8daab9db9fb451d4682e3d50260f49e58bcc4dfde3bd29bb1022dc7c7",
+    "streamingSignatureGroups": 52,
+    "wholeUnchangedUpstreamFiles": 2,
+    "subjectsPerFile": 2,
+    "cliInteropSkipDiagnosticsPreserved": 2,
+    "skipCountsAsPassingCoverage": false,
+    "compiledInputsVerified": 1008,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Actual current portable ncrypto signature state and native key/JWK-DER/codec/Writable/TLS controls; skips/native dependencies explicit, no guest key/JSAPI/GC/realm/fourhost proof"
+  },
+  "sealedEvidence": {
+    "report": ".context/signature-owner-agent/report.json",
+    "sha256": "61e666009c7049b548fda9b709a9b9238c5353159616e6c3b61962902a3d34fd",
+    "reusedEvidence": true,
+    "scope": "52focused groups/2unchanged upstream files eachsubject with CLI-block skips;1tiny compile/0fail,1008inputs; normal source/staging/style/registration/syntax only, no engine/guest."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/signature-owner-agent/setup-failure.json",
+      "sha256": "c73972a1aa97651bd4fb4c72eba1b84eb9a3691726a1952078718ce8ceee29e4",
+      "kind": "initial-private-input-anchor-setup",
+      "reason": "Private base lacked parent190patch0138 anchor; setup failure retained, no compiler/runtime pass inferred."
+    },
+    {
+      "report": ".context/node26-signature193-registration-guard-r1.log",
+      "sha256": "92ab1aadabe9bdf72c84955bd226fd7de8f17b319daaaacea37a01c90f4f7835",
+      "kind": "incorrect-root-registration-check-expectation",
+      "reason": "Root expected unguarded native pointer, actual correct production registration uses KandeloCryptoGuard; no runtime change, strict expected line corrected."
+    },
+    {
+      "report": ".context/signature-owner-agent/test-crypto-sign-verify.js.native.stdout",
+      "sha256": "77bceacf55a958c9b2b815f5331835d14d39ea270e875b19d56cb5553b437ab3",
+      "kind": "unchanged-upstream-conditional-CLI-skip",
+      "reason": "Native sign-verify existing CLI interop block emits skip; other assertions execute, no all-branch coverage claim."
+    },
+    {
+      "report": ".context/signature-owner-agent/test-crypto-sign-verify.js.candidate.stdout",
+      "sha256": "77bceacf55a958c9b2b815f5331835d14d39ea270e875b19d56cb5553b437ab3",
+      "kind": "unchanged-upstream-conditional-CLI-skip",
+      "reason": "Candidate same conditional CLI-block skip, not passing coverage; all upstream source/assertions unchanged."
+    }
+  ],
+  "remaining": [
+    "Real one-shot SignJob sync/async ownership, context/provider algorithms, snapshots/fallback/EdDSA/callback behavior remain separate implementation slice",
+    "Compile/execute actual guest JSAPI/realms/security/GC/OOM/resize/shared/native-byte/material and all-four-host conformance",
+    "Actual guest key importers/STORE/permissions/keygen/provider configuration and complete crypto remain open",
+    "Opaque provider/vector/control allocation accounting and real teardown/fault policy",
+    "Conditional OpenSSL CLI interop branch remains unexecuted in these native controls; native TLS/other capabilities are explicit dependencies"
+  ],
+  "at": "2026-11-07T07:18:36.619413+00:00",
+  "recipeRevision": 193,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

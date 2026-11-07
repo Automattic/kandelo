@@ -645,6 +645,7 @@
         keyOperation(operation, ...args) { return native.keyOperation(operation, ...args); },
         x509Operation(...args) { return native.x509Operation(...args); },
         cipherOperation(operation, ...args) { return native.cipherOperation(operation, ...args); },
+        signatureOperation(operation, ...args) { return native.signatureOperation(operation, ...args); },
         isKeyObject(value) { return native.keyOperation('isKeyObject', value).value; },
         isCryptoKey(value) { return native.keyOperation('isCryptoKey', value).value; },
         incrementalHash(operation, ...args) { return native.incrementalHash(operation, ...args); },

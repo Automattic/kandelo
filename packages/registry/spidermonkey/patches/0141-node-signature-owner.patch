@@ -1,0 +1,10 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4211,6 +4211,7 @@
+       JS_FN("x509Operation", (KandeloCryptoGuard<KandeloNativeX509Operation>), 2, 0),
+       JS_FN("histogramOperation", KandeloNativeHistogramOperation, 2, 0),
+       JS_FN("cipherOperation", (KandeloCryptoGuard<KandeloNativeCipherOperation>), 1, 0),
++      JS_FN("signatureOperation", (KandeloCryptoGuard<KandeloNativeSignatureOperation>), 1, 0),
+       JS_FN("incrementalHash", KandeloNativeIncrementalHash, 1, 0),
+       JS_FN("dirOperation", KandeloNativeDirOperation, 1, 0),
+       JS_FN("packageOperation", KandeloPackageOperation, 0, 0),
