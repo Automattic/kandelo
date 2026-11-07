@@ -3,9 +3,9 @@
 //! The device boots at 640×400, the mode fbDOOM was written against. A
 //! program selects another with `FBIOPUT_VSCREENINFO` before it maps or
 //! writes the device; every `FBIOGET_*SCREENINFO`, `mmap` length check,
-//! and `bind_framebuffer` call reads the mode back from here. Like a Linux
-//! fbdev driver, the mode belongs to the device, so it outlives the
-//! process that set it.
+//! and `bind_framebuffer` call reads the mode back from here. The mode
+//! belongs to the device for as long as one process owns it; releasing
+//! the device returns it to the boot mode.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use wasm_posix_shared::Errno;
@@ -68,20 +68,44 @@ pub fn set_geometry(width: u32, height: u32) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Release `/dev/fb0` if `pid` owns it, returning the device to its boot
+/// mode first. Idempotent: safe from `close`, `munmap`, exec and exit even
+/// when `pid` never owned the device.
+///
+/// WHY: the device has one owner, so nobody else is using the mode when
+/// that owner leaves. Resetting it means each program starts from the boot
+/// mode instead of whatever the previous owner chose, and a program that
+/// needs another mode asks for it. The mode is reset before ownership is
+/// cleared, so a new owner never observes the old one.
+pub fn release_owner(pid: u32) {
+    let owner = &crate::process_table::FB0_OWNER;
+    if owner.load(Ordering::SeqCst) != pid as i32 {
+        return;
+    }
+    WIDTH.store(DEFAULT_WIDTH, Ordering::Relaxed);
+    HEIGHT.store(DEFAULT_HEIGHT, Ordering::Relaxed);
+    let _ = owner.compare_exchange(pid as i32, -1, Ordering::SeqCst, Ordering::SeqCst);
+}
+
+/// The mode and `FB0_OWNER` are machine-global, so every test that reads or
+/// changes either (here, in `syscalls` and in `process_table`) holds this
+/// guard. It starts the test from a fresh device: no owner, boot mode.
+#[cfg(test)]
+pub(crate) fn lock_device_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+    set_geometry(DEFAULT_WIDTH, DEFAULT_HEIGHT).unwrap();
+    guard
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Tests run single-threaded (`RUST_TEST_THREADS = 1`), and the mode is
-    /// device state: restore the default so a later test still sees the
-    /// geometry a fresh kernel boots with.
-    fn restore_default() {
-        set_geometry(DEFAULT_WIDTH, DEFAULT_HEIGHT).unwrap();
-    }
-
     #[test]
     fn default_geometry_is_640x400_bgra32() {
-        restore_default();
+        let _device = lock_device_for_test();
         let fb = geometry();
         assert_eq!((fb.width, fb.height), (DEFAULT_WIDTH, DEFAULT_HEIGHT));
         assert_eq!(fb.line_length(), 640 * 4);
@@ -90,28 +114,45 @@ mod tests {
 
     #[test]
     fn set_geometry_moves_stride_and_buffer_size() {
+        let _device = lock_device_for_test();
         set_geometry(1280, 800).unwrap();
         let fb = geometry();
         assert_eq!((fb.width, fb.height), (1280, 800));
         assert_eq!(fb.line_length(), 1280 * 4);
         assert_eq!(fb.smem_len(), 1280 * 800 * 4);
-        restore_default();
     }
 
     #[test]
     fn set_geometry_accepts_the_maximum_mode() {
+        let _device = lock_device_for_test();
         set_geometry(MAX_WIDTH, MAX_HEIGHT).unwrap();
         assert_eq!(geometry().smem_len(), MAX_WIDTH * MAX_HEIGHT * 4);
-        restore_default();
     }
 
     #[test]
     fn set_geometry_rejects_a_mode_out_of_range_and_keeps_the_current_one() {
+        let _device = lock_device_for_test();
         set_geometry(1280, 800).unwrap();
         for (width, height) in [(0, 800), (1280, 0), (MAX_WIDTH + 1, 800), (1280, MAX_HEIGHT + 1)] {
             assert_eq!(set_geometry(width, height), Err(Errno::EINVAL));
         }
         assert_eq!(geometry(), Geometry { width: 1280, height: 800 });
-        restore_default();
+    }
+
+    #[test]
+    fn release_by_the_owner_restores_the_boot_mode() {
+        let _device = lock_device_for_test();
+        let owner = &crate::process_table::FB0_OWNER;
+        owner.store(7, Ordering::SeqCst);
+        set_geometry(1280, 800).unwrap();
+
+        // Another pid's release changes neither the owner nor the mode.
+        release_owner(8);
+        assert_eq!(owner.load(Ordering::SeqCst), 7);
+        assert_eq!(geometry(), Geometry { width: 1280, height: 800 });
+
+        release_owner(7);
+        assert_eq!(owner.load(Ordering::SeqCst), -1);
+        assert_eq!(geometry(), Geometry { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT });
     }
 }

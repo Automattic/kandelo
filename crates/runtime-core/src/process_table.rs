@@ -291,8 +291,7 @@ impl ProcessRemovalResources {
         }
         if lock_state_changed { crate::wakeup::push_advisory_lock(); }
         if had_framebuffer_binding { io.unbind_framebuffer(pid); }
-        let _ = FB0_OWNER.compare_exchange(pid as i32, -1,
-            core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::SeqCst);
+        crate::framebuffer::release_owner(pid);
         for socket_index in 0..self.sockets.len() {
             let named = self.ofds.iter().any(|(_, ofd)| ofd.file_type == FileType::Socket
                 && ofd.host_handle < 0 && (-(ofd.host_handle + 1)) as usize == socket_index);
@@ -5332,6 +5331,8 @@ mod tests {
         process.fb_binding = Some(crate::process::FbBinding {
             addr: 0x04000000, len: 0x10000, w: 1, h: 1, stride: 4, fmt: 0,
         });
+        let _device = crate::framebuffer::lock_device_for_test();
+        crate::framebuffer::set_geometry(1280, 800).unwrap();
         let previous_owner = FB0_OWNER.swap(pid as i32, core::sync::atomic::Ordering::SeqCst);
         add_listening_socket(&mut table, pid, 8080, 10);
         table.get_mut(pid).unwrap().sockets.get_mut(0).unwrap().host_net_handle = Some(9_999_971);
@@ -5349,6 +5350,13 @@ mod tests {
                 Some(RemovalEvent::Network(9_999_971)),
             ]);
             assert_eq!(FB0_OWNER.load(core::sync::atomic::Ordering::SeqCst), -1);
+            assert_eq!(
+                crate::framebuffer::geometry(),
+                crate::framebuffer::Geometry {
+                    width: crate::framebuffer::DEFAULT_WIDTH,
+                    height: crate::framebuffer::DEFAULT_HEIGHT,
+                },
+            );
         }
         FB0_OWNER.store(previous_owner, core::sync::atomic::Ordering::SeqCst);
         drop(table);
