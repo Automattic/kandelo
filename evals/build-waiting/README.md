@@ -722,6 +722,71 @@ duration script are local in `.context/replay-samples.md`,
 `.context/replay-details.json` and `.context/analyze-wait-replay.py`.
 Existing-rule denials are outside this new rule's precision sample.
 
+**Controlled result (2026-11-07).** One pair on macOS 27.2 arm64,
+Claude Code 2.1.316, alias `sonnet` resolved to `claude-sonnet-5-5`.
+Both sessions used the same current guidance and explicit experimental
+prompt; only the CLI and hook differed. The baseline took them from
+`1b6f3783d3`. Each session delegated one foreground subagent, read the
+same 600-record context file (two reads, because the first was truncated),
+then tried the default wait. The fixture requested 660 s and actually
+took 669.1/668.7 s. Both reported exit 3 and the exact `frob_widget`
+error, confirmed against the saved fixture logs and result records.
+
+| Measure | Baseline | 240 s candidate |
+|---|---:|---:|
+| Correct result | 1/1 | 1/1 |
+| Blocking waits | 2 | 3 |
+| Extra denied default wait | 0 | 1 |
+| Subagent tool calls, including reads and denials | 5 | 7 |
+| Gaps at wait wakes, seconds | 543.8, 114.3 | 243.9, 243.9, 166.4 |
+| Cache creation tokens at those wakes | 41,023; 876 | 530; 523; 862 |
+| Cache read tokens at those wakes | 2,384; 43,407 | 43,274; 43,804; 44,327 |
+| Input-equivalent tokens at wait wakes | 90,801 | 20,466 |
+| Whole-session input-equivalent tokens | 231,870 | 167,404 |
+| Session cost, USD | 0.320160 | 0.237803 |
+| Wall time, seconds | 678 | 677 |
+
+The baseline rebuilt about 95% of its prompt after the 543.8 s gap.
+Every candidate wake read the existing prefix, creating only the new
+suffix. Wake input-equivalent tokens were 77% lower in this pair;
+whole-session tokens were 28% lower and billed cost 26% lower, including
+the denial and extra wait. Combined cost was $0.558, below the estimate
+and caps. The keep rule is met for this controlled check: correct
+completion, preserved short-window caches, and lower measured wake cost.
+
+**Limits:** one pair, roughly 43–45k-token subagent contexts, a synthetic
+job, and an explicitly directed first wait. This measures the cache
+mechanism, not natural adoption, parent handoff, large contexts, or
+workflow-wide savings. It does not turn the historical 18% projection
+into a measurement. CLI defaults and main-session hook controls were
+tested; a separate main-session long-wait A/B was not run. Arbitrary
+scripts, aliases, non-wait commands and scheduling stalls can still
+outlive the cache. The first-five-real-uses harm review remains pending.
+
+Raw streams, fixture records/logs, identity probes, copied subagent
+transcripts and measured source snapshots/hashes are local under
+`.context/subagent-cache-eval-auth`. `wake-summary.json` comes from:
+
+```bash
+python3 evals/build-waiting/summarize-subagent-wait.py .context/subagent-cache-eval-auth
+```
+
+The final loop-parser refinement produced identical decisions and reasons
+on all 10 captured Bash calls (`decision-equivalence.json`). The collector
+was corrected to resolve macOS `/tmp` aliases; persisted transcripts from
+this pair were recovered read-only, and a regression test covers their
+collection. An initial pair could not authenticate inside the dev shell
+and used zero model tokens/$0; only those harness-owned fixtures were
+terminated with SIGTERM. The measured pair used the macOS Keychain client
+for CLI authentication, with dev-shell Python and fixture tools.
+
+**Validation and rollout:** dev-shell `test_wait_guard.py` (9 tests),
+`test_agent_job.py` (18), and `test_run.py` (3) passed, as did Python
+compilation and `git diff --check`. Runtime/browser/conformance suites
+were not run: this changes only local agent tooling. `HOOK_VERSION` is
+now 4. Re-run `python3 .claude/hooks/install-hooks.py --user` to update
+an installed copy; the change does not install itself.
+
 ### 9. `local-build plan --status` with time estimate
 
 Before a build starts, this prints which nodes are cache hits, which will
