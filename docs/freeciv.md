@@ -103,14 +103,15 @@ the declared KMS display is prepared before launch. Use **Already running**
 only when a multiplayer server is already listening on this hosting machine.
 Configure the game in Freeciv’s native lobby. See [package sessions](package-sessions.md).
 
-The original manual procedure remains available:
+The launcher can also be run by hand in a plain network session:
 
-1. Open the **Network** panel and create a network session.
-2. In the Freeciv machine's **Multiplayer** menu, choose **Host a game**.
-3. Share the network session's invitation link with the other players.
-4. Each player opens the link, clicks **Join session**, then chooses
-   **Multiplayer → Join session host**.
-5. Configure and start the game through Freeciv once the players have
+1. Open the **Network** panel, create a network session without an
+   activity, and share its invitation link with the other players.
+2. Each player opens the link and clicks **Join session**.
+3. In TTY1 on the hosting computer, press Ctrl+C to end the running
+   Freeciv and run `freeciv-play host`. Each other player does the same
+   with `freeciv-play join`.
+4. Configure and start the game through Freeciv once the players have
    joined. The first connected player has control of the server settings.
 
 Hosting starts a real `freeciv-server` process listening on IPv4 TCP port
