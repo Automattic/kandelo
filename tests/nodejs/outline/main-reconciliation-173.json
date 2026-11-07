@@ -1,0 +1,75 @@
+{
+  "at": "2026-11-07T02:25:06.421587+00:00",
+  "sourceCheckpoint": 173,
+  "mergeCommit": "fa0b5d709bfc67adced89c5863a12d93ea31bf66",
+  "originMain": "afeedd583ca5b9169e32a2d316e49d589c0476c4",
+  "mainContained": true,
+  "mergeConflicts": false,
+  "recordedSourceIdentityChanges": {
+    "docs/architecture.md": {
+      "beforeSha256": "5e9b26f1d77caa04284096109c7424873a1034583a672a8fb73d09f3d128a985",
+      "afterSha256": "1f651c11b9b6307b1ca2268cc519aa119de45b9eb56a46031df9c7a62818500a"
+    },
+    "docs/browser-support.md": {
+      "beforeSha256": "25a6f595ae20dc9335b76c25639fb41b4171aabbdb5f7ff9cdfd6f219635dfa4",
+      "afterSha256": "f05814c38625987d813bf75774025a8d5ed89bd1f86860ef1fbd6a68b12468be"
+    },
+    "packages/sets/local-supported.toml": {
+      "beforeSha256": "20d230cc717fa80d58ec0fdb5026015c5f1ab83a6be823f11fcff27d0504abae",
+      "afterSha256": "0b2c2981d30f139b072a44a3e0ed932ebf97cbdb5a7d570058f408f015d4a977"
+    },
+    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": {
+      "beforeSha256": "48f66f740a30a7f96bb0975f109b2a6417191a2030979f7da9a5aba4b236c489",
+      "afterSha256": "694927ae9d48658ad34468b80550559bf130331eb4fb54a675337b8ed89623c7"
+    },
+    "packages/registry/shell/package.toml": {
+      "beforeSha256": "c013e54bd4ecbd33eb09da4e9fab4731ebb9173a61fe8b0190e3f65b90ec1a50",
+      "afterSha256": "81e67b39443ac86c31bbc75e631373e2e376793fadc7f78da0e5fad94275e441"
+    },
+    "packages/registry/shell/source-rootfs-shell-dependencies.json": {
+      "beforeSha256": "a37dd1575e818dd2073c59bbfd20c2e0416d631e865410c1b71d57353240b90d",
+      "afterSha256": "93d6e7ef812f0dcdd453f95d19ee36005205f2eff5e10cf8d1515ef2365ff28d"
+    }
+  },
+  "mainDelta": [
+    "apps/browser-demos/pages/kandelo/app/App.tsx",
+    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
+    "apps/browser-demos/test/retro-rom-drop.spec.ts",
+    "docs/architecture.md",
+    "docs/browser-support.md",
+    "host/test/retro-emulators-cli-smoke.test.ts",
+    "images/vfs/lib/init/shell-binaries.ts",
+    "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+    "packages/registry/genesis-plus-gx-source/package.toml",
+    "packages/registry/retro-emulators/LICENSE-MAP.md",
+    "packages/registry/retro-emulators/build-retro-emulators.sh",
+    "packages/registry/retro-emulators/build.toml",
+    "packages/registry/retro-emulators/frontend/main.c",
+    "packages/registry/retro-emulators/package.toml",
+    "packages/registry/retro-rom-240p-md/package.toml",
+    "packages/registry/retro-rom-240p-snes/package.toml",
+    "packages/registry/shell/package.toml",
+    "packages/registry/shell/source-rootfs-shell-dependencies.json",
+    "packages/registry/snes9x-source/package.toml",
+    "packages/sets/local-supported.toml",
+    "scripts/browser-binary-package-roots.mjs",
+    "web-libs/kandelo-session/src/exchange-session.ts",
+    "web-libs/kandelo-session/src/index.ts",
+    "web-libs/kandelo-session/src/terminal-request.ts",
+    "web-libs/kandelo-session/test/exchange-session.test.ts",
+    "web-libs/kandelo-session/test/terminal-request.test.ts"
+  ],
+  "selectedPlan": {
+    "path": ".context/node26-engine173-plan.json",
+    "sha256": "c161b7c51418683646255c1f94dbcba21aba53406aa47c0516b13ab748535f53",
+    "cached": 8,
+    "willRun": 1
+  },
+  "targetPinChanged": false,
+  "auditChanged": false,
+  "unrelatedLocalWorkPreserved": true,
+  "fullProductRebuilds": 0,
+  "overallSuites": 0,
+  "runtimeConformance": false,
+  "scope": "Reconciled main retro-emulator changes without changing Node core source/pins; normal selected engine build still pending; no emulator or product validation claimed"
+}

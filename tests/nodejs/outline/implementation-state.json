@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T02:23:09.373405+00:00",
+  "updatedAt": "2026-11-07T02:25:06.421587+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -474,7 +474,7 @@
     "packages/registry/spidermonkey/README.md": "12f2f8daadb10a91e386221fb3d15886c41c53eec93741e68df1c488b35e4a5f",
     "packages/registry/spidermonkey/patches/README.md": "c61f743b05db43a86921963095abef18b09c246059618dababf405b2b1ca4904",
     "packages/registry/node-compat/README.md": "d05d796ec268c520a2de1f0fdb066440474ddff19df0b6f57e0a8b3b512b0227",
-    "docs/architecture.md": "5e9b26f1d77caa04284096109c7424873a1034583a672a8fb73d09f3d128a985",
+    "docs/architecture.md": "1f651c11b9b6307b1ca2268cc519aa119de45b9eb56a46031df9c7a62818500a",
     "tests/nodejs/outline/breadth-first-implementation.md": "23f1fca112029b1bb19ff884fafb0bb54401eb19b159c915b82a99e81f037492",
     "libc/musl-overlay/src/network/wasm32posix/if_nametoindex.c": "cd62192bfdfa70ed555f18e7d382b5d03355da7d1e93cb5191a3bce7b48056c2",
     "libc/musl-overlay/src/network/wasm32posix/if_nameindex.c": "7bacd44a07d103810ebecfd7ff10364e7b7b8e198b9e29414058516a5edf7a91",
@@ -941,7 +941,7 @@
     "host/test/fixtures/node-path-metadata-reference.cjs": "b3ac867cf38d6305383f9cb83c2b39b1a738816e6dceda895ed3201f1fa50a67",
     "tests/nodejs/outline/path-metadata-implementation-dependencies.md": "3c02300563b032996d8906bbf4ea7257b983a53cc7714ce642b3af5dd4f9ab42",
     "tests/nodejs/outline/path-metadata-finding-progress.json": "a39dd16478114b475c2a3d348b4d900d4af99d5fd12bdbd2cb02ffc35ebd5941",
-    "docs/browser-support.md": "25a6f595ae20dc9335b76c25639fb41b4171aabbdb5f7ff9cdfd6f219635dfa4",
+    "docs/browser-support.md": "f05814c38625987d813bf75774025a8d5ed89bd1f86860ef1fbd6a68b12468be",
     "crates/runtime-core/src/hostdir.rs": "f5a9e09fc5dceff205b735de8c549d6e2615f04e09fcf27ba7e7839b925e8593",
     "third_party/node-core/upstream/path-metadata/lib/fs.js": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3",
     "third_party/node-core/upstream/path-metadata/lib/internal/fs/promises.js": "bdb9f9c75509dbaade2ef68e7d8b1c6fff345f356b1459c8969696d48180ea49",
@@ -1112,7 +1112,7 @@
     "host/test/node-assertion-semantics.test.ts": "03a884cd87f744299d7dac96be21edc3d920b961e139ebe9fc299f4e793463bd",
     "host/test/fixtures/node-assertion-platform.cjs": "5cf9c33d8c856a9bfa48ba351e4225d03024809a10674f8708671a17d8e9c9cc",
     "host/test/fixtures/node-assertion-upstream.cjs": "e955f17a3fd2cf831ddd2739e10ba6003cd359ed8e9fecec9bc4d4f1eeb57464",
-    "packages/sets/local-supported.toml": "20d230cc717fa80d58ec0fdb5026015c5f1ab83a6be823f11fcff27d0504abae",
+    "packages/sets/local-supported.toml": "0b2c2981d30f139b072a44a3e0ed932ebf97cbdb5a7d570058f408f015d4a977",
     "tests/nodejs/outline/kernel-admission-integration.md": "d9dcad7fdae46a7faa9a1972b62055f008e078f08bb381b16d18434e8f560b81",
     "tests/nodejs/outline/assertion-error-implementation-dependencies.md": "23ace606a14ecf7d04aa29b0b041f50729a924a6c4ef4b029d39f0c0ff2cca28",
     "tests/nodejs/outline/assertion-error-finding-progress.json": "6178cb137c34812ee75d5e3feb87e024376ca1d749d936721351025c81815a8c",
@@ -1710,7 +1710,7 @@
     "apps/browser-demos/deployment-base-vite-config.test.ts": "5ed0c8f712dde6f34103e2d09ff84ff2a4246c495dd3959ba6b9ee571cc73afa",
     "apps/browser-demos/lib/init/service-worker-bridge.test.ts": "9c75332df0c7498e81a39454f4e3327c62c42333f8bd239b13e97881204a0773",
     "apps/browser-demos/lib/init/service-worker-bridge.ts": "8f8a5353238485529b14adb81a38c5b947dd7e53c33431b0173891a5d3328dc3",
-    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "48f66f740a30a7f96bb0975f109b2a6417191a2030979f7da9a5aba4b236c489",
+    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "694927ae9d48658ad34468b80550559bf130331eb4fb54a675337b8ed89623c7",
     "apps/browser-demos/test/harper.spec.ts": "76cc98e92799826f76c07c441bb85e66b2dec1191f38115b99d08718bbe63794",
     "apps/browser-demos/vite.config.ts": "3fa0de51067f2e7160be87a3add1c5b9366cea361504b1a1ad555845b9a2b224",
     "docs/porting-guide.md": "0a235dbf96c141b584b8719c7816b701d4094c561dc73468b22a87e53455cb16",
@@ -1736,8 +1736,8 @@
     "packages/registry/harper/patches/tokio-1.53.3.patch": "9c6472da0ad4d6046e656beeab6f3b4106b4c61d5066f93b972c2bc4f2ee9325",
     "packages/registry/harper/patches/tree-sitter-gitcommit-0.5.0.patch": "9d9524d51d8bba7c8de3386b5b583134b4416c0e7bb39e1eeb3cdc1b48008dbf",
     "packages/registry/shell/build.toml": "c5968b2c1146a1f691ca1912ada2f14ad127406cd472f35924c80c4104dd9db5",
-    "packages/registry/shell/package.toml": "c013e54bd4ecbd33eb09da4e9fab4731ebb9173a61fe8b0190e3f65b90ec1a50",
-    "packages/registry/shell/source-rootfs-shell-dependencies.json": "a37dd1575e818dd2073c59bbfd20c2e0416d631e865410c1b71d57353240b90d",
+    "packages/registry/shell/package.toml": "81e67b39443ac86c31bbc75e631373e2e376793fadc7f78da0e5fad94275e441",
+    "packages/registry/shell/source-rootfs-shell-dependencies.json": "93d6e7ef812f0dcdd453f95d19ee36005205f2eff5e10cf8d1515ef2365ff28d",
     "scripts/build-rust-sysroot.sh": "b78395930733ede830547087498a0d268cfe6f9c61348239aa5140d4b5d11483",
     "scripts/package-rust-build-env.sh": "f1b398b864b7dc63f435d30f906207d76154f0847bdd615151242d57e6520104",
     "sdk/rust/README.md": "83d546ae5221671a0cc7e2866ed5692aba4d6162502109b2cff2c8bcbc401987",
@@ -1986,7 +1986,8 @@
     "tests/nodejs/outline/finding-ledger.md": "676852fbcf728bbd37e6b9636d9bb596c257b6b14c1e7210c6ae672273ef9702",
     "tests/nodejs/outline/native-include-staging-integration.md": "a550589973bfd956a4d061169880634e095e611f949338dfb0ad6db030554449",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
-    "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2"
+    "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
+    "tests/nodejs/outline/main-reconciliation-173.json": "0562221390c324bdd8cdfb74a67ad4c2d6bb3bbfc81380d1e821e9abd9a4bfe3"
   },
   "changes": [
     {
@@ -41742,13 +41743,82 @@
     "Shared callback policy compiles with explicit hook/context/queue boundary adapters and matches real native Node-API/libuv behavior in eight scenarios, with expected termination codes 1/17 retained. SpiderMonkey rooted/context/checkpoint adapter, engine/root-entry patch and changed DNS/FS/codec owners remain uncompiled. Full rejection events/modes/uncaught recovery, weak-reference/zero-ID/VM/worker and complete loop phases remain missing or unvalidated. Native addon loading in the reference does not imply a guest addon implementation."
   ],
   "mainReconciliation": {
-    "at": "2026-11-07T01:16:43.651351+00:00",
-    "originMain": "b92a1c1126ab065a7ffbfe6626a22b43951b3e51",
-    "aheadBehind": "111\t0",
-    "scope": "Fresh official origin fetch during frozen165build; all main commits already included; no runtime or target mutation",
+    "at": "2026-11-07T02:25:06.421587+00:00",
+    "sourceCheckpoint": 173,
+    "mergeCommit": "fa0b5d709bfc67adced89c5863a12d93ea31bf66",
+    "originMain": "afeedd583ca5b9169e32a2d316e49d589c0476c4",
+    "mainContained": true,
+    "mergeConflicts": false,
+    "recordedSourceIdentityChanges": {
+      "docs/architecture.md": {
+        "beforeSha256": "5e9b26f1d77caa04284096109c7424873a1034583a672a8fb73d09f3d128a985",
+        "afterSha256": "1f651c11b9b6307b1ca2268cc519aa119de45b9eb56a46031df9c7a62818500a"
+      },
+      "docs/browser-support.md": {
+        "beforeSha256": "25a6f595ae20dc9335b76c25639fb41b4171aabbdb5f7ff9cdfd6f219635dfa4",
+        "afterSha256": "f05814c38625987d813bf75774025a8d5ed89bd1f86860ef1fbd6a68b12468be"
+      },
+      "packages/sets/local-supported.toml": {
+        "beforeSha256": "20d230cc717fa80d58ec0fdb5026015c5f1ab83a6be823f11fcff27d0504abae",
+        "afterSha256": "0b2c2981d30f139b072a44a3e0ed932ebf97cbdb5a7d570058f408f015d4a977"
+      },
+      "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": {
+        "beforeSha256": "48f66f740a30a7f96bb0975f109b2a6417191a2030979f7da9a5aba4b236c489",
+        "afterSha256": "694927ae9d48658ad34468b80550559bf130331eb4fb54a675337b8ed89623c7"
+      },
+      "packages/registry/shell/package.toml": {
+        "beforeSha256": "c013e54bd4ecbd33eb09da4e9fab4731ebb9173a61fe8b0190e3f65b90ec1a50",
+        "afterSha256": "81e67b39443ac86c31bbc75e631373e2e376793fadc7f78da0e5fad94275e441"
+      },
+      "packages/registry/shell/source-rootfs-shell-dependencies.json": {
+        "beforeSha256": "a37dd1575e818dd2073c59bbfd20c2e0416d631e865410c1b71d57353240b90d",
+        "afterSha256": "93d6e7ef812f0dcdd453f95d19ee36005205f2eff5e10cf8d1515ef2365ff28d"
+      }
+    },
+    "mainDelta": [
+      "apps/browser-demos/pages/kandelo/app/App.tsx",
+      "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
+      "apps/browser-demos/test/retro-rom-drop.spec.ts",
+      "docs/architecture.md",
+      "docs/browser-support.md",
+      "host/test/retro-emulators-cli-smoke.test.ts",
+      "images/vfs/lib/init/shell-binaries.ts",
+      "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+      "packages/registry/genesis-plus-gx-source/package.toml",
+      "packages/registry/retro-emulators/LICENSE-MAP.md",
+      "packages/registry/retro-emulators/build-retro-emulators.sh",
+      "packages/registry/retro-emulators/build.toml",
+      "packages/registry/retro-emulators/frontend/main.c",
+      "packages/registry/retro-emulators/package.toml",
+      "packages/registry/retro-rom-240p-md/package.toml",
+      "packages/registry/retro-rom-240p-snes/package.toml",
+      "packages/registry/shell/package.toml",
+      "packages/registry/shell/source-rootfs-shell-dependencies.json",
+      "packages/registry/snes9x-source/package.toml",
+      "packages/sets/local-supported.toml",
+      "scripts/browser-binary-package-roots.mjs",
+      "web-libs/kandelo-session/src/exchange-session.ts",
+      "web-libs/kandelo-session/src/index.ts",
+      "web-libs/kandelo-session/src/terminal-request.ts",
+      "web-libs/kandelo-session/test/exchange-session.test.ts",
+      "web-libs/kandelo-session/test/terminal-request.test.ts"
+    ],
+    "selectedPlan": {
+      "path": ".context/node26-engine173-plan.json",
+      "sha256": "c161b7c51418683646255c1f94dbcba21aba53406aa47c0516b13ab748535f53",
+      "cached": 8,
+      "willRun": 1
+    },
+    "targetPinChanged": false,
+    "auditChanged": false,
+    "unrelatedLocalWorkPreserved": true,
+    "fullProductRebuilds": 0,
+    "overallSuites": 0,
+    "runtimeConformance": false,
+    "scope": "Reconciled main retro-emulator changes without changing Node core source/pins; normal selected engine build still pending; no emulator or product validation claimed",
     "evidence": {
-      "report": ".context/node26-native166-main.json",
-      "sha256": "4580a1248e931509348677ad56535947d3b22b5fd3ea4ac9920dfd7451a7d1e8"
+      "report": "tests/nodejs/outline/main-reconciliation-173.json",
+      "sha256": "0562221390c324bdd8cdfb74a67ad4c2d6bb3bbfc81380d1e821e9abd9a4bfe3"
     }
   },
   "storageMaintenance": {
@@ -42115,10 +42185,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/native-include-staging-20261107T022311Z.tar.gz",
-    "sha256": "65cfab1ac062a5d239df9d4cd4ba943deb4fe3d44efbae739928a4e6a701e110",
-    "bytes": 57543821,
-    "scope": "173normalnative include/vendor staging with unchanged style success; no current engine acceptance/guest/fourhost",
+    "path": ".context/node26-implementation-snapshots/main-reconciliation173-20261107T022506Z.tar.gz",
+    "sha256": "252466dc9068d2b0be26e4a60da92609cf3fee4bcbcbdb520be1e865b52c0e91",
+    "bytes": 9930190,
+    "scope": "Source173 after latest-main reconciliation, current public-core source unchanged",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -50953,6 +51023,13 @@
       "sha256": "5e845d8d2d10da26887c05bac8927d3a9a096306907be9591fcf7486750983c4",
       "bytes": 10093246,
       "scope": "Source172 unchanged runtime plus original finding reconciliation",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/native-include-staging-20261107T022311Z.tar.gz",
+      "sha256": "65cfab1ac062a5d239df9d4cd4ba943deb4fe3d44efbae739928a4e6a701e110",
+      "bytes": 57543821,
+      "scope": "173normalnative include/vendor staging with unchanged style success; no current engine acceptance/guest/fourhost",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
