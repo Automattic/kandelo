@@ -27,10 +27,17 @@ optimizer probes and real editor workflows in all three browser engines;
 a synthetic-probe result must not substitute for the real WordPress path.
 Canonical images, lifecycle and full benchmark acceptance remain open.
 
-The partial experiment uses the normal release `xtask partial-image
-wordpress --jobs 1` path. PHP ZTS compiles, and the combined server reaches
-normal fork instrumentation; image publication and runtime results are
-still pending. The separate benchmark checkout now matches selected main
+The partial experiment passes the normal release `xtask partial-image
+wordpress --jobs 1` path in 43m34s. Its 83,524,156-byte WordPress image is
+SHA-256 `464d553bb3e5c37910b3c5910fa6d2d7a404d535e6781b387682376a74ddb703`.
+The layout audit passes; image inspection verifies both embedded daemons
+equal their normal selected package outputs and all 92 cache-plugin files
+equal the pinned upstream archive. The ZTS archive contains the original
+`compute_postnum_recursive` symbol. Sequential Node, browser-host and real
+editor tests are running with separate reports; no runtime result is
+claimed yet. This partial leaves unrelated shell applications out and is
+not canonical acceptance. The selected kernel remains `6f5410ea67d0`.
+The separate benchmark checkout now matches selected main
 `1b6f3783d`; its SDK inputs are unchanged from the completed bootstrap.
 The benchmark driver requires an explicit final candidate projection.
 No new full build or benchmark timing has started.
