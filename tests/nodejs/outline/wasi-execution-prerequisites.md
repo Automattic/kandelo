@@ -12,8 +12,10 @@ execution by the embedding host does not establish that prerequisite.
 
 ## Actual engine source path
 
-The current SpiderMonkey recipe sets `--disable-jit` in
-`packages/registry/spidermonkey/build-spidermonkey.sh:477`. In the pinned
+The source177 recipe capture sets `--disable-jit` in
+`packages/registry/spidermonkey/build-spidermonkey.sh:477`. Source180still
+sets that option; its exact current source identity is recorded separately.
+In the pinned
 Mozilla 140.11.0esr source:
 
 | Source | Consequence |
@@ -50,16 +52,32 @@ The accepted engine173 artifact predates later source slices. Neither its
 successful compilation nor the pending portable WASI owner's host controls
 establish a guest WebAssembly backend or four-host WASI conformance.
 
-## Required work and unresolved decision
+## Required work and authorized ordering
+
+The user explicitly keeps the execution backend in scope and defers its
+implementation to the final phase, after independent core-module work.
+This is a scheduling decision, not an API exclusion or reduced completion
+requirement. The full goal still requires real implementation and
+identified-artifact conformance across all four hosts.
 
 A real guest execution backend must preserve module validation, memory and
 imports, invocation, traps, lifecycle, and public WebAssembly behavior. Its
 integration also needs owning engine/host and resource accounting review.
-An explicit API-specific exclusion would require user review; no answer
-or elapsed time approves one. The existing goal keeps this work in scope.
+Keep its module/import/memory/exit and direct-Wasm numeric-dispatch contracts
+visible now so earlier WASI/loader work does not hard-code a false capability.
+Do not introduce a namespace, fabricated memory, spoofable provenance flag,
+or native-host delegation to make dependent APIs appear complete.
+
+Independent core owners and portable WASI operations can continue. Guest
+WASI execution, Wasm loading/translators and related WebAssembly instance,
+memory and clone conformance must wait for the actual backend. Their tests
+remain unvalidated; a deferred dependency is never a pass or an accepted
+platform limit. Existing outer host Wasm program execution/dynamic linking
+is a different layer and remains available for independent FFI work.
 
 Other WASI gaps remain independent, including the complete import surface,
 rights/preopen enforcement, direct-Wasm numeric argument conversion,
 shared-memory growth, native JSAPI/GC ownership and lifecycle. These are
 implementation gaps even if a portable component passes selected controls.
 No overall suite or full product rebuild was run for this investigation.
+The scheduling update itself runs no runtime checks or compilation.

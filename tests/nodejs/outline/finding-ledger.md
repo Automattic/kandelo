@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 97 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 98 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 255 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 252 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -115,3 +115,22 @@ Current179combined source has no accepted build or guest/four-host evidence.
 The native component uses identified host artifacts and host WebAssembly;
 it does not execute production SpiderMonkey JSAPI or supply a guest backend.
 The ledger closes no API/family findings and preserves all nonpasses.
+
+## Source180 progress overlay
+
+The actual combined module-mock and generic ESM source owner now links
+L-009/L-011/L-029/L-033 and qualified TEST-002. Source contributions and
+bounded evidence remain distinct from completed semantic obligations.
+Original definitions/ranges and all earlier source/artifact scopes stay
+unchanged; no finding/family is closed.
+
+The current source uses actual sync hooks, full URL/type source identity,
+retained attributes, native synthetic evaluation and prepared CJS records
+with unchanged Merve. Root corrects original compile-error preservation;
+failed cleanup cache retirement remains a separate gap. Current targeted
+controls do not execute the new SpiderMonkey registry/static memo/GC paths.
+
+Accepted173predates current180. Early phases/attributes, async loaders,
+translators/cache/lifecycle, native allocation/error semantics, guest Wasm
+execution and remaining public/four-host conformance remain open. Whole
+module-mocking file coverage is not claimed:3of23top-level groups run.

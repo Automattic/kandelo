@@ -20,9 +20,33 @@
   "sourceConclusion": "Current configured guest engine has no WebAssembly execution backend; native-host WASI component execution is not guest execution. Enabling namespace/configuration alone is insufficient.",
   "implementationGap": true,
   "acceptedPlatformBoundary": false,
-  "scopeDecision": "Pending optional user clarification; existing implementation goal retains backend work in scope. No exclusion inferred.",
+  "scopeDecision": {
+    "authority": "explicit-user-instruction",
+    "recordedAt": "2026-11-07T04:41:24.542773+00:00",
+    "backendRemainsInScope": true,
+    "implementationOrder": "final-phase-after-independent-core-module-work",
+    "exclusionApproved": false,
+    "dependentWorkDeferred": [
+      "guest WASI execution",
+      "Wasm module loading/translators",
+      "backend-dependent WebAssembly memory/instance/clone conformance"
+    ],
+    "independentWorkContinues": [
+      "portable core-module owners",
+      "portable WASI import/capability operations",
+      "existing outer Wasm program/dynamic-linker and FFI ownership"
+    ],
+    "mustPreserve": "Visible prerequisite contracts, real failures/unvalidated cases and full four-host completion requirements"
+  },
   "runtimeTests": 0,
   "compilations": 0,
   "guestExecuted": false,
-  "fourHostConformance": false
+  "fourHostConformance": false,
+  "sourceEvidenceScope": "Original upstream/recipe inspection captured at177and preserved in source snapshots; current recipe confirmed separately, not substituted for historical bytes.",
+  "currentRecipeConfirmation": {
+    "recipeRevision": 180,
+    "path": "packages/registry/spidermonkey/build-spidermonkey.sh",
+    "sha256": "f44eae63c4ca7c41f75bedb3f9389048658249873f3f422fd2a5e4ba422f493d",
+    "disableJitLine": 482
+  }
 }

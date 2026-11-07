@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 97,
+    "sourceSliceRecords": 98,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 255
+    "findingsWithoutExplicitOrProposedSourceSlice": 252
   },
   "families": [
     {
@@ -494,7 +494,7 @@
         "L-032",
         "L-033"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 4,
+      "findingsWithExplicitOrProposedSourceSlices": 7,
       "sourceRouteAsRecorded": "Partial pinned Module.wrap/wrapper and patched-script source owners with single exports snapshot; Real native parser goals and direct CJS body compilation, pinned filename/package/entry selection and shared ESM source format in103; Module record/require/JSON, package cache/reader, exports/imports/conditions/self/maps and SourceMap algorithms; source153 pinned synchronous CJS hook registration/chaining/disposal, actual supplied-source execution and resolver/cache transactions",
       "remainingAsRecorded": "Actual guest parser/error/source/realm evidence; complete ESM supplied-source execution/hooks, async loader workers, remaining CJS/CLI/cache behavior and ESM URL/namespace/JSON/async/cycle/dynamic-import graphs; TypeScript/Wasm/addon/source-map/cache/preload/CLI/permission/lifecycle owners; four-host conformance",
       "remainingOwner": "Actual CJS/ESM graph/resolver/cache/compiler/hook/CLI owners",
@@ -6269,6 +6269,13 @@
         {
           "slice": "module-hooks",
           "relation": "explicit"
+        },
+        {
+          "slice": "module-mocks-esm-source",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/loading.md",
+          "scope": "Bounded real syncresolve/load/fullURL/source/native synthetic/CJS-preparse/mock/CLI owners; no complete finding/family closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -6320,7 +6327,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "ESM classification/namespace/identity",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "module-mocks-esm-source",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/loading.md",
+          "scope": "Bounded real syncresolve/load/fullURL/source/native synthetic/CJS-preparse/mock/CLI owners; no complete finding/family closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "package-policy",
         "package-reader"
@@ -6748,7 +6763,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "ESM must resolve/cache by URLs, preserve query/fragment instance distinctions, file encoding and supported file:/node:/data: schemes, reject directory/extension errors correctly and keep CJS extension search distinct. JS _resolveFile uses extension/main/index probing for imports; native normalizePath uses filesystem components, not full Node URL semantics. Native javascript: source imports remain an extra shell feature, whereas Node's default loader rejects that scheme. Default arbitrary https: imports are **not** a Node requirement without custom hooks.",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "module-mocks-esm-source",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/loading.md",
+          "scope": "Bounded real syncresolve/load/fullURL/source/native synthetic/CJS-preparse/mock/CLI owners; no complete finding/family closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "package-policy",
         "package-reader"
@@ -6841,7 +6864,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Missing public hooks/cache/source-map APIs require real lifetimes, not detached helper results. registerHooks returns a frozen ModuleHooks with deregister and identical Symbol.dispose alias (`customization_hooks.js:67\u2013104`), mutating actual resolve/load chains and enforcing next/shortCircuit/result contracts. SourceMap clones payload and lineLengths while retaining actual decoded mappings (`source_map.js:126\u2013244`); real source-map cache/stack integration must follow generated/builtin/URL/VFS module lifetime. Compile-cache status/portable/readOnly/files/flush/exit/worker activation must derive actual compiler/cache ownership.",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "module-mocks-esm-source",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/loading.md",
+          "scope": "Bounded real syncresolve/load/fullURL/source/native synthetic/CJS-preparse/mock/CLI owners; no complete finding/family closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "package-policy",
         "package-reader"
@@ -9052,6 +9083,13 @@
         {
           "slice": "testing-owner",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "module-mocks-esm-source",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/testing.md",
+          "scope": "Bounded real syncresolve/load/fullURL/source/native synthetic/CJS-preparse/mock/CLI owners; no complete finding/family closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -18898,6 +18936,89 @@
       "rootOverlay": true,
       "auditDocument": "tests/nodejs/audit/native-integration.md",
       "findingScope": "Unchanged public WASI lifecycle and25real POSIX/native import source owners only; no complete import set/guest execution/numeric dispatch/API closure"
+    },
+    "module-mocks-esm-source": {
+      "document": "tests/nodejs/outline/module-mocks-esm-source-finding-progress.json",
+      "sha256": "a1bc05b1ee1df97c5530d9b2c74e48184881e50cae1924b3e723ad797bc5ec70",
+      "recordedRevision": 180,
+      "explicitFindingIds": [
+        "L-009",
+        "L-011",
+        "L-029",
+        "L-033"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-loading180-source-r1/report.json",
+          "sha256": "7c558517474832ce7ab8e9f592eac3e8463b9ce7d67b9fb92762ef9aeb890915",
+          "guardedInputs": 817,
+          "scope": "Current actual mock/resolver/fullURL-source/attributes/native graph source with real native-dependent controls; production newJSAPI/GC/guest/fourhost uncompiled."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-loading180-affected-r1.json",
+          "sha256": "7628c1cc8a19defa8dc1749aa6a770b18d555095f6adf94b6d14a7d951f9a5dc",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-loading180-source-r1/report.json",
+          "sha256": "7c558517474832ce7ab8e9f592eac3e8463b9ce7d67b9fb92762ef9aeb890915",
+          "unchangedWholeUpstreamExecutions": 8,
+          "unchangedMockSelectedTestsPerSubject": 21,
+          "selectedMockTopLevelGroups": 3,
+          "fullMockTopLevelGroups": 23,
+          "unrunMockTopLevelGroups": 20,
+          "loaderSemanticGroupsPerSubject": 6,
+          "mockSemanticGroupsPerSubject": 7,
+          "lifecycleResultsEqual": true,
+          "nativeCliComparisons": 14,
+          "nativeLexerComparisons": 25,
+          "newCompilerAttempts": 0,
+          "productionSMExecuted": false,
+          "scope": "Current combined production JS algorithms and source-extracted native CLI/unchanged Merve artifacts over identified native VM/fs/package/MIME/encoding/stack dependencies; no actual new SpiderMonkey registry/synthetic/GC/exception execution"
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/esm-url-loader-agent/handoff.json",
+          "sha256": "f4b93b4024bb06161c5130acbd8f7f03e94fba6e548b0266bdc5597bc82f91e5",
+          "reusedEvidence": true,
+          "scope": "Sealed dependency and loader source/evidence; both outer JSON file SHA and distinct embedded canonical-manifest digests verified, all member identities intact; private4compiler attempts total incl1SDKobject, no engine build"
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/module-mocks-esm-source-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/module-mocks-esm-source-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Actual sync import-goal resolve/load caches, hook chaining, source/format/attribute validation and generic consumer; no async-loader worker emulation",
+        "Pinned MockTracker.module uses real resolver/hooks/CJS cache/restore and actual structured SavedFrame caller source; genuine CLI-only activation rejects inherited NODE_OPTIONS variants",
+        "Native fullURL/type registry/source metadata, retained original import attributes, traced stable static ModuleRequest/reference resolution and native synthetic environment/evaluation owners",
+        "Unchanged Node-vendored Merve CJS name/reexport discovery, genuine private pending-source/cache transactions and evaluation through actual Module._load/_compile; no execution during preparse",
+        "Real supplied ESM/CJS/Buffer source, query/fragment/opaque URL identity and eligible JSON/CJS cache sharing; source-load/parse failures retire before job creation while evaluation error identity is retained",
+        "Root native cleanup correction explicitly restores actual original compile exception even when private cleanup fails; preserve unresolved cache-retirement failure owner",
+        "Compose0134/0135normal engine patches and source generation with174VM/175SQLite/177Net/178Domain/179WASI; correct genuine include order/vendor include form without checker changes"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/module-mocks-esm-source-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual production newJSAPI/static memo/ModuleRequest slots/synthetic owner/source metadata/GC/realm/OOM/security/reentry/shutdown and allfourhosts",
+        "Failed private source-retirement hook may still leave cached source slot; original compile error is now preserved by source, actual native execution unvalidated",
+        "Early engine unsupported attribute keys and request/source/defer phases, async module.register worker, TS/wasm/addon translators, native require cycles/whole-async-graph/link-failure memoization",
+        "Complete builtin export synchronization/import.meta/entry/source-map/compiler-cache/CLI/permissions/diagnostic/test discovery/isolation/coverage/worker APIs and broader public findings",
+        "Native lexer UTF8/string/GC/allocation-error semantics: target can omit name allocation failure while current JSAPI propagates it; no parity or boundary established"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/loading.md",
+      "findingScope": "Bounded real syncresolve/load/fullURL/source/native synthetic/CJS-preparse/mock/CLI owners; no complete finding/family closure",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/testing.md": [
+          "TEST-002"
+        ]
+      }
     }
   },
   "dependencyNarratives": {
@@ -20756,6 +20877,26 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current179WASI source contribution and bounded evidence/nonpasses. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T04:39:02.277571+00:00",
+        "sourceCheckpoint": 180,
+        "sourceHead": "810b8bead907f01f3483b9a72878cef187c815e9",
+        "addedSourceSlices": [
+          "module-mocks-esm-source"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "92cbfd59bcf142c199c45ca96d62abf4a245c86e9403f506bb74dd48cbc9c8d3"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current180mock/loading source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }

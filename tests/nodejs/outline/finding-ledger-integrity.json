@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T04:18:18.588925+00:00",
-  "sourceHead": "4ea5ff6ad5ce2ce4a71e31bd083c65be97859eb4",
-  "recipeRevision": 179,
+  "at": "2026-11-07T04:39:02.277571+00:00",
+  "sourceHead": "810b8bead907f01f3483b9a72878cef187c815e9",
+  "recipeRevision": 180,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 97,
+    "sourceSliceRecords": 98,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 255
+    "findingsWithoutExplicitOrProposedSourceSlice": 252
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,21 +26,21 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 97,
+  "sourceSliceIdentitiesVerified": 98,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "f1537a4d01f37439e6747b784204afc3f06d93186b2b6157f98a32845e0ad718"
+    "sha256": "40bfb523d80ae6d3714380f311af16923b458fb40b8a5effc8bc2e6bcae11eb8"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "d62be6b0860176114034c17ced6a0a9e3b6b943de37d6ea9faecc70d1a86a230",
-    "sourceHead": "e9e3a7a21271677988043686651214e8775c151f",
+    "sha256": "ec9688542aa92df6bff959fa5812780ca60d4ba0f3bdfb95f2a5c3bd403dc471",
+    "sourceHead": "4ea5ff6ad5ce2ce4a71e31bd083c65be97859eb4",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "wasi-owner"
+    "module-mocks-esm-source"
   ]
 }
