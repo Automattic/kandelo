@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
-import { execFileSync, fork } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, fork, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { cpus, platform, arch } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
 import { chromium, type Browser, type Page } from "playwright";
-import { machineUrl } from "../apps/browser-demos/test/support/kandelo-machine.ts";
 import { clickDockTool } from "../apps/browser-demos/test/support/dock.ts";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs.ts";
+import { comparisonWorkerPools, phpFpmWorkerCount } from "./wordpress-stack-config.ts";
+import { resolveBinary } from "../host/src/binary-resolver.ts";
 import { writeVfsFile } from "../host/src/vfs/image-helpers.ts";
 import {
   bootDinitServiceVfs,
@@ -39,6 +42,7 @@ interface Options {
   imagePath?: string;
   soakSeconds: number;
   profiles: readonly Profile[];
+  phpWorkers: number;
 }
 
 interface RoundResult {
@@ -52,6 +56,7 @@ interface RoundResult {
   nodeProcessId?: number;
   serviceLog: string;
   phpThreads?: number;
+  phpWorkers: number;
   soak?: SoakResult;
 }
 
@@ -125,7 +130,7 @@ function parseOptions(): Options {
   if (host !== "node" && host !== "browser" && host !== "both") {
     throw new Error("--host must be node, browser, or both");
   }
-  const known = new Set(["host", "rounds", "warmups", "samples", "clients", "concurrent-samples", "port", "browser-base-url", "output", "alternative", "soak-seconds", "image-path"]);
+  const known = new Set(["host", "rounds", "warmups", "samples", "clients", "concurrent-samples", "port", "browser-base-url", "output", "alternative", "soak-seconds", "image-path", "php-workers"]);
   for (const name of values.keys()) {
     if (!known.has(name)) throw new Error(`Unknown option --${name}`);
   }
@@ -138,6 +143,8 @@ function parseOptions(): Options {
   if (alternative !== "classic" && alternative !== "caddy") {
     throw new Error("--alternative must be classic or caddy");
   }
+  const phpWorkers = integer("php-workers", 2, 1);
+  if (phpWorkers > 32) throw new Error("--php-workers must be at most 32");
   return {
     host,
     rounds,
@@ -151,6 +158,7 @@ function parseOptions(): Options {
     imagePath: values.has("image-path") ? resolve(values.get("image-path")!) : undefined,
     soakSeconds: integer("soak-seconds", 0, 0),
     profiles: ["wordpress-sqlite", alternative === "caddy" ? "wordpress-frankenphp-caddy" : "wordpress-frankenphp"],
+    phpWorkers,
   };
 }
 
@@ -200,20 +208,24 @@ function validateServiceLog(profile: Profile, log: string): number | undefined {
   }
 }
 
-async function readBrowserServiceLog(page: Page, profile: Profile): Promise<string> {
-  await clickDockTool(page, "Internals", { timeout: 5000 });
+async function readBrowserVfsText(page: Page, path: string): Promise<string> {
   const inspector = page.getByRole("dialog", { name: "Internals" });
+  if (!await inspector.isVisible()) await clickDockTool(page, "Internals", { timeout: 5000 });
   await inspector.getByRole("tab", { name: "VFS" }).click({ timeout: 5000 });
-  for (const segment of ["var", "log"]) {
+  const root = inspector.getByRole("button", { name: "/", exact: true });
+  if (await root.isEnabled()) await root.click({ timeout: 5000 });
+  const segments = path.split("/").filter(Boolean);
+  const filename = segments.pop()!;
+  for (const segment of segments) {
     await inspector.locator(".ktable tr", {
       has: page.locator("td", { hasText: new RegExp(`^${segment}/$`) }),
     }).click({ timeout: 5000 });
   }
   await inspector.locator(".ktable tr", {
-    has: page.locator("td", { hasText: `${serviceName(profile)}.log` }),
+    has: page.locator("td", { hasText: filename }),
   }).click({ timeout: 5000 });
   const log = await inspector.locator(".kinternals-surface pre").last().textContent();
-  if (log === null) throw new Error(`Missing ${profile} service log`);
+  if (log === null) throw new Error(`Missing guest file ${path}`);
   return log;
 }
 
@@ -232,9 +244,9 @@ async function measureNode(profile: Profile, round: number, options: Options, im
     configure: (fs) => {
       const serviceConfigPath = `/etc/dinit.d/${target}`;
       const serviceConfig = readVfsText(fs, serviceConfigPath);
-      configureWordPressRuntime(fs, { port, phpFpmWorkers: 6, frankenPhpThreads: 6 });
-      if (!/^pm\.max_children\s*=\s*6\s*$/m.test(readVfsText(fs, "/etc/php-fpm.conf"))) {
-        throw new Error("Node comparison did not configure six PHP-FPM children");
+      configureWordPressRuntime(fs, { port, phpFpmWorkers: options.phpWorkers, frankenPhpThreads: options.phpWorkers });
+      if (phpFpmWorkerCount(readVfsText(fs, "/etc/php-fpm.conf")) !== options.phpWorkers) {
+        throw new Error("Node comparison did not configure the requested PHP-FPM capacity");
       }
       // Preserve the shipped service log; the demo helper routes it to stdio.
       writeVfsFile(fs, serviceConfigPath, serviceConfig);
@@ -254,7 +266,7 @@ async function measureNode(profile: Profile, round: number, options: Options, im
     },
     env: [
       "HOME=/root", "TERM=xterm-256color", "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
-      "WP_APP_PATH=/", "WP_PROTO=http", "FRANKENPHP_NUM_THREADS=6", `FRANKENPHP_LISTEN=:${port}`,
+      "WP_APP_PATH=/", "WP_PROTO=http", `FRANKENPHP_NUM_THREADS=${options.phpWorkers}`, `FRANKENPHP_LISTEN=:${port}`,
       `FRANKENPHP_PORT=${port}`,
     ],
     onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
@@ -301,13 +313,16 @@ async function measureNode(profile: Profile, round: number, options: Options, im
     if (!logBytes) throw new Error(`Missing ${profile} service log`);
     const serviceLog = new TextDecoder().decode(logBytes);
     const phpThreads = validateServiceLog(profile, serviceLog);
-    if (profile !== "wordpress-sqlite" && phpThreads !== 6) {
-      throw new Error(`Node comparison requires six PHP threads, received ${phpThreads}`);
+    const phpWorkers = profile === "wordpress-sqlite"
+      ? phpFpmWorkerCount(new TextDecoder().decode(await host.readFileFromVfs("/etc/php-fpm.conf") ?? undefined))
+      : phpThreads;
+    if (phpWorkers !== options.phpWorkers) {
+      throw new Error(`Node comparison requires ${options.phpWorkers} PHP workers, received ${phpWorkers}`);
     }
     return {
       host: "node", profile, round, startupMs, latenciesMs,
       throughputRequests: options.clients * options.concurrentSamples,
-      throughputDurationMs, soak, serviceLog, phpThreads,
+      throughputDurationMs, soak, serviceLog, phpThreads, phpWorkers,
       nodeProcessId: process.pid,
     };
   } finally {
@@ -447,21 +462,54 @@ async function measureBrowser(
     () => chromiumRss(browser), "chromium-process-rss-sum",
   ) : undefined;
   // Inspect only after the timed and RSS phases, through the ordinary app UI.
-  const serviceLog = await readBrowserServiceLog(page, profile);
+  const serviceLog = await readBrowserVfsText(page, `/var/log/${serviceName(profile)}.log`);
   const phpThreads = validateServiceLog(profile, serviceLog);
+  const phpWorkers = profile === "wordpress-sqlite"
+    ? phpFpmWorkerCount(await readBrowserVfsText(page, "/etc/php-fpm.conf"))
+    : phpThreads;
+  if (phpWorkers !== options.phpWorkers) {
+    throw new Error(`Browser comparison requires ${options.phpWorkers} PHP workers, received ${phpWorkers}`);
+  }
   return {
     host: "browser", profile, round, startupMs,
     latenciesMs: measurements.latenciesMs,
     throughputRequests: options.clients * options.concurrentSamples,
     throughputDurationMs: measurements.throughputDurationMs,
-    soak, serviceLog, phpThreads,
+    soak, serviceLog, phpThreads, phpWorkers,
   };
 }
 
 async function main(): Promise<void> {
   const options = parseOptions();
-  const imagePath = options.imagePath ?? resolveServiceVfsImage(image);
-  const imageDigest = createHash("sha256").update(readFileSync(imagePath)).digest("hex");
+  const sourceImagePath = options.imagePath ?? resolveServiceVfsImage(image);
+  if (existsSync(options.output)) throw new Error(`Preserve the existing report; choose a fresh --output: ${options.output}`);
+  mkdirSync(dirname(options.output), { recursive: true });
+  const inputDirectory = mkdtempSync(join(dirname(options.output), "wordpress-stack-input-"));
+  // Image construction has its own process: its temporary Wasm heap must not
+  // become part of a measured Node/browser parent's allocation history.
+  const preparation = spawnSync(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url)], {
+    env: { ...process.env, KANDELO_WORDPRESS_STACK_PREPARE: JSON.stringify({
+      sourceImagePath, inputDirectory, phpWorkers: options.phpWorkers,
+    }) },
+    encoding: "utf8", timeout: 180_000, maxBuffer: 1024 * 1024,
+  });
+  if (preparation.error || preparation.status !== 0) {
+    throw new Error(`Comparison image preparation failed: ${preparation.error ?? preparation.signal ?? preparation.status}\n${preparation.stdout}\n${preparation.stderr}`);
+  }
+  const inputs = JSON.parse(readFileSync(join(inputDirectory, "inputs.json"), "utf8")) as {
+    source: { path: string; sha256: string };
+    configured: { path: string; sha256: string };
+    phpWorkers: number;
+  };
+  const imagePath = inputs.configured.path;
+  const imageDigest = inputs.configured.sha256;
+  const kernelPath = resolveBinary("kernel.wasm");
+  const kernelBytes = readFileSync(kernelPath);
+  const runtime = {
+    kernel: { path: kernelPath, bytes: kernelBytes.byteLength, sha256: createHash("sha256").update(kernelBytes).digest("hex") },
+    sourceCommit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim(),
+    trackedChanges: execFileSync("git", ["status", "--short", "--untracked-files=no"], { cwd: repoRoot, encoding: "utf8" }).trim(),
+  };
   const results: RoundResult[] = [];
 
   if (options.host === "node" || options.host === "both") {
@@ -482,7 +530,13 @@ async function main(): Promise<void> {
       const probe = await context.newPage();
       try {
         await probe.goto(new URL("/trap-signal-test.html", options.browserBaseUrl).href);
-        sharedMachineUrl = new URL(await machineUrl(probe, options.profiles[1]!), options.browserBaseUrl).href;
+        const machine = new URL(options.browserBaseUrl);
+        // Vite streams the exact selected local fixture. Do not send large
+        // image bodies through Playwright's JSON protocol or rewrite assets.
+        const fixturePath = imagePath.replaceAll("\\", "/").replace(/^\//, "");
+        machine.searchParams.set("vfs", new URL(`/@fs/${fixturePath}`, options.browserBaseUrl).href);
+        machine.searchParams.set("profile", options.profiles[1]!);
+        sharedMachineUrl = machine.href;
         const browserDigest = await browserImageDigest(probe, sharedMachineUrl);
         if (browserDigest !== imageDigest) {
           throw new Error(`Node/browser VFS image mismatch: ${imageDigest} != ${browserDigest}`);
@@ -525,10 +579,12 @@ async function main(): Promise<void> {
     })),
   );
   const report = {
-    version: 2,
+    version: 3,
     measuredAt: new Date().toISOString(),
     environment: { platform: platform(), architecture: arch(), cpus: cpus().length, node: process.version },
     image: { path: imagePath, sha256: imageDigest },
+    inputs,
+    runtime,
     options,
     summary,
     results,
@@ -538,7 +594,29 @@ async function main(): Promise<void> {
   console.log(`Raw samples and provenance: ${options.output}`);
 }
 
-if (process.env.KANDELO_WORDPRESS_STACK_WORKER === "1") {
+if (process.env.KANDELO_WORDPRESS_STACK_PREPARE) {
+  const { sourceImagePath, inputDirectory, phpWorkers } = JSON.parse(process.env.KANDELO_WORDPRESS_STACK_PREPARE) as {
+    sourceImagePath: string; inputDirectory: string; phpWorkers: number;
+  };
+  const source = readFileSync(sourceImagePath);
+  const fs = KandeloImageFs.create();
+  fs.loadImage(source, { maxDecompressedBytes: 1024 * 1024 * 1024 });
+  const pools = comparisonWorkerPools(readVfsText(fs, "/etc/php-fpm.conf"), readVfsText(fs, "/etc/dinit.d/env-frankenphp"), phpWorkers);
+  writeVfsFile(fs, "/etc/php-fpm.conf", pools.fpm);
+  writeVfsFile(fs, "/etc/dinit.d/env-frankenphp", pools.franken);
+  const configured = zstdCompressSync(await fs.saveImage(), {
+    params: { [zlibConstants.ZSTD_c_compressionLevel]: 19 },
+  });
+  const path = join(inputDirectory, "wordpress-comparison.vfs.zst");
+  writeFileSync(path, configured, { flag: "wx" });
+  const inputs = {
+    source: { path: sourceImagePath, sha256: createHash("sha256").update(source).digest("hex") },
+    configured: { path, sha256: createHash("sha256").update(configured).digest("hex") },
+    phpWorkers,
+    scope: "Controlled PHP capacity on a normal image; not a canonical build or a visitor-cache comparison.",
+  };
+  writeFileSync(join(inputDirectory, "inputs.json"), JSON.stringify(inputs, null, 2) + "\n", { flag: "wx" });
+} else if (process.env.KANDELO_WORDPRESS_STACK_WORKER === "1") {
   if (!process.send || !process.disconnect) throw new Error("Node measurement worker requires IPC");
   const send = process.send.bind(process);
   const disconnect = process.disconnect.bind(process);

@@ -2,6 +2,22 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Comparison configuration checkpoint:** an isolated benchmark change replaces
+Node's fixed six-worker setup and the browser's unequal shipped defaults with
+one explicitly configured image, defaulting to two PHP workers per service.
+It retains source/configured hashes, uses a disposable preparation process,
+checks the service's configured pool on both hosts and preserves existing
+reports. Twelve pure configuration cases, syntax compilation and all 676
+test-file classifications pass. The host build, including declarations,
+passes. An additional broad TypeScript diagnostic still reports the existing
+`host/src/webgl/query.ts:403` cast; the unchanged entry reports that same
+diagnostic plus two test-fixture import errors. No new benchmark diagnostic
+is reported, but this is not a clean broad TypeScript gate. Real Node and
+Chromium harness checks remain pending. The final image build below is
+kept frozen in its own checkout; the comparison change is not integrated
+into the primary preview or draft PR branch yet. No performance result or
+visitor-cache behavior is claimed.
+
 **Workflow update:** main's campaign checkpoints and per-run validation
 isolation are merged. Both offline-listener fixtures are retained under
 distinct names, with one shared backend implementation. Post-merge checks

@@ -399,7 +399,11 @@ report their results separately. This plugin is a different cache from
 `benchmarks/wordpress-stack.ts` compares the preinstalled WordPress nginx/PHP-FPM
 and FrankenPHP classic services, or FrankenPHP+Caddy with
 `--alternative=caddy`, from the **same** resolver-selected
-`wordpress.vfs.zst`. Unlike the `wordpress` suite above, it measures complete
+`wordpress.vfs.zst`. It first prepares a controlled copy with the same
+explicit PHP pool capacity for both services (`--php-workers=2` by default).
+The shipped defaults differ: one FPM child and two FrankenPHP threads.
+Those defaults must be a separate user comparison, not an equal-pool claim.
+Unlike the `wordpress` suite above, it measures complete
 dynamic homepage responses through the actual dinit service stacks, once on
 the Node host and once through the Chromium browser demo. It verifies that
 the browser-served image has the same SHA-256 as the Node input before
@@ -416,17 +420,24 @@ digest, startup times, environment, median, p90, and throughput median across
 rounds. Node runs assign distinct HTTP and SMTP ports to prevent one demo
 or round from conflicting with another.
 
-The browser comparison resolves the alternative's gallery image once and
-selects both service profiles inside that image. The gallery's standalone
-FPM shortcut may belong to a different multi-image product, so using each
-shortcut independently would compare different image bytes. The shared
-browser image must still match the Node input's SHA-256.
+The preparation runs in a disposable process before any measured round.
+It changes only the ordinary FPM and FrankenPHP pool settings, preserves
+the source image, and retains both source and configured image hashes in
+the report. Node and Chromium load that same configured input. The local
+Vite server streams it through its normal filesystem route, so serve this
+checkout when running browser comparisons. Its selected lazy-asset cohort
+must match the source image. The browser input's SHA-256 must match the
+Node input before measurement. This controlled image is benchmark
+configuration, not a canonical image build or cache-activation test.
 
 Each result also retains its real service log. Go panic/fatal headers or
 multiple FrankenPHP startup markers fail the measurement even if HTTP later
 recovers. Node also checks that the single-process Go server retains its
 listener PID. nginx legitimately distributes a shared listener across worker
-PIDs. Log inspection runs after the timed and RSS phases.
+PIDs. Both hosts verify the FrankenPHP thread count or PHP-FPM configuration
+against the requested capacity. Log and configuration inspection run after
+the timed and RSS phases. A larger explicit PHP pool can exceed the host's
+worker budget and must fail visibly; the harness does not raise that budget.
 
 First build and publish the WordPress source-only image. For browser runs,
 serve `apps/browser-demos` with its source-only Vite configuration on port
@@ -438,7 +449,11 @@ scripts/dev-shell.sh bash -c 'export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
 
 The default report is `.context/wordpress-stack-benchmark.json`; use
 `--output=...`, `--host=node|browser|both`, `--alternative=classic|caddy`, `--browser-base-url=...`, or
-`--port=...`, `--clients=...`, or `--concurrent-samples=...` to change it.
+`--port=...`, `--clients=...`, `--concurrent-samples=...`, or
+`--php-workers=...` to change it. Use a fresh report path to preserve prior
+results and the adjacent retained comparison input. Unique-query/no-store
+requests do not establish visitor-cache performance; cache-enabled work
+needs stable visitor URLs and proven hit, invalidation and bypass behavior.
 Use `--image-path=...` to select an archived immutable image for a Node
 comparison. Browser runs still require the served image to match its hash.
 This is a paired, single-machine latency, cold-boot, and bounded
