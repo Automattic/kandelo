@@ -38,6 +38,18 @@ const PROBES: Record<string, string> = {
   less: "less --version | head -n 1",
   fbdoom: "test -x /usr/bin/fbdoom && test -x /usr/bin/doom-launch && echo fbdoom-wrapper-ok",
   "dosbox-pure": "dosbox-pure --info; dos-play --list",
+  // Reads the kernel's own message ring and writes to the system log. `-r`
+  // keeps the <pri> prefix, which is the part only the kernel can supply: the
+  // ring always holds the boot records written when / was loaded, so a
+  // machine that reaches this point has something to print. `logger -s` also
+  // writes to standard error, which is the only way to observe the message
+  // on an image with no daemon -- syslog(3) returns void, so nothing else
+  // can report where it went.
+  // `logger` runs first on purpose. Running it after `dmesg -r | head -n 1`
+  // hangs; see the `/dev/kmsg` known defect in docs/posix-status.md for the
+  // measured reproduction. Keeping the working order means this probe proves
+  // both tools rather than quietly timing out.
+  toybox: "logger -s -t probe hello 2>&1; dmesg -r | head -n 1",
 };
 
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -88,6 +100,11 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
       if (manifest!.packages.includes("tmux")) expect(stdout).toMatch(/tmux \d/);
       if (manifest!.packages.includes("less")) expect(stdout).toMatch(/less \d+/);
       if (manifest!.packages.includes("fbdoom")) expect(stdout).toContain("fbdoom-wrapper-ok");
+      if (manifest!.packages.includes("toybox")) {
+        // A record the kernel wrote, carrying the priority it assigned.
+        expect(stdout).toMatch(/<\d+>/);
+        expect(stdout).toContain("probe: hello");
+      }
       if (manifest!.packages.includes("dosbox-pure")) {
         expect(stdout).toContain("CPU: x86 interpreter");
         expect(stdout).toContain("keen1");
