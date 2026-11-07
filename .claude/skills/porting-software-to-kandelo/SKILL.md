@@ -55,7 +55,9 @@ bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh <pkg> [
 
 It uses the declared dev-shell tool PATH without a login shell. It prints
 one status line and, on failure, the first error lines and the end of the
-log; the full log stays in `.context/build-<pkg>-<arch>.log`.
+log. Every invocation prints its own full-log path under a fresh directory
+in `$KANDELO_AGENT_SCRATCH_DIR` (when running as a job), or `.context/`.
+Keep that exact path when reading evidence from parallel builds.
 
 For a long build, use:
 

@@ -7,8 +7,7 @@ import {
 import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 
-const FIXTURE_PORT = 55_431;
-const FIXTURE_ORIGIN = `http://127.0.0.1:${FIXTURE_PORT}`;
+let FIXTURE_ORIGIN: string;
 const SESSION_A = "11111111-1111-4111-8111-111111111111";
 const SESSION_B = "22222222-2222-4222-8222-222222222222";
 const SESSION_A_NEXT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -140,7 +139,9 @@ test.beforeAll(async () => {
   });
   await new Promise<void>((resolve, reject) => {
     fixtureServer.once("error", reject);
-    fixtureServer.listen(FIXTURE_PORT, "127.0.0.1", () => {
+    fixtureServer.listen(0, "127.0.0.1", () => {
+      const port = (fixtureServer.address() as import("node:net").AddressInfo).port;
+      FIXTURE_ORIGIN = `http://127.0.0.1:${port}`;
       fixtureServer.off("error", reject);
       resolve();
     });
@@ -566,7 +567,7 @@ test("a bare machine-prefix link in app HTML is not doubled", async ({ page }) =
     const res = await fetch(replyData.appPrefix, { cache: "no-store" });
     return { name: replyData.name, body: await res.text() };
   });
-  const origin = `http://127.0.0.1:${FIXTURE_PORT}`;
+  const origin = FIXTURE_ORIGIN;
   // The bare home link stays a single prefix — never doubled.
   expect(out.body).toContain(`href="${origin}/a/computer/${out.name}"`);
   expect(out.body).not.toContain(`/a/computer/${out.name}/computer/${out.name}`);

@@ -35,9 +35,10 @@ class InstallHooksTest(unittest.TestCase):
         # The current branch can run the updater, but must never supply the
         # installer used to change the user's registered hook/settings.
         text = self.installer.read_text().replace(
-            "    path, command = target(args)",
+            "    path, command = target(args, filename, user_copy)",
             "    if not args.update_from_main:\n        raise RuntimeError('unmerged installer used')\n"
-            "    path, command = target(args)")
+            "    path, command = target(args, filename, user_copy)")
+        self.assertIn("unmerged installer used", text)
         self.installer.write_text(text)
         self.copy = self.home / ".claude/hooks/kandelo-wait-guard.py"
         self.settings = self.home / ".claude/settings.json"
@@ -54,8 +55,8 @@ class InstallHooksTest(unittest.TestCase):
                                           {"type": "command", "command": "other-hook"}]}]}}
         self.settings.write_text(json.dumps(settings))
 
-    def update(self, scope="--user"):
-        return subprocess.run([sys.executable, str(self.installer), scope, "--update-from-main"],
+    def update(self, scope="--user", *options):
+        return subprocess.run([sys.executable, str(self.installer), scope, "--update-from-main", *options],
                               cwd=self.checkout, env=self.env, capture_output=True, text=True, timeout=30)
 
     def test_uses_merged_hook_and_installer_preserving_other_settings(self):
@@ -98,6 +99,25 @@ class InstallHooksTest(unittest.TestCase):
     def test_update_mode_requires_user_scope(self):
         self.assertEqual(self.update("--project-local").returncode, 2)
         self.assertFalse(self.home.exists())
+
+    def test_wait_guard_updates_preserve_checkpoint_hook_registration(self):
+        self.opt_in()
+        settings = json.loads(self.settings.read_text())
+        checkpoint = {"matcher": "", "hooks": [{"type": "command", "command":
+            "python3 ~/.claude/hooks/kandelo-context-checkpoint.py"}]}
+        settings["hooks"]["PreToolUse"].append(checkpoint)
+        self.settings.write_text(json.dumps(settings))
+        self.assertEqual(self.update().returncode, 0)
+        self.assertIn(checkpoint, json.loads(self.settings.read_text())["hooks"]["PreToolUse"])
+
+    def test_update_mode_rejects_checkpoint_profiles_without_writing_settings(self):
+        self.opt_in()
+        before = self.copy.read_bytes(), self.settings.read_bytes()
+        for options in (("--hook", "context"), ("--hook", "context", "--client", "codex")):
+            with self.subTest(options=options):
+                result = self.update("--user", *options)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual((self.copy.read_bytes(), self.settings.read_bytes()), before)
 
 
 if __name__ == "__main__":

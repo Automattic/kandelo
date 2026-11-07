@@ -6,8 +6,9 @@ tree while a run is reading it, and collide with each other's runs. This
 directory holds the measurements that decide whether each tool built to fix
 that is worth keeping.
 
-The plan below was written and committed **before** the tools were built.
-When a tool changes, update its section here in the same change.
+The original plan below was written and committed **before** its tools were
+built. Later entries record when their measures were declared. When a tool
+changes, update its section here in the same change.
 
 ## How the numbers are produced
 
@@ -836,6 +837,176 @@ in seconds instead of mid-suite.
   - closure errors in test output fall by at least 80%;
   - the preflight runs in ≤ 10 s;
   - and it never fails on a tree that the suite then runs cleanly.
+
+### 12. Concurrent validation isolation (2026-11-07, measure before implementation)
+
+- **Measure:** confirmed evidence collisions per overlapping pair of runs:
+  deleted Playwright artifacts, overwritten reporter/log output, attachment
+  to another tree's server, and host port bind failures. Count only runner
+  output and manually adjudicated transcript incidents, not quoted searches.
+  Keep compositor/load failures separate until their cause is demonstrated.
+- **Baseline sources:** the graphics workflow's 2026-11-02 15:59 UTC main
+  session (shared results cleanup and compositor failures), its 17:56 UTC
+  base/after Sortix runs (port 49152), and the 2026-11-07 build-waiting A/B
+  integration run that read another session's `/tmp/integ.log`.
+- **Controlled check:** two overlapping real Playwright runs must retain
+  their own attachments and reports and use their own servers; two real
+  Vitest runs must retain distinguishable logs. Exercise occupied explicit
+  ports too. Record commands, provenance, exits, and before/after outcomes.
+- **Keep if:** the controlled checks expose each confirmed collision before
+  the fix and show zero evidence collisions after it, without relaxing test
+  assertions or silently reusing another server. After five sessions using
+  the changes, manually review every reported collision; target zero.
+- **Harm signals:** lost CI artifact collection, hidden bind errors, deleted
+  peer files, or a hook warning on a safe private temporary path. Revise once
+  on any harm; remove the responsible mechanism if it recurs. Add a fixed
+  `/tmp` warning hook only if transcript replay achieves at least 95%
+  precision over 20 adjudicated warnings; otherwise use scratch guidance.
+
+**Pre-landing controlled evidence (2026-11-07).** Baseline revision:
+`1b6f3783d3d5`; Node 24.15.0, Playwright 1.63.0, Vitest 5.0.3, macOS arm64.
+Each check allocates its own evidence directory and prints the path. No
+existing host log or server is used as a control.
+
+| Collision, per overlapping pair | Before | After | Owning layer |
+|---|---|---|---|
+| Playwright attachment cleanup | First run lost `owned.txt`, exits 1/0 | Both attachments retained, exits 0/0 | Config output directory |
+| Playwright server reuse | Second run received the first run's page; both failed | Two origins passed; an occupied explicit port was refused | Config server selection |
+| File reporter overwrite | Shared default HTML/blob destinations | Distinct HTML, blob, JSON and JUnit reports verified | Config reporter defaults |
+| Fixed integration log | Session A read session B's Vitest `RUN` path | Both jobs retained only their own output | Agent log destination and job scratch |
+| Offline guest TCP publication | Overlapping guests emitted host `EADDRINUSE` while both guests exited 0 | Both listeners overlapped and exited 0 without host bind errors | Offline network backend |
+
+Reproduce the config failures without checking out or editing another tree:
+
+```bash
+scripts/dev-shell.sh python3 evals/build-waiting/check-concurrent-validation.py --baseline-ref 1b6f3783d3d5
+scripts/dev-shell.sh python3 evals/build-waiting/check-concurrent-validation.py
+scripts/dev-shell.sh python3 evals/build-waiting/check-concurrent-logs.py
+```
+
+The first command must fail on the old shared-output/reuse policy. The next
+two must pass. The Playwright check imports the real config and quiet browser
+fixture, substituting a tiny owned HTTP server for Vite so its assertions
+observe origin identity without needing application products. The log check
+runs two real Vitest processes per arm and exercises a nested dev shell in
+the private-scratch arm. Explicit caller-provided output paths remain caller
+responsibility; the check never opens an actual shared `/tmp/integ.log`.
+
+`host/test/offline-listener-isolation.test.ts` runs two dedicated Node kernel
+workers and SDK-built guests. An OS-selected port is held by the test itself;
+the guests both listen on that port in their own namespaces. Before the fix,
+the host TCP bridge tries to bind it and emits the incident's error. After
+the fix, neither guest touches the host port. Guest `bind(..., 0)` normally
+starts at 49152 (`Process.next_ephemeral_port`); randomizing that guest port
+would conceal the namespace leak. The regression uses a test-owned host
+port so the negative control cannot contend with somebody else's server.
+
+**Graphics transcript adjudication, not new compositor validation.** The
+main transcript `880a2b4a…` at 15:59 UTC on November 2 contains three separate
+causes: Cage/Sway's rendered-session checks selected SourceOnly, which
+correctly excludes the standalone `wlclient-test` fixture; Playwright deleted
+shared trace files; labwc timed out waiting for rendered input. Later runs
+with private outputs still failed labwc. The protocol trace in
+`agent-a0cfc314421ac29fa`, 17:32:29 UTC, identified the package's SFWBar patch
+requesting on-demand keyboard focus before mapping: labwc focused the bar
+and foot lost its keys, including Enter. A click-on-foot control delivered
+all keys. This was a package focus policy defect, not evidence of load.
+`agent-adeb68532fafa3758`, 17:19:49 UTC, separately traced missing SFWBar in
+default-mode Sway runs to Vite transforming an extensionless lazy script.
+Those graphics packages/specs are absent from this baseline tree. They were
+not imported from or rerun in the protected graphics workspace. No compositor
+timeout was weakened and no load-based exemption was added.
+
+The package-build skill wrapper also had a fixed
+`.context/build-<pkg>-<arch>.log` destination. It now allocates a fresh
+invocation directory under the job scratch root or `.context/`; two concurrent
+real `login` package builds retained different full-log paths. The skill's
+published instructions now describe that behavior.
+
+Additional validation through `scripts/dev-shell.sh`: 57 affected Vitest
+tests passed after rebuilding the current kernel and the canonical
+`platform-rootfs` product. The focused Vitest config omitted unrelated global
+fixture provisioning; its SDK-built C probe was compiled and ABI-stamped
+explicitly. Two concurrent service-worker suites passed 31 Chromium tests
+each, and two concurrent native lazy-asset transport runs through real Vite
+servers passed one test each. Two concurrent Sortix runs passed all six
+selected repository-local TCP cases each (accept/send/recv, refused
+nonblocking connect, peer EOF/EPIPE, poll readiness, half-close and shutdown
+matrix). Each used a private build root; there were no host bind diagnostics.
+The 18 agent-job tests, five browser policy tests, reporter wrapper checks,
+Vitest evidence inventory, vfork interface check and repository skill checks
+also passed. Program policy/compatibility and PHP/SpiderMonkey configs
+collected successfully.
+
+Full host/browser/conformance suites, Firefox/WebKit and package runtime
+suites were not run. The CORS suite failed collection because curl/wget
+artifacts were absent. Initial Sortix attempts lacked the canonical rootfs;
+those failures are provisioning evidence, not socket regressions. The rootfs
+was then built through its declared product graph and the socket selections
+rerun. The external skill validator could not import PyYAML; the repository's
+own skill checks passed. No test intentionally used SIGABRT or SIGSEGV.
+
+The controlled isolation checks meet the pre-landing rule; the five-session
+transcript measure remains pending. No fixed-`/tmp` hook was added, and hook
+precision was not measured.
+
+### 12b. Evidence cleanup lifecycle (measure declared before implementation)
+
+- **Measure:** retained payload bytes after explicit release and after removing
+  an owning worktree; deletion or unreadability of a peer's evidence; live-run
+  cleanup refusals; recovered payloads after skipped teardown.
+- **Keep if:** two real disposable worktrees retain distinct evidence, releasing
+  one finished run preserves its summary and peer files, worktree cleanup
+  refuses active writers, and removal leaves no new payload outside the
+  worktree. Recovery must handle a crashed supervisor and path reuse without
+  deleting a live run, symlink target, shared cache, or new worktree's files.
+- **Controlled checks:** exercise release, cleanup, manual removal, recreated
+  paths with a new UUID, and a killed supervisor with a surviving child. Run
+  concurrent real Playwright/Vitest checks against the new lifecycle. No
+  SIGABRT/SIGSEGV scenarios, and no cleanup against the real shared registry
+  or the protected graphics workspace.
+- **Harm signals:** evidence removed before release, a summary reported LOST
+  merely because its payload was cleaned, any cross-worktree deletion, or
+  cleanup following a symlink. Any such result means revise before landing.
+
+**Controlled result (2026-11-07):** kept. The stdlib lifecycle suite passed
+28 tests through the dev shell, using disposable ordinary Git checkouts and
+worktrees with isolated registries. Checks cover release/dry-run/idempotence,
+active admission refusal and reopening, a killed supervisor with a live child,
+worktree removal, UUID path reuse, symlink refusal, interrupted directory
+deletion after its ownership marker was already removed, and legacy orphan
+payloads. Recorded exit status and bounded log summaries survive removal.
+Repository ignore rules keep `.context` and package browser results private
+without relying on any developer's local Git excludes; a fresh-repository
+regression covers that boundary.
+Both merge-validation workflows now run this suite on Linux CI; local runs
+for this change were on macOS, not Linux.
+
+`scripts/dev-shell.sh python3 evals/build-waiting/check-artifact-lifecycle.py`
+ran real overlapping Chromium runners in two plain Git worktrees, with no
+editor hook or application environment. Cleanup refused while active, release
+preserved the live peer, reusing a path got a new worktree UUID, orphan
+collection preserved the peer, and the same cleanup command worked in an
+ordinary checkout. In that controlled run, managed payload bytes went from
+259 to 0 after release and 261 to 0 after worktree removal. These are fixture
+payload sizes after normal browser teardown, not a disk-space benchmark.
+Evidence is in `.context/artifact-lifecycle-tthrvlq4/result.json`.
+
+Real concurrent Vitest jobs retained separate logs through nested dev shells.
+Concurrent Chromium and Firefox checks retained attachments, all four default
+file reporters, and owned servers; occupied explicit ports failed loudly.
+The 14 browser storage/policy unit tests and the macOS WebKit OPFS strict
+reopen regression passed. Bulk job output and Playwright scratch now live
+inside their worktree; the shared registry retains only metadata, leases and
+bounded summaries for new runs. Explicit output overrides and Darwin-managed
+WebKit staging retain their existing ownership boundaries. No actual shared
+registry cleanup, graphics-workspace cleanup, or shared-cache cleanup was run.
+Two concurrent standalone service-worker suites also passed all 31 tests
+per run after the lifecycle changes; PHP and SpiderMonkey configs collected
+their tests successfully.
+Full host/browser/conformance suites and package runtime suites were not
+rerun for this lifecycle follow-up. Five-session transcript effectiveness
+remains pending under tool 12's original rule.
 
 ## Status after building (2026-10-01)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build one registry package through the normal resolver path (the command in
 # docs/porting-guide.md "4. Verify locally") with the log kept out of the
-# transcript: full output goes to .context/, the caller sees one status line
+# transcript: each invocation owns a log directory, and the caller sees one status line
 # plus, on failure, the first error lines and the end of the log.
 #
 # Usage: bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh <package> [wasm32|wasm64]
@@ -10,8 +10,10 @@ set -uo pipefail
 pkg="${1:?usage: build-package.sh <package> [wasm32|wasm64]}"
 arch="${2:-wasm32}"
 repo="$(git rev-parse --show-toplevel)"
-log="$repo/.context/build-$pkg-$arch.log"
-mkdir -p "$repo/.context"
+scratch_root="${KANDELO_AGENT_SCRATCH_DIR:-$repo/.context}"
+mkdir -p "$scratch_root" || exit 1
+run_dir="$(mktemp -d "$scratch_root/package-build.XXXXXX")" || exit 1
+log="$run_dir/build.log"
 cd "$repo"
 
 start=$(date +%s)

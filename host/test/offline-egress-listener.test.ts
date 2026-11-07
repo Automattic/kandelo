@@ -7,7 +7,7 @@ import { compileSdkFixture } from "./support/compile-sdk-fixture";
 
 let fixture: ReturnType<typeof compileSdkFixture>;
 beforeAll(() => {
-  fixture = compileSdkFixture(new URL("./fixtures/offline-listener.c", import.meta.url), [], { forkInstrument: true });
+  fixture = compileSdkFixture(new URL("./fixtures/offline-egress-listener.c", import.meta.url), [], { forkInstrument: true });
 }, 120_000);
 afterAll(() => fixture?.cleanup());
 
