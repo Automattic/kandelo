@@ -2,6 +2,7 @@
  * window registry, not kernel allocation or pixel rendering. */
 #include <gbm.h>
 #include "gbm_window.h"
+#include "drm_owned.h"
 #include <xf86drm.h>
 #include <drm/drm_mode.h>
 #include <drm/drm_fourcc.h>
@@ -27,6 +28,8 @@ int _wpk_egl_image_export_gbm(const void *image, const void *device, uint64_t id
 }
 static int device_fd;
 static unsigned created, closed, fail_allocation;
+static struct wpk_drm_bo_info bo_metadata[256];
+int graphics_gbm_native_bo_info(uint32_t handle,int fd,struct wpk_drm_bo_info *info){(void)fd;assert(handle<256);*info=bo_metadata[handle];return 0;}
 static uint32_t imported_handle;
 static int imported_fd = -1;
 /* Import validates geometry against the dma-buf size, which PRIME
@@ -55,8 +58,10 @@ int drmIoctl(int fd, unsigned long request, void *data) {
     if (request == 0xc01064e0u && gpu_enabled) {
         uint32_t *words = data;
         if (fail_allocation && created+1 == fail_allocation) { errno = ENOMEM; return -1; }
+        uint32_t width=words[0],height=words[1],format=words[2];
         uint32_t pitch = words[0]*4;
         words[2] = ++created; words[3] = pitch;
+        bo_metadata[created]=(struct wpk_drm_bo_info){(uint64_t)pitch*height,width,height,pitch,format,1,0};
         return 0;
     }
     if (request == DRM_IOCTL_PRIME_HANDLE_TO_FD) {
@@ -69,12 +74,14 @@ int drmIoctl(int fd, unsigned long request, void *data) {
         if (fail_allocation && created+1 == fail_allocation) { errno = ENOMEM; return -1; }
         struct drm_mode_create_dumb *d = data;
         d->handle = ++created; d->pitch = d->width*4; d->size = (uint64_t)d->pitch*d->height;
+        bo_metadata[d->handle]=(struct wpk_drm_bo_info){d->size,d->width,d->height,d->pitch,0,0,0};
         return 0;
     }
     if (request == DRM_IOCTL_PRIME_FD_TO_HANDLE && imported_handle) {
         struct drm_prime_handle *prime = data;
-        assert(prime->fd == imported_fd);
+        assert(graphics_gbm_same_file(prime->fd,imported_fd));
         prime->handle = imported_handle;
+        off_t size=lseek(prime->fd,0,SEEK_END);assert(size>=0);bo_metadata[imported_handle].size=size;
         return 0;
     }
     if (request == DRM_IOCTL_MODE_MAP_DUMB) {

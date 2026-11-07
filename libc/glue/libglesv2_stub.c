@@ -116,6 +116,33 @@ struct wpk_object_group {
 /* Name lookup, native mutation and C publication form one group operation.
  * The metadata mutex remains free across device IO and image cleanup. */
 
+/* WHY: fork may copy a child while another thread retires an inherited C
+ * graph. Serialize only pure memory retirement and EGL's encoder=NULL
+ * publication: acquiring graphics locks or doing device IO while holding this
+ * guard would invert atfork ordering and could wait for a vanished thread. */
+static pthread_mutex_t inherited_cleanup_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t inherited_cleanup_once = PTHREAD_ONCE_INIT;
+static int inherited_cleanup_registration;
+static _Thread_local int inherited_cleanup_cancel_state;
+static void inherited_cleanup_prepare(void) {
+    if (pthread_mutex_lock(&inherited_cleanup_mutex)) abort();
+}
+static void inherited_cleanup_resume(void) {
+    if (pthread_mutex_unlock(&inherited_cleanup_mutex)) abort();
+}
+static void register_inherited_cleanup(void) {
+    inherited_cleanup_registration = pthread_atfork(inherited_cleanup_prepare,
+        inherited_cleanup_resume, inherited_cleanup_resume);
+}
+void _wpk_gl_inherited_cleanup_begin(void) {
+    if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&inherited_cleanup_cancel_state)) abort();
+    if (pthread_mutex_lock(&inherited_cleanup_mutex)) abort();
+}
+void _wpk_gl_inherited_cleanup_end(void) {
+    if (pthread_mutex_unlock(&inherited_cleanup_mutex)) abort();
+    if (pthread_setcancelstate(inherited_cleanup_cancel_state,NULL)) abort();
+}
+
 static void object_release(struct wpk_object_group *, struct wpk_object_name *);
 /* Final image release can issue device IO. Never do it under the group
  * metadata mutex; the dead record itself carries the deferred work. */
@@ -123,7 +150,7 @@ static void destroy_object_records(struct wpk_object_name *records) {
     while (records) {
         struct wpk_object_name *next = records->next;
         if (records->image)
-            _wpk_egl_image_release(records->image);
+            _wpk_egl_image_release_renderer(records->image);
         free(records);
         records = next;
     }
@@ -132,6 +159,10 @@ static struct wpk_object_group *object_group_create(void) {
     // Ownership must predate every dispatch lock, including before journal
     // admission or the first error drain. A child cannot inherit that lock.
     if (!_wpk_gl_device_requests_fork_safe()) {errno=ENOMEM;return NULL;}
+    /* Register before publishing any encoder; cleanup cannot safely acquire
+     * registration machinery after an inherited graph is already visible. */
+    if (pthread_once(&inherited_cleanup_once,register_inherited_cleanup) ||
+        inherited_cleanup_registration) {errno=ENOMEM;return NULL;}
     struct wpk_object_group *group = calloc(1, sizeof *group);
     if (!group)
         return NULL;
@@ -194,7 +225,7 @@ static void object_group_release(struct wpk_object_group *group) {
         group->pending_images = entry->next;
         object_release(group, entry->object);
         if (entry->image)
-            _wpk_egl_image_release(entry->image);
+            _wpk_egl_image_release_renderer(entry->image);
         free(entry);
     }
     while (group->program_records) {
@@ -396,7 +427,7 @@ struct wpk_program_intent {
  * both the output receiver and every cell before local acceptance. */
 struct wpk_program_stream {
     struct wpk_program_stream *next;
-    int fd, active, blocked;
+    int active, blocked;
     void *reset_owner;
     uint32_t id, transaction, cache_cursor, current_token, signature_cursor;
     uint64_t ticket;
@@ -709,11 +740,13 @@ static int buffer_snapshot_epoch(struct wpk_gles_context *state) {
     return 0;
 }
 
-static int gl_device_ioctl(int fd, unsigned long request, void *arg) {
+/* The encoder owns an EGL context, not a borrowed public descriptor. A
+ * descriptor exported for raw callers may be closed and reused while queued
+ * work still belongs to this original context; never resolve it again here. */
+static int gl_device_ioctl(struct wpk_gles_context *state, unsigned long request, void *arg) {
     _wpk_gl_note_known_device_request(); /* Voids local glGetError knowledge. */
-    int rc = ioctl(fd, request, arg);
+    int rc = _wpk_egl_context_device_ioctl(state ? state->reset_owner : NULL, request, arg);
     if (rc != 0) {
-        struct wpk_gles_context *state = _wpk_gl_current_encoder();
         if (state) {
             /* A standalone numeric getter cannot create, delete, relink or
              * select a program. Its failed output is no proof of mutation:
@@ -727,7 +760,10 @@ static int gl_device_ioctl(int fd, unsigned long request, void *arg) {
             else
                 invalidate_binding_knowledge(state);
         }
-        if (errno == ENODEV) _wpk_gl_note_reset();
+        if (errno == ENODEV && state) {
+            if (state->reset_owner == _wpk_gl_context_owner()) _wpk_gl_note_reset();
+            else _wpk_egl_note_encoder_reset(state->reset_owner);
+        }
     }
     return rc;
 }
@@ -760,9 +796,9 @@ static void finish_command_submission(struct wpk_gles_context *state,
 static int flush_commands(void) {
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
     if (!state) return 0;
-    int fd = _wpk_gl_fd();
     uint8_t *base = _wpk_gl_cmdbuf_base();
-    if (fd < 0 || base == NULL) return 0;
+    if (base == NULL) return 0;
+    if (!state->reset_owner) { errno = ENODEV; return -1; }
     if (!g_cursor) g_cursor = base;
     /* Commands recorded before a reset was observed have no effect. A checked
      * submission must still report loss, including loss notified by a foreign
@@ -783,15 +819,15 @@ static int flush_commands(void) {
 
     struct gl_submit_info si = { .offset = 0,
                                  .length = (uint32_t)(g_cursor - base) };
-    int rc = gl_device_ioctl(fd, GLIO_SUBMIT, &si);
+    int rc = gl_device_ioctl(state, GLIO_SUBMIT, &si);
     finish_command_submission(state, base, errors, rc);
     return rc;
 }
 int _wpk_gl_flush_checked(void) { return flush_commands(); }
 void _wpk_gl_flush(void) { (void)_wpk_gl_flush_checked(); }
 int _wpk_gl_server_flush_checked(void) {
-    int fd = _wpk_gl_fd();
-    if (!_wpk_gl_current_encoder() || fd < 0 || !_wpk_gl_cmdbuf_base()) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (!state || !state->reset_owner || !_wpk_gl_cmdbuf_base()) {
         errno = ENODEV;
         return -1;
     }
@@ -799,7 +835,7 @@ int _wpk_gl_server_flush_checked(void) {
     /* Submission alone only decodes commands. The empty query acknowledges
      * the native flush without claiming GPU completion. */
     struct gl_query_info info = {.op = QOP_FLUSH};
-    return gl_device_ioctl(fd, GLIO_QUERY, &info);
+    return gl_device_ioctl(state, GLIO_QUERY, &info);
 }
 
 /* Reserve `bytes` of cmdbuf space and return a write cursor for the
@@ -1883,7 +1919,7 @@ enum { WPK_GL_QUERY_NOT_DISPATCHED = -2 };
 /* One synchronous execution path for malloc-owned replies and the context's
  * persistent error reply/packet. Storage is reserved before any native effects;
  * this helper neither allocates nor retries an entered operation. */
-static int query_owned_reply(struct wpk_gles_context *state, uint8_t *base, int fd,
+static int query_owned_reply(struct wpk_gles_context *state, uint8_t *base,
                              uint32_t op, const void *in, uint32_t in_len,
                              void *reply, uint32_t out_len, uint32_t prefix,
                              struct gl_submit_query_info *packet, int *query_entered) {
@@ -1903,7 +1939,7 @@ static int query_owned_reply(struct wpk_gles_context *state, uint8_t *base, int 
         packet->query = qi;
         if (query_entered) *query_entered = 1;
         int submit_rc = -1; // Unknown entry never proves the prefix rejected.
-        rc = gl_device_ioctl(fd,GLIO_SUBMIT_QUERY,packet);
+        rc = gl_device_ioctl(state,GLIO_SUBMIT_QUERY,packet);
         // Once entered, the prefix may have executed even without a reply.
         // Match flush_commands: consume on every return, never replay/fallback.
         g_cursor = base;
@@ -1937,7 +1973,7 @@ static int query_owned_reply(struct wpk_gles_context *state, uint8_t *base, int 
         finish_command_submission(state, base, 0, submit_rc);
     } else {
         if (query_entered) *query_entered = 1;
-        rc = gl_device_ioctl(fd,GLIO_QUERY,&qi);
+        rc = gl_device_ioctl(state,GLIO_QUERY,&qi);
     }
     return rc;
 }
@@ -1948,9 +1984,8 @@ static int query_into_tracked(uint32_t op,
     if (query_entered) *query_entered = 0;
     uint8_t *base = _wpk_gl_cmdbuf_base();
     if (base == NULL) return -1;
-    int fd = _wpk_gl_fd();
-    if (fd < 0) return -1;
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (!state || !state->reset_owner) return -1;
     /* Preserve the acknowledged error trailer as one ordinary flush. A clean
      * nonempty command prefix may use the compound transport below. */
     if (state->client_errors && flush_commands() != 0)
@@ -1976,7 +2011,7 @@ static int query_into_tracked(uint32_t op,
     }
     if (dst_len) memset(heap, 0, dst_len);
     struct gl_submit_query_info *packet = prefix ? (void *)((uint8_t *)heap+header_offset) : NULL;
-    int rc = query_owned_reply(state,base,fd,op,in,in_len,heap,dst_len,prefix,packet,query_entered);
+    int rc = query_owned_reply(state,base,op,in,in_len,heap,dst_len,prefix,packet,query_entered);
     if (rc == 0 && dst_len) memcpy(dst,heap,dst_len);
     free(heap);
     return rc;
@@ -2010,7 +2045,7 @@ static uint32_t vertex_attrib_limit(struct wpk_gles_context *state) {
  * This permits cancellation after a later transport failure without another
  * allocation. A failed cancellation leaves one context-owned transaction;
  * replacement or acknowledged context retirement also releases its bytes. */
-static int shader_upload_query(int fd, uint8_t *request, uint32_t input_len,
+static int shader_upload_query(struct wpk_gles_context *state, uint8_t *request, uint32_t input_len,
                                 uint8_t *reply, uint32_t token, int quiet) {
     memset(reply,0,12);
     struct gl_query_info info = {
@@ -2018,7 +2053,7 @@ static int shader_upload_query(int fd, uint8_t *request, uint32_t input_len,
         .in_buf_ptr = (uintptr_t)request, .in_buf_len = input_len,
         .out_buf_ptr = (uintptr_t)reply, .out_buf_len = 12, .reserved = 0,
     };
-    if (gl_device_ioctl(fd,GLIO_QUERY,&info) != 0) goto invalid;
+    if (gl_device_ioctl(state,GLIO_QUERY,&info) != 0) goto invalid;
     uint32_t status, echoed, footer;
     memcpy(&status,reply,4); memcpy(&echoed,reply+4,4); memcpy(&footer,reply+8,4);
     if (status > 1 || footer != WPK_GL_QUERY_REPLY_MAGIC) goto invalid;
@@ -2036,11 +2071,10 @@ static void upload_shader_source(GLuint shader, GLsizei count, const GLchar *con
     uint8_t *request = malloc(65536), *reply = malloc(12);
     if (!request || !reply) { free(request); free(reply); raise_client_error(GL_OUT_OF_MEMORY); return; }
     if (flush_commands() != 0) { free(request); free(reply); return; }
-    int fd = _wpk_gl_fd();
     uint32_t token = ++state->next_shader_upload;
     uint32_t header[4] = {1,shader,token,total};
     memcpy(request,header,sizeof header);
-    if (!shader_upload_query(fd,request,16,reply,token,0)) goto abort;
+    if (!shader_upload_query(state,request,16,reply,token,0)) goto abort;
     uint32_t offset = 0, chunk = 0;
     for (GLsizei i=0; i<count; i++) {
         size_t size = lengths && lengths[i] >= 0 ? (size_t)lengths[i] : strlen(strings[i]);
@@ -2050,21 +2084,21 @@ static void upload_shader_source(GLuint shader, GLsizei count, const GLchar *con
             memcpy(request+16+chunk,source,n); chunk += n; source += n; size -= n;
             if (chunk == 65520u) {
                 header[0] = 2; header[3] = offset; memcpy(request,header,16);
-                if (!shader_upload_query(fd,request,16+chunk,reply,token,0)) goto abort;
+                if (!shader_upload_query(state,request,16+chunk,reply,token,0)) goto abort;
                 offset += chunk; chunk = 0;
             }
         }
     }
     if (chunk) {
         header[0] = 2; header[3] = offset; memcpy(request,header,16);
-        if (!shader_upload_query(fd,request,16+chunk,reply,token,0)) goto abort;
+        if (!shader_upload_query(state,request,16+chunk,reply,token,0)) goto abort;
     }
     header[0] = 3; header[3] = 0; memcpy(request,header,16);
-    if (!shader_upload_query(fd,request,16,reply,token,0)) goto abort;
+    if (!shader_upload_query(state,request,16,reply,token,0)) goto abort;
     free(request); free(reply); return;
 abort:
     header[0] = 4; header[3] = 0; memcpy(request,header,16);
-    (void)shader_upload_query(fd,request,16,reply,token,1);
+    (void)shader_upload_query(state,request,16,reply,token,1);
     free(request); free(reply);
 }
 
@@ -2139,13 +2173,13 @@ static int accept_error_drain(struct wpk_gles_context *state, int *retained) {
 /* Failure-only recovery never submits a prefix, replays a drain or touches
  * native error state. A subsequent fresh drain observes work accepted since
  * the lost reply before this glGetError can establish complete knowledge. */
-static int recover_error_drain(struct wpk_gles_context *state,int fd) {
+static int recover_error_drain(struct wpk_gles_context *state) {
     state->error_request[0]=state->error_pending_transaction;
     memset(state->error_drain,0,sizeof state->error_drain);
     struct gl_query_info query={.op=QOP_ERROR_DRAIN_RECEIPT,
         .in_buf_ptr=(uintptr_t)state->error_request,.in_buf_len=4,
         .out_buf_ptr=(uintptr_t)state->error_drain,.out_buf_len=sizeof state->error_drain};
-    if(gl_device_ioctl(fd,GLIO_QUERY,&query)!=0)return 0;
+    if(gl_device_ioctl(state,GLIO_QUERY,&query)!=0)return 0;
     const uint32_t *reply=state->error_drain;
     if(reply[1]!=state->error_pending_transaction || reply[12]!=WPK_GL_QUERY_REPLY_MAGIC)return 0;
     if(reply[0]==1){
@@ -2202,7 +2236,7 @@ GLenum glGetError(void) {
     if (!state) return GL_NO_ERROR;
     uint8_t *base = _wpk_gl_cmdbuf_base();
     if (base == NULL) return GL_NO_ERROR;
-    if(state->error_pending && !recover_error_drain(state,_wpk_gl_fd())) {
+    if(state->error_pending && !recover_error_drain(state)) {
         state->error_pending_observed=1;return failed_error_observation(state);
     }
     if (exact_error_state(state)) {
@@ -2235,7 +2269,6 @@ GLenum glGetError(void) {
     /* One request carries the queued commands (as the compound prefix), the
      * unacknowledged client flags and the drain, in that order, matching the
      * ordering the separate trailer flush used to give. */
-    const int fd = _wpk_gl_fd();
     const uint32_t errors = state->client_errors;
     const uint32_t prefix = !g_cursor ? 0 : (uint32_t)(g_cursor-base);
     state->error_request[0] = errors;
@@ -2246,7 +2279,7 @@ GLenum glGetError(void) {
     memset(state->error_drain, 0, sizeof state->error_drain);
     const uint64_t requests = _wpk_gl_device_requests();
     int retained = 1;
-    int rc = query_owned_reply(state,base,fd,QOP_GET_ERROR,state->error_request,
+    int rc = query_owned_reply(state,base,QOP_GET_ERROR,state->error_request,
         sizeof state->error_request,state->error_drain,sizeof state->error_drain,
         prefix,prefix ? &state->error_packet : NULL,NULL);
     if (rc == 0 && !accept_error_drain(state, &retained)) { errno = EIO; rc = -1; }
@@ -2280,8 +2313,8 @@ GLenum glGetError(void) {
  * the host in submission order, so a query answered after they have run, and
  * after the host context's own finish(), is that point. */
 int _wpk_gl_finish_checked(void) {
-    int fd = _wpk_gl_fd();
-    if (!_wpk_gl_current_encoder() || fd < 0 || !_wpk_gl_cmdbuf_base()) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (!state || !state->reset_owner || !_wpk_gl_cmdbuf_base()) {
         errno = ENODEV;
         return -1;
     }
@@ -2289,7 +2322,7 @@ int _wpk_gl_finish_checked(void) {
     /* QOP_FINISH has no output bytes. Its completed ioctl is the host
      * acknowledgement, so no reply allocation or guest pointer is needed. */
     struct gl_query_info info = {.op = QOP_FINISH};
-    return gl_device_ioctl(fd,GLIO_QUERY,&info);
+    return gl_device_ioctl(state,GLIO_QUERY,&info);
 }
 void glFinish(void) {
     if (!_wpk_gl_command_encoder()) return;
@@ -2371,9 +2404,9 @@ static int publish_object_image(struct wpk_object_group *group, struct wpk_objec
     }
     pthread_mutex_unlock(&group->mutex);
     if (old)
-        _wpk_egl_image_release(old);
+        _wpk_egl_image_release_renderer(old);
     if (image)
-        _wpk_egl_image_release(image);
+        _wpk_egl_image_release_renderer(image);
     return current;
 }
 
@@ -2478,15 +2511,14 @@ static int checked_program_mutation(uint32_t op, GLuint name, GLuint shader) {
 static int program_capture_query(struct wpk_gles_context *state, uint32_t action,
                                 uint32_t value, struct wpk_program_capture *capture) {
     uint8_t *base=_wpk_gl_cmdbuf_base();
-    int fd=_wpk_gl_fd();
-    if (!base || fd<0 || state->program_captures_uncertain) return 0;
+    if (!base || !state->reset_owner || state->program_captures_uncertain) return 0;
     uint32_t *request=state->program_capture_request, *reply=state->program_capture_reply;
     request[0]=action;request[1]=value;request[2]=0;
     memset(reply,0,sizeof state->program_capture_reply);
     const uint32_t prefix=g_cursor ? (uint32_t)(g_cursor-base) : 0;
     const struct wpk_error_proof proof=capture_error_proof();
     int entered=0;
-    int rc=query_owned_reply(state,base,fd,QOP_PROGRAM_CAPTURE,request,8,reply,16,
+    int rc=query_owned_reply(state,base,QOP_PROGRAM_CAPTURE,request,8,reply,16,
         prefix,prefix ? &state->program_capture_packet : NULL,&entered);
     if (!rc && reply[3]==WPK_GL_QUERY_REPLY_MAGIC) {
         if (reply[0]==0 && reply[1]==1 &&
@@ -2533,10 +2565,10 @@ static int program_stream_io(struct wpk_program_stream *stream,uint32_t op,
     struct gl_query_info query={.op=op,.in_buf_ptr=(uintptr_t)request,.in_buf_len=words*4,
         .out_buf_ptr=(uintptr_t)reply,.out_buf_len=48};
     _wpk_gl_note_known_device_request();
-    int rc=ioctl(stream->fd,GLIO_QUERY,&query);
+    int rc=_wpk_egl_context_device_ioctl(stream->reset_owner,GLIO_QUERY,&query);
     if (rc && errno==ENODEV) {
         stream->blocked|=WPK_PROGRAM_BLOCKED_EXECUTION;
-        if (stream->fd==_wpk_gl_fd()) _wpk_gl_note_reset();
+        if (stream->reset_owner==_wpk_gl_context_owner()) _wpk_gl_note_reset();
         else if(stream->reset_owner)_wpk_egl_note_encoder_reset(stream->reset_owner);
     }
     return !rc && valid_program_receipt(reply);
@@ -2700,16 +2732,17 @@ static int publish_program_intents(struct wpk_object_group *group) {
 }
 /* The carrier is reserved before the first local selection. It has no
  * journal slots/native pins of its own; only one exact transport receiver.
- * Never change its fd while an entered publication still needs recovery. */
+ * Never change its exact owner while entered publication needs recovery:
+ * public aliases can collide or disappear without transferring that custody. */
 static int prepare_peer_program_publisher(struct wpk_gles_context *state,
-                                          struct wpk_gles_context *peer,int fd) {
+                                          struct wpk_gles_context *peer) {
     struct wpk_object_group *group=state->objects;
     struct wpk_program_stream *publisher=group->program_retirement_publisher;
-    if(!publisher || peer->objects!=group || fd<0 || group->program_publication_caller ||
+    if(!publisher || peer->objects!=group || !peer->reset_owner || group->program_publication_caller ||
         (peer->program_stream && peer->program_stream->active))return 0;
-    if(group->program_retirement_publisher_owner!=peer || publisher->fd!=fd ||
+    if(group->program_retirement_publisher_owner!=peer || publisher->reset_owner!=peer->reset_owner ||
         !publisher->active || publisher->blocked){
-        memset(publisher,0,sizeof *publisher);publisher->fd=fd;publisher->reset_owner=peer->reset_owner;
+        memset(publisher,0,sizeof *publisher);publisher->reset_owner=peer->reset_owner;
         group->program_retirement_publisher_owner=peer;publisher->read_request[0]=6;
         if(!program_stream_io(publisher,QOP_PROGRAM_JOURNAL_BARRIER,publisher->read_request,1,publisher->reply) ||
             publisher->reply[0]==2 || publisher->reply[1]==UINT32_MAX)return 0;
@@ -2720,7 +2753,7 @@ static int prepare_peer_program_publisher(struct wpk_gles_context *state,
 static int publish_program_intents_from_encoder_slow(struct wpk_gles_context *state,int report_error) {
     if(publish_program_intents(state->objects))return 1;
     if(state==_wpk_gl_current_encoder() && !_wpk_gl_context_reset() &&
-        prepare_peer_program_publisher(state,state,_wpk_gl_fd()) &&
+        prepare_peer_program_publisher(state,state) &&
         publish_program_intents(state->objects))return 1;
     if(report_error)raise_client_error(GL_INVALID_OPERATION);
     return 0;
@@ -2781,7 +2814,6 @@ int _wpk_gl_enable_program_journal(void) {
     if(!state->objects->program_retirement_publisher){
         state->objects->program_retirement_publisher=calloc(1,sizeof(struct wpk_program_stream));
         if(!state->objects->program_retirement_publisher){raise_client_error(GL_OUT_OF_MEMORY);return 0;}
-        state->objects->program_retirement_publisher->fd=-1;
     }
     // This context's journal will own its transaction sequence from now on.
     if(state->objects->program_retirement_publisher_owner==state)
@@ -2790,7 +2822,7 @@ int _wpk_gl_enable_program_journal(void) {
     if (!stream) {
         stream=calloc(1,sizeof *stream);
         if (!stream) {raise_client_error(GL_OUT_OF_MEMORY);return 0;}
-        stream->fd=_wpk_gl_fd();stream->reset_owner=state->reset_owner;
+        stream->reset_owner=state->reset_owner;
         stream->next=state->objects->program_streams;
         state->objects->program_streams=stream;state->program_stream=stream;
         atomic_store_explicit(&state->objects->program_owner_epoch,_wpk_gl_device_owner_epoch(),memory_order_relaxed);
@@ -3153,8 +3185,8 @@ int _wpk_gl_prepare_encoder_retirement(struct wpk_gles_context *state,int reset_
     return group->program_retirement_reset || publish_program_intents(group);
 }
 int _wpk_gl_prepare_encoder_retirement_with_peer(struct wpk_gles_context *state,
-                                                 struct wpk_gles_context *peer,int fd) {
-    return prepare_peer_program_publisher(state,peer,fd) && publish_program_intents(state->objects);
+                                                 struct wpk_gles_context *peer) {
+    return prepare_peer_program_publisher(state,peer) && publish_program_intents(state->objects);
 }
 struct wpk_gl_name_scope _wpk_gl_begin_encoder_retirement(struct wpk_gles_context *state) {
     // Retirement needs no current encoder and must not reconcile a pending
@@ -3174,7 +3206,7 @@ void _wpk_gl_retire_encoder_programs(struct wpk_gles_context *state) {
             objects->program_publication_caller=NULL;
             objects->program_publication_transaction=objects->program_publication_count=0;
         }
-        memset(publisher,0,sizeof *publisher);publisher->fd=-1;
+        memset(publisher,0,sizeof *publisher);
         objects->program_retirement_publisher_owner=NULL;
     }
     if (state->program_stream) {
@@ -3244,6 +3276,80 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
     object_release(state->objects, state->array_capture.object);
     object_group_release(state->objects);
     free(state);
+}
+
+int _wpk_gl_discard_inherited_encoders(struct wpk_gles_context **states,size_t count) {
+    if ((!states && count) || count > SIZE_MAX/sizeof(struct wpk_object_group *)) {
+        errno=EINVAL;return 0;
+    }
+    if(!count)return 1;
+    const uint64_t epoch=_wpk_gl_device_owner_epoch();
+    if(!epoch){errno=EACCES;return 0;}
+    struct wpk_object_group **groups=count?calloc(count,sizeof *groups):NULL;
+    if(count && !groups){errno=ENOMEM;return 0;}
+    size_t group_count=0;
+    /* WHY: only EGL's complete child inventory establishes the surviving C
+     * graph. A copied reference count can include a vanished thread halfway
+     * through acquisition; neither it nor its inherited pthread locks grants
+     * permission to publish work into the parent's renderer. Preflight the
+     * entire inventory before freeing anything, so refusal is all-or-nothing. */
+    for(size_t i=0;i<count;i++) {
+        struct wpk_gles_context *state=states[i];
+        if(!state || !state->objects){free(groups);errno=EINVAL;return 0;}
+        for(size_t j=0;j<i;j++)if(states[j]==state){free(groups);errno=EINVAL;return 0;}
+        struct wpk_object_group *group=state->objects;
+        if(atomic_load_explicit(&group->program_owner_epoch,memory_order_relaxed)==epoch) {
+            free(groups);errno=EACCES;return 0;
+        }
+        size_t j=0;while(j<group_count && groups[j]!=group)j++;
+        if(j==group_count)groups[group_count++]=group;
+    }
+    for(size_t i=0;i<count;i++) {
+        struct wpk_gles_context *state=states[i];
+        while(state->image_attachments) {
+            struct wpk_image_attachment *entry=state->image_attachments;
+            state->image_attachments=entry->next;free(entry);
+        }
+        while(state->vertex_arrays) {
+            struct wpk_vertex_array *entry=state->vertex_arrays;
+            state->vertex_arrays=entry->next;
+            if(entry->attribs!=entry->initial_attribs)free(entry->attribs);
+            free(entry);
+        }
+        if(state->default_vertex_array.attribs!=state->default_vertex_array.initial_attribs)
+            free(state->default_vertex_array.attribs);
+        if(state->texture_units!=state->initial_texture_units)free(state->texture_units);
+        if(state->framebuffer_names!=state->initial_framebuffer_names)free(state->framebuffer_names);
+        free(state);states[i]=NULL;
+    }
+    for(size_t i=0;i<group_count;i++) {
+        struct wpk_object_group *group=groups[i];
+        while(group->pending_images) {
+            struct wpk_pending_image *entry=group->pending_images;
+            group->pending_images=entry->next;
+            free(entry);
+        }
+        while(group->program_streams) {
+            struct wpk_program_stream *entry=group->program_streams;
+            group->program_streams=entry->next;free(entry);
+        }
+        while(group->program_records) {
+            struct wpk_program_record *entry=group->program_records;
+            group->program_records=entry->next;free(entry);
+        }
+        free(group->program_retirement_publisher);
+        /* WHY: EGL has already dropped the inherited renderer-reference
+         * category. Images may now be freed; even inspecting their pointers
+         * here could touch retired storage. Only copied C records remain ours
+         * to free, independent of their stale reference counts and locks. */
+        struct wpk_object_name *lists[2]={group->names,group->retired_objects};
+        for(unsigned j=0;j<2;j++)while(lists[j]) {
+            struct wpk_object_name *entry=lists[j];
+            lists[j]=entry->next;free(entry);
+        }
+        free(group);
+    }
+    free(groups);return 1;
 }
 
 static int checked_query_reply(uint32_t, const void *, uint32_t, uint8_t *, uint32_t);
@@ -3379,7 +3485,13 @@ static int import_image_object(uint32_t kind, GLenum target, struct wpk_object_n
     }
     pending->object = object;
     pending->image = image;
-    _wpk_egl_image_retain(image);
+    if (!_wpk_egl_image_retain_renderer(image)) {
+        object_release(group,object);
+        free(pending);
+        free(input);
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return 0;
+    }
     input[0] = kind;
     input[1] = target;
     input[2] = source;
@@ -3387,7 +3499,7 @@ static int import_image_object(uint32_t kind, GLenum target, struct wpk_object_n
     int rc = _wpk_gl_query_into(QOP_BOUND_IMAGE_TARGET, input, 12, reply, 16);
     free(input);
     if (rc == WPK_GL_QUERY_NOT_DISPATCHED) {
-        _wpk_egl_image_release(image);
+        _wpk_egl_image_release_renderer(image);
         object_release(group, object);
         free(pending);
         return 0;
@@ -3400,7 +3512,7 @@ static int import_image_object(uint32_t kind, GLenum target, struct wpk_object_n
         return 1;
     }
     if (!rc && reply[3] == WPK_GL_QUERY_REPLY_MAGIC && reply[0] == 1) {
-        _wpk_egl_image_release(image);
+        _wpk_egl_image_release_renderer(image);
         object_release(group, object);
         free(pending);
         return 0;
@@ -3468,7 +3580,7 @@ int _wpk_gl_image_source_state(struct wpk_gles_context *state, uint32_t kind,
     pthread_mutex_unlock(&group->mutex);
     return result;
 }
-void _wpk_gl_link_image_source(struct wpk_gles_context *state, uint32_t kind, uint32_t name,
+int _wpk_gl_link_image_source(struct wpk_gles_context *state, uint32_t kind, uint32_t name,
                                struct wpk_egl_image *image, uint32_t source, uint32_t revision) {
     struct wpk_object_group *group = state->objects;
     pthread_mutex_lock(&group->mutex);
@@ -3478,11 +3590,14 @@ void _wpk_gl_link_image_source(struct wpk_gles_context *state, uint32_t kind, ui
     if (retained)
         object->references++;
     pthread_mutex_unlock(&group->mutex);
-    if (!retained)
-        return;
-    _wpk_egl_image_retain(image);
-    (void)publish_object_image(group, object, image, source, revision);
+    if (!retained) {errno=ENOMEM;return 0;}
+    if (!_wpk_egl_image_retain_renderer(image)) {
+        object_release(group,object);
+        return 0;
+    }
+    int published=publish_object_image(group, object, image, source, revision);
     object_release(group, object);
+    return published;
 }
 static GLenum image_target_error(struct wpk_object_group *group, struct wpk_object_name *object,
                                  GLenum target) {
@@ -4731,7 +4846,7 @@ void glBlendEquation(GLenum mode) {
 
 /* Preallocated query buffers also permit cancellation after a transport
  * failure, without another allocation. Only acknowledged replies publish. */
-static int uniform_lookup_query(int fd, uint8_t *request, uint32_t length, uint8_t *reply,
+static int uniform_lookup_query(struct wpk_gles_context *state, uint8_t *request, uint32_t length, uint8_t *reply,
                                 uint32_t token, GLint *location, int quiet) {
     memset(reply, 0, 16);
     struct gl_query_info info = {.op = QOP_LOOKUP_UNIFORM,
@@ -4740,7 +4855,7 @@ static int uniform_lookup_query(int fd, uint8_t *request, uint32_t length, uint8
                                  .out_buf_ptr = (uintptr_t)reply,
                                  .out_buf_len = 16,
                                  .reserved = 0};
-    if (gl_device_ioctl(fd, GLIO_QUERY, &info) != 0)
+    if (gl_device_ioctl(state, GLIO_QUERY, &info) != 0)
         goto invalid;
     uint32_t status, echoed, footer;
     memcpy(&status, reply, 4);
@@ -4780,17 +4895,16 @@ GLint glGetUniformLocation(GLuint program, const GLchar *name) {
     GLint location = -1;
     if (flush_commands() != 0)
         goto done;
-    int fd = _wpk_gl_fd();
     uint32_t token = ++state->next_uniform_lookup;
     uint32_t header[4] = {length <= 65520 ? 0u : 1u, program, token, (uint32_t)length};
     memcpy(request, header, 16);
     if (length <= 65520) {
         memcpy(request + 16, name, length);
-        if (!uniform_lookup_query(fd, request, (uint32_t)length + 16, reply, token, &location, 0))
+        if (!uniform_lookup_query(state, request, (uint32_t)length + 16, reply, token, &location, 0))
             location = -1;
         goto done;
     }
-    if (!uniform_lookup_query(fd, request, 16, reply, token, &location, 0))
+    if (!uniform_lookup_query(state, request, 16, reply, token, &location, 0))
         goto abort;
     for (uint32_t offset = 0; offset < (uint32_t)length;) {
         uint32_t count = (uint32_t)length - offset < 65520 ? (uint32_t)length - offset : 65520;
@@ -4798,21 +4912,21 @@ GLint glGetUniformLocation(GLuint program, const GLchar *name) {
         header[3] = offset;
         memcpy(request, header, 16);
         memcpy(request + 16, name + offset, count);
-        if (!uniform_lookup_query(fd, request, count + 16, reply, token, &location, 0))
+        if (!uniform_lookup_query(state, request, count + 16, reply, token, &location, 0))
             goto abort;
         offset += count;
     }
     header[0] = 3;
     header[3] = 0;
     memcpy(request, header, 16);
-    if (!uniform_lookup_query(fd, request, 16, reply, token, &location, 0))
+    if (!uniform_lookup_query(state, request, 16, reply, token, &location, 0))
         goto abort;
     goto done;
 abort:
     header[0] = 4;
     header[3] = 0;
     memcpy(request, header, 16);
-    (void)uniform_lookup_query(fd, request, 16, reply, token, &location, 1);
+    (void)uniform_lookup_query(state, request, 16, reply, token, &location, 1);
     location = -1;
 done:
     free(request);
@@ -4835,14 +4949,14 @@ GLenum glCheckFramebufferStatus(GLenum target) {
 /* A captured native read is never repeated on an unknown reply. Preallocate
  * cancellation buffers before admission, and publish only after every copied
  * byte and the final release have been acknowledged. */
-static int readback_capture_query(int fd, uint8_t *request, uint32_t input_len,
+static int readback_capture_query(struct wpk_gles_context *state, uint8_t *request, uint32_t input_len,
                                   uint8_t *reply, uint32_t output_len,
                                   uint32_t token, uint32_t expected, int quiet) {
     memset(reply,0,output_len);
     struct gl_query_info info = {.op=QOP_READBACK_CAPTURE,
         .in_buf_ptr=(uintptr_t)request,.in_buf_len=input_len,
         .out_buf_ptr=(uintptr_t)reply,.out_buf_len=output_len,.reserved=0};
-    if (gl_device_ioctl(fd,GLIO_QUERY,&info) != 0) goto invalid;
+    if (gl_device_ioctl(state,GLIO_QUERY,&info) != 0) goto invalid;
     uint32_t status,echoed,count,magic;
     memcpy(&status,reply,4);memcpy(&echoed,reply+4,4);memcpy(&count,reply+8,4);
     memcpy(&magic,reply+output_len-4,4);
@@ -4860,22 +4974,22 @@ static int captured_read_pixels(const uint8_t metadata[24], uint8_t *pixels, uin
     uint8_t *request=malloc(36),*reply=malloc(65536);
     if (!request || !reply) {free(request);free(reply);raise_client_error(GL_OUT_OF_MEMORY);return 0;}
     if (flush_commands()!=0) {free(request);free(reply);return 0;}
-    int fd=_wpk_gl_fd(),success=0;
+    int success=0;
     uint32_t token=++state->next_readback_capture;
     uint32_t header[3]={1,token,total};memcpy(request,header,12);memcpy(request+12,metadata,24);
-    if (!readback_capture_query(fd,request,36,reply,16,token,total,0)) goto abort;
+    if (!readback_capture_query(state,request,36,reply,16,token,total,0)) goto abort;
     for (uint32_t offset=0;offset<total;) {
         uint32_t count=total-offset;if (count>65520u) count=65520u;
         uint32_t chunk[4]={2,token,offset,count};memcpy(request,chunk,16);
-        if (!readback_capture_query(fd,request,16,reply,count+16,token,count,0)) goto abort;
+        if (!readback_capture_query(state,request,16,reply,count+16,token,count,0)) goto abort;
         memcpy(pixels+offset,reply+12,count);offset+=count;
     }
     header[0]=3;memcpy(request,header,8);
-    if (!readback_capture_query(fd,request,8,reply,16,token,0,0)) goto abort;
+    if (!readback_capture_query(state,request,8,reply,16,token,0,0)) goto abort;
     success=1;goto done;
 abort:
     header[0]=3;memcpy(request,header,8);
-    (void)readback_capture_query(fd,request,8,reply,16,token,0,1);
+    (void)readback_capture_query(state,request,8,reply,16,token,0,1);
 done:
     free(request);free(reply);return success;
 }
@@ -5551,13 +5665,13 @@ void glTexParameterfv(GLenum target, GLenum pname, const GLfloat *params) {
  * operation is equivalent to a compressed full-image validation. BEGIN can
  * reject metadata before touching source bytes; COMMIT alone mutates native
  * storage. Unknown completion is never replayed. */
-static int compressed_upload_query(int fd, uint8_t *request, uint32_t length,
+static int compressed_upload_query(struct wpk_gles_context *state, uint8_t *request, uint32_t length,
                                     uint8_t *reply, uint32_t token, int quiet) {
     memset(reply,0,12);
     struct gl_query_info info = {.op=QOP_COMPRESSED_UPLOAD,
         .in_buf_ptr=(uintptr_t)request,.in_buf_len=length,
         .out_buf_ptr=(uintptr_t)reply,.out_buf_len=12};
-    if (gl_device_ioctl(fd,GLIO_QUERY,&info) == 0) {
+    if (gl_device_ioctl(state,GLIO_QUERY,&info) == 0) {
         uint32_t status,echoed,footer;
         memcpy(&status,reply,4);memcpy(&echoed,reply+4,4);memcpy(&footer,reply+8,4);
         if (footer==WPK_GL_QUERY_REPLY_MAGIC && status<=1) {
@@ -5578,12 +5692,11 @@ static void compressed_upload(uint32_t op, GLenum target, GLint level, GLenum fo
     uint8_t *request=malloc(65536), *reply=malloc(12);
     if (!request || !reply) {free(request);free(reply);raise_client_error(GL_OUT_OF_MEMORY);return;}
     if (flush_commands()!=0) {free(request);free(reply);return;}
-    const int fd=_wpk_gl_fd();
     const uint32_t token=++state->next_compressed_upload;
     uint32_t header[13]={1,token,op,target,(uint32_t)level,format,(uint32_t)x,(uint32_t)y,
         (uint32_t)width,(uint32_t)height,(uint32_t)border,(uint32_t)imageSize,data!=NULL};
     memcpy(request,header,sizeof header);
-    if (!compressed_upload_query(fd,request,sizeof header,reply,token,0)) goto cancel;
+    if (!compressed_upload_query(state,request,sizeof header,reply,token,0)) goto cancel;
     if (imageSize>0 && !data) {raise_client_error(GL_INVALID_VALUE);goto cancel;}
     if ((uint32_t)imageSize>WPK_GL_COMPRESSED_UPLOAD_MAX_BYTES) {raise_client_error(GL_OUT_OF_MEMORY);goto cancel;}
     if ((uintptr_t)data>UINTPTR_MAX-(uintptr_t)imageSize) {raise_client_error(GL_OUT_OF_MEMORY);goto cancel;}
@@ -5592,11 +5705,11 @@ static void compressed_upload(uint32_t op, GLenum target, GLint level, GLenum fo
         if (bytes>65524u) bytes=65524u;
         header[0]=2;header[2]=offset;memcpy(request,header,12);
         memcpy(request+12,(const uint8_t *)data+offset,bytes);
-        if (!compressed_upload_query(fd,request,12+bytes,reply,token,0)) goto cancel;
+        if (!compressed_upload_query(state,request,12+bytes,reply,token,0)) goto cancel;
         offset+=bytes;
     }
     header[0]=3;header[2]=0;memcpy(request,header,12);
-    if (!compressed_upload_query(fd,request,12,reply,token,0)) goto cancel;
+    if (!compressed_upload_query(state,request,12,reply,token,0)) goto cancel;
     if (op==OP_COMPRESSED_TEX_IMAGE_2D)
         sync_respecified_image(target);
     free(request);free(reply);return;
@@ -5604,7 +5717,7 @@ cancel:
     /* ABORT drops staged bytes only. It cannot undo or repeat an uncertain
      * accepted native COMMIT; image input ownership stays conservatively held. */
     header[0]=4;header[2]=0;memcpy(request,header,12);
-    (void)compressed_upload_query(fd,request,12,reply,token,1);
+    (void)compressed_upload_query(state,request,12,reply,token,1);
     free(request);free(reply);
 }
 void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat,
@@ -5988,28 +6101,31 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
         raise_client_error(GL_INVALID_ENUM);
         return;
     }
-    struct wpk_egl_image *img = _wpk_egl_image_lookup(image);
+    struct wpk_egl_image_borrow *borrow = NULL;
+    struct wpk_egl_image *img = _wpk_egl_image_borrow_lookup(image,&borrow);
     struct wpk_texture_unit *unit = &g_texture_units[g_active_unit];
     GLuint name = target == GL_TEXTURE_2D ? unit->texture : unit->external;
     struct wpk_object_name *object = target == GL_TEXTURE_2D ? unit->texture_object : unit->external_object;
     if (!img) {
-        raise_client_error(GL_INVALID_VALUE);
+        /* Exhausting never-reused borrow identities is a resource failure,
+         * not evidence that this public image name is invalid. */
+        raise_client_error(errno==ENOMEM || errno==EOVERFLOW ? GL_OUT_OF_MEMORY : GL_INVALID_VALUE);
         return;
     }
     /* A YUV image is external-only: no 2D texture can be its sibling. */
     if (name == 0 || (target == GL_TEXTURE_2D && _wpk_egl_image_external_only(img))) {
         raise_client_error(GL_INVALID_OPERATION);
-        _wpk_egl_image_release(img);
+        _wpk_egl_image_borrow_release(&borrow);
         return;
     }
     GLuint source = _wpk_egl_image_texture(img);
     if (!source) {
         raise_client_error(GL_INVALID_OPERATION);
-        _wpk_egl_image_release(img);
+        _wpk_egl_image_borrow_release(&borrow);
         return;
     }
     (void)import_image_object(1, target, object, source, img);
-    _wpk_egl_image_release(img);
+    _wpk_egl_image_borrow_release(&borrow);
 }
 
 /* Renderbuffer siblings retain the same canonical source as texture siblings. */
@@ -6019,25 +6135,26 @@ void glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image) 
         raise_client_error(GL_INVALID_ENUM);
         return;
     }
-    struct wpk_egl_image *img = _wpk_egl_image_lookup(image);
+    struct wpk_egl_image_borrow *borrow = NULL;
+    struct wpk_egl_image *img = _wpk_egl_image_borrow_lookup(image,&borrow);
     if (!img) {
-        raise_client_error(GL_INVALID_VALUE);
+        raise_client_error(errno==ENOMEM || errno==EOVERFLOW ? GL_OUT_OF_MEMORY : GL_INVALID_VALUE);
         return;
     }
     /* A YUV image is external-only and never a render target. */
     if (g_bound_renderbuffer == 0 || _wpk_egl_image_external_only(img)) {
         raise_client_error(GL_INVALID_OPERATION);
-        _wpk_egl_image_release(img);
+        _wpk_egl_image_borrow_release(&borrow);
         return;
     }
     GLuint source = _wpk_egl_image_texture(img);
     if (!source) {
         raise_client_error(GL_INVALID_OPERATION);
-        _wpk_egl_image_release(img);
+        _wpk_egl_image_borrow_release(&borrow);
         return;
     }
     (void)import_image_object(2, GL_RENDERBUFFER, _wpk_gl_current_encoder()->renderbuffer_object, source, img);
-    _wpk_egl_image_release(img);
+    _wpk_egl_image_borrow_release(&borrow);
 }
 
 void glDrawBuffer(GLenum buf) {
@@ -6409,14 +6526,14 @@ GLboolean glIsEnabled(GLenum cap) {
 /* Each variable query owns one independent snapshot, including metadata.
  * Preallocate the transport/cancellation buffer before BEGIN. A failed chunk,
  * allocation, or RELEASE preserves every public output and never re-queries. */
-static int object_capture_query(int fd, uint32_t request[6], uint32_t input_len,
+static int object_capture_query(struct wpk_gles_context *state, uint32_t request[6], uint32_t input_len,
                                 uint8_t *reply, uint32_t output_len,
                                 uint32_t token, uint32_t *count, int quiet) {
     memset(reply,0,output_len);
     struct gl_query_info info={.op=QOP_OBJECT_CAPTURE,
         .in_buf_ptr=(uintptr_t)request,.in_buf_len=input_len,
         .out_buf_ptr=(uintptr_t)reply,.out_buf_len=output_len,.reserved=0};
-    if(gl_device_ioctl(fd,GLIO_QUERY,&info)!=0)goto invalid;
+    if(gl_device_ioctl(state,GLIO_QUERY,&info)!=0)goto invalid;
     uint32_t status,echoed,magic;
     memcpy(&status,reply,4);memcpy(&echoed,reply+4,4);memcpy(&magic,reply+output_len-4,4);
     if(status>1 || magic!=WPK_GL_QUERY_REPLY_MAGIC)goto invalid;
@@ -6435,10 +6552,10 @@ static int query_object_blob(uint32_t op, uint32_t *input, uint32_t words,
     uint32_t *request=malloc(24);uint8_t *reply=malloc(65536),*result=NULL;int success=0;
     if(!request || !reply){free(request);free(reply);raise_client_error(GL_OUT_OF_MEMORY);return 0;}
     if(flush_commands()!=0){free(request);free(reply);return 0;}
-    const int fd=_wpk_gl_fd();const uint32_t token=++state->next_object_capture;
+    const uint32_t token=++state->next_object_capture;
     uint32_t begin[6]={1,token,op,input[0],words==4?input[1]:0,limit},total=0,got=0;
     memcpy(request,begin,sizeof begin);
-    if(!object_capture_query(fd,request,24,reply,16,token,&total,0))goto abort;
+    if(!object_capture_query(state,request,24,reply,16,token,&total,0))goto abort;
     if(total<header_size || total>64u*1024u*1024u ||
         (uint64_t)total>(uint64_t)header_size+(uint64_t)limit*unit)goto malformed;
     result=malloc(total);
@@ -6446,7 +6563,7 @@ static int query_object_blob(uint32_t op, uint32_t *input, uint32_t words,
     for(uint32_t offset=0;offset<total;) {
         uint32_t n=total-offset;if(n>65520u)n=65520u;
         request[0]=2;request[2]=offset;request[3]=n;
-        if(!object_capture_query(fd,request,16,reply,n+16,token,&got,0))goto abort;
+        if(!object_capture_query(state,request,16,reply,n+16,token,&got,0))goto abort;
         if(got!=n)goto malformed;
         memcpy(result+offset,reply+12,n);offset+=n;
     }
@@ -6454,14 +6571,14 @@ static int query_object_blob(uint32_t op, uint32_t *input, uint32_t words,
     uint32_t wanted=header[0]<limit?header[0]:limit;
     if((uint64_t)header_size+(uint64_t)wanted*unit!=total)goto malformed;
     request[0]=3;
-    if(!object_capture_query(fd,request,8,reply,16,token,&got,0))goto abort;
+    if(!object_capture_query(state,request,8,reply,16,token,&got,0))goto abort;
     if(got!=0)goto malformed;
     memmove(result,result+header_size,(size_t)wanted*unit);
     *bytes=result;*count=wanted;result=NULL;success=1;goto done;
 malformed:
     raise_client_error(GL_INVALID_OPERATION);
 abort:
-    request[0]=3;(void)object_capture_query(fd,request,8,reply,16,token,&got,1);
+    request[0]=3;(void)object_capture_query(state,request,8,reply,16,token,&got,1);
 done:
     free(result);free(reply);free(request);return success;
 }

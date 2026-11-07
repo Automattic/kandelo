@@ -4,10 +4,14 @@
 /* Private in-process ownership bridge. No guest/kernel wire layout changes. */
 /* Return a caller-owned CLOEXEC alias only while this exact public device is
  * live. Identity validation and duplication share the withdrawal lock. */
+struct wpk_drm_owner;
+struct gbm_device *_wpk_gbm_device_from_owner(struct wpk_drm_owner *owner);
+int _wpk_gbm_device_acquire_owner(const void *native,uint64_t identity,struct wpk_drm_owner **owner);
 int _wpk_gbm_device_acquire_fd(const void *native, uint64_t identity);
 struct wpk_gbm_frame {
     int fd;
     uint32_t handle, width, height, format, pitch;
+    struct wpk_drm_owner *owner,*bo_owner;
 };
 /* GBM_BO_IMPORT_EGL_IMAGE: the planes of a live EGLImage owned by the EGL
  * display initialized on GBM device `device` (with its `identity`). Each of

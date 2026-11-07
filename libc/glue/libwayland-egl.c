@@ -26,6 +26,7 @@
 #include <limits.h>
 #include <errno.h>
 #include "gbm_window.h"
+#include "drm_owned.h"
 #include "wayland-native.h"
 
 #include <wayland-client.h>
@@ -58,7 +59,7 @@ struct wpk_allocation {
 struct wpk_wlegl {
     struct wl_egl_window *window;
     const void *display;
-    uint64_t display_identity;
+    uint64_t display_identity,process_epoch;
     void *surface_hold;
     unsigned references;
     int owner_alive, resizing, active, presenting;
@@ -180,18 +181,18 @@ static void free_allocation(struct wpk_allocation *a) {
     }
     if(a->lease)_wpk_gbm_window_release(a->lease);
     if(a->surface)gbm_surface_destroy(a->surface);
-    if(a->gbm) {
-        int fd=gbm_device_get_fd(a->gbm);gbm_device_destroy(a->gbm);close(fd);
-    }
+    if(a->gbm)gbm_device_destroy(a->gbm);
     free(a);
 }
 static int alloc_buffer(struct wpk_wlegl *w,int width,int height) {
     struct wpk_allocation *a=calloc(1,sizeof *a);
     if(!a)return -1;
-    int fd=open(WPK_GL_DEVICE,O_RDWR|O_CLOEXEC);
-    if(fd<0) {free(a);return -1;}
-    a->gbm=gbm_create_device(fd);
-    if(!a->gbm) {close(fd);free(a);return -1;}
+    struct wpk_drm_owner *owner=NULL;
+    if(_wpk_drm_owned_open(WPK_DRM_OWNED_RENDER_NODE,&owner)!=0){
+        _wpk_drm_owned_retire(&owner);free(a);return -1;
+    }
+    a->gbm=_wpk_gbm_device_from_owner(owner);_wpk_drm_owned_retire(&owner);
+    if(!a->gbm){free(a);return -1;}
     a->surface=gbm_surface_create(a->gbm,(uint32_t)width,(uint32_t)height,
         GBM_FORMAT_XBGR8888,GBM_BO_USE_RENDERING);
     if(!a->surface || !_wpk_gbm_window_acquire(a->surface,&a->lease,&a->back))goto fail;
@@ -218,14 +219,16 @@ static void free_buffer(struct wpk_wlegl *w) {
 
 /* Native windows have independent public and EGL lease lifetimes. Only
  * list membership validates untrusted pointers; never inspect their memory. */
-static pthread_mutex_t window_mutex=PTHREAD_MUTEX_INITIALIZER;
+static struct wpk_drm_mutex window_mutex=WPK_DRM_MUTEX_INITIALIZER;
 static struct wpk_wlegl *windows;
+static void retire_inherited_window(struct wpk_wlegl *);
 static struct wpk_wlegl *find_window(const void *native) {
     for(struct wpk_wlegl *w=windows;w;w=w->next)if(w->window==native && w->owner_alive)return w;
     return NULL;
 }
 static struct wpk_wlegl *readable_window(const void *native) {
     struct wpk_wlegl *w=find_window(native);
+    if(w&&w->process_epoch!=_wpk_drm_process_generation())return NULL;
     return w && w->resizing && !pthread_equal(w->resize_thread,pthread_self()) ? NULL : w;
 }
 static struct wpk_wlegl *find_lease(void *lease) {
@@ -253,7 +256,7 @@ struct wl_egl_window *wl_egl_window_create(struct wl_surface *surface,int width,
     struct wl_egl_window *win=calloc(1,sizeof *win);
     struct wpk_wlegl *w=calloc(1,sizeof *w);
     if(!win || !w) {free(win);free(w);return NULL;}
-    w->window=win;
+    w->window=win;w->process_epoch=_wpk_drm_process_generation();
     w->surface_hold=_wpk_wl_surface_acquire(surface,&w->display,&w->display_identity);
     if(!w->surface_hold) {free(win);free(w);return NULL;}
     struct wl_display *display=(struct wl_display *)w->display;
@@ -264,27 +267,33 @@ struct wl_egl_window *wl_egl_window_create(struct wl_surface *surface,int width,
     *(intptr_t *)&win->version=WL_EGL_WINDOW_VERSION;
     win->width=win->attached_width=width;win->height=win->attached_height=height;
     win->surface=surface;win->driver_private=w;w->owner_alive=1;
-    pthread_mutex_lock(&window_mutex);w->next=windows;windows=w;pthread_mutex_unlock(&window_mutex);
+    _wpk_drm_mutex_lock(&window_mutex);w->next=windows;windows=w;_wpk_drm_mutex_unlock(&window_mutex);
     return win;
 }
 void wl_egl_window_destroy(struct wl_egl_window *win) {
-    pthread_mutex_lock(&window_mutex);
+    _wpk_drm_mutex_lock(&window_mutex);
     struct wpk_wlegl *w=find_window(win),*retired=NULL;
-    if(w) {w->owner_alive=0;retired=collect_window(w);}
-    pthread_mutex_unlock(&window_mutex);free_window(retired);
+    if(w){
+        w->owner_alive=0;
+        if(w->process_epoch!=_wpk_drm_process_generation())w->active=w->presenting=w->resizing=0;
+        retired=collect_window(w);
+    }
+    _wpk_drm_mutex_unlock(&window_mutex);
+    if(retired&&retired->process_epoch!=_wpk_drm_process_generation())retire_inherited_window(retired);
+    else free_window(retired);
 }
 void wl_egl_window_resize(struct wl_egl_window *win,int width,int height,int dx,int dy) {
-    pthread_mutex_lock(&window_mutex);
+    _wpk_drm_mutex_lock(&window_mutex);
     struct wpk_wlegl *w=find_window(win);
-    if(!w || w->resizing || w->active || !_wpk_wl_surface_alive(w->surface_hold)) {
-        pthread_mutex_unlock(&window_mutex);return;
+    if(!w || w->process_epoch!=_wpk_drm_process_generation() || w->resizing || w->active || !_wpk_wl_surface_alive(w->surface_hold)) {
+        _wpk_drm_mutex_unlock(&window_mutex);return;
     }
     if(width<=0)width=(int)w->width;if(height<=0)height=(int)w->height;
-    if(width==(int)w->width && height==(int)w->height) {pthread_mutex_unlock(&window_mutex);return;}
+    if(width==(int)w->width && height==(int)w->height) {_wpk_drm_mutex_unlock(&window_mutex);return;}
     w->resizing=1;w->resize_thread=pthread_self();
     struct wpk_allocation *old=w->allocation;
     uint32_t old_width=w->width,old_height=w->height;
-    pthread_mutex_unlock(&window_mutex);
+    _wpk_drm_mutex_unlock(&window_mutex);
     // No window lock across the EGL callback: EGL always precedes native
     // window locking. Other resize/present admission refuses while this exact
     // resize owns its candidate; destruction retains it until we finish.
@@ -294,49 +303,49 @@ void wl_egl_window_resize(struct wl_egl_window *win,int width,int height,int dx,
     if(accepted && _wpk_egl_window_retarget)accepted=_wpk_egl_window_retarget(win);
     if(!accepted) {free_buffer(w);w->allocation=old;w->width=old_width;w->height=old_height;}
     else w->retired=old;
-    pthread_mutex_lock(&window_mutex);
+    _wpk_drm_mutex_lock(&window_mutex);
     if(accepted) {win->width=win->attached_width=width;win->height=win->attached_height=height;win->dx=dx;win->dy=dy;}
     w->resizing=0;
-    struct wpk_wlegl *retired=collect_window(w);pthread_mutex_unlock(&window_mutex);free_window(retired);
+    struct wpk_wlegl *retired=collect_window(w);_wpk_drm_mutex_unlock(&window_mutex);free_window(retired);
 }
 void wl_egl_window_get_attached_size(struct wl_egl_window *win,int *width,int *height) {
-    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_window(win);
+    _wpk_drm_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_window(win);
     if(width)*width=w ? win->attached_width : 0;if(height)*height=w ? win->attached_height : 0;
-    pthread_mutex_unlock(&window_mutex);
+    _wpk_drm_mutex_unlock(&window_mutex);
 }
 static int prepare_window(struct wpk_wlegl *w,struct wpk_wlegl_frame *frame) {
-    if(!w || !w->owner_alive || w->active || (w->resizing && !pthread_equal(w->resize_thread,pthread_self()))
+    if(!w || w->process_epoch!=_wpk_drm_process_generation() || !w->owner_alive || w->active || (w->resizing && !pthread_equal(w->resize_thread,pthread_self()))
       || !_wpk_wl_surface_alive(w->surface_hold))return 0;
     w->active=1;
-    *frame=(struct wpk_wlegl_frame){.fd=w->allocation->back.fd,.handle=w->allocation->back.handle,.width=w->width,.height=w->height};
+    *frame=(struct wpk_wlegl_frame){.fd=w->allocation->back.fd,.handle=w->allocation->back.handle,.width=w->width,.height=w->height,.owner=w->allocation->back.owner,.bo_owner=w->allocation->back.bo_owner};
     return 1;
 }
 int _wpk_wlegl_acquire(const void *window,const void *display,uint64_t identity,void **lease,struct wpk_wlegl_frame *frame) {
-    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_window(window);
+    _wpk_drm_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_window(window);
     int ok=w && (!display || (w->display==display && w->display_identity==identity))
         && w->references<UINT_MAX && prepare_window(w,frame);
     if(ok) {w->references++;*lease=w;}
-    pthread_mutex_unlock(&window_mutex);return ok;
+    _wpk_drm_mutex_unlock(&window_mutex);return ok;
 }
 int _wpk_wlegl_prepare(void *lease,struct wpk_wlegl_frame *frame) {
-    pthread_mutex_lock(&window_mutex);int ok=prepare_window(find_lease(lease),frame);
-    pthread_mutex_unlock(&window_mutex);return ok;
+    _wpk_drm_mutex_lock(&window_mutex);int ok=prepare_window(find_lease(lease),frame);
+    _wpk_drm_mutex_unlock(&window_mutex);return ok;
 }
 int _wpk_wlegl_prepare_present(void *lease,struct wpk_wlegl_frame *frame) {
-    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_lease(lease);
+    _wpk_drm_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_lease(lease);
     int ok=prepare_window(w,frame);
-    pthread_mutex_unlock(&window_mutex);
+    _wpk_drm_mutex_unlock(&window_mutex);
     if(!ok)return 0;
     struct wpk_gbm_frame front;
     for(;;) {
         if(!_wpk_wl_surface_alive(w->surface_hold))break;
         if(_wpk_gbm_window_prepare(w->allocation->lease,&front)) {
-            pthread_mutex_lock(&window_mutex);
+            _wpk_drm_mutex_lock(&window_mutex);
             int live=w->owner_alive && _wpk_wl_surface_alive(w->surface_hold);
             if(live)w->presenting=1;
-            pthread_mutex_unlock(&window_mutex);
+            _wpk_drm_mutex_unlock(&window_mutex);
             if(!live) {_wpk_gbm_window_finish(w->allocation->lease,0);break;}
-            *frame=(struct wpk_wlegl_frame){.fd=front.fd,.handle=front.handle,.width=front.width,.height=front.height};
+            *frame=(struct wpk_wlegl_frame){.fd=front.fd,.handle=front.handle,.width=front.width,.height=front.height,.owner=front.owner,.bo_owner=front.bo_owner};
             return 1;
         }
         if(errno!=EBUSY || wl_display_dispatch_queue((struct wl_display *)w->display,w->queue)<0)break;
@@ -344,7 +353,7 @@ int _wpk_wlegl_prepare_present(void *lease,struct wpk_wlegl_frame *frame) {
     _wpk_wlegl_finish(lease,0);return 0;
 }
 int _wpk_wlegl_finish(void *lease,int present) {
-    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_lease(lease);
+    _wpk_drm_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_lease(lease);
     int ok=w && w->active;
     if(ok && w->presenting) {
         struct wpk_allocation *a=w->allocation;
@@ -364,24 +373,57 @@ int _wpk_wlegl_finish(void *lease,int present) {
         }
     } else if(ok && present)ok=0; /* no normalized front was prepared */
     if(w) {w->active=0;w->presenting=0;}
-    pthread_mutex_unlock(&window_mutex);return ok;
+    _wpk_drm_mutex_unlock(&window_mutex);return ok;
+}
+/* Local proxy retirement is distinct from sending protocol destruction.
+ * Queued events see destroyed proxies and release their references without
+ * invoking the old listener. Release the queue before freeing its capsules. */
+static void release_inherited_allocation(struct wpk_wlegl *w,struct wpk_allocation *a) {
+    if(!a)return;
+    for(unsigned i=0;i<4;i++){
+        if(a->fronts[i].buffer)_wpk_wl_proxy_discard_inherited(w->surface_hold,a->fronts[i].buffer);
+        if(a->fronts[i].busy&&a->surface)gbm_surface_release_buffer(a->surface,a->fronts[i].bo);
+        a->fronts[i].busy=0;a->fronts[i].bo=NULL;
+    }
+    if(a->lease)_wpk_gbm_window_release(a->lease);a->lease=NULL;
+    if(a->surface)gbm_surface_destroy(a->surface);a->surface=NULL;
+    if(a->gbm)gbm_device_destroy(a->gbm);a->gbm=NULL;
+}
+static void retire_inherited_window(struct wpk_wlegl *w) {
+    release_inherited_allocation(w,w->allocation);release_inherited_allocation(w,w->retired);
+    if(w->dmabuf)_wpk_wl_proxy_discard_inherited(w->surface_hold,w->dmabuf);
+    if(w->queue)_wpk_wl_queue_discard_inherited(w->surface_hold,w->queue);
+    void *hold=w->surface_hold;
+    free(w->allocation);free(w->retired);free(w->window);free(w);
+    _wpk_wl_surface_release_inherited(hold);
+}
+void _wpk_wlegl_release_inherited(void *lease) {
+    _wpk_drm_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_lease(lease),*retired=NULL;
+    if(w){
+        if(w->process_epoch==_wpk_drm_process_generation())abort();
+        --w->references;w->active=w->presenting=w->resizing=0;retired=collect_window(w);
+    }
+    _wpk_drm_mutex_unlock(&window_mutex);if(retired)retire_inherited_window(retired);
 }
 void _wpk_wlegl_release(void *lease) {
-    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_lease(lease),*retired=NULL;
+    _wpk_drm_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_lease(lease),*retired=NULL;
+    if(w&&w->process_epoch!=_wpk_drm_process_generation()){
+        _wpk_drm_mutex_unlock(&window_mutex);_wpk_wlegl_release_inherited(lease);return;
+    }
     if(w) {w->references--;retired=collect_window(w);}
-    pthread_mutex_unlock(&window_mutex);free_window(retired);
+    _wpk_drm_mutex_unlock(&window_mutex);free_window(retired);
 }
 /* Legacy metadata entry points stay safe for callers that only inspect a
  * live native window. EGL itself uses the retained typed lease above. */
 uint32_t _wpk_wlegl_bo_handle(void *window) {
-    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=readable_window(window);
-    uint32_t result=w ? w->allocation->back.handle : 0;pthread_mutex_unlock(&window_mutex);return result;
+    _wpk_drm_mutex_lock(&window_mutex);struct wpk_wlegl *w=readable_window(window);
+    uint32_t result=w ? w->allocation->back.handle : 0;_wpk_drm_mutex_unlock(&window_mutex);return result;
 }
 int _wpk_wlegl_device_fd(void *window) {
-    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=readable_window(window);
-    int result=w ? w->allocation->back.fd : -1;pthread_mutex_unlock(&window_mutex);return result;
+    _wpk_drm_mutex_lock(&window_mutex);struct wpk_wlegl *w=readable_window(window);
+    int result=w ? w->allocation->back.fd : -1;_wpk_drm_mutex_unlock(&window_mutex);return result;
 }
 int _wpk_wlegl_dimensions(void *window,uint32_t *width,uint32_t *height) {
-    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=readable_window(window);
-    if(w) {*width=w->width;*height=w->height;}pthread_mutex_unlock(&window_mutex);return w!=NULL;
+    _wpk_drm_mutex_lock(&window_mutex);struct wpk_wlegl *w=readable_window(window);
+    if(w) {*width=w->width;*height=w->height;}_wpk_drm_mutex_unlock(&window_mutex);return w!=NULL;
 }

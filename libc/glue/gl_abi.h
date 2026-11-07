@@ -331,6 +331,8 @@ _Static_assert(__builtin_offsetof(struct gl_submit_query_info, result) == (sizeo
 /* Cross-archive accessors require a current context on the calling thread.
  * Native windows own independent device descriptors and transfer BO names. */
 int      _wpk_gl_fd(void);
+void *_wpk_gl_context_owner(void);
+int _wpk_egl_context_device_ioctl(void *owner,unsigned long request,void *arg);
 uint8_t *_wpk_gl_cmdbuf_base(void);
 void     _wpk_gl_flush(void);
 /* Graphics reset state, owned by libEGL (EXT/KHR_robustness section 2.6).
@@ -414,9 +416,12 @@ int _wpk_gl_prepare_encoder_retirement(struct wpk_gles_context *state,int reset_
 /* Borrow only a proved healthy, same-group public context's metadata authority;
  * no command prefix or mutable encoder is borrowed. Caller holds both guards. */
 int _wpk_gl_prepare_encoder_retirement_with_peer(struct wpk_gles_context *state,
-                                                 struct wpk_gles_context *peer,int fd);
+                                                 struct wpk_gles_context *peer);
 void _wpk_gl_retire_encoder_programs(struct wpk_gles_context *state);
 void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
+int _wpk_gl_discard_inherited_encoders(struct wpk_gles_context **states,size_t count);
+void _wpk_gl_inherited_cleanup_begin(void);
+void _wpk_gl_inherited_cleanup_end(void);
 
 /* An EGLImage made by eglCreateImageKHR from dma-buf planes. A
  * GPU-tier bo (its PRIME fd has no CPU mapping) is sampled and rendered
@@ -427,13 +432,18 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
  * TEXTURE_EXTERNAL_OES, converted to RGBA by the host when a plane is
  * written. */
 struct egl_generation;
+struct wpk_drm_owner;
+struct wpk_egl_image_borrow;
 struct wpk_egl_image {
     struct egl_generation *generation; /* owns the imported GEM handle */
     uintptr_t public_handle; /* never reuse an invalidated public identity */
-    unsigned references;    /* public image plus every live GL sibling */
+    uint64_t storage_references; /* explicit process-owned private holds */
+    uint64_t renderer_references; /* invalidated with inherited renderers */
+    struct wpk_egl_image_borrow *borrows; /* exact caller-scoped admission */
     int public_live;
     struct wpk_egl_image *next;
     uint32_t handle;          /* GEM handle on the EGL session's fd */
+    struct wpk_drm_owner *bo_owner;
     uint32_t width, height;
     uint32_t fourcc;          /* DRM_FORMAT_[AX]RGB8888 / [AX]BGR8888 */
     uint32_t pitch;
@@ -446,7 +456,7 @@ struct wpk_egl_image {
      * select (WPK_YUV_* color space, full range, WPK_CHROMA_SITING_*). */
     int external_only;
     uint32_t plane_count;
-    struct { uint32_t handle, pitch, offset; void *map; size_t map_len; } planes[3];
+    struct { uint32_t handle, pitch, offset; void *map; size_t map_len; struct wpk_drm_owner *owner; } planes[3];
     uint32_t color_space, full_range, chroma_siting;
 };
 
@@ -517,7 +527,7 @@ int _wpk_gl_image_source_state(struct wpk_gles_context *state, uint32_t kind,
                                uint32_t object_target, uint32_t name);
 /* Record the accepted export: the source object retains the image as one of
  * its siblings until it is respecified or deleted. */
-void _wpk_gl_link_image_source(struct wpk_gles_context *state, uint32_t kind, uint32_t name,
+int _wpk_gl_link_image_source(struct wpk_gles_context *state, uint32_t kind, uint32_t name,
                                struct wpk_egl_image *image, uint32_t source, uint32_t revision);
 
 /* A retained private source token, separate from public GL names, for either
@@ -526,6 +536,12 @@ void _wpk_gl_link_image_source(struct wpk_gles_context *state, uint32_t kind, ui
 struct wpk_egl_image *_wpk_egl_image_lookup(const void *image);
 void _wpk_egl_image_retain(struct wpk_egl_image *image);
 void _wpk_egl_image_release(struct wpk_egl_image *image);
+/* Nontransferable lexical GL/API admission, released on its calling thread.
+ * Use ordinary retain/release for an explicit process-owned storage handoff. */
+struct wpk_egl_image *_wpk_egl_image_borrow_lookup(const void *image, struct wpk_egl_image_borrow **out);
+void _wpk_egl_image_borrow_release(struct wpk_egl_image_borrow **borrow);
+int _wpk_egl_image_retain_renderer(struct wpk_egl_image *image);
+void _wpk_egl_image_release_renderer(struct wpk_egl_image *image);
 uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image);
 
 #endif

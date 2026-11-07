@@ -92,6 +92,8 @@ host/test/dri-vblank-clock.test.ts	source-only
 host/test/dylink-fork-archive.test.ts	source-only
 host/test/dylink.test.ts	source-only
 host/test/egl-dmabuf-smoke.test.ts	prepared-product
+host/test/egl-dri-fd-ownership.test.ts	prepared-product
+host/test/egl-fork-reinitialize.test.ts	prepared-product
 host/test/egl-image-ownership.test.ts	prepared-product
 host/test/egl-native-display.test.ts	prepared-product
 host/test/egress-link.test.ts	source-only
@@ -164,6 +166,7 @@ host/test/gallery-descriptor.test.ts	source-only
 host/test/gbm-cpu-map.test.ts	prepared-product
 host/test/gbm-device-retirement.test.ts	prepared-product
 host/test/gbm-file-aliases.test.ts	prepared-product
+host/test/gbm-fork-ownership.test.ts	prepared-product
 host/test/gbm-import-lifetime.test.ts	prepared-product
 host/test/gbm-modifiers.test.ts	prepared-product
 host/test/gbm-rendered-ring.test.ts	prepared-product
@@ -183,6 +186,7 @@ host/test/gles-program-sharing.test.ts	prepared-product
 host/test/gles-surfaceless-default.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
 host/test/gobject-callback-contract.test.ts	prepared-product
+host/test/graphics-fork-metadata-mutex.test.ts	prepared-product
 host/test/gtk3-smoke.test.ts	prepared-product
 host/test/guest-build-make.test.ts	prepared-product
 host/test/guest-build-run.test.ts	prepared-product

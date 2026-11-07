@@ -25847,3 +25847,37 @@ memory gate, full Freeciv workload comparisons and manual browser check
 remain required in this iteration. No boundary or acceptance change is made.
 Public6271 remains the unchanged normal R494 prototype until a new coherent
 normal build is admitted.
+
+
+### Guest graphics custody source checkpoint, 2026-11-06
+
+The C guest libraries now connect the exact-file/buffer endpoint to EGL, GBM,
+Wayland-EGL and GLES cleanup. Deferred retirement retains globally reachable
+custody through foreign-thread fork; facade withdrawal transfers capability
+edges atomically; pending completion commits recovery metadata before its
+terminal marker. Image borrowing distinguishes public, storage, renderer and
+per-thread scope lifetimes. Errors preserve consumption and allocation
+semantics, including image-borrow EOVERFLOW as resource exhaustion. Inline Why comments
+cover the unsafe descriptor, replay, fork, ordering and unused-feature
+simplifications. No macOS launcher change or ABI-family bump is included.
+
+Frozen composition R577 passes489 unique native libc controls, full GBM and
+Wayland-window controls,34 transport,7 publication,13 completion,14 peer,
+7 image-borrow invocations and4 facade fork controls. Both target-width C
+syntax checks, eight fixture parses and host source types pass. The initial
+83s orchestration fails only because one new evidence row is unsorted; that
+failure is preserved. A registry-only correction passes22s with719 files,
+and actual upstream Wayland client lifetime controls pass13s using the
+pinned source archive without invoking a resolver build. Exact commands and
+source/external-input hashes are in
+`.context/graphics-owned-composition-r577-runs/{run.sh,check-registry-r2.sh,checkpoint-manifest.json,judgment.json}`.
+
+These native protocol/ownership controls do not execute the new guest C with
+Kandelo's Rust kernel. Registered Node/browser fixtures cover descriptor
+replacement, fork reinitialization, surviving caller/storage/renderer holds,
+vanished peer holds, exact final BO release and fork-safe metadata locks;
+their normal SDK link and target execution remain pending. Image-generation
+lifetime and detached deferred EGL C-lease findings remain open in this
+iteration. Preserve the public old preview until coherent new normal
+products and admission checks pass. No stage completion, performance claim,
+new boundary, deferral or acceptance reduction follows from this checkpoint.

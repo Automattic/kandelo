@@ -425,6 +425,20 @@ rm -f "$SYSROOT/lib/libkandelo-ucontext-unsupported.a"
 rm -f "$SYSROOT/lib/ucontext_unsupported.o"
 
 # ---------------------------------------------------------------
+# 8c. Private kernel-owned device runtime (pulled only when referenced)
+# ---------------------------------------------------------------
+# Keep one nonce/receipt implementation across EGL and GBM. Separate archive
+# membership avoids a graphics hook or initialization cost in other programs.
+echo "==> Building kernel-owned device resource runtime..."
+"$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS \
+    -matomics -mbulk-memory \
+    -I"$SYSROOT/include" \
+    -c "$REPO_ROOT/libc/glue/drm_owned.c" \
+    -o "$SYSROOT/lib/drm_owned.o"
+"$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/drm_owned.o"
+rm -f "$SYSROOT/lib/drm_owned.o"
+
+# ---------------------------------------------------------------
 # 9. Install override headers
 # ---------------------------------------------------------------
 echo "==> Installing override headers..."

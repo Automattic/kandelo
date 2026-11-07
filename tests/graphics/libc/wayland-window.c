@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include "owned-resource-peer.h"
 static int window_open(const char *, int, ...);
 static int window_close(int);
 #define open window_open
@@ -17,10 +19,12 @@ static int window_close(int);
 
 struct gbm_device {
     int fd;
+    struct wpk_drm_owner *owner;
 };
 struct gbm_bo {
     struct gbm_device *device;
     uint32_t width, height, handle;
+    struct wpk_drm_owner *owner;
 };
 static int descriptors[16], exported[16], fail_device, fail_bo, fail_export, fail_params, fail_buffer,
     reject_retarget, destroy_during_retarget;
@@ -47,19 +51,57 @@ static int window_close(int fd) {
     closed++;
     return 0;
 }
-struct gbm_device *gbm_create_device(int fd) {
-    assert(descriptors[fd - 100]);
-    if (fail_device)
-        return NULL;
-    struct gbm_device *device = malloc(sizeof *device);
-    assert(device);
-    device->fd = fd;
-    return device;
+struct graphics_peer_file {unsigned refs;int slot,alias;};
+static struct graphics_peer_file window_files[32];
+static struct graphics_peer_file *window_aliases[512];
+static struct graphics_peer_file *window_peer_open(uint32_t node){
+    assert(node==WPK_DRM_OWNED_RENDER_NODE);int fd=window_open(WPK_GL_DEVICE,O_RDWR|O_CLOEXEC);
+    for(unsigned i=0;i<32;i++)if(!window_files[i].refs){window_files[i]=(struct graphics_peer_file){1,fd,-1};return &window_files[i];}
+    assert(!"native window resource slots exhausted");return NULL;
 }
+static struct graphics_peer_file *window_peer_acquire(int fd,uint32_t flags){
+    assert(!flags);struct graphics_peer_file *file=fd>=0&&fd<512?window_aliases[fd]:NULL;
+    if(!file){errno=EBADF;return NULL;}file->refs++;return file;
+}
+static void window_peer_retain(struct graphics_peer_file *file){assert(file->refs);file->refs++;}
+static int window_peer_release(struct graphics_peer_file *file){assert(file->refs);return --file->refs?0:window_close(file->slot);}
+static int window_peer_matches(struct graphics_peer_file *file,int fd){return fd>=0&&fd<512&&window_aliases[fd]==file;}
+static int window_peer_close(struct graphics_peer_file *file,int fd){assert(window_peer_matches(file,fd));window_aliases[fd]=NULL;file->alias=-1;return 0;}
+static int window_peer_duplicate(struct graphics_peer_file *file,int previous,int borrowed){
+    (void)borrowed;if(window_peer_matches(file,previous))return previous;
+    int fd=file->slot;assert(!window_aliases[fd]);window_aliases[fd]=file;file->alias=fd;return fd;
+}
+static int window_peer_io(struct graphics_peer_file *file,uint32_t request,void *body,uint32_t length,struct graphics_peer_file *source,const struct graphics_peer_binding *proofs,uint32_t count){
+    (void)proofs;assert(!count);
+    (void)file;(void)body;assert(request==UINT32_C(0xc004fe01)&&length==4&&!source);return 0;
+}
+static int window_peer_info(struct graphics_peer_file *file,uint32_t handle,uint64_t *storage,struct wpk_drm_bo_info *info){
+    *storage=handle;
+    (void)file;assert(handle);*info=(struct wpk_drm_bo_info){4096,32,32,128,GBM_FORMAT_XBGR8888,1,0};return 0;
+}
+static int window_peer_bo_release(struct graphics_peer_file *file,uint32_t handle,uint64_t storage){assert(storage==handle);(void)file;assert(handle);return 0;}
+static void *window_peer_map(struct graphics_peer_file *file,uint64_t address,uint64_t length,int64_t offset,uint32_t prot,uint32_t flags,uint32_t handle,uint64_t storage){
+    (void)storage;(void)file;(void)address;(void)length;(void)offset;(void)prot;(void)flags;(void)handle;assert(!"window bridge has no CPU maps");return MAP_FAILED;
+}
+static int window_peer_poll(struct graphics_peer_file *file,uint32_t events,int32_t timeout,uint32_t *revents){(void)file;(void)events;(void)timeout;(void)revents;assert(!"window bridge has no sync files");return -1;}
+static const struct graphics_peer_ops window_peer_ops={window_peer_open,window_peer_acquire,window_peer_retain,window_peer_release,window_peer_duplicate,window_peer_matches,window_peer_close,window_peer_io,window_peer_info,window_peer_bo_release,window_peer_map,window_peer_poll};
+int window_owned_ioctl(int fd,unsigned long request,...){
+    assert(fd==-1&&request==WPK_DRM_IOCTL_OWNED_RESOURCE);va_list args;va_start(args,request);void *packet=va_arg(args,void *);va_end(args);return graphics_peer_ioctl(&window_peer_ops,packet);
+}
+struct gbm_device *_wpk_gbm_device_from_owner(struct wpk_drm_owner *owner){
+    if(fail_device)return NULL;struct gbm_device *device=malloc(sizeof *device);assert(device);
+    assert(!_wpk_drm_owned_retain(owner));device->owner=owner;
+    device->fd=_wpk_drm_owned_fd(owner,-1,O_CLOEXEC|WPK_DRM_OWNED_BORROW_ALIAS);assert(device->fd>=0);return device;
+}
+struct gbm_device *gbm_create_device(int fd){
+    struct wpk_drm_owner *owner=NULL;if(_wpk_drm_owned_acquire(fd,0,&owner))return NULL;
+    struct gbm_device *device=_wpk_gbm_device_from_owner(owner);_wpk_drm_owned_retire(&owner);return device;
+}
+
 int gbm_device_get_fd(struct gbm_device *device) { return device->fd; }
 void gbm_device_destroy(struct gbm_device *device) {
     assert(descriptors[device->fd - 100]);
-    free(device);
+    _wpk_drm_owned_retire(&device->owner);free(device);
 }
 struct gbm_bo *gbm_bo_create(struct gbm_device *device, uint32_t width, uint32_t height,
                              uint32_t format, uint32_t flags) {
@@ -69,12 +111,13 @@ struct gbm_bo *gbm_bo_create(struct gbm_device *device, uint32_t width, uint32_t
     struct gbm_bo *bo = malloc(sizeof *bo);
     assert(bo);
     bo->device = device;
-    bo->width = width;bo->height=height;bo->handle=++bo_created;
+    bo->width = width;bo->height=height;bo->handle=++bo_created;bo->owner=NULL;
+    assert(!_wpk_drm_owned_ioctl(device->owner,UINT32_C(0xc004fe01),&bo->handle,4,NULL,WPK_DRM_OWNED_CAPTURE_BO,&bo->owner));
     return bo;
 }
 void gbm_bo_destroy(struct gbm_bo *bo) {
     assert(descriptors[bo->device->fd - 100]);
-    bo_destroyed++;
+    _wpk_drm_owned_retire(&bo->owner);bo_destroyed++;
     free(bo);
 }
 union gbm_bo_handle gbm_bo_get_handle(struct gbm_bo *bo) {
@@ -112,7 +155,7 @@ void gbm_surface_destroy(struct gbm_surface *s) {
 }
 static void test_frame(struct gbm_surface *s,int i,struct wpk_gbm_frame *f) {
     *f=(struct wpk_gbm_frame){.fd=s->device->fd,.handle=s->bos[i]->handle,
-        .width=s->width,.height=s->height,.format=GBM_FORMAT_XBGR8888,.pitch=s->width*4};
+        .width=s->width,.height=s->height,.format=GBM_FORMAT_XBGR8888,.pitch=s->width*4,.owner=s->device->owner,.bo_owner=s->bos[i]->owner};
 }
 int _wpk_gbm_window_acquire(const void *surface,void **lease,struct wpk_gbm_frame *frame) {
     struct gbm_surface *s=(void *)surface;assert(s->back==-1);
@@ -210,6 +253,10 @@ struct wl_event_queue *wl_display_create_queue(struct wl_display *display) {
     return (struct wl_event_queue *)display;
 }
 void wl_event_queue_destroy(struct wl_event_queue *queue) { (void)queue; }
+/* These native proxies contain local bookkeeping only; inherited cleanup
+ * must not marshal a destructor to the parent's protocol connection. */
+void _wpk_wl_proxy_discard_inherited(void *hold,void *proxy){(void)hold;wl_proxy_destroy(proxy);}
+void _wpk_wl_queue_discard_inherited(void *hold,void *queue){(void)hold;wl_event_queue_destroy(queue);}
 int wl_display_roundtrip_queue(struct wl_display *display, struct wl_event_queue *queue) {
     (void)display;(void)queue;
     if(registry_callbacks) {
@@ -237,6 +284,7 @@ int _wpk_wl_surface_present(void *hold,void *buffer,int width,int height) {
     last_presented=buffer;present_count++;return surface_live && !fail_present;
 }
 void _wpk_wl_surface_release(void *hold) {assert(hold==&surface_holds && surface_holds);surface_holds--;}
+void _wpk_wl_surface_release_inherited(void *hold){_wpk_wl_surface_release(hold);}
 int _wpk_egl_window_retarget(void *window) {
     assert(_wpk_wlegl_device_fd(window) >= 100 && _wpk_wlegl_bo_handle(window));
     if(destroy_during_retarget)wl_egl_window_destroy(window);

@@ -11,6 +11,7 @@
  * is source/API evidence, not SDK guest or kernel execution. */
 #include <gbm.h>
 #include "gbm_window.h"
+#include "drm_owned.h"
 #include <xf86drm.h>
 #include <drm/drm_mode.h>
 #include <drm/drm_fourcc.h>
@@ -28,6 +29,8 @@ int _wpk_gbm_surface_metadata(const void *, uint32_t *, uint32_t *, uint32_t *, 
 int _wpk_gbm_device_metadata(const void *, int *, uint64_t *);
 
 #define MAX_HANDLES 64
+static struct wpk_drm_bo_info bo_metadata[64];
+int graphics_gbm_native_bo_info(uint32_t handle,int fd,struct wpk_drm_bo_info *info){(void)fd;assert(handle<64);*info=bo_metadata[handle];return 0;}
 static unsigned created;              /* last allocated GEM handle */
 static unsigned live[MAX_HANDLES];    /* GEM handle reference: 1 while open */
 static unsigned closes[MAX_HANDLES];  /* drmCloseBufferHandle calls per handle */
@@ -90,6 +93,7 @@ int drmIoctl(int fd, unsigned long request, void *data) {
         /* The kernel's dumb rule: any nonzero bpp, rows rounded to 4 bytes. */
         d->handle = new_handle(0); d->pitch = ((d->width * d->bpp + 7) / 8 + 3) & ~3u;
         d->size = (uint64_t)d->pitch * d->height;
+        bo_metadata[d->handle]=(struct wpk_drm_bo_info){d->size,d->width,d->height,d->pitch,0,0,0};
         return 0;
     }
     if (request == 0xc01064e0u) {
@@ -105,18 +109,21 @@ int drmIoctl(int fd, unsigned long request, void *data) {
         }
         ++gpu_allocations;
         last_gpu_format = words[2];
+        uint32_t width=words[0],height=words[1];
         words[2] = new_handle(1);
         gpu_format[words[2]] = last_gpu_format;
         words[3] = (words[0] * cpp + 3) & ~3u;
+        bo_metadata[words[2]]=(struct wpk_drm_bo_info){(uint64_t)words[3]*height,width,height,words[3],last_gpu_format,1,0};
         return 0;
     }
     if (request == DRM_IOCTL_PRIME_FD_TO_HANDLE) {
         struct drm_prime_handle *prime = data;
         for (unsigned i = 0; i < sizeof primes / sizeof primes[0]; ++i) {
-            if (primes[i].handle && primes[i].fd == prime->fd) {
+            if (primes[i].handle && graphics_gbm_same_file(primes[i].fd,prime->fd)) {
                 /* PRIME reimport on a file reuses its live GEM name. */
                 if (!live[primes[i].handle]) live[primes[i].handle] = 1;
                 prime->handle = primes[i].handle;
+                off_t size=lseek(prime->fd,0,SEEK_END);assert(size>=0);bo_metadata[prime->handle].size=size;bo_metadata[prime->handle].tier=gpu_handle[prime->handle];
                 return 0;
             }
         }

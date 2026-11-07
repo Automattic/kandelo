@@ -21,6 +21,7 @@
 #include <sys/wait.h>
 #include "gl_abi.h"
 #include "gbm_window.h"
+#include "owned-resource-peer.h"
 #include "wayland-native.h"
 /* Wire tag is independent of the selected production revision in baseline runs. */
 #define GRAPHICS_EGL_TRACE_CHECKED_QUERY 0x100u
@@ -111,6 +112,9 @@ static unsigned allocation_count(void) {
     return count;
 }
 
+static int fixture_frame_owners(void *,int,uint32_t,struct wpk_drm_owner **,struct wpk_drm_owner **);
+static void fixture_frame_release(void *);
+
 /* A small native-window identity exercises the real EGL resize hook. */
 static int native_window, record_windows[3];
 static const void *wayland_native_display=(void *)(uintptr_t)0x576100u;
@@ -139,12 +143,13 @@ int _wpk_wlegl_prepare(void *lease,struct wpk_wlegl_frame *frame) {
     if(lease!=&native_window || !native_window_live || !wayland_native_live || native_window_active)return 0;
     native_window_active=1;
     *frame=(struct wpk_wlegl_frame){.fd=native_window_fd,.handle=native_window_bo,
-        .width=native_window_width,.height=native_window_height};return 1;
+        .width=native_window_width,.height=native_window_height};
+    if(!fixture_frame_owners(lease,native_window_fd,native_window_bo,&frame->owner,&frame->bo_owner)){native_window_active=0;return 0;}return 1;
 }
 int _wpk_wlegl_prepare_present(void *lease,struct wpk_wlegl_frame *frame) {
     if(!_wpk_wlegl_prepare(lease,frame))return 0;
     native_window_prepare_presents++;native_window_present_active=1;
-    frame->handle=native_window_bo+100;return 1;
+    frame->handle=native_window_bo+100;return fixture_frame_owners(lease,native_window_fd,frame->handle,&frame->owner,&frame->bo_owner);
 }
 int _wpk_wlegl_acquire(const void *window,const void *display,uint64_t identity,void **lease,struct wpk_wlegl_frame *frame) {
     if(window!=&native_window || (display && (display!=wayland_native_display || identity!=wayland_native_identity))
@@ -158,7 +163,8 @@ int _wpk_wlegl_finish(void *lease,int present) {
     native_window_present_active=0;
     return 1;
 }
-void _wpk_wlegl_release(void *lease) {assert(lease==&native_window && native_window_holds);native_window_holds--;}
+void _wpk_wlegl_release(void *lease) {assert(lease==&native_window && native_window_holds);native_window_holds--;if(!native_window_holds)fixture_frame_release(lease);}
+void _wpk_wlegl_release_inherited(void *lease){_wpk_wlegl_release(lease);}
 
 int _wpk_gbm_surface_dimensions(const void *window, uint32_t *w, uint32_t *h) {
     for (unsigned i = 0; i < 3; i++)
@@ -187,30 +193,31 @@ int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_fra
     if (window_leases[i]) { errno = EBUSY; return 0; }
     window_leases[i] = 1; *lease = &window_leases[i];
     *frame = (struct wpk_gbm_frame){10,77+i,width,height,record_format,width*4};
-    return 1;
+    if(!fixture_frame_owners(*lease,10,77+i,&frame->owner,&frame->bo_owner)){window_leases[i]=0;return 0;}return 1;
 }
 int _wpk_gbm_window_prepare(void *lease, struct wpk_gbm_frame *frame) {
     unsigned i = (unsigned *)lease-window_leases;
     assert(i < 3 && window_leases[i]);
     *frame = (struct wpk_gbm_frame){10,88+i,32+i,24+i,record_format,(32+i)*4};
-    return 1;
+    return fixture_frame_owners(lease,10,88+i,&frame->owner,&frame->bo_owner);
 }
 void _wpk_gbm_window_finish(void *lease, int accepted) { (void)lease; (void)accepted; }
 void _wpk_gbm_window_release(void *lease) {
     unsigned i = (unsigned *)lease-window_leases;
     assert(i < 3 && window_leases[i]);
-    window_leases[i] = 0;
+    window_leases[i] = 0;fixture_frame_release(lease);
 }
 
 static unsigned closes, imports;
 static struct {
     uint32_t handle;
-    int source_fd;
+    int source_fd,same_file;
 } prime_exports[8];
 static uint32_t transferred_handles[8];
 static uint32_t transferred_sources[8];
 static int imported_owners[8];
 static unsigned transfers, transfer_closes, export_closes;
+static unsigned same_file_export_closes,prime_export_calls,prime_import_calls,prime_descriptor_closes;
 /* GLES-object image export (EXPORT_IMAGE): handle 99 is the exported bo. */
 #define DOUBLE_EXPORT_IMAGE 0xc03064e3u
 /* DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE: the last request and its count. */
@@ -481,6 +488,26 @@ static unsigned image_mutation_failure, image_mutation_queries;
 static unsigned framebuffer_bind_queries;
 static int fail_alloc_after_image_mutation;
 static EGLImageKHR nested_image_import, nested_image_state;
+static _Thread_local EGLImageKHR queued_nested_image;
+static _Thread_local uint32_t queued_nested_kind;
+static _Thread_local unsigned owned_transport_depth, completed_transports;
+int graphics_owned_ioctl_impl(struct wpk_drm_owner *,uint32_t,void *,uint32_t,struct wpk_drm_owner *,uint32_t,struct wpk_drm_owner **);
+int _wpk_drm_owned_ioctl(struct wpk_drm_owner *owner,uint32_t request,void *body,uint32_t length,
+                         struct wpk_drm_owner *source,uint32_t flags,struct wpk_drm_owner **capture){
+    owned_transport_depth++;
+    int rc=graphics_owned_ioctl_impl(owner,request,body,length,source,flags,capture);
+    assert(owned_transport_depth);owned_transport_depth--;completed_transports++;
+    if(queued_nested_image){
+        /* Completion may interleave before an older caller publishes its
+         * result. The embedded receipt must already be unlocked: executing
+         * guest EGL inside a host ioctl would invent unsupported reentry. */
+        assert(rc==0&&owned_transport_depth==0&&completed_transports);
+        EGLImageKHR image=queued_nested_image;uint32_t kind=queued_nested_kind;queued_nested_image=NULL;
+        if(kind==1)glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,image);
+        else glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER,image);
+    }
+    return rc;
+}
 static struct wpk_gles_context *close_group_peer;
 static unsigned close_group_reservations;
 static unsigned scalar_queries;
@@ -713,6 +740,7 @@ void *_wpk_wl_display_acquire(const void *native,uint64_t identity) {
 }
 int _wpk_wl_display_alive(void *hold) {assert(hold==&wayland_holds && wayland_holds);return wayland_native_live;}
 void _wpk_wl_display_release(void *hold) {assert(hold==&wayland_holds && wayland_holds);wayland_holds--;}
+void _wpk_wl_display_release_inherited(void *hold){_wpk_wl_display_release(hold);}
 int _wpk_wl_display_metadata(const void *native,uint64_t *identity) {
     if(native!=wayland_native_display || !wayland_native_live)return 0;
     *identity=wayland_native_identity;return 1;
@@ -733,8 +761,158 @@ int _wpk_gbm_device_acquire_fd(const void *native, uint64_t identity) {
         return open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
     errno = EINVAL; return -1;
 }
+int _wpk_gbm_device_acquire_owner(const void *native,uint64_t identity,struct wpk_drm_owner **owner){
+    if(!gbm_device_initializable||native!=(void *)(uintptr_t)0x576200u||identity!=wayland_native_identity){errno=EINVAL;return -1;}
+    return _wpk_drm_owned_open(WPK_DRM_OWNED_CARD_NODE,owner);
+}
 
-int graphics_open(const char *path, int flags, ...) {
+/* The legacy renderer below indexes native objects by slot. Those slot
+ * coordinates are never public descriptor authority: aliases resolve to a
+ * retained peer_file first, and e7 dispatch already holds that exact file. */
+struct graphics_peer_file { unsigned refs; int slot,kind; uint64_t identity; volatile uint32_t *signaled; int provenance_fd,alias_high_water; };
+static struct graphics_peer_file peer_files[128];
+static struct graphics_peer_file *peer_aliases[512];
+static uint64_t peer_file_sequence;
+static _Thread_local struct graphics_peer_file *peer_typed_source;
+static int dmabuf_cpu_tier;
+static uint8_t dmabuf_cpu_storage[64 * 64 * 4];
+static int backend_open(const char *,int,...);
+static int backend_close(int);
+static int backend_ioctl(int,unsigned long,void *);
+static struct graphics_peer_file *peer_new(int slot,int kind) {
+    for(unsigned i=0;i<128;i++)if(!peer_files[i].refs){
+        peer_files[i]=(struct graphics_peer_file){1,slot,kind,++peer_file_sequence};return &peer_files[i];
+    }assert(!"native resource table exhausted");return NULL;
+}
+static void image_peer_retain(struct graphics_peer_file *f){assert(f&&f->refs);f->refs++;}
+static int image_peer_release(struct graphics_peer_file *f){
+    assert(f&&f->refs);if(--f->refs)return 0;
+    return f->kind==4?0:f->slot>=0?backend_close(f->slot):0;
+}
+static int image_peer_alias_matches(struct graphics_peer_file *f,int fd){return fd>=0&&fd<512&&peer_aliases[fd]==f;}
+static int image_peer_close_alias(struct graphics_peer_file *f,int fd){
+    if(!image_peer_alias_matches(f,fd)){errno=EBADF;return -1;}
+    peer_aliases[fd]=NULL;
+    if(fd>=300&&fd<316)sync_files[fd-300].open=0;
+    return image_peer_release(f);
+}
+static int image_peer_duplicate(struct graphics_peer_file *f,int previous,int borrowed){
+    (void)borrowed;if(image_peer_alias_matches(f,previous))return previous;
+    int fd=f->slot;
+    if(f->kind==4&&f->signaled){
+        /* Keep export identities distinct in these source controls; unlike
+         * raw open/close reuse controls, their assertions compare exports
+         * across a successful transfer of descriptor ownership. */
+        fd=f->alias_high_water>=300?f->alias_high_water+1:300;
+        while(fd<316&&(sync_files[fd-300].open||peer_aliases[fd]))fd++;
+        assert(fd<316);sync_files[fd-300].open=1;sync_files[fd-300].signaled=f->signaled;f->alias_high_water=fd;
+    }
+    if(fd<0||peer_aliases[fd]){fd=50;while(fd<100&&peer_aliases[fd])fd++;assert(fd<100);}
+    peer_aliases[fd]=f;image_peer_retain(f);return fd;
+}
+static struct graphics_peer_file *image_peer_open(uint32_t node){
+    if(node==WPK_DRM_OWNED_CARD_NODE)return peer_new(backend_open("/dev/dri/card0",O_RDWR|O_CLOEXEC),2);
+    assert(node==WPK_DRM_OWNED_RENDER_NODE);display_opens++;return peer_new(-1,1);
+}
+static struct graphics_peer_file *image_peer_acquire(int fd,uint32_t flags){
+    struct graphics_peer_file *f=fd>=0&&fd<512?peer_aliases[fd]:NULL;
+    if(!f){
+        /* Standalone dma-buf and native-fence fixture inputs predate libEGL;
+         * register their actual backend object once, independently of caps. */
+        if(fd!=100&&fd!=299&&!is_sync_file(fd)&&!(fd>=200&&fd<208&&prime_exports[fd-200].handle)){errno=EBADF;return NULL;}
+        f=peer_new(fd,fd==100?3:fd>=200&&fd<208?5:4);if(is_sync_file(fd))f->signaled=sync_files[fd-300].signaled;peer_aliases[fd]=f;
+    }
+    if((flags&WPK_DRM_OWNED_EXPECT_SYNC_FILE)&&!f->signaled){errno=EINVAL;return NULL;}
+    f->provenance_fd=fd;image_peer_retain(f);if(flags&WPK_DRM_OWNED_CONSUME_FD)image_peer_close_alias(f,fd);return f;
+}
+static int image_peer_io(struct graphics_peer_file *f,uint32_t request,void *body,uint32_t length,struct graphics_peer_file *source,const struct graphics_peer_binding *proofs,uint32_t count){
+    (void)length;for(uint32_t i=0;i<count;i++)assert(proofs[i].storage==(f->identity<<32|proofs[i].handle));
+    if(request==UINT32_C(0xc004fe01))return 0;
+    if(f->kind==4){
+        if(!f->signaled||request!=WPK_SYNC_IOC_FILE_INFO){errno=ENOTTY;return -1;}
+        struct wpk_sync_file_info *info=body;assert(!info->num_fences&&!info->flags&&!info->pad);
+        info->status=*f->signaled?1:0;info->num_fences=1;return 0;
+    }
+    if(request==GLIO_INIT){
+        struct gl_init_info *init=body;
+        if(f->slot<0){
+            if(init->role==WPK_GL_SESSION_DISPLAY){unsigned i=0;while(i<8&&root_slots[i].open)i++;assert(i<8);root_slots[i].open=1;f->slot=20+i;}
+            else{unsigned i=0;while(i<8&&device_slots[i].object_open)i++;assert(i<8);memset(&device_slots[i],0,sizeof device_slots[i]);device_slots[i].object_open=1;f->slot=10+i;}
+        }
+        assert(source&&source->slot>=0);init->display_fd=source->slot;
+    }else if(source&&request==0xc00c642eu){((uint32_t *)body)[2]=source->slot;}
+
+    assert(f->slot>=0);struct graphics_peer_file *previous=peer_typed_source;peer_typed_source=source;
+    int rc=backend_ioctl(f->slot,request,body);peer_typed_source=previous;return rc;
+}
+static int image_peer_bo_info(struct graphics_peer_file *f,uint32_t handle,uint64_t *storage,struct wpk_drm_bo_info *info){
+    *storage=f->identity<<32|handle;*info=(struct wpk_drm_bo_info){sizeof dmabuf_cpu_storage,64,64,256,0x34324241,!dmabuf_cpu_tier,0};return 0;
+}
+static int fixture_producer_handle(struct graphics_peer_file *,uint32_t);
+static int fixture_producer_slot(int,uint32_t);
+static int image_peer_bo_release(struct graphics_peer_file *f,uint32_t handle,uint64_t storage){
+    assert(storage==(f->identity<<32|handle));
+    /* Producer storage retirement is judged by the actual GBM/window peers;
+     * these bridge records supply its exact lifetime, not an application
+     * PRIME-import close in this renderer peer's counters. */
+    /* A producer-created bridge name has no application import-close
+     * event. If it aliases an actual PRIME import, however, whichever
+     * owner retires last must close that exact namespace entry once. */
+    if(fixture_producer_handle(f,handle)&&!(handle==77&&f->slot>=10&&f->slot<18&&imported_owners[f->slot-10]))return 0;
+    uint32_t close[2]={handle,0};return backend_ioctl(f->slot,0x40086409u,close);
+}
+static void *image_peer_map(struct graphics_peer_file *f,uint64_t address,uint64_t length,int64_t offset,uint32_t prot,uint32_t flags,uint32_t handle,uint64_t storage){
+    assert(!handle||storage==(f->identity<<32|handle));return graphics_mmap((void *)(uintptr_t)address,length,prot,flags,handle?100:f->slot,offset);
+}
+static int image_peer_poll(struct graphics_peer_file *f,uint32_t events,int32_t timeout,uint32_t *revents){
+    assert(f->signaled);*revents=*f->signaled?(events&POLLIN):0;assert(*revents||timeout==0);return !!*revents;
+}
+static const struct graphics_peer_ops image_peer_ops={image_peer_open,image_peer_acquire,image_peer_retain,image_peer_release,image_peer_duplicate,image_peer_alias_matches,image_peer_close_alias,image_peer_io,image_peer_bo_info,image_peer_bo_release,image_peer_map,image_peer_poll};
+struct fixture_frame_owner {void *lease;int fd;uint32_t handle;struct graphics_peer_file *resource;struct wpk_drm_owner *file,*bo;};
+static struct fixture_frame_owner fixture_frames[32];
+static int fixture_producer_slot(int slot,uint32_t handle){
+    for(unsigned i=0;i<32;i++)if(fixture_frames[i].lease&&fixture_frames[i].resource->slot==slot&&fixture_frames[i].handle==handle)return 1;return 0;
+}
+static int fixture_producer_handle(struct graphics_peer_file *f,uint32_t handle){
+    for(unsigned i=0;i<32;i++)if(fixture_frames[i].lease&&fixture_frames[i].resource==f&&fixture_frames[i].handle==handle)return 1;return 0;
+}
+static int fixture_frame_owners(void *lease,int fd,uint32_t handle,struct wpk_drm_owner **owner,struct wpk_drm_owner **bo){
+    struct fixture_frame_owner *record=NULL;
+    for(unsigned i=0;i<32;i++)if(fixture_frames[i].lease==lease&&fixture_frames[i].fd==fd&&fixture_frames[i].handle==handle){record=&fixture_frames[i];break;}
+    if(!record){
+        for(unsigned i=0;i<32;i++)if(!fixture_frames[i].lease){record=&fixture_frames[i];break;}assert(record);
+        struct graphics_peer_file *resource=NULL;
+        for(unsigned i=0;i<128;i++)if(peer_files[i].refs&&peer_files[i].slot==fd){resource=&peer_files[i];break;}
+        assert(resource);int alias=image_peer_duplicate(resource,-1,0);
+        *record=(struct fixture_frame_owner){.lease=lease,.fd=fd,.handle=handle,.resource=resource};
+        int result=_wpk_drm_owned_acquire(alias,0,&record->file);assert(!image_peer_close_alias(resource,alias));
+        if(!result)result=_wpk_drm_owned_ioctl(record->file,UINT32_C(0xc004fe01),&handle,4,NULL,WPK_DRM_OWNED_CAPTURE_BO,&record->bo);
+        if(result){_wpk_drm_owned_retire(&record->bo);_wpk_drm_owned_retire(&record->file);memset(record,0,sizeof *record);return 0;}
+    }
+    *owner=record->file;*bo=record->bo;return 1;
+}
+static void fixture_frame_release(void *lease){
+    for(unsigned i=0;i<32;i++)if(fixture_frames[i].lease==lease){
+        _wpk_drm_owned_retire(&fixture_frames[i].bo);_wpk_drm_owned_retire(&fixture_frames[i].file);memset(&fixture_frames[i],0,sizeof fixture_frames[i]);
+    }
+}
+
+int graphics_open(const char *path,int flags,...){
+    int slot=backend_open(path,flags);struct graphics_peer_file *f=peer_new(slot,1);
+    int fd=slot;if(peer_aliases[fd]){fd=50;while(fd<100&&peer_aliases[fd])fd++;assert(fd<100);}peer_aliases[fd]=f;return fd;
+}
+int graphics_close(int fd){
+    if(fd>=0&&fd<512&&peer_aliases[fd])return image_peer_close_alias(peer_aliases[fd],fd);
+    return backend_close(fd);
+}
+int graphics_ioctl(int fd,unsigned long request,...){
+    va_list args;va_start(args,request);void *arg=va_arg(args,void *);va_end(args);
+    if(fd==-1&&request==WPK_DRM_IOCTL_OWNED_RESOURCE)return graphics_peer_ioctl(&image_peer_ops,arg);
+    struct graphics_peer_file *f=fd>=0&&fd<512?peer_aliases[fd]:NULL;
+    return backend_ioctl(f?f->slot:fd,request,arg);
+}
+
+static int backend_open(const char *path, int flags, ...) {
     (void)flags;
     if (!strcmp(path, "/dev/dri/card0")) {
         for (unsigned i = 0; i < 8; i++) {
@@ -764,7 +942,8 @@ int graphics_open(const char *path, int flags, ...) {
     return 10;
 #endif
 }
-int graphics_close(int fd) {
+static int backend_close(int fd) {
+    if(fd==100||fd==299)return 0;
     if (fd >= 300 && fd < 316) {
         assert(sync_files[fd - 300].open); sync_files[fd - 300].open = 0; return 0;
     }
@@ -773,8 +952,9 @@ int graphics_close(int fd) {
     }
     if (fd >= 200 && fd < 208) {
         assert(prime_exports[fd - 200].handle);
-        prime_exports[fd - 200].handle = 0;
-        export_closes++;
+        prime_exports[fd - 200].handle = 0;prime_descriptor_closes++;
+        if(prime_exports[fd-200].same_file)same_file_export_closes++;else export_closes++;
+        prime_exports[fd-200].same_file=0;
         return 0;
     }
 #ifdef WPK_GL_SESSION_DISPLAY
@@ -803,9 +983,7 @@ void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 static int check_format_errno;
 static unsigned format_checks;
 static uint32_t checked_format;
-/* A CPU-tier dma-buf: its mapping is real memory. */
-static int dmabuf_cpu_tier;
-static uint8_t dmabuf_cpu_storage[64 * 64 * 4];
+/* A CPU-tier dma-buf: its mapping is real memory (declared with peer state). */
 int graphics_fstat(int fd, struct stat *st) {
     assert(fd == 100);
     memset(st, 0, sizeof *st);
@@ -881,9 +1059,7 @@ static unsigned read_align(unsigned bytes, unsigned alignment) {
     return (bytes + alignment - 1) & ~(alignment - 1);
 }
 
-int graphics_ioctl(int fd, unsigned long request, ...) {
-    va_list args; va_start(args, request);
-    void *arg = va_arg(args, void *); va_end(args);
+static int backend_ioctl(int fd, unsigned long request, void *arg) {
     if (fd == 299 || is_sync_file(fd)) {
         if (fd == 299 || request != WPK_SYNC_IOC_FILE_INFO) { errno = ENOTTY; return -1; }
         struct wpk_sync_file_info *info = arg;
@@ -919,7 +1095,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(root_slots[info->display_fd - 20].live &&
                    info->display_id == root_slots[info->display_fd - 20].generation);
             device_slots[fd - 10].generation = info->display_id;
-            if (fail_display_join) { errno = ENOMEM; return -1; }
+            if (fail_display_join) { errno = fail_display_join==2?ENOMEM:EIO; return -1; }
         }
         return 0;
     }
@@ -952,13 +1128,15 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         return -1;
     }
     if (request == 0xc00c642du) {
+        prime_export_calls++;
         if (fail_prime_export) {
             errno = ENOMEM;
             return -1;
         }
         uint32_t *words = arg;
         assert((words[0] >= 77 && words[0] <= 79) ||
-               (words[0] >= 88 && words[0] <= 90) || words[0] == 99);
+               (words[0] >= 88 && words[0] <= 90) || words[0] == 99 ||
+               fixture_producer_slot(fd,words[0]));
         unsigned i = 0;
         while (i < 8 && prime_exports[i].handle)
             i++;
@@ -967,6 +1145,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         prime_exports[i].source_fd = fd;
         words[2] = 200 + i;
     } else if (request == 0xc00c642eu) {
+        prime_import_calls++;
         uint32_t *words = arg;
         if (words[2] == 100) {
             if (fail_dmabuf_import) { errno = ENOMEM; return -1; }
@@ -975,7 +1154,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             imports++;
         } else {
             assert(words[2] >= 200 && words[2] < 208 && prime_exports[words[2] - 200].handle);
-            assert(prime_exports[words[2] - 200].source_fd != fd);
+            if(prime_exports[words[2]-200].source_fd==fd){prime_exports[words[2]-200].same_file=1;words[0]=prime_exports[words[2]-200].handle;return 0;}
             if (fail_prime_import) {
                 errno = ENOMEM;
                 return -1;
@@ -1587,14 +1766,15 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             const uint32_t *input=allocation_for(q->in_buf_ptr,8);uint32_t *reply=allocation_for(q->out_buf_ptr,16);
             if(!input[1]) {
                 /* An imported native fence names its sync_file by fd. */
-                assert(is_sync_file((int)input[0]));
-                native_server_waits++;last_native_server_wait_fd=(int)input[0];
+                assert(peer_typed_source?peer_typed_source->signaled!=NULL:is_sync_file((int)input[0]));
+                native_server_waits++;last_native_server_wait_fd=peer_typed_source?peer_typed_source->provenance_fd:(int)input[0];
                 reply[0]=0;reply[1]=0;reply[2]=server_wait_disposition;reply[3]=WPK_GL_QUERY_REPLY_MAGIC;return 0;
             }
-            assert(input[0]>=10 && input[0]<18 && input[1]);
-            struct device_slot *source=&device_slots[input[0]-10];unsigned index=0;
+            int source_fd=peer_typed_source?peer_typed_source->slot:(int)input[0];
+            assert(source_fd>=10 && source_fd<18 && input[1]);
+            struct device_slot *source=&device_slots[source_fd-10];unsigned index=0;
             while(index<32 && source->fence_tokens[index]!=input[1])index++;
-            assert(index<32);server_wait_queries++;server_wait_destination=fd;server_wait_source=(int)input[0];
+            assert(index<32);server_wait_queries++;server_wait_destination=fd;server_wait_source=source_fd;
             if(server_wait_failure==1){errno=EIO;return -1;}
             reply[0]=server_wait_failure==2?1:0;reply[1]=input[1];reply[2]=server_wait_disposition;
             reply[3]=server_wait_failure==3?0:WPK_GL_QUERY_REPLY_MAGIC;return 0;
@@ -1893,19 +2073,16 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             memcpy(trace + 4, input, q->in_buf_len);
             egl_trace(12, fd, trace, 16 + q->in_buf_len);
             protocol_trace(2, q->op, input, q->in_buf_len, 16);
-            // Complete a newer accepted import before delivering this older
-            // reply to C. This models completion interleaving, not public
-            // context/thread sharing or real GPU execution.
+            // Queue a newer completion before this older result is published.
+            // The wrapper dispatches it only after the receiver unlocks.
             EGLImageKHR nested = q->op == 0x25 ? nested_image_import : nested_image_state;
             if (nested) {
                 if (q->op == 0x25)
                     nested_image_import = NULL;
                 else
                     nested_image_state = NULL;
-                if (input[0] == 1)
-                    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, nested);
-                else
-                    glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, nested);
+                assert(!queued_nested_image&&owned_transport_depth==1);
+                queued_nested_image=nested;queued_nested_kind=input[0];
             }
             return 0;
         }
@@ -3431,6 +3608,11 @@ int main(int argc, char **argv) {
         // object-session failure or later metadata allocation failure.
         fail_display_join=1;
         assert(!eglInitialize(client,NULL,NULL) && eglGetError()==EGL_NOT_INITIALIZED);
+        assert(wayland_holds==0);
+        /* Exhaustion is distinct from a renderer/session rejection. The
+         * connection lease must unwind for both exact error classes. */
+        fail_display_join=2;
+        assert(!eglInitialize(client,NULL,NULL) && eglGetError()==EGL_BAD_ALLOC);
         assert(wayland_holds==0);fail_display_join=0;
         calloc_before_failure=1;
         assert(!eglInitialize(client,NULL,NULL) && eglGetError()==EGL_BAD_ALLOC);
@@ -4146,7 +4328,10 @@ int main(int argc, char **argv) {
             EGLint rgb888[13]; memcpy(rgb888,narrow,sizeof rgb888); rgb888[5] = 0x34324752;
             assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,rgb888));
             assert(eglGetError() == EGL_BAD_MATCH);
-            assert(imports == closes && imports == 26);
+            /* Atomic capture precedes BO_INFO extent validation: all 26
+             * valid images and 13 rejected extents must release their hold.
+             * The original invalid-extent/error checks above stay intact. */
+            assert(imports == closes && imports == 39);
         } else if (!strcmp(argv[1],"dmabuf-gpu-format")) {
             /* The kernel compares the claimed fourcc with the storage the bo
              * was made with: a mismatch is EGL_BAD_MATCH, and the imported
@@ -5547,9 +5732,22 @@ int main(int argc, char **argv) {
         fflush(NULL);
         const pid_t child = fork(); assert(child >= 0);
         if (child == 0) {
-            const unsigned before = error_queries;
-            (void)glGetError();
-            _exit(error_queries == before + 1 ? 0 : 1);
+            const unsigned before = error_queries,requests=device_calls;
+            /* A child has storage, not its parent's renderer or cached
+             * error proof. No inherited GL call may reach that device. */
+            assert(glGetError()==GL_NO_ERROR&&error_queries==before&&device_calls==requests);
+            assert(eglGetCurrentContext()==EGL_NO_CONTEXT);
+            assert(!eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx)&&eglGetError()==EGL_NOT_INITIALIZED);
+            assert(error_queries==before&&device_calls==requests);
+            /* A fresh renderer establishes its own first error proof. */
+            assert(eglInitialize(dpy,NULL,NULL));
+            EGLContext fresh=eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs);assert(fresh&&fresh!=ctx);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,fresh));
+            unsigned fresh_queries=error_queries;
+            assert(glGetError()==GL_NO_ERROR&&error_queries==fresh_queries+1);
+            assert(!eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx)&&eglGetError()==EGL_BAD_CONTEXT);
+            assert(eglDestroyContext(dpy,fresh)&&eglReleaseThread()&&eglTerminate(dpy));
+            _exit(0);
         }
         int status = 0; assert(waitpid(child,&status,0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
         assert(glGetError() == GL_NO_ERROR && error_queries == queries + 4);
@@ -8893,7 +9091,7 @@ int main(int argc, char **argv) {
         assert(!nested_image_import && glGetError() == GL_NO_ERROR);
         for (unsigned i = 0; i < 3; i++) {
             struct wpk_egl_image *record = _wpk_egl_image_lookup(images[i]);
-            assert(record && record->references == (i == 1 ? 3u : 2u));
+            assert(record && record->public_live==1 && record->storage_references==1 && record->renderer_references==(i==1?1u:0u) && record->borrows==NULL);
             _wpk_egl_image_release(record);
         }
         const GLubyte blue[4] = {0, 0, 255, 255};
@@ -8906,7 +9104,7 @@ int main(int argc, char **argv) {
         assert(!nested_image_state && glGetError() == GL_NO_ERROR && image_pixel_updates == before);
         for (unsigned i = 0; i < 3; i++) {
             struct wpk_egl_image *record = _wpk_egl_image_lookup(images[i]);
-            assert(record && record->references == (i == 2 ? 3u : 2u));
+            assert(record && record->public_live==1 && record->storage_references==1 && record->renderer_references==(i==2?1u:0u) && record->borrows==NULL);
             _wpk_egl_image_release(record);
         }
         if (texture)
@@ -8917,7 +9115,7 @@ int main(int argc, char **argv) {
         assert(glGetError() == GL_NO_ERROR && (!texture || image_pixel_updates > before));
         for (unsigned i = 0; i < 3; i++) {
             struct wpk_egl_image *record = _wpk_egl_image_lookup(images[i]);
-            assert(record && record->references == 2);
+            assert(record && record->public_live==1 && record->storage_references==1 && record->renderer_references==0 && record->borrows==NULL);
             _wpk_egl_image_release(record);
             assert(eglDestroyImageKHR(dpy, images[i]));
         }
@@ -9683,12 +9881,21 @@ int main(int argc, char **argv) {
         assert(eglQuerySurface(dpy, other, EGL_WIDTH, &width) && width == 80);
         assert(transfers == 6 && transfer_closes == 6 && export_closes == 7);
         glDeleteTextures(1, &texture);
-        assert(closes == 1 && device_slots[0].closes == 1);
+        fprintf(stderr,"TRANSFER_TRAFFIC exports=%u imports=%u descriptor_closes=%u cross=%u same=%u bo_closes=%u\n",prime_export_calls,prime_import_calls,prime_descriptor_closes,export_closes,same_file_export_closes,closes);
+        /* The live producer frame still holds this exact BO. Releasing a
+         * renderer sibling cannot close its public GEM name prematurely. */
+        assert(closes == 0 && device_slots[0].closes == 0);
         assert(eglDestroySurface(dpy, first) && eglDestroySurface(dpy, other));
+        /* first is still the current read surface, and other is draw:
+         * public withdrawal cannot retire either accepted allocation yet. */
+        assert(closes == 0 && device_slots[0].closes == 0);
         assert(eglDestroyContext(dpy, ctx) && eglDestroyContext(dpy, second));
         assert(eglReleaseThread() && eglTerminate(dpy));
+        assert(closes == 1 && device_slots[0].closes == 1);
         for (unsigned i = 0; i < 8; i++)
             assert(!prime_exports[i].handle && !transferred_handles[i]);
+        fprintf(stderr,"TRANSFER_FINAL exports=%u imports=%u descriptor_closes=%u cross=%u same=%u bo_closes=%u\n",prime_export_calls,prime_import_calls,prime_descriptor_closes,export_closes,same_file_export_closes,closes);
+        assert(prime_export_calls==9&&prime_import_calls==9&&prime_descriptor_closes==8&&same_file_export_closes==1&&export_closes==7);
         puts("PASS records-transfer");
         return 0;
     }

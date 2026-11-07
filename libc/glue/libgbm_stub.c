@@ -51,8 +51,8 @@
 
 #include <gbm.h>
 #include "gbm_window.h"
+#include "drm_owned.h"
 #include "drm_format_info.h"
-#include <xf86drm.h>
 #include <drm/drm.h>
 #include <drm/drm_mode.h>
 #include <drm/drm_fourcc.h>
@@ -90,34 +90,25 @@ struct wpk_drm_gpu_bo_create {
 #define WPK_DRM_IOCTL_CHECK_BO_FORMAT 0xc00864e4u  /* _IOWR('d', 0xE4, 8) */
 struct wpk_drm_check_bo_format { uint32_t handle, format; };
 
-/* Devices over dup/SCM_RIGHTS aliases share the DRM file's GEM namespace.
- * Retain a shared file identity through all wrapper/BO lifetimes, including
- * wrappers withdrawn from the public registry. Each wrapper still owns its
- * own private descriptor; the file registry compares live private aliases. */
-struct gbm_file {
-    unsigned references;
-    struct gbm_device *devices;
-    struct gbm_file *next;
-};
-
+/* Kernel capabilities retain the exact open description. A real alias is
+ * exposed only by APIs which promise a descriptor; rendering and cleanup do
+ * not consult that recyclable name. BO capabilities independently retain
+ * storage even if a caller closes its public GEM handle through another fd. */
 struct gbm_device {
-    struct gbm_file *file;
-    int fd;          /* independently owned private alias */
-    struct gbm_device *file_next;
-    int public_fd;   /* caller's original descriptor, returned by the public API */
+    struct wpk_drm_owner *owner;
+    int fd, public_fd;
     unsigned references;
     uint64_t identity;
     struct gbm_device *live_next;
 };
 
-static pthread_mutex_t device_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct wpk_drm_mutex device_mutex = WPK_DRM_MUTEX_INITIALIZER;
 static struct gbm_device *live_devices;
-static struct gbm_file *owned_files;
 static uint64_t next_device_identity = 1;
 
 static int retain_device(struct gbm_device *device) {
     int retained = 0;
-    pthread_mutex_lock(&device_mutex);
+    _wpk_drm_mutex_lock(&device_mutex);
     for (struct gbm_device *p = live_devices; p; p = p->live_next) {
         if (p == device && p->references != UINT_MAX) {
             ++p->references;
@@ -125,50 +116,47 @@ static int retain_device(struct gbm_device *device) {
             break;
         }
     }
-    pthread_mutex_unlock(&device_mutex);
+    _wpk_drm_mutex_unlock(&device_mutex);
     if (!retained) errno = EINVAL;
     return retained;
 }
 
 static int retain_owned_device(struct gbm_device *device) {
-    pthread_mutex_lock(&device_mutex);
+    _wpk_drm_mutex_lock(&device_mutex);
     int retained = device->references != UINT_MAX;
     if (retained) ++device->references;
-    pthread_mutex_unlock(&device_mutex);
+    _wpk_drm_mutex_unlock(&device_mutex);
     if (!retained) errno = EOVERFLOW;
     return retained;
 }
 
-/* A public device name can disappear while BOs or windows still own its
- * file. Retire the private alias only after their independent holds end. */
+/* Public withdrawal cannot invalidate BOs or windows. Their independent
+ * C holds keep the exact kernel file capability until final retirement. */
+/* device_mutex and the common publication guard are held. The last C
+ * device edge moves to globally visible exact custody before its facade can
+ * disappear, including when the edge belongs to a BO or window ring. */
+static int release_device_published(struct gbm_device *device) {
+    if(!device->references)abort();
+    int retired=--device->references==0;
+    if(retired)_wpk_drm_owned_defer_locked(&device->owner);
+    return retired;
+}
 static void release_device(struct gbm_device *device) {
-    struct gbm_file *retired_file = NULL;
-    pthread_mutex_lock(&device_mutex);
-    int retired = --device->references == 0;
-    if (retired) {
-        struct gbm_device **member = &device->file->devices;
-        while (*member != device) member = &(*member)->file_next;
-        *member = device->file_next;
-        if (--device->file->references == 0) {
-            retired_file = device->file;
-            struct gbm_file **slot = &owned_files;
-            while (*slot != retired_file) slot = &(*slot)->next;
-            *slot = retired_file->next;
-        }
-    }
-    pthread_mutex_unlock(&device_mutex);
-    if (retired) {
-        close(device->fd);
-        free(device);
-    }
-    free(retired_file);
+    int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    _wpk_drm_mutex_lock(&device_mutex);
+    _wpk_drm_owned_publication_begin();
+    int retired=release_device_published(device);
+    _wpk_drm_owned_publication_end();
+    _wpk_drm_mutex_unlock(&device_mutex);
+    if(retired){free(device);_wpk_drm_owned_drain();}
+    pthread_setcancelstate(cancel_state,NULL);
 }
 
 /* EGL receives an opaque native handle. Resolve only our live devices;
  * neither a foreign pointer nor a recycled allocation selects an old display. */
 int _wpk_gbm_device_metadata(const void *native, int *fd, uint64_t *identity) {
     int found = 0;
-    pthread_mutex_lock(&device_mutex);
+    _wpk_drm_mutex_lock(&device_mutex);
     for (struct gbm_device *d = live_devices; d; d = d->live_next) {
         if (d == native) {
             *fd = d->fd;
@@ -177,22 +165,31 @@ int _wpk_gbm_device_metadata(const void *native, int *fd, uint64_t *identity) {
             break;
         }
     }
-    pthread_mutex_unlock(&device_mutex);
+    _wpk_drm_mutex_unlock(&device_mutex);
     return found;
 }
 
 int _wpk_gbm_device_acquire_fd(const void *native, uint64_t identity) {
     int fd = -1;
-    pthread_mutex_lock(&device_mutex);
+    _wpk_drm_mutex_lock(&device_mutex);
     errno = EINVAL;
     for (struct gbm_device *d = live_devices; d; d = d->live_next) {
         if (d == native && d->identity == identity) {
-            fd = fcntl(d->fd, F_DUPFD_CLOEXEC, 0);
+            fd = _wpk_drm_owned_fd(d->owner,-1,O_CLOEXEC);
             break;
         }
     }
-    pthread_mutex_unlock(&device_mutex);
+    _wpk_drm_mutex_unlock(&device_mutex);
     return fd;
+}
+
+int _wpk_gbm_device_acquire_owner(const void *native,uint64_t identity,struct wpk_drm_owner **owner) {
+    if(!owner){errno=EINVAL;return -1;}*owner=NULL;
+    _wpk_drm_mutex_lock(&device_mutex);int rc=-1;errno=EINVAL;
+    for(struct gbm_device *d=live_devices;d;d=d->live_next)if(d==native&&d->identity==identity){
+        rc=_wpk_drm_owned_retain(d->owner);if(!rc)*owner=d->owner;break;
+    }
+    _wpk_drm_mutex_unlock(&device_mutex);return rc;
 }
 
 struct gbm_bo {
@@ -210,7 +207,7 @@ struct gbm_bo {
     /* Every plane (drm_format_info.h); plane 0 repeats handle/stride/offset.
      * A plane's object may be another plane's or its own. */
     unsigned plane_count;
-    struct { uint32_t handle, stride, offset; } planes[GBM_MAX_PLANES];
+    struct { uint32_t handle, stride, offset; struct wpk_drm_owner *owner; } planes[GBM_MAX_PLANES];
     uint64_t modifier;        /* DRM_FORMAT_MOD_LINEAR for v1 */
     int is_gpu;               /* 1 = GPU-tier (unmappable WebGLTexture bo) */
     struct gbm_mapping *mappings;
@@ -222,17 +219,16 @@ struct gbm_bo {
     struct gbm_bo *handle_next;
 };
 
-/* PRIME reimport returns the existing GEM name on this DRM file. Public
- * GBM objects own separate lifetimes, so only the final peer closes it.
- * Serialize import with removal: an ioctl followed by later registration
- * could otherwise lose the handle to a concurrent peer's destruction. */
-static pthread_mutex_t handle_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* Metadata registration is independent of kernel storage custody. Each
+ * imported plane has a capability before registration, so removing a peer
+ * cannot revoke an accepted allocation or a later recycled numeric name. */
+static struct wpk_drm_mutex handle_mutex = WPK_DRM_MUTEX_INITIALIZER;
 static struct gbm_bo *live_bos;
 static void register_bo(struct gbm_bo *bo) {
-    pthread_mutex_lock(&handle_mutex);
+    _wpk_drm_mutex_lock(&handle_mutex);
     bo->handle_next = live_bos;
     live_bos = bo;
-    pthread_mutex_unlock(&handle_mutex);
+    _wpk_drm_mutex_unlock(&handle_mutex);
 }
 
 struct gbm_mapping {
@@ -240,7 +236,7 @@ struct gbm_mapping {
     uintptr_t token;
     int internal_release_pending;
 };
-static pthread_mutex_t mapping_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct wpk_drm_mutex mapping_mutex = WPK_DRM_MUTEX_INITIALIZER;
 static uintptr_t next_mapping_token = 1;
 
 #define WPK_GBM_SURFACE_BO_COUNT 4
@@ -251,20 +247,20 @@ struct gbm_surface {
     uint32_t width, height, format, flags;
     struct gbm_bo *bos[WPK_GBM_SURFACE_BO_COUNT];
     int in_use[WPK_GBM_SURFACE_BO_COUNT];
-    int public_live, window_owned;
+    int public_live, window_owned, device_retired, retirement_cancel_state;
     int back, front, pending;
     struct gbm_surface *live_next;
 };
 
 /* EGL native windows are opaque. Look up our own live handles rather than
  * interpreting another backend's pointer using the GBM structure layout. */
-static pthread_mutex_t surface_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct wpk_drm_mutex surface_mutex = WPK_DRM_MUTEX_INITIALIZER;
 static struct gbm_surface *live_surfaces;
 
 int _wpk_gbm_surface_metadata(const void *window, uint32_t *width, uint32_t *height,
                               uint32_t *format, uint32_t *flags) {
     int found = 0;
-    pthread_mutex_lock(&surface_mutex);
+    _wpk_drm_mutex_lock(&surface_mutex);
     for (struct gbm_surface *s = live_surfaces; s; s = s->live_next) {
         if (s == window && s->public_live) {
             *width = s->width;
@@ -275,7 +271,7 @@ int _wpk_gbm_surface_metadata(const void *window, uint32_t *width, uint32_t *hei
             break;
         }
     }
-    pthread_mutex_unlock(&surface_mutex);
+    _wpk_drm_mutex_unlock(&surface_mutex);
     return found;
 }
 int _wpk_gbm_surface_dimensions(const void *window, uint32_t *width, uint32_t *height) {
@@ -394,63 +390,47 @@ char *gbm_format_get_name(uint32_t format, struct gbm_format_name_desc *desc) {
     return desc->name;
 }
 
+static struct gbm_device *publish_owned_device(struct wpk_drm_owner *owner,int public_fd) {
+    struct gbm_device *d=calloc(1,sizeof *d);if(!d)return NULL;
+    if(_wpk_drm_owned_retain(owner)!=0){free(d);return NULL;}
+    d->owner=owner;
+    d->fd=_wpk_drm_owned_fd(d->owner,-1,O_CLOEXEC|WPK_DRM_OWNED_BORROW_ALIAS);
+    if(d->fd<0){_wpk_drm_owned_retire(&d->owner);free(d);return NULL;}
+    _wpk_drm_mutex_lock(&device_mutex);
+    if(!next_device_identity){
+        _wpk_drm_mutex_unlock(&device_mutex);_wpk_drm_owned_retire(&d->owner);free(d);errno=EOVERFLOW;return NULL;
+    }
+    d->public_fd=public_fd>=0?public_fd:d->fd;d->references=1;d->identity=next_device_identity;
+    next_device_identity=next_device_identity==UINT64_MAX?0:next_device_identity+1;
+    d->live_next=live_devices;live_devices=d;
+    _wpk_drm_mutex_unlock(&device_mutex);return d;
+}
 struct gbm_device *gbm_create_device(int fd) {
-    /* Snapshot the caller's description before comparing it. Its descriptor
-     * can then close/recycle without changing this transaction's identity. */
-    int private_fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
-    if (private_fd < 0) return NULL;
-    struct gbm_device *d = calloc(1, sizeof *d);
-    struct gbm_file *candidate = calloc(1, sizeof *candidate);
-    if (!d || !candidate) {
-        close(private_fd); free(d); free(candidate); errno = ENOMEM; return NULL;
-    }
-    int error = 0;
-    pthread_mutex_lock(&device_mutex);
-    struct gbm_file *file = owned_files;
-    for (; file; file = file->next) {
-        int same = fcntl(private_fd, F_DUPFD_QUERY, (unsigned long)file->devices->fd);
-        if (same < 0) { error = errno; break; }
-        if (same) break;
-    }
-    if (!error && (next_device_identity == 0 || (file && file->references == UINT_MAX)))
-        error = EOVERFLOW;
-    if (!error) {
-        if (!file) {
-            candidate->next = owned_files;
-            owned_files = file = candidate;
-            candidate = NULL;
-        }
-        ++file->references;
-        d->file = file;
-        d->fd = private_fd;
-        private_fd = -1;
-        d->file_next = file->devices;
-        file->devices = d;
-        d->public_fd = fd;
-        d->references = 1;
-        d->identity = next_device_identity;
-        next_device_identity = next_device_identity == UINT64_MAX ? 0 : next_device_identity + 1;
-        d->live_next = live_devices;
-        live_devices = d;
-    }
-    pthread_mutex_unlock(&device_mutex);
-    if (private_fd >= 0) close(private_fd);
-    free(candidate);
-    if (error) { free(d); errno = error; return NULL; }
-    return d;
+    struct wpk_drm_owner *owner=NULL;
+    if(_wpk_drm_owned_acquire(fd,0,&owner)!=0){_wpk_drm_owned_retire(&owner);return NULL;}
+    struct gbm_device *device=publish_owned_device(owner,fd);_wpk_drm_owned_retire(&owner);return device;
+}
+struct gbm_device *_wpk_gbm_device_from_owner(struct wpk_drm_owner *owner) {
+    /* Internal window allocation starts with atomic owned OPEN. Exporting a
+     * raw fd and reacquiring it here would recreate the close/reuse window. */
+    return publish_owned_device(owner,-1);
 }
 
 void gbm_device_destroy(struct gbm_device *gbm) {
-    int removed = 0;
-    pthread_mutex_lock(&device_mutex);
+    int retired=0,cancel_state;
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    _wpk_drm_mutex_lock(&device_mutex);
     struct gbm_device **slot = &live_devices;
     while (*slot && *slot != gbm) slot = &(*slot)->live_next;
     if (*slot) {
+        _wpk_drm_owned_publication_begin();
         *slot = gbm->live_next;
-        removed = 1;
+        retired=release_device_published(gbm);
+        _wpk_drm_owned_publication_end();
     }
-    pthread_mutex_unlock(&device_mutex);
-    if (removed) release_device(gbm);
+    _wpk_drm_mutex_unlock(&device_mutex);
+    if(retired){free(gbm);_wpk_drm_owned_drain();}
+    pthread_setcancelstate(cancel_state,NULL);
 }
 
 int gbm_device_get_fd(struct gbm_device *gbm) {
@@ -548,7 +528,8 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
         greq.height = height;
         greq.format = format;
         greq.usage  = flags;
-        if (drmIoctl(gbm->fd, WPK_DRM_IOCTL_CREATE_GPU_BO, &greq) == 0) {
+        if (_wpk_drm_owned_ioctl(gbm->owner,WPK_DRM_IOCTL_CREATE_GPU_BO,&greq,sizeof greq,
+                NULL,WPK_DRM_OWNED_CAPTURE_BO,&bo->planes[0].owner)==0) {
             bo->handle = greq.format;   /* out: per-fd handle */
             bo->stride = greq.usage;    /* out: stride (bytes) */
             bo->size   = (uint64_t) greq.usage * height;
@@ -559,6 +540,7 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
             register_bo(bo);
             return bo;
         }
+        _wpk_drm_owned_retire(&bo->planes[0].owner);
         if (gpu_tier == 2) {
             int save = errno;
             free(bo);
@@ -582,7 +564,9 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
         req.height = (uint32_t)((yuv_size + strides[0] - 1) / strides[0]);
         req.bpp = 8;
     }
-    if (drmIoctl(gbm->fd, DRM_IOCTL_MODE_CREATE_DUMB, &req) < 0) {
+    if (_wpk_drm_owned_ioctl(gbm->owner,DRM_IOCTL_MODE_CREATE_DUMB,&req,sizeof req,
+            NULL,WPK_DRM_OWNED_CAPTURE_BO,&bo->planes[0].owner)<0) {
+        _wpk_drm_owned_retire(&bo->planes[0].owner);
         int save = errno;
         free(bo);
         release_device(gbm);
@@ -594,6 +578,7 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
     bo->size   = req.size;
     bo->plane_count = layout->num_planes;
     for (unsigned plane = 0; plane < layout->num_planes; plane++) {
+        bo->planes[plane].owner=bo->planes[0].owner;
         bo->planes[plane].handle = req.handle;
         bo->planes[plane].stride = layout->is_yuv ? strides[plane] : req.pitch;
         bo->planes[plane].offset = offsets[plane];
@@ -658,25 +643,26 @@ struct gbm_bo *gbm_bo_create_with_modifiers(struct gbm_device *gbm,
                                          GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
 }
 
-/* Caller holds handle_mutex. PRIME reimport returns a GEM name a live peer
- * may already own on this DRM file (as any of its planes); only close a
- * name nobody else holds. */
-static void release_handle_locked(struct gbm_device *dev, uint32_t handle) {
-    for (struct gbm_bo *peer = live_bos; peer; peer = peer->handle_next) {
-        if (peer->dev->file != dev->file) continue;
-        for (unsigned plane = 0; plane < peer->plane_count; plane++)
-            if (peer->planes[plane].handle == handle) return;
+/* A single allocation may supply several planes. Imports each own their
+ * own kernel capability, even when PRIME returns the same public GEM name. */
+static void defer_plane_owners_published(struct gbm_bo *bo) {
+    struct wpk_drm_owner *released[GBM_MAX_PLANES]={0};unsigned count=0;
+    for(unsigned plane=0;plane<GBM_MAX_PLANES;plane++){
+        struct wpk_drm_owner *owner=bo->planes[plane].owner;int repeated=0;
+        for(unsigned i=0;i<count;i++)repeated|=released[i]==owner;
+        if(owner&&!repeated){released[count++]=owner;_wpk_drm_owned_defer_locked(&bo->planes[plane].owner);}
+        bo->planes[plane].owner=NULL;
     }
-    drmCloseBufferHandle(dev->fd, handle);
 }
-
-/* Caller holds handle_mutex. Release each distinct name of `planes`. */
-static void release_plane_handles_locked(struct gbm_device *dev, const uint32_t *handles, unsigned count) {
-    for (unsigned plane = 0; plane < count; plane++) {
-        int repeated = 0;
-        for (unsigned earlier = 0; earlier < plane; earlier++) repeated |= handles[earlier] == handles[plane];
-        if (handles[plane] && !repeated) release_handle_locked(dev, handles[plane]);
-    }
+static void release_plane_owners(struct gbm_bo *bo) {
+    _wpk_drm_owned_publication_begin();
+    defer_plane_owners_published(bo);
+    _wpk_drm_owned_publication_end();
+}
+static int bo_ioctl(struct gbm_device *device,struct wpk_drm_owner *bo,
+                    uint32_t request,void *body,uint32_t length) {
+    struct wpk_drm_bo_binding binding={0,bo};
+    return _wpk_drm_owned_ioctl_bo(device->owner,request,body,length,NULL,0,NULL,&binding,1);
 }
 
 /* Import the linear planes of a dma-buf image, one fd, stride and offset
@@ -712,21 +698,30 @@ static struct gbm_bo *import_planes(struct gbm_device *gbm, unsigned count, cons
     if (!bo) { release_device(gbm); errno = ENOMEM; return NULL; }
     uint32_t handles[GBM_MAX_PLANES] = {0};
     int error = 0, any_gpu = 0;
-    pthread_mutex_lock(&handle_mutex);
+    int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    _wpk_drm_mutex_lock(&handle_mutex);
     for (unsigned plane = 0; plane < count && !error; plane++) {
         struct drm_prime_handle req = {.fd = fds[plane]};
-        if (drmIoctl(gbm->fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) < 0) { error = errno; break; }
+        struct wpk_drm_owner *prime=NULL;
+        if(_wpk_drm_owned_acquire(fds[plane],0,&prime)!=0){
+            error=errno;_wpk_drm_owned_retire(&prime);break;
+        }
+        int imported=_wpk_drm_owned_ioctl(gbm->owner,DRM_IOCTL_PRIME_FD_TO_HANDLE,&req,sizeof req,
+            prime,WPK_DRM_OWNED_CAPTURE_BO,&bo->planes[plane].owner);
+        int import_error=errno;_wpk_drm_owned_retire(&prime);
+        if(imported<0){error=import_error;break;}
         handles[plane] = req.handle;
-        /* Only a proven dma-buf is seeked, so no ordinary file offset moves. */
-        off_t real_size = lseek(fds[plane], 0, SEEK_END);
+        struct wpk_drm_bo_info info;
+        if(_wpk_drm_owned_bo_info(bo->planes[plane].owner,&info)!=0){error=errno;break;}
+        uint64_t real_size=info.size;
         uint64_t rows = wpk_drm_plane_height(layout, height, plane);
-        if (real_size < 0 || (uint64_t)strides[plane] * rows + offsets[plane] > (uint64_t)real_size) {
+        if ((uint64_t)strides[plane] * rows + offsets[plane] > real_size) {
             error = EINVAL;
             break;
         }
         int gpu = 0;
         struct drm_mode_map_dumb probe = {.handle = req.handle};
-        if (drmIoctl(gbm->fd, DRM_IOCTL_MODE_MAP_DUMB, &probe) == 0) gpu = 0;
+        if (bo_ioctl(gbm,bo->planes[plane].owner,DRM_IOCTL_MODE_MAP_DUMB,&probe,sizeof probe) == 0) gpu = 0;
         else if (errno == EINVAL) gpu = 1;
         else { error = errno; break; }
         /* A GPU-tier BO is a texture of its own format: the claimed format
@@ -738,7 +733,7 @@ static struct gbm_bo *import_planes(struct gbm_device *gbm, unsigned count, cons
              * origin or nowhere. */
             if (layout->is_yuv && offsets[plane] != 0) { error = EINVAL; break; }
             struct wpk_drm_check_bo_format check = {.handle = req.handle, .format = layout->plane_formats[plane]};
-            if (drmIoctl(gbm->fd, WPK_DRM_IOCTL_CHECK_BO_FORMAT, &check) != 0) { error = errno; break; }
+            if (bo_ioctl(gbm,bo->planes[plane].owner,WPK_DRM_IOCTL_CHECK_BO_FORMAT,&check,sizeof check) != 0) { error = errno; break; }
         }
         if (plane == 0) bo->is_gpu = gpu;
         any_gpu |= gpu;
@@ -746,10 +741,12 @@ static struct gbm_bo *import_planes(struct gbm_device *gbm, unsigned count, cons
     /* gbm_bo_write needs CPU storage a GPU-tier plane does not have. */
     if (!error && any_gpu && (usage & GBM_BO_USE_WRITE)) error = EINVAL;
     if (error) {
-        release_plane_handles_locked(gbm, handles, count);
-        pthread_mutex_unlock(&handle_mutex);
+        release_plane_owners(bo);
+        _wpk_drm_mutex_unlock(&handle_mutex);
         free(bo);
         release_device(gbm);
+        _wpk_drm_owned_drain();
+        pthread_setcancelstate(cancel_state,NULL);
         errno = error;
         return NULL;
     }
@@ -772,7 +769,8 @@ static struct gbm_bo *import_planes(struct gbm_device *gbm, unsigned count, cons
     }
     bo->handle_next = live_bos;
     live_bos = bo;
-    pthread_mutex_unlock(&handle_mutex);
+    _wpk_drm_mutex_unlock(&handle_mutex);
+    pthread_setcancelstate(cancel_state,NULL);
     return bo;
 }
 
@@ -853,7 +851,7 @@ int gbm_bo_get_fd(struct gbm_bo *bo) {
     memset(&req, 0, sizeof(req));
     req.handle = bo->handle;
     req.flags  = O_CLOEXEC | O_RDWR;
-    if (drmIoctl(bo->dev->fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &req) < 0) {
+    if (bo_ioctl(bo->dev,bo->planes[0].owner,DRM_IOCTL_PRIME_HANDLE_TO_FD,&req,sizeof req) < 0) {
         return -1;
     }
     return req.fd;
@@ -865,7 +863,7 @@ int gbm_bo_get_fd_for_plane(struct gbm_bo *bo, int plane) {
         return -1;
     }
     struct drm_prime_handle req = {.handle = bo->planes[plane].handle, .flags = O_CLOEXEC | O_RDWR};
-    if (drmIoctl(bo->dev->fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &req) < 0) return -1;
+    if (bo_ioctl(bo->dev,bo->planes[plane].owner,DRM_IOCTL_PRIME_HANDLE_TO_FD,&req,sizeof req) < 0) return -1;
     return req.fd;
 }
 
@@ -878,10 +876,11 @@ static int map_bo_locked(struct gbm_bo *bo) {
     uint64_t length = bo->size + bo->offset;
     if (length > SIZE_MAX) { errno = EOVERFLOW; return -1; }
     struct drm_mode_map_dumb req = {.handle = bo->handle};
-    if (drmIoctl(bo->dev->fd, DRM_IOCTL_MODE_MAP_DUMB, &req) < 0) return -1;
-    void *addr = mmap(NULL, (size_t)length, PROT_READ | PROT_WRITE,
-        MAP_SHARED, bo->dev->fd, (off_t)req.offset);
-    if (addr == MAP_FAILED) return -1;
+    if (bo_ioctl(bo->dev,bo->planes[0].owner,DRM_IOCTL_MODE_MAP_DUMB,&req,sizeof req) < 0) return -1;
+    uint64_t mapped=0;
+    if(_wpk_drm_owned_map_bo(bo->dev->owner,bo->planes[0].owner,0,length,
+            req.offset,PROT_READ|PROT_WRITE,MAP_SHARED,&mapped)!=0)return -1;
+    void *addr=(void *)(uintptr_t)mapped;
     bo->map_addr = addr;
     bo->map_len = (size_t)length;
     return 0;
@@ -907,10 +906,10 @@ void *gbm_bo_map(struct gbm_bo *bo,
     }
     struct gbm_mapping *mapping = calloc(1, sizeof *mapping);
     if (!mapping) { errno = ENOMEM; return NULL; }
-    pthread_mutex_lock(&mapping_mutex);
+    _wpk_drm_mutex_lock(&mapping_mutex);
     if (!next_mapping_token || map_bo_locked(bo) < 0) {
         if (!next_mapping_token) errno = ENOMEM;
-        pthread_mutex_unlock(&mapping_mutex);
+        _wpk_drm_mutex_unlock(&mapping_mutex);
         free(mapping);
         return NULL;
     }
@@ -934,7 +933,7 @@ void *gbm_bo_map(struct gbm_bo *bo,
         (size_t)(bo->offset + (uint64_t)y * bo->stride + x_bytes);
     *stride = bo->stride;
     *map_data = (void *)mapping->token;
-    pthread_mutex_unlock(&mapping_mutex);
+    _wpk_drm_mutex_unlock(&mapping_mutex);
     return address;
 }
 
@@ -956,9 +955,9 @@ static int unmap_bo_locked(struct gbm_bo *bo, void *map_data) {
 
 void gbm_bo_unmap(struct gbm_bo *bo, void *map_data) {
     if (!bo) { errno = EINVAL; return; }
-    pthread_mutex_lock(&mapping_mutex);
+    _wpk_drm_mutex_lock(&mapping_mutex);
     unmap_bo_locked(bo, map_data);
-    pthread_mutex_unlock(&mapping_mutex);
+    _wpk_drm_mutex_unlock(&mapping_mutex);
 }
 
 void gbm_bo_destroy(struct gbm_bo *bo) {
@@ -968,24 +967,35 @@ void gbm_bo_destroy(struct gbm_bo *bo) {
         bo->user_data = NULL;
         bo->user_data_destroy = NULL;
     }
-    pthread_mutex_lock(&mapping_mutex);
+    int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    _wpk_drm_mutex_lock(&mapping_mutex);
+    _wpk_drm_mutex_lock(&handle_mutex);
+    _wpk_drm_mutex_lock(&device_mutex);
+    struct gbm_device *device=bo->dev;
+    /* The BO list, all aliased plane slots, and its device edge change as
+     * one pure-C fork publication. A child sees either a usable BO facade
+     * or globally queued exact resources, never live fields with NULL owners
+     * or an unlinked BO whose native cleanup exists only on a peer stack. */
+    _wpk_drm_owned_publication_begin();
+    defer_plane_owners_published(bo);
+    struct gbm_bo **link = &live_bos;
+    while (*link && *link != bo) link = &(*link)->handle_next;
+    if (*link) *link = bo->handle_next;
+    int device_retired=release_device_published(device);
+    _wpk_drm_owned_publication_end();
+    _wpk_drm_mutex_unlock(&device_mutex);
+    _wpk_drm_mutex_unlock(&handle_mutex);
     if (bo->map_addr) munmap(bo->map_addr, bo->map_len);
     while (bo->mappings) {
         struct gbm_mapping *mapping = bo->mappings;
         bo->mappings = mapping->next;
         free(mapping);
     }
-    pthread_mutex_unlock(&mapping_mutex);
-    pthread_mutex_lock(&handle_mutex);
-    struct gbm_bo **link = &live_bos;
-    while (*link && *link != bo) link = &(*link)->handle_next;
-    if (*link) *link = bo->handle_next;
-    uint32_t handles[GBM_MAX_PLANES];
-    for (unsigned plane = 0; plane < bo->plane_count; plane++) handles[plane] = bo->planes[plane].handle;
-    release_plane_handles_locked(bo->dev, handles, bo->plane_count);
-    pthread_mutex_unlock(&handle_mutex);
-    release_device(bo->dev);
+    _wpk_drm_mutex_unlock(&mapping_mutex);
+    if(device_retired)free(device);
     free(bo);
+    _wpk_drm_owned_drain();
+    pthread_setcancelstate(cancel_state,NULL);
 }
 
 int gbm_bo_write(struct gbm_bo *bo, const void *buf, size_t count) {
@@ -1003,7 +1013,7 @@ int gbm_bo_write(struct gbm_bo *bo, const void *buf, size_t count) {
         GBM_BO_TRANSFER_WRITE, &stride, &token);
     if (!address) return -1;
     memcpy(address, buf, count);
-    pthread_mutex_lock(&mapping_mutex);
+    _wpk_drm_mutex_lock(&mapping_mutex);
     int result = unmap_bo_locked(bo, token);
     if (result < 0) {
         for (struct gbm_mapping *mapping = bo->mappings; mapping; mapping = mapping->next) {
@@ -1013,7 +1023,7 @@ int gbm_bo_write(struct gbm_bo *bo, const void *buf, size_t count) {
             }
         }
     }
-    pthread_mutex_unlock(&mapping_mutex);
+    _wpk_drm_mutex_unlock(&mapping_mutex);
     return result;
 }
 
@@ -1150,10 +1160,10 @@ struct gbm_surface *gbm_surface_create(struct gbm_device *gbm,
             return NULL;
         }
     }
-    pthread_mutex_lock(&surface_mutex);
+    _wpk_drm_mutex_lock(&surface_mutex);
     s->live_next = live_surfaces;
     live_surfaces = s;
-    pthread_mutex_unlock(&surface_mutex);
+    _wpk_drm_mutex_unlock(&surface_mutex);
     return s;
 }
 
@@ -1194,30 +1204,42 @@ static struct gbm_surface *retire_surface_locked(struct gbm_surface *s) {
         if (s->in_use[i]) return NULL;
     struct gbm_surface **link = &live_surfaces;
     while (*link && *link != s) link = &(*link)->live_next;
+    /* Drop the ring's device edge while its BO roots still exist. Waiting
+     * until the last BO is freed would leave the device only on this retiring
+     * surface's local cleanup stack in another thread's fork snapshot. */
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&s->retirement_cancel_state);
+    _wpk_drm_mutex_lock(&device_mutex);
+    _wpk_drm_owned_publication_begin();
     if (*link) *link = s->live_next;
+    s->device_retired=release_device_published(s->dev);
+    _wpk_drm_owned_publication_end();
+    _wpk_drm_mutex_unlock(&device_mutex);
     return s;
 }
 /* User BO callbacks may reenter EGL/GBM. Never run them under metadata locks. */
 static void free_surface(struct gbm_surface *s) {
     if (!s) return;
+    int cancel_state=s->retirement_cancel_state;
     for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i) {
         if (s->bos[i]) {
             s->bos[i]->surface = NULL;
             gbm_bo_destroy(s->bos[i]);
         }
     }
-    release_device(s->dev);
+    if(s->device_retired)free(s->dev);
     free(s);
+    _wpk_drm_owned_drain();
+    pthread_setcancelstate(cancel_state,NULL);
 }
 static void surface_frame(struct gbm_surface *s, int index, struct wpk_gbm_frame *frame) {
     struct gbm_bo *bo = s->bos[index];
     *frame = (struct wpk_gbm_frame){s->dev->fd, bo->handle, s->width, s->height,
-        bo->format, bo->stride};
+        bo->format, bo->stride,s->dev->owner,bo->planes[0].owner};
 }
 int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_frame *frame) {
     struct gbm_bo *replaced[WPK_GBM_SURFACE_BO_COUNT] = {0};
     int accepted = 0;
-    pthread_mutex_lock(&surface_mutex);
+    _wpk_drm_mutex_lock(&surface_mutex);
     struct gbm_surface *s = find_surface_locked(window);
     if (!s || !s->public_live) errno = EINVAL;
     else if (s->window_owned) errno = EBUSY;
@@ -1246,7 +1268,7 @@ int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_fra
         }
         if (!accepted && !errno) errno = EBUSY;
     }
-    pthread_mutex_unlock(&surface_mutex);
+    _wpk_drm_mutex_unlock(&surface_mutex);
     for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i)
         if (replaced[i]) { replaced[i]->surface = NULL; gbm_bo_destroy(replaced[i]); }
     return accepted;
@@ -1254,7 +1276,7 @@ int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_fra
 int _wpk_gbm_window_prepare(void *lease, struct wpk_gbm_frame *frame) {
     int accepted = 0;
     struct gbm_bo *replaced = NULL;
-    pthread_mutex_lock(&surface_mutex);
+    _wpk_drm_mutex_lock(&surface_mutex);
     struct gbm_surface *s = find_surface_locked(lease);
     if (!s || !s->window_owned || s->pending >= 0) errno = EINVAL;
     else {
@@ -1275,33 +1297,33 @@ int _wpk_gbm_window_prepare(void *lease, struct wpk_gbm_frame *frame) {
             break;
         }
     }
-    pthread_mutex_unlock(&surface_mutex);
+    _wpk_drm_mutex_unlock(&surface_mutex);
     if (replaced) { replaced->surface = NULL; gbm_bo_destroy(replaced); }
     return accepted;
 }
 void _wpk_gbm_window_finish(void *lease, int accepted) {
-    pthread_mutex_lock(&surface_mutex);
+    _wpk_drm_mutex_lock(&surface_mutex);
     struct gbm_surface *s = find_surface_locked(lease);
     if (s && s->window_owned && s->pending >= 0) {
         if (accepted) s->front = s->pending;
         s->pending = -1;
     }
-    pthread_mutex_unlock(&surface_mutex);
+    _wpk_drm_mutex_unlock(&surface_mutex);
 }
 void _wpk_gbm_window_release(void *lease) {
-    pthread_mutex_lock(&surface_mutex);
+    _wpk_drm_mutex_lock(&surface_mutex);
     struct gbm_surface *s = find_surface_locked(lease), *retired = NULL;
     if (s && s->window_owned) {
         s->window_owned = 0;
         s->back = s->front = s->pending = -1;
         retired = retire_surface_locked(s);
     }
-    pthread_mutex_unlock(&surface_mutex);
+    _wpk_drm_mutex_unlock(&surface_mutex);
     free_surface(retired);
 }
 struct gbm_bo *gbm_surface_lock_front_buffer(struct gbm_surface *window) {
     struct gbm_bo *bo = NULL;
-    pthread_mutex_lock(&surface_mutex);
+    _wpk_drm_mutex_lock(&surface_mutex);
     struct gbm_surface *s = find_surface_locked(window);
     if (s && s->public_live && s->front >= 0) {
         int index = s->front;
@@ -1309,34 +1331,34 @@ struct gbm_bo *gbm_surface_lock_front_buffer(struct gbm_surface *window) {
         s->in_use[index] = 1;
         bo = s->bos[index];
     } else errno = EINVAL;
-    pthread_mutex_unlock(&surface_mutex);
+    _wpk_drm_mutex_unlock(&surface_mutex);
     return bo;
 }
 void gbm_surface_release_buffer(struct gbm_surface *window, struct gbm_bo *bo) {
-    pthread_mutex_lock(&surface_mutex);
+    _wpk_drm_mutex_lock(&surface_mutex);
     struct gbm_surface *s = find_surface_locked(window), *retired = NULL;
     if (s && bo) {
         for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i)
             if (s->bos[i] == bo) { s->in_use[i] = 0; break; }
         retired = retire_surface_locked(s);
     }
-    pthread_mutex_unlock(&surface_mutex);
+    _wpk_drm_mutex_unlock(&surface_mutex);
     free_surface(retired);
 }
 int gbm_surface_has_free_buffers(struct gbm_surface *window) {
     int available = 0;
-    pthread_mutex_lock(&surface_mutex);
+    _wpk_drm_mutex_lock(&surface_mutex);
     struct gbm_surface *s = find_surface_locked(window);
     if (s && s->public_live)
         for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i)
             if (!s->in_use[i] && (int)i != s->back && (int)i != s->front) { available = 1; break; }
-    pthread_mutex_unlock(&surface_mutex);
+    _wpk_drm_mutex_unlock(&surface_mutex);
     return available;
 }
 void gbm_surface_destroy(struct gbm_surface *window) {
-    pthread_mutex_lock(&surface_mutex);
+    _wpk_drm_mutex_lock(&surface_mutex);
     struct gbm_surface *s = find_surface_locked(window), *retired = NULL;
     if (s && s->public_live) { s->public_live = 0; retired = retire_surface_locked(s); }
-    pthread_mutex_unlock(&surface_mutex);
+    _wpk_drm_mutex_unlock(&surface_mutex);
     free_surface(retired);
 }

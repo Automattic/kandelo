@@ -7533,3 +7533,30 @@ fork 21. This source checkpoint and its focused controls do not establish
 complete B1 application, browser-memory, conformance or native-feel
 acceptance. The new guest-library connection and coherent normal-built
 preview must complete those gates in this iteration.
+
+
+The guest graphics libraries now carry these capabilities through private C
+receivers instead of retaining public descriptor numbers for later cleanup.
+A single libc archive member owns receiver and nonce state; software that
+never references the graphics helpers acquires no graphics initialization or
+universal descriptor hook. Acquisition and capture publish recoverable
+custody even when the caller's reply fails. A completed mutation commits its
+transaction, acknowledgement and consumption metadata before clearing its
+pending marker, so a forked child recovers the original immutable receipt
+rather than repeating an operation.
+
+Public image identity, explicit storage holds, renderer holds and lexical
+per-thread borrows are separate lifetime categories. A child preserves the
+fork caller's active borrows and process storage while dropping vanished
+peer-thread borrows and inherited renderer access. Graphics metadata mutexes
+use process epochs rather than inherited pthread owners. Cold publication
+uses one fork guard for pointer/reference changes and transfers retiring
+capabilities into a globally rooted, epoch-claimed queue before native work.
+No native operation, receiver lock or driver futex wake runs under that guard.
+
+This is a source checkpoint, not complete B1 admission. The image-generation
+metadata lifetime and detached EGL deferred-lease queues still require their
+own repairs and regressions. New Node/browser fixtures are registered, but
+must be linked and executed with the coherent normally rebuilt SDK, kernel
+and programs before this ownership connection can be called validated on the
+platform. Full stage, memory, conformance and latency gates remain required.

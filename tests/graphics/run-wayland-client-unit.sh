@@ -27,7 +27,7 @@ clang -g -O1 -pthread -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" \
     -fno-sanitize-recover=all -fno-omit-frame-pointer -DHAVE_CONFIG_H \
     "-DWPK_WAYLAND_CLIENT_SOURCE=\"$source_root/src/wayland-client.c\"" \
     -I"$output_dir/include" -I"$source_root/src" -I"$source_root" -I"$repo_root/libc/glue" \
-    "$repo_root/tests/graphics/libc/wayland-connection.c" \
+    "$repo_root/tests/graphics/libc/wayland-connection.c" "$repo_root/libc/glue/drm_owned.c" \
     "$source_root/src/wayland-util.c" "$source_root/src/connection.c" "$output_dir/protocol.c" \
     "${ffi_flags[@]}" -o "$output_dir/connection"
 python3 - "$output_dir/connection" <<'PYTHON'
