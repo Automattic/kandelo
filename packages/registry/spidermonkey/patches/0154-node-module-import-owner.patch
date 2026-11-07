@@ -1,0 +1,232 @@
+--- a/js/src/shell/ModuleLoader.cpp
++++ b/js/src/shell/ModuleLoader.cpp
+@@ -12,2 +12,3 @@
+ #include "jsapi.h"
++#include "jsfriendapi.h"
+ #include "NamespaceImports.h"
+@@ -36,2 +37,3 @@
+ #include "vm/JSContext.h"
++#include "vm/JSFunction.h"
+ #include "vm/StringType.h"
+@@ -505,2 +507,136 @@
+
++// The import promise and actual module are traced native-function slots. A
++// fulfilled evaluation must not resolve the specifier again: user hooks can
++// intentionally select a different module on the next import (cache:false).
++template <bool Reject>
++static bool KandeloModuleImportSettled(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  RootedObject promise(
++      cx, &GetFunctionNativeReserved(&args.callee(), 0).toObject());
++  RootedObject module(
++      cx, &GetFunctionNativeReserved(&args.callee(), 1).toObject());
++  args.rval().setUndefined();
++  if constexpr (Reject) {
++    return JS::RejectPromise(cx, promise, args.get(0));
++  } else {
++    RootedObject ns(cx, JS::GetModuleNamespace(cx, module));
++    if (!ns) {
++      RootedValue error(cx);
++      if (!JS_GetPendingException(cx, &error)) return false;
++      JS_ClearPendingException(cx);
++      return JS::RejectPromise(cx, promise, error);
++    }
++    RootedValue value(cx, ObjectValue(*ns));
++    return JS::ResolvePromise(cx, promise, value);
++  }
++}
++
++static bool KandeloModuleImportRejectPending(JSContext* cx,
++                                               HandleObject promise) {
++  RootedValue error(cx);
++  if (!JS_GetPendingException(cx, &error)) return false;
++  JS_ClearPendingException(cx);
++  return JS::RejectPromise(cx, promise, error);
++}
++
++static bool KandeloStartModuleImportEvaluation(JSContext* cx,
++                                                HandleObject module,
++                                                HandleObject promise) {
++  // Reentrant imports may see a linking/evaluating cached module before this
++  // job runs. Never call ModuleLink on an already evaluating module.
++  if (module->as<ModuleObject>().status() == ModuleStatus::Unlinked &&
++      !JS::ModuleLink(cx, module))
++    return KandeloModuleImportRejectPending(cx, promise);
++  RootedValue evaluation(cx);
++  if (!JS::ModuleEvaluate(cx, module, &evaluation))
++    return KandeloModuleImportRejectPending(cx, promise);
++  if (!evaluation.isObject()) {
++    JS_ReportErrorASCII(cx, "Module evaluation did not return a promise");
++    return KandeloModuleImportRejectPending(cx, promise);
++  }
++  RootedObject completion(cx, &evaluation.toObject());
++  RootedFunction fulfilled(
++      cx, NewFunctionWithReserved(cx, KandeloModuleImportSettled<false>, 1, 0,
++                                  ""));
++  RootedFunction rejected(
++      cx, NewFunctionWithReserved(cx, KandeloModuleImportSettled<true>, 1, 0,
++                                  ""));
++  if (!fulfilled || !rejected)
++    return KandeloModuleImportRejectPending(cx, promise);
++  for (JSFunction* function : {fulfilled.get(), rejected.get()}) {
++    SetFunctionNativeReserved(function, 0, ObjectValue(*promise));
++    SetFunctionNativeReserved(function, 1, ObjectValue(*module));
++  }
++  RootedObject onFulfilled(cx, JS_GetFunctionObject(fulfilled));
++  RootedObject onRejected(cx, JS_GetFunctionObject(rejected));
++  if (!JS::AddPromiseReactions(cx, completion, onFulfilled, onRejected))
++    return KandeloModuleImportRejectPending(cx, promise);
++  return true;
++}
++
++static bool KandeloModuleImportEvaluate(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  RootedObject promise(
++      cx, &GetFunctionNativeReserved(&args.callee(), 0).toObject());
++  RootedObject module(
++      cx, &GetFunctionNativeReserved(&args.callee(), 1).toObject());
++  args.rval().setUndefined();
++  return KandeloStartModuleImportEvaluation(cx, module, promise);
++}
++
++bool ModuleLoader::importModuleNamespace(JSContext* cx, HandleString specifier,
++                                         HandleValue parentURL,
++                                         HandleValue attributes,
++                                         MutableHandleValue rval) {
++  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
++  if (!promise) return false;
++  auto reject = [&]() {
++    if (!KandeloModuleImportRejectPending(cx, promise)) return false;
++    rval.setObject(*promise);
++    return true;
++  };
++
++  Rooted<JSAtom*> name(cx, AtomizeString(cx, specifier));
++  if (!name) return reject();
++  Rooted<ModuleRequestObject*> request(
++      cx, ModuleRequestObject::create(cx, name, JS::ModuleType::JavaScript));
++  if (!request) return reject();
++  // Raw Node loader attributes belong to the real Node resolve/load hooks.
++  // They must not receive syntax-only filtering, a copy, or an early `type`
++  // getter. Node's actual record selects its URL/type registry identity.
++  if (attributes.isObject()) {
++    JS::SetReservedSlot(request, ModuleRequestObject::ImportAttributesSlot,
++                        attributes);
++  }
++  RootedValue referencingPrivate(cx, UndefinedValue());
++  if (parentURL.isString()) {
++    RootedString parent(cx, parentURL.toString());
++    RootedObject info(cx, CreateScriptPrivate(cx, parent));
++    if (!info) return reject();
++    referencingPrivate.setObject(*info);
++  }
++  // Use the original string overload so even an empty specifier reaches the
++  // actual Node resolver/error owner instead of the shell's early rejection.
++  Rooted<JSLinearString*> path(
++      cx, resolve(cx, specifier, referencingPrivate, request));
++  if (!path) return reject();
++  RootedObject module(cx, loadAndParse(cx, path, request));
++  if (!module) return reject();
++  if (module->as<ModuleObject>().status() == ModuleStatus::Unlinked &&
++      !JS::ModuleLink(cx, module)) return reject();
++  // Resolution/source/linking stay synchronous like Node's sync hook path;
++  // user module evaluation starts only after the import call has returned.
++  RootedFunction evaluate(
++      cx, NewFunctionWithReserved(cx, KandeloModuleImportEvaluate, 1, 0, ""));
++  if (!evaluate) return reject();
++  SetFunctionNativeReserved(evaluate, 0, ObjectValue(*promise));
++  SetFunctionNativeReserved(evaluate, 1, ObjectValue(*module));
++  RootedObject callback(cx, JS_GetFunctionObject(evaluate));
++  RootedObject delay(cx, JS::CallOriginalPromiseResolve(cx, UndefinedHandleValue));
++  if (!delay || !JS::AddPromiseReactions(cx, delay, callback, nullptr))
++    return reject();
++  rval.setObject(*promise);
++  return true;
++}
++
+ bool ModuleLoader::loadAndExecute(JSContext* cx, HandleString path,
+@@ -767,25 +903,12 @@
+                                    JS::HandleObject promise) {
+-  // Exceptions during dynamic import are handled by calling
+-  // FinishDynamicModuleImport with a pending exception on the context.
+-  RootedValue rval(cx);
+-  bool ok =
+-      tryDynamicImport(cx, referencingPrivate, moduleRequest, promise, &rval);
+-  JSObject* evaluationObject = ok ? &rval.toObject() : nullptr;
+-  RootedObject evaluationPromise(cx, evaluationObject);
+-  return JS::FinishDynamicModuleImport(
+-      cx, evaluationPromise, referencingPrivate, moduleRequest, promise);
+-}
+-
+-bool ModuleLoader::tryDynamicImport(JSContext* cx,
+-                                    JS::HandleValue referencingPrivate,
+-                                    JS::HandleObject moduleRequest,
+-                                    JS::HandleObject promise,
+-                                    JS::MutableHandleValue rval) {
+-  Rooted<JSLinearString*> path(cx,
+-                               resolve(cx, moduleRequest, referencingPrivate));
+-  if (!path) {
+-    return false;
+-  }
+-
+-  return loadAndExecute(cx, path, moduleRequest, rval);
++  // Keep the original request/attributes and resolved module through
++  // completion. FinishDynamicModuleImport rebuilds a request before calling
++  // HostResolve again; that loses Node attributes and may select a new mock.
++  // The existing asynchronous delay above and VM-specific branch are retained.
++  Rooted<JSLinearString*> path(
++      cx, resolve(cx, moduleRequest, referencingPrivate));
++  if (!path) return KandeloModuleImportRejectPending(cx, promise);
++  RootedObject module(cx, loadAndParse(cx, path, moduleRequest));
++  if (!module) return KandeloModuleImportRejectPending(cx, promise);
++  return KandeloStartModuleImportEvaluation(cx, module, promise);
+ }
+--- a/js/src/shell/ModuleLoader.h
++++ b/js/src/shell/ModuleLoader.h
+@@ -37,2 +37,9 @@
+
++  // Node's internal loader carries an explicit referrer and raw import
++  // attributes. Resolve/load once, then retain the actual module through TLA
++  // completion; do not re-resolve its namespace after evaluation.
++  bool importModuleNamespace(JSContext* cx, HandleString specifier,
++                             HandleValue parentURL, HandleValue attributes,
++                             MutableHandleValue rval);
++
+  private:
+@@ -68,5 +75,2 @@
+                        HandleObject moduleRequest, HandleObject promise);
+-  bool tryDynamicImport(JSContext* cx, HandleValue referencingPrivate,
+-                        HandleObject moduleRequest, HandleObject promise,
+-                        MutableHandleValue rval);
+   JSObject* loadAndParse(JSContext* cx, HandleString path,
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2894,2 +2894,24 @@
+
++// Original specifier/referrer/attributes enter the same genuine module graph
++// as static imports and require(esm); no source wrapper or require surrogate.
++static bool KandeloNativeImportModule(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() < 1 || !args[0].isString() ||
++      (!args.get(1).isUndefined() && !args[1].isString()) ||
++      (!args.get(2).isUndefined() && !args[2].isObject())) {
++    JS_ReportErrorASCII(cx,
++        "importModule requires a string specifier, optional string referrer "
++        "and optional attribute record");
++    return false;
++  }
++  ShellContext* sc = GetShellContext(cx);
++  if (!sc || !sc->moduleLoader) {
++    JS_ReportErrorASCII(cx, "module loader is not initialized");
++    return false;
++  }
++  RootedString specifier(cx, args[0].toString());
++  return sc->moduleLoader->importModuleNamespace(
++      cx, specifier, args.get(1), args.get(2), args.rval());
++}
++
+ // ---------------------------------------------------------------------------
+@@ -4317,2 +4339,3 @@
+       JS_FN("__kandeloRequireModule", KandeloNativeRequireModule, 1, 0),
++      JS_FN("importModule", KandeloNativeImportModule, 3, 0),
+       JS_FN("__kandeloZstdDecompress", KandeloNativeZstdDecompress, 1, 0),

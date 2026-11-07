@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "6465a9afa209d4992aec31c132841c5bca1500b29c8664d87f31685e0d285410",
+    "packages/registry/node-compat/bootstrap.js": "0436a9569a09f41bfb7cc8263e33fb7e82b11c85efcab507eec530c113c7e6ad",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
@@ -35,7 +35,7 @@
     "third_party/node-core/domain-owner-adapter.js": "6f4103cc8ad53a0a77e81ec1306b1d236279326174eb72d2c5219e3039d3769d",
     "third_party/node-core/domain-platform-adapter.js": "79e745f8827b7d0420336262b4496bfeea31c0f045d71f9bf1a6abb05b8f3964",
     "third_party/node-core/dotenv-platform-adapter.js": "2b88d630708168641b9b852a6cc969bd7a655c3a5468b89eae03005df4681f23",
-    "third_party/node-core/esm-graph-platform-adapter.js": "a316f3594a5414d4a29b8c7985ed1dee8940917132f55597d76a5842658c2379",
+    "third_party/node-core/esm-graph-platform-adapter.js": "20af7ef1f054ade6402d2941f0524f97b629011fdc9ec7729fa72f6ca713fa55",
     "third_party/node-core/esm-load-platform-adapter.js": "2a00c08a3e6407c77fc554c20859f1b641f6149a18ce746223c47b6aace20882",
     "third_party/node-core/event-loop-delay-platform-adapter.js": "37ed94c3eb86ecda79c69f3ac563d5878bf2e965741ca3f45b1ef15c8510728f",
     "third_party/node-core/event-platform-adapter.js": "83c398737e7a7fa0af9b86f10ee289057b10f2a210e7a31a0025301e2e1773ed",

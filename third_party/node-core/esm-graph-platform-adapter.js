@@ -11,6 +11,9 @@ function _createNodeESMGraphPlatform(platform) {
         ERR_METHOD_NOT_IMPLEMENTED, ERR_INVALID_RETURN_PROPERTY_VALUE } = platform.values.errors.codes;
     const { Module } = platform.records;
     const resolutions = new SafeMap(), sources = new SafeMap();
+    // The actual native request, not URL/type or an attribute getter, owns the
+    // resolve-to-record handoff. Different requests can select the same URL.
+    const requests = new SafeWeakMap();
     const cjsNames = new SafeWeakMap();
     const empty = platform.values.util.kEmptyObject;
     const { URL, pathToFileURL, fileURLToPath } = platform.url;
@@ -27,20 +30,30 @@ function _createNodeESMGraphPlatform(platform) {
         validateString(type, 'type');
         return JSONStringify([url, type]);
     }
-    function resolve(specifier, parent, attributes = empty, resolveOnly = false) {
+    function resolve(specifier, parent, attributes = empty, resolveOnly = false, request) {
         const parentURL = typeof parent === 'string' && parent.length > 0 ? canonical(parent) : undefined;
         const result = platform.records.getModuleResolver().resolveSync(parentURL,
             { __proto__: null, specifier, attributes });
         if (resolveOnly) return result.url;
-        resolutions.set(key(result.url, attributes), { __proto__: null,
-            result, parentURL, attributes: result.importAttributes ?? attributes });
+        const resolution = { __proto__: null, result, parentURL,
+            attributes: result.importAttributes ?? attributes };
+        if (request !== undefined) requests.set(request, resolution);
+        // Legacy source-preparation callers have no resolved native request.
+        // All native resolve/load handoffs supply their actual request below.
+        else resolutions.set(key(result.url, attributes), resolution);
         return result.url;
     }
-    function record(identifier, attributes = empty) {
+    function record(identifier, attributes = empty, request) {
         const url = canonical(identifier);
-        const resolutionKey = key(url, attributes);
-        const resolution = resolutions.get(resolutionKey);
-        resolutions.delete(resolutionKey);
+        let resolution;
+        if (request !== undefined) {
+            resolution = requests.get(request);
+            requests.delete(request);
+        } else {
+            const resolutionKey = key(url, attributes);
+            resolution = resolutions.get(resolutionKey);
+            resolutions.delete(resolutionKey);
+        }
         const actualAttributes = resolution?.attributes ?? attributes;
         return { __proto__: null, url, key: key(url, actualAttributes),
             resolution: resolution?.result ?? { __proto__: null, url },
@@ -192,17 +205,12 @@ function _createNodeESMGraphPlatform(platform) {
         try { slot.value = translate(rec, loaded); slot.state = 1; }
         catch (error) { sources.delete(rec.key); throw error; }
     }
-    async function importURL(specifier, attributes = empty) {
-        // Public runner entries/global setup already supply absolute file URLs.
-        // Pass that original identifier once through the actual native graph;
-        // resolving it here too would run user hooks twice with a changed parent.
-        const identifier = P.String(specifier);
-        const parsed = URLParse(identifier);
-        if (parsed === null || parsed.protocol !== 'file:')
-            throw new ERR_METHOD_NOT_IMPLEMENTED('Module import with non-file-URL referrer/specifier');
-        if (ObjectKeys(attributes).length !== 0)
-            throw new ERR_METHOD_NOT_IMPLEMENTED('Module import attributes bridge');
-        return platform.native.importModule(identifier);
+    async function importModule(specifier, parentURL, attributes = empty) {
+        // Node resolveSync performs one string-hint conversion. Keep the
+        // original referrer/attribute record until the actual native request
+        // enters the same resolve/load/source/registry owners as syntax imports.
+        const identifier = `${specifier}`;
+        return platform.native.importModule(identifier, parentURL, attributes);
     }
-    return { canonical, resolve, record, load, failed, prepare, importURL };
+    return { canonical, resolve, record, load, failed, prepare, importModule };
 }

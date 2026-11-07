@@ -1,0 +1,99 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/loading.md",
+    "findingIds": [
+      "L-003",
+      "L-009",
+      "L-011"
+    ],
+    "relatedFamilies": [
+      "loading",
+      "testing",
+      "engine",
+      "async",
+      "workers"
+    ],
+    "scope": "Partial actual original-request/import completion and hooks/source/namespace identity prerequisite, not complete resolver/loader/cache/CLI or guest/four-host closure"
+  },
+  "sourceImplemented": [
+    "Forward one string-hint conversion plus original parent/raw attribute record to the actual native graph; no pre-resolve/URL substitution, require surrogate or production host import",
+    "Actual rooted ModuleRequest carries raw Node attributes without premature type reads or syntax-only filtering; existing resolver/load/source/URL-type registry owners consume it",
+    "Real ModuleObject/import promise are retained in traced native-function slots through deferred evaluation and actual TLA completion; return genuine namespace through real promise assimilation without re-resolving hooks",
+    "Ordinary syntax dynamic imports consume the same captured module completion owner while retaining existing delay and separate VM consumer",
+    "Pass the same realm-wrapped actual native request to resolve/record callbacks; consume a weak request-keyed transaction retaining hook-replaced attrs, parent, supplied source and same-URL request distinction",
+    "Empty primitive specifier reaches the actual Node resolver/error owner; legacy requestless preparation keeps its existing URL/type path instead of an invented opaque identity",
+    "General runner import bridge now consumes original requests; authored component diagnostics check real native missing-module/type errors, with original upstream assertions unchanged"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-import209-source-r1/report.json",
+    "sha256": "6b5d475dec2642a63f6385b921406f1df84145575ada944cebbd0b3e92ada650",
+    "guardedInputs": 879,
+    "scope": "Actual original import request/referrer/attributes and captured module completion source plus real request-keyed resolve/record and empty-specifier correction. Native loader is an explicit component dependency; guest C++ uncompiled."
+  },
+  "packageChecks": {
+    "report": ".context/node26-import209-affected-r1.json",
+    "sha256": "129a88fe3c961ee535f53b4dd79900121effcd10dabc677302fde294acfb24ac",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-import209-source-r1/report.json",
+    "sha256": "6b5d475dec2642a63f6385b921406f1df84145575ada944cebbd0b3e92ada650",
+    "originalForwardingNativeLoaderGroups": 9,
+    "actualGraphNativeDependencyGroups": 3,
+    "exactBootstrapEmptySpecifierGroups": 1,
+    "originalAttributeTypeReads": 0,
+    "runnerNativeCandidatePairs": 11,
+    "runnerImplementationGapNonpassGroups": 1,
+    "priorFixtureCases": 4,
+    "unchangedUpstreamFilesEachSubject": 2,
+    "unchangedUpstreamProcesses": 4,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "unchangedStyleCheckerPassed": true,
+    "scope": "Actual generated JS forwarding over native loader; actual graph resolve/record/load with native hooks/request-report dependencies; exact bootstrap function. C++ opaque request/realm/promise/GC and guest execution not run. Native reports are held component keys, not claims of native internal identity."
+  },
+  "sealedEvidence": {
+    "report": ".context/general-import-owner-agent/report.json",
+    "sha256": "c483af5e59c2c313d269ec53e0e103008b19db331350df9e3c55bf425d27bdb1",
+    "reusedEvidence": true,
+    "scope": "Original general import source plus independently sealed verified request-identity/empty-specifier correction;0 compiles, native loader dependencies explicit. Initial cache-path fixture/control errors and disproved sticky-link hypothesis remain."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-import209-source-r1/runner-controls-r1/missing-owners-candidate.stdout",
+      "sha256": "4bcb0145efd94b555a603a7e81cbe24daf5ae262e328cc82563a180f017d5816",
+      "scope": "Valid default process/watch/coverage runner modes still fail for missing owners. One diagnostic group is not passing compatibility. General bridge errors now reach actual native loader in component, not the previous unsupported bridge."
+    },
+    {
+      "report": ".context/general-import-owner-agent/report.json",
+      "sha256": "c483af5e59c2c313d269ec53e0e103008b19db331350df9e3c55bf425d27bdb1",
+      "scope": "Initial native fixture realpath/cache-count mismatch retained; original count1 assertion preserved after selecting actual canonical native path. No runtime workaround inferred."
+    },
+    {
+      "report": ".context/runner-import-review-agent/HANDOFF.json",
+      "sha256": "5b37ae140805aee3dcaf8e03a1bcbd0fba56432e12f821b7bc7ac1ea48e5281f",
+      "scope": "Original production graph getter/alias and empty-specifier source failures,2 setup errors and disproved sticky dependency-link-error expectation remain. No false cache workaround; source/actual graph controls do not prove C++."
+    }
+  ],
+  "remaining": [
+    "Compile actual guest C++ request/realm wrapping/native-function slots/promise/GC APIs against coherent engine inputs and validate actual syntax/internal import consumers",
+    "Full Node job/linking/evaluation/cache/error/reentry/termination/fatal chronology, raw attribute/parser admission, arbitrary phases and async loader workers",
+    "Legacy requestless URL/type preparation/getter behavior, full CJS/ESM/JSON/builtin/mock/cache/namespace/symlink/condition/format semantics",
+    "TypeScript/Wasm/addon/source-map/cache/preload/permission/CLI and broader public loader coverage",
+    "Actual guest async/realm/GC/OOM/fault/Worker/context teardown and identified artifacts across all four hosts; complete runner process/IPC/stdio/watch/coverage/benchmark dependencies"
+  ],
+  "at": "2026-11-07T11:18:49.429642+00:00",
+  "recipeRevision": 209,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

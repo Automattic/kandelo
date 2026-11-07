@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0155-node-module-request-identity.patch",
   "packages/registry/spidermonkey/patches/0153-node-late-detached-arraybuffer-owner.patch",
   "packages/registry/spidermonkey/patches/0152-node-host-outcome-publication.patch",
   "packages/registry/spidermonkey/patches/0151-node-registered-host-sender.patch",
@@ -190,6 +191,8 @@ inputs = [
   "third_party/node-core/upstream/performance",
   "third_party/node-core/testing-platform-adapter.js",
   "third_party/node-core/testing-runner-adapter.js",
+  "packages/registry/spidermonkey/patches/0154-node-module-import-owner.patch",
+  "third_party/node-core/module-import-owner.md",
   "third_party/node-core/testing-runner.md",
   "third_party/node-core/sqlite-platform-adapter.js",
   "third_party/node-core/sqlite-limit-names.h",
@@ -722,4 +725,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 208
+revision = 209

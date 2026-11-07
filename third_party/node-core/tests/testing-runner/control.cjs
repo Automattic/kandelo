@@ -37,8 +37,8 @@ async function main() {
     assert.deepEqual(eventNames.map(name=>process.listenerCount(name)),listeners);
     assert.ok(checks.every(e=>e.code==='ERR_NOT_IMPLEMENTED'));
     assert.equal(order.length,0);
-    await assert.rejects(candidate.graph.importURL('./relative.mjs'),{code:'ERR_METHOD_NOT_IMPLEMENTED'});
-    await assert.rejects(candidate.graph.importURL(pathToFileURL(write('empty.mjs','')).href,{type:'json'}),{code:'ERR_METHOD_NOT_IMPLEMENTED'});
+    await assert.rejects(candidate.graph.importModule('./relative.mjs',pathToFileURL(path.join(dir,'parent.mjs')).href),{code:'ERR_MODULE_NOT_FOUND'});
+    await assert.rejects(candidate.graph.importModule(pathToFileURL(write('empty.mjs','')).href,undefined,{type:'json'}),{code:'ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE'});
     console.log(JSON.stringify({scenario,implementationFailures:checks,notConformancePass:true}));return;
   }
   let options = {isolation:'none',cwd:dir};

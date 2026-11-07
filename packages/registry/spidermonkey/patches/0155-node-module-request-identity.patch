@@ -1,0 +1,21 @@
+--- a/js/src/shell/ModuleLoader.cpp
++++ b/js/src/shell/ModuleLoader.cpp
+@@ -88,5 +88,7 @@
+
+-  JS::RootedValueArray<4> args(cx);
++  JS::RootedValueArray<5> args(cx);
+   args[0].setString(specifier);
+   args[2].setBoolean(resolveOnly);
++  if (request) args[4].setObject(*request);
++  if (!JS_WrapValue(cx, args[4])) return false;
+   if (request && request->as<ModuleRequestObject>().importAttributes()) {
+@@ -158,4 +160,8 @@
+   if (!hook.isObject() || !JS::IsCallable(&hook.toObject())) return true;
+-  JS::RootedValueArray<2> args(cx);
++  JS::RootedValueArray<3> args(cx);
+   args[0].setString(identifier);
++  // Keep the same actual request identity used by resolve, including across
++  // checked realm wrappers; reconstructing a URL/type key loses hook results.
++  if (request) args[2].setObject(*request);
++  if (!JS_WrapValue(cx, args[2])) return false;
+   if (request && request->as<ModuleRequestObject>().importAttributes())

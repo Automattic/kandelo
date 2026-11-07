@@ -5118,7 +5118,7 @@ function _getNodeTestingPlatform() {
         timers, timerPromises: timersPromises, path, fs, fsUtils: _nodeFsStats, os: nodeOs,
         glob: _nodeGlobPlatform.require('internal/fs/glob'), console: _nodeConsolePlatform.api,
         importModule(specifier, parentURL, attributes) {
-            return _nodeESMGraph.importURL(specifier, attributes);
+            return _nodeESMGraph.importModule(specifier, parentURL, attributes);
         },
         url: { ...url, isURL: value => value instanceof _nodeWebPlatform.URL,
             URLParse: value => _nodeWebPlatform.URL.parse(value) },
@@ -5890,9 +5890,9 @@ const _nodeESMGraph = _createNodeESMGraphPlatform({
     normalizeBuiltin: id => _nodeBuiltinPolicy.normalizeRequirableId(id),
     loadBuiltin: id => _builtinModules[id], parseJSON: _parseCommonJsJSON,
 });
-globalThis.__kandeloResolveBare = function(specifier, referrerPath, resolveOnly = false, attributes) {
-    if (typeof specifier !== 'string' || specifier.length === 0) return null;
-    return _nodeESMGraph.resolve(specifier, referrerPath, attributes, resolveOnly);
+globalThis.__kandeloResolveBare = function(specifier, referrerPath, resolveOnly = false, attributes, request) {
+    if (typeof specifier !== 'string') return null;
+    return _nodeESMGraph.resolve(specifier, referrerPath, attributes, resolveOnly, request);
 };
 globalThis.__kandeloModuleRecord = _nodeESMGraph.record;
 globalThis.__kandeloLoadModule = _nodeESMGraph.load;

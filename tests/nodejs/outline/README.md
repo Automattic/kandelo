@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source209 integrates actual original-request native imports and captured module completion, plus verified request-identity and empty-specifier corrections.9 forwarding groups,3 actual graph/native dependency groups and1 exact bootstrap group pass; runner regressions retain their explicit missing-owner nonpass. New C++ remains uncompiled and no four-host conformance is established.
+See [source scope](module-import-integration.md).
+
 Source208 integrates actual nonisolated public runner/discovery/setup/import/test reporting.11 native/component pairs match;1 valid-public missing-owner diagnostic group remains a nonpass. Two unchanged upstream files eachsubject and4 prior fixture cases pass over explicit native dependencies; no guest compile or four-host conformance.
 See [source scope](testing-runner-integration.md).
 

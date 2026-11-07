@@ -18,7 +18,8 @@ module.exports = function createCandidate(root) {
   const glob = factories._createNodeGlobPlatform({ fs, path, process, values,
     dirents: require('internal/fs/utils'), toPathIfFileURL: require('internal/url').toPathIfFileURL });
   const graph = factories._createNodeESMGraphPlatform({
-    records: { Module }, values, native: { importModule: identifier => import(identifier) },
+    records: { Module }, values, native: { importModule: (specifier, parentURL, attributes) =>
+      require('internal/modules/esm/loader').getOrInitializeCascadedLoader().import(specifier, parentURL, attributes) },
     url: require('node:url'), types: require('node:util').types,
   });
   const candidate = factories._createNodeTestingPlatform({
@@ -28,7 +29,7 @@ module.exports = function createCandidate(root) {
     getCallerLocation: internalBinding('util').getCallerLocation,
     getStructuredStack: internalBinding('util').getStructuredStack,
     getModuleResolver: require('internal/modules/esm/loader').getOrInitializeCascadedLoader,
-    importModule: (specifier, parentURL, attributes) => graph.importURL(specifier, attributes),
+    importModule: (specifier, parentURL, attributes) => graph.importModule(specifier, parentURL, attributes),
     glob: glob.require('internal/fs/glob'), console,
     events: require('node:events'), abort: require('internal/abort_controller'), async: require('node:async_hooks'),
     timers: require('node:timers'), timerPromises: require('node:timers/promises'),

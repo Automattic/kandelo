@@ -464,7 +464,9 @@
             }
             return sites;
         },
-        importModule(filename) { return import(filename); },
+        importModule(specifier, parentURL, attributes) {
+            return native.importModule(specifier, parentURL, attributes);
+        },
         prepareGlobalScope(publicNames) {
             const retained = new Set(publicNames);
             for (const name of shellGlobalNames) {

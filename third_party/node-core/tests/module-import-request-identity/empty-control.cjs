@@ -1,0 +1,11 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+assert.equal(process.version,'v26.13.0');const bootstrapPath=path.resolve(process.argv[2]);
+const loader=require('internal/modules/esm/loader').getOrInitializeCascadedLoader();
+const parent='file:///kandelo-review/entry.mjs';let expected;
+try{loader.resolveSync(parent,{specifier:'',attributes:{}});}catch(error){expected=error;}assert(expected);
+const source=fs.readFileSync(bootstrapPath,'utf8');const match=source.match(/globalThis\.__kandeloResolveBare = (function\(specifier,[\s\S]*?\n\});/);assert(match);
+let calls=0;const graph={resolve(specifier,referrer,attributes){calls++;return loader.resolveSync(referrer,{specifier,attributes}).url;}};
+const actual=Function('_nodeESMGraph','return ('+match[1]+');')(graph);
+assert.throws(()=>actual('',parent,false,{}),error=>error.code===expected.code&&error.name===expected.name,'Empty specifier must reach actual Node resolver/error owner');assert.equal(calls,1);
+console.log(JSON.stringify({passed:true,scope:'Exact production bootstrap function over actual unchanged native Node resolver; no guest/CPP proof',expected:{name:expected.name,code:expected.code,message:expected.message},actualResolverCalls:calls}));
