@@ -27,6 +27,22 @@ optimizer probes and real editor workflows in all three browser engines;
 a synthetic-probe result must not substitute for the real WordPress path.
 Canonical images, lifecycle and full benchmark acceptance remain open.
 
+The partial experiment uses the normal release `xtask partial-image
+wordpress --jobs 1` path. PHP ZTS compiles, and the combined server reaches
+normal fork instrumentation; image publication and runtime results are
+still pending. The separate benchmark checkout now matches selected main
+`1b6f3783d`; its SDK inputs are unchanged from the completed bootstrap.
+The benchmark driver requires an explicit final candidate projection.
+No new full build or benchmark timing has started.
+
+**Visitor-cache configuration follow-up:** both current WordPress stacks
+disable OPcache timestamp validation. Stock cache-plugin activation edits
+PHP configuration, so the assumption that PHP sources remain static needs
+revisiting before activation. Evaluate ordinary timestamp validation or
+deployment invalidation, then prove edits become visible with matching
+settings in both stacks. This is source inspection, not a demonstrated
+stale-bytecode failure. The unchanged-optimizer trial keeps its settings.
+
 **Verified canonical checkpoint before the latest merges:** job
 `wordpress-wasm32-stable-1107-121249-d310` passes in 39m48s. All 165 nodes
 complete: 157 cached and eight built. WordPress revision 43 is 82,844,469
