@@ -709,6 +709,18 @@ trailing byte before returning a process list. Total Wasm memory beyond the
 supplied allocation is irrelevant, and neither a short buffer nor a malformed
 later record exposes a partial list.
 
+### Boot image ownership
+
+Node and browser initialization preserve caller-owned image inputs. Raw
+caller views are copied for the worker. Decompression produces a new buffer
+owned by the host, so that decoded buffer transfers directly; an internally
+fetched default image likewise needs no second full-image copy. The browser
+captures the initial input before awaiting startup, preserving this ownership
+decision even if the caller subsequently replaces the options object.
+The explicit ownership-taking APIs also accept a whole ordinary raw buffer.
+These handoffs avoid duplicate decoded storage; they do not establish a bound
+on guest heaps, compiled code, image caches or native process footprint.
+
 ### Kernel heap lifetime
 
 The Rust kernel uses a reclaiming `dlmalloc` heap inside its own Wasm linear

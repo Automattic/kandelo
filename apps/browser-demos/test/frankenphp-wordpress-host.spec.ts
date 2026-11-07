@@ -28,6 +28,10 @@ const numThreads = Number(process.env.KANDELO_FRANKENPHP_NUM_THREADS ?? "2");
 if (!Number.isSafeInteger(numThreads) || numThreads < 1 || numThreads > 32) {
   throw new Error("KANDELO_FRANKENPHP_NUM_THREADS must be an integer from 1 to 32");
 }
+const recoveryRounds = Number(process.env.KANDELO_FRANKENPHP_RECOVERY_ROUNDS ?? "1");
+if (!Number.isSafeInteger(recoveryRounds) || recoveryRounds < 1 || recoveryRounds > 8) {
+  throw new Error("KANDELO_FRANKENPHP_RECOVERY_ROUNDS must be an integer from 1 to 8");
+}
 const soakSeconds = Number(process.env.KANDELO_FRANKENPHP_SOAK_SECONDS ?? "0");
 if (!Number.isSafeInteger(soakSeconds) || soakSeconds < 0 || soakSeconds > 600) {
   throw new Error("KANDELO_FRANKENPHP_SOAK_SECONDS must be an integer from 0 to 600");
@@ -118,7 +122,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     });
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, metricsModuleUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, imageLazyAssetDirectory, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds, optimizerProbes }) => {
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, metricsModuleUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, imageLazyAssetDirectory, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds, recoveryRounds, optimizerProbes }) => {
       let readMemory: (() => Promise<unknown>) | undefined;
       const stage = async (message: string) => {
         let snapshot: unknown;
@@ -387,26 +391,30 @@ echo json_encode([
         const soakDurationMs = performance.now() - soakStarted;
         let restarted = false;
         if (serviceName === "frankenphp-caddy") {
-          const listener = await kernel.pickListenerTarget(8080);
-          if (!listener) throw new Error("FrankenPHP listener missing before restart test");
-          if (!(await kernel.signalProcess(listener.pid, 9))) {
-            throw new Error("Could not kill FrankenPHP process for restart test");
-          }
-          for (let attempt = 0; attempt < 300; attempt += 1) {
-            const replacement = await kernel.pickListenerTarget(8080);
-            if (replacement && replacement.pid !== listener.pid) {
-              try {
-                const recovered = await kernel.fetchInKernel(8080, {
-                  method: "GET", url: "/", headers: { Host: "localhost:8080" }, body: null,
-                }, { timeoutMs: 30_000 });
-                restarted = recovered.status === 200 && decoder.decode(recovered.body).includes("WordPress on Kandelo");
-                if (restarted) break;
-              } catch {}
+          for (let round = 0; round < recoveryRounds; round++) {
+            restarted = false;
+            const listener = await kernel.pickListenerTarget(8080);
+            if (!listener) throw new Error("FrankenPHP listener missing before restart test");
+            if (!(await kernel.signalProcess(listener.pid, 9))) {
+              throw new Error("Could not kill FrankenPHP process for restart test");
             }
-            await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
+            for (let attempt = 0; attempt < 300; attempt += 1) {
+              const replacement = await kernel.pickListenerTarget(8080);
+              if (replacement && replacement.pid !== listener.pid) {
+                try {
+                  const recovered = await kernel.fetchInKernel(8080, {
+                    method: "GET", url: "/", headers: { Host: "localhost:8080" }, body: null,
+                  }, { timeoutMs: 30_000 });
+                  restarted = recovered.status === 200 && decoder.decode(recovered.body).includes("WordPress on Kandelo");
+                  if (restarted) break;
+                } catch {}
+              }
+              await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
+            }
+            if (!restarted) throw new Error("FrankenPHP did not recover after SIGKILL");
+            await stage(recoveryRounds === 1 ? "Caddy recovered after SIGKILL"
+              : `Caddy recovered after SIGKILL (${round + 1}/${recoveryRounds})`);
           }
-          if (!restarted) throw new Error("FrankenPHP did not recover after SIGKILL");
-          await stage("Caddy recovered after SIGKILL");
         }
         upstreamMetricsReady = false;
         const graceful = await verifyFrankenPhpGracefulShutdown(
@@ -464,7 +472,7 @@ echo json_encode([
       }
     }, {
       imageUrl, kernelUrl, browserKernelUrl, metricsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName,
-      memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds,
+      memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds, recoveryRounds,
       gracefulProbeUrl: new URL(`/@fs/${resolve(repoRoot, "host/test/support/frankenphp-graceful.ts")}`, baseURL!).href,
       runtimeUrlsModuleUrl: new URL("/lib/init/image-owned-runtime-urls.ts", baseURL!).href,
       imageLazyAssetDirectory,

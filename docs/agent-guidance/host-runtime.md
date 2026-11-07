@@ -63,15 +63,17 @@ a native listener error can appear on the worker's console outside guest
 stderr and the host-diagnostic callback.
 
 The default Node rootfs-image option preserves caller-owned `ArrayBuffer`
-and `Uint8Array` bytes across initialization. It snapshots the image into a
-private ordinary `ArrayBuffer` and transfers that private buffer to the
-kernel worker, rather than structured-cloning it a second time. Never put
+and `Uint8Array` bytes across initialization. It snapshots a raw caller
+image into a private ordinary `ArrayBuffer` and transfers that buffer to the kernel
+worker. A fresh decode or internal default fetch already belongs to the
+host, so it transfers directly without another full-image copy. Never put
 the caller's original buffer on the transfer list without an explicit
 ownership choice. For one-shot callers with a whole ordinary `ArrayBuffer`,
 `takeRootfsImageOwnership: true` transfers the raw image directly and may
 detach it; that host cannot reinitialize from the surrendered bytes. The
-browser's `initFromImage` likewise preserves caller ownership, while its
-separate `initFromOwnedImage` entry point explicitly takes ownership. This
+browser's `initFromImage` likewise preserves caller ownership and transfers
+host-owned decoded/default buffers; raw caller views retain copy semantics.
+Its separate `initFromOwnedImage` entry point explicitly takes ownership. This
 handoff avoids copies but does not by itself establish a lower steady-state
 RSS or solve a large guest's native Wasm-code footprint.
 

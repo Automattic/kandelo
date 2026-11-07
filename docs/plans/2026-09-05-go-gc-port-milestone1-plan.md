@@ -65,9 +65,32 @@ owned path transfers its fresh decoded buffer. This isolates an avoidable
 host image handoff cost, not a Go/PHP collector defect. Evaluate a general
 Node/browser fix that transfers host-owned decoded buffers while preserving
 all caller-owned raw/compressed inputs and the existing raw-copy contract.
-No such runtime fix is adopted at this checkpoint. The initial control
-invocation used the wrong Playwright working directory and failed test
-collection; the normal app-directory rerun passes both cases.
+The general Node/browser fix now transfers freshly decoded/default buffers
+while retaining the raw caller-copy contract. It captures the original
+browser input before awaiting initialization, so replacing the options
+cannot transfer the caller's raw backing. The compiled host and 91 host
+cases pass, including ordinary/shared raw and compressed input preservation.
+All six image-only cases pass across Chromium, Firefox and WebKit. With the
+fix, the preserve-input WebKit case samples 1.2G at initialization, 715.1M
+after ten seconds and 174.9M thirty seconds after destruction; its compressed
+caller input remains intact. This is one startup control, not a whole-app
+resource bound. The initial control invocation used the wrong Playwright
+working directory and failed collection; that report remains separate.
+
+The real backend revalidation also passes all three browsers, with four
+SIGKILL/restart cycles, traffic and graceful draining, zero skips/flaky
+cases. Kernel capacity rises once to 381,747,200 bytes, then stays there
+through all four recoveries on each engine. WebKit still samples a 9.1G
+traffic spike and 741.0M sixty seconds after destruction. Eliminating the
+startup clone does not resolve execution-time native footprint. The two
+browser selections complete together as job
+`image-handoff-browser-gates-1107-165141-467c` in 15m08s. Reports are under
+`.context/image-handoff-fix-v1/` in the isolated checkout.
+
+The real app's composer returns a new raw buffer, so its normal ephemeral
+boot handoff must also use the existing ownership-taking API. That consumer
+change remains a proposal until source and rendered UI checks are complete;
+the focused compressed-input controls do not validate it.
 
 Reports remain under the isolated checkout's `.context/baseline-tests/`,
 `.context/candidate-tests/` and `.context/image-init-control-results-v2/`.

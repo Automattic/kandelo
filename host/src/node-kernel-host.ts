@@ -1677,8 +1677,11 @@ function resolveRootfsImage(
       : new Uint8Array(override);
   const decoded = maybeDecompressImage(bytes);
   if (takeOwnership && decoded === bytes) return override as ArrayBuffer;
+  // WHY: a fresh decode or internal default fetch belongs to this host, so
+  // transferring it preserves caller input without another full-image copy.
   if (
-    takeOwnership && decoded.buffer instanceof ArrayBuffer &&
+    (takeOwnership || override === "default" || decoded !== bytes) &&
+    decoded.buffer instanceof ArrayBuffer &&
     decoded.byteOffset === 0 && decoded.byteLength === decoded.buffer.byteLength
   ) return decoded.buffer;
   // Copy into a fresh ArrayBuffer — the source might live in a

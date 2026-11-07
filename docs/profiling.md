@@ -491,7 +491,8 @@ For the focused `frankenphp-wordpress-host.spec.ts` diagnostic, set
 `KANDELO_WORDPRESS_FRANKENPHP_VFS` to the retained image. If its deferred
 members belong to a different build than the current test server, set
 `KANDELO_WORDPRESS_FRANKENPHP_LAZY_ASSET_DIRECTORY` to that image's matching
-asset directory. This is ordinary transport binding: the kernel still
+asset directory. `KANDELO_FRANKENPHP_RECOVERY_ROUNDS` selects one to eight
+real Caddy crash/restart cycles (default one). This is ordinary transport binding: the kernel still
 checks every fetched body's size and digest. An image and another build's
 same-named utility are not an interchangeable artifact cohort.
 

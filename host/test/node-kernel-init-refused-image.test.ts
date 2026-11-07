@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
 import { BinaryNotFoundError, tryResolveBinary } from "../src/binary-resolver";
@@ -82,7 +83,13 @@ describe("NodeKernelHost refuses an image the kernel rejects", () => {
       const image = await fs.saveImage();
       const kernel = asArrayBuffer(new Uint8Array(readFileSync(kernelPath!)));
 
-      for (const source of [image, asArrayBuffer(image)]) {
+      const compressed = new Uint8Array(zstdCompressSync(image));
+      const sharedRaw = new Uint8Array(new SharedArrayBuffer(image.byteLength));
+      sharedRaw.set(image);
+      const sharedCompressed = new Uint8Array(new SharedArrayBuffer(compressed.byteLength));
+      sharedCompressed.set(compressed);
+      for (const source of [image, asArrayBuffer(image), sharedRaw,
+        compressed, asArrayBuffer(compressed), sharedCompressed]) {
         const expected = new Uint8Array(source).slice();
         const host = new NodeKernelHost({ rootfsImage: source });
         try {
