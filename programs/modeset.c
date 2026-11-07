@@ -41,6 +41,7 @@
 #include <fcntl.h>
 #include <gbm.h>
 #include <math.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1167,108 +1168,219 @@ static void drain_mouse(int fd, int *cx, int *cy, uint8_t *buttons, int W, int H
 }
 
 /* ────────────────────────────────────────────────────────────────────
- * KMS setup — drives PAGE_FLIP gating; rendering still flows through
- * EGL_DEFAULT_DISPLAY.
+ * One GBM window owns the rendered fronts submitted to KMS. The EGL display
+ * must use this same DRM file: another open or a PID is not its master grant.
  * ──────────────────────────────────────────────────────────────────── */
 
-#define KMS_BO_COUNT 2
-
 static int kms_drm_fd = -1;
+static int fluid_mouse_fd = -1;
 static struct gbm_device *kms_gbm = NULL;
-static struct gbm_bo *kms_bos[KMS_BO_COUNT] = { 0 };
-static uint32_t kms_fb_ids[KMS_BO_COUNT] = { 0 };
+static struct gbm_surface *kms_window = NULL;
+static struct gbm_bo *kms_front = NULL;
+static struct gbm_bo *kms_pending = NULL;
 static uint32_t kms_crtc_id = 0;
 static uint32_t kms_conn_id = 0;
 static drmModeModeInfo kms_mode;
-static int kms_current_fb = 0;
+static int kms_active = 0;
+static int kms_master = 0;
+static int kms_flip_pending = 0;
+static int display_cleanup_started = 0;
+static EGLDisplay fluid_display = EGL_NO_DISPLAY;
+static EGLContext fluid_context = EGL_NO_CONTEXT;
+static EGLSurface fluid_surface = EGL_NO_SURFACE;
+static int fluid_display_initialized = 0;
+
+struct scanout_fb {
+    int fd;
+    uint32_t id;
+};
+
+static void destroy_scanout_fb(struct gbm_bo *bo, void *data) {
+    (void)bo;
+    struct scanout_fb *fb = data;
+    if (drmModeRmFB(fb->fd, fb->id) != 0) perror("fluid: drmModeRmFB");
+    free(fb);
+}
+
+static struct scanout_fb *scanout_fb(struct gbm_bo *bo) {
+    struct scanout_fb *fb = gbm_bo_get_user_data(bo);
+    if (fb) return fb;
+    fb = calloc(1, sizeof *fb);
+    if (!fb) { perror("fluid: framebuffer metadata"); return NULL; }
+    fb->fd = kms_drm_fd;
+    uint32_t handles[4] = {gbm_bo_get_handle(bo).u32, 0, 0, 0};
+    uint32_t pitches[4] = {gbm_bo_get_stride(bo), 0, 0, 0};
+    uint32_t offsets[4] = {0};
+    if (drmModeAddFB2(kms_drm_fd, gbm_bo_get_width(bo), gbm_bo_get_height(bo),
+                     gbm_bo_get_format(bo), handles, pitches, offsets, &fb->id, 0) != 0) {
+        perror("fluid: drmModeAddFB2");
+        free(fb);
+        return NULL;
+    }
+    /* The FB names this exact live BO. Its destructor removes the cached FB
+     * before the DRM fd closes; a separate pair of blank BOs cannot stand in
+     * for the buffers EGL actually rendered. */
+    gbm_bo_set_user_data(bo, fb, destroy_scanout_fb);
+    return fb;
+}
+
+static void cleanup_display(void) {
+    /* This exit owner gets one attempt: a failed native retirement may have
+     * consumed progress, so recursive exit must not replay a stale handle. */
+    if (display_cleanup_started) return;
+    display_cleanup_started = 1;
+    /* A queued flip may still own both fronts after a failed wait. Disable
+     * scanout before returning either hold to GBM, so the renderer cannot
+     * overwrite a BO the display still reads. */
+    if (kms_active) {
+        if (drmModeSetCrtc(kms_drm_fd, kms_crtc_id, 0, 0, 0, NULL, 0, NULL) != 0) {
+            perror("fluid: disable CRTC during cleanup");
+            /* Keep the actual BO holds alive until process teardown rather
+             * than pretend an unsuccessful disable retired their reader. */
+            return;
+        }
+        kms_active = 0;
+        kms_flip_pending = 0;
+    }
+    if (kms_pending) {
+        gbm_surface_release_buffer(kms_window, kms_pending);
+        kms_pending = NULL;
+    }
+    if (kms_front) {
+        gbm_surface_release_buffer(kms_window, kms_front);
+        kms_front = NULL;
+    }
+    if (fluid_display_initialized) {
+        /* A failed retirement can leave EGL's window lease or a BO callback
+         * queued. Keep its GBM graph and DRM fd alive until process teardown;
+         * closing the numeric fd here would invalidate that callback's owner. */
+        if (!eglMakeCurrent(fluid_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
+            fprintf(stderr, "fluid: cleanup eglMakeCurrent failed: 0x%x\n", eglGetError());
+            return;
+        }
+        if (fluid_surface != EGL_NO_SURFACE) {
+            if (!eglDestroySurface(fluid_display, fluid_surface)) {
+                fprintf(stderr, "fluid: cleanup eglDestroySurface failed: 0x%x\n", eglGetError());
+                return;
+            }
+            fluid_surface = EGL_NO_SURFACE;
+        }
+        if (fluid_context != EGL_NO_CONTEXT) {
+            if (!eglDestroyContext(fluid_display, fluid_context)) {
+                fprintf(stderr, "fluid: cleanup eglDestroyContext failed: 0x%x\n", eglGetError());
+                return;
+            }
+            fluid_context = EGL_NO_CONTEXT;
+        }
+        if (!eglReleaseThread()) {
+            fprintf(stderr, "fluid: cleanup eglReleaseThread failed: 0x%x\n", eglGetError());
+            return;
+        }
+        if (!eglTerminate(fluid_display)) {
+            fprintf(stderr, "fluid: cleanup eglTerminate failed: 0x%x\n", eglGetError());
+            return;
+        }
+        fluid_display_initialized = 0;
+        fluid_display = EGL_NO_DISPLAY;
+    }
+    /* EGL's native-window lease is gone before surface destruction invokes
+     * BO callbacks. Their DRM fd remains open until all cached FBs retire. */
+    if (kms_window) {
+        gbm_surface_destroy(kms_window);
+        kms_window = NULL;
+    }
+    if (kms_gbm) {
+        gbm_device_destroy(kms_gbm);
+        kms_gbm = NULL;
+    }
+    if (kms_drm_fd >= 0) {
+        if (kms_master && drmDropMaster(kms_drm_fd) != 0) perror("fluid: drmDropMaster");
+        if (close(kms_drm_fd) != 0) perror("fluid: close DRM");
+        kms_drm_fd = -1;
+        kms_master = 0;
+    }
+    if (fluid_mouse_fd >= 0) {
+        if (close(fluid_mouse_fd) != 0) perror("fluid: close mouse");
+        fluid_mouse_fd = -1;
+    }
+}
 
 static int setup_kms(void) {
     kms_drm_fd = open("/dev/dri/card0", O_RDWR | O_NONBLOCK);
     if (kms_drm_fd < 0) { perror("open /dev/dri/card0"); return 1; }
-
-    if (drmSetMaster(kms_drm_fd) != 0) {
-        perror("drmSetMaster"); return 1;
-    }
+    if (drmSetMaster(kms_drm_fd) != 0) { perror("drmSetMaster"); return 1; }
+    kms_master = 1;
 
     drmModeResPtr res = drmModeGetResources(kms_drm_fd);
     if (!res || res->count_crtcs < 1 || res->count_connectors < 1) {
         fprintf(stderr, "drmModeGetResources: empty\n");
+        if (res) drmModeFreeResources(res);
         return 1;
     }
     kms_crtc_id = res->crtcs[0];
     kms_conn_id = res->connectors[0];
-
     drmModeConnectorPtr conn = drmModeGetConnector(kms_drm_fd, kms_conn_id);
-    if (!conn || conn->connection != DRM_MODE_CONNECTED ||
-        conn->count_modes < 1) {
+    if (!conn || conn->connection != DRM_MODE_CONNECTED || conn->count_modes < 1) {
         fprintf(stderr, "drmModeGetConnector: no usable connector\n");
+        if (conn) drmModeFreeConnector(conn);
+        drmModeFreeResources(res);
         return 1;
     }
     kms_mode = conn->modes[0];
     canvas_w = kms_mode.hdisplay;
     canvas_h = kms_mode.vdisplay;
-
     drmModeFreeConnector(conn);
     drmModeFreeResources(res);
 
+    fprintf(stderr, "fluid: creating GBM device\n");
     kms_gbm = gbm_create_device(kms_drm_fd);
     if (!kms_gbm) { perror("gbm_create_device"); return 1; }
-
-    for (int i = 0; i < KMS_BO_COUNT; i++) {
-        kms_bos[i] = gbm_bo_create(kms_gbm, CANVAS_W, CANVAS_H,
-                                   GBM_FORMAT_XRGB8888,
-                                   GBM_BO_USE_SCANOUT);
-        if (!kms_bos[i]) { perror("gbm_bo_create"); return 1; }
-
-        uint32_t handle = gbm_bo_get_handle(kms_bos[i]).u32;
-        uint32_t stride = gbm_bo_get_stride(kms_bos[i]);
-        uint32_t handles[4] = { handle, 0, 0, 0 };
-        uint32_t pitches[4] = { stride, 0, 0, 0 };
-        uint32_t offsets[4] = { 0, 0, 0, 0 };
-        if (drmModeAddFB2(kms_drm_fd, CANVAS_W, CANVAS_H,
-                          DRM_FORMAT_XRGB8888,
-                          handles, pitches, offsets,
-                          &kms_fb_ids[i], 0) != 0) {
-            perror("drmModeAddFB2"); return 1;
-        }
-    }
-
-    int prime_fd = gbm_bo_get_fd(kms_bos[0]);
-    if (prime_fd >= 0) close(prime_fd);
-
-    if (drmModeSetCrtc(kms_drm_fd, kms_crtc_id, kms_fb_ids[0],
-                       0, 0, &kms_conn_id, 1, &kms_mode) != 0) {
-        perror("drmModeSetCrtc"); return 1;
-    }
-
     return 0;
 }
 
-/* O_NONBLOCK + read+usleep(1000) instead of poll(): sys_poll's
- * 50 ms host-retry would clamp this loop to ~20 FPS when no other
- * syscall traffic triggers a broad wake. */
-static int kms_pageflip_wait(void) {
-    int next_fb = kms_current_fb ^ 1;
-    if (drmModePageFlip(kms_drm_fd, kms_crtc_id, kms_fb_ids[next_fb],
-                        DRM_MODE_PAGE_FLIP_EVENT, NULL) != 0) {
-        perror("drmModePageFlip");
-        return 1;
-    }
+static void flip_complete(int fd, unsigned int sequence, unsigned int sec,
+                          unsigned int usec, void *data) {
+    (void)fd; (void)sequence; (void)sec; (void)usec;
+    *(int *)data = 0;
+}
 
-    struct drm_event_vblank ev;
-    for (;;) {
-        ssize_t n = read(kms_drm_fd, &ev, sizeof(ev));
-        if (n == (ssize_t)sizeof(ev)) break;
-        if (n < 0 && errno == EAGAIN) {
-            usleep(1000);
-            continue;
+static int kms_present(void) {
+    kms_pending = gbm_surface_lock_front_buffer(kms_window);
+    if (!kms_pending) { perror("gbm_surface_lock_front_buffer"); return 1; }
+    struct scanout_fb *fb = scanout_fb(kms_pending);
+    if (!fb) return 1;
+    if (!kms_active) {
+        fprintf(stderr, "fluid: modesetting rendered front\n");
+        if (drmModeSetCrtc(kms_drm_fd, kms_crtc_id, fb->id, 0, 0,
+                           &kms_conn_id, 1, &kms_mode) != 0) {
+            perror("drmModeSetCrtc"); return 1;
         }
-        fprintf(stderr, "drm event read failed: n=%zd errno=%d\n",
-                n, errno);
-        return 1;
+        kms_active = 1;
+    } else {
+        kms_flip_pending = 1;
+        if (drmModePageFlip(kms_drm_fd, kms_crtc_id, fb->id,
+                            DRM_MODE_PAGE_FLIP_EVENT, &kms_flip_pending) != 0) {
+            perror("drmModePageFlip"); return 1;
+        }
+        drmEventContext events = {.version = 2, .page_flip_handler = flip_complete};
+        struct pollfd fd = {.fd = kms_drm_fd, .events = POLLIN};
+        while (kms_flip_pending) {
+            int ready;
+            do { ready = poll(&fd, 1, -1); } while (ready < 0 && errno == EINTR);
+            if (ready < 0) { perror("fluid: poll flip"); return 1; }
+            if (!(fd.revents & POLLIN) || (fd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+                fprintf(stderr, "fluid: DRM flip poll failed: revents=0x%x\n", fd.revents);
+                return 1;
+            }
+            if (drmHandleEvent(kms_drm_fd, &events) != 0) {
+                perror("drmHandleEvent"); return 1;
+            }
+        }
     }
-
-    kms_current_fb = next_fb;
+    struct gbm_bo *previous = kms_front;
+    kms_front = kms_pending;
+    kms_pending = NULL;
+    if (previous) gbm_surface_release_buffer(kms_window, previous);
     return 0;
 }
 
@@ -1284,17 +1396,22 @@ static int egl_startup_failure(const char *operation, int status) {
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
 
-    int mouse = open("/dev/input/mice", O_RDONLY | O_NONBLOCK);
+    if (atexit(cleanup_display) != 0) {
+        fprintf(stderr, "fluid: could not register display cleanup\n");
+        return 1;
+    }
+    int mouse = fluid_mouse_fd = open("/dev/input/mice", O_RDONLY | O_NONBLOCK);
     if (mouse < 0) FAIL("open /dev/input/mice");
 
     fprintf(stderr, "fluid: initializing KMS\n");
     if (setup_kms() != 0) return 8;
 
     fprintf(stderr, "fluid: initializing EGL\n");
-    EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    EGLDisplay dpy = fluid_display = eglGetDisplay((EGLNativeDisplayType)kms_gbm);
     if (dpy == EGL_NO_DISPLAY) return egl_startup_failure("eglGetDisplay", 1);
     EGLint maj = 0, min = 0;
     if (!eglInitialize(dpy, &maj, &min)) return egl_startup_failure("eglInitialize", 1);
+    fluid_display_initialized = 1;
 
     EGLint cfg_attribs[] = {
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
@@ -1306,13 +1423,21 @@ int main(int argc, char **argv) {
     EGLint num_cfg = 0;
     if (!eglChooseConfig(dpy, cfg_attribs, &cfg, 1, &num_cfg) || num_cfg < 1)
         return egl_startup_failure("eglChooseConfig (requires a window config)", 2);
+    EGLint native_format;
+    if (!eglGetConfigAttrib(dpy, cfg, EGL_NATIVE_VISUAL_ID, &native_format))
+        return egl_startup_failure("eglGetConfigAttrib native visual", 2);
+    fprintf(stderr, "fluid: creating GBM window %dx%d format=0x%x\n",
+            CANVAS_W, CANVAS_H, (unsigned)native_format);
+    kms_window = gbm_surface_create(kms_gbm, CANVAS_W, CANVAS_H, (uint32_t)native_format,
+                                  GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    if (!kms_window) { perror("gbm_surface_create"); return 8; }
     if (!eglBindAPI(EGL_OPENGL_ES_API)) return egl_startup_failure("eglBindAPI", 3);
 
     EGLint ctx_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-    EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attribs);
+    EGLContext ctx = fluid_context = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attribs);
     if (ctx == EGL_NO_CONTEXT) return egl_startup_failure("eglCreateContext", 4);
 
-    EGLSurface surf = eglCreateWindowSurface(dpy, cfg, 0, 0);
+    EGLSurface surf = fluid_surface = eglCreateWindowSurface(dpy, cfg, (EGLNativeWindowType)kms_window, NULL);
     if (surf == EGL_NO_SURFACE) return egl_startup_failure("eglCreateWindowSurface", 5);
     if (!eglMakeCurrent(dpy, surf, surf, ctx)) return egl_startup_failure("eglMakeCurrent", 6);
 
@@ -1336,14 +1461,10 @@ int main(int argc, char **argv) {
     int color_timer = 0;
     uint8_t buttons = 0;
 
-    /* The kernel-side vblank pump currently retires PAGE_FLIP events
-     * immediately (Q4), so kms_pageflip_wait() returns at ~2 kHz instead
-     * of monitor refresh. We throttle the loop ourselves at 60 Hz and
-     * drive the sim from a wall-clock dt. */
+    /* KMS flip completion paces the next frame. Integrate using elapsed
+     * time rather than a fixed 60Hz step so other refresh rates stay valid. */
     struct timespec t_prev;
     clock_gettime(CLOCK_MONOTONIC, &t_prev);
-    const long FRAME_NS = 16666667L;
-    struct timespec t_next = t_prev;
 
     for (uint64_t frame = 0; ; frame++) {
         struct timespec t_now;
@@ -1412,25 +1533,7 @@ int main(int argc, char **argv) {
         blur_sunrays(1);
         pass_display();
 
-        if (!eglSwapBuffers(dpy, surf)) return 7;
-        if (kms_pageflip_wait() != 0) return 9;
-
-        /* Resync if we fell more than 100 ms behind (backgrounded tab,
-         * heavy host stall) so we don't burn the next second sprinting
-         * to catch up. */
-        t_next.tv_nsec += FRAME_NS;
-        while (t_next.tv_nsec >= 1000000000L) {
-            t_next.tv_sec += 1;
-            t_next.tv_nsec -= 1000000000L;
-        }
-        struct timespec t_after;
-        clock_gettime(CLOCK_MONOTONIC, &t_after);
-        long behind_ns = (t_after.tv_sec - t_next.tv_sec) * 1000000000L
-                       + (t_after.tv_nsec - t_next.tv_nsec);
-        if (behind_ns > 100000000L) {
-            t_next = t_after;
-        } else if (behind_ns < 0) {
-            usleep((useconds_t)((-behind_ns) / 1000L));
-        }
+        if (!eglSwapBuffers(dpy, surf)) return egl_startup_failure("eglSwapBuffers", 7);
+        if (kms_present() != 0) return 9;
     }
 }

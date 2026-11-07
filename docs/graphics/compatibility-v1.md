@@ -27128,3 +27128,15 @@ parent implementation with leaked alpha and passes with the correction;
 on the old preview, so it does not prove the original flicker resolved.
 Normal rebuild and original-demo checks remain required. ABI versions
 remain program 56, unpublished host 3, GL 17 and fork 21.
+
+The fluid consumer now uses one conventional GBM/EGL window on the same
+DRM open file that owns master. It flips the actual rendered GBM fronts and
+releases the previous front only after completion, replacing two unrelated
+blank CPU buffers and an EGL default-display open with different authority.
+Cleanup retains the window/device/file graph if disabling scanout or EGL
+retirement fails; a late BO callback must never run against a closed fd.
+Eight controls executing the actual extracted cleanup body pass, including
+each retirement failure and same-BO dual holds; declared LLVM wasm32 syntax
+checking passes. These scoped controls do not establish browser rendering.
+The first normal rebuild is running on frozen 9ed8021c03; this later GBM
+consumer correction still requires its own rebuilt normal artifact checks.
