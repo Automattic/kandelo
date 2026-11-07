@@ -1,12 +1,13 @@
-# Registered host transfer: receiver-order prerequisite
+# Registered host transfer: receiver and sender ownership
 
-This source supplies an actual versioned SameProcess order-table and receiver
-preflight/phase owner. It does not enable registered-JavaScript transfer admission.
-The unchanged sender still rejects ReadableStream/WritableStream/TransformStream,
-transferable AbortSignal and other registered transfer modes. These are valid
-public implementation failures, not accepted engine/platform boundaries or
-passing unsupported coverage. Public FileHandle transfer is separately disabled
-until an actual transferable native fd owner exists.
+The receiver prerequisite and sender follow-up provide a consumed normal
+registered-JavaScript transfer path in source. Whole-list admission, nested
+registry expansion, graph identities, ArrayBuffer-first detachment, combined
+JS/native endpoint commit and receiver order/finalization use actual owners.
+Production JSAPI is uncompiled/unrun and this is not complete stream/messaging
+compatibility. Incomplete native host types (notably FileHandle) and the exact
+malformed/no-result/deferred-exception outcomes below remain valid failing public
+cases, not accepted boundaries or green unsupported results.
 
 Pinned Node26.13.0 `src/node_messaging.cc` validates explicit entries, expands
 NestedTransferables/kTransferList, serializes the main graph, detaches all listed
@@ -20,10 +21,12 @@ phase dependency as well as sender work.
 
 Current write consumes a version2 envelope. Its native transfer-map indices and
 JS constructor indices are separate IDs, encoded as bounded kind/index pairs
-following the existing pure string descriptor table. The current sender's actual
-order remains native transfer entries followed by clone-only JS hosts. Future
-sender admission can emit interleaved entries through the same schema/owner;
-this source does not claim that future writer exists. No JS pointer/root or
+following the existing pure string descriptor table. The sender records the actual combined explicit/nested host order. Registered
+JS receivers are preassigned descriptor identities, including unreachable
+transfers, while native map IDs remain independent. Every declared ArrayBuffer
+is detached after main traversal and before any host commit. JS kTransfer and
+actual native endpoint moves then follow that frozen host order; clone-only
+hosts discovered by main/payload traversal follow the transfer prefix. No JS pointer/root or
 script-visible global token crosses a packet. The existing native endpoint
 sidecars and collector still own actual endpoints/clone data.
 
@@ -58,24 +61,65 @@ pinned native Node controls independently establish two valid public mixed/neste
 stream and aborted-signal/ArrayBuffer cases still source-rejected by Kandelo.
 No original public finding is closed or runtime conformance claimed.
 
-## Next owning implementation dependencies
+## Sender and native identity ownership
 
-1. Real explicit registered-JS admission and complete nested host registry with
-   checked private identity/duplicate/source-port/mark/error order. Do not add
-   type-name or AbortSignal-specific allowances.
-2. Main-graph identity/backreference registration for all transferred JS hosts,
-   including unreachable entries, without putting JS roots in packet sidecars.
-3. ArrayBuffer detachment followed by actual JS kTransfer/native endpoint moves
-   in combined host order; kClone hosts discovered from payloads follow that
-   prefix. Preserve partial detach/failure/abort behavior and unchanged hooks.
-4. Emit that real combined order into version2. Consume real serialized info/data
-   in current per-context deserializer factory, then finalize exactly once after
-   graph allocation, preserving native receiver abort/close ownership.
-5. Source-check and compile actual engine glue, then unchanged public stream/
-   signal/upstream and native differential cases on identified artifacts across
-   all four hosts. Skips/unsupported/timeouts/harness errors remain nonpasses.
+The whole explicit list validates before nested hooks, graph getters or source
+detachment. Registered hosts retain the engine's hidden PrivateName brand;
+configuration rejects an ordinary Symbol. Native nested discovery uses a separate
+context-local C++ JSClass/checked-unwrap probe, not public tokens or a second
+canTransfer admission (which would mutate the explicit duplicate ledger).
+Only real existing MessagePort native identity currently supplies that probe.
+Nested arrays are traversed with the pinned filtering/duplicate/length behavior;
+no type-name or AbortSignal-only allowance exists. Writer roots are local and
+synchronous. No JS object/root/exception pointer is added to packet bytes or
+native transit sidecars.
 
-Native FileHandle ownership, generic context policy, full stream cancellation/
-backpressure/messageerror/close/GC/OOM/fatal/realm cases and other host resources
-remain separate implementation/conformance gaps. No runtime workaround or
-external runtime defect is claimed by this prerequisite.
+Admitted registered-JS transfers also record their actual count in the native
+packet sidecar through a context-local, callback-identity-checked observer. This
+scalar contains no JS root or pointer. It forbids repeated Broadcast reads even
+when a logical JS move produces no native transfer-map entry; the engine
+`JS_StructuredCloneHasTransferables` native-map query alone cannot establish
+repeatability. Ordinary delivery retains the existing consume-once packet owner.
+A different/raw clone callback pair cannot silently publish registered moves
+without this owned sidecar. No new public callback ABI or token is introduced.
+
+Main graph and deferred data use the same serializer memory map. Native transfer
+map slots are filled by indexed actual owner moves, preserving ABI/backreference
+positions while interleaving JS hooks. Failed graph/hook/move aborts the real
+native serialization buffer/sidecars and receiver transaction. Already-detached
+buffers and executed JS hook side effects are not falsely rolled back. Native
+FileHandle movement is still absent and its upstream registration remains
+separately disabled. Histogram/native clone creation order also remains its
+existing distinct callback owner, not newly covered by this transfer schedule.
+
+## Remaining concrete outcome owner
+
+Pinned native controls establish distinct outcomes, not a universal throw:
+missing/nonobject private transfer results detach buffers but structuredClone
+returns undefined and MessagePort drops the packet (a following actual FIFO
+sentinel arrives alone). A throwing deserializeInfo string conversion detaches
+buffers; structuredClone reports the receiver's empty-info module error, while
+postMessage rethrows the original sender error **and** delivers a malformed
+packet that produces receiver messageerror before the FIFO sentinel. The
+candidate hook currently throws/preserves its original exception; these are
+explicit nonpasses, not preferred policy or a justified exclusion.
+
+The required next owner must distinguish successful packet, no-result/drop and
+prepared-packet/deferred-sender-exception states. It must own string conversion,
+original exception stack, publication and caller outcomes; no special-case JS
+catch or fabricated successful value suffices. Sender exception roots must stay
+in the sender context/transaction or opaque local wrapper, never the native
+cross-thread packet. Worker startup requires its actual LOAD_SCRIPT transaction:
+pinned internal/worker.js posts its private/public ports plus data before
+startThread, so no-result can consume/close transferred peers yet still start a
+thread without a load message. Candidate bootstrap/input splitting needs a real
+waiting-for-load/termination owner, not fake undefined workerData. Native immediate
+termination evidence proves only constructor/thread retirement, not absence of
+user startup.
+
+Other remaining work: exact JS-host duplicate constructor-name diagnostics;
+full private-hook malformed/result/UTF8/exception policy; native host classes
+beyond endpoints; compile actual C++ glue; unchanged upstream/native controls
+for streams/AbortSignal/backpressure/cancel/abort/close/messageerror, graph
+getters/reentry/GC/OOM/fatal/foreign realms/Worker and every identified artifact
+on all four hosts. No original STR-003/STR-004 finding is closed.

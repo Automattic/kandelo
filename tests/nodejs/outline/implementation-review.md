@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source206 integrates normal generic registered-JS sender ownership over205receiver order. Current actual JS callbacks have7matching observations and2explicit differential nonpasses; normal877inputs/style/bootstrap/staging and14package checks pass. Real outcome/Worker LOAD owner is next; no new compiler or guest run.
+See [source scope](registered-host-sender-integration.md).
+
 A control-only signature-frame correction now passes the original byte-identical40groups and3native/candidate lifecycle pairs. Current52streaming groups and2unchanged upstream files per subject pass with existing CLI-block skips retained. Original39/40is preserved. Production/engine inputs and revision205are unchanged; guest conformance remains open.
 See [source scope](signature-frame-control-integration.md).
 

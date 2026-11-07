@@ -1,0 +1,466 @@
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -659,5 +659,5 @@
+
+   bool parseTransferable();
+-  bool transferOwnership();
++  bool transferOwnership(bool arraysOnly, size_t selectedIndex);
+
+   inline void checkStack();
+@@ -701,4 +701,8 @@
+   RootedValueVector kandeloHostObjects;
+   RootedValueVector kandeloHostInfo;
++  kandelo::clone::HostOrder kandeloWriteOrder;
++  size_t kandeloTransferredJSCount = 0;
++  bool expandKandeloTransfers();
++  bool serializeKandeloHost(uint32_t index, bool transfer);
+   bool writeValue(HandleValue v);
+
+@@ -770,5 +774,5 @@
+   *mode = -1;
+   RootedValue marker(this, kandeloCloneModeSymbol());
+-  if (!marker.isSymbol()) return true;
++  if (!marker.isSymbol() || !marker.toSymbol()->isPrivateName()) return true;
+   RootedObject unwrapped(this, CheckedUnwrapStatic(object));
+   // A proxy is not its target's host object. Do not trigger a proxy trap to
+@@ -1353,68 +1357,73 @@
+     int32_t hostMode;
+     if (!cx->getKandeloCloneMode(tObj, &hostMode)) return false;
+-    if (hostMode >= 0) {
+-      return cx->reportKandeloCloneError((hostMode & 1)
+-          ? "Transferring registered host objects is not implemented"
+-          : "Found invalid object in transferList");
+-    }
+-
+-    RootedObject unwrappedObj(cx, CheckedUnwrapStatic(tObj));
+-    if (!unwrappedObj) {
+-      ReportAccessDenied(cx);
+-      return false;
+-    }
+-
+-    if (unwrappedObj->is<ArrayBufferObject>() &&
+-        unwrappedObj->as<ArrayBufferObject>().isNonDetachable()) {
+-      // Reject before graph traversal or detaching any other listed buffer.
+-      if (cx->hasKandeloCloneErrors()) {
++    if (hostMode >= 0 && (!cx->hasKandeloCloneErrors() ||
++        output().scope() != JS::StructuredCloneScope::SameProcess || hostMode != 1))
++      return cx->reportKandeloCloneError("Found invalid object in transferList");
++
++    if (hostMode < 0) {
++      RootedObject unwrappedObj(cx, CheckedUnwrapStatic(tObj));
++      if (!unwrappedObj) {
++        ReportAccessDenied(cx);
++        return false;
++      }
++
++      if (cx->hasKandeloCloneErrors() && unwrappedObj->is<ArrayBufferObject>() &&
++          (unwrappedObj->as<ArrayBufferObject>().isDetached() ||
++           unwrappedObj->as<ArrayBufferObject>().hasDefinedDetachKey()))
+         return cx->reportKandeloCloneError("Cannot transfer object of unsupported type.");
+-      }
+-      return reportDataCloneError(JS_SCERR_WASM_NO_TRANSFER);
+-    }
+-
+-    // Shared memory cannot be transferred because it is not possible (nor
+-    // desirable) to detach the memory in agents that already hold a
+-    // reference to it.
+-
+-    if (unwrappedObj->is<SharedArrayBufferObject>()) {
+-      return reportDataCloneError(JS_SCERR_SHMEM_TRANSFERABLE);
+-    }
+-
+-    else if (unwrappedObj->is<WasmMemoryObject>()) {
+-      if (unwrappedObj->as<WasmMemoryObject>().isShared()) {
++      if (unwrappedObj->is<ArrayBufferObject>() &&
++          unwrappedObj->as<ArrayBufferObject>().isNonDetachable()) {
++        // Reject before graph traversal or detaching any other listed buffer.
++        if (cx->hasKandeloCloneErrors()) {
++          return cx->reportKandeloCloneError("Cannot transfer object of unsupported type.");
++        }
++        return reportDataCloneError(JS_SCERR_WASM_NO_TRANSFER);
++      }
++
++      // Shared memory cannot be transferred because it is not possible (nor
++      // desirable) to detach the memory in agents that already hold a
++      // reference to it.
++
++      if (unwrappedObj->is<SharedArrayBufferObject>()) {
+         return reportDataCloneError(JS_SCERR_SHMEM_TRANSFERABLE);
+       }
+-    }
+-
+-    // External array buffers may be able to be transferred in the future,
+-    // but that is not currently implemented.
+-
+-    else if (unwrappedObj->is<ArrayBufferObject>()) {
+-      if (unwrappedObj->as<ArrayBufferObject>().isExternal() &&
+-          (!unwrappedObj->as<ArrayBufferObject>().kandeloBackingOwner() ||
+-           output().scope() != JS::StructuredCloneScope::SameProcess)) {
+-        return reportDataCloneError(JS_SCERR_TRANSFERABLE);
+-      }
+-    }
+-
+-    else {
+-      if (!out.buf.callbacks_ || !out.buf.callbacks_->canTransfer) {
+-        return reportDataCloneError(JS_SCERR_TRANSFERABLE);
+-      }
+-
+-      JSAutoRealm ar(cx, unwrappedObj);
+-      bool sameProcessScopeRequired = false;
+-      if (!out.buf.callbacks_->canTransfer(
+-              cx, unwrappedObj, &sameProcessScopeRequired, out.buf.closure_)) {
+-        // Node's native host owner can report a precise source/detached/duplicate
+-        // error. Do not overwrite that already-pending exception.
+-        if (cx->hasKandeloCloneErrors() && cx->isExceptionPending()) return false;
+-        return reportDataCloneError(JS_SCERR_TRANSFERABLE);
+-      }
+-
+-      if (sameProcessScopeRequired) {
+-        output().sameProcessScopeRequired();
+-      }
++
++      else if (unwrappedObj->is<WasmMemoryObject>()) {
++        if (unwrappedObj->as<WasmMemoryObject>().isShared()) {
++          return reportDataCloneError(JS_SCERR_SHMEM_TRANSFERABLE);
++        }
++      }
++
++      // External array buffers may be able to be transferred in the future,
++      // but that is not currently implemented.
++
++      else if (unwrappedObj->is<ArrayBufferObject>()) {
++        if (unwrappedObj->as<ArrayBufferObject>().isExternal() &&
++            (!unwrappedObj->as<ArrayBufferObject>().kandeloBackingOwner() ||
++             output().scope() != JS::StructuredCloneScope::SameProcess)) {
++          return reportDataCloneError(JS_SCERR_TRANSFERABLE);
++        }
++      }
++
++      else {
++        if (!out.buf.callbacks_ || !out.buf.callbacks_->canTransfer) {
++          return reportDataCloneError(JS_SCERR_TRANSFERABLE);
++        }
++
++        JSAutoRealm ar(cx, unwrappedObj);
++        bool sameProcessScopeRequired = false;
++        if (!out.buf.callbacks_->canTransfer(
++                cx, unwrappedObj, &sameProcessScopeRequired, out.buf.closure_)) {
++          // Node's native host owner can report a precise source/detached/duplicate
++          // error. Do not overwrite that already-pending exception.
++          if (cx->hasKandeloCloneErrors() && cx->isExceptionPending()) return false;
++          return reportDataCloneError(JS_SCERR_TRANSFERABLE);
++        }
++
++        if (sameProcessScopeRequired) {
++          output().sameProcessScopeRequired();
++        }
++      }
++
+     }
+
+@@ -1456,5 +1465,77 @@
+   }
+
+-  return true;
++  return !cx->hasKandeloCloneErrors() ||
++      output().scope() != JS::StructuredCloneScope::SameProcess || expandKandeloTransfers();
++}
++
++bool JSStructuredCloneWriter::expandKandeloTransfers() {
++  JSContext* cx = context();
++  RootedObject host(cx), nested(cx), actual(cx);RootedValue result(cx), value(cx);
++  // The entire explicit list was checked first. Re-read length as hooks can
++  // register more hosts; ArrayBuffers are not hosts and have no nested hook.
++  for (size_t i = 0; i < transferableObjects.length(); ++i) {
++    if (!CheckForInterrupt(cx)) return false;
++    host = transferableObjects[i];int32_t mode;
++    if (!cx->getKandeloCloneMode(host, &mode)) return false;
++    if (mode < 0) continue;
++    RootedValue hook(cx, cx->kandeloCloneNestedTransfers());
++    RootedValue argument(cx, ObjectValue(*host));
++    if (!CallKandeloCloneHook(cx, hook, JS::HandleValueArray(argument), &result)) return false;
++    if (!result.isObject()) continue;
++    nested = &result.toObject();actual = CheckedUnwrapStatic(nested);
++    if (!actual) { ReportAccessDenied(cx);return false; }
++    // Pinned IsArray accepts actual arrays, not proxies with array targets.
++    if (!actual->is<ArrayObject>()) continue;
++    for (uint32_t j = 0;; ++j) {
++      if (!CheckForInterrupt(cx)) return false;
++      uint32_t length;if (!JS::GetArrayLength(cx, nested, &length)) return false;
++      if (j >= length) break;
++      if (!JS_GetElement(cx, nested, j, &value)) return false;
++      if (!value.isObject()) continue;
++      RootedObject item(cx, &value.toObject());int32_t itemMode;bool native = false;
++      if (!cx->getKandeloCloneMode(item, &itemMode)) return false;
++      if (itemMode < 0 && !cx->probeKandeloNativeHost(item, &native)) return false;
++      if (itemMode < 0 && !native) continue;
++      RootedObject identity(cx, CheckedUnwrapStatic(item));
++      if (!identity) { ReportAccessDenied(cx);return false; }
++      for (size_t registered = 0; registered < transferableObjects.length(); ++registered) {
++        if (!CheckForInterrupt(cx)) return false;
++        RootedObject previous(cx, transferableObjects[registered]);
++        RootedObject previousIdentity(cx, CheckedUnwrapStatic(previous));
++        if (!previousIdentity) { ReportAccessDenied(cx);return false; }
++        if (identity == previousIdentity)
++          return cx->reportKandeloCloneError("The transfer list is invalid.");
++      }
++      if (transferableObjects.length() == UINT32_MAX)
++        return cx->reportKandeloCloneError("Host transfer registry is too large");
++      if (!transferableObjects.append(item)) return false;
++    }
++  }
++  // Native transfer-map entries retain native graph IDs. JS hosts get their
++  // separate descriptor IDs before main traversal, including unreachable ones.
++  size_t nativeIndex = 0;
++  const size_t total = transferableObjects.length();
++  try {
++    for (size_t i = 0; i < total; ++i) {
++      if (!CheckForInterrupt(cx)) return false;
++      host = transferableObjects[i];int32_t mode;
++      if (!cx->getKandeloCloneMode(host, &mode)) return false;
++      if (mode >= 0) {
++        uint32_t index = uint32_t(kandeloHostObjects.length());
++        if (!kandeloHostObjects.append(ObjectValue(*host))) return false;
++        if (!kandeloWriteOrder.Append(kandelo::clone::HostOrder::Kind::JavaScript, index)) return false;
++      } else {
++        ESClass cls;if (!GetBuiltinClass(cx, host, &cls)) return false;
++        transferableObjects.get()[nativeIndex] = host.get();
++        if (cls != ESClass::ArrayBuffer &&
++            !kandeloWriteOrder.Append(kandelo::clone::HostOrder::Kind::Native, uint32_t(nativeIndex))) return false;
++        ++nativeIndex;
++      }
++    }
++  } catch (const std::bad_alloc&) { ReportOutOfMemory(cx);return false; }
++  transferableObjects.shrinkBy(total - nativeIndex);
++  kandeloTransferredJSCount = kandeloHostObjects.length();
++  return !kandeloTransferredJSCount || cx->observeKandeloTransfers(
++      out.buf.callbacks_, out.buf.closure_, uint32_t(kandeloTransferredJSCount));
+ }
+
+@@ -2311,5 +2392,11 @@
+   if (hostMode >= 0) {
+     if (hostMode == 0) return context()->reportKandeloCloneError("Cannot clone object of unsupported type.");
+-    if (hostMode & 1) return context()->reportKandeloCloneError("Transferring registered host objects is not implemented");
++    if (hostMode & 1) {
++      for (uint32_t i = 0; i < kandeloHostObjects.length(); ++i)
++        if (kandeloHostObjects[i] == ObjectValue(*obj))
++          return out.writePair(SCTAG_KANDELO_HOST_OBJECT, i);
++      return context()->reportKandeloCloneError(
++          "Object that needs transfer was found in message but not listed in transferList");
++    }
+     if (!context()->hasKandeloCloneErrors() ||
+         output().scope() != JS::StructuredCloneScope::SameProcess) {
+@@ -2470,5 +2557,5 @@
+ }
+
+-bool JSStructuredCloneWriter::transferOwnership() {
++bool JSStructuredCloneWriter::transferOwnership(bool arraysOnly, size_t selectedIndex) {
+   if (transferableObjects.empty()) {
+     return true;
+@@ -2480,5 +2567,9 @@
+   // when the Node clone owner is not installed.
+   const bool nodeOrder = context()->hasKandeloCloneErrors();
+-  for (unsigned pass = 0; pass < (nodeOrder ? 2u : 1u); ++pass) {
++  const bool selected = selectedIndex != SIZE_MAX;
++  if (selected && selectedIndex >= transferableObjects.length())
++    return context()->reportKandeloCloneError("Invalid native transfer index");
++  const unsigned passes = nodeOrder && !arraysOnly && !selected ? 2u : 1u;
++  for (unsigned pass = 0; pass < passes; ++pass) {
+     // Walk along the transferables and the transfer map at the same time,
+     // grabbing out pointers from the transferables and stuffing them into the
+@@ -2501,10 +2592,17 @@
+     RootedObject obj(cx);
+     JS::StructuredCloneScope scope = output().scope();
+-    for (auto* o : transferableObjects) {
+-      obj = o;
++    // A scheduled native commit addresses its existing table slot directly;
++    // it must not rescan every buffer/host for each endpoint in a large list.
++    const size_t first = selected ? selectedIndex : 0;
++    const size_t last = selected ? selectedIndex + 1 : transferableObjects.length();
++    if (selected) point += selectedIndex * 3 * sizeof(uint64_t);
++    for (size_t i = first; i < last; ++i) {
++      obj = transferableObjects[i];
+
+       ESClass cls;
+       if (!GetBuiltinClass(cx, obj, &cls)) return false;
+-      if (nodeOrder && ((pass == 0) != (cls == ESClass::ArrayBuffer))) {
++      const bool skip = nodeOrder && !selected &&
++          (arraysOnly ? cls != ESClass::ArrayBuffer : ((pass == 0) != (cls == ESClass::ArrayBuffer)));
++      if (skip) {
+         MOZ_ALWAYS_TRUE(point.advance());
+         MOZ_ALWAYS_TRUE(point.advance());
+@@ -2640,5 +2738,5 @@
+     // Make sure there aren't any more transfer map entries after the expected
+     // number we read out.
+-    if (!point.done()) {
++    if (!selected && !point.done()) {
+       uint32_t tag, data;
+       SCInput::getPair(point.peek(), &tag, &data);
+@@ -2756,4 +2854,20 @@
+ }
+
++bool JSStructuredCloneWriter::serializeKandeloHost(uint32_t index, bool transfer) {
++  if (index >= kandeloHostObjects.length() || index != kandeloHostInfo.length())
++    return context()->reportKandeloCloneError("Invalid host payload order");
++  JS::RootedValueArray<2> arguments(context());
++  arguments[0].set(kandeloHostObjects[index]);arguments[1].setBoolean(transfer);
++  RootedValue hook(context(), context()->kandeloCloneSerialize()), result(context());
++  if (!CallKandeloCloneHook(context(), hook, arguments, &result)) return false;
++  if (!result.isObject()) return context()->reportKandeloCloneError("Invalid host clone payload");
++  RootedObject record(context(), &result.toObject());
++  RootedValue info(context()), payload(context());
++  if (!JS_GetElement(context(), record, 0, &info) ||
++      !JS_GetElement(context(), record, 1, &payload)) return false;
++  if (!info.isString()) return context()->reportKandeloCloneError("Invalid host constructor info");
++  return kandeloHostInfo.append(info) && writeValue(payload);
++}
++
+ bool JSStructuredCloneWriter::write(HandleValue v) {
+   const bool hostProtocol = context()->hasKandeloCloneErrors() &&
+@@ -2770,20 +2884,19 @@
+     // before any host payload hook. Stored resizable-buffer tails occupy the
+     // gap before payloadStart; the reader checks and consumes that exact gap.
+-    if (!transferOwnership()) return false;
++    if (!transferOwnership(true, SIZE_MAX)) return false;
+     uint64_t payloadStart = out.tell();
+-    // Match Node's host hook order: all main-graph getters run first. A host
+-    // payload can discover more hosts, so read length again on each iteration.
+-    for (size_t i = 0; i < kandeloHostObjects.length(); ++i) {
+-      RootedValue object(context(), kandeloHostObjects[i]);
+-      RootedValue hook(context(), context()->kandeloCloneSerialize());
+-      RootedValue result(context());
+-      if (!CallKandeloCloneHook(context(), hook, JS::HandleValueArray(object), &result)) return false;
+-      if (!result.isObject()) return context()->reportKandeloCloneError("Invalid host clone payload");
+-      RootedObject record(context(), &result.toObject());
+-      RootedValue info(context()), payload(context());
+-      if (!JS_GetElement(context(), record, 0, &info) ||
+-          !JS_GetElement(context(), record, 1, &payload)) return false;
+-      if (!info.isString()) return context()->reportKandeloCloneError("Invalid host constructor info");
+-      if (!kandeloHostInfo.append(info) || !writeValue(payload)) return false;
++    // The frozen transfer prefix follows whole-list/nested admission, not
++    // main graph encounter order. Native entries keep their map positions;
++    // every transferred JS payload shares the same original graph memory.
++    for (const auto& entry : kandeloWriteOrder.Entries()) {
++      if (!CheckForInterrupt(context())) return false;
++      if (entry.kind == kandelo::clone::HostOrder::Kind::Native) {
++        if (!transferOwnership(false, entry.index)) return false;
++      } else if (!serializeKandeloHost(entry.index, true)) return false;
++    }
++    // Payloads can discover more clone-only hosts, so re-read length. Their
++    // descriptor IDs follow every registered transfer, as in pinned Node.
++    for (size_t i = kandeloTransferredJSCount; i < kandeloHostObjects.length(); ++i) {
++      if (!CheckForInterrupt(context()) || !serializeKandeloHost(uint32_t(i), false)) return false;
+     }
+     uint64_t tableOffset = out.tell();
+@@ -2794,23 +2907,10 @@
+       if (!writeString(SCTAG_STRING, info)) return false;
+     }
+-    // The current sender admits native transfers followed by cloned JS hosts.
+-    // Encode this actual creation order, retaining native transfer-map indices
+-    // independently from JS constructor/graph identities. Generic registered
+-    // JS sender admission/nested commit will consume this same ordered owner.
+     try {
+-      kandelo::clone::HostOrder order;
+-      uint32_t index = 0;
+-      for (auto* object : transferableObjects) {
+-        RootedObject item(context(), object);ESClass cls;
+-        if (!GetBuiltinClass(context(), item, &cls)) return false;
+-        if (cls != ESClass::ArrayBuffer)
+-          order.Append(kandelo::clone::HostOrder::Kind::Native, index);
+-        ++index;
+-      }
+-      for (size_t i = 0; i < kandeloHostInfo.length(); ++i)
+-        order.Append(kandelo::clone::HostOrder::Kind::JavaScript, uint32_t(i));
+-      if (order.Entries().size() > UINT32_MAX) return reportDataCloneError(JS_SCERR_TRANSFERABLE);
+-      if (!out.writePair(SCTAG_KANDELO_HOST_ORDER, uint32_t(order.Entries().size()))) return false;
+-      for (const auto& entry : order.Entries())
++      for (size_t i = kandeloTransferredJSCount; i < kandeloHostInfo.length(); ++i)
++        if (!kandeloWriteOrder.Append(kandelo::clone::HostOrder::Kind::JavaScript, uint32_t(i))) return false;
++      if (kandeloWriteOrder.Entries().size() > UINT32_MAX) return reportDataCloneError(JS_SCERR_TRANSFERABLE);
++      if (!out.writePair(SCTAG_KANDELO_HOST_ORDER, uint32_t(kandeloWriteOrder.Entries().size()))) return false;
++      for (const auto& entry : kandeloWriteOrder.Entries())
+         if (!out.writePair(uint32_t(entry.kind), entry.index)) return false;
+     } catch (const std::bad_alloc&) { ReportOutOfMemory(context());return false; }
+@@ -2825,5 +2925,5 @@
+   }
+   memory.clear();
+-  return hostProtocol || transferOwnership();
++  return hostProtocol || transferOwnership(false, SIZE_MAX);
+ }
+
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -40,4 +40,5 @@
+
+ struct JS_PUBLIC_API JSContext;
++struct JSStructuredCloneCallbacks;
+
+ struct DtoaState;
+@@ -624,4 +625,9 @@
+   js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneCreate_;
+   js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneDeserialize_;
++  js::ContextData<JS::PersistentRooted<JS::Value>> kandeloCloneNestedTransfers_;
++  using KandeloNativeHostProbe = bool (*)(JSContext*, JS::HandleObject, bool*);
++  js::ContextData<KandeloNativeHostProbe> kandeloNativeHostProbe_;
++  using KandeloTransferObserver = bool (*)(JSContext*, const JSStructuredCloneCallbacks*, void*, uint32_t);
++  js::ContextData<KandeloTransferObserver> kandeloTransferObserver_;
+
+  public:
+@@ -661,4 +667,18 @@
+   bool reportKandeloCloneError(const char* message);
+   bool getKandeloCloneMode(JS::HandleObject object, int32_t* mode);
++  JS::Value& kandeloCloneNestedTransfers() {
++    if (!kandeloCloneNestedTransfers_.ref().initialized()) kandeloCloneNestedTransfers_.ref().init(this);
++    return kandeloCloneNestedTransfers_.ref().get();
++  }
++  void setKandeloNativeHostProbe(KandeloNativeHostProbe probe) { kandeloNativeHostProbe_.ref() = probe; }
++  bool probeKandeloNativeHost(JS::HandleObject object, bool* found) {
++    *found = false;auto probe = kandeloNativeHostProbe_.ref();
++    return !probe || probe(this, object, found);
++  }
++  void setKandeloTransferObserver(KandeloTransferObserver observer) { kandeloTransferObserver_.ref() = observer; }
++  bool observeKandeloTransfers(const JSStructuredCloneCallbacks* callbacks, void* closure, uint32_t count) {
++    auto observer = kandeloTransferObserver_.ref();
++    return observer ? observer(this, callbacks, closure, count) : reportKandeloCloneError("Registered transfer packet ownership is unavailable");
++  }
+   double& kandeloAsyncParentId() { return kandeloAsyncParentId_.ref(); }
+   // Environment override, deliberately excluded from captured job/frame data.
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -1213,4 +1213,7 @@
+       kandeloCloneCreate_(this),
+       kandeloCloneDeserialize_(this),
++      kandeloCloneNestedTransfers_(this),
++      kandeloNativeHostProbe_(this, nullptr),
++      kandeloTransferObserver_(this, nullptr),
+       unwrappedException_(this),
+       unwrappedExceptionStack_(this),
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3828,9 +3828,9 @@
+ static bool KandeloNativeConfigureClone(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+-  if (!args.get(0).isSymbol()) {
++  if (!args.get(0).isSymbol() || !args[0].toSymbol()->isPrivateName()) {
+     JS_ReportErrorASCII(cx, "Clone configuration requires a private mode symbol");
+     return false;
+   }
+-  for (unsigned i = 1; i < 5; ++i) {
++  for (unsigned i = 1; i < 6; ++i) {
+     if (!args.get(i).isObject() || !JS::IsCallable(&args[i].toObject())) {
+       JS_ReportErrorASCII(cx, "Clone configuration requires callable hooks");
+@@ -3843,4 +3843,7 @@
+   cx->kandeloCloneCreate() = args[3];
+   cx->kandeloCloneDeserialize() = args[4];
++  cx->kandeloCloneNestedTransfers() = args[5];
++  cx->setKandeloNativeHostProbe(KandeloPortIsTransferHost);
++  cx->setKandeloTransferObserver(KandeloPortObserveRegisteredTransfers);
+   args.rval().setUndefined();
+   return true;
+@@ -4249,5 +4252,5 @@
+       JS_FN("asyncHookFatal", KandeloNativeAsyncHookFatal, 1, 0),
+       JS_FN("enqueueMicrotask", KandeloNativeEnqueueMicrotask, 1, 0),
+-      JS_FN("configureClone", KandeloNativeConfigureClone, 5, 0),
++      JS_FN("configureClone", KandeloNativeConfigureClone, 6, 0),
+       JS_FN("createCloneModeSymbol", KandeloNativeCreateCloneModeSymbol, 0, 0),
+       JS_FN("setCloneMode", KandeloNativeSetCloneMode, 2, 0),

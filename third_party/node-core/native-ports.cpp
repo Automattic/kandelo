@@ -318,6 +318,24 @@ static bool KandeloPortMissingTransfer(JSContext* cx, HandleObject object, bool*
       ? "Object that needs transfer was found in message but not listed in transferList"
       : "Cannot clone object of unsupported type.");
 }
+// Type identity only: nested discovery must not repeat explicit admission's
+// source/detached/duplicate side effects. No JS property or public token grants
+// this brand; real adoption still validates/moves its native endpoint owner.
+static bool KandeloPortIsTransferHost(JSContext* cx, HandleObject object, bool* found) {
+  RootedObject actual(cx, KandeloPortUnwrap(cx, object));if (!actual) return false;
+  *found = JS::GetClass(actual) == &KandeloPublicPortClass;return true;
+}
+// Only the actual owned packet callback/closure pair can receive this scalar.
+// No sender JS object or context is retained by the published sidecar.
+static bool KandeloPortObserveRegisteredTransfers(JSContext* cx,
+    const JSStructuredCloneCallbacks* callbacks, void* closure, uint32_t count) {
+  if (callbacks != &KandeloHistogramCloneCallbacks || !closure)
+    return cx->reportKandeloCloneError("Registered transfer requires an owned packet");
+  auto* data = static_cast<KandeloHistogramCloneData*>(closure);
+  if (!data->graphOwner)
+    return cx->reportKandeloCloneError("Registered transfer packet ownership was retired");
+  data->registeredTransfers = count;return true;
+}
 static bool KandeloPortCanTransfer(JSContext* cx, HandleObject object, bool* sameProcess, void* closure) {
   RootedObject unwrapped(cx, KandeloPortUnwrap(cx, object));
   if (!unwrapped || JS::GetClass(unwrapped) != &KandeloPublicPortClass) return false;
@@ -544,7 +562,7 @@ static bool KandeloPortDispatch(JSContext* cx, unsigned argc, Value* vp) {
       if (!JS_StructuredCloneHasTransferables(packet->content->data.data(), &hasTransferables)) {
         JS_ReportErrorASCII(cx, "Invalid broadcast clone data"); return false;
       }
-      if (hasTransferables)
+      if (hasTransferables || packet->content->histogramData.registeredTransfers)
         return cx->reportKandeloCloneError("Broadcast messages cannot contain transferred objects");
       // The pinned JS_ReadStructuredClone contract permits repeated reads
       // only without transferables. Retain the one immutable engine buffer;

@@ -9,6 +9,9 @@ using KandeloPortTransfer = kandelo::ports::TransitTransfer<KandeloPortPacket>;
 struct KandeloHistogramCloneData {
   std::vector<std::shared_ptr<Histogram>> histograms;
   std::vector<std::shared_ptr<KandeloPortTransfer>> ports;
+  // Logical registered-JS moves also forbid repeated/broadcast reads even
+  // when the engine native-transfer map is empty. Set before publication.
+  uint32_t registeredTransfers = 0;
   // Borrowed only during the synchronous write/read operation. These never
   // survive publication of a packet or contain a cross-thread JS reference.
   kandelo::ports::transit::Node* graphOwner = nullptr;

@@ -1,6 +1,7 @@
 // Native graph traversal owns identity, host allocation and deferred payloads.
-// Cloneable host objects supply the pinned private clone/deserialize hooks;
-// moving host handles and channel transport remain implementation gaps.
+// Registered JS hosts supply pinned clone/transfer/list/deserialize hooks.
+// Native writer/packet owners handle admission, graph identity and moves;
+// per-type native ownership and malformed/outcome parity remain separate gaps.
 function _createNodeClonePlatform(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
@@ -44,8 +45,9 @@ function _createNodeClonePlatform(platform) {
     }
     platform.native.configureClone(privateSymbols.transfer_mode_private_symbol,
         message => new (platform.getDOMException())(message, 'DataCloneError'),
-        object => {
-            const result = ReflectApply(object[symbols.messaging_clone_symbol], object, []);
+        (object, transfer = false) => {
+            const method = transfer ? symbols.messaging_transfer_symbol : symbols.messaging_clone_symbol;
+            const result = ReflectApply(object[method], object, []);
             // Node gets data before converting deserializeInfo to a string.
             // Keep these reads in that order, even for accessor properties.
             const data = result.data;
@@ -56,6 +58,10 @@ function _createNodeClonePlatform(platform) {
         (object, data) => {
             const method = object[symbols.messaging_deserialize_symbol];
             if (typeof method === 'function') ReflectApply(method, object, [data]);
+        },
+        object => {
+            const method = object[symbols.messaging_transfer_list_symbol];
+            return typeof method === 'function' ? ReflectApply(method, object, []) : undefined;
         });
     const module = { exports: {} };
     factories['internal/worker/js_transferable'](module, module.exports, require, primordials, internalBinding);
