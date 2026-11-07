@@ -54,6 +54,14 @@ function _createNodeSocketStream(platform) {
         /* NODE_SOCKET_NET_OPTIONS */
         /* NODE_SOCKET_DESTROY_SOON */
     }
+    const afterShutdown = (function(debug) {
+        /* NODE_SOCKET_AFTER_SHUTDOWN */
+        return afterShutdown;
+    })(require('internal/util/debuglog').debuglog('net'));
+    function shutdown(owner, cb) {
+        const { UV_ENOTCONN } = platform.uv.binding;
+        /* NODE_SOCKET_SHUTDOWN_BODY */
+    }
     function initOptions(socket, options) {
         ReflectApply(function() {
             /* NODE_SOCKET_NET_INIT */
@@ -86,7 +94,7 @@ function _createNodeSocketStream(platform) {
         stream[kAfterAsyncWrite] = function() { this._lastWriteQueueSize = 0; };
         return owner;
     }
-    return { bind, onStreamRead, afterWriteDispatched, createConstructor, installSocket, initOptions, applyOptions,
+    return { bind, onStreamRead, afterWriteDispatched, createConstructor, installSocket, shutdown, initOptions, applyOptions,
         binding: { kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync, kLastWriteErr, streamBaseState },
         symbols: { kUpdateTimer, kAfterAsyncWrite, kHandle, kMaybeDestroy } };
 }

@@ -34150,6 +34150,29 @@ Socket.prototype.setKeepAlive = function(enable, initialDelayMsecs,
     this.once('finish', this.destroy);
 };
     }
+    const afterShutdown = (function(debug) {
+        function afterShutdown() {
+  const self = this.handle[owner_symbol];
+
+  debug('afterShutdown destroyed=%j', self.destroyed);
+
+  this.callback();
+}
+        return afterShutdown;
+    })(require('internal/util/debuglog').debuglog('net'));
+    function shutdown(owner, cb) {
+        const { UV_ENOTCONN } = platform.uv.binding;
+          const req = platform.native.socketShutdownRequest(owner);
+  req.oncomplete = afterShutdown;
+  req.handle = owner;
+  req.callback = cb;
+  const err = owner.shutdown(req);
+
+  if (err === 1 || err === UV_ENOTCONN)  // synchronous finish
+    return cb();
+  else if (err !== 0)
+    return cb(new ErrnoException(err, 'shutdown'));
+    }
     function initOptions(socket, options) {
         ReflectApply(function() {
               this[kSetNoDelay] = Boolean(options.noDelay);
@@ -34193,7 +34216,7 @@ Socket.prototype.setKeepAlive = function(enable, initialDelayMsecs,
         stream[kAfterAsyncWrite] = function() { this._lastWriteQueueSize = 0; };
         return owner;
     }
-    return { bind, onStreamRead, afterWriteDispatched, createConstructor, installSocket, initOptions, applyOptions,
+    return { bind, onStreamRead, afterWriteDispatched, createConstructor, installSocket, shutdown, initOptions, applyOptions,
         binding: { kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync, kLastWriteErr, streamBaseState },
         symbols: { kUpdateTimer, kAfterAsyncWrite, kHandle, kMaybeDestroy } };
 }

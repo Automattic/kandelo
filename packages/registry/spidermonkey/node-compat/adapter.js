@@ -711,6 +711,7 @@
         socketOwnerAbortAdoption(owner) { return native.socketOwnerAbortAdoption(owner); },
         socketOwnerValidate(owner) { return native.socketOwnerValidate(owner); },
         socketOwnerCommitAdoption(owner) { return native.socketOwnerCommitAdoption(owner); },
+        socketShutdownRequest(owner) { return native.socketShutdownRequest(owner); },
         socketShutdown(fd) { return native.socketShutdown(fd); },
         socketRef(handle, referenced) { return native.socketRef(handle, referenced); },
         socketAddress(fd, peer) { return native.socketAddress(fd, peer); },

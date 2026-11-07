@@ -735,7 +735,8 @@ if socket_adapter.count('/* NODE_SOCKET_STREAM_STATE_LAYOUT */') != 1:
     raise ValueError('Review socket stream-state layout marker')
 socket_adapter = socket_adapter.replace('/* NODE_SOCKET_STREAM_STATE_LAYOUT */', socket_state['javascript'])
 for name, marker in [('symbols', 'STREAM_SYMBOLS'), ('afterWrite', 'STREAM_AFTER_WRITE'), ('read', 'STREAM_READ'),
-                     ('netOptions', 'NET_OPTIONS'), ('destroySoon', 'DESTROY_SOON'), ('netInit', 'NET_INIT'), ('netApply', 'NET_APPLY'),
+                     ('netOptions', 'NET_OPTIONS'), ('destroySoon', 'DESTROY_SOON'),
+                     ('shutdownBody', 'SHUTDOWN_BODY'), ('afterShutdown', 'AFTER_SHUTDOWN'), ('netInit', 'NET_INIT'), ('netApply', 'NET_APPLY'),
                      ('constructorValidate', 'CONSTRUCTOR_VALIDATE'), ('constructorNormalize', 'CONSTRUCTOR_NORMALIZE'),
                      ('constructorFlow', 'CONSTRUCTOR_FLOW')]:
     item = socket_spec['sections'][name]
@@ -744,6 +745,10 @@ for name, marker in [('symbols', 'STREAM_SYMBOLS'), ('afterWrite', 'STREAM_AFTER
     selected = source[begin:begin + item['length']]
     if hashlib.sha256(selected.encode()).hexdigest() != item['sha256']:
         raise ValueError('Socket stream selection mismatch: ' + name)
+    if name == 'shutdownBody':
+        if selected.count('new ShutdownWrap()') != 1 or selected.count('this._handle') != 2:
+            raise ValueError('Review retained TCP shutdown owning adaptation')
+        selected = selected.replace('new ShutdownWrap()', 'platform.native.socketShutdownRequest(owner)').replace('this._handle', 'owner')
     token = '/* NODE_SOCKET_' + marker + ' */'
     if socket_adapter.count(token) != 1:
         raise ValueError('Socket stream selection marker mismatch: ' + name)

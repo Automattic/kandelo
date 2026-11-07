@@ -68,6 +68,19 @@
       "start": "Socket.prototype.destroySoon = function() {",
       "length": 179,
       "sha256": "e70f2c502e1e7c651a9a5f10775a8b8976bc1e2595144bd685d0074ce15e9106"
+    },
+    "shutdownBody": {
+      "source": "net",
+      "start": "  const req = new ShutdownWrap();",
+      "length": 314,
+      "sha256": "82c33e1d172355bea67022b5925a1f75a1b515d0419cfca0624f9c75924274cb",
+      "adaptation": "new ShutdownWrap() -> platform.native.socketShutdownRequest(owner); this._handle -> owner; actual retained native identity, no dummy constructor"
+    },
+    "afterShutdown": {
+      "source": "net",
+      "start": "function afterShutdown() {",
+      "length": 146,
+      "sha256": "56ece3b9e776dfe8a10944599d5a0b5a0ed84b5be3d71de5af29bfffe5fb054b"
     }
   },
   "tcpProvider": {

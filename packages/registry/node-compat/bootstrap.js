@@ -2583,7 +2583,7 @@ const stream = _nodeStreamPlatform.api;
 // Shared stream state also carries reads from actual captured TTY owners.
 const _nodeSocketStream = _createNodeSocketStream({
     Buffer, FastBuffer: _FastBuffer, async: _nodeAsyncPlatform,
-    values: _nodeValues, types: util.types, native: _nodeNative, stream,
+    values: _nodeValues, types: util.types, native: _nodeNative, stream, uv: _nodeUv,
     markResource: receiver => _nodeClonePlatform.setMode(receiver, 0),
 });
 
@@ -3849,8 +3849,7 @@ const net = (() => {
             // No acquired native stream exists to shut down. Complete the
             // actual Writable finalization rather than issuing shutdown(-1).
             if (!owner) return cb();
-            try { nat.socketShutdown(owner.fd); cb(); }
-            catch (reason) { cb(connectError(reason, this.remoteAddress, this.remotePort, 'shutdown')); }
+            return _nodeSocketStream.shutdown(owner, cb);
         }
 
         connect(...args) {

@@ -1,0 +1,8 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3958 +3958,2 @@
+-                    JS::GetClass(unwrapped) == &KandeloSocketConnectClass)) {
++                    JS::GetClass(unwrapped) == &KandeloSocketConnectClass ||
++                    JS::GetClass(unwrapped) == &KandeloSocketShutdownClass)) {
+@@ -4602,0 +4604 @@
++      JS_FN("socketShutdownRequest", KandeloNativeCreateSocketShutdownRequest, 1, 0),

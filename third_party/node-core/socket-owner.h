@@ -95,6 +95,15 @@ struct Write {
   }
 };
 
+struct Shutdown {
+  const uint64_t generation;
+  uint64_t writeSequence = 0;
+  bool queued = false, complete = false;
+  int error = 0;
+  memory::Allocation allocation{sizeof(Shutdown)};
+  explicit Shutdown(uint64_t value) : generation(value) {}
+};
+
 // A transport layer consumes this actual stream exclusively. Its outstanding
 // native requests keep the parent's queued close from completing prematurely.
 class TransportAttachment {
@@ -112,6 +121,7 @@ class Owner {
   bool reading_ = false;
   bool closed_ = false;
   bool referenced_ = true;
+  bool writeShutdown_ = false;
   std::shared_ptr<Read> read_;
  public:
   memory::Allocation allocation{sizeof(Owner)};
@@ -153,6 +163,22 @@ class Owner {
 #endif
     }
     return error;
+  }
+  int QueueShutdown(Shutdown& request) noexcept {
+    if (request.generation != generation_ || request.queued || request.complete)
+      return EINVAL;
+    if (closed_ || Fd() < 0 || writeShutdown_) return ENOTCONN;
+    if (transport_) return EBUSY; // TLS owns its own close_notify/stream layer.
+    writeShutdown_ = true; request.queued = true; return 0;
+  }
+  bool ProgressShutdown(Shutdown& request, bool earlierWrites) noexcept {
+    if (request.complete) return true;
+    if (!request.queued || request.generation != generation_) return false;
+    // The caller also waits for earlier callbacks, not just consumed bytes.
+    if (earlierWrites) return false;
+    if (closed_ || Fd() < 0) request.error = ECANCELED;
+    else if (::shutdown(Fd(), SHUT_WR) < 0) request.error = errno;
+    request.complete = true; return true;
   }
   bool Reading() const noexcept { return reading_; }
   bool Closed() const noexcept { return closed_; }
@@ -237,17 +263,17 @@ class Owner {
     return -error;
   }
   template<class SpanRef>
-  int ValidateWrite(const Write<SpanRef>& write) const noexcept {
+  int ValidateWrite(const Write<SpanRef>& write, bool submitted = false) const noexcept {
     // Pinned uv__check_before_write count guard, before descriptor validation.
     if (write.vectors.empty() || write.vectors.size() > 1024 * 1024) return EINVAL;
-    return Fd() < 0 ? EBADF : transport_ ? EBUSY : 0;
+    return Fd() < 0 ? EBADF : (writeShutdown_ && !submitted) ? EPIPE : transport_ ? EBUSY : 0;
   }
   // Callers serialize writes in stream order. One actual sendmsg consumes a
   // bounded prefix of the retained vectors; EINTR never changes that prefix.
   template<class SpanRef>
-  bool ProgressWrite(Write<SpanRef>& write) noexcept {
+  bool ProgressWrite(Write<SpanRef>& write, bool submitted = false) noexcept {
     if (write.complete) return true;
-    if (const int error = ValidateWrite(write)) { write.error = error; write.complete = true; return true; }
+    if (const int error = ValidateWrite(write, submitted)) { write.error = error; write.complete = true; return true; }
     if (!write.Remaining()) { write.complete = true; return true; }
     msghdr message = {};
     message.msg_iov = write.vectors.data() + write.vectorIndex;

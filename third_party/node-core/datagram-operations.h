@@ -97,7 +97,7 @@ class Endpoint {
     if (closed_) return EBADF;
     if (fd_ >= 0) return family_ == family ? 0 : EINVAL;
     if (flags & ~(IPv6Only | ReuseAddr | ReusePort)) return EINVAL;
-    int fd = socket(family, SOCK_DGRAM, 0);
+    int fd = ::socket(family, SOCK_DGRAM, 0);
     if (fd < 0) return errno;
     auto fail = [&](int error) { close(fd); return error; };
     int status = fcntl(fd, F_GETFL);

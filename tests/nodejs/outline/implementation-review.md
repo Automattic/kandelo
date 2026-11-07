@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source229 adds real retained connected shutdown request/lifecycle and fixes the combined datagram libc lookup.9frontend+7portable+7regression groups pass; new guest bridge/fullSocket/TLS/fourhost remain open.
+See [source scope](socket-shutdown-integration.md).
+
 Source228 wires actual module metadata to genuine lazy DATA filename/dirname cells;17current native-dependent groups pass. New native bridge, complete metadata and guest/four-host behavior remain unvalidated.
 See [source scope](import-meta-lazy-integration.md).
 

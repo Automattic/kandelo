@@ -42,6 +42,7 @@ function prepare(handle){
  handle.writeVector=function(chunks){const result=Reflect.apply(nativeWritev,this,[null,chunks,true]);copyState(socketStream.binding.streamBaseState);return result;};
 }
 const native={
+ socketShutdownRequest(handle){actual(handle);return new nativeStream.ShutdownWrap();},
  socketOwnerValidate(handle){actual(handle);if(closing.has(handle))throw Error('actual native owner closed');return handle.hasRef();},
  socketOwnerCommitAdoption(handle){actual(handle);if(closing.has(handle))throw Error('actual native owner closed before publication');},
  socketOwnerAbortAdoption(handle){actual(handle);return close(handle);},
@@ -50,7 +51,7 @@ const native={
  socketOwnerAdopt(){throw Error('Numeric-fd adoption is outside this fixture');},
 };
 const symbols={owner_symbol:Symbol('actual candidate stream owner'),async_id_symbol:Symbol('actual candidate async id')};
-const socketStream=factory.socket({Buffer,FastBuffer,async:{symbols},values,types:util.types,native,stream,
+const socketStream=factory.socket({Buffer,FastBuffer,async:{symbols},values,types:util.types,native,stream,uv:{binding:process.binding('uv')},
  markResource:receiver=>require('node:worker_threads').markAsUncloneable(receiver)});
 function candidateNet(){
  const a=source.indexOf('const net = (() => {'),b=source.indexOf('// net.BlockList and SocketAddress',a);assert(a>=0&&b>a);

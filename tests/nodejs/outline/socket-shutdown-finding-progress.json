@@ -1,0 +1,99 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network-contracts.md",
+    "findingIds": [
+      "N-015",
+      "N-020"
+    ],
+    "relatedFamilies": [
+      "network",
+      "http",
+      "secure-network",
+      "streams",
+      "async"
+    ],
+    "scope": "Genuine retained connected TCP write-shutdown request/lifecycle/error owner; no full Socket/TLSWrap/guest/four-host closure"
+  },
+  "sourceImplemented": [
+    "Consume pinned connected-final and complete afterShutdown body over genuine private retained-owner/native request factory",
+    "Create actual foreground-GC SHUTDOWNWRAP state/parent/context/frame/root/async identity before init hooks; commit queue only after successful admission",
+    "Defer real POSIX write shutdown until prior writes AND callbacks retire; reject later writes, preserve generation and cancel against closed owner",
+    "Integrate dispatch/ref/close barriers/Scope.Close-Fail/retirement/teardown/resource reporting, with genuine completed-vs-closing entry marker",
+    "Preserve no-owner and connecting paths, metadata/CLI/child/timer owners and curated exports; explicitly qualify global libc socket to fix actual combined-unity compiler error"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-shutdown229-source-r1/report.json",
+    "sha256": "9e50c3549ed124a33e827845b3c1ef47830965a8d5438eb0a6b6f04947dffbbe",
+    "guardedInputs": 891,
+    "scope": "Real retained queued shutdown request/completion and pinned connected finalization over native portable/TCP/ShutdownWrap/UV/context dependencies; preserves no-owner/connecting and source228Meta. Explicit global libc socket qualification fixes actual unity namespace collision. New guest JSAPI remains uncompiled; no fullSocket/fourhost conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-shutdown229-affected-r1.json",
+    "sha256": "5ade01269711d9b8cb772eecdedc620dcd83ee5a37a8bb76a1031b597d27f428",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-shutdown229-source-r1/report.json",
+    "sha256": "9e50c3549ed124a33e827845b3c1ef47830965a8d5438eb0a6b6f04947dffbbe",
+    "portableGroups": 7,
+    "frontendGroups": 9,
+    "destroySoonGroups": 7,
+    "freshDirectExecutions": 6,
+    "unchangedOwnerAssertions": 1424,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Two exact passing native portable binaries over identical owner/TU/header inputs, plus current frontend/native9 and destroySoon/native7 against immutable oracle rows. Native TCP/ShutdownWrap/UV/fatal/AsyncHook/VM/streams are explicit dependencies. No new guest JSAPI/fullSocket/TLS proof."
+  },
+  "sealedEvidence": {
+    "report": ".context/socket-shutdown-owner-agent/report.json",
+    "sha256": "d93c78da9205b690f3cfea21c26f66b431542991c31cb786a3df07d3e52b3066",
+    "reusedEvidence": true,
+    "scope": "Final9/9frontend vs3/9baseline,7portable owner groups and unchanged1424owner assertions,7destroySoon regression groups.3historical successful helper compiles/0compilefailures,2passing binaries, archived SIGPIPE execution remainsnonpass;21Nodeobservations acrossversions preserved."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/socket-shutdown-owner-agent/report.json",
+      "sha256": "d93c78da9205b690f3cfea21c26f66b431542991c31cb786a3df07d3e52b3066",
+      "scope": "Original helperSIGPIPEfixturefdalias,3exit0missingJSONharness errors, actual source close-phaseP2 correction, unrelatedpeer8/9counterdiag and rawprefixparsefailure retained. No publicconstructor/prototype/guest/TLS closure."
+    },
+    {
+      "report": ".context/socket-shutdown-review-agent/REPORT.md",
+      "sha256": "96bb993402ea6d17ad0ded5456c5f2b8c45f272ffbfb40326d62d29d3709edbc",
+      "scope": "Exact final runtime source review, actual close-completion distinction fixed; no additionalP1/P2. Packagingpending wastruewhenreviewsealed; no tests/builds."
+    },
+    {
+      "report": ".context/socket-shutdown-review-membership-receipt/receipt.json",
+      "sha256": "a4f6776563859718aeae3e1107a42d99e09eb0060e2b826362fe7f81e6149b97",
+      "scope": "All1524producer members and3review members verified; final4runtimehashes and7executedleaves match oldreview exactly, packagingpending resolved separately without mutating priorreview."
+    },
+    {
+      "report": "tests/nodejs/outline/engine228-build-failure-r2.json",
+      "sha256": "94731ba23888bd0100b1de5509f4380b8cc7ff361548ace4b152c4e2db956c48",
+      "scope": "Actual frozen228C++namespace error preserved; fix uses explicit global libc call with no compilerflag/assertion/platform substitution. Historical report mislabeled namespace fromfilename; actualnamespace correction is documented separately."
+    },
+    {
+      "report": ".context/node26-shutdown229-source-r1/header-staging-expectation-correction.json",
+      "sha256": "787f710603cf1b0230608ff0d10e887fb477f08b2ec124d327c257b212740b9f",
+      "scope": "Initial rootsourcecheck stopped before controls because it compared normal include-sorted header to raw bytes. Expectedbytes now derived by include-block sorting, exact body/libc qualification unchanged. Also records actual kandelo::udp namespace label; originalfailedbuildreport unchanged."
+    }
+  ],
+  "remaining": [
+    "Compile/execute actual guest JSAPI/request/frame/root/context/GC/OOM/fatal/Worker/callback/loop/ref and close-registry behavior",
+    "Full private ShutdownWrap constructor/prototype, Socket reuse/fd kind/externalfd/OFD invalidation/provider metadata and complete lifecycle",
+    "Real TLSWrap close_notify/stream shutdown; retained TLS raw shutdown still truthfully returns EBUSY, not a platform exclusion",
+    "Actual current identified Node/Chromium/Firefox/WebKit conformance and complete N-015/N-020; no API/family closure"
+  ],
+  "at": "2026-11-07T17:59:32.254801+00:00",
+  "recipeRevision": 229,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
