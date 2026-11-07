@@ -10,6 +10,37 @@ Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
 Implementation/evaluation checkpoints are pushed to draft PR #1492.
 The full WordPress service goal remains unfinished.
 
+**Module/native footprint controls:** a maintained module-only control
+passes all three browsers (58.6 seconds), then a separate WebKit run
+captures all eight phase-held OS snapshots (25.3 seconds). It compiles the
+same normal `606d5174c8a6` artifact but creates zero guest instances. The
+WebKit physical footprint reported by vmmap is `856.6M` after dropping the
+source-byte reference and `864.9M` with eight extra module-holding workers.
+This bounds that one observed transfer increment; it is not a complete
+engine allocation census or a reclamation guarantee. The final window
+after worker retirement reports `677.7M`, not zero.
+
+A separate fresh-browser real Caddy gate passes (17.8 seconds), with
+Go heap 2,443,512 bytes, Go Sys 42,859,644 bytes, two PHP threads and
+normal requests/shutdown. Its WebContent RSS is 7,640,170,496 bytes and
+vmmap physical footprint is `5.9G`. This is an instrumented tiny-service
+observation under build load, not WordPress or a stable production bound.
+The large gap remains after proving inexpensive compiled-module transfer.
+Normal thread initialization still structured-clones the complete
+185,049,722-byte source buffer into each thread; source ownership and
+per-instance costs need separate investigation before attributing the
+whole gap to Go or an engine defect.
+
+The native sampler now pairs the browser's own launchd PID domain with
+the OS process table. A parent-only attempt misses macOS XPC content
+processes and fails visibly; its report is retained separately. The
+corrected eight snapshots include owned content-process RSS, physical
+footprint and raw mappings, without inspecting another app's memory.
+Evidence: `.context/offline-egress-listeners/.context/` under
+`module-memory-control/`, `module-memory-control-native/` and
+`upstream-memory-metrics/native-process-service/`. No program, compiler,
+collector or host runtime behavior changes are made by these controls.
+
 **Upstream memory diagnostics:** the shared test helper now reads real
 Caddy Go metrics and FrankenPHP's per-thread PHP allocator endpoint through
 ordinary test-owned admin/metrics configuration. A fresh Node service run

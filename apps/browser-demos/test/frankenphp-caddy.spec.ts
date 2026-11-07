@@ -1,5 +1,6 @@
 import { expect } from "@playwright/test";
 import { test } from "./support/streamed-artifacts";
+import { sampleBrowserNativeMemory } from "./support/browser-native-memory";
 import { requestLifetimePhp } from "../../../tests/go/frankenphp/request-lifetime";
 import { caddyMemoryDiagnosticsConfig } from "../../../tests/go/frankenphp/memory-metrics";
 import { readFileSync } from "node:fs";
@@ -59,6 +60,10 @@ test("FrankenPHP Caddy php_server serves PHP and static HTTP", async ({ page, ba
   const browserKernelUrl = new URL(`/@fs/${resolve(repoRoot, "host/src/browser-kernel-host.ts")}`, baseURL!).href;
   const lifetimeModuleUrl = new URL(`/@fs/${resolve(repoRoot, "tests/go/frankenphp/request-lifetime.ts")}`, baseURL!).href;
   const metricsModuleUrl = new URL(`/@fs/${resolve(repoRoot, "tests/go/frankenphp/memory-metrics.ts")}`, baseURL!).href;
+  let nativeMemory: unknown;
+  await page.exposeFunction("recordCaddyMemorySnapshot", async () => {
+    nativeMemory = await sampleBrowserNativeMemory(page);
+  });
   await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
   const result = await page.evaluate(async ({ programUrl, kernelUrl, browserKernelUrl, lifetimeModuleUrl, metricsModuleUrl, memoryDiagnostics, imageBytes }) => {
@@ -126,6 +131,9 @@ test("FrankenPHP Caddy php_server serves PHP and static HTTP", async ({ page, ba
           kernel.getKernelMemoryPages(),
         ]);
         memory = { startedAt, finishedAt: new Date().toISOString(), upstream, modules, processes, kernelPages };
+        await (globalThis as typeof globalThis & {
+          recordCaddyMemorySnapshot(): Promise<void>;
+        }).recordCaddyMemorySnapshot();
       }
       await kernel.signalProcess(serverPid, 15);
       const exitCode = await withDeadline(exit, 30_000, "FrankenPHP shutdown timeout");
@@ -154,7 +162,7 @@ test("FrankenPHP Caddy php_server serves PHP and static HTTP", async ({ page, ba
 
   if (memoryDiagnostics) {
     await test.info().attach("upstream-caddy-memory", {
-      body: JSON.stringify(result.memory), contentType: "application/json",
+      body: JSON.stringify({ memory: result.memory, nativeMemory }), contentType: "application/json",
     });
   }
 

@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import { sampleBrowserNativeMemory } from "./support/browser-native-memory";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import {
   phpOptimizerCfgProbe,
@@ -103,10 +104,13 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     // Retain phase evidence outside the page if its execution context is lost.
     const memoryEvidencePath = test.info().outputPath("browser-memory-samples.jsonl");
     const memoryErrors: string[] = [];
-    await page.exposeFunction("recordFrankenPhpStage", (stage: string, memory?: unknown) => {
+    await page.exposeFunction("recordFrankenPhpStage", async (stage: string, memory?: unknown) => {
       record(`stage: ${stage}`);
-      if (memoryDiagnostics) appendFileSync(memoryEvidencePath,
-        JSON.stringify({ recordedAt: new Date().toISOString(), stage, configuredPhpThreads: numThreads, memory }) + "\n");
+      if (memoryDiagnostics) {
+        const native = await sampleBrowserNativeMemory(page);
+        appendFileSync(memoryEvidencePath,
+          JSON.stringify({ recordedAt: new Date().toISOString(), stage, configuredPhpThreads: numThreads, memory, native }) + "\n");
+      }
       if (memoryDiagnostics && memory !== null && typeof memory === "object" && "error" in memory) {
         memoryErrors.push(`${stage}: ${String(memory.error)}`);
       }

@@ -109,6 +109,22 @@ PHP's reported per-thread allocator usage excludes other C allocations;
 Go Sys excludes C and engine allocations. Neither value bounds total RSS,
 and Go's released-page count does not prove physical reclamation.
 
+On macOS, `KANDELO_NATIVE_PROCESS_MEMORY=1` additionally captures phase-held
+process RSS and `vmmap -summary` output. The adapter identifies XPC content
+processes through the test browser app's own launchd PID domain; their
+parent PID alone does not identify that ownership. These queries are
+read-only and their collection intervals are recorded. Keep RSS, physical
+footprint and inspector categories separate, and do not sum shared pages.
+
+For a module-only control, set `KANDELO_WASM_MODULE_FOOTPRINT_INPUT` to the
+exact normal program artifact and run `test/wasm-module-footprint.spec.ts`.
+It streams the bytes, compiles once, and holds the resulting module in
+one, four and eight additional workers. It never instantiates the module
+or executes guest code. The eight phase windows record explicit ownership
+changes; dropping references does not require physical reclamation within
+their two-second observation windows. Run this separately from the real
+service so each has a fresh browser parent.
+
 The separate retirement fixture blocks a live Go guest in a pipe read,
 then destroys the machine. It observes the host's drain progress to require
 that the guest unwinds before forced worker termination. Both plain Go and
