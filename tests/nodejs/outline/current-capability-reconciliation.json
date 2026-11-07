@@ -290,12 +290,12 @@
         "third_party/node-core/dns-records.h": "3fb7a8ab5686d1e08ebf5d7d09799bb29d8c71933612b92cfedbb24f4a79c220",
         "packages/registry/node-compat/bootstrap.js": "fda83506e29c495cebbc9a43740339016e6740be34caaf5b1fb100bb7b3e08e6"
       },
-      "sourceRoute": "native address/rule state, pinned BlockList/SocketAddress and live TCP consumers; queued lookup, actual c-ares channels/record JSAPI/external-completion source and libc/kernel/host routes; source160 actual TCP descriptor/read/original-write owners, private callbacks/shared prototypes/async aliases, accepted-fd lease/rollback and keepalive controls; source165 pinned dgram over actual UDP endpoint/sendmsg/original-allocation request/callback/ref/shutdown owners; source166 reusable native root value clear preserves registration; source167 shared scoped IPv6 byte-address parser feeds real c-ares local/server/reverse consumers; source170 actual accepted TCP owner initializes before null-prototype publication and transfers once; accept watch unlinks before JS reentry",
+      "sourceRoute": "native address/rule state, pinned BlockList/SocketAddress and live TCP consumers; queued lookup, actual c-ares channels/record JSAPI/external-completion source and libc/kernel/host routes; source160 actual TCP descriptor/read/original-write owners, private callbacks/shared prototypes/async aliases, accepted-fd lease/rollback and keepalive controls; source165 pinned dgram over actual UDP endpoint/sendmsg/original-allocation request/callback/ref/shutdown owners; source166 reusable native root value clear preserves registration; source167 shared scoped IPv6 byte-address parser feeds real c-ares local/server/reverse consumers; source170 actual accepted TCP owner initializes before null-prototype publication and transfers once; accept watch unlinks before JS reentry; source171 focused DNS fixture uses genuine native histogram/ELD dependencies (test setup only; no runtime API change)",
       "remainingDependencies": "Guest rule/clone/worker integration, full Socket/Server controls/lifecycle, Resolver configuration/permission/JSAPI lifecycle integration and datagram owners; source/native controls are not guest conformance; accepted-init timing, legacy accept identity/concurrency and full public Socket/Server behavior remain gaps",
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
-        "node": "170acceptedTCP prepublication/single-owner/watch source integrated;4currentnative-boundary scenarios12accepts and unchangedgetterreference pass; actual listener/fatal/SM/guest/fourhost open.",
+        "node": "171focusedDNS fixture genuine dependency repair:26currentunchangednative-boundary cases pass; runtime source unchanged, actual guestJSAPI/kernel/provider/fourhost open.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -790,7 +790,7 @@
         "equals": "documentation"
       },
       "selectedCurrentSourceIdentities": {
-        "tests/nodejs/outline/current-capability-reconciliation.md": "204c001a8735c33723ee76fff33815ef877ece93eaa863c33a908ef3ecd91e93"
+        "tests/nodejs/outline/current-capability-reconciliation.md": "d85ce744c2be72b3ef962008f0da343f213d4a33128f01ff418b33275fabc6eb"
       },
       "sourceRoute": "This reconciliation and original requirements",
       "remainingDependencies": "Actual warning/origin/CLI/environment/activation behavior and unresolved target prose/source questions",

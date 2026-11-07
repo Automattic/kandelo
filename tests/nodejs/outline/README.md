@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Focused DNS setup at unchangedsource171 now supplies genuine native histogram/ELD owners.26unchanged current resolver cases pass; original pre-DNS harness error retained. No runtime/recipe change or guest/fourhost conformance.
+See [source scope](dns-fixture-dependency-integration.md).
+
 Source171 integrates pinned Request/completeBody/FormData and actual streamingHTTP consumption.14currentnative differential groups plus32unchangedcomponent and14package checks pass; fullFetchpolicy/lateabort/guest/fourhost remain open.
 See [source scope](request-bodyinit-integration.md).
 

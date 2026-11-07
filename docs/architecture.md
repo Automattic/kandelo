@@ -6864,3 +6864,7 @@ Source170 constructs the real accepted TCP owner before publication and retains 
 ### Request and multipart BodyInit source ownership
 
 Source171 selects unchanged pinned Undici Request and complete Body extraction over actual shared Headers/WebIDL/Blob/File/FormData/abort/stream owners. The existing HTTP consumer now publishes that real Request body with Readable.fromWeb/pipeline instead of stringification; Response gains genuine FormData extraction. Complete Fetch redirect/filter/dispatcher/decompression/cache/scheme and lifecycle policy remain gaps, as do guest/four-host execution. See [scope](../tests/nodejs/outline/request-bodyinit-integration.md).
+
+### Focused DNS component dependency evidence
+
+The focused DNS fixture supplies genuine native histogram and event-loop-delay owners to its existing candidate Performance dependency. This changes test setup only, with no runtime module, engine recipe or target mutation.26unchanged resolver cases pass over current source with real loopback/native request boundaries; the original pre-DNS setup error is preserved. See [evidence scope](../tests/nodejs/outline/dns-fixture-dependency-integration.md).

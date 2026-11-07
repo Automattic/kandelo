@@ -70,7 +70,10 @@ function createDnsPlatform() {
     signals: os.constants.signals, getDOMException: () => DOMException });
   const web = webFactory();
   const event = require('./node-performance-platform.cjs').event;
-  const perf = factories.perf({ native, values, process: boundary, util, setImmediate, event, structuredClone });
+  const perf = factories.perf({ native, values, process: boundary, util, setImmediate, event, structuredClone,
+    histogram: require('internal/histogram'),
+    eventLoopDelay: require('node:perf_hooks'), // Actual native producer owner; no guest conformance.
+  });
   const adapter = createNativeAdapter(native);
   assertAdapterVersion(adapter);
   const subject = factories.dns({ native: adapter, values, Buffer, process: boundary,

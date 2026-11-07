@@ -1,0 +1,75 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network.md",
+    "findingIds": [
+      "N-001",
+      "N-004",
+      "N-017"
+    ],
+    "relatedFamilies": [
+      "network",
+      "observability"
+    ],
+    "scope": "Focused fixture dependency correction and scoped evidence only, not implementation finding closure"
+  },
+  "sourceImplemented": [
+    "Repair only DNS fixture dependency setup with actual native histogram/ELD owners, matching existing Performance fixture",
+    "Preserve all DNS assertions/packet controls/TS selection and original setup error with exact source identities",
+    "Run current unchanged26resolver cases over genuine loopback/native request boundaries without product/global setup",
+    "Leave runtime modules, package recipe/revision and target pins unchanged"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-dnsfixture171-source-r1/report.json",
+    "sha256": "e94cad603520d652cd85e7faa256041bf1107ec6fcf7e6ee293c0d3263bf938a",
+    "guardedInputs": 790,
+    "scope": "Focused genuine native Performance dependency setup,26unchanged DNS resolver controls with actual loopback and native request owners; no runtime/recipe/input change, no guest/JSAPI/browser/fourhost acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-request171-affected-r1.json",
+    "sha256": "833e65119edd82e3af77f3fc1facc8c2163d6b1c670f8434b2c929793e169780",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": true
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-dnsfixture171-source-r1/report.json",
+    "sha256": "e94cad603520d652cd85e7faa256041bf1107ec6fcf7e6ee293c0d3263bf938a",
+    "discovered": 26,
+    "run": 26,
+    "passed": 26,
+    "failed": 0,
+    "skipped": 0,
+    "timeouts": 0,
+    "harnessErrors": 0,
+    "scope": "Current unchanged focused resolver component over native owners/realUDP loopback, not guest"
+  },
+  "sealedEvidence": {
+    "report": ".context/dns-fixture-setup-agent/summary.json",
+    "sha256": "36f3a30bb37bea560efbbb9b1f5dd14fc087769526a51588c1ff5497383458e2",
+    "reusedEvidence": true,
+    "scope": "Original harnesserror before zeroDNSrun,26privateafterpass/94requests, all assertion source bytes identical; no guest or builds"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/dns-fixture-setup-agent/SEAL.json",
+      "sha256": "bc61c9350397d0329fcdeec3d46c166859bc7449d40656bd9daa8392a5b32270",
+      "kind": "original-pre-DNS-harness-error",
+      "reason": "Original missing eventLoopDelay/histogram setup TypeError and zero-case execution preserved independently of repaired run"
+    }
+  ],
+  "remaining": [
+    "Actual guest engine/nativeJSAPI/kernel/libc/provider lifecycle across allfourhosts",
+    "Other DNS platform/record/upstream selections not run by this focusedrepair",
+    "No public API or family closure established from this component evidence"
+  ],
+  "at": "2026-11-07T01:40:24.179414+00:00",
+  "recipeRevision": 171,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
