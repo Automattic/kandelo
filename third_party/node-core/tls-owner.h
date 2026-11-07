@@ -66,6 +66,14 @@ class Owner : public socket::TransportAttachment {
   Owner(const Owner&) = delete;
   Owner& operator=(const Owner&) = delete;
   ~Owner() { Close(); DetachParent(); }
+  // AsyncWrap publication precedes native SSL allocation in TLSWrap's real
+  // constructor. Only the still-preparing, unattached owner may finish it.
+  bool InitializeSsl() noexcept {
+    if (phase_ != Phase::Preparing || ssl_ || parent_ || !context_) return false;
+    OwnedSSL prepared(SSL_new(context_.get()));
+    if (!prepared) return false;
+    ssl_ = std::move(prepared); return true;
+  }
   uint64_t Generation() const noexcept { return generation_; }
   Phase State() const noexcept { return phase_; }
   int Fd() const noexcept {

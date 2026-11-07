@@ -1,0 +1,78 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/secure-network.md",
+    "findingIds": [
+      "S-004",
+      "S-009"
+    ],
+    "relatedFamilies": [
+      "secure-network",
+      "async",
+      "engine"
+    ],
+    "scope": "Real retained TLSWRAP identity, frame, init rollback and finalization prerequisite. S-008 inherited Socket shape and transport adoption remain separate; no full cancellation/shutdown closure."
+  },
+  "sourceImplemented": [
+    "Assign actual TLSWRAP async id and trigger with retained environment and captured frame",
+    "Emit init before SSL_new and parent attachment; rollback cannot reopen an owner closed by reentrant init",
+    "Keep the same opaque native resource identity through read/write/close and resourceInfo inspection",
+    "Retain identity after Close/DestroySSL; actual foreground wrapper finalization queues destroy",
+    "Preserve source232 key-generation class admission,233 write-callback tickets and234 publication transaction"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tlsasync235-source-r1/report.json",
+    "sha256": "70ffc533c1824df16973a0d7cdc12c22ac31610605f1620351fc4e5013cf6cea",
+    "guardedInputs": 896,
+    "scope": "PartialS009/S004/S008 actualTLSnativeasyncowner source;portableheader9assertions+3nativeNodeTLSWRAPreferences only;guestJSAPI/init/frame/GC/realm/Worker/shutdownremainopen"
+  },
+  "packageChecks": {
+    "report": ".context/node26-tlsasync235-affected-r1.json",
+    "sha256": "095b386b083d10725405a92e8083a6af79e4cebe384c5b886f7469ed91fb2e7b",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tlsasync235-source-r1/report.json",
+    "sha256": "70ffc533c1824df16973a0d7cdc12c22ac31610605f1620351fc4e5013cf6cea",
+    "normalSourceChecks": 6,
+    "actualPortableHeaderAssertions": 9,
+    "nativeReferenceGroups": 3,
+    "newRootCompilerAttempts": 0,
+    "historicalProducerHelperCompileAttempts": 1,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "deterministicToolCompleted": true,
+    "declaredChecksImported": 2,
+    "scope": "One actual portable TLS header component with nine assertions plus three separate native Node TLSWRAP lifecycle references. No execution of new Kandelo JSAPI/AsyncWrap/frame/GC/realm/Worker code."
+  },
+  "sealedEvidence": {
+    "report": ".context/tls-async-owner-agent/control-r1.stdout",
+    "sha256": "6daf106016ee7ce111172a10b28018eff447cbbdc0263190f39981eb1a9d1586",
+    "reusedEvidence": true,
+    "scope": "Historical actual OpenSSL header component nine assertions plus three native Node lifecycle reference groups; one successful helper compilation. Independently reviewed exact source; guest JSAPI remains uncompiled."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tlsasync235-agent-integrate/authoring-attempts.json",
+      "sha256": "c53aa2a3c73b2502f8cf8c1b0482e602cba7fc68a05d68532f0f0730423cdf8a",
+      "scope": "Preserved private script authoring syntax and authorized-output path-guard failure. Neither launched a declared check, runtime test or compiler; exact private-source resume preserves original pre/postimages."
+    }
+  ],
+  "remaining": [
+    "Compile and execute actual new JSAPI init/frame/environment/GC/finalizer code against identified artifacts on all four hosts",
+    "Verify init throw/retention/reentry, Worker realm teardown, callback provider ownership and destroy timing through actual guest resources",
+    "Implement real SSL_shutdown/close_notify/_final encrypted-output ownership; blocked shutdown proposal remains unapplied",
+    "Complete S-008 Socket inheritance/adoption and full public TLS resource shape plus broader secure-network APIs"
+  ],
+  "at": "2026-11-07T20:17:26.001916+00:00",
+  "recipeRevision": 235,
+  "lastAcceptedEngine": 230,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

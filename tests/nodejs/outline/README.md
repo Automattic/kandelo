@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source235 adds actual native TLS async-resource ownership; nine portable-header assertions and three native lifecycle references pass. Guest C++ and four-host behavior remain unvalidated.
+See [source scope](tls-async-owner-integration.md).
+
 Source234 extends actual key-job ownership through outer return-packet publication and preserves reentrant admitted work.6source/staging checks+14package tests pass; new native C++/fault/guest behavior remains unvalidated.
 See [source scope](key-operation-publication-integration.md).
 

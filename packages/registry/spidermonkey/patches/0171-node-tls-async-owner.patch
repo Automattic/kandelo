@@ -1,0 +1,101 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2469,0 +2470 @@
++enum KandeloTlsSlot { TlsStateSlot, TlsReadTicketSlot, TlsFrameSlot, TlsSlots };
+@@ -2476,0 +2478,2 @@
++  js::shell::KandeloNativeAsyncState* lifetime = nullptr;
++  double id = -1, trigger = -1;
+@@ -2500 +2503,6 @@
+-  ~KandeloTlsState() { BeginClose(); }
++  ~KandeloTlsState() {
++    // TLSWrap::DestroySSL is not AsyncWrap destruction. The actual weak
++    // wrapper's foreground finalizer retires this one native identity.
++    BeginClose();
++    if (lifetime) { lifetime->Finalized(id); lifetime->Release(); }
++  }
+@@ -2522 +2530 @@
+-  JSCLASS_HAS_RESERVED_SLOTS(2) | JSCLASS_FOREGROUND_FINALIZE, &KandeloTlsClassOps};
++  JSCLASS_HAS_RESERVED_SLOTS(TlsSlots) | JSCLASS_FOREGROUND_FINALIZE, &KandeloTlsClassOps};
+@@ -2539,0 +2548,32 @@
++}
++static bool KandeloTlsResourceInfo(JSContext* cx, HandleObject owner,
++                                     MutableHandleValue result) {
++  RootedObject actual(cx);
++  RootedValue resource(cx, ObjectValue(*owner));
++  auto* state = KandeloTlsStateFor(cx, resource, &actual); if (!state) return false;
++  if (state->id < 0) {
++    JS_ReportErrorASCII(cx, "TLS native identity is not initialized"); return false;
++  }
++  JS::RootedValueArray<5> entries(cx);
++  entries[0].setNumber(state->id); entries[1].setNumber(state->trigger);
++  entries[2].set(JS::GetReservedSlot(actual, TlsFrameSlot));
++  RootedString provider(cx, JS_NewStringCopyZ(cx, "TLSWRAP")); if (!provider) return false;
++  entries[3].setString(provider); entries[4].setObject(*actual);
++  for (size_t i = 0; i < 5; ++i) if (!JS_WrapValue(cx, entries[i])) return false;
++  RootedObject array(cx, JS::NewArrayObject(cx, entries)); if (!array) return false;
++  result.setObject(*array); return true;
++}
++static bool KandeloTlsInitialize(JSContext* cx, HandleObject owner,
++                                   KandeloTlsState* state) {
++  MOZ_RELEASE_ASSERT(state->id < 0 && !state->lifetime);
++  RootedValue frame(cx); double trigger;
++  if (!cx->kandeloAsyncProperty("frame", &frame) ||
++      !cx->getKandeloDefaultTriggerAsyncId(&trigger)) return false;
++  auto* lifetime = js::shell::KandeloGetNativeAsyncState(cx);
++  if (!lifetime || !JS_WrapValue(cx, &frame)) return false;
++  lifetime->Retain(); state->lifetime = lifetime;
++  state->id = cx->allocateKandeloAsyncId(); state->trigger = trigger;
++  JS::SetReservedSlot(owner, TlsFrameSlot, frame);
++  // The provider and its real state/frame exist before native:init reentry.
++  // No TCP ID or fabricated public socket is substituted for this resource.
++  return cx->notifyKandeloAsyncLifecycle("native:init", owner, frame);
+@@ -2809,7 +2848,0 @@
+-    kandelo::tls::OwnedSSL ssl(SSL_new(context.get()));
+-    if (!ssl) { JS_ReportErrorASCII(cx, "SSL_new failed"); return false; }
+-    SSL_set_verify(ssl.get(), SSL_VERIFY_NONE, kandelo::tls::ContinueVerification);
+-    if (SSL_set_tlsext_host_name(ssl.get(), servername.get()) != 1 ||
+-        SSL_set1_host(ssl.get(), servername.get()) != 1) {
+-      JS_ReportErrorASCII(cx, "TLS connection setup failed"); return false;
+-    }
+@@ -2820 +2853 @@
+-        source, parent, std::move(context), std::move(ssl));
++        source, parent, std::move(context), kandelo::tls::OwnedSSL{});
+@@ -2826,2 +2859,24 @@
+-    // Recheck actual authority after all getters/allocation. Only an empty,
+-    // idle parent can enter this exclusively consumed transport relationship.
++    auto* actual = state.release(); JS::SetReservedSlot(owner, TlsStateSlot, PrivateValue(actual));
++    actual->next = gKandeloTlsOwners; gKandeloTlsOwners = actual;
++    bool admitted = false;
++    auto rollback = mozilla::MakeScopeExit([&] {
++      if (!admitted) actual->BeginClose(false);
++    });
++    // AsyncWrap's base constructor runs init before TLSWrap allocates SSL or
++    // attaches its underlying listener. The rooted capability owns real state
++    // throughout init, even if a hook retains it, closes it or throws.
++    if (!KandeloTlsInitialize(cx, owner, actual)) return false;
++    if (actual->owner.State() != kandelo::tls::Owner::Phase::Preparing) {
++      JS_ReportErrorASCII(cx, "TLS owner closed during initialization"); return false;
++    }
++    if (!actual->owner.InitializeSsl()) {
++      JS_ReportErrorASCII(cx, "SSL_new failed"); return false;
++    }
++    SSL* ssl = actual->owner.Ssl();
++    SSL_set_verify(ssl, SSL_VERIFY_NONE, kandelo::tls::ContinueVerification);
++    if (SSL_set_tlsext_host_name(ssl, servername.get()) != 1 ||
++        SSL_set1_host(ssl, servername.get()) != 1) {
++      JS_ReportErrorASCII(cx, "TLS connection setup failed"); return false;
++    }
++    // Recheck actual authority after all getters/allocation/init reentry. Only
++    // the same empty idle parent can enter this exclusive relationship.
+@@ -2829 +2884 @@
+-        parent->socket->Fd() >= 0 || !state->owner.AttachParent(*parent->socket)) {
++        parent->socket->Fd() >= 0 || !actual->owner.AttachParent(*parent->socket)) {
+@@ -2832,3 +2887 @@
+-    auto* actual = state.release(); JS::SetReservedSlot(owner, 0, PrivateValue(actual));
+-    actual->next = gKandeloTlsOwners; gKandeloTlsOwners = actual;
+-    args.rval().setObject(*owner); return true;
++    admitted = true; args.rval().setObject(*owner); return true;
+@@ -4044,0 +4098,3 @@
++  }
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloTlsClass) {
++    return KandeloTlsResourceInfo(cx, unwrapped, args.rval());
