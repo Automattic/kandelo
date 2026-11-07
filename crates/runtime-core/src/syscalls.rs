@@ -57717,6 +57717,12 @@ impl HostIO for RelSymlinkMock {
             bind_dgram(&mut proc, &mut host, b"/dev/log").unwrap();
             assert_eq!(sys_chmod(&mut proc, &mut host, b"/dev/log", 0o600), Err(Errno::EROFS));
             assert_eq!(sys_chown(&mut proc, &mut host, b"/dev/log", 1, 1), Err(Errno::EROFS));
+            // NOTE: the next rename-away and link-away expect EROFS only
+            // because tmpfs is disabled in this test process, so `/tmp/log`
+            // is not claimed by it. In a running kernel `/tmp` is tmpfs and
+            // the cross-filesystem answer is EXDEV. Not a contract on which
+            // errno a refused move to `/tmp` reports; the invariant is that
+            // `/dev/log` is neither moved nor linked.
             assert_eq!(
                 sys_rename(&mut proc, &mut host, b"/dev/log", b"/tmp/log"),
                 Err(Errno::EROFS)
@@ -57766,6 +57772,9 @@ impl HostIO for RelSymlinkMock {
 
             // What musl's syslog(3) does: a datagram socket connected to
             // exactly this path.
+            // Single process only: a datagram connect from another process is
+            // ECONNREFUSED today (no machine-wide datagram routing), so this test
+            // cannot show that a separate syslog(3) client reaches the daemon.
             let client = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
             sys_connect(&mut proc, &mut host, client, &sockaddr(b"/dev/log")).unwrap();
             assert_eq!(sys_write(&mut proc, &mut host, client, b"<13>hello").unwrap(), 9);
