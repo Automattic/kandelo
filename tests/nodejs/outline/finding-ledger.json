@@ -25,7 +25,7 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 108,
+    "sourceSliceRecords": 109,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 238
@@ -7116,6 +7116,13 @@
         {
           "slice": "tty-size-owner",
           "relation": "explicit"
+        },
+        {
+          "slice": "captured-terminal-input",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "scope": "Consumed captured-input/OFD/read request/mode lease and correct OS tuple prerequisite; public TTY classes/master/mode/JSAPI/fourhost still open",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7228,6 +7235,13 @@
         {
           "slice": "terminal-mode",
           "relation": "explicit"
+        },
+        {
+          "slice": "captured-terminal-input",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "scope": "Consumed captured-input/OFD/read request/mode lease and correct OS tuple prerequisite; public TTY classes/master/mode/JSAPI/fourhost still open",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7290,6 +7304,13 @@
         {
           "slice": "tty-output",
           "relation": "explicit"
+        },
+        {
+          "slice": "captured-terminal-input",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "scope": "Consumed captured-input/OFD/read request/mode lease and correct OS tuple prerequisite; public TTY classes/master/mode/JSAPI/fourhost still open",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -20004,6 +20025,88 @@
           "CP-009"
         ]
       }
+    },
+    "captured-terminal-input": {
+      "document": "tests/nodejs/outline/captured-terminal-input-finding-progress.json",
+      "sha256": "fb845f41108bcbaf8d8cb49b39bffa5fa10ade5b1344d3cac1539454dacd07b7",
+      "recordedRevision": 191,
+      "explicitFindingIds": [
+        "T-002",
+        "T-007",
+        "T-009"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tty191-source-r1/report.json",
+          "sha256": "07860b80c56067ca85bfe1c3ca5e148368f29d4e5f38999fcd145a4c9d107982",
+          "guardedInputs": 844,
+          "scope": "Real captured input/OFD/read request/lease and exact Promise/control/ref/cancel/close source; actual portable PTY/forwarding and reused matched native diagnostic evidence, no new JSAPI/public TTY/guest/fourhost closure."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tty191-affected-r1.json",
+          "sha256": "e1e933c2c372ffd0fde6c1d7b38debe943dab5a03d785123aeb1a98385e04d87",
+          "passed": 18,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false,
+          "scope": "18scoped existing checks:14package-source and4fd-stream native-boundary groups; no global product setup or guest acceptance."
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tty191-source-r1/report.json",
+          "sha256": "07860b80c56067ca85bfe1c3ca5e148368f29d4e5f38999fcd145a4c9d107982",
+          "actualPtyOwnershipChecks": 14,
+          "curatedOsForwardingGroups": 2,
+          "reusedMatchedFullAttributeComparisons": 22,
+          "reusedMatchedResourceChecks": 93,
+          "literalRestorationNonpassesPreserved": 9,
+          "originalR3SigabrtPreserved": true,
+          "matchedDiagnosticNewRuns": 0,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "matchedDiagnosticReport": {
+            "report": ".context/tty-restoration-diagnostic-agent/HANDOFF.json",
+            "sha256": "bb5a1cc4217152f55352e19a923a79f9b29bf33b3a458efae6b4f50034fcf742"
+          },
+          "scope": "Current byte-identical portable header/descriptor executable and curated tuple checks; exact prior native matched diagnostic identities. No production reactor/GC/realm/native JSAPI/public TTY/guest/fourhost proof"
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tty-input-owner-agent/HANDOFF.json",
+          "sha256": "1b0ca116ec2adbf97fe88013035b4fe7b45a6082e4f40633b5931e648b2f33b2",
+          "reusedEvidence": true,
+          "scope": "Consumed partial input owner;14native descriptor checks/32source checks/5tiny successful compiles; original3strict mode failures preserved. Later matched diagnostic separate2compiles,1neverexecuted; no guest JSAPI."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/captured-terminal-input-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/captured-terminal-input-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Actual slave input capture reuses verified reopen/device identity/same-number owner; nonblocking state is isolated from preexisting aliases",
+        "Native read reactor roots actual opaque lease/exact Promise and supports matching ref/cancel/close",
+        "Completion unlinks before Promise hooks and avoids raw next across reentry; Promise creation rechecks close/fd state",
+        "OS tty-input-read returns actual Promise directly with no allocation packet after pending linkage",
+        "Actual fd-readable stdin consumes owner; mode binds same captured lease; construction failure closes actual owner preserving original Error",
+        "Curated OS adapter forwards complete tuple including false/null; fsEvent half intentionally remains pending real owner",
+        "Integrate actual patch0139 and normal generation, retaining unchanged raw-mode source and all strict/master/backpressure failures"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/captured-terminal-input-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile/run actual production JSAPI read/reactor/Promise/ref/cancel/GC/realm/wrapper/fatal/shutdown and all-four-host conformance",
+        "Generic StreamBase/TTY handle admission and native TTYWRAP lifecycle before full callable public classes/Socket hierarchy/options/descriptors",
+        "Master/unreopenable/fallback ownership/backpressure and partial writes remain real implementation gaps",
+        "Actual guest termios/readiness, concurrency/fork, late allocation/initialization/OOM and per-context/worker cleanup",
+        "Original strict mode failures and9literal matched diagnostic nonpasses remain; no mode fix or platform exclusion justified",
+        "Private SIGWINCH and remaining terminal/readline/REPL family obligations",
+        "Separate fsEvent forwarding and actual notification export/kernel activation remain pending; OS tuple half alone is integrated"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/terminal.md",
+      "findingScope": "Consumed captured-input/OFD/read request/mode lease and correct OS tuple prerequisite; public TTY classes/master/mode/JSAPI/fourhost still open",
+      "additionalAuditDocuments": {}
     }
   },
   "dependencyNarratives": {
@@ -22044,6 +22147,26 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current190actual spawn preparation/action-source lifetime and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T06:44:45.981982+00:00",
+        "sourceCheckpoint": 191,
+        "sourceHead": "eda35ad147790a5b519224ce7429ac929b91b8d5",
+        "addedSourceSlices": [
+          "captured-terminal-input"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "a81c5318e7e55442ba037fd353f3eea2fa1c3560640aab8e038d4128a75b2ff1"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current191actual captured terminal input/OFD/request and bounded matched-evidence contributions. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }

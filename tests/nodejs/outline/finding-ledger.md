@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 108 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 109 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 238 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -260,3 +260,17 @@ with native dependency limits explicit. Original baseline leaks, exception/EMFIL
 iterator failures, fixture wait/observer/errno failures and old alias EBADF remain.
 Low-fd cycles, full stdio/argv/IPC, raw-error/coercion/hooks, cwd, stream-adoption
 and guest kernel/four-host lifecycle are still open. Accepted173predates190.
+
+## Source191 captured terminal input overlay
+
+T-002/007/009 now link to the consumed actual captured terminal/OFD/read lease,
+exact Promise/ref/cancel/close ownership and curated OS tuple forwarding.
+Public TTY constructors and StreamBase/TTYWRAP lifecycle remain missing.
+The notification forwarding half remains pending its actual export.
+
+Fourteen real native descriptor checks and two tuple groups pass; matched prior
+mode diagnostics retain exact actor agreement and all literal false verdicts.
+The original strict abort, nine restoration nonpasses, master/backpressure gaps
+and uncompiled guest reactor/realm/GC/fatal/teardown remain explicit. No mode
+fix, outside-runtime defect or platform exclusion is inferred. No finding/family
+closes; accepted173predates191 and all-four-host conformance is unestablished.
