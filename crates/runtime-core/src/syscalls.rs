@@ -57095,7 +57095,7 @@ impl HostIO for RelSymlinkMock {
         // neither can spend the other's burst.
 
         #[test]
-        fn a_reader_parked_at_the_tail_reads_what_was_logged_while_it_slept() {
+        fn eagain_leaves_the_cursor_so_the_retry_finds_the_record() {
             use crate::kmsg::{klog, with_global_ring_selected, KlogSite};
             use crate::test_fixtures::ClockHost;
             let (_guard, ring) = lock_ring();
@@ -57104,7 +57104,9 @@ impl HostIO for RelSymlinkMock {
             let fd = open_kmsg(&mut proc, &mut host);
             // The host retries the same read on the same description. The
             // EAGAIN left the cursor where it was, so the retry finds the
-            // record that arrived in between rather than skipping it.
+            // record that arrived in between rather than skipping it. This
+            // pins only the cursor; that the host really parks and retries is
+            // `host/test/kmsg-poll.test.ts`.
             assert_eq!(read_line(&mut proc, &mut host, fd), Err(Errno::EAGAIN));
             let mut clock = ClockHost::at(1, 0);
             let seq = with_global_ring_selected(|| {
