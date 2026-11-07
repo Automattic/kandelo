@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T06:22:04.792906+00:00",
+  "updatedAt": "2026-11-07T06:25:38.758167+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -6950,7 +6950,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated actual sys/util identity and pinned init/warning/cache owner, declaring real inputs and retaining separate ESM harness failures without fake graph or closure."
+    "reason": "Reconciled canonical V-025 navigation with integrated real sys alias/init/warning/cache source and exact native-dependent CJS evidence, preserving prose-definition ambiguity, ESM harness nonpasses and guest obligations without closure."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -43914,10 +43914,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/finding-overlay189-20261107T062205Z.tar.gz",
-    "sha256": "443c5af6e011662b83e138f992f942311ae86e0c00f8752201e7c36811ed2d55",
-    "bytes": 10662879,
-    "scope": "Current189source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
+    "path": ".context/node26-implementation-snapshots/maintenance189-20261107T062539Z.tar.gz",
+    "sha256": "4403f533dea6a2bb6bbd73b570badb4d5b560a5d19332d421da2c10467353c00",
+    "bytes": 10522068,
+    "scope": "Current189 source plus completed-worktree cleanup journal and pending spawn action-order seal. Original raw component/guest/source evidence retained in prior snapshots/capsules; no new runtime test or compile.",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -47211,7 +47211,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Reconciled canonical V-025 navigation with integrated real sys alias/init/warning/cache source and exact native-dependent CJS evidence, preserving prose-definition ambiguity, ESM harness nonpasses and guest obligations without closure."
+    "reason": "Safely removed inactive fully sealed/integrated sys private source copy and verified exact independent spawn action-order handoff as pending; no implementation or conformance promoted by metadata."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -47692,6 +47692,17 @@
       "remainingOverPolicy": "20.0 GiB protected/recent; no manual deletion",
       "freeBytesObserved": 41818853376,
       "sourceSnapshotStatus": "Post-snapshot maintenance metadata only; all selected source identities and retained target outputs verified unchanged"
+    },
+    {
+      "at": "2026-11-07T06:25:38.758167+00:00",
+      "scope": "Removed finished private sys worktree after agent confirmation and exact tracked/untracked/ignored plus immutable handoff verification. Source189 and all raw evidence retained. APFS free-space delta includes concurrent activity.",
+      "journal": ".context/node26-sys189-worktree-cleanup.json",
+      "sha256": "33f5f49f2e77a100f9fb0d6ecfc06c18eb9374dfe945224fea20172beafb3e7b",
+      "freeBytesBefore": 34366562304,
+      "freeBytesAfter": 34630434816,
+      "runtimeTests": 0,
+      "compilations": 0,
+      "sharedCacheDeleted": false
     }
   ],
   "headersHistoricalControlRuns": [
@@ -53129,6 +53140,13 @@
       "sha256": "206faebb7734b8c7a63dcf3aa256770c613c5cccdaf540698a4c4d45d68c4d66",
       "bytes": 31237428,
       "scope": "189actual sys/cache/warning/init source and exact native-dependent CJS/unchanged upstream evidence; default ESM fixture nonpasses and guest/realm/fourhost gaps preserved",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/finding-overlay189-20261107T062205Z.tar.gz",
+      "sha256": "443c5af6e011662b83e138f992f942311ae86e0c00f8752201e7c36811ed2d55",
+      "bytes": 10662879,
+      "scope": "Current189source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -59174,7 +59192,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "21dc4398e6754d09b5e15770086c9f29b0cdd12d",
+    "pushedThrough": "b4ea74c216dbc727be586ac1b0f06571b0f959f8",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -59258,7 +59276,9 @@
       ".context/node26-push-util186-https.log": "5157b2454e86e2c8ab3670692e4336be8ca8a807f41d2621e75335ce0baacb5a",
       ".context/node26-push-rsa187-https.log": "c39c852d979f2c88411105fc70a2a12ea463b66a7da5f6cd22b96416689d1824",
       ".context/node26-push-ffi188-https.log": "287f2718833b0f30ee2d260f22b546a4f1f93a636ae9e3af702c57343c99a323",
-      ".context/node26-push-ffi188-overlay-https.log": "cc55c3c24b880cc94ce444f903c79f9c9c5ad3142704e5d35cf853f8d6114105"
+      ".context/node26-push-ffi188-overlay-https.log": "cc55c3c24b880cc94ce444f903c79f9c9c5ad3142704e5d35cf853f8d6114105",
+      ".context/node26-push-sys189-https.log": "bb3a504e9c9415179adb14d0256f5e1e13d47b1e6e034435410d3bc21f8e8cc0",
+      ".context/node26-push-sys189-overlay-https.log": "68d0418df6a2bee1ad82fb0edcd4443608f6c7dc83e1adabbe1bbbbc44049acd"
     }
   },
   "sourceLedgerCoverageCorrection": {
@@ -93305,6 +93325,15 @@
       "status": "sealed-pending-root-integration",
       "scope": "Real async-spawn stdio admission/pipe rollback and own-property native publication;19focused/9existing controls and unchanged upstream file; actual numeric-fd action-order nonpass, JSAPI/guest open",
       "nativeHelperAttemptsPendingIntegration": 1,
+      "nativeHelperFailuresPendingIntegration": 0,
+      "currentGuestConformance": false
+    },
+    {
+      "path": ".context/spawn-action-order-owner-agent",
+      "sealSha256": "7a99614bcbf8228346dbfca97a71fd7e6f175b6e67aa9777fbcb5f77977cd8f2",
+      "status": "sealed-pending-root-integration",
+      "scope": "Actual stdio dup/open before owned-source-close lifetime correction over preparation slice; unchanged fd-alias diagnostic now matches native,19controls/source;0new compiles. Low-fd remapping/nonblocking/cwd/guest remain open.",
+      "nativeHelperAttemptsPendingIntegration": 0,
       "nativeHelperFailuresPendingIntegration": 0,
       "currentGuestConformance": false
     }
