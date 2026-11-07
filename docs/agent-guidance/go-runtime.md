@@ -26,6 +26,24 @@ target. Confirm `GOOS=kandelo GOARCH=wasm` and cross-target `js`/`wasip1`
 builds after runtime or linker changes. Do not assume Linux build tags or
 APIs apply to Kandelo.
 
+The upstream `GOARCH=wasm32` investigation is recorded in the implementation
+plan under "32-bit Go/Wasm target investigation". As checked November 6,
+2026, proposal [#63131](https://github.com/golang/go/issues/63131) is accepted
+and architecture foundations are merged, but compiler/runtime activation
+remains under review. The current Kandelo Go 1.25.6 fork still rejects
+`wasip1/wasm32`. Upstream's proposed model has 4-byte pointers/integers but
+8-byte registers, stack alignment and `int64` alignment; copying the `386`
+layout is incorrect. Prefer investigating that named architecture rather
+than changing `GOARCH=wasm`'s data layout conditionally by operating system.
+The upstream work does not enable cgo and uses single-threaded WASI
+scheduling. Kandelo's threading, callbacks, C archive linker and shared
+memory still require a separate port and validation. Do not select the
+new architecture in package recipes based on layout-model evidence alone.
+The isolated upstream compiler now builds unchanged and passes eight focused
+checks on both WASI32 and legacy Wasm under Node; a real cgo probe rejects
+its unrecognized pointer size. This is investigation evidence, not Kandelo
+runtime, cgo or browser support.
+
 Kandelo is a Unix target for Go build constraints. Register it in both
 `src/internal/syslist/syslist.go` and `src/cmd/dist/build.go`; changing only
 one leaves `go/build` and the toolchain disagreeing. Then inspect files newly

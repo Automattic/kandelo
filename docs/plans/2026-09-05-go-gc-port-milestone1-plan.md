@@ -2,6 +2,15 @@
 
 ## Current checkpoint — 2026-11-06
 
+**Latest investigation:** the maintainer authorized investigating a proper
+32-bit-pointer Go/Wasm target. Upstream already has an accepted proposal
+and partial implementation. The layout study below supports following
+that work. An unmodified upstream Go/WASI32 compiler and focused Node
+probe now build and pass in an isolated checkout. No Kandelo Go/Wasm32
+runtime or cgo support is implemented, and no production source, recipe
+pin, ABI or preview has changed. This is an
+investigation result, not completion of the original service goal.
+
 **Maintainer priority clarification:** improve Kandelo rather than adapting
 applications around incomplete platform support. First audit and fix general
 cgo gaps, removing FrankenPHP adaptations those fixes replace. The maintainer
@@ -55,6 +64,152 @@ introduce a large new execution model just to clear this demo's gate.
 
 References: [LLVM tail-call elimination](https://llvm.org/docs/Passes.html#tailcallelim-tail-call-elimination)
 and the [WebAssembly tail-call semantics](https://github.com/WebAssembly/tail-call/blob/main/proposals/tail-call/Overview.md).
+
+### 32-bit Go/Wasm target investigation — 2026-11-06
+
+**Recommendation:** use upstream's named `wasm32` architecture for an
+isolated feasibility prototype, then assess a Kandelo runtime/cgo port.
+Avoid a private backend design, operating-system-specific pointer widths
+under the existing `wasm` name, or transparent field rewrites that cannot
+preserve escaping-address semantics. Kandelo runtime implementation and production
+migration are separate decisions from this investigation.
+
+Upstream [proposal #63131](https://github.com/golang/go/issues/63131) is
+accepted and still open, with milestone Backlog when checked. It addresses
+the same host-layout and Go-pointer-lifetime problem found in this port.
+Its planned initial operating-system target is WASI, not Kandelo, and
+acceptance does not establish release readiness or a delivery date.
+
+The read-only Gerrit inventory records these immutable current revisions:
+
+| Upstream change | State checked | Scope |
+|---|---|---|
+| [836648](https://go-review.googlesource.com/c/go/+/836648), `564f7d071a34` | Merged October 29 | Separate pointer and register widths |
+| [836651](https://go-review.googlesource.com/c/go/+/836651), `98dfce93f14c` | Merged October 30 | Architecture/type-layout definitions |
+| [836652](https://go-review.googlesource.com/c/go/+/836652), `61944466b27f` | Under review | Compiler and assembler code generation |
+| [836653](https://go-review.googlesource.com/c/go/+/836653), `ba007912b1fb` | Under review; updated November 5 | Function handles, logical PCs, reflection and linker |
+| [836654](https://go-review.googlesource.com/c/go/+/836654), `51c48484e6c1` | Under review | Runtime, assembly, atomics and stack operations |
+| [836655](https://go-review.googlesource.com/c/go/+/836655), `6701952c3c2d` | Under review | Shared library/build selections |
+| [836656](https://go-review.googlesource.com/c/go/+/836656), `6e4c07ab3e3b` | Under review | Typed WASI pointers |
+| [836657](https://go-review.googlesource.com/c/go/+/836657), `5e196a61a223` | Under review | Activate `wasip1/wasm32` and tests |
+
+The eight revisions describe 284 unique paths, including generated files
+and build constraints; that is not a count of newly maintained Kandelo
+logic. Their proposed target retains 64-bit integer locals/registers and
+8-byte stack alignment while making pointers and Go integers 32-bit.
+Return/resume slots remain eight bytes, with separate 32-bit logical PCs
+and function-table handles. A blanket replacement of eight-byte loads,
+stores or offsets would therefore be wrong. This follows the existing
+WebAssembly backend and Go collector model, rather than proposing a
+Wasm-GC-managed heap or a new collector.
+
+**Layout evidence:** an ordinary SDK-built, instrumented and ABI-stamped
+C program runs successfully in Kandelo/Node, with empty stderr and host
+diagnostics. A first comparison uses the proposed `{WordSize: 4, MaxAlign: 8}`
+Go type model, represented by the identical existing `amd64p32` entry in
+`go/types`; that name is used only for modeling. An actual upstream
+Go/WASI32 binary now confirms those layouts on Node. For a sample with
+scalar, pointer, 64-bit, pointer-to-pointer and tail fields:
+
+| Layout property | SDK C/Kandelo, on Node | Actual Go/WASI32, on Node | Actual Go/WASI legacy control | Go `386` model |
+|---|---:|---:|---:|---:|
+| Pointer bytes | 4 | 4 | 8 | 4 |
+| Go/C integer bytes | 4 | 4 | 8 | 4 |
+| `uint64` alignment | 8 | 8 | 8 | 4 |
+| Sample struct size | 24 | 24 | 40 | 24 |
+| Pointer field offset | 4 | 4 | 8 | 4 |
+| 64-bit field offset | 8 | 8 | 16 | 8 |
+| Separate `{uint32; uint64; uint8}` struct size | 24 | 24 | 24 | 16 |
+
+All eleven sampled size/alignment/offset values match the actual Go/WASI32
+binary. The C and Go programs run separately; this is not a combined cgo
+program. A direct target probe on the unchanged Kandelo fork still rejects
+`wasip1/wasm32`. The layout-model and C-program evidence is retained in
+`.context/wasm32-layout-study/`.
+
+**Unmodified upstream prototype:** current revisions of changes 836652
+through 836657 form a direct parent chain. The experiment checks out its
+pinned head `5e196a61a223f2590d576909992bea8803d770f9` directly, without
+cherry-picking or editing source. The declared Go 1.25.8 tool first builds
+official Go 1.26.10 source, verified against its release SHA-256
+`fd63e883ba2f2bfca93c1646b31ebef63e2b1e4d2b317c9789d976a68d81f36f`.
+That bootstrap builds the upstream Go 1.28 development compiler (`08cc`,
+1m38s); its target list contains `wasip1/wasm32`. Both source trees and
+caches remain private to `.context/go-wasm32-study-7VN0Qm/`.
+
+The same functional program compiles and runs as both `wasip1/wasm32`
+and the legacy `wasip1/wasm` control on Node 24.15.0 (`1848`, 6s). Eight
+checks pass on each: an interior pointer retained through Go GC; an
+escaping field address with aliasing/write-through; closures/interfaces;
+reflection calls; function-handle/PC lookup; stack growth through 256
+recursive calls; panic/recover; and goroutine/channel scheduling. The
+explicit `runtime.GC` is a functional root-retention check, not a memory
+reclamation measurement. Node's normal experimental WASI warning is
+retained in host stderr. `git diff --exit-code` confirms the experimental
+upstream source remains unchanged.
+
+A separate real cgo compile probe against this upstream compiler rejects
+`wasm32` with `cgo: unknown ptrSize for $GOARCH "wasm32"`; no source change
+was made to bypass it. This is the first observed cgo integration boundary,
+not a claim that adding one table entry completes cgo support. The tests
+do not prove Kandelo's Go/Wasm32 host, multiple Ms, C ABI bridge, PHP,
+browser execution, full upstream conformance or service readiness.
+
+The actual runtime proof, program hashes, raw warning output and exact
+source/bootstrap lock are in `.context/go-wasm32-study-7VN0Qm/`;
+`runtime-proof.json` records both targets and the C layout comparison.
+
+**Integration scope:** the series targets a Go 1.28 development tree. Its
+bootstrap rule requires at least Go 1.26; the declared shell currently
+provides Go 1.25.8 and the Kandelo fork is Go 1.25.6. The isolated source
+bootstrap above supplies that requirement without changing the declared
+production toolchain. None
+of the eight patches passes an individual unchanged `git apply --check`
+against this fork. Those are context checks, not sequential cherry-picks,
+semantic merge results or proof that backporting is infeasible. A forward
+port to a pinned upstream base should be assessed before attempting a
+large bespoke backport. The active Kandelo Go checkout and package pins
+remain unchanged.
+
+The proposed upstream runtime uses single-threaded WASI scheduling and
+`sbrk`, and its platform entry does not enable cgo. Kandelo still needs:
+
+- Native Wasm atomics, multiple Go Ms, per-M syscall channels/TLS,
+  startup, scheduler wakeups, signals and cooperative retirement.
+- Architecture-correct cgo call/export frames, C-created-thread callback
+  bootstrap, GC roots and pinning, constructors, archives and exceptions.
+  The current mixed-width special cases in `cmd/cgo/gcc.go` and `out.go`
+  are candidates for removal for the new target only after real tests.
+- C archive function/data/TLS relocation and callback-table integration
+  with upstream's changed function-handle and logical-PC scheme. This is
+  a major review point in the existing custom linker, not a name change.
+- New architecture selection in runtime assembly, SDK wrappers, package
+  recipes and direct dependency ports. Files ending in `_wasm.go` or
+  `_wasm.s` are not automatically selected for `wasm32`.
+
+The existing wasm32 C ABI, shared-memory object and fixed-width syscall
+transport need not be replaced merely because Go's pointer model changes.
+In particular, the channel's six 64-bit argument slots stay fixed-width.
+Audit actual host/program exports and layouts before deciding whether a
+public ABI bump is necessary; do not assume either a mandatory global
+bump or compatibility. Keep the existing target and artifacts intact
+through an isolated prototype.
+
+The isolated upstream build and focused runtime proof above complete the
+first investigation gate. Next, port Kandelo's threading and channel
+runtime in isolation; prove generic cgo layouts, escaping pointer-field addresses,
+Go-backed argument lifetime and both callback paths on Node/three
+browsers; then try PHP embed and FrankenPHP's original struct/bulk call
+paths. Only after those pass should production recipes/images migrate
+and the original final lifecycle, editor, traffic and benchmark gates
+resume on coherent artifacts.
+
+This route addresses the pointer-ABI mismatch. It does not by itself fix
+PHP's native recursion limit, establish the PHP patch's upstream benefit,
+reduce engine-managed WebKit memory, or complete the existing service goal.
+Potentially smaller Go data structures are not a measured RSS saving.
+Full revision hashes, patch hashes, states, file inventories and read-only
+context-check logs are retained in `.context/wasm32-upstream-review/`.
 
 ### Current cgo adaptation audit — 2026-11-06
 
