@@ -5867,22 +5867,14 @@ globalThis.__kandeloModuleRecord = _nodeESMGraph.record;
 globalThis.__kandeloLoadModule = _nodeESMGraph.load;
 globalThis.__kandeloModuleFailed = _nodeESMGraph.failed;
 
-// The native ES-module metadata hook (SpiderMonkey shell ModuleLoader.cpp,
-// patches/0016-kandelo-import-meta.patch) calls __kandeloModuleMeta with the
-// resolved module path and copies the returned url/dirname/require onto
-// import.meta, shared by ESM entry points, import() and require(esm).
-// Extracted Bun apps read import.meta.require and import.meta.dirname, so
-// populating them here lets those apps run without any source rewriting.
-// Returning null lets the C hook keep its default (url = raw path) behavior so
-// an unresolvable path stays a visible boundary rather than a silent success.
-globalThis.__kandeloModuleMeta = function(identifier) {
-    if (typeof identifier !== 'string' || identifier.length === 0) return null;
-    const href = _nodeESMGraph.canonical(identifier);
-    const parsed = new _nodeWebPlatform.URL(href);
-    if (parsed.protocol !== 'file:') return { url: href };
-    const filename = url.fileURLToPath(parsed);
-    return { url: href, filename, dirname: path.dirname(filename), require: _makeRequire(filename) };
-};
+// The native hook supplies the actual new import.meta object. Native DATA
+// cells initialize file path helpers on that owner without eager copying.
+// Existing require extension and native resolve hook remain independent.
+globalThis.__kandeloModuleMeta = _createNodeImportMetaPlatform({
+    canonical: _nodeESMGraph.canonical, URL: _nodeWebPlatform.URL,
+    fileURLToPath: url.fileURLToPath, makeRequire: _makeRequire, process,
+    defineNativeLazyDataProperty: _nodeNative.defineNativeLazyDataProperty,
+});
 
 // Node.js globals
 globalThis.process = process;

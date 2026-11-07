@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "df51da27898587a4f3b51bf94f8c214bf774045217e3ee638433b505e598bc94",
+    "packages/registry/node-compat/bootstrap.js": "5ba7669d2ea695851bab520625ccb59602240eed59ba9f710e3cbff390317ee5",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
@@ -62,6 +62,7 @@
     "third_party/node-core/http-parser-platform-adapter.js": "7c4fd0bd45fa1f77835030a14d1633742b0f3f99b93fd88634de5697ed62a0f5",
     "third_party/node-core/http-server-response-adapter.js": "195151e495fb710376347ef00b618719568c8ebf09a020e8edfa3a42d680e65a",
     "third_party/node-core/http2-settings-adapter.js": "b837ecce6701f40c7ca7ebe9f3129cae83a074a99dd1818a0147d35aeab9bbb3",
+    "third_party/node-core/import-meta-platform-adapter.js": "d3650d9d241e492d8173ecace06287cb11b51fd5d562c66247de36d003426202",
     "third_party/node-core/incremental-crypto-adapter.js": "de8d3498d03635694120adefadba9d2929cb002192a3ee5a14014e435d8109e8",
     "third_party/node-core/inspection-adapter.js": "c090c337276d93d5dc4762c932666ed18232400904d331bb3444a3b28a9b6eb7",
     "third_party/node-core/kdf-platform-adapter.js": "eb3545cf338837c65daea74d6c52c127c35ef6bfffb09a2a0424ae1c59758ea5",

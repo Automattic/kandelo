@@ -1,0 +1,90 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/loading-contracts.md",
+    "findingIds": [
+      "L-028"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "loading",
+      "engine",
+      "values",
+      "workers"
+    ],
+    "scope": "Partial actual import.meta path-property lazy DATA owner/initializer/bridge; main, resolver, full metadata and source-map prerequisites remain open."
+  },
+  "sourceImplemented": [
+    "Pass actual rooted native-created metadata object into shared initializer and preserve same-object lazy cells without eager copy",
+    "Install genuine native lazy DATA dirname/filename properties using existing real cell owner/lifecycle",
+    "Capture immutable genuine branded URL/private conversion inputs and real authority before user mutation",
+    "Port exact pinned native path helper separator algorithm, including verified native empty root dirname",
+    "Preserve existing genuine eager require extension and legacy record/default-shell path; declare normal additive engine patch0166 and two runtime inputs"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-meta228-source-r1/report.json",
+    "sha256": "fdae0cc6506eaa26f636229ea4a024cbbc7336d507e90dc134290bfd6fa5c9a7",
+    "guardedInputs": 891,
+    "scope": "Actual metadata-object initializer and lazy filename/dirname ownership, existing genuine lazy DATA reference dependency and17native metadata groups. New native ModuleLoader bridge uncompiled; main/resolve/fullshape/guest/fourhost remain open."
+  },
+  "packageChecks": {
+    "report": ".context/node26-meta228-affected-r1.json",
+    "sha256": "c0c7c5371f28db2b819b3409273c733844e7ead812b12d984223f8d5100fa600",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-meta228-source-r1/report.json",
+    "sha256": "fdae0cc6506eaa26f636229ea4a024cbbc7336d507e90dc134290bfd6fa5c9a7",
+    "nativeDependentGroups": 17,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "newModuleLoaderBridgeCompiled": false,
+    "scope": "Fresh current production initializer/installation over explicit existing V8 lazy addon/URL/CJS/VM and actual native reference ModuleWraps. Candidate-only conversion counts distinguish lazy cells from old eager require owner. No SpiderMonkey bridge/GC/realm/guest or fullmetadata proof."
+  },
+  "sealedEvidence": {
+    "report": ".context/import-meta-lazy-owner-agent/handoff/report.json",
+    "sha256": "7690f1738cda13ba73f7d4d9ea743f7ece776f4402eef7969ad8ac96c91435a9",
+    "reusedEvidence": true,
+    "scope": "Original17native/after matches vs14/17baseline, actual native rootedge probe and existing lazy-reference addon reused;0compilers. SourceMap prerequisite remains separate, no fullmetadata activation."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/import-meta-lazy-owner-agent/handoff/report.json",
+      "sha256": "7690f1738cda13ba73f7d4d9ea743f7ece776f4402eef7969ad8ac96c91435a9",
+      "scope": "Original14/17baseline semantic matches and3load-only native URL resolution setup failures retained; genuine resolve+load hooks corrected probe reachability, not path assertions or actual rootedge behavior."
+    },
+    {
+      "report": ".context/import-meta-lazy-review-agent/REPORT.md",
+      "sha256": "f7fb125db83b77f6ffeb69c843d97cf36956a3b0b4f6b703eeaf379b8271d4e1",
+      "scope": "Independent rooted call/owner success-cache/lazy payload/property mutation/URL capture review,56members verified, no new P1/P2. No runtime/compiler/build proof."
+    },
+    {
+      "report": ".context/source-map-owner-prerequisite-agent/REPORT.md",
+      "sha256": "c6f20f58947d0f066b6cc61cd6ead4e8e494e905bea0a9a0d15e12dd8d0fb4ee",
+      "scope": "L-033actual compile/private weak cache/coverage/stack-formatter/CallSite prerequisites documented. No inert cache export, fake enabled flag or accepted engine exclusion."
+    }
+  ],
+  "remaining": [
+    "Actual import.meta.main/isMain module-entry ownership, resolver policy/lazy identity/hooks/thread and full metadata shape/order",
+    "Compile and exercise new native bridge and actual SpiderMonkey lazy DATA/GC/CCW/reentry/OOM/init failure behavior",
+    "Guest canonical URL/path/CJS/ModuleObject lifecycle and identified Node/Chromium/Firefox/WebKit evidence",
+    "Actual source-map compile/private weak cache/coverage/CallSite/native stack formatter prerequisites; no exclusion or finding closure"
+  ],
+  "at": "2026-11-07T17:02:49.588193+00:00",
+  "recipeRevision": 228,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": [],
+  "patchRepresentationCorrection": {
+    "report": "tests/nodejs/outline/import-meta-patch-encoding-correction.json",
+    "sha256": "84ceb471b45e06d693d86b89375df9511517f752ba786121b052f016b5e6f41c",
+    "scope": "Only unified-diff context encoding changed to zero context; actual pre/post C++bytes unchanged and strict original inverse/new forward/inverse/forward replay verified. Original patch/log/checkpoint snapshot preserved."
+  }
+}

@@ -1,5 +1,8 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0166-node-import-meta-lazy-data.patch",
+  "third_party/node-core/import-meta-platform-adapter.js",
+  "third_party/node-core/import-meta-sources.json",
   "third_party/node-core/timers-promises-platform-adapter.js",
   "third_party/node-core/timers-promises-sources.json",
   "third_party/node-core/upstream/timers-promises/lib/timers/promises.js",
@@ -746,4 +749,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 227
+revision = 228

@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source228 wires actual module metadata to genuine lazy DATA filename/dirname cells;17current native-dependent groups pass. New native bridge, complete metadata and guest/four-host behavior remain unvalidated.
+See [source scope](import-meta-lazy-integration.md).
+
 Source227 consumes complete pinned timers/promises over corrected shared construction/insertion and real abort owners;18current groups/8upstreamsubjects/2unref exits pass. Guest and full async/four-host behavior remain open.
 See [source scope](timers-promises-integration.md).
 

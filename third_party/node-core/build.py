@@ -2089,6 +2089,17 @@ marker = '/* NODE_PUBLIC_SOURCE_MAP */'
 if source_map_adapter.count(marker) != 1:
     raise ValueError('Review public SourceMap marker')
 bundle += source_map_adapter.replace(marker, (root / source_map_spec['sources']['lib/internal/source_map/source_map.js']['path']).read_text()) + '\n'
+import_meta_spec = json.loads((root / 'import-meta-sources.json').read_text())
+if import_meta_spec['version'] != manifest['version'] or import_meta_spec['commit'] != manifest['commit']:
+    raise ValueError('Import metadata target mismatch')
+import_meta_raw = (root / import_meta_spec['source']['path']).read_bytes()
+if hashlib.sha256(import_meta_raw).hexdigest() != import_meta_spec['source']['sha256']:
+    raise ValueError('Import metadata source mismatch')
+import_meta_part = import_meta_spec['pathHelpers']
+import_meta_begin = import_meta_raw.index(import_meta_part['start'].encode())
+if hashlib.sha256(import_meta_raw[import_meta_begin:import_meta_begin + import_meta_part['length']]).hexdigest() != import_meta_part['sha256']:
+    raise ValueError('Import metadata helper reference mismatch')
+bundle += (root / 'import-meta-platform-adapter.js').read_text() + '\n'
 http_parser_spec = manifest['httpParser']
 for name, item in http_parser_spec['sources'].items():
     if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:

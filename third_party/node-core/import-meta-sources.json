@@ -1,0 +1,14 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "source": {
+    "path": "upstream/vm-modules/src/module_wrap.cc",
+    "sha256": "ef6d3f20a46aaa844d9471b32e489bf60b7539681d6d9e3f7e230e1abddcb051"
+  },
+  "pathHelpers": {
+    "start": "static void PathHelpersLazyGetter(",
+    "length": 1624,
+    "sha256": "9c68f444ac2e7b3009d12307a2e75685c6cbc78680188c7e845ab07f520ad8d8"
+  },
+  "scope": "Port actual pinned C++ path-helper semantics to genuine native lazy DATA cells with immutable captured real URL. Main/default resolve initialization remains separate."
+}
