@@ -584,27 +584,41 @@ waiting on another workspace's build, installed copies kept recommending
 `while kill -0 <pid>`.
 
 - **The rule:** every change to a rule or a denial message bumps
-  `HOOK_VERSION` in `wait-guard.py`, and its PR says to re-run
-  `python3 .claude/hooks/install-hooks.py --user`. Comment-only changes
-  do not bump it.
+  `HOOK_VERSION` in `wait-guard.py`. Comment-only changes do not bump it.
+  Main agents refresh existing user installations after merging; initial
+  installation remains opt-in.
 - **The notice:** when the checkout an agent works in has a higher
   `HOOK_VERSION` than the installed copy, the hook shows the user a
   one-line notice to reinstall, once per session. It goes to the user
   (`systemMessage`), not the model, and does not approve or deny the
   call. A checkout with a lower version, as on an older branch, is
   silent.
-- **Not automatic, on purpose:** the copy reads the checkout's version
+- **No self-update from a checkout:** the copy reads the checkout's version
   as text and never runs or copies the checkout's file. A user-level hook
   that updated itself from whatever repository is open would let any
   branch change what runs on every Bash call.
+- **Agent maintenance (2026-11-07):** `CLAUDE.md` cues main agents to
+  fetch `origin main` and run
+  `python3 .claude/hooks/install-hooks.py --user --update-from-main`
+  at task start and after merging hook changes. This mode updates only
+  existing opt-ins, takes both hook and installer from fetched
+  `origin/main`, and refuses a version downgrade. A lock serializes
+  concurrent automatic updates. It does not execute feature-branch code
+  as the global hook, or require a Conductor-specific setup script.
+  No additional model calls were made to validate this maintenance mode.
 - **Versioned log:** every `hook-log.jsonl` entry records `version`, and
   `wait-impact.py` reports decisions per version (`by_version`). Judge a
   changed rule or message only on entries from the version that has it.
   Entries without the field come from versions 1 (#1455) and 2 (#1464,
   2026-10-02), and are told apart by date.
-- **Limit:** copies installed before version 3 cannot give the notice.
-  Reinstalling version 3 is the last manual check needed.
-- **Tests:** `python3 evals/build-waiting/test_wait_guard.py`.
+- **Limit:** copies installed before version 3 cannot give the notice;
+  agents' task-start cue also updates existing unversioned copies.
+  Maintenance requires a main agent reading the new guidance; it is not
+  a service that runs immediately on a GitHub merge without an agent.
+- **Tests:** `python3 evals/build-waiting/test_wait_guard.py` and
+  `test_install_hooks.py`. The latter's six isolated-Git tests cover
+  merged-source provenance, opt-in, downgrade refusal, legacy updates,
+  idempotence, settings/backup preservation and failure without main.
 
 ### 8b. Subagent long-wait guard (same hook)
 
@@ -612,9 +626,9 @@ The largest baseline cost is subagents blocking on long builds, at 938 M
 tokens. This rule turns standing guidance into enforcement: a subagent that
 needs a build expected to take more than 5 minutes returns that need to its
 parent instead of waiting. In subagents only, the hook denies foreground
-`./run.sh setup`, `local-build`, and full-suite runs, plus any command whose
-recorded median (tool 10) is over 5 min. It tells the subagent to report
-back what it needs built.
+`./run.sh setup`, `local-build`, and full-suite runs. It tells the subagent
+to report back what it needs built. Recorded-duration lookup is not
+implemented.
 
 - **Measure:** idle-gap cache rewrites in subagents, against the 938 M
   baseline.
@@ -625,6 +639,168 @@ back what it needs built.
   the denial log; 2 or more sessions means revise.
 - **Feasibility check:** this relies on the hook input identifying a
   subagent. If it does not, the rule is dropped, and this file says so.
+
+**Subagent wait windows, plan before measuring (2026-11-07).**
+
+The graphics baseline at `3700f32cb4` found 187 subagent wakes from
+`agent-job wait`, with a median 9.1-minute gap and 412k-token context.
+They cost 153M input-equivalent tokens, 21% of that workflow. After
+3–4.75-minute gaps, 0/74 subagent turns rebuilt their cache; after
+6–10-minute gaps, 194/194 did. Main-session caches survived gaps up to
+an hour. The projected 153M → 22M cost with shorter windows is an
+estimate, not measured savings. Source transcripts and the analysis in
+madrid are read-only; local copies are in `.context/graphics-baseline`.
+
+- **Boundary:** local agent tooling and Claude Code's prompt cache;
+  no guest/kernel, Node/browser host, ABI, or package change.
+- **Design:** keep the main-session 540 s default and interactive
+  background `--timeout 0`. Split CLI hints by session type. Subagents
+  use foreground `--timeout 240` for targeted work; whole-tree builds,
+  full suites and other known long jobs return to the parent. Preserve
+  explicit timeouts in retry hints. The opt-in hook uses `agent_id` to
+  deny subagent `agent-job wait` calls without a literal positive
+  timeout, or with a total window over 270 s in one Bash call. The
+  margin leaves time for scheduling, status output and the next request
+  inside the observed five-minute cache boundary. This is a guardrail,
+  not a guarantee about scheduler delay or arbitrary shell programs.
+- **Identity check:** inspect CLI environment/process evidence and
+  capture a main and a subagent probe in the controlled check. Prefer
+  hook identity over inferring identity from a process name or adding
+  a global timeout that also shortens main-session waits.
+- **Replay:** run `replay-hook.py` over the graphics transcripts;
+  review a deterministic sample of at least 20 new-rule denials (all
+  if fewer), plus main-session and quoted-text controls. Report policy
+  precision separately from actual observed wait durations: a completed
+  job may return immediately even with an unsafe requested window.
+- **Controlled check:** one baseline/candidate pair, Sonnet, with one
+  foreground subagent per session waiting on a 660 s fixture job.
+  Both start with the same default wait request; baseline uses the
+  pre-change hook and CLI, candidate uses this change. Load a fixed
+  context before waiting so a rebuild is visible. Capture hook inputs,
+  safe environment/process probes, raw model streams and persisted
+  subagent transcripts. Score the exit status and error line against
+  fixture output. Inspect usage at each wake, including cache reads
+  and creation, rather than inferring a cache hit from elapsed time.
+- **Accounting:** cherry-pick `ea82add28e`, preserving authorship;
+  use session-total `modelUsage`, sum turns across result segments,
+  and retain raw streams. Check its aggregation with regression tests.
+- **Cost estimate before model calls:** about $0.50–$2 total on Sonnet
+  for the pair with modest fixed context; cap each session at $1.50
+  ($3 combined). No repeated statistical trial or large graphics replay
+  with models. Replay and unit tests make no model calls.
+- **Measure:** denial precision, correct completion, actual subagent
+  idle gaps and cache creation/read tokens at wakes, input-equivalent
+  tokens and billed session cost, tool calls, wall time, and unchanged
+  main-session wait behavior. Record model/client versions and limits.
+- **Keep if:** at least 90% of sampled denials target executable
+  subagent waits with unsafe windows, no main-session denial, both
+  arms report the fixture result correctly, and candidate wakes avoid
+  the baseline's full-context rebuild with lower wake token cost.
+  If the controlled check cannot reproduce a baseline rebuild, report
+  it as inconclusive; do not claim measured cache savings. Retain the
+  narrow policy only as a guardrail supported by historical evidence.
+- **Revise/remove if:** a main session is restricted, results are lost,
+  or a denial encourages polling/evasion. Review the first five real
+  subagent uses; two blocked-parent or evasion incidents require revision.
+
+**Identity and replay (2026-11-07).** Claude Code 2.1.316's controlled
+main/subagent probes had the same environment variable names and the
+same Claude process ancestor within each session. Both had `CLAUDECODE=1`
+and `CLAUDE_CODE_ENTRYPOINT=sdk-cli`; neither exposed
+`CLAUDE_CODE_AGENT_ID` or `CLAUDE_AGENT_ID`. These probes do not establish
+a portable environment/process discriminator. Hook inputs did distinguish
+them: no main `agent_id`, and a distinct nonempty id on subagent Bash
+calls. The CLI therefore prints separate hints instead of guessing its
+caller; the hook enforces the bound using the supplied identity.
+
+```bash
+python3 evals/build-waiting/replay-hook.py --since 2026-11-01 --until 2026-11-04 --match kandelo-moscow --samples 25
+```
+
+The replay covered 11,627 Bash calls. The new rule flagged 296 calls from
+25 subagents. A separate pass over the normalized turns found the same
+296 calls and 10 main-session waits, with zero new-rule main denials.
+Review of 25 randomly selected denials (seed 1, normalized transcript
+order) found 25 wait command sites with unsafe requested windows; 23/25
+actually reached `agent-job`, while two failed shell glob expansion first.
+That is 92% executable-wait precision, meeting the 90% policy threshold.
+Only 15/25 sampled calls actually lasted over 270 s; the policy deliberately
+requires a bounded request even when a job happens to have finished.
+
+Across all 296 flagged calls, 194 had Bash-call elapsed time over 270 s,
+24 returned in under 30 s, and median elapsed time was 519.7 s. Elapsed
+time includes any other commands in the same Bash call, so it is not an
+exact measure of time inside `wait`. These are historical classifications,
+not measured savings. Full reviewed commands, result excerpts and the
+duration script are local in `.context/replay-samples.md`,
+`.context/replay-details.json` and `.context/analyze-wait-replay.py`.
+Existing-rule denials are outside this new rule's precision sample.
+
+**Controlled result (2026-11-07).** One pair on macOS 27.2 arm64,
+Claude Code 2.1.316, alias `sonnet` resolved to `claude-sonnet-5-5`.
+Both sessions used the same current guidance and explicit experimental
+prompt; only the CLI and hook differed. The baseline took them from
+`1b6f3783d3`. Each session delegated one foreground subagent, read the
+same 600-record context file (two reads, because the first was truncated),
+then tried the default wait. The fixture requested 660 s and actually
+took 669.1/668.7 s. Both reported exit 3 and the exact `frob_widget`
+error, confirmed against the saved fixture logs and result records.
+
+| Measure | Baseline | 240 s candidate |
+|---|---:|---:|
+| Correct result | 1/1 | 1/1 |
+| Blocking waits | 2 | 3 |
+| Extra denied default wait | 0 | 1 |
+| Subagent tool calls, including reads and denials | 5 | 7 |
+| Gaps at wait wakes, seconds | 543.8, 114.3 | 243.9, 243.9, 166.4 |
+| Cache creation tokens at those wakes | 41,023; 876 | 530; 523; 862 |
+| Cache read tokens at those wakes | 2,384; 43,407 | 43,274; 43,804; 44,327 |
+| Input-equivalent tokens at wait wakes | 90,801 | 20,466 |
+| Whole-session input-equivalent tokens | 231,870 | 167,404 |
+| Session cost, USD | 0.320160 | 0.237803 |
+| Wall time, seconds | 678 | 677 |
+
+The baseline rebuilt about 95% of its prompt after the 543.8 s gap.
+Every candidate wake read the existing prefix, creating only the new
+suffix. Wake input-equivalent tokens were 77% lower in this pair;
+whole-session tokens were 28% lower and billed cost 26% lower, including
+the denial and extra wait. Combined cost was $0.558, below the estimate
+and caps. The keep rule is met for this controlled check: correct
+completion, preserved short-window caches, and lower measured wake cost.
+
+**Limits:** one pair, roughly 43–45k-token subagent contexts, a synthetic
+job, and an explicitly directed first wait. This measures the cache
+mechanism, not natural adoption, parent handoff, large contexts, or
+workflow-wide savings. It does not turn the historical 18% projection
+into a measurement. CLI defaults and main-session hook controls were
+tested; a separate main-session long-wait A/B was not run. Arbitrary
+scripts, aliases, non-wait commands and scheduling stalls can still
+outlive the cache. The first-five-real-uses harm review remains pending.
+
+Raw streams, fixture records/logs, identity probes, copied subagent
+transcripts and measured source snapshots/hashes are local under
+`.context/subagent-cache-eval-auth`. `wake-summary.json` comes from:
+
+```bash
+python3 evals/build-waiting/summarize-subagent-wait.py .context/subagent-cache-eval-auth
+```
+
+The final loop-parser refinement produced identical decisions and reasons
+on all 10 captured Bash calls (`decision-equivalence.json`). The collector
+was corrected to resolve macOS `/tmp` aliases; persisted transcripts from
+this pair were recovered read-only, and a regression test covers their
+collection. An initial pair could not authenticate inside the dev shell
+and used zero model tokens/$0; only those harness-owned fixtures were
+terminated with SIGTERM. The measured pair used the macOS Keychain client
+for CLI authentication, with dev-shell Python and fixture tools.
+
+**Validation and rollout:** dev-shell `test_wait_guard.py` (9 tests),
+`test_agent_job.py` (18), and `test_run.py` (3) passed, as did Python
+compilation and `git diff --check`. Runtime/browser/conformance suites
+were not run: this changes only local agent tooling. `HOOK_VERSION` is
+now 4. Main agents refresh an existing installation with
+`python3 .claude/hooks/install-hooks.py --user --update-from-main` after
+fetching main; a first installation still uses explicit `--user` opt-in.
 
 ### 9. `local-build plan --status` with time estimate
 

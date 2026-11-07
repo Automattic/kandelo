@@ -24,7 +24,9 @@ those choices:
       and exits 124. Repeat only when the wait-window notice says the job
       is still running; a completed job can also exit 124, and its
       FAILED (exit 124) result is final. One call per
-      9 minutes, instead of a poll every few seconds. --timeout 0 waits
+      9 minutes for headless main sessions. Subagents use --timeout 240
+      for targeted work to stay inside their shorter prompt cache; return
+      known long jobs to the parent. --timeout 0 waits
       without limit, for an interactive main session that runs it with
       run_in_background and ends its turn. Never end your turn to wait in a
       headless (claude -p) session or a subagent: they stop when the turn
@@ -463,9 +465,12 @@ def cmd_start(args):
           f"wait with (choose your session type; do not poll):\n"
           f"  interactive main: {shlex.quote(sys.argv[0])} wait {job_id} --timeout 0  "
           f"(Bash run_in_background: true; act on one completion notification)\n"
-          f"  headless/subagent: {shlex.quote(sys.argv[0])} wait {job_id}  "
+          f"  headless main: {shlex.quote(sys.argv[0])} wait {job_id}  "
           f"(foreground; repeat only if wait reports still running; "
-          f"FAILED (exit 124) is final; never end the turn to wait)")
+          f"FAILED (exit 124) is final; never end the turn to wait)\n"
+          f"  subagent: {shlex.quote(sys.argv[0])} wait {job_id} --timeout 240  "
+          f"(foreground, targeted work only; return known long jobs to parent; "
+          f"repeat only if wait reports still running; FAILED (exit 124) is final; never end the turn to wait)")
 
 
 def peer_job(text):
@@ -518,7 +523,7 @@ def cmd_wait(args):
         if deadline and now() >= deadline:
             print(f"agent-job: still running after {args.timeout}s of waiting "
                   f"(wait window expired; exit 124)\n"
-                  f"resume with: {shlex.quote(sys.argv[0])} wait {args.id}\n")
+                  f"resume with: {shlex.quote(sys.argv[0])} wait {args.id} --timeout {args.timeout}\n")
             print_status(args.id, d)
             sys.exit(124)
         time.sleep(2)

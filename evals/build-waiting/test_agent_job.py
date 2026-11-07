@@ -33,6 +33,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 AGENT_JOB = REPO / "scripts" / "agent-job"
@@ -77,19 +78,31 @@ class JobsDirCase(unittest.TestCase):
 
 
 class AgentJobTest(JobsDirCase):
-    def test_start_prints_executable_wait_hints_for_both_session_types(self):
+    def test_wait_parser_keeps_main_default_and_explicit_windows(self):
+        module = load_agent_job()
+        for argv, timeout in ((["wait", "job"], 540), (["wait", "job", "--timeout", "0"], 0),
+                              (["wait", "job", "--timeout", "240"], 240)):
+            with self.subTest(argv=argv), mock.patch.object(module, "cmd_wait") as wait, \
+                    mock.patch.object(sys, "argv", [str(AGENT_JOB), *argv]):
+                module.main()
+                self.assertEqual(wait.call_args.args[0].timeout, timeout)
+
+    def test_start_prints_executable_wait_hints_for_all_session_types(self):
         started = self.agent_job("start", "--", "sleep 0.1; echo hint-result; exit 7").stdout
         job_id = started.splitlines()[0]
         hints = {line.split(": ", 1)[0].strip(): line.split(": ", 1)[1]
                  for line in started.splitlines() if line.startswith("  ")}
-        self.assertEqual(set(hints), {"interactive main", "headless/subagent"}, started)
+        self.assertEqual(set(hints), {"interactive main", "headless main", "subagent"}, started)
         self.assertIn("run_in_background: true", hints["interactive main"])
         self.assertIn("--timeout 0", hints["interactive main"])
         self.assertIn("one completion notification", hints["interactive main"])
-        self.assertIn("foreground", hints["headless/subagent"])
-        self.assertIn("repeat only if wait reports still running", hints["headless/subagent"])
-        self.assertIn("FAILED (exit 124) is final", hints["headless/subagent"])
-        self.assertIn("never end the turn", hints["headless/subagent"])
+        self.assertIn("foreground", hints["headless main"])
+        self.assertIn("repeat only if wait reports still running", hints["headless main"])
+        self.assertIn("FAILED (exit 124) is final", hints["headless main"])
+        self.assertIn("never end the turn", hints["headless main"])
+        self.assertIn("--timeout 240", hints["subagent"])
+        self.assertNotIn("--timeout", hints["headless main"])
+        self.assertIn("return known long jobs to parent", hints["subagent"])
         for session_type, hint in hints.items():
             with self.subTest(session_type=session_type):
                 # Execute the printed command, not a separately constructed
@@ -379,6 +392,7 @@ class PeerJobTest(JobsDirCase):
         self.assertEqual(len(resume), 1, timed_out.stdout)
         command = shlex.split(resume[0])
         self.assertNotIn("--peer", command)
+        self.assertEqual(command[-2:], ["--timeout", "1"])
 
         release.touch()
         finished = self.agent_job("wait", original, "--timeout", "30", check=False)
