@@ -1972,6 +1972,9 @@ for marker, text in {
     '/* NODE_LEGACY_CONSTANTS_SOURCE */': json.dumps(selected_platform_source(public_constants_spec, 'lib/constants.js')),
     '/* NODE_CRYPTO_DEFAULT_CIPHER */': selected_platform_section(public_constants_spec, 'defaultCipherAccessor'),
     '/* NODE_CRYPTO_CONSTANTS_PROPERTY */': selected_platform_section(public_constants_spec, 'publicCryptoConstants'),
+    '/* NODE_TLS_PUBLIC_CIPHER_DEFAULT */': selected_platform_section(public_constants_spec, 'publicTLSCipherDefault'),
+    '/* NODE_TLS_NORMAL_MIN_DEFAULT */': selected_platform_section(public_constants_spec, 'publicTLSNormalMin').removeprefix('else\n'),
+    '/* NODE_TLS_NORMAL_MAX_DEFAULT */': selected_platform_section(public_constants_spec, 'publicTLSNormalMax').removeprefix('else\n'),
     '/* NODE_CONSTANTS_COMPILE */': selected_platform_section(public_constants_spec, 'compileForInternalLoader'),
 }.items():
     if constant_adapter.count(marker) != 1:

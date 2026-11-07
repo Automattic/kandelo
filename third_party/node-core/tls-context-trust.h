@@ -3,6 +3,9 @@
 #define KANDELO_NODE_TLS_CONTEXT_TRUST_H
 #include <climits>
 #include <cstddef>
+#include <cstdio>
+#include <cstring>
+#include "crypto-errors.h"
 #include <memory>
 #include <string>
 #include <openssl/err.h>
@@ -11,10 +14,38 @@
 namespace kandelo::tls {
 struct ContextDeleter { void operator()(SSL_CTX* value) const { SSL_CTX_free(value); } };
 using ContextPointer = std::unique_ptr<SSL_CTX, ContextDeleter>;
-inline ContextPointer NewTrustContext() {
+inline ContextPointer NewTrustContext(int minVersion = TLS1_2_VERSION,
+                                     int maxVersion = TLS1_3_VERSION) {
   ContextPointer context(SSL_CTX_new(TLS_client_method()));
-  if (!context || !SSL_CTX_set_min_proto_version(context.get(), TLS1_2_VERSION)) return {};
+  if (!context || !SSL_CTX_set_min_proto_version(context.get(), minVersion) ||
+      !SSL_CTX_set_max_proto_version(context.get(), maxVersion)) return {};
   return context;
+}
+// These operations own actual SSL_CTX policy and its real thread-local error
+// queue. The option frontend keeps TLS1.2 lists and TLS1.3 suites separate.
+struct CipherErrorClear {
+  CipherErrorClear() { ERR_clear_error(); }
+  ~CipherErrorClear() { ERR_clear_error(); }
+};
+[[noreturn]] inline void CipherFailure(unsigned long number, const char* fallback) {
+  char message[128];
+  if (number) { ERR_error_string_n(number, message, sizeof(message)); fallback = message; }
+  throw kandelo::crypto::Error(fallback, number);
+}
+inline void SetContextCipherSuites(SSL_CTX* context, const char* ciphers) {
+  CipherErrorClear clear;
+  if (!SSL_CTX_set_ciphersuites(context, ciphers))
+    CipherFailure(ERR_get_error(), "Failed to set ciphers");
+}
+inline void SetContextCiphers(SSL_CTX* context, const char* ciphers) {
+  CipherErrorClear clear;
+  if (!SSL_CTX_set_cipher_list(context, ciphers)) {
+    const unsigned long number = ERR_get_error();
+    // Exact Node policy: deliberately clearing the pre-TLS1.3 list is valid;
+    // a nonempty invalid list still throws the actual OpenSSL error.
+    if (ciphers[0] == '\0' && ERR_GET_REASON(number) == SSL_R_NO_CIPHER_MATCH) return;
+    CipherFailure(number, "Failed to set ciphers");
+  }
 }
 // A CA is public material. The selected Node LoadBIO nevertheless uses a
 // secure-memory BIO; preserve its explicit length and read-only input policy.

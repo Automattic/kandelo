@@ -27,7 +27,7 @@ exports.create=function create(options={}) {
     const initial=source.slice(source.indexOf('const _nodePublicConstants ='),source.indexOf('let _nodeDomain, _nodeFfi;'));
     const cryptoGetter=source.match(/    get crypto\(\) \{ return _nodePublicConstants.load\('crypto'\); \},/)[0];
     const constantsGetter=source.match(/    get constants\(\) \{ return _nodePublicConstants.load\('constants'\); \},/)[0];
-    const context={process:proc,_nodeValues:values,_nodeConstantBinding:binding,crypto:existingCryptoAPI,
+    const context={process:proc,_nodeValues:values,_nodeConstantBinding:binding,crypto:existingCryptoAPI,tls:Object.create(null),
       _createNodePublicConstantModules:factories.modules,_builtinModules:builtins,
       _nodeNative:{cliOptions,evalScriptAsFunction:(text,filename,line)=>{
         if(line!==1)throw Error('unexpected source origin line');return vm.runInThisContext(text,{filename});

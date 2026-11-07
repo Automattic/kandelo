@@ -25,6 +25,10 @@
     "lib/internal/crypto/util.js": {
       "path": "upstream/tls-context/lib/internal/crypto/util.js",
       "sha256": "79c2825d2173435a80f914aeca952032826bb61ea5a2835c315f08ced5963337"
+    },
+    "lib/internal/tls/common.js": {
+      "path": "upstream/tls-context/lib/internal/tls/common.js",
+      "sha256": "c84aa4d0750e5e18af326ca00e57a33e5d1813187771b82c29c384d15e01ef78"
     }
   },
   "selections": {
@@ -81,6 +85,42 @@
       "start": "  if (pfx !== undefined && pfx !== null) {",
       "length": 536,
       "sha256": "3316a3e53dea748f4aff7e2ac9ab02fff47a0906acc6752ba513d43135011203"
+    },
+    "getDefaultCiphers": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "function getDefaultCiphers() {",
+      "length": 232,
+      "sha256": "bb82944c40bde5b0a219546ef354ab2098b11c462c2771aa4d010de7c8792df7"
+    },
+    "getDefaultEcdhCurve": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "function getDefaultEcdhCurve() {",
+      "length": 250,
+      "sha256": "0fa9e185ee2b6c2f74a3216d423a1881ecc28d00f864bd9e14c7d9121f49b9ba"
+    },
+    "processCiphers": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "function processCiphers(ciphers, name) {",
+      "length": 1073,
+      "sha256": "c47e539089f0d8e5f310aeb18d604c64319870decfc12eed582041f367077c74"
+    },
+    "optionInputs": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "  const {\n    allowPartialTrustChain,",
+      "length": 369,
+      "sha256": "f488fb743aec5935056a96cbbc641fd295b300b6d7a5718480cf28e6ffbbfe0e"
+    },
+    "configureCiphers": {
+      "source": "lib/internal/tls/secure-context.js",
+      "start": "  // Set the cipher list and cipher suite before anything else",
+      "length": 918,
+      "sha256": "d0cbbe307f0f6f4d4aeadf4d2264ee2d6106e384ddffca2f4ecba984967ba5ab"
+    },
+    "protocolVersion": {
+      "source": "lib/internal/tls/common.js",
+      "start": "function toV(which, v, def) {",
+      "length": 280,
+      "sha256": "a53ac7266080a3c0d11597c0ab86ed5fa412aa1f9f9259618fb49670cca89e29"
     }
   },
   "errorReason": {

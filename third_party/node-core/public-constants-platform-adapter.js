@@ -23,6 +23,14 @@ function _createNodePublicConstantModules(platform) {
     function compileFunction(id) {
         if (id === 'constants')
             return platform.compileSource('(function(exports, require, module, process, internalBinding, primordials) {' + source + '\n})', 'node:constants');
+        if (id === 'tls') return function(exports) {
+            /* NODE_TLS_PUBLIC_CIPHER_DEFAULT */
+            // Protocol CLI switches remain rejected by the launcher. These
+            // admitted normal-profile defaults are consumed by real SSL_CTX
+            // version setters and remain mutable public configuration.
+            /* NODE_TLS_NORMAL_MIN_DEFAULT */
+            /* NODE_TLS_NORMAL_MAX_DEFAULT */
+        };
         return function(exports, require, module) {
             const constants = binding.crypto;
             /* NODE_CRYPTO_DEFAULT_CIPHER */
@@ -43,6 +51,7 @@ function _createNodePublicConstantModules(platform) {
     const records = new SafeMap([
         ['constants', new ConstantModule('constants', {})],
         ['crypto', new ConstantModule('crypto', platform.crypto)],
+        ['tls', new ConstantModule('tls', platform.tls)],
     ]);
     return { load(id) { return records.get(id).compileForInternalLoader(); } };
 }

@@ -1,0 +1,92 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/secure-network.md",
+    "findingIds": [
+      "S-002",
+      "S-003",
+      "S-007"
+    ],
+    "relatedFamilies": [
+      "secure-network",
+      "crypto",
+      "values",
+      "loading",
+      "http",
+      "engine"
+    ],
+    "scope": "Real mutable public TLS/default/CLI/protocol/cipherlist context policy only; full SecureContext/lower TLS/HTTPS/guest remain incomplete"
+  },
+  "sourceImplemented": [
+    "Genuine lazy TLS public module load/cache/reentry/retry over the actual preconstructed public TLS object",
+    "Actual DEFAULT_CIPHERS from admitted CLI state independent from mutable crypto constants, with mutable real min/max defaults",
+    "Complete pinned protocol/cipher partition/getter-order source consumed by real SSL_CTX operations before credentials",
+    "Direct internal connect and public HTTPS getter initialize actual TLS dependency",
+    "Explicit two new upstream reference inputs declared; broader SecureContext remains honestly unavailable"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tlspolicy196-source-r1/report.json",
+    "sha256": "4105e7882d9e7b856859ba7eb33b52235cba0e7f098d591052c0e8eaf3f2c77d",
+    "guardedInputs": 863,
+    "scope": "Actual lazy public TLS cipher/default/protocol and live SSL_CTX owner; scoped native component only. Full SecureContext/options/secure Agent/lower TLS/JSAPI/fourhost incomplete."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tlspolicy196-affected-r1.json",
+    "sha256": "74ff4f56e1782f42b5710b4a23c5d2846cc55186de116e39b2ab3155aa799563",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tlspolicy196-source-r1/report.json",
+    "sha256": "4105e7882d9e7b856859ba7eb33b52235cba0e7f098d591052c0e8eaf3f2c77d",
+    "tlsPolicyGroups": 27,
+    "publicConstantRegressionGroups": 12,
+    "upstreamNativeBaselineOnly": true,
+    "upstreamCandidateExecuted": false,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Actual current SSL_CTX/default/public/CLI policy over explicit native dependency fixtures; direct internal connect expected pre-TCP fault, no guest or successful handshake proof."
+  },
+  "sealedEvidence": {
+    "report": ".context/tls-cipher-policy-owner-agent/HANDOFF.json",
+    "sha256": "5bbc85859e88eacf253c841fa60e7d4a7391735dbf032bfe4c5635dc6a6b364b",
+    "reusedEvidence": true,
+    "scope": "27final paired groups/137source checks, initial12pass15nonpass inspector setup preserved;3successful tiny compiles, native-only unchanged upstream, guest0."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tls-cipher-policy-owner-agent/controls-r1/report.json",
+      "sha256": "2012c5143b276401f5424e84681d7e1d1fefc56caf073fc012f8a877e7a65b53",
+      "kind": "incorrect-initial-native-inspector-fixture",
+      "passed": 12,
+      "nonpass": 15,
+      "reason": "NAPI External-wrapper accessor was wrong for plain V8 External; proper native inspector, no production policy workaround or defect claim"
+    },
+    {
+      "report": ".context/tls-cipher-policy-owner-agent/source-check-r1/failure.json",
+      "sha256": "5904813d947490bb3a389d557a8c7712e5a8b8e2bfd82cd7d21705bdf33961f0",
+      "kind": "source-template-harness-failure",
+      "reason": "Original setup failure retained; final current source/staging checks separate"
+    }
+  ],
+  "remaining": [
+    "Public tls.createSecureContext remains _notImpl; broader SecureContext constructor/options/descriptor/overload ownership incomplete.",
+    "Secure protocol/options/honor order/singleUse/ECDH/DH/sigalgs/session/ticket/CRL/server context actions and full pre-init getter order remain gaps.",
+    "TLS min/max CLI flags still rejected; only actual normal-profile mutable defaults and explicit options are routed.",
+    "HTTPS ad hoc host:port pool and request projections omit explicit TLS policy; real secure Agent identity/ownership followup needed.",
+    "Existing guest default trust paths do not establish Node bundled/system/extra CA-store semantics.",
+    "No actual new handshake, guest, browser or four-host runtime evidence.",
+    "Actual SSL_CTX/JSAPI/CCW/GC/realm/OOM/error policy and identified-artifact four-host conformance",
+    "Unchanged upstream cipher-list file was executed only under native reference, not current candidate"
+  ],
+  "at": "2026-11-07T07:50:02.129238+00:00",
+  "recipeRevision": 196,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -115,9 +115,14 @@ static bool KandeloNativeTlsContextOperationImpl(JSContext* cx, unsigned argc, V
   std::string operation;
   if (!KandeloKeyString(cx, args[0], &operation)) return false;
   if (operation == "create") {
-    if (argc != 1) { JS_ReportErrorASCII(cx, "Invalid TLS context creation arguments"); return false; }
+    if (argc != 1 && argc != 3) { JS_ReportErrorASCII(cx, "Invalid TLS context creation arguments"); return false; }
+    int minVersion=TLS1_2_VERSION,maxVersion=TLS1_3_VERSION;
+    if (argc == 3) {
+      if (!args[1].isInt32() || !args[2].isInt32()) { JS_ReportErrorASCII(cx,"TLS protocol bounds require checked int32 values");return false; }
+      minVersion=args[1].toInt32();maxVersion=args[2].toInt32();
+    }
     ERR_clear_error();
-    auto context = kandelo::tls::NewTrustContext();
+    auto context = kandelo::tls::NewTrustContext(minVersion,maxVersion);
     if (!context) return KandeloTlsContextError(cx, "TLS context allocation failed");
     auto owner = std::make_unique<KandeloTlsContextOwner>(std::move(context));
     RootedObject object(cx, JS_NewObject(cx, &KandeloTlsContextClass));
@@ -130,6 +135,25 @@ static bool KandeloNativeTlsContextOperationImpl(JSContext* cx, unsigned argc, V
   if (!owner || !owner->context) {
     if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Invalid TLS trust context receiver");
     return false;
+  }
+  if ((operation == "ciphers" || operation == "cipherSuites") && argc == 3) {
+    if (!args[2].isString()) { JS_ReportErrorASCII(cx,"TLS cipher policy requires a checked string");return false; }
+    kandelo::tls::CipherErrorClear clear;
+    std::string ciphers;
+    if (!KandeloKeyString(cx,args[2],&ciphers))return false;
+    if (operation == "ciphers") kandelo::tls::SetContextCiphers(owner->context.get(),ciphers.c_str());
+    else kandelo::tls::SetContextCipherSuites(owner->context.get(),ciphers.c_str());
+    args.rval().setUndefined();return true;
+  }
+  if ((operation == "getMinProto" || operation == "getMaxProto") && argc == 2) {
+    const long version = operation == "getMinProto" ? SSL_CTX_get_min_proto_version(owner->context.get()) : SSL_CTX_get_max_proto_version(owner->context.get());
+    args.rval().setNumber(double(version));return true;
+  }
+  if (operation == "setMinProto" && argc == 3) {
+    if (!args[2].isInt32()) { JS_ReportErrorASCII(cx,"TLS protocol requires a checked int32");return false; }
+    if (!SSL_CTX_set_min_proto_version(owner->context.get(),args[2].toInt32()))
+      return KandeloTlsContextError(cx,"OpenSSL rejected TLS protocol minimum");
+    args.rval().setUndefined();return true;
   }
   if (operation == "addCA" && argc == 3) {
     kandelo::crypto::Bytes bytes;size_t length;

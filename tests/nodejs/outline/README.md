@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source196 integrates actual TLS cipher/default/protocol policy through shared lazy public ownership and live SSL_CTX operations.27focused policy groups,12existing constants groups and14package checks pass. Unchanged upstream cipher-list evidence is native-only; guest/full SecureContext/secure Agent remain incomplete.
+See [source scope](tls-cipher-policy-integration.md).
+
 Source195 integrates actual one-shot SignJob owners over streaming193/constants192.39of40focused component groups pass; one ALS/frame group remains a nonpass and later assertions are uncredited. Existing52streaming groups,2unchanged files per subject and14package checks complete; CLI branches stay skipped.
 See [source scope](signature-jobs-integration.md).
 

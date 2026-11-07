@@ -4286,6 +4286,7 @@ net.Stream = net.Socket;
 // ============================================================
 
 const _nodeTlsContextTrust = _createNodeTlsContextTrust({
+    constants: _nodeConstantBinding, require: id => _builtinModules[id],
     native: _nodeNative, values: _nodeValues, types: util.types, Buffer,
 });
 
@@ -4416,6 +4417,7 @@ const tls = (() => {
     }
 
     function connect(options, cb) {
+        _nodePublicConstants.load('tls');
         if (typeof options === 'number') {
             /* (port, host?, opts?, cb?) Node-style overloads. */
             const port = options;
@@ -5127,7 +5129,7 @@ const _nodeSys = _createNodeSysPlatform({
     compileSource: (source, filename) => _nodeNative.evalScriptAsFunction(source, filename, 1),
 });
 const _nodePublicConstants = _createNodePublicConstantModules({
-    process, values: _nodeValues, binding: _nodeConstantBinding, crypto,
+    process, values: _nodeValues, binding: _nodeConstantBinding, crypto, tls,
     cliOptions: _nodeNative.cliOptions,
     require: id => _builtinModules[id],
     compileSource: (source, filename) => _nodeNative.evalScriptAsFunction(source, filename, 1),
@@ -5156,12 +5158,12 @@ const _builtinModules = {
     'child_process': child_process,
     get crypto() { return _nodePublicConstants.load('crypto'); },
     'net': net,
-    'tls': tls,
+    get tls() { return _nodePublicConstants.load('tls'); },
     'http': http,
     '_http_incoming': _nodeHttpIncoming,
     '_http_outgoing': _nodeHttpOutgoing.module,
     '_http_agent': _nodeHttpAgent.module,
-    'https': https,
+    get https() { _nodePublicConstants.load('tls'); return https; },
     get zlib() { return _nodeStreamPlatform.require('zlib'); },
     'tty': {
         isatty: _nodeReadlinePlatform.isatty,

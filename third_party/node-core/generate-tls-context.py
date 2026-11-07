@@ -23,7 +23,13 @@ def generate(root):
                'configureCA': '/* NODE_TLS_CONFIGURE_CA */', 'partial': '/* NODE_TLS_PARTIAL_CHAIN */',
                'setCerts': '/* NODE_TLS_SET_CERTS */', 'setKey': '/* NODE_TLS_SET_KEY */',
                'configureCert': '/* NODE_TLS_CONFIGURE_CERT */', 'configureKey': '/* NODE_TLS_CONFIGURE_KEY */',
-               'configurePFX': '/* NODE_TLS_CONFIGURE_PFX */'}
+               'configurePFX': '/* NODE_TLS_CONFIGURE_PFX */',
+               'protocolVersion': '/* NODE_TLS_PROTOCOL_VERSION */',
+               'getDefaultCiphers': '/* NODE_TLS_GET_DEFAULT_CIPHERS */',
+               'getDefaultEcdhCurve': '/* NODE_TLS_GET_DEFAULT_ECDH */',
+               'processCiphers': '/* NODE_TLS_PROCESS_CIPHERS */',
+               'optionInputs': '/* NODE_TLS_OPTION_INPUTS */',
+               'configureCiphers': '/* NODE_TLS_CONFIGURE_CIPHERS */'}
     for name, selector in identity['selections'].items():
         source = sources[selector['source']]
         if source.count(selector['start']) != 1:

@@ -5916,6 +5916,11 @@
         "path": "upstream/public-constants/lib/internal/bootstrap/realm.js",
         "upstreamPath": "lib/internal/bootstrap/realm.js",
         "sha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b"
+      },
+      "lib/tls.js": {
+        "path": "upstream/tls-context/lib/tls.js",
+        "upstreamPath": "lib/tls.js",
+        "sha256": "e3096a40fafa90eb2a0e125d2e7f720b18562757bc8a9827029bf35051b5b461"
       }
     },
     "selections": {
@@ -5990,6 +5995,24 @@
         "start": "  compileForInternalLoader() {",
         "length": 824,
         "sha256": "20586a04eb8f2f144c44b8b0877267ad4dba3c26dd9944961e6055fe9b2c1740"
+      },
+      "publicTLSCipherDefault": {
+        "source": "lib/tls.js",
+        "start": "exports.DEFAULT_CIPHERS = getOptionValue('--tls-cipher-list');",
+        "length": 62,
+        "sha256": "29280b88f0772705140c78f83139907fa5e191b4ee16961b2c4e2cefc23e1374"
+      },
+      "publicTLSNormalMin": {
+        "source": "lib/tls.js",
+        "start": "else\n  exports.DEFAULT_MIN_VERSION = 'TLSv1.2';",
+        "length": 47,
+        "sha256": "974afe7bb54a36b9905b31ea009f58bb5e78d0b929c818f1d9ee1711b44907d6"
+      },
+      "publicTLSNormalMax": {
+        "source": "lib/tls.js",
+        "start": "else\n  exports.DEFAULT_MAX_VERSION = 'TLSv1.3';",
+        "length": 47,
+        "sha256": "3345ab03dc27f0a80edbfd8a880cd9f077684ed13a5e764963297a61e8e3e17c"
       }
     }
   }

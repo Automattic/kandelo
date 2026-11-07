@@ -30678,9 +30678,11 @@ module.exports = {
 function _createNodeTlsContextTrust(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
-    const { ArrayIsArray, ArrayPrototypeForEach } = primordials;
-    const { validateString } = platform.values.validators;
+    const { ArrayIsArray, ArrayPrototypeFilter, ArrayPrototypeForEach, ArrayPrototypeJoin,
+        StringPrototypeSplit, StringPrototypeStartsWith } = primordials;
+    const { validateString, validateObject } = platform.values.validators;
     const Buffer = platform.Buffer;
+    const { kEmptyObject } = platform.values.require('internal/util');
     function toBuf(val, encoding) {
   if (typeof val === 'string') {
     if (encoding === 'buffer')
@@ -30690,7 +30692,64 @@ function _createNodeTlsContextTrust(platform) {
   return val;
 }
 
-    const { ERR_INVALID_ARG_TYPE } = platform.values.errors.codes;
+    const { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_TLS_INVALID_PROTOCOL_VERSION } = platform.values.errors.codes;
+    const { TLS1_VERSION, TLS1_1_VERSION, TLS1_2_VERSION, TLS1_3_VERSION } = platform.constants.crypto;
+    function require(name) {
+        if (name === 'tls') return platform.require(name);
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('TLS policy dependency ' + name);
+    }
+    function toV(which, v, def) {
+  v ??= def;
+  if (v === 'TLSv1') return TLS1_VERSION;
+  if (v === 'TLSv1.1') return TLS1_1_VERSION;
+  if (v === 'TLSv1.2') return TLS1_2_VERSION;
+  if (v === 'TLSv1.3') return TLS1_3_VERSION;
+  throw new ERR_TLS_INVALID_PROTOCOL_VERSION(v, which);
+}
+    function getDefaultCiphers() {
+  // We do it this way because DEFAULT_CIPHERS can be
+  // changed by users, so we need to grab the current
+  // value, but we want the evaluation to be lazy.
+  return require('tls').DEFAULT_CIPHERS;
+}
+    function getDefaultEcdhCurve() {
+  // We do it this way because DEFAULT_ECDH_CURVE can be
+  // changed by users, so we need to grab the current
+  // value, but we want the evaluation to be lazy.
+  return require('tls').DEFAULT_ECDH_CURVE || 'auto';
+}
+    function processCiphers(ciphers, name) {
+  ciphers = StringPrototypeSplit(ciphers || getDefaultCiphers(), ':');
+
+  const cipherList =
+    ArrayPrototypeJoin(
+      ArrayPrototypeFilter(
+        ciphers,
+        (cipher) => {
+          if (cipher.length === 0) return false;
+          if (StringPrototypeStartsWith(cipher, 'TLS_')) return false;
+          if (StringPrototypeStartsWith(cipher, '!TLS_')) return false;
+          return true;
+        }), ':');
+
+  const cipherSuites =
+    ArrayPrototypeJoin(
+      ArrayPrototypeFilter(
+        ciphers,
+        (cipher) => {
+          if (cipher.length === 0) return false;
+          if (StringPrototypeStartsWith(cipher, 'TLS_')) return true;
+          if (StringPrototypeStartsWith(cipher, '!TLS_')) return true;
+          return false;
+        }), ':');
+
+  // Specifying empty cipher suites for both TLS1.2 and TLS1.3 is invalid, its
+  // not possible to handshake with no suites.
+  if (cipherSuites === '' && cipherList === '')
+    throw new ERR_INVALID_ARG_VALUE(name, ciphers);
+
+  return { cipherList, cipherSuites };
+}
     const { isArrayBufferView } = platform.types;
     function validateKeyOrCertOption(name, value) {
   if (typeof value !== 'string' && !isArrayBufferView(value)) {
@@ -30729,8 +30788,18 @@ function _createNodeTlsContextTrust(platform) {
 
 
     function create(options) {
-        const owner = platform.native.tlsContext('create');
+        options ||= kEmptyObject;
+        const tls = require('tls');
+        const { minVersion, maxVersion } = options;
+        const minV = toV('minimum', minVersion, tls.DEFAULT_MIN_VERSION);
+        const maxV = toV('maximum', maxVersion, tls.DEFAULT_MAX_VERSION);
+        const owner = platform.native.tlsContext('create', minV, maxV);
         const context = {
+            setCipherSuites(value) { platform.native.tlsContext('cipherSuites', owner, value); },
+            setCiphers(value) { platform.native.tlsContext('ciphers', owner, value); },
+            getMinProto() { return platform.native.tlsContext('getMinProto', owner); },
+            getMaxProto() { return platform.native.tlsContext('getMaxProto', owner); },
+            setMinProto(value) { platform.native.tlsContext('setMinProto', owner, value); },
             addCACert(cert) { platform.native.tlsContext('addCA', owner, cert); },
             setCert(cert) { platform.native.tlsContext('setCert', owner, cert); },
             setKey(key, passphrase) { platform.native.tlsContext('setKey', owner, key, passphrase); },
@@ -30738,8 +30807,53 @@ function _createNodeTlsContextTrust(platform) {
             addRootCerts() { platform.native.tlsContext('addDefault', owner); },
             setAllowPartialTrustChain() { platform.native.tlsContext('partial', owner); },
         };
-        const { allowPartialTrustChain, ca, cert, key, passphrase, pfx } = options;
         const name = 'options';
+        validateObject(options, name);
+          const {
+    allowPartialTrustChain,
+    ca,
+    cert,
+    certificateCompression,
+    ciphers = getDefaultCiphers(),
+    clientCertEngine,
+    crl,
+    dhparam,
+    ecdhCurve = getDefaultEcdhCurve(),
+    key,
+    passphrase,
+    pfx,
+    privateKeyIdentifier,
+    privateKeyEngine,
+    sessionIdContext,
+    sessionTimeout,
+    sigalgs,
+    ticketKeys,
+  } = options;
+          // Set the cipher list and cipher suite before anything else because
+  // @SECLEVEL=<n> changes the security level and that affects subsequent
+  // operations.
+  if (ciphers !== undefined && ciphers !== null)
+    validateString(ciphers, `${name}.ciphers`);
+
+  // Work around an OpenSSL API quirk. cipherList is for TLSv1.2 and below,
+  // cipherSuites is for TLSv1.3 (and presumably any later versions). TLSv1.3
+  // cipher suites all have a standard name format beginning with TLS_, so split
+  // the ciphers and pass them to the appropriate API.
+  const {
+    cipherList,
+    cipherSuites,
+  } = processCiphers(ciphers, `${name}.ciphers`);
+
+  if (cipherSuites !== '')
+    context.setCipherSuites(cipherSuites);
+  context.setCiphers(cipherList);
+
+  if (cipherList === '' &&
+      context.getMinProto() < TLS1_3_VERSION &&
+      context.getMaxProto() > TLS1_2_VERSION) {
+    context.setMinProto(TLS1_3_VERSION);
+  }
+
           if (ca) {
     addCACerts(context, ArrayIsArray(ca) ? ca : [ca], `${name}.ca`);
   } else {
@@ -109253,6 +109367,14 @@ function _createNodePublicConstantModules(platform) {
     function compileFunction(id) {
         if (id === 'constants')
             return platform.compileSource('(function(exports, require, module, process, internalBinding, primordials) {' + source + '\n})', 'node:constants');
+        if (id === 'tls') return function(exports) {
+            exports.DEFAULT_CIPHERS = getOptionValue('--tls-cipher-list');
+            // Protocol CLI switches remain rejected by the launcher. These
+            // admitted normal-profile defaults are consumed by real SSL_CTX
+            // version setters and remain mutable public configuration.
+              exports.DEFAULT_MIN_VERSION = 'TLSv1.2';
+              exports.DEFAULT_MAX_VERSION = 'TLSv1.3';
+        };
         return function(exports, require, module) {
             const constants = binding.crypto;
             ObjectDefineProperty(constants, 'defaultCipherList', {
@@ -109328,6 +109450,7 @@ function _createNodePublicConstantModules(platform) {
     const records = new SafeMap([
         ['constants', new ConstantModule('constants', {})],
         ['crypto', new ConstantModule('crypto', platform.crypto)],
+        ['tls', new ConstantModule('tls', platform.tls)],
     ]);
     return { load(id) { return records.get(id).compileForInternalLoader(); } };
 }
