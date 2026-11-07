@@ -18,8 +18,9 @@ request has been submitted. The existing WordPress preview is preserved.
 
 The candidate is **not adopted**. It demonstrates stack safety for the
 exercised cases, but deep-pattern compilation is slower on the tested Wasm
-hosts. Real FrankenPHP+Caddy evaluation is the next gate; no request-rate
-or WordPress performance conclusion follows from these microbenchmarks.
+hosts. Actual FrankenPHP+Caddy now passes the focused service gate on Node
+and all three browsers, including WebKit. No request-rate or WordPress
+performance conclusion follows from these microbenchmarks.
 
 ## Implementation
 
@@ -123,6 +124,52 @@ and splitting leaf emission did not remove the deep Wasm timing regression.
 The first browser timing host lacked `poll_oneoff`; its 108 rows are invalid
 and excluded. The replacement clock poll honors subscription deadlines.
 
+## Real FrankenPHP+Caddy evaluation
+
+A complete experimental first-hit registry copies the unchanged released
+FrankenPHP 1.13.5/Caddy 2.11.9 recipe and changes only its Go pin to
+`f6053060`. The normal SourceOnly resolver builds and publishes it into a
+private projection in 7m28s. Its declared Go 1.26.10 bootstrap freshly
+builds `go1.28-devel_f6053060`; this service proof does not reuse the local
+8b compiler. The original incomplete override omitted its script/main files
+and was correctly rejected; that attempt is retained separately.
+
+Candidate artifact: 185,049,718 bytes, SHA-256
+`ee48e2bfa3bfcd9a31d984a8e1989a2af1625184bb1450791681714438f7b919`.
+It uses the same ABI-55 kernel and PHP artifact as the baseline. Neither
+FrankenPHP nor Caddy source is patched. PHP's separate experimental optimizer
+candidate remains present in the PHP artifact and is not evaluated here.
+
+The candidate passes the maintained Node service test: real PHP/static HTTP,
+OPcache compilation/cache-file creation, 32 requests with four in flight
+and exact CGI/body checks during observed Go collection (17 to 34), then
+normal SIGTERM exit 0, with no host diagnostics. The browser service gate
+also passes Chromium, Firefox and WebKit (3/3, 35.4 seconds), including
+32 concurrent request checks during collection and normal shutdown. The
+unchanged-library baseline had exited before readiness on WebKit; its
+stripped frame trace did not establish exact function identity by itself.
+
+A separate Node diagnostic runs the whole maintained test in six fresh
+children, three alternating rounds, with no simultaneous owned heavy build.
+The workload includes engine compilation, machine boot, PHP/static/OPcache,
+32 concurrent request checks, shutdown and teardown. All six runs pass.
+
+| Whole Node service-test elapsed time | Median | Range | Samples |
+| --- | ---: | ---: | ---: |
+| Original library | 5.414 s | 4.865–6.313 s | 3 |
+| Candidate | 5.452 s | 5.221–5.659 s | 3 |
+
+The candidate median is 0.7% higher, with overlapping ranges. This small
+sample does not establish a performance difference. It is neither isolated
+server startup nor sustained request throughput and does not replace the
+planned WordPress/FPM comparison. A first diagnostic setup used an
+incorrect binary-resolver path and accidentally captured shell banners;
+it executed no service samples and is retained as an invalid attempt.
+
+Normal recipe pins, application source and the preserved preview remain
+unchanged. Stack safety is established for these service cases; broad
+compiler, cgo, memory/lifecycle and production WordPress gates remain open.
+
 ## Reproduction and remaining decision
 
 The candidate contains upstream-style equivalence/deep/concurrency tests
@@ -139,18 +186,22 @@ Failed, skipped and intermediate runs remain separate. A smoke check of
 the preserved harness is stored under `.context/go-regexp-harness-smoke/`;
 its timings are not part of the comparison above.
 
-An experimental first-hit registry copies the unchanged FrankenPHP+Caddy
-recipe and changes only its Go source pin to `f6053060`. The normal resolver
-builds it into a private projection. Its first attempt omitted the selected
-package's script/main input files; resolution correctly rejected the
-incomplete override. The complete override is being built. No normal recipe,
-application source, PHP artifact or existing preview is replaced by this
-experiment.
+Real-service evidence is `real-caddy-candidate-artifact.json`,
+`real-caddy-candidate-tests.log`, `real-caddy-node-comparison.json` and the
+six per-child logs in the same evaluation directory. Build job:
+`regexp-caddy-evaluation-1107-013552-c471`. The baseline artifact SHA-256 is
+`20c10f8ec00cea0ae470ea6a58eb408383d4e3d38da89be17e738e3a79aeb79d`.
 
-Before promotion, run that actual service on Node and all three browsers,
-retain the compilation tradeoff explicitly, and evaluate application startup
-and request behavior. If the library-level cost is unacceptable, further
+The reusable harness is also rebuilt from its recorded compiler inputs and
+smoke-tested on native/Node and all three browsers under
+`.context/go-regexp-harness-built/`. Its summarizer rejects mixed WASI
+artifacts across Node/browser rows; a deliberately mixed cohort is rejected.
+Smoke results do not enter the full comparison above.
+
+Promotion remains pending broader coherent compiler validation, with the
+compilation tradeoff explicit. The candidate is a robustness improvement,
+not an established speed improvement. If that cost is unacceptable, further
 profiling or a separate instrumentation design is needed; restoring the old
-hybrid fallback is not the recommendation. Full compiler/cgo/POSIX, image,
-WordPress lifecycle/memory and fair PHP-FPM performance gates remain part
-of the parent plan. PHP's optimizer-recursion candidate remains separate.
+hybrid fallback is not the recommendation. Final image, WordPress workflow,
+lifecycle/memory and fair PHP-FPM performance gates remain in the parent
+plan. PHP's optimizer-recursion candidate remains separate.

@@ -27,6 +27,8 @@ Avoid concurrent builds and other heavy workloads during timings. Save host
 load and memory observations before and after the run. The builder records
 compiler versions and source revisions; retain those files alongside the
 raw JSON, artifact hashes, source cleanliness and the final summary.
+The summarizer rejects mixed WASI artifact hashes across Node and browser
+rows, preventing comparisons that accidentally combine different builds.
 
 Each workload parses and simplifies its expression before timing. It records
 one cold compile, then calibrates for approximately 100 ms per sample and

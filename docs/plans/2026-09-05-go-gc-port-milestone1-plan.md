@@ -7,8 +7,9 @@ four-byte Go/C pointers and eight-byte scalar alignment. Latest pushed Go
 source is
 [`a0b048e19e1b`](https://github.com/kandelo-dev/go/commit/a0b048e19e1b183db33f52d26c08d1c63b4f1c1d).
 Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
-Kandelo checkpoint `2e774fe1c` is pushed to draft PR #1492, including the
-unadapted FrankenPHP 1.13.5/Caddy 2.11.9 build and request proof. The full
+The implementation and evaluation checkpoints are pushed to draft PR #1492,
+including the unadapted FrankenPHP 1.13.5/Caddy 2.11.9 build and request
+proof. The full
 WordPress service goal remains unfinished.
 
 **Approved upstream regexp candidate:**
@@ -27,7 +28,15 @@ attempts, source provenance and adoption gates are in the
 The reusable harness is `benchmarks/go-regexp/`. A private normal-resolver
 FrankenPHP+Caddy build changes only the Go pin to evaluate actual service
 behavior; the existing preview and normal package recipes are preserved.
-That build and its Node/three-browser service gate remain pending.
+The private build passes in 7m28s with a freshly bootstrapped f605 compiler.
+Its Node service gate passes PHP/static/OPcache, 32 concurrent CGI/body
+checks during collection (17 to 34), and normal exit 0 without diagnostics.
+Its Chromium/Firefox/WebKit service gate passes 3/3 (35.4 seconds), resolving
+the exercised real Caddy WebKit startup failure. A six-child alternating
+Node diagnostic has whole-test medians 5.414 seconds original and 5.452
+seconds candidate, with overlapping ranges; this small sample does not
+establish a performance difference or measure request throughput. Normal
+pins remain unchanged pending broad coherent compiler validation.
 
 **Normal build integration:** the declared Nix Go 1.25.8 builds verified
 Go 1.26.10 source, which bootstraps the pinned Go 1.28 compiler. These are
@@ -211,8 +220,8 @@ Evidence: `.context/go32-clean-a0-*`,
 
 Remaining order:
 
-1. Finish the approved regexp candidate's real FrankenPHP+Caddy evaluation
-   and decide promotion with the measured compilation cost explicit. Finish
+1. The approved regexp candidate passes real FrankenPHP+Caddy on Node and
+   three browsers. Decide promotion with the compilation cost explicit; finish
    normal reproducibility and coherent Node/three-engine compiler/cgo/POSIX
    gates. The upstream Caddy dependency upgrade and obsolete application
    patch removal are complete; the full service goal is not.

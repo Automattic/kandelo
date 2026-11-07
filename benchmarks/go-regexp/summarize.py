@@ -11,10 +11,13 @@ native = json.loads((root / "native-benchmarks.json").read_text())["rows"]
 browser = json.loads((root / "browser-benchmarks.json").read_text())["rows"]
 groups = defaultdict(list)
 checksums = defaultdict(set)
+wasm_hashes = defaultdict(set)
 errors = []
 
 for row in native + browser:
     host = row.get("host", row.get("engine"))
+    if host != "native":
+        wasm_hashes[row["variant"]].add(row["sha256"])
     data = row["result"] if "host" in row else row["parsed"]
     if data is None:
         error = row["result"].get("error")
@@ -32,6 +35,9 @@ for row in native + browser:
             sample["TotalAlloc"] / data["N"],
             sample["Mallocs"] / data["N"],
         ))
+
+if any(len(hashes) != 1 for hashes in wasm_hashes.values()):
+    raise SystemExit("Mixed WASI artifacts across Node/browser measurements")
 
 summary = []
 for host in ["native", "node-wasi", "chromium", "firefox", "webkit"]:
@@ -69,6 +75,7 @@ result = {
     "rows": summary,
     "errors": errors,
     "checksumVariants": {name: len(values) for name, values in checksums.items()},
+    "wasmArtifacts": {variant: sorted(hashes) for variant, hashes in wasm_hashes.items()},
 }
 (root / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
 for error in errors:

@@ -19,7 +19,7 @@ for (const host of ['native', 'node-wasi']) {
                 const output = execFileSync(command, args, { encoding: 'utf8', env: { ...process.env, REGEXP_BENCH_CASE: name, GOMAXPROCS: '1' }, timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] });
                 const result = JSON.parse(output);
                 rows.push({ host, round, name, variant, sha256: createHash('sha256').update(readFileSync(path)).digest('hex'), result });
-                writeFileSync(resolve(outputDir, 'native-benchmarks.json'), JSON.stringify({ scope: 'Fresh child per row; compilation only; same source/compiler except regexp traversal; GOMAXPROCS=1; alternating order', node: process.version, rows }, null, 2) + '\n');
+                writeFileSync(resolve(outputDir, 'native-benchmarks.json'), JSON.stringify({ scope: 'Fresh child per row; compilation only; provided compiler inputs; GOMAXPROCS=1; alternating order', node: process.version, rows }, null, 2) + '\n');
                 console.log(JSON.stringify({ host, round, name, variant, nsPerOp: result.Samples.map(s => s.DurationNs / result.N) }));
             }
         }

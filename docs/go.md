@@ -127,8 +127,9 @@ The approved shared iterative regexp candidate passes the focused regression
 on Node and three browsers, with full-program equivalence tests. Its clean
 build and compilation benchmarks are recorded in the
 [upstream evaluation](plans/2026-11-07-go-regexp-upstream-evaluation.md).
-Deep-pattern compilation is slower on the tested Wasm hosts. Actual service
-evaluation remains pending; normal package pins have not adopted it.
+Deep-pattern compilation is slower on the tested Wasm hosts. The candidate
+also passes the real FrankenPHP+Caddy service gate on Node and all three
+browsers; normal package pins have not adopted it.
 
 Caddy 2.10.2 also rejects Go 1.28's default JSON type alias during module
 configuration. Upstream corrected this in
