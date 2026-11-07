@@ -6,9 +6,10 @@ import { opfsTest as test } from "./support/opfs-page";
 import { tryResolveBinaries } from "../../../host/src/binary-resolver";
 import { rustCompilerEnv } from "../../../host/test/fixtures/rust-compiler";
 
-const paths = tryResolveBinaries(["kernel.wasm", "programs/wasm32/kandelo-rust-sdk.zip"]);
+const resolved = tryResolveBinaries(["kernel.wasm", "programs/wasm32/kandelo-rust-sdk.zip"]);
+const paths = [resolved[0], process.env.KANDELO_GUEST_RUST_SDK_BUNDLE ?? resolved[1]];
 import { createRustCargoImage } from "../../../host/test/fixtures/rust-cargo";
-import { cargoProjectOutput } from "../../../host/test/fixtures/cargo-project";
+import { cargoProjectOutput, cargoTestArgs, cargoFailingTestArgs, cargoWrongPanicArgs } from "../../../host/test/fixtures/cargo-project";
 
 const available = paths.every(path => path !== null);
 if (!available && process.env.KANDELO_REQUIRE_GUEST_CARGO === "1") {
@@ -57,7 +58,7 @@ test("guest Cargo builds and runs a workspace with a build script on a persisten
     const lazyUrlMap = Object.fromEntries(assets.map(asset => [asset.url, origin + new URL(asset.url).pathname]));
     await page.goto(new URL("/trap-signal-test.html", baseURL).href);
     const modulePath = fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts", import.meta.url));
-    const results = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, lazyUrlMap, env, diagnostics }) => {
+    const results = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, lazyUrlMap, env, testArgs, failingArgs, wrongPanicArgs, diagnostics }) => {
       const { BrowserKernel } = await import(moduleUrl);
       const createHost = () => new BrowserKernel({ kernelOwnedFs: true, maxWorkers: 8,
         onHostDiagnostic: (event: unknown) => console.info("[cargo host diagnostic]", JSON.stringify(event)),
@@ -66,18 +67,18 @@ test("guest Cargo builds and runs a workspace with a build script on a persisten
       let host = createHost();
       const results: Array<{ exitCode: number; stdout: string; stderr: string }> = [];
       let sequence = 0;
-      async function run(path: string, argv: string[], expectedExit = 0) {
+      async function run(path: string, argv: string[], expectedExit = 0, timeoutMs = 300_000) {
         console.info("[cargo acceptance] starting", path, argv.join(" "));
         let stdout = "", stderr = "";
         const id = `cargo-browser-${++sequence}`;
         const { exit } = await host.spawnFromVfs(path, argv, {
           uid: 1000, gid: 1000, cwd: "/home/maker/project", env,
-          ownedJob: { id, timeoutMs: 300_000 },
+          ownedJob: { id, timeoutMs },
         });
         void exit.catch(() => {});
         let cursor = 0;
         let nextDiagnostic = Date.now() + 5000;
-        const deadline = Date.now() + 330_000;
+        const deadline = Date.now() + timeoutMs + 30_000;
         const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
         for (;;) {
           if (diagnostics && Date.now() >= nextDiagnostic) {
@@ -121,24 +122,36 @@ test("guest Cargo builds and runs a workspace with a build script on a persisten
         console.info("[cargo acceptance] image ready");
         await run("/usr/bin/cargo", ["cargo", "-vV"]);
         await run("/usr/bin/cargo", ["cargo", "metadata", "--offline", "--format-version=1"]);
-        await run("/usr/bin/cargo", ["cargo", "check", "--offline", "-j1"]);
+        await run("/usr/bin/cargo", ["cargo", "check", "--offline"]);
         await run("/usr/bin/cargo", ["cargo", "run", "--offline", "-j1", "-p", "cargo-hello"]);
         await run("/usr/bin/cargo", ["cargo", "build", "--offline", "-j1"]);
+        // This cold command links and prepares three separate libtest binaries.
+        await run("/usr/bin/cargo", ["cargo", ...testArgs], 0, 600_000);
+        await run("/usr/bin/cargo", ["cargo", ...failingArgs], 101);
+        await run("/usr/bin/cargo", ["cargo", ...wrongPanicArgs], 101);
         await host.destroy();
         host = createHost();
         await host.initFromImage({ ...bootOptions, requireExistingRootfsPersistence: true });
         await run("/usr/bin/cargo", ["cargo", "run", "--offline", "-j1", "-p", "cargo-hello"]);
         await run("/home/maker/project/target/debug/cargo-hello.wasm", ["cargo-hello"]);
+        await run("/usr/bin/cargo", ["cargo", ...testArgs]);
         return results;
       } finally { await host.destroy(); }
     }, { moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href, kernelUrl, imageUrl, lazyUrlMap,
-      env: rustCompilerEnv, diagnostics: process.env.KANDELO_CARGO_DIAGNOSTICS === "1" });
+      env: rustCompilerEnv, testArgs: cargoTestArgs, failingArgs: cargoFailingTestArgs,
+      wrongPanicArgs: cargoWrongPanicArgs, diagnostics: process.env.KANDELO_CARGO_DIAGNOSTICS === "1" });
     expect(results[0]!.stdout).toContain("cargo 1.97.0-nightly");
     expect(results[1]!.stdout).toContain('"name":"message"');
     expect(results[3]!.stdout).toContain(cargoProjectOutput);
     expect(results[4]!.stderr).not.toContain("Compiling");
-    expect(results[5]!.stdout).toBe(cargoProjectOutput);
-    expect(results[6]!.stdout).toBe(cargoProjectOutput);
+    expect(results[5]!.stdout).toContain("test result: ok. 4 passed; 0 failed; 2 ignored");
+    expect(results[5]!.stdout).toMatch(/expected_panic.*ok/);
+    expect(results[5]!.stdout).toContain("compiled_binary_runs_as_a_child ... ok");
+    expect(results[6]!.stdout).toContain("test result: FAILED. 0 passed; 1 failed");
+    expect(results[7]!.stdout).toContain("panic did not contain expected string");
+    expect(results[8]!.stdout).toBe(cargoProjectOutput);
+    expect(results[9]!.stdout).toBe(cargoProjectOutput);
+    expect(results[10]!.stdout).toContain("test result: ok. 4 passed; 0 failed; 2 ignored");
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close(error => error ? reject(error) : resolve());

@@ -25,3 +25,23 @@
 +    #[cfg(any(all(target_arch = "wasm32", not(target_os = "kandelo")), target_os = "hermit", target_os = "trusty"))]
      #[stable(feature = "io_safety", since = "1.63.0")]
      pub fn try_clone_to_owned(&self) -> io::Result<OwnedFd> {
+--- a/test/src/lib.rs
++++ b/test/src/lib.rs
+@@ -643,6 +643,6 @@
+     let ignore_because_no_process_support = desc.should_panic != ShouldPanic::No
+         && (cfg!(target_family = "wasm") || cfg!(target_os = "zkvm"))
+-        && !cfg!(target_os = "emscripten");
++        && !cfg!(any(target_os = "emscripten", target_os = "kandelo"));
+ 
+     if force_ignore || desc.ignore || ignore_because_no_process_support {
+         let message = CompletedTest::new(id, desc, TrIgnored, None, Vec::new());
+--- a/std/src/sys/thread/unix.rs
++++ b/std/src/sys/thread/unix.rs
+@@ -147,6 +147,7 @@
+ pub fn available_parallelism() -> io::Result<NonZero<usize>> {
+     cfg_select! {
+         any(
++            target_os = "kandelo",
+             target_os = "android",
+             target_os = "emscripten",
+             target_os = "fuchsia",

@@ -6,10 +6,10 @@ import type { OwnedJobRead } from "../../src/owned-jobs";
 export async function readRustCompilerJob(host: {
   readOwnedJob(id: string, offset?: number, limit?: number): Promise<OwnedJobRead>;
   releaseOwnedJob(id: string): Promise<void>;
-}, id: string) {
+}, id: string, timeoutMs = 330_000) {
   let cursor = 0, stdout = "", stderr = "";
   const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
-  const deadline = Date.now() + 330_000;
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
     const result = await host.readOwnedJob(id, cursor, 65536);
     if (result.expired) throw new Error(`Rust compiler output expired: ${id}`);

@@ -39,10 +39,10 @@ The experimental `rustc` package builds the compiler itself for Kandelo,
 separately from host-side `wasm32posix-cargo`. It pins the repository's
 nightly compiler revision, statically links its matching LLVM 22 WebAssembly
 backend through the `rust-llvm` library package, and supplies matching
-prebuilt `std` in `rust-std.zip`. These packages are outside the default
-supported software set. The compiler package alone does not include Cargo;
-the optional Rust SDK below adds it. Rustup and procedural macros are not
-included.
+prebuilt `std` in `rust-std.zip`. The shell carries these as lazy tools;
+the standalone Rust SDK bundle below is optional. The compiler package
+alone does not include Cargo. Rustup is not included; procedural macro
+loading remains unvalidated.
 
 Build it through the package resolver (this is a substantial cold build):
 
@@ -85,6 +85,20 @@ compilation, execution, diagnostics and reopening the compiled program from
 its persistent root filesystem. The browser fixture uses an OPFS disk.
 
 ## Cargo inside Kandelo
+
+To try the toolchain in the browser app, build a partial shell from
+`scripts/dev-shell.sh` and serve it:
+
+```sh
+./run.sh partial shell cargo rustc kandelo-rustc kandelo-sdk-browser-bundle wasm-fork-instrument
+./run.sh browser --partial
+```
+
+This installs the same tools as the standalone SDK below, using separate
+lazy programs and archives. The shell supplies the musl environment flag;
+the project still needs the bounded build profile below. Other shell
+activities are left out when their packages are absent. This development
+image does not establish canonical-shell integration readiness.
 
 The optional `kandelo-rust-sdk` package builds a ZIP mounted at `/usr`.
 It combines the C/C++ SDK and its linker with the pinned guest rustc,
@@ -144,6 +158,16 @@ using Kandelo's declared libcurl, OpenSSL and zlib. The current libcurl
 build supports HTTP/1.1; this Cargo build does not request HTTP/2. Registry
 fetching, TLS trust configuration, Git credentials, procedural macros and
 arbitrary third-party crates are not covered by the offline acceptance case.
+Local-registry `.crate` archives are covered by acceptance: Cargo verifies
+their checksum, unpacks them, preserves executable permissions and builds
+their Rust code. CPU-count detection uses Kandelo's musl `sysconf`, allowing
+Cargo to choose its default job count. For bounded browser builds, `-j1`
+remains the tested recommendation. Cargo defaults to HTTP/1.1 when the
+linked curl lacks HTTP/2; explicit HTTP configuration remains authoritative.
+Kandelo's libcurl uses `/etc/ssl/certs/ca-certificates.crt` and
+`/etc/ssl/certs` for trust, including the browser's session CA bundle.
+This configuration does not establish end-to-end HTTPS registry support.
+
 Cargo install/uninstall are also unvalidated. The std port still lacks a
 Kandelo-specific `std::env::consts` entry; platform identity and filename
 constants use the generic fallback. Cargo build scripts use the actual
@@ -153,14 +177,63 @@ platform code does not recognize Kandelo still need portability work, just
 as they do when cross-compiled on the build machine.
 
 The acceptance fixtures are `host/test/cargo-in-guest.test.ts` and
-`apps/browser-demos/test/cargo-in-guest.spec.ts`. Set
+`apps/browser-demos/test/cargo-in-guest.spec.ts`. The partial shell's login
+terminal and lazy tools are covered by
+`apps/browser-demos/test/cargo-partial-image.spec.ts`. Set
 `KANDELO_REQUIRE_GUEST_CARGO=1` to make missing experimental artifacts fail
-instead of skip. The workspace includes a path dependency, generated Rust
+instead of skip. `KANDELO_GUEST_RUST_SDK_BUNDLE` can name the normal resolver's
+canonical ZIP output when the optional bundle is outside the published view.
+The workspace includes a path dependency, generated Rust
 source from `build.rs`, a build script launching rustc and a program spawning
 itself. The tests check a fresh build, reuse of existing outputs and running
 again after reopening the persistent disk. The documented profile passes on desktop Node, Chromium, Firefox and
-WebKit. Build parallelism is one job in these tests; runtime memory limits
-are unchanged.
+WebKit. Builds and test execution use one job; `cargo check` also exercises
+default CPU-count detection. Runtime memory limits are unchanged.
+
+### Unit and integration tests
+
+The matching sysroot ships `libtest` and its dependencies. The compiler
+entry point selects Rust's upstream abort-mode test harness for `--test`:
+each test runs in a subprocess, allowing the parent to report failures and
+check `#[should_panic(expected = "...")]` without panic unwinding.
+Ordinary programs still use `panic = "abort"`.
+Tests run in separate processes, so they do not share mutable process globals.
+This does not provide stack unwinding or destructor cleanup after a panic.
+
+```sh
+cargo test --offline -j1 --workspace --tests -- --test-threads=1
+```
+
+`--tests` selects unit and integration tests and avoids the documentation
+test phase. `rustdoc` is not shipped, so plain `cargo test` on a library
+can still fail when it reaches doctests; use explicit test target selection
+until rustdoc is available. Binary-only packages do not have that phase.
+Test filtering, ignored tests, expected panics, mismatched panic messages,
+failure exit status, build-script generated source, subprocess tests and
+running tests again after reopening a persistent disk are exercised by Cargo acceptance.
+The negative acceptance cases explicitly run the ignored failing tests;
+they must report failure, rather than turn an empty test run green.
+Acceptance uses one test thread; parallel harness execution still needs
+dedicated coverage.
+
+### Remaining development-tool gaps
+
+| Expected workflow | Guest SDK status |
+|---|---|
+| `cargo doc` and doctests | Missing `rustdoc` |
+| `cargo fmt`, `cargo clippy` | Guest `rustfmt` and Clippy tools are not shipped |
+| Editor analysis and standard-library source navigation | Guest `rust-analyzer` and `rust-src` are not shipped |
+| Procedural macros, such as derive plugins | Loading and panic recovery remain unvalidated |
+| Cargo dependencies that compile C/C++ or run configure tools | Basic cross-language linking is covered; general guest native-dependency builds remain unvalidated |
+| `catch_unwind`, panic unwinding and backtraces | Unsupported; abort-mode libtest isolates tests instead |
+| Online registries, Git authentication and proxies | Transport defaults configured; end-to-end workflow unvalidated |
+| Incremental compilation on WebKit | Disabled in the tested profile because of native process memory limits |
+| Guest release/LTO builds, benchmarks, coverage and test time limits | Need dedicated guest-toolchain validation |
+
+On the build machine, the cross-compilation wrapper can build test targets
+with `--no-run`, but its `test` subcommand still needs a Cargo runner that
+prepares and executes the hashed test artifacts. Guest Cargo executes its
+test artifacts directly through the installed compiler entry point.
 
 ## Sharing libraries with C and C++
 
@@ -344,7 +417,7 @@ and `docs/plans/2026-09-07-rust-std-target-implementation.md`.
 
 ## Status
 
-Full-`std` parity is demonstrated. Remaining hardening: reconcile the
+The documented `std` surface is demonstrated. Remaining hardening: reconcile the
 remaining WALI-derived constants/syscall numbers in the wasm32 libc leaf
 to Kandelo's ABI (none has affected the demonstrated surface), and
 upstream the target as tier-3.

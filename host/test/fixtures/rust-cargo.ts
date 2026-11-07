@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { extractZipEntry, parseZipCentralDirectory } from "../../src/vfs/zip";
-import { cargoProjectFiles } from "./cargo-project";
+import { cargoProjectFiles, cargoProjectBinaryFiles } from "./cargo-project";
 
 export async function createRustCargoImage(bundle: Uint8Array) {
   const fs = KandeloImageFs.create();
@@ -21,6 +21,12 @@ export async function createRustCargoImage(bundle: Uint8Array) {
     const destination = `/home/maker/project/${path}`;
     mkdir(dirname(destination));
     fs.writeFile(destination, new TextEncoder().encode(source), 0o644);
+    fs.chown(destination, 1000, 1000);
+  }
+  for (const [path, bytes] of Object.entries(cargoProjectBinaryFiles)) {
+    const destination = `/home/maker/project/${path}`;
+    mkdir(dirname(destination));
+    fs.writeFile(destination, bytes, 0o644);
     fs.chown(destination, 1000, 1000);
   }
   const asset = {

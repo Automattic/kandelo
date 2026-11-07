@@ -830,13 +830,13 @@ manifest = "images/vfs/products/browser-lamp.toml"
 name = "texlive"
 reason = "deferred software"
 
-[[exclusions]]
+[[packages]]
 name = "rustc"
-reason = "experimental guest Rust toolchain; procedural macros remain unvalidated"
+class = "user-software"
 
-[[exclusions]]
+[[packages]]
 name = "rust-llvm"
-reason = "experimental guest Rust compiler dependency"
+class = "platform"
 
 [[exclusions]]
 name = "erlang"
@@ -869,13 +869,13 @@ id = "browser-redis"
 package = "redis-vfs"
 manifest = "images/vfs/products/browser-redis.toml"
 
-[[exclusions]]
+[[packages]]
 name = "cargo"
-reason = "experimental guest Rust package manager"
+class = "user-software"
 
-[[exclusions]]
+[[packages]]
 name = "kandelo-rustc"
-reason = "experimental guest Rust SDK compiler entry point"
+class = "user-software"
 
 [[exclusions]]
 name = "kandelo-rust-sdk"

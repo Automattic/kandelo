@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { findRepoRoot, tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { normalizeImageOwnedLazyReference } from "../src/vfs/vfs-asset-group-reference";
 import {
   KANDELO_DEMO_CONFIG_PATH,
   parseKandeloDemoConfig,
@@ -45,6 +46,9 @@ const PROBES: Record<string, string> = {
   tmux: "tmux -V",
   less: "less --version | head -n 1",
   fbdoom: "test -x /usr/bin/fbdoom && test -x /usr/bin/doom-launch && echo fbdoom-wrapper-ok",
+  cargo: "cargo --version",
+  rustc: "/usr/libexec/rustc --version",
+  "kandelo-rustc": '. /etc/profile.d/rust.sh; test "$RUST_LIBC_UNSTABLE_MUSL_V1_2_3" = 1; rustc --print sysroot',
 };
 
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -61,6 +65,22 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
     expect(metadata.partialSelection).toEqual({ schema: 1, packages: manifest!.selection });
     const demo = parseKandeloDemoConfig(new TextDecoder().decode(fs.readFile(KANDELO_DEMO_CONFIG_PATH)));
     expect(Object.keys(demo?.profiles ?? {}).sort()).toEqual([...manifest!.activities].sort());
+  });
+
+  it("names published members for every deferred file and archive", () => {
+    const fs = KandeloImageFs.create();
+    fs.loadImage(imageBytes());
+    const lazy = fs.lazyEntries();
+    const uris = new Set([
+      ...lazy.files.filter(file => file.archiveId === 0).map(file => file.uri),
+      ...lazy.archives.map(archive => archive.uri),
+    ]);
+    for (const uri of uris) {
+      const relative = normalizeImageOwnedLazyReference(uri).replace(/^assets\//, "");
+      const path = join(repoRoot, "local-binaries/source-only-v1", relative);
+      expect(existsSync(path), `${uri} must name a published package member at ${path}`).toBe(true);
+      expect(statSync(path).isFile(), uri).toBe(true);
+    }
   });
 
   it("boots Bash and runs the named packages' programs", async () => {
@@ -99,6 +119,9 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
       if (manifest!.packages.includes("tmux")) expect(stdout).toMatch(/tmux \d/);
       if (manifest!.packages.includes("less")) expect(stdout).toMatch(/less \d+/);
       if (manifest!.packages.includes("fbdoom")) expect(stdout).toContain("fbdoom-wrapper-ok");
+      if (manifest!.packages.includes("cargo")) expect(stdout).toContain("cargo 1.97.0-nightly");
+      if (manifest!.packages.includes("rustc")) expect(stdout).toContain("rustc 1.97.0-nightly");
+      if (manifest!.packages.includes("kandelo-rustc")) expect(stdout).toContain("/usr");
     } finally {
       await host.destroy().catch(() => {});
       rmSync(assets, { recursive: true, force: true });

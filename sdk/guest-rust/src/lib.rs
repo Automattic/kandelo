@@ -3,6 +3,22 @@
 
 pub type Result<T> = std::result::Result<T, String>;
 
+#[cfg(any(target_os = "kandelo", test))]
+fn compiler_arguments(args: &[String]) -> Vec<String> {
+    let mut compiler_args = vec!["-Zunstable-options".to_owned()];
+    if !args.iter().any(|arg| arg == "--sysroot" || arg.starts_with("--sysroot=")) {
+        compiler_args.extend(["--sysroot".to_owned(), "/usr".to_owned()]);
+    }
+    if args.iter().any(|arg| arg == "--test") {
+        // WHY: the target aborts on panic. libtest's subprocess harness can
+        // report failures and expected panics without an unwinder.
+        compiler_args.push("-Zpanic-abort-tests".to_owned());
+    }
+    // Explicit caller options retain their usual last-option precedence.
+    compiler_args.extend_from_slice(args);
+    compiler_args
+}
+
 #[cfg(not(target_os = "kandelo"))]
 pub fn compiler_main(_args: &[String]) -> Result<i32> {
     Err("the Rust compiler entry point is available inside Kandelo; on the build machine use wasm32posix-cargo".into())
@@ -14,14 +30,7 @@ pub fn compiler_main(args: &[String]) -> Result<i32> {
     use std::process::Command;
 
     const COMPILER: &str = "/usr/libexec/rustc";
-    let mut compiler_args = vec!["-Zunstable-options".to_owned()];
-    if !args
-        .iter()
-        .any(|arg| arg == "--sysroot" || arg.starts_with("--sysroot="))
-    {
-        compiler_args.extend(["--sysroot".to_owned(), "/usr".to_owned()]);
-    }
-    compiler_args.extend_from_slice(args);
+    let compiler_args = compiler_arguments(args);
     // Queries and metadata-only compiles need no post-link work. Replace
     // this wrapper so they do not keep an extra process and fork snapshot.
     if !emits_link(args) {
@@ -164,6 +173,15 @@ mod tests {
     use super::*;
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).into()).collect()
+    }
+    #[test]
+    fn test_harness_uses_abort_subprocesses_and_preserves_caller_options() {
+        assert!(!compiler_arguments(&args(&["main.rs"]))
+            .iter().any(|arg| arg == "-Zpanic-abort-tests"));
+        let options = compiler_arguments(&args(&["--test", "--sysroot=/custom", "test.rs"]));
+        assert!(options.iter().any(|arg| arg == "-Zpanic-abort-tests"));
+        assert!(!options.iter().any(|arg| arg == "/usr"));
+        assert_eq!(options.last().unwrap(), "test.rs");
     }
     #[test]
     fn cargo_probes_and_checks_do_not_prepare_outputs() {
