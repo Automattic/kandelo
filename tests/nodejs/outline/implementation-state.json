@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T22:26:03.774800+00:00",
+  "updatedAt": "2026-11-07T23:16:10.436340+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -46,7 +46,7 @@
   "deployAuthorized": false,
   "overallSuitesRun": 0,
   "productRebuildsRun": 0,
-  "packageOrEngineCompilationsRun": 310,
+  "packageOrEngineCompilationsRun": 315,
   "families": {
     "values": {
       "breadthState": "started",
@@ -132,7 +132,7 @@
       "breadthState": "started",
       "implementationComplete": false,
       "runtimeConformance": {
-        "node": "234actual shared key publication C++ source verified/staged; no new native execution, allocatorfault, guest or fourhost runtime evidence.",
+        "node": "239 actual Node-host AES/HMAC sync generation/export/error and AES async generation subjects pass against pinned native controls; broader key generation/keypairs/WebCrypto/crypto/GC/realm/four-host gaps remain.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -172,7 +172,7 @@
       "breadthState": "started",
       "implementationComplete": false,
       "runtimeConformance": {
-        "node": "Source239 shared clone configuration prerequisite only. Current guest startup/clone/streams/Worker and all-four-host conformance remain unestablished; historical238 bootstrap failures preserved.",
+        "node": "239 full clone-hook configuration executes through successful Node-host bootstrap. Clone/stream/Worker transfer and lifetime conformance remain open; reviewed FileHandle lease/activation still private.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -202,7 +202,7 @@
       "breadthState": "started",
       "implementationComplete": false,
       "runtimeConformance": {
-        "node": "215 actual VM callback source over explicit native ContextifyScript/function/ModuleWrap/realm/Promise dependencies:15groups/3unchanged upstream files; new guest bridge/GC uncompiled.",
+        "node": "Normal239 build/cache accepted; Node-host bootstrap and sync/async symmetric generation3subjects pass. Full JSAPI/GC/realm/core/four-host conformance remains open; counter315lowerbound with4unattributed dependencies.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "971a5404874dde340381fe20e0b4e0e93a7fa8ad9031a53bf4275bce029cc297",
+    "tests/nodejs/outline/status-by-family.md": "ed6279dca100c2cd842deff554c5c92c21165afa07ee03e24ae45109aa1df195",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -2567,7 +2567,9 @@
     "third_party/node-core/tests/clone-config-forwarding/control.cjs": "8737b632a8d22ed4ae625865274734d5f78faa3f14290620a728a463bb35185d",
     "tests/nodejs/outline/clone-configuration-forwarding-finding-progress.json": "1e5d37993ef89df67bedc001be820335988218a65930b2a4064dabee507f93f8",
     "tests/nodejs/outline/clone-configuration-forwarding-integration.md": "3ac9d83a15e728fa445b7d2b2a810edd46ffb15f03bf6cecbfb90b6bfbafca50",
-    "tests/nodejs/outline/engine239-build-result.json": "f919c792036f879ad3f41eef7ac418634b07adde3c9edea99d885dd0c55a9fed"
+    "tests/nodejs/outline/engine239-build-result.json": "f919c792036f879ad3f41eef7ac418634b07adde3c9edea99d885dd0c55a9fed",
+    "tests/nodejs/outline/engine239-global-build-result.json": "7d4d1a83496cd2792766ed045ce06475ef0e7e3cd92c86b8d84c679af3cfb083",
+    "tests/nodejs/outline/engine239-node-focused-result.json": "10b446fdc8d51d41d5414f11ac63dbdf04a145fa767e5ac50a789809fa2ce1ac"
   },
   "changes": [
     {
@@ -9332,14 +9334,13 @@
     }
   ],
   "nextSourceWork": [
-    "Freeze and push239 then run only selected normal SpiderMonkey engine build; preserve source while live",
-    "Rerun actual Node-host bootstrap and corrected key subjects on identified239 artifact, preserving original238 failures",
-    "Continue independent FileHandle transfer, TTY queued output and SQLite serialization review; VM cache has two independent P2s to correct",
-    "Nested guest Wasm backend remains in scope last; all19families partial, no overall suite or full product rebuild"
+    "Integrate reviewed FileHandle lease/transfer and SQLite serialization; TTY corrections and VM encoding/build-ID foundation require their full reviewed composition",
+    "Keep all19families partial and reconcile API-specific gaps breadth first; preserve runtime/source/evidence separation",
+    "No overall suite or full product rebuild; nested guest Wasm backend remains in scope last"
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Reconciled latestmain validation isolation and agent tool updates with no897engineinputchanges; preserved unrelatedwork and238artifact provenance. Actual guestbootstrapfailure pinpointed thinwrapper droppednestedtransferhook;239fix remains next."
+    "reason": "Fix actual dropped sixth clone hook at curated/native boundary without weakening native validation; preserve original guest failure and audit correction, zero finding/API closure."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -45148,6 +45149,13 @@
         "reusedEvidence": true,
         "scope": "Private exact four-leaf reparenting with unchanged core/native C++; reused old1pass2fail and fixed3pass boundary controls, zero compilers. Root exact checks are separate."
       }
+    },
+    {
+      "at": "2026-11-07T23:16:10.436340+00:00",
+      "kind": "Actual239 Node-host bootstrap and symmetric generation",
+      "report": "tests/nodejs/outline/engine239-node-focused-result.json",
+      "sha256": "10b446fdc8d51d41d5414f11ac63dbdf04a145fa767e5ac50a789809fa2ce1ac",
+      "scope": "Three actual Node-host guest subjects and three paired pinned-native subjects only; no API/family/four-host closure"
     }
   ],
   "preservedFailedEvidence": [
@@ -50306,11 +50314,11 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/engine239-preflight-failed-20261107T222603800833Z.tar.gz",
-    "sha256": "fb966ee961ce00cb0bb6b4aacdf08ea0e25ece0b8fd10c48543d2aaef9b752f9",
-    "bytes": 13790259,
-    "scope": "Source239 actual terminal/build accounting and unchanged source/audit/finding identities. Prior238 failures preserved; no new guest execution, API closure or four-host conformance.",
-    "stateFileNote": "Archived state precedes snapshot-reference injection. No239Wasm was built by this invocation; accepted238Wasm remains separately retained under its unchanged historical receipt."
+    "path": ".context/node26-implementation-snapshots/engine239-node-focused-20261107T231610473058Z.tar.gz",
+    "sha256": "bf6fa6c71dfce4da323d6b21932ec8e3e1c8bf464d2e78407db144fcd3a806fb",
+    "bytes": 12067747,
+    "scope": "Source239 with three scoped actual Node-host guest subjects, identified artifacts and paired references. No full-core/API/four-host closure.",
+    "stateFileNote": "Archived state precedes snapshot-reference injection"
   },
   "currentScopedStaticChecks": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -52803,15 +52811,28 @@
     "state": "OS lookup source and raw c-ares channel plus owned record decoder; public Resolver/channel/request/loop/JSAPI/guest linking/transport/error/malformed and four-host obligations remain open"
   },
   "nativeCompilationAccountingThisTurn": {
-    "acceptedEngineBuilds": 0,
-    "guestEngineBuildAttempts": 0,
+    "acceptedEngineBuilds": 1,
+    "guestEngineBuildAttempts": 1,
     "guestEngineBuildFailures": 0,
     "nativeHelperCompileAttempts": 0,
     "nativeHelperCompileFailures": 0,
-    "guestDependencyCompilations": 0,
+    "guestDependencyCompilations": 4,
+    "guestDependencyCompilationFailures": 0,
+    "compilationAccountingComplete": false,
+    "unattributedDependencySubjects": [
+      "node-llhttp",
+      "node-sqlite",
+      "node-ncrypto",
+      "node-simdjson"
+    ],
+    "dependencyCompilationCountRange": [
+      4,
+      8
+    ],
+    "knownCompilationCountIsLowerBound": true,
     "kernelWasmCompilations": 0,
     "productRebuilds": 0,
-    "scope": "Actual raw Cargo fresh:false completed targets plus failed compiler targets; one selected normal engine package attempt only when real recipe-entry evidence and terminal prove it. Internal engine TUs/Rust archive are raw-log detail, not separate package builds. Preflight failure adds zero guest attempts."
+    "scope": "Confirmed dependency attempts use reviewed job log and owning source evidence; unresolved subjects persist as lower-bound uncertainty. Actual raw Cargo fresh:false completed targets plus failed compiler targets; one selected normal engine package attempt only when real recipe-entry evidence and terminal prove it. Internal engine TUs/Rust archive are raw-log detail, not separate package builds. Preflight failure adds zero guest attempts."
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -53603,7 +53624,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Fix actual dropped sixth clone hook at curated/native boundary without weakening native validation; preserve original guest failure and audit correction, zero finding/API closure."
+    "reason": "Normal frozen combined239 engine compilation/link/style/opcode/fork instrumentation and canonical cache acceptance succeeded, exact artifact retained. Runtime execution/four-host/API compatibility unestablished; main ref drift recorded separately."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -54737,11 +54758,11 @@
     "guestEngineCompiled": false
   },
   "targetedEngineBuild": {
-    "recipeRevision": 238,
-    "jobId": "node26-engine238-1107-160939-59ce",
-    "report": "tests/nodejs/outline/engine238-build-result.json",
-    "sha256": "69b645fd41b997596410227c7a58f800e3c71cae4bce047ff7ce43dca01170a2",
-    "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior228 failures and source229 correction remain unchanged.",
+    "recipeRevision": 239,
+    "jobId": "node26-engine239-global-1107-172655-2057",
+    "report": "tests/nodejs/outline/engine239-global-build-result.json",
+    "sha256": "7d4d1a83496cd2792766ed045ce06475ef0e7e3cd92c86b8d84c679af3cfb083",
+    "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Accepted238 and initial failed239 preflight plus raw238 guest failures remain unchanged. Reviewed nine-node closure after shared dev-shell cache-key invalidation; no full product rebuild.",
     "result": "normal-production-build-and-cache-acceptance-success",
     "productionCompilationSucceeded": true,
     "productionLinkSucceeded": true,
@@ -54750,17 +54771,16 @@
     "guestRuntimeValidated": false,
     "currentSourceRevision": 239,
     "artifact": {
-      "path": ".context/node26-engine238-terminal/artifacts/js.wasm",
-      "sha256": "3cdede1f62ba40787f0703b11a3e6d72c2a0fb10aed060626cc9737661dc39ba",
-      "bytes": 52080061
+      "path": ".context/node26-engine239-global-terminal/artifacts/js.wasm",
+      "sha256": "22f49c87b4b7097fb0438d4ca14974701362bba5cedfc0918fcf00e7bdb795b0",
+      "bytes": 52080063
     },
-    "postBuildMainReconciliation": {
-      "report": "tests/nodejs/outline/engine238-campaign-main-reconciliation.json",
-      "sha256": "aadaa5e10536ddf76019755d1e0c99850c95ceb9f343a40f33ece1556f1fef0a",
-      "requiredEngineInputsUnchanged": 897,
-      "compiledSourceHeadUnchanged": "19135afd4e1b795172677f4d061b505fc80ea32b",
-      "scope": "Tool changes only; previous Playwright/host isolation reconciliation retained in history, no new guest validation"
-    }
+    "focusedGuestEvidence": {
+      "report": "tests/nodejs/outline/engine239-node-focused-result.json",
+      "sha256": "10b446fdc8d51d41d5414f11ac63dbdf04a145fa767e5ac50a789809fa2ce1ac",
+      "scope": "Three actual Node-host guest subjects and three paired pinned-native subjects only; no API/family/four-host closure"
+    },
+    "guestBootstrapValidated": true
   },
   "targetedEngineBuildHistory": [
     {
@@ -56889,16 +56909,48 @@
         "compiledSourceHeadUnchanged": "f06beea7fdfa6d83d93b9c9cde85642e76731511",
         "scope": "Acceptedengine230owninputs unchanged; host/runtime products not validated"
       }
+    },
+    {
+      "recipeRevision": 238,
+      "jobId": "node26-engine238-1107-160939-59ce",
+      "report": "tests/nodejs/outline/engine238-build-result.json",
+      "sha256": "69b645fd41b997596410227c7a58f800e3c71cae4bce047ff7ce43dca01170a2",
+      "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior228 failures and source229 correction remain unchanged.",
+      "result": "normal-production-build-and-cache-acceptance-success",
+      "productionCompilationSucceeded": true,
+      "productionLinkSucceeded": true,
+      "normalChecksSucceeded": true,
+      "acceptedArtifact": true,
+      "guestRuntimeValidated": false,
+      "currentSourceRevision": 239,
+      "artifact": {
+        "path": ".context/node26-engine238-terminal/artifacts/js.wasm",
+        "sha256": "3cdede1f62ba40787f0703b11a3e6d72c2a0fb10aed060626cc9737661dc39ba",
+        "bytes": 52080061
+      },
+      "postBuildMainReconciliation": {
+        "report": "tests/nodejs/outline/engine238-campaign-main-reconciliation.json",
+        "sha256": "aadaa5e10536ddf76019755d1e0c99850c95ceb9f343a40f33ece1556f1fef0a",
+        "requiredEngineInputsUnchanged": 897,
+        "compiledSourceHeadUnchanged": "19135afd4e1b795172677f4d061b505fc80ea32b",
+        "scope": "Tool changes only; previous Playwright/host isolation reconciliation retained in history, no new guest validation"
+      }
     }
   ],
   "nativeEmbeddingIntegration": {
-    "at": "2026-11-07T22:16:08.427592+00:00",
+    "at": "2026-11-07T23:10:47.368767+00:00",
     "recipeRevision": 239,
-    "lastAcceptedEngine": 238,
-    "sourceOnly": true,
-    "guestCompiled": false,
+    "lastAcceptedEngine": 239,
+    "sourceOnly": false,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
-    "scope": "Source239 shared clone configuration prerequisite only. Current guest startup/clone/streams/Worker and all-four-host conformance remain unestablished; historical238 bootstrap failures preserved."
+    "scope": "Current239 normal C++/embedded bootstrap compiled/linked and canonical cache accepted; no guest JSAPI/lifecycle/API/four-host runtime conformance established. Exact artifact and source identities in engine239-global terminal report.",
+    "fourHostConformance": false,
+    "focusedGuestEvidence": {
+      "report": "tests/nodejs/outline/engine239-node-focused-result.json",
+      "sha256": "10b446fdc8d51d41d5414f11ac63dbdf04a145fa767e5ac50a789809fa2ce1ac",
+      "scope": "Three actual Node-host guest subjects and three paired pinned-native subjects only; no API/family/four-host closure"
+    }
   },
   "asyncAuditedFindingProgress": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -58629,6 +58681,15 @@
       "guestRuntimeValidated": false,
       "scope": "Current238 normal C++/embedded bootstrap compiled/linked and canonical cache accepted; no guest JSAPI/lifecycle/API/four-host runtime conformance established. Exact artifact and source identities in engine238 terminal report.",
       "fourHostConformance": false
+    },
+    {
+      "at": "2026-11-07T22:16:08.427592+00:00",
+      "recipeRevision": 239,
+      "lastAcceptedEngine": 238,
+      "sourceOnly": true,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "scope": "Source239 shared clone configuration prerequisite only. Current guest startup/clone/streams/Worker and all-four-host conformance remain unestablished; historical238 bootstrap failures preserved."
     }
   ],
   "bufferPoolImplementation": {
@@ -58937,13 +58998,13 @@
   },
   "sourceCandidateIntegration": {
     "recipeRevision": 239,
-    "sourceOnly": true,
-    "lastAcceptedEngine": 238,
-    "acceptedArtifactCurrentForCandidate": false,
-    "guestCompiled": false,
+    "sourceOnly": false,
+    "lastAcceptedEngine": 239,
+    "acceptedArtifactCurrentForCandidate": true,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
     "fourHostConformance": false,
-    "scope": "Current239combined guest source has no accepted build; accepted238and prior nonpasses retain their scopes. Pending private agent work excluded."
+    "scope": "Current239 normal engine accepted; three scoped Node-host guest subjects pass. Whole-candidate API/runtime and four-host conformance remain unestablished; original failures preserved."
   },
   "vmPlainContextImplementation": {
     "at": "2026-11-05T00:10:14.839714+00:00",
@@ -60793,6 +60854,20 @@
       "bytes": 18080587,
       "scope": "Source239 actual full curated/native forwarding boundary; exact source/component evidence and preserved guest failure. Zero finding closure or guest conformance.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/engine239-preflight-failed-20261107T222603800833Z.tar.gz",
+      "sha256": "fb966ee961ce00cb0bb6b4aacdf08ea0e25ece0b8fd10c48543d2aaef9b752f9",
+      "bytes": 13790259,
+      "scope": "Source239 actual terminal/build accounting and unchanged source/audit/finding identities. Prior238 failures preserved; no new guest execution, API closure or four-host conformance.",
+      "stateFileNote": "Archived state precedes snapshot-reference injection. No239Wasm was built by this invocation; accepted238Wasm remains separately retained under its unchanged historical receipt."
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/engine239-global-accepted-20261107T231356400902Z.tar.gz",
+      "sha256": "922cb39bc44577db1a9c3d3f773a6ae09bafdca00147d69059d4e64baee3cfaf",
+      "bytes": 14210791,
+      "scope": "Source239 accepted global-closure build and durable lower-bound accounting; all current source/audit/finding identities plus global terminal metadata retained. Prior failed239 preflight/238guest failures preserved; snapshot adds no guest/API/four-host conformance claim.",
+      "stateFileNote": "Archived state precedes snapshot-reference injection. Accepted239Wasm is separately retained and hashed in global terminal receipt; Wasm payloads are excluded from this source/metadata archive. Prior238 artifact/failure evidence remains unchanged."
     }
   ],
   "processLifetimeImplementation": {
@@ -65345,6 +65420,18 @@
       "nativeHelperCompileFailures": 0,
       "productRebuilds": 0,
       "scope": "No root, producer helper, guest engine, package or product compilation. Existing total310 remains; accepted238 artifact retains historical startup failure."
+    },
+    {
+      "at": "2026-11-07T23:10:47.368767+00:00",
+      "acceptedEngineBuilds": 0,
+      "guestEngineBuildAttempts": 0,
+      "guestEngineBuildFailures": 0,
+      "nativeHelperCompileAttempts": 0,
+      "nativeHelperCompileFailures": 0,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "productRebuilds": 0,
+      "scope": "Actual raw Cargo fresh:false completed targets plus failed compiler targets; one selected normal engine package attempt only when real recipe-entry evidence and terminal prove it. Internal engine TUs/Rust archive are raw-log detail, not separate package builds. Preflight failure adds zero guest attempts."
     }
   ],
   "cryptoKdfImplementation": {
@@ -132640,6 +132727,11 @@
       "report": "tests/nodejs/outline/engine239-build-result.json",
       "sha256": "f919c792036f879ad3f41eef7ac418634b07adde3c9edea99d885dd0c55a9fed",
       "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior238 build and three guest bootstrap failures remain unchanged and nonpassing."
+    },
+    {
+      "report": "tests/nodejs/outline/engine239-global-build-result.json",
+      "sha256": "7d4d1a83496cd2792766ed045ce06475ef0e7e3cd92c86b8d84c679af3cfb083",
+      "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Accepted238 and initial failed239 preflight plus raw238 guest failures remain unchanged. Reviewed nine-node closure after shared dev-shell cache-key invalidation; no full product rebuild."
     }
   ],
   "engine228PreflightR1": {
@@ -133676,5 +133768,46 @@
     "guestEngineAttempted": false,
     "acceptedArtifact": false,
     "evidenceDirectory": ".context/node26-engine239-terminal"
+  },
+  "compilationAccountingComplete": false,
+  "packageOrEngineCompilationsRunIsLowerBound": true,
+  "unattributedDependencySubjects": [
+    "node26-engine239-global-1107-172655-2057:node-llhttp",
+    "node26-engine239-global-1107-172655-2057:node-sqlite",
+    "node26-engine239-global-1107-172655-2057:node-ncrypto",
+    "node26-engine239-global-1107-172655-2057:node-simdjson"
+  ],
+  "compilationAccountingUncertaintyHistory": [
+    {
+      "at": "2026-11-07T23:10:47.368767+00:00",
+      "jobId": "node26-engine239-global-1107-172655-2057",
+      "report": "tests/nodejs/outline/engine239-global-build-result.json",
+      "confirmedDependencyCompilations": 4,
+      "unattributedDependencySubjects": [
+        "node-llhttp",
+        "node-sqlite",
+        "node-ncrypto",
+        "node-simdjson"
+      ],
+      "dependencyCompilationCountRange": [
+        4,
+        8
+      ],
+      "scope": "Counter includes known attempts only; unresolved attribution persists until separately reconciled, never inferred from plan or content receipt."
+    }
+  ],
+  "engine239GlobalTerminalResult": {
+    "report": "tests/nodejs/outline/engine239-global-build-result.json",
+    "sha256": "7d4d1a83496cd2792766ed045ce06475ef0e7e3cd92c86b8d84c679af3cfb083",
+    "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Accepted238 and initial failed239 preflight plus raw238 guest failures remain unchanged. Reviewed nine-node closure after shared dev-shell cache-key invalidation; no full product rebuild.",
+    "jobId": "node26-engine239-global-1107-172655-2057",
+    "guestEngineAttempted": true,
+    "acceptedArtifact": true,
+    "evidenceDirectory": ".context/node26-engine239-global-terminal"
+  },
+  "focusedGuestEvidence239": {
+    "report": "tests/nodejs/outline/engine239-node-focused-result.json",
+    "sha256": "10b446fdc8d51d41d5414f11ac63dbdf04a145fa767e5ac50a789809fa2ce1ac",
+    "scope": "Three actual Node-host guest subjects and three paired pinned-native subjects only; no API/family/four-host closure"
   }
 }

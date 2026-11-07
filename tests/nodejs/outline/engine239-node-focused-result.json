@@ -1,0 +1,207 @@
+{
+  "at": "2026-11-07T23:16:10.436340+00:00",
+  "recipeRevision": 239,
+  "buildSourceCommit": "21db2c38567ab0acdaf0a894ffe7831f445e3bb4",
+  "execution": {
+    "handle": "exec-session-85439",
+    "exitCode": 0,
+    "argv": [
+      "scripts/dev-shell.sh",
+      "bash",
+      "-c",
+      "set -eu\ntest ! -e .context/node26-engine239-guest-focused-r1.log\nnode --import ./host/node_modules/tsx/dist/loader.mjs .context/run-node26-engine239-guest-focused.ts > .context/node26-engine239-guest-focused-r1.log 2>&1\n"
+    ]
+  },
+  "rawReport": {
+    "path": ".context/node26-engine239-focused-evidence/report.json",
+    "sha256": "dda48bb32c66e5b5d3473dcc047e2edcd2e0962f0c25e24d8796d4a897251fc8"
+  },
+  "buildReceipt": {
+    "path": "tests/nodejs/outline/engine239-global-build-result.json",
+    "sha256": "7d4d1a83496cd2792766ed045ce06475ef0e7e3cd92c86b8d84c679af3cfb083"
+  },
+  "inputs": {
+    "reference": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+      "bytes": 147346864,
+      "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+    },
+    "engine": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/node26-engine239-global-terminal/artifacts/js.wasm",
+      "bytes": 52080063,
+      "sha256": "22f49c87b4b7097fb0438d4ca14974701362bba5cedfc0918fcf00e7bdb795b0"
+    },
+    "kernel": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/davao/local-binaries/source-only-v1/kernel.wasm",
+      "bytes": 2581970,
+      "sha256": "f5abc0afcb7f025c33eb35e7ce21e2321d2ad8a39153f5ca2765d565bab01f69"
+    },
+    "image": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/node26-sync-r1-inputs/shell.vfs.zst",
+      "bytes": 1051082,
+      "sha256": "83293c21fa6c4d290420aa8a30dca93266eafe90a5e05aa911477e305012e362"
+    }
+  },
+  "executedSources": [
+    {
+      "case": "bootstrap",
+      "actualExecutedSource": ".context/node26-engine239-corrected-native-r2/bootstrap.cjs",
+      "sha256": "89a6ec11c4c08cf8931909d6b0bec6b886328f2d5ec14ce0862cd8e8f6b6cd8f",
+      "displayFixtureSha256": "600c4d176f76a6d1b805f65b5442d4a9eb6758e3b9efeb9965941830713792a1",
+      "displayFixtureNote": "Runner saves one extra trailing newline; both native and guest execute the exact corrected source string loaded from actualExecutedSource."
+    },
+    {
+      "case": "key-sync",
+      "actualExecutedSource": ".context/node26-engine239-corrected-native-r2/key-sync.cjs",
+      "sha256": "f7931e0e982229973f4e34cb4c16563357b0e278c5e5cbd4b6a5c19af00c26bc",
+      "displayFixtureSha256": "51de5bf896a715733a64faa5bafcc0318e2fd765430eb6dff1581d1aeb96a951",
+      "displayFixtureNote": "Runner saves one extra trailing newline; both native and guest execute the exact corrected source string loaded from actualExecutedSource."
+    },
+    {
+      "case": "key-async",
+      "actualExecutedSource": ".context/node26-engine239-corrected-native-r2/key-async.cjs",
+      "sha256": "1baa4629e456b50a1677276fb9abe1d29ad5ffea1a21c3278752a0d4b1b73d4b",
+      "displayFixtureSha256": "689e5ac0c8dc6f85c53ce9b705e3ab285f09b9f8b9ef2c735fb837a74a77e6eb",
+      "displayFixtureNote": "Runner saves one extra trailing newline; both native and guest execute the exact corrected source string loaded from actualExecutedSource."
+    }
+  ],
+  "result": {
+    "at": "2026-11-07T23:11:07.945Z",
+    "hostNode": "v24.15.0",
+    "scope": "Three same-source pinned-native/actual accepted239 Node-host guest controls only. Identified existing kernel/image are historical fixture inputs, not proof of current kernel/product or browser conformance. No overall suite or full rebuild.",
+    "runner": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/run-node26-engine239-guest-focused.ts",
+      "bytes": 6451,
+      "sha256": "cd13faa14d79da559c26435d561a557ab34c178770140ca45eee8ebc7bbd9a70"
+    },
+    "cases": [
+      {
+        "name": "bootstrap",
+        "source": {
+          "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/node26-engine239-guest-focused-r1/bootstrap.cjs",
+          "bytes": 182,
+          "sha256": "600c4d176f76a6d1b805f65b5442d4a9eb6758e3b9efeb9965941830713792a1"
+        },
+        "native": {
+          "exitCode": 0,
+          "signal": null,
+          "stdout": "CONTROL_RESULT:bootstrap\n",
+          "stderr": "",
+          "result": "pass"
+        },
+        "exitCode": 0,
+        "result": "pass",
+        "stdout": "CONTROL_RESULT:bootstrap\n",
+        "stderr": "",
+        "timedOut": false,
+        "durationMs": 3503
+      },
+      {
+        "name": "key-sync",
+        "source": {
+          "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/node26-engine239-guest-focused-r1/key-sync.cjs",
+          "bytes": 456,
+          "sha256": "51de5bf896a715733a64faa5bafcc0318e2fd765430eb6dff1581d1aeb96a951"
+        },
+        "native": {
+          "exitCode": 0,
+          "signal": null,
+          "stdout": "CONTROL_RESULT:key-sync\n",
+          "stderr": "",
+          "result": "pass"
+        },
+        "exitCode": 0,
+        "result": "pass",
+        "stdout": "CONTROL_RESULT:key-sync\n",
+        "stderr": "",
+        "timedOut": false,
+        "durationMs": 2004
+      },
+      {
+        "name": "key-async",
+        "source": {
+          "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/node26-engine239-guest-focused-r1/key-async.cjs",
+          "bytes": 332,
+          "sha256": "689e5ac0c8dc6f85c53ce9b705e3ab285f09b9f8b9ef2c735fb837a74a77e6eb"
+        },
+        "native": {
+          "exitCode": 0,
+          "signal": null,
+          "stdout": "CONTROL_RESULT:key-async\n",
+          "stderr": "",
+          "result": "pass"
+        },
+        "exitCode": 0,
+        "result": "pass",
+        "stdout": "CONTROL_RESULT:key-async\n",
+        "stderr": "",
+        "timedOut": false,
+        "durationMs": 2632
+      }
+    ],
+    "inputs": {
+      "reference": {
+        "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+        "bytes": 147346864,
+        "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+      },
+      "engine": {
+        "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/node26-engine239-global-terminal/artifacts/js.wasm",
+        "bytes": 52080063,
+        "sha256": "22f49c87b4b7097fb0438d4ca14974701362bba5cedfc0918fcf00e7bdb795b0"
+      },
+      "kernel": {
+        "path": "/Users/brandon/conductor/workspaces/kandelo/davao/local-binaries/source-only-v1/kernel.wasm",
+        "bytes": 2581970,
+        "sha256": "f5abc0afcb7f025c33eb35e7ce21e2321d2ad8a39153f5ca2765d565bab01f69"
+      },
+      "image": {
+        "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/node26-sync-r1-inputs/shell.vfs.zst",
+        "bytes": 1051082,
+        "sha256": "83293c21fa6c4d290420aa8a30dca93266eafe90a5e05aa911477e305012e362"
+      }
+    },
+    "buildReceipt": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/davao/tests/nodejs/outline/engine239-global-build-result.json",
+      "bytes": 66107,
+      "sha256": "7d4d1a83496cd2792766ed045ce06475ef0e7e3cd92c86b8d84c679af3cfb083"
+    },
+    "implementationState": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/davao/tests/nodejs/outline/implementation-state.json",
+      "bytes": 9739420,
+      "sha256": "fe84c3a77f71436e07f8402ec82ad46e7a6c5266d84c57e07e47e139087124b2"
+    },
+    "correctedReference": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/node26-engine239-corrected-native-r2/report.json",
+      "bytes": 1085,
+      "sha256": "5ab61ca3d8ed60caea79f676d0cdc10d0ea2688103f9b5f0454d53e570f714ad"
+    },
+    "expectedCases": 3,
+    "counts": {
+      "pass": 3,
+      "fail": 0,
+      "skip": 0,
+      "unsupported": 0,
+      "timeout": 0,
+      "harness-error": 0
+    },
+    "completedAt": "2026-11-07T23:11:16.399Z"
+  },
+  "guestSubjectsPassed": 3,
+  "pairedNativeSubjectsPassed": 3,
+  "sourceUnchangedByExecution": true,
+  "testsAreCustomFocusedSubjects": true,
+  "upstreamAssertionsChanged": false,
+  "individualApiClosure": false,
+  "familyClosure": false,
+  "fourHostConformance": false,
+  "overallSuiteRun": false,
+  "fullProductRebuilt": false,
+  "limitations": [
+    "Only Node-host bootstrap and two symmetric-key subjects; no complete API/family/core conformance",
+    "Existing identified kernel and historical fixture image do not validate current kernel or canonical products",
+    "Chromium, Firefox and WebKit not run in this slice",
+    "Original238 guest failures and incorrect custom native sync-key expectation remain preserved; corrected source identity is explicit",
+    "FileHandle, SQLite, TTY and VM private proposals are not included in this artifact"
+  ]
+}

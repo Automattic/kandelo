@@ -1,0 +1,816 @@
+{
+  "at": "2026-11-07T23:10:47.368767+00:00",
+  "recipeRevision": 239,
+  "jobId": "node26-engine239-global-1107-172655-2057",
+  "sourceCommit": "21db2c38567ab0acdaf0a894ffe7831f445e3bb4",
+  "phase": "engine",
+  "exitCode": 0,
+  "durationSeconds": 2338.7,
+  "stateBeforeSha256": "ac4d16f5f82f19481a996fdb618ee36004fd82ae831eee806c3971cdd96cbeb7",
+  "compilationTotalBefore": 310,
+  "compilationTotalAfter": 315,
+  "compilationAccounting": {
+    "acceptedEngineBuilds": 1,
+    "guestEngineBuildAttempts": 1,
+    "guestEngineBuildFailures": 0,
+    "nativeHelperCompileAttempts": 0,
+    "nativeHelperCompileFailures": 0,
+    "guestDependencyCompilations": 4,
+    "guestDependencyCompilationFailures": 0,
+    "compilationAccountingComplete": false,
+    "unattributedDependencySubjects": [
+      "node-llhttp",
+      "node-sqlite",
+      "node-ncrypto",
+      "node-simdjson"
+    ],
+    "dependencyCompilationCountRange": [
+      4,
+      8
+    ],
+    "knownCompilationCountIsLowerBound": true,
+    "kernelWasmCompilations": 0,
+    "productRebuilds": 0,
+    "scope": "Confirmed dependency attempts use reviewed job log and owning source evidence; unresolved subjects persist as lower-bound uncertainty. Actual raw Cargo fresh:false completed targets plus failed compiler targets; one selected normal engine package attempt only when real recipe-entry evidence and terminal prove it. Internal engine TUs/Rust archive are raw-log detail, not separate package builds. Preflight failure adds zero guest attempts."
+  },
+  "nativeArtifactsFreshFalse": [],
+  "nativeFailedCompilerTargets": [],
+  "guestAttemptEvidenceLine": "==> Building SpiderMonkey JS shell for wasm32...",
+  "dependencyAccounting": [
+    {
+      "name": "libcxx",
+      "canonicalPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/libcxx-21.1.7-rev9-wasm32-abi55-6987ba23ec780be4eb18353b974f234f8f05d822502d57ccd9d115f2de33124b",
+      "beforeCanonicalExists": false,
+      "beforeReceiptExists": false,
+      "attribution": "compiled-this-job",
+      "confirmedCompilationAttempts": 1,
+      "scope": "Before absence/planned miss/content receipt do not establish this job compiled the package; peer publication remains possible.",
+      "canonicalExistsAtTerminalRecording": true,
+      "cacheReceiptSha256": "f7d05ae8040b163ae75a83913edb678ca6c0bf56d0f4f86e81592a1af247be89",
+      "confirmedCompilationFailures": 0,
+      "reason": "Actual recipe entry+two PID3317 cmake work roots+success tail. Pinned script uses checked cmake build for static and PIC plus checked header smoke compile before success, so this job executed one library-package compilation transaction. Internal invocations are not additional package attempts.",
+      "sourceEvidence": [
+        {
+          "source": "/Users/brandon/conductor/workspaces/kandelo/davao/packages/registry/libcxx/build-libcxx.sh",
+          "sha256": "dfbc125bb7333aab4164722b00c526d06bedfa89270ad2dc027366797de249f0",
+          "explanation": "Source-bound checked build and success emission; see dependency-source-map.json for exact line ranges."
+        }
+      ],
+      "exactJobLogLines": [
+        "==> Building libc++ and libc++abi for wasm32...",
+        "-- Build files have been written to: /Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/.libcxx-21.1.7-rev9-wasm32-abi55-6987ba23ec780be4eb18353b974f234f8f05d822502d57ccd9d115f2de33124b.work-3317-1/recipe-work/build-wasm32",
+        "==> Done!"
+      ]
+    },
+    {
+      "name": "node-cares",
+      "canonicalPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/node-cares-26.13.0-rev1-wasm32-abi55-48a704a0cf96213bd1c61146827b9ffb3c149eab2e7e75bc7947a4bcf8693d5d",
+      "beforeCanonicalExists": false,
+      "beforeReceiptExists": false,
+      "attribution": "compiled-this-job",
+      "confirmedCompilationAttempts": 1,
+      "scope": "Before absence/planned miss/content receipt do not establish this job compiled the package; peer publication remains possible.",
+      "canonicalExistsAtTerminalRecording": true,
+      "cacheReceiptSha256": "f849b8ccbfc5d27dc0945f735f90f4ed14819461190ab8f6e689671ef9f43f02",
+      "contentProvenanceSha256": "2b3a12f2cde36d699346d212288b5d4dda6530a3ebf39d7407e36e43cec7c4bf",
+      "provenanceCompiledClaim": true,
+      "confirmedCompilationFailures": 0,
+      "reason": "PID3317 cmake work root followed actual C object compilation and100% linked c-ares target in same job output. Checked recipe build/install and provenance trace establish one package attempt.",
+      "sourceEvidence": [
+        {
+          "source": "/Users/brandon/conductor/workspaces/kandelo/davao/packages/registry/node-cares/build-node-cares.py",
+          "sha256": "339610d6f8c464c562dc3fd893057e7faf697aa99b8b33f0ff625a13ac4c60e9",
+          "explanation": "Source-bound checked build and success emission; see dependency-source-map.json for exact line ranges."
+        }
+      ],
+      "exactJobLogLines": [
+        "-- Build files have been written to: /Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/.node-cares-26.13.0-rev1-wasm32-abi55-48a704a0cf96213bd1c61146827b9ffb3c149eab2e7e75bc7947a4bcf8693d5d.work-3317-16/recipe-work/cares-build",
+        "[  1%] Building C object src/lib/CMakeFiles/c-ares.dir/ares_addrinfo2hostent.c.o",
+        "[100%] Built target c-ares"
+      ]
+    },
+    {
+      "name": "node-codecs",
+      "canonicalPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/node-codecs-26.13.0-rev1-wasm32-abi55-a719f66b4e0930d98d974231244c25cbface1267061e1a2c7e1afb96d01e322c",
+      "beforeCanonicalExists": false,
+      "beforeReceiptExists": false,
+      "attribution": "compiled-this-job",
+      "confirmedCompilationAttempts": 1,
+      "scope": "Before absence/planned miss/content receipt do not establish this job compiled the package; peer publication remains possible.",
+      "canonicalExistsAtTerminalRecording": true,
+      "cacheReceiptSha256": "9d2ff7f5806f936c48b6913b1bb665f8e9f6b8a10319eddb510791d007eaf2bf",
+      "contentProvenanceSha256": "ea63b3b48794004f24f4e348c21943b720383340b5b7b1ad7e2ff3210947193b",
+      "provenanceCompiledClaim": true,
+      "confirmedCompilationFailures": 0,
+      "reason": "After actual checked compiler/archive loops, unchanged recipe prints unique PID3317 output stage. This job completion print proves one codec package attempt; no inference from content-only provenance.",
+      "sourceEvidence": [
+        {
+          "source": "/Users/brandon/conductor/workspaces/kandelo/davao/packages/registry/node-codecs/build-node-codecs.py",
+          "sha256": "e576c023acd6bd471a90619ae8168a7fb1ae5d428d7948082a6223910165a5f8",
+          "explanation": "Source-bound checked build and success emission; see dependency-source-map.json for exact line ranges."
+        }
+      ],
+      "exactJobLogLines": [
+        "Codec archives and provenance written to /Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/.node-codecs-26.13.0-rev1-wasm32-abi55-a719f66b4e0930d98d974231244c25cbface1267061e1a2c7e1afb96d01e322c.build-stage-3317-6"
+      ]
+    },
+    {
+      "name": "node-llhttp",
+      "canonicalPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/node-llhttp-26.13.0-rev1-wasm32-abi55-7e52cb0ac371cc1d49985800c7d28aa7505f9c3389892cc7149f339354778cc7",
+      "beforeCanonicalExists": false,
+      "beforeReceiptExists": false,
+      "attribution": "unresolved",
+      "confirmedCompilationAttempts": 0,
+      "scope": "Before absence/planned miss/content receipt do not establish this job compiled the package; peer publication remains possible.",
+      "canonicalExistsAtTerminalRecording": true,
+      "cacheReceiptSha256": "bf558fbd7f364302229dcf5bc3ba8b27e482f3f49788ce0c0103e5caa09d9251",
+      "contentProvenanceSha256": "196e712fbb7e05873d62501692081d9712c01640e8afd7faaf741e96d816926c",
+      "provenanceCompiledClaim": true,
+      "reason": "Recipe compiler/archive calls are silent on success; content compiled:true receipt identifies bytes, not which resolver job executed them. No additional attribution search delays current build recording.",
+      "sourceEvidence": [],
+      "exactJobLogLines": []
+    },
+    {
+      "name": "node-sqlite",
+      "canonicalPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/node-sqlite-26.13.0-rev1-wasm32-abi55-9ad3cf688f71afe5da07beb1f5d998d94c59bf42644cf338fd5b32c1284095aa",
+      "beforeCanonicalExists": false,
+      "beforeReceiptExists": false,
+      "attribution": "unresolved",
+      "confirmedCompilationAttempts": 0,
+      "scope": "Before absence/planned miss/content receipt do not establish this job compiled the package; peer publication remains possible.",
+      "canonicalExistsAtTerminalRecording": true,
+      "cacheReceiptSha256": "ad9233f502537c388914b29433c7d816b99496f1ac8857738bdac4e6c49354f3",
+      "contentProvenanceSha256": "2a415d57aae7941e0c692eff098b13d6325b40b102af3d1fe838d0757451b6f6",
+      "provenanceCompiledClaim": true,
+      "reason": "Recipe compiler/archive calls are silent on success; content compiled:true receipt identifies bytes, not which resolver job executed them. No additional attribution search delays current build recording.",
+      "sourceEvidence": [],
+      "exactJobLogLines": []
+    },
+    {
+      "name": "openssl",
+      "canonicalPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/openssl-3.5.9-rev6-wasm32-abi55-d510507495c2473760d66c13a938b3b4bb92f94d4654acfaf08fea9ce4b576f0",
+      "beforeCanonicalExists": false,
+      "beforeReceiptExists": false,
+      "attribution": "compiled-this-job",
+      "confirmedCompilationAttempts": 1,
+      "scope": "Before absence/planned miss/content receipt do not establish this job compiled the package; peer publication remains possible.",
+      "canonicalExistsAtTerminalRecording": true,
+      "cacheReceiptSha256": "e92fcabea180c45dfbc1e384eec003452a1684d6589cb42e56593ef959028dcd",
+      "confirmedCompilationFailures": 0,
+      "reason": "Actual configure/build/completion lines belong to checked make recipe in this job. Completion follows successful build and staging; counts one package attempt, not every C translation unit.",
+      "sourceEvidence": [
+        {
+          "source": "/Users/brandon/conductor/workspaces/kandelo/davao/packages/registry/openssl/build-openssl.sh",
+          "sha256": "fd6f0b69387a861b497db37c402a76e81f0107b6b6ed55999995833a98228bc5",
+          "explanation": "Source-bound checked build and success emission; see dependency-source-map.json for exact line ranges."
+        }
+      ],
+      "exactJobLogLines": [
+        "==> Configuring OpenSSL for wasm32...",
+        "==> Building OpenSSL...",
+        "==> OpenSSL build complete!"
+      ]
+    },
+    {
+      "name": "node-ncrypto",
+      "canonicalPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/node-ncrypto-26.13.0-rev1-wasm32-abi55-665e5d288c4bf42e6eea30ff9668d0d53ed2ba3fa639a1ee67d2384ff0fab297",
+      "beforeCanonicalExists": false,
+      "beforeReceiptExists": false,
+      "attribution": "unresolved",
+      "confirmedCompilationAttempts": 0,
+      "scope": "Before absence/planned miss/content receipt do not establish this job compiled the package; peer publication remains possible.",
+      "canonicalExistsAtTerminalRecording": true,
+      "cacheReceiptSha256": "f1d96e4f71c7dac9a838cb0c9c661a50cf76572798c42ecd10b55336d446e6e0",
+      "contentProvenanceSha256": "6c4f04e2acc97bb0914ab260ea7bd1a6c1f0acf8fb21e5e2d74f8c2556e9f243",
+      "provenanceCompiledClaim": true,
+      "reason": "Recipe compiler/archive calls are silent on success; content compiled:true receipt identifies bytes, not which resolver job executed them. No additional attribution search delays current build recording.",
+      "sourceEvidence": [],
+      "exactJobLogLines": []
+    },
+    {
+      "name": "node-simdjson",
+      "canonicalPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/libs/node-simdjson-26.13.0-rev1-wasm32-abi55-c8de80eea62cf21792cb0de3fc9185f1836bd5d70ce6dc1dc9586d7842cc646e",
+      "beforeCanonicalExists": false,
+      "beforeReceiptExists": false,
+      "attribution": "unresolved",
+      "confirmedCompilationAttempts": 0,
+      "scope": "Before absence/planned miss/content receipt do not establish this job compiled the package; peer publication remains possible.",
+      "canonicalExistsAtTerminalRecording": true,
+      "cacheReceiptSha256": "45e10dfbf8f5c2db846429177e183bb3e18f22692ec752796ed38bdc4fdf7faf",
+      "contentProvenanceSha256": "20bc9307538bca69ffb4c8511ae44da61c3fc20b1ea79f9fa4128034144d86cf",
+      "provenanceCompiledClaim": true,
+      "reason": "Recipe compiler/archive calls are silent on success; content compiled:true receipt identifies bytes, not which resolver job executed them. No additional attribution search delays current build recording.",
+      "sourceEvidence": [],
+      "exactJobLogLines": []
+    }
+  ],
+  "compilationAccountingComplete": false,
+  "unattributedDependencySubjects": [
+    "node-llhttp",
+    "node-sqlite",
+    "node-ncrypto",
+    "node-simdjson"
+  ],
+  "compilationTotalAfterIsLowerBound": true,
+  "sourceWasFrozen": true,
+  "changedFrozenSourcePaths": [],
+  "sourceSnapshotBeforeBuild": {
+    "path": ".context/node26-implementation-snapshots/engine239-preflight-failed-20261107T222603800833Z.tar.gz",
+    "sha256": "fb966ee961ce00cb0bb6b4aacdf08ea0e25ece0b8fd10c48543d2aaef9b752f9",
+    "bytes": 13790259,
+    "scope": "Source239 actual terminal/build accounting and unchanged source/audit/finding identities. Prior238 failures preserved; no new guest execution, API closure or four-host conformance.",
+    "stateFileNote": "Archived state precedes snapshot-reference injection. No239Wasm was built by this invocation; accepted238Wasm remains separately retained under its unchanged historical receipt."
+  },
+  "protectedAuditAndFindingIdentities": {
+    "tests/nodejs/audit/loading-native-source-evidence.json": "d143e331c518c62c75be975e462cb21c53b9b9483066074979d14335813214b5",
+    "tests/nodejs/audit/engine-source-evidence.json": "48778db7132db2aea379b0c8ea8f9695a4359a7a9bc2dd72a24cd163a330c072",
+    "tests/nodejs/audit/http.md": "f766b453ff166b9fd8e8934ce57723717a5d4f0d47f4d1f92c3edebbb9d84e24",
+    "tests/nodejs/audit/network-validation-candidates.json": "3a662367f70acb784cdfcaf6a5071f2dfc56edf8f5b8ec59ba78ae3a4ca90649",
+    "tests/nodejs/audit/event-emitter-validation-candidates.json": "09e2b7f3fe9ad9a3b60313ad8144911687356713e504f261786ae377e0541923",
+    "tests/nodejs/audit/event-target-abort-contracts.md": "0acb163bb0e9d7a26556734d8e85c895d284b17cd63d5c2ad652fb385af4b74d",
+    "tests/nodejs/audit/module-reviews.json": "7cd2cbb05083067ee238804648f92a115733516365516dee5fe38a874a6880b8",
+    "tests/nodejs/audit/worker-validation-candidates.json": "993a685e7d1da2ae85057571d9012eeff5210c82e816a75876fb045ffa689904",
+    "tests/nodejs/audit/diagnostic-report-validation-candidates.json": "394d7191f5a7d9070f3b2272be75344aeb5a43dbb5dfe87030b5d817a9d0c127",
+    "tests/nodejs/audit/legacy-module-requirements.json": "248a0037fd34edcac17198fcd36f7f8af3ed1182d9abbc36bbad5089c447a6ac",
+    "tests/nodejs/audit/async-context-requirements.json": "4c2f20cd70e1b8b09edf66e9a79ba9a86547db30b3769b31750c8d6f8e717f25",
+    "tests/nodejs/audit/streams-requirements.json": "a987e6ef559c38a58982b515730e4dde84db310d3e2c0f6a834b53c8c3f3125a",
+    "tests/nodejs/audit/http-requirements.json": "f0de140438ad955149ae41a44b0411a2f71eaf31dd815e718bed54a5267fb82e",
+    "tests/nodejs/audit/obligation-crosswalk-summary.json": "44753bd2b2a3fe6ae45dc518d5c9a64519c5f3d909398b3fdc22e158d1417069",
+    "tests/nodejs/audit/diagnostic-report-contracts.md": "3374c8234d8f745f85f4e868bfcea931d1dcd1f103f44e8ccf6e70e70878a7ec",
+    "tests/nodejs/audit/values-legacy-modules.md": "61e206adc1f8a4c9e41bd07c7a3855cc858e4d36880cc0ee9ea106361e91b8fe",
+    "tests/nodejs/audit/performance-requirements.json": "9837672436e899fbc4b79b1da6744e63daa420db9a00072729777de634aa808f",
+    "tests/nodejs/audit/network.md": "47be76f231eaeb91caa757b8f0c0bf9c943806261cb724d7aec5340a302cd636",
+    "tests/nodejs/audit/streams-contracts.md": "a25643b7194a335edf67d4ebf0f2a8bbe7d222c02f0375e15dff4f28b1f9a887",
+    "tests/nodejs/audit/http-validation-candidates.json": "6e09a0bb8243ab7aa985b5069b6c35570e6eb5fe0bdfa5a5968bf8762a4b6085",
+    "tests/nodejs/audit/streams-source-correspondence.json": "25bf49a1cf879c4ee0b4b615d06464e3ec06c54382a9cbf7b09e8971789451bf",
+    "tests/nodejs/audit/processes.md": "85553852dab54ffe49f7ed9f63b64051d680245d021f88cd8ebe9032b2596d0a",
+    "tests/nodejs/audit/compression-validation-candidates.json": "a17df4a37fb010b5506f6a82c7adff4b294ebcbf2daf206f26e5e9c27f4d761a",
+    "tests/nodejs/audit/engine-contracts.md": "e259def41a0e23870a437718b0e19a5467f8e8023b9233b9018f9cfeca3b4849",
+    "tests/nodejs/audit/state.json": "39f39f855a732152d796a24445661a80bf7f77c3071d61d9f5f5922c938f1af6",
+    "tests/nodejs/audit/native-public-contracts.md": "672e76d1529945a286e6af30de82f347135cdb121cc4b4bee0a7717474d5649d",
+    "tests/nodejs/audit/streams-validation-candidates.json": "22c11478f19da071d7c40dd769c3523938df18e27197530386ba05dbf9adefc5",
+    "tests/nodejs/audit/crypto-validation-candidates.json": "6eceb25890342bcabd03cbe64ac1fcdc5f52897a3cbcd4943e50c41d7df1d557",
+    "tests/nodejs/audit/testing-validation-candidates.json": "978083dbdfa8ef09568bdb901b0b841da4b6b6cc32f124a9030603c2fecb57b2",
+    "tests/nodejs/audit/web-contracts.md": "733d889cdeaf94d6f6c38aaef9765f57727cf2ccd178772f8719b065397fda33",
+    "tests/nodejs/audit/readline-repl-contracts.md": "8fcbeefd0c1f67d83dc4d2cf6aab5565c459279cf7082a1147a74051590e4e64",
+    "tests/nodejs/audit/tty-requirements.json": "2fa586e966aebe087672b9d1e6380c3e7072f0db75bb6a5b98cb70fe5cf0110d",
+    "tests/nodejs/audit/engine-requirements.json": "a84f9749e64bcd9c6faa6bfc12d3cdde5919817b5e6caa3c66b4e93a8ffcbf23",
+    "tests/nodejs/audit/process-requirements.json": "7622ade35046c84c90da99ce452f0c1c81178b20573ff3304e9e227cb47ce312",
+    "tests/nodejs/audit/trace-events-contracts.md": "e813ea60f5a4317a7f01e068528b38a7a818d2ec50e88e115e8a140f9952bb13",
+    "tests/nodejs/audit/crypto.md": "2b69b54577b0b506ce6b2eb5f8d22e25e72ab3396b467641d9672eaef3a1c77f",
+    "tests/nodejs/audit/engine.md": "911a93cdf826efe401d336e7f838c9528a92d23e554103579c39e0fa169e5823",
+    "tests/nodejs/audit/readline-repl-requirements.json": "08ed642ad2ef1786132783e3eb6d1233372791e0db57222d06fd1dd4dfbb786c",
+    "tests/nodejs/audit/native-embedding-sea-validation-candidates.json": "8ad4eee5c9d89c7c3178ce76527ca51311961004057de6e6c761336db032ffda",
+    "tests/nodejs/audit/http-contracts.md": "daf944ac74a53a205438448eb179f1686d6eef81ee9feada519e033e1d1f96bf",
+    "tests/nodejs/audit/string-decoder-contracts.md": "d22ffb1fb75cd3de0d45a98b85898b1ff922ec134c01525d551bf5f9204b2e39",
+    "tests/nodejs/audit/filesystem-source-correspondence.json": "e18443ccb6bd709a1912f111eab44bebb85becb143f39c9cad3495313dbd22d9",
+    "tests/nodejs/audit/web-requirements.json": "2fa21110c4647c1caf9f58c35bfb2153502b436f81803c9f9001ab17cad30096",
+    "tests/nodejs/audit/loading-public-contracts.md": "fa46e97b0458c731e62083a45cdfcb14af6da8d179980cab8edbe614187108e8",
+    "tests/nodejs/audit/trace-events-requirements.json": "a2ab35be09a53283cb0c5c4bf716f503cece3cf6948432a700421d0b75b1f558",
+    "tests/nodejs/audit/native-addon-contracts.md": "438e16871d88790dd57bbc50df25431f9da237f8023bc7110f78ceaa59a95c67",
+    "tests/nodejs/audit/documentation-validation-candidates.json": "7963d944240167b1d03c5195c8785ea697f87e0043de63a8223c9a0352c1df8a",
+    "tests/nodejs/audit/console-requirements.json": "17dd184b30693a29b87a9e50129327e4dc1f194ba5c61c6f6d3444245a2e9b35",
+    "tests/nodejs/audit/filesystem-validation-candidates.json": "1636fcdad7022b8f986e8dc75b6203f432e966ec13f0dc07d909cbe36b1bccff",
+    "tests/nodejs/audit/process-contracts.md": "06a1e78aa49a7120d435c737f1bf87b3d3ab3a98f17f83bad5b4d4255618fe29",
+    "tests/nodejs/audit/documentation-contracts.md": "ac1773c72b575ffe137c64407ac53ab333b8951d77050c4d35242abbf6abad9e",
+    "tests/nodejs/audit/engine-validation-candidates.json": "bb796647e13e1ff6dd3838ac28620e5de96a7fdb6a08696cfed20371c66b6261",
+    "tests/nodejs/audit/process-validation-candidates.json": "a63e655e5b0a9754866c0859ccf0bec5deb0ada387de2ec94ca9f3e7760e816b",
+    "tests/nodejs/audit/web-validation-candidates.json": "0dc746a744ac0470fa2c64a752d9ec3babb16e9f4a89acb633b30d86b52d8eff",
+    "tests/nodejs/audit/workers.md": "d0e3be7a871a66507554685dfb718a7bb9c87fd9d7d70b1b1f434cd0ada356fd",
+    "tests/nodejs/audit/performance-validation-candidates.json": "f7adb188b4ce5f661c5373c67443e759e313051ad69972d40bdb5ca7b33f5bba",
+    "tests/nodejs/audit/async.md": "30022b48ed8591f15f0d38d77b2f1161a7fc165076e7a73363a92930a816df72",
+    "tests/nodejs/audit/filesystem-contracts.md": "4f7102e2c4abc17521c8fd06a8cfc0ae0abc676b2e4946d57da898fbc7b3a93c",
+    "tests/nodejs/audit/values-validation-candidates.json": "1f00d120f73cd40390cb9050d5199c03e8da859afcfeafc5346f385473923ebe",
+    "tests/nodejs/audit/validation-plan.md": "0b7c13825f7c5a5cd045f5e80403784837898eb4fdc3410fb60406b904f91e86",
+    "tests/nodejs/audit/network-requirements.json": "dc67391c34e9c05cafb5ce0dd6ec5dc118c7e2309273ec513473322de94d0a6a",
+    "tests/nodejs/audit/diagnostic-report-requirements.json": "4f7c009de450d5b5e7f0bb8c05b4873c5d5ced0a9d61d109aac88b9b891fb6f7",
+    "tests/nodejs/audit/documentation-requirements.json": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481",
+    "tests/nodejs/audit/crypto-contracts.md": "de319bc4da9f82229e7627e3293d854c68d1bcd4e7c1ab32f585aac588dc7d3e",
+    "tests/nodejs/audit/obligation-crosswalk.jsonl": "5730d34a7a58ce10f6a7c9648680cc2d57343f2d57634931e4bf43134914141b",
+    "tests/nodejs/audit/domain-diagnostics-contracts.md": "1aaeb26fecd5ea3e500da188d0226c852a6b85fb372f37a06c65a6ac12ce8d61",
+    "tests/nodejs/audit/testing.md": "a9f8e7288b7c767205624268b73c51e2c9721d35282756e07bb81d5f869440cb",
+    "tests/nodejs/audit/filesystem-requirements.json": "d0400614d7b9090311ecb9f0cf84e7a60d034eced803bd77bd95aa29fffde5b7",
+    "tests/nodejs/audit/values-source-correspondence.json": "be8ac86d33979efc0c60cef0cbbad43fad972efda6903ad2d051a935a7fcab07",
+    "tests/nodejs/audit/crypto-requirements.json": "04f1d07cce87b7d1c3dfbc98f5386ff4dda5b843db0b42259c957ddbe4f913a6",
+    "tests/nodejs/audit/values-contracts.md": "accb7225fa336e74d789ecfc1defe666edadb6661bc9fa038c1763143f27c334",
+    "tests/nodejs/audit/README.md": "a702279b6478ac014778bf83ddb0b601f3973e7b36d5517ee093fd0006fd523c",
+    "tests/nodejs/audit/domain-diagnostics-requirements.json": "a4f25e88d60e1982c484db7a5556470649dc366b56867917dd4f14ef996c8c8a",
+    "tests/nodejs/audit/native-addon-requirements.json": "fce0bab375f7f9f390aef1ddc8e2366891fcb927bc89aaf3497928e6581b5ff0",
+    "tests/nodejs/audit/values.md": "446ebe652d2bc0787822fd760a1cbd36de0497cae7fb129efc686db000ed434b",
+    "tests/nodejs/audit/streams.md": "c7224f586d4421cf859b89f742b2f33d7b268a2feeeab2e241713779bb78d2f7",
+    "tests/nodejs/audit/audit-report.md": "e226ac3f46a5bf9b8f19d73d26ba03eaa3f740b016124d5279a11f3a45937325",
+    "tests/nodejs/audit/compression-contracts.md": "a90a37ce4729beb074c729cea33e6c2c851d8a828d5d8a2a453e948312cc786b",
+    "tests/nodejs/audit/native-packaging-embedding-requirements.json": "b59cd90f708cabb71dd529aae21769ce8cf66d00d8443964f9a3cfd5f656156f",
+    "tests/nodejs/audit/terminal.md": "b1eea9bd9616fa86cd318352f8a5433acd4fdee1baabf2de069e3739d3d16f11",
+    "tests/nodejs/audit/async-context-validation-candidates.json": "427890ecd22bfbfb6bf249f9aac9ca7a30cb908ed48f18fcbc5e5ff91963d9a8",
+    "tests/nodejs/audit/console-contracts.md": "dc13126302541b71c45e9b1e16d9e65de2a717545ff2403ef0856c6163f7b027",
+    "tests/nodejs/audit/worker-requirements.json": "374af3cf087bd14ec44e6abbd49d82043fdeeb13b844d09a8522052c8ed408c2",
+    "tests/nodejs/audit/secure-network.md": "38047465bb7abf32d9c76976d45993c94434be5e0879a3406ab396374a1e9a5b",
+    "tests/nodejs/audit/native-integration.md": "450545d4d2def928c49994e7fc7dd2bb9a323a1eaa34e0ad408f84933cfe3a4c",
+    "tests/nodejs/audit/roadmap.md": "35439debff20dce23f66a792a7ab365d4606868be81a1054cb0acdb25fbee247",
+    "tests/nodejs/audit/target-pins.md": "b0c9bf36c02ca4a9fa68601de58971908610fa7aaeae046ec84477269a8078de",
+    "tests/nodejs/audit/final-obligation-reconciliation.json": "ccbc901dd5cc6d1e6981cc1e91f1cda7796b345558e2295c57d16235e5bb8e1a",
+    "tests/nodejs/audit/secure-network-validation-candidates.json": "03859f71c879f43e604c2f003cfffb8f9057abc8237fcd7fba3d2a8dd2793ff1",
+    "tests/nodejs/audit/event-target-abort-requirements.json": "f6fbfbab8488e538f509e54c70e3446820f5ffc0ab56ef9d7e591e7fee661100",
+    "tests/nodejs/audit/timer-contracts.md": "f66e91798a708d8740edfc35ad0d3a99226e098fa8357a4a26b963d0b0ba51b7",
+    "tests/nodejs/audit/event-emitter-contracts.md": "744655003e8e40e26af9f677704a8f1561c95758bb717a0f420190f089ad234a",
+    "tests/nodejs/audit/string-decoder-validation-candidates.json": "fb0b88c31682b86f9ff44f105736e3ab692ca164814761e8f842bfd232d992f9",
+    "tests/nodejs/audit/api-matrix.json": "2d3fde3b30ac0d28e804cc06a50424a90ecc94abb4507697a0ddbc7c977321f9",
+    "tests/nodejs/audit/performance-contracts.md": "5b7f7fa9536f2ddd5fa0707956ada63005dcc24c77c71829a98064dc5d950226",
+    "tests/nodejs/audit/secure-network-contracts.md": "bae703c2e8c7a8ec933eb0f6739bc1912e75edb5df185dbe426162fb07f45aa8",
+    "tests/nodejs/audit/loading.md": "8c741eb4bc62d08ea2428b721cbfd3f96f1a000e2a5b6ac4813603fd29c6ad03",
+    "tests/nodejs/audit/web.md": "d43212ac637c500656ef8a02eb225f1a78cd401cd252f00e00dae297696918c0",
+    "tests/nodejs/audit/family-survey.md": "3269dfa361096a3de80257582a1d07f2f98a3088e00441f568e511d5e4a3c45f",
+    "tests/nodejs/audit/existing-evidence.json": "9dd7c4e8478bf501d6df0cb1265099b7d49a823e1ca04016e382929c0d39dcc3",
+    "tests/nodejs/audit/tty-validation-candidates.json": "33c797d370398eb0e63392ca9e284e8a59bfc5e410b1e15c04a520436d0f3836",
+    "tests/nodejs/audit/native-packaging-embedding-contracts.md": "18a150211d134bd68421b51c001f4198a0117fe3006d77a4e6bb0873729ffb45",
+    "tests/nodejs/audit/readline-repl-validation-candidates.json": "c8316c26635da490d95fc080b94e4ef73e1e885aedf2013c566972b9b350a2d9",
+    "tests/nodejs/audit/tty-contracts.md": "7f30af7e6e617861558544c60825e8935e5f6d1f4a3b005e2a5b867dbedd7f36",
+    "tests/nodejs/audit/existing-evidence.md": "997cfe04a4395c0499baba2e7640c45050a2d4534bbf63b167c00e2b9c9ad51b",
+    "tests/nodejs/audit/loading-validation-candidates.json": "e8b0d5dde0c680d0354b684d73d43aa38f07e49d0c8dad5eda29ba4f64073509",
+    "tests/nodejs/audit/loading-contracts.md": "ca0c92a99b1e56b92dbded52e75bd68e8f0005e45a2f0ba03d4b8390f7c0b562",
+    "tests/nodejs/audit/documentation.md": "ae842319f94c8595b78bb98fd2948e7274d8efcdf309fc92c960be846c71f537",
+    "tests/nodejs/audit/values-error-code-catalog.json": "abf8b2acc33b41de6122be401170a0561fcbcee63f2dd39c1af626a1556f36b0",
+    "tests/nodejs/audit/timer-requirements.json": "a3011791b9cfb17c404ae7c711efbb3273eadb1585cfc03c5343b566e89b6a86",
+    "tests/nodejs/audit/trace-events-validation-candidates.json": "d92d069396b9f2d54af462df13ecc0c86fc10a9042c0fb0703f7e687c010f2e3",
+    "tests/nodejs/audit/observability.md": "7310487397f56d8c3e676dc821e45fa40f917c68b348d36209583e59a32a67ac",
+    "tests/nodejs/audit/native-validation-candidates.json": "857e3a10d8488014034b6d61c0fe13299655960dd46862a466efe9499b902998",
+    "tests/nodejs/audit/timer-validation-candidates.json": "b492a51418092e2b89d64de0a16b71ae84717b0de507756724f25207f4bed8bf",
+    "tests/nodejs/audit/network-contracts.md": "5d7e77dec63a36c51eb590e3f301877ca7f3831ac2a91e6d10d9ac306ce49c79",
+    "tests/nodejs/audit/async-context-contracts.md": "9a58b8d87ead6414d6d108950866b85e0e25e194c00239ae7d9aeb419e9d80a6",
+    "tests/nodejs/audit/console-validation-candidates.json": "4200f489fe603bb798ca3fcb224cdfbe042c76e07c8b3c6a0d11f32a946a02e7",
+    "tests/nodejs/audit/values-query-codecs.md": "532576ad923befe9f09976fda158e2d9713ed05612ccda1aa21e9d2303421ed8",
+    "tests/nodejs/audit/event-emitter-requirements.json": "0cdf30ecf5892b380dd71f79620b646f2b2853da783318fea0fdae37f334d013",
+    "tests/nodejs/audit/module-exposure.json": "8ade2a74cc009a68743f7c803a203c14482010177051aea0fc532b42df9dd42b",
+    "tests/nodejs/audit/filesystem-raw-path-source-evidence.json": "932905933ec36cefa629f236233dab94818206f6b1dfddfe7384c7da42b4468e",
+    "tests/nodejs/audit/loading-requirements.json": "34852999026c557251fadafc62396415e518193cb9fe681df72872230fa52dae",
+    "tests/nodejs/audit/compression-requirements.json": "ea7aebf1046da6c0bfb024fc5ec8090ab418e289c0bf539b71571713c569acc7",
+    "tests/nodejs/audit/secure-network-requirements.json": "85706a7e997691284bd1ffe44af6f9c5d62593eff7395098e127a20ca7cfc6be",
+    "tests/nodejs/audit/event-target-abort-validation-candidates.json": "99889b9790811da3f11b5405d44f582f68b4187a1085aa679515a9adb172614e",
+    "tests/nodejs/audit/engine-iterator-source.json": "bc5d9d681e1b55252d207de9ce559e860a07aaf2983ff156b957b7cb01f30894",
+    "tests/nodejs/audit/pin-file-correspondence.json": "d1cd894502993f588d288d76947623aaf2e788ed0825bcd00cf22d24bae6918b",
+    "tests/nodejs/audit/testing-public-contracts.md": "c3323e52816f690ae9497ce36a3fcf49209f6ad3ea1bd13ff19886b1f344f363",
+    "tests/nodejs/audit/historical-evidence-index.json": "d32a5f2783abd8b70ba45444f0999fc51baffad0fff5dbf9aada5e77860b56a1",
+    "tests/nodejs/audit/audit-completion.json": "cdb7d388836ae8a9b444bea1e8846b2b954131b8aa3edfc129436fc69eb6de71",
+    "tests/nodejs/audit/testing-requirements.json": "eda4fd2569bc09981db8e49b68edca2f1a4ec42f5731b1429fba77e77865ce83",
+    "tests/nodejs/audit/worker-contracts.md": "7df16ec7d2cd734c34066f19f746d0df07ff1a806401235856cf7c8a332a9e68",
+    "tests/nodejs/audit/baseline-failure-analysis.json": "68bd3efe23a260705d3df1c1661a8bd5e0fc3dc845125aed5992a09234938630",
+    "tests/nodejs/audit/domain-diagnostics-validation-candidates.json": "c53be272083b695150b606b60e49314c1ded3fbd13825399178932518e614860",
+    "tests/nodejs/audit/historical-evidence.tar.gz": "ff7c920b62a1b12e11714ae85f73379fd68181fb8f801ee386709e5223cfed1a",
+    "tests/nodejs/audit/filesystem.md": "7475cf32201c43bdf2f8fb5d18287823168e846fe6a7ff43e4b957eebc3509e7",
+    "tests/nodejs/audit/compression.md": "e08deb6775f9fc9a3f7c8cdeea03e80a9ce8ae89d735f4dc4b623cf3a16451f2",
+    "tests/nodejs/audit/values-requirements.json": "7aec61199b6db5ea745171ebffb2dd40bacb20859c934c426ec0fcf54cd5e4f6",
+    "tests/nodejs/outline/histogram-finding-progress.json": "25188d2463686b607c0f8ad015fa068f9e8872ea5c6724eedefba2e89e69f232",
+    "tests/nodejs/outline/tls-write-callback-finding-progress.json": "b3112be120a0dc9bcc8e7a17d23fcad8e31e8ca87313e1f45aea12fffcff2e16",
+    "tests/nodejs/outline/terminal-read-material-finding-progress.json": "62fbd02ed12a3baf4e8e0205733ea864272578e3c96321e59511ee61909b0634",
+    "tests/nodejs/outline/async-hook-registration-finding-progress.json": "c6481aa1673565aebf670610829c887dff4145fba08b6878536a9ac1dcf9aead",
+    "tests/nodejs/outline/context-thread-watch-finding-progress.json": "5ec780adae9510e104df2943702c5c611ce87d53019608a0dbf493fb2220093e",
+    "tests/nodejs/outline/event-loop-delay-finding-progress.json": "8b9f9edfe1e7c3d4be553b935d6a0c783474c95472894102afc55ee8a63c33ca",
+    "tests/nodejs/outline/http-request-server-response-finding-progress.json": "857503dd879e72001587e6eca44be78b762d433370eeb883d07a8e32d4cb19ef",
+    "tests/nodejs/outline/wasi-owner-finding-progress.json": "b5692317f27e88a9ee6dffe7aa1fd83b073c7997d1a3464a37f027286f4809b3",
+    "tests/nodejs/outline/x509-owner-finding-progress.json": "cba04112faf41eaa56ae72a56ffed89b575827277f691a8e1b6ad7c9b9b5da9b",
+    "tests/nodejs/outline/broadcast-finding-progress.json": "b4252b287a4f6718c46d529c914198c88d74c3cdfb0764a05da06ec71b851a83",
+    "tests/nodejs/outline/sqlite-backup-finding-progress.json": "2e8f0463e878bd7ee800803cff17a99930472e58b114dd870edda3d56b4842ee",
+    "tests/nodejs/outline/rsa-transform-owner-finding-progress.json": "52cf1a38ed5c441d92ce2d3885920f575dfa523a5dc3c1c643ff9024d7c1f5ab",
+    "tests/nodejs/outline/pkcs12-parser-finding-progress.json": "76fc7d5c1b7d92049eb0d402ffa1d4f2d4c1de5fff91d2de21828d11d23d5257",
+    "tests/nodejs/outline/sdk-recovery-finding-progress.json": "f67234270856a477839bb7707bd3fac4a75c1e02d7d32a743a3b335691754198",
+    "tests/nodejs/outline/sys-alias-owner-finding-progress.json": "005e40cea148aed9cb0db524a37a5f4d8c4de83e63b07168f2a0da877e1756a0",
+    "tests/nodejs/outline/readdir-finding-progress.json": "de3772feb4c7dc5613227b589b30ae00062deb86ec7d6eda0c2559e995d49198",
+    "tests/nodejs/outline/write-file-finding-progress.json": "fe4e94d9a35da88d42cd9752a7b32e51485d1120723b1a2777a55e15751b3889",
+    "tests/nodejs/outline/sqlite-session-finding-progress.json": "906051cdf14704feb1881e6e38c8eeae2d4b20461c6c527b8aa25b6983346528",
+    "tests/nodejs/outline/datagram-integration-finding-progress.json": "5385994b60a7572b3c853038c50390cff42b2350a1bc6696918918ffca00dd56",
+    "tests/nodejs/outline/sqlite-callback-finding-progress.json": "7cb4a2712249935f13ca4811b9fa938e837af89077386790a23885e2d4e9ee02",
+    "tests/nodejs/outline/http-connections-finding-progress.json": "42a6921bcdce48d8da9a02af90f6c20ce0b0ca98493ff57c5948e1fc91763fee",
+    "tests/nodejs/outline/dns-fixture-dependency-finding-progress.json": "43008260822063464220abe835a6a046091876670da56bbb4ab1c840ca72bb04",
+    "tests/nodejs/outline/cjs-circular-warning-finding-progress.json": "bd941f62321b86b55e250727ca048df1b801a64668cfb63e1a94d64ae37de7f9",
+    "tests/nodejs/outline/accepted-tcp-owner-finding-progress.json": "64e3a56c0f79ef8d923ccec832384dc64014a4ed2691cb639c021e3c3aa368f8",
+    "tests/nodejs/outline/clone-configuration-forwarding-finding-progress.json": "1e5d37993ef89df67bedc001be820335988218a65930b2a4064dabee507f93f8",
+    "tests/nodejs/outline/import-meta-lazy-finding-progress.json": "88842d4da3d81b00042341ea33adfb550ffb811ad4ca8cb163e8cbac3a014990",
+    "tests/nodejs/outline/module-wrapper-finding-progress.json": "bc9be176c158bc4b42d2c9ef7c55e733468696104913c174fe490daa4fff65a6",
+    "tests/nodejs/outline/opaque-tls-owner-finding-progress.json": "1a4f4857956ca2cc6cc37fc0a5bc6230ba8a92a8f68e07005a8d341d370cd8c4",
+    "tests/nodejs/outline/incremental-crypto-finding-progress.json": "e1d35ef66247243b56f82e2061ad88a8d60cda66001a142e88e7c89c766f0f45",
+    "tests/nodejs/outline/ffi-memory-retirement-finding-progress.json": "025e4093dba717e8063c8b3fc98b989664c27472768c91b69b5fd211060000af",
+    "tests/nodejs/outline/tls-x509-owner-finding-progress.json": "02da4b3bca01482382f223f820cae8ce7136626b9b24d506b530fe4bdc8e85fb",
+    "tests/nodejs/outline/package-policy-finding-progress.json": "b6a83a2f1b6c62d1e27da2e8a2f3c3458989a4ccf4b6f2c34ffdddc68334a7fd",
+    "tests/nodejs/outline/tcp-agent-finding-progress.json": "4a079ff9adfba9a17c5a43042315a3e764b64a1316584a86888ec48796593e2f",
+    "tests/nodejs/outline/dir-finding-progress.json": "bcba03bb6b0ade7a805d90d24c85ee1c163ca11926e46f915ef2f70b81c0f0a0",
+    "tests/nodejs/outline/snapshot-activation-finding-progress.json": "b1d8379f22fd7a0fe46a86734404cc61878139ac7f41905c6fd583259050f5be",
+    "tests/nodejs/outline/host-transfer-outcome-finding-progress.json": "7f53199b8f7f18e3e63af899f5eaa188196dbca7f201bd2abfa7b5b95d3df06d",
+    "tests/nodejs/outline/port-transit-cycle-finding-progress.json": "02e967a8ba269f7f9e52cc09ad4f00e504885513bd8d81a86569c1b610317093",
+    "tests/nodejs/outline/test-pattern-cli-finding-progress.json": "00c11027134852b00eb7bb017732378053fe2f43cdcf4432fc910303a2670430",
+    "tests/nodejs/outline/private-byte-finding-progress.json": "d9b712ff12bc82ee7219f97e8a5123c5628c20e3151cdea1e17997e21e23dbb8",
+    "tests/nodejs/outline/file-promises-finding-progress.json": "111a1af52a5a58f8e629ac784e535aaa2cb147b6168da463a4e0c13aab075b4c",
+    "tests/nodejs/outline/blob-construction-finding-progress.json": "8d54b86db1bf3414b9b6d4af4fb9855faea093b1459b2046ef9c01f1ccddce51",
+    "tests/nodejs/outline/request-bodyinit-finding-progress.json": "3b812cdeceb123eac131791d26bc90638c69249ac8f29ec353e634bfac018b56",
+    "tests/nodejs/outline/tls-context-finding-progress.json": "560f2fdde79b134af3ccf79115da9c070b528fc0b22219f7d47d096f73552622",
+    "tests/nodejs/outline/stdio-resize-finding-progress.json": "bfc80e9d990d9f3752a61696888b13f640e17811fd1c5a8ef14e667e9abfdc78",
+    "tests/nodejs/outline/raw-key-finding-progress.json": "79848f9f12d9d94817854834d26342aea2cc30945b5889f766857395ec7a123a",
+    "tests/nodejs/outline/registered-host-sender-finding-progress.json": "3dae4fa2b5f18f3e3de3026a19d9e4ce2cbf58e57c46369c4b8e77731252c530",
+    "tests/nodejs/outline/error-location-finding-progress.json": "93cd90b8f8b18ede3c7301de682e0cd3b9bc8148bb743f56b8b0c009fb8f438d",
+    "tests/nodejs/outline/sqlite-lifecycle-finding-progress.json": "42407e7c976c601339c94d9667df5f83269e70a45f9793a96e319c7f22047cbe",
+    "tests/nodejs/outline/finding-ledger.json": "e1b09b8eae984dfc5ab0bcca17732c3cc05cfce5a9ce954796b81256a8e227c1",
+    "tests/nodejs/outline/module-import-finding-progress.json": "990ad48b6d8fede2757b5032fafde399a4863bbc7eda6caad642cf5e83e28786",
+    "tests/nodejs/outline/symmetric-keygen-finding-progress.json": "56781661a7a93a62067956cc0be1d5a22d5e65a9c80434e13eef450eab8c733b",
+    "tests/nodejs/outline/process-tracing-owner-finding-progress.json": "109a99b8d888bfc391d453e12f01733a2c823ded9b0eb2ab415002f0cbb20d5a",
+    "tests/nodejs/outline/readfile-capacity-finding-progress.json": "54c0fde6781f5b1d62595eea40bea78d9614652c271ce59c08807506aa407dfa",
+    "tests/nodejs/outline/socket-destroy-soon-finding-progress.json": "195c5caf79f8d7ab7dd8f4cee6694008eb1de23db54cfa214c9faa07d695832c",
+    "tests/nodejs/outline/shared-crypto-error-owner-finding-progress.json": "d2bc28830e6bdaf5d74ebc101a1dbf9a7d1553e383d5e2d44c19a7143dd9e539",
+    "tests/nodejs/outline/jwk-finding-progress.json": "7e484af9a93e3a281d239cf8ec1099f617c8593ecd4445f4548a963752562d8d",
+    "tests/nodejs/outline/native-lazy-data-finding-progress.json": "1b638df45de2b3a59f5ffeb158910ac8400eceb92b3091f86660c6f91b6ac750",
+    "tests/nodejs/outline/backing-store-finding-progress.json": "c9e249322d47c42a4b4c717bca7257c326b686b60420dcadc18ecc4e651d0bbc",
+    "tests/nodejs/outline/child-exec-finding-progress.json": "a42b4de9d255061f51118d7ad4e75aaa5be5087b199cd691f515869f88d9fa00",
+    "tests/nodejs/outline/host-receiver-order-finding-progress.json": "7fe0f89595c9fd1fc3c124a74074716a378cf2153b197a59943c43a98337a987",
+    "tests/nodejs/outline/fetch-body-finding-progress.json": "e47a78817d0944a58cbc1f222c4352d159f02465b1dffa334972926142910da8",
+    "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
+    "tests/nodejs/outline/hardlink-finding-progress.json": "7d4ac89bc3060c310ca1c7869de118a6650269ed69fc85e77049935785d2608a",
+    "tests/nodejs/outline/tempdir-finding-progress.json": "b4fd16ce674b98bad0ecc539f4c4c8791aebed3c872ba81e6b126e377415a5c1",
+    "tests/nodejs/outline/tls-async-owner-finding-progress.json": "daf232212c3785ff9d616552bf984d28dd1573f9436ab42aaaa3974403a65c93",
+    "tests/nodejs/outline/retained-tls-parent-finding-progress.json": "2947ed6780fe7bdc22e817f073fac75c64da0e6cd037b5caea2d817377793c4f",
+    "tests/nodejs/outline/worker-locks-prototype-finding-progress.json": "542990c09057cd65bada389781bec92a835274f2a5ed6a8a9add68d90953c7d3",
+    "tests/nodejs/outline/streaming-signature-owner-finding-progress.json": "f942166d80320afff4c82f290aa690084889ec1489dbfee6d3116dadd46b36d0",
+    "tests/nodejs/outline/target-config-finding-progress.json": "9b13ad54e988efedabd44f360e79447f708a9429798bb597fc7a8be8f35d25f8",
+    "tests/nodejs/outline/performance-milestone-finding-progress.json": "19f9b3c81d269e8c8cfaeea827fc7583a1dd43c424f2f0afe9f5399a9b61a234",
+    "tests/nodejs/outline/filesystem-notification-owners-finding-progress.json": "a6b1628b327b95325537f0daebd49807857e43998befbdd98cdd7cdcedf228db",
+    "tests/nodejs/outline/async-default-trigger-finding-progress.json": "41afd3bf7e8cd7e5d8612e1a1868d2b8a4bdb94528ff699771b5f397245de725",
+    "tests/nodejs/outline/public-abort-finding-progress.json": "4ddc651bbcddd8f5e7147491e653be59b853b28ff0b3070c1a74cf44a6d12bd8",
+    "tests/nodejs/outline/filesystem-traversal-finding-progress.json": "261be1e672bd56c7d312a2cbe2ac0dbf1e5442b1e05acf89c15920f36ad4b06d",
+    "tests/nodejs/outline/native-bridge-compilation-finding-progress.json": "ece780df94b3baa715e3631d2740275448ab0ba2f93138a93647fd39dc78a566",
+    "tests/nodejs/outline/response-owner-finding-progress.json": "663acc05d60166684d19d25b7d4868b239448c9bc05b512d5d4fbd58965a4116",
+    "tests/nodejs/outline/hkdf-finding-progress.json": "1288f36d730d690491bb7449cd2ec51c29cb32e1c59071bf71f3c720e48610cc",
+    "tests/nodejs/outline/vm-import-callback-finding-progress.json": "ddb3b2c8fb09a61d4d38f3de2f8e64413d4b69ae770aab64e8b619a24c012520",
+    "tests/nodejs/outline/http2-settings-finding-progress.json": "d9cb6995f67d879da06f322859e28fac8e2d678f1765b749b2219f56f72f9f8b",
+    "tests/nodejs/outline/default-locale-finding-progress.json": "95a29509f35b6e1afb82862884292effea977016cd5d73b021a6d25655bf54e9",
+    "tests/nodejs/outline/process-signals-finding-progress.json": "277dc6723f3b829b91acaf2ba63606375276964e1dfb1dc8e62241c9aaa79c50",
+    "tests/nodejs/outline/backing-read-wake-finding-progress.json": "2d06bbe43a8578af223c74ec23fa3ebae65717213f8441156d39d4226e7aabb7",
+    "tests/nodejs/outline/tty-size-owner-finding-progress.json": "3bbe04ef69961d903a8db65b61bf2ee289355730dbb276cec612a18e5249aeb5",
+    "tests/nodejs/outline/tty-output-publication-finding-progress.json": "1ed353d70dfafe7acc280c8e14f3ac36e8bbf954c791e4df981b42426bd027f3",
+    "tests/nodejs/outline/copy-file-header-finding-progress.json": "d6446678fe5977f145664e079d136de4349702ab574e4d94d234bbb0108a8372",
+    "tests/nodejs/outline/worker-startup-finding-progress.json": "d8635e4175f82b07ca5046d50ebc401d5cb58453f3cb773ba9102e3e3dbaad0c",
+    "tests/nodejs/outline/module-syntax-finding-progress.json": "d3d673e92c9fc1ee60eba963b9a9b0878b991e675b865c51a6f03e83260f2f41",
+    "tests/nodejs/outline/messageport-transfer-finding-progress.json": "c74916affaa01518da225bcecb47aad2d4ac1ee4237cc8d4f5297a7741db06f3",
+    "tests/nodejs/outline/module-hooks-finding-progress.json": "ae495d39bc4b8b9e723d3c1f7c8638c280fcbf964c426b92cbc4c18f96d450dd",
+    "tests/nodejs/outline/shared-backing-alignment-finding-progress.json": "f7e94005a516d48c7c09cf23a5efc7832230601deec59e5045906351aad6bfbc",
+    "tests/nodejs/outline/key-finding-progress.json": "be8eedcbe7eee085757e077e4daef4699b06f6f9a84904abeaedcbb4ca1db77b",
+    "tests/nodejs/outline/assertion-error-finding-progress.json": "6178cb137c34812ee75d5e3feb87e024376ca1d749d936721351025c81815a8c",
+    "tests/nodejs/outline/kdf-finding-progress.json": "c9aedfb93593e86623da4c3fd0c9a3512fec8834e69e60bf16bd2a2e7bb4d2b8",
+    "tests/nodejs/outline/eval-builtin-bindings-finding-progress.json": "082e844fba60cb7edce06fb7624a57d3acda7a5672e3ccb7277781f68d3dd9af",
+    "tests/nodejs/outline/loop-metrics-finding-progress.json": "d2d990821c19890c637db38ce512bc9e24136d3d197b9495a79969e3b8ebd276",
+    "tests/nodejs/outline/module-mocks-esm-source-finding-progress.json": "a1bc05b1ee1df97c5530d9b2c74e48184881e50cae1924b3e723ad797bc5ec70",
+    "tests/nodejs/outline/empty-tmpfs-write-finding-progress.json": "3d59c3df4952aece7ec1aa04f860b01e9f4b05e78c3429c9010f82f0769fe057",
+    "tests/nodejs/outline/process-capture-owner-finding-progress.json": "ba47b0204994201a6af21d88d2c76f2408036a895a6757a9eced88da89ea5a6c",
+    "tests/nodejs/outline/signature-frame-control-finding-progress.json": "42fdcf3447147d14701f106419d6925fde7872d18b8f7c6e1e07101c92b07166",
+    "tests/nodejs/outline/terminal-mode-finding-progress.json": "739e56320a973f8fd1c5a8b7cf8bff22483ed689be4dea0edbcf4e3b1d497fb8",
+    "tests/nodejs/outline/original-backing-consumers-finding-progress.json": "63e340ae6f470f46465cdced0e9057ac6c5cae6678ccf50a0eb1715854d9310d",
+    "tests/nodejs/outline/process-versions-finding-progress.json": "1804cfdb524dc4fb2e8a210a4baa516383d665043e1acc8eb4d108618e2e1461",
+    "tests/nodejs/outline/dns-scoped-address-finding-progress.json": "6641325a6a57f663fca841beb31085fb372e16fa0e1f1acd4bf9d44ed66c3b5d",
+    "tests/nodejs/outline/testing-runner-finding-progress.json": "2d94145caf7c662937c2047fcf15402502347d570fa96b67b68cfde9514cf341",
+    "tests/nodejs/outline/buffer-pool-finding-progress.json": "241f4336ef91333a04e06cd5e61ca54172e42e896152bcd5e3af88004a1aa879",
+    "tests/nodejs/outline/copy-directory-finding-progress.json": "0eb528bf0636a3423909c133d74848dc7d33a97378a44388a75041d1d2986e33",
+    "tests/nodejs/outline/spawn-preparation-action-order-finding-progress.json": "dcc047335caed34519a1c78591b9690b4754b4428e83fb7830fe0b7260474c02",
+    "tests/nodejs/outline/copy-file-finding-progress.json": "9b6690c491134f93f1e872e37d55c440e149178e238fc44b3fecb0487052b26c",
+    "tests/nodejs/outline/url-path-finding-progress.json": "0ac56af0adbd86b3c7d19057b4d2eaaa7b4ccfa7a39d7d908fe8ffabd2389044",
+    "tests/nodejs/outline/tls-plaintext-read-finding-progress.json": "3d8edd495bc7adcc0cd8da732d7c419285a7b6dc4e9acc2689ad75779802825c",
+    "tests/nodejs/outline/ordinary-sea-image-finding-progress.json": "d53e0ea5ec44b8513884f63ff260ec1df9f98f18dbb78fe89a1f2577ffbe0863",
+    "tests/nodejs/outline/finding-ledger.md": "8a2cbf3321c07952de305b7afd4a38ae5cd038b7873452449ebcb395f35b4f44",
+    "tests/nodejs/outline/locks-lifecycle-finding-progress.json": "bd1d3c82d004032edb1afcbfba9421db71451b7412ba0cd1cb4c93169a5761db",
+    "tests/nodejs/outline/ffi-library-owner-finding-progress.json": "5868867743bc753b40018c8ef850c45a4e46943e701e1a0cf8dcdab05e195b14",
+    "tests/nodejs/outline/source-map-finding-progress.json": "283e0f9449947edd0c1288bafd12f9c0295c626d96f1330e6984bb1af32445ef",
+    "tests/nodejs/outline/socket-shutdown-finding-progress.json": "bab519307ca941f1e9861f7b0ea68232b187bc3e562a0f1c502a0a8cd65778e9",
+    "tests/nodejs/outline/http-parser-finding-progress.json": "ac75722b6665215237c8fa13c31818c8aaf7e11f40bac8b07fefe0ea116f2284",
+    "tests/nodejs/outline/process-lifetime-finding-progress.json": "e621feb4bdea7a855940d448a6e9d99ad306289866bc93d83ff5c349047d21db",
+    "tests/nodejs/outline/decoder-fatal-state-finding-progress.json": "180ee03ff652ff6970fe5acc4bb270886c7dd20862e927516fec825fbf070164",
+    "tests/nodejs/outline/crypto-byte-source-finding-progress.json": "e0cfeaec5ef3f232c857f4c2990e618fad1c4bf051cb43b236f09ef8131b4732",
+    "tests/nodejs/outline/child-kill-error-finding-progress.json": "f59f8b9d9137e0aaff22d21ff4f184b1f9d7c8788bbab46652fc2856f52c2bac",
+    "tests/nodejs/outline/path-metadata-finding-progress.json": "a39dd16478114b475c2a3d348b4d900d4af99d5fd12bdbd2cb02ffc35ebd5941",
+    "tests/nodejs/outline/compression-storage-finding-progress.json": "027e0e2d41f7be17f9b9a6d2bb234a97a5b9ae46738a2e364b95ddc2ab405590",
+    "tests/nodejs/outline/engine-api-finding-progress.json": "53673f38fc86da31986ddae1beadb40fb922fd1437cee67397342a55f65afc88",
+    "tests/nodejs/outline/environment-object-finding-progress.json": "2a15ae34a50b4f0f01feef8fa596b10806ea33d8a7997eff35bc94aeae862c35",
+    "tests/nodejs/outline/worker-lazy-finding-progress.json": "49d752cc852e66b21d8ca3bab4a20f0a746b26cb96e919827f109ba0ecceed0c",
+    "tests/nodejs/outline/util-style-lazy-finding-progress.json": "1d6559c15337d1799cdd286fea9791445d10fb8e752f251362720f02caf0e7d6",
+    "tests/nodejs/outline/jwk-review-finding-progress.json": "8baca0b62420899202c72f76eee2c2adc0803a930293cd16a32705c10f882883",
+    "tests/nodejs/outline/package-reader-finding-progress.json": "ea29bc7dd44279a1b77c5548c821d9ec00fecaa848065870b9419b6c16ca16df",
+    "tests/nodejs/outline/file-sync-finding-progress.json": "2d6e1a657ab235a2fa113c7e938bb6194d5aee8ee7976eab8bae30da310baa9c",
+    "tests/nodejs/outline/tls-credential-owner-finding-progress.json": "5f028ac9540d18b62010cb180de721f2b877e176407287414461162e0bc548d8",
+    "tests/nodejs/outline/signature-jobs-finding-progress.json": "d9b18afa1f8e28eb5331f9ea3b78e0af5148ed62705d5468fb87f95cfebcea98",
+    "tests/nodejs/outline/key-operation-publication-finding-progress.json": "46a33fe9b6712ab4df941c4f1b531482a0c1f4cd3e811db6cb2f710026c45559",
+    "tests/nodejs/outline/timers-promises-finding-progress.json": "23379e0d2557facec273b96b10a61df25ce4d99b625517474912ceb03ac1788d",
+    "tests/nodejs/outline/vm-module-finding-progress.json": "112e90b029056d863b0dc8096e9c1c4eb570eb0ba2349cca2f4339701dd9dc68",
+    "tests/nodejs/outline/build-input-finding-progress.json": "92bcd77906a25132e8fb286ae7212b11350c9c202eba72a8fd2baac96118ca63",
+    "tests/nodejs/outline/vm-execution-deadline-finding-progress.json": "065e214f35af88354497018a951ba6644ad9985fa705f4d059efb14c3f93d92e",
+    "tests/nodejs/outline/testing-owner-finding-progress.json": "8d3414f063f50cf49c01b37ea580ff6ed6a73fbb67bcd22ee8f14c88d5df3202",
+    "tests/nodejs/outline/zstd-pledged-size-finding-progress.json": "ff3b4ba685d781af341fb0878482f77146da0fe9292b15b0d12e4974438c667f",
+    "tests/nodejs/outline/tls-cipher-policy-finding-progress.json": "99e2e2e168d3098ea61222c97c67de28eb0f660a25f3b638d6757cf6450a3576",
+    "tests/nodejs/outline/http-outgoing-finding-progress.json": "e5713abaf33c332a79a7d922b0b70022f80ab0aaeaad88f33675c568157f4385",
+    "tests/nodejs/outline/native-root-and-backing-finding-progress.json": "93d83a2daf75d153fbe74af2d05e445150518159540e82a7ee86999c23765047",
+    "tests/nodejs/outline/net-server-receiver-finding-progress.json": "ca88948c6c29400f093a0e0074d77936b3e08795719200fc73ec9a9418d40c97",
+    "tests/nodejs/outline/shared-public-constants-finding-progress.json": "a4357e64352941471e7ca1d6da4f80c9dc3dd112acfa8be36d64a90c1749019e",
+    "tests/nodejs/outline/http-synchronous-headers-finding-progress.json": "112056b15beb14db68eae5fe7fa2d1d2a5ba2abfe780239c22367cb4508b526a",
+    "tests/nodejs/outline/own-property-return-finding-progress.json": "e4648f7a7a1c906e05e7f5d1217b9c54c767784bf078b4b55537cc281f8c897c",
+    "tests/nodejs/outline/sqlite-statement-status-finding-progress.json": "418e6a1b525e0c256e42e2a03d50f9dcae50149eb457c50821aa81ebf85684a1",
+    "tests/nodejs/outline/tls-state-finding-progress.json": "0891f98d1e3577b03d7cc1531e4a72cc5117522e8d5e35bc4f7476db6ae66b6d",
+    "tests/nodejs/outline/tty-output-finding-progress.json": "0486a8ecefe9e2654b816471f04138db658f7897ab06c24d4c412da01b36760a",
+    "tests/nodejs/outline/cipher-finding-progress.json": "8505b5cf06ff34abd2cfe0dcebb2a26a44c8b6c05abb4cd88bb71d249a8b20f7",
+    "tests/nodejs/outline/performance-timeline-finding-progress.json": "0a03a36dc6323274e9e3d19a35b748bc1971c91ac6cb6f2e47767f1825c17a17",
+    "tests/nodejs/outline/argon2-finding-progress.json": "1d38e4bbcee409e09c7d91dea78f7ced0978f911b3f5ec9106eb855651ea075d",
+    "tests/nodejs/outline/stat-watcher-finding-progress.json": "b04840ec75823dffbcd1a5f1a6f244d61e5d2c685c84f4fdaae9b01688bb8991",
+    "tests/nodejs/outline/worker-locks-finding-progress.json": "f1aba5d26ddaf46244c6d51b52e2631af5933f24423b86802620a41fb91e9ee0",
+    "tests/nodejs/outline/terminal-callback-resource-finding-progress.json": "249f8dc247f5e782afeb3d8dc0a7146f3d2ede3a40776e06f055a1233f07049b",
+    "tests/nodejs/outline/domain-owner-finding-progress.json": "515cd6e3c458959755ec4b9c9b49343674c3d89e27e251a5771d87617c6ed68b",
+    "tests/nodejs/outline/captured-terminal-input-finding-progress.json": "fb845f41108bcbaf8d8cb49b39bffa5fa10ade5b1344d3cac1539454dacd07b7",
+    "tests/nodejs/outline/filesystem-readiness-finding-progress.json": "74335c14a603a894f8e90ad6440924c1b82f1bc478004481a190bec22144a3b9",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "8036a8b09b3fcaabb933eeb7ddb1f9084506424448da50e5d8636a5203ecf50e",
+    "tests/nodejs/outline/engine-build-order-finding-progress.json": "560ab8d75e5e3940ecde659d2dbd29c65eb7f1fe84832fead1821f4b62d3b5c2",
+    "tests/nodejs/outline/socket-receiver-adoption-finding-progress.json": "153251b4fd2e24ac5f5657bf8e8a2fbbf78b4714d547beef75e14a28b64cfe52",
+    "tests/nodejs/outline/object-marks-finding-progress.json": "1519c142a5df680c2f608e3d4be27af4c16bdb5fb994d50304a3714dc711e8de",
+    "tests/nodejs/outline/callback-recovery-finding-progress.json": "c8833ab6dd4aefbc6d003ba3af9f26dc3a9b0daf7ac6a28dda6b1f0393707a1f",
+    "tests/nodejs/outline/warning-finding-progress.json": "a2351607f344b496a73606c150e092143fa882745f93680e94042a54afd4a570",
+    "tests/nodejs/outline/retained-transfer-kind-finding-progress.json": "d8f6e28b39e361466ed1c710abbff446f0238c8d6dd4320b481ac8a01dc5ee14",
+    "tests/nodejs/outline/buffer-view-json-finding-progress.json": "2591a656564ee05a7358de14ab983578a83656ccc4caa70d90b262a1b0fd5524"
+  },
+  "selectedPlan": {
+    "schema": 1,
+    "jobs": 4,
+    "source_cache_root": "/Users/brandon/.cache/kandelo/source-only",
+    "nodes": [
+      {
+        "node": "libcxx/wasm32",
+        "status": "will-run",
+        "median_seconds": 90.232116813
+      },
+      {
+        "node": "node-cares/wasm32",
+        "status": "will-run",
+        "median_seconds": 197.21230075
+      },
+      {
+        "node": "node-codecs/wasm32",
+        "status": "will-run",
+        "median_seconds": 106.859865
+      },
+      {
+        "node": "node-llhttp/wasm32",
+        "status": "will-run",
+        "median_seconds": 78.972370042
+      },
+      {
+        "node": "node-sqlite/wasm32",
+        "status": "will-run",
+        "median_seconds": 104.991095625
+      },
+      {
+        "node": "openssl/wasm32",
+        "status": "will-run",
+        "median_seconds": 116.4424311455
+      },
+      {
+        "node": "node-ncrypto/wasm32",
+        "status": "will-run",
+        "median_seconds": 54.1356315
+      },
+      {
+        "node": "node-simdjson/wasm32",
+        "status": "will-run",
+        "median_seconds": 54.220580334
+      },
+      {
+        "node": "spidermonkey/wasm32",
+        "status": "will-run",
+        "median_seconds": 243.822337166
+      }
+    ],
+    "cached": 0,
+    "will_run": 9,
+    "source_checks": 0,
+    "critical_path_seconds": 441.034637916,
+    "parallel_seconds": 261.722182093875,
+    "overhead_seconds": 72.22268297950001,
+    "estimate_seconds": 513.2573208955,
+    "unknown_nodes": 0,
+    "fallback_seconds": 23.926200719
+  },
+  "productionCompilationSucceeded": true,
+  "productionLinkSucceeded": true,
+  "normalChecksSucceeded": true,
+  "normalBuildAccepted": true,
+  "acceptedArtifact": true,
+  "artifact": {
+    "path": ".context/node26-engine239-global-terminal/artifacts/js.wasm",
+    "sha256": "22f49c87b4b7097fb0438d4ca14974701362bba5cedfc0918fcf00e7bdb795b0",
+    "bytes": 52080063
+  },
+  "normalCacheReceipt": {
+    "schema": 2,
+    "receipt": {
+      "manifestSha256": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
+      "cacheKeySha256": "d1ced79ac5333b10f03c1408e7d8781a9ff8f628c6c68d5e41a192d04ca40b7c",
+      "cacheReceiptSha256": "3689421b04071f9c89b86fe6057ab658cdff2f7b688012e5186261c30b9f5f4f",
+      "materializedMembers": [
+        {
+          "sourceArtifact": "js.wasm",
+          "mirrorPath": "programs/wasm32/js.wasm",
+          "mode": 493,
+          "size": 52080063,
+          "sha256": "22f49c87b4b7097fb0438d4ca14974701362bba5cedfc0918fcf00e7bdb795b0"
+        }
+      ]
+    }
+  },
+  "cacheSelection": {
+    "cacheDirectory": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/spidermonkey-140.11.0esr-rev239-wasm32-abi55-d1ced79ac5333b10f03c1408e7d8781a9ff8f628c6c68d5e41a192d04ca40b7c",
+    "receiptSource": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/.spidermonkey-140.11.0esr-rev239-wasm32-abi55-d1ced79ac5333b10f03c1408e7d8781a9ff8f628c6c68d5e41a192d04ca40b7c.kandelo-receipt.json",
+    "rawReceiptSha256": "2314f6a521cbf48e181b25a390ff07f91337ce431a0f241839e75f0e3bdcc268",
+    "artifactSource": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/spidermonkey-140.11.0esr-rev239-wasm32-abi55-d1ced79ac5333b10f03c1408e7d8781a9ff8f628c6c68d5e41a192d04ca40b7c/js.wasm",
+    "artifact": {
+      "path": ".context/node26-engine239-global-terminal/artifacts/js.wasm",
+      "sha256": "22f49c87b4b7097fb0438d4ca14974701362bba5cedfc0918fcf00e7bdb795b0",
+      "bytes": 52080063
+    }
+  },
+  "candidateBefore": {
+    "recipeRevision": 239,
+    "sourceOnly": true,
+    "lastAcceptedEngine": 238,
+    "acceptedArtifactCurrentForCandidate": false,
+    "guestCompiled": false,
+    "guestRuntimeValidated": false,
+    "fourHostConformance": false,
+    "scope": "Current239combined guest source has no accepted build; accepted238and prior nonpasses retain their scopes. Pending private agent work excluded."
+  },
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "overallSuiteRun": false,
+  "fullProductRebuilt": false,
+  "productProjectionMaterialized": false,
+  "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Accepted238 and initial failed239 preflight plus raw238 guest failures remain unchanged. Reviewed nine-node closure after shared dev-shell cache-key invalidation; no full product rebuild.",
+  "evidence": {
+    "artifacts/js.wasm": {
+      "path": ".context/node26-engine239-global-terminal/artifacts/js.wasm",
+      "sha256": "22f49c87b4b7097fb0438d4ca14974701362bba5cedfc0918fcf00e7bdb795b0",
+      "bytes": 52080063
+    },
+    "cache-receipt.json": {
+      "path": ".context/node26-engine239-global-terminal/cache-receipt.json",
+      "sha256": "2314f6a521cbf48e181b25a390ff07f91337ce431a0f241839e75f0e3bdcc268",
+      "bytes": 475
+    },
+    "cache-selection.json": {
+      "path": ".context/node26-engine239-global-terminal/cache-selection.json",
+      "sha256": "6f1903a68f963c5080c3a0334f01ee15a7f4258b4a5ad725b84166599ac156e3",
+      "bytes": 946
+    },
+    "dependencies/libcxx/cache-receipt.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/libcxx/cache-receipt.json",
+      "sha256": "f7d05ae8040b163ae75a83913edb678ca6c0bf56d0f4f86e81592a1af247be89",
+      "bytes": 305
+    },
+    "dependencies/libcxx/source-0-build-libcxx.sh": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/libcxx/source-0-build-libcxx.sh",
+      "sha256": "dfbc125bb7333aab4164722b00c526d06bedfa89270ad2dc027366797de249f0",
+      "bytes": 18611
+    },
+    "dependencies/node-cares/cache-receipt.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-cares/cache-receipt.json",
+      "sha256": "f849b8ccbfc5d27dc0945f735f90f4ed14819461190ab8f6e689671ef9f43f02",
+      "bytes": 305
+    },
+    "dependencies/node-cares/provenance.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-cares/provenance.json",
+      "sha256": "2b3a12f2cde36d699346d212288b5d4dda6530a3ebf39d7407e36e43cec7c4bf",
+      "bytes": 43642
+    },
+    "dependencies/node-cares/source-0-build-node-cares.py": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-cares/source-0-build-node-cares.py",
+      "sha256": "339610d6f8c464c562dc3fd893057e7faf697aa99b8b33f0ff625a13ac4c60e9",
+      "bytes": 5603
+    },
+    "dependencies/node-codecs/cache-receipt.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-codecs/cache-receipt.json",
+      "sha256": "9d2ff7f5806f936c48b6913b1bb665f8e9f6b8a10319eddb510791d007eaf2bf",
+      "bytes": 305
+    },
+    "dependencies/node-codecs/provenance.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-codecs/provenance.json",
+      "sha256": "ea63b3b48794004f24f4e348c21943b720383340b5b7b1ad7e2ff3210947193b",
+      "bytes": 1031
+    },
+    "dependencies/node-codecs/source-0-build-node-codecs.py": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-codecs/source-0-build-node-codecs.py",
+      "sha256": "e576c023acd6bd471a90619ae8168a7fb1ae5d428d7948082a6223910165a5f8",
+      "bytes": 6695
+    },
+    "dependencies/node-llhttp/cache-receipt.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-llhttp/cache-receipt.json",
+      "sha256": "bf558fbd7f364302229dcf5bc3ba8b27e482f3f49788ce0c0103e5caa09d9251",
+      "bytes": 305
+    },
+    "dependencies/node-llhttp/provenance.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-llhttp/provenance.json",
+      "sha256": "196e712fbb7e05873d62501692081d9712c01640e8afd7faaf741e96d816926c",
+      "bytes": 1137
+    },
+    "dependencies/node-ncrypto/cache-receipt.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-ncrypto/cache-receipt.json",
+      "sha256": "f1d96e4f71c7dac9a838cb0c9c661a50cf76572798c42ecd10b55336d446e6e0",
+      "bytes": 305
+    },
+    "dependencies/node-ncrypto/provenance.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-ncrypto/provenance.json",
+      "sha256": "6c4f04e2acc97bb0914ab260ea7bd1a6c1f0acf8fb21e5e2d74f8c2556e9f243",
+      "bytes": 1026
+    },
+    "dependencies/node-simdjson/cache-receipt.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-simdjson/cache-receipt.json",
+      "sha256": "45e10dfbf8f5c2db846429177e183bb3e18f22692ec752796ed38bdc4fdf7faf",
+      "bytes": 305
+    },
+    "dependencies/node-simdjson/provenance.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-simdjson/provenance.json",
+      "sha256": "20bc9307538bca69ffb4c8511ae44da61c3fc20b1ea79f9fa4128034144d86cf",
+      "bytes": 938
+    },
+    "dependencies/node-sqlite/cache-receipt.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-sqlite/cache-receipt.json",
+      "sha256": "ad9233f502537c388914b29433c7d816b99496f1ac8857738bdac4e6c49354f3",
+      "bytes": 305
+    },
+    "dependencies/node-sqlite/provenance.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/node-sqlite/provenance.json",
+      "sha256": "2a415d57aae7941e0c692eff098b13d6325b40b102af3d1fe838d0757451b6f6",
+      "bytes": 1429
+    },
+    "dependencies/openssl/cache-receipt.json": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/openssl/cache-receipt.json",
+      "sha256": "e92fcabea180c45dfbc1e384eec003452a1684d6589cb42e56593ef959028dcd",
+      "bytes": 305
+    },
+    "dependencies/openssl/source-0-build-openssl.sh": {
+      "path": ".context/node26-engine239-global-terminal/dependencies/openssl/source-0-build-openssl.sh",
+      "sha256": "fd6f0b69387a861b497db37c402a76e81f0107b6b6ed55999995833a98228bc5",
+      "bytes": 4724
+    },
+    "dependency-cache-before.json": {
+      "path": ".context/node26-engine239-global-terminal/dependency-cache-before.json",
+      "sha256": "330cea1cc7880197a3eabf987b6ab7c3e71b88b9dc778d1b542f3f0847c483b2",
+      "bytes": 7152
+    },
+    "dependency-claims.json": {
+      "path": ".context/node26-engine239-global-terminal/dependency-claims.json",
+      "sha256": "cbbccce1248abcbd50a4aea2bd625f7aa86d6180e2793c2eb1637533b6cd3137",
+      "bytes": 5779
+    },
+    "job/meta.json": {
+      "path": ".context/node26-engine239-global-terminal/job/meta.json",
+      "sha256": "2b9688085d02657df47f333dd94e2e77d3b8d8e9e5f95e034c1c4d0aadca8985",
+      "bytes": 982
+    },
+    "job/output.log": {
+      "path": ".context/node26-engine239-global-terminal/job/output.log",
+      "sha256": "f93e7f065c613e9e3435d36691adf28dbafd8c04803429e76e9db64d3cbac7e8",
+      "bytes": 1227465
+    },
+    "job/result.json": {
+      "path": ".context/node26-engine239-global-terminal/job/result.json",
+      "sha256": "820fab5296e3eb82863c583d37940d200b58cdfeabbe07042fdad5109f3836b5",
+      "bytes": 4022
+    },
+    "native/cargo.jsonl": {
+      "path": ".context/node26-engine239-global-terminal/native/cargo.jsonl",
+      "sha256": "787045abeaaeb4917f001cc47d2141994784717594f4fd50f3ee8f69f7c45d4d",
+      "bytes": 260986
+    },
+    "native/cargo.stderr": {
+      "path": ".context/node26-engine239-global-terminal/native/cargo.stderr",
+      "sha256": "bc2244dc93d30078b74abdb1f27e4bc400affa2f6df7973013e5d2422c09a2a7",
+      "bytes": 62
+    },
+    "native/result.json": {
+      "path": ".context/node26-engine239-global-terminal/native/result.json",
+      "sha256": "0473c85d7da514504413e2d981ee26d8695872712d04ff2e9f2dde19247b93dd",
+      "bytes": 369
+    },
+    "native/source-preflight.json": {
+      "path": ".context/node26-engine239-global-terminal/native/source-preflight.json",
+      "sha256": "e5af6075356f8076a18fd3f65a6a86b0e157e3bb8bf8fe8c72c8dd29930c37ee",
+      "bytes": 614
+    },
+    "selected/plan.json": {
+      "path": ".context/node26-engine239-global-terminal/selected/plan.json",
+      "sha256": "0c64ef30488698dfde27913760fda5f8f76790947e52f781d4b0284a10d43755",
+      "bytes": 1409
+    },
+    "selected/preflight.json": {
+      "path": ".context/node26-engine239-global-terminal/selected/preflight.json",
+      "sha256": "5785f2ecfe46e19d86507ad167aaaec1ab412be626cc930f773d93e267b81b6a",
+      "bytes": 310936
+    },
+    "selected/terminal.json": {
+      "path": ".context/node26-engine239-global-terminal/selected/terminal.json",
+      "sha256": "7ae5faae58c00ba205c14c08afd85229f8e357186a6c5201bfb4ad1550d6511c",
+      "bytes": 303
+    }
+  },
+  "reviewedMain": "faf9b31720e868fac7c431d81b5076f40a4c16c1",
+  "originMainObservedAtTerminalRecording": "faf9b31720e868fac7c431d81b5076f40a4c16c1",
+  "observedMainRequiresReconciliation": false,
+  "forkInstrumentationScope": "Only actual normal instrumentation diagnostics in the retained job log support this build. Cache acceptance is not proof of guest fork execution; no prior-job fallback diagnostics are attributed to this job."
+}
