@@ -86,7 +86,7 @@
     "third_party/node-core/removal-platform-adapter.js": "a641209be995d2f246b87dc035857a8864fcb0cecb74ab968c1dce95bdde73b0",
     "third_party/node-core/socket-stream-adapter.js": "436ac1c31a90ba186369c95e56193f258795cd76d30b60e5a7fe904a96f02a8c",
     "third_party/node-core/source-map-platform-adapter.js": "cf215318dcfa6a95edd314d85b71a98c4b52f12dc10c646f3ed13a4a4b42c9fc",
-    "third_party/node-core/sqlite-platform-adapter.js": "8a6cc0327250f62f9d094e00dec585cb6ce59fc9415b7dcdd85cf8b08ef8633c",
+    "third_party/node-core/sqlite-platform-adapter.js": "51f4aa497e46965558380f60eb92d0b4a7465d72b8f581d73a10c7ee53aa628c",
     "third_party/node-core/stat-watcher-platform-adapter.js": "a39ff9c4d95f076284eb1b3f74e2d3b1a6fd34854cc41e1f1789900904456602",
     "third_party/node-core/stream-platform-adapter.js": "2073a7b29238c6feb09667e76806e6f42ad725f321758b9514699812223e4ac9",
     "third_party/node-core/string-decoder-adapter.js": "7e1e21f39f36fcf0e7228afd85beeb581caf6fec095eb5c9f91bee798b772e13",

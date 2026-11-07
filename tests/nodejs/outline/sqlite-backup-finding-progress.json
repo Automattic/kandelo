@@ -1,0 +1,88 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-002",
+      "NI-006"
+    ],
+    "relatedFamilies": [
+      "native-integration",
+      "engine",
+      "async",
+      "filesystem"
+    ],
+    "scope": "Actual async backup and selected backend identity subset; remaining SQLite findings and runtime obligations remain open"
+  },
+  "sourceImplemented": [
+    "Real sqlite3_backup state over actual serialized source/destination connections, per-worker page steps with context-owned finish/close",
+    "Pinned-order public source/path/options and byte/URI snapshots with genuine function metadata and post-getter source recheck",
+    "Fresh per-batch native jobs root actual source/callback graph/Promise before queue transfer; owner-thread zombie finalization and exception cleanup",
+    "Real page/status/progress and requested native capacity accounting; actual target SQLite backend dependency preserved"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-sqlite175-source-r1/report.json",
+    "sha256": "61aad693d662aa2f26d794ebaa01d8069aa5c0c54ff0e981c58cdb9c14905102",
+    "guardedInputs": 791,
+    "scope": "Actual asyncSQLitebackup/page-step/sharedconnection/nativequeue source; freshlycompiled portableowner11cases over realSQLite3.54 and13current publicfrontend/native comparisons.175productionJSAPI/GC/queue/guest/fourhost not established; malformed source reference crash remains nonpass."
+  },
+  "packageChecks": {
+    "report": ".context/node26-sqlite175-affected-r1.json",
+    "sha256": "b904d68abeefbb05a6225cd6805080752f19db647c951e25dd7478f41ec70466",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-sqlite175-source-r1/report.json",
+    "sha256": "61aad693d662aa2f26d794ebaa01d8069aa5c0c54ff0e981c58cdb9c14905102",
+    "portableOwnerCases": 11,
+    "currentFrontendComparisonGroups": 13,
+    "allocationFailureThrows": 5,
+    "beyondAllocationPositionsSucceeded": 4,
+    "freshNativeCompilerAttempts": 1,
+    "packageContractCases": 14,
+    "productionSMExecuted": false,
+    "scope": "Fresh actual portableowner/currentheaders over realSQLite3.54; frontend controls use explicit nativeNodeSQLite boundary, not production JSAPI/queue/GC or guest/fourhost"
+  },
+  "sealedEvidence": {
+    "report": ".context/sqlite-backup-owner-agent/report.json",
+    "sha256": "4d03f0a0d3904a110ab389d2c808e0a21fbab5244e8e2e386bcdb0915dff1218",
+    "reusedEvidence": true,
+    "scope": "13public frontend groups/11native portableowner cases,3prior successfultinycompiles, exact SQLite3.54source/object; malformed-sourceSIGBUS remains nonpass and JSAPI uncompiled"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/sqlite-backup-owner-agent/comparison-run1.json",
+      "sha256": "c638e3db9c386cadf8b04502c02fc1651ca4c08c5350819aa272af92311e828d",
+      "kind": "real-public-function-metadata-mismatch",
+      "reason": "Initial object method lacked native constructible function/prototype metadata; final real named function and construction control correct it"
+    },
+    {
+      "report": ".context/sqlite-backup-owner-agent/run1-preflight-commands.json",
+      "sha256": "2ba457755db015b8f01f3992ba860fdcc06aef46bc20935ed4c7e3d7e252aa76",
+      "kind": "source-fixture-include-expectation",
+      "reason": "Initial expected header path omitted actual normal shell canonicalization; original preparation result preserved"
+    },
+    {
+      "report": ".context/sqlite-backup-owner-agent/native-shapes-isolated.json",
+      "sha256": "8ccb30c5067d99de559c96438dcc19887475b40527864f042e388db9673230c6",
+      "kind": "unresolved-native-reference-crash",
+      "reason": "Plain-object sourceDb native probe SIGBUS(-10); not passing conformance, accepted platform boundary or established vendor defect"
+    }
+  ],
+  "remaining": [
+    "Actual175productionJSAPI/nativequeue/Promise/GC/realm/reentry/cancellation/thread/VFS/file-lock and allfourhosts",
+    "Dedicated real lock contention and external-source-connection restart controls; full SQLite allocator accounting",
+    "Wrong plain-object native reference crash/error-equivalence unresolved; all remaining SQLite/native integration APIs stay open"
+  ],
+  "at": "2026-11-07T03:09:25.800413+00:00",
+  "recipeRevision": 175,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

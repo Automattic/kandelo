@@ -36472,7 +36472,7 @@ module.exports = {
 }
 
 // Public Database/Statement owners over real native SQLite handles. Incomplete
-// callback/tag-store/backup features remain explicit;
+// callback/tag-store features remain explicit;
 // namespace presence is not complete SQLite conformance.
 function _createNodeSqlitePlatform(platform) {
     'use strict';
@@ -36869,8 +36869,53 @@ function _createNodeSqlitePlatform(platform) {
     }
     ObjectDefineProperty(Session.prototype, SymbolDispose, { configurable: true, writable: true,
         value() { native('closeSession', session(this).handle, true); } });
-    const binding = { Database, Statement, Session, constants: platform.constants,
-        backup() { return unavailable('asynchronous backup owner'); } };
+    function backupPath(value) {
+        let path = value;
+        if (platform.util.types.isUint8Array(path)) {
+            const length = P.TypedArrayPrototypeGetByteLength(path);
+            const bytes = new Uint8Array(length);
+            if (length) P.TypedArrayPrototypeSet(bytes, new Uint8Array(P.TypedArrayPrototypeGetBuffer(path),
+                P.TypedArrayPrototypeGetByteOffset(path), length));
+            for (let i = 0; i < length; i++) if (bytes[i] === 0) argument('path', 'a string, Uint8Array, or URL without null bytes');
+            return bytes;
+        }
+        if (path !== null && (typeof path === 'object' || typeof path === 'function')) {
+            path = path.href;
+            if (typeof path === 'string' && !P.StringPrototypeIncludes(path, '\0')) {
+                try { new platform.URL(path); } catch { fail('ERR_INVALID_URL', 'Invalid URL', P.TypeError); }
+                if (!P.StringPrototypeStartsWith(path, 'file:')) fail('ERR_INVALID_URL_SCHEME', 'The URL must be of scheme file:', P.TypeError);
+                return path;
+            }
+        } else if (typeof path === 'string' && !P.StringPrototypeIncludes(path, '\0')) return path;
+        argument('path', 'a string, Uint8Array, or URL without null bytes');
+    }
+    function backup(sourceDb, path) {
+        if (sourceDb === null || (typeof sourceDb !== 'object' && typeof sourceDb !== 'function')) argument('sourceDb', 'an object');
+        const db = database(sourceDb);
+        native('checkDatabase', db.handle);
+        // Capture real pathname bytes before option getters can mutate
+        // the input, close/reopen the source, or throw into the caller.
+        const destination = backupPath(path);
+        let rate = 100, source = 'main', target = 'main', progress;
+        if (arguments.length > 2) {
+            const options = optionsObject(arguments[2]);
+            const value = options.rate;
+            if (value !== undefined) {
+                if (typeof value !== 'number' || !NumberIsInteger(value) || value < -2147483648 || value > 2147483647) argument('options.rate', 'an integer');
+                if (value <= 0) fail('ERR_OUT_OF_RANGE', 'The "options.rate" argument must be a positive integer.', P.RangeError);
+                rate = value;
+            }
+            const name = options.source;
+            if (name !== undefined) source = string(name, 'options.source');
+            const targetName = options.target;
+            if (targetName !== undefined) target = string(targetName, 'options.target');
+            progress = options.progress;
+            if (progress !== undefined && typeof progress !== 'function') argument('options.progress', 'a function');
+        }
+        native('checkDatabase', db.handle);
+        return native('backup', db.handle, destination, source, target, rate, progress, sourceDb);
+    }
+    const binding = { Database, Statement, Session, constants: platform.constants, backup };
     const module = { exports: {} };
     const internalBinding = name => name === 'sqlite' ? binding : unavailable(name);
     (function(module, exports, internalBinding) {

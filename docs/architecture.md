@@ -6884,3 +6884,7 @@ Source173 canonicalizes owning native includes using the exact pinned Mozilla in
 ### Scoped synchronous VM deadline ownership
 
 Source174 routes pinned positive VM script timeouts into a joined steady-clock native watchdog and per-context invocation chain. Real engine interruption remains uncatchable inside the running script; only the owning boundary translates after unwinding in the target realm. Existing foreign shell/worker/OOM/forced states retain their owners. The current portable owner and frontend/native-dependency checks do not execute the new SpiderMonkey bridge. The rare wait-failure reentry edge and module/microtask/SIGINT scopes remain open. See [scope](../tests/nodejs/outline/vm-execution-deadline-integration.md).
+
+### Asynchronous SQLite backup ownership
+
+Source175 implements the public backup frontend over real SQLite backup state and fresh per-batch shared work-queue jobs. Only page stepping executes on workers; native finish/close, public callback graph ownership, progress and Promise settlement stay on the creating context thread. Real serialized connection mutexes are required and checked. Current portable-owner and frontend/native dependency controls do not execute new production JSAPI/queue/GC/VFS behavior. Exact backing/version policy and unresolved reference nonpasses remain explicit. See [scope](../tests/nodejs/outline/sqlite-backup-integration.md).

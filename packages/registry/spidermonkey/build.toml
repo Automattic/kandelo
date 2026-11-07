@@ -161,6 +161,8 @@ inputs = [
   "third_party/node-core/module-record-platform-adapter.js",
   "third_party/node-core/upstream/module-syntax",
   "third_party/node-core/native-sqlite.cpp",
+  "third_party/node-core/native-sqlite-backup.cpp",
+  "third_party/node-core/sqlite-backup.h",
   "third_party/node-core/native-ports.cpp",
   "third_party/node-core/ports-platform-adapter.js",
   "third_party/node-core/monotonic-clock.h",
@@ -618,4 +620,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 174
+revision = 175

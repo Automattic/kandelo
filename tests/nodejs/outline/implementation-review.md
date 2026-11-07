@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source175 integrates genuine async SQLite backup/page-step/native-job ownership.11fresh portable-owner cases,13current public/native comparison groups,14package checks and unchanged style pass.175productionJSAPI/queue/GC/guest/fourhost remain uncompiled/unvalidated; malformed-source native crash remains a nonpass.
+See [source scope](sqlite-backup-integration.md).
+
 Source174 integrates real joined synchronous VM deadline/frame/interrupt source.10portable owner groups,8deadline+11validation comparisons, whole unchanged upstream eachsubject and25affected checks pass with explicit native dependencies.174SMbinding remains uncompiled; rare wait-failure reentry and guest/fourhost remain open.
 See [source scope](vm-execution-deadline-integration.md).
 

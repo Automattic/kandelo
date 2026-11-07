@@ -1552,3 +1552,14 @@ existing KeyMaterial/X509Material owners directly; no serialized certificate
 record or export-only implementation is supplied. Focused native/parser/public
 controls do not validate production JSAPI or guest libraries. TLS pfx context
 installation remains a distinct implementation gap. See [PKCS12 scope](../../tests/nodejs/outline/pkcs12-implementation-dependencies.md).
+
+### Actual asynchronous SQLite backup ownership
+
+The public backup source uses real sqlite3_backup batching and native
+connection ownership. Only page stepping runs on workers; finish, destination
+close, progress callbacks and Promise settlement remain on the context thread.
+Fresh per-batch work items retain the real source/callback graph before queue
+transfer. The owner checks actual serialized SQLite mutex support. Current
+frontend and portable-owner controls are scoped evidence; production JSAPI,
+guest VFS/thread/GC/realm behavior and full SQLite compatibility remain open.
+The isolated plain-object native reference crash remains an unresolved nonpass.

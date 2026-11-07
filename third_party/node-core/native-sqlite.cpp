@@ -505,10 +505,12 @@ static bool KandeloSqliteBoolean(JSContext* cx, HandleObject object, const char*
   if (!value.isBoolean()) throw SqliteError("ERR_INVALID_ARG_TYPE", "Invalid SQLite boolean option");
   *result = value.toBoolean(); return true;
 }
+static bool KandeloSqliteBackup(JSContext* cx, const CallArgs& args);
 static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   std::string operation;
   if (!KandeloSqliteString(cx, args.get(0), &operation)) return false;
+  if (operation == "backup") return KandeloSqliteBackup(cx, args);
   if (operation == "version") return KandeloSqliteText(cx, sqlite3_libversion(), args.rval());
   if (operation == "constants") {
     RootedObject object(cx, JS_NewPlainObject(cx));

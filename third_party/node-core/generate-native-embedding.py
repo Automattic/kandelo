@@ -27,7 +27,7 @@ FRAGMENTS = (
     'native-file-jobs.cpp', 'native-lazy-data.cpp', 'native-object-marks.cpp', 'native-environment-object.cpp', 'native-buffer.cpp', 'native-digests.cpp', 'native-http-parser.cpp', 'native-keys.cpp', 'native-x509.cpp', 'native-tls-context.cpp', 'native-incremental-hash.cpp', 'native-cipher.cpp',
     'native-random.cpp', 'native-kdf.cpp', 'native-address-rules.cpp', 'native-dns-lookup.cpp', 'native-dns-records.cpp', 'native-datagram.cpp',
     'native-terminal.cpp', 'native-os.cpp', 'native-dotenv.cpp', 'native-vm.cpp', 'native-vm-modules.cpp', 'native-module-syntax.cpp',
-    'native-sqlite.cpp', 'histogram-native.cpp', 'event-loop-delay-native.cpp', 'histogram-clone.cpp', 'native-ports.cpp', 'native-worker.cpp', 'native-locks.cpp',
+    'native-sqlite.cpp', 'native-sqlite-backup.cpp', 'histogram-native.cpp', 'event-loop-delay-native.cpp', 'histogram-clone.cpp', 'native-ports.cpp', 'native-worker.cpp', 'native-locks.cpp',
     'native-signals.cpp',
 )
 
