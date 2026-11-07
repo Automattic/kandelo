@@ -276,6 +276,7 @@ host/test/long-timeout.test.ts	source-only
 host/test/love-audio.test.ts	prepared-product
 host/test/lseek-invalid-guest.test.ts	prepared-product
 host/test/main-worker-absence.test.ts	source-only
+host/test/main-worker-fence-identity.test.ts	source-only
 host/test/mako-smoke.test.ts	prepared-product
 host/test/man-shell-lazy-archive.test.ts	prepared-product
 host/test/mariadb-image-helpers.test.ts	prepared-product

@@ -26247,3 +26247,23 @@ input integrity, strict scalar decoding and exact outgoing realm identities
 pass. No causal missing-ACK repair or performance/reclamation improvement is
 claimed. Full browser-memory acceptance remains open. Exact results and hashes
 are in `.context/graphics-main-browser-r634/judgment.json`.
+
+### Exact main-worker payload identity, 2026-11-07
+
+Browser main memory/exec acknowledgements now require the bound PID and no
+thread discriminator, in addition to the existing exact Worker/generation.
+Error/exit payloads and timer dispatch also require that PID, matching Node.
+Actual Worker error/exit events remain independently authenticated without a
+payload PID. Before controls demonstrate wrong logical finalization for16
+error/exit cases;8 timer cases dispatch unnecessarily but schedule nothing
+because the shared handler already rejects them. None establishes the cause
+of the R634 Chromium missing-ACK observation.
+
+Root `graphics-main-identity-composition-r648-1107-021238-d140` passes37s:
+476 controls in15 files, production and strict new-fixture TypeScript,
+723-file evidence inventory and unchanged frozen host inputs. Exact commands,
+results and hashes are in `.context/graphics-pending-composition-r648/`.
+The new fixture executes actual complete adapter/listener functions with mock
+message delivery; these are source controls, not normal guest/browser launches.
+Full browser-memory, coherent rebuilt consumers and B1/final acceptance remain
+required. No ABI family, deadline or native event policy changes.

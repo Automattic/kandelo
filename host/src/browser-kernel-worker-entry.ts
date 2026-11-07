@@ -1732,21 +1732,28 @@ function installProcessWorkerListeners(
     const process = processes.get(pid);
     if (!process || process.worker !== worker) return;
     const m = msg as WorkerToHostMessage;
-    if (m.type === "memory_quiescent" && m.tid === undefined) {
+    // Worker equality above binds the exact realm; its PID and main-thread
+    // discriminator complete the fence proof. A foreign or malformed ACK
+    // cannot authorize retiring this image's memory or exec resources.
+    if (m.type === "memory_quiescent" && m.pid === pid && m.tid === undefined) {
       // The browser entry emits this only after worker-main returns. Unlike
       // Browser Worker.terminate(), this is an exact-generation ownership
       // fence and can authorize dropping the allocator's strong reference.
       if (vforkLifetimes.phaseForChild(process) !== undefined) {
         traceVforkMechanism("memory_quiescent", `child=${pid}`);
       }
-      if (m.pid === pid) generationObservations.mainQuiescent(process);
+      generationObservations.mainQuiescent(process);
       process.workerQuiescence.settle();
     }
-    if (m.type === "exec_retired" && m.tid === undefined) {
+    if (m.type === "exec_retired" && m.pid === pid && m.tid === undefined) {
       process.execRetirement.settle();
     }
     if (intentionallyTerminated.has(worker as object)) return;
-    if (m.type === "error") {
+    // Payload lifecycle events must name this process, as on Node. Worker
+    // identity alone cannot authenticate a foreign/missing payload PID.
+    // Native Worker error/exit events above have no payload PID and keep
+    // their independent exact-realm checks.
+    if (m.type === "error" && m.pid === pid) {
       const signum = classifiedSignalOrFallback(m.message);
       const status = classifiedTrapExitStatus(m.message) ?? -1;
       finalize(
@@ -1757,9 +1764,9 @@ function installProcessWorkerListeners(
           message: `[process-worker] ${m.message ?? "unknown error"}`,
         },
       );
-    } else if (m.type === "exit") {
+    } else if (m.type === "exit" && m.pid === pid) {
       finalize(m.status ?? 0);
-    } else if (m.type === "vm_interrupt_timer") {
+    } else if (m.type === "vm_interrupt_timer" && m.pid === pid) {
       handleVmInterruptTimer(m, pid, process);
     } else if (m.type === "fork_host_import") {
       dispatchForkHostImport(worker, m);

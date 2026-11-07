@@ -1461,3 +1461,9 @@ both sides; this remains distinct from sealed main absence and needs the full
 memory contract and focused investigation. Native Freeciv3.2.6 SDL2 control is
 now built with the frozen saved world/assets and exact SDL library versions;
 visible rendering, interaction comparability and latency remain unmeasured.
+
+Exact main-worker payload PID checks now match Node for browser fences and
+lifecycle messages. Their composed source checks do not explain historical
+Chromium missing acknowledgements; finish that investigation and the actual
+full browser-memory contract in this iteration, without turning an additional
+per-generation diagnostic into a new acceptance rule or waiving real failures.

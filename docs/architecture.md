@@ -2527,6 +2527,15 @@ retain `mainFence: missing` and report `mainAbsent: true` separately, so absence
 cannot be mistaken for guest return. Rollback and final retirement keep the
 captured generation even when its numeric PID has an exec replacement.
 
+Main-worker message authority requires both the exact current Worker realm and
+the payload's bound PID. Memory/exec fences additionally require an absent
+thread discriminator. Browser error/exit messages and interrupt-timer dispatch
+use the same PID predicate as Node. Native Worker error/exit events carry no
+message PID and retain their separate exact-realm authority. The shared timer
+handler already rejected foreign PIDs before scheduling; the entry predicate
+adds parity without claiming a former scheduling violation. These checks cannot
+manufacture a missing acknowledgement or prove its cause.
+
 An asynchronously launched fork owns its newly allocated Rust child and
 pre-publication descriptor mirrors until its host callback transfers custody.
 Cleanup uses a fresh kernel entry even if the caller's original mailbox has
