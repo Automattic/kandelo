@@ -191,7 +191,7 @@ pairs. Do not combine these interventions with the handoff trial.
 `scripts/agent-checkpoint` stores required handoff sections and records the
 worktree, HEAD, tracked diff hash and status. Its `check` command checks
 format and that recorded state, not the truth of the note or test results.
-The independent Claude Code hook injects one advisory reminder per agent at
+The independent Claude Code and Codex adapters inject one advisory reminder per agent at
 250k recorded input-context tokens. It never denies a tool, ends a session,
 spawns a worker or asks the user to arrange a handoff.
 
@@ -209,7 +209,7 @@ characters, and p95 process wall time below 250 ms on the measured machine.
 Record results locally; this is an operational gate, not a token-saving or
 quality claim. The graphics workspace and its jobs remain read-only.
 
-After five real reminder uses, inspect note creation and recovery costs
+After five real reminder uses per client, inspect note creation and recovery costs
 under the handoff trial's accounting. At least four notes must be produced
 at real phase milestones and judged adequate by their coordinator. Any
 lost required decision, premature completion caused by the reminder, or
@@ -232,3 +232,34 @@ the operational gate. Raw measurements and the replay script are local in
 `.context/context-growth/checkpoint-measurement.json` and
 `measure-checkpoint.py`. Agent compliance, recovery cost and quality remain
 unmeasured; no model sessions ran and the rotation gate remains closed.
+
+Codex extension measure, fixed before running: sample 20 inactive Kandelo
+rollouts from November 1–6, stratified as ten main and ten child threads,
+evenly by sorted path within each group. Exclude files modified in the last
+hour, pin source hashes, compare the bounded parser to full-record latest
+input usage and call each adapter twice with isolated cache state. Reject
+changing source files rather than attributing a mismatch to the parser.
+Apply the same 20/20, no tool decisions/user messages/repeated reminders,
+under-2k-character reminder and 250 ms p95 operational gate. Add regressions
+for cached-input/session-total confusion, compaction, parent/child identity,
+parallel delivery, both Codex config representations and preserved trust
+records. Codex registration is distinct from its required hook trust review.
+
+The first replay stopped at a rollout without any token-count records.
+The reference comparator was corrected to accept missing usage as an
+explicit silent case, retaining the original 20 selected files. Report
+available/missing usage counts separately; absence of usage is not a zero
+context estimate or a reason to substitute a more convenient transcript.
+
+Codex extension result (2026-11-07, local macOS, repository dev shell):
+22 checkpoint/installer tests and six wait-guard tests passed. All 20
+Codex rollouts matched the full-record reference: 19 had usage, one had
+none and stayed silent. Five reminders were issued on first invocation,
+none repeated across 40 calls. Median process time was 46 ms, p95 49 ms,
+and longest reminder 1,093 characters. A fresh Claude replay still matched
+20/20, with zero repeated reminders and p95 101 ms. Both adapters meet the
+operational gate. Codex source hashes and raw measurements are local in
+`.context/context-growth/codex-checkpoint-measurement.json`; replay uses
+`measure-codex-checkpoint.py`. These are offline process/rollout checks,
+not proof of live client compliance or reduced campaign cost. No model
+sessions ran; automatic rotation remains gated by the quality trial.

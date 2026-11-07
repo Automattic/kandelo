@@ -52,33 +52,45 @@ worker instead of guessing; charge that recovery to the trial.
 | Client | Checkpoint helper and repository guidance | Automatic context reminder |
 |---|---|---|
 | Claude Code | Yes | Opt-in hook below |
-| Codex | Yes | No adapter in this implementation |
+| Codex | Yes | Opt-in hook below; requires Codex hook trust review |
 | Other coding agents | Helper is usable; instruction loading depends on the client | No adapter in this implementation |
 
-## Quiet context reminder (Claude Code)
+## Quiet context reminders
 
 Install/update independently of the wait guard:
 
 ```bash
 python3 .claude/hooks/install-hooks.py --user --hook context
 python3 .claude/hooks/install-hooks.py --user --hook context --check
+python3 .claude/hooks/install-hooks.py --user --hook context --client codex
 ```
 
-This installs a standalone trusted copy under `~/.claude/hooks/` and adds
-only its own entry in user settings, preserving other hooks. It acts only
+This installs standalone copies under `~/.claude/hooks/` or `~/.codex/hooks/`
+and adds only its own entry in the selected client's settings, preserving
+other hooks. Codex uses an existing `hooks.json`, or a marked block in
+`config.toml`, preserving the layer's format and existing trust records.
+[Codex requires review of a new/changed hook in `/hooks`](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks)
+before it executes; installation and `--check` confirm registration, not
+trust. No trust records are added by the installer. The hook acts only
 in Kandelo checkouts with `scripts/agent-job`. Once per agent transcript,
 at 250k recorded input-context tokens, it reminds the agent to checkpoint
 at its next safe milestone. It makes no tool decision, spawns no agents,
 does not end work, and asks nothing of the user. Missing/malformed usage
-fails open. Reads are bounded to a 512 KiB transcript tail; JSON records
+fails open. Reads are bounded to a 512 KiB transcript tail; Codex also checks
+up to 512 KiB of the rollout header to verify the executing thread's identity.
+Codex counts `last_token_usage.input_tokens` once, including cached input;
+Claude adds its separate input/cache counts. Neither uses session totals.
+These are observed transcript adapters, not stable client APIs; unknown
+formats stay silent. JSON records
 under `~/.cache/kandelo/agent-context/` record issued reminders for review.
 
 The reminder includes a command using the installed helper, so it works
 on older Kandelo branches without the repository wrapper. Other agent
-clients can use the same checkpoint helper and guidance, but this hook
-does not give them automatic context telemetry. Existing sessions may
-need to reload hook settings; newly started Claude sessions load them.
+clients can use the same checkpoint helper and guidance; automatic telemetry
+requires a client adapter. Existing sessions may need to reload hook settings;
+newly started sessions load registered hooks, subject to Codex trust review.
 
 Remove only this hook with `install-hooks.py --user --hook context
 --uninstall`. Use `--project-local` instead of `--user` to configure one
-checkout. Neither mode enables the independent wait guard.
+checkout. Add `--client codex` to check/update/remove only Codex's adapter.
+Neither mode enables the independent Claude Code wait guard.

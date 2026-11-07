@@ -4,7 +4,8 @@
 No model calls, tool denials, worker rotation, or transcript writes. Install
 the standalone trusted copy with install-hooks.py --user --hook context.
 Without arguments this is a PreToolUse hook; save/check are also usable by
-agents whose client does not support Claude Code hooks.
+agents whose client does not support hooks. `hook-codex` selects Codex's
+transcript adapter; the reminder and checkpoint contract are shared.
 """
 import argparse
 import datetime
@@ -19,7 +20,7 @@ import sys
 import tempfile
 import uuid
 
-HOOK_VERSION = 1
+HOOK_VERSION = 2
 CONTEXT_THRESHOLD = 250_000
 TAIL_BYTES = 512 * 1024
 NOTE_BYTES = 64 * 1024
@@ -39,8 +40,20 @@ def checkout(start):
     return None
 
 
-def transcript(payload):
+def transcript(payload, client="claude"):
     main = Path(os.path.expanduser(payload["transcript_path"]))
+    if client == "codex":
+        # Codex tool hooks name the executing thread's rollout, including
+        # child threads. Verify identity rather than guessing a child path
+        # in Claude's unrelated on-disk layout. Unknown layouts fail open.
+        with main.open("rb") as stream:
+            first = stream.readline(TAIL_BYTES)
+        row = json.loads(first)
+        session = row.get("payload") or {}
+        expected = payload.get("agent_id") or payload.get("session_id")
+        if row.get("type") != "session_meta" or not expected or session.get("id") != expected:
+            return None
+        return main
     agent = payload.get("agent_id")
     if not agent:
         return main
@@ -55,7 +68,7 @@ def transcript(payload):
     return child if child.is_file() else None
 
 
-def last_context(path):
+def last_context(path, client="claude"):
     with path.open("rb") as stream:
         size = stream.seek(0, os.SEEK_END)
         offset = max(0, size - TAIL_BYTES)
@@ -66,6 +79,18 @@ def last_context(path):
     for line in reversed(lines):
         try:
             row = json.loads(line)
+            if client == "codex":
+                payload = row.get("payload") or {}
+                if row.get("type") != "event_msg" or payload.get("type") != "token_count":
+                    continue
+                info = payload.get("info") or {}
+                usage = info.get("last_token_usage") or {}
+                # Codex input_tokens already includes cached input. Totals
+                # across the session are billing history, not context size.
+                value = usage.get("input_tokens")
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    return value
+                continue
             if row.get("type") != "assistant":
                 continue
             usage = (row.get("message") or {}).get("usage") or {}
@@ -79,22 +104,25 @@ def last_context(path):
     return None
 
 
-def reminder(payload):
+def reminder(payload, client="claude"):
     if payload.get("hook_event_name") != "PreToolUse":
         return None
     root = checkout(payload.get("cwd") or os.getcwd())
     if root is None or not payload.get("transcript_path"):
         return None
-    path = transcript(payload)
+    path = transcript(payload, client)
     if path is None:
         return None
-    identity = hashlib.sha256(str(path.resolve()).encode()).hexdigest()
+    stream_key = str(path.resolve())
+    if client != "claude":
+        stream_key = client + "\0" + stream_key
+    identity = hashlib.sha256(stream_key.encode()).hexdigest()
     state = Path(os.path.expanduser(os.environ.get(
         "KANDELO_CONTEXT_CACHE_DIR", "~/.cache/kandelo/agent-context")))
     marker = state / (identity + ".json")
     if marker.exists():
         return None
-    tokens = last_context(path)
+    tokens = last_context(path, client)
     if tokens is None or tokens < CONTEXT_THRESHOLD:
         return None
     command = (f"cd {shlex.quote(str(root))} && python3 "
@@ -115,7 +143,7 @@ def reminder(payload):
     # Parallel tool calls must not inject the same reminder repeatedly.
     try:
         with marker.open("x") as stream:
-            json.dump(dict(version=HOOK_VERSION, context_tokens=tokens,
+            json.dump(dict(version=HOOK_VERSION, client=client, context_tokens=tokens,
                            session_id=payload.get("session_id"), agent_id=payload.get("agent_id"),
                            worktree=str(root), transcript=str(path)), stream)
     except FileExistsError:
@@ -223,10 +251,11 @@ def cli():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
+    codex_hook = sys.argv[1:] == ["hook-codex"]
+    if len(sys.argv) > 1 and not codex_hook:
         raise SystemExit(cli())
     try:
-        result = reminder(json.load(sys.stdin))
+        result = reminder(json.load(sys.stdin), "codex" if codex_hook else "claude")
         if result:
             print(json.dumps(result))
     except Exception:

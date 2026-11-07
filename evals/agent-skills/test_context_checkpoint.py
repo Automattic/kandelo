@@ -35,6 +35,12 @@ def assistant(tokens, mid="m1"):
         cache_creation_input_tokens=10, output_tokens=50)))
 
 
+def codex_usage(tokens, cached=0, total=99_000_000):
+    return dict(type="event_msg", payload=dict(type="token_count", info=dict(
+        total_token_usage=dict(input_tokens=total), last_token_usage=dict(
+            input_tokens=tokens, cached_input_tokens=cached, output_tokens=100))))
+
+
 NOTE = "\n\n".join("## " + title + "\n" + body for title, body in zip(checkpoint.SECTIONS, (
     "Fix fixture; acceptance is the focused check.",
     "Preserve EIO on failed writes; silent success was rejected.",
@@ -63,12 +69,57 @@ class ContextCheckpointTest(unittest.TestCase):
         self.env = dict(os.environ, KANDELO_CONTEXT_CACHE_DIR=str(self.state),
                         GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
 
-    def hook(self, payload=None):
-        result = subprocess.run([sys.executable, "-B", str(HOOK)],
+    def hook(self, payload=None, client="claude"):
+        command = [sys.executable, "-B", str(HOOK)]
+        if client == "codex":
+            command.append("hook-codex")
+        result = subprocess.run(command,
                                 input=json.dumps(payload or self.payload), text=True,
                                 capture_output=True, env=self.env, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout) if result.stdout else {}
+
+    def codex_transcript(self, path=None, session="session", rows=None):
+        path = path or self.transcript
+        path.write_text("\n".join(map(json.dumps, [
+            dict(type="session_meta", payload=dict(id=session)),
+            *(rows if rows is not None else [codex_usage(260_000, 250_000)]),
+        ])) + "\n")
+
+    def test_codex_input_includes_cache_and_does_not_use_session_totals(self):
+        self.codex_transcript(rows=[codex_usage(40_000, 35_000)])
+        self.assertEqual(self.hook(client="codex"), {})
+        self.codex_transcript()
+        output = self.hook(client="codex")
+        self.assertIn("260,000", output["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(set(output["hookSpecificOutput"]), {"hookEventName", "additionalContext"})
+        self.assertEqual(self.hook(client="codex"), {})
+
+    def test_codex_compaction_and_null_rate_limit_events(self):
+        self.codex_transcript(rows=[codex_usage(900_000), dict(type="compacted", payload={}),
+            codex_usage(40_000), dict(type="event_msg", payload=dict(type="token_count", info=None))])
+        self.assertEqual(self.hook(client="codex"), {})
+
+    def test_codex_child_rollout_is_separate_and_parent_mismatch_is_silent(self):
+        self.codex_transcript()
+        child = self.base / "rollout-child.jsonl"
+        self.codex_transcript(child, "child", [codex_usage(40_000)])
+        payload = dict(self.payload, session_id="child", transcript_path=str(child))
+        self.assertEqual(self.hook(payload, client="codex"), {})
+        self.assertEqual(self.hook(dict(payload, transcript_path=str(self.transcript)), client="codex"), {})
+        self.codex_transcript(child, "child")
+        self.assertTrue(self.hook(payload, client="codex"))
+        self.assertTrue(self.hook(client="codex"))
+
+    def test_codex_unknown_rollout_header_fails_open(self):
+        self.transcript.write_text(json.dumps(codex_usage(260_000)) + "\n")
+        self.assertEqual(self.hook(client="codex"), {})
+
+    def test_codex_parallel_tools_deliver_once(self):
+        self.codex_transcript()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda _: self.hook(client="codex"), range(4)))
+        self.assertEqual(sum(bool(result) for result in results), 1)
 
     def test_reminds_model_once_without_tool_decision_or_user_message(self):
         result = self.hook()
@@ -223,6 +274,60 @@ class ContextCheckpointTest(unittest.TestCase):
         self.assertEqual(install("--uninstall"), 0)
         self.assertEqual(json.loads(settings.read_text()), original)
         self.assertFalse(copy.exists())
+
+    def test_codex_installer_preserves_inline_config_and_trust_records(self):
+        import tomllib
+        config = self.base / "user/.codex/config.toml"
+        config.parent.mkdir(parents=True)
+        original = ('# User preferences stay intact\nmodel = "fixture-model"\n'
+                    '[hooks.state."existing"]\ntrusted = true\n'
+                    '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "existing-hook"\n')
+        config.write_text(original)
+        real_expanduser = installer.os.path.expanduser
+
+        def expand(path):
+            return str(self.base / "user" / path[2:]) if path.startswith("~/") else real_expanduser(path)
+
+        def install(*args):
+            with mock.patch.object(sys, "argv", [str(INSTALLER), "--user", "--hook", "context", "--client", "codex", *args]), \
+                    mock.patch.object(installer.os.path, "expanduser", side_effect=expand), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                return installer.main()
+
+        self.assertEqual(install(), 0)
+        installed = config.read_bytes()
+        parsed = tomllib.loads(installed.decode())
+        parsed["hooks"].pop("PreToolUse")
+        self.assertEqual(parsed, tomllib.loads(original))
+        self.assertTrue(installed.decode().startswith(original))
+        self.assertFalse((config.parent / "hooks.json").exists())
+        self.assertEqual(install(), 0)
+        self.assertEqual(install("--check"), 0)
+        self.assertEqual(config.read_bytes(), installed)
+        self.assertEqual(config.with_suffix(".toml.bak").read_text(), original)
+        self.assertEqual(install("--uninstall"), 0)
+        self.assertEqual(config.read_text(), original)
+
+    def test_codex_existing_json_is_preserved_instead_of_adding_toml_hooks(self):
+        directory = self.base / "user/.codex"
+        directory.mkdir(parents=True)
+        path = directory / "hooks.json"
+        original = {"description": "User hooks", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "existing"}]}]}}
+        path.write_text(json.dumps(original))
+        real_expanduser = installer.os.path.expanduser
+
+        def expand(value):
+            return str(self.base / "user" / value[2:]) if value.startswith("~/") else real_expanduser(value)
+
+        for mode in ([], ["--uninstall"]):
+            with mock.patch.object(sys, "argv", [str(INSTALLER), "--user", "--hook", "context", "--client", "codex", *mode]), \
+                    mock.patch.object(installer.os.path, "expanduser", side_effect=expand), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(installer.main(), 0)
+            current = json.loads(path.read_text())
+            self.assertEqual(installer.without_ours(current, "context-checkpoint.py"), original)
+        self.assertEqual(current, original)
+        self.assertFalse((directory / "config.toml").exists())
 
 
 if __name__ == "__main__":

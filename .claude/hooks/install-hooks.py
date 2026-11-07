@@ -8,7 +8,7 @@ hook changes. This script makes installing, updating, and removing it one
 safe, repeatable command.
 
 Deterministic and idempotent: running it twice changes nothing the second
-time. It edits only its own hook entry in a Claude Code settings file and
+time. It edits only its own hook entry in the selected client's settings and
 keeps every other setting; the previous file is saved next to it as
 <file>.bak before any change.
 
@@ -17,6 +17,7 @@ keeps every other setting; the previous file is saved next to it as
   python3 .claude/hooks/install-hooks.py --user --check   # exit 1 if missing or out of date
   python3 .claude/hooks/install-hooks.py --user --uninstall
   python3 .claude/hooks/install-hooks.py --user --hook context
+  python3 .claude/hooks/install-hooks.py --user --hook context --client codex
 
 --user copies the hook to ~/.claude/hooks/kandelo-wait-guard.py and points
 user settings at that copy, rather than at a file inside whichever project is
@@ -34,11 +35,17 @@ Hooks installed:
   --hook context selects the independent, advisory context-checkpoint hook.
                  PreToolUse/all tools, once per agent at 250k context tokens.
                  Does not enable wait-guard or rotate workers.
+
+Codex context hooks use an existing hooks.json, or a marked block in
+config.toml when that is the layer's representation. Other settings and
+hook trust records are preserved. Registration does not grant trust: Codex
+requires reviewing the new definition in /hooks before it executes.
 """
 import argparse
 import filecmp
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -50,9 +57,18 @@ PROFILES = {
     "wait": ("wait-guard.py", "kandelo-wait-guard.py", "Bash"),
     "context": ("context-checkpoint.py", "kandelo-context-checkpoint.py", ""),
 }
+CODEX_BLOCK = re.compile(
+    r"\n\n# BEGIN Kandelo context checkpoint hook\n.*?"
+    r"# END Kandelo context checkpoint hook\n", re.S)
 
 
 def target(args, filename, user_copy):
+    if args.client == "codex":
+        directory = os.path.expanduser("~/.codex") if args.user else os.path.join(REPO, ".codex")
+        hooks = os.path.join(directory, "hooks.json")
+        path = hooks if os.path.exists(hooks) else os.path.join(directory, "config.toml")
+        source = user_copy if args.user else os.path.join(HERE, filename)
+        return path, f"python3 {shlex.quote(source)} hook-codex"
     if args.user:
         return (os.path.expanduser("~/.claude/settings.json"),
                 f"python3 {shlex.quote(user_copy)}")
@@ -98,14 +114,38 @@ def with_ours(settings, command, marker=MARKER, matcher="Bash"):
     return out
 
 
+def codex_toml(current, command, uninstall=False):
+    import tomllib
+    tomllib.loads(current)
+    stripped = CODEX_BLOCK.sub("", current)
+    if "# BEGIN Kandelo context checkpoint hook" in stripped or "# END Kandelo context checkpoint hook" in stripped:
+        raise ValueError("incomplete Kandelo hook block; restore its markers before updating")
+    if uninstall:
+        wanted = stripped
+    else:
+        # JSON quoting of this single string is also valid TOML basic-string
+        # quoting. The rest of config.toml is preserved byte for byte.
+        wanted = stripped + (
+            '\n\n# BEGIN Kandelo context checkpoint hook\n'
+            '[[hooks.PreToolUse]]\nmatcher = ""\n'
+            '[[hooks.PreToolUse.hooks]]\ntype = "command"\n'
+            f'command = {json.dumps(command)}\ntimeout = 10\n'
+            '# END Kandelo context checkpoint hook\n')
+    tomllib.loads(wanted)
+    return wanted
+
+
 def write(path, settings):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path):
         shutil.copy2(path, path + ".bak")
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
+        if isinstance(settings, str):
+            f.write(settings)
+        else:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
     os.replace(tmp, path)
 
 
@@ -119,14 +159,26 @@ def main():
     mode.add_argument("--uninstall", action="store_true")
     ap.add_argument("--hook", choices=PROFILES, default="wait",
                     help="independent hook to install/check/remove (default: wait)")
+    ap.add_argument("--client", choices=("claude", "codex"), default="claude")
     args = ap.parse_args()
+    if args.client == "codex" and args.hook != "context":
+        ap.error("the Codex adapter supports --hook context; wait-guard is Claude Code-only")
 
     filename, installed_name, matcher = PROFILES[args.hook]
     source = os.path.join(HERE, filename)
-    user_copy = os.path.expanduser("~/.claude/hooks/" + installed_name)
+    client_dir = ".codex" if args.client == "codex" else ".claude"
+    user_copy = os.path.expanduser("~/" + client_dir + "/hooks/" + installed_name)
     path, command = target(args, filename, user_copy)
-    current = load(path)
-    wanted = without_ours(current, filename) if args.uninstall else with_ours(current, command, filename, matcher)
+    if args.client == "codex" and path.endswith(".toml"):
+        try:
+            with open(path) as stream:
+                current = stream.read()
+        except FileNotFoundError:
+            current = ""
+        wanted = codex_toml(current, command, uninstall=args.uninstall)
+    else:
+        current = load(path)
+        wanted = without_ours(current, filename) if args.uninstall else with_ours(current, command, filename, matcher)
     settings_ok = current == wanted
     copy_ok = not args.user or args.uninstall or (
         os.path.exists(user_copy) and filecmp.cmp(source, user_copy, shallow=False))
@@ -151,6 +203,8 @@ def main():
     else:
         write(path, wanted)
         print(f"{'removed from' if args.uninstall else 'installed in'} {path} (previous file: {path}.bak)")
+    if args.client == "codex" and not args.uninstall:
+        print("Codex registration is ready; review the new/changed definition in /hooks before it can run.")
     return 0
 
 
