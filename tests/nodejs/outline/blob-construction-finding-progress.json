@@ -1,0 +1,88 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/web-contracts.md",
+    "findingIds": [
+      "WEB-008"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "web",
+      "values",
+      "workers"
+    ],
+    "scope": "Partial real Blob construction and slice behavior over existing shared byte/WebIDL owners. Encoding/object URLs/full Blob/File/clone/stream/guest obligations remain open."
+  },
+  "sourceImplemented": [
+    "Consume the complete existing pinned WebIDL source sequence before options access and real byte snapshots",
+    "Use actual shared dictionary/errors/BufferSource brands and maximum-length owners; read endings/type once in pinned order",
+    "Copy actual bytes after sequence/coercion/getter mutations; defer MIME type string coercion until after byte assembly",
+    "Use genuine shared WebIDL long-long slice conversion and clamp/range/type order over actual private byte storage",
+    "Retain unchanged upstream assertions and record the remaining custom-inspection failure rather than declaring full Blob support"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-blob217-source-r1/report.json",
+    "sha256": "a2fa04ddf7a623724010bf7f71692a4e8101542d938bd3fc3fd17646fd222a09",
+    "guardedInputs": 885,
+    "scope": "Actual Blob sequence/dictionary/coercion/byte snapshot and slice WebIDL semantics. Native-dependent groups only; unchanged upstream custom inspection failure remains, no guest/fourhost closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-blob217-affected-r1.json",
+    "sha256": "a5e60d80266031bfb4cd49e3dca2fdeff7ee2c8ca816955ff207aed07e067887",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-blob217-source-r1/report.json",
+    "sha256": "a2fa04ddf7a623724010bf7f71692a4e8101542d938bd3fc3fd17646fd222a09",
+    "nativeDependentGroups": 19,
+    "focusedFailures": 0,
+    "unchangedUpstreamPassing": false,
+    "unchangedUpstreamEvidence": ".context/blob-construction-owner-agent/upstream-report-r2.json",
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "engineCXXChanged": false,
+    "scope": "Actual root Blob IIFE executes over explicit native WebIDL/errors/brands/encoding/streams/clone dependencies. Nineteen matches do not validate guest dependencies; unchanged upstream still fails at missing custom inspection."
+  },
+  "sealedEvidence": {
+    "report": ".context/blob-construction-owner-agent/report.json",
+    "sha256": "65cbcc1aa30286c87b8d0b69820b46f2c2a4df8c861ea8438966be8cdfda055a",
+    "reusedEvidence": true,
+    "scope": "19final native-dependent matches versus6/19baseline,16source/staging/replay checks;0compiles. Native unchanged upstream passes; candidate remains nonpassing at custom inspection after bounded slice conversion correction. Exact raw evidence and provenance limitations retained."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/blob-construction-owner-agent/upstream-report.json",
+      "sha256": "ccfe4dbc50d2fad656fa2fef7a8740abfdae091152bc8a7e5f99cea8ed205c46",
+      "scope": "Unchanged initial upstream candidate nonpass at line163 on generic Blob.slice BigInt error; native exits0."
+    },
+    {
+      "report": ".context/blob-construction-owner-agent/upstream-report-r2.json",
+      "sha256": "ccfe4dbc50d2fad656fa2fef7a8740abfdae091152bc8a7e5f99cea8ed205c46",
+      "scope": "After actual slice WebIDL correction, unchanged candidate still exits1 at line234 missing custom inspection; native exits0. Reaching a later synchronous assertion does not prove all earlier async branches or later tests."
+    },
+    {
+      "report": ".context/blob-construction-owner-agent/report.json",
+      "sha256": "65cbcc1aa30286c87b8d0b69820b46f2c2a4df8c861ea8438966be8cdfda055a",
+      "scope": "Baseline6/19 matches and original15-group intermediate evidence retained. Historical intermediate source hashes reconstructed honestly, not falsely claimed captured before launch. Native dependency fixture is not guest owner proof."
+    }
+  ],
+  "remaining": [
+    "Actual Blob custom inspection (unchanged upstream candidate failure), complete public branding/descriptors/subclass/reflective metadata",
+    "Prototype mutation, concurrent shared bytes and complete large-allocation/OOM/error semantics",
+    "Full Blob/File/Fetch/stream/clone/transfer/message/encoding/object URL ownership and lifecycle",
+    "Actual guest WebIDL/brands/encoding/streams/native storage/GC/realm/worker and identified-artifact four-host validation",
+    "No API/family closure or accepted exclusion; all unrelated public-core findings remain"
+  ],
+  "at": "2026-11-07T14:23:12.277783+00:00",
+  "recipeRevision": 217,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

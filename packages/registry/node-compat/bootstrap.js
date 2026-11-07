@@ -6025,6 +6025,19 @@ const _nodeBodyData = (() => {
     const sharedLength = typeof SharedArrayBuffer === 'function' ? get(SharedArrayBuffer.prototype, 'byteLength') : null;
     const isView = ArrayBuffer.isView, slice = Function.prototype.call.bind(Bytes.prototype.slice);
     const blobs = new WeakMap();
+    const { createSequenceConverter, converters } = _nodeEventPlatform.require('internal/webidl');
+    const { validateDictionary } = _nodeValues.validators;
+    const { kEmptyObject } = _nodeValues.util;
+    const { ERR_INVALID_ARG_VALUE, ERR_BUFFER_TOO_LARGE } = _nodeValues.errors.codes;
+    const { isAnyArrayBuffer, isArrayBufferView } = _nodeValues.require('internal/util/types');
+    const kMaxLength = _nodeBufferConstants.MAX_LENGTH;
+    const isBlob = value => blobs.has(value);
+    const sourcesConverter = createSequenceConverter((source, opts = kEmptyObject) => {
+      if (isBlob(source) || isAnyArrayBuffer(source) || isArrayBufferView(source)) {
+        return source;
+      }
+      return converters.DOMString(source, opts);
+    });
     function blobError(message, code = 'ERR_INVALID_ARG_TYPE') {
         const error = new TypeError(message); error.code = code; throw error;
     }
@@ -6080,26 +6093,31 @@ const _nodeBodyData = (() => {
     class Blob {
         constructor(parts = [], init) {
             _nodeClonePlatform.protocol.markTransferMode(this, true, false);
-            if (init != null && typeof init !== 'object' && typeof init !== 'function') blobError('Blob options must be an object');
-            init = options(init);
-            let endings = init.endings;
-            if (typeof endings === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
-            endings = endings === undefined ? 'transparent' : String(endings);
-            if (endings !== 'transparent' && endings !== 'native') blobError('Invalid Blob endings', 'ERR_INVALID_ARG_VALUE');
-            if (parts == null || (typeof parts !== 'object' && typeof parts !== 'function')) blobError('Blob parts must be a sequence');
-            const iterator = parts[Symbol.iterator];
-            if (typeof iterator !== 'function') blobError('Blob parts must be iterable');
+            // The complete pinned sequence conversion runs before dictionary
+            // access and before copying any BufferSource. Strings are coerced
+            // during iteration; byte sources stay real owners until that pass
+            // completes, so later hooks can still mutate their stored bytes.
+            const sources = sourcesConverter(parts);
+            validateDictionary(init, 'options');
+            let { endings = 'transparent', type: contentType = '' } = init ?? kEmptyObject;
+            endings = `${endings}`;
+            if (endings !== 'transparent' && endings !== 'native')
+                throw new ERR_INVALID_ARG_VALUE('options.endings', endings);
             const values = [];
             let total = 0;
-            for (const part of { [Symbol.iterator]: () => iterator.call(parts) }) {
+            for (let i = 0; i < sources.length; ++i) {
+                const part = sources[i];
                 const blob = blobs.get(part);
                 const bytes = blob ? blob.bytes : copyBytes(part) ?? stringBytes(part, endings === 'native');
                 values.push(bytes); total += bytes.byteLength;
             }
+            if (total > kMaxLength) throw new ERR_BUFFER_TOO_LARGE(kMaxLength);
             const bytes = new Bytes(total);
             let offset = 0;
             for (const part of values) { bytes.set(part, offset); offset += part.byteLength; }
-            blobs.set(this, { bytes, type: init.type === undefined ? '' : type(init.type) });
+            // Match the pinned order: type's getter already ran, but its
+            // string coercion follows actual byte storage construction.
+            blobs.set(this, { bytes, type: type(contentType) });
         }
         [_nodeClonePlatform.protocol.kClone]() {
             const stored = data(this);
@@ -6130,17 +6148,18 @@ const _nodeBodyData = (() => {
         }
         slice(start = 0, end = undefined, contentType = '') {
             const bytes = data(this).bytes, size = bytes.byteLength;
-            const index = value => {
-                if (typeof value === 'bigint') throw new TypeError('Cannot convert a BigInt to a number');
-                let n = Number(value);
-                if (Number.isNaN(n)) n = 0;
-                n = Math.max(-(2 ** 63), Math.min(2 ** 63 - 1, n));
-                // [Clamp] long long uses ties-to-even, not truncation.
-                const floor = Math.floor(n), fraction = n - floor;
-                n = fraction > 0.5 || (fraction === 0.5 && floor % 2 !== 0) ? floor + 1 : floor;
-                return n < 0 ? Math.max(size + n, 0) : Math.min(n, size);
-            };
-            return new Blob([bytes.subarray(index(start), end === undefined ? size : index(end))], { type: contentType });
+            start = converters['long long'](
+                start, { __proto__: null, context: 'start', clamp: true });
+            end = converters['long long'](
+                end === undefined ? size : end,
+                { __proto__: null, context: 'end', clamp: true });
+            start = start < 0 ? Math.max(size + start, 0) : Math.min(start, size);
+            end = end < 0 ? Math.max(size + end, 0) : Math.min(end, size);
+            contentType = type(contentType);
+            const span = Math.max(end - start, 0);
+            // The real private byte allocation supplies this slice. Public
+            // TypedArray species/subarray methods do not own Blob slicing.
+            return new Blob([new Bytes(typedBuffer(bytes), typedOffset(bytes) + start, span)], { type: contentType });
         }
         get [Symbol.toStringTag]() { return 'Blob'; }
     }

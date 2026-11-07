@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source217 corrects real shared Blob construction/slice conversion and byte-snapshot order.19focused native-dependent groups match; unchanged upstream Blob test remains nonpassing on custom inspection. No new guest binding build or four-host acceptance.
+See [source scope](blob-construction-integration.md).
+
 Source216 adds real reactive backing-read wake ownership and conservative bounded admission. Actual native consumers compile,37focused native cases pass, and the Wasm kernel typechecks. No linked guest/public watcher or four-host acceptance follows.
 See [source scope](backing-read-wake-integration.md).
 
