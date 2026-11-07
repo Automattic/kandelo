@@ -3,17 +3,17 @@ import { lstatSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import {
-  playwrightTestIgnoreForEnvironment,
-  shouldReuseExistingPlaywrightServer,
-} from "./playwright-server-policy";
+import { playwrightTestIgnoreForEnvironment } from "./playwright-server-policy";
+import { playwrightRun, playwrightPort } from "../../tests/playwright-run";
 import { browserStorageHome } from "./playwright-storage";
 import type { KandeloWorkerOptions } from "./playwright-test";
 
 const silentAudio = process.env.KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO !== "1";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const port = Number(process.env.KANDELO_PLAYWRIGHT_PORT ?? 5401);
+const port = await playwrightPort(process.env.KANDELO_PLAYWRIGHT_PORT);
+// Specs and nested tools must observe the port selected by this config.
+process.env.KANDELO_PLAYWRIGHT_PORT = String(port);
 const protectedBrowserBaseUrl = protectedLoopbackBaseUrl(
   process.env.KANDELO_ABI_STAGING_BROWSER_BASE_URL,
 );
@@ -153,6 +153,7 @@ const chromiumLaunchArgs = [
 ];
 
 export default defineConfig<{}, KandeloWorkerOptions>({
+  ...playwrightRun(__dirname),
   globalSetup: join(__dirname, "playwright-storage-setup.ts"),
   testDir: join(__dirname, "test"),
   testMatch: "*.spec.ts",
@@ -204,9 +205,7 @@ export default defineConfig<{}, KandeloWorkerOptions>({
         : `npx vite${viteModeArgument} --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`,
       port,
       env: webServerEnvironment,
-          reuseExistingServer:
-            assembledSiteRoot === undefined &&
-            shouldReuseExistingPlaywrightServer(process.env),
+      reuseExistingServer: false,
       timeout: 30_000,
     }
     : undefined,

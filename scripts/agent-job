@@ -340,8 +340,10 @@ def supervise(d):
     # KANDELO_LOCAL_BUILD_EVENTS asks local-build/setup to write progress
     # events, which `status` reads. That replaces turns spent probing
     # processes and log sizes to guess how far along a build is.
+    scratch = os.path.abspath(os.path.join(d, "scratch"))
+    os.makedirs(scratch, mode=0o700, exist_ok=True)
     env = dict(os.environ, KANDELO_LOCAL_BUILD_EVENTS=os.path.join(d, "events.jsonl"),
-               KANDELO_AGENT_JOB=meta["id"])
+               KANDELO_AGENT_JOB=meta["id"], KANDELO_AGENT_SCRATCH_DIR=scratch)
     # Its own session/process group, so a stop request can reach every
     # process the build spawned (cargo, clang, node workers), not just bash.
     child = subprocess.Popen(["bash", "-c", meta["cmd"]], cwd=meta["cwd"], stdin=subprocess.DEVNULL,
@@ -460,6 +462,7 @@ def cmd_start(args):
     write_json(os.path.join(d, "meta.json"), meta)
     usual = f"; usually takes {fmt_secs(meta['usual_duration'])}" if meta["usual_duration"] else ""
     print(f"{job_id}\nlog: {os.path.join(d, 'output.log')}{usual}\n"
+          f"scratch: {os.path.join(d, 'scratch')} (child: $KANDELO_AGENT_SCRATCH_DIR)\n"
           f"wait with (choose your session type; do not poll):\n"
           f"  interactive main: {shlex.quote(sys.argv[0])} wait {job_id} --timeout 0  "
           f"(Bash run_in_background: true; act on one completion notification)\n"

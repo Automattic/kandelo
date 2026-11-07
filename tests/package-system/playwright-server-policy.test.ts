@@ -1,23 +1,18 @@
 import { describe, expect, it } from "vitest";
-import {
-  shouldReuseExistingPlaywrightServer,
-} from "../../apps/browser-demos/playwright-server-policy";
+import { playwrightPort } from "../playwright-run";
 
-describe("Playwright server reuse policy", () => {
-  it("reuses an existing server for ordinary local browser tests", () => {
-    expect(shouldReuseExistingPlaywrightServer({})).toBe(true);
+describe("Playwright server ports", () => {
+  it("accepts an OS-selected port and preserves explicit selections", async () => {
+    const port = await playwrightPort(undefined);
+    expect(port).toBeGreaterThanOrEqual(1024);
+    expect(port).toBeLessThanOrEqual(65535);
+    // Do not re-bind the probe's released port: losing that race is allowed
+    // and is handled by the real runner's strict-port/no-reuse policy.
+    expect(await playwrightPort("57419")).toBe(57419);
   });
-
-  it("starts an owned server for CI and every exact artifact proof", () => {
-    expect(shouldReuseExistingPlaywrightServer({ CI: "true" })).toBe(false);
-    expect(shouldReuseExistingPlaywrightServer({
-      KANDELO_CANONICAL_FLAT_SHELL_STRICT: "1",
-    })).toBe(false);
-    expect(shouldReuseExistingPlaywrightServer({
-      KANDELO_PLAYWRIGHT_SERVE_DIST: "1",
-    })).toBe(false);
-    expect(shouldReuseExistingPlaywrightServer({
-      KANDELO_SOURCE_ROOTFS_SHELL_STRICT: "1",
-    })).toBe(false);
+  it("rejects invalid explicit ports", async () => {
+    for (const value of ["", "0", "1023", "65536", "abc", "1.5"]) {
+      await expect(playwrightPort(value)).rejects.toThrow("Invalid Playwright port");
+    }
   });
 });

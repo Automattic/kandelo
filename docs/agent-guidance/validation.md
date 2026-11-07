@@ -222,9 +222,9 @@ builds the host, and runs:
   runtime errors, forced teardown, unreviewed shared worker messages, and main-thread
   shared Wasm allocations fail the test.
 
-This gate owns its browser server; set `KANDELO_PLAYWRIGHT_PORT` if the
-default port is occupied. Missing products or the Quake archive fail the
-required run instead of becoming skipped coverage. Initial source builds can
+This gate owns its browser server on an automatically selected free port;
+`KANDELO_PLAYWRIGHT_PORT` can pin one explicitly. Missing products or the
+Quake archive fail the required run instead of becoming skipped coverage. Initial source builds can
 take longer than ten minutes: use `scripts/agent-job` for the complete gate
 when inputs are not already built. Later runs reuse the normal build cache.
 The command is independent of whether GitHub Actions is enabled. The CI
@@ -413,9 +413,27 @@ run used the wrong config and toolchain, and its results are invalid.
 - **Stable inputs:** never mutate a tree while a job validates it. Mixed
   inputs invalidate evidence and can break program-index publication.
   Finish or stop the job before editing, then validate the final tree.
-- **Browser server:** always choose a free worktree-specific
-  `KANDELO_PLAYWRIGHT_PORT` for Playwright suites. `reuseExistingServer`
-  can otherwise silently attach to another tree's server on a shared port.
+- **Browser server and evidence:** repository Playwright configs select a
+  free loopback port per run and never reuse an existing server. Pin
+  `KANDELO_PLAYWRIGHT_PORT` only when needed; an occupied explicit port
+  fails loudly. Vite retains `--strictPort`, so losing the free-port probe's
+  bind race also fails rather than moving silently to a different origin.
+  Each run owns `test-results/<run-id>/artifacts` and default HTML, blob,
+  JSON and JUnit reports beside it. CI uploads the enclosing `test-results`
+  directory. Explicit `--output`, reporter options or reporter environment
+  paths remain caller-owned: allocate a fresh directory for every process,
+  including base/after runs. A unique worktree alone does not isolate two
+  runs in that worktree. For `--last-failed`, explicitly select that run's
+  artifact directory with `--output`; there is no shared last-run file.
+- **Logs and scratch:** a job exports its private, retained
+  `KANDELO_AGENT_SCRATCH_DIR` through the dev shell. For example, redirect
+  inside the job with `> "$KANDELO_AGENT_SCRATCH_DIR/integ.log" 2>&1`.
+  Every nested `agent-job start` gets a new directory, even if it inherits
+  its parent's scratch variable. For short foreground runs, first allocate
+  a fresh directory with `mktemp -d` and keep the returned path when reading
+  the results. Never use fixed host paths such as `/tmp/integ.log`, or a
+  shared `.context/check.log`, for concurrent runs. The job's own stdout
+  and stderr are already retained in its `output.log`.
 - **Suite environment:** `scripts/dev-shell.sh` clears outer variables
   outside its keep-list. Export suite variables inside `bash -c` when
   they must reach a test. `KANDELO_PLAYWRIGHT_PORT` is explicitly kept;
@@ -425,7 +443,7 @@ run used the wrong config and toolchain, and its results are invalid.
   scripts/agent-job start -- scripts/dev-shell.sh bash -c 'export KANDELO_PLAYWRIGHT_PORT=5197; cd apps/browser-demos && npx playwright test'
   ```
 
-  Choose a free port for this worktree; 5197 is only an example.
+  Omit the export for automatic selection; 5197 is only a pinned example.
 - **Another workspace's build:** waiting on a build that another worktree
   (another Conductor workspace) is running is supported, and `agent-job` is
   the tool for it. Do not hand-roll a `kill -0 <pid>`, `pgrep`, or `sleep`

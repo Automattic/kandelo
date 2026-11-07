@@ -30,6 +30,7 @@ const examplesDir = join(repoRoot, "examples");
 const fixturesDir = join(__dirname, "fixtures");
 
 const C_TEST_FIXTURES = [
+  { src: join(fixturesDir, "offline-listener.c"), out: join(fixturesDir, "offline-listener.wasm") },
   {
     src: join(repoRoot, "programs/exec-caller.c"),
     out: join(fixturesDir, "abi-version-user.wasm"),

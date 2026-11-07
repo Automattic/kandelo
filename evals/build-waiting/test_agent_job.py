@@ -101,6 +101,19 @@ class AgentJobTest(JobsDirCase):
                 self.assertIn(f"{job_id}: FAILED (exit 7)", waited.stdout)
                 self.assertIn("hint-result", waited.stdout)
 
+    def test_jobs_own_private_scratch_even_with_an_inherited_peer_path(self):
+        self.env["KANDELO_AGENT_SCRATCH_DIR"] = "/must-not-reuse-peer-scratch"
+        ids = []
+        for label in ("a", "b"):
+            started = self.agent_job("start", "--", "bash", "-c",
+                f'printf {label} > "$KANDELO_AGENT_SCRATCH_DIR/integ.log"').stdout
+            ids.append(started.splitlines()[0])
+        for label, job_id in zip(("a", "b"), ids):
+            self.agent_job("wait", job_id, "--timeout", "30")
+            scratch = pathlib.Path(self.jobs_dir, "jobs", job_id, "scratch")
+            self.assertEqual((scratch / "integ.log").read_text(), label)
+            self.assertEqual(scratch.stat().st_mode & 0o777, 0o700)
+
     def test_multi_word_command_keeps_inner_bash_c_script_whole(self):
         # The 2026-10-01 shape: a wrapper, then `bash -c` with a script that
         # has spaces and `&&`. The whole script must run in the inner shell.
