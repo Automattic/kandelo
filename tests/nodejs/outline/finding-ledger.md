@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 142 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 145 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 222 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 221 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -617,3 +617,37 @@ scope. All19categories remain partial; no audit finding closes. Full product
 rebuild and overall suites stay deferred. Independent decoder state, terminal
 output rollback and test-filter CLI owners are active privately, outside current
 root source claims. Nested guest Wasm stays in scope for the final phase.
+
+
+## Source220–222 decoder state, captured TTY output and Buffer views
+
+These three scoped records add four original document-qualified finding links:
+web-contracts.md WEB-008; terminal.md T-002 and T-010; values-contracts.md V-030.
+V-030receives its first exact source-slice link. The original definitions,
+ranges and broader obligations remain unchanged; a link is not resolution.
+
+Actual decoder fatal/BOM/pending state includes post-getter reentry rollback
+and successful nonstream retirement corrections. Current29native-dependent
+groups in2modes and12unchanged upstream subjects retain native conversion/VM/
+byte dependencies. Original8baseline mismatches per mode and two reviewed
+intermediate regression versions remain visible. Repertoire/options/brands/
+concurrent storage and guest integration remain open.
+
+Captured TTY output construction/publication rolls back its actual extra
+owner while preserving original exceptions and borrowed public descriptors.
+Current6real-PTY component groups use actual OutputHandle with native Writable/
+NAPI/direct-close dependencies; they do not establish guest queued-close or
+public TTY constructors. Original5baseline nonpasses and outer publication,
+close-root allocation/native-init escaped-owner rollback gaps remain explicit.
+
+Pinned Buffer JSON/adjustOffset/subarray/slice algorithms consume genuine
+FastBuffer/backing owners. Current14native-dependent groups and4unchanged
+upstream subjects retain original10baseline mismatches and3authored control
+syntax failures. Complete Buffer overload/codecs/storage/realm/GC/OOM and
+guest/four-host obligations remain open. No fixture proves guest JSAPI.
+
+All19families remain partial; no finding closes. Compilation accounting stays
+286with no new compile/test/build in this metadata reconciliation. Accepted200
+predates current222; combined guest/runtime/four-host conformance remains
+unestablished. Overall suites and full product rebuilds stay deferred.
+Historical overlays retain their original capture/failure scope.

@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 142,
+    "sourceSliceRecords": 145,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 222
+    "findingsWithoutExplicitOrProposedSourceSlice": 221
   },
   "families": [
     {
@@ -72,7 +72,7 @@
         "V-036",
         "V-037"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 6,
+      "findingsWithExplicitOrProposedSourceSlices": 7,
       "sourceRouteAsRecorded": "pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source ; source140/146 actual retained-allocation capability and USER_OWNED commit source",
       "remainingAsRecorded": "Original allocation foundation and selected FS/codec routing are source-only; actual engine/GC/realm/transfer and remaining Buffer/util/URL/IDNA/error/descriptor/CLI/loader/warning behavior and four-host conformance remain open",
       "remainingOwner": "Buffer/string/URL/util/error compatibility adapters and actual native byte/ICU/SavedFrame owners",
@@ -1475,7 +1475,16 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "V-030 \u2014 Buffer overload and inherited-method gaps.** Besides V-013\u2013V-017:",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "buffer-view-json",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/values-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual Buffer inherited view/JSON/offset/dispatch behavior, not full overload/codec/backing/realm/GC/guest coverage.",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "buffer-pool"
       ],
@@ -6514,6 +6523,14 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Partial real Blob construction and slice behavior over existing shared byte/WebIDL owners. Encoding/object URLs/full Blob/File/clone/stream/guest obligations remain open.",
           "closure": false
+        },
+        {
+          "slice": "decoder-fatal-state",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/web-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial real shared decoder stream/fatal/BOM/pending/nonstream-retirement behavior; full repertoire, input/options and guest/fourhost remain open.",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7571,6 +7588,14 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Partial native input/read/material/queued-close/stdin prerequisite; no complete public tty constructors, writes, StreamBase or guest/four-host closure",
           "closure": false
+        },
+        {
+          "slice": "tty-output-publication",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial consumed captured-output initialization/lifetime prerequisite; public TTY constructors/method coverage and guest queued-close remain incomplete.",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7824,6 +7849,14 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/terminal.md",
           "scope": "Partial source prerequisites for actual terminal resource/callback/read lifecycle; no public constructor or inherited Socket/StreamBase closure",
+          "closure": false
+        },
+        {
+          "slice": "tty-output-publication",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial consumed captured-output initialization/lifetime prerequisite; public TTY constructors/method coverage and guest queued-close remain incomplete.",
           "closure": false
         }
       ],
@@ -23801,6 +23834,275 @@
       "auditDocument": "tests/nodejs/audit/loading-public-contracts.md",
       "findingScope": "Partial real CommonJS circular-warning/cache/cleanup behavior and observable getter chronology; no ESM/whole loading/warning/CLI/REPL/guest closure.",
       "additionalAuditDocuments": {}
+    },
+    "decoder-fatal-state": {
+      "document": "tests/nodejs/outline/decoder-fatal-state-finding-progress.json",
+      "sha256": "180ee03ff652ff6970fe5acc4bb270886c7dd20862e927516fec825fbf070164",
+      "recordedRevision": 220,
+      "explicitFindingIds": [
+        "WEB-008"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-decoder220-source-r1/report.json",
+          "sha256": "6c405e4ff64a272f63c4e7f11bfef8e0e8b44789bd38a8c494854aedcc7f42c2",
+          "guardedInputs": 885,
+          "scope": "Actual fatal stream/BOM/pending owner plus reviewed post-getter rollback and completed nonstream retirement.29groups in two native-dependent modes and4unchanged upstream files per3subjects, no guest/full encoding/four-host closure."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-decoder220-affected-r1.json",
+          "sha256": "7f91ec06594f1d7a8b1c3c9541dcdb2ea8f9cc1aee92954c4c0a33e01f33ceac",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-decoder220-source-r1/report.json",
+          "sha256": "6c405e4ff64a272f63c4e7f11bfef8e0e8b44789bd38a8c494854aedcc7f42c2",
+          "fatalStateGroups": 20,
+          "reentryGroups": 9,
+          "candidateModes": 2,
+          "logicalGroups": 29,
+          "unchangedUpstreamFiles": 4,
+          "upstreamSubjectsPassed": 12,
+          "upstreamSkips": 0,
+          "newDecoderCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "engineCXXChanged": false,
+          "scope": "Actual current shared decoder state/bytes in slow and native validated-UTF8 component modes. Native VM/isUtf8/fast conversion are explicit dependencies, not guest JSAPI/GC/byte lifetime/four-host proof. Original and intermediate regressions remain preserved."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/textdecoder-fatal-owner-agent/report.json",
+          "sha256": "74bd59383a8c8f0e295cc0dea3010c1bdfabd28c7fad24b3d26ddcf9038a42e8",
+          "reusedEvidence": true,
+          "scope": "Original20state groups in slow/fast modes and4unchanged upstream files\u00d73subjects; independent source review and two separate correction seals add9reentry groups. Final actual root29groups in2modes and12upstream subjects pass; no compiler/guest claims from decoder fixtures."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/textdecoder-fatal-owner-agent/report.json",
+          "sha256": "74bd59383a8c8f0e295cc0dea3010c1bdfabd28c7fad24b3d26ddcf9038a42e8",
+          "scope": "Original8group baseline mismatches per mode retained; full ICU/chronology/GC/realm/native-byte dependencies remain."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/textdecoder-fatal-review-agent/REPORT.md",
+          "sha256": "01fda63762b824de2f0c39153041c96d0c8c579647b365bdc5744163fe793d93",
+          "scope": "Read-only source review identified stale pre-getter BOM snapshot, with two actual newly introduced reentry regressions confirmed later; no runtime in this review."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/textdecoder-bom-reentry-correction-agent/handoff/REPORT.md",
+          "sha256": "7956ee30b438a3496d8c6194f90c95d1fdf56f6b20c98994afb9956935bcf339",
+          "scope": "Immutable intermediate strict9case driver passes8/fails1 per mode; successful nonstream retirement still exposed a new regression. Not accepted as preexisting deviation or ship-ready."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/textdecoder-nonstream-retirement-correction-agent/handoff/HANDOFF.json",
+          "sha256": "4b9ae98650cc80e74d6bb6b639d23c8949960c4659c4a4454d5d015e2c4d34d2",
+          "scope": "Final actual state owner corrects remaining regression; original/intermediate failures/versions remain unchanged, not relabeled passing."
+        },
+        {
+          "field": "$.preservedNonpasses[4]",
+          "report": ".context/node26-native220-maintenance/result.json",
+          "sha256": "f57da5623883cbc8921c63e169e5e16f5fc09efd5a4971534db55ae37398a360",
+          "scope": "CacheGC removed0entries because build lock held;1actual native xtask/runtime Cargo production build separately counted. Initial metadata recorder flat-artifact assumption failed before final record/state mutation, preserved as harness error."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/decoder-fatal-state-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/decoder-fatal-state-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Preserve established successful BOM state across streaming fatal conversion while retiring actual pending bytes/code point state",
+        "Capture rollback BOM after the real stream getter, retaining successful nested decode effects",
+        "Build actual current nonstream output before immediately retiring decoder state; fatal nonstream failure also retires rather than restoring stale BOM",
+        "Preserve original/intermediate newly introduced reentry regressions and integrate separate corrections before committing",
+        "Consume existing shared byte/state/optional-valid-UTF8 owners without native-host production delegation"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/decoder-fatal-state-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Full ICU/WHATWG encoding repertoire, constructors/options/input/brand/error/descriptor/prototype chronology",
+        "Concurrent/shared/detached/resizable/growable byte/GC/OOM/native conversion ownership",
+        "Complete TextDecoderStream/File/Fetch/Buffer integration and identified-artifact guest/four-host validation",
+        "All other WEB-008/public-core obligations; no API or family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/web-contracts.md",
+      "findingScope": "Partial real shared decoder stream/fatal/BOM/pending/nonstream-retirement behavior; full repertoire, input/options and guest/fourhost remain open.",
+      "additionalAuditDocuments": {}
+    },
+    "tty-output-publication": {
+      "document": "tests/nodejs/outline/tty-output-publication-finding-progress.json",
+      "sha256": "1ed353d70dfafe7acc280c8e14f3ac36e8bbf954c791e4df981b42426bd027f3",
+      "recordedRevision": 221,
+      "explicitFindingIds": [
+        "T-002",
+        "T-010"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tty221-source-r1/report.json",
+          "sha256": "4446d1fcaab44b1f4e6976b047f488bef27fb101c2a81dd3380f0fbce3f7ad4d",
+          "guardedInputs": 885,
+          "scope": "Captured TTY output construction/publication failures retire real extra owner and preserve original error/public fd;6native component cases, not guest queued close/public TTY/fourhost."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tty221-affected-r1.json",
+          "sha256": "7f6eddf2aa5c73a7c09001313f2bbb82a4be392c91920a82ae4733bd23184a75",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tty221-source-r1/report.json",
+          "sha256": "4446d1fcaab44b1f4e6976b047f488bef27fb101c2a81dd3380f0fbce3f7ad4d",
+          "actualNativePTYComponentGroups": 6,
+          "freshNativeRuntimeChildren": 1,
+          "reusedNativeCompileAttempts": 1,
+          "newRootCompilerAttempts": 0,
+          "actualCapturedOutputHeaderMatches": true,
+          "guestQueuedCloseExecuted": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "engineCXXChanged": false,
+          "scope": "Actual current generated values/fd/terminal factories and same native captured OutputHandle over real PTY. Native Writable/errors/NAPI/direct close are fixture boundaries, not SpiderMonkey queued-close or full public TTY conformance. Original baseline5nonpasses remain."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tty-output-publication-owner-agent/handoff/HANDOFF.json",
+          "sha256": "b708c90000d100fdce61ef2ff928cd7648629f904e895dbe93d5c06c5fc2a5f1",
+          "reusedEvidence": true,
+          "scope": "Original1successful native NAPI compile and4before/after runtime children; each baseline1pass5nonpasses/candidate6pass. Root fresh actual current generated after component6passes; no new root compile. Native direct close differs from guest queued-close execution."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/tty-output-publication-owner-agent/handoff/REPORT.md",
+          "sha256": "595bcbc9db78563262fa4f97780798a5e4bf81c4f0c97e7313ae885b7ec7e995",
+          "scope": "Original real-PTY baseline5nonpasses per run retained. Outer bindOutput, close-root OOM fallback, native-init escaped-owner rollback and broader TTY nonpasses remain explicit."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/tty-output-publication-review-agent/review.md",
+          "sha256": "097c9fe872e603fa1661e1aa6a0c14f1efce9e537ad245ef635a5574d6699ad4",
+          "scope": "Independent source review verified original59members and actual root/close/idempotence/retirement/inner catch without new blocker. No tests/builds/guest validation in review."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/tty-output-publication-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/tty-output-publication-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Wrap actual writable construction/options/bind/publication in rollback after native output acquisition",
+        "Expose existing native tty-output-close over the genuine opaque captured owner",
+        "Preserve original thrown identity even if cleanup also throws; never close borrowed public fd or replacement at that number",
+        "Retain successful write and pinned borrowed-stdio dummyDestroy lifetime policy",
+        "Use actual current generated factories and same production OutputHandle native component over real PTYs; no public constructor/queue facade"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/tty-output-publication-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual guest queued-close callbacks/async-hook/ref/lifecycle/GC/four-host conformance",
+        "Outer bootstrap bindOutput publication failure, close-root allocation failure fallback and native-init escaped-owner rollback",
+        "Real public TTY constructors/Socket kind/adoption, WriteWrap original-byte queues, partial/EAGAIN/shutdown/cancellation/errors",
+        "Other original T-002/T-010 and terminal/stdio/readline requirements; no finding/family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/terminal.md",
+      "findingScope": "Partial consumed captured-output initialization/lifetime prerequisite; public TTY constructors/method coverage and guest queued-close remain incomplete.",
+      "additionalAuditDocuments": {}
+    },
+    "buffer-view-json": {
+      "document": "tests/nodejs/outline/buffer-view-json-finding-progress.json",
+      "sha256": "2591a656564ee05a7358de14ab983578a83656ccc4caa70d90b262a1b0fd5524",
+      "recordedRevision": 222,
+      "explicitFindingIds": [
+        "V-030"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-buffer222-source-r1/report.json",
+          "sha256": "fde869f80f75e78930c3abdda4123ffc0967b34c9a7839ef704bce0c596407ba",
+          "guardedInputs": 885,
+          "scope": "Actual complete pinned Buffer JSON/adjustOffset/subarray/slice algorithms over real FastBuffer/backing owners;14native-dependent groups and2unchanged upstream files/native+candidate, not guest/fullBuffer/fourhost."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-buffer222-affected-r1.json",
+          "sha256": "6234d16512a8e05935e349e77402da70bbf3d4d076840a3528b89fdfa7397c8c",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-buffer222-source-r1/report.json",
+          "sha256": "fde869f80f75e78930c3abdda4123ffc0967b34c9a7839ef704bce0c596407ba",
+          "nativeDependentGroups": 14,
+          "unchangedUpstreamFiles": 2,
+          "upstreamSubjectsPassed": 4,
+          "upstreamSkips": 0,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "engineCXXChanged": false,
+          "scope": "Actual current pinned Buffer view/JSON installation over explicit native byte/value/codec/VM/brand dependencies; genuine shared-array aliases in fixture, not guest constructor/backing/realm/GC/fourhost proof."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/buffer-view-json-owner-agent/report.json",
+          "sha256": "89a8dbf55f50b2ebea8b4cdf8c212cdb90b2985e9aacb5e80a1f8bbf7d2ee9f8",
+          "reusedEvidence": true,
+          "scope": "14native-dependent groups vs4/14baseline,2unchanged upstream files/native+candidate and14source checks;0compiles. Independent1372member review finds no new verified production defect, no guest validation."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/buffer-view-json-owner-agent/report.json",
+          "sha256": "89a8dbf55f50b2ebea8b4cdf8c212cdb90b2985e9aacb5e80a1f8bbf7d2ee9f8",
+          "scope": "Original baseline10mismatch groups and3authored -2**40 syntax exits retained; parentheses correction changes control syntax only. Native fixture backing/realm/brand dependencies remain explicit."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/buffer-view-json-review-agent/REPORT.md",
+          "sha256": "1624470aeda3a649201546658fffce23cd149cff51cfd25c06f47f90478af80d",
+          "scope": "Independent read-only actual pinned section/installer/prototype/species/backing/realm review,0tests/builds and no new verified production blocker. Does not establish full Buffer/guest acceptance."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/buffer-view-json-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/buffer-view-json-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Consume complete unchanged pinned toJSON/adjustOffset/subarray/slice selection through the existing normal section installer",
+        "Use genuine Array/MathTrunc primordials and actual FastBuffer constructor/prototype/backing owners",
+        "Avoid public iterator/constructor/species during target operations while preserving required public buffer/offset/slice-dispatch chronology",
+        "Keep actual aliasing, error/coercion/descriptor and typed storage behavior rather than relabeling a generic view",
+        "Regenerate current combined source without new native registration, API pin or backing model change"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/buffer-view-json-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Full Buffer overload/codec/allocation/pool/transfer/shared-backing and public inherited method findings",
+        "Guest actual constructor/backing/CCW/realm/GC/OOM/resize/detach/concurrent storage and primitive behavior",
+        "Prototype mutation/inspection/error shape and complete public API inventory obligations",
+        "Identified-artifact Node/Chromium/Firefox/WebKit conformance; no API/family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/values-contracts.md",
+      "findingScope": "Partial actual Buffer inherited view/JSON/offset/dispatch behavior, not full overload/codec/backing/realm/GC/guest coverage.",
+      "additionalAuditDocuments": {}
     }
   },
   "dependencyNarratives": {
@@ -26155,6 +26457,25 @@
         "fourHostConformance": false,
         "individualApiClosure": false,
         "scope": "Actual shared Blob construction/slice, real public native/libc abort/Worker refusal and pinned circular CJS warning/cleanup with reviewed single-getter admission. Existing216kernel typecheck has explicit terminal-blank normalization; no current guest engine/kernel link or four-host acceptance."
+      },
+      {
+        "at": "2026-11-07T16:11:43.948065+00:00",
+        "sourceCheckpoint": 222,
+        "sourceHead": "8a4195364d4a050117547cb876648ad4be21d3bc",
+        "addedSourceSlices": [
+          "decoder-fatal-state",
+          "tty-output-publication",
+          "buffer-view-json"
+        ],
+        "latestAcceptedEngine": 200,
+        "currentCombinedEngineCompiled": false,
+        "currentKernelTypechecked": true,
+        "currentKernelLinked": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "scope": "Qualified source220decoder fatal/BOM/reentry/retirement, source221captured TTY output publication rollback and source222pinned Buffer view/JSON owners. Existing scoped controls and original/intermediate failures preserved. Metadata only; accepted200stale; no guest/four-host/API/family closure."
       }
     ]
   }

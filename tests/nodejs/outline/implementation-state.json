@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T16:03:07.713267+00:00",
+  "updatedAt": "2026-11-07T16:11:43.948065+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "2e3fb24bdf4d10d2e6460e45c895403c89e53623c54f7c431627317c63109622",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "2f4c83f19c414125a9686bcf26f442b1f28546c3c906db919d98072a3487010e",
-    "tests/nodejs/outline/finding-ledger.md": "74ff4facc50007e1c6620a91da1c4a3a2e4c3d851e4f8c69718823d7d34debdc",
+    "tests/nodejs/outline/finding-ledger.json": "abee8ad5b98af2d2ba004cf64f1dce689c3e06288d08904d926904d15ffb4c01",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "bbb41802c298b45d9bd1792df50707ef6a72cb8c5bd03a75bc54c668407faad1",
+    "tests/nodejs/outline/finding-ledger.md": "929153562c2d9982247122aa0727326fa65acf21e2535b3f82d70d931907c310",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -48587,10 +48587,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/buffer-view-json-20261107T151452Z.tar.gz",
-    "sha256": "f81dab845a120b94bf4a704e47a1a566ab9fa9f4aa22c51b1877b30aab335c5c",
-    "bytes": 37725566,
-    "scope": "222actual Buffer JSON/views selection/installer,14native-dependent groups/4unchanged upstream subjects, original failures/independent review; no guest/fullBuffer closure.",
+    "path": ".context/node26-implementation-snapshots/finding-overlay222-20261107T161144436988Z.tar.gz",
+    "sha256": "a77078bbef0277a5bf7ec024f1865dae80732f5e529d8452fcddbc5c76afe35f",
+    "bytes": 11647568,
+    "scope": "Current222qualified decoder-state/TTY-publication/Buffer-view finding links. Metadata only; no new runtime/compiler/closure.",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -58645,6 +58645,13 @@
       "sha256": "62622dddb5a1c52df9ce11a494eca5bdba615a814924893c1ced09e675988d1a",
       "bytes": 32696521,
       "scope": "221real captured-output rollback/current generated factories and6native PTY component groups, original failures/independent review, no guest queued-close/fourhost acceptance.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/buffer-view-json-20261107T151452Z.tar.gz",
+      "sha256": "f81dab845a120b94bf4a704e47a1a566ab9fa9f4aa22c51b1877b30aab335c5c",
+      "bytes": 37725566,
+      "scope": "222actual Buffer JSON/views selection/installer,14native-dependent groups/4unchanged upstream subjects, original failures/independent review; no guest/fullBuffer closure.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -115387,22 +115394,22 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "2e3fb24bdf4d10d2e6460e45c895403c89e53623c54f7c431627317c63109622",
+    "sha256": "abee8ad5b98af2d2ba004cf64f1dce689c3e06288d08904d926904d15ffb4c01",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "2f4c83f19c414125a9686bcf26f442b1f28546c3c906db919d98072a3487010e"
+      "sha256": "bbb41802c298b45d9bd1792df50707ef6a72cb8c5bd03a75bc54c668407faad1"
     },
-    "sourceCheckpoint": 219,
+    "sourceCheckpoint": 222,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 142,
+      "sourceSliceRecords": 145,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
-      "findingsWithoutExplicitOrProposedSourceSlice": 222
+      "findingsWithoutExplicitOrProposedSourceSlice": 221
     },
     "individualApiClosure": false,
     "fourHostConformance": false
@@ -116325,6 +116332,28 @@
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 225
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "2e3fb24bdf4d10d2e6460e45c895403c89e53623c54f7c431627317c63109622",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "2f4c83f19c414125a9686bcf26f442b1f28546c3c906db919d98072a3487010e"
+      },
+      "sourceCheckpoint": 219,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 142,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 222
       },
       "individualApiClosure": false,
       "fourHostConformance": false
