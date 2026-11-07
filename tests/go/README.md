@@ -176,7 +176,9 @@ contention through the same runner. To include the direct Kandelo
 them. Run the resulting `xsys-unix-test.wasm` in Node with the syscall
 runner and `^TestKandeloUnix`; set `KANDELO_XSYS_BROWSER_TESTS=1` alongside
 `KANDELO_GO_BROWSER_TESTS=1` for the three-browser probes. These cover
-mapped writeback, memory advice, lock contention, access checks, and a
+descriptor duplication (shared offsets, independent close, close-on-exec
+clearing and invalid-fd failure), mapped writeback, memory advice, lock
+contention, access checks, and a
 `SO_REUSEPORT` option round-trip. They do not prove duplicate-listener
 behavior or database durability.
 
@@ -413,6 +415,13 @@ scripts/dev-shell.sh bash -c 'prefix=$(cargo xtask build-deps --arch wasm32 reso
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_FRANKENPHP_CLASSIC_WASM="$(cd ../.. && cargo xtask build-deps --arch wasm32 resolve frankenphp-classic)/frankenphp-classic.wasm" npx playwright test test/frankenphp-classic.spec.ts --project=chromium --project=firefox --project=webkit --workers=1'
 ```
 
+The real Caddy package has a matching Node gate, including the shared
+concurrent lifetime/GC verifier and awaited normal exit:
+
+```sh
+scripts/dev-shell.sh bash -c 'node --import tsx packages/registry/frankenphp-caddy/test/run.ts "$(scripts/resolve-binary.sh programs/wasm32/frankenphp-caddy.wasm)" "$(scripts/resolve-binary.sh kernel.wasm)"'
+```
+
 The classic SAPI test checks static OPcache registration, compiles a PHP
 file, and checks that file-cache-only mode wrote its cache file. The
 WordPress browser-host test makes the same request-level check for classic
@@ -464,16 +473,18 @@ linking. `-ldl` selects the SDK's real Wasm dynamic-loader glue. This small
 probe does not prove PHP ZTS embedding or static OPcache request behavior.
 
 `cgo/mixed-struct` checks a C struct containing a pointer and a fixed
-pointer array, returned from C and passed back by value. On Kandelo/Wasm,
-generated Go struct fields that hold C addresses are 4-byte `uint32` values,
-not native Go pointers; explicit conversion is required to use a C-owned
-address. It also checks a packed 14-byte struct with an unaligned pointer
+pointer array, returned from C and passed back by value. On the current
+Kandelo/wasm32 target,
+generated fields use ordinary four-byte Go pointers matching the C ABI.
+The legacy mixed-width target represented them as `uint32` instead. It
+also checks a packed 14-byte struct with an unaligned pointer
 and 64-bit integer, returned from C and passed back by value. A bulk call
 passes 24 consecutive 12-byte pointer-bearing structs, with ordinary pointer
 arguments before and after them, and verifies every field and C pointee.
 The bulk test uses C-owned storage; it does not establish lifetime safety
-for Go-backed strings represented as raw C addresses. Do not store
-a Go-managed pointer in these raw fields. Build,
+for Go-backed strings. The actual FrankenPHP lifetime checks described
+above cover that separate boundary with typed Go roots and observed GC.
+Build,
 instrument, stamp, and run this focused probe with:
 
 ```sh

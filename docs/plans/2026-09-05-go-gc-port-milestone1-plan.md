@@ -1,15 +1,18 @@
 # Go `GOOS=kandelo` Port — Milestone 1 Implementation Plan
 
-## Current checkpoint — 2026-11-06
+## Current checkpoint — 2026-11-07
 
 **Active migration:** Go 1.28 development `kandelo/wasm32`, with matching
 four-byte Go/C pointers and eight-byte scalar alignment. Latest pushed Go
 source is
 [`a0b048e19e1b`](https://github.com/kandelo-dev/go/commit/a0b048e19e1b183db33f52d26c08d1c63b4f1c1d).
 Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
-Kandelo checkpoint `aa2fbad7b` is pushed to draft PR #1492; the subsequent
-application proof and dependency upgrade are being prepared for checkpoint.
-The full WordPress service goal remains unfinished.
+Kandelo checkpoint `beef7d811` is pushed to draft PR #1492, including the
+classic application proof and the selected upstream Caddy dependency upgrade.
+The full WordPress service goal remains unfinished. A maintainer decision
+is pending on evaluating a general iterative regexp traversal as an upstream
+candidate versus researching a general instrumentation transform. No such
+algorithm or compiler transformation is being implemented while pending.
 
 **Normal build integration:** the declared Nix Go 1.25.8 builds verified
 Go 1.26.10 source, which bootstraps the pinned Go 1.28 compiler. These are
@@ -115,11 +118,31 @@ or reflection port defect. Upstream fixed it in
 [caddyserver/caddy#7274](https://github.com/caddyserver/caddy/pull/7274).
 
 Both recipes now select released Caddy 2.11.9 containing that fix. Standalone
-Caddy revision 12 uses its verified source archive; FrankenPHP+Caddy
-revision 14 updates the pinned module using ordinary `go get`, leaving
-FrankenPHP source and Go's JSON defaults unchanged. Active normal build:
-`cargo-xtask-bootstrap-1106-235851-a08d`. Its compile/request results remain
-pending; the newer dependency graph can expose additional target-port APIs.
+Caddy revision 13 uses its verified source archive; FrankenPHP+Caddy
+revision 14 updated the pinned module using ordinary `go get`, leaving
+FrankenPHP source and Go's JSON defaults unchanged. Its normal build stopped
+on missing transitive `go.sum` entries (job
+`cargo-xtask-bootstrap-1106-235851-a08d`, 7m03s). Revision 15 adds the ordinary
+`go mod tidy` dependency refresh before compilation. That normal build
+(`cargo-xtask-bootstrap-1107-000615-e528`) stopped after 6m14s at the genuine
+missing `unix.Dup` target API. The Go fork already implements the kernel
+operation, so x/sys now delegates to it in pushed
+[`258047d84115`](https://github.com/kandelo-dev/sys/commit/258047d84115d79e9b594f61de9ec45caca492b3).
+Node verifies shared file offsets, independent close, close-on-exec clearing
+and EBADF. All four Unix cases and the pointer-aggregate/constructor/exit
+cases pass across three browsers (21/21, 44.3 seconds). Six corresponding
+Node aggregate/constructor/exit cases pass too. The first extra local fixture
+attempt inherited the target C compiler into host Rust; its corrected run
+is separately recorded. No guest defect or pass is inferred from that error.
+
+FrankenPHP+Caddy revision 16 and standalone Caddy revision 13 select the
+new x/sys pin. A maintained Node Caddy package test now covers PHP/static
+HTTP, static OPcache cache files, concurrent CGI/GC lifetimes and normal
+SIGTERM exit. It still needs to execute on the new published service.
+Active job `cargo-xtask-bootstrap-1107-001634-d8da` runs the normal
+revision-16 build, maintained Node Caddy test, normal go-hello revision-31
+build and VFS launch in that order. Collect each actual result; a later
+step does not execute if an earlier one fails.
 The standalone Caddy recipe has not yet been built on this target.
 
 **Layout and memory:** WordPress uses latest main's `/srv/www/html` layout;

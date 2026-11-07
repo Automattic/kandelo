@@ -91,6 +91,7 @@ stage_go_module certificate-transparency "$WASM_POSIX_BUILD_GIT_CERTIFICATE_TRAN
 # aliases (upstream caddyserver/caddy#7274). Upgrade the released dependency;
 # keep both application sources and the compiler's JSON defaults unchanged.
 (cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" get github.com/caddyserver/caddy/v2@v2.11.9)
+(cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" mod tidy)
 
 (cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" build -tags nowatcher \
     -o "$WORK_DIR/frankenphp-caddy.wasm" ./cmd/kandelo)

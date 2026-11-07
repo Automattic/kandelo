@@ -496,10 +496,10 @@ const probes: Probe[] = [
 
 if (process.env.KANDELO_XSYS_BROWSER_TESTS === "1") {
   probes.push({
-    name: "Kandelo x/sys/unix socket, mmap, access, and flock APIs",
+    name: "Kandelo x/sys/unix socket, mmap, access, flock and Dup APIs",
     file: "xsys-unix-test.wasm",
     argv: ["go-xsys-unix-test", "-test.run=^TestKandeloUnix", "-test.v"],
-    stdout: ["--- PASS: TestKandeloUnixMemory", "--- PASS: TestKandeloUnixSocketOption", "--- PASS: TestKandeloUnixFlockAccess", "PASS"],
+    stdout: ["--- PASS: TestKandeloUnixDup", "--- PASS: TestKandeloUnixMemory", "--- PASS: TestKandeloUnixSocketOption", "--- PASS: TestKandeloUnixFlockAccess", "PASS"],
     directories: ["/tmp"],
     imageCapacity: 8 * 1024 * 1024,
   });
@@ -582,7 +582,7 @@ if (process.env.KANDELO_GO_MAX_THREAD_SLOTS_TESTS === "1") {
 
 if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
   probes.push({
-    name: "mixed-width C pointer struct and by-value cgo call",
+    name: "C pointer-bearing structs and by-value cgo calls",
     file: "../go-cgo-mixed-struct-instrumented.wasm",
     argv: ["go-cgo-mixed-struct"],
     stdout: ["CGO MIXED STRUCT PASS"],
