@@ -53,6 +53,9 @@ function _createNodeTerminalPlatform(platform) {
             // Bind by output object, never by a public descriptor number that
             // can be closed/reused after native initialization.
             bind(output) { outputOwners.set(output, { owner }); },
+            // Failed publication retires the actual captured descriptor through
+            // its native queued-close owner, never the borrowed public fd.
+            close() { return platform.native.operatingSystem('tty-output-close', owner); },
             write(chunk) {
                 const result = platform.native.operatingSystem('tty-output-write', owner, chunk);
                 // Writable owns callback/drain/HWM behavior after the actual

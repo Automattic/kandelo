@@ -1,0 +1,84 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/terminal.md",
+    "findingIds": [
+      "T-002",
+      "T-010"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "terminal",
+      "streams",
+      "engine"
+    ],
+    "scope": "Partial consumed captured-output initialization/lifetime prerequisite; public TTY constructors/method coverage and guest queued-close remain incomplete."
+  },
+  "sourceImplemented": [
+    "Wrap actual writable construction/options/bind/publication in rollback after native output acquisition",
+    "Expose existing native tty-output-close over the genuine opaque captured owner",
+    "Preserve original thrown identity even if cleanup also throws; never close borrowed public fd or replacement at that number",
+    "Retain successful write and pinned borrowed-stdio dummyDestroy lifetime policy",
+    "Use actual current generated factories and same production OutputHandle native component over real PTYs; no public constructor/queue facade"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tty221-source-r1/report.json",
+    "sha256": "4446d1fcaab44b1f4e6976b047f488bef27fb101c2a81dd3380f0fbce3f7ad4d",
+    "guardedInputs": 885,
+    "scope": "Captured TTY output construction/publication failures retire real extra owner and preserve original error/public fd;6native component cases, not guest queued close/public TTY/fourhost."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tty221-affected-r1.json",
+    "sha256": "7f6eddf2aa5c73a7c09001313f2bbb82a4be392c91920a82ae4733bd23184a75",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tty221-source-r1/report.json",
+    "sha256": "4446d1fcaab44b1f4e6976b047f488bef27fb101c2a81dd3380f0fbce3f7ad4d",
+    "actualNativePTYComponentGroups": 6,
+    "freshNativeRuntimeChildren": 1,
+    "reusedNativeCompileAttempts": 1,
+    "newRootCompilerAttempts": 0,
+    "actualCapturedOutputHeaderMatches": true,
+    "guestQueuedCloseExecuted": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "engineCXXChanged": false,
+    "scope": "Actual current generated values/fd/terminal factories and same native captured OutputHandle over real PTY. Native Writable/errors/NAPI/direct close are fixture boundaries, not SpiderMonkey queued-close or full public TTY conformance. Original baseline5nonpasses remain."
+  },
+  "sealedEvidence": {
+    "report": ".context/tty-output-publication-owner-agent/handoff/HANDOFF.json",
+    "sha256": "b708c90000d100fdce61ef2ff928cd7648629f904e895dbe93d5c06c5fc2a5f1",
+    "reusedEvidence": true,
+    "scope": "Original1successful native NAPI compile and4before/after runtime children; each baseline1pass5nonpasses/candidate6pass. Root fresh actual current generated after component6passes; no new root compile. Native direct close differs from guest queued-close execution."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tty-output-publication-owner-agent/handoff/REPORT.md",
+      "sha256": "595bcbc9db78563262fa4f97780798a5e4bf81c4f0c97e7313ae885b7ec7e995",
+      "scope": "Original real-PTY baseline5nonpasses per run retained. Outer bindOutput, close-root OOM fallback, native-init escaped-owner rollback and broader TTY nonpasses remain explicit."
+    },
+    {
+      "report": ".context/tty-output-publication-review-agent/review.md",
+      "sha256": "097c9fe872e603fa1661e1aa6a0c14f1efce9e537ad245ef635a5574d6699ad4",
+      "scope": "Independent source review verified original59members and actual root/close/idempotence/retirement/inner catch without new blocker. No tests/builds/guest validation in review."
+    }
+  ],
+  "remaining": [
+    "Actual guest queued-close callbacks/async-hook/ref/lifecycle/GC/four-host conformance",
+    "Outer bootstrap bindOutput publication failure, close-root allocation failure fallback and native-init escaped-owner rollback",
+    "Real public TTY constructors/Socket kind/adoption, WriteWrap original-byte queues, partial/EAGAIN/shutdown/cancellation/errors",
+    "Other original T-002/T-010 and terminal/stdio/readline requirements; no finding/family closure"
+  ],
+  "at": "2026-11-07T15:08:49.681702+00:00",
+  "recipeRevision": 221,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

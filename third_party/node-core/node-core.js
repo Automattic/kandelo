@@ -50894,6 +50894,9 @@ WriteStream.prototype.getWindowSize = function() {
             // Bind by output object, never by a public descriptor number that
             // can be closed/reused after native initialization.
             bind(output) { outputOwners.set(output, { owner }); },
+            // Failed publication retires the actual captured descriptor through
+            // its native queued-close owner, never the borrowed public fd.
+            close() { return platform.native.operatingSystem('tty-output-close', owner); },
             write(chunk) {
                 const result = platform.native.operatingSystem('tty-output-write', owner, chunk);
                 // Writable owns callback/drain/HWM behavior after the actual
@@ -89592,7 +89595,8 @@ function _createNodeFdStreamPlatform(platform) {
         // The generic async operation owns copied bytes through readiness
         // waits. Writable owns serialization, HWM, drain,
         // encoding, callback-once and end/final/error state above that seam.
-        const result = new Writable({
+        let result;
+        try { result = new Writable({
             ...options,
             write(chunk, encoding, callback) {
                 if (terminalOutput) {
@@ -89616,6 +89620,13 @@ function _createNodeFdStreamPlatform(platform) {
         // but fd 1/2 remain open and the JS stream can be used again.
         result._destroy = dummyDestroy;
         return result;
+        } catch (error) {
+            // Preserve the original construction/publication exception. A
+            // failed new Writable or later setter/bind must not abandon its
+            // already-captured native TTY descriptor until a future GC.
+            try { if (terminalOutput) terminalOutput.close(); } catch (_) {}
+            throw error;
+        }
     }
 
     function readable(fd, options, onRetire) {

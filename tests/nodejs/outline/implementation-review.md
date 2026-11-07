@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source221 retires real captured TTY output on failed inner writable publication.6real-PTY component groups pass; successful stdio lifetime is preserved. Native direct-close evidence is not guest queued-close or full TTY conformance.
+See [source scope](tty-output-publication-integration.md).
+
 Source220 corrects actual decoder fatal/reentry/nonstream state ownership. Two independently exposed proposal regressions are fixed before integration;29groups in two component modes and4unchanged focused upstream files×3subjects pass. Full encoding and guest/four-host conformance remain open.
 See [source scope](decoder-fatal-state-integration.md).
 
