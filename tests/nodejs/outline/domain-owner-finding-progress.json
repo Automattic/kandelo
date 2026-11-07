@@ -1,0 +1,92 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/async.md",
+    "findingIds": [
+      "A-006"
+    ],
+    "relatedFamilies": [
+      "async",
+      "processes",
+      "filesystem",
+      "engine",
+      "loading"
+    ],
+    "scope": "Complete public Domain algorithms plus bounded native invocation consumers, not all Domain/provider/Promise/GC/fatal obligations or finding closure"
+  },
+  "sourceImplemented": [
+    "Lazy actual public Domain loading preserves full pinned class/factory/stack/membership/bind/intercept/error/nesting and process-domain algorithms over genuine shared owners",
+    "Reuse exact weak-reference helper with actual weak/refcounted callback lifetime rather than a permanent strong domain map",
+    "Actual native context-rooted trampoline/gate registration is explicitly forwarded/exported and reads real before/after counts/execution-resource usage",
+    "Shared native MakeCallback invocation seam preserves current actual execution ID, receiver/arguments/failure ownership; real FS/stat consumers route through it while histogram internal direct resolver stays distinct",
+    "Compose0132registration over174VM engine postimage and preserve175SQLite/176HTTP/177Net current sources and immutable URL helper"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-domain178-source-r1/report.json",
+    "sha256": "0790c20b0f00a9924659dae45b5625732727346a8fbe85deb018ee32fad57ef3",
+    "guardedInputs": 799,
+    "scope": "Current fullunchangedDomain/realMakeCallback source with targeted unchangedupstream and actualAsync/fatal component; production178JSAPI/guest/fourhost unestablished."
+  },
+  "packageChecks": {
+    "report": ".context/node26-domain178-affected-r1.json",
+    "sha256": "bb9ddb1c96067a2110325f4ff0606bfe4a5289ef9c7f19dec9d4661696b522e9",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-domain178-source-r1/report.json",
+    "sha256": "0790c20b0f00a9924659dae45b5625732727346a8fbe85deb018ee32fad57ef3",
+    "unchangedUpstreamProcesses": 24,
+    "actualAsyncFatalGroups": 4,
+    "newNativeCompilerAttempts": 0,
+    "productionSMExecuted": false,
+    "scope": "Complete candidateDomain over native26 dependencies plus current candidateAsync/fatal algorithms over exact reused portable execution owner; production native roots/zero-ID/Promise/GC/fatal-exit/guest unvalidated"
+  },
+  "sealedEvidence": {
+    "report": ".context/domain-owner-agent/HANDOFF.json",
+    "sha256": "236e6ca0c38a713665e8d01e7e49b897bc1f39c924a644c8e5e34fc193ca6848",
+    "reusedEvidence": true,
+    "scope": "33source checks,24unchanged upstream source-component processes and4actual Async/fatal portable-owner groups; private two-input closure failure retained, root declares actual sources"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/domain-owner-agent/bundle-r1.stderr",
+      "sha256": "27f65d77cafb895176acd54a1cbf61b8095e5d965683d31d8c3d52683c474aa4",
+      "kind": "private-filename-collision",
+      "reason": "Initial writer replaced separate URL helper; failure caught missing marker. URL helper restored exactly and distinct domain-owner-adapter.js used."
+    },
+    {
+      "report": ".context/domain-owner-agent/upstream-r1.stderr",
+      "sha256": "10920f60334c8621e46b0ccf3027bad1281c2ad5199bfd7e595ae37e245a814b",
+      "kind": "explicit-stale-bundle-preflight",
+      "reason": "No unchanged case ran until generated source existed; retained failed preparation."
+    },
+    {
+      "report": ".context/domain-owner-agent/verify-r1.stderr",
+      "sha256": "00dcb275af835769dc61e53a97e59200b9d97c3b078e80fa956d74a4c206a86c",
+      "kind": "missing-authentic-style-checker-in-private-staging",
+      "reason": "Real source173checker fixture copied, not stubbed/relaxed. Subsequent normal source staging passed."
+    },
+    {
+      "report": ".context/domain-owner-agent/input-declarations-unintegrated.stdout",
+      "sha256": "6f3aa608f2d2e7f1a581b093923b907adbc9802b1c0e5335cd8e7fc4a27bf305",
+      "kind": "private-missing-two-input-declarations",
+      "reason": "Private declaration check genuinely failed. Root declares domain-owner-adapter.js and complete upstream/domain.js and checks current closure."
+    }
+  ],
+  "remaining": [
+    "ProductionJSAPI/trampoline/root/security/realm/OOM/GC/fatal/reentry/teardown and real legacy zero-ID MakeCallback validation",
+    "All native MakeCallback consumers/provider identities, native Promise-hook activation/registration, foreignVM/weakGC/Worker lifecycle and remaining unchanged publicDomain cases",
+    "Actual abort/report/auxiliary capture/REPL policy, incomplete resource providers and four-host identified-artifact conformance"
+  ],
+  "at": "2026-11-07T04:03:36.414206+00:00",
+  "recipeRevision": 178,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -56,6 +56,25 @@ class KandeloCallbackHost {
     }
     cx_->kandeloAsyncContext() = prior_;
   }
+  bool Call(JS::HandleValue callback, const JS::HandleValueArray& arguments,
+            JS::MutableHandleValue result) {
+    // This is the MakeCallback invocation seam, not InternalCallbackScope's
+    // direct resolver path. Actual nonzero owners retain existing hook logic.
+    if (lifetime_->execution.Id() != 0 || !lifetime_->domainTrampoline.initialized() ||
+        !lifetime_->domainTrampoline)
+      return JS::Call(cx_, resource_, callback, arguments, result);
+    RootedValue gate(cx_, ObjectValue(*lifetime_->domainTrampolineGate));
+    RootedValue trampoline(cx_, ObjectValue(*lifetime_->domainTrampoline));
+    if (!JS_WrapValue(cx_, &gate) || !JS_WrapValue(cx_, &trampoline)) return false;
+    RootedValue active(cx_);
+    if (!JS::Call(cx_, resource_, gate, JS::HandleValueArray::empty(), &active)) return false;
+    if (!JS::ToBoolean(active)) return JS::Call(cx_, resource_, callback, arguments, result);
+    RootedValueVector values(cx_);
+    if (!values.append(callback)) { JS_ReportOutOfMemory(cx_);return false; }
+    for (size_t i = 0; i < arguments.length(); ++i)
+      if (!values.append(arguments[i])) { JS_ReportOutOfMemory(cx_);return false; }
+    return JS::Call(cx_, resource_, trampoline, values, result);
+  }
   bool Checkpoint() { return KandeloPerformCallbackCheckpoint(cx_); }
 };
 class KandeloNativeCallbackScope {
@@ -66,6 +85,8 @@ class KandeloNativeCallbackScope {
       : host_(cx, resource, frame), scope_(host_) {}
   bool Enter() { return scope_.Enter(); }
   bool Stopped() const { return scope_.Stopped(); }
+  bool Call(JS::HandleValue callback, const JS::HandleValueArray& arguments,
+            JS::MutableHandleValue result) { return host_.Call(callback, arguments, result); }
   bool Close() { return scope_.Close(); }
   bool Fail() { return scope_.Close(false); }
 };

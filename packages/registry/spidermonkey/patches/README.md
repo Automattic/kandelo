@@ -514,3 +514,11 @@ execution unwinds, in its target realm. Preserve independent shell/worker
 cancellation, OOM and forced-return ownership. This patch is a source slice;
 actual engine interrupt races and the watchdog wait-failure reentry edge
 remain unvalidated/incomplete. No guest or four-host closure is claimed.
+
+### 0132: actual Domain callback registration
+
+Expose the real context-rooted Domain callback and activation predicate to
+the curated native adapter. The owning native callback seam consults the
+actual execution ID and preserves the distinction between MakeCallback and
+an internal direct resolver. This registration is a source prerequisite;
+production JSAPI/zero-ID/Promise/GC/fatal/realm behavior remains unvalidated.

@@ -8,10 +8,10 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "a8b206f19835555ff09eb661643a49f46dd08595f1f20064c34190079365f552",
+    "packages/registry/node-compat/bootstrap.js": "ed24db4063e0adfb6737d50c652aadc3d6693c37993b50e7c2a4510572815773",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
-    "third_party/node-core/async-platform-adapter.js": "2b4311bb7771028882a70bcf432bc1ebb887dcce9f75786ba7df896850a01022",
+    "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
     "third_party/node-core/buffer-bytes-adapter.js": "b73d5e43885582c9d25be752d8c4211a796b904412d2b824be4162e7b3dbd68a",
     "third_party/node-core/buffer-codecs-adapter.js": "de9373d9f1ab96f82dc3f9087a7d4e5a66db9cf997f83986ac14076f0ae9a552",
     "third_party/node-core/buffer-constructor-adapter.js": "2074bd8ba330ce3450d65bc6b09a965c85679adc6a33c79bfd409d5149375da1",
@@ -32,6 +32,7 @@
     "third_party/node-core/dir-platform-adapter.js": "e81a92a6d67675594586955e455768e7d97bd7a4b4bd3d131a98d6db0b8a1ba4",
     "third_party/node-core/directory-platform-adapter.js": "ede79cdb078e896cc29adf8c0dd0de571863d6bc20ee1b3e7e29ac1268991646",
     "third_party/node-core/dns-lookup-platform-adapter.js": "e8c7e8180cb229944b838abc7e5f2d3d605f51d69cfb21a4d6c7eab6937c8e8a",
+    "third_party/node-core/domain-owner-adapter.js": "6f4103cc8ad53a0a77e81ec1306b1d236279326174eb72d2c5219e3039d3769d",
     "third_party/node-core/domain-platform-adapter.js": "79e745f8827b7d0420336262b4496bfeea31c0f045d71f9bf1a6abb05b8f3964",
     "third_party/node-core/dotenv-platform-adapter.js": "2b88d630708168641b9b852a6cc969bd7a655c3a5468b89eae03005df4681f23",
     "third_party/node-core/event-loop-delay-platform-adapter.js": "37ed94c3eb86ecda79c69f3ac563d5878bf2e965741ca3f45b1ef15c8510728f",

@@ -1,0 +1,10 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4035,6 +4035,7 @@
+       JS_FN("hasAsyncExecution", KandeloNativeHasAsyncExecution, 0, 0),
+       JS_FN("executionAsyncResource", KandeloNativeAsyncExecutionResource, 0, 0),
+       JS_FN("setUncaughtProcess", KandeloNativeSetUncaughtProcess, 1, 0),
++      JS_FN("setDomainTrampoline", KandeloNativeSetDomainTrampoline, 2, 0),
+       JS_FN("allocateAsyncId", KandeloNativeAllocateAsyncId, 0, 0),
+       JS_FN("getDefaultTriggerAsyncId", KandeloNativeGetDefaultTriggerAsyncId, 0, 0),
+       JS_FN("swapDefaultTriggerAsyncId", KandeloNativeSwapDefaultTriggerAsyncId, 1, 0),

@@ -2,6 +2,9 @@ script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
   "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch",
   "packages/registry/spidermonkey/patches/0131-node-vm-execution-deadlines.patch",
+  "packages/registry/spidermonkey/patches/0132-node-domain-callback-owner.patch",
+  "third_party/node-core/domain-owner-adapter.js",
+  "third_party/node-core/upstream/domain.js",
   "third_party/node-core/datagram-platform-adapter.js",
   "third_party/node-core/datagram-sources.json",
   "third_party/node-core/datagram-operations.h",
@@ -624,4 +627,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 177
+revision = 178

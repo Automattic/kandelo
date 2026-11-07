@@ -6896,3 +6896,7 @@ Source176 extends the single actual llhttp owner to request framing and preserve
 ### Generic Server receiver and captured listener ownership
 
 Source177 initializes the actual supplied inheriting net.Server receiver, using unchanged pinned public option/field segments. Actual active listeners retain distinct private captured fd/generation/ref owners across receiver reinitialization. Existing real TCP/accepted-socket/native option owners remain authoritative. Full opaque listener/worker/fork/fatal/HTTP and four-host behavior remain open. See [source scope](../tests/nodejs/outline/net-server-receiver-integration.md).
+
+### Domain ownership and real callback invocation
+
+Source178 loads the complete pinned Domain algorithms on actual public module demand. The owning async state roots its callback and activation predicate; the shared native MakeCallback invocation seam consults actual execution ID and distinguishes internal direct resolvers. Existing FS/stat callbacks consume this seam. Native JSAPI/legacy zero-ID/Promise/GC/fatal/realm and guest behavior remain unvalidated. See [source scope](../tests/nodejs/outline/domain-owner-integration.md).

@@ -535,6 +535,17 @@ diagnostics_raw = (root / diagnostics_item['source']['path']).read_bytes()
 if hashlib.sha256(diagnostics_raw).hexdigest() != diagnostics_item['source']['sha256']:
     raise ValueError('Node diagnostics source hash mismatch')
 diagnostics_weak = filesystem_sections(diagnostics_item['weakReference'])['WeakReference']
+domain_item = manifest['domainPlatform']['source']
+domain_raw = (root / domain_item['path']).read_bytes()
+if hashlib.sha256(domain_raw).hexdigest() != domain_item['sha256']:
+    raise ValueError('Domain complete source identity mismatch')
+domain_adapter = (root / 'domain-owner-adapter.js').read_text()
+for marker, content in [('NODE_DOMAIN_WEAK_REFERENCE', diagnostics_weak), ('NODE_DOMAIN_MODULE', domain_raw.decode('utf8'))]:
+    token = '/* ' + marker + ' */'
+    if domain_adapter.count(token) != 1: raise ValueError('Review Domain owner marker: ' + marker)
+    domain_adapter = domain_adapter.replace(token, content)
+bundle += domain_adapter + '\n'
+
 diagnostics_adapter = (root / 'diagnostics-platform-adapter.js').read_text()
 for marker, replacement in [
     ('/* NODE_DIAGNOSTICS_WEAK_REFERENCE */', diagnostics_weak),

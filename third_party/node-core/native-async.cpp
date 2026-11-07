@@ -59,6 +59,8 @@ struct KandeloNativeAsyncState {
   unsigned callbackDepth = 0;  // Owning-context scopes, including checkpoint jobs.
   KandeloExecutionStack execution;
   JS::PersistentRootedObject process;
+  JS::PersistentRootedObject domainTrampoline;
+  JS::PersistentRootedObject domainTrampolineGate;
   // Environment anchor in the process realm; foreign realm globals are weak
   // keys, so TCP prototypes do not keep otherwise-dead realms alive.
   JS::PersistentRootedObject socketPrototypes;
@@ -165,6 +167,18 @@ static bool KandeloNativeAsyncExecutionResource(JSContext* cx, unsigned argc, Va
   if (state && state->execution.Top()) args.rval().setObject(*state->execution.Top()->resource);
   else args.rval().setUndefined();
   return JS_WrapValue(cx, args.rval());
+}
+static bool KandeloNativeSetDomainTrampoline(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  if (!args.get(0).isObject() || !JS::IsCallable(&args[0].toObject()) ||
+      !args.get(1).isObject() || !JS::IsCallable(&args[1].toObject())) {
+    JS_ReportErrorASCII(cx, "Domain trampoline requires its actual callback and hook predicate");return false;
+  }
+  auto* state = KandeloGetNativeAsyncState(cx);if (!state) return false;
+  if (!state->domainTrampoline.initialized()) state->domainTrampoline.init(cx);
+  if (!state->domainTrampolineGate.initialized()) state->domainTrampolineGate.init(cx);
+  state->domainTrampoline = &args[0].toObject();state->domainTrampolineGate = &args[1].toObject();
+  args.rval().setUndefined();return true;
 }
 static bool KandeloNativeSetUncaughtProcess(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -295,6 +309,8 @@ static void KandeloShutdownNativeAsync(ShellContext* sc) {
   state->trackingDestroy = false;
   state->execution.Clear();
   state->socketPrototypes.reset();
+  state->domainTrampoline.reset();
+  state->domainTrampolineGate.reset();
   state->process.reset();
   state->destroyIds.clearAndFree();
   state->retryIds.clearAndFree();

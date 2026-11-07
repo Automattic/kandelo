@@ -252,7 +252,7 @@ struct KandeloFsWork : js::shell::KandeloNativeWork {
         RootedValue oncomplete(cx);
         JS::RootedValueArray<1> rejected(cx); rejected[0].set(exception);
         if (!JS_GetProperty(cx, resource, "oncomplete", &oncomplete) ||
-            !JS_CallFunctionValue(cx, resource, oncomplete, rejected, &ignored)) return scope.Fail();
+            !scope.Call(oncomplete, rejected, &ignored)) return scope.Fail();
       }
     } else if (operation == Operation::CloseHandle || state->kind == FsResourceKind::Promise) {
       RootedObject promise(cx, &JS::GetReservedSlot(resource, FsRequestPromise).toObject());
@@ -272,7 +272,7 @@ struct KandeloFsWork : js::shell::KandeloNativeWork {
       }
     } else {
       if (succeeded && !ResultValue(cx, arguments[2])) return scope.Fail();
-      if (!JS_CallFunctionValue(cx, resource, callback, arguments, &ignored)) return scope.Fail();
+      if (!scope.Call(callback, arguments, &ignored)) return scope.Fail();
     }
     return scope.Close();
   }

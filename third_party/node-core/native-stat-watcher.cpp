@@ -117,7 +117,7 @@ static void KandeloStatWatcherChanged(StatPoll::uv_fs_poll_t* handle,int status,
   bool ok=true;
   if(!scope.Stopped()){
     JS::RootedValueArray<2> argv(cx);argv[0].setInt32(status);argv[1].setObject(*stats);RootedValue result(cx);
-    ok=JS::Call(cx,owner,callback,argv,&result);
+    ok=scope.Call(callback,argv,&result);
   }
   loop->ok=ok ? scope.Close() : scope.Fail();
 }
@@ -179,7 +179,7 @@ static void KandeloStatWatcherClosed(StatPoll::uv_fs_poll_t* handle) {
   if(callback.isObject() && JS::IsCallable(&callback.toObject()) && loop->ok){
     RootedValue frame(cx,JS::GetReservedSlot(owner,StatWatcherFrame));KandeloNativeCallbackScope scope(cx,owner,frame);
     if(!scope.Enter())loop->ok=false;
-    else{bool ok=true;if(!scope.Stopped()){RootedValue result(cx);ok=JS::Call(cx,owner,callback,JS::HandleValueArray::empty(),&result);}loop->ok=ok ? scope.Close() : scope.Fail();}
+    else{bool ok=true;if(!scope.Stopped()){RootedValue result(cx);ok=scope.Call(callback,JS::HandleValueArray::empty(),&result);}loop->ok=ok ? scope.Close() : scope.Fail();}
   }
   state->Retire();state->root.reset();
 }

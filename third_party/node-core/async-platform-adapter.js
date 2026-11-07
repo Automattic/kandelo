@@ -26,6 +26,7 @@ function _createNodeAsyncPlatform(platform) {
     const promise_resolve_symbol = Symbol('promiseResolve');
     const kNoPromiseHook = Symbol('kNoPromiseHook');
     let hooksFatal = false;
+    let executionResourceAccessed = false;
     const state = () => platform.native.getAsyncContext() ?? root;
     const setState = value => platform.native.setAsyncContext(value);
     const frame = () => state().frame;
@@ -344,6 +345,7 @@ function _createNodeAsyncPlatform(platform) {
     function executionAsyncId() { executionState(); return platform.native.executionAsyncId(); }
     function triggerAsyncId() { executionState(); return platform.native.triggerAsyncId(); }
     function executionAsyncResource() {
+        executionResourceAccessed = true;
         executionState();  // Preserve the untracked-entry guard.
         const resource = platform.native.executionAsyncResource() ?? root.resource;
         // Like pinned lookupPublicResource(rawResource), resolve the current
@@ -369,7 +371,16 @@ function _createNodeAsyncPlatform(platform) {
         AsyncResource,
     };
     modules.set('async_hooks', api);
-    return { api, validators, frame: AsyncContextFrame, enabledHooksExist,
+    const domain = {
+        useDomainTrampoline(callback) {
+            // Same real activation predicate as MakeCallback: before/after
+            // hooks or an observed executionAsyncResource() use. The private
+            // predicate reads the owning hook registry, never fabricated flags.
+            platform.native.setDomainTrampoline(callback, () =>
+                async_hook_fields[kBefore] + async_hook_fields[kAfter] > 0 || executionResourceAccessed);
+        },
+    };
+    return { api, validators, frame: AsyncContextFrame, enabledHooksExist, domain,
         symbols: { owner_symbol, async_id_symbol, trigger_async_id_symbol },
         createTask, runTask, retireTask, enqueueTick, drainTicks, drainDestroys, runInternalImmediate, defaultTriggerAsyncIdScope,
         hasTicks: () => tickCursor < tickQueue.length,

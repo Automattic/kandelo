@@ -5716,5 +5716,14 @@
       }
     },
     "scope": "Unchanged public option/validation/field segments and receiver guard, genuine current per-listener ownership; no fake Node handle/Worker transfer metadata. Transfer remains blocked until its actual owner exists."
+  },
+  "domainPlatform": {
+    "source": {
+      "path": "upstream/domain.js",
+      "upstreamPath": "lib/domain.js",
+      "sha256": "929feafebae8bb251c3980a4fd2c25d90185de8c53fb6d4d13f5444eb13d4a30"
+    },
+    "weakReference": "Reuse exact diagnosticsPlatform.weakReference source selection; actual engine WeakRef with refcounted strong callback lifetime",
+    "scope": "Full unchanged Domain algorithms over actual EventEmitter/AsyncHook/process fatal owners; native zero-ID MakeCallback trampoline is separately routed, no guest/provider/Promise/GC completion claim"
   }
 }

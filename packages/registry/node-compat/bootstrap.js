@@ -5048,6 +5048,7 @@ const _nodeLocksPlatform = _createNodeLocksPlatform({
 globalThis.__kandeloDispatchLocks = _nodeLocksPlatform.dispatch;
 
 
+let _nodeDomain;
 const _builtinModules = {
     'path': path,
     'events': events,
@@ -5098,6 +5099,9 @@ const _builtinModules = {
     },
     'console': _nodeConsolePlatform.api,
     'async_hooks': _nodeAsyncPlatform.api,
+    get domain() { return _nodeDomain ??= _createNodeDomainPlatform({
+        process, events, values: _nodeValues, async: _nodeAsyncPlatform,
+    }); },
     'diagnostics_channel': _nodeDiagnostics.api,
     'v8': {
         // Only the configured engine GC budget is measured here. The other

@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source178 integrates full unchanged public Domain and a real bounded native MakeCallback seam.24unchanged upstream source-component executions,4actual Async/fatal groups and14package checks pass; productionJSAPI/guest/fourhost remain unestablished.
+See [source scope](domain-owner-integration.md).
+
 Source177 integrates actual net.Server supplied-receiver and captured-listener ownership. Current10native/11candidate groups,7actual accepts and existing4scenario/12connection regression plus14package checks pass. ProductionSM/guest/fourhost remain unestablished.
 See [source scope](net-server-receiver-integration.md).
 
