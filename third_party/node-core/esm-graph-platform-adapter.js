@@ -192,5 +192,17 @@ function _createNodeESMGraphPlatform(platform) {
         try { slot.value = translate(rec, loaded); slot.state = 1; }
         catch (error) { sources.delete(rec.key); throw error; }
     }
-    return { canonical, resolve, record, load, failed, prepare };
+    async function importURL(specifier, attributes = empty) {
+        // Public runner entries/global setup already supply absolute file URLs.
+        // Pass that original identifier once through the actual native graph;
+        // resolving it here too would run user hooks twice with a changed parent.
+        const identifier = P.String(specifier);
+        const parsed = URLParse(identifier);
+        if (parsed === null || parsed.protocol !== 'file:')
+            throw new ERR_METHOD_NOT_IMPLEMENTED('Module import with non-file-URL referrer/specifier');
+        if (ObjectKeys(attributes).length !== 0)
+            throw new ERR_METHOD_NOT_IMPLEMENTED('Module import attributes bridge');
+        return platform.native.importModule(identifier);
+    }
+    return { canonical, resolve, record, load, failed, prepare, importURL };
 }

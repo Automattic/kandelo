@@ -49,5 +49,5 @@ function _createNodeGlobPlatform(platform) {
         /* NODE_GLOB_PROMISES */
         return { glob };
     }
-    return { api: publicAPIs(), promises: promiseAPIs() };
+    return { api: publicAPIs(), promises: promiseAPIs(), require };
 }

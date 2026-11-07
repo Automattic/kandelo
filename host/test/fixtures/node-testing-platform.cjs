@@ -21,6 +21,10 @@ const candidate = process.argv[3] === 'native-reference' ? { api: nativeTest, re
   events: require('node:events'), abort: require('internal/abort_controller'), async: require('node:async_hooks'),
   timers: require('node:timers'), timerPromises: require('node:timers/promises'),
   path, fs, fsUtils: require('internal/fs/utils'), os: require('node:os'),
+  glob: require('internal/fs/glob'), console,
+  getModuleResolver: require('internal/modules/esm/loader').getOrInitializeCascadedLoader,
+  importModule: (specifier, parentURL, attributes) =>
+    require('internal/modules/esm/loader').getOrInitializeCascadedLoader().import(specifier, parentURL, attributes),
   url: require('internal/url'), Module: require('node:module'), vm: require('node:vm'),
   diagnostics: require('node:diagnostics_channel'), queueMicrotask,
   stream: require('node:stream'), streamRequire: require, getOptionValue: require('internal/options').getOptionValue,

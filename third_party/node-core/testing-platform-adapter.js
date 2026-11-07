@@ -12,9 +12,6 @@ function _createNodeTestingPlatform(platform) {
         const error = new Error('Node testing owner is not implemented: ' + name);
         error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
     }
-    modules.set('internal/test_runner/runner', {
-        exports: { run: () => unavailable('test discovery/isolation/runner') },
-    });
     const { getDeprecationWarningEmitter } = platform.values.util;
     /* NODE_TEST_DEPRECATE_PROPERTY */
     const helpers = { ...platform.values.util, deprecateProperty,
@@ -35,10 +32,16 @@ function _createNodeTestingPlatform(platform) {
         ['internal/assert/utils', platform.assertUtils],
         ['internal/timers', { TIMEOUT_MAX: 2147483647 }],
         ['internal/fs/utils', platform.fsUtils],
+        ['internal/fs/glob', platform.glob],
+        ['internal/console/global', platform.console],
         ['internal/options', { getOptionValue: platform.getOptionValue }],
         ['internal/url', platform.url],
         ['internal/modules/cjs/loader', { Module: platform.Module }],
-        ['internal/modules/esm/loader', { getOrInitializeCascadedLoader: platform.getModuleResolver }],
+        ['internal/modules/esm/loader', { getOrInitializeCascadedLoader() {
+            const resolver = platform.getModuleResolver();
+            return { resolveSync: (...args) => resolver.resolveSync(...args),
+                import: platform.importModule };
+        } }],
         ['internal/modules/customization_hooks', { registerHooks: platform.Module.registerHooks }],
         ['internal/process/task_queues', { queueMicrotask: platform.queueMicrotask }],
         ['process', process], ['assert', platform.assert], ['path', platform.path], ['fs', platform.fs],
@@ -50,6 +53,10 @@ function _createNodeTestingPlatform(platform) {
     function require(name) {
         if (bindings.has(name)) return bindings.get(name);
         if (modules.has(name)) return modules.get(name).exports;
+        if (name === 'internal/test_runner/runner') {
+            const exports = _createNodeTestingRunner({ require, primordials, internalBinding, process });
+            modules.set(name, { exports }); return exports;
+        }
         if (name === 'test') name = 'test-public';
         if (name === 'test/reporters') name = 'test-reporters-public';
         if (modules.has(name)) return modules.get(name).exports;

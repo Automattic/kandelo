@@ -189,6 +189,8 @@ inputs = [
   "third_party/node-core/performance-observer-adapter.js",
   "third_party/node-core/upstream/performance",
   "third_party/node-core/testing-platform-adapter.js",
+  "third_party/node-core/testing-runner-adapter.js",
+  "third_party/node-core/testing-runner.md",
   "third_party/node-core/sqlite-platform-adapter.js",
   "third_party/node-core/sqlite-limit-names.h",
   "third_party/node-core/upstream/sqlite",
@@ -720,4 +722,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 207
+revision = 208

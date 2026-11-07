@@ -1,0 +1,100 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/testing.md",
+    "findingIds": [
+      "TEST-001",
+      "TEST-003"
+    ],
+    "relatedFamilies": [
+      "testing",
+      "loading",
+      "filesystem",
+      "streams",
+      "processes",
+      "async"
+    ],
+    "scope": "Partial real isolation:none runner/discovery/import/report prerequisite; default process/CLI/watch/coverage/benchmark and guest/four-host gaps stay open"
+  },
+  "sourceImplemented": [
+    "Consume exact pinned runner primordials/worker-pool/discovery/run sections with byte/hash guarded generation",
+    "Actual directory/glob/default-pattern/node_modules/sorting/shard/validation algorithms use the same genuine Glob class as public fs.glob",
+    "Actual none-isolated root/setup/module import/registration/hooks/cancellation/placeholder and TestsStream owners execute and report real success/failure",
+    "Original absolute file URL enters existing native graph exactly once; no duplicate hook resolution, require-as-import or fabricated successful stream",
+    "After original validation, fail honestly before root/resources for still-missing process isolation/watch/coverage/CLI owners; no claimed boundary",
+    "Native component setup routes fixture imports to the actual generated candidate test tree while preserving original unchanged upstream assertions and native helper global descriptors"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-runner208-source-r1/report.json",
+    "sha256": "fc6451aba68386388f56804134e1b8eb9e9f03c89c1886552c0e81e0f9a5aeb5",
+    "guardedInputs": 879,
+    "scope": "Actual explicit none-isolated runner source and native-dependency component controls; default process/watch/coverage/CLI remain implementation gaps, no guest/four-host closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-runner208-affected-r1.json",
+    "sha256": "8bd414de253ea86cd5979a392b52614e74a108cbab67dfffcd4c2e3d84608c6b",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-runner208-source-r1/report.json",
+    "sha256": "fc6451aba68386388f56804134e1b8eb9e9f03c89c1886552c0e81e0f9a5aeb5",
+    "nativeCandidateMatchingPairs": 11,
+    "focusedProcesses": 23,
+    "implementationGapDiagnosticGroups": 1,
+    "missingOwnerOutcomesAreNotPassingCompatibility": true,
+    "priorFixtureCases": 4,
+    "unchangedUpstreamFilesEachSubject": 2,
+    "unchangedUpstreamProcesses": 4,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "unchangedStyleCheckerPassed": true,
+    "scope": "Actual current generated JS runner/test tree over native Node process/async/stream/fs/module dependencies. Narrow two upstream files are not an overall suite or guest conformance. Three admitted valid-public runner modes remain implementation failures in one separately reported group."
+  },
+  "sealedEvidence": {
+    "report": ".context/testing-runner-owner-agent/report.json",
+    "sha256": "dc861cff7f5eeb9728689ab8868ee297b8d9f15d7fe5b7d7f5187c69f640d58b",
+    "reusedEvidence": true,
+    "scope": "Original bounded runner source and exact native/component/upstream controls with sparse-generation, native helper leak/setup and source-doc provenance failures preserved.0 compilation attempts; original225 qualified navigation rows unchanged."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-runner208-source-r1/runner-controls-r1/missing-owners-candidate.stdout",
+      "sha256": "4bcb0145efd94b555a603a7e81cbe24daf5ae262e328cc82563a180f017d5816",
+      "scope": "Valid default process isolation/watch/coverage modes fail for absent owners. One diagnostic group, not a conformance pass; narrow parent/attributes import bridge also intentionally incomplete until next owning slice."
+    },
+    {
+      "report": ".context/testing-runner-owner-agent/upstream-r1.json",
+      "sha256": "0879f541f49b203c37c8001fb2d1cc51897a21df2b685c0ad0920bf3b5506b85",
+      "scope": "Initial unchanged upstream candidate fixture setup failures remain; corrected exact helper-global restoration does not rewrite original assertions/results."
+    },
+    {
+      "report": ".context/testing-runner-owner-agent/report.json",
+      "sha256": "dc861cff7f5eeb9728689ab8868ee297b8d9f15d7fe5b7d7f5187c69f640d58b",
+      "scope": "Initial sparse source-generation and untracked doc provenance/setup failures preserved; original historical fixture/signature-frame nonpasses keep original scope."
+    },
+    {
+      "report": ".context/node26-runner208-integration-r1.log",
+      "sha256": "e178823241fe9d954b2450a4e25bb65c9e48c3f3741c2d8c9157900f67100d32",
+      "scope": "Root verifier guessed optionFlags rather than actual optionDefaultFields after exact patch replay. Manifest check/generation resumed from verified applied bytes without patch reapplication; no compiler/test ran in that attempt."
+    }
+  ],
+  "remaining": [
+    "General original-specifier/parent/raw-attributes native import bridge and verified request-identity/empty-specifier corrections; runner bridge currently supports absolute file URLs only",
+    "Default process isolation and actual child/IPC/structured report/error/stdio/resource transport",
+    "Full CLI/preload/watch restart/measured coverage/benchmark owners and public reporting destinations/exit behavior",
+    "Actual guest module/parser/source/async-frame/phase/fatal/realm/GC/fault/cleanup behavior and all-four-host identified artifacts",
+    "Complete runner/test/mock/snapshot/timer/reporter lifecycle, discovery/option/error semantics and unchanged relevant upstream coverage beyond this slice"
+  ],
+  "at": "2026-11-07T11:11:10.938038+00:00",
+  "recipeRevision": 208,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -5116,6 +5116,10 @@ function _getNodeTestingPlatform() {
         getStructuredStack: _nodeNative.getStructuredStack,
         getModuleResolver: () => _nodeModuleRecords.getModuleResolver(),
         timers, timerPromises: timersPromises, path, fs, fsUtils: _nodeFsStats, os: nodeOs,
+        glob: _nodeGlobPlatform.require('internal/fs/glob'), console: _nodeConsolePlatform.api,
+        importModule(specifier, parentURL, attributes) {
+            return _nodeESMGraph.importURL(specifier, attributes);
+        },
         url: { ...url, isURL: value => value instanceof _nodeWebPlatform.URL,
             URLParse: value => _nodeWebPlatform.URL.parse(value) },
         vm: _builtinModules.vm, Module, diagnostics: _nodeDiagnostics.api, queueMicrotask,

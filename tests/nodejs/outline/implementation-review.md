@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source208 integrates actual nonisolated public runner/discovery/setup/import/test reporting.11 native/component pairs match;1 valid-public missing-owner diagnostic group remains a nonpass. Two unchanged upstream files eachsubject and4 prior fixture cases pass over explicit native dependencies; no guest compile or four-host conformance.
+See [source scope](testing-runner-integration.md).
+
 Shared kernel readiness now retains allocation-free epoll propagation scratch in real instances. Current26 native cases pass over698 exact source/input identities. This does not activate public file notifications; guest kernel and four-host conformance remain unvalidated. SpiderMonkey recipe207 is unchanged.
 See [source scope](filesystem-readiness-integration.md).
 

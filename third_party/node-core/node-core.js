@@ -50433,7 +50433,7 @@ async function* glob(pattern, options) {
 }
         return { glob };
     }
-    return { api: publicAPIs(), promises: promiseAPIs() };
+    return { api: publicAPIs(), promises: promiseAPIs(), require };
 }
 
 // Borrowed stdio mode ownership. This is not a public Socket/TTY constructor.
@@ -55535,7 +55535,19 @@ function _createNodeESMGraphPlatform(platform) {
         try { slot.value = translate(rec, loaded); slot.state = 1; }
         catch (error) { sources.delete(rec.key); throw error; }
     }
-    return { canonical, resolve, record, load, failed, prepare };
+    async function importURL(specifier, attributes = empty) {
+        // Public runner entries/global setup already supply absolute file URLs.
+        // Pass that original identifier once through the actual native graph;
+        // resolving it here too would run user hooks twice with a changed parent.
+        const identifier = P.String(specifier);
+        const parsed = URLParse(identifier);
+        if (parsed === null || parsed.protocol !== 'file:')
+            throw new ERR_METHOD_NOT_IMPLEMENTED('Module import with non-file-URL referrer/specifier');
+        if (ObjectKeys(attributes).length !== 0)
+            throw new ERR_METHOD_NOT_IMPLEMENTED('Module import attributes bridge');
+        return platform.native.importModule(identifier);
+    }
+    return { canonical, resolve, record, load, failed, prepare, importURL };
 }
 
 // Unmodified synchronous customization-hook policy over actual loader owners.
@@ -98199,9 +98211,6 @@ module.exports = {
         const error = new Error('Node testing owner is not implemented: ' + name);
         error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
     }
-    modules.set('internal/test_runner/runner', {
-        exports: { run: () => unavailable('test discovery/isolation/runner') },
-    });
     const { getDeprecationWarningEmitter } = platform.values.util;
     function deprecateProperty(key, msg, code, isPendingDeprecation) {
   const emitDeprecationWarning = getDeprecationWarningEmitter(
@@ -98231,10 +98240,16 @@ module.exports = {
         ['internal/assert/utils', platform.assertUtils],
         ['internal/timers', { TIMEOUT_MAX: 2147483647 }],
         ['internal/fs/utils', platform.fsUtils],
+        ['internal/fs/glob', platform.glob],
+        ['internal/console/global', platform.console],
         ['internal/options', { getOptionValue: platform.getOptionValue }],
         ['internal/url', platform.url],
         ['internal/modules/cjs/loader', { Module: platform.Module }],
-        ['internal/modules/esm/loader', { getOrInitializeCascadedLoader: platform.getModuleResolver }],
+        ['internal/modules/esm/loader', { getOrInitializeCascadedLoader() {
+            const resolver = platform.getModuleResolver();
+            return { resolveSync: (...args) => resolver.resolveSync(...args),
+                import: platform.importModule };
+        } }],
         ['internal/modules/customization_hooks', { registerHooks: platform.Module.registerHooks }],
         ['internal/process/task_queues', { queueMicrotask: platform.queueMicrotask }],
         ['process', process], ['assert', platform.assert], ['path', platform.path], ['fs', platform.fs],
@@ -98246,6 +98261,10 @@ module.exports = {
     function require(name) {
         if (bindings.has(name)) return bindings.get(name);
         if (modules.has(name)) return modules.get(name).exports;
+        if (name === 'internal/test_runner/runner') {
+            const exports = _createNodeTestingRunner({ require, primordials, internalBinding, process });
+            modules.set(name, { exports }); return exports;
+        }
         if (name === 'test') name = 'test-public';
         if (name === 'test/reporters') name = 'test-reporters-public';
         if (modules.has(name)) return modules.get(name).exports;
@@ -98277,7 +98296,7 @@ module.exports = {
 // discovery, coverage, source maps, watching or any unavailable runner feature.
 function _createNodeTestOptionReader(platform) {
     const { Error, SafeMap } = _createNodePrimordials();
-    const defaults = new SafeMap([["--test", false], ["--experimental-test-coverage", false], ["--test-coverage-include-all", false], ["--test-force-exit", false], ["--enable-source-maps", false], ["--test-update-snapshots", false], ["--watch", false], ["--test-timeout", 0], ["--test-randomize", false], ["[has_test_random_seed]", false], ["--test-random-seed", 0], ["--test-rerun-failures", ""], ["--test-only", false], ["--test-reporter-destination", []], ["--test-reporter", []], ["--test-global-setup", ""], ["--test-isolation", "process"], ["--experimental-test-tag-filter", []], ["--test-concurrency", 0], ["--test-shard", ""], ["--test-name-pattern", []], ["--test-skip-pattern", []], ["--test-coverage-exclude", []], ["--test-coverage-include", []], ["--test-coverage-branches", 0], ["--test-coverage-lines", 0], ["--test-coverage-functions", 0]]);
+    const defaults = new SafeMap([["--test", false], ["--experimental-test-coverage", false], ["--test-coverage-include-all", false], ["--test-force-exit", false], ["--enable-source-maps", false], ["--test-update-snapshots", false], ["--watch", false], ["--test-timeout", 0], ["--test-randomize", false], ["[has_test_random_seed]", false], ["--test-random-seed", 0], ["--test-rerun-failures", ""], ["--test-only", false], ["--test-reporter-destination", []], ["--test-reporter", []], ["--test-global-setup", ""], ["--test-isolation", "process"], ["--experimental-test-tag-filter", []], ["--test-concurrency", 0], ["--test-shard", ""], ["--test-name-pattern", []], ["--test-skip-pattern", []], ["--test-coverage-exclude", []], ["--test-coverage-include", []], ["--test-coverage-branches", 0], ["--test-coverage-lines", 0], ["--test-coverage-functions", 0], ["--import", []]]);
     const options = platform.cliOptions;
     return function getOptionValue(name) {
         if (name === '--experimental-test-module-mocks') return options.experimentalTestModuleMocks === true;
@@ -98288,6 +98307,580 @@ function _createNodeTestOptionReader(platform) {
         error.code = 'ERR_NOT_IMPLEMENTED';
         throw error;
     };
+}
+
+// Exact pinned public runner/discovery algorithms over the real test tree.
+// Child report transport/watch/coverage remain missing owning dependencies.
+function _createNodeTestingRunner(platform) {
+    'use strict';
+    const { require, primordials, process, internalBinding } = platform;
+    const {
+  ArrayIsArray,
+  ArrayPrototypeEvery,
+  ArrayPrototypeFilter,
+  ArrayPrototypeFind,
+  ArrayPrototypeForEach,
+  ArrayPrototypeIncludes,
+  ArrayPrototypeJoin,
+  ArrayPrototypeMap,
+  ArrayPrototypePush,
+  ArrayPrototypePushApply,
+  ArrayPrototypeShift,
+  ArrayPrototypeSlice,
+  ArrayPrototypeSome,
+  ArrayPrototypeSort,
+  ObjectAssign,
+  PromisePrototypeThen,
+  PromiseWithResolvers,
+  RegExpPrototypeSymbolReplace,
+  SafeMap,
+  SafePromiseAll,
+  SafePromiseAllReturnVoid,
+  SafePromiseAllSettledReturnVoid,
+  SafeSet,
+  String,
+  StringFromCharCode,
+  StringPrototypeIndexOf,
+  StringPrototypeSlice,
+  StringPrototypeStartsWith,
+  Symbol,
+  TypedArrayPrototypeGetLength,
+  TypedArrayPrototypeSubarray,
+} = primordials;
+    const { statSync } = require('fs');
+    const { resolve, sep, isAbsolute } = require('path');
+    const { getOptionValue } = require('internal/options');
+    const console = require('internal/console/global');
+    const { codes: { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE } } = require('internal/errors');
+    const esmLoader = require('internal/modules/esm/loader');
+    const { validateArray, validateBoolean, validateFunction, validateObject, validateOneOf,
+        validateInteger, validateUint32, validateString, validateStringArray } = require('internal/validators');
+    const { isRegExp } = require('internal/util/types');
+    const { pathToFileURL } = require('internal/url');
+    const { emitExperimentalWarning, kEmptyObject } = require('internal/util');
+    const { createTestTree, startSubtestAfterBootstrap } = require('internal/test_runner/harness');
+    const { Test } = require('internal/test_runner/test');
+    const { createRandomSeed, convertStringToRegExp, kDefaultPattern,
+        parseCommandLine } = require('internal/test_runner/utils');
+    const { parseTagFilterExpression } = require('internal/test_runner/tag_filter');
+    const { Glob } = require('internal/fs/glob');
+    const { validatePath } = require('internal/fs/utils');
+    const { exitCodes: { kGenericUserError } } = internalBinding('errors');
+    const debug = require('internal/util/debuglog').debuglog('test_runner');
+    const kIsolatedProcessName = Symbol('kIsolatedProcessName');
+    function missing(owner) {
+        const error = new primordials.Error('Node test runner owner is not implemented: ' + owner);
+        error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
+    }
+    function admitRunner(isolation, watch, coverage, isTestRunner) {
+        // Validate upstream options first, then fail before creating a root or
+        // opening resources. These are implementation gaps, not platform limits.
+        if (isolation === 'process') missing('process isolation and child report transport');
+        if (watch) missing('watch restart and process lifecycle');
+        if (coverage) missing('measured coverage instrumentation');
+        if (isTestRunner) missing('test CLI preload/launcher');
+    }
+    function runTestFile() { return missing('process isolation and child report transport'); }
+    function watchFiles() { return missing('watch restart and process lifecycle'); }
+    function loadPreloadModules() { return missing('test CLI preload/launcher'); }
+    class WorkerIdPool {
+  #acquiredIds = new SafeSet();
+
+  acquire() {
+    let id = 1;
+
+    while (this.#acquiredIds.has(id)) {
+      id++;
+    }
+
+    this.#acquiredIds.add(id);
+    return id;
+  }
+
+  release(id) {
+    this.#acquiredIds.delete(id);
+  }
+}
+    function createTestFileList(patterns, cwd) {
+  const hasUserSuppliedPattern = patterns != null;
+  if (!patterns || patterns.length === 0) {
+    patterns = [kDefaultPattern];
+  } else {
+    patterns = ArrayPrototypeMap(patterns, (pattern) => {
+      // A directory argument is expanded to search for the default test files
+      // within it, matching the behavior from before glob patterns were
+      // supported. Glob patterns always use forward slashes, so a trailing
+      // path separator (of either kind) is stripped before appending.
+      const resolved = isAbsolute(pattern) ? pattern : resolve(cwd, pattern);
+      try {
+        if (statSync(resolved).isDirectory()) {
+          return `${RegExpPrototypeSymbolReplace(/[\\/]+$/, pattern, '')}/${kDefaultPattern}`;
+        }
+      } catch {
+        // Not a directory or not accessible; leave the pattern as-is so the
+        // existing "Could not find" handling still applies.
+      }
+      return pattern;
+    });
+  }
+  const glob = new Glob(patterns, {
+    __proto__: null,
+    cwd,
+    exclude: (name) => name === 'node_modules',
+  });
+  const results = glob.globSync();
+
+  if (hasUserSuppliedPattern && results.length === 0 && ArrayPrototypeEvery(glob.matchers, (m) => !m.hasMagic())) {
+    console.error(`Could not find '${ArrayPrototypeJoin(patterns, ', ')}'`);
+    process.exit(kGenericUserError);
+  }
+
+  return ArrayPrototypeSort(results);
+}
+    function run(options = kEmptyObject) {
+  validateObject(options, 'options');
+
+  let {
+    testNamePatterns,
+    testSkipPatterns,
+    testTagFilters,
+    shard,
+    coverageExcludeGlobs,
+    coverageIncludeGlobs,
+  } = options;
+  const {
+    concurrency,
+    timeout,
+    signal,
+    files,
+    forceExit,
+    inspectPort,
+    isolation = 'process',
+    watch,
+    setup,
+    globalSetupPath,
+    only,
+    globPatterns,
+    coverage = false,
+    coverageIncludeAll = false,
+    lineCoverage = 0,
+    branchCoverage = 0,
+    functionCoverage = 0,
+    randomize: suppliedRandomize,
+    randomSeed: suppliedRandomSeed,
+    execArgv = [],
+    argv = [],
+    cwd = process.cwd(),
+    rerunFailuresFilePath,
+    env,
+  } = options;
+
+  if (files != null) {
+    validateArray(files, 'options.files');
+  }
+  if (watch != null) {
+    validateBoolean(watch, 'options.watch');
+  }
+  if (forceExit != null) {
+    validateBoolean(forceExit, 'options.forceExit');
+
+    if (forceExit && watch) {
+      throw new ERR_INVALID_ARG_VALUE(
+        'options.forceExit', watch, 'is not supported with watch mode',
+      );
+    }
+  }
+  if (only != null) {
+    validateBoolean(only, 'options.only');
+  }
+  if (globPatterns != null) {
+    validateArray(globPatterns, 'options.globPatterns');
+  }
+  if (suppliedRandomize != null) {
+    validateBoolean(suppliedRandomize, 'options.randomize');
+  }
+  if (suppliedRandomSeed != null) {
+    validateUint32(suppliedRandomSeed, 'options.randomSeed');
+  }
+  let randomize = suppliedRandomize;
+  let randomSeed = suppliedRandomSeed;
+
+  if (randomSeed != null) {
+    randomize = true;
+  }
+  if (watch) {
+    if (randomSeed != null) {
+      throw new ERR_INVALID_ARG_VALUE(
+        'options.randomSeed',
+        randomSeed,
+        'is not supported with watch mode',
+      );
+    }
+    if (randomize) {
+      throw new ERR_INVALID_ARG_VALUE(
+        'options.randomize',
+        randomize,
+        'is not supported with watch mode',
+      );
+    }
+  }
+  if (rerunFailuresFilePath) {
+    validatePath(rerunFailuresFilePath, 'options.rerunFailuresFilePath');
+    // TODO(pmarchini): Support rerun-failures with randomization by
+    // persisting the randomization seed in the rerun state file.
+    if (randomSeed != null) {
+      throw new ERR_INVALID_ARG_VALUE(
+        'options.randomSeed',
+        randomSeed,
+        'is not supported with rerun failures mode',
+      );
+    }
+    if (randomize) {
+      throw new ERR_INVALID_ARG_VALUE(
+        'options.randomize',
+        randomize,
+        'is not supported with rerun failures mode',
+      );
+    }
+  }
+  if (randomize) {
+    randomSeed ??= createRandomSeed();
+  }
+
+  validateString(cwd, 'options.cwd');
+
+  if (globPatterns?.length > 0 && files?.length > 0) {
+    throw new ERR_INVALID_ARG_VALUE(
+      'options.globPatterns', globPatterns, 'is not supported when specifying \'options.files\'',
+    );
+  }
+
+  if (shard != null) {
+    validateObject(shard, 'options.shard');
+    // Avoid re-evaluating the shard object in case it's a getter
+    shard = { __proto__: null, index: shard.index, total: shard.total };
+
+    validateInteger(shard.total, 'options.shard.total', 1);
+    validateInteger(shard.index, 'options.shard.index', 1, shard.total);
+
+    if (watch) {
+      throw new ERR_INVALID_ARG_VALUE('options.shard', watch, 'shards not supported with watch mode');
+    }
+  }
+  if (setup != null) {
+    validateFunction(setup, 'options.setup');
+  }
+  if (testNamePatterns != null) {
+    if (!ArrayIsArray(testNamePatterns)) {
+      testNamePatterns = [testNamePatterns];
+    }
+
+    testNamePatterns = ArrayPrototypeMap(testNamePatterns, (value, i) => {
+      if (isRegExp(value)) {
+        return value;
+      }
+      const name = `options.testNamePatterns[${i}]`;
+      if (typeof value === 'string') {
+        return convertStringToRegExp(value, name);
+      }
+      throw new ERR_INVALID_ARG_TYPE(name, ['string', 'RegExp'], value);
+    });
+  }
+  if (testSkipPatterns != null) {
+    if (!ArrayIsArray(testSkipPatterns)) {
+      testSkipPatterns = [testSkipPatterns];
+    }
+
+    testSkipPatterns = ArrayPrototypeMap(testSkipPatterns, (value, i) => {
+      if (isRegExp(value)) {
+        return value;
+      }
+      const name = `options.testSkipPatterns[${i}]`;
+      if (typeof value === 'string') {
+        return convertStringToRegExp(value, name);
+      }
+      throw new ERR_INVALID_ARG_TYPE(name, ['string', 'RegExp'], value);
+    });
+  }
+
+  // The public contract of testTagFilters is `string | string[]`. The
+  // parseCommandLine bootstrap path piggybacks the already-parsed AST array
+  // on the same field, identifiable by the sibling testTagFilterExpressions
+  // field which only that path sets. When that marker is present and the
+  // first element isn't a string, treat the array as ASTs and skip the
+  // public validation loop. Otherwise validate every element as a string,
+  // so any non-string input throws ERR_INVALID_ARG_TYPE with the offending
+  // index regardless of position.
+  let testTagFilterExpressions = null;
+  if (testTagFilters != null) {
+    if (!ArrayIsArray(testTagFilters)) {
+      testTagFilters = [testTagFilters];
+    }
+    if (testTagFilters.length === 0) {
+      testTagFilters = null;
+    } else if (options.testTagFilterExpressions != null &&
+               typeof testTagFilters[0] !== 'string') {
+      // Internal bootstrap: trust the AST array as already-parsed.
+    } else {
+      emitExperimentalWarning('Test tags');
+      testTagFilterExpressions = ArrayPrototypeSlice(testTagFilters);
+      testTagFilters = ArrayPrototypeMap(testTagFilters, (value, i) => {
+        const name = `options.testTagFilters[${i}]`;
+        if (typeof value !== 'string') {
+          throw new ERR_INVALID_ARG_TYPE(name, 'string', value);
+        }
+        return parseTagFilterExpression(value, name);
+      });
+    }
+  }
+  testTagFilterExpressions ??= options.testTagFilterExpressions;
+
+  validateOneOf(isolation, 'options.isolation', ['process', 'none']);
+  validateBoolean(coverage, 'options.coverage');
+  validateBoolean(coverageIncludeAll, 'options.coverageIncludeAll');
+  if (coverageExcludeGlobs != null) {
+    if (!ArrayIsArray(coverageExcludeGlobs)) {
+      coverageExcludeGlobs = [coverageExcludeGlobs];
+    }
+    validateStringArray(coverageExcludeGlobs, 'options.coverageExcludeGlobs');
+  } else if (coverage) {
+    coverageExcludeGlobs = [kDefaultPattern];
+  }
+  if (coverageIncludeGlobs != null) {
+    if (!ArrayIsArray(coverageIncludeGlobs)) {
+      coverageIncludeGlobs = [coverageIncludeGlobs];
+    }
+    validateStringArray(coverageIncludeGlobs, 'options.coverageIncludeGlobs');
+  }
+  validateInteger(lineCoverage, 'options.lineCoverage', 0, 100);
+  validateInteger(branchCoverage, 'options.branchCoverage', 0, 100);
+  validateInteger(functionCoverage, 'options.functionCoverage', 0, 100);
+
+  validateStringArray(argv, 'options.argv');
+  validateStringArray(execArgv, 'options.execArgv');
+
+  if (globalSetupPath != null) {
+    validatePath(globalSetupPath, 'options.globalSetupPath');
+  }
+
+  if (env != null) {
+    validateObject(env, 'options.env');
+
+    if (isolation === 'none') {
+      throw new ERR_INVALID_ARG_VALUE('options.env', env, 'is not supported with isolation=\'none\'');
+    }
+  }
+
+  const rootTestOptions = { __proto__: null, concurrency, timeout, signal };
+  const globalOptions = {
+    __proto__: null,
+    // parseCommandLine() should not be used here. However, The existing run()
+    // behavior has relied on it, so removing it must be done in a semver major.
+    ...parseCommandLine(),
+    setup,  // This line can be removed when parseCommandLine() is removed here.
+    coverage,
+    coverageIncludeAll,
+    coverageExcludeGlobs,
+    coverageIncludeGlobs,
+    rerunFailuresFilePath,
+    lineCoverage: lineCoverage,
+    branchCoverage: branchCoverage,
+    functionCoverage: functionCoverage,
+    cwd,
+    globalSetupPath,
+    randomize,
+    randomSeed,
+    testTagFilters,
+  };
+
+  if (isolation === 'none') {
+    if (testNamePatterns != null) {
+      globalOptions.testNamePatterns = testNamePatterns;
+    }
+    if (testSkipPatterns != null) {
+      globalOptions.testSkipPatterns = testSkipPatterns;
+    }
+    if (only != null) {
+      globalOptions.only = only;
+    }
+  }
+
+  admitRunner(isolation, watch, coverage, globalOptions.isTestRunner);
+  const root = createTestTree(rootTestOptions, globalOptions);
+  let testFiles = files ?? createTestFileList(globPatterns, cwd);
+  const { isTestRunner } = globalOptions;
+
+  if (randomize) {
+    root.diagnostic(`Randomized test order seed: ${randomSeed}`);
+  }
+
+  if (shard) {
+    testFiles = ArrayPrototypeFilter(testFiles, (_, index) => index % shard.total === shard.index - 1);
+  }
+
+  let teardown;
+  let postRun;
+  let filesWatcher;
+  let runFiles;
+
+  // The pool tracks the IDs actually in use, so they stay exclusive and never
+  // exceed the number of files running concurrently.
+  const workerIdPool = new WorkerIdPool();
+  debug('Created worker ID pool, testFiles: %d', testFiles.length);
+
+  const opts = {
+    __proto__: null,
+    root,
+    signal,
+    inspectPort,
+    testNamePatterns,
+    testSkipPatterns,
+    testTagFilterExpressions,
+    hasFiles: files != null,
+    globPatterns,
+    only,
+    forceExit,
+    cwd,
+    isolation,
+    argv,
+    execArgv,
+    rerunFailuresFilePath,
+    env,
+    workerIdPool: isolation === 'process' ? workerIdPool : null,
+    randomize,
+    randomSeed,
+    testFiles,
+  };
+
+  if (isolation === 'process') {
+    if (process.env.NODE_TEST_CONTEXT !== undefined) {
+      process.emitWarning('node:test run() is being called recursively within a test file. skipping running files.');
+      root.postRun();
+      return root.reporter;
+    }
+
+    if (watch) {
+      filesWatcher = watchFiles(testFiles, opts);
+    } else {
+      postRun = () => root.postRun();
+      teardown = () => root.harness.teardown();
+    }
+
+    runFiles = () => {
+      root.harness.bootstrapPromise = null;
+      root.harness.buildPromise = null;
+      return SafePromiseAllSettledReturnVoid(testFiles, (path) => {
+        const subtest = runTestFile(path, filesWatcher, opts);
+        filesWatcher?.runningSubtests.set(path, subtest);
+        return subtest;
+      });
+    };
+  } else if (isolation === 'none') {
+    // For isolation=none, set worker ID to 1 in the current process
+    process.env.NODE_TEST_WORKER_ID = '1';
+    debug('Set NODE_TEST_WORKER_ID=1 for isolation=none');
+
+    if (watch) {
+      const absoluteTestFiles = ArrayPrototypeMap(testFiles, (file) => (isAbsolute(file) ? file : resolve(cwd, file)));
+      filesWatcher = watchFiles(absoluteTestFiles, opts);
+      runFiles = async () => {
+        root.harness.bootstrapPromise = null;
+        root.harness.buildPromise = null;
+        const subtest = runTestFile(kIsolatedProcessName, filesWatcher, opts);
+        filesWatcher?.runningSubtests.set(kIsolatedProcessName, subtest);
+        return subtest;
+      };
+    } else {
+      runFiles = async () => {
+        const { promise, resolve: finishBootstrap } = PromiseWithResolvers();
+
+        await root.runInAsyncScope(async () => {
+          const parentURL = pathToFileURL(cwd + sep).href;
+          const cascadedLoader = esmLoader.getOrInitializeCascadedLoader();
+          let topLevelTestCount = 0;
+
+          root.harness.bootstrapPromise = root.harness.bootstrapPromise ?
+            SafePromiseAllReturnVoid([root.harness.bootstrapPromise, promise]) :
+            promise;
+
+          // We need to setup the user modules in the test runner if we are running with
+          // --test-isolation=none and --test in order to avoid loading the user modules
+          // BEFORE the creation of the root test (that would cause them to get lost).
+          if (isTestRunner) {
+            // If we are not coming from the test runner entry point, the user-required and imported
+            // modules have already been loaded.
+            // Since it's possible to delete modules from require.cache, a CommonJS module
+            // could otherwise be executed twice.
+            loadPreloadModules();
+          }
+          const userImports = getOptionValue('--import');
+          for (let i = 0; i < userImports.length; i++) {
+            await cascadedLoader.import(userImports[i], parentURL, kEmptyObject);
+          }
+
+          for (let i = 0; i < testFiles.length; ++i) {
+            const testFile = testFiles[i];
+            const fileURL = pathToFileURL(resolve(cwd, testFile));
+            const parent = i === 0 ? undefined : parentURL;
+            let threw = false;
+            let importError;
+
+            root.entryFile = resolve(testFile);
+            debug('loading test file:', fileURL.href);
+            try {
+              await cascadedLoader.import(fileURL, parent, { __proto__: null });
+            } catch (err) {
+              threw = true;
+              importError = err;
+            }
+
+            debug(
+              'loaded "%s": top level test count before = %d and after = %d',
+              testFile,
+              topLevelTestCount,
+              root.subtests.length,
+            );
+            if (threw || topLevelTestCount === root.subtests.length) {
+              // This file failed to load or had no tests in it. Add the placeholder test.
+              const subtest = root.createSubtest(Test, testFile, kEmptyObject, undefined, {
+                __proto__: null,
+                loc: [1, 1, resolve(testFile)],
+              });
+              if (threw) {
+                subtest.fail(importError);
+              }
+              startSubtestAfterBootstrap(subtest);
+            }
+
+            topLevelTestCount = root.subtests.length;
+          }
+        });
+
+        debug('beginning test execution');
+        root.entryFile = null;
+        finishBootstrap();
+        return root.processPendingSubtests();
+      };
+    }
+  }
+
+  const runChain = async () => {
+    if (root.harness?.bootstrapPromise) {
+      await root.harness.bootstrapPromise;
+    }
+    if (typeof setup === 'function') {
+      await setup(root.reporter);
+    }
+
+    await runFiles();
+    postRun?.();
+    teardown?.();
+  };
+
+  runChain();
+  return root.reporter;
+}
+    return { run };
 }
 
 // Pinned public hrtime tuple/borrow/validation over real monotonic nanoseconds.

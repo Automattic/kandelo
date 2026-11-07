@@ -1546,6 +1546,30 @@ for marker, replacement in [('/* NODE_TESTING_MODULES */', ',\n'.join(testing_fa
         raise ValueError('Review testing marker: ' + marker)
     testing_adapter = testing_adapter.replace(marker, replacement)
 bundle += testing_adapter + '\n'
+runner_adapter = (root / 'testing-runner-adapter.js').read_text()
+for name, selector in manifest['testingPlatform']['runnerSections'].items():
+    source = testing_sources[selector['source']]
+    if source.count(selector['start']) != 1:
+        raise ValueError('Ambiguous test runner selection: ' + name)
+    start = source.index(selector['start'])
+    body = source[start:start + selector['length']]
+    if hashlib.sha256(body.encode()).hexdigest() != selector['sha256']:
+        raise ValueError('Test runner selection identity mismatch: ' + name)
+    if name == 'run':
+        anchor = '  const root = createTestTree(rootTestOptions, globalOptions);'
+        if body.count(anchor) != 1:
+            raise ValueError('Review test runner capability admission boundary')
+        body = body.replace(anchor,
+            '  admitRunner(isolation, watch, coverage, globalOptions.isTestRunner);\n' + anchor)
+    marker = {'runnerPrimordials': '/* NODE_RUNNER_PRIMORDIALS */',
+              'workerPool': '/* NODE_RUNNER_POOL */',
+              'discover': '/* NODE_RUNNER_DISCOVER */',
+              'run': '/* NODE_RUNNER_RUN */'}[name]
+    if runner_adapter.count(marker) != 1:
+        raise ValueError('Review test runner marker: ' + marker)
+    runner_adapter = runner_adapter.replace(marker, body)
+bundle += runner_adapter + '\n'
+
 clock_item = manifest['processClock']
 clock_raw = (root / clock_item['source']['path']).read_bytes()
 if hashlib.sha256(clock_raw).hexdigest() != clock_item['source']['sha256']:
