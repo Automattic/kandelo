@@ -23,7 +23,9 @@ focused three-engine browser gate (12/12). Unmodified FrankenPHP 1.13.5/
 Caddy 2.11.9 executes real requests, collection and shutdown. The first narrow
 validation projection omitted rootfs, so Vite's app-wide dependency scan
 warned despite all consumer cases passing. Include the declared base image
-when preparing a full app test projection. WordPress image rebuild and final
+when preparing a full app test projection. The corrected rootfs-inclusive
+run passes 12/12 without dependency-scan failure, preserving exact Go/kernel
+bytes; its rootfs FHS audit passes. WordPress image rebuild and final
 validation remain pending. Deep regexp compilation is
 slower on tested Wasm hosts; retain that measured tradeoff. The authoritative
 record is `docs/plans/2026-09-05-go-gc-port-milestone1-plan.md`; `docs/go.md`

@@ -62,8 +62,11 @@ PHP/OPcache and 32 requests at concurrency four, with observed Go collection
 All four normal consumers pass three browsers (12/12) on exact preserved
 bytes and kernel a991e3cf. The narrow projection omitted rootfs, producing a
 Vite app-wide dependency-scan warning despite the passing consumer tests.
-A rerun with the normal base-image prerequisite is in progress. Larger
-C-linked independent byte-reproducibility checks remain open; GoHello's
+The corrected rootfs-inclusive gate passes 12/12, zero skips/failures/flakes,
+in 74.5 seconds without a dependency-scan failure. Its 36-node publication
+rebuilds rootfs and 20 CLI packages; rootfs passes the FHS layout audit.
+The exact Go program and kernel bytes are preserved. Larger C-linked
+independent byte-reproducibility checks remain open; GoHello's
 completed check is not substituted for them.
 Standalone Caddy is intentionally outside the default bootstrap set and
 uses the normal explicit source resolver. An initial private orchestration

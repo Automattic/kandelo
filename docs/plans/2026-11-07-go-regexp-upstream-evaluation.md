@@ -102,8 +102,11 @@ consumers also pass Chromium/Firefox/WebKit (12/12). A receipt-validated
 projection preserves their exact bytes and matches frozen kernel
 `a991e3cf4469345e8b274572c2fec153331fa9da53678e0860f5f7e238d80783`.
 The first narrow projection omitted rootfs, so Vite's full-app dependency
-scan warned even though the consumer tests passed. A rerun with the normal
-rootfs prerequisite is in progress. No artifact validation is relaxed.
+scan warned even though the consumer tests passed. The corrected rootfs-inclusive gate passes 12/12, zero skips/failures/flakes,
+in 74.5 seconds with no dependency-scan failure. Its 36-node publication
+rebuilds rootfs and 20 CLI packages for the current SDK; the rootfs FHS audit
+passes. Go bytes and kernel remain identical. No artifact validation is
+relaxed.
 
 | Package/revision | Wasm bytes | SHA-256 |
 | --- | ---: | --- |
