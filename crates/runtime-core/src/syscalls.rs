@@ -418,17 +418,11 @@ fn acquire_fb0_or_busy(pid: u32) -> Result<(), Errno> {
     Ok(())
 }
 
-/// Release `/dev/fb0` ownership held by `pid`, if any. Idempotent: safe
-/// to call from `close`, `munmap`, or process exit even when the process
-/// never owned the device.
+/// Release `/dev/fb0` ownership held by `pid`, if any, and return the
+/// device to its boot mode. Idempotent: safe to call from `close`,
+/// `munmap`, or process exit even when the process never owned the device.
 pub fn maybe_release_fb0(pid: u32) {
-    use core::sync::atomic::Ordering;
-    let _ = crate::process_table::FB0_OWNER.compare_exchange(
-        pid as i32,
-        -1,
-        Ordering::SeqCst,
-        Ordering::SeqCst,
-    );
+    crate::framebuffer::release_owner(pid);
 }
 
 /// True iff `proc` still has an open fd referencing `device`.
@@ -23867,6 +23861,7 @@ mod tests {
         use crate::metadata_budget::MetadataBudget;
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::AT_FDCWD;
+        let _device = crate::framebuffer::lock_device_for_test();
         let _guard = crate::clipboard::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         static BUDGET: MetadataBudget = MetadataBudget::new(4096);
         for use_openat in [false, true] {
@@ -47950,9 +47945,8 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn fbioget_vscreeninfo_returns_640x400_bgra32() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::fbdev::*;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -47977,9 +47971,8 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn fbioget_fscreeninfo_reports_correct_smem_len() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::fbdev::*;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -47998,9 +47991,8 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn fbiopan_display_succeeds() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::fbdev::*;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -48031,18 +48023,9 @@ impl HostIO for RelSymlinkMock {
         sys_ioctl(proc, host, fd, wasm_posix_shared::fbdev::FBIOPUT_VSCREENINFO, &mut buf)
     }
 
-    fn fb_restore_default_mode() {
-        crate::framebuffer::set_geometry(
-            crate::framebuffer::DEFAULT_WIDTH,
-            crate::framebuffer::DEFAULT_HEIGHT,
-        )
-        .unwrap();
-    }
-
     #[test]
     fn fbioput_vscreeninfo_rejects_an_unsupported_mode() {
-        use core::sync::atomic::Ordering;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -48060,8 +48043,7 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn fbioput_vscreeninfo_activate_test_checks_without_setting() {
-        use core::sync::atomic::Ordering;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -48078,11 +48060,10 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn fbioput_vscreeninfo_selects_the_mode_screeninfo_and_mmap_follow() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::fbdev::*;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -48119,14 +48100,12 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(fb_put_mode(&mut proc, &mut host, fd, 640, 400, 32, 0), Ok(()));
 
         sys_close(&mut proc, &mut host, fd).unwrap();
-        fb_restore_default_mode();
     }
 
     #[test]
     fn fbioput_vscreeninfo_mode_drives_write_binding_and_seek_end() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -48155,14 +48134,13 @@ impl HostIO for RelSymlinkMock {
             crate::framebuffer::geometry(),
             crate::framebuffer::Geometry { width: 1280, height: 800 }
         );
-        fb_restore_default_mode();
     }
 
     #[test]
     fn fb0_owned_by_another_process_refuses_mode_change_and_binding() {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         // A fork child keeps the parent's fb fd but not its ownership.
         let mut proc = Process::new(1);
@@ -48185,8 +48163,7 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn unknown_fb_ioctl_returns_enotty() {
-        use core::sync::atomic::Ordering;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -48199,9 +48176,8 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn write_fb0_lazy_binds_and_forwards_pixels() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -48245,10 +48221,9 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn mmap_fb0_records_binding_and_calls_host() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -48288,10 +48263,9 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn second_mmap_of_fb0_returns_einval() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -48326,10 +48300,9 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn mmap_fb0_with_wrong_length_returns_einval() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -48358,7 +48331,7 @@ impl HostIO for RelSymlinkMock {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -48389,7 +48362,7 @@ impl HostIO for RelSymlinkMock {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -48443,6 +48416,7 @@ impl HostIO for RelSymlinkMock {
     #[test]
     fn exit_releases_mapped_fb0_before_reap() {
         use core::sync::atomic::Ordering;
+        let _device = crate::framebuffer::lock_device_for_test();
         for close_fd in [false, true] {
             let mut proc = Process::new(41);
             let mut host = TrackingHostIO::new();
@@ -48466,6 +48440,7 @@ impl HostIO for RelSymlinkMock {
     #[test]
     fn signal_exit_releases_mapped_fb0_before_reap() {
         use core::sync::atomic::Ordering;
+        let _device = crate::framebuffer::lock_device_for_test();
         let mut proc = Process::new(43);
         let mut host = TrackingHostIO::new();
         map_fb0_for_exit_test(&mut proc, &mut host, true);
@@ -48478,10 +48453,52 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
     }
 
+    /// Releasing the device returns it to the boot mode, so the next
+    /// program does not inherit the previous owner's choice.
+    #[test]
+    fn releasing_fb0_restores_the_boot_mode() {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::fbdev::*;
+        use wasm_posix_shared::flags::O_RDWR;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _device = crate::framebuffer::lock_device_for_test();
+        let boot = crate::framebuffer::Geometry { width: 640, height: 400 };
+        let selected = crate::framebuffer::Geometry { width: 1280, height: 800 };
+
+        // The last close of an unmapped device releases it.
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        fb_put_mode(&mut proc, &mut host, fd, 1280, 800, 32, 0).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(crate::framebuffer::geometry(), boot);
+
+        // A mapping keeps the device, and its mode, past close; exit
+        // releases both.
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        fb_put_mode(&mut proc, &mut host, fd, 1280, 800, 32, 0).unwrap();
+        let len = (1280 * 800 * 4) as usize;
+        sys_mmap(&mut proc, &mut host, 0, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(crate::framebuffer::geometry(), selected);
+        sys_exit(&mut proc, &mut host, 0);
+        assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+        assert_eq!(crate::framebuffer::geometry(), boot);
+
+        // The next owner reads the boot mode.
+        let mut successor = Process::new(2);
+        let fd = sys_open(&mut successor, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 160];
+        sys_ioctl(&mut successor, &mut host, fd, FBIOGET_VSCREENINFO, &mut buf).unwrap();
+        let v: FbVarScreenInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!((v.xres, v.yres), (640, 400));
+        sys_close(&mut successor, &mut host, fd).unwrap();
+    }
+
     #[test]
     fn open_dev_fb0_is_single_owner() {
         use core::sync::atomic::Ordering;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        let _device = crate::framebuffer::lock_device_for_test();
 
         let mut proc1 = Process::new(1);
         let mut proc2 = Process::new(2);
