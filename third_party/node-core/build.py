@@ -1504,6 +1504,7 @@ marker = '/* NODE_STDIO_DUMMY_DESTROY */'
 if fd_adapter.count(marker) != 1:
     raise ValueError('Review stdio destroy marker')
 bundle += fd_adapter.replace(marker, section) + '\n'
+bundle += (root / 'stdio-output-platform-adapter.js').read_text() + '\n'
 port_factories = []
 for name, item in manifest['portsPlatform'].items():
     raw = (root / item['path']).read_bytes()

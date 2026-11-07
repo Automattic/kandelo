@@ -1579,7 +1579,8 @@ const path = _createNodePathPlatform({ process, inspect: value => util.inspect(v
 const _startTime = Date.now();
 
 // Lazy stream creation for stdout/stderr/stdin
-let _stdout, _stderr, _stdin;
+let _stdin;
+let _nodeStdioOutputPlatform;
 let _nodeReadlinePlatform;
 function _cursorTo(...args) { return _nodeReadlinePlatform.callbacks.cursorTo(...args); }
 function _moveCursor(...args) { return _nodeReadlinePlatform.callbacks.moveCursor(...args); }
@@ -1587,27 +1588,7 @@ function _clearLine(...args) { return _nodeReadlinePlatform.callbacks.clearLine(
 function _clearScreenDown(...args) { return _nodeReadlinePlatform.callbacks.clearScreenDown(...args); }
 
 function _createWriteStream(fd) {
-    if (fd === 1 && _stdout) return _stdout;
-    if (fd === 2 && _stderr) return _stderr;
-    const output = _nodeFdStreamPlatform.writable(fd);
-    _nodeTerminalPlatform.bindOutput(output, fd);
-    if (fd === 1) _stdout = output;
-    if (fd === 2) _stderr = output;
-    return output;
-}
-
-// Resize consumer only. The existing private signal registration below remains
-// a separate activation gap; this code does not establish signal delivery.
-try {
-    os.signal(28, () => {
-        // Refresh each actual borrowed TTY owner. Its pinned method emits
-        // resize only after a successful query finds changed dimensions.
-        if (_stdout) _nodeTerminalPlatform.refreshOutput(_stdout);
-        if (_stderr) _nodeTerminalPlatform.refreshOutput(_stderr);
-    });
-} catch (_) {
-    // A registration failure leaves the last actual queried dimensions.
-    // Do not synthesize successful resize delivery or terminal dimensions.
+    return _nodeStdioOutputPlatform.writable(fd);
 }
 
 function _createReadStream(fd) {
@@ -2598,6 +2579,12 @@ const _nodeFdStreamPlatform = _createNodeFdStreamPlatform({
     stream, Buffer, process, native: _nodeNative,
     openTerminalOutput: _nodeTerminalPlatform.openOutput,
     openTerminalInput: _nodeTerminalPlatform.openInput,
+});
+// Signal hooks, captured terminal output and shared streams are initialized
+// before diagnostics first requests stderr. Worker stdio remains separate.
+_nodeStdioOutputPlatform = _createNodeStdioOutputPlatform({
+    process, fdStreams: _nodeFdStreamPlatform, terminal: _nodeTerminalPlatform,
+    signals: _nodeProcessSignals, mainEnvironment: _nodeNative.workerEnvironment === null,
 });
 // Public styling consumes actual classic/Web predicates and the shared guest
 // inspection, byte, stdio and color-policy owners; no host capability shim.

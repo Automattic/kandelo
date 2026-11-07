@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source231 replaces empty private os.signal resize registration with genuine main stdio SIGWINCH subscriptions and captured-owner publication rollback.1native resize+7candidate components pass; publicTTY/guest/fourhost remain open.
+See [source scope](stdio-resize-integration.md).
+
 Source230 wires real main eval builtin bindings to the existing shared Module/require owner and adds actual parser-presence source.14native-dependent groups,4source guards,1unchanged upstream file/two subjects and14package checks pass; no fullCLI/publicREPL/guest/four-host closure.
 See [source scope](eval-builtin-bindings-integration.md).
 

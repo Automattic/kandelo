@@ -1,0 +1,92 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/terminal.md",
+    "findingIds": [
+      "T-008"
+    ],
+    "prerequisiteFindingIds": [
+      "T-010"
+    ],
+    "relatedFamilies": [
+      "terminal",
+      "processes",
+      "streams",
+      "async"
+    ],
+    "scope": "Partial direct stdio dimensions/resize owner for T-008. Producer label T-010 is preserved historically; public tty.WriteStream class remains absent, so T-010 receives a shared prerequisite only, not direct API activation/closure."
+  },
+  "sourceImplemented": [
+    "Replace actual empty numeric os.signal consumer with lazy named SIGWINCH main TTY subscriptions through real process first/last listener ownership",
+    "Publish the genuine bound stream before signal init/newListener reentry; roll back only its cache/subscriber and preserve other stdio observers on throw",
+    "Extend existing fd writable captured-owner rollback through terminal binding/listener registration; never close a borrowed or replaced publicfd",
+    "Consume existing pinned captured size/refresh owner and preserve Worker no-subscription/full public TTY gaps"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-stdio231-source-r1/report.json",
+    "sha256": "19974abb051a837a891a5cb851660e721285c5c3d10f0bf0b81b1f6b1fd707de",
+    "guardedInputs": 892,
+    "scope": "Actual current root source over real PTYs/native SignalWrap and exact existing OutputHandle addon.1native publicgroup+7candidate components; no new compiles/guest/fourhost evidence."
+  },
+  "packageChecks": {
+    "report": ".context/node26-stdio231-affected-r1.json",
+    "sha256": "e015fba3b3baef5491684a5b952b17c4a904dae8e2960fb9cdcf219913f5d67e",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-stdio231-source-r1/report.json",
+    "sha256": "19974abb051a837a891a5cb851660e721285c5c3d10f0bf0b81b1f6b1fd707de",
+    "nativePublicResizeGroups": 1,
+    "candidateComponentGroups": 7,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "One native public PTY resize observation and seven actual current source components over genuine native libuv SignalWrap/stream/EventEmitter/VM and exact reused OutputHandle addon. Distinct scopes, not eight matched APIs; no guest queued-close/self-pipe/ref/frame proof.",
+    "sourceStagingSetupFailures": 1
+  },
+  "sealedEvidence": {
+    "report": ".context/stdio-resize-owner-agent/report.json",
+    "sha256": "c50634109e3c8bc690a95bfb210096b3f78e092893fecde7672f49783564e140",
+    "reusedEvidence": true,
+    "scope": "Producer1native public resize group and7candidate components vs1/7baseline;9observation children across3versions,0helpercompiles. Actual PTY ioctl/SIGWINCH and reused exact OutputHandle/nativeSignalWrap dependencies. Original setup/baseline/root-drift nonpasses retained."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/stdio-resize-owner-agent/REPORT.md",
+      "sha256": "1a5eeb777980a06bc1df0a53cc7be07c229cb0f7b6feb53478209ae57bf343fe",
+      "scope": "Initial3empty-report setup exits,3authored unavailable process.binding fixture failures,6final baseline component nonpasses and old2256IDroot guard after229/230 drift retained. Original producerT010 shorthand is qualified by root against directT008 audit wording."
+    },
+    {
+      "report": ".context/stdio-resize-owner-agent/REPORT-CLARIFICATION.json",
+      "sha256": "903876c2b21ecf0040a2ce12e68239e4cbaef144c4952da3cdc6fcffcd840124",
+      "scope": "Required immutable wording addendum: root runtime unchanged, private runtime source changed; Worker gap/no-subscription retained but shared getter/publication changes. Original seal not rewritten."
+    },
+    {
+      "report": ".context/stdio-resize-review-agent/REPORT.md",
+      "sha256": "12cc42519e52981d7ab9eb972c2ea590339c9dd56e852e7c489c2cddcee89b80",
+      "scope": "No new introducedP1/P2 established; same-stream versus earlier/cross-stream init and closed-init policy distinguished. Inherited exact-native-policy questions remain unresolved, not accepted exclusions."
+    },
+    {
+      "report": ".context/node26-stdio231-source-r1/staging-setup-failure/correction.json",
+      "sha256": "c6b6f3b1c9905abdb0ef2bfa8a11126ec36faccf044f94fa0575fb3b8ded17aa",
+      "scope": "Prepared minimal stage omitted unchanged pinned Mozilla include-order checker required by normal generator runpy path. First source check stopped before controls. Only unchanged33181bytepinnedchecker addedtofixture; all normal algorithms/assertions remain."
+    }
+  ],
+  "remaining": [
+    "Embed new231stdio consumer/bootstrap source and execute actual guest main/signal self-pipe/queued close/ref/frame/fatal/GC/OOM/context teardown and allfourhosts",
+    "Resolve cross-stream/earlier fd-bind init reentry and exact closing/closed Signal.start policy with appropriate native controls; no guessed errno or compatibility claim",
+    "Implement full public TTY/StreamBase/stdin/stdout classes, actual Workerstdio and borrowed unsupported-reopen blocking/identity gaps",
+    "Complete T-008 and dependent T-010 semantics with identified artifact runtime evidence; no API/family closure"
+  ],
+  "at": "2026-11-07T18:48:18.293311+00:00",
+  "recipeRevision": 231,
+  "lastAcceptedEngine": 230,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

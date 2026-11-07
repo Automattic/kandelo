@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/stdio-output-platform-adapter.js",
   "packages/registry/spidermonkey/patches/0168-node-eval-presence.patch",
   "packages/registry/spidermonkey/patches/0167-node-socket-shutdown-owner.patch",
   "packages/registry/spidermonkey/patches/0166-node-import-meta-lazy-data.patch",
@@ -751,4 +752,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 230
+revision = 231

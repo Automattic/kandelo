@@ -11,7 +11,7 @@ function _createNodeFdStreamPlatform(platform) {
     const process = platform.process;
     /* NODE_STDIO_DUMMY_DESTROY */
 
-    function writable(fd, options) {
+    function writable(fd, options, publish) {
         const terminalOutput = platform.openTerminalOutput ? platform.openTerminalOutput(fd) : null;
         // A verified blocking TTY owner completes actual libc writes first.
         // The generic async operation owns copied bytes through readiness
@@ -41,6 +41,7 @@ function _createNodeFdStreamPlatform(platform) {
         // Match the target process-specific destroy policy: close is observable
         // but fd 1/2 remain open and the JS stream can be used again.
         result._destroy = dummyDestroy;
+        if (publish !== undefined) publish(result);
         return result;
         } catch (error) {
             // Preserve the original construction/publication exception. A
