@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Shared kernel readiness now retains allocation-free epoll propagation scratch in real instances. Current26 native cases pass over698 exact source/input identities. This does not activate public file notifications; guest kernel and four-host conformance remain unvalidated. SpiderMonkey recipe207 is unchanged.
+See [source scope](filesystem-readiness-integration.md).
+
 Source207 adds real clone outcomes and one Worker LOAD graph with native startup packet ownership. Narrow JavaScript/native dependency controls are distinct from uncompiled guest C++ and unestablished four-host conformance. Original transfer nonpasses remain preserved; no finding closes.
 See [source scope](host-transfer-outcome-integration.md).
 

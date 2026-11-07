@@ -560,3 +560,95 @@ fn epoll_reports_exchange_stream_end_failure_and_seal() {
     assert_eq!(batch(&mut p, &mut h, ep, 8), [(EPOLLERR, 3)]);
     assert!(batch(&mut p, &mut h, ep, 8).is_empty(), "edge-triggered: each once");
 }
+
+#[test]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+fn epoll_notify_committed_eventfd_write_and_nested_candidates_do_not_allocate() {
+    for reverse in [false, true] {
+        let mut p = Process::new(141);
+        let mut h = MockHostIO::new();
+        let event = sys_eventfd2(&mut p, 0, O_NONBLOCK).unwrap();
+        let mut eps = [0; 5];
+        for ep in &mut eps { *ep = sys_epoll_create1(&mut p, 0).unwrap(); }
+        if reverse { eps.reverse(); }
+        sys_epoll_ctl(&mut p, eps[0], 1, event, EPOLLIN | EPOLLET, 1).unwrap();
+        for parent in 1..eps.len() {
+            sys_epoll_ctl(&mut p, eps[parent], 1, eps[parent - 1], EPOLLIN | EPOLLET, parent as u64 + 1).unwrap();
+        }
+        for ep in eps { assert!(batch(&mut p, &mut h, ep, 1).is_empty()); }
+        let mut written = Err(Errno::EIO);
+        let bytes = 1u64.to_le_bytes();
+        let count = crate::epoll::allocation_probe::measure(|| {
+            written = sys_write(&mut p, &mut h, event, &bytes);
+        });
+        assert_eq!(written, Ok(8));
+        assert_eq!(count, 0, "committed write readiness propagation must not allocate");
+        // Observe only the top-level wait: candidates propagate through four
+        // actual nested epoll owners without consuming the child event.
+        assert_eq!(batch(&mut p, &mut h, eps[4], 1), [(EPOLLIN, 5)]);
+        assert_eq!(batch(&mut p, &mut h, eps[0], 1), [(EPOLLIN, 1)]);
+        for ep in eps { sys_close(&mut p, &mut h, ep).unwrap(); }
+        sys_close(&mut p, &mut h, event).unwrap();
+    }
+}
+
+#[test]
+fn epoll_notify_multiple_parent_paths_keep_distinct_ready_interests() {
+    let mut p = Process::new(142);
+    let mut h = MockHostIO::new();
+    let event = sys_eventfd2(&mut p, 0, O_NONBLOCK).unwrap();
+    let leaf = sys_epoll_create1(&mut p, 0).unwrap();
+    let left = sys_epoll_create1(&mut p, 0).unwrap();
+    let right = sys_epoll_create1(&mut p, 0).unwrap();
+    let top = sys_epoll_create1(&mut p, 0).unwrap();
+    for (parent, child, data) in [(leaf, event, 1), (left, leaf, 2), (right, leaf, 3),
+        (top, left, 4), (top, right, 5)] {
+        sys_epoll_ctl(&mut p, parent, 1, child, EPOLLIN | EPOLLET, data).unwrap();
+    }
+    assert!(batch(&mut p, &mut h, top, 2).is_empty());
+    for _ in 0..2 {
+        sys_write(&mut p, &mut h, event, &1u64.to_le_bytes()).unwrap();
+        let mut ready = batch(&mut p, &mut h, top, 2);ready.sort_unstable();
+        assert_eq!(ready, [(EPOLLIN, 4), (EPOLLIN, 5)]);
+    }
+    assert_eq!(batch(&mut p, &mut h, leaf, 1), [(EPOLLIN, 1)]);
+    for fd in [top, right, left, leaf, event] { sys_close(&mut p, &mut h, fd).unwrap(); }
+}
+
+#[test]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+fn epoll_notify_epoch_wrap_clears_stale_marks_without_consuming_pending_events() {
+    let mut p = Process::new(143);
+    let mut h = MockHostIO::new();
+    let a = sys_eventfd2(&mut p, 0, O_NONBLOCK).unwrap();
+    let b = sys_eventfd2(&mut p, 0, O_NONBLOCK).unwrap();
+    let ea = sys_epoll_create1(&mut p, 0).unwrap();
+    let eb = sys_epoll_create1(&mut p, 0).unwrap();
+    let parent = sys_epoll_create1(&mut p, 0).unwrap();
+    for (ep, target, data) in [(ea, a, 1), (eb, b, 2), (parent, eb, 3)] {
+        sys_epoll_ctl(&mut p, ep, 1, target, EPOLLIN | EPOLLET, data).unwrap();
+    }
+    for ep in [ea, eb, parent] { assert!(batch(&mut p, &mut h, ep, 1).is_empty()); }
+    let index = epoll_index(&p, eb).unwrap();
+    crate::descriptor_backing::with_epolls(|table| {
+        let ep = table.get_mut(index).unwrap();
+        // Model a mark from the previous full epoch cycle. Its independently
+        // pending candidate must survive cleanup, but cannot wake an ancestor
+        // for this unrelated callback. Delivery still rechecks real fd state.
+        ep.notification_epoch = 1;ep.interests[0].pending = true;
+    });
+    crate::epoll::force_notification_wrap_for_test();
+    let bytes = 1u64.to_le_bytes();let mut result = Err(Errno::EIO);
+    let allocations = crate::epoll::allocation_probe::measure(|| { result = sys_write(&mut p, &mut h, a, &bytes); });
+    assert_eq!(result, Ok(8));assert_eq!(allocations, 0, "epoch wrap cannot allocate after mutation");
+    let parent_index = epoll_index(&p, parent).unwrap();
+    crate::descriptor_backing::with_epolls(|table| {
+        assert_eq!(table.get(index).unwrap().notification_epoch, 0);
+        assert!(table.get(index).unwrap().interests[0].pending);
+        assert!(!table.get(parent_index).unwrap().interests[0].pending);
+    });
+    assert_eq!(batch(&mut p, &mut h, ea, 1), [(EPOLLIN, 1)]);
+    assert!(batch(&mut p, &mut h, eb, 1).is_empty());
+    assert!(batch(&mut p, &mut h, parent, 1).is_empty());
+    for fd in [parent, eb, ea, b, a] { sys_close(&mut p, &mut h, fd).unwrap(); }
+}

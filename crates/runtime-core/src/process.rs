@@ -902,6 +902,9 @@ pub struct EpollInstance {
     pub interests: Vec<EpollInterest>,
     pub cursor: usize,
     pub waiters: u32,
+    // Private callback propagation scratch. It belongs to this shared epoll
+    // backing, never the descriptor number, fork wire or guest event record.
+    pub(crate) notification_epoch: u64,
 }
 
 impl EpollInstance {
@@ -910,6 +913,7 @@ impl EpollInstance {
             interests: Vec::new(),
             cursor: 0,
             waiters: 0,
+            notification_epoch: 0,
         }
     }
 }

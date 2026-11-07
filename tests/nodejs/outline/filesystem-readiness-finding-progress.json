@@ -1,0 +1,91 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem.md",
+    "findingIds": [
+      "FS-005"
+    ],
+    "relatedFamilies": [
+      "filesystem",
+      "network",
+      "processes",
+      "streams",
+      "engine"
+    ],
+    "scope": "Shared producer/readiness prerequisite only; not FSWatcher activation, API closure or an accepted platform exclusion"
+  },
+  "sourceImplemented": [
+    "Actual shared epoll notification uses per-instance scratch and serialized epoch rather than allocating temporary changed/parent vectors after a committed mutation",
+    "Complete direct/nested cascade uses existing backing-table ownership; four passes preserve legal nested paths in either slot order and distinct diamond interests",
+    "Zero sentinel and wrap reset only scratch, preserve pending events and reuse nonzero epoch without adding an exhaustion failure",
+    "Original exclusive/mask/disabled/error/level/edge/oneshot/fd-reuse/delivery behavior remains; original23 affected tests are byte unchanged",
+    "Native-only allocation observation checks real eventfd write across actual nested descriptors and wrap; no production allocator or platform identity is replaced"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-epoll207-source-r1/report.json",
+    "sha256": "3e6e35eb57482dff5c8c156f31bde1d01352a173096d323557d1ff41e0a54db6",
+    "guardedInputs": 878,
+    "scope": "Actual shared epoll producer readiness source;698 frozen native input identities and26 actual focused native cases. No Wasm kernel/guest/public notification or four-host conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-hostoutcome207-affected-r1.json",
+    "sha256": "a66ab9dd990ec148640468ed1687dd80931af5d7e02a2a6d01b132711e1847a5",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": true
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-epoll207-source-r1/report.json",
+    "sha256": "3e6e35eb57482dff5c8c156f31bde1d01352a173096d323557d1ff41e0a54db6",
+    "currentNativeCases": 26,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 3138,
+    "exactFrozenInputMembers": 698,
+    "nativeArtifactSha256": "705496a6523af0f4dfeef76ceabd6e5155b249450fd3facbaa15911629f4da0e",
+    "originalCasesUnchanged": 23,
+    "addedCases": 3,
+    "newCompilerAttempts": 0,
+    "priorNativeTestCompilesIntegrated": 3,
+    "priorNativeProductionChecksIntegrated": 1,
+    "guestKernelCompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "packageEvidenceReused": true,
+    "scope": "Actual native runtime-core epoll module only.698 source/input identities match frozen final build; original baseline failure and reconstructed intermediate source limitation remain. No public inotify or guest claim."
+  },
+  "sealedEvidence": {
+    "report": ".context/fsnotify-readiness-agent/handoff/report.json",
+    "sha256": "2bae86e999322a2fcdd38b645d6b7997a46bacd2634a5c8efd361e9584ba0630",
+    "reusedEvidence": true,
+    "scope": "Actual private instance readiness correction with original allocation failure, three identified executed native binaries,26 final affected cases,3 native test compiles and1 production check; no guest/public notification activation."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/fsnotify-readiness-agent/handoff/evidence/native-before.stdout",
+      "sha256": "ff8fd7923198f5e2c3307a489ed031626675830117831a8d5378439f89bcba09",
+      "scope": "Original committed eventfd write through nested epolls allocated5 times, expected0; test exit101 and exact original source/binary retained."
+    },
+    {
+      "report": ".context/fsnotify-readiness-agent/handoff/RUNS.json",
+      "sha256": "5ffe96e9e56767c0b5d92ce4a827289c6d0463fe648146ade906ccd2bb6798f0",
+      "scope": "Intermediate24-case source reconstructed from preserved editor scripts, not captured contemporaneously; final26-case inputs independently frozen. Original requested target env did not select target path; actual terminal private cache location recorded."
+    }
+  ],
+  "remaining": [
+    "Integrate genuine dormant notification queue/tmpfs producer and managed descriptor owners in dependency order; public ENOSYS remains an implementation gap",
+    "Real producer-to-parked-host wake publication, actual opened-dentry/rootfs/persistent/provider mutation and permission/mask/quota ownership",
+    "Concrete notification fd metadata/SIGIO/fork encoding and coherent ABI admission/activation decision preserving frozen baseline artifacts",
+    "Compile an identified actual Wasm kernel and validate applicable guest epoll/watcher/POSIX behavior on all four hosts within build authorization",
+    "Native multithread stress, broader concurrent close/reuse/rollback/failure ownership and unchanged upstream filesystem/stream integration"
+  ],
+  "at": "2026-11-07T10:59:18.730295+00:00",
+  "recipeRevision": 207,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
