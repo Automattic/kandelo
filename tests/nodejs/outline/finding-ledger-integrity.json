@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T06:22:04.792906+00:00",
-  "sourceHead": "21dc4398e6754d09b5e15770086c9f29b0cdd12d",
-  "recipeRevision": 189,
+  "at": "2026-11-07T06:32:54.456483+00:00",
+  "sourceHead": "b960dac57b43373809e3d6039c8fdffd57ff50d6",
+  "recipeRevision": 190,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 107,
+    "sourceSliceRecords": 108,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 243
+    "findingsWithoutExplicitOrProposedSourceSlice": 238
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,21 +26,21 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 107,
+  "sourceSliceIdentitiesVerified": 108,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "3287086a3ab1e32dbd3038de8267af56dfad644617680adf4053c9fcc97191b0"
+    "sha256": "9bb853c44f5b83d253dec681ac8ba4f7125c1ca9904f15c0574f21289bd12f0c"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "7da9e6858d16c9ace80eaae2cccc76d01591f35f98f9c8b0ec708e1061236d95",
-    "sourceHead": "7917dcdd63f37a53da9dfd07d1451d15bdb68c7c",
+    "sha256": "0af18b832c0eaa65b882b39981e1c4ad16c548e01877b3fa30676f4d2b0a73af",
+    "sourceHead": "21dc4398e6754d09b5e15770086c9f29b0cdd12d",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "sys-alias-owner"
+    "spawn-preparation-action-order"
   ]
 }

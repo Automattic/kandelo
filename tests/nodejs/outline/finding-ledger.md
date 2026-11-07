@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 107 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 108 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 243 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 238 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -246,3 +246,17 @@ remain; an explicit focused-CJS option omits only that separate installation.
 It does not repair ESM or supply a fake graph. Actual guest warning/script/realm,
 ESM imports, warning redirection and remaining util behavior remain open.
 Accepted173predates current189; no four-host current conformance is established.
+
+## Source190 spawn preparation and action lifetime overlay
+
+CP-002/003/004 and document-qualified CP-007/009 now link to actual supported
+stdio admission, owned pipe rollback and child source lifetime. Every placement
+consumes its descriptor before owned sources close; legitimate numeric-fd reuse
+is preserved without a precheck/reservation. Native pair publication defines
+own elements under the actual existing cleanup guard. No finding/family closes.
+
+Nineteen real POSIX groups and the unchanged alias diagnostic/upstream file pass
+with native dependency limits explicit. Original baseline leaks, exception/EMFILE/
+iterator failures, fixture wait/observer/errno failures and old alias EBADF remain.
+Low-fd cycles, full stdio/argv/IPC, raw-error/coercion/hooks, cwd, stream-adoption
+and guest kernel/four-host lifecycle are still open. Accepted173predates190.

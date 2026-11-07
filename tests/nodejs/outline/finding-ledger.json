@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 107,
+    "sourceSliceRecords": 108,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 243
+    "findingsWithoutExplicitOrProposedSourceSlice": 238
   },
   "families": [
     {
@@ -251,7 +251,7 @@
         "PROC-014",
         "PROC-015"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 3,
+      "findingsWithExplicitOrProposedSourceSlices": 8,
       "sourceRouteAsRecorded": "bootstrap process/ChildProcess, process-clock/state/usage validation and explicit absent numeric providers, dotenv/child-wait, pinned OS frontend with native POSIX state, unchanged weak finalization/lazy descriptor and Refable dispatch; actual linked dependency versions with read-only/configurable version descriptors; native live environment virtual Object/property hooks and inherited-receiver policy ; source148 real runtime-owned original locale/ICU canonicalization and private bootstrap capture; source162 actual main-only sigaction/self-pipe SignalWrap and pinned first/last-listener activation with target-compiled signal names, real native close/async roots and reviewed loop fences; source166 reusable native root value clear preserves registration; source168 ChildProcess.kill public errors use pinned ErrnoException and actual compiled UV map",
       "remainingAsRecorded": "Complete environment prototype/constructor/keys/warnings/GC/JIT/clone and worker/TZ/CLI behavior, fatal/rejection/GC/exit/worker/resource reference integration, signal/IPC and exceptional wait/close policy, measurements, permissions and OS metadata; guest lifecycle/mask/parent/env conformance pending; custom/coverage handler EBUSY, privateTTYactivation and actual SignalWrap/guest/four-host semantics remain open",
       "remainingOwner": "Guest process/kernel state, native spawn/wait/signals/IPC and process/OS adapters",
@@ -3242,7 +3242,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "ChildProcess identity, fields, methods and events",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "spawn-preparation-action-order",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/processes.md",
+          "scope": "Actual supported async-spawn admission/pipe rollback/ordered source lifetime and own pair publication; not full ChildProcess/options/stdio/IPC/argv/coercion/error-hook/guest closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [
         "child-wait-implementation-dependencies"
@@ -3264,7 +3272,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Failure reports and owned resources settle correctly",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "spawn-preparation-action-order",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/processes.md",
+          "scope": "Actual supported async-spawn admission/pipe rollback/ordered source lifetime and own pair publication; not full ChildProcess/options/stdio/IPC/argv/coercion/error-hook/guest closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Guest process/kernel state, native spawn/wait/signals/IPC and process/OS adapters",
@@ -3284,7 +3300,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Argument, shell, env, stdio and lifecycle options",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "spawn-preparation-action-order",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/processes.md",
+          "scope": "Actual supported async-spawn admission/pipe rollback/ordered source lifetime and own pair publication; not full ChildProcess/options/stdio/IPC/argv/coercion/error-hook/guest closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Guest process/kernel state, native spawn/wait/signals/IPC and process/OS adapters",
@@ -3344,7 +3368,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Async normalization accepts/ignores unsupported options, custom shell path ignored, exec overwrites custom shell with true, extra stdio/IPC omitted. Partial pipe allocation happens before cleanup try. Real child PATH search does not repair these errors. bootstrap:3714\u20133814,3936\u20133947.",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "spawn-preparation-action-order",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/process-contracts.md",
+          "scope": "Actual supported async-spawn admission/pipe rollback/ordered source lifetime and own pair publication; not full ChildProcess/options/stdio/IPC/argv/coercion/error-hook/guest closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Guest process/kernel state, native spawn/wait/signals/IPC and process/OS adapters",
@@ -3384,7 +3416,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Sync launch has real adoption/deadline/limit/reap ownership; async wait still fabricates ECHILD success. Falsy top-level input is also ignored by target child_process.js:951, so that truthiness check alone is not a mismatch. Error/result metadata, OS-level error-versus-exception policy, flags and fd/descendant/failure edges remain exact-target questions; do not claim the sync controller is a stub or aggregate maxBuffer is inherently wrong.",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "spawn-preparation-action-order",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/process-contracts.md",
+          "scope": "Actual supported async-spawn admission/pipe rollback/ordered source lifetime and own pair publication; not full ChildProcess/options/stdio/IPC/argv/coercion/error-hook/guest closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Guest process/kernel state, native spawn/wait/signals/IPC and process/OS adapters",
@@ -19878,6 +19918,92 @@
       "auditDocument": "tests/nodejs/audit/values-legacy-modules.md",
       "findingScope": "Actual sys alias/load effect and pinned initialization/cache/warning owner; original prose finding ambiguity preserved, no util/ESM/guest closure",
       "additionalAuditDocuments": {}
+    },
+    "spawn-preparation-action-order": {
+      "document": "tests/nodejs/outline/spawn-preparation-action-order-finding-progress.json",
+      "sha256": "dcc047335caed34519a1c78591b9690b4754b4428e83fb7830fe0b7260474c02",
+      "recordedRevision": 190,
+      "explicitFindingIds": [
+        "CP-002",
+        "CP-003",
+        "CP-004"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-spawn190-source-r1/report.json",
+          "sha256": "cba5bab4ee5966c87cb7343ffc9858950b46353f0aa0d2f3bb3660becb39a875",
+          "guardedInputs": 844,
+          "scope": "Real async-spawn pipe preparation/rollback, action-source lifetime and own-element native publication; scoped real native controls/upstream file, guest JSAPI/kernel/full stdio/lifecycle remain open."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-spawn190-affected-r1.json",
+          "sha256": "21964eeccb22987757fb1582fe979f52a960961e74a5254b9739149f0f09d872",
+          "passed": 23,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false,
+          "scope": "23scoped existing checks in the identified report:14package-source and9child-owner/lifecycle; no global product setup or guest conformance."
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-spawn190-source-r1/report.json",
+          "sha256": "cba5bab4ee5966c87cb7343ffc9858950b46353f0aa0d2f3bb3660becb39a875",
+          "actualPosixControlGroups": 19,
+          "numericFdAliasMatches": true,
+          "wholeUnchangedUpstreamFiles": 1,
+          "subjectsPerFile": 2,
+          "existingChildChecks": 9,
+          "existingPackageChecks": 14,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "actionOrderSealedReport": {
+            "report": ".context/spawn-action-order-owner-agent/report.json",
+            "sha256": "be8c44f3c4fa7e6edcaf3e7b926677afa3043b2d8d7a01bf4623d54c1179e7e3"
+          },
+          "scope": "Actual current bootstrap over identified POSIX component and explicit native streams/readiness/error boundaries; native publisher JSAPI source/replay only, no guest kernel/full lifecycle/fourhost proof"
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/spawn-preparation-owner-agent/report.json",
+          "sha256": "004f1b599870080f4e57a75f13ed25b339a71764faa69ab7b88e2cd7f9f35877",
+          "reusedEvidence": true,
+          "scope": "19actual-POSIX groups/9existing child checks/whole unchanged upstream;7pass12fail original preimage, ENOSYS fixture failure and alias nonpass preserved.1tiny native compile accounted once; no guest JSAPI."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/spawn-preparation-action-order-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/spawn-preparation-action-order-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Read supported caller options/getters/stdio before physical acquisition; retain original getter exception values",
+        "Adopt both real raw pipe ends into fixed own slots without Array iteration; rollback every owned end without closing borrowed fds",
+        "Native JS_DefineElement pair publication preserves existing ScopeExit and avoids inherited setters",
+        "Construct supported stdio placements before child-source closes, retaining actual numeric-fd reuse instead of prechecking/reserving identities",
+        "Real EMFILE/ENFILE return ChildProcess before queued error/close without pid/stdio; public queued Error observes child metadata",
+        "Preserve actual native flags/minFd3/wait/parent cleanup and source188 environment teardown",
+        "Use actual host errno constants in existing fixture input with original assertions; update explanatory current README while preserving immutable diagnostic source/nonpasses"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/spawn-preparation-action-order-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "New production native pair-publication compile/runtime and actual guest libc/kernel/four-host conformance",
+        "Complete supported stdio beyond first3, wrapped/sparse/extra/IPC and low0..2 borrowed remapping/cycles",
+        "Actual inherited nonblocking-source and cwd/error-precedence policy",
+        "Complete shell/argv/env/URL/credential/abort/timeout normalization and raw-error versus coercion exception chronology",
+        "Native error property-hook behavior and unforgeable operation-outcome admission; own numeric errno plus native Error is not proof by itself",
+        "Post-success stream adoption/OOM, cancellation/ref/async-resource and full lifecycle/IPC/reaping behavior",
+        "Preserve original failures/skips/unsupported/timeouts/harness errors; source/component checks do not close findings"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/processes.md",
+      "findingScope": "Actual supported async-spawn admission/pipe rollback/ordered source lifetime and own pair publication; not full ChildProcess/options/stdio/IPC/argv/coercion/error-hook/guest closure",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/process-contracts.md": [
+          "CP-007",
+          "CP-009"
+        ]
+      }
     }
   },
   "dependencyNarratives": {
@@ -21898,6 +22024,26 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current189actual sys alias/init/warning/cache source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T06:32:54.456483+00:00",
+        "sourceCheckpoint": 190,
+        "sourceHead": "b960dac57b43373809e3d6039c8fdffd57ff50d6",
+        "addedSourceSlices": [
+          "spawn-preparation-action-order"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "9b778cb043b28b177b7ec0f214c983ff15fa5bd1e9d4fc2a65c071b4a744a511"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current190actual spawn preparation/action-source lifetime and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }
