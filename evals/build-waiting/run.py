@@ -94,6 +94,34 @@ def make_sandbox(arm):
     return box, settings
 
 
+def session_usage(events):
+    """(usage, turns) for the whole session.
+
+    A headless session that waits on a background task emits one result
+    event per segment. The last one's `usage` and `num_turns` cover only
+    the final segment, while its `modelUsage` and `total_cost_usd` are
+    session totals (probe, 2026-11-07: two result events; the last
+    reported 36k cache reads in `usage`, 66k in `modelUsage`). Before
+    this, sessions that waited in the background were undercounted.
+    """
+    results = [e for e in events if e.get("type") == "result"]
+    if not results:
+        return {}, 0
+    total = {}
+    for v in (results[-1].get("modelUsage") or {}).values():
+        for ours, theirs in (("input_tokens", "inputTokens"), ("cache_read_input_tokens", "cacheReadInputTokens"),
+                             ("cache_creation_input_tokens", "cacheCreationInputTokens"),
+                             ("output_tokens", "outputTokens")):
+            total[ours] = total.get(ours, 0) + (v.get(theirs) or 0)
+    return total or (results[-1].get("usage") or {}), sum(r.get("num_turns") or 0 for r in results)
+
+
+def input_equivalent(usage):
+    # Same weighting as evals/agent-skills and wait-impact.py.
+    return round((usage.get("input_tokens") or 0) + 0.1 * (usage.get("cache_read_input_tokens") or 0)
+                 + 2 * (usage.get("cache_creation_input_tokens") or 0) + 5 * (usage.get("output_tokens") or 0))
+
+
 def run_one(task, arm, rep, model, out_dir, budget):
     box, settings = make_sandbox(arm)
     env = dict(os.environ, **task["env"], KANDELO_AGENT_JOBS_DIR=str(box / ".agent-jobs"))
@@ -104,6 +132,8 @@ def run_one(task, arm, rep, model, out_dir, budget):
     start = time.time()
     proc = subprocess.run(cmd, cwd=box, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     seconds = round(time.time() - start)
+    # Kept so every number below can be re-derived from the transcript.
+    (out_dir / f"{task['id']}.{arm}.{rep}.stream.jsonl").write_text(proc.stdout)
     events = []
     for line in proc.stdout.splitlines():
         try:
@@ -119,9 +149,11 @@ def run_one(task, arm, rep, model, out_dir, budget):
     record = {
         "task": task["id"], "arm": arm, "rep": rep,
         "score": sum(passed.values()) / len(passed), "checks": passed,
-        "cost_usd": result.get("total_cost_usd") or 0.0, "turns": result.get("num_turns") or 0,
+        "cost_usd": result.get("total_cost_usd") or 0.0, "turns": session_usage(events)[1],
         "bash_calls": len(bash), "wait_calls": sum(1 for c in bash if WAITISH.search(c)),
         "used_agent_job": any("agent-job" in c for c in bash),
+        "tokens": input_equivalent(session_usage(events)[0]),
+        "segments": sum(1 for e in events if e.get("type") == "result"),
         "seconds": seconds, "error": bool(result.get("is_error")) or not result,
     }
     (out_dir / f"{task['id']}.{arm}.{rep}.md").write_text(answer + "\n\n--- bash calls ---\n" + "\n".join(bash))
