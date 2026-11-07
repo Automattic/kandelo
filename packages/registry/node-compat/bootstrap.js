@@ -3495,13 +3495,12 @@ Object.assign(crypto, _createNodeSignaturePlatform({
     Buffer, types: util.types, codecs: _nodeBufferCodecs, streams: stream,
     digestHelpers: _nodeDigestHelpers, kHandle: _nodeIncrementalCrypto.symbols.kHandle,
     constants: _nodeConstantBinding,
+    makeError: _nodeFsTruncation.makeError,
 }));
-// Key generation and one-shot signature consumers still need native owners.
+// Key generation still needs its separate native owner.
 // Imported keys above own real ncrypto material; their presence does not
 // establish those separate consumers or WebCrypto algorithm compatibility.
 crypto.generateKeyPairSync = _notImpl('crypto', 'generateKeyPairSync');
-crypto.sign = _notImpl('crypto', 'sign');
-crypto.verify = _notImpl('crypto', 'verify');
 const _nodeX509 = _createNodeX509Platform({
     native: _nodeNative, values: _nodeValues, keys: _nodeCryptoKeys,
     types: util.types, inspection: _nodeInspection, Buffer, codecs: _nodeBufferCodecs,

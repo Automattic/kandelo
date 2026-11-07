@@ -1,5 +1,9 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0143-node-sign-job-resource-info.patch",
+  "third_party/node-core/native-signature-jobs.cpp",
+  "third_party/node-core/signature-job-operations.h",
+  "third_party/node-core/signature-jobs.md",
   "packages/registry/spidermonkey/patches/0142-node-messageport-transfer.patch",
   "packages/registry/spidermonkey/patches/0141-node-signature-owner.patch",
   "third_party/node-core/native-signature.cpp",
@@ -687,4 +691,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 194
+revision = 195

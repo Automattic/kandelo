@@ -1,0 +1,113 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto.md",
+    "findingIds": [
+      "C-015",
+      "C-008",
+      "C-009"
+    ],
+    "relatedFamilies": [
+      "crypto",
+      "values",
+      "async",
+      "engine"
+    ],
+    "scope": "Actual sync/async one-shot SignJob provider/input/resource/queue ownership; component ALS/frame nonpass and queue-OOM/provider/guest obligations remain"
+  },
+  "sourceImplemented": [
+    "Actual public one-shot sign/verify consume unchanged pinned wrappers, not incompatible streaming substitutes",
+    "Real key upref, sync original allocation spans and async pre-init owned input/context/signature snapshots",
+    "Actual EVP one-shot/prehashed/EdDSA/ML-DSA operations, P1363/error/context policy",
+    "Genuine SIGNREQUEST owner over existing CPU queue/captured frame/callback scope and catchable ToResult exception delivery",
+    "Actual resourceInfo class route includes existing HKDF and new signature request owners"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-signjobs195-source-r2/report.json",
+    "sha256": "4eed79d21a8dffc8a6e3d52bd3951077a2fda2aa29b256ff2bb936f9524e54c6",
+    "guardedInputs": 862,
+    "scope": "Actual one-shot sync/async jobs, real queue/resource/bytes/error ownership;39of40component groups pass, native ALS/frame nonpass retained, no productionJSAPI/fatal/provider/guest closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-signjobs195-affected-r1.json",
+    "sha256": "a67e98aeb6291aff7690b0fe64f16df8882a1991f60bed2f674fea95437cc103",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-signjobs195-source-r2/report.json",
+    "sha256": "4eed79d21a8dffc8a6e3d52bd3951077a2fda2aa29b256ff2bb936f9524e54c6",
+    "oneShotGroups": 40,
+    "oneShotPass": 39,
+    "oneShotNonpass": 1,
+    "actualControlExit": 1,
+    "controlRunIsPassing": false,
+    "laterMetadataAssertionsUncredited": true,
+    "streamingSignatureGroups": 52,
+    "wholeUnchangedUpstreamFiles": 2,
+    "subjectsPerFile": 2,
+    "cliInteropSkipDiagnosticsPreserved": 2,
+    "compiledInputsVerified": 1268,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Partial actual one-shot source. Native component ALS/frame nonpass is unresolved, not a platform boundary/Node defect/workaround. Metadata after failed assertion not credited; actual production captured-frame/queue behavior untested."
+  },
+  "sealedEvidence": {
+    "report": ".context/signature-jobs-owner-agent/report.json",
+    "sha256": "2e63dc85a392c64b4004befd22adb28b20188ef6c84f054817e368a359882f92",
+    "reusedEvidence": true,
+    "scope": "39of40groups with unresolved native component ALS/frame nonpass, existing52stream groups,2unchanged files per subject/CLI skips;3tiny compiles2fixture failures, guest0."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/signature-jobs-owner-agent/report.json",
+      "sha256": "2e63dc85a392c64b4004befd22adb28b20188ef6c84f054817e368a359882f92",
+      "kind": "preserved-native-component-and-compile-fixture-nonpasses",
+      "focusedFailure": [
+        {
+          "name": "actual callback async context/resource and destroy lifecycle",
+          "message": "Expected values to be strictly equal:\n+ actual - expected\n\n+ undefined\n- {\n-   frame: true\n- }\n",
+          "stack": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n+ actual - expected\n\n+ undefined\n- {\n-   frame: true\n- }\n\n    at SignJob.<anonymous> (/Users/brandon/conductor/workspaces/kandelo/davao/.context/agent-worktrees/signature-jobs-owner/third_party/node-core/tests/signature-jobs/control.cjs:67:138)\n    at job.ondone (eval at <anonymous> (/Users/brandon/conductor/workspaces/kandelo/davao/.context/agent-worktrees/signature-jobs-owner/third_party/node-core/tests/signature-jobs/platform.cjs:12:17), <anonymous>:100966:5)\n    at SignJob.complete (eval at <anonymous> (/Users/brandon/conductor/workspaces/kandelo/davao/.context/agent-worktrees/signature-jobs-owner/third_party/node-core/tests/signature-jobs/platform.cjs:12:17), <anonymous>:100735:28)\n    at SignJob.callbackTrampoline (node:internal/async_hooks:132:14)"
+        }
+      ],
+      "fixtureFailures": [
+        "first2 native compiler failures",
+        "third compile succeeded but reused stream artifact path incorrect; load error corrected without recompilation"
+      ],
+      "laterMetadataAssertionsUncredited": true
+    },
+    {
+      "report": ".context/node26-signjobs195-source-r2/controls/actual-signature-job-controls.stdout",
+      "sha256": "0ba45ac25bfe2efb85f7328b2dc2627578f2ca922f353e113db65f1991892829",
+      "kind": "current-root-component-ALS-frame-nonpass",
+      "exit": 1,
+      "name": "actual callback async context/resource and destroy lifecycle",
+      "acceptedPlatformLimit": false
+    },
+    {
+      "report": ".context/node26-signjobs195-integration-r1.log",
+      "sha256": "e1270a2948d84e29d88eb21db3412009f087ad8b13a1ee56a7440f256f4486ee",
+      "kind": "overly-broad-root-preimage-guard",
+      "reason": "Embedding generator already contains independent constants192 changes; stopped before edits. Narrow additive jobs hunk applied inr2."
+    }
+  ],
+  "remaining": [
+    "unresolved native component callback frame nonpass",
+    "shared queue OOM/native-exception mapping versus target crypto allocation/fatal policy unverified",
+    "actual guest JSAPI/queue/context/security/GC/fault/teardown validation",
+    "provider and opaque allocation accounting",
+    "existing STORE/keygen/permission gaps",
+    "four-host identified-artifact conformance",
+    "Skipped conditional OpenSSL-CLI interoperability branches remain unexecuted; no all-branch coverage claim"
+  ],
+  "at": "2026-11-07T07:42:45.793809+00:00",
+  "recipeRevision": 195,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "a29b3fd089ab5eab4b505876e05944bd76d572f4d0701b5f10a758c83dcaf41b",
+    "packages/registry/node-compat/bootstrap.js": "4501d007bdce298487954e31457af2ec9cab49955ea98136d3b551d9114008f0",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
@@ -92,7 +92,7 @@
     "third_party/node-core/realpath-platform-adapter.js": "7f59896f6a03436546fd0d34e0d651f01ed18724bbee1ce3c10216a6f73bd3ca",
     "third_party/node-core/removal-platform-adapter.js": "a641209be995d2f246b87dc035857a8864fcb0cecb74ab968c1dce95bdde73b0",
     "third_party/node-core/server-constructor-adapter.js": "c296b58141685aa178836c01cb85e2e292f0f06641fd56dd31fa630002b61f3f",
-    "third_party/node-core/signature-platform-adapter.js": "3c9bb65dfac8b3c88dde60cb611839716a13103fe334bc0bd1e9209da1d08ea4",
+    "third_party/node-core/signature-platform-adapter.js": "1e44bb8672c1d51c5b752a25b540e863cf93eecbd366091584fabda62443d7f2",
     "third_party/node-core/socket-stream-adapter.js": "436ac1c31a90ba186369c95e56193f258795cd76d30b60e5a7fe904a96f02a8c",
     "third_party/node-core/source-map-platform-adapter.js": "cf215318dcfa6a95edd314d85b71a98c4b52f12dc10c646f3ed13a4a4b42c9fc",
     "third_party/node-core/sqlite-platform-adapter.js": "51f4aa497e46965558380f60eb92d0b4a7465d72b8f581d73a10c7ee53aa628c",

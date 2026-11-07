@@ -3,9 +3,9 @@
 The complete unchanged pinned `lib/internal/crypto/sig.js` supplies the public
 Sign/Verify constructors, Writable inheritance, shared update/_write methods,
 validation/getter order, key preparation, options and encodings. The exact
-`lib/crypto.js` creator functions are selected by source identity. Only the four
-streaming exports are connected; the public one-shot crypto.sign/verify remain
-open consumers with their existing explicit unsupported behavior.
+`lib/crypto.js` creator functions are selected by source identity. The four
+streaming exports use this owner; the distinct public one-shot crypto.sign/verify
+owner is documented in signature-jobs.md.
 
 `signature-platform-adapter.js` delegates private operations through the curated
 production adapter to `native-signature.cpp`. Its real GC-finalized handle owns a
@@ -40,8 +40,9 @@ actual engine KeyMaterial edges. Passing these controls does not compile the
 SpiderMonkey wrapper, validate guest libc/kernel/provider configuration, establish
 GC/zone/security behavior, or demonstrate four-host conformance.
 
-One-shot SignJob needs separate sync/async admission, retained key/data/signature
+The separate SignJob owner uses sync/async admission, retained key/data/signature
 ownership, context strings, provider one-shot algorithms, prehashed fallback,
-small-order EdDSA checks and actual native work/callback lifecycle. Implementing
-it by forwarding through streaming Sign would produce different behavior,
-including for SM2 and one-shot-only keys, and is not this implementation.
+small-order EdDSA checks and actual native work/callback lifecycle. Forwarding
+one-shot work through streaming Sign would produce different behavior,
+including for SM2 and one-shot-only keys. See signature-jobs.md for that owner
+and its remaining evidence/dependency gaps.

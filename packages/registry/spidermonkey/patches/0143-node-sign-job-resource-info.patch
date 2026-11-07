@@ -1,0 +1,10 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3635,5 +3635,6 @@
+   if (unwrapped && (JS::GetClass(unwrapped) == &KandeloFsRequestClass || JS::GetClass(unwrapped) == &KandeloRandomRequestClass ||
+                     JS::GetClass(unwrapped) == &KandeloPbkdf2RequestClass || JS::GetClass(unwrapped) == &KandeloScryptRequestClass ||
+-                    JS::GetClass(unwrapped) == &KandeloArgon2RequestClass)) {
++                    JS::GetClass(unwrapped) == &KandeloArgon2RequestClass || JS::GetClass(unwrapped) == &KandeloHkdfRequestClass ||
++                    JS::GetClass(unwrapped) == &KandeloSignRequestClass)) {
+     return KandeloFsRequestResourceInfo(cx, unwrapped, args.rval());
+   }

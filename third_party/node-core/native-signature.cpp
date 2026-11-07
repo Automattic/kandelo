@@ -13,11 +13,60 @@ static const JSClass KandeloSignClass = {"Sign",
   JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_FOREGROUND_FINALIZE, &KandeloSignatureOps};
 static const JSClass KandeloVerifyClass = {"Verify",
   JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_FOREGROUND_FINALIZE, &KandeloSignatureOps};
+static bool KandeloSignatureKey(JSContext* cx, const CallArgs& args, unsigned offset, bool verify,
+                                  MutableHandleObject handle, MutableHandleValue materialOwner,
+                                  std::unique_ptr<kandelo::crypto::KeyMaterial>& parsed,
+                                  const kandelo::crypto::KeyMaterial*& material) {
+  using State = kandelo::crypto::SignatureState;
+  using Material = kandelo::crypto::KeyMaterial;
+  handle.set(KandeloKeyUnwrap(cx, args.get(offset)));
+  if (JS_IsExceptionPending(cx)) return false;
+  if (handle && JS::GetClass(handle) == &KandeloKeyHandleClass) {
+    materialOwner.set(JS::GetReservedSlot(handle, 0)); material = KandeloKeyMaterial(handle);
+    if (!material || material->isSecret || (!verify && KandeloKeyRole(handle) != 2))
+      State::Code("ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE", "Invalid key object type");
+  } else {
+    int64_t format = 1, encoding = 1;
+    if (!args.get(offset + 1).isNullOrUndefined() && !KandeloFsInteger(cx, args.get(offset + 1), 0, 6, &format)) return false;
+    if (Material::Format(format) == Material::Format::JWK) {
+      if (!args.get(offset + 0).isObject()) { JS_ReportErrorASCII(cx, "JWK requires an object"); return false; }
+      RootedObject jwk(cx, &args.get(offset).toObject());
+      handle.set(JS_NewObjectWithGivenProto(cx, &KandeloKeyHandleClass, nullptr));
+      RootedValue ignored(cx);
+      if (!handle || !KandeloKeyImportJwk(cx, handle, 1, jwk, &ignored)) return false;
+      materialOwner.set(JS::GetReservedSlot(handle, 0)); material = KandeloKeyMaterial(handle);
+    } else if (Material::Format(format) == Material::Format::STORE) {
+      if (verify) State::Code("ERR_INVALID_ARG_VALUE", "URLs for OpenSSL STORE loaders are only accepted for private keys");
+      State::Code("ERR_METHOD_NOT_IMPLEMENTED", "OpenSSL STORE key loading is not implemented");
+    } else {
+      kandelo::crypto::Bytes bytes, passphrase;
+      if (!KandeloKeyCopyRaw(cx, args.get(offset + 0), &bytes)) return false;
+      if (Material::Format(format) == Material::Format::RAW_PUBLIC ||
+          Material::Format(format) == Material::Format::RAW_PRIVATE || Material::Format(format) == Material::Format::RAW_SEED) {
+        std::string type, curve;
+        if (!KandeloKeyString(cx, args.get(offset + 2), &type)) return false;
+        if (args.get(offset + 4).isString() && !KandeloKeyString(cx, args.get(offset + 4), &curve)) return false;
+        parsed = Material::Raw(bytes, Material::Format(format), type, curve);
+      } else {
+        if (!args.get(offset + 2).isNullOrUndefined() && !KandeloFsInteger(cx, args.get(offset + 2), 0, 3, &encoding)) return false;
+        const bool password = !args.get(offset + 3).isNullOrUndefined();
+        if (password && !KandeloKeyCopy(cx, args.get(offset + 3), &passphrase)) return false;
+        parsed = Material::Parse(!verify, bytes, Material::Configuration(int(format), int(encoding), password ? &passphrase : nullptr));
+      }
+      material = parsed.get();
+    }
+  }
+  return true;
+}
+static bool KandeloCreateSignatureJob(JSContext*, const CallArgs&, MutableHandleValue);
+static bool KandeloRunSignatureJob(JSContext*, const CallArgs&, MutableHandleValue);
 static bool KandeloSignatureDispatch(JSContext* cx, const CallArgs& args, MutableHandleValue output) {
   using State = kandelo::crypto::SignatureState;
   using Material = kandelo::crypto::KeyMaterial;
   std::string operation;
   if (!KandeloKeyString(cx, args.get(0), &operation)) return false;
+  if (operation == "createJob") return KandeloCreateSignatureJob(cx, args, output);
+  if (operation == "runJob") return KandeloRunSignatureJob(cx, args, output);
   if (operation == "new") {
     RootedObject prototype(cx, KandeloKeyUnwrap(cx, args.get(1)));
     if (!prototype || !args.get(2).isBoolean()) {
@@ -70,46 +119,11 @@ static bool KandeloSignatureDispatch(JSContext* cx, const CallArgs& args, Mutabl
   // Root both the handle and its independent material edge while key parsing
   // may enter caller JWK getters or allocate/collect. No raw byte borrow crosses
   // those callbacks; the digest owner itself is rooted throughout reentrancy.
-  RootedObject handle(cx, KandeloKeyUnwrap(cx, args.get(2)));
-  if (JS_IsExceptionPending(cx)) return false;
+  RootedObject handle(cx);
   RootedValue materialOwner(cx);
   std::unique_ptr<Material> parsed;
   const Material* material = nullptr;
-  if (handle && JS::GetClass(handle) == &KandeloKeyHandleClass) {
-    materialOwner = JS::GetReservedSlot(handle, 0); material = KandeloKeyMaterial(handle);
-    if (!material || material->isSecret || (!verify && KandeloKeyRole(handle) != 2))
-      State::Code("ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE", "Invalid key object type");
-  } else {
-    int64_t format = 1, encoding = 1;
-    if (!args.get(3).isNullOrUndefined() && !KandeloFsInteger(cx, args.get(3), 0, 6, &format)) return false;
-    if (Material::Format(format) == Material::Format::JWK) {
-      if (!args.get(2).isObject()) { JS_ReportErrorASCII(cx, "JWK requires an object"); return false; }
-      RootedObject jwk(cx, &args[2].toObject());
-      handle = JS_NewObjectWithGivenProto(cx, &KandeloKeyHandleClass, nullptr);
-      RootedValue ignored(cx);
-      if (!handle || !KandeloKeyImportJwk(cx, handle, 1, jwk, &ignored)) return false;
-      materialOwner = JS::GetReservedSlot(handle, 0); material = KandeloKeyMaterial(handle);
-    } else if (Material::Format(format) == Material::Format::STORE) {
-      if (verify) State::Code("ERR_INVALID_ARG_VALUE", "URLs for OpenSSL STORE loaders are only accepted for private keys");
-      State::Code("ERR_METHOD_NOT_IMPLEMENTED", "OpenSSL STORE key loading is not implemented");
-    } else {
-      kandelo::crypto::Bytes bytes, passphrase;
-      if (!KandeloKeyCopyRaw(cx, args.get(2), &bytes)) return false;
-      if (Material::Format(format) == Material::Format::RAW_PUBLIC ||
-          Material::Format(format) == Material::Format::RAW_PRIVATE || Material::Format(format) == Material::Format::RAW_SEED) {
-        std::string type, curve;
-        if (!KandeloKeyString(cx, args.get(4), &type)) return false;
-        if (args.get(6).isString() && !KandeloKeyString(cx, args.get(6), &curve)) return false;
-        parsed = Material::Raw(bytes, Material::Format(format), type, curve);
-      } else {
-        if (!args.get(4).isNullOrUndefined() && !KandeloFsInteger(cx, args.get(4), 0, 3, &encoding)) return false;
-        const bool password = !args.get(5).isNullOrUndefined();
-        if (password && !KandeloKeyCopy(cx, args.get(5), &passphrase)) return false;
-        parsed = Material::Parse(!verify, bytes, Material::Configuration(int(format), int(encoding), password ? &passphrase : nullptr));
-      }
-      material = parsed.get();
-    }
-  }
+  if (!KandeloSignatureKey(cx, args, 2, verify, &handle, &materialOwner, parsed, material)) return false;
   State::CheckKey(material->asymmetric);
   const unsigned offset = verify ? 8 : 7;
   int64_t padding = material->asymmetric.getDefaultSignPadding(), encoding;

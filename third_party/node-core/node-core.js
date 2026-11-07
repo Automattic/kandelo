@@ -100773,7 +100773,17 @@ function _createNodeSignaturePlatform(platform) {
         update(data, encoding) { return call('update', this, data, encoding); }
         verify(...args) { return call('verify', this, ...args); }
     }
-    const binding = { Sign: SignHandle, Verify: VerifyHandle,
+    function complete(status, syscall, packet) {
+        const error = status < 0 ? platform.makeError(status, syscall) : packet[0];
+        return primordials.ReflectApply(this.ondone, this, [error, status < 0 ? undefined : packet[1]]);
+    }
+    function SignJob(mode, operation, ...args) {
+        return call('createJob', SignJob.prototype, complete, mode, operation, ...args);
+    }
+    primordials.ObjectDefineProperty(SignJob.prototype, 'run', { configurable: true, writable: true,
+        value: function run() { return call('runJob', this); } });
+    const binding = { Sign: SignHandle, Verify: VerifyHandle, SignJob,
+        kCryptoJobAsync: 0, kCryptoJobSync: 1, kSignJobModeSign: 0, kSignJobModeVerify: 1,
         kSigEncDER: 0, kSigEncP1363: 1 };
     const module = { exports: {} };
     const dependencies = new primordials.SafeMap([
@@ -101113,7 +101123,7 @@ module.exports = {
         throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Signature dependency ' + name);
     }, primordials, name => name === 'crypto' ? binding :
         name === 'constants' ? platform.constants : undefined);
-    const { Sign, Verify } = module.exports;
+    const { Sign, Verify, signOneShot, verifyOneShot } = module.exports;
     function createSign(algorithm, options) {
   return new Sign(algorithm, options);
 }
@@ -101122,9 +101132,7 @@ function createVerify(algorithm, options) {
   return new Verify(algorithm, options);
 }
 
-    // SignJob/one-shot and its native async ownership are separate consumers;
-    // do not expose the unbound one-shot wrappers as working implementations.
-    return { Sign, Verify, createSign, createVerify };
+    return { Sign, Verify, createSign, createVerify, sign: signOneShot, verify: verifyOneShot };
 }
 
 // Pinned public password-KDF algorithms over native owned sync/queued work.

@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source195 integrates actual one-shot SignJob owners over streaming193/constants192.39of40focused component groups pass; one ALS/frame group remains a nonpass and later assertions are uncredited. Existing52streaming groups,2unchanged files per subject and14package checks complete; CLI branches stay skipped.
+See [source scope](signature-jobs-integration.md).
+
 Source194 integrates actual native MessagePort transfer/receiver/abort ownership and clone ordering. Eight portable groups, thirteen native-dependent candidate processes, one unchanged upstream file per subject and25affected checks pass. Automatic native transit-cycle collection, generic transfer and guest/four-host evidence remain incomplete.
 See [source scope](messageport-transfer-integration.md).
 
