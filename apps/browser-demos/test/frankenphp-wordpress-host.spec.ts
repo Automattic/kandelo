@@ -13,6 +13,7 @@ import {
 } from "../../../packages/registry/php/test/optimizer-cfg-probe";
 
 const imagePath = process.env.KANDELO_WORDPRESS_FRANKENPHP_VFS;
+const imageLazyAssetDirectory = process.env.KANDELO_WORDPRESS_FRANKENPHP_LAZY_ASSET_DIRECTORY;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const churnRequests = Number(process.env.KANDELO_FRANKENPHP_CHURN_REQUESTS ?? "0");
 const editorBurstRounds = Number(process.env.KANDELO_FRANKENPHP_EDITOR_BURST_ROUNDS ?? "0");
@@ -117,7 +118,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     });
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, metricsModuleUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds, optimizerProbes }) => {
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, metricsModuleUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, imageLazyAssetDirectory, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds, optimizerProbes }) => {
       let readMemory: (() => Promise<unknown>) | undefined;
       const stage = async (message: string) => {
         let snapshot: unknown;
@@ -168,8 +169,9 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
       try {
         await kernel.initFromImage({
           kernelWasm, vfsImage: new Uint8Array(imageBytes),
-          // Use the app's ordinary transport for the image's deferred bodies.
-          lazyAssetDirectory: imageOwnedLazyAssetDirectory(),
+          // A retained image must fetch its exact pinned lazy-member cohort.
+          // Current images default to the app's ordinary transport.
+          lazyAssetDirectory: imageLazyAssetDirectory ?? imageOwnedLazyAssetDirectory(),
         });
         readMemory = async () => {
           const startedAt = new Date().toISOString();
@@ -465,6 +467,7 @@ echo json_encode([
       memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds,
       gracefulProbeUrl: new URL(`/@fs/${resolve(repoRoot, "host/test/support/frankenphp-graceful.ts")}`, baseURL!).href,
       runtimeUrlsModuleUrl: new URL("/lib/init/image-owned-runtime-urls.ts", baseURL!).href,
+      imageLazyAssetDirectory,
       optimizerProbes: PHP_OPTIMIZER_CFG_CONDITIONS.map(conditions => ({ conditions, code: phpOptimizerCfgProbe(conditions) })),
     }).catch(async error => {
       const evidencePath = test.info().outputPath("browser-page-lifecycle.json");

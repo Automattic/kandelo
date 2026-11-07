@@ -487,6 +487,14 @@ it is not unique physical footprint or guest linear-memory usage. Each
 Chromium round already uses a fresh browser. A bounded run and an RSS trend
 do not by themselves prove a leak fix or long-term production stability.
 
+For the focused `frankenphp-wordpress-host.spec.ts` diagnostic, set
+`KANDELO_WORDPRESS_FRANKENPHP_VFS` to the retained image. If its deferred
+members belong to a different build than the current test server, set
+`KANDELO_WORDPRESS_FRANKENPHP_LAZY_ASSET_DIRECTORY` to that image's matching
+asset directory. This is ordinary transport binding: the kernel still
+checks every fetched body's size and digest. An image and another build's
+same-named utility are not an interchangeable artifact cohort.
+
 #### mariadb
 
 Runs MariaDB 10.5 with the Aria or InnoDB storage engine. Measures bootstrap (system table creation) and a sequence of SQL operations.

@@ -21,20 +21,67 @@ normal SDK does not link the retired direct-import glue. The fixture
 exercises brk query/refusal, not positive brk growth: normal C startup has
 already placed a live mapping beside the break. A proposed custom-entry
 fixture was discarded instead of changing the SDK/CRT for this test.
-Broader Rust, ABI, libc/POSIX, final-image and real workload memory checks
-remain pending. A first Rust workspace invocation incorrectly overrode the
-repository's serial `RUST_TEST_THREADS=1` with two threads and aborted in
-image-module tests; preserve that runner-error evidence and rerun with the
-committed setting. Reports are under the isolated checkout's
-`.context/baseline-tests/` and `.context/candidate-tests/`. The existing
-verified WordPress preview remains unchanged during evaluation.
+The serial validation run passes 3,966 workspace Rust checks, the ABI
+snapshot and all 674 test-file classifications. Selected allocation and
+unmapping conformance completes on both Node and Chromium: each host has
+seven passes and three documented expected failures, no unexpected ones.
+The first Rust run overrode the committed serial setting with two threads
+and aborted; that runner-error report is retained separately.
+
+The real WordPress backend gate passes all three engines in 9m13s, zero
+skips/flaky cases, with unchanged image `464d553bb3e5` and Caddy
+`f5771507fe1e`. It includes 90-second traffic, editor HTTP bursts,
+SIGKILL/restart and held-request draining. Kernel capacity stays at
+196,673,536 bytes throughout traffic while Caddy reaches 713,031,680.
+After restart the kernel high-water mark is 381,747,200 bytes. WebKit
+samples reach 7.1G physical footprint and report 890.2M at 60 seconds after
+destruction. These vmmap labels are one diagnostic observation, not RSS,
+a sustained bound or an improvement percentage. The earlier 9.2G run
+completed a different request count; do not infer throughput or physical
+savings by subtracting those samples. Repeated recovery still needs testing.
+
+A first application attempt correctly refused a utility body from the
+wrong lazy-member cohort before PHP ran. Image inspection verifies the
+expected coreutils digest `3bb59de1a992`, while the new projection serves
+`ac4624a82d9b`. The test now accepts an explicit asset directory for retained
+images and uses the preserved preview's matching, hash-checked transport.
+No image digest, receipt or admission check is changed, and no PHP/Go
+rebuild is needed for this controlled kernel comparison. Preserve the
+failed run as setup evidence, not a kernel regression.
+
+**Next general memory improvement:** the 79.7 MiB compressed image decodes
+to about 440 MiB. Current non-owning browser initialization clones that
+host-created decoded buffer. A two-case, no-guest-entry WebKit control
+compares the existing preserve/owned APIs in distinct content processes:
+
+| Existing API | Initialized footprint | After 10 seconds | Destroyed plus 30 seconds |
+| --- | ---: | ---: | ---: |
+| Preserve caller input | 2.5G | 2.4G | 2.0G |
+| Explicit owned handoff | 1.2G | 716.3M | 175.3M |
+
+Both controls boot the same image and read WordPress 7.0 with no guest
+process. Both retain the 83,524,156-byte compressed caller buffer; the
+owned path transfers its fresh decoded buffer. This isolates an avoidable
+host image handoff cost, not a Go/PHP collector defect. Evaluate a general
+Node/browser fix that transfers host-owned decoded buffers while preserving
+all caller-owned raw/compressed inputs and the existing raw-copy contract.
+No such runtime fix is adopted at this checkpoint. The initial control
+invocation used the wrong Playwright working directory and failed test
+collection; the normal app-directory rerun passes both cases.
+
+Reports remain under the isolated checkout's `.context/baseline-tests/`,
+`.context/candidate-tests/` and `.context/image-init-control-results-v2/`.
+The existing verified WordPress preview remains unchanged. Full canonical
+images, rendered final UI, persistence, complete memory/lifecycle and
+benchmark acceptance remain open.
 
 
 **Active migration:** Go 1.28 development `kandelo/wasm32`, with matching
 four-byte Go/C pointers and eight-byte scalar alignment. Latest selected Go
 source is
 [`f60530600f70`](https://github.com/kandelo-dev/go/commit/f60530600f70a5ea905a907ac311ec8bd2ae8ac4).
-Latest main `1b6f3783d3d5` is merged as `359e4c7f0`; ABI remains 55.
+Latest main `28ba128310b5` is merged as `4dc6d9a77` in this evaluation
+branch; ABI remains 55. The primary preview stays on its verified source.
 Implementation/evaluation checkpoints are tracked in draft PR #1492.
 The full WordPress service goal remains unfinished.
 
