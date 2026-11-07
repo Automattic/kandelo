@@ -1,0 +1,75 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -623,4 +623,5 @@
+   // Only captured-terminal reads populate these real request/lease owners.
+   PersistentRootedObject terminalOwner;
++  PersistentRootedValue terminalCallback;
+   KandeloTerminalLease* terminalLease = nullptr;
+   std::vector<uint8_t> buffer;
+@@ -639,5 +640,5 @@
+   KandeloSocketWatch(JSContext* cx, int fd, KandeloSocketWatchKind kind,
+                      HandleObject promise)
+-      : fd(fd), kind(kind), cx(cx), promise(cx, promise), terminalOwner(cx) {
++      : fd(fd), kind(kind), cx(cx), promise(cx, promise), terminalOwner(cx), terminalCallback(cx) {
+     events = (kind == KandeloSocketWatchKind::Read ||
+               kind == KandeloSocketWatchKind::Accept) ? POLLIN : POLLOUT;
+@@ -1078,4 +1079,11 @@
+         KandeloSocketWatchUnlink(watch);
+         auto retire = mozilla::MakeScopeExit([&] { js_delete(watch); });
++        if (!watch->terminalCallback.isUndefined()) {
++          RootedObject owner(cx, watch->terminalOwner);
++          RootedValue callback(cx, watch->terminalCallback);
++          const bool ok = KandeloTerminalDeliverRead(cx, owner, callback, error,
++              watch->buffer.data(), n >= 0 ? size_t(n) : 0);
++          return ok ? processed + 1 : -1;
++        }
+         const bool ok = n >= 0
+             ? KandeloResolvePromiseWithBytes(cx, watch->promise, watch->buffer.data(), size_t(n))
+@@ -1376,4 +1384,32 @@
+   return nullptr;
+ }
++// Actual callback mode queues native readiness without manufacturing a Promise.
++// The watch holds the real owner/callback roots until detachment/publication.
++static bool KandeloTerminalStartRead(JSContext* cx, HandleObject owner,
++    KandeloTerminalLease* lease, int32_t length, HandleValue callback, MutableHandleValue result) {
++  JSAutoRealm realm(cx, owner);
++  RootedValue wrapped(cx, callback);if (!JS_WrapValue(cx, &wrapped)) return false;
++  if (lease->inputClosing || lease->input.Descriptor() < 0) { result.setInt32(-EBADF);return true; }
++  if (KandeloTerminalPendingRead(lease)) { result.setInt32(-EALREADY);return true; }
++  try {
++    std::vector<uint8_t> bytes(size_t(length), uint8_t(0));
++    RootedObject noPromise(cx);
++    auto* watch = js_new<KandeloSocketWatch>(cx, lease->input.Descriptor(), KandeloSocketWatchKind::Read, noPromise);
++    if (!watch) { JS_ReportOutOfMemory(cx);return false; }
++    watch->buffer = std::move(bytes);watch->terminalOwner = owner;watch->terminalLease = lease;
++    watch->terminalCallback = wrapped;watch->referenced = lease->referenced;
++    KandeloSocketWatchLink(watch);result.setInt32(0);return true;
++  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx);return false; }
++}
++static bool KandeloTerminalStopRead(KandeloTerminalLease* lease) {
++  auto* watch = KandeloTerminalPendingRead(lease);
++  if (!watch || watch->terminalCallback.isUndefined()) return false;
++  KandeloSocketWatchUnlink(watch);js_delete(watch);return true;
++}
++static bool KandeloTerminalRefRead(KandeloTerminalLease* lease, bool referenced) {
++  auto* watch = KandeloTerminalPendingRead(lease);
++  if (!watch) return false;
++  watch->referenced = referenced;return true;
++}
+ static bool KandeloTerminalRead(JSContext* cx, HandleObject owner,
+     KandeloTerminalLease* lease, int32_t length, MutableHandleValue result) {
+@@ -1404,5 +1440,5 @@
+   if (!watch) return true;
+   KandeloSocketWatchUnlink(watch);
+-  if (!notify) { js_delete(watch);return true; }
++  if (!notify || !watch->terminalCallback.isUndefined()) { js_delete(watch);return true; }
+   MOZ_RELEASE_ASSERT(cx && watch->cx == cx);
+   RootedObject promise(cx, watch->promise);
+@@ -3625,4 +3661,7 @@
+                     JS::GetClass(unwrapped) == &KandeloSocketConnectClass)) {
+     return KandeloSocketResourceInfo(cx, unwrapped, args.rval());
++  }
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloTerminalIOClass) {
++    return KandeloTerminalResourceInfo(cx, unwrapped, args.rval());
+   }
+   if (unwrapped && JS::GetClass(unwrapped) == &KandeloCpClass) {

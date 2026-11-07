@@ -74,6 +74,15 @@ function _createNodeTerminalPlatform(platform) {
         const owner = packet.value;
         return {
             bind(input) { entries.set(input, owner); },
+            // Callback mode belongs to the real captured native read owner.
+            // No extra Promise changes the public data callback's async owner.
+            start(length, callback) {
+                const status = platform.native.operatingSystem('tty-input-start', owner, length, callback);
+                return status ? new ErrnoException(status, 'read') : undefined;
+            },
+            stop() { return platform.native.operatingSystem('tty-input-stop', owner); },
+            error(status) { return new ErrnoException(status, 'read'); },
+            ref(value) { platform.native.operatingSystem('tty-input-ref', owner, value); },
             read(length) { return platform.native.operatingSystem('tty-input-read', owner, length); },
             control(promise, value) { return platform.native.operatingSystem('tty-input-control', owner, promise, value).value; },
             close() { platform.native.operatingSystem('tty-input-close', owner); },

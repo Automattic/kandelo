@@ -6992,3 +6992,7 @@ Source199 replaces generic integer admission for both Zstd modes with the exact 
 ### Native bridge declarations follow their actual owning namespaces and APIs
 
 The normal selected199engine build reached native compilation and failed. Source200 supplies the transit Root dereference required by its real bridge caller, removes an unintended nested anonymous namespace in native ports so forward declarations and later global js::shell registry types share their intended scope, and uses the actual SpiderMonkey140 JS_InitClass and PropertyKey::Symbol signatures for DynamicLibrary. No access checks, native owner state or target assertions are removed. Current portable ownership controls pass; complete engine200compiler/link/cache acceptance and runtime conformance remain pending.
+
+### Captured terminal reads retain their native callback resource
+
+Source201 gives captured terminal I/O leases actual async IDs, trigger/frame ownership and once-only retirement. Read readiness retains its real lease and callback, unlinks before JavaScript reentry and enters the shared native callback/recovery scope. The fd-readable adapter consumes native start/stop/ref operations without manufacturing an extra read Promise. Mode-only leases remain separate. Public tty constructors, shared Socket/StreamBase adoption, WriteWrap and precise failed-init/close ordering remain incomplete. Focused PTY controls use genuine native dependencies; new guest JSAPI is uncompiled and all-four-host behavior is unvalidated.

@@ -64,10 +64,11 @@ static bool KandeloNativeOS(JSContext* cx,unsigned argc,Value* vp) {
   if (!operation) return false;
   RootedValue value(cx,UndefinedValue()); int error = 0;
   const char* name = operation.get();
-  // Promise publication is the terminal allocation boundary for captured
-  // input reads. Do not allocate a packet after linking an actual read watch:
-  // packet OOM would otherwise leave a request the JS caller never received.
-  if (strcmp(name, "tty-input-read") == 0) {
+  // Read/start/control results are the publication boundary for captured
+  // input requests. A later packet OOM must not hide newly linked ownership
+  // or an already-committed cancellation/reference transition.
+  if (strcmp(name, "tty-input-read") == 0 || strcmp(name, "tty-input-start") == 0 ||
+      strcmp(name, "tty-input-stop") == 0 || strcmp(name, "tty-input-ref") == 0) {
     return KandeloTerminalDispatch(cx, args, name, args.rval(), &error);
   }
   if (strcmp(name,"constants") == 0) {

@@ -1,0 +1,97 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/terminal.md",
+    "findingIds": [
+      "T-002",
+      "T-007",
+      "T-010"
+    ],
+    "relatedFamilies": [
+      "terminal",
+      "streams",
+      "async",
+      "processes",
+      "engine"
+    ],
+    "scope": "Partial source prerequisites for actual terminal resource/callback/read lifecycle; no public constructor or inherited Socket/StreamBase closure"
+  },
+  "sourceImplemented": [
+    "Actual captured terminal I/O lease owns async ID/trigger/frame/native init and once-only retirement; mode-only leases keep their separate identity",
+    "Actual callback read owns rooted lease/callback and native readiness; detach before shared callback/recovery/after/checkpoint entry",
+    "Actual start/stop/ref scalar publication prevents packet allocation from hiding committed ownership/control transitions",
+    "FD-readable demand/pause/ref/unref/destroy consume real callback operations; cancellation precedes descriptor release and callback path creates no private read Promise",
+    "Exact narrow engine patch composes over source200 watch registry/collector/SignJob routes; no root source or assertion replacement"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-terminal201-source-r1/report.json",
+    "sha256": "013f0b6e4be5aef4fa3edd1bae8a3f9e454ec95a42ce7d4f076840dbeb4ca9c3",
+    "guardedInputs": 866,
+    "scope": "Actual captured terminal native callback/resource owner source; current JS/native-dependent PTY and unchanged FD controls, not new C++ JSAPI or guest conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-terminal201-affected-r1.json",
+    "sha256": "aba546e3bf28f9cf5adbb2d313304a9f33dd7e5f61344197a5cbb539b879eeff",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-terminal201-source-r1/report.json",
+    "sha256": "013f0b6e4be5aef4fa3edd1bae8a3f9e454ec95a42ce7d4f076840dbeb4ca9c3",
+    "actualNativeCallbackAndResourceOwner": true,
+    "publicTTYConstructorsActivated": false,
+    "currentPTYScenarios": 2,
+    "currentPositivePTYProcesses": 4,
+    "expectedDisabledRouteRejections": 1,
+    "existingUnchangedFDComponentCases": 4,
+    "newCompilerAttempts": 0,
+    "unchangedStyleCheckerPassed": true,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Candidate JS consumption over explicit real native TTY dependencies and source owner checks only; new production JSAPI uncompiled and unexecuted."
+  },
+  "sealedEvidence": {
+    "report": ".context/tty-streambase-agent/handoff/report.json",
+    "sha256": "3202cac64e74f1d26e8cd23ee88f71c5a467203f54642fae6f891ba5ae7128b3",
+    "reusedEvidence": true,
+    "scope": "Immutable partial TTY callback/resource source and real PTY/native-dependent controls;17prior component processes with four fixture/setup nonpasses and one expected disabled-route failure retained. Zero C++ compiles/guest runs."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tty-streambase-agent/handoff/report.json",
+      "sha256": "3202cac64e74f1d26e8cd23ee88f71c5a467203f54642fae6f891ba5ae7128b3",
+      "scope": "Four initial fixture/mutation-setup failures and final expected mutant rejection remain distinct; negative errno path lacks a passing actual PTY error control; no runtime defect inferred."
+    },
+    {
+      "report": ".context/node26-terminal201-integration-r1.log",
+      "sha256": "d48a4577f130564ad98df996f82de11a033342ee73ab13814c07612af81fa1c1",
+      "scope": "Integration metadata referenced nonexistent excerpts.json after source application and bundle generation; corrected only metadata in r2, no source reapplication or compilation."
+    },
+    {
+      "report": ".context/node26-terminal201-source-r1/controls/pty/bytes-candidate-no-callback.stderr",
+      "sha256": "e3c3385ff8ab8cdc2541b184ecbbaff906868224fdfe23396e394e300a105119",
+      "scope": "Expected disabled-route rejection using unchanged control assertions; not a passing compatibility case."
+    }
+  ],
+  "remaining": [
+    "Public callable TTY ReadStream/WriteStream, prototype/aliases/options/descriptors are unchanged incomplete generic stream exports",
+    "Actual shared net.Socket options.handle/manualStart/TTY adoption and complete StreamBase native methods/prototype/descriptors; this opaque resource is not a complete public native TTY handle API",
+    "Init occurs after actual captured owner acquisition; pinned failed-init/constructor native init order/reentry remain unimplemented/not established",
+    "Deferred native close callback ownership/prototype shapes/WriteWrap and exact callback/destroy ordering remain gaps; do not infer them from queued destroy IDs",
+    "Negative errno delivery source exists but final real PTY controls observe EOF; production errno/recovery/fatal/GC/OOM/realm/Worker behavior uncompiled/unvalidated",
+    "Existing strict raw-to-normal attribute restoration nonpasses and master/unreopenable fallback/backpressure gaps preserved from191",
+    "Private SIGWINCH activation and all4 identified guest-host conformance remain absent",
+    "Separate thread-local list correction is necessary but does not implement comprehensive pending generic numeric fd watch shutdown"
+  ],
+  "at": "2026-11-07T09:23:36.652967+00:00",
+  "recipeRevision": 201,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

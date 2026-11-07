@@ -50556,6 +50556,15 @@ WriteStream.prototype.getWindowSize = function() {
         const owner = packet.value;
         return {
             bind(input) { entries.set(input, owner); },
+            // Callback mode belongs to the real captured native read owner.
+            // No extra Promise changes the public data callback's async owner.
+            start(length, callback) {
+                const status = platform.native.operatingSystem('tty-input-start', owner, length, callback);
+                return status ? new ErrnoException(status, 'read') : undefined;
+            },
+            stop() { return platform.native.operatingSystem('tty-input-stop', owner); },
+            error(status) { return new ErrnoException(status, 'read'); },
+            ref(value) { platform.native.operatingSystem('tty-input-ref', owner, value); },
             read(length) { return platform.native.operatingSystem('tty-input-read', owner, length); },
             control(promise, value) { return platform.native.operatingSystem('tty-input-control', owner, promise, value).value; },
             close() { platform.native.operatingSystem('tty-input-close', owner); },
@@ -89160,6 +89169,29 @@ function _createNodeFdStreamPlatform(platform) {
         function start() {
             if (pending || !requested || stopped || ended || retired) return;
             requested = false;
+            if (terminalInput?.start) {
+                const request = { nativeCallback: true, cancelled: false };
+                pending = request;
+                let error;
+                try {
+                    terminalInput.ref(referenced);
+                    error = terminalInput.start(4096, (status, data) => {
+                        if (pending === request) pending = null;
+                        if (retired || request.cancelled) return;
+                        if (status) {
+                            result.destroy(terminalInput.error(status));
+                            return;
+                        }
+                        const bytes = new Uint8Array(data);
+                        if (TypedArrayPrototypeGetLength(bytes) === 0) {
+                            ended = true;result.push(null);
+                        } else result.push(ReflectApply(bufferFrom, Buffer, [bytes]));
+                        start();
+                    });
+                } catch (failure) { error = failure; }
+                if (error) { if (pending === request) pending = null;result.destroy(error); }
+                return;
+            }
             let request;
             try {
                 request = { promise: read(4096), cancelled: false };
@@ -89191,7 +89223,11 @@ function _createNodeFdStreamPlatform(platform) {
             requested = false;
             result._readableState.reading = false;
             if (pending && !pending.cancelled) {
-                pending.cancelled = control(pending.promise, null);
+                if (pending.nativeCallback) {
+                    const request = pending;
+                    request.cancelled = terminalInput.stop();
+                    if (request.cancelled && pending === request) pending = null;
+                } else pending.cancelled = control(pending.promise, null);
             }
         }
         let result;
@@ -89226,12 +89262,14 @@ function _createNodeFdStreamPlatform(platform) {
         }));
         result.ref = function ref() {
             referenced = true;
-            if (pending) control(pending.promise, true);
+            if (terminalInput?.start) terminalInput.ref(true);
+            else if (pending) control(pending.promise, true);
             return this;
         };
         result.unref = function unref() {
             referenced = false;
-            if (pending) control(pending.promise, false);
+            if (terminalInput?.start) terminalInput.ref(false);
+            else if (pending) control(pending.promise, false);
             return this;
         };
         return result;

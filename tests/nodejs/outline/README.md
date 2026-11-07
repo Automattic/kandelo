@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source201 integrates real captured-terminal callback/resource ownership. Two current native/candidate PTY scenarios and four unchanged fd-stream cases pass; the disabled-callback mutant is rejected. Normal source/staging/style/bootstrap checks and14package checks pass. New guest C++ remains uncompiled; accepted engine200 excludes this slice.
+See [source scope](terminal-callback-resource-integration.md).
+
 Source200 now has a normally compiled, linked and cache-accepted engine artifact.
 All three unchanged Mozilla checks and static ABI55/kernel-program policy
 inspection pass. Product projection, guest execution and four-host conformance
