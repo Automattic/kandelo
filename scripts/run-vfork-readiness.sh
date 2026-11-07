@@ -25,14 +25,6 @@ fi
 
 bash scripts/test-vfork-readiness-interface.sh
 
-# Keep concurrent worktrees from silently reusing an unrelated Vite server.
-# Callers may still pin a reviewed port explicitly (for example in CI).
-if [ -z "${KANDELO_PLAYWRIGHT_PORT:-}" ]; then
-  repo_checksum="$(printf '%s' "$repo_root" | cksum | awk '{print $1}')"
-  KANDELO_PLAYWRIGHT_PORT=$((20000 + (repo_checksum % 20000)))
-  export KANDELO_PLAYWRIGHT_PORT
-fi
-
 bash scripts/build-programs.sh
 
 (

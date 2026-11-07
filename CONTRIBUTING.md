@@ -196,3 +196,43 @@ you did not test. A passing Node.js test does not prove browser behavior.
 
 For suite selection, long jobs, and detailed evidence requirements, see the
 [validation guide](docs/agent-guidance/validation.md).
+
+## Retain and clean validation evidence
+
+These scripts work in ordinary Git checkouts and worktrees on macOS and
+Linux; no IDE, agent application, or workspace hook is required. Playwright
+allocates one `test-results/<run-uuid>` directory per run. Long-running jobs
+started with `scripts/agent-job` store logs and scratch under
+`.context/agent-jobs/<job-id>`. Use the job's
+`$KANDELO_AGENT_SCRATCH_DIR` for additional logs instead of fixed `/tmp` paths.
+
+Evidence stays available until you release it or remove its worktree:
+
+```bash
+scripts/agent-job release <job-id-or-playwright-run-uuid> --dry-run
+scripts/agent-job release <job-id-or-playwright-run-uuid>
+scripts/agent-job cleanup --dry-run
+scripts/agent-job cleanup
+```
+
+`cleanup` closes the current worktree to new validation runs and refuses
+while a registered run still has active writers. After a refusal, finish
+the run and retry, or use `scripts/agent-job reopen` to resume work. Cleanup
+never stops a process. An optional editor or worktree-removal hook can call
+the same command, but must honor its failure before removing the worktree.
+
+The bulk payload is inside the worktree, so removing the directory also
+removes that payload even if no hook ran. A small machine-wide registry in
+`~/.cache/kandelo/agent-jobs` retains job exit status, a bounded log summary,
+and UUID ownership records. `scripts/agent-job gc --dry-run`, followed by
+`scripts/agent-job gc`, reconciles removed worktrees, recovers interrupted
+cleanup, and releases inactive legacy job payloads. It skips live runs and
+does not clean shared build caches or arbitrary `/tmp` files. A new worktree
+at an old path receives a new UUID; its files cannot be claimed by the old
+record. Set `KANDELO_AGENT_JOBS_DIR` to override the registry location.
+
+Explicit Playwright output overrides remain caller-owned. macOS WebKit can
+also create OS-managed staging files outside `TMPDIR`; these retain their
+existing guarded teardown and may need inspection after an interrupted run.
+See [Playwright storage](docs/agent-guidance/validation.md#playwright-storage-on-macos)
+for that boundary. Worktree cleanup does not sweep those shared directories.

@@ -1,8 +1,8 @@
 import { defineConfig } from "@playwright/test";
 import base from "./playwright.config";
+import { playwrightPort } from "../../tests/playwright-run";
 
-const port = Number(process.env.KANDELO_PROGRAM_COMPATIBILITY_PORT ?? 57417);
-if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Invalid program compatibility test port");
+const port = await playwrightPort(process.env.KANDELO_PROGRAM_COMPATIBILITY_PORT);
 
 export default defineConfig({
   ...base,

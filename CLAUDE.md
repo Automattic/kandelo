@@ -99,6 +99,11 @@ For a reviewed patch integration, use the optional
 pinned inputs, preserve unrelated work, and journal evidence/checkpoints.
 It imports reviewed check results; command execution remains separate.
 
+For long campaigns, maintain phase checkpoints yourself; do not require the
+user to copy context or manage replacement chats. Read the focused
+[campaign guide](docs/agent-guidance/campaigns.md) when preparing a dispatch
+or handoff. Context reminders are advisory; worker rotation remains a trial.
+
 Do not stop at code reasoning for browser demo bugs, syscall semantics, ABI
 changes, package artifacts, or performance claims.
 
@@ -118,6 +123,16 @@ changes, package artifacts, or performance claims.
 | Optional Spacefast deployment, publication and examples | `docs/agent-guidance/spacefast-deployment.md` | `apps/spacefast-cors-proxy/README.md`, `.agents/skills/deploying-kandelo-to-spacefast/SKILL.md` |
 
 ## Validation Contract
+
+Main agents: at task start, fetch `origin main`, then run
+`python3 .claude/hooks/install-hooks.py --user --update-from-main`.
+Repeat after merging a hook change. This refreshes an existing user
+installation from fetched `origin/main`, preserves opt-in and never
+downgrades; do it without asking the user to run the installer. Do not run
+plain `--user` from a feature branch as an automatic update. If fetching
+or updating fails, report it and continue independent work. Subagents
+leave user hook maintenance to the parent. See the hook workflow in
+`docs/agent-guidance/validation.md`.
 
 Keep automated browser tests silent through the shared
 `apps/browser-demos/playwright-test.ts` fixture, including private diagnostic
@@ -148,9 +163,11 @@ Runs under 10 minutes: one foreground Bash call with output to a log file.
 Longer runs: use `scripts/agent-job start`. Interactive main sessions: run
 `scripts/agent-job wait <id> --timeout 0` once with Bash's
 `run_in_background`, then act on its single completion notification.
-Headless sessions and subagents repeat foreground `scripts/agent-job wait
-<id>` only when the wait-window notice says the job is still running
-(up to 9 minutes per call). `FAILED (exit 124)` is final, not a retry.
+Headless main sessions repeat foreground `scripts/agent-job wait <id>`
+(up to 9 minutes per call). Subagents use `wait <id> --timeout 240` for
+targeted work, one wait per Bash call; return known long jobs to the parent.
+Repeat only when the wait-window notice says the job is still running.
+`FAILED (exit 124)` is final, not a retry.
 To wait on another workspace's build, find it with
 `scripts/agent-job list --all` and wait on its id (or `wait --peer <text>`),
 not on its PID. After a selector wait times out, retry by its resolved id,

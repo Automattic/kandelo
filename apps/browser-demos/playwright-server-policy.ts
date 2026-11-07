@@ -49,21 +49,3 @@ export function playwrightTestIgnoreForEnvironment(
   }
   return ignored;
 }
-
-/**
- * Reusing a developer's Vite server keeps ordinary local browser tests fast,
- * but production-preview and exact-artifact proofs must own the server that
- * resolves their binaries. Otherwise a server from another worktree can
- * silently serve different VFS bytes on the same port.
- */
-export function shouldReuseExistingPlaywrightServer(
-  env: PlaywrightServerEnvironment,
-): boolean {
-  return (
-    !env.CI &&
-    env.KANDELO_CANONICAL_FLAT_SHELL_STRICT !== "1" &&
-    env.KANDELO_NETWORK_LAB !== "1" &&
-    env.KANDELO_PLAYWRIGHT_SERVE_DIST !== "1" &&
-    env.KANDELO_SOURCE_ROOTFS_SHELL_STRICT !== "1"
-  );
-}

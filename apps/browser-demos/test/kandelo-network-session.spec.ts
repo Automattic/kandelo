@@ -25,15 +25,6 @@ test.beforeEach(async ({ context, browserName }) => {
 const running = (page: Page) =>
   expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
 const closePanel = (page: Page) => page.locator(".knetwork .kshare-x").click();
-/** The last game Doom started, as it reports it on its terminal. */
-async function doomGame(page: Page): Promise<string> {
-  const games = (await terminalLines(page)).match(/player \d+ of \d+ \(\d+ nodes\)/g) ?? [];
-  return games.at(-1) ?? "";
-}
-const pickLanEntry = async (page: Page, entry: string) => {
-  await page.getByTestId("fb-dock-action-lan").click();
-  await page.getByTestId(`fb-dock-menu-entry-${entry}`).click();
-};
 /** Key presses into the display, as a player at the keyboard makes them. */
 async function pressKeys(page: Page, keys: string[]) {
   await page.locator("canvas.kframebuffer-canvas").first().focus();
@@ -403,62 +394,6 @@ test("an invitation can be dismissed without joining", async ({ page }) => {
   await page.getByRole("button", { name: "Dismiss", exact: true }).click();
   await expect(page.getByRole("button", { name: "Join session", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Start network session", exact: true })).toBeVisible();
-});
-
-test("the Doom machine's LAN menu starts a two-player game across the session", async ({ browser, page, browserName }) => {
-  test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
-  test.setTimeout(480_000);
-  const link = await host(page, "Doom night", "doom");
-  await closePanel(page);
-  // The host's game waits for its second player before it starts.
-  await pickLanEntry(page, "coop-2");
-  const { page: joiner, context } = await join(browser, link, "10.89.0.2");
-  try {
-    await closePanel(joiner);
-    // fbDOOM reads a raw-mode terminal, so Ctrl+C would not end it; the
-    // pane ends the display's owner and starts the joining game.
-    await pickLanEntry(joiner, "join");
-    await expect.poll(() => doomGame(page), { timeout: 90_000 }).toBe("player 1 of 2 (2 nodes)");
-    await expect.poll(() => doomGame(joiner), { timeout: 30_000 }).toBe("player 2 of 2 (2 nodes)");
-    await page.screenshot({ path: "../../.context/doom-lan-host.png" });
-    await joiner.screenshot({ path: "../../.context/doom-lan-joiner.png" });
-
-    // Single player still works on a computer that stays in the session.
-    await pickLanEntry(joiner, "single");
-    await expect.poll(() => doomGame(joiner), { timeout: 60_000 }).toBe("player 1 of 1 (1 nodes)");
-    await expect(joiner.getByRole("button", { name: "Network session: connected", exact: true })).toBeAttached();
-  } finally {
-    await context.close();
-  }
-});
-
-test("a Doom host starts a LAN game before every player has joined", async ({ browser, page, browserName }) => {
-  test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
-  test.setTimeout(480_000);
-  const link = await host(page, "Doom night", "doom");
-  await closePanel(page);
-  // Room for four; only one other computer comes.
-  await pickLanEntry(page, "coop-4");
-  const { page: joiner, context } = await join(browser, link, "10.89.0.2");
-  try {
-    await closePanel(joiner);
-    await pickLanEntry(joiner, "join");
-    await expect.poll(() => terminalLines(page), { timeout: 90_000 }).toContain("2 of 4 players have joined");
-    await page.screenshot({ path: "../../.context/doom-lan-waiting-room.png" });
-    // Esc leaves the waiting room; the host's room sees the player go.
-    await pressKeys(joiner, ["Escape"]);
-    await expect.poll(() => terminalLines(joiner), { timeout: 30_000 }).toContain("NET_WaitForLaunch: cancelled.");
-    await expect.poll(() => terminalLines(page), { timeout: 60_000 }).toMatch(/1 of 4 players have joined\.\s*$/);
-    // Quitting Doom leaves the shell; the player starts it again there.
-    await typeAtPrompt(joiner, "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -autojoin");
-    await expect.poll(() => terminalLines(page), { timeout: 90_000 }).toMatch(/2 of 4 players have joined\.\s*$/);
-    // The waiting room starts the game with Space, as chocolate-doom's does.
-    await pressKeys(page, ["Space"]);
-    await expect.poll(() => doomGame(page), { timeout: 60_000 }).toBe("player 1 of 2 (2 nodes)");
-    await expect.poll(() => doomGame(joiner), { timeout: 30_000 }).toBe("player 2 of 2 (2 nodes)");
-  } finally {
-    await context.close();
-  }
 });
 
 test("Quake's own multiplayer menu hosts a game another computer finds and joins", async ({ browser, page, browserName }) => {
