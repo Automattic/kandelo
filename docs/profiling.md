@@ -385,6 +385,99 @@ carries a PHP warning or fatal error, rather than timing an error page.
 
 Build requirements: `wasm32posix-cc` SDK. The PHP build script automatically builds dependencies (SQLite, zlib, OpenSSL, libxml2). WordPress must be downloaded separately into `packages/registry/wordpress/wordpress/`.
 
+#### wordpress-stack
+
+`benchmarks/wordpress-stack.ts` compares the preinstalled WordPress nginx/PHP-FPM
+and FrankenPHP classic services, or FrankenPHP+Caddy with
+`--alternative=caddy`, from the **same** resolver-selected
+`wordpress.vfs.zst`. Unlike the `wordpress` suite above, it measures complete
+dynamic homepage responses through the actual dinit service stacks, once on
+the Node host and once through the Chromium browser demo. It verifies that
+the browser-served image has the same SHA-256 as the Node input before
+recording browser samples. Each profile boots a fresh machine per round;
+profile order alternates. Each Node round runs in a fresh child process and
+records its native process ID, just as each Chromium round launches a fresh
+browser. Three requests warm the stack, then 12 unique-query
+responses per round are timed including full response bodies. A separate
+four-client phase issues four requests per client and records completed
+requests per second over the whole concurrent phase. HTTP errors,
+missing WordPress content, and PHP diagnostics fail the run. The JSON report
+retains every latency, concurrent-phase request count and duration, the image
+digest, startup times, environment, median, p90, and throughput median across
+rounds. Node runs assign distinct HTTP and SMTP ports to prevent one demo
+or round from conflicting with another.
+
+The browser comparison resolves the alternative's gallery image once and
+selects both service profiles inside that image. The gallery's standalone
+FPM shortcut may belong to a different multi-image product, so using each
+shortcut independently would compare different image bytes. The shared
+browser image must still match the Node input's SHA-256.
+
+Each result also retains its real service log. Go panic/fatal headers or
+multiple FrankenPHP startup markers fail the measurement even if HTTP later
+recovers. Node also checks that the single-process Go server retains its
+listener PID. nginx legitimately distributes a shared listener across worker
+PIDs. Log inspection runs after the timed and RSS phases.
+
+First build and publish the WordPress source-only image. For browser runs,
+serve `apps/browser-demos` with its source-only Vite configuration on port
+5401. Then run the comparison from the repository root:
+
+```bash
+scripts/dev-shell.sh bash -c 'export WASM_POSIX_RESOLUTION_POLICY=source-only-v1 WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"; node --import tsx benchmarks/wordpress-stack.ts --host=both --rounds=4 --warmups=3 --samples=12 --clients=4 --concurrent-samples=4 --alternative=caddy'
+```
+
+The default report is `.context/wordpress-stack-benchmark.json`; use
+`--output=...`, `--host=node|browser|both`, `--alternative=classic|caddy`, `--browser-base-url=...`, or
+`--port=...`, `--clients=...`, or `--concurrent-samples=...` to change it.
+Use `--image-path=...` to select an archived immutable image for a Node
+comparison. Browser runs still require the served image to match its hash.
+This is a paired, single-machine latency, cold-boot, and bounded
+multi-client throughput comparison, not a statistically powered superiority
+test. Node and Chromium medians describe different
+request paths and must not be pooled. The existing full benchmark suite is
+still required for broad platform performance claims.
+The comparison measures each complete HTTP stack, including its PHP
+execution mode. Both profiles use PHP 8.5 with file-cache-only OPcache;
+FrankenPHP embeds the thread-safe build and nginx uses PHP-FPM processes.
+Node configures six PHP-FPM children and six FrankenPHP threads. Browser
+runs use the image's shipped defaults: the current WordPress builder selects
+one PHP-FPM child and two FrankenPHP threads. Use the Node pair to compare
+equal maximum worker pools and the browser pair to compare those shipped
+stacks. Retain the actual image configuration when interpreting concurrency.
+The Node harness explicitly updates the shared FrankenPHP service environment
+to six threads; Caddy and the classic wrapper consume that same setting.
+The demo's two-thread default accounts for host Wasm-instance costs as well
+as PHP allocations. Six idle PHP threads already produce about 8.2 GiB in
+WebKit's native allocation bucket in the recorded revision-38 control,
+before executing a WordPress PHP request. This is not a whole-process RSS
+measurement or a claim that other engines have that cost. See the
+[implementation measurements](plans/2026-09-05-go-gc-port-milestone1-plan.md).
+The image prewarms the FPM file cache at build time. FrankenPHP builds its
+own compatible cache during requests, so cold-start and warm-request
+results must remain separate. Verify actual OPcache activation and warm
+both workloads before interpreting warm timings. Neither profile includes
+a full-page cache: these results cannot establish the performance of a
+cache-enabled visitor experience. The Node Caddy profile requests a 1 GiB
+Wasm memory ceiling, versus 256 MiB for the nginx/PHP-FPM profile; this is
+an address-space ceiling, not a measurement of host physical memory.
+
+Add `--soak-seconds=900` for a sustained four-client phase after each
+profile's timed measurements. Every response must still contain the real
+WordPress page without PHP diagnostics. The report keeps completed request
+counts and native RSS samples at the start, every 15 seconds, and the end.
+Sampling follows the timed phases, so native process inspection does not
+affect their latency samples. Node reports the whole round's child process,
+including its worker threads, image staging, native code, and allocator pages.
+Chromium reports the sum of RSS for processes returned by its browser
+debugging session, using `benchmarks/process-rss.py` and the dev shell's
+declared psutil library. Failed queries remain errors rather than zero
+samples. Darwin's Nix `ps` cannot query RSS without a system entitlement.
+That sum can count shared native pages more than once;
+it is not unique physical footprint or guest linear-memory usage. Each
+Chromium round already uses a fresh browser. A bounded run and an RSS trend
+do not by themselves prove a leak fix or long-term production stability.
+
 #### mariadb
 
 Runs MariaDB 10.5 with the Aria or InnoDB storage engine. Measures bootstrap (system table creation) and a sequence of SQL operations.

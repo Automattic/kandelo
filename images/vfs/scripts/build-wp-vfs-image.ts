@@ -7,6 +7,8 @@ import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesys
  *   wp-config-init (internal) + smtp-capture (process)
  *     + wordpress-secrets (scripted; this machine's keys, on first boot)
  *       → php-fpm (process) → nginx (process)
+ *       → FrankenPHP classic (process)
+ *       → FrankenPHP Caddy (process)
  *
  * The browser host overwrites wp-config.php with the page-supplied
  * @@APP_PATH@@ and @@PROTO@@ values before dinit starts. Keeping that
@@ -25,10 +27,13 @@ import {
 } from "./vfs-image-helpers";
 import {
   addDinitInit,
+  DINIT_SERVICE_ENV,
   type DinitBinaryInputs,
   type DinitService,
 } from "./dinit-image-helpers";
 import { prewarmOpcache } from "./opcache-prewarm";
+import { installServiceActivities } from "./service-activities";
+import { parseComputerServices } from "../../../web-libs/kandelo-session/src/computer-services";
 import { writeTrackedDemoConfig } from "./tracked-demo-config";
 import {
   populateSmtpCaptureConfig,
@@ -72,6 +77,8 @@ const PHP_FPM_GID = 65534;
 // WordPress layers service binaries and application data on the complete
 // canonical shell, so its product profile must admit that 512 MiB base.
 const WORDPRESS_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
+const FRANKENPHP_ENV_PATH = "/etc/dinit.d/env-frankenphp";
+const FRANKENPHP_CADDY_CONFIG_PATH = "/etc/caddy/Caddyfile";
 
 // --- Service configs (reuse logic from init modules) ---
 
@@ -296,6 +303,8 @@ include $docRoot . '/index.php';
  *   smtp-capture   (process)  — local SMTP sink storing mail under /var/mail
  *   php-fpm        (process)  — depends-on wp-config-init + smtp-capture
  *   nginx          (process)  — depends-on php-fpm
+ *   frankenphp-classic (process) — depends-on wp-config-init + smtp-capture + wordpress-secrets
+ *   frankenphp-caddy (process) — depends-on wp-config-init + smtp-capture + wordpress-secrets
  */
 function buildServices(): DinitService[] {
   return [
@@ -326,6 +335,29 @@ function buildServices(): DinitService[] {
       logfile: "/var/log/nginx.log",
       restart: false,
     },
+    {
+      name: "frankenphp-classic",
+      type: "process",
+      command: "/usr/sbin/frankenphp-classic",
+      dependsOn: ["wp-config-init", "smtp-capture", WORDPRESS_SECRETS_SERVICE],
+      logfile: "/var/log/frankenphp-classic.log",
+      restart: false,
+      noDefaultEnvFile: true,
+      // Allow the 20-second HTTP drain plus PHP thread cleanup before SIGKILL.
+      extra: [`env-file = ${FRANKENPHP_ENV_PATH}`, "stop-timeout = 30"],
+    },
+    {
+      name: "frankenphp-caddy",
+      type: "process",
+      command: `/usr/sbin/frankenphp-caddy run --config ${FRANKENPHP_CADDY_CONFIG_PATH} --adapter caddyfile`,
+      dependsOn: ["wp-config-init", "smtp-capture", WORDPRESS_SECRETS_SERVICE],
+      logfile: "/var/log/frankenphp-caddy.log",
+      restart: true,
+      restartDelay: 1,
+      noDefaultEnvFile: true,
+      // Allow the 20-second HTTP drain plus PHP thread cleanup before SIGKILL.
+      extra: [`env-file = ${FRANKENPHP_ENV_PATH}`, "stop-timeout = 30"],
+    },
   ];
 }
 
@@ -337,7 +369,10 @@ export interface WordPressVfsImageBuildInputs {
   sqliteDirectory: string;
   nginx: Uint8Array;
   phpFpm: Uint8Array;
+  frankenphpClassic: Uint8Array;
+  frankenphpCaddy: Uint8Array;
   msmtpd: Uint8Array;
+  serviceActivityControl: Uint8Array;
   dinit?: DinitBinaryInputs;
   buildPrograms?: {
     kernel: Uint8Array;
@@ -363,11 +398,50 @@ export async function buildWordPressVfsImage(
   populateSmtpCaptureConfig(fs);
   populateWordPressFirstBootSecrets(fs);
 
-  console.log("Writing nginx + php-fpm + msmtpd binaries...");
+  console.log("Writing nginx + php-fpm + FrankenPHP + Caddy + msmtpd binaries...");
   ensureDirRecursive(fs, "/usr/sbin");
   writeVfsBinary(fs, "/usr/sbin/nginx", inputs.nginx);
   writeVfsBinary(fs, "/usr/sbin/php-fpm", inputs.phpFpm);
+  writeVfsBinary(fs, "/usr/sbin/frankenphp-classic", inputs.frankenphpClassic);
+  writeVfsBinary(fs, "/usr/sbin/frankenphp-caddy", inputs.frankenphpCaddy);
   writeVfsBinary(fs, "/usr/sbin/msmtpd", inputs.msmtpd);
+  ensureDirRecursive(fs, "/etc/frankenphp");
+  writeVfsFile(fs, "/etc/frankenphp/php.ini", `curl.cainfo=/etc/ssl/certs/ca-certificates.crt
+openssl.cafile=/etc/ssl/certs/ca-certificates.crt
+
+[opcache]
+opcache.enable=1
+opcache.enable_cli=1
+opcache.memory_consumption=64
+opcache.file_cache=/var/cache/opcache
+opcache.file_cache_only=1
+opcache.file_update_protection=0
+opcache.validate_timestamps=0
+opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
+`);
+  ensureDirRecursive(fs, "/etc/dinit.d");
+  writeVfsFile(fs, FRANKENPHP_ENV_PATH,
+    // PHP threads also require host Wasm instances. Keep the demo pool sized
+    // for its single Go scheduler P; larger pools are an explicit setting.
+    `${Object.entries({ ...DINIT_SERVICE_ENV, PHPRC: "/etc/frankenphp", FRANKENPHP_NUM_THREADS: "2" })
+      .map(([name, value]) => `${name}=${value}`)
+      .join("\n")}\n`);
+  ensureDirRecursive(fs, "/etc/caddy");
+  writeVfsFile(fs, FRANKENPHP_CADDY_CONFIG_PATH, `{
+\tadmin off
+\tauto_https off
+\tgrace_period 20s
+
+\tfrankenphp {
+\t\tnum_threads {$FRANKENPHP_NUM_THREADS:2}
+\t}
+}
+
+:{$FRANKENPHP_PORT:8080} {
+\troot * /srv/www/html
+\tphp_server
+}
+`);
 
   // Template + default wp-config. The browser host overwrites wp-config.php
   // with the current page prefix/protocol before dinit starts.
@@ -419,6 +493,8 @@ export async function buildWordPressVfsImage(
   // dependencies ensure wp-config.php is finalized and SMTP is listening
   // before any FastCGI request.
   addDinitInit(fs, buildServices(), { binaries: inputs.dinit });
+  const services = parseComputerServices(readFileSync(resolve(REPO_ROOT, "packages/registry/wordpress/services.json"), "utf8"));
+  installServiceActivities(fs, services.map(service => ({ target: service.id, port: service.port, title: service.title, shortcuts: service.shortcuts })), inputs.serviceActivityControl);
 
   await preinstallWordPressSqlite(fs, inputs.buildPrograms);
 
@@ -448,9 +524,12 @@ async function main(): Promise<void> {
   const shellRoot = process.env.WASM_POSIX_DEP_SHELL_DIR;
   const nginxRoot = process.env.WASM_POSIX_DEP_NGINX_DIR;
   const phpRoot = process.env.WASM_POSIX_DEP_PHP_DIR;
+  const frankenphpRoot = process.env.WASM_POSIX_DEP_FRANKENPHP_CLASSIC_DIR;
+  const frankenphpCaddyRoot = process.env.WASM_POSIX_DEP_FRANKENPHP_CADDY_DIR;
   const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
   const msmtpdRoot = process.env.WASM_POSIX_DEP_MSMTPD_DIR;
   const kernelRoot = process.env.WASM_POSIX_DEP_KERNEL_DIR;
+  const serviceActivityRoot = process.env.WASM_POSIX_DEP_SERVICE_ACTIVITY_TOOLS_DIR;
   await buildWordPressVfsImage({
     shellImage: shellRoot === undefined
       ? undefined
@@ -463,9 +542,18 @@ async function main(): Promise<void> {
     phpFpm: new Uint8Array(readFileSync(phpRoot === undefined
       ? resolveBinary("programs/php/php-fpm.wasm")
       : join(phpRoot, "php-fpm.wasm"))),
+    frankenphpClassic: new Uint8Array(readFileSync(frankenphpRoot === undefined
+      ? resolveBinary("programs/frankenphp-classic.wasm")
+      : join(frankenphpRoot, "frankenphp-classic.wasm"))),
+    frankenphpCaddy: new Uint8Array(readFileSync(frankenphpCaddyRoot === undefined
+      ? resolveBinary("programs/frankenphp-caddy.wasm")
+      : join(frankenphpCaddyRoot, "frankenphp-caddy.wasm"))),
     msmtpd: new Uint8Array(readFileSync(msmtpdRoot === undefined
       ? resolveBinary("programs/msmtpd.wasm")
       : join(msmtpdRoot, "msmtpd.wasm"))),
+    serviceActivityControl: new Uint8Array(readFileSync(serviceActivityRoot === undefined
+      ? resolveBinary("programs/service-activity-control.wasm")
+      : join(serviceActivityRoot, "service-activity-control.wasm"))),
     dinit: dinitRoot === undefined
       ? undefined
       : {

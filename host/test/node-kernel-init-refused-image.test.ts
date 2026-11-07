@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { tryResolveBinary } from "../src/binary-resolver";
-import { NodeKernelHost } from "../src/node-kernel-host";
+import { BinaryNotFoundError, tryResolveBinary } from "../src/binary-resolver";
+import { NodeKernelHost, resolveRootfsArtifact } from "../src/node-kernel-host";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 /**
@@ -72,4 +72,102 @@ describe("NodeKernelHost refuses an image the kernel rejects", () => {
     },
     30_000,
   );
+
+  it.skipIf(!haveKernel)(
+    "preserves caller-owned image bytes after worker initialization",
+    async () => {
+      const fs = KandeloImageFs.create();
+      fs.mkdir("/etc", 0o755);
+      fs.writeFile("/etc/hostname", new TextEncoder().encode("kandelo\n"), 0o644);
+      const image = await fs.saveImage();
+      const kernel = asArrayBuffer(new Uint8Array(readFileSync(kernelPath!)));
+
+      for (const source of [image, asArrayBuffer(image)]) {
+        const expected = new Uint8Array(source).slice();
+        const host = new NodeKernelHost({ rootfsImage: source });
+        try {
+          await host.init(kernel);
+          expect(new Uint8Array(source)).toEqual(expected);
+          expect(await host.readFileFromVfs("/etc/hostname")).toEqual(
+            new TextEncoder().encode("kandelo\n"),
+          );
+        } finally {
+          await host.destroy();
+        }
+      }
+    },
+    30_000,
+  );
+
+  it.skipIf(!haveKernel)(
+    "transfers an explicitly owned image without retaining caller bytes",
+    async () => {
+      const fs = KandeloImageFs.create();
+      fs.mkdir("/etc", 0o755);
+      fs.writeFile("/etc/hostname", new TextEncoder().encode("kandelo\n"), 0o644);
+      const ownedImage = asArrayBuffer(await fs.saveImage());
+      const host = new NodeKernelHost({
+        rootfsImage: ownedImage,
+        takeRootfsImageOwnership: true,
+      });
+      try {
+        await host.init(asArrayBuffer(new Uint8Array(readFileSync(kernelPath!))));
+        expect(ownedImage.byteLength).toBe(0);
+        expect(await host.readFileFromVfs("/etc/hostname")).toEqual(
+          new TextEncoder().encode("kandelo\n"),
+        );
+      } finally {
+        await host.destroy();
+      }
+    },
+    30_000,
+  );
+
+  it.skipIf(!haveKernel)("rejects a byte view as an ownership-taking image", async () => {
+    const host = new NodeKernelHost({
+      rootfsImage: new Uint8Array([1, 2, 3]),
+      takeRootfsImageOwnership: true,
+    });
+    await expect(host.init()).rejects.toThrow(
+      "owned rootfs image must be one whole ordinary ArrayBuffer",
+    );
+  });
+});
+
+describe("Node rootfs artifact selection", () => {
+  it("prefers the resolver-managed package image", () => {
+    const requests: string[] = [];
+    const selected = resolveRootfsArtifact((request) => {
+      requests.push(request);
+      return `/artifacts/${request}`;
+    });
+    expect(selected).toEqual({
+      resolverRequest: "programs/rootfs.vfs.zst",
+      selectedPath: "/artifacts/programs/rootfs.vfs.zst",
+    });
+    expect(requests).toEqual(["programs/rootfs.vfs.zst"]);
+  });
+
+  it("uses the legacy rootfs only when the package image is absent", () => {
+    const requests: string[] = [];
+    const selected = resolveRootfsArtifact((request) => {
+      requests.push(request);
+      if (request === "programs/rootfs.vfs.zst") throw new BinaryNotFoundError("not found");
+      return "/artifacts/rootfs.vfs.zst";
+    });
+    expect(selected).toEqual({
+      resolverRequest: "rootfs.vfs.zst",
+      selectedPath: "/artifacts/rootfs.vfs.zst",
+    });
+    expect(requests).toEqual(["programs/rootfs.vfs.zst", "rootfs.vfs.zst"]);
+  });
+
+  it("does not bypass a rejected package image with the legacy rootfs", () => {
+    const requests: string[] = [];
+    expect(() => resolveRootfsArtifact((request) => {
+      requests.push(request);
+      throw new Error("package artifact rejected");
+    })).toThrow("package artifact rejected");
+    expect(requests).toEqual(["programs/rootfs.vfs.zst"]);
+  });
 });

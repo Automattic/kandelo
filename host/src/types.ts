@@ -56,6 +56,9 @@ export interface StatResult {
   atimeMs: number;
   mtimeMs: number;
   ctimeMs: number;
+  atimeNs?: bigint;
+  mtimeNs?: bigint;
+  ctimeNs?: bigint;
 }
 
 export interface StatfsResult {

@@ -5,8 +5,9 @@ It wraps LLVM tools for `wasm32-unknown-unknown` and `wasm64-unknown-unknown`
 and links against the corresponding musl sysroot. Rust guest support,
 including `std`, is documented separately in the [Rust SDK guide](../sdk/rust/README.md).
 
-Every SDK tool is one program, the SDK driver (`crates/kandelo-cc`), which
-decides from the name it runs as whether to be `cc`, `c++`, `ar`, `configure`
+The C/C++ compiler and binary tools share the SDK driver
+(`crates/kandelo-cc`), which decides from the name it runs as whether to be
+`cc`, `c++`, `ar`, `configure`
 and so on. The same source is built twice: as a native program for the build
 machine (the `sdk/bin` tools run it) and as a Kandelo program for the SDK
 inside Kandelo (see [Compile inside the base shell](#compile-inside-the-base-shell)).
@@ -14,6 +15,17 @@ Only toolchain discovery differs between the two; every compiler, linker and
 post-link job is decided by the same code.
 
 ## Installation
+
+Foreign runtimes that issue syscalls can use `<kandelo/syscall.h>` and
+`__wasm_posix_syscall6`. This enters libc's normal transport and signal
+dispatcher, including handler masks, alternate stacks, restart rules, and
+deadline accounting. Its result contains a full 64-bit value and a separate
+errno; wasm32's ordinary `long` syscall interface cannot represent every
+Go integer result. Existing musl entry points retain their normal negative
+errno convention. A runtime that has already completed a raw channel call
+can consume its pending C signal through `<kandelo/signal.h>` after saving
+the result and resetting the channel to idle. That dispatcher alone does
+not restart the original syscall.
 
 ### Prerequisites
 
@@ -74,6 +86,13 @@ The SDK provides eight LLVM wrappers for each architecture (16 commands):
 | `wasm32posix-strip` | `wasm64posix-strip` | No-op for Wasm |
 | `wasm32posix-pkg-config` | `wasm64posix-pkg-config` | Target pkg-config |
 | `wasm32posix-configure` | `wasm64posix-configure` | Autoconf wrapper |
+
+The checkout also provides `sdk/bin/wasm32posix-go` for a separately built
+Kandelo Go fork. It selects `GOOS=kandelo GOARCH=wasm32` with pure Go;
+cgo packages invoke the fork directly
+with the SDK C compiler. See [Go support](go.md) for that build route and
+its current boundaries. The Go wrapper is available through the checkout's
+SDK `PATH`; it is not registered by the npm package's C/C++ tool list.
 
 ### LLVM Discovery
 

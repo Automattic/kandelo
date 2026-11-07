@@ -1237,12 +1237,49 @@ test("the guest bridge forwards the browser User-Agent when native request heade
   expect(observed.forwarded).toBe(observed.expected);
 });
 
+for (const navigation of ["automation", "location.assign"] as const) {
+  test(`guest redirects retain the bridge during iframe ${navigation}`, async ({ page }) => {
+    await page.goto(`${FIXTURE_ORIGIN}/a/`);
+    await registerScope(page, "/a/");
+    const source = "/wp-admin/site-editor.php?postType=wp_template&postId=theme//index&canvas=edit";
+    const destination = "/wp-admin/site-editor.php?canvas=edit&p=/wp_template/theme//index";
+    const machine = await installBridge(page, SESSION_A, "redirect", {
+      [source]: destination,
+    });
+    await page.evaluate(() => {
+      const iframe = document.createElement("iframe");
+      iframe.title = "guest redirect";
+      document.body.append(iframe);
+    });
+    const frame = page.frames().find(candidate => candidate !== page.mainFrame());
+    if (!frame) throw new Error("guest iframe was not created");
+    const target = `${FIXTURE_ORIGIN}${machine.appPrefix}${destination.slice(1)}`;
+    const redirected = page.waitForResponse(response => response.url() === target);
+    if (navigation === "automation") {
+      await frame.goto(`${FIXTURE_ORIGIN}${machine.appPrefix}${source.slice(1)}`);
+    } else {
+      await frame.goto(`${FIXTURE_ORIGIN}${machine.appPrefix}initial`);
+      await page.evaluate(path => {
+        const iframe = document.querySelector<HTMLIFrameElement>('iframe[title="guest redirect"]');
+        iframe!.contentWindow!.location.assign(path);
+      }, `${machine.appPrefix}${source.slice(1)}`);
+    }
+    const response = await redirected;
+    expect(response.status()).toBe(200);
+    // The guest-only response body proves bridge routing in every engine;
+    // protocol service-worker flags are diagnostic metadata.
+    await expect(frame.locator("body")).toContainText("bridge:redirect");
+    await expect.poll(() => frame.url()).toBe(target);
+  });
+}
+
 async function installBridge(
   page: Page,
   sessionId: string,
   label: string,
+  redirects: Record<string, string> = {},
 ): Promise<{ reply: any; name: string; appPrefix: string; body: string }> {
-  return page.evaluate(async ({ session, responseLabel }) => {
+  return page.evaluate(async ({ session, responseLabel, redirects }) => {
     const controller = navigator.serviceWorker.controller;
     if (!controller) throw new Error("service worker does not control fixture");
     const keepAlive = window as any;
@@ -1264,12 +1301,14 @@ async function installBridge(
         });
       }
       keepAlive.__bridgeCookies[responseLabel].push(event.data.headers?.cookie ?? "");
+      const location = redirects[event.data.url];
       bridge.port1.postMessage({
         type: "http-response",
         requestId: event.data.requestId,
-        status: 200,
+        status: location ? 302 : 200,
         headers: {
           "Content-Type": "text/plain; charset=utf-8",
+          ...(location ? { Location: location } : {}),
           "x-forwarded-user-agent": event.data.headers["user-agent"] ?? "",
           "Set-Cookie": `${responseLabel}=${keepAlive.__bridgeCookieValues[responseLabel] ?? "1"}; Path=/`,
         },
@@ -1291,7 +1330,7 @@ async function installBridge(
     const appPrefix: string = replyData.appPrefix;
     const response = await fetch(`${appPrefix}cookie`, { cache: "no-store" });
     return { reply: replyData, name: replyData.name, appPrefix, body: await response.text() };
-  }, { session: sessionId, responseLabel: label });
+  }, { session: sessionId, responseLabel: label, redirects });
 }
 
 async function setBridgeCookieValue(

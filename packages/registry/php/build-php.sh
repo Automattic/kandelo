@@ -17,10 +17,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+PACKAGE_DIR="${PHP_PACKAGE_DIR:-$SCRIPT_DIR}"
+PHP_BUILD_VARIANT="${PHP_BUILD_VARIANT:-cli-fpm}"
 source "$REPO_ROOT/scripts/package-build-roots.sh"
-kandelo_package_load_source_metadata "$SCRIPT_DIR"
+kandelo_package_load_source_metadata "$PACKAGE_DIR"
 # shellcheck source=/dev/null
-kandelo_package_prepare_build_roots "$SCRIPT_DIR/php-work" wasm32
+kandelo_package_prepare_build_roots "$PACKAGE_DIR/php-work" wasm32
 PHP_VERSION="$WASM_POSIX_DEP_VERSION"
 SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
 SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
@@ -203,6 +205,11 @@ cd "$SRC_DIR"
 # Apply patches for Wasm compatibility
 echo "==> Patching PHP for Wasm..."
 
+# A valid large opcode array can exceed a browser worker's native Wasm call
+# stack during CFG numbering. Preserve the upstream DFS order using explicit
+# PHP-allocated traversal frames, for both CLI/FPM and the ZTS embed library.
+git apply "$SCRIPT_DIR/iterative-cfg-postorder.patch"
+
 # The upstream no-phar test fixture is a self-extracting PHP stub embedded at
 # fixed byte offsets. It masks CRC values with the literal 0xffffffff; on
 # wasm32/PHP with 32-bit longs that literal is a float and PHP 8.3 emits
@@ -235,6 +242,20 @@ if ! grep -q 'ZEND_USE_ASM_ARITHMETIC 0' Zend/zend_multiply.h 2>/dev/null; then
 ' Zend/zend_multiply.h && rm -f Zend/zend_multiply.h.bak
     fi
 fi
+python3 - <<'PY'
+from pathlib import Path
+path = Path("Zend/zend_operators.h")
+source = path.read_text()
+original = """#if defined(HAVE_ASM_GOTO) && !__has_feature(memory_sanitizer)
+# define ZEND_USE_ASM_ARITHMETIC 1
+#else
+# define ZEND_USE_ASM_ARITHMETIC 0
+#endif
+"""
+if original not in source:
+    raise SystemExit("zend_operators.h: arithmetic macro block not found")
+path.write_text(source.replace(original, "#ifndef ZEND_USE_ASM_ARITHMETIC\n" + original + "#endif\n", 1))
+PY
 
 # PHP 8.5's pcntl header embeds siginfo_t but does not include its owner.
 # musl exposes that type with the feature macros supplied to every build below.
@@ -882,7 +903,14 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     kandelo_package_project_requested_vfs_source_role test-suite "$SRC_DIR"
 fi
 
-echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
+if [ "$PHP_BUILD_VARIANT" = "zts-embed" ]; then
+    SAPI_CONFIG_FLAGS=(--disable-cli --disable-fpm --enable-embed=static --enable-zts)
+    EXTENSION_CONFIG_FLAGS=(--enable-opcache --enable-intl --with-curl --enable-phar --with-zip)
+else
+    SAPI_CONFIG_FLAGS=(--enable-cli --enable-fpm --enable-opcache)
+    EXTENSION_CONFIG_FLAGS=(--enable-intl=shared --with-curl=shared --enable-phar=shared --enable-zend-test=shared --with-zip=shared)
+fi
+echo "==> Configuring PHP for Wasm ($PHP_BUILD_VARIANT)..."
 # Keep autoconf's cache inside the disposable build directory. Package builds
 # must not race on or leave generated state in the registry recipe directory.
 rm -f "$CONFIG_CACHE"
@@ -1036,9 +1064,8 @@ if [ ! -f Makefile ]; then
         --disable-rpath \
         --disable-cgi \
         --disable-phpdbg \
-        --enable-cli \
-        --enable-fpm \
-        --enable-intl=shared \
+        "${SAPI_CONFIG_FLAGS[@]}" \
+        "${EXTENSION_CONFIG_FLAGS[@]}" \
         --enable-mbstring \
         --disable-mbregex \
         --enable-ctype \
@@ -1049,9 +1076,7 @@ if [ ! -f Makefile ]; then
         --enable-dba \
         --enable-ftp \
         --with-iconv="$LIBICONV_PREFIX" \
-        --with-curl=shared \
         --enable-pcntl \
-        --enable-phar=shared \
         --enable-posix \
         --enable-shmop \
         --enable-soap \
@@ -1059,7 +1084,6 @@ if [ ! -f Makefile ]; then
         --enable-sysvmsg \
         --enable-sysvsem \
         --enable-sysvshm \
-        --enable-zend-test=shared \
         --without-valgrind \
         --without-pcre-jit \
         --disable-fiber-asm \
@@ -1081,7 +1105,6 @@ if [ ! -f Makefile ]; then
         --enable-simplexml \
         --enable-xmlreader \
         --enable-xmlwriter \
-        --with-zip=shared \
         --cache-file="$CONFIG_CACHE" \
         --prefix="$GUEST_PREFIX" \
         --sysconfdir=/etc \
@@ -1232,6 +1255,18 @@ fi
 # last. With libxml2's upstream layout that is `-I…/include/libxml2`,
 # the directory PHP's `#include <libxml/parser.h>` resolves against.
 EXTRA_INC_LIBXML="-D_GNU_SOURCE -I${LIBXML2_PREFIX}/include/libxml2"
+
+if [ "$PHP_BUILD_VARIANT" = "zts-embed" ]; then
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+        EXTRA_CFLAGS="$EXTRA_INC_LIBXML" libphp.la
+    test -f libs/libphp.a
+    INSTALL_ROOT="$WORK_DIR/install" make install-headers
+    INSTALL_DIR="${KANDELO_PACKAGE_OUT_DIR:-$WORK_DIR/output}"
+    mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
+    cp libs/libphp.a "$INSTALL_DIR/lib/libphp.a"
+    cp -R "$WORK_DIR/install/usr/include/php" "$INSTALL_DIR/include/php"
+    exit 0
+fi
 
 echo "==> Building PHP CLI..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" cli

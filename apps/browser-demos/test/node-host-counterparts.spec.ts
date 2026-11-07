@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
@@ -10,6 +10,11 @@ import { tryResolveBinary } from "../../../host/src/binary-resolver";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../..");
 const publicDir = join(repoRoot, "apps", "browser-demos", "public");
+const frankenphpChurnRequests = Number(process.env.KANDELO_FRANKENPHP_CHURN_REQUESTS ?? "0");
+if (!Number.isSafeInteger(frankenphpChurnRequests) ||
+    frankenphpChurnRequests < 0 || frankenphpChurnRequests > 40) {
+  throw new Error("KANDELO_FRANKENPHP_CHURN_REQUESTS must be an integer from 0 to 40");
+}
 
 interface ServiceImageRef {
   relPath: string;
@@ -316,6 +321,52 @@ test.describe("Node-host counterparts for Kandelo browser demos", () => {
     try {
       const html = await fetchText(`http://127.0.0.1:${port}/`);
       expect(html).toMatch(/WordPress|wp-admin|install/i);
+    } finally {
+      await stopNodeHostDemo(demo.proc);
+    }
+  });
+
+  test("WordPress FrankenPHP serves the preinstalled site and editor without PHP-FPM", async ({ page }) => {
+    test.setTimeout(300_000);
+    const explicitImage = process.env.KANDELO_WORDPRESS_FRANKENPHP_IMAGE;
+    if (explicitImage) {
+      test.skip(!existsSync(resolve(repoRoot, explicitImage)), "WordPress FrankenPHP image path is missing");
+    } else {
+      skipUnlessRunnable("WordPress FrankenPHP Node-host demo", serviceImages.wordpress);
+    }
+
+    const port = await getFreePort();
+    const demo = await startNodeHostDemo(
+      "packages/registry/wordpress/demo/serve-frankenphp.ts",
+      [String(port)],
+      /WordPress on Kandelo FrankenPHP:/i,
+      180_000,
+    );
+
+    try {
+      const html = await fetchText(`http://localhost:${port}/`);
+      expect(html).toMatch(/WordPress/i);
+      expect(html).not.toMatch(/id="setup"|id="language-chooser"/i);
+      expect(demo.output()).not.toMatch(/php-fpm|nginx.*listening/i);
+
+      for (let index = 0; index < frankenphpChurnRequests; index += 1) {
+        const isLogin = index % 2 === 1;
+        const path = isLogin ? "/wp-login.php" : "/";
+        const body = await fetchText(`http://localhost:${port}${path}?round=${index}`);
+        expect(body).toContain(isLogin ? "user_login" : "WordPress on Kandelo");
+      }
+
+      await page.goto(`http://localhost:${port}/wp-login.php`);
+      await page.locator("#user_login").fill("admin");
+      await page.locator("#user_pass").fill("password");
+      await page.locator("#wp-submit").click();
+      await expect(page.locator("#adminmenu, body.wp-admin").first()).toBeVisible({ timeout: 120_000 });
+      await page.goto(`http://localhost:${port}/wp-admin/site-editor.php`);
+      await expect(page.locator("iframe").first()).toBeVisible({ timeout: 120_000 });
+      await page.waitForTimeout(20_000);
+      const editorHealth = await page.request.get(`http://localhost:${port}/wp-admin/site-editor.php?health=${Date.now()}`);
+      expect(editorHealth.status()).toBe(200);
+      expect(demo.output()).not.toMatch(/panic|fatal error/i);
     } finally {
       await stopNodeHostDemo(demo.proc);
     }

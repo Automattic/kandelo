@@ -1628,6 +1628,8 @@ interface ChannelInfo {
    *  retry/sleep/fork/exec path. Prevents the poller from re-entering a
    *  channel that is already in flight. Only used when usePolling=true. */
   handling?: boolean;
+  /** The owner is exiting; every waiter must observe its terminal completion. */
+  retiring?: boolean;
   /**
    * Handle for this channel's kernel-owned wait deadline, or undefined when
    * no wait is armed. Minted by `kernel_wait_deadline_open` and never reused,
@@ -12483,6 +12485,7 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     entry?: KernelWorkerEntryContext,
   ): void {
+    channel.retiring = true;
     const view = new DataView(channel.memory.buffer, channel.channelOffset);
     view.setUint32(CH_SIG_SIGNUM, SIGKILL, true);
     view.setUint32(CH_SIG_HANDLER, 0, true);
@@ -12522,6 +12525,7 @@ export class CentralizedKernelWorker {
     syscallNr: number,
     entry?: KernelWorkerEntryContext,
   ): void {
+    channel.retiring = true;
     this.completeChannelRaw(channel, 0, 0, entry);
     if (syscallNr === SYS_EXIT_GROUP) {
       // musl follows a returning EXIT_GROUP with the non-returning SYS_EXIT
@@ -15112,7 +15116,8 @@ export class CentralizedKernelWorker {
     kernelEntryIntrinsicApply(
       kernelEntryIntrinsicAtomicsNotify,
       kernelEntryIntrinsicAtomics,
-      [i32View, statusIndex, 1],
+      // A queued host listener must not consume the retiring guest's only wake.
+      [i32View, statusIndex, channel.retiring ? Infinity : 1],
     );
     if (prepared.relistenRequested && this.isRegisteredChannel(channel)) {
       this.relistenChannel(channel);
@@ -15404,10 +15409,12 @@ export class CentralizedKernelWorker {
           publication.prepared,
         );
       }
-      // Re-enter through the normal listener so polling mode and the browser's
-      // event-loop yielding policy retain their existing behavior.
+      // A deferred retry still owns its frozen request and Rust target token.
+      // Re-entering it as a fresh mailbox dispatch would lose that token and
+      // return EBUSY instead of completing the original operation.
       for (const channel of deferredToRelisten) {
-        this.relistenChannel(channel);
+        if (this.blockingRetrySnapshots.has(channel)) this.retrySyscall(channel);
+        else this.relistenChannel(channel);
       }
     });
     return true;
@@ -16040,6 +16047,7 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
     alreadyExited = false,
   ): void {
+    channel.retiring = true;
     if (alreadyExited || this.hostReaped?.has(channel.pid)) {
       this.wakeExitedChannelForRetirement(channel, entry);
       return;
@@ -21398,8 +21406,9 @@ export class CentralizedKernelWorker {
 
   /**
    * Handle SYS_SPAWN (path, path_len, blob, blob_len, pid_out, 0). The kernel
-   * reads the request from the caller's memory, refuses a target a launch
-   * could not run, and builds the child with its file actions applied once;
+   * reads the request from the caller's memory and builds the child with its
+   * file actions applied once. It prechecks the target only when the parent
+   * and child have the same lookup context;
    * the host then launches the child's committed target. The child pid is
    * written to `pid_out`, so a negative result is always a kernel error.
    */
@@ -22460,15 +22469,7 @@ export class CentralizedKernelWorker {
     }
     const cwd = new TextDecoder().decode(output.value);
     const joined = cwd.endsWith("/") ? cwd + path : cwd + "/" + path;
-    // Normalize . and .. components (e.g. /data/spawn/./prog → /data/spawn/prog)
-    const parts = joined.split("/");
-    const normalized: string[] = [];
-    for (const part of parts) {
-      if (part === "." || part === "") continue;
-      if (part === ".." && normalized.length > 0) { normalized.pop(); continue; }
-      normalized.push(part);
-    }
-    return { kind: "ok", value: "/" + normalized.join("/") };
+    return { kind: "ok", value: this.normalizeAbsoluteGuestPath(joined) };
   }
 
   /**
@@ -22607,7 +22608,7 @@ export class CentralizedKernelWorker {
         return;
       }
       const base = new TextDecoder().decode(output.value);
-      execPath = this.normalizeSharedMmapPath(`${base}/${pathStr}`);
+      execPath = this.normalizeAbsoluteGuestPath(`${base}/${pathStr}`);
     }
 
     if (!this.callbacks.onExec) {
@@ -23151,6 +23152,7 @@ export class CentralizedKernelWorker {
     const isMainChannel = this.isMainProcessChannel(channel);
 
     if (syscallNr === SYS_EXIT && !isMainChannel) {
+      channel.retiring = true;
       // Thread exit: finalize kernel-side thread state, complete the channel,
       // then ask the host to tear down the backing Worker (browser + Node both
       // wire onThreadExit).
@@ -25905,7 +25907,7 @@ export class CentralizedKernelWorker {
       const path = new TextDecoder().decode(pathBytes);
       if (!path) return { kind: "error", errno: ENOENT };
       if (path.startsWith("/")) {
-        return { kind: "ok", value: this.normalizeSharedMmapPath(path) };
+        return { kind: "ok", value: this.normalizeAbsoluteGuestPath(path) };
       }
 
       let base: string;
@@ -25928,7 +25930,7 @@ export class CentralizedKernelWorker {
       }
       return {
         kind: "ok",
-        value: this.normalizeSharedMmapPath(`${base}/${path}`),
+        value: this.normalizeAbsoluteGuestPath(`${base}/${path}`),
       };
     } catch (err) {
       this.#rethrowKernelEntryFatal(err);
@@ -25936,7 +25938,7 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private normalizeSharedMmapPath(path: string): string {
+  private normalizeAbsoluteGuestPath(path: string): string {
     const normalized: string[] = [];
     for (const component of path.split("/")) {
       if (!component || component === ".") continue;

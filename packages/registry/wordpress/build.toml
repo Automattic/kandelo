@@ -17,6 +17,8 @@ inputs = [
   "images/vfs/scripts/build-wp-vfs-image.sh",
   "images/vfs/scripts/build-wp-vfs-image.ts",
   "images/vfs/scripts/dinit-image-helpers.ts",
+  "images/vfs/scripts/service-activities.ts",
+  "packages/registry/wordpress/services.json",
   "images/rootfs/etc/services",
   "images/vfs/scripts/tracked-demo-config.ts",
   "packages/registry/wordpress/wordpress-demo.json",
@@ -52,5 +54,5 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 30
+revision = 43
 publication_state = "pending"

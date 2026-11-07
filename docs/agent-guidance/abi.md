@@ -37,6 +37,10 @@ Treat these as ABI surface:
   ordering, or meanings visible to user programs or host marshalling.
 - Kernel Wasm exports used by the host, including function signatures, tracked
   globals, required/optional host-adapter metadata, and export filter policy.
+- Optional process exports that only select host placement policy belong to
+  the kernel-host surface when programs without the export retain their exact
+  layout and behavior. Record them in `host_adapter`, keep the supported
+  program digest unchanged, and test both absent and present declarations.
 - Kernel Wasm imports every host must supply (`env.host_*` functions and the
   imported `env.memory`), with signatures and memory limits. Adding or
   changing one is incompatible (a kernel-host version bump); removing one is

@@ -1,4 +1,4 @@
-use alloc::rc::Rc;
+use alloc::rc::{Rc, Weak};
 use alloc::boxed::Box;
 use core::ops::Deref;
 use wasm_posix_shared::Errno;
@@ -12,7 +12,26 @@ struct SharedValue<Value> {
 
 pub(crate) struct IoRc<Value>(Rc<SharedValue<Value>>);
 
+/// A weak shared owner whose surviving control block remains admitted after
+/// the last strong reference releases the value's own reservation.
+pub(crate) struct IoWeak<Value> {
+    value: Weak<SharedValue<Value>>,
+    _reservation: MetadataReservation<'static>,
+}
+
+impl<Value> IoWeak<Value> {
+    pub(crate) fn upgrade(&self) -> Option<IoRc<Value>> { self.value.upgrade().map(IoRc) }
+    pub(crate) fn strong_count(&self) -> usize { self.value.strong_count() }
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool { self.value.ptr_eq(&other.value) }
+}
+
 impl<Value> IoRc<Value> {
+    pub(crate) fn try_downgrade(&self) -> Result<IoWeak<Value>, Errno> {
+        // A Weak can keep the Rc control block allocated after Value drops.
+        let bytes = 4usize.checked_mul(core::mem::size_of::<usize>()).ok_or(Errno::ENOMEM)?;
+        let reservation = self.0._reservation.budget().reserve(bytes)?;
+        Ok(IoWeak { value: Rc::downgrade(&self.0), _reservation: reservation })
+    }
     pub(crate) fn identity(&self) -> usize { &self.0.value as *const Value as usize }
     #[cfg(test)]
     pub(crate) fn strong_count(&self) -> usize { Rc::strong_count(&self.0) }

@@ -2730,6 +2730,14 @@ fallback for any request that has no demo chrome to render a status in, such
 as loading `/<scope>/computer/<name>/` directly with no page-side listener
 attached.
 
+If a browser navigation reaches the static origin without service-worker
+control, the static server must also refuse the `/<scope>/computer/` namespace.
+Vite's development and preview servers return a non-cacheable 503 there,
+instead of serving the Kandelo app shell inside its own web-preview iframe
+and recursively booting another computer. The 503 identifies lost bridge
+control; it does not restart the guest. Other static hosts need the same
+route policy when they use an app-shell fallback.
+
 ### Blob-URL iframes (service-worker boundary)
 
 The service worker can only bridge requests from documents it **controls**. A
@@ -3543,7 +3551,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
 | Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | package-built platform rootfs plus shell demo assets; Bash and login are embedded; every other program — sudo, the ordinary command set, and the demo machines' programs — is a first-use package output, and the composer rejects any other program it would embed |
-| WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
+| WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | Preinstalled WordPress and SQLite, with separate nginx/PHP-FPM, FrankenPHP classic, and FrankenPHP+Caddy service targets |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
@@ -3558,7 +3566,20 @@ uncompressed code or data. Building `harper` prepares the binaries, and
 `harper-browser-bundle` packages them without recompiling. An existing shell
 image gains these references when the shell image is next rebuilt.
 
-Node, WordPress, and LAMP are optional demo profiles. Their VFS asset imports
+Node, WordPress, WordPress on FrankenPHP, and LAMP are optional demo profiles.
+The WordPress image offers three profiles using different dinit targets:
+`wordpress-sqlite` starts nginx/PHP-FPM, `wordpress-frankenphp` starts a
+small Go HTTP server embedding FrankenPHP, and `wordpress-frankenphp-caddy`
+starts Caddy's `php_server` integration. Both FrankenPHP profiles execute
+embedded PHP directly, without PHP-FPM, and use PHP ZTS with built-in
+OPcache configured in file-cache-only mode. They do not include a full-page
+cache. These functional classic-mode demos are not yet production deployment
+recipes or evidence of better performance than PHP-FPM. Chromium template
+Save/reload is tested through the actual WordPress UI; intermittent WebKit
+editor-health stalls, sustained stability, physical-memory bounds, and
+current performance comparisons remain open in the
+[Go milestone plan](plans/2026-09-05-go-gc-port-milestone1-plan.md).
+Their VFS asset imports
 are resolved only after that profile is requested; loading the main shell does
 not require or fetch those image bytes. If the selected profile's local or
 resolver-managed artifact is absent, the browser reports that exact missing
@@ -3872,6 +3893,13 @@ cache entries, source-cache files, symlink escapes, malformed filesystem URLs,
 and descendants created by replacing an approved file with a directory receive
 HTTP 403. Production builds emit ordinary bundled assets and do not expose the
 local package cache.
+
+Each development server owns a private dependency-optimizer directory beneath
+its configured Vite cache root. Concurrent servers can select different
+dependency graphs, so one must not replace the optimized modules another is
+still serving. The directory is removed on server close or process exit.
+The browser regression opens both servers and checks that closing one preserves
+the other's module responses and releases only the closed server's cache.
 
 With `WASM_POSIX_RESOLUTION_POLICY=source-only-v1`, the browser build also
 requires `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT` to be a normalized canonical
@@ -4382,6 +4410,14 @@ safepoints, so on Chromium, Firefox, and Node the host answers the first
 timeout with an unbounded wait and the process waits exactly as before. The
 host import lives in `host/src/heap-safepoint.ts`; the bounded wait is in
 `libc/glue/channel_syscall.c`.
+
+The newest eight-byte buffer is retained on the disposable worker's global
+object under a private symbol, replacing the previous one at each call.
+A module-local assignment with only a test reader was eliminated from the
+production bundle. A Vite/Terser browser regression now checks actual
+allocations without that reader; development-server results alone do not
+validate the shipped checkpoint. This implementation correction does not
+confirm the suspected engine explanation.
 
 The cost on JavaScriptCore is one wakeup per blocked thread per 100 ms. A
 standalone reproduction (24 workers that start a collection and then block)

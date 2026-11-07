@@ -8,12 +8,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ABI_VERSION } from "../src/generated/abi";
 import {
   captureProgramFixtureBuildContract,
   programFixtureNeedsRebuild,
+  sdkProgramBuildInputs,
   stampProgramFixture,
 } from "./program-fixture-freshness";
 
@@ -111,6 +113,16 @@ afterEach(() => {
 });
 
 describe("compiled program fixture freshness", () => {
+  it("includes the ABI contract snapshot in SDK fixture inputs", () => {
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    expect(sdkProgramBuildInputs(repoRoot, "wasm32")).toContain(
+      join(repoRoot, "abi/snapshot.json"),
+    );
+    expect(sdkProgramBuildInputs(repoRoot, "wasm64")).toContain(
+      join(repoRoot, "abi/snapshot.json"),
+    );
+  });
+
   it("accepts only the exact stamped source content, independent of mtimes", () => {
     const { root, source, input, output } = createFixture();
     const contract = capture(root, input);

@@ -106,6 +106,7 @@ changes, package artifacts, or performance claims.
 | ABI versioning and snapshot policy | `docs/agent-guidance/abi.md` | `docs/abi-versioning.md`, `docs/fork-instrumentation.md` |
 | Host runtime and Node/browser parity | `docs/agent-guidance/host-runtime.md` | `docs/architecture.md`, `docs/browser-support.md` |
 | Package schema, builds, resolver, cache | `docs/agent-guidance/packages-and-builds.md` | `docs/package-management.md`, `docs/porting-guide.md`, `docs/sdk-guide.md` |
+| Extending the `GOOS=kandelo` Go runtime fork | `docs/agent-guidance/go-runtime.md` | `tests/go/README.md`, `docs/plans/2026-09-05-go-gc-port-milestone1-plan.md` |
 | Browser demos, VFS images, sharing, users | `docs/agent-guidance/browser-and-user.md` | `docs/browser-support.md` |
 | Filesystem image hierarchy and installed guest paths | `docs/agent-guidance/images.md` | `docs/filesystem-layout.md` |
 | Performance claims and benchmarks | `docs/agent-guidance/performance.md` | `docs/profiling.md` |

@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostFileSystem } from "../../src/vfs/host-fs";
+import { PATHCONF_NAMES } from "../../src/generated/abi";
 
 const O_WRONLY = 0o1;
 const O_CREAT = 0o100;
@@ -85,21 +86,25 @@ describe("HostFileSystem component-wise path resolution", () => {
     expect(existsSync(join(root, "created-hard-link"))).toBe(false);
   });
 
-  it("keeps native link semantics for a symlink source inside the mount", () => {
+  it.runIf(process.platform !== "win32")("links the symlink inode for a symlink source inside the mount", () => {
     writeFileSync(join(root, "target"), "target");
     symlinkSync("target", join(root, "source-link"));
 
     hostFs.link("/source-link", "/linked-symlink");
 
     const sourceLink = hostFs.lstat("/source-link");
-    const target = hostFs.stat("/target");
     const linked = hostFs.lstat("/linked-symlink");
-    expect([sourceLink.ino, target.ino]).toContain(linked.ino);
-    if ((linked.mode & 0xf000) === 0xa000) {
-      expect(hostFs.readlink("/linked-symlink")).toBe("target");
-    } else {
-      expect(linked.ino).toBe(target.ino);
-    }
+    expect(linked.ino).toBe(sourceLink.ino);
+    expect((linked.mode & 0xf000)).toBe(0xa000);
+    expect(hostFs.readlink("/linked-symlink")).toBe("target");
+  });
+
+  it.runIf(process.platform === "darwin")("preserves EEXIST when linking a symlink inode", () => {
+    symlinkSync("target", join(root, "source-link"));
+    writeFileSync(join(root, "destination"), "occupied");
+
+    expect(() => hostFs.link("/source-link", "/destination")).toThrow(/EEXIST/);
+    expect(hostFs.readlink("/source-link")).toBe("target");
   });
 
   it("revalidates an intermediate directory after an external replacement", () => {
@@ -141,6 +146,24 @@ describe("HostFileSystem utimens metadata", () => {
     expect(result.mtimeMs).toBe(30_000);
   });
 
+  it("preserves exact nanoseconds across path and descriptor stat", () => {
+    writeFileSync(join(root, "nanoseconds"), "data");
+    const atimeNs = 1_790_000_000_123_456_789n;
+    const mtimeNs = 1_790_000_001_987_654_321n;
+    hostFs.utimensat("/nanoseconds", 1_790_000_000, 123_456_789, 1_790_000_001, 987_654_321);
+
+    expect(hostFs.stat("/nanoseconds").atimeNs).toBe(atimeNs);
+    expect(hostFs.stat("/nanoseconds").mtimeNs).toBe(mtimeNs);
+    expect(hostFs.pathconf("/nanoseconds", PATHCONF_NAMES.TIMESTAMP_RESOLUTION)).toBe(1);
+    const fd = hostFs.open("/nanoseconds", 0, 0);
+    expect(hostFs.fstat(fd).mtimeNs).toBe(mtimeNs);
+    hostFs.close(fd);
+
+    hostFs.utimensat("/nanoseconds", 0, UTIME_OMIT, 1_790_000_002, 123_456_789);
+    expect(hostFs.stat("/nanoseconds").atimeNs).toBe(atimeNs);
+    expect(hostFs.stat("/nanoseconds").mtimeNs).toBe(1_790_000_002_123_456_789n);
+  });
+
   it("drops timestamp overrides after an external native mutation", () => {
     const nativePath = join(root, "externally-mutated");
     writeFileSync(nativePath, "before");
@@ -152,6 +175,9 @@ describe("HostFileSystem utimens metadata", () => {
 
     expect(hostFs.stat("/externally-mutated").mtimeMs).toBe(
       nativeAfter.mtimeMs,
+    );
+    expect(hostFs.stat("/externally-mutated").mtimeNs).toBe(
+      statSync(nativePath, { bigint: true }).mtimeNs,
     );
   });
 });

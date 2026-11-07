@@ -542,10 +542,10 @@ describe("blocking retry snapshot contract", () => {
     expect(flagWrite).toBeGreaterThan(wakeAuthority);
     expect(pendingWrite).toBeGreaterThan(flagWrite);
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
-      "return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0, 0u);",
+      "__do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0, 0u);",
     );
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
-      "long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1, 0u);",
+      "__do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1, 0u);",
     );
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
       "CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY",
@@ -818,6 +818,59 @@ afterEach(() => {
 });
 
 describe("blocking retry request snapshots", () => {
+  it.each(WIDTHS)(
+    "%s resumes a stopped scalar read with its retained target and destination",
+    async (_name, pointerWidth) => {
+      vi.useFakeTimers();
+      const harness = createRetryHarness(pointerWidth);
+      const destination = 0x1000;
+      const replacement = 0x2000;
+      const payload = [0x41, 0x42, 0x43];
+      const attempts: bigint[] = [];
+      harness.kernelExports.kernel_handle_channel = vi.fn(
+        (rawPointer: number | bigint, _pid: number, _tid: number, token: bigint) => {
+          const view = kernelView(harness, rawPointer);
+          attempts.push(token);
+          if (attempts.length === 1) {
+            publishKernelResult(view, -1, EAGAIN);
+          } else if (token !== 1n) {
+            // Rust rejects a fresh dispatch while this TID still owns the
+            // original blocked read's open-file-description binding.
+            publishKernelResult(view, -1, 16); // EBUSY
+          } else {
+            expect(kernelArg(view, 0)).toBe(7n);
+            harness.kernelBytes.set(payload, Number(kernelArg(view, 1)));
+            publishKernelResult(view, payload.length, 0);
+          }
+          return 0;
+        },
+      );
+      harness.relistenChannel.mockImplementation((channel) => {
+        if (requestStatus(harness, channel) === CHANNEL_STATUS_PENDING) {
+          harness.worker.handleSyscall(channel);
+        }
+      });
+      writeRequest(harness, ABI_SYSCALLS.Read, [7n, BigInt(destination), 3n]);
+      harness.worker.handleSyscall(harness.channel);
+      harness.worker.stoppedPids.add(harness.channel.pid);
+      writeRequest(harness, ABI_SYSCALLS.Read, [88n, BigInt(replacement), 3n]);
+      await retryAfterDefaultDelay(harness);
+      expect(harness.worker.deferredStoppedChannels.has(harness.channel)).toBe(true);
+
+      expect(harness.worker.testAuthority.resumeStoppedProcessForTest(harness.channel.pid)).toBe(true);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(requestResult(harness)).toEqual({
+        status: CHANNEL_STATUS_COMPLETE, returnValue: payload.length, errno: 0,
+      });
+      expect(attempts).toEqual([0n, 1n]);
+      expect(Array.from(harness.processBytes.slice(destination, destination + payload.length))).toEqual(payload);
+      expect(Array.from(harness.processBytes.slice(replacement, replacement + payload.length))).toEqual([0, 0, 0]);
+      expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Read);
+      expect(harness.onKernelFatal).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(WIDTHS)(
     "%s retains a scalar write's fd, source range, length, and payload",
     async (_name, pointerWidth) => {

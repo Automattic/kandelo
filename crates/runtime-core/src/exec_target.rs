@@ -772,10 +772,11 @@ pub fn admit(
     }
 }
 
-/// Refuse a `posix_spawn` target before the child exists, so a launch that
-/// cannot run never applies file actions (POSIX runs them exactly once, and
-/// `posix_spawnp` retries the next PATH entry on `ENOENT`/`EACCES`). Checks
-/// what a launch would: the path from the caller's CWD with execute
+/// Refuse a `posix_spawn` target before the child exists when the caller and
+/// child have the same lookup context (no file actions or credential reset).
+/// Otherwise the child's normal target admission must perform the check after
+/// its attributes and file actions have established that context. Checks
+/// what a launch would: the path from this process's CWD with execute
 /// permission, a WebAssembly or `#!` header, and one `#!` level whose
 /// interpreter must itself be a program (`ENOEXEC` otherwise). Retains
 /// nothing.

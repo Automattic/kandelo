@@ -23,6 +23,27 @@ role = "runtime"
 materialization = "embedded"
 
 [[software.package]]
+name = "service-activity-tools"
+outputs = ["service-activity-tools"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "frankenphp-classic"
+outputs = ["frankenphp-classic"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "frankenphp-caddy"
+outputs = ["frankenphp-caddy"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
 name = "dinit"
 outputs = ["dinit", "dinitctl"]
 source_roles = []
@@ -70,7 +91,7 @@ gid = 0
 ephemeral = true
 
 [boot]
-argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"]
+argv = ["/bin/sh", "/sbin/kandelo-init", "nginx"]
 cwd = "/root"
 uid = 0
 gid = 0

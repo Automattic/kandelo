@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "services": [
+    {
+      "id": "nginx",
+      "title": "WordPress SQLite",
+      "port": 8080,
+      "shortcuts": {
+        "title": "WordPress demo",
+        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
+        "groups": [
+          {
+            "title": "Admin",
+            "actions": [
+              {
+                "id": "wp-admin-login",
+                "label": "Log in as admin",
+                "description": "Open wp-admin with the bundled admin account.",
+                "kind": "web.wordpressLogin",
+                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "frankenphp-classic",
+      "title": "WordPress on FrankenPHP",
+      "port": 8080,
+      "shortcuts": {
+        "title": "WordPress on FrankenPHP",
+        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
+        "groups": [
+          {
+            "title": "Admin",
+            "actions": [
+              {
+                "id": "wp-admin-login",
+                "label": "Log in as admin",
+                "description": "Open wp-admin with the bundled admin account.",
+                "kind": "web.wordpressLogin",
+                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "frankenphp-caddy",
+      "title": "WordPress on FrankenPHP + Caddy",
+      "port": 8080,
+      "shortcuts": {
+        "title": "WordPress on FrankenPHP + Caddy",
+        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
+        "groups": [
+          {
+            "title": "Admin",
+            "actions": [
+              {
+                "id": "wp-admin-login",
+                "label": "Log in as admin",
+                "description": "Open wp-admin with the bundled admin account.",
+                "kind": "web.wordpressLogin",
+                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

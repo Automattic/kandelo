@@ -1,0 +1,29 @@
+kind = "program"
+name = "caddy"
+version = "2.11.9"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = ["go-bootstrap-source@1.26.10"]
+
+[source]
+url = "https://github.com/caddyserver/caddy/archive/refs/tags/v2.11.9.tar.gz"
+sha256 = "fefbe1f72b7a7e244f348c20eba377bb1e6964f51594229d2f38c49eaa2aa9a4"
+provider = "archive"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/caddyserver/caddy/blob/v2.11.9/LICENSE"
+
+[build]
+script_path = "packages/registry/caddy/build-caddy.sh"
+
+[[outputs]]
+name = "caddy"
+wasm = "caddy.wasm"
+fork_instrumentation = "auto"
+
+[[host_tools]]
+name = "go"
+version_constraint = ">=1.25.6"
+probe = { args = ["version"], version_regex = "go version go(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

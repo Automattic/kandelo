@@ -100,6 +100,8 @@ for required_tool in python3 rustc cargo cbindgen node curl make; do
     fi
 done
 
+export RUSTC="$(command -v rustc)"
+
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 resolve_dep() {
     local name="$1"
@@ -306,6 +308,11 @@ fi
 
 export MOZCONFIG="$MOZCONFIG_PATH"
 export MOZBUILD_STATE_PATH
+# Mach validates its own Python dependency versions. Keep unrelated declared
+# tools (such as the benchmark's psutil) out of its build environment instead
+# of weakening those requirements or changing Mozilla's dependency sources.
+python3 -m venv --without-pip "$WORK_DIR/build-python"
+export PATH="$WORK_DIR/build-python/bin:$PATH"
 export MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=system
 
 TARGET_OS_DEFINES="${WASM_POSIX_TARGET_OS_DEFINES:--D__linux__=1 -D__unix__=1}"

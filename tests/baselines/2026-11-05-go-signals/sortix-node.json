@@ -1,0 +1,22 @@
+{
+  "context": {
+    "command": "scripts/dev-shell.sh bash scripts/run-sortix-tests.sh signal io",
+    "commit": "5e25c7365a08",
+    "date": "2026-11-05",
+    "exit_code": 1,
+    "host": "node",
+    "repo_root": "/Users/brandon/conductor/workspaces/kandelo/astana",
+    "suite": "sortix"
+  },
+  "counts": {
+    "BUILD": 1,
+    "SKIP": 2
+  },
+  "source_sha256": "a168d891c32d9f1c47d5edcca4b34c98bf07fc831188921d4d58de16ad51a31d",
+  "cases": {
+    "[runner exit]": {"outcome":"error","reason":"runner exited 1; inspect the console log for errors omitted by the reporter"},
+    "signal/default-usr1-exec": {"outcome":"error","reason":"BUILD signal/default-usr1-exec"},
+    "signal/ppoll-block-raise": {"outcome":"skip","reason":"SKIP signal/ppoll-block-raise (relies on signal()'s implementation-defined SA_RESTART; see os-test-local/signal/ppoll-{sarestart,norestart}-*)"},
+    "signal/ppoll-block-sleep-raise": {"outcome":"skip","reason":"SKIP signal/ppoll-block-sleep-raise (relies on signal()'s implementation-defined SA_RESTART; see os-test-local/signal/ppoll-{sarestart,norestart}-*)"}
+  }
+}

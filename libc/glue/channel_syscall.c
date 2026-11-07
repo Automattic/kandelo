@@ -28,6 +28,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <kandelo/signal.h>
+#include <kandelo/syscall.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <time.h>
@@ -168,7 +170,7 @@ _Static_assert(sizeof(uint64_t) == WASM_POSIX_CHANNEL_SIG_ALT_SIZE_BYTES,
 
 static long __do_syscall(long n, long long a1, long long a2, long long a3,
                          long long a4, long long a5, long long a6);
-static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
+static struct kandelo_syscall_result __do_syscall_impl(long n, long long a1, long long a2, long long a3,
                               long long a4, long long a5, long long a6,
                               int cancellation_point,
                               uint32_t extra_request_flags);
@@ -249,7 +251,7 @@ static int kandelo_capture_ppoll_deadline(
             0, 0, 0, 0,
             0,
             CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
-        ) != 0)
+        ).error != 0)
         return 0;
     deadline->tv_sec = now.tv_sec + timeout.tv_sec;
     deadline->tv_nsec = now.tv_nsec + timeout.tv_nsec;
@@ -273,7 +275,7 @@ static void kandelo_ppoll_remaining(
             0, 0, 0, 0,
             0,
             CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
-        ) != 0 || now.tv_sec > deadline->tv_sec ||
+        ).error != 0 || now.tv_sec > deadline->tv_sec ||
         (now.tv_sec == deadline->tv_sec && now.tv_nsec >= deadline->tv_nsec)) {
         remaining[0] = 0;
         remaining[1] = 0;
@@ -896,6 +898,17 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
                  (long)(uintptr_t)&old_mask, 0, 8, 0, 0);
 
     return flags;
+}
+
+/* Foreign runtimes may submit channel calls themselves. Once they have
+ * saved the syscall result and reset the channel to IDLE, use the same
+ * dispatcher as musl for C handlers, masks, siginfo, and alternate stacks.
+ * This consumes an already delivered record; it must not issue a checkpoint
+ * syscall first, which could overwrite that record. */
+uint32_t __wasm_posix_dispatch_pending_signal(void)
+{
+    int delivered;
+    return __deliver_pending_signal(get_channel_base(), &delivered);
 }
 
 /* ================================================================== */
@@ -1590,7 +1603,7 @@ static void __unmarshal_channel_record(const uint8_t *data,
 /* Central dispatch — writes to channel and blocks for result          */
 /* ------------------------------------------------------------------ */
 
-static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
+static struct kandelo_syscall_result __do_syscall_impl(long n, long long a1, long long a2, long long a3,
                               long long a4, long long a5, long long a6,
                               int cancellation_point,
                               uint32_t extra_request_flags)
@@ -1607,7 +1620,7 @@ static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
      * program calls __syscall(SYS_fork) directly), return ENOSYS because
      * fork instrumentation cannot save the call stack through the channel path. */
     if (n == SYS_FORK || n == SYS_VFORK) {
-        return -38; /* ENOSYS */
+        return (struct kandelo_syscall_result){ .error = 38 }; /* ENOSYS */
     }
 
     /* Per-thread exit is non-returning. Route it through the dedicated import
@@ -1633,7 +1646,7 @@ static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
         if (a2 != 0) {
             const uintptr_t act = (uintptr_t)a2;
             if (act > memory_bytes || 24u > memory_bytes - act)
-                return -EFAULT;
+                return (struct kandelo_syscall_result){ .error = EFAULT };
 
             uint64_t handler;
             uint64_t flags;
@@ -1645,7 +1658,7 @@ static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
                 sizeof(sigaction_in_wire.mask)
             );
             if (handler > UINT32_MAX || flags > UINT32_MAX)
-                return -EINVAL;
+                return (struct kandelo_syscall_result){ .error = EINVAL };
             sigaction_in_wire.handler = (uint32_t)handler;
             sigaction_in_wire.flags = (uint32_t)flags;
             a2 = (long long)(uintptr_t)&sigaction_in_wire;
@@ -1654,7 +1667,7 @@ static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
             sigaction_old_guest = (uintptr_t)a3;
             if (sigaction_old_guest > memory_bytes ||
                 24u > memory_bytes - sigaction_old_guest)
-                return -EFAULT;
+                return (struct kandelo_syscall_result){ .error = EFAULT };
             __builtin_memset(&sigaction_out_wire, 0, sizeof(sigaction_out_wire));
             a3 = (long long)(uintptr_t)&sigaction_out_wire;
         }
@@ -1672,7 +1685,7 @@ static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
      * The wasm global is per-instance and immune to cross-thread corruption. */
 
     uintptr_t base;
-    long result;
+    int64_t result;
     int32_t err;
     uint32_t delivered_flags;
     int delivered_signal;
@@ -1834,7 +1847,7 @@ restart_wait_syscall:
         __builtin_trap();
     }
 
-    result = (long)*(int64_t *)(uintptr_t)(base + CH_RETURN);
+    result = *(int64_t *)(uintptr_t)(base + CH_RETURN);
     err = *(int32_t *)(uintptr_t)(base + CH_ERRNO);
 
     /* Reset status to IDLE for next syscall */
@@ -1902,7 +1915,7 @@ restart_wait_syscall:
             long checked = __syscall_cp_check(-(long)EINTR);
             if (checked != -(long)EINTR) {
                 kandelo_finish_interrupted_mask_wait(n, a4, a6);
-                return checked;
+                return (struct kandelo_syscall_result){ .error = (int32_t)-checked };
             }
         }
         if (kandelo_ppoll_has_deadline) {
@@ -1919,18 +1932,22 @@ restart_wait_syscall:
         kandelo_finish_interrupted_mask_wait(n, a4, a6);
     }
 
-    /* Return in musl's expected format: negative errno on error.
-     * musl's __syscall_ret() converts this to set errno and return -1. */
-    if (err) {
-        return -(long)err;
-    }
-    return result;
+    return (struct kandelo_syscall_result){ .value = result, .error = err };
 }
 
 static long __do_syscall(long n, long long a1, long long a2, long long a3,
                          long long a4, long long a5, long long a6)
 {
-    return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0, 0u);
+    struct kandelo_syscall_result result =
+        __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0, 0u);
+    return result.error ? -(long)result.error : (long)result.value;
+}
+
+void __wasm_posix_syscall6(int32_t number, const int64_t arguments[6],
+                         struct kandelo_syscall_result *result)
+{
+    *result = __do_syscall_impl(number, arguments[0], arguments[1],
+        arguments[2], arguments[3], arguments[4], arguments[5], 0, 0u);
 }
 
 /* ================================================================== */
@@ -2007,7 +2024,9 @@ long __syscall_cp(long n, long long a1, long long a2, long long a3,
 {
     long pending = __syscall_cp_cancel_preflight();
     if (pending) return pending;
-    long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1, 0u);
+    struct kandelo_syscall_result result =
+        __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1, 0u);
+    long r = result.error ? -(long)result.error : (long)result.value;
     return __syscall_cp_check(r);
 }
 

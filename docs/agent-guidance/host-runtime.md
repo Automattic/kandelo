@@ -53,6 +53,27 @@ incomplete until both hosts have the same platform-observable behavior or the
 difference is explicitly justified by a real platform boundary. Do not land
 Node-first or browser-later host changes.
 
+The default Node rootfs-image option preserves caller-owned `ArrayBuffer`
+and `Uint8Array` bytes across initialization. It snapshots the image into a
+private ordinary `ArrayBuffer` and transfers that private buffer to the
+kernel worker, rather than structured-cloning it a second time. Never put
+the caller's original buffer on the transfer list without an explicit
+ownership choice. For one-shot callers with a whole ordinary `ArrayBuffer`,
+`takeRootfsImageOwnership: true` transfers the raw image directly and may
+detach it; that host cannot reinitialize from the surrendered bytes. The
+browser's `initFromImage` likewise preserves caller ownership, while its
+separate `initFromOwnedImage` entry point explicitly takes ownership. This
+handoff avoids copies but does not by itself establish a lower steady-state
+RSS or solve a large guest's native Wasm-code footprint.
+
+For `rootfsImage: "default"`, resolve the package-owned
+`programs/rootfs.vfs.zst` before the legacy `rootfs.vfs.zst` in
+`host/wasm`. Only a genuine missing package artifact permits that fallback;
+a rejected or incomplete package must stay visible as an error. The image's
+deferred-file digests are tied to the binary generation it was built with:
+a stale legacy image can name the same lazy URL and byte length as the
+current SourceOnly binary but fail its SHA-256 check at first read.
+
 Before and after host work, ask: "What does this look like on the other host?"
 
 ## Persistent browser realms must not own guest address spaces
@@ -73,6 +94,13 @@ before dropping their bookkeeping, release AudioWorklet views/ports and stop
 its processor, and cancel device timers. Exit must escape guest exception
 handlers; a JavaScript-thrown RuntimeError is catchable by Wasm handlers.
 Preserve Rust's exit status and avoid guest deallocators on retired channels.
+
+Terminal channel publication must wake all queued waiters. An outstanding
+host `Atomics.waitAsync` listener can consume a one-waiter notification and
+leave the retiring guest blocked. Mark the exact exiting channel before its
+completion; keep that state out of replacement images and reused thread
+slots. The native-waiter regression in `kernel-teardown-pipe-entry.test.ts`
+exercises actual completion publication with an observer queued first.
 
 For ownership, memory-ceiling, audio, framebuffer, graphics-lifecycle, or
 machine-teardown changes, run `./run.sh test browser-memory`. See the
@@ -202,7 +230,8 @@ The host never decodes the image into a filesystem of its own.
 
 The kernel decides what an exec or `posix_spawn` runs; the host instantiates
 it. `kernel_spawn_process` reads the spawn request from the caller's memory
-and refuses a target a launch could not run before any file action;
+and builds the child. It may precheck a target in the parent context only
+when file actions and credential reset cannot change that context;
 `kernel_exec_target_admit` says whether a retained target is a `#!` script or
 a program runnable under this ABI; `kernel_exec_commit` sets the new image's
 pointer width. Do not add host code that parses a spawn request or an exec

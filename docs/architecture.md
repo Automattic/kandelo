@@ -1278,7 +1278,13 @@ until Worker termination completes.
 Once Rust has made that Process Exited, the host retires pending sibling
 mailboxes with the private cooperative-exit signal and a raw interruption,
 never by dispatching their old syscall into Rust. Host timers, engine futex
-waiters and request capabilities are retired before that publication. A later
+waiters and request capabilities are retired before that publication. A
+terminal completion wakes every waiter on the retiring channel: a host
+`Atomics.waitAsync` listener can otherwise consume the single notification
+and leave the guest parked despite its completed exit reply. The retiring
+state belongs to the exact channel object; a new process image or reused
+thread slot gets a fresh object. Active channels retain their ordinary
+single-waiter notification. A later
 `exit_group`/`exit` completes only its transport handshake; it cannot replace
 the original Rust exit status or repeat parent notification. Late clone
 continuations must still own their original request and a live process, and
@@ -1705,13 +1711,18 @@ caller now take.
    spawn wire format, and validates argv + envp against the same 4 MiB
    `ARG_MAX` contract as `execve`, counted at the caller's pointer width, plus
    the separate 64 KiB per-entry process-metadata transport limit (an
-   implementation ceiling, not `ARG_MAX`). Before anything changes it refuses
-   a target a launch could not run (`exec_target::probe_spawn_target`): the
-   path from the caller's CWD with execute permission, a WebAssembly or `#!`
-   header, and one `#!` level whose interpreter must itself be a program.
-   That keeps a failed `posix_spawnp` PATH probe from creating a child or
-   running its file actions; it retains nothing and is never launch
-   authority. A target whose bytes are still being fetched returns `EAGAIN`
+   implementation ceiling, not `ARG_MAX`). When there are no file actions or
+   credential reset, the parent and child have the same lookup context, so
+   the kernel can first refuse a target a launch could not run
+   (`exec_target::probe_spawn_target`): the path from the caller's CWD with
+   execute permission, a WebAssembly or `#!` header, and one `#!` level whose
+   interpreter must itself be a program. This check retains nothing and is
+   never launch authority. If file actions or `RESETIDS` can change lookup,
+   the kernel builds the child and applies those operations once; normal
+   retained-target admission then validates the executable using the child's
+   actual CWD, descriptors, and credentials. A child-relative executable must
+   not be refused merely because it is absent from the parent's directory.
+   A precheck whose target bytes are still being fetched returns `EAGAIN`
    with nothing changed, and the host retries once the fetch settles. The
    explicit 8,417,320-byte whole-blob ceiling also bounds file-action data
    that `ARG_MAX` does not count. The advertised 4 MiB `ARG_MAX`,
@@ -1993,7 +2004,7 @@ rather than simulated Ctrl+C input. No guest ABI or syscall changed.
 ### clone() (threads)
 
 1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request
-2. Host asks the kernel to reserve one dynamic pthread control slot in the same process address space
+2. Host takes a preallocated pthread slot or asks the kernel to reserve one dynamically
 3. Host grows the process `WebAssembly.Memory` only far enough to cover that slot
 4. Host spawns a new worker that shares the parent's `WebAssembly.Memory`
 5. Thread worker runs `centralizedThreadWorkerMain`, calls `__wasm_thread_init` to set up TLS
@@ -2031,8 +2042,12 @@ never a path. Exec and spawn read the target's current bytes from the kernel
 for every launch, so a file rewritten in place hashes differently at its next
 exec and can never run a module compiled from older contents. The thread
 variant is keyed on the *program's* digest; `patchWasmForThread` is a pure
-function of those bytes. When the patch leaves the bytes unchanged (a module
-without a start section), the thread module is the program module itself.
+function of those bytes. LLVM shared-memory modules lose the Start section
+and constructor body in the thread variant. Modules with no Start section
+and only active data segments, including Kandelo Go binaries, lose the
+active data section instead: a thread's new Wasm instance must not replay
+static initializers over the running process's shared globals. When neither
+patch applies, the thread module is the program module itself.
 
 **Admission is never skipped.** The cache replaces only the compile step.
 The ABI marker and artifact-policy checks still run on every launch's bytes
@@ -2082,7 +2097,7 @@ compile one thread module between them.
 
 ## Memory Layout
 
-Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus the main-thread control pages, then grows it after successful guest allocation syscalls or after dynamically reserving a pthread control slot.
+Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum, the main-thread control pages, and any opt-in preallocated pthread arena, then grows it after successful guest allocation syscalls or after dynamically reserving a pthread control slot.
 
 ```
 Address           Region
@@ -2093,6 +2108,7 @@ control_base      Host-owned low control slab
                   - main page 0: fork-save/scratch
                   - main page 1: syscall channel primary page
                   - main page 2: syscall channel spill page
+                  - optional bounded pthread slot arena
 control_end       End of host-owned control slab
 brk_base          Initial brk; brk(0) returns this address
 mmap_base         First automatic mmap address; normally equals brk_base
@@ -2106,11 +2122,14 @@ mmap_base         First automatic mmap address; normally equals brk_base
 MAX_PAGES         End of memory (1GB default)
 ```
 
-For current binaries, `control_base` is page-aligned from the larger of the imported-memory minimum and the program's `__heap_base`. The host installs only the main control pages before `_start` can run, then calls `kernel_set_brk_base(pid, control_end)` and `kernel_set_mmap_base(pid, control_end)`. `__heap_base` is therefore treated as "first byte available to the host layout" rather than the value returned by guest `brk(0)`.
+For current binaries, `control_base` is page-aligned from the larger of the imported-memory minimum and the program's `__heap_base`. The host installs the main control pages before `_start` can run, then calls `kernel_set_brk_base(pid, control_end)` and `kernel_set_mmap_base(pid, control_end)`. `__heap_base` is therefore treated as "first byte available to the host layout" rather than the value returned by guest `brk(0)`.
 
 The Rust ABI declaration in `crates/shared/src/lib.rs` is the source of truth for this layout and is mirrored into `abi/snapshot.json` plus generated TypeScript constants. The main control area uses three Wasm pages: fork-save/scratch, syscall channel primary, and syscall channel spill. Each pthread slot is four Wasm pages addressed from the slot start: TLS/control, per-thread fork-save/scratch, syscall channel primary, and syscall channel spill. Pthread workers share the process `WebAssembly.Memory`; the host gives each worker a distinct dynamically reserved slot and returns the slot to that process's allocator after thread exit.
 
-Processes may export `__wasm_posix_thread_slots` to declare their maximum concurrent pthread count. A value of `-1` uses the host default, `0` allows no pthreads, and a positive value sets the exact per-process limit. The kernel worker creation options expose `defaultThreadSlots` for the `-1`/missing-export case. The built-in default is 1024: an intentionally arbitrary high limit meant to avoid pthread availability problems for most programs now that slots are reserved on demand. Hosts can lower or raise it with `defaultThreadSlots` when they need a different resource policy. This limit is a resource-control guard, not a static memory reservation.
+Processes may export `__wasm_posix_thread_slots` to declare their maximum concurrent pthread count. A value of `-1` uses the host default, `0` allows no pthreads, and a positive value sets the exact per-process limit. The kernel worker creation options expose `defaultThreadSlots` for the `-1`/missing-export case. The built-in default is 1024: an intentionally arbitrary high limit meant to avoid pthread availability problems for most programs now that slots are reserved on demand. Hosts can lower or raise it with `defaultThreadSlots` when they need a different resource policy. This limit is a resource-control guard, not a static memory reservation unless the program also opts in to the bounded arena below.
+
+An executable may additionally export `__wasm_posix_preallocate_thread_slots` as a constant-return function yielding `1`. This requires a positive, explicit `__wasm_posix_thread_slots` count. Node and browser hosts then reserve exactly that many four-page thread slots between the main control pages and `brk_base` before starting the process. Ordinary pthread slots come from this bounded arena; host-only `vfork` control workspaces remain dynamically reserved outside it. Programs without the new export retain dynamic pthread slot allocation. This opt-in is for runtimes such as Go that grow their own heap above the initial linear-memory size and cannot let dynamic host slots appear in that untracked heap.
+The optional export is recorded in the kernel-host adapter snapshot. It does not change the ABI-55 program contract: saved executables without the export keep their original layout. A host built before this opt-in does not provide the preallocation behavior required by new Go executables.
 
 `mmap` remains coherent because the kernel has one per-process address-space model for brk, mmap, and host-reserved dynamic control ranges. Automatic `mmap` starts at the process's `mmap_base`, not at the legacy fixed 64MB floor. A usable non-fixed address hint is preferred after rounding it down to the 64KB Wasm page boundary; an occupied or invalid hint falls back to the ordinary first-fit search. `brk` growth succeeds only when the adjacent range is free; if an mmap region or host-reserved pthread slot occupies the next pages, `brk` fails by returning the old break. `MAP_FIXED`, `munmap`, and `mremap` growth are rejected when they would overlap the reserved prefix, legacy host-control range, or a host-reserved pthread slot. `munmap` rounds its length up to a Wasm page before updating both kernel mappings and host-owned bindings. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls and after dynamic pthread-slot reservations so returned guest addresses are backed before user code touches them.
 
@@ -5665,7 +5684,10 @@ consume a record, so an `EFAULT` cannot lose child status or reap a zombie.
 Default stop actions park execution cooperatively at the syscall boundary. The
 kernel emits a process-transition event, and the shared Node/browser host holds
 prepared completions by exact channel identity, including every pthread
-channel, until SIGCONT. SIGCONT changes state immediately even when blocked,
+channel, until SIGCONT. A blocked I/O retry deferred during the stop resumes
+through its retained request and kernel target token. It must not become a
+fresh dispatch while the original open-file-description binding remains live.
+SIGCONT changes state immediately even when blocked,
 ignored, or caught; SIGKILL can terminate a stopped process. Current Wasm
 workers do not provide arbitrary-instruction preemption, so CPU-bound code that
 never reaches a syscall cannot be suspended immediately; that boundary is

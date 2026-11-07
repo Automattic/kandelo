@@ -1,0 +1,45 @@
+script_path = "packages/registry/frankenphp-caddy/build-frankenphp-caddy.sh"
+inputs = [
+  "packages/registry/frankenphp-caddy/build-frankenphp-caddy.sh",
+  "packages/registry/frankenphp-caddy/main.go",
+  "scripts/install-local-binary.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/build-programs-abi-stamp.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/build-kandelo-go-toolchain.sh",
+  "scripts/go-cgo-static-libs.sh",
+  "sdk/activate.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 20
+
+[[git_inputs]]
+name = "go_toolchain"
+repository = "https://github.com/kandelo-dev/go.git"
+commit = "f60530600f70a5ea905a907ac311ec8bd2ae8ac4"
+
+[[git_inputs]]
+name = "xsys"
+repository = "https://github.com/kandelo-dev/sys.git"
+commit = "258047d84115d79e9b594f61de9ec45caca492b3"
+
+[[git_inputs]]
+name = "bbolt"
+repository = "https://github.com/kandelo-dev/bbolt.git"
+commit = "75fe37b2f4323fe67e16257664145809058318b7"
+
+[[git_inputs]]
+name = "readline"
+repository = "https://github.com/kandelo-dev/readline.git"
+commit = "cd55beaf2b93d4becc3100a4a06e186b5e69d85d"
+
+[[git_inputs]]
+name = "logrus"
+repository = "https://github.com/kandelo-dev/logrus.git"
+commit = "179e7a7ca539075feb85112492d10d9b43e14fe6"
+
+[[git_inputs]]
+name = "certificate_transparency"
+repository = "https://github.com/kandelo-dev/certificate-transparency-go.git"
+commit = "c990f3c1f5e54d4e69b7b7479c30176387dab20c"

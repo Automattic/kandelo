@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { assertSupportedKernelFunctionImports } from "../src/worker-main";
+import { assertSupportedKernelFunctionImports, buildKernelImportsForTest } from "../src/worker-main";
 
 function section(id: number, payload: number[]): number[] {
   return [id, payload.length, ...payload];
@@ -29,6 +29,15 @@ function moduleImportingKernelFunction(name: string): WebAssembly.Module {
 }
 
 describe("process kernel-import contract", () => {
+  it("accepts the Go thread-exit import provided to process workers", () => {
+    const module = moduleImportingKernelFunction("kernel_thread_exit");
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    expect(() => assertSupportedKernelFunctionImports(
+      module,
+      buildKernelImportsForTest(memory, 0, 4),
+    )).not.toThrow();
+  });
+
   it("accepts only an explicitly callable channel-mode kernel import", () => {
     const module = moduleImportingKernelFunction("kernel_fork");
     const kernelFork = vi.fn();

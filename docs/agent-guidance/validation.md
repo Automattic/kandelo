@@ -17,11 +17,47 @@ Use precise language:
 
 ## Test fixtures must observe the actual contract
 
+For graceful server shutdown, hold a real request until the listener has
+closed, then release it and require the complete response and normal process
+exit. Observing SIGTERM dispatch alone can release the request before the
+shutdown handler runs. Syscall traces record entry, so verify actual listener
+state through the kernel-owned network API after a close event.
+
+Stream large browser fixtures over test-owned HTTP rather than passing
+numeric byte arrays to `page.evaluate` or large bodies to `route.fulfill`.
+The latter base64-encodes bytes on the debugging protocol: the 104 MB Caddy
+fixture exceeded Chromium's 100 MiB pipe buffer and closed its connection
+before guest execution. An external resolver-cache path can also be
+intentionally forbidden by Vite. Serve only the explicitly selected fixture
+files, keep their ABI/content checks, and close the server after the test.
+Inspect large browser modules with asynchronous `WebAssembly.compile` too:
+the synchronous main-thread constructor rejects fixtures above 8 MB in
+Chromium. Use the ordinary supported API rather than changing browser flags.
+
+For editors that compose several stored entities, prove which entity owns
+the changed content. WordPress's site editor can edit a post title or insert
+a block into post content inside a Query Loop without changing the template.
+Choose the intended insertion context through the UI, observe the intended
+entity becoming dirty and finishing its save, then read it back after fresh
+navigation. A disappearing Save button or retained canvas text alone does
+not prove a template save. For crash durability, also disable the original
+image source and verify the changed content after restarting the browser.
+
 Wait for the operation's completion event or promise rather than a fixed
 number of event-loop turns. For example, compiling a child Wasm module can
 finish later under full-suite load; a spawn assertion should observe the
 channel completion before checking its result. Keep a timeout so a missing
 completion remains a visible failure.
+
+Freeze Vite-watched application and fixture sources during browser lifecycle
+and persistence runs. Editing a fixture imported by another test page can
+broadcast a full reload to the real app, resetting page-local observations
+while persisted guest content recovers. Different ports and dependency-cache
+directories do not isolate source-file watchers. Use a separate checkout for
+concurrent browser development, or finish the active run before editing.
+Retain the dev-server reload log and page lifecycle events when diagnosing
+missing observations; do not relax an ownership assertion to accept a run
+invalidated by source edits. Save observations before asserting on them.
 
 Select the intended terminal and observe its visible repaint before reading
 rendered output. A hidden xterm can parse new output while its DOM still
@@ -51,6 +87,14 @@ over a fresh SourceOnly projection. Refresh it with
 run. For a lazy artifact size mismatch, check the selected image and
 executable identities and repair stale inputs. Do not relax size checks
 or substitute unrelated executable bytes.
+
+Check for an active source build before diagnosing a projection mismatch as
+cache corruption. A build can stage a newly rebuilt mirror member while the
+previous projection remains published until finalization. The observed rootfs
+size mismatch during the Go signal port was this intermediate state. Wait for
+the build to publish its complete cohort, then rerun consumers. Do not copy an
+older artifact over the new member, restamp it, or weaken integrity checks to
+make an in-progress projection usable.
 
 A spec must not skip because a binary or image the supported build produces
 is missing. Missing supported output is a build defect: fail with the reason,
@@ -572,9 +616,11 @@ volume, and run the normal suite with that source root:
 ```bash
 scripts/dev-shell.sh env KANDELO_SORTIX_SOURCE_ROOT=/absolute/os-test \
   bash scripts/ci-run-test-suite.sh sortix
+scripts/dev-shell.sh env KANDELO_SORTIX_SOURCE_ROOT=/absolute/os-test \
+  bash scripts/run-browser-sortix-tests.sh --all
 ```
 
-The runner keeps its build directory below the selected source root;
+Both runners keep their build directory below the selected source root;
 SDK, kernel, overrides, and runtime still come from the current worktree.
 
 Before blaming a suite failure on your change, confirm it actually is your

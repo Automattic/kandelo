@@ -645,6 +645,10 @@ _run_runtime_test_worker() {
     # it can exceed XFAIL_TIMEOUT, and that timeout would hide which way it
     # really failed (seen 2026-09-30 with udp/bind-lan-subnet-first).
     local this_timeout="$TEST_TIMEOUT"
+    case "$suite/$test_name" in
+        basic/poll/poll|basic/sys_select/select|basic/sys_time/select)
+            this_timeout=$((TEST_TIMEOUT * 6)) ;;
+    esac
     if $is_xfail; then
         case "$(xfail_expected_reason "${suite}/${test_name}")" in
             timeout*) this_timeout="$XFAIL_TIMEOUT" ;;

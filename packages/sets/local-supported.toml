@@ -1,6 +1,7 @@
 schema = 1
 policy = "source-only-v1"
 dependency_only = [
+  "go-bootstrap-source",
   "bytepath-source",
   "genesis-plus-gx-source",
   "snkrx-source",
@@ -215,6 +216,14 @@ name = "foot"
 class = "user-software"
 
 [[packages]]
+name = "frankenphp-caddy"
+class = "user-software"
+
+[[packages]]
+name = "frankenphp-classic"
+class = "user-software"
+
+[[packages]]
 name = "freetype"
 class = "platform"
 
@@ -241,6 +250,10 @@ class = "platform"
 [[packages]]
 name = "glibmm"
 class = "platform"
+
+[[packages]]
+name = "go-hello"
+class = "user-software"
 
 [[packages]]
 name = "grep"
@@ -561,6 +574,10 @@ name = "php"
 class = "user-software"
 
 [[packages]]
+name = "php-zts"
+class = "user-software"
+
+[[packages]]
 name = "pixman"
 class = "platform"
 
@@ -829,6 +846,10 @@ manifest = "images/vfs/products/browser-lamp.toml"
 [[exclusions]]
 name = "texlive"
 reason = "deferred software"
+
+[[exclusions]]
+name = "caddy"
+reason = "deferred standalone server; FrankenPHP Caddy has its own package"
 
 [[exclusions]]
 name = "erlang"

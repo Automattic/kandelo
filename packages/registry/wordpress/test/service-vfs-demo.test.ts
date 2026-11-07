@@ -1,9 +1,16 @@
 import { createServer, type Server } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { waitForHttp } from "../../service-vfs-demo";
+import { tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
+import { addDinitInit } from "../../../../images/vfs/scripts/dinit-image-helpers";
+import { bootDinitServiceVfs, finishWhenDinitExits, waitForHttp } from "../../service-vfs-demo";
 
 const servers = new Set<Server>();
+const haveDinit = tryResolveBinary("programs/dinit/dinit.wasm") !== null;
 
 afterEach(async () => {
   await Promise.all(
@@ -39,5 +46,84 @@ describe("service VFS HTTP readiness", () => {
     await waitForHttp(`http://127.0.0.1:${address.port}/`, 5_000);
 
     expect(requests).toBe(3);
+  });
+});
+
+describe("service VFS boot", () => {
+  it.skipIf(!haveDinit)("boots an edited image through the ownership-taking host path", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-service-vfs-"));
+    const imagePath = join(directory, "service.vfs");
+    const fs = KandeloImageFs.create();
+    addDinitInit(fs, [{ name: "probe", type: "internal" }], { boot: false });
+    writeFileSync(imagePath, await fs.saveImage());
+
+    try {
+      const { host, pid } = await bootDinitServiceVfs({
+        image: {
+          relPath: "programs/unused.vfs",
+          publicFile: "unused.vfs",
+          buildHint: "not needed for this fixture",
+        },
+        imagePath,
+        target: "probe",
+        configure: (imageFs) => {
+          imageFs.writeFile("/etc/hostname", new TextEncoder().encode("kandelo\n"), 0o644);
+        },
+      });
+      try {
+        expect(pid).toBeGreaterThan(0);
+        expect(await host.readFileFromVfs("/etc/hostname")).toEqual(
+          new TextEncoder().encode("kandelo\n"),
+        );
+      } finally {
+        await host.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("service VFS supervisor exit", () => {
+  it("reports a service log and fails when dinit exits successfully after serving", async () => {
+    const serviceLog = new TextEncoder().encode("frankenphp-caddy panic");
+    const readFileFromVfs = vi.fn().mockResolvedValue(serviceLog);
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const host = { readFileFromVfs, destroy } as unknown as Parameters<typeof finishWhenDinitExits>[0];
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((status) => {
+      throw new Error(`exit ${status}`);
+    });
+
+    try {
+      await expect(finishWhenDinitExits(host, Promise.resolve(0), "/var/log/frankenphp-caddy.log"))
+        .rejects.toThrow("exit 1");
+      expect(readFileFromVfs).toHaveBeenCalledWith("/var/log/frankenphp-caddy.log");
+      expect(logError).toHaveBeenCalledWith("/var/log/frankenphp-caddy.log:\nfrankenphp-caddy panic");
+      expect(destroy).toHaveBeenCalledOnce();
+      expect(exit).toHaveBeenCalledWith(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("still fails when the service log is unavailable", async () => {
+    const readFileFromVfs = vi.fn().mockRejectedValue(new Error("kernel unavailable"));
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const host = { readFileFromVfs, destroy } as unknown as Parameters<typeof finishWhenDinitExits>[0];
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((status) => {
+      throw new Error(`exit ${status}`);
+    });
+
+    try {
+      await expect(finishWhenDinitExits(host, Promise.resolve(0), "/var/log/frankenphp-classic.log"))
+        .rejects.toThrow("exit 1");
+      expect(logError).toHaveBeenCalledWith("Could not read /var/log/frankenphp-classic.log: Error: kernel unavailable");
+      expect(destroy).toHaveBeenCalledOnce();
+      expect(exit).toHaveBeenCalledWith(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
