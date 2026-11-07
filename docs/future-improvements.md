@@ -1533,3 +1533,11 @@ separation. Its Swift/Node and three-engine headless controls pass, while
 physical adversarial qualification and application oracles remain current-
 iteration work. The original unexplained geometry refusal remains recorded.
 These tooling results close no desktop performance or full B1 gate.
+
+
+The maintainer's 2026-11-07 priority is to ship the separately validated B1
+stage as concrete graphics progress before B2–B6/C1–C3. Those remaining
+stages stay in this iteration and the full goal; this does not move them
+to future work or waive B1 or final acceptance. Current normal R760 remains
+in progress. Preview availability and complete-B1 readiness are separate
+claims, each requiring evidence for its own scope.

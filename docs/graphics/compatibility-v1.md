@@ -81,6 +81,17 @@ explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## B1 delivery priority, 2026-11-07
+
+The maintainer wants to ship B1 as graphics progress today, before completing
+B2–B6 and C1–C3. Treat B1 as a separately reviewable stage: local guest
+validation/error knowledge and exact shared-resource ownership are useful
+platform capabilities before asynchronous bindings or a dedicated GPU worker.
+This is a delivery priority, not evidence of readiness or permission to waive
+B1 correctness, audit, measurement or normal-build requirements. The complete
+goal, stage order and final native-feel bar remain unchanged. Announce a
+runnable preview separately from complete-B1 acceptance, with explicit limits.
+
 ## Sortix validation source parity, 2026-11-06 (R513)
 
 The browser Sortix runner now honors the same `KANDELO_SORTIX_SOURCE_ROOT`
@@ -26961,3 +26972,41 @@ display occlusion/hidden-window controls, actual application response oracles,
 source-to-display distributions, native/main comparison and instrumentation
 overhead remain required. Production graphics, ABI 56/3/17/21 and stage order
 are unchanged. This does not announce a complete B1 preview.
+
+
+### B1 delivery closure and inactive fence evidence, 2026-11-07 (R774)
+
+The sole normal R760 producer remains live at its last recorded checkpoint:
+199 of 222 nodes complete, no failed or blocked nodes, with Sway fork
+instrumentation running. Freeciv, its browser bundle, ScummVM and SFWBar are
+built. The exact ordinary demanded plan contains 190 nodes versus all 222;
+of 32 omitted nodes, 29 are already complete. Only libevent-tests/wasm64,
+zlib/wasm64 and Waybar remain pending outside the default selection. Switching
+selection would not remove the required SpiderMonkey/Node, desktop and image
+chain, so the existing producer is preserved rather than restarted.
+The normal aggregate source-only projection still lacks current application
+ownership records until finalization. File existence and per-node receipts
+are not substitutes for the resolver's aggregate authority. Consumer checks
+must use the ordinary completed projection, without hand edits or stale tiers.
+Full ABI/freshness and application admission remain pending.
+
+The private inactive B5 request-routing draft separately passes 48 native
+controls, 13 registry controls and actual Wasm32 kernel wasm_api cargo check.
+The first native launch fails before compilation because the private source
+cut is not a Git worktree; the corrected declared development shell is
+recorded separately. This is compilation/source evidence, not activation,
+linked-kernel execution, SDK, Node/browser application or stage acceptance.
+Public fence creation still returns ENOSYS before backend effects.
+
+The paired R767 causal controls execute both guest pointer widths and exact
+cleanup before judging their saved outcomes. Original-source closed-fd and
+replacement-fd runs fail with EBADF and ENOTTY, respectively, where the
+retained preparation requires ENOSYS. However, the candidate closed-fd run
+also fails with EBADF; its compilation provenance is being investigated.
+It is not counted as a successful after-control or a fixed routing defect.
+All four frozen source/parent manifests remain unchanged. The first two
+runs exit 101 after 23/15 seconds; the candidate run exits 101 after 12
+seconds. No production B5 code is integrated and this does not introduce
+a B1 dependency. Exact commands, raw logs and outcomes remain in private
+graphics-b5-ingress-causal-r767-runs. Further B5 expansion is subordinate to
+B1 preview delivery. No final gate or approved stage boundary is changed.
