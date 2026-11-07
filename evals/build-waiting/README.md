@@ -794,12 +794,15 @@ precision was not measured.
   cleanup following a symlink. Any such result means revise before landing.
 
 **Controlled result (2026-11-07):** kept. The stdlib lifecycle suite passed
-27 tests through the dev shell, using disposable ordinary Git checkouts and
+28 tests through the dev shell, using disposable ordinary Git checkouts and
 worktrees with isolated registries. Checks cover release/dry-run/idempotence,
 active admission refusal and reopening, a killed supervisor with a live child,
 worktree removal, UUID path reuse, symlink refusal, interrupted directory
 deletion after its ownership marker was already removed, and legacy orphan
 payloads. Recorded exit status and bounded log summaries survive removal.
+Repository ignore rules keep `.context` and package browser results private
+without relying on any developer's local Git excludes; a fresh-repository
+regression covers that boundary.
 Both merge-validation workflows now run this suite on Linux CI; local runs
 for this change were on macOS, not Linux.
 

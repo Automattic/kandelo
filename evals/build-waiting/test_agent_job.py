@@ -190,7 +190,7 @@ class PeerJobTest(JobsDirCase):
         self.env.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com", GIT_COMMITTER_NAME="t",
                         GIT_COMMITTER_EMAIL="t@example.com", GIT_CONFIG_GLOBAL=os.devnull,
                         GIT_CONFIG_NOSYSTEM="1")
-        # Two worktrees of one clone, like two Conductor workspaces: `main`
+        # Two worktrees of one ordinary clone: `main`
         # at commit A, `peer` one commit ahead (B, a descendant of A).
         # realpath: git reports macOS's /var/folders as /private/var/folders.
         root = os.path.realpath(self.tmp.name)
@@ -302,6 +302,16 @@ class PeerJobTest(JobsDirCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(payload.exists())
         self.assertTrue(pathlib.Path(self.meta(peer)["payload_dir"]).exists())
+
+    def test_managed_paths_are_ignored_without_private_git_excludes(self):
+        shutil.copy(REPO / ".gitignore", pathlib.Path(self.main, ".gitignore"))
+        self.git(self.main, "add", ".gitignore")
+        self.git(self.main, "commit", "-q", "-m", "repository ignore rules")
+        self.finish(self.main, "ignored-payload")
+        report = pathlib.Path(self.main, "packages/registry/fixture/test/browser/test-results/run/report.json")
+        report.parent.mkdir(parents=True)
+        report.write_text("{}")
+        self.assertEqual(self.git(self.main, "status", "--porcelain", "--untracked-files=all"), "")
 
     def test_removing_worktree_removes_payload_without_external_bulk(self):
         jid, payload = self.finish(self.peer, "removed-owner")
