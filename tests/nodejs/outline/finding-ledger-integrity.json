@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T16:29:06.049058+00:00",
-  "sourceHead": "1b875621d961b7e3bb6a56423af44f3679a58017",
-  "recipeRevision": 225,
+  "at": "2026-11-07T16:54:10.223445+00:00",
+  "sourceHead": "b5879db959c32b72a4fe88d6c0eefaa31b275f50",
+  "recipeRevision": 227,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 148,
+    "sourceSliceRecords": 150,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 221
+    "findingsWithoutExplicitOrProposedSourceSlice": 219
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,24 +26,23 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 148,
+  "sourceSliceIdentitiesVerified": 150,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "d82f97c72fdf602216f57e71a4025df2e80c649d1cbd8add632f69e52951d260"
+    "sha256": "48815ae1344e288592fcaa98074a9837a74eee83a52f78b2bcc77d6ea60e2c22"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Qualified source/evidence links only; original definitions/ranges and unresolved semantics unchanged.",
   "previousIntegrityIdentity": {
-    "sha256": "bbb41802c298b45d9bd1792df50707ef6a72cb8c5bd03a75bc54c668407faad1",
-    "sourceHead": "8a4195364d4a050117547cb876648ad4be21d3bc",
+    "sha256": "6bca32c2cdef476746932328fc035d9d13b4f1f94a1827d8a7e11093af8305bd",
+    "sourceHead": "1b875621d961b7e3bb6a56423af44f3679a58017",
     "scope": "Preserved in prior commit and source snapshot history"
   },
   "sourceProgressOverlaysAdded": [
-    "test-pattern-cli",
-    "socket-destroy-soon",
-    "sqlite-statement-status"
+    "child-exec",
+    "timers-promises"
   ],
   "qualifiedReferenceCorrections": [
     {

@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 148 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 150 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 221 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 219 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -678,3 +678,30 @@ current guest/four-host conformance is unestablished. Compilation accounting292
 includes original tiny helpers, with zero new compile/test in this ledger overlay.
 Overall suites and full product rebuild stay deferred. Private timers/promises
 and child-process collector work is excluded from root source claims.
+
+
+## Source226–227 child collection and shared Promise timers
+
+Two qualified original finding links identify these partial owner contributions:
+process-contracts.md CP-010 and timer-contracts.md A-011. Complete pinned child
+exec/execFile collectors use actual public bootstrap and genuine lower spawn;
+23current native-dependent groups and8unchanged upstream subjects pass. Caller
+stdin, Buffer/decoder/limit/callback/error and custom Promise identities now
+follow target algorithms. The companion correction preserves original report
+bytes: native spawn supplied timeout even in the old fixture, whose timeout
+mismatch proves error-shape/cmd divergence, not absent guest timeout execution.
+
+Complete pinned timers/promises uses real shared constructors/insertion/cancel
+and protected listener owners. Timeout constructor no longer inserts; classic
+and Promise callers insert once, with actual monotonic origin independent of
+truncated duration.18current groups/8unchanged subjects/2unref exits pass over
+explicit native scheduler/ref/clock/Promise/EventTarget/VM/context dependencies.
+Original baseline and authored insertion regression are preserved alongside the
+corrected source and fixture errors; source assertions were not weakened.
+
+All19families remain partial and no finding closes. Actual guest/native engine
+bindings and identified-artifact four-host evidence remain due. Compilation
+accounting stays292; this overlay runs no runtime test/build/compile. Overall
+suites and full product rebuild stay deferred. Targeted current engine
+compilation is planned separately. Private import-meta and connected shutdown
+source work remains excluded until root integration.

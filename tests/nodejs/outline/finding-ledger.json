@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 148,
+    "sourceSliceRecords": 150,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 221
+    "findingsWithoutExplicitOrProposedSourceSlice": 219
   },
   "families": [
     {
@@ -124,7 +124,7 @@
         "A-029",
         "A-030"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 7,
+      "findingsWithExplicitOrProposedSourceSlices": 8,
       "sourceRouteAsRecorded": "Pinned public AsyncHook/createHook algorithms over real symbol/array/count registry,nested publication and native destroy tracking;133native per-context default-trigger override with public/tick/Promise fallback and existing FS/DNS/codec consumers;ordinary public metadata/root resource and callback owners ; source149 actual native execution stack/epoch/process recovery and explicit callback failure ownership",
       "remainingAsRecorded": "Promise activation/removal and ALS CLI path,remaining native providers/default-trigger consumers,GC/destroy/rejection/fatal/worker/realm/loop/cancellation/ref integration and actual117\u2013149guest/four-host conformance remain open",
       "remainingOwner": "Native async execution/job/Promise owners, compatibility EventEmitter/timers/domain/diagnostics owners",
@@ -251,7 +251,7 @@
         "PROC-014",
         "PROC-015"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 10,
+      "findingsWithExplicitOrProposedSourceSlices": 11,
       "sourceRouteAsRecorded": "bootstrap process/ChildProcess, process-clock/state/usage validation and explicit absent numeric providers, dotenv/child-wait, pinned OS frontend with native POSIX state, unchanged weak finalization/lazy descriptor and Refable dispatch; actual linked dependency versions with read-only/configurable version descriptors; native live environment virtual Object/property hooks and inherited-receiver policy ; source148 real runtime-owned original locale/ICU canonicalization and private bootstrap capture; source162 actual main-only sigaction/self-pipe SignalWrap and pinned first/last-listener activation with target-compiled signal names, real native close/async roots and reviewed loop fences; source166 reusable native root value clear preserves registration; source168 ChildProcess.kill public errors use pinned ErrnoException and actual compiled UV map",
       "remainingAsRecorded": "Complete environment prototype/constructor/keys/warnings/GC/JIT/clone and worker/TZ/CLI behavior, fatal/rejection/GC/exit/worker/resource reference integration, signal/IPC and exceptional wait/close policy, measurements, permissions and OS metadata; guest lifecycle/mask/parent/env conformance pending; custom/coverage handler EBUSY, privateTTYactivation and actual SignalWrap/guest/four-host semantics remain open",
       "remainingOwner": "Guest process/kernel state, native spawn/wait/signals/IPC and process/OS adapters",
@@ -1887,7 +1887,16 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "A-011 \u2014 promise option access and abort cleanup.** Target",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "timers-promises",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/timer-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Actual Promise timer option/getter/error/listener/reaction and shared timer insertion prerequisites. No full scheduler/native loop/async or finding closure.",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Native async execution/job/Promise owners, compatibility EventEmitter/timers/domain/diagnostics owners",
@@ -3605,7 +3614,16 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "exec/execFile accumulate per-chunk strings without complete encoding/Buffer/maxBuffer/timeout handling. Target custom promisify returns {stdout,stderr} and attaches child; candidate lacks those descriptors, so ordinary util.promisify is insufficient. Callback error/close/once/abort and consumer exceptions need actual lifecycle owners, not just waiting for close. bootstrap:3909\u20133949; target child_process.js:244\u2013265,530.",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "child-exec",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/process-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual exec/execFile normalization/output/limits/callback/custom-promise ownership; lower spawn/stdio/signal/abort/wait and full process findings remain open.",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Guest process/kernel state, native spawn/wait/signals/IPC and process/OS adapters",
@@ -24453,6 +24471,183 @@
       "auditDocument": "tests/nodejs/audit/native-integration.md",
       "findingScope": "Actual SQLite Statement stat/resetStats, native mapping/error and receiver/counter admission prerequisites. No full SQLite or finding closure.",
       "additionalAuditDocuments": {}
+    },
+    "child-exec": {
+      "document": "tests/nodejs/outline/child-exec-finding-progress.json",
+      "sha256": "a42b4de9d255061f51118d7ad4e75aaa5be5087b199cd691f515869f88d9fa00",
+      "recordedRevision": 226,
+      "explicitFindingIds": [
+        "CP-010"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-childexec226-source-r1/report.json",
+          "sha256": "fef0c281069b22ddc13fe44253efa543a7f40fc338244eb4f528b0e2d3c4c5d4",
+          "guardedInputs": 887,
+          "scope": "Actual pinned child exec collection/custom-promise/validation owner consumed by current bootstrap over explicit native spawn/stdio/timer/value dependencies. Lower guest child lifecycle/transport and full process/fourhost compatibility remain open."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-childexec226-affected-r1.json",
+          "sha256": "91e07112fab8b22205ca22c516ec5d990e48ab7e424d73ccf8903c1b72da61fb",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-childexec226-source-r1/report.json",
+          "sha256": "fef0c281069b22ddc13fe44253efa543a7f40fc338244eb4f528b0e2d3c4c5d4",
+          "nativeDependentGroups": 23,
+          "unchangedUpstreamFiles": 4,
+          "upstreamSubjectsPassed": 8,
+          "upstreamSkipMarkers": 0,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "engineCXXChanged": false,
+          "scope": "Fresh actual current bootstrap IIFE/factory23groups and4unchanged upstream files/native+candidate over explicit native spawn/stdio/decoder/Buffer/timers/errors/VM. No guest lower ownership validation."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/child-exec-owner-agent/handoff/report.json",
+          "sha256": "57b6af758636d7fa35b970ff05b4bc8d2abe644c3d1468ae791468a1d67f89fb",
+          "reusedEvidence": true,
+          "scope": "Original native23/23,baseline5/23,candidate23/23 and8unchanged upstream subjects. Earlier factory-only evidence separate; required companion addendum corrects baseline timeout attribution without changing source/results."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/child-exec-owner-agent/handoff/report.json",
+          "sha256": "57b6af758636d7fa35b970ff05b4bc8d2abe644c3d1468ae791468a1d67f89fb",
+          "scope": "Original baseline18mismatches, real forced-stdin ERR_STREAM_WRITE_AFTER_END aggregate exit, missing _nodeNative fixture capture and two private missing-input generator failures retained.0compiles."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/child-exec-owner-agent/evidence-interpretation-addendum.json",
+          "sha256": "056cc47cb5019e7d799133802d1b1c14bfb22088540a91e11b400e21ef8554cc",
+          "scope": "Mandatory correction: no final fixtureSafetyKill; native spawn consumed timeout even with old collector. Baseline timeout difference only establishes error shape/cmd mismatch, not missing guest timeout execution. Original immutable report retained."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/child-exec-review-agent/REPORT.md",
+          "sha256": "9a3dbcccd06c823ea7a2cd594b75501c05865e0a968fd2f12de6193c06015624",
+          "scope": "Independent pinned section/actual bootstrap/overload/encoding/maxBuffer/timer/error/promise ownership review and verified addendum; no new P1/P2. No tests/builds or guest proof."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/node26-childexec226-checkpoint-unknown-family.log",
+          "sha256": "6ce8c73fc9dccd369db36213181d1d1e8c9d6881b8e539deefafb7b9e2e08c0e",
+          "scope": "Root metadata checkpoint rejected noncanonical family key process before saving state or staging. Corrected to existing processes family. No source algorithm, runtime test or compilation changed."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/child-exec-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/child-exec-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Consume complete8158byte pinned collector/normalizer and998byte validators through real generated adapter",
+        "Wire actual bootstrap public factory to existing _spawn/Buffer/timers/values; preserve live public execFile lookup and export order",
+        "Use actual per-stream decoder/Buffer output and byte limits, real timeout/kill/error/close callback-once ownership",
+        "Preserve custom Promise descriptors, actual child identity, output values and original rejected errors",
+        "Retire old unconditional stdin.end collector behavior; caller stdin stays open under actual caller/child terminal ownership"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/child-exec-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual lower spawn options/AbortSignal/shell/argv0/stdio-kind/error/IPC/fork behavior",
+        "Guest original Buffer/decoder/stream/timer and signal/kill/pipe/read-cancel/ref/wait/reap/close/error/fatal/GC/realm conformance",
+        "Current identified guest engine/package/kernel/image and Node/Chromium/Firefox/WebKit evidence",
+        "Complete CP-010 and broader process/native lifecycle audit findings; no API/family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/process-contracts.md",
+      "findingScope": "Partial actual exec/execFile normalization/output/limits/callback/custom-promise ownership; lower spawn/stdio/signal/abort/wait and full process findings remain open.",
+      "additionalAuditDocuments": {}
+    },
+    "timers-promises": {
+      "document": "tests/nodejs/outline/timers-promises-finding-progress.json",
+      "sha256": "23379e0d2557facec273b96b10a61df25ce4d99b625517474912ceb03ac1788d",
+      "recordedRevision": 227,
+      "explicitFindingIds": [
+        "A-011"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-timers227-source-r1/report.json",
+          "sha256": "7f18cb5feb6c3d3de7c998cc97bf79345672e5cb5d52cc8ea43c923f5a4f83e7",
+          "guardedInputs": 889,
+          "scope": "Actual shared timer construction/insertion/cancellation plus complete pinned timers/promises options/listener/interval/Scheduler behavior over explicit native scheduler/clock/EventTarget/value/Promise/frame dependencies. Current child collector preserved; no guest/fourhost/fullasync acceptance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-timers227-affected-r1.json",
+          "sha256": "14aa9ae75f4883b3581b3aa4b26f351c25bce045de3c93a08338473425994b71",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-timers227-source-r1/report.json",
+          "sha256": "7f18cb5feb6c3d3de7c998cc97bf79345672e5cb5d52cc8ea43c923f5a4f83e7",
+          "nativeDependentGroups": 18,
+          "unchangedUpstreamFiles": 4,
+          "upstreamSubjectsPassed": 8,
+          "upstreamSkipMarkers": 0,
+          "unrefExitSubjectsPassed": 2,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "engineCXXChanged": false,
+          "scope": "Fresh current shared timer/bootstrap and full pinned Promise module over explicit genuine native clock/handles/ref/Promise/EventTarget/VM and existing AsyncResource/ALS dependencies. No guest scheduling/frame/GC/fatal/Worker/fourhost proof."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/timers-promises-owner-agent/report.json",
+          "sha256": "9fb06aa6f65ef0f5351c733ef7fbe12822a32e2ed8aa2f7b5a2af52814978d98",
+          "reusedEvidence": true,
+          "scope": "Final18native matches vs11/18baseline,4unchangedfiles/8subjects and2unref-exit subjects. All41direct runtime attempts across versions retained, including reproduced insertion defect and fixture setup failures;0toolchaincompiles."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/timers-promises-owner-agent/report.json",
+          "sha256": "9fb06aa6f65ef0f5351c733ef7fbe12822a32e2ed8aa2f7b5a2af52814978d98",
+          "scope": "Original baseline7mismatches, r1wrong delay-as-origin and actual deadline17/18regression, corrected-source fixture missing primordial factory causing1group+4upstream exits preserved. No production assertion/algorithm weakening."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/timers-promises-review-agent/REPORT.md",
+          "sha256": "6dc63cc0f9ec6ae69e84b36880e20162b0f8f76bc9e350bbfa86bc2a8894986a",
+          "scope": "Independent full pinned source/actual clock/provider signature/construction/classic/Promise/lazy-symbol ownership review;1501members verified, no new P1/P2. No tests/builds or guest approval."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/timers-promises-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/timers-promises-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Consume complete unchanged6390byte pinned timers/promises module via real normal factory and bootstrap/custom-promisify routes",
+        "Separate actual Timeout construction from insertion; classic and Promise timer callers each schedule once",
+        "Capture genuine monotonic origin separately from duration and truncate delay before actual native scheduler call",
+        "Supply genuine shared validators/errors/primordials/cancellation and lazy EventTarget resistant listener symbol",
+        "Preserve original option errors, listener cleanup reactions, interval yield/return/abort and Scheduler receiver semantics; compose over unchanged226child collector"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/timers-promises-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual identified guest scheduler/native provider/ref/process-exit/callback/GC/OOM/fatal and Promise/context/ALS/Worker behavior",
+        "Other timer/async-hook/event-loop/resource lifecycle/interval/clock/public API findings and full native loop integration",
+        "Shared cross-module classic timer/runtime regression and Node/Chromium/Firefox/WebKit identified-artifact conformance",
+        "Complete A-011 and broader async surface; no finding/family closure or new platform exclusion"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/timer-contracts.md",
+      "findingScope": "Actual Promise timer option/getter/error/listener/reaction and shared timer insertion prerequisites. No full scheduler/native loop/async or finding closure.",
+      "additionalAuditDocuments": {}
     }
   },
   "dependencyNarratives": {
@@ -26845,6 +27040,24 @@
         "fourHostConformance": false,
         "individualApiClosure": false,
         "scope": "Actual native CLI/filter/shared UTF8, Socket destroySoon/no-owner finalization and SQLite statement status/reset/admission/error source owners. Current scoped source/native components and original failures retained. No guest/four-host/API/family closure."
+      },
+      {
+        "at": "2026-11-07T16:54:10.223445+00:00",
+        "sourceCheckpoint": 227,
+        "sourceHead": "b5879db959c32b72a4fe88d6c0eefaa31b275f50",
+        "addedSourceSlices": [
+          "child-exec",
+          "timers-promises"
+        ],
+        "latestAcceptedEngine": 200,
+        "currentCombinedEngineCompiled": false,
+        "currentKernelTypechecked": true,
+        "currentKernelLinked": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "scope": "Actual public child exec/execFile output/callback/custom-promise and complete pinned shared Promise timers/construction/insertion owners. Mandatory timeout evidence addendum and all original/intermediate failures retained. Native components only, no guest/four-host/API/family closure."
       }
     ]
   }
