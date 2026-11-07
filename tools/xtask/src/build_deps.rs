@@ -17652,6 +17652,64 @@ fn resolve_source_repo_root(
     Ok(Some(runtime_root))
 }
 
+/// The positional subcommand [`run`] would dispatch on, or `None` when the
+/// arguments do not name one.
+///
+/// WHY it exists: `build-deps` accepts every global flag in any position
+/// (`build-deps --arch=wasm64 path zlib` and `build-deps path zlib
+/// --arch=wasm64` are the same command), so which argument is the subcommand
+/// is a question only this module's own flag grammar can answer. A caller that
+/// re-derived it would drift from `run` the next time a flag is added.
+///
+/// A flag error answers `None`: `run` will report it, and the caller asking
+/// this question is deciding how much to say, not whether to proceed.
+fn positional_subcommand(args: &[String]) -> Option<String> {
+    // Same extractors, in the same order, as `run` below.
+    let (_, args) = extract_source_only_flag(args.to_vec()).ok()?;
+    let (_, args) = extract_source_repo_root_flag(args).ok()?;
+    let (_, args) = extract_arch_flag(args).ok()?;
+    let (_, args) = extract_binaries_dir_flag(args).ok()?;
+    let (_, args) = extract_force_source_build_flag(args).ok()?;
+    args.into_iter().next()
+}
+
+/// Whether `args` select a subcommand whose whole job is to print one
+/// machine-readable value — a path, a digest, or a JSON record a caller
+/// captures with `$(...)` — and which builds nothing.
+///
+/// WHY the admission gate asks: `tools/xtask/src/main.rs` runs the supported
+/// program baseline before dispatching `build-deps`, and announces on stderr
+/// when that check admits a prior program contract beside the current one.
+/// That announcement belongs on the commands that build something. On a value
+/// query it is noise at best, and corrupts the answer for any consumer that
+/// merges stdout and stderr — which is why
+/// `tools/xtask/tests/build_deps_cache_root.rs` requires `build-deps
+/// cache-root` to write no stderr at all.
+///
+/// The list below mirrors the query arms of `run`'s dispatch. `resolve`,
+/// `install-local-artifact` and the index writers are absent on purpose: they
+/// build or write, so they are exactly where the announcement belongs. The
+/// `check` arms are absent too — they already write prose diagnostics, so one
+/// more line cannot corrupt anything they promise.
+pub(crate) fn selects_value_query(args: &[String]) -> bool {
+    matches!(
+        positional_subcommand(args).as_deref(),
+        Some(
+            "cache-root"
+                | "output-fork-instrumentation"
+                | "output-fork-instrumentation-for-rel"
+                | "output-metadata"
+                | "output-path"
+                | "parse"
+                | "path"
+                | "runtime-file-metadata"
+                | "runtime-file-path"
+                | "sha"
+                | "toolchain-inputs"
+        )
+    )
+}
+
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let ambient_policy = ambient_resolution_policy()?;
     let (explicit_source_only, args) = extract_source_only_flag(args)?;
