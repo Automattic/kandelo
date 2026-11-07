@@ -71,33 +71,9 @@
         "internalsAccess": "drawer",
         "displayScale": 1.5
       },
-      "dockActions": [
-        {
-          "id": "multiplayer",
-          "label": "Multiplayer",
-          "description": "Create or join a Network session, then host a game or connect to its host. Each player gets a separate screen name.",
-          "menu": [
-            {
-              "id": "host",
-              "label": "Host a game",
-              "restart": "/usr/bin/freeciv-play host"
-            },
-            {
-              "id": "join",
-              "label": "Join session host",
-              "restart": "/usr/bin/freeciv-play join"
-            },
-            {
-              "id": "local",
-              "label": "Single player / main menu",
-              "restart": "/usr/bin/freeciv-play"
-            }
-          ]
-        }
-      ],
       "guide": {
         "title": "Freeciv",
-        "summary": "Use New Game for single player. For multiplayer, create a Network session and choose Multiplayer → Host a game. Friends join the session and choose Join session host. The host starts play after everyone has joined. Automatic LAN discovery is unavailable; connections use host:5556. Save games in your home directory; download the save files to keep them beyond this running machine's lifetime.",
+        "summary": "Use New Game for single player. For multiplayer, open the Network session panel and start the Freeciv game activity, then share its invite link. Friends open the link and join; the host starts play after everyone has joined. Automatic LAN discovery is unavailable; connections use host:5556. Save games in your home directory; download the save files to keep them beyond this running machine's lifetime.",
         "groups": []
       },
       "activity": {
@@ -139,23 +115,6 @@
           "url": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
           "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
           "mode": 420
-        }
-      ],
-      "dockActions": [
-        {
-          "id": "lan",
-          "label": "LAN game",
-          "description": "Play with the other computers in this network session: host a game that starts once every player has joined (or press Space in its waiting room to start sooner), or join one hosted on the session. Everyone plays the shareware WAD.",
-          "menu": [
-            { "id": "coop-2", "label": "2 players", "group": "Host co-op", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 2" },
-            { "id": "coop-3", "label": "3 players", "group": "Host co-op", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 3" },
-            { "id": "coop-4", "label": "4 players", "group": "Host co-op", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 4" },
-            { "id": "deathmatch-2", "label": "2 players", "group": "Host deathmatch", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 2 -deathmatch" },
-            { "id": "deathmatch-3", "label": "3 players", "group": "Host deathmatch", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 3 -deathmatch" },
-            { "id": "deathmatch-4", "label": "4 players", "group": "Host deathmatch", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 4 -deathmatch" },
-            { "id": "join", "label": "Join a LAN game", "group": "Join", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad -autojoin" },
-            { "id": "single", "label": "Back to single player", "group": "Single player", "restart": "/usr/bin/fbdoom -iwad /usr/share/doom/doom1.wad" }
-          ]
         }
       ],
       "exchange": {"label": "Load WAD", "accept": [".wad"]},

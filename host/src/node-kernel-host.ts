@@ -134,7 +134,8 @@ export interface NodeKernelHostOptions {
    * Boot the machine with the internet egress link the browser host always
    * gives it (eth0 at 10.0.2.15/24 behind a NAT gateway), but with nothing
    * behind the gateway: connections beyond the machine fail with
-   * EHOSTUNREACH and the host's network is never touched. For conformance
+   * EHOSTUNREACH and guest listeners are never published as host ports.
+   * The host's network is never touched. For conformance
    * runs that must observe the browser's machine. Cannot be combined with
    * `enableTcpNetwork`.
    */

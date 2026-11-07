@@ -899,7 +899,7 @@ kernel, image writer, images, and package artifacts through `run.sh`.
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package as a lazy file in the image, fetched when the profile first runs it; its shader presets are baked into the image. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
 | modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
-| freeciv | Freeciv 3.2.6 SDL2 client + server | dinit | Lazy game/data archive, GLES2 presentation, and direct TCP multiplayer through network sessions. The Multiplayer dock menu hosts or joins the session host on port 5556. Audio and multicast discovery are disabled; see [Freeciv](freeciv.md). |
+| freeciv | Freeciv 3.2.6 SDL2 client + server | dinit | Lazy game/data archive, GLES2 presentation, and direct TCP multiplayer through network sessions. The Freeciv game session activity hosts on port 5556, and players join the session host. Audio and multicast discovery are disabled; see [Freeciv](freeciv.md). |
 | love | Native LÖVE 11.5 games | dinit | SDL2 KMSDRM/EGL/GLES port with Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX selectable through the Games dock menu. Starts Pong; switching restarts the process with the selected game directory. The executable and game tree download lazily. SDL2/OSS audio output is verified in Chromium. Steam integration is disabled. See `packages/registry/love/README.md` for the port's compatibility boundaries. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The desktop data archive also fetches on first read; the terminal-only boot does not download it. |
@@ -4250,11 +4250,9 @@ the host forwards their traffic in its dedicated kernel worker, and the panel
 lists the computers and addresses the worker reports. Booting another machine
 or leaving ends this computer's part in the session, and a host leaving ends
 it for everyone, with the reason shown. The bare `/pages/peer-network/` page
-connects machines it boots itself, with the same transport. Its Doom/Quake
-controls select guest applications on the connected machine, rather than
-machine profiles. The machine-identity source guard admits only the named
-`PeerNetworkGame` selector type; image-owned machine definitions still belong
-in `/etc/kandelo/demo.json`.
+connects machines it boots itself, with the same transport, and exercises it
+with guest `nc` UDP and a PHP/curl HTTP exchange. Multiplayer games use the
+packages' session activities in the Kandelo app instead.
 
 Both use `purpose: "network-activities-v2"` peer connections, including a
 separate reliable `activity-data-v1` channel for explicitly offered data
@@ -4279,18 +4277,17 @@ one-player game that never listened; the package's
 should run as a private server (`fbdoom -privateserver`): the browser's
 internet egress carries TCP only, so UDP to Doom's internet master server
 fails with `EHOSTUNREACH`, and fbdoom stops with a fatal error when its
-registration send fails. The Doom machine's **LAN game** dock menu runs
-these commands for the player: a host co-op or deathmatch entry restarts the
-game as `fbdoom -server -privateserver -nodes N` (plus `-deathmatch`), so
+registration send fails. The Doom game session activity
+(`packages/registry/fbdoom/sessions.json`) starts the host as `fbdoom
+-server -privateserver -nodes N` (plus `-deathmatch` or `-altdeath`), so
 the host plays and the game starts once N players have joined. While it
 waits, each computer shows chocolate-doom's waiting room on its display (who
 has joined, drawn with Doom's font, since fbDOOM lacks the textscreen
 library upstream uses): the host can press Space to start sooner with
-whoever is there, and Esc quits; **Join a LAN game** runs `fbdoom
--autojoin`, which searches the session by broadcast and stops with "No
-server found on local LAN" when none answers; and **Back to single player**
-restarts the ordinary game without leaving the session. Every player uses
-the shareware WAD the machine fetched at boot, so all computers load the
+whoever is there, and Esc quits. Players join with `fbdoom -connect host`;
+from a terminal, `fbdoom -autojoin` instead searches the session by
+broadcast and stops with "No server found on local LAN" when none answers.
+The activity sends the host's WAD to each player, so all computers load the
 same game data. Node runs the same segment over paired native ports; its
 built-in runtime has no WebRTC API, so creating RTC links remains a browser
 adapter capability.
