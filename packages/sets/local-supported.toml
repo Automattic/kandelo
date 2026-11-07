@@ -1,6 +1,7 @@
 schema = 1
 policy = "source-only-v1"
 dependency_only = [
+  "go-bootstrap-source",
   "bytepath-source",
   "genesis-plus-gx-source",
   "snkrx-source",

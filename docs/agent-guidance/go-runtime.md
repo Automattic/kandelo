@@ -1,72 +1,67 @@
 # Go Runtime Port Guidance
 
-Use this guide when changing the `GOOS=kandelo GOARCH=wasm` toolchain,
-runtime, linker, or standard-library platform code. Registry package recipes
-instead follow `porting-software-to-kandelo` and the package-build guide.
+Use this guide when changing Kandelo's Go toolchain, runtime, linker or
+standard-library platform code. Registry recipes follow
+`porting-software-to-kandelo` and the package-build guide.
 
 ## Ownership and build
 
-The Go source lives in the adjacent `../go-kandelo` checkout on its
-`kandelo-port` branch, not in this repository. The pinned package input is
-`packages/registry/go-hello/build.toml`; the implementation record is
-`docs/plans/2026-09-05-go-gc-port-milestone1-plan.md`. Before changing code,
-compare the fork's current commit with the package pin and progress log.
-Runtime, syscall, and linker fixes belong in the Go fork. Kernel/host ABI and
-POSIX fixes belong in Kandelo. Do not hide a platform defect in a probe or
-package shim.
+Go source lives in [kandelo-dev/go](https://github.com/kandelo-dev/go).
+The active migration uses branch `kandelo-wasm32-prototype`, based on Go
+1.28 development and upstream's wasm32 review stack. The adjacent
+`../go-kandelo` checkout can still be on the legacy `kandelo-port` branch
+(Go 1.25.6, pin `5834adc`). Never assume that path has the new compiler or
+replace another checkout's untracked artifacts. Inspect its branch/version
+and each package's `go_toolchain` pin first.
 
-Build the fork with the dev shell's bootstrap Go:
+The `go-hello` package and SDK wrapper now select `kandelo/wasm32`.
+Caddy/FrankenPHP recipe migration remains pending. The authoritative record
+is `docs/plans/2026-09-05-go-gc-port-milestone1-plan.md`; `docs/go.md` maps
+consumers to targets. Do not describe historical legacy service evidence as
+validation of the replacement compiler or image.
 
-```sh
-scripts/dev-shell.sh bash -c 'cd ../go-kandelo/src && GOROOT_BOOTSTRAP="$(go env GOROOT)" ./make.bash'
-```
+Normal builds declare `go-bootstrap-source@1.26.10` and use the shared
+`scripts/build-kandelo-go-toolchain.sh` helper. The declared host Go builds
+that verified source release, which then builds the pinned Go 1.28 source.
+The helper uses private work roots, preserves the sealed input's Git
+metadata for Go's own commit/version generation, and uses `-trimpath`.
+Keep both native compilers out of target package outputs. A direct developer
+build also needs Go 1.26 or newer as `GOROOT_BOOTSTRAP`; the dev shell's
+Go 1.25.8 cannot bootstrap Go 1.28 directly.
 
-The current fork is based on Go 1.25.6; cgo support remains partial for this
-target. Confirm `GOOS=kandelo GOARCH=wasm` and cross-target `js`/`wasip1`
-builds after runtime or linker changes. Do not assume Linux build tags or
-APIs apply to Kandelo.
+Set `GO_KANDELO_BIN` to the selected wasm32 compiler *inside* the declared
+dev shell when running fixture builders. The old adjacent checkout is a
+fallback path, not proof that its compiler implements wasm32. Runtime,
+syscall and linker fixes belong in the Go fork; OS and host fixes belong
+in Kandelo. Do not hide a platform defect in a probe or package shim.
 
-The upstream `GOARCH=wasm32` investigation is recorded in the implementation
-plan under "32-bit Go/Wasm target investigation". As checked November 6,
-2026, proposal [#63131](https://github.com/golang/go/issues/63131) is accepted
-and architecture foundations are merged, but compiler/runtime activation
-remains under review. The current Kandelo Go 1.25.6 fork still rejects
-`wasip1/wasm32`. Upstream's proposed model has 4-byte pointers/integers but
-8-byte registers, stack alignment and `int64` alignment; copying the `386`
-layout is incorrect. Prefer investigating that named architecture rather
-than changing `GOARCH=wasm`'s data layout conditionally by operating system.
-The upstream work does not enable cgo and uses single-threaded WASI
-scheduling. Kandelo's threading, callbacks, C archive linker and shared
-memory still require a separate port and validation. Do not select the
-new architecture in package recipes based on layout-model evidence alone.
-The isolated upstream compiler now builds unchanged and passes eight focused
-checks on both WASI32 and legacy Wasm under Node; a real cgo probe rejects
-its unrecognized pointer size. This is investigation evidence, not Kandelo
-runtime, cgo or browser support.
+The upstream architecture has four-byte pointers/integers but eight-byte
+registers, stack alignment and `int64` alignment. Copying `386` layout or
+conditionally changing legacy `GOARCH=wasm` by OS is incorrect. Preserve
+Go's collector and upstream code generation. Validate the complete standard
+library for Kandelo32 (plain/cgo), WASI32, legacy WASI and legacy JS after
+runtime/linker changes. The prototype inventory is
+`tests/go/wasm32-prototype` and `go-wasm32.spec.ts`; archive exports, signals,
+PHP lifetimes and final application gates are separate requirements.
 
-The maintainer subsequently approved the isolated Kandelo runtime/cgo
-prototype. Its separate `kandelo-wasm32-prototype` branch at
-`7ae173a6576a` now passes seven Node cases and 21 browser cases for plain
-Go, typed C fields and escaping addresses, errno, function pointers,
-per-M TLS, callbacks and C-created pthread stack growth/churn. Five full
-standard-library builds pass. Unadapted FrankenPHP Go/C source compiles
-as an archive with the direct x/sys architecture port `df34dffa75d5`;
-final linking and real request/lifetime proof remain outstanding.
-Production recipes still pin `5834adc`. Use `tests/go/wasm32-prototype`
-and `go-wasm32.spec.ts` for this separate opt-in inventory.
+Preserve eight-byte continuation slots when porting four-byte ABI0
+arguments. Convert logical PCs to table handles for clone/signal dispatch;
+never retain the old `PC >> 16` shortcut on wasm32. C bindings use table
+handles directly. Wasm indirect calls require exact types: ordinary cgo
+frame wrappers return void, while errno wrappers return i32. Record that
+distinction in linker metadata instead of rewriting frontend frame layouts.
+Keep unused C call edges out of link roots while preserving live edges and
+constructor/vtable roots. Passive data has no address until initialized.
 
-Preserve eight-byte registers and continuation slots when porting
-four-byte ABI0 arguments. Convert logical PCs to table handles for
-clone/signal dispatch; never retain the old `PC >> 16` shortcut on wasm32.
-C bindings use table handles directly. Wasm's indirect calls require exact
-types: cgo's ordinary C frame wrappers return void, while errno wrappers
-return i32. The prototype records that distinction in linker metadata
-instead of changing frontend frame layouts. Keep unused C function edges
-out of the link roots; preserve live references and constructor/vtable
-roots. Passive data has no address until initialized. Do not restore the
-removed mixed-width pointer-field/export-frame adaptations in this
-homogeneous target. Compilation and focused callback tests do not prove
-all archive exports, signals, PHP lifetimes or the final application.
+Cgo scalar alignment is distinct from pointer size: an `int32, int64,
+int32` argument sequence followed by an `int64` result needs a 32-byte
+frame. C function pointers index a table rather than linear memory. Use
+cgo's existing `runtime/cgo.Incomplete` non-heap pointer semantics for them
+so stack copying cannot reject or relocate low handles. Keep ordinary C
+data pointers as GC roots; prove escaping field aliases across collection.
+Do not weaken pointer checks or reintroduce the mixed-width field/export
+adaptations for this homogeneous target. Compile-only FrankenPHP evidence
+is not proof of safe Go-backed bulk strings or running requests.
 
 Kandelo is a Unix target for Go build constraints. Register it in both
 `src/internal/syslist/syslist.go` and `src/cmd/dist/build.go`; changing only
@@ -89,6 +84,19 @@ interop representation. Exclude those implementations in the fork, not by
 adding package-only `netgo` or `osusergo` flags to FrankenPHP.
 
 ## Memory, threads, and syscalls
+
+- Runtime clock functions participate in scheduler state transitions.
+  `casgstatus` can call `nanotime1` while cgo's `exitsyscall` forbids stack
+  growth. Keep Kandelo's monotonic clock path nosplit and use the existing
+  raw channel primitive there; invoking signal callbacks during that
+  transition is unsafe. Ordinary syscall boundaries still own delivery.
+  The signal/GC and blocked-wait fixtures exercise this path. Do not fix a
+  `stack split at bad time` failure by changing the collector or suppressing
+  stack guards.
+- Base architecture extensions of a direct dependency port on the current
+  consumer pin. Extending an earlier x/sys CPU file while omitting newer
+  Unix APIs can compile FrankenPHP's archive but fail Caddy's dependencies.
+  Preserve existing target API coverage, then validate the actual consumers.
 
 - For large Go/cgo browser workloads, retain native browser stderr alongside
   guest service logs. A same-URL page reload and a lost evaluation context
@@ -484,6 +492,12 @@ Stamp newly built probe binaries with this checkout's ABI-contract digest;
 do not validate against a stale or unstamped binary.
 
 ## Go/Wasm cgo and C linking
+
+The service results and mixed-width adaptations in this section describe
+the legacy `kandelo/wasm` packages. The new `kandelo/wasm32` migration above
+replaces that pointer boundary; do not copy its C accessors or scalar CGI
+adaptations into the new target. Keep final application lifetime/link gates
+explicit while those recipes still select the legacy compiler.
 
 FrankenPHP classic mode embeds a PHP ZTS SAPI through cgo. A working
 `cmd/cgo` frontend is only one layer of that port. The `go-hello` package

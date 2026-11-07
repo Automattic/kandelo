@@ -6,7 +6,7 @@ cd "$repo_root"
 mkdir -p .context/go-retirement
 for mode in pure cgo; do
   if [[ "$mode" = cgo ]]; then cgo=1; else cgo=0; fi
-  GO111MODULE=off GOOS=kandelo GOARCH=wasm CGO_ENABLED="$cgo" CC=wasm32posix-cc \
+  GO111MODULE=off GOOS=kandelo GOARCH=wasm32 CGO_ENABLED="$cgo" CC=wasm32posix-cc \
     "$go_bin" build -o ".context/go-retirement/$mode-raw.wasm" ./tests/go/retirement
   if [[ "$mode" = cgo ]]; then
     scripts/run-wasm-fork-instrument.sh ".context/go-retirement/$mode-raw.wasm" -o ".context/go-retirement/$mode.wasm"

@@ -88,7 +88,8 @@ The SDK provides eight LLVM wrappers for each architecture (16 commands):
 | `wasm32posix-configure` | `wasm64posix-configure` | Autoconf wrapper |
 
 The checkout also provides `sdk/bin/wasm32posix-go` for a separately built
-Kandelo Go fork. It selects pure Go; cgo packages invoke the fork directly
+Kandelo Go fork. It selects `GOOS=kandelo GOARCH=wasm32` with pure Go;
+cgo packages invoke the fork directly
 with the SDK C compiler. See [Go support](go.md) for that build route and
 its current boundaries. The Go wrapper is available through the checkout's
 SDK `PATH`; it is not registered by the npm package's C/C++ tool list.

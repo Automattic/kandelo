@@ -345,9 +345,9 @@ const probes: Probe[] = [
     stdout: ["--- PASS: TestKandeloFileInfoHeader", "PASS"],
     directories: ["/tmp", "/testdata"],
     imageCapacity: 16 * 1024 * 1024,
-    dataFiles: () => readdirSync(resolve(repoRoot, "../go-kandelo/src/archive/tar/testdata")).map((name) => ({
+    dataFiles: () => readdirSync(resolve(fixtureDir, "tar-testdata")).map((name) => ({
       path: `/testdata/${name}`,
-      data: Array.from(readFileSync(resolve(repoRoot, "../go-kandelo/src/archive/tar/testdata", name))),
+      data: Array.from(readFileSync(resolve(fixtureDir, "tar-testdata", name))),
     })),
   },
   {

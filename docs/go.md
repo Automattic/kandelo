@@ -1,29 +1,41 @@
 # Go and FrankenPHP support
 
-Kandelo has an experimental `GOOS=kandelo GOARCH=wasm` port of Go's native
-compiler and runtime. The compiler runs on the development machine and
-produces a Wasm program for Kandelo. Cgo integrates C/C++ compiled with the
-Kandelo SDK into that Go program.
+Kandelo has experimental Go compiler/runtime ports for Wasm. The compiler
+runs on the development machine; its output runs inside Kandelo. Cgo links
+C/C++ compiled by the Kandelo SDK into that program.
 
-The fork is based on Go 1.25.6. Use the immutable `go_toolchain` revision in
-the [Go package recipe](../packages/registry/go-hello/build.toml), together
-with this checkout's SDK and kernel. The
-[implementation checkpoint](plans/2026-09-05-go-gc-port-milestone1-plan.md)
-records current validation and release gates. This port does not establish
-complete upstream Go conformance or production readiness.
+The packages are migrating to upstream's Go 1.28 development `wasm32`
+architecture. Check each recipe's immutable `go_toolchain` revision: the
+migration is not complete.
+
+| Consumer | Selected compiler/target |
+| --- | --- |
+| `go-hello`, `wasm32posix-go` | Go 1.28 development, `kandelo/wasm32`; four-byte Go/C pointers |
+| Caddy and both FrankenPHP recipes | Legacy Go 1.25.6, `kandelo/wasm`; eight-byte Go/four-byte C pointers, pending migration |
+
+The [implementation checkpoint](plans/2026-09-05-go-gc-port-milestone1-plan.md)
+records the exact source pins, validation and remaining release gates.
+Neither target establishes complete upstream Go conformance or production
+readiness. Historical service results below use the legacy target until
+replacement-image validation is recorded.
 
 ## Building packages
 
 The [go-hello recipe](../packages/registry/go-hello/build-go-hello.sh) is the
-smallest package example. The resolver supplies verified Go source, the
-recipe builds the native compiler in its private work directory, and the
-normal installer records the program's ABI contract and package identity.
+smallest package example. The resolver supplies verified Go and bootstrap
+source. The shared
+`scripts/build-kandelo-go-toolchain.sh` helper builds Go 1.26.10 with the
+declared host Go, then builds the pinned Go 1.28 compiler with that
+bootstrap. Both native compilers stay in the private work directory;
+`-trimpath` removes those temporary paths from compilation. The normal
+installer records the program's ABI contract and package identity.
 Keep that path for maintained packages; rebuilding only a Wasm file does not
 update its package or VFS image.
 
 The SDK's `wasm32posix-go` convenience command takes an absolute
-`KANDELO_GO_ROOT` pointing to a built fork. It currently selects pure Go
-with `CGO_ENABLED=0`. Cgo recipes invoke the fork's `bin/go` directly with
+`KANDELO_GO_ROOT` pointing to a built fork. It selects
+`GOOS=kandelo GOARCH=wasm32` and pure Go with `CGO_ENABLED=0`. The existing
+cgo recipes still invoke the fork's `bin/go` directly with
 `GOOS=kandelo`, `GOARCH=wasm`, `CGO_ENABLED=1`, and
 `CC=wasm32posix-cc` inside the declared dev shell. See the
 [FrankenPHP recipe](../packages/registry/frankenphp-caddy/build-frankenphp-caddy.sh)
@@ -88,9 +100,14 @@ does not measure physical page reclamation. The fixture also passes in
 Chromium, Firefox and WebKit. See `tests/go/memory-accounting` and the
 implementation log for the exact run scope.
 
-Go values and C addresses have different widths in this target. Raw C
-address fields are not Go-managed pointers; use typed C accessors for layouts
-that cross this boundary. Go main return and `os.Exit` bypass registered C
+The legacy target has different Go/C pointer widths and uses typed C
+accessors at that boundary. The new `wasm32` target uses ordinary typed C
+pointer fields, including escaping field addresses. It preserves eight-byte
+scalar alignment despite four-byte pointers. C function pointers are Wasm
+table handles, represented through cgo's existing non-heap opaque pointer
+type; data pointers retain normal Go collector root semantics. These focused
+tests do not yet prove FrankenPHP's request/string lifetimes. Go main return
+and `os.Exit` bypass registered C
 exit handlers; explicit C `exit` runs them and C `_exit` bypasses them.
 The [runtime and cgo guide](agent-guidance/go-runtime.md) describes the exact
 contracts and their tests.

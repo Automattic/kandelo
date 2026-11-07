@@ -2,18 +2,105 @@
 
 ## Current checkpoint — 2026-11-06
 
-**Latest prototype:** the isolated `kandelo/wasm32` compiler now runs plain
-Go and cgo with matching four-byte Go/C pointers. Seven Node cases and
-21 browser cases pass, including typed C fields, escaping field addresses,
-errno, function pointers and callbacks on C-created pthreads. All five
-standard-library build configurations pass. The compiler checkpoint is
-[`7ae173a6576a`](https://github.com/kandelo-dev/go/commit/7ae173a6576a7e795eddab67009f9b0517b3b403).
-Unadapted FrankenPHP Go/C source also compiles as an archive, using the
-small x/sys architecture port at
+**Active migration:** integrate the upstream-based Go 1.28 development
+`kandelo/wasm32` target into every Go recipe, then finish the real
+FrankenPHP+Caddy WordPress replacement and its release gates. Latest main
+`afeedd583ca5` is merged as `dedd2706b`; ABI remains 55. The preserved
+revision-39 preview remains available, with its known PHP native-stack
+failure. It is not the replacement artifact or a completed production gate.
+
+**Current package checkpoint:** the normal resolver built `go-hello`
+revision 28 from pinned Go `7ae173a6576a` and verified Go 1.26.10 source.
+The declared Nix Go 1.25.8 builds the bootstrap, which builds Go 1.28-devel.
+Private compiler and target builds use `-trimpath`. The resolved package
+passes the Node C `posix_spawn`/VFS launch test and all three browser launch
+tests. Source/archive/cache publication uses the normal package pipeline.
+A second independent build for byte-for-byte reproducibility is not yet
+recorded. Revision 29 also passed normal publication (3m59s), followed by revision 30
+at Go `5954fb32` (4m26s), which includes the scheduler clock correction
+below. Final coherent-fixture gates continue.
+
+**General cgo corrections:** pushed Go
+[`924bccecd7a4`](https://github.com/kandelo-dev/go/commit/924bccecd7a40b1831b2f4513cc3ad5b57546274)
+fixes two reproduced platform defects. Low Wasm function-table handles
+previously caused `invalid pointer found on stack` during Go stack growth;
+cgo now uses its existing non-heap opaque-pointer mechanism for C function
+pointer types. Ordinary data-pointer roots remain intact. Separately,
+64-bit scalar arguments after 32-bit arguments were misaligned because
+cgo capped alignment at pointer size. Wasm32 now retains eight-byte scalar
+alignment. The fixes change cgo's target handling, not the collector or
+code generator, and require no FrankenPHP source patch.
+
+Seven Node cases and 21 browser prototype cases pass with these fixes;
+the combined package/prototype browser run is **24/24** across Chromium,
+Firefox and WebKit (1.8 minutes). Host cgo/object-reader/platform tests, five full
+standard-library builds and both eight-check WASI controls pass. Separate
+Node static-archive and dynamic C-export/`dlopen` tests also pass. The
+unchanged FrankenPHP Go/C source compiles again as an archive using direct
+x/sys port
 [`df34dffa75d5`](https://github.com/kandelo-dev/sys/commit/df34dffa75d5f738769c8a313524a97c2272ef77).
-That archive is not a linked or running service. Production Go `5834adc`,
-recipe pins, ABI 55 and the revision-39 preview remain unchanged. The
-original WordPress service goal is unfinished.
+These runs used the patched working compiler; clean-commit rebuild evidence
+will be recorded separately. No linked/running replacement service is yet
+claimed.
+
+Evidence: `.context/go32-function-pointer-gc/` retains both failure
+reproductions and pass-after logs;
+`.context/go32-package-and-cgo-browser.log`,
+`.context/go32-normal-package-node.log`,
+`.context/go32-archive-exports.log`, and
+`.context/go32-cgo-alignment-controls.log` retain the scoped results.
+The original homogeneous bridge at `7ae173a6` remains documented below as
+historical evidence.
+
+The clean `924bccec` compiler rebuild and seven Node cases pass, with a
+clean source manifest; its five standard-library builds, host tests and
+WASI controls also pass. The wider Node signal inventory then reproduced
+`stack split at bad time` in `casgstatus` calling `nanotime1` during cgo
+syscall return. Go
+[`5954fb3213fc`](https://github.com/kandelo-dev/go/commit/5954fb3213fc8f1fbc1b1ef4df1f0e2021dffd91)
+keeps the scheduler clock path nosplit and uses the existing raw channel
+primitive without reentering signal dispatch. It retains real monotonic
+clock reads, per-M storage and ordinary syscall signal delivery. All 17
+Node signal/GC/drain/restart/retirement workflows pass after the change.
+Evidence: `.context/go32-node-signal-retirement.log` (before),
+`.context/go32-node-signal-clock-after.log` (after).
+
+The wider three-engine browser inventory is running, not yet green. Its
+first failure is an obsolete test count: the new Go version passes all
+65 `os.Root` tests, while the harness expects the old 47. An independent
+Node sweep confirms 65 passes, no skips/errors/diagnostics. Keep the exact
+new inventory rather than weakening that assertion. The archive testdata
+now stages from the compiler that built the test binary, avoiding the
+unmigrated adjacent checkout.
+
+All four Caddy dependency test binaries compile for wasm32 and pass their
+focused Node cases. Readline, logrus and certificate-transparency need no
+new source edits. Bbolt's existing Wasm mapping constants now select both
+Wasm architectures at
+[`75fe37b`](https://github.com/kandelo-dev/bbolt/commit/75fe37b).
+The x/sys prototype now includes the latest existing Kandelo Unix API port
+as well as its CPU architecture selection, at
+[`488edb0`](https://github.com/kandelo-dev/sys/commit/488edb0).
+This retains terminal/memory-limit APIs required by the existing consumers;
+starting from the older x/sys base omitted `Mlock`/`Munlock`. Bbolt's reopen
+case does not establish durable shared mappings. A separate wasm32 check
+also passes `CGO_LDFLAGS` library search paths and archive execution, so
+application source need not carry a link-path patch for that case.
+
+Remaining order:
+
+1. Finish clean/compiler and normal-package gates; migrate archive exports,
+   TLS, signals, scheduler and POSIX inventories to the selected compiler
+   on Node and all three browsers.
+2. Link unchanged FrankenPHP+Caddy, prove real requests and Go-backed bulk
+   CGI string lifetimes, then remove obsolete application adaptations.
+3. Migrate all other Go recipes/dependencies and rebuild coherent WordPress
+   images normally, keeping the old preview until replacement validation.
+4. Complete login/editor/post/template saves/uploads and lifecycle/recovery,
+   blocking-wait/memory accounting/WebKit footprint and final resource gates.
+5. Run sustained traffic, fair PHP-FPM and user-facing comparisons, and the
+   planned Node/Chromium benchmarks. Report measured results without a
+   presumed speed advantage. PHP recursion remains a separate issue.
 
 **Maintainer priority clarification:** improve Kandelo rather than adapting
 applications around incomplete platform support. First audit and fix general

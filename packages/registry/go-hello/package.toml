@@ -3,7 +3,7 @@ name = "go-hello"
 version = "0.1.0"
 kernel_abi = 55
 arches = ["wasm32"]
-depends_on = []
+depends_on = ["go-bootstrap-source@1.26.10"]
 
 [source]
 url = "https://github.com/Automattic/kandelo"

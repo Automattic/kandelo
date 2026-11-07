@@ -134,8 +134,8 @@ func main() {
 		panic("C pointer-bearing struct offsets changed")
 	}
 	target := uintptr(unsafe.Pointer(C.target_address()))
-	if value.first != 11 || value.last != 29 || uintptr(value.pointer) != target ||
-		uintptr(value.pointers[0]) != target || uintptr(value.pointers[1]) != target {
+	if value.first != 11 || value.last != 29 || uintptr(unsafe.Pointer(value.pointer)) != target ||
+		uintptr(unsafe.Pointer(value.pointers[0])) != target || uintptr(unsafe.Pointer(value.pointers[1])) != target {
 		panic(fmt.Sprintf("C pointer-bearing struct fields failed: first=%d last=%d pointer=%x", value.first, value.last, value.pointer))
 	}
 	if C.check_mixed(value) != 1 {
@@ -148,7 +148,7 @@ func main() {
 		panic("C nested aggregate layout changed")
 	}
 	if aggregate.tag != 7 || aggregate.nested.wide != 0x1122334455667788 ||
-		uintptr(aggregate.nested.pointer) != target || aggregate.nested.ratio != 2.5 ||
+		uintptr(unsafe.Pointer(aggregate.nested.pointer)) != target || aggregate.nested.ratio != 2.5 ||
 		aggregate.tail != 19 || C.check_aggregate(aggregate) != 1 {
 		panic("C nested aggregate return or by-value argument failed")
 	}

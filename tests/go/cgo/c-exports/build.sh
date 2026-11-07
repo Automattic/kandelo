@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+go_bin="${GO_KANDELO_BIN:-$repo_root/../go-kandelo/bin/go}"
 source_dir="$repo_root/tests/go/cgo/c-exports"
 output_dir="$repo_root/.context/go-c-exports"
 fixture_dir="$output_dir/fixture"
@@ -30,8 +31,8 @@ for symbol in "${requested_exports[@]}"; do
     export_flags+=("-Wl,--export-dynamic-symbol=$symbol")
 done
 link_flags="-extldflags '${export_flags[*]}'"
-GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc \
-    "$repo_root/../go-kandelo/bin/go" build -a -ldflags="$link_flags" \
+GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm32 CC=wasm32posix-cc \
+    "$go_bin" build -a -ldflags="$link_flags" \
     -o "$output_dir/probe.wasm" "$fixture_dir/main.go"
 wasm-validate --enable-threads "$output_dir/probe.wasm"
 node -e '
@@ -43,8 +44,8 @@ for (const [name, kind] of [["export_only_function", "function"], ["export_only_
   }
 }
 ' "$output_dir/probe.wasm"
-if GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc \
-    "$repo_root/../go-kandelo/bin/go" build -a \
+if GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm32 CC=wasm32posix-cc \
+    "$go_bin" build -a \
     -ldflags="-extldflags=-Wl,--export-dynamic-symbol=missing_symbol" \
     -o "$output_dir/missing.wasm" "$fixture_dir/main.go" \
     > "$output_dir/missing.log" 2>&1; then

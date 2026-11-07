@@ -2,8 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-go_root="$(cd "$repo_root/../go-kandelo" && pwd)"
-go_bin="${GO_KANDELO_BIN:-$go_root/bin/go}"
+go_bin="${GO_KANDELO_BIN:-$repo_root/../go-kandelo/bin/go}"
+go_root="$(cd "$(dirname "$go_bin")/.." && pwd)"
 source_repo="$repo_root/.context/roadrunner"
 output_dir="$repo_root/.context"
 source_commit="207b2b4ba75f2529ecccf801b3d8dd7038f22732"
@@ -32,7 +32,7 @@ git -C "$source_repo" archive "$source_commit" | tar -x -C "$work_dir"
   GOROOT="$go_root" \
     GOMODCACHE="$output_dir/go-roadrunner-modcache" \
     GOCACHE="$output_dir/go-roadrunner-cache" \
-    GOOS=kandelo GOARCH=wasm CGO_ENABLED=0 GOTOOLCHAIN=local \
+    GOOS=kandelo GOARCH=wasm32 CGO_ENABLED=0 GOTOOLCHAIN=local \
     "$go_bin" build -mod=mod -o "$output_dir/roadrunner-minimal.wasm" \
     "$repo_root/tests/go/roadrunner/main.go"
 )

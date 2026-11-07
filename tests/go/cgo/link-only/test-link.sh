@@ -15,7 +15,7 @@ wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/tls.c" -
 wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/function-pointer.c" -o "$output_dir/function-pointer.o"
 wasm32posix-cc -O2 -fPIC -c "$repo_root/tests/go/cgo/link-only/testdata/channel-base.c" -o "$output_dir/channel-base.o"
 
-if GO111MODULE=off CGO_ENABLED=0 GOOS=kandelo GOARCH=wasm GOTMPDIR="$output_dir" \
+if GO111MODULE=off CGO_ENABLED=0 GOOS=kandelo GOARCH=wasm32 GOTMPDIR="$output_dir" \
     "$go_bin" build -x -work -o "$output_dir/base.wasm" ./tests/go/cgo/link-only \
     > "$output_dir/build.log" 2>&1; then
   echo "expected the unlinked C function to be unresolved" >&2
@@ -41,7 +41,7 @@ if [[ ! -f "$work_dir/b001/_pkg_.a" ]]; then
 fi
 
 "$go_bin" tool pack r "$work_dir/b001/_pkg_.a" "$output_dir/functions.o" "$output_dir/data.o" "$output_dir/cross-data.o" "$output_dir/offset.o" "$output_dir/tls.o" "$output_dir/function-pointer.o" "$output_dir/channel-base.o"
-GOROOT="$("$go_bin" env GOROOT)" GOOS=kandelo GOARCH=wasm \
+GOROOT="$("$go_bin" env GOROOT)" GOOS=kandelo GOARCH=wasm32 \
   "$go_bin" tool link -linkmode=internal -extld=wasm32posix-cc -o "$output_dir/combined.wasm" \
   -importcfg "$work_dir/b001/importcfg.link" "$work_dir/b001/_pkg_.a"
 wasm-validate --enable-threads "$output_dir/combined.wasm"

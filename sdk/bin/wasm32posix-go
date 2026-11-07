@@ -12,5 +12,5 @@ if [ ! -x "$KANDELO_GO_ROOT/bin/go" ]; then
 fi
 
 export GOROOT="$KANDELO_GO_ROOT"
-export GOOS=kandelo GOARCH=wasm CGO_ENABLED=0 GOTOOLCHAIN=local GOENV=off
+export GOOS=kandelo GOARCH=wasm32 CGO_ENABLED=0 GOTOOLCHAIN=local GOENV=off
 exec "$GOROOT/bin/go" "$@"

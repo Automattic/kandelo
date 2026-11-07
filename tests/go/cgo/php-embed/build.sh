@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+go_bin="${GO_KANDELO_BIN:-$repo_root/../go-kandelo/bin/go}"
 source_dir="$repo_root/tests/go/cgo/php-embed"
 output_dir="$repo_root/.context/go-php-embed"
 fixture_dir="$output_dir/fixture"
@@ -40,8 +41,8 @@ ln -sf "$repo_root/sysroot/lib/libkandelo-ucontext-unsupported.a" \
 
 php_include="$php_prefix/include/php"
 export CGO_CFLAGS="-I$php_include -I$php_include/main -I$php_include/Zend -I$php_include/TSRM -I$php_include/sapi/embed -I$php_include/ext"
-GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc \
-    "$repo_root/../go-kandelo/bin/go" build -a \
+GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm32 CC=wasm32posix-cc \
+    "$go_bin" build -a \
     -o "$output_dir/probe.wasm" "$fixture_dir/main.go"
 wasm-validate --enable-threads --enable-exceptions "$output_dir/probe.wasm"
 "$repo_root/scripts/run-wasm-fork-instrument.sh" "$output_dir/probe.wasm" \

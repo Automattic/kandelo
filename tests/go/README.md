@@ -3,22 +3,35 @@
 For package entry points and the current support matrix, see
 [Go and FrankenPHP support](../../docs/go.md).
 
-These probes run binaries built from the `kandelo-port` branch of
-[`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-port) through
-Kandelo's real Chromium, Firefox, and WebKit process workers. Their program
-ABI and ABI-contract digest must match the selected kernel. Rebuild
-`.context/go-browser/` fixtures after either changes instead of restamping
-old binaries. Use the Go fork revision pinned in
-`packages/registry/go-hello/build.toml`, built with the declared dev shell's
-Go as `GOROOT_BOOTSTRAP`.
-By default the fork is checked out beside this repository as
-`../go-kandelo`.
+The fixture builders now select `GOOS=kandelo GOARCH=wasm32`. Build the
+Go 1.28 development compiler pinned by `packages/registry/go-hello/build.toml`
+on branch `kandelo-wasm32-prototype` of
+[`kandelo-dev/go`](https://github.com/kandelo-dev/go/tree/kandelo-wasm32-prototype).
+It requires a Go 1.26-or-newer bootstrap; the normal package build obtains
+verified Go 1.26.10 source and builds that bootstrap with the declared host
+Go. See `scripts/build-kandelo-go-toolchain.sh` for the reproducible route.
+
+Set `GO_KANDELO_BIN` to the absolute compiler path inside the dev shell.
+Builders retain `../go-kandelo/bin/go` as their default, but that checkout
+may still be on the legacy branch. Check its version and branch before
+using it. Do not change another checkout or discard its local artifacts
+just to satisfy that default.
+
+These probes use real Node/browser process workers. Their program ABI and
+ABI-contract digest must match the selected kernel. Rebuild fixtures after
+either changes instead of restamping old binaries. Historical results in
+this guide describe the legacy compiler unless the implementation log
+records a new-target run.
 
 From the Kandelo repository root:
 
 ```sh
-./run.sh build kernel
-scripts/dev-shell.sh bash tests/go/build-browser-fixtures.sh
+./run.sh setup
+scripts/dev-shell.sh bash
+# Inside that shell, select the built wasm32 compiler:
+export GO_KANDELO_BIN=/absolute/path/to/go-wasm32/bin/go
+bash tests/go/build-browser-fixtures.sh
+exit
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && npm ci'
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit'
 ```
@@ -362,7 +375,7 @@ embedding requires cgo and a PHP ZTS embed library. The first Go/Wasm gate is
 the small C-call program in `cgo/main.go`:
 
 ```sh
-scripts/dev-shell.sh bash -c 'CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -o .context/cgo-probe.wasm tests/go/cgo/main.go'
+scripts/dev-shell.sh bash -c 'CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm32 CC=wasm32posix-cc "${GO_KANDELO_BIN:-../go-kandelo/bin/go}" build -o .context/cgo-probe.wasm tests/go/cgo/main.go'
 ```
 
 The pinned `go-hello` package now uses the callback-capable fork revision,
@@ -411,7 +424,7 @@ scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=
 ```
 
 ```sh
-scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-c-abs.wasm ./tests/go/cgo && wasm-validate --enable-threads .context/go-c-abs.wasm'
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm32 CC=wasm32posix-cc "${GO_KANDELO_BIN:-../go-kandelo/bin/go}" build -a -o .context/go-c-abs.wasm ./tests/go/cgo && wasm-validate --enable-threads .context/go-c-abs.wasm'
 scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-c-abs.wasm -o .context/go-c-abs-instrumented.wasm'
 scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-c-abs-instrumented.wasm; stamp_built_program_outputs'
 node --import tsx tests/go/cgo/run.ts .context/go-c-abs-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
@@ -459,14 +472,14 @@ a Go-managed pointer in these raw fields. Build,
 instrument, stamp, and run this focused probe with:
 
 ```sh
-scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -o .context/go-cgo-mixed-struct.wasm ./tests/go/cgo/mixed-struct'
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm32 CC=wasm32posix-cc "${GO_KANDELO_BIN:-../go-kandelo/bin/go}" build -o .context/go-cgo-mixed-struct.wasm ./tests/go/cgo/mixed-struct'
 scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-cgo-mixed-struct.wasm -o .context/go-cgo-mixed-struct-instrumented.wasm; REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-cgo-mixed-struct-instrumented.wasm; stamp_built_program_outputs'
 scripts/dev-shell.sh bash -c 'node --import tsx tests/go/cgo/mixed-struct/run.ts .context/go-cgo-mixed-struct-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 WASM_POSIX_RESOLUTION_POLICY=source-only-v1 WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$(realpath ../../local-binaries/source-only-v1)" npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit --grep "mixed-width C pointer struct" --workers=1'
 ```
 
 ```sh
-scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-callback-same.wasm ./tests/go/cgo/callback-same'
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm32 CC=wasm32posix-cc "${GO_KANDELO_BIN:-../go-kandelo/bin/go}" build -a -o .context/go-callback-same.wasm ./tests/go/cgo/callback-same'
 scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-callback-same.wasm -o .context/go-callback-same-instrumented.wasm'
 scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-callback-same-instrumented.wasm; stamp_built_program_outputs'
 node --import tsx tests/go/cgo/callback-same/run.ts .context/go-callback-same-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
@@ -496,14 +509,14 @@ Go secure-environment audit. Build and stamp the Go child, then run the Node
 and Chromium cases:
 
 ```sh
-scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-cgo-secure-exec.wasm ./tests/go/cgo/secure-exec'
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm32 CC=wasm32posix-cc "${GO_KANDELO_BIN:-../go-kandelo/bin/go}" build -a -o .context/go-cgo-secure-exec.wasm ./tests/go/cgo/secure-exec'
 scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-cgo-secure-exec.wasm -o .context/go-cgo-secure-exec-instrumented.wasm; REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-cgo-secure-exec-instrumented.wasm; stamp_built_program_outputs'
 scripts/dev-shell.sh bash -c 'cd host && ./node_modules/.bin/vitest run test/secure-exec.test.ts -t "Go/cgo child"'
 cd apps/browser-demos && WASM_POSIX_RESOLUTION_POLICY=source-only-v1 WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$(cd ../.. && pwd)/local-binaries/source-only-v1" KANDELO_GO_CGO_RUNTIME_TESTS=1 ./node_modules/.bin/playwright test test/secure-exec-startup.spec.ts --project=chromium --grep 'Go/cgo child'
 ```
 
 ```sh
-scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -a -o .context/go-constructors.wasm ./tests/go/cgo/constructors && wasm-validate --enable-threads .context/go-constructors.wasm'
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm32 CC=wasm32posix-cc "${GO_KANDELO_BIN:-../go-kandelo/bin/go}" build -a -o .context/go-constructors.wasm ./tests/go/cgo/constructors && wasm-validate --enable-threads .context/go-constructors.wasm'
 scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/go-constructors.wasm -o .context/go-constructors-instrumented.wasm'
 scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/go-constructors-instrumented.wasm; stamp_built_program_outputs'
 node --import tsx tests/go/cgo/constructors/run.ts .context/go-constructors-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"
@@ -519,7 +532,7 @@ calling thread and a C-created pthread entering Go. It checks a mixed
 scalar/pointer callback frame and forces stack growth in the foreign callback:
 
 ```sh
-scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc ../go-kandelo/bin/go build -o .context/cgo-callback-probe.wasm ./tests/go/cgo/callback'
+scripts/dev-shell.sh bash -c 'GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm32 CC=wasm32posix-cc "${GO_KANDELO_BIN:-../go-kandelo/bin/go}" build -o .context/cgo-callback-probe.wasm ./tests/go/cgo/callback'
 scripts/dev-shell.sh bash -c 'scripts/run-wasm-fork-instrument.sh .context/cgo-callback-probe.wasm -o .context/cgo-callback-probe-instrumented.wasm'
 scripts/dev-shell.sh bash -c 'REPO_ROOT=$PWD; source scripts/build-programs-abi-stamp.sh; record_built_program_output .context/cgo-callback-probe-instrumented.wasm; stamp_built_program_outputs'
 node --import tsx tests/go/cgo/callback/run.ts .context/cgo-callback-probe-instrumented.wasm local-binaries/kernel.wasm

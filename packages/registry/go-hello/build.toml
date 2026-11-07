@@ -4,14 +4,15 @@ inputs = [
   "packages/registry/go-hello/main.go",
   "scripts/install-local-binary.sh",
   "scripts/package-build-roots.sh",
+  "scripts/build-kandelo-go-toolchain.sh",
   "sdk/activate.sh",
   "sdk/bin/wasm32posix-go",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 26
+revision = 30
 
 [[git_inputs]]
 name = "go_toolchain"
 repository = "https://github.com/kandelo-dev/go.git"
-commit = "5834adc306dddf6784c20e402deeabf643ad9c37"
+commit = "5954fb3213fc8f1fbc1b1ef4df1f0e2021dffd91"
