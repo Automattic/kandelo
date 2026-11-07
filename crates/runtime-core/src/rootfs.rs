@@ -13277,11 +13277,18 @@ mod tests {
         assert_eq!(&back, b"boot: ok\n");
         assert_eq!(lstat(b"/var/log/messages").unwrap().st_mode & 0o7777, 0o640);
 
-        // The restored log still counts toward the cap, and opening it by path
-        // after the reboot is what puts it under the cap's hint: nine bytes are
-        // already spent, so a limit of twelve leaves room for three.
-        set_var_log_byte_limit(12);
+        // Size accounting: the restored log's nine bytes are known to the cap.
+        // With the limit below that, overwriting them spends nothing and is
+        // admitted whole; had the restored size been lost, the write would look
+        // like growth from an empty file and be cut to the limit. (A single
+        // file cannot show this through the tail check below, where `used`
+        // cancels against `old_size`.)
+        set_var_log_byte_limit(4);
         let again = open(b"/var/log/messages", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(again, 0, &[2; 9], &mut source), Ok(9));
+        // The mark: opening the restored file by path puts it under the cap's
+        // hint. Nine bytes are spent, so a limit of twelve leaves room for three.
+        set_var_log_byte_limit(12);
         assert_eq!(write(again, 9, &[1; 10], &mut source), Ok(3));
         assert_eq!(write(again, 12, b"x", &mut source), Err(Errno::ENOSPC));
         release_handle(again);
