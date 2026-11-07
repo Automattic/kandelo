@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 132 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 135 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 230 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 229 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -522,3 +522,38 @@ N-001 fabricated DNS resolve is not this source slice. Immutable audit IDs and
 definitions are unchanged. No finding/family closes and all19 remain partial.
 Accepted200 excludes201–212; no current combined guest/four-host acceptance exists.
 Full product/overall suites remain deferred; nested guest Wasm stays in scope.
+
+
+## Source213–214 actual terminal, tracing and dormant notification owners
+
+TTY input retains actual consumed material, native request/close ownership and
+continuous read demand through recoverable callback checkpoint failure. Ordinary
+exception-free dispatch arms the next request. Public TTY constructors, kind
+admission, writes/shutdown and guest recovery remain incomplete. Portable/native
+controls do not execute the new guest JSAPI.
+
+Process tracing categories and the real descriptor sink now serve unchanged
+public/Console consumers. Main post-public-Worker teardown owns final close;
+shell extension-thread joining remains unestablished. Eight of nine component
+comparisons pass and the failed-open native timeout stays a nonpass. Full
+producers, CLI/metadata/rotation/inspector/report and guest evidence stay open.
+
+Dormant notifications compose real queue, descriptor/shared-OFD and retained
+tmpfs dentry producers, plus correct hardlink replacement link accounting.
+Current703 native input identities admit the identified125-case artifact/rerun.
+No public inotify activation or dynamic ABI/baseline acceptance follows. Wake,
+metadata, full providers/policy/deletion/order and coherent fork/ABI activation
+remain implementation gaps.
+
+A definite metadata-writer path-variable bug accidentally replaced the POSIX
+document. The strict guard caught it before runtime controls. Exact corrupted
+bytes, original restoration and a private byte-identical reproduction remain;
+the earlier sealed read-only-root claim is explicitly withdrawn, not rewritten.
+Current intended notification documentation was applied only after restoration.
+
+All19 families remain partial and no finding closes. Current214 engine plus newer
+kernel source has no combined guest build/four-host acceptance; accepted200 is
+stale. Overall suites and full product rebuild remain deferred. The separate
+REPL plan requires real additive process capture/abort suppression, then actual
+VM import-callback ownership before public activation. Nested guest WebAssembly
+execution remains in scope for the final phase.

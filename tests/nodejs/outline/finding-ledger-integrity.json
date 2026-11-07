@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T12:01:45.740806+00:00",
-  "sourceHead": "a4dea36e9d12f6a77a9b51839fcdbf0a8c4ac43e",
-  "recipeRevision": 212,
+  "at": "2026-11-07T12:58:15.873311+00:00",
+  "sourceHead": "610fb274f999d973e303b126a728c42cc11ee6d8",
+  "recipeRevision": 214,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 132,
+    "sourceSliceRecords": 135,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 230
+    "findingsWithoutExplicitOrProposedSourceSlice": 229
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,24 +26,24 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 132,
+  "sourceSliceIdentitiesVerified": 135,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "b3a1a23bb219828a118b84e83a4e7b6e78ebfd9f0cf5b44eec3191bd558a74ee"
+    "sha256": "793a76549d1cfefebd7c9ec64aa657961f2023f93e933d8ab43b713ce2063f72"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
-  "scope": "Documentation/identity/qualified-link verification only; immutable audit unchanged, no API/runtime closure",
+  "scope": "Qualified source/identity audit links only; immutable audit unchanged, no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "b2d53784d6a608700a85eefe37f3349557d85233ba4f6f69fa5bb6b2103adf1b",
-    "sourceHead": "ee296dcd11fb632e4048794d0e743bc046aa180f",
+    "sha256": "7fe5ed089bd7225e2273a7d73b40536ca1d727f593094cdcf5f96b8fecb37108",
+    "sourceHead": "a4dea36e9d12f6a77a9b51839fcdbf0a8c4ac43e",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "retained-transfer-kind",
-    "retained-tls-parent",
-    "socket-receiver-adoption"
+    "terminal-read-material",
+    "process-tracing-owner",
+    "filesystem-notification-owners"
   ],
   "qualifiedReferenceCorrections": [
     {

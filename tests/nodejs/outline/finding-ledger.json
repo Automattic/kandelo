@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 132,
+    "sourceSliceRecords": 135,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 230
+    "findingsWithoutExplicitOrProposedSourceSlice": 229
   },
   "families": [
     {
@@ -650,7 +650,7 @@
         "O-022",
         "O-023"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 7,
+      "findingsWithExplicitOrProposedSourceSlices": 8,
       "sourceRouteAsRecorded": "Pinned Console/diagnostics/TCP/DNS producers,Performance timeline/entry/observer/resource/timerify and process-origin clock;124real loop-start/idle and ELU arithmetic;134real HDR/statistics/window owners,public histogram wrappers,queued QRDE,packet clone material and shared retained-memory ledger ; source139 real event-loop-delay sampling/ref/close owner and145shared cached clock",
       "remainingAsRecorded": "Combined117\u2013148engine uncompiled;actual JSAPI/GC/VM/clone/cancellation/pressure and realm retirement remain open;actual ELD producer and timer-phase/GC/ref behavior unvalidated;other milestones/counters/GC/network producers,inspector,tracing/reporting and four-host conformance incomplete",
       "remainingOwner": "Actual performance/GC/HTTP/trace/report/console/engine measurement producers",
@@ -2817,6 +2817,14 @@
           "originalProseRefs": [],
           "standaloneDefinitionRecovered": true,
           "scope": "Shared producer/readiness prerequisite only; not FSWatcher activation, API closure or an accepted platform exclusion",
+          "closure": false
+        },
+        {
+          "slice": "filesystem-notification-owners",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/filesystem.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial kernel notification queue/fd/OFD/tmpfs opened-dentry producer prerequisite; public watchers remain inactive and original findings open",
           "closure": false
         }
       ],
@@ -7502,6 +7510,14 @@
           "auditDocument": "tests/nodejs/audit/terminal.md",
           "scope": "Partial source prerequisites for actual terminal resource/callback/read lifecycle; no public constructor or inherited Socket/StreamBase closure",
           "closure": false
+        },
+        {
+          "slice": "terminal-read-material",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial native input/read/material/queued-close/stdin prerequisite; no complete public tty constructors, writes, StreamBase or guest/four-host closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7628,6 +7644,14 @@
           "auditDocument": "tests/nodejs/audit/terminal.md",
           "scope": "Partial source prerequisites for actual terminal resource/callback/read lifecycle; no public constructor or inherited Socket/StreamBase closure",
           "closure": false
+        },
+        {
+          "slice": "terminal-read-material",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial native input/read/material/queued-close/stdin prerequisite; no complete public tty constructors, writes, StreamBase or guest/four-host closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7703,6 +7727,14 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/terminal.md",
           "scope": "Actual runtime-thread ownership of native watch roots/list only; no full async resource/provider, cancellation/drain or public TTY/TLS closure",
+          "closure": false
+        },
+        {
+          "slice": "terminal-read-material",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial native input/read/material/queued-close/stdin prerequisite; no complete public tty constructors, writes, StreamBase or guest/four-host closure",
           "closure": false
         }
       ],
@@ -9031,7 +9063,16 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "trace_events API, categories and output lifecycle",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "process-tracing-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/observability.md",
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual public tracing backend/category/file ownership prerequisite; no full producer/CLI/schema/guest/four-host closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "actual trace category/event/output native producers and worker lifecycle",
@@ -22899,6 +22940,262 @@
         ]
       },
       "publicRequirementRecords": []
+    },
+    "terminal-read-material": {
+      "document": "tests/nodejs/outline/terminal-read-material-finding-progress.json",
+      "sha256": "62fbd02ed12a3baf4e8e0205733ea864272578e3c96321e59511ee61909b0634",
+      "recordedRevision": 213,
+      "explicitFindingIds": [
+        "T-002",
+        "T-007",
+        "T-009"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tty213-source-r2/report.json",
+          "sha256": "3437b105df28b91a08ebc9e2788e2649685e7a36826d14f9b1c9370621541932",
+          "guardedInputs": 880,
+          "scope": "Captured TTY retained read material/configure/onread/start/stop/ref/request-counted close and actual stdin JS consumption. Portable owner/native-backed factory controls only; new guest JSAPI/public TTY/write/shutdown/init-order/full four-host behavior remains incomplete."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tty213-affected-r2.json",
+          "sha256": "6c74b577b3d425f6c2ab6089c39fe90f9c19e8fc376f3c364cbd01ca33ba41f7",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tty213-source-r2/report.json",
+          "sha256": "3437b105df28b91a08ebc9e2788e2649685e7a36826d14f9b1c9370621541932",
+          "portableNamedChecks": 27,
+          "nativeFactoryScenarios": 2,
+          "positiveNativeProcesses": 4,
+          "intentionalNegativeNativeProcesses": 1,
+          "negativeExit": 1,
+          "newCompilerAttempts": 0,
+          "previousPortableCompilerAttemptsIntegrated": 1,
+          "unchangedStyleCheckerPassed": true,
+          "productionJSAPICompiled": false,
+          "publicTTYConstructorsActivated": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "sourceChecks": [
+            "exact production portable owner/dependency: terminal-read-owner.h",
+            "exact production portable owner/dependency: terminal-operations.h",
+            "exact production portable owner/dependency: native-retained-memory.h"
+          ],
+          "portableArtifactSha256": "2d09b8f73b0cabc675df78b85bfe7df1136b1acfd92aa8e8f3d4f6636d1ca687",
+          "scope": "Actual current JS factories with real native Node TTY dependencies and exact portable C++ owner artifact. Guest JSAPI/callback/GC/realm/queued-close remains uncompiled and unexecuted."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tty-stream-read-owner-agent/handoff/HANDOFF.json",
+          "sha256": "0ddc1eda1df352b8655b066c37dfe9eda51be067ef281f909ada34f5b30ad906",
+          "reusedEvidence": true,
+          "scope": "Original sealed actual captured TTY material/native stream/queued-close input prerequisite;1 successful tiny portable C++ compile,27 named PTY checks and2 native-backed JS scenarios. Guest C++ uncompiled. Original setup failures and negative disabled route retained."
+        },
+        {
+          "field": "$.reviewCorrection",
+          "report": ".context/tty-read-integration-review213/handoff/HANDOFF.json",
+          "sha256": "4b08261502c7f99b04fae0085a20c2bd6bc58c4fbd3739007404ac6df6e77d30",
+          "scope": "Actual continuous read-demand root survives recovered after/checkpoint failure and rearms only on ordinary exception-free native dispatch; delivering-ticket guard avoids duplicate watch. One pinned native recovery control is target evidence only, not guest execution."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/terminal-read-material-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/terminal-read-material-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Retain actual captured InputHandle read allocation, generation/sequence/status through stop and failed pre-admission publication",
+        "Configure real shared stream state and rooted onread/dispatcher on the actual native TTY I/O owner; no TTY shape or synthetic handle admission",
+        "Reactor owns read tickets and native-memory claim plus actual resource roots until callback/after/checkpoint unwinds; stopped requests do not poll or keep loop referenced",
+        "Request-counted native close releases captured descriptors and queues actual callback/retirement after active requests, preserving borrowed public descriptor replacements",
+        "Share actual socket stream-state binding before terminal construction and consume native configure/readStart/readStop/ref/onread in stdio input without private read Promises",
+        "Declare/stage the new terminal-read-owner header and compose additive0159 engine patch over preserved212 Socket/TLS/worker/module owners",
+        "Preserve actual continuous read-demand root across recoverable callback checkpoint failure; only ordinary exception-free dispatch arms the next real request",
+        "Guard detached Delivering ticket against duplicate-watch admission; stop/close/EOF/error/teardown clear genuine demand root"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/terminal-read-material-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Public callable tty.ReadStream/WriteStream constructors, inherited Socket/prototype/descriptors, actual native kind admission and directional/init-error/AsyncWrap birth contract",
+        "Native write/WriteWrap/shutdown/control and full StreamBase methods; early constructor/native-init failure ordering and reentry",
+        "Actual new guest C++ JSAPI/realm/CCW/GC/OOM/fatal/reentry/Worker/context teardown and queued-close runtime validation",
+        "Preserve original raw-mode/master/unreopenable/output-backpressure/SIGWINCH/drain and restoration nonpasses; no accepted platform exclusion",
+        "Complete terminal/stdio/readline/REPL public behavior and identified-artifact conformance on all four hosts"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/terminal.md",
+      "findingScope": "Partial native input/read/material/queued-close/stdin prerequisite; no complete public tty constructors, writes, StreamBase or guest/four-host closure",
+      "additionalAuditDocuments": {}
+    },
+    "process-tracing-owner": {
+      "document": "tests/nodejs/outline/process-tracing-owner-finding-progress.json",
+      "sha256": "109a99b8d888bfc391d453e12f01733a2c823ded9b0eb2ab415002f0cbb20d5a",
+      "recordedRevision": 214,
+      "explicitFindingIds": [
+        "O-011"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tracing214-source-r1/report.json",
+          "sha256": "c127a0a3e21b97db8b9bccad8ac701bdbda37dba815e93f66ba424e0487751a5",
+          "guardedInputs": 884,
+          "scope": "Real native process-shared tracing/category/file-sink and main-only post-public-Worker-join teardown source. Current JS/component controls preserve8/9 comparisons and native failed-open timeout; actual new guest JSAPI/teardown/full producer/report/four-host conformance remains incomplete."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tracing214-affected-r1.json",
+          "sha256": "37e9f650bda75141cff25cb9a5781b28fca2d495b61defcdbe1058b152dd53c4",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tracing214-source-r1/report.json",
+          "sha256": "c127a0a3e21b97db8b9bccad8ac701bdbda37dba815e93f66ba424e0487751a5",
+          "comparisons": 9,
+          "passingComparisons": 8,
+          "nonpassingComparisons": 1,
+          "nonpassKinds": [
+            "open-error"
+          ],
+          "failedOpenNativeTimeoutPreserved": true,
+          "freshFailedOpenCandidateExitZero": true,
+          "nativePublicReferencesReused": true,
+          "priorStandaloneOwnerModesPassed": 5,
+          "priorNativeCompilerAttemptsIntegrated": 5,
+          "priorNativeCompilerFailuresIntegrated": 1,
+          "newCompilerAttempts": 0,
+          "unchangedStyleCheckerPassed": true,
+          "productionJSAPICompiled": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Current actual public trace_events/Console algorithms over exact identified portable native owner and explicit Node dependencies. All original9 comparisons/assertions retained,8pass and failed-open native timeout nonpass; no guest teardown/JSAPI/full producer/report acceptance."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tracing-owner-agent/REPORT.json",
+          "sha256": "7d3266c6ff4f95743617fe41bc400dd827989b8ee26508d1e57c3389e4d99a8f",
+          "reusedEvidence": true,
+          "scope": "Original sealed20-leaf tracing source and tiny portable owner components;5 compiler attempts incl1 registration/API admission failure,8/9 comparison groups and5 native ownership modes. Failed-open native20s timeout remains; source wait inference is not stack-confirmed outside-runtime attribution."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/process-tracing-owner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/process-tracing-owner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Process-wide mutex-protected category refcounts/native file sink shared by real main/Worker contexts",
+        "Unchanged pinned public trace_events validation/retention/descriptors and actual main-owner Worker admission",
+        "Existing pinned Console count/timer producers publish genuine operation records with actual monotonic clock/PID/TID",
+        "Actual guest file descriptor/lazy creation/CLOEXEC/EINTR/short-write/sticky-error/close ownership; no fabricated CPU data",
+        "Preserve independent per-realm private callback trace subscriptions while sharing native process state",
+        "Main-only post-public-Worker-join native producer teardown closes the process sink; no early JS exit listener",
+        "Preserve current TTY/Socket/TLS/module/transfer sources through narrow staging and additive0160 teardown patch"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/process-tracing-owner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile actual new guest JSAPI/teardown and validate context/realm/GC/fatal/Worker/source lifecycle on identified artifacts",
+        "Complete native operation/category producers, measurements, CPU/duration/schema/metadata and allocation accounting",
+        "CLI/NODE_OPTIONS/file pattern/rotation/permissions/inspector/Perfetto integration",
+        "Actual failed-open/write/fatal/abrupt-shutdown chronology; native timeout not accepted as platform boundary or passing behavior",
+        "process.report full configuration/schema/process/thread/resource/loaded-library/Worker metadata remains missing",
+        "All four hosts require identified-artifact conformance; source/native components do not close audit findings"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/observability.md",
+      "findingScope": "Partial actual public tracing backend/category/file ownership prerequisite; no full producer/CLI/schema/guest/four-host closure",
+      "additionalAuditDocuments": {}
+    },
+    "filesystem-notification-owners": {
+      "document": "tests/nodejs/outline/filesystem-notification-owners-finding-progress.json",
+      "sha256": "a6b1628b327b95325537f0daebd49807857e43998befbdd98cdd7cdcedf228db",
+      "recordedRevision": 214,
+      "explicitFindingIds": [
+        "FS-005"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-fsnotify214-source-r1/report.json",
+          "sha256": "3c0f3ef3af455c41d762ec7bd5d25f9c61139a8f83d5cf42c4b0c893f621a036",
+          "guardedInputs": 884,
+          "scope": "Dormant queue/descriptor/tmpfs-dentry ownership source, exact existing native125-case artifact/fresh sealed rerun and703-input admission. Same214 engine recipe and unchanged native unity/bootstrap; no public activation, dynamic baseline/guest/four-host acceptance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tracing214-affected-r1.json",
+          "sha256": "37e9f650bda75141cff25cb9a5781b28fca2d495b61defcdbe1058b152dd53c4",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": true
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-fsnotify214-source-r1/report.json",
+          "sha256": "3c0f3ef3af455c41d762ec7bd5d25f9c61139a8f83d5cf42c4b0c893f621a036",
+          "matchedNativeSourceInputs": 703,
+          "nativeCasesEvidenceReused": 125,
+          "nativeCaseFailures": 0,
+          "reusedNativeProcesses": 12,
+          "freshRootRuntimeProcesses": 0,
+          "historicalCompileCheckInvocationsIntegrated": 15,
+          "historicalCompileFailuresIntegrated": 1,
+          "newCompilerAttempts": 0,
+          "engineRecipeChanged": false,
+          "publicNotificationsActivated": false,
+          "protectedContractSourceFilesUnchanged": 7,
+          "nativeUnityAndBootstrapUnchanged": true,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Current root exact703 source inputs admit the identified existing125-case native artifact and fresh sealed12-process rerun. No repeat runtime run or compile; unchanged public/ABI source identities are not dynamic baseline acceptance. Original metadata-write/root-readonly claim is explicitly corrected by incident evidence.",
+          "reusedEvidence": true
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/fsnotify-composition213/handoff/RUNS.json",
+          "sha256": "86af359ef9a11495a74b829e4b646270a280e78ad4b172d672c07cd381438ce6",
+          "reusedEvidence": true,
+          "scope": "Exact layered dormant composition plus fresh12-process/125-case native artifact rerun after703 private source inputs matched; root now matches those703 bytes. Original RUNS rootEdited=false/read-only claim is false due later metadata-writer incident and is explicitly superseded by incident/restoration evidence; runtime/source/compile evidence retains its exact scope."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/filesystem-notification-owners-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/filesystem-notification-owners-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Real bounded notification instance/watch/queue/record ownership with allocation-before-mutation publication",
+        "Managed internal FsNotify descriptor/OFD shares queue/readiness through dup, SCM_RIGHTS and modern exec; whole-record read/poll consume actual state",
+        "Preflight surviving new-kind fork serialization before Writer/fd/ref/child commit; existing version20 tags0\u201312/reader unchanged",
+        "Actual shared OFD retains opened tmpfs dentry distinct from inode data/mapping handle; hardlinks/rename/unlink/name reuse preserve entry authority",
+        "Real prepared-fd OPEN, read/pread/write/pwrite/ftruncate/final shared CLOSE producers consume retained entry and source events",
+        "Correct rename-over-hardlinked-destination link count by removing exactly one nondirectory link; surviving aliases stay live",
+        "Keep public inotify ENOSYS and explicit missing host-wake/metadata/SIGIO/providers/watch policy/fork/ABI activation owners"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/filesystem-notification-owners-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual host parked-waiter wake publication, anonymous metadata/fstat and SIGIO owners",
+        "Full public pathname/permission/mask/quota/EXCL_UNLINK/watch retirement/deletion and event-order policy",
+        "Directory/rootfs/provider/mount and remaining operation producers, O_TRUNC/path metadata and precise ordering",
+        "Coherent frozen55 admission/channel marshalling/public activation and new-kind fork reader/version/retained-owner policy",
+        "Integrate actual fs.watch frontend only after its native/kernel owners work; public ENOSYS remains an implementation gap",
+        "Targeted current kernel build and identified guest/four-host conformance; protected source identities/focused native cases are not dynamic ABI/baseline acceptance"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/filesystem.md",
+      "findingScope": "Partial kernel notification queue/fd/OFD/tmpfs opened-dentry producer prerequisite; public watchers remain inactive and original findings open",
+      "additionalAuditDocuments": {}
     }
   },
   "dependencyNarratives": {
@@ -25197,6 +25494,23 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current210\u2013212links retained transfer admission, actual prelookup SSL/retained TCP lifetime and Socket receiver/native-handle ownership. Source-only versus native portable/component scopes remain distinct; full TLSWrap/TTY/guest/fourhost and all original failures stay open. Accepted200excludes newer source."
+      },
+      {
+        "at": "2026-11-07T12:58:15.873311+00:00",
+        "sourceCheckpoint": 214,
+        "sourceHead": "610fb274f999d973e303b126a728c42cc11ee6d8",
+        "addedSourceSlices": [
+          "terminal-read-material",
+          "process-tracing-owner",
+          "filesystem-notification-owners"
+        ],
+        "latestAcceptedEngine": 200,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "scope": "Actual captured TTY input/material/continuous-demand recovery/queued-close source, real process tracing sink and dormant kernel notification queue/fd/dentry owners. Native components and protected source checks do not establish guest or dynamic ABI baseline acceptance; public inotify stays ENOSYS. Original nonpasses and definite preparation incident preserved."
       }
     ]
   }
