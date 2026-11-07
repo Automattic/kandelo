@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 151,
+    "sourceSliceRecords": 153,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 218
+    "findingsWithoutExplicitOrProposedSourceSlice": 214
   },
   "families": [
     {
@@ -494,7 +494,7 @@
         "L-032",
         "L-033"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 10,
+      "findingsWithExplicitOrProposedSourceSlices": 11,
       "sourceRouteAsRecorded": "Partial pinned Module.wrap/wrapper and patched-script source owners with single exports snapshot; Real native parser goals and direct CJS body compilation, pinned filename/package/entry selection and shared ESM source format in103; Module record/require/JSON, package cache/reader, exports/imports/conditions/self/maps and SourceMap algorithms; source153 pinned synchronous CJS hook registration/chaining/disposal, actual supplied-source execution and resolver/cache transactions",
       "remainingAsRecorded": "Actual guest parser/error/source/realm evidence; complete ESM supplied-source execution/hooks, async loader workers, remaining CJS/CLI/cache behavior and ESM URL/namespace/JSON/async/cycle/dynamic-import graphs; TypeScript/Wasm/addon/source-map/cache/preload/CLI/permission/lifecycle owners; four-host conformance",
       "remainingOwner": "Actual CJS/ESM graph/resolver/cache/compiler/hook/CLI owners",
@@ -533,7 +533,7 @@
         "T-016",
         "T-017"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 6,
+      "findingsWithExplicitOrProposedSourceSlices": 9,
       "sourceRouteAsRecorded": "Pinned shared/callback/promise readline,history/key/cursor owners plus120actual borrowed terminal-mode leases and window queries; source161 pinned stdio output cursor/color/window methods and real verified independent-OFD blocking output with checked/rooted lease/view realm acquisition; source163 captured real output owner also supplies size/resize and same-number reopen is promoted before dup",
       "remainingAsRecorded": "Full public TTY/stdio classes,signals/resize/drain,Unicode width,persistence/permissions/REPL and guest lifecycle/stream/symbol conformance; master/unreopenable backpressure nonpass, partial/EAGAIN queue, broader arbitrary-fd/concurrent-close behavior and privateSIGWINCH gaps retained",
       "remainingOwner": "Actual guest fd/termios/PTY/stdio stream/readline/REPL owners",
@@ -4500,6 +4500,17 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Partial real Socket flush-before-destroy and never-acquired-owner finalization. No full Socket/native async shutdown or finding closure.",
           "closure": false
+        },
+        {
+          "slice": "socket-shutdown",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Genuine retained connected TCP write-shutdown request/lifecycle/error owner; no full Socket/TLSWrap/guest/four-host closure",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4630,6 +4641,17 @@
         {
           "slice": "tcp-agent",
           "relation": "explicit"
+        },
+        {
+          "slice": "socket-shutdown",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Genuine retained connected TCP write-shutdown request/lifecycle/error owner; no full Socket/TLSWrap/guest/four-host closure",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7505,7 +7527,19 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Prefix CLI handling only consumes warning/stream booleans, version and eval; the first other argument hands the entire tail to the shell parser (`js.cpp:10838\u201310935`). Shell -p means prelude, not Node --print; --help describes the shell. Shell -c sets compileOnly, but RunKandeloNodeBootstrap executes a file before returning (`15819\u201315825`) without guarding compileOnly, so it is not Node check-only behavior. --check is not that shell alias. Eval is a real shell execution path, but Node input-type/stdin/syntax/TS/print/preload/options precedence/exit/REPL behavior is not thereby implemented.",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "eval-builtin-bindings",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/loading-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual eval builtin-binding/shared Module helper and parsed-presence source for L-031; terminal T-012/T-016/T-017 links are shared prerequisites only, public REPL remains absent",
+          "publicApiClosure": false,
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "package-policy",
         "package-reader"
@@ -7950,7 +7984,19 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "repl",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "eval-builtin-bindings",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Shared Module/require/lazy builtin and genuine parser-presence prerequisite only; public REPLServer/start/default evaluator/Inspector/session/history/standalone owners are not activated or complete. Partial actual eval builtin-binding/shared Module helper and parsed-presence source for L-031; terminal T-012/T-016/T-017 links are shared prerequisites only, public REPL remains absent",
+          "publicApiClosure": false,
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Actual guest fd/termios/PTY/stdio stream/readline/REPL owners",
@@ -8035,7 +8081,19 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Full namespace/inherited/legacy metadata",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "eval-builtin-bindings",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Shared Module/require/lazy builtin and genuine parser-presence prerequisite only; public REPLServer/start/default evaluator/Inspector/session/history/standalone owners are not activated or complete. Partial actual eval builtin-binding/shared Module helper and parsed-presence source for L-031; terminal T-012/T-016/T-017 links are shared prerequisites only, public REPL remains absent",
+          "publicApiClosure": false,
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Actual guest fd/termios/PTY/stdio stream/readline/REPL owners",
@@ -8055,7 +8113,19 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Standalone Node REPL",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "eval-builtin-bindings",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Shared Module/require/lazy builtin and genuine parser-presence prerequisite only; public REPLServer/start/default evaluator/Inspector/session/history/standalone owners are not activated or complete. Partial actual eval builtin-binding/shared Module helper and parsed-presence source for L-031; terminal T-012/T-016/T-017 links are shared prerequisites only, public REPL remains absent",
+          "publicApiClosure": false,
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Actual guest fd/termios/PTY/stdio stream/readline/REPL owners",
@@ -24748,6 +24818,208 @@
       "auditDocument": "tests/nodejs/audit/loading-contracts.md",
       "findingScope": "Partial actual import.meta path-property lazy DATA owner/initializer/bridge; main, resolver, full metadata and source-map prerequisites remain open.",
       "additionalAuditDocuments": {}
+    },
+    "socket-shutdown": {
+      "document": "tests/nodejs/outline/socket-shutdown-finding-progress.json",
+      "sha256": "bab519307ca941f1e9861f7b0ea68232b187bc3e562a0f1c502a0a8cd65778e9",
+      "recordedRevision": 229,
+      "explicitFindingIds": [
+        "N-015",
+        "N-020"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-shutdown229-source-r1/report.json",
+          "sha256": "9e50c3549ed124a33e827845b3c1ef47830965a8d5438eb0a6b6f04947dffbbe",
+          "guardedInputs": 891,
+          "scope": "Real retained queued shutdown request/completion and pinned connected finalization over native portable/TCP/ShutdownWrap/UV/context dependencies; preserves no-owner/connecting and source228Meta. Explicit global libc socket qualification fixes actual unity namespace collision. New guest JSAPI remains uncompiled; no fullSocket/fourhost conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-shutdown229-affected-r1.json",
+          "sha256": "5ade01269711d9b8cb772eecdedc620dcd83ee5a37a8bb76a1031b597d27f428",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-shutdown229-source-r1/report.json",
+          "sha256": "9e50c3549ed124a33e827845b3c1ef47830965a8d5438eb0a6b6f04947dffbbe",
+          "portableGroups": 7,
+          "frontendGroups": 9,
+          "destroySoonGroups": 7,
+          "freshDirectExecutions": 6,
+          "unchangedOwnerAssertions": 1424,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Two exact passing native portable binaries over identical owner/TU/header inputs, plus current frontend/native9 and destroySoon/native7 against immutable oracle rows. Native TCP/ShutdownWrap/UV/fatal/AsyncHook/VM/streams are explicit dependencies. No new guest JSAPI/fullSocket/TLS proof."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/socket-shutdown-owner-agent/report.json",
+          "sha256": "d93c78da9205b690f3cfea21c26f66b431542991c31cb786a3df07d3e52b3066",
+          "reusedEvidence": true,
+          "scope": "Final9/9frontend vs3/9baseline,7portable owner groups and unchanged1424owner assertions,7destroySoon regression groups.3historical successful helper compiles/0compilefailures,2passing binaries, archived SIGPIPE execution remainsnonpass;21Nodeobservations acrossversions preserved."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/socket-shutdown-owner-agent/report.json",
+          "sha256": "d93c78da9205b690f3cfea21c26f66b431542991c31cb786a3df07d3e52b3066",
+          "scope": "Original helperSIGPIPEfixturefdalias,3exit0missingJSONharness errors, actual source close-phaseP2 correction, unrelatedpeer8/9counterdiag and rawprefixparsefailure retained. No publicconstructor/prototype/guest/TLS closure."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/socket-shutdown-review-agent/REPORT.md",
+          "sha256": "96bb993402ea6d17ad0ded5456c5f2b8c45f272ffbfb40326d62d29d3709edbc",
+          "scope": "Exact final runtime source review, actual close-completion distinction fixed; no additionalP1/P2. Packagingpending wastruewhenreviewsealed; no tests/builds."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/socket-shutdown-review-membership-receipt/receipt.json",
+          "sha256": "a4f6776563859718aeae3e1107a42d99e09eb0060e2b826362fe7f81e6149b97",
+          "scope": "All1524producer members and3review members verified; final4runtimehashes and7executedleaves match oldreview exactly, packagingpending resolved separately without mutating priorreview."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": "tests/nodejs/outline/engine228-build-failure-r2.json",
+          "sha256": "94731ba23888bd0100b1de5509f4380b8cc7ff361548ace4b152c4e2db956c48",
+          "scope": "Actual frozen228C++namespace error preserved; fix uses explicit global libc call with no compilerflag/assertion/platform substitution. Historical report mislabeled namespace fromfilename; actualnamespace correction is documented separately."
+        },
+        {
+          "field": "$.preservedNonpasses[4]",
+          "report": ".context/node26-shutdown229-source-r1/header-staging-expectation-correction.json",
+          "sha256": "787f710603cf1b0230608ff0d10e887fb477f08b2ec124d327c257b212740b9f",
+          "scope": "Initial rootsourcecheck stopped before controls because it compared normal include-sorted header to raw bytes. Expectedbytes now derived by include-block sorting, exact body/libc qualification unchanged. Also records actual kandelo::udp namespace label; originalfailedbuildreport unchanged."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/socket-shutdown-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/socket-shutdown-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Consume pinned connected-final and complete afterShutdown body over genuine private retained-owner/native request factory",
+        "Create actual foreground-GC SHUTDOWNWRAP state/parent/context/frame/root/async identity before init hooks; commit queue only after successful admission",
+        "Defer real POSIX write shutdown until prior writes AND callbacks retire; reject later writes, preserve generation and cancel against closed owner",
+        "Integrate dispatch/ref/close barriers/Scope.Close-Fail/retirement/teardown/resource reporting, with genuine completed-vs-closing entry marker",
+        "Preserve no-owner and connecting paths, metadata/CLI/child/timer owners and curated exports; explicitly qualify global libc socket to fix actual combined-unity compiler error"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/socket-shutdown-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile/execute actual guest JSAPI/request/frame/root/context/GC/OOM/fatal/Worker/callback/loop/ref and close-registry behavior",
+        "Full private ShutdownWrap constructor/prototype, Socket reuse/fd kind/externalfd/OFD invalidation/provider metadata and complete lifecycle",
+        "Real TLSWrap close_notify/stream shutdown; retained TLS raw shutdown still truthfully returns EBUSY, not a platform exclusion",
+        "Actual current identified Node/Chromium/Firefox/WebKit conformance and complete N-015/N-020; no API/family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/network-contracts.md",
+      "findingScope": "Genuine retained connected TCP write-shutdown request/lifecycle/error owner; no full Socket/TLSWrap/guest/four-host closure",
+      "additionalAuditDocuments": {},
+      "terminalPublicApiClosure": false
+    },
+    "eval-builtin-bindings": {
+      "document": "tests/nodejs/outline/eval-builtin-bindings-finding-progress.json",
+      "sha256": "082e844fba60cb7edce06fb7624a57d3acda7a5672e3ccb7277781f68d3dd9af",
+      "recordedRevision": 230,
+      "explicitFindingIds": [
+        "L-031"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-eval230-source-r1/report.json",
+          "sha256": "0709d39b10c5870be0c7187d18c469b3688835c6cf9c30c03ad845310a54fb9a",
+          "guardedInputs": 891,
+          "scope": "Actual eval builtin/shared Module helper and separate parser-owned presence source over existing native dependencies. Preserve current shutdown229+libc qualification; new C++presence/guest/defaultREPL/Inspector/fullCLI remain unvalidated."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-eval230-affected-r1.json",
+          "sha256": "3d158886ef842061bf0a717365d3819b1d16e27616f63d5b6353cc0f11432e97",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-eval230-source-r1/report.json",
+          "sha256": "0709d39b10c5870be0c7187d18c469b3688835c6cf9c30c03ad845310a54fb9a",
+          "nativeDependentGroups": 14,
+          "candidateSourceGuardCases": 4,
+          "unchangedUpstreamFiles": 1,
+          "upstreamSubjectsPassed": 2,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "newCLIFlagCompiled": false,
+          "fourHostConformance": false,
+          "scope": "Actual current Module helper/control and generated factory over explicit native VM/fs/URL/package/builtin owners. Native upstream REPL uses candidate helper only; guard cases inspect supplied source/bridge, not compiled native CLI."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/eval-builtin-bindings-owner-agent/handoff/report.json",
+          "sha256": "03acffdad6416212ab723bc704e2d44b423adb5087c18e6d91d53389eb92fde1",
+          "reusedEvidence": true,
+          "scope": "Producer14/14native/candidate vs0/14baseline new-private-seam availability;4source guards; unchanged test-repl-autolibs.js two subjects;5native-only metadata cases+1admission rejection;0compilers. Native REPL/evaluator/dependencies do not establish public guest activation."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/eval-builtin-bindings-owner-agent/handoff/REPORT.md",
+          "sha256": "7621c40ae8404a7882ffaa7cb0a8aec5cb36ba64ccbf4f68e593e40722163446",
+          "scope": "Preserve native spy fixture11/14,3authored syntax exits,2native wrong presence/admission expectations, rejected intermediate raw-text omission proposal and root228-to229 drift guard. Final14groups/4guards are bounded; baseline0/14 means absent new private seams, not old requireFactory absence."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/eval-builtin-bindings-owner-agent/handoff/presence-results-interpretation.json",
+          "sha256": "1f35442c2d64f6a6d33535ca2d086c77d4cc6563b5c67f8033fdbfc1d91991fd",
+          "scope": "Earlier raw rejected row retains superseded expected metadata; explicit expectedTargetAdmission/status9 governs --eval=. Kandelo existing inline-empty admission mismatch remains open."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/eval-builtin-bindings-review-agent/REPORT.md",
+          "sha256": "c2c62de18744631f4a2c4b925353aab2dbd38067bc0ad634e84d5e07751dd323",
+          "scope": "Exact pinned helper/CLI/main-only/Module/lazy descriptor source review; no newP1/P2, no runtime or compilation. Current root composition separately checked."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/eval230-integration-plan/PLAN.md",
+          "sha256": "93e55e04433e94447fb52ca95c193bef62b57d9a6515b370417127e68158fe12",
+          "scope": "Plan sealed before root execution; initial preparation-only wrong escaping assertion had no source mutation. Actual integration receipt/source checks separately identify current combined postimages."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/eval-builtin-bindings-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/eval-builtin-bindings-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Consume complete unchanged1940byte pinned addBuiltinLibsToObject in actual module-record owner beside existing makeRequireFunction; share same genuine Module/cache/require path",
+        "Install genuine lazy eval global bindings after real global-scope initialization, retaining native descriptor/error/retry/inherited-setter behavior",
+        "Record parser-owned hasEvalSource boolean independently of raw evalSource text and gate actual main eval helper admission; preserve raw util behavior and exclude Worker borrowing",
+        "Compose narrow normal0168patch/current bootstrap/build selectors over unchanged shutdown229, datagram ::socket, Meta228 and existing CLI/child/timer owners"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/eval-builtin-bindings-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile new actual parser-presence C++ and execute guest CLI/eval/global propagation with exact artifacts",
+        "Fix existing --eval= inline-empty admission/exit mismatch and implement missing --print plus remaining CLI/evaluator/crypto-identifier semantics",
+        "Complete public REPL/Inspector/default-context/private utilities/parser/session/history/standalone owners; terminal links are prerequisites only",
+        "Validate actual guest Module/builtin/VM/fs/URL/GC/realm/lifecycle and exact identified four-host candidate; no API/family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-eval-owner-with-shared-terminal-prerequisites",
+      "auditDocument": "tests/nodejs/audit/loading-contracts.md",
+      "findingScope": "Partial actual eval builtin-binding/shared Module helper and parsed-presence source for L-031; terminal T-012/T-016/T-017 links are shared prerequisites only, public REPL remains absent",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/terminal.md": [
+          "T-012",
+          "T-016",
+          "T-017"
+        ]
+      },
+      "terminalPublicApiClosure": false
     }
   },
   "dependencyNarratives": {
@@ -27175,6 +27447,21 @@
         "fourHostConformance": false,
         "individualApiClosure": false,
         "scope": "Actual native-created import metadata/lazy DATA path-property owner, preserved original probe/nonpasses and patch-context correction. Native components/source only; current bridge/guest/fourhost/main/resolve/source-map gaps remain open."
+      },
+      {
+        "at": "2026-11-07T18:39:26.010142+00:00",
+        "sourceCheckpoint": 230,
+        "sourceHead": "b92f49bda1c53d9a3b6c7c69b97b9fac1dbba6c0",
+        "addedSourceSlices": [
+          "socket-shutdown",
+          "eval-builtin-bindings"
+        ],
+        "latestAcceptedEngine": 230,
+        "currentCombinedEngineCompiled": true,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "scope": "Qualified socket shutdown229 and eval builtin230 owner links only. Terminal T-012/T-016/T-017 are explicitly shared prerequisites; no public REPL activation/closure, missing Inspector/history/CLI and new guest C++/runtime remain open."
       }
     ]
   }

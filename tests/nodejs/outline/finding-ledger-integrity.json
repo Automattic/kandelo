@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T17:08:43.860058+00:00",
-  "sourceHead": "86195f14278460e0806c39d9444cdd3b861903db",
-  "recipeRevision": 228,
+  "at": "2026-11-07T18:39:26.010142+00:00",
+  "sourceHead": "b92f49bda1c53d9a3b6c7c69b97b9fac1dbba6c0",
+  "recipeRevision": 230,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 151,
+    "sourceSliceRecords": 153,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 218
+    "findingsWithoutExplicitOrProposedSourceSlice": 214
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,22 +26,23 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 151,
+  "sourceSliceIdentitiesVerified": 153,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "a7e9bd66a36fa0840e54acd87f1f9b91176a70ada21a185385b2b798e81bceeb"
+    "sha256": "464ec4cb145e05ca29f5dfd3781c6e8d93270a2aa20de92a2b5f156bab0ff0f6"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
-  "scope": "Qualified source/evidence links only; original definitions/ranges and unresolved semantics unchanged.",
+  "scope": "Qualified partial source/evidence links only; terminal links prerequisite-only, original definitions/ranges/limits/failures preserved.",
   "previousIntegrityIdentity": {
-    "sha256": "c22e87c3fbfddce545b20a965cd3ccfd1642ccf06ef3ad4d3b2b7f4bdb886e4b",
-    "sourceHead": "b5879db959c32b72a4fe88d6c0eefaa31b275f50",
-    "scope": "Preserved in prior commit and source snapshot history"
+    "sha256": "0bb64f5b80dbdd71257cd3371fc4ac1d9f62717631f3002b5f2b7613904eb1a8",
+    "sourceHead": "86195f14278460e0806c39d9444cdd3b861903db",
+    "scope": "Preserved in prior commit/source snapshot history"
   },
   "sourceProgressOverlaysAdded": [
-    "import-meta-lazy"
+    "socket-shutdown",
+    "eval-builtin-bindings"
   ],
   "qualifiedReferenceCorrections": [
     {

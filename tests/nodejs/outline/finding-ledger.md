@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 151 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 153 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 218 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 214 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -721,3 +721,22 @@ actual new bridge/GC/guest/four-host behavior remain open. No finding closes.
 All19families remain partial. This ledger overlay runs no runtime/compiler;
 accounting stays292. Targeted frozen-source current engine build is next,
 separate from full product rebuilding and overall suites, which remain deferred.
+
+
+## Source229–230 shutdown and eval owner prerequisites
+
+Network N-015/N-020 now link retained connected TCP shutdown/request/completion
+source229. Loading L-031 links source230actual eval lazy builtin/Module/require
+and actual parser-owned presence. Terminal T-012/T-016/T-017 links are shared
+prerequisites only: no public REPLServer/start/default evaluator/Inspector/history
+or standalone CLI activation is established. All original nonpasses, including
+inline-empty eval admission and CLI/guest/realm/lifecycle limits, remain scoped
+in the original progress records. No API or finding closes.
+
+Source-progress records153; findings without exact links214. Original357groups,
+417qualified definitions,52ranges and all19families are preserved. Every family
+remains partial. This overlay runs0runtime tests/compilers; accounting stays299.
+Current source230normal engine compilation/cache acceptance: True.
+Actual guest execution/four-host conformance remain unestablished. The separate
+engine230terminal report identifies compiled bytes or retained failure; full
+product rebuilding and overall suites remain deferred.
