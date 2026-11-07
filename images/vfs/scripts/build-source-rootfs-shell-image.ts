@@ -1,5 +1,5 @@
 /** Compose the canonical browser shell from resolver-owned package outputs. */
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
@@ -54,7 +54,6 @@ import {
   readShellContractPackageNames,
   requireProfileRequirementsDeclared,
   selectionIncludes,
-  type ExcludedProfile,
   type ShellSelection,
 } from "./shell-selection";
 
@@ -109,12 +108,6 @@ export interface SourceRootfsShellInputs {
    * (images/vfs/scripts/shell-selection.ts).
    */
   selection?: ShellSelection;
-  /**
-   * Where to write `{included, excluded}`: the activities the image kept and
-   * those it left out with the packages they lacked. `xtask partial-image`
-   * reads it to describe the image it built.
-   */
-  reportFile?: string;
 }
 
 /** A path input the selection makes required, or a loud failure. */
@@ -1284,18 +1277,17 @@ export function composeSourceRootfsDemoConfig(
 function selectDemoConfig(
   composed: Uint8Array,
   selection: ShellSelection,
-): { bytes: Uint8Array; included: string[]; excluded: ExcludedProfile[] } {
+): { bytes: Uint8Array; included: string[] } {
   const config = parseKandeloDemoConfig(decodeUtf8(composed, "composed demo config"));
   if (config === null) throw new Error("composed demo config has an unsupported version");
   requireProfileRequirementsDeclared(config, readShellContractPackageNames());
   const filtered = filterDemoConfigForSelection(config, selection);
   if (selection.kind === "canonical") {
-    return { bytes: composed, included: filtered.included, excluded: [] };
+    return { bytes: composed, included: filtered.included };
   }
   return {
     bytes: new TextEncoder().encode(`${JSON.stringify(filtered.config, null, 2)}\n`),
     included: filtered.included,
-    excluded: filtered.excluded,
   };
 }
 
@@ -2279,12 +2271,6 @@ export async function buildSourceRootfsShellImage(
   requireCompleteProductShellContract(outputFs, selection);
   requireLazyShellData(outputFs, selection);
   readExperimentalTerminalSession(outputFs);
-  if (inputs.reportFile !== undefined) {
-    writeFileSync(
-      inputs.reportFile,
-      `${JSON.stringify({ included: demoSelection.included, excluded: demoSelection.excluded }, null, 2)}\n`,
-    );
-  }
   return image;
 }
 
@@ -2331,7 +2317,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     ...REQUIRED_FLAGS,
     ...SELECTED_INPUT_FLAGS.map(({ flag }) => flag),
     "--selection",
-    "--report",
   ]);
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
@@ -2353,7 +2338,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
           "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
           "--dependency-contract <dependencies.json> " +
-          "[--selection <selection.json>] [--report <report.json>] " +
+          "[--selection <selection.json>] " +
           "--out <shell.vfs.zst>",
       );
     }
@@ -2396,7 +2381,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
     outFile: values.get("--out")!,
     selection,
-    reportFile: values.get("--report"),
     // A partial shell may resolve only the packages it selected, so a step
     // that reached for anything else fails here instead of pulling it in.
     resolveArtifact: strictResolverFromDependencyEnvironment(

@@ -29,6 +29,12 @@ export function resolveProgramOriginalForImage(resolverPath: string, dependency:
   const inputs = process.env.WASM_POSIX_DEP_ORIGINAL_INPUTS;
   if (inputs !== undefined) return resolveDependencyOriginalInput(
     loadDependencyOriginalInputs(inputs, process.env.WASM_POSIX_DEP_NAME), resolverPath, dependency, executablePath, program);
+  // Inside a package build the resolver lists every dependency original, and
+  // sets no list when no dependency carries one (a shell whose packages all
+  // lack originals, such as a partial shell of tmux alone). Then there is no
+  // original: registerProgramOriginal still fails if the program references
+  // one. The fallback below is for builders the resolver does not run.
+  if (process.env.WASM_POSIX_DEP_OUT_DIR !== undefined) return null;
   const key = `WASM_POSIX_DEP_${dependency.replaceAll("-", "_").toUpperCase()}_DIR`;
   return resolveProgramOriginalWasmArtifact(resolverPath, dependency, executablePath, process.env[key]);
 }
