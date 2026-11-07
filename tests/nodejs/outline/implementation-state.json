@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T05:55:50.862710+00:00",
+  "updatedAt": "2026-11-07T06:03:21.225046+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "8575614f965fd0dfc3dfecc232427e0b3fb6b79348f9baf121c3760f5a52b2c4",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "fa0e377a8a6cca09dcfbca24a9f7c298b37a20860816077446766d0c04c21cd1",
-    "tests/nodejs/outline/finding-ledger.md": "4dc7d0687509b4b66c45677ba2113b3cccc9896d02ad83c8c8508f5a03f167ba",
+    "tests/nodejs/outline/finding-ledger.json": "e4518000e34a7f7ab11bb5c9ea0d75ff3c5ab32203b83904867a1367bced9b7d",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "37f6416a30b20d81dad7b93a68d3041ec095e29c43cc4fc8a7928466b9696566",
+    "tests/nodejs/outline/finding-ledger.md": "0bf463a518a6b089a635abfa34139a8b91cf3654c94442b37891753a8e07cce8",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -6858,7 +6858,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Reconciled canonical finding navigation with integrated native lazy util/styleText and constants allocation source and scoped limitations, preserving document-qualified definitions, exact nonpasses and unknown dispositions without API closure."
+    "reason": "Integrated real RSA key/material/original-range/provider-guard operations through complete pinned wrappers with exact reused native artifact evidence; retained all preparation/compile/fixture aborts and guest/broader crypto gaps."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -43677,10 +43677,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/rsa-transform-owner-20261107T055553Z.tar.gz",
-    "sha256": "8a78988397f3fa756e87c453079b86f2ee1faca1dc0f27ce14cd72fdd085cd0e",
-    "bytes": 45895545,
-    "scope": "187actual RSA/pinned wrapper/material/range/guard source and exact scoped native/upstream evidence; guestJSAPI/STORE/GC/provider/fullcrypto/fourhost unestablished",
+    "path": ".context/node26-implementation-snapshots/finding-overlay187-20261107T060321Z.tar.gz",
+    "sha256": "6923336f6376fd2cf22cb113f9a7632260e7671cecedb477020417db99fe6013",
+    "bytes": 10457573,
+    "scope": "Current187source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -46974,7 +46974,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real RSA key/material/original-range/provider-guard operations through complete pinned wrappers with exact reused native artifact evidence; retained all preparation/compile/fixture aborts and guest/broader crypto gaps."
+    "reason": "Reconciled canonical finding navigation with integrated actual RSA/pinned wrapper/material/range/guard source and scoped limitations, preserving document-qualified definitions, exact nonpasses and unknown dispositions without API closure."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -52839,6 +52839,13 @@
       "sha256": "7ce67ebceb56a0da778691cf0893db3d247c392ed1df243e1654e51b0e3567a3",
       "bytes": 10422228,
       "scope": "Current186source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/rsa-transform-owner-20261107T055553Z.tar.gz",
+      "sha256": "8a78988397f3fa756e87c453079b86f2ee1faca1dc0f27ce14cd72fdd085cd0e",
+      "bytes": 45895545,
+      "scope": "187actual RSA/pinned wrapper/material/range/guard source and exact scoped native/upstream evidence; guestJSAPI/STORE/GC/provider/fullcrypto/fourhost unestablished",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -92197,6 +92204,24 @@
       "scope": "Real20scalar/pointer/string/Buffer/AB/copy/borrow owners and partial types/suffix;2tiny compiler successes; JSAPI uncompiled and environment-unload dependency under review",
       "status": "sealed-pending-root-integration",
       "currentGuestConformance": false
+    },
+    {
+      "path": ".context/ffi-teardown-agent/handoff",
+      "sealSha256": "fd86387444d6a1f9622f7d8165e074bf43b57ec306deff2457561b81ff5323d4",
+      "status": "sealed-pending-root-integration",
+      "scope": "One shared native-consumer-before-FFI teardown/status owner; actual pool/mmap structural controls,2tiny compiler successes; guestJSAPI/cancellation/worker/fourhost open",
+      "nativeHelperAttemptsPendingIntegration": 2,
+      "nativeHelperFailuresPendingIntegration": 0,
+      "currentGuestConformance": false
+    },
+    {
+      "path": ".context/sys-alias-owner-agent",
+      "sealSha256": "8fd6be3b82ff927efa146a53feab5001b9bb4f7fe18eb322e056a9564347e97b",
+      "status": "sealed-pending-root-integration",
+      "scope": "Actual sys/util identity and pinned warning/cache/reentry/retry owner;13paired groups/unchanged upstream file, default ESM harness failures retained;2new inputs require declaration",
+      "nativeHelperAttemptsPendingIntegration": 0,
+      "nativeHelperFailuresPendingIntegration": 0,
+      "currentGuestConformance": false
     }
   ],
   "dnsScopedAddressImplementation": {
@@ -92735,19 +92760,19 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "8575614f965fd0dfc3dfecc232427e0b3fb6b79348f9baf121c3760f5a52b2c4",
+    "sha256": "e4518000e34a7f7ab11bb5c9ea0d75ff3c5ab32203b83904867a1367bced9b7d",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "fa0e377a8a6cca09dcfbca24a9f7c298b37a20860816077446766d0c04c21cd1"
+      "sha256": "37f6416a30b20d81dad7b93a68d3041ec095e29c43cc4fc8a7928466b9696566"
     },
-    "sourceCheckpoint": 186,
+    "sourceCheckpoint": 187,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 104,
+      "sourceSliceRecords": 105,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
       "findingsWithoutExplicitOrProposedSourceSlice": 244
@@ -93299,6 +93324,28 @@
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 246
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "8575614f965fd0dfc3dfecc232427e0b3fb6b79348f9baf121c3760f5a52b2c4",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "fa0e377a8a6cca09dcfbca24a9f7c298b37a20860816077446766d0c04c21cd1"
+      },
+      "sourceCheckpoint": 186,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 104,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 244
       },
       "individualApiClosure": false,
       "fourHostConformance": false
@@ -94430,5 +94477,21 @@
     "individualApiClosure": false,
     "implementationComplete": false,
     "acceptedPlatformLimits": []
+  },
+  "ttyRestorationDiagnosticPendingIntegration": {
+    "path": ".context/tty-restoration-diagnostic-agent",
+    "sealSha256": "ca8dd116f9fdcafb0e2850faf705d6ff5c0fc7e43b6c91f5825564aeff34fe82",
+    "status": "sealed-focused-evidence-pending-terminal-integration",
+    "sourceImplementationChanges": false,
+    "nativeHelperAttemptsPendingIntegration": 2,
+    "nativeHelperFailuresPendingIntegration": 0,
+    "matchedProcesses": 9,
+    "fullAttributePhaseComparisons": 22,
+    "resourceChecks": 93,
+    "literalRestorationNonpassesRetained": 9,
+    "originalR3SigabrtRetained": true,
+    "productionRestoreDefectEstablished": false,
+    "acceptedPlatformBoundary": false,
+    "scope": "Matched Node/portable/direct-libc branches in shared native diagnostic addon; all exact phase words agree, original predicates/nonpasses retained. Second compiled libc-only object was never loaded/run. Guest/kernel/fourhost unvalidated."
   }
 }

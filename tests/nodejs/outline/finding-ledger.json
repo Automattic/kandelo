@@ -25,7 +25,7 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 104,
+    "sourceSliceRecords": 105,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 244
@@ -5277,6 +5277,13 @@
           "auditDocument": "tests/nodejs/audit/crypto.md",
           "scope": "Shared actual Error/queue/property/identity prerequisite for consumed crypto/TLS paths; not complete public API/per-callsite errors or finding closure",
           "closure": false
+        },
+        {
+          "slice": "rsa-transform-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "scope": "Actual four one-shot RSA cipher transforms and material/range/guard prerequisite; not public signatures/keygen/STORE/WebCrypto, all per-callsite semantics or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -5786,6 +5793,13 @@
         {
           "slice": "pkcs12-parser",
           "relation": "explicit-original-finding-id"
+        },
+        {
+          "slice": "rsa-transform-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "scope": "Actual four one-shot RSA cipher transforms and material/range/guard prerequisite; not public signatures/keygen/STORE/WebCrypto, all per-callsite semantics or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -19615,6 +19629,75 @@
           "V-024"
         ]
       }
+    },
+    "rsa-transform-owner": {
+      "document": "tests/nodejs/outline/rsa-transform-owner-finding-progress.json",
+      "sha256": "52cf1a38ed5c441d92ce2d3885920f575dfa523a5dc3c1c643ff9024d7c1f5ab",
+      "recordedRevision": 187,
+      "explicitFindingIds": [
+        "C-001",
+        "C-015"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-rsa187-source-r1/report.json",
+          "sha256": "eb3504912959dc6068b992475f33f6d48d5b6c4307106bf16beb3c9e0a82ebad",
+          "guardedInputs": 836,
+          "scope": "Four actual RSA transforms over retained original input range/immutable material and real provider guard; scoped native components/upstream controls, no current guest JSAPI/STORE/GC/realm/fourhost conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-rsa187-affected-r1.json",
+          "sha256": "66fb9ecafdd6ca82d731ab2d98323316eef668fcee554ce6ff2fe50b87c451bc",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-rsa187-source-r1/report.json",
+          "sha256": "eb3504912959dc6068b992475f33f6d48d5b6c4307106bf16beb3c9e0a82ebad",
+          "focusedNativeComponentGroups": 71,
+          "wholeUnchangedUpstreamFiles": 2,
+          "subjectsPerFile": 2,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "scope": "Actual current four RSA methods over identified native ncrypto/OpenSSL artifact and explicit native key/JWK-DER/stream/private Buffer dependencies; not guest private slot/security/GC/material transfer/resize or complete crypto/fourhost conformance."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/rsa-transforms-owner-agent/report.json",
+          "sha256": "4e81f2771454a23f8c5af7ad314ddbdeff7a2bd90a3d63178a68e608015221a0",
+          "reusedEvidence": true,
+          "scope": "71focused groups and2whole unchanged upstream files per subject,37source checks/825private inputs, exact final compiler dependency/source/header/artifact identities.4tiny compiler attempts/2failures; native key export arity SIGABRT retained as fixture nonpass. GuestJSAPI uncompiled."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/rsa-transform-owner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/rsa-transform-owner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Four complete pinned public RSA wrappers are actually exported and call existing curated cipherOperation; throwing unavailable bindings replaced by actual RSA dispatch",
+        "Native dispatch consumes genuine immutable KeyMaterial or existing real PEM/DER/JWK/raw importer and retains its independent rooted material edge through reentrant option conversion",
+        "Capture original input allocation/range before Uint32(padding), read actual bytes afterward, atomically load shared bytes and retain real provider output through engine allocation",
+        "Actual PKCS1 private-decrypt key-context implicit-rejection query and fatal allocation invariant preserve exact pinned ordering before digest/label/MGF1 checks; no unsafe fallback or invented capability",
+        "Actual ncrypto::Cipher encrypt/decrypt/sign/recover operations reuse shared genuine native Error queue/decorations/property behavior; raw RSA sign/recover are not public Sign/Verify support",
+        "Declare/stage actual RSA portable header, preserve source/target/ABI pins and regenerate the combined bundle without overwriting newer source"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/rsa-transform-owner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Real OpenSSL STORE loading and existing generic key-parser/configuration/per-callsite message gaps",
+        "Actual guest JSAPI/material/private slot/JWK/raw/security-wrapper/realm/GC/OOM/resize/transfer/cancellation/teardown execution",
+        "C++ scratch/vector/control-block and opaque OpenSSL physical allocation/accounting",
+        "Actual selected guest backend/provider configuration and all-four-host identified-artifact conformance; positive native guard is not unsupported-provider or allocation-fault proof",
+        "Public Sign/Verify/keygen/exchange/KEM/provider MAC/WebCrypto/FIPS and remaining crypto/secure-network inventory gaps"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/crypto.md",
+      "findingScope": "Actual four one-shot RSA cipher transforms and material/range/guard prerequisite; not public signatures/keygen/STORE/WebCrypto, all per-callsite semantics or finding closure",
+      "additionalAuditDocuments": {}
     }
   },
   "dependencyNarratives": {
@@ -21575,6 +21658,26 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current186native lazy util/styleText and fs.constants allocator source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T06:03:21.225046+00:00",
+        "sourceCheckpoint": 187,
+        "sourceHead": "f914f373252c247dbc6a7e934c9cb3666b7152da",
+        "addedSourceSlices": [
+          "rsa-transform-owner"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "0efe3f393d92a9589ab2dfe30e4a8a48d7e82cd534a905405ee27ca9d1984eca"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current187actual RSA transform source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }

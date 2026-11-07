@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 104 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 105 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 244 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -199,4 +199,20 @@ source matrices, pipe TTY skips and old descriptor failure remain immutable.
 Actual current guest lazy/constant/realm/GC/dependency semantics and all-four-host
 conformance remain unestablished. Constants aggregation/sys/transcode/legacy URL
 and other public values gaps remain. Accepted173predates current186.
+Nested guest Wasm execution stays in scope, scheduled last.
+
+## Source187 RSA progress overlay
+
+C-001/C-015 now link to actual one-shot RSA cipher transforms through complete
+pinned public wrappers, genuine immutable key material/original input range
+and real ncrypto/OpenSSL operations. The provider implicit-rejection query and
+error order are actual owners; no unsupported-provider flag or unsafe fallback
+is introduced. Selected native/component evidence does not execute new guest
+material/slot/GC/realm/transfer/resize behavior. No finding/family closes.
+
+Two whole unchanged upstream files run per native/candidate, with native key/
+JWK-to-DER/stream/private Buffer dependencies explicit. Original setup/compiler/
+Buffer-boundary and key-export arity aborts stay recorded. STORE, backend/provider,
+opaque accounting and broader signatures/keygen/exchange/WebCrypto gaps remain.
+Accepted173predates current187; all-four-host conformance is unestablished.
 Nested guest Wasm execution stays in scope, scheduled last.

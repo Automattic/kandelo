@@ -1,14 +1,14 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T05:45:13.463319+00:00",
-  "sourceHead": "975ab8e329751d269904f0f010d0313756a8a39c",
-  "recipeRevision": 186,
+  "at": "2026-11-07T06:03:21.225046+00:00",
+  "sourceHead": "f914f373252c247dbc6a7e934c9cb3666b7152da",
+  "recipeRevision": 187,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 104,
+    "sourceSliceRecords": 105,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 244
@@ -26,21 +26,21 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 104,
+  "sourceSliceIdentitiesVerified": 105,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "8575614f965fd0dfc3dfecc232427e0b3fb6b79348f9baf121c3760f5a52b2c4"
+    "sha256": "e4518000e34a7f7ab11bb5c9ea0d75ff3c5ab32203b83904867a1367bced9b7d"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "df5d443d04f43ad832695fb895d8c838db978a20677824bc9d9d444e490f3f4e",
-    "sourceHead": "277c62c3b9c41ca6ec48f6e82dafc427e99f8ebb",
+    "sha256": "fa0e377a8a6cca09dcfbca24a9f7c298b37a20860816077446766d0c04c21cd1",
+    "sourceHead": "975ab8e329751d269904f0f010d0313756a8a39c",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "util-style-lazy"
+    "rsa-transform-owner"
   ]
 }
