@@ -1,0 +1,79 @@
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -706,2 +706,5 @@
+   size_t kandeloTransferredJSCount = 0;
++  enum class KandeloTransferKind { JavaScript, Native, ArrayBuffer };
++  Vector<KandeloTransferKind, 0, SystemAllocPolicy> kandeloTransferKinds;
++  bool appendKandeloTransfer(HandleObject object, KandeloTransferKind kind);
+   bool expandKandeloTransfers();
+@@ -1291,2 +1294,17 @@
+
++bool JSStructuredCloneWriter::appendKandeloTransfer(HandleObject object,
++                                                   KandeloTransferKind kind) {
++  if (!context()->hasKandeloCloneErrors()) {
++    return transferableObjects.append(object);
++  }
++  MOZ_ASSERT(kandeloTransferKinds.length() == transferableObjects.length());
++  if (!kandeloTransferKinds.append(kind)) {
++    ReportOutOfMemory(context()); return false;
++  }
++  if (!transferableObjects.append(object)) {
++    kandeloTransferKinds.popBack(); return false;
++  }
++  return true;
++}
++
+ bool JSStructuredCloneWriter::parseTransferable() {
+@@ -1364,2 +1382,4 @@
+
++    KandeloTransferKind transferKind = hostMode >= 0
++        ? KandeloTransferKind::JavaScript : KandeloTransferKind::Native;
+     if (hostMode < 0) {
+@@ -1402,2 +1422,3 @@
+       else if (unwrappedObj->is<ArrayBufferObject>()) {
++        transferKind = KandeloTransferKind::ArrayBuffer;
+         if (unwrappedObj->as<ArrayBufferObject>().isExternal() &&
+@@ -1463,5 +1484,3 @@
+
+-    if (!transferableObjects.append(tObj)) {
+-      return false;
+-    }
++    if (!appendKandeloTransfer(tObj, transferKind)) return false;
+   }
+@@ -1479,5 +1498,7 @@
+     if (!CheckForInterrupt(cx)) return false;
+-    host = transferableObjects[i];int32_t mode;
+-    if (!cx->getKandeloCloneMode(host, &mode)) return false;
+-    if (mode < 0) continue;
++    // Node retains the admitted BaseObject owner before any nested hook.
++    // Later mode deletion/mutation must not revoke its scheduled hook/commit.
++    // Main-graph startWrite still performs its separate dynamic mode read.
++    if (kandeloTransferKinds[i] != KandeloTransferKind::JavaScript) continue;
++    host = transferableObjects[i];
+     RootedValue hook(cx, cx->kandeloCloneNestedTransfers());
+@@ -1512,3 +1533,4 @@
+         return cx->reportKandeloCloneError("Host transfer registry is too large");
+-      if (!transferableObjects.append(item)) return false;
++      if (!appendKandeloTransfer(item, itemMode >= 0
++              ? KandeloTransferKind::JavaScript : KandeloTransferKind::Native)) return false;
+     }
+@@ -1522,5 +1544,5 @@
+       if (!CheckForInterrupt(cx)) return false;
+-      host = transferableObjects[i];int32_t mode;
+-      if (!cx->getKandeloCloneMode(host, &mode)) return false;
+-      if (mode >= 0) {
++      host = transferableObjects[i];
++      const auto kind = kandeloTransferKinds[i];
++      if (kind == KandeloTransferKind::JavaScript) {
+         uint32_t index = uint32_t(kandeloHostObjects.length());
+@@ -1529,5 +1551,4 @@
+       } else {
+-        ESClass cls;if (!GetBuiltinClass(cx, host, &cls)) return false;
+         transferableObjects.get()[nativeIndex] = host.get();
+-        if (cls != ESClass::ArrayBuffer &&
++        if (kind == KandeloTransferKind::Native &&
+             !kandeloWriteOrder.Append(kandelo::clone::HostOrder::Kind::Native, uint32_t(nativeIndex))) return false;
+@@ -1538,2 +1559,3 @@
+   transferableObjects.shrinkBy(total - nativeIndex);
++  kandeloTransferKinds.clear();
+   kandeloTransferredJSCount = kandeloHostObjects.length();

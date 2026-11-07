@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source210 retains actual transfer admission kind through nested discovery/partition while preserving dynamic main-graph behavior and the non-Node append path. Six frozen native observations are reference-only; exact source/replay/style and14 package checks pass. No candidate runtime or compiler ran.
+See [source scope](retained-transfer-kind-integration.md).
+
 Source209 integrates actual original-request native imports and captured module completion, plus verified request-identity and empty-specifier corrections.9 forwarding groups,3 actual graph/native dependency groups and1 exact bootstrap group pass; runner regressions retain their explicit missing-owner nonpass. New C++ remains uncompiled and no four-host conformance is established.
 See [source scope](module-import-integration.md).
 

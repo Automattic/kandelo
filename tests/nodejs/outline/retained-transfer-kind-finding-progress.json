@@ -1,0 +1,93 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/streams.md",
+    "findingIds": [
+      "STR-003",
+      "STR-004"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/family-survey.md": [
+        "R-001"
+      ],
+      "tests/nodejs/audit/worker-contracts.md": [
+        "R-013"
+      ]
+    },
+    "relatedFamilies": [
+      "workers",
+      "streams",
+      "web",
+      "engine",
+      "async"
+    ],
+    "scope": "Partial retained admission-kind/identity/nested/partition source prerequisite; no full Worker/stream/guest closure"
+  },
+  "sourceImplemented": [
+    "Retain genuine explicit/nested admitted JS/native/AB kind in a POD enum vector while existing GC-traced vector owns object identities",
+    "Consume retained kind for nested hook schedule and native/JS partition instead of rereading mutable private modes",
+    "New nested admission remains dynamic; entire main-graph startWrite and transferOwnership bodies, duplicate/security/interrupt policy remain byte unchanged",
+    "Pair metadata/object append with real metadata OOM reporting and rollback before graph/detach/commit",
+    "Preserve original non-Node append without new metadata allocation; track all Node-configured entries through UnknownDestination to SameProcess transition"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-kind210-source-r1/report.json",
+    "sha256": "fa429e8d003f04d637c6a4ca13ae9a33e72d8c019f1a57faa66a3ffdd545fb59",
+    "guardedInputs": 879,
+    "scope": "Retained actual JS/native/AB admission kind plus safe non-Node original append path. Exact source/patch/style checks only;6 frozen native reference observations reused, no candidate runtime/guest proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-kind210-affected-r1.json",
+    "sha256": "4a81339e69a619eec71d2747664b8c627478f529a549f0212c3ce9b6686f95b8",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-kind210-source-r1/report.json",
+    "sha256": "fa429e8d003f04d637c6a4ca13ae9a33e72d8c019f1a57faa66a3ffdd545fb59",
+    "actualCandidateRuntimeCases": 0,
+    "sourceGuardChecks": 4,
+    "nativeReferenceObservationsReused": 6,
+    "nativeReferencesAreNotCandidatePasses": true,
+    "newCompilerAttempts": 0,
+    "newRuntimeProcesses": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "unchangedStyleCheckerPassed": true,
+    "scope": "Exact staged source/invariants and unchanged checker only.6 frozen native private-protocol observations remain references, not candidate/public API passes. New C++ uncompiled."
+  },
+  "sealedEvidence": {
+    "report": ".context/retained-transfer-kind-agent/report.json",
+    "sha256": "4a72d5182a734b9b3ee54988e3ef5dac487dde328fc3cbf1d085db204f558b0a",
+    "reusedEvidence": true,
+    "scope": "Immutable retained-kind candidate plus separately sealed minimal non-Node bypass review. Native6 observations reference-only; no ordinary-public deletion reachability or candidate execution established."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/retained-transfer-kind-scope-review-agent/REPORT.md",
+      "sha256": "428b0da128a3af5e48e7f1489f61bbdfd0f82de239d1b98cb548ace16c295457",
+      "scope": "Proposed scope-based bypass rejected because UnknownDestination can later become SameProcess; final implementation bypasses only non-Node contexts. Source invariant finding, not a runtime reproduction."
+    },
+    {
+      "report": ".context/node26-kind210-source-r1/source-check-r1-failed.log",
+      "sha256": "e4e3e8b69aa774c2783b833150549d1afe9e1eac630d9f20527d4b6a82fb49c4",
+      "scope": "Root source guard verifier initially assumed one-line formatting; actual sealed branch has braces. Corrected exact-byte comparison, source unchanged; no compiler/runtime ran."
+    }
+  ],
+  "remaining": [
+    "Compile actual C++/JSAPI and validate real private/native object classification, vector OOM, roots, foreign realms/security/interrupt and partial native commit",
+    "Full nested-list timing/duplicate/intrinsic classification and malformed/no-result/deferred-error protocol semantics",
+    "Genuine public Worker/MessagePort/WebStream/signal/backpressure/cancellation/lifecycle and identified all-four-host artifacts",
+    "Ordinary-public mode-deletion reachability was not established; no new public private-symbol/registration exposure introduced"
+  ],
+  "at": "2026-11-07T11:31:10.213176+00:00",
+  "recipeRevision": 210,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
