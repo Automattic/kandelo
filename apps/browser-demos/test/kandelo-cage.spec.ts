@@ -1,12 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { gotoMachine } from "./support/kandelo-machine";
+import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
 import { cageShellTextColumns } from "./support/cage-shell-frame";
+import { screenshotPixelDelta } from "./support/screenshot-pixels";
 
 /** Show the Internals syslog, the demo canvas, or the machine's terminal.
  *  Internals is an overlay toggle in the dock; showing another view means
  *  closing it and selecting that view. */
 async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+  if (label === "Internals") await waitForMachineBootInput(page);
   const internals = page.getByRole("button", { name: "Internals", exact: true });
   await internals.waitFor({ state: "visible", timeout: 30_000 });
   const open = (await internals.getAttribute("aria-pressed")) === "true";
@@ -115,14 +117,20 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
     { timeout: 60_000, message: "wlterm has rendered the shell's first output" },
   ).toBeGreaterThan(24);
   await page.locator("body").click({ position: { x: 5, y: 5 } });
+  // Locator screenshots include DOM overlays above the canvas. The initial
+  // lazy-download toasts can finish after the shell prompt is painted; their
+  // disappearance is not a change in wlterm's framebuffer.
+  await expect(page.getByRole("complementary", { name: "Download status" }))
+    .toBeHidden({ timeout: 60_000 });
   const frame = () => canvas.screenshot({ animations: "disabled" });
   const before = await frame();
   await page.waitForTimeout(1_000);
-  expect((await frame()).equals(before)).toBe(true);
+  const idleDelta = await screenshotPixelDelta(page, before, await frame());
+  expect(idleDelta, "wlterm's rendered pixels remain unchanged while idle").toMatchObject({ same: true, changed: 0 });
   await page.keyboard.type("echo cage-gles2-ok\n", { delay: 40 });
   await expect
     .poll(
-      async () => (await frame()).equals(before),
+      async () => (await screenshotPixelDelta(page, before, await frame())).same,
       { timeout: 60_000, intervals: [500, 1_000, 2_000] },
     )
     .toBe(false);

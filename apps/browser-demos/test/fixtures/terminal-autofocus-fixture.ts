@@ -7,6 +7,7 @@ import type {
   KernelHost,
   PtyHandle,
 } from "../../../../web-libs/kandelo-session/src/kernel-host";
+import { ExchangeSession } from "../../../../web-libs/kandelo-session/src/exchange-session";
 
 export interface DelayedPtyShellFixture {
   resolveAttach(): void;
@@ -31,6 +32,7 @@ export function mountDelayedPtyShell(
     resize() {},
     write() {},
   };
+  const exchange = new ExchangeSession();
   const host = {
     attachPty: () => {
       resolveAttachRequest();
@@ -44,6 +46,10 @@ export function mountDelayedPtyShell(
     // makes the component throw instead of failing the assertion under test.
     getWebPreview: () => null,
     subscribeWebPreview: () => () => {},
+    // Shell's drop target reads the machine's exchange while rendering. No
+    // kernel backs this fixture, so give it an exchange attached to none (no
+    // consumer) rather than omitting the method.
+    getExchange: () => exchange,
   } as unknown as KernelHost;
 
   const root = ReactDOM.createRoot(container);

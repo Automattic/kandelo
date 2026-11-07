@@ -126,6 +126,8 @@ const RESOLVED_PROGRAM_FIXTURES = [
 
 /** C programs that tests depend on. */
 const TEST_PROGRAMS = [
+  "channel_request_validation_test.c",
+  "mqueue_test.c",
   "epoll_semantics_test.c",
   "clock_getcpuclockid_test.c",
   "syscall_cp_offset_test.c",
@@ -143,6 +145,7 @@ const TEST_PROGRAMS = [
   "getdents_boundary_test.c",
   "terminal_attributes_api_test.c",
   "pty_readiness_test.c",
+  "masked_wait_wake_test.c",
   "rlimit_fsize_test.c",
   "rlimit_as_test.c",
   "kernel_scratch_browser_test.c",
@@ -152,9 +155,13 @@ const TEST_PROGRAMS = [
   "getaddrinfo_test.c",
   "process_native_layout_test.c",
   "timerfd_signalfd_scratch_test.c",
+  "timerfd_wake_latency_test.c",
   "sysv_ipc_test.c",
   "sysv_shm_departed_peer_test.c",
   "shm_mapping_coherence_test.c",
+  "shm_mapping_fence_test.c",
+  "shm_mapping_boundary_test.c",
+  "proc_maps_test.c",
   "wasm_trap_test.c",
   "oob_trap_test.c",
   "divzero_trap_test.c",
@@ -187,10 +194,15 @@ const WASM64_TEST_PROGRAMS = [...new Set([
 ])];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
+  "channel_request_validation_test.c",
+  "shm_mapping_fence_test.c",
   "epoll_semantics_test.c",
   "sysv_shm_departed_peer_test.c",
   "pty_readiness_test.c",
+  "masked_wait_wake_test.c",
   "shm_mapping_coherence_test.c",
+  "shm_mapping_boundary_test.c",
+  "proc_maps_test.c",
   "environment_lifecycle_test.c",
   "pthread_channel_reuse_test.c",
   "unix_listener_exec_test.c",
@@ -315,34 +327,28 @@ export async function setup() {
   // read packages/registry/program-packages.json directly get a fresh
   // projection without depending on a prior build — every caller of `vitest
   // run` gets the prereq for free, exactly like the wasm fixtures below.
-  const hostTarget = execFileSync("rustc", ["-vV"], { encoding: "utf8" })
+  // The suite runner already prepares this exact tool through Cargo. Reuse
+  // it just as compile-sdk-fixture does; rebuilding a separate debug tool
+  // duplicates native caches during large normal package builds.
+  const preparedXtask = process.env.WASM_POSIX_XTASK_BIN;
+  const hostTarget = preparedXtask ? undefined : execFileSync("rustc", ["-vV"], { encoding: "utf8" })
     .split(/\r?\n/)
     .find((line) => line.startsWith("host: "))
     ?.slice(6)
     .trim();
-  if (!hostTarget) {
+  if (!preparedXtask && !hostTarget) {
     throw new Error("[global-setup] could not determine the Rust host target");
   }
+  const runXtask = (args: string[]) => execFileSync(preparedXtask ?? "cargo", [
+    ...(preparedXtask ? [] : ["run", "-p", "xtask", "--target", hostTarget!, "--quiet", "--"]),
+    ...args,
+  ], { cwd: repoRoot, stdio: "pipe" });
   console.log("[global-setup] Generating program package index...");
-  execFileSync(
-    "cargo",
-    [
-      "run",
-      "-p",
-      "xtask",
-      "--target",
-      hostTarget,
-      "--quiet",
-      "--",
-      "build-deps",
-      "program-index",
-      "--source-repo-root",
-      repoRoot,
-      join(repoRoot, "packages/registry"),
-      join(repoRoot, "packages/registry/program-packages.json"),
-    ],
-    { cwd: repoRoot, stdio: "pipe" },
-  );
+  runXtask([
+    "build-deps", "program-index", "--source-repo-root", repoRoot,
+    join(repoRoot, "packages/registry"),
+    join(repoRoot, "packages/registry/program-packages.json"),
+  ]);
 
   const wasm32Contract = fixtureBuildContract("wasm32", false);
   const wasm32ForkContract = fixtureBuildContract("wasm32", true);
@@ -449,21 +455,7 @@ export async function setup() {
   ].filter((out) => existsSync(out));
   if (abiContractStampTargets.length > 0) {
     console.log("[global-setup] Stamping ABI contract digest on fixtures...");
-    execFileSync(
-      "cargo",
-      [
-        "run",
-        "-p",
-        "xtask",
-        "--target",
-        hostTarget,
-        "--quiet",
-        "--",
-        "stamp-abi-contract",
-        ...abiContractStampTargets,
-      ],
-      { cwd: repoRoot, stdio: "pipe" },
-    );
+    runXtask(["stamp-abi-contract", ...abiContractStampTargets]);
   }
 
   // packages/registry/wordpress/test/wordpress-site-editor.test.ts calls

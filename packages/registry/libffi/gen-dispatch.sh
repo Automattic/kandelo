@@ -4,25 +4,25 @@
 # full libffi port (see src/ffi_internal.h for the shared key encoding):
 #
 #   ffi_dispatch.c      the ffi_call signature switch. Emitted families:
-#                       every signature of arity <= 8 with at most two
-#                       non-i32 arguments (glib generic-marshal calls are
-#                       instance + params + data, pointers all being i32
-#                       words on wasm32; two doubles/i64s covers the
-#                       gesture-style tails), plus all-i32 signatures up
-#                       to arity 22 (the Wayland ceiling), each times the
-#                       five return classes. An un-emitted signature
-#                       makes ffi_call abort printing its key — extend a
-#                       family bound here and rebuild.
+#                       every signature of arity <= 9 with at most two
+#                       non-i32 arguments, plus all-i32 signatures through
+#                       arity 22, each times the five return classes.
+#                       Full scalar records (9 words, f32/f64 in either
+#                       order, 6 words, 2 i64s) also allow leading/trailing
+#                       context or sret words through arity 22. This covers
+#                       complete typed records without generating every
+#                       unused placement of those scalar classes.
+#                       Un-emitted signatures abort with their exact key.
 #
 #                       The switch is split into one function per
 #                       (return class, arity): a single function holding
-#                       all 4435 cases compiles to a ~275 KB wasm
+#                       all of the original 4435 cases compiled to a ~275 KB wasm
 #                       function, and V8 aborts the whole process with
 #                       "Fatal process out of memory: Zone" when its
 #                       optimizing tier compiles it. The key low byte is
 #                       rc + nargs * 8, so the router indexes a function
 #                       pointer table with key & 0xff and each leaf
-#                       stays <= 277 cases. The table (not a switch of
+#                       stays bounded to one arity. The table (not a switch of
 #                       direct calls) is load-bearing: the clang driver
 #                       runs wasm-opt -O2 post-link when binaryen is on
 #                       PATH, and binaryen re-inlines single-caller
@@ -126,26 +126,38 @@ BEGIN {
 
     body = ""; routes = ""
     for (rc = 0; rc <= 4; rc++) {
-        for (n = 0; n <= 8; n++) {
+        for (n = 0; n <= 22; n++) {
             reset(n, cls)
             emit_case(rc, n, cls)
-            for (p = 0; p < n; p++)
-                for (c = 1; c <= 3; c++) {
-                    reset(n, cls); cls[p] = c
-                    emit_case(rc, n, cls)
-                }
-            for (p1 = 0; p1 < n; p1++)
-                for (p2 = p1 + 1; p2 < n; p2++)
-                    for (c1 = 1; c1 <= 3; c1++)
-                        for (c2 = 1; c2 <= 3; c2++) {
-                            reset(n, cls); cls[p1] = c1; cls[p2] = c2
+            if (n <= 9) {
+                for (p = 0; p < n; p++)
+                    for (c = 1; c <= 3; c++) {
+                        reset(n, cls); cls[p] = c
+                        emit_case(rc, n, cls)
+                    }
+                for (p1 = 0; p1 < n; p1++)
+                    for (p2 = p1 + 1; p2 < n; p2++)
+                        for (c1 = 1; c1 <= 3; c1++)
+                            for (c2 = 1; c2 <= 3; c2++) {
+                                reset(n, cls); cls[p1] = c1; cls[p2] = c2
+                                emit_case(rc, n, cls)
+                            }
+            }
+            # The full scalar record has nine word fields, a floating pair,
+            # six more words and an i64 pair. Context/data and hidden sret
+            # words can surround that record; keep every existing short-call
+            # family unchanged rather than enumerate unused word paddings.
+            for (prefix = 0; prefix <= 3; prefix++)
+                for (suffix = 0; suffix <= 3 - prefix; suffix++)
+                    if (n == 19 + prefix + suffix)
+                        for (float_order = 0; float_order <= 1; float_order++) {
+                            reset(n, cls)
+                            cls[prefix + 9] = 2 + float_order
+                            cls[prefix + 10] = 3 - float_order
+                            cls[prefix + 17] = 1
+                            cls[prefix + 18] = 1
                             emit_case(rc, n, cls)
                         }
-            emit_leaf(rc, n)
-        }
-        for (n = 9; n <= 22; n++) {
-            reset(n, cls)
-            emit_case(rc, n, cls)
             emit_leaf(rc, n)
         }
     }

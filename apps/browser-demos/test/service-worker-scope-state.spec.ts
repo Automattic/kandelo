@@ -7,7 +7,7 @@ import {
 import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 
-const FIXTURE_PORT = 55_431;
+const FIXTURE_PORT = Number(process.env.KANDELO_SW_FIXTURE_PORT ?? 55_431);
 const FIXTURE_ORIGIN = `http://127.0.0.1:${FIXTURE_PORT}`;
 const SESSION_A = "11111111-1111-4111-8111-111111111111";
 const SESSION_B = "22222222-2222-4222-8222-222222222222";
@@ -217,6 +217,23 @@ test("a scoped lazy VFS asset cache preserves full bytes and Content-Length duri
     body: expectedBody,
     contentLength: String(Buffer.byteLength(expectedBody)),
   });
+  expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
+});
+
+test("an explicit native-integrity reload replaces a rejected scoped lazy body", async ({ page }) => {
+  const assetPath = "/a/vfs-groups/release-1/assets/shared.bin";
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  expect((await fetchResponse(page, assetPath)).body).toBe("scope-a shared bytes");
+  lazyAssetResponses.set(assetPath, { kind: "ok", body: "verified replacement bytes" });
+  // Ordinary reads retain the cached body until native validation rejects it.
+  expect((await fetchResponse(page, assetPath)).body).toBe("scope-a shared bytes");
+  const replacement = await page.evaluate(async path => {
+    const response = await fetch(path, { cache: "reload" });
+    return response.text();
+  }, assetPath);
+  expect(replacement).toBe("verified replacement bytes");
+  expect((await fetchResponse(page, assetPath)).body).toBe("verified replacement bytes");
   expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
 });
 

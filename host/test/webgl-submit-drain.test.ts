@@ -11,8 +11,8 @@ import {
 import type { GlBinding } from "../src/webgl/registry.js";
 import type { GlMuxer } from "../src/webgl/muxer.js";
 
-function mkBinding(pid: number, gl: object | null = {}): GlBinding {
-  return { pid, contextId: null, gl } as unknown as GlBinding;
+function mkBinding(pid: number, gl: object | null = { getError: () => 0, isContextLost: () => false }): GlBinding {
+  return { pid, sessionId: pid, errors: [], contextId: null, gl } as unknown as GlBinding;
 }
 
 function mkFrame(tag: number): SubmitFrame {
@@ -104,8 +104,8 @@ describe("drainSubmitQueue", () => {
 
   it("each binding gets its own muxer when they hold distinct gl contexts", () => {
     const q = new SubmitQueue(binding => binding.pid === 2);
-    const glA = {};
-    const glB = {};
+    const glA = { getError: () => 0, isContextLost: () => false };
+    const glB = { getError: () => 0, isContextLost: () => false };
     const ba = mkBinding(10, glA);
     const bb = mkBinding(11, glB);
     q.enqueue(ba, mkFrame(1));

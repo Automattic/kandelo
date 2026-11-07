@@ -2242,6 +2242,16 @@ bash needs (it can dlopen); with `assume-all-entries-fork-returning` bash
 keeps 1,927 of 1,929 functions. Instrumented binaries
 built through the SDK with embedded facts have not been run yet.
 
+The file-backed conversion analysis checks fixed-point convergence by
+probing the current and previous non-null primary-key sets in both
+directions. It does not materialize temporary `EXCEPT` result trees.
+Both components of conversion pairs and the separate name relation must
+agree before the existing feedback loop can stop. The four-round policy,
+conservative target discovery and emitted continuation format are
+unchanged. Exhaustive small-snapshot differential tests compare the
+indexed query with set difference; schema and query-plan controls protect
+its non-null and indexed-probe assumptions.
+
 ## Guarantees and non-guarantees
 
 ### Guaranteed

@@ -3,7 +3,14 @@
 // src/tls-worker.ts
 var import_node_worker_threads = require("node:worker_threads");
 
-// src/tls/shims.ts
+// ../../../host/src/networking/tls/shims.ts
+function nonSharedBytes(source) {
+  const view = ArrayBuffer.isView(source);
+  const buffer = view ? source.buffer : source;
+  const offset = view ? source.byteOffset : 0;
+  const length = source.byteLength;
+  return buffer instanceof ArrayBuffer ? new Uint8Array(buffer, offset, length) : new Uint8Array(new Uint8Array(buffer, offset, length));
+}
 function concatUint8Arrays(arrays) {
   let totalLength = 0;
   arrays.forEach((a) => totalLength += a.length);
@@ -31,7 +38,7 @@ var logger = {
   log: (...args) => console.log(...args)
 };
 
-// src/tls/utils.ts
+// ../../../host/src/networking/tls/utils.ts
 function flipObject(obj) {
   return Object.fromEntries(Object.entries(obj).map(([k, v]) => [v, k]));
 }
@@ -111,7 +118,7 @@ var ArrayBufferWriter = class {
   }
 };
 
-// src/tls/extensions/types.ts
+// ../../../host/src/networking/tls/extensions/types.ts
 var ExtensionTypes = {
   server_name: 0,
   max_fragment_length: 1,
@@ -170,7 +177,7 @@ var ExtensionTypes = {
 };
 var ExtensionNames = flipObject(ExtensionTypes);
 
-// src/tls/extensions/0_server_name.ts
+// ../../../host/src/networking/tls/extensions/0_server_name.ts
 var ServerNameTypes = {
   host_name: 0
 };
@@ -228,7 +235,7 @@ var ServerNameExtension = class {
   }
 };
 
-// src/tls/extensions/11_ec_point_formats.ts
+// ../../../host/src/networking/tls/extensions/11_ec_point_formats.ts
 var ECPointFormats = {
   uncompressed: 0,
   ansiX962_compressed_prime: 1,
@@ -287,7 +294,24 @@ var ECPointFormatsExtension = class {
   }
 };
 
-// src/tls/extensions/65281_renegotiation_info.ts
+// ../../../host/src/networking/tls/extensions/23_extended_master_secret.ts
+var ExtendedMasterSecretExtension = {
+  decodeFromClient(_data) {
+    return {};
+  },
+  encodeForClient() {
+    const extensionType = ExtensionTypes.extended_master_secret;
+    return new Uint8Array([
+      extensionType >> 8 & 255,
+      extensionType & 255,
+      0,
+      0
+      // zero-length extension data
+    ]);
+  }
+};
+
+// ../../../host/src/networking/tls/extensions/65281_renegotiation_info.ts
 var RenegotiationInfoExtension = {
   decodeFromClient(data) {
     const length = data[0] ?? 0;
@@ -312,7 +336,7 @@ var RenegotiationInfoExtension = {
   }
 };
 
-// src/tls/cipher-suites.ts
+// ../../../host/src/networking/tls/cipher-suites.ts
 var CipherSuites = {
   TLS1_CK_PSK_WITH_RC4_128_SHA: 138,
   TLS1_CK_PSK_WITH_3DES_EDE_CBC_SHA: 139,
@@ -519,7 +543,7 @@ var CipherSuites = {
 };
 var CipherSuitesNames = flipObject(CipherSuites);
 
-// src/tls/extensions/10_supported_groups.ts
+// ../../../host/src/networking/tls/extensions/10_supported_groups.ts
 var SupportedGroups = {
   secp256r1: 23,
   secp384r1: 24,
@@ -576,7 +600,7 @@ var SupportedGroupsExtension = class {
   }
 };
 
-// src/tls/extensions/13_signature_algorithms.ts
+// ../../../host/src/networking/tls/extensions/13_signature_algorithms.ts
 var SignatureAlgorithms = {
   anonymous: 0,
   rsa: 1,
@@ -652,13 +676,14 @@ var SignatureAlgorithmsExtension = class {
   }
 };
 
-// src/tls/extensions/parse-extensions.ts
+// ../../../host/src/networking/tls/extensions/parse-extensions.ts
 var TLSExtensionsHandlers = {
   server_name: ServerNameExtension,
   signature_algorithms: SignatureAlgorithmsExtension,
   supported_groups: SupportedGroupsExtension,
   ec_point_formats: ECPointFormatsExtension,
-  renegotiation_info: RenegotiationInfoExtension
+  renegotiation_info: RenegotiationInfoExtension,
+  extended_master_secret: ExtendedMasterSecretExtension
 };
 function parseClientHelloExtensions(data) {
   const reader = new ArrayBufferReader(data.buffer);
@@ -682,12 +707,12 @@ function parseClientHelloExtensions(data) {
   return parsed;
 }
 
-// src/tls/1_2/prf.ts
+// ../../../host/src/networking/tls/1_2/prf.ts
 async function tls12Prf(secret, label, seed, outputLength) {
   const seedBytes = concatArrayBuffers([label, seed]);
   const hmacKey = await crypto.subtle.importKey(
     "raw",
-    secret,
+    nonSharedBytes(secret),
     { name: "HMAC", hash: { name: "SHA-256" } },
     false,
     ["sign"]
@@ -711,7 +736,7 @@ async function hmacSha256(key, data) {
   );
 }
 
-// src/tls/1_2/types.ts
+// ../../../host/src/networking/tls/1_2/types.ts
 var CompressionMethod = {
   Null: 0,
   Deflate: 1
@@ -810,7 +835,7 @@ var ECNamedCurves = {
   arbitrary_explicit_char2_curves: 65282
 };
 
-// src/tls/1_2/connection.ts
+// ../../../host/src/networking/tls/1_2/connection.ts
 var TLSConnectionClosed = class extends Error {
 };
 var TLS_Version_1_2 = new Uint8Array([3, 3]);
@@ -1003,6 +1028,9 @@ var TLS_1_2_Connection = class {
       ContentTypes.Handshake,
       MessageEncoder.serverHelloDone()
     );
+    const useEMS = clientHelloRecord.body.extensions.some(
+      (ext) => ext.type === "extended_master_secret"
+    );
     const clientKeyExchangeRecord = await this.readNextHandshakeMessage(
       HandshakeType.ClientKeyExchange
     );
@@ -1013,11 +1041,12 @@ var TLS_1_2_Connection = class {
       serverPrivateKey: ecdheKeyPair.privateKey,
       clientPublicKey: await crypto.subtle.importKey(
         "raw",
-        clientKeyExchangeRecord.body.exchange_keys,
+        nonSharedBytes(clientKeyExchangeRecord.body.exchange_keys),
         { name: "ECDH", namedCurve: "P-256" },
         false,
         []
-      )
+      ),
+      useEMS
     });
     await this.readNextHandshakeMessage(HandshakeType.Finished);
     await this.writeTLSRecord(
@@ -1036,13 +1065,14 @@ var TLS_1_2_Connection = class {
   }
   /**
    * Derives the session keys from the random values and the
-   * pre-master secret – as per RFC 5246.
+   * pre-master secret – as per RFC 5246 and RFC 7627 (EMS).
    */
   async deriveSessionKeys({
     clientRandom,
     serverRandom,
     serverPrivateKey,
-    clientPublicKey
+    clientPublicKey,
+    useEMS = false
   }) {
     const preMasterSecret = await crypto.subtle.deriveBits(
       {
@@ -1053,14 +1083,32 @@ var TLS_1_2_Connection = class {
       256
       // Length of the derived secret (256 bits for P-256)
     );
-    const masterSecret = new Uint8Array(
-      await tls12Prf(
-        preMasterSecret,
-        new TextEncoder().encode("master secret"),
-        concatUint8Arrays([clientRandom, serverRandom]),
-        48
-      )
-    );
+    let masterSecret;
+    if (useEMS) {
+      const sessionHash = new Uint8Array(
+        await crypto.subtle.digest(
+          "SHA-256",
+          concatUint8Arrays(this.handshakeMessages)
+        )
+      );
+      masterSecret = new Uint8Array(
+        await tls12Prf(
+          preMasterSecret,
+          new TextEncoder().encode("extended master secret"),
+          sessionHash,
+          48
+        )
+      );
+    } else {
+      masterSecret = new Uint8Array(
+        await tls12Prf(
+          preMasterSecret,
+          new TextEncoder().encode("master secret"),
+          concatUint8Arrays([clientRandom, serverRandom]),
+          48
+        )
+      );
+    }
     const keyBlock = await tls12Prf(
       masterSecret,
       new TextEncoder().encode("key expansion"),
@@ -1077,14 +1125,14 @@ var TLS_1_2_Connection = class {
       masterSecret,
       clientWriteKey: await crypto.subtle.importKey(
         "raw",
-        clientWriteKey,
+        nonSharedBytes(clientWriteKey),
         { name: "AES-GCM" },
         false,
         ["encrypt", "decrypt"]
       ),
       serverWriteKey: await crypto.subtle.importKey(
         "raw",
-        serverWriteKey,
+        nonSharedBytes(serverWriteKey),
         { name: "AES-GCM" },
         false,
         ["encrypt", "decrypt"]
@@ -1304,7 +1352,7 @@ var TLS_1_2_Connection = class {
         tagLength: 128
       },
       this.sessionKeys.serverWriteKey,
-      payload
+      nonSharedBytes(payload)
     );
     ++this.sentRecordSequenceNumber;
     const encrypted = concatUint8Arrays([
@@ -1358,10 +1406,12 @@ var TLSDecoder = class _TLSDecoder {
    */
   static parseCipherSuites(buffer) {
     const reader = new ArrayBufferReader(buffer);
-    reader.readUint16();
+    const firstSuite = reader.readUint16();
     const cipherSuites = [];
+    const allSuiteIds = [firstSuite];
     while (!reader.isFinished()) {
       const suite = reader.readUint16();
+      allSuiteIds.push(suite);
       if (!(suite in CipherSuitesNames)) {
         continue;
       }
@@ -1656,16 +1706,26 @@ var MessageEncoder = class {
           );
         case "renegotiation_info":
           return RenegotiationInfoExtension.encodeForClient();
+        case "extended_master_secret":
+          return ExtendedMasterSecretExtension.encodeForClient();
       }
       return void 0;
     }).filter((x) => x !== void 0);
+    const hasRenegExt = extensionsParts.length > 0 && clientHello.extensions.some((ext) => ext.type === "renegotiation_info");
+    if (!hasRenegExt) {
+      extensionsParts.push(RenegotiationInfoExtension.encodeForClient());
+    }
     const extensions = concatUint8Arrays(extensionsParts);
     const body = new Uint8Array([
       // Version field – 0x03, 0x03 means TLS 1.2
       ...TLS_Version_1_2,
       ...serverRandom,
-      clientHello.session_id.length,
-      ...clientHello.session_id,
+      // TLS 1.3-capable clients can send a legacy ID even on their first
+      // connection. Once we select TLS 1.2, echoing that ID would instead
+      // claim a successful session-cache lookup and make the client expect
+      // an abbreviated handshake. We have no such cache, so an empty ID is
+      // the only truthful response before our full handshake.
+      0,
       ...as2Bytes(CipherSuites.TLS1_CK_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
       compressionAlgorithm,
       // Extensions length (2 bytes)
@@ -1724,7 +1784,7 @@ var MessageEncoder = class {
   }
 };
 
-// src/tls/certificates.ts
+// ../../../host/src/networking/tls/certificates.ts
 function generateCertificate(description, issuerKeyPair) {
   return CertificateGenerator.generateCertificate(description, issuerKeyPair);
 }
@@ -1770,7 +1830,7 @@ var CertificateGenerator = class {
         hash: "SHA-256"
       },
       privateKey,
-      tbsCertificate.buffer
+      nonSharedBytes(tbsCertificate)
     );
     const certificate = ASN1Encoder.sequence([
       new Uint8Array(tbsCertificate.buffer),
@@ -1883,31 +1943,28 @@ var CertificateGenerator = class {
   static keyUsage(keyUsage) {
     const keyUsageBits = new Uint8Array([0]);
     if (keyUsage?.digitalSignature) {
-      keyUsageBits[0] |= 1;
-    }
-    if (keyUsage?.nonRepudiation) {
-      keyUsageBits[0] |= 2;
-    }
-    if (keyUsage?.keyEncipherment) {
-      keyUsageBits[0] |= 4;
-    }
-    if (keyUsage?.dataEncipherment) {
-      keyUsageBits[0] |= 8;
-    }
-    if (keyUsage?.keyAgreement) {
-      keyUsageBits[0] |= 16;
-    }
-    if (keyUsage?.keyCertSign) {
-      keyUsageBits[0] |= 32;
-    }
-    if (keyUsage?.cRLSign) {
-      keyUsageBits[0] |= 64;
-    }
-    if (keyUsage?.encipherOnly) {
       keyUsageBits[0] |= 128;
     }
-    if (keyUsage?.decipherOnly) {
+    if (keyUsage?.nonRepudiation) {
       keyUsageBits[0] |= 64;
+    }
+    if (keyUsage?.keyEncipherment) {
+      keyUsageBits[0] |= 32;
+    }
+    if (keyUsage?.dataEncipherment) {
+      keyUsageBits[0] |= 16;
+    }
+    if (keyUsage?.keyAgreement) {
+      keyUsageBits[0] |= 8;
+    }
+    if (keyUsage?.keyCertSign) {
+      keyUsageBits[0] |= 4;
+    }
+    if (keyUsage?.cRLSign) {
+      keyUsageBits[0] |= 2;
+    }
+    if (keyUsage?.encipherOnly) {
+      keyUsageBits[0] |= 1;
     }
     return ASN1Encoder.sequence([
       ASN1Encoder.objectIdentifier(oidByName("keyUsage")),
@@ -1965,12 +2022,12 @@ var CertificateGenerator = class {
   }
   static subjectAltName(altNames) {
     const generalNames = altNames.dnsNames?.map((name) => {
-      const dnsName = ASN1Encoder.ia5String(name);
-      return ASN1Encoder.contextSpecific(2, dnsName);
+      const dnsNameBytes = new TextEncoder().encode(name);
+      return ASN1Encoder.contextSpecific(2, dnsNameBytes);
     }) || [];
     const ipAddresses = altNames.ipAddresses?.map((ip) => {
-      const ipAddress = ASN1Encoder.ia5String(ip);
-      return ASN1Encoder.contextSpecific(7, ipAddress);
+      const ipBytes = new TextEncoder().encode(ip);
+      return ASN1Encoder.contextSpecific(7, ipBytes);
     }) || [];
     const sanExtensionValue = ASN1Encoder.octetString(
       ASN1Encoder.sequence([...generalNames, ...ipAddresses])
@@ -2164,14 +2221,22 @@ var ASN1Encoder = class _ASN1Encoder {
     result.set(data, 1 + lengthBytes.length);
     return result;
   }
-  static integer(number) {
-    if (number[0] > 127) {
-      const extendedNumber = new Uint8Array(number.length + 1);
-      extendedNumber[0] = 0;
-      extendedNumber.set(number, 1);
-      number = extendedNumber;
+  static integer(unsignedMagnitude) {
+    if (unsignedMagnitude.length === 0) {
+      throw new Error("ASN.1 INTEGER magnitude must not be empty");
     }
-    return _ASN1Encoder.ASN1(ASN1Tags.Integer, number);
+    let firstByte = 0;
+    while (firstByte < unsignedMagnitude.length - 1 && unsignedMagnitude[firstByte] === 0 && (unsignedMagnitude[firstByte + 1] & 128) === 0) {
+      firstByte += 1;
+    }
+    const magnitude = unsignedMagnitude.subarray(firstByte);
+    if ((magnitude[0] & 128) !== 0) {
+      const positive = new Uint8Array(magnitude.length + 1);
+      positive[0] = 0;
+      positive.set(magnitude, 1);
+      return _ASN1Encoder.ASN1(ASN1Tags.Integer, positive);
+    }
+    return _ASN1Encoder.ASN1(ASN1Tags.Integer, magnitude);
   }
   static bitString(data) {
     const unusedBits = new Uint8Array([0]);
@@ -2636,3 +2701,9 @@ import_node_worker_threads.parentPort.on("message", (msg) => {
   }
   loop();
 });
+/*!
+ * TLS 1.2 implementation from WordPress Playground.
+ * Copyright WordPress Foundation and contributors.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ * Source provenance and local modifications are recorded in NOTICE.
+ */

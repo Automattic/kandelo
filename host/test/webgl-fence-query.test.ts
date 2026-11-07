@@ -1,17 +1,21 @@
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
-import { setupMainForward, type GlForwardMessage } from "../src/webgl/main-forward.js";
-import { createGlForwardQueryMailbox, prepareGlForwardQuery, retireGlForwardQuery, waitForGlForwardQuery } from "../src/webgl/main-forward-query.js";
+import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import { QOP_CREATE_FENCE, QOP_FENCE_STATUS, QOP_RELEASE_FENCE, QOP_FLUSH } from "../src/webgl/ops.js";
 
+import { markRendererReset, rendererLost, RENDERER_LOST } from "../src/webgl/renderer-loss.js";
+import { setGlDiagnosticReporter } from "../src/webgl/diagnostics.js";
+import { configureGlAudit, resetGlAuditForTesting } from "../src/webgl/native-audit.js";
+afterEach(() => { setGlDiagnosticReporter(null); resetGlAuditForTesting(); setNativeGlFaultReporter(null); });
+
 function renderer() {
-  let serial = 0, flushes = 0;
+  let serial = 0, flushes = 0, errorReads = 0;
   const live = new Map<WebGLSync, number>(), deleted: WebGLSync[] = [];
   const errors: number[] = [];
   const hooks = { create: () => {} };
   const gl = new Proxy({
-    getError: () => errors.shift() ?? 0,
+    getError: () => { errorReads++; return errors.shift() ?? 0; },
     getParameter: () => null,
     flush() { flushes++; },
     isContextLost: () => false,
@@ -19,7 +23,7 @@ function renderer() {
     getSyncParameter: (fence: WebGLSync) => live.get(fence) ?? null,
     deleteSync(fence: WebGLSync) { expect(live.delete(fence)).toBe(true); deleted.push(fence); },
   }, { get(target, name) { return Reflect.get(target, name) ?? (() => null); } }) as unknown as WebGL2RenderingContext;
-  return { gl, live, deleted, hooks, errors, created: () => serial, flushes: () => flushes,
+  return { gl, live, deleted, hooks, errors, errorReads: () => errorReads, created: () => serial, flushes: () => flushes,
     signal() { for (const fence of live.keys()) live.set(fence, 0x9119); } };
 }
 function bytes(token: number): Uint8Array {
@@ -29,9 +33,9 @@ function words(value: Uint8Array): number[] {
   const data = new DataView(value.buffer, value.byteOffset, value.byteLength);
   return Array.from({ length: value.byteLength / 4 }, (_, index) => data.getUint32(index * 4, true));
 }
-function direct(width: 4 | 8) {
+function direct(width: 4 | 8, onHostFault?: (fault: Error) => void) {
   const native = renderer(), memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
-  const kernel = createWasmPosixKernelTestHarness({ io: {}, memory, pointerWidth: width,
+  const kernel = createWasmPosixKernelTestHarness({ io: {}, memory, pointerWidth: width, callbacks: { onHostFault },
     instance: createKernelScratchTestInstance(width, memory, () => ({}), () => width === 4 ? 4096 : 4096n),
   });
   kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 4096, cmdbufLen: 4096 });
@@ -99,57 +103,6 @@ it("a known cancellation token prevents late direct creation from reviving it", 
   value.kernel.releaseProcessViews(7);
 });
 
-function forwarded() {
-  const native = renderer();
-  let listener: ((event: MessageEvent) => void) | null = null;
-  const worker = { addEventListener(_type: "message", next: (event: MessageEvent) => void) { listener = next; }, removeEventListener() { listener = null; } };
-  const fire = (data: GlForwardMessage) => listener!({ data } as MessageEvent);
-  const dispose = setupMainForward(worker, { width: 1, height: 1, getContext: () => native.gl } as unknown as HTMLCanvasElement, 7);
-  const create = createGlForwardQueryMailbox(); prepareGlForwardQuery(create, 0);
-  fire({ type: "gl_forward_create_context", pid: 7, sessionId: 11, mailbox: create });
-  expect(waitForGlForwardQuery(create).rc).toBe(0);
-  function query(op: number, token: number, mailbox = createGlForwardQueryMailbox(), outputLength = 16, input = bytes(token)) {
-    prepareGlForwardQuery(mailbox, outputLength);
-    fire({ type: "gl_forward_query", pid: 7, sessionId: 11, op, input, mailbox });
-    return waitForGlForwardQuery(mailbox);
-  }
-  return { native, query, fire, dispose };
-}
-it("forwarded fences retain completion after creator destruction and reconcile duplicate creation", () => {
-  const value = forwarded();
-  expect(words(value.query(QOP_CREATE_FENCE, 9).bytes)).toEqual([0, 9, 0, 0x47514c33]);
-  value.query(QOP_CREATE_FENCE, 9); expect(value.native.created()).toBe(1);
-  value.fire({ type: "gl_forward_destroy_context", pid: 7, sessionId: 11 });
-  value.native.signal();
-  expect(words(value.query(QOP_FENCE_STATUS, 9).bytes)).toEqual([0, 9, 1, 0x47514c33]);
-  value.query(QOP_RELEASE_FENCE, 9); value.query(QOP_RELEASE_FENCE, 9);
-  expect(value.native.deleted).toHaveLength(1); value.dispose();
-});
-it("cancels a forwarded candidate when the worker retires its reply during allocation", () => {
-  const value = forwarded(), mailbox = createGlForwardQueryMailbox();
-  value.native.hooks.create = () => retireGlForwardQuery(mailbox);
-  expect(value.query(QOP_CREATE_FENCE, 9, mailbox).rc).toBe(-5);
-  expect(value.native.created()).toBe(1); expect(value.native.deleted).toHaveLength(1);
-  expect(words(value.query(QOP_FENCE_STATUS, 9).bytes)).toEqual([2, 9, 0, 0x47514c33]);
-  value.native.hooks.create = () => {};
-  expect(words(value.query(QOP_CREATE_FENCE, 9).bytes)).toEqual([1, 9, 0, 0x47514c33]);
-  expect(value.native.created()).toBe(1); value.dispose();
-});
-it("does not allocate a native fence for a request delivered after mailbox retirement", () => {
-  const value = forwarded(), mailbox = createGlForwardQueryMailbox();
-  prepareGlForwardQuery(mailbox, 16); retireGlForwardQuery(mailbox);
-  value.fire({ type: "gl_forward_query", pid: 7, sessionId: 11, op: QOP_CREATE_FENCE, input: bytes(9), mailbox });
-  expect(value.native.created()).toBe(0); value.dispose();
-});
-it("known-token cancellation is idempotent on the forwarded receiver", () => {
-  const value = forwarded();
-  value.query(QOP_RELEASE_FENCE, 9); value.query(QOP_RELEASE_FENCE, 9);
-  expect(words(value.query(QOP_CREATE_FENCE, 9).bytes)).toEqual([1, 9, 0, 0x47514c33]);
-  expect(value.native.created()).toBe(0);
-  expect(words(value.query(QOP_CREATE_FENCE, 10).bytes)).toEqual([0, 10, 0, 0x47514c33]);
-  value.dispose(); expect(value.native.deleted).toHaveLength(1);
-});
-
 it.each([4, 8] as const)("server flush is acknowledged and preflights empty payloads at wasm%d widths", width => {
   const value = direct(width);
   expect(value.query(QOP_FLUSH, 0, 0, 0).rc).toBe(0);
@@ -162,28 +115,89 @@ it.each([4, 8] as const)("server flush is acknowledged and preflights empty payl
   expect(value.native.flushes()).toBe(1);
   value.kernel.releaseProcessViews(7);
 });
-it("the forwarded receiver acknowledges flush without inventing a completion wait", () => {
-  const value = forwarded();
-  expect(value.query(QOP_FLUSH, 0, createGlForwardQueryMailbox(), 0, new Uint8Array()).rc).toBe(0);
-  expect(value.native.flushes()).toBe(1);
-  expect(value.query(QOP_FLUSH, 0).rc).toBe(-22);
-  expect(value.native.flushes()).toBe(1);
-  value.dispose();
+it("reports a fence deletion the live renderer refuses as a fatal host fault", () => {
+  const faults: Error[] = [];
+  try {
+    const value = direct(4, fault => faults.push(fault)); value.query(QOP_CREATE_FENCE, 7);
+    value.native.gl.deleteSync = () => { value.native.errors.push(0x502); };
+    // The kernel's host-fault callback latches the fault, and host_gl_query
+    // rethrows it instead of converting it into an EIO reply.
+    let thrown: unknown;
+    try { value.query(QOP_RELEASE_FENCE, 7); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(NativeGlFault);
+    expect((thrown as Error).message).toMatch(/live renderer refused deleteSync of an object the host retired/);
+    expect(faults).toEqual([thrown]);
+    expect(value.native.deleted).toHaveLength(0);
+  } finally { setNativeGlFaultReporter(null); }
 });
-
-it("rejects malformed fence requests before replaying pending cleanup, then preserves selected flags on valid admission", () => {
+it("preserves selected flags on valid fence admission", () => {
   const value = direct(4); value.query(QOP_CREATE_FENCE, 7);
-  const destroy = value.native.gl.deleteSync;
-  value.native.gl.deleteSync = () => { value.native.errors.push(0x502); };
-  expect(value.query(QOP_RELEASE_FENCE, 7).rc).toBe(16);
-  expect(value.native.deleted).toHaveLength(0);
-  value.native.gl.deleteSync = destroy;
-  expect(value.query(QOP_CREATE_FENCE, 8, 0, 16).rc).toBe(-22);
-  expect(value.native.deleted).toHaveLength(0);
-  value.native.errors.push(0x500);
+  value.binding.errors.push(0x500);
   expect(value.query(QOP_CREATE_FENCE, 8).rc).toBe(16);
-  expect(value.native.deleted).toHaveLength(1);
   expect(value.binding.errors).toEqual([0x500]);
   value.kernel.releaseProcessViews(7);
   expect(value.native.deleted).toHaveLength(2);
+});
+
+it.each([4, 8] as const)("samples creation and polling once per fence query at wasm%d widths", width => {
+  const value = direct(width);
+  const before = value.native.errorReads();
+  expect(value.query(QOP_CREATE_FENCE, 7).rc).toBe(16);
+  expect(value.native.errorReads() - before).toBe(1);
+  const afterCreate = value.native.errorReads();
+  expect(value.query(QOP_FENCE_STATUS, 7).rc).toBe(16);
+  expect(value.native.errorReads() - afterCreate).toBe(1);
+  value.kernel.releaseProcessViews(7);
+});
+
+it.each([0x502, 0x505])("resets a fence creator on native flag %s without publishing its candidate", flag => {
+  const value = direct(4);
+  const peer = { gl: value.native.gl };
+  const messages: string[] = [];
+  setGlDiagnosticReporter(d => messages.push(d.message));
+  value.native.hooks.create = () => value.native.errors.push(flag);
+  const result = value.query(QOP_CREATE_FENCE, 7);
+  expect(result.rc).toBe(RENDERER_LOST);
+  expect([...result.output]).toEqual(Array(16).fill(0xa5));
+  expect(rendererLost(value.binding)).toBe(true);
+  expect(rendererLost(peer)).toBe(false);
+  expect(value.binding.fences.has(7)).toBe(false);
+  expect(value.native.live.size).toBe(0);
+  expect(value.binding.errors).toEqual([]);
+  expect(messages).toHaveLength(1);
+  expect(messages[0]).toMatch(/pid 7 session 11 batch .*query 0x2e/);
+  value.kernel.releaseProcessViews(7);
+});
+
+it("resets an unexpected native fence-status error instead of swallowing it privately", () => {
+  const value = direct(4);
+  setGlDiagnosticReporter(() => {});
+  expect(value.query(QOP_CREATE_FENCE, 7).rc).toBe(16);
+  value.native.gl.getSyncParameter = () => { value.native.errors.push(0x502); return 0x9118; };
+  const result = value.query(QOP_FENCE_STATUS, 7);
+  expect(result.rc).toBe(RENDERER_LOST);
+  expect([...result.output]).toEqual(Array(16).fill(0xa5));
+  expect(rendererLost(value.binding)).toBe(true);
+  expect(value.binding.errors).toEqual([]);
+  value.kernel.releaseProcessViews(7);
+});
+
+it("releases a retained fence after the guest context resets", () => {
+  const value = direct(4);
+  expect(value.query(QOP_CREATE_FENCE, 7).rc).toBe(16);
+  markRendererReset(value.binding);
+  expect(value.query(QOP_RELEASE_FENCE, 7).rc).toBe(16);
+  expect(value.native.deleted).toHaveLength(1);
+  value.kernel.releaseProcessViews(7);
+});
+
+it("keeps a divergent fence creation fatal under audit and cancels its unpublished candidate", () => {
+  const value = direct(4);
+  setGlDiagnosticReporter(() => {});
+  configureGlAudit({ mode: "fatal", sink: () => {}, fault: message => { throw new NativeGlFault(message); } });
+  value.native.hooks.create = () => value.native.errors.push(0x502);
+  expect(() => value.query(QOP_CREATE_FENCE, 7)).toThrow(NativeGlFault);
+  expect(value.binding.fences.has(7)).toBe(false);
+  expect(value.native.live.size).toBe(0);
+  expect(rendererLost(value.binding)).toBe(true);
 });

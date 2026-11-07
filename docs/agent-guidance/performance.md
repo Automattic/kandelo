@@ -36,6 +36,30 @@ npx tsx benchmarks/compare.ts benchmarks/results/before.json benchmarks/results/
 If a benchmark suite skips because its binary is missing, the claim is not
 proven. Build or fetch the prerequisite before drawing conclusions.
 
+## Investigate before rebuilding the full preview
+
+Screen performance theories with profiles of an existing frozen build and
+small diagnostics around the measured hot path. Record source/artifact
+identities, include setup or invocation costs relevant to the change, and
+exercise equal/changed data and small/large inputs. A fast isolated operation
+is evidence about that operation; application benefit remains to be measured.
+Do not require a new SDK, every package and a new image for each theory.
+
+Keep a provisioned experimental checkout for incremental investigations.
+Host-only changes can reuse its compatible kernel and program artifacts;
+Vite can consume TypeScript directly, while distribution-entry tests need
+an incremental host build. Kernel implementation changes need a normal kernel
+build. Rebuild SDK/program/image inputs when their actual contracts or build
+inputs change, and preserve freshness and ABI failures. Never force a stale
+cache key or borrow incompatible artifacts to make an experiment run.
+
+Stop the experimental server before changing its source, freeze each run's
+inputs and preserve already published previews. Full normal preview builds
+and the required application, cross-host, memory and conformance gates are
+candidate checkpoints. They remain required for acceptance and broad claims;
+they are not prerequisites for profiling or an isolated diagnostic.
+See [the incremental investigation loop](../profiling.md#incremental-performance-investigations).
+
 ## Comparing the finished change with its destination
 
 For a claim about performance after merge, compare the latest runtime with

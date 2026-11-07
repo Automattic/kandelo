@@ -160,6 +160,12 @@ pub fn host_handle_close_ref(h: i64) -> bool {
     true
 }
 
+/// Observe the actual cross-process authority without consuming it. Internal
+/// executable cancellation uses this before its sole native close attempt.
+pub(crate) fn host_handle_is_final_reference(h: i64) -> bool {
+    get_host_handle_refs().get(&h).is_none_or(|count| *count == 1)
+}
+
 #[cfg(test)]
 pub fn host_handle_ref_count(h: i64) -> u32 {
     get_host_handle_refs().get(&h).copied().unwrap_or(0)
@@ -264,6 +270,17 @@ pub struct PrimeBoState {
 /// -200 was the first procfs buffer handle; it was safe only because every
 /// procfs dispatch happened to check the file type first.
 pub const PRIME_FD_HOST_HANDLE: i64 = -195;
+/// `host_handle` sentinel for `sync_file` fds (see `crate::dri::sync_file`).
+pub const SYNC_FILE_FD_HOST_HANDLE: i64 = -196;
+/// `host_handle` sentinel for DRM syncobj fds (`DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD`).
+pub const SYNCOBJ_FD_HOST_HANDLE: i64 = -197;
+const _: () = assert!(
+    SYNC_FILE_FD_HOST_HANDLE > -crate::procfs::PROCFS_BUF_BASE
+        && SYNCOBJ_FD_HOST_HANDLE > -crate::procfs::PROCFS_BUF_BASE
+        && SYNC_FILE_FD_HOST_HANDLE < crate::sysfs::SYSFS_DIR_HANDLE
+        && SYNCOBJ_FD_HOST_HANDLE < SYNC_FILE_FD_HOST_HANDLE
+        && SYNC_FILE_FD_HOST_HANDLE < PRIME_FD_HOST_HANDLE
+);
 const _: () = assert!(
     PRIME_FD_HOST_HANDLE > -crate::procfs::PROCFS_BUF_BASE
         && PRIME_FD_HOST_HANDLE != crate::procfs::PROCFS_DIR_HANDLE
@@ -406,11 +423,14 @@ pub struct DriFdState {
     /// last close / exec.
     pub gl: Option<GlState>,
     pub gl_resources: SharedGlResources,
+    /// DRM sync-object handles (`drm_file.syncobj_idr`): per open file
+    /// description, shared by its aliases like the GEM namespace.
+    pub syncobjs: crate::dri::syncobj::SharedSyncobjs,
 }
 
 /// A KMS framebuffer object — i.e. one slot in the per-fd `fbs` map,
 /// keyed by the `fb_id` MODE_ADDFB2 returned.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KmsFb {
     pub bo_id: crate::dri::BoId,
     pub width: u32,
@@ -418,6 +438,8 @@ pub struct KmsFb {
     pub pixel_format: u32,
     pub stride: u32,
     pub offset: u32,
+    /// `DRM_MODE_FB_INTERLACED`, as ADDFB2 recorded it (GETFB2 reports it).
+    pub flags: u32,
 }
 
 /// Exact-ownership handle to one card0 OFD's framebuffer table.
@@ -478,16 +500,84 @@ pub struct KmsFdState {
     /// Bound by kernel open/restore to the exact containing description.
     pub master_identity: Option<OfdId>,
     pub holds_master: bool,
-    /// A visible cursor owns a BO reference independently of GEM handles.
-    pub cursor_bo: Option<u32>,
+    /// `drm_file.was_master`: this file held master at some point. With
+    /// `opener_pid` it is what lets a non-root compositor drop and re-take
+    /// master (`drm_master_check_perm`).
+    pub was_master: bool,
+    /// Thread-group id of the process that opened the file (`drm_file.pid`).
+    pub opener_pid: u32,
+    /// `drm_file.master`: the master object this file belongs to, named by
+    /// the file that created it. A file opened while another file is master
+    /// joins that master; a file that becomes master by open or SET_MASTER
+    /// owns its own. Magic tokens live in this object's map.
+    pub master_object: Option<OfdId>,
     /// `DRM_CLIENT_CAP_UNIVERSAL_PLANES`: the fd sees primary and cursor
     /// planes, not only overlays.
     pub universal_planes: bool,
+    /// `DRM_CLIENT_CAP_ATOMIC`: the fd lists atomic properties and may
+    /// issue `DRM_IOCTL_MODE_ATOMIC`.
+    pub atomic: bool,
     /// The `DRM_IOCTL_GET_MAGIC` token, issued on first request; 0 = none.
     pub magic: u32,
     pub fbs: SharedKmsFbs,
+    /// Flips queued with `DRM_MODE_PAGE_FLIP_EVENT`; a flip without the
+    /// flag completes at the same vblank but produces no event.
     pub pending_flips: Vec<PendingFlip>,
+    /// `DRM_VBLANK_EVENT` requests whose target vblank has not passed.
+    pub pending_vblank_events: Vec<PendingVblankEvent>,
+    /// Blocking `DRM_IOCTL_WAIT_VBLANK` calls parked on the host's EAGAIN
+    /// retry path, one per waiting thread; see [`VblankWait`].
+    pub vblank_waits: Vec<VblankWait>,
+    /// Blocking `DRM_IOCTL_MODE_ATOMIC` calls waiting, across host EAGAIN
+    /// retries, for the flip they committed; see
+    /// [`crate::dri::atomic::CommitWait`].
+    pub commit_waits: Vec<crate::dri::atomic::CommitWait>,
     pub event_ring: VecDeque<u8>,
+}
+
+impl KmsFdState {
+    /// Bytes of `drm_file.event_space` in use: delivered but unread events
+    /// plus every event already reserved by a pending flip or vblank event.
+    pub fn event_space_used(&self) -> usize {
+        self.event_ring.len()
+            + 32 * (self.pending_flips.len() + self.pending_vblank_events.len())
+    }
+}
+
+/// A `DRM_VBLANK_EVENT` queued by `DRM_IOCTL_WAIT_VBLANK`.
+#[derive(Clone, Copy, Debug)]
+pub struct PendingVblankEvent {
+    /// Absolute 64-bit vblank sequence the event waits for.
+    pub target: u64,
+    pub user_data: u64,
+    pub crtc_id: u32,
+    /// `kms::vblank_off_generation()` when queued; a newer generation means
+    /// the CRTC turned off, which sends the event prematurely.
+    pub off_generation: u32,
+}
+
+/// One thread's blocking `DRM_IOCTL_WAIT_VBLANK` across host EAGAIN retries.
+///
+/// WHY: the host re-runs a parked ioctl from the caller's unchanged request
+/// bytes, so a `_DRM_VBLANK_RELATIVE` request would otherwise be re-based on
+/// every retry and never complete. Linux resolves the target once (and
+/// writes it back as an absolute request); the kernel keeps that resolved
+/// target here, keyed by the waiting task and the exact request words, and
+/// drops it when the call completes, a handler signal interrupts the task,
+/// or the task makes a different request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VblankWait {
+    pub pid: u32,
+    pub tid: u32,
+    pub request_type: u32,
+    pub request_sequence: u32,
+    /// Absolute 64-bit vblank sequence the call waits for.
+    pub target: u64,
+    /// CLOCK_MONOTONIC ns at which Linux's 3 s wait gives up with EBUSY.
+    pub deadline_ns: i64,
+    /// `kms::vblank_off_generation()` when the wait began; a newer one means
+    /// the CRTC turned off, which ends the wait successfully on Linux.
+    pub off_generation: u32,
 }
 
 /// Mutable KMS state belongs to the DRM file, including caps, cursor and
@@ -499,7 +589,6 @@ impl From<KmsFdState> for SharedKmsFile {
     fn from(state: KmsFdState) -> Self { Self(Rc::new(RefCell::new(state))) }
 }
 impl SharedKmsFile {
-    pub fn downgrade(&self) -> WeakKmsFile { WeakKmsFile(Rc::downgrade(&self.0)) }
     pub fn borrow(&self) -> core::cell::Ref<'_, KmsFdState> { self.0.borrow() }
     pub fn borrow_mut(&self) -> core::cell::RefMut<'_, KmsFdState> { self.0.borrow_mut() }
     pub fn into_last(self) -> Option<KmsFdState> {
@@ -507,18 +596,6 @@ impl SharedKmsFile {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct WeakKmsFile(Weak<RefCell<KmsFdState>>);
-
-impl WeakKmsFile {
-    /// The plane belongs to its actual master file, even when an owning
-    /// framebuffer is removed by a different DRM file.
-    pub fn take_cursor_bo(&self) -> Result<Option<u32>, Errno> {
-        let file = self.0.upgrade().ok_or(Errno::EBADF)?;
-        let bo = file.borrow_mut().cursor_bo.take();
-        Ok(bo)
-    }
-}
 
 /// DRI sidecar on [`OpenFileDesc::dri_state`]. A card0 OFD needs both
 /// a GEM-handle namespace (for `MODE_ADDFB2` lookups against
@@ -532,6 +609,30 @@ pub enum DriOfdState {
     RenderNode(DriFdState),
     /// fd from `open("/dev/dri/card0")`.
     Card { dri: DriFdState, kms: SharedKmsFile },
+    /// A `sync_file` fd (`SYNC_FILE_FD_HOST_HANDLE`).
+    SyncFile(crate::dri::sync_file::SyncFile),
+    /// A DRM syncobj fd (`SYNCOBJ_FD_HOST_HANDLE`).
+    Syncobj(crate::dri::syncobj::Syncobj),
+}
+
+impl DriOfdState {
+    /// The `host_handle` sentinel an OFD carrying this sidecar must have, for
+    /// the descriptor kinds that are not device opens.
+    pub fn sentinel(&self) -> Option<i64> {
+        match self {
+            DriOfdState::PrimeBo(_) => Some(PRIME_FD_HOST_HANDLE),
+            DriOfdState::SyncFile(_) => Some(SYNC_FILE_FD_HOST_HANDLE),
+            DriOfdState::Syncobj(_) => Some(SYNCOBJ_FD_HOST_HANDLE),
+            DriOfdState::RenderNode(_) | DriOfdState::Card { .. } => None,
+        }
+    }
+
+    /// Whether this is a `sync_file` or syncobj fd sidecar. Both are
+    /// reference-counted kernel objects: cloning the sidecar shares the
+    /// object, so dup/fork/spawn/SCM_RIGHTS need no explicit accounting.
+    pub fn is_sync_object(&self) -> bool {
+        matches!(self, DriOfdState::SyncFile(_) | DriOfdState::Syncobj(_))
+    }
 }
 
 /// Non-owning reconstruction metadata for a DRM description in SCM_RIGHTS.
@@ -542,16 +643,20 @@ pub struct DriTransferSnapshot {
     gem: Weak<RefCell<GemNamespace>>,
     resources: Weak<RefCell<GlResources>>,
     kms: Option<Weak<RefCell<KmsFdState>>>,
+    syncobjs: crate::dri::syncobj::WeakSyncobjs,
 }
 impl DriTransferSnapshot {
     pub fn from_state(identity: OfdId, state: &DriOfdState) -> Option<Self> {
         let (dri, kms) = match state {
             DriOfdState::RenderNode(dri) => (dri, None),
             DriOfdState::Card { dri, kms } => (dri, Some(Rc::downgrade(&kms.0))),
-            DriOfdState::PrimeBo(_) => return None,
+            DriOfdState::PrimeBo(_) | DriOfdState::SyncFile(_) | DriOfdState::Syncobj(_) => {
+                return None;
+            }
         };
         Some(Self { identity, gem: Rc::downgrade(&dri.gem.0),
-            resources: Rc::downgrade(&dri.gl_resources.0), kms })
+            resources: Rc::downgrade(&dri.gl_resources.0), kms,
+            syncobjs: dri.syncobjs.downgrade() })
     }
     pub fn identity(&self) -> OfdId { self.identity }
     pub fn is_card(&self) -> bool { self.kms.is_some() }
@@ -561,8 +666,9 @@ impl DriTransferSnapshot {
         let kms = self.kms.as_ref().map(|kms| kms.upgrade().ok_or(Errno::EBADF)).transpose()?;
         // File resources are shared; command addresses/current-thread authority
         // belong to the sending process and must never cross this boundary.
+        let syncobjs = self.syncobjs.upgrade().ok_or(Errno::EBADF)?;
         let dri = DriFdState { gem: SharedGemNamespace(gem), gl: None,
-            gl_resources: SharedGlResources(resources) };
+            gl_resources: SharedGlResources(resources), syncobjs };
         Ok(Box::new(match kms {
             Some(kms) => DriOfdState::Card { dri, kms: SharedKmsFile(kms) },
             None => DriOfdState::RenderNode(dri),
@@ -698,6 +804,8 @@ pub struct OpenFileDesc {
     pub shared_state: SharedOfdState,
     pub host_handle: i64,
     pub ref_count: u32,
+    /// Internal close quarantine is never serialized: fork refuses its owner.
+    pub(crate) exec_close_quarantined: bool,
     pub path: Vec<u8>, // resolved absolute path
     /// Host directory handle for getdents64 iteration (lazily opened).
     /// -1 means not yet opened, -2 means exhausted (EOF).
@@ -924,15 +1032,28 @@ impl OpenFileDesc {
     pub fn dri(&self) -> Option<&DriFdState> {
         match self.dri_state.as_deref()? {
             DriOfdState::RenderNode(d) | DriOfdState::Card { dri: d, .. } => Some(d),
-            DriOfdState::PrimeBo(_) => None,
+            DriOfdState::PrimeBo(_) | DriOfdState::SyncFile(_) | DriOfdState::Syncobj(_) => None,
         }
     }
 
     pub fn dri_mut(&mut self) -> Option<&mut DriFdState> {
         match self.dri_state.as_deref_mut()? {
             DriOfdState::RenderNode(d) | DriOfdState::Card { dri: d, .. } => Some(d),
-            DriOfdState::PrimeBo(_) => None,
+            DriOfdState::PrimeBo(_) | DriOfdState::SyncFile(_) | DriOfdState::Syncobj(_) => None,
         }
+    }
+
+    /// The `sync_file` behind a sync_file fd.
+    pub fn sync_file(&self) -> Option<&crate::dri::sync_file::SyncFile> {
+        match self.dri_state.as_deref()? {
+            DriOfdState::SyncFile(file) => Some(file),
+            _ => None,
+        }
+    }
+
+    /// Whether this OFD is a `sync_file` or syncobj fd.
+    pub fn is_sync_object(&self) -> bool {
+        self.dri_state.as_deref().is_some_and(DriOfdState::is_sync_object)
     }
 
     pub fn prime_bo(&self) -> Option<&PrimeBoState> {
@@ -1008,6 +1129,7 @@ impl OfdTable {
             shared_state: SharedOfdState::new(status_flags, 0, 0),
             host_handle,
             ref_count: 1,
+            exec_close_quarantined: false,
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
@@ -1048,6 +1170,7 @@ impl OfdTable {
             shared_state,
             host_handle,
             ref_count: 1,
+            exec_close_quarantined: false,
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
@@ -1120,9 +1243,34 @@ impl OfdTable {
         Ok(())
     }
 
+    /// Reconstruct one inherited graphics capability without extending the
+    /// fork wire. Hidden library references are not fds or retry pins, but
+    /// their exact descriptions still belong to the forked storage graph.
+    pub(crate) fn retain_graphics_fork_target(&mut self,source:&OfdTable,target:crate::owned_resource::Target)->Result<(),Errno> {
+        let parent=source.get(target.index).ok_or(Errno::EBADF)?;
+        if parent.ofd_id!=target.id || parent.exec_close_quarantined || parent.dri_state.is_none() {return Err(Errno::EBADF);}
+        if self.get(target.index).is_none() {
+            let required=target.index.checked_add(1).ok_or(Errno::ENOMEM)?;
+            self.entries.try_reserve(required.saturating_sub(self.entries.len())).map_err(|_|Errno::ENOMEM)?;
+            let mut inherited=parent.clone();
+            inherited.ref_count=0;
+            // Namespace and file resources are shared; parent's command
+            // addresses/current-thread GL authority never become the child's.
+            if let Some(dri)=inherited.dri_mut() {dri.gl=None;}
+            inherited.reset_directory_iterator_for_reopen();
+            self.entries.resize_with(required.max(self.entries.len()),||None);
+            self.entries[target.index]=Some(inherited);
+        }
+        self.try_inc_ref_exact(target.index,target.id)
+    }
+
     /// Increment the reference count for the OFD at `idx`.
     pub fn inc_ref(&mut self, idx: usize) {
         if let Some(ofd) = self.get_mut(idx) {
+            assert!(
+                !ofd.exec_close_quarantined,
+                "cannot retain uncertain executable OFD"
+            );
             ofd.ref_count = ofd
                 .ref_count
                 .checked_add(1)
@@ -1140,6 +1288,9 @@ impl OfdTable {
         if ofd.ofd_id != id {
             return Err(Errno::EBADF);
         }
+        if ofd.exec_close_quarantined {
+            return Err(Errno::EBUSY);
+        }
         ofd.ref_count = ofd.ref_count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
         Ok(())
     }
@@ -1148,6 +1299,10 @@ impl OfdTable {
     /// Returns `true` if the OFD was freed (ref_count reached 0).
     pub fn dec_ref(&mut self, idx: usize) -> bool {
         let should_free = if let Some(ofd) = self.entries.get_mut(idx).and_then(|s| s.as_mut()) {
+            assert!(
+                !ofd.exec_close_quarantined,
+                "cannot retire uncertain executable OFD without proof"
+            );
             ofd.ref_count -= 1;
             ofd.ref_count == 0
         } else {
@@ -1160,6 +1315,28 @@ impl OfdTable {
         } else {
             false
         }
+    }
+
+    pub(crate) fn quarantine_exec_close(&mut self, idx: usize, id: OfdId) -> Result<(), Errno> {
+        let ofd = self.get_mut(idx).ok_or(Errno::EBADF)?;
+        if ofd.ofd_id != id || ofd.ref_count != 1 {
+            return Err(Errno::EBADF);
+        }
+        ofd.exec_close_quarantined = true;
+        Ok(())
+    }
+
+    pub(crate) fn clear_exec_close_quarantine(
+        &mut self,
+        idx: usize,
+        id: OfdId,
+    ) -> Result<(), Errno> {
+        let ofd = self.get_mut(idx).ok_or(Errno::EBADF)?;
+        if ofd.ofd_id != id || ofd.ref_count != 1 || !ofd.exec_close_quarantined {
+            return Err(Errno::EBADF);
+        }
+        ofd.exec_close_quarantined = false;
+        Ok(())
     }
 
     /// Iterate over all open file descriptions with their indices.
@@ -1254,6 +1431,9 @@ impl OfdTable {
                     child_dri.gem = source_dri.gem.clone();
                 }
                 child_dri.gl_resources = source_dri.gl_resources.clone();
+                // Sync-object handles are not on the fork wire; the child's
+                // description is the parent's, so it shares their namespace.
+                child_dri.syncobjs = source_dri.syncobjs.clone();
             }
             if let (Some(DriOfdState::Card { kms: child, .. }),
                     Some(DriOfdState::Card { kms: parent, .. })) =
@@ -1452,6 +1632,7 @@ mod tests {
                 shared_state: ofd.shared_state(),
                 host_handle: ofd.host_handle,
                 ref_count: ofd.ref_count,
+                exec_close_quarantined: false,
                 path: ofd.path.clone(),
                 dir_host_handle: -1,
                 dir_synth_state: 0,

@@ -1057,8 +1057,8 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | fontconfig | `packages/registry/fontconfig/build-fontconfig.sh` | autoconf | libxml2 backend, gperf host tool, `ac_cv_*` RNG/statfs overrides |
 | tllist | `packages/registry/tllist/build-tllist.sh` | header-only | Staged, nothing compiles |
 | fcft | `packages/registry/fcft/build-fcft.sh` | meson bypass | Two TUs + three generated headers, no harfbuzz/SVG |
-| foot | `packages/registry/foot/build-foot.sh` | meson bypass | First stock upstream Wayland client; two patches: gbm prime-fd shm pools, serial font loading |
-| libffi | `packages/registry/libffi/build-libffi.sh` | in-tree | Full port, no upstream source: gen-dispatch.sh generates the ffi_call call_indirect switch + the static closure trampoline pool (wasm32 cannot JIT) |
+| foot | `packages/registry/foot/build-foot.sh` | meson bypass | Stock upstream Wayland client with ordinary shared-memory pools; the remaining patch serializes font loading while its concurrency defect is investigated |
+| libffi | `packages/registry/libffi/build-libffi.sh` | in-tree | Kandelo implementation, not the upstream library: gen-dispatch.sh emits a finite set of ffi_call signatures and static closure trampolines. Coverage and admission remain incomplete; see the callback section below. |
 | glib | `packages/registry/glib/build-glib.sh` | meson bypass | 2.84.4: glib/gmodule/gobject/gio incl. the gdbus client core and the GApplication/GAction/GMenu family (GtkApplication's parent types), hand-curated config.h + glibconfig.h, three patches (no dbus built-ins, wasm callback signatures, wasm credentials backend); GRegex is in, compiled against the pcre2 package — glibmm's `Glib::Error::register_init()` calls `g_regex_error_quark` at startup, so every glibmm consumer needs it |
 | pcre2 | `packages/registry/pcre2/build-pcre2.sh` | cmake | 10.44, 8-bit code unit width only, static, no JIT (wasm cannot generate code at runtime), no pcre2grep/pcre2test; backs glib's GRegex. Separate from the `pcre2-source` package, which stages the unbuilt tree MariaDB configures itself |
 | expat | `packages/registry/expat/build-expat.sh` | autoconf | dbus config-parser dependency; entropy from kernel getrandom() |
@@ -1072,9 +1072,9 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | gdk-pixbuf | `packages/registry/gdk-pixbuf/build-gdk-pixbuf.sh` | autoconf | 2.36.12 (last autotools release): png loader compiled in statically, no dynamic loader modules; `gio_can_sniff=no` forces builtin signature sniffing — the default `GDK_PIXBUF_USE_GIO_MIME` path selects loaders via `g_content_type_guess`, which returns `application/octet-stream` without a shared-mime-info database and rejects every image as "Unrecognized image file format" |
 | atk | `packages/registry/atk/build-atk.sh` | meson bypass | 2.36.0 (final release; GTK 3.24.34 needs >= 2.32, last autotools 2.28 is too old): hand config.h, glib-mkenums + glib-genmarshal generation, upstream TU list; `src/wasm-callback-arity.patch` adds `gpointer class_data` to 1-argument `class_init` functions and routes atkhyperlink's action interface through `g_wasm_iface_init_thunk` |
 | libepoxy | `packages/registry/libepoxy/build-libepoxy.sh` | autoconf | 1.5.4 via autoreconf (tarball ships no configure; xorg-macros from flake.nix): EGL dispatch only, vendored EGL/KHR platform headers + headers-only egl.pc stub; GL symbols resolve by dlopen at first call, so no GL library exists until a context is created |
-| gtk3 | `packages/registry/gtk3/build-gtk3.sh` | autoconf | 3.24.34 (last GTK 3): Wayland backend only, no X11/cups/cloudprint; host `glib-compile-resources` via env override (the wasm gio-2.0.pc carries no `glib_compile_resources` variable); libffi/zlib LDFLAGS for the build's own executables (glib's pc files say bare `-lffi`/`-lz`); `src/wasm-callback-arity.patch` fixes arity-changing callback casts (see the arity section below); `src/wayland-shm-gbm-pool.patch` allocates gdk-wayland's `wl_shm` pools as gbm prime-fd dumb bos (foot's shm contract — a memfd is private to the process that made it, so the compositor's `gbm_bo_import` rejects it and the window shows no pixels) |
+| gtk3 | `packages/registry/gtk3/build-gtk3.sh` | autoconf | 3.24.34 (last GTK 3): Wayland backend only, no X11/cups/cloudprint; host `glib-compile-resources` via env override (the wasm gio-2.0.pc carries no `glib_compile_resources` variable); libffi/zlib LDFLAGS for the build's own executables (glib's pc files say bare `-lffi`/`-lz`); `src/wasm-callback-arity.patch` fixes arity-changing callback casts (see the arity section below); upstream shared-memory pool allocation |
 | basu | `packages/registry/basu/build-basu.sh` | meson bypass | 0.2.1 (standalone sd-bus, extracted from systemd by mako's author): hand config.h, errno gperf tables generated with the wasm cpp, no libcap/audit; built with `-D__linux__` — the kernel emulates the Linux ABI (SO_PEERCRED, SCM_CREDENTIALS) and without it bus-socket.c hits "#error auth not implemented for this OS" |
-| mako | `packages/registry/mako/build-mako.sh` | meson bypass | 1.10.0: mako + makoctl on basu's sd-bus (mako speaks `sd_bus_*`, not gdbus); two patches: gbm prime-fd pool buffers (foot's shm contract), and a `parse_boolean` rename — basu exports a same-named 1-argument function and both land in one wasm symbol namespace, so basu-internal calls would bind to mako's 2-argument definition and trap; no icons (add gdk-pixbuf + `HAVE_ICONS` when a demo needs images) |
+| mako | `packages/registry/mako/build-mako.sh` | meson bypass | 1.10.0: mako + makoctl on basu's sd-bus; upstream shared-memory pools. The remaining patches rename `parse_boolean` to avoid basu's incompatible static-link symbol and give no-op listeners exact callback types; no icons (add gdk-pixbuf + `HAVE_ICONS` when a demo needs images) |
 | libsigcxx | `packages/registry/libsigcxx/build-libsigcxx.sh` | autoconf | 2.10.3 (last release shipping configure): the gtkmm stack's signal library. Package name avoids `+` — the resolver's per-dep env var (`WASM_POSIX_DEP_<NAME>_DIR`) must be a valid shell identifier |
 | glibmm / cairomm / pangomm / atkmm / gtkmm3 | `packages/registry/{glibmm,cairomm,pangomm,atkmm,gtkmm3}/build-*.sh` | autoconf | The last autotools release of each `-2.4`/`-1.0`/`-1.4`/`-1.6`/`-3.0` ABI series (2.62.0, 1.12.2, 2.42.0, 2.28.0, 3.24.2); every later point release is meson-only. All C++ TUs need `-fwasm-exceptions`. Each builds only its library subdir and installs via the top-level `install-data-am` (umbrella headers + generated config headers + .pc, without recursing into tools/tests/examples). glibmm carries one patch: libc++ dropped the non-standard `char_traits<unsigned char>`, so `contenttype.cc`'s orphaned `basic_string<guchar>` overload is deleted. cairomm/pangomm/gtkmm3 pass the freetype/fontconfig includes explicitly — the host pkg-config does not reliably traverse `cairo.pc`'s `Requires.private` for `--cflags` |
 | gtk-layer-shell | `packages/registry/gtk-layer-shell/build-gtk-layer-shell.sh` | meson bypass | 0.9.2: layer-shell for GTK3 windows; wayland-scanner glue for wlr-layer-shell + xdg-shell, version macros passed as `-D` (no version-header template in this release) |
@@ -1083,17 +1083,20 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | waybar | `packages/registry/waybar/build-waybar.sh` | meson bypass | 0.14.0, the O2 gate's bar: core + the dependency-free compositor module families (hyprland, sway, river, dwl, niri, wayfire, wlr-taskbar) + `simpleclock`. The `is_linux` modules (battery, cpu, memory, systemd units) stay out — their headers are guarded on `__linux__`, which wasm32-unknown-unknown does not define, and nothing here serves `/proc`, `/sys` or logind. `src/glib-static-init.c` forces glib's initializer ahead of gobject's with a priority-101 constructor: upstream relies on shared-library load order for that, which a static link does not have |
 | FFmpeg | `packages/registry/ffmpeg/build-ffmpeg.sh` | custom configure | n9.0, unpatched: `--arch=wasm --target-os=none` (upstream knows wasm and its simd128 extension; `--target-os=none` makes configure probe everything instead of assuming the build machine's OS). Never `--disable-asm`, which also turns off simd128. `--disable-autodetect` keeps the dependency set equal to `depends_on`, and then needs `--enable-pthreads`, since threads are autodetected. The configure arguments compiled into the binaries name dependency prefixes symbolically (`ffmpeg_normalize_configuration`), so the build is the same on every machine. ffplay draws through SDL2's GLES2 renderer, so it needs GL: browser only |
 
-## Callback casts that change arity trap on wasm
+## Callback signatures across GLib and GTK dispatch
 
-Wasm checks the exact type of every `call_indirect`. A C idiom that
-casts a function pointer to a type with a different argument count (or
-a different return type) compiles fine, works on every native ABI, and
-traps at runtime on wasm with `null function or function signature
-mismatch`.
+Wasm checks the function type of every `call_indirect`. Calling through
+a cast with incompatible arguments or return type is undefined behavior
+in C. Some native calling conventions tolerate particular mismatches;
+that does not make the call portable. On Wasm, a mismatch in the lowered
+function signature traps with `null function or function signature
+mismatch`. Casting a pointer does not adapt the function it points to.
 
-glib is built on this idiom. The port carries
+GLib and GTK contain callback casts that need explicit adaptation for
+this target. The port carries
 `packages/registry/glib/src/wasm-callback-signatures.patch`, which
-routes every arity-changing cast through a typed thunk:
+repairs the following dispatch paths. This list is not evidence that
+every callback boundary in the dependency stack is correct:
 
 - `g_list_free_full` / `g_slist_free_full` / `g_queue_free_full` call
   the `GDestroyNotify` (1 argument) through `GFunc` (2 arguments).
@@ -1106,11 +1109,24 @@ routes every arity-changing cast through a typed thunk:
   `iface_init` functions through 2-argument `GTypeInfo` slots. The
   patched macros generate matching `*_intern_*` wrappers, so code that
   uses the macros (all of gio, GTK later) is fixed at compile time.
-- `G_IMPLEMENT_INTERFACE` routes the conventional 1-argument interface
-  init through `g_wasm_iface_init_thunk`, carried in
-  `GInterfaceInfo.interface_data`. The thunk skips a NULL init, so the
-  common `G_IMPLEMENT_INTERFACE (TYPE, NULL)` idiom (GtkBox's
-  GtkOrientable, GtkTextView's GtkScrollable) stays valid.
+- `G_IMPLEMENT_INTERFACE` and `G_IMPLEMENT_INTERFACE_DYNAMIC` retain
+  their public `GInterfaceInitFunc` contract: two pointer arguments,
+  with NULL interface data. Typed two-argument callbacks keep that
+  arity, including callbacks whose first pointer names an interface
+  structure. Conventional one-argument callbacks explicitly use
+  Kandelo's `G_IMPLEMENT_INTERFACE_UNARY` or
+  `G_IMPLEMENT_INTERFACE_DYNAMIC_UNARY` adapter. Those macros route
+  through `g_wasm_iface_init_thunk`, carrying the unary function in
+  `GInterfaceInfo.interface_data`. NULL callbacks are valid in both
+  forms. Do not infer arity with `_Generic` against only the exact
+  typedef: a typed two-argument callback has a distinct C function
+  type and would be misclassified as unary. The GLib/GIO, GTK, ATK,
+  Pango and GdkPixbuf patches migrate their actual unary registrations
+  to the explicit adapter; GLibmm's upstream interface test does too.
+  A new consumer must choose its real signature. The focused control
+  in `packages/registry/glib/tests/check-interface-init-contract.sh`
+  exercises the actual patched macros and thunk in separate Wasm
+  translation units; it supplements normal rebuilt consumer tests.
 - `g_object_add_weak_pointer` / `g_object_remove_weak_pointer` cast
   the 1-argument `g_nullify_pointer` to `GWeakNotify` (2 arguments) —
   routed through a matching 2-argument wrapper. Every
@@ -1137,10 +1153,22 @@ routes every arity-changing cast through a typed thunk:
   every GTest case trapped before it ran. The patched `gtestutils.c`
   keeps the typed callbacks on the test case and calls each through
   its own type, with upstream's teardown/free ordering unchanged.
+- Source closure lifetime callbacks use matching `void(gpointer)`
+  adapters. `g_closure_ref` returns a pointer, so it cannot be invoked
+  directly through the source table's void-returning callback type.
+- Native child-watch dispatch uses the public void
+  `GChildWatchFunc(GPid, gint, gpointer)` callback. An explicit adapter
+  discards the separate inner GClosure boolean result, retaining its
+  existing Unix ULONG PID representation. Do not change one boundary's
+  return or argument types to resemble the other.
+- Generic signal return conversion reads `G_TYPE_INT64` and
+  `G_TYPE_UINT64` at their full width. `ffi_arg` is only 32 bits on
+  wasm32; reading a 64-bit result through it discards the upper bits.
 
 GTK 3 carries the same idiom in its own code. The port's
 `packages/registry/gtk3/src/wasm-callback-arity.patch` fixes the
-instances the smoke test hits, in seven shapes:
+following seven shapes. Other registrations and virtual methods still
+need their own contract checks:
 
 - Handlers connected with fewer arguments than the signal
   (`default_display_notify_cb`, `display_opened_cb`,
@@ -1175,14 +1203,62 @@ instances the smoke test hits, in seven shapes:
   through `_gdk_event_emit`, so this traps on the first event.
   Replaced by a 2-argument `gtk_main_do_event_wasm_cb` wrapper.
 
-When a new GTK code path traps with this signature, symbolize the
-stack (rebuild with a no-op `wasm-opt` shim on PATH so the name
-section survives) and extend the patch with the same shapes.
+The separate `wasm-application-default-vfuncs.patch` supplies correctly
+typed defaults for all fourteen `GtkApplicationImplClass` virtual
+methods. It preserves the original no-op, zero and false behavior;
+parent chaining still invokes the actual declared method signature.
 
-When porting a GObject-based library, watch for the same pattern in
-the library's own code: any `(SomeFunc)` cast where the target has a
-different argument count needs a thunk. The failure mode is a trap at
-first use, not a build error. Current executable links reject missing
+Audit each registration together with its eventual invocation. Record
+the callback's real type, the dispatcher's argument and return types,
+and any metadata that controls signal or libffi marshalling. An erased
+storage type such as `GCallback` does not by itself prove a defect;
+the eventual call must match the function. Conversely, a cast can hide
+a mismatched default virtual method even without a registration macro.
+Use explicitly typed adapters where signatures differ, preserving the
+public callback contract, return value and callback lifetime. Do not
+replace a public binary callback contract with a universal unary thunk.
+
+Validate shared dispatch with separate translation units and actual
+library execution. Cover static and dynamic type/interface construction,
+normal and swapped signal handlers, class and interface virtual methods,
+GValue and variadic marshalling, and source/weak/destroy callbacks. Check
+return values as well as argument counts, including 64-bit integers on
+wasm32. Existing focused checks cover only their named paths; upstream
+GObject tests and rebuilt consumers remain necessary. A successful demo
+startup does not establish callback completeness.
+
+The in-tree libffi implementation is also a compatibility surface to
+validate, not a complete replacement established by its exported symbols.
+Its generated calls cover up to eight arguments with at most two non-i32
+arguments, plus all-i32 calls through twenty-two arguments. Closure
+families and their slot pools have separate bounds. Currently some
+signatures pass `ffi_prep_cif` but abort when `ffi_call` finds no generated
+dispatcher. ABI validation and true variadic calls have additional gaps.
+These are ordinary implementation gaps. Required GLib signatures need
+actual support; signatures outside the supported contract need correct
+preparation failure. Do not extend one observed signature and infer full
+coverage, or describe these limits as unavoidable Wasm boundaries.
+
+The `gobject-callback-tests` package and
+`host/test/gobject-callback-contract.test.ts` provide a durable CPU gate:
+separate-unit argument/return/source cases, binding/class-handler/child-watch
+lifecycle cases, and ten pinned upstream GObject targets. Build through the
+normal resolver using the commands in
+`packages/registry/gobject-callback-tests/README.md` before running the
+host test in the declared dev shell. Missing artifacts fail.
+The normal SourceOnly run at source `540b2fd5e2` passes all 75 focused
+callback/binding/class-handler cases and four upstream targets. Six upstream
+targets still fail; the child-watch and upstream callback adaptations have
+not yet run in the normal guest, so the combined gate remains red. Upstream
+generic-marshaller and all-types cases already reproduce accepted
+signatures that abort in the current libffi dispatcher. Keep those
+failures and original assertions visible until their contracts work.
+
+For a new trap, map the exact loaded binary and its inputs before
+attributing a cause. Compare headers, static libraries and side modules
+with the normal resolver's selected dependency closure to distinguish a
+stale build from a callback type defect. Keep diagnostic binaries separate
+from normal product artifacts. Current executable links reject missing
 symbols outside the declared host import list. Shared-library side modules
 resolve imports dynamically, so inspect their unresolved symbols with
 `wasm32posix-nm` when a port traps before `main`.

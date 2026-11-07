@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RENDERBUFFER_WIDTH/HEIGHT after storage with a zero dimension</title>
+<pre id="result">Running</pre>
+<script>
+// Standalone WebGL 2. No Kandelo code.
+//
+// OpenGL ES (glGetRenderbufferParameteriv, glRenderbufferStorage; WebGL 2
+// follows ES 3.0): RENDERBUFFER_WIDTH and RENDERBUFFER_HEIGHT are the width
+// and height of the image last specified by renderbufferStorage. Zero is a
+// valid width or height; only negative values or values above
+// MAX_RENDERBUFFER_SIZE are errors.
+//
+// control: 84x66 storage reads back as 84x66.
+// test:    0x29, 29x0 and 0x0 storage must read back as specified, with no error.
+try {
+  const gl = document.createElement('canvas').getContext('webgl2');
+  if (!gl) throw Error('WebGL2 unavailable');
+  const renderbuffer = gl.createRenderbuffer();
+  gl.bindRenderbuffer(gl.RENDERBUFFER, renderbuffer);
+  const size = () => [gl.getRenderbufferParameter(gl.RENDERBUFFER, gl.RENDERBUFFER_WIDTH),
+                      gl.getRenderbufferParameter(gl.RENDERBUFFER, gl.RENDERBUFFER_HEIGHT)];
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA4, 84, 66);
+  const control = size();
+  const cases = {};
+  for (const [width, height] of [[0, 29], [29, 0], [0, 0]]) {
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA4, width, height);
+    cases[`${width}x${height}`] = { got: size(), error: gl.getError() };
+  }
+  const wrong = Object.entries(cases).filter(([want, c]) => c.error !== 0 || `${c.got[0]}x${c.got[1]}` !== want);
+  const verdict = control[0] !== 84 || control[1] !== 66 ? 'inconclusive' : wrong.length ? 'reproduced' : 'not-reproduced';
+  window.__reproVerdict = { verdict, details: JSON.stringify({ control, cases, renderer: gl.getParameter(gl.RENDERER) }) };
+} catch (error) {
+  window.__reproVerdict = { verdict: 'inconclusive', details: JSON.stringify({ error: String(error) }) };
+}
+document.querySelector('#result').textContent = JSON.stringify(window.__reproVerdict, null, 2);
+</script>

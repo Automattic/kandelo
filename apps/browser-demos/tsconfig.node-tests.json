@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "types": [
+      "node",
+      "vite/client"
+    ],
+    "allowJs": true
+  },
+  "include": [
+    "**/*.test.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

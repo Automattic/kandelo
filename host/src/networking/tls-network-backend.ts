@@ -28,12 +28,13 @@ import {
   type HttpHeaderOccurrence,
   validateBrowserCorsProxyConfig,
 } from "./browser-cors-proxy";
-import { TLS_1_2_Connection } from "../../../packages/registry/openssl/src/tls/1_2/connection";
+import { TLS_1_2_Connection } from "./tls/1_2/connection";
+import { nonSharedBytes } from "./tls/shims";
 import {
   generateCertificate,
   certificateToPEM,
   type GeneratedCertificate,
-} from "../../../packages/registry/openssl/src/tls/certificates";
+} from "./tls/certificates";
 
 const MSG_PEEK = 0x0002;
 
@@ -224,7 +225,7 @@ async function decodeContentEncodingBody(
     : null;
   if (format === null) return null;
   const decoded = new Response(
-    new Response(body).body!.pipeThrough(new DecompressionStream(format)),
+    new Response(nonSharedBytes(body)).body!.pipeThrough(new DecompressionStream(format)),
   );
   return new Uint8Array(await decoded.arrayBuffer()) as Uint8Array<ArrayBuffer>;
 }

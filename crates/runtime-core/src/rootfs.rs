@@ -3222,17 +3222,21 @@ pub fn pin_mapping(handle: i64) -> Result<(), Errno> {
 }
 
 /// Drop a reference [`pin_mapping`] took, freeing an inode that has no name,
-/// descriptor or other mapping left.
-pub fn unpin_mapping(handle: i64) {
+/// descriptor or other mapping left. False when `handle` names no inode
+/// holding a pin: the caller's bookkeeping is broken and nothing changes.
+pub fn unpin_mapping(handle: i64) -> bool {
     let Ok(idx) = file_handle_to_inode(handle) else {
-        return;
+        return false;
     };
     ROOTFS.with(|state| {
-        if let Some(inode) = state.get_mut(idx) {
-            inode.map_pins = inode.map_pins.saturating_sub(1);
+        let Some(inode) = state.get_mut(idx) else { return false };
+        if inode.map_pins == 0 {
+            return false;
         }
+        inode.map_pins -= 1;
         state.maybe_free(idx);
-    });
+        true
+    })
 }
 
 /// A counter that changes on every write, truncation or `O_TRUNC` open of the

@@ -157,7 +157,12 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     if (handleRef.current) return;
 
     try {
-      const attached = host.attachKmsDisplay(canvas, crtcId);
+      const displayViewport = stageRef.current;
+      if (!displayViewport) throw new Error("KMS display viewport is not mounted");
+      // The canvas fits guest pixels; the containing viewport owns monitor
+      // size. Observing the fitted canvas lets a guest's first surface resize
+      // withdraw the connector mode it is about to present.
+      const attached = host.attachKmsDisplay(canvas, crtcId, { displayViewport });
       if (!attached) {
         setError("Kernel does not expose kmsAttachCanvas (older ABI?)");
         return;

@@ -1,3 +1,4 @@
+import { withNativeBatch } from "./native-batch.js";
 /**
  * Queue-aware drain step that pairs `SubmitQueue.pickNext` with a muxer
  * `switchTo` and the TLV dispatcher (plan 3 §B4).
@@ -17,6 +18,17 @@
 import type { GlBinding } from "./registry.js";
 import type { GlMuxer } from "./muxer.js";
 import type { SubmitQueue } from "./submit-queue.js";
+import { NativeGlFault, rethrowNativeGlFault } from "./native-recovery.js";
+
+// A callback may enqueue work while dispatching. The later frame cannot run
+// on that same physical renderer until the active frame's tail has finished.
+const executingMuxers = new WeakSet<GlMuxer>();
+
+/** Result-bearing reentry must not switch selectors underneath a frame from
+ * another logical owner on the same physical renderer. */
+export function glSubmitExecuting(muxer: GlMuxer | undefined): boolean {
+  return !!muxer && executingMuxers.has(muxer);
+}
 
 export type GlMuxerFor = (b: GlBinding) => GlMuxer | null;
 export type GlDispatch = (b: GlBinding, off: number, len: number) => number | void;
@@ -25,24 +37,35 @@ export function drainSubmitQueue(
   queue: SubmitQueue,
   muxerFor: GlMuxerFor,
   dispatch: GlDispatch,
+  maxFrames = Infinity,
 ): number {
-  while (true) {
+  if (maxFrames !== Infinity && (!Number.isSafeInteger(maxFrames) || maxFrames < 0)) return -22;
+  for (let frames = 0; frames < maxFrames; frames++) {
     const entry = queue.pickNext();
     if (!entry) return 0;
+    let mux: GlMuxer | null = null, lookupFailed = false, lookupError: unknown;
+    try { mux = muxerFor(entry.binding); }
+    catch (error) { rethrowNativeGlFault(error); lookupFailed = true; lookupError = error; }
+    if (mux && executingMuxers.has(mux)) return 0;
     const frame = entry.frames.shift()!;
+    if (mux) executingMuxers.add(mux);
     let rc: number | void;
     try {
-      rc = frame.run(entry.binding, () => {
-        const mux = muxerFor(entry.binding);
+      rc = withNativeBatch(entry.binding, "submit", () => frame.run(entry.binding, () => {
+        if (lookupFailed) throw lookupError;
         if (mux) mux.switchTo(entry.binding);
         return dispatch(entry.binding,0,frame.byteLength);
-      });
-    } catch {
+      }));
+    } catch (error) {
+      // A native cleanup fault is fatal, never an I/O result.
+      if (error instanceof NativeGlFault) throw error;
       // Renderer failure is an I/O result, not an exception into kernel Wasm.
       return -5;
     } finally {
-      queue.releaseIfEmpty(entry);
+      try { queue.complete(frame); queue.releaseIfEmpty(entry); }
+      finally { if (mux) executingMuxers.delete(mux); }
     }
     if (typeof rc === "number" && rc < 0) return rc;
   }
+  return 0;
 }

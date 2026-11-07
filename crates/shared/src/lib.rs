@@ -2,9 +2,12 @@
 
 pub mod channel_record;
 pub mod channel_scalar;
+pub mod dri_sync;
+pub mod dri_owned;
 pub mod host_abi;
 pub mod host_raw_syscalls;
 pub mod ioctl_contract;
+pub mod kms_cursor;
 pub mod process_layout;
 
 // The program ABI is owned separately so host-only edits do not rebuild
@@ -189,10 +192,43 @@ pub mod wakeup_event_wire {
     pub const TYPE_PROCESS_CONTINUED: u8 = 32;
     pub const TYPE_ADVISORY_LOCK: u8 = 64;
     /// A kernel-owned wait decided a parked task's result (see
-    /// `wait_completion_wire`). `idx` is 0. The host drains
-    /// `kernel_drain_wait_completions` when it sees this bit, so a machine
-    /// with no kernel-parked task pays no extra export call per syscall.
+    /// `wait_completion_wire`), or a timer was armed whose deadline the
+    /// host's kernel timer must now honour. `idx` is 0. The host drains
+    /// `kernel_drain_wait_completions` when it sees this bit, which ends by
+    /// re-reading `kernel_wait_next_timeout_ns`, so a machine with no
+    /// kernel-parked task pays no extra export call per syscall.
     pub const TYPE_WAIT_COMPLETE: u8 = 128;
+
+    /// `idx` of a [`TYPE_READABLE`] record that names no pipe: a fence
+    /// signaled, a DRM sync object gained a fence, a sync-object eventfd
+    /// fired, an eventfd's counter changed, or a timerfd expired. Parked
+    /// waits on sync objects, `sync_file`/dma-buf/eventfd/timerfd readiness
+    /// may now finish, so hosts apply their broad retry. Pipe indices never
+    /// reach the reserved top of the `u32` range.
+    pub const IDX_FENCE_READY: u32 = u32::MAX;
+    /// `idx` of a [`TYPE_READABLE`] record: the kernel has GL-fence work for
+    /// the host (a waiter enabled a separate-context fence the host must
+    /// poll, or the kernel released one); the host collects it with
+    /// `kernel_dri_fence_host_requests`. Raised only on those changes, so a
+    /// host never asks while nothing is pending.
+    pub const IDX_FENCE_HOST_WORK: u32 = u32::MAX - 1;
+}
+
+/// Checked outcome of one DRI/GL cleanup effect the kernel asks the host to
+/// apply (`host_gbm_bo_unbind`, `host_gbm_bo_destroy`, `host_gl_unbind`,
+/// `host_kms_rmfb`, `host_kms_drop_master`).
+///
+/// The kernel has already retired the object and will reuse the address
+/// range or identity it named, so the host must finish in the same call:
+/// detach the mapping and publish its final writeback, free the backing and
+/// every native view, retire the session, framebuffer or grant. Production
+/// GL and DRI run synchronously in the kernel worker, so the host answers
+/// [`COMPLETE`] or reports a fatal host fault (it throws out of the import
+/// with the precise reason, which stops the kernel instance). A host that
+/// returns any other value has broken this contract and the kernel stops
+/// itself (`syscalls::apply_dri_release_effect`).
+pub mod dri_cleanup_status {
+    pub const COMPLETE: i32 = 0;
 }
 
 /// Kernel-owned parking: the host/kernel contract for a syscall whose result
@@ -876,6 +912,8 @@ pub enum Errno {
     ENOMSG = 42,
     EIDRM = 43,
     ENODATA = 61,
+    /// `ETIME`: a DRM sync-object wait reached its timeout.
+    ETIME = 62,
     EPROTO = 71,
     EOVERFLOW = 75,
     EBADFD = 77,
@@ -953,6 +991,7 @@ impl Errno {
             42 => Some(Errno::ENOMSG),
             43 => Some(Errno::EIDRM),
             61 => Some(Errno::ENODATA),
+            62 => Some(Errno::ETIME),
             71 => Some(Errno::EPROTO),
             75 => Some(Errno::EOVERFLOW),
             77 => Some(Errno::EBADFD),
@@ -2328,6 +2367,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_dequeue_signal"),
         HostAdapterKernelExport::required("kernel_drain_wait_completions"),
         HostAdapterKernelExport::required("kernel_epoll_wait_finish"),
+        HostAdapterKernelExport::optional("kernel_epoll_wait_retry_state"),
         HostAdapterKernelExport::required("kernel_epoll_wait_token"),
         HostAdapterKernelExport::required("kernel_exchange_activate"),
         HostAdapterKernelExport::required("kernel_exchange_add_entry"),
@@ -2360,6 +2400,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_get_dirfd_path"),
         HostAdapterKernelExport::required("kernel_get_fd_path"),
         HostAdapterKernelExport::required("kernel_get_parent_pid"),
+        HostAdapterKernelExport::required("kernel_get_process_exec_generation"),
         HostAdapterKernelExport::required("kernel_get_process_exit_signal"),
         HostAdapterKernelExport::required("kernel_get_process_state"),
         HostAdapterKernelExport::required("kernel_get_socket_timeout_ms"),
@@ -2382,6 +2423,7 @@ pub mod abi {
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_configure", 50, 51),
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_read", 50, 51),
         HostAdapterKernelExport::required("kernel_mark_process_signaled"),
+        HostAdapterKernelExport::optional("kernel_owned_mapping_finish"),
         HostAdapterKernelExport::required("kernel_pcm_claim_transport"),
         HostAdapterKernelExport::required("kernel_pcm_clock_update"),
         HostAdapterKernelExport::required("kernel_pcm_reconcile"),
@@ -3977,6 +4019,14 @@ pub mod gl {
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
     pub const OP_VERSION: u32 = 17;
+    /// One owned TLV replaces public-name staging for bounded client draws.
+    /// Keep this record in the program digest even during the unpublished epoch.
+    pub mod inline_client_draw {
+        pub const HEADER_BYTES: u32 = 16;
+        pub const ATTRIBUTE_BYTES: u32 = 20;
+        pub const MAX_BYTES: u32 = 65535;
+        pub const MAX_ATTRIBUTES: u32 = 16;
+    }
     /// Private mode of the existing foreign-BO bind ioctl. Its result is a
     /// source token for QOP_IMAGE_TARGET, never a public GLES texture name.
     pub const IMAGE_SOURCE_TARGET: u32 = 0x5750_4b49;
@@ -3995,6 +4045,12 @@ pub mod gl {
     pub const GLIO_PRESENT: u32 = 0x48;
     pub const GLIO_QUERY: u32 = 0x49;
     pub const GLIO_UPDATE_SURFACE: u32 = 0x4A;
+    /// Ordered nonempty submit prefix followed by one checked query. Phase
+    /// errors are returned in-band; ioctl success alone is not GL acceptance.
+    pub const GLIO_SUBMIT_QUERY: u32 = 0x4B;
+    pub const SUBMIT_QUERY_PHASE_SUBMIT: u32 = 1;
+    pub const SUBMIT_QUERY_PHASE_QUERY: u32 = 2;
+    pub const SUBMIT_QUERY_REPLY_MAGIC: u32 = 0x4753_5131;
 
     pub const SESSION_DISPLAY: u32 = 1;
     pub const SESSION_OBJECTS: u32 = 2;
@@ -4005,6 +4061,35 @@ pub mod gl {
     pub const WPK_SURFACE_DEFAULT: u32 = 1;
     /// `kind` value for an off-screen pbuffer surface (Phase C).
     pub const WPK_SURFACE_PBUFFER: u32 = 2;
+
+    // --- surface storage configs ------------------------------------------
+
+    /// Low byte of `GlSurfaceAttrs.config_id`: RGBA8 color with
+    /// DEPTH24_STENCIL8 ancillary storage, the only surface format.
+    pub const WPK_SURFACE_CONFIG_RGBA8_D24S8: u32 = 1;
+    /// Bits 8..16 of a creation `config_id`: color/depth/stencil sample
+    /// count. Zero is single-sampled storage; a multisampled surface renders
+    /// into renderbuffers of exactly this many samples and resolves them into
+    /// its single-sampled storage. One sample is not a multisample buffer.
+    pub const WPK_SURFACE_CONFIG_SAMPLES_SHIFT: u32 = 8;
+    /// Largest sample count the creation word and capability mask can name.
+    pub const WPK_SURFACE_CONFIG_MAX_SAMPLES: u32 = 31;
+    /// Creation `config_id` for RGBA8/D24S8 storage with `samples` samples.
+    pub const fn surface_config(samples: u32) -> u32 {
+        WPK_SURFACE_CONFIG_RGBA8_D24S8 | (samples << WPK_SURFACE_CONFIG_SAMPLES_SHIFT)
+    }
+    /// The kernel validates the shape of the word; the host validates the
+    /// sample count against its renderer's supported counts.
+    pub const fn surface_config_valid(config_id: u32) -> bool {
+        let samples = config_id >> WPK_SURFACE_CONFIG_SAMPLES_SHIFT;
+        config_id & 0xff == WPK_SURFACE_CONFIG_RGBA8_D24S8
+            && (samples == 0 || (samples >= 2 && samples <= WPK_SURFACE_CONFIG_MAX_SAMPLES))
+    }
+    /// `QOP_SURFACE_CAPABILITIES` reply lengths: [max width, max height,
+    /// max pixels, QUERY_REPLY_MAGIC], or with the u32 supported sample-count
+    /// mask (bit n = n samples) inserted before the magic.
+    pub const SURFACE_CAPABILITIES_LEN: u32 = 16;
+    pub const SURFACE_CAPABILITIES_SAMPLES_LEN: u32 = 20;
 
     /// Upper bound on `GlQueryInfo.in_buf_len` / `out_buf_len`. The
     /// kernel allocates scratch buffers of these sizes before forwarding
@@ -4052,6 +4137,8 @@ pub mod gl {
     /// Both records have an empty payload and are local to the context.
     pub const OP_BEGIN_CLIENT_ARRAY: u16 = 0x0105;
     pub const OP_END_CLIENT_ARRAY: u16 = 0x0106;
+    /// Private retained buffer definition; legacy BufferData is unchanged.
+    pub const OP_BUFFER_DATA_SNAPSHOT: u16 = 0x0107;
 
     pub const OP_GEN_TEXTURES: u16 = 0x0200;
     pub const OP_DELETE_TEXTURES: u16 = 0x0201;
@@ -4074,6 +4161,7 @@ pub mod gl {
     pub const OP_DELETE_PROGRAM: u16 = 0x0309;
     pub const OP_DETACH_SHADER: u16 = 0x030A;
     pub const OP_VALIDATE_PROGRAM: u16 = 0x030B;
+    pub const OP_USE_PROGRAM_JOURNAL: u16 = 0x030C;
 
     pub const OP_UNIFORM1I: u16 = 0x0400;
     pub const OP_UNIFORM1F: u16 = 0x0401;
@@ -4090,6 +4178,15 @@ pub mod gl {
     pub const OP_DISABLE_VERTEX_ATTRIB_ARRAY: u16 = 0x0501;
     pub const OP_VERTEX_ATTRIB_POINTER: u16 = 0x0502;
     pub const OP_DRAW_ARRAYS: u16 = 0x0503;
+    /// Bounded, owned client-array bytes and one nonindexed draw. Never public buffer names.
+    pub const OP_DRAW_CLIENT_ARRAYS: u16 = 0x0506;
+    /// Own-context buffer generations; no guest address or public name.
+    pub const OP_DRAW_BUFFER_SNAPSHOTS: u16 = 0x0507;
+    pub const OP_DRAW_PREPARED_INLINE_COMPACT: u16 = 0x050c;
+    pub const OP_DRAW_PREPARED_INLINE: u16 = 0x050b;
+    pub const OP_DRAW_PREPARED_SNAPSHOTS: u16 = 0x050a;
+    pub const OP_DRAW_FRAMEBUFFER_SNAPSHOTS: u16 = 0x0508;
+    pub const OP_CLEAR_FRAMEBUFFER_SNAPSHOT: u16 = 0x0509;
     pub const OP_DRAW_ELEMENTS: u16 = 0x0504;
     /// `glVertexAttrib4fv(index, value)` — constant (non-array) vertex
     /// attribute. ScummVM's shader pipeline feeds the per-draw color
@@ -4111,7 +4208,40 @@ pub mod gl {
 
     // --- sync query op tags (used in GlQueryInfo.op) -----------------------
 
+    /// Legacy input is empty or one ES2 client-flag mask (4 bytes); the
+    /// reply pops one recorded flag (4 bytes). The 8-byte input form in
+    /// [`error_drain`] transfers every recorded flag in one reply instead.
     pub const QOP_GET_ERROR: u32 = 0x01;
+    /// Additive `QOP_GET_ERROR` form within operation table 17. Input:
+    /// [ES2 client-flag mask, `REQUEST`]. Checked reply of `REPLY_BYTES`:
+    /// [count, retained, errors[CAPACITY], QUERY_REPLY_MAGIC]. The renderer
+    /// captures native flags, merges the mask, then moves up to `CAPACITY`
+    /// recorded flags (oldest first, distinct, nonzero) into the reply and
+    /// removes them from the context. `retained` is 1 when flags remain
+    /// recorded, else 0. Unused error slots are zero. A guest that received
+    /// `retained == 0` holds the whole error state of the context until its
+    /// next request on the device, so it can answer later glGetError calls
+    /// with no transport round trip (libc/glue/libglesv2_stub.c).
+    pub mod error_drain {
+        pub const REQUEST: u32 = 0x4744_524e;
+        pub const REQUEST_BYTES: u32 = 8;
+        pub const CAPACITY: u32 = 8;
+        pub const REPLY_BYTES: u32 = (3 + CAPACITY) * 4;
+    }
+    /// Retained drain variant: request [client mask, REQUEST, transaction].
+    /// Reply [status, transaction, count, retained, errors[8], magic]. Status0
+    /// seals the transfer; status1 proves nonentry and status2 retains unknown
+    /// custody. Only the next wrapping u32 identity may enter. One outstanding
+    /// synchronous call per context makes wrap unambiguous. Existing forms
+    /// retain their exact contracts.
+    pub mod error_drain_receipt {
+        pub const REQUEST: u32 = 0x4752_4350;
+        pub const REQUEST_BYTES: u32 = 12;
+        pub const REPLY_BYTES: u32 = 52;
+    }
+    /// Read-only [transaction] recovery of the latest error-drain receipt.
+    /// No native replay, error capture/drain, upload interruption or BO sync.
+    pub const QOP_ERROR_DRAIN_RECEIPT: u32 = 0x003D;
     pub const QOP_GET_STRING: u32 = 0x02;
     pub const QOP_GET_INTEGERV: u32 = 0x03;
     pub const QOP_GET_FLOATV: u32 = 0x04;
@@ -4143,6 +4273,13 @@ pub mod gl {
     pub const OP_POLYGON_OFFSET: u16 = 0x001B;
     pub const OP_DEPTH_RANGEF: u16 = 0x001C;
     pub const OP_SAMPLE_COVERAGE: u16 = 0x001D;
+    /// Ordered transfer of the five ES2 client error flags (bits 0,1,2,5,6).
+    pub const OP_CLIENT_ERRORS: u16 = 0x001E;
+    /// B1 ordered local glGetError observation: pending mask, consumed bit.
+    /// Both words use bits 0,1,2,5,6; consumed is zero or one pending bit.
+    pub const OP_ERROR_OBSERVED: u16 = 0x001F;
+    /// Ordered observation of transport INVALID_OPERATION, not an exact flag proof.
+    pub const OP_TRANSPORT_ERROR_OBSERVED: u16 = 0x0020;
     pub const OP_TEX_PARAMETERF: u16 = 0x0208;
     pub const OP_COMPRESSED_TEX_IMAGE_2D: u16 = 0x0209;
     pub const OP_COMPRESSED_TEX_SUB_IMAGE_2D: u16 = 0x020A;
@@ -4157,6 +4294,10 @@ pub mod gl {
     pub const OP_UNIFORM4IV: u16 = 0x040D;
     pub const OP_UNIFORM_MATRIX2FV: u16 = 0x040E;
     pub const OP_UNIFORM_MATRIX3FV: u16 = 0x040F;
+    pub const OP_UNIFORM_UPLOAD_BEGIN: u16 = 0x0410;
+    pub const OP_UNIFORM_UPLOAD_CHUNK: u16 = 0x0411;
+    pub const OP_UNIFORM_UPLOAD_COMMIT: u16 = 0x0412;
+    pub const OP_UNIFORM_UPLOAD_CANCEL: u16 = 0x0413;
     pub const OP_DELETE_RENDERBUFFERS: u16 = 0x0708;
     pub const OP_DRAW_BUFFER: u16 = 0x0709;
     pub const OP_DRAW_BUFFERS: u16 = 0x070A;
@@ -4218,10 +4359,34 @@ pub mod gl {
     pub const QOP_BOUND_IMAGE_TARGET: u32 = 0x0025;
     /// V11: kind/target (8 bytes), same 16-byte source/revision reply.
     pub const QOP_BOUND_IMAGE_STATE: u32 = 0x0026;
-    /// V12: kind/name (8 bytes), checked accepted deletion (12-byte reply).
+    /// V12: kind/name (8 bytes). Output size selects the legacy ACK or the
+    /// opt-in deletion-container receipt declared below; input is unchanged.
     pub const QOP_IMAGE_OBJECT_DELETE: u32 = 0x0027;
-    /// V12: kind/target/point/object-target/name/level (24 bytes), checked ACK.
+    /// V12: kind/target/point/object-target/name/level (24 bytes). Output size
+    /// selects the legacy ACK or opt-in attachment-container receipt below.
     pub const QOP_IMAGE_ATTACHMENT: u32 = 0x0028;
+
+    /// Checked query footer. All receipt words are little-endian u32 values.
+    pub const QUERY_REPLY_MAGIC: u32 = 0x4751_4c33;
+    /// Unchanged Q39/Q40 ACK: [status, accepted, QUERY_REPLY_MAGIC]. Status0
+    /// and accepted1 acknowledge GL acceptance; rejected status1 zeros payload.
+    /// Neither old payload value is a framebuffer name.
+    pub const IMAGE_MUTATION_LEGACY_REPLY_BYTES: u32 = 12;
+    /// Opt-in Q40: [status, accepted, container_name, QUERY_REPLY_MAGIC].
+    /// Capture the actual logical selected container after any queued prefix,
+    /// before attachment effects. Successful name is nonzero; logical default
+    /// storage cannot accept attachments. Failure zeros all payload words.
+    /// C may publish ownership only after validating the complete success.
+    pub const IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES: u32 = 16;
+    /// Opt-in Q39: [status, accepted, draw_name, read_name, QUERY_REPLY_MAGIC].
+    /// Names capture this context's selected containers after any queued prefix,
+    /// before deletion effects. Zero explicitly means logical default storage,
+    /// even when backed by a native FBO; equal draw/read names are permitted.
+    /// Deletion detaches matching object references only in selected containers;
+    /// unbound and peer containers retain their exact old object identity.
+    /// Failure zeros payload. Unknown completion never authorizes replay or
+    /// release of input ownership merely because a transport call returned.
+    pub const IMAGE_DELETION_CONTAINERS_REPLY_BYTES: u32 = 20;
     /// V12: allocation opcode plus unchanged payload, checked 12-byte ACK.
     /// TEX_IMAGE_2D requires dataLen=0 (40 bytes); RBO storage is 20 bytes.
     pub const QOP_IMAGE_STORAGE: u32 = 0x0029;
@@ -4232,8 +4397,31 @@ pub mod gl {
     /// V15: name (4 bytes), checked accepted deletion (12-byte reply).
     pub const QOP_DELETE_BUFFER: u32 = 0x002C;
     /// V16: read-only renderer limits before a context is current. No input;
-    /// width/height/pixels and QUERY_REPLY_MAGIC, exactly 16 output bytes.
+    /// width/height/pixels and QUERY_REPLY_MAGIC in 16 output bytes, or a
+    /// 20-byte reply that also carries the supported sample-count mask.
     pub const QOP_SURFACE_CAPABILITIES: u32 = 0x002D;
+    /// Compatible GL17 reset-scope receipt, allowed after context loss. No
+    /// input; 12-byte output [status=0, scope, QUERY_REPLY_MAGIC], scope:
+    /// 0 healthy, 1 logical context reset, 2 physical renderer/share-group loss.
+    /// No commands, muxer replay or native error drain may run for this query.
+    pub const QOP_CONTEXT_RESET_SCOPE: u32 = 0x0037;
+    /// Checked object creation: [kind=4 shader/5 program, shader_type_or_zero, name].
+    /// The 12-byte reply is [status, accepted_name_or_zero, QUERY_REPLY_MAGIC].
+    pub const QOP_CREATE_SHADER_PROGRAM: u32 = 0x0038;
+    /// Checked shared program graph mutation: command opcode plus its unchanged
+    /// name payload (8 bytes, or 12 for attach/detach). Reply: status, accepted
+    /// boolean, QUERY_REPLY_MAGIC. Ordinary replay/dependencies/current authority.
+    pub const QOP_PROGRAM_MUTATION: u32 = 0x0039;
+    /// Context-owned executable captures. Acquire [1, name], select
+    /// [2, name, handle], release [3, handle]. Checked 16-byte reply:
+    /// status, linked_or_accepted, handle_or_zero, QUERY_REPLY_MAGIC.
+    /// Ordinary current-thread query authority and replay/dependencies.
+    pub const QOP_PROGRAM_CAPTURE: u32 = 0x003A;
+    pub const QOP_PROGRAM_JOURNAL: u32 = 0x003B;
+    /// Publish/recover already-reserved shared program metadata through a live
+    /// owned public context, including EGL lifecycle calls with no GL binding.
+    /// Only journal actions 3/6/7; never native selection or a submit prefix.
+    pub const QOP_PROGRAM_JOURNAL_BARRIER: u32 = 0x003C;
     /// V17 retained fences. Input: one nonzero client token, allocated
     /// monotonically per object session before creation. Output: 16 bytes
     /// (status, echoed token, signaled bool, checked reply magic).
@@ -4242,6 +4430,39 @@ pub mod gl {
     pub const QOP_RELEASE_FENCE: u32 = 0x0030;
     /// V17 server flush acknowledgement: no input or output bytes.
     pub const QOP_FLUSH: u32 = 0x0031;
+    /// Checked opaque compressed image upload. BEGIN=1/CHUNK=2/COMMIT=3/ABORT=4;
+    /// checked 12-byte reply echoes the monotonic context-local token. BEGIN
+    /// admits custody only; COMMIT performs the single original native call.
+    pub const QOP_COMPRESSED_UPLOAD: u32 = 0x0032;
+    pub mod compressed_upload {
+        pub const MAX_BYTES: u32 = 16 * 1024 * 1024;
+        pub const BEGIN_BYTES: u32 = 52;
+        pub const HEADER_BYTES: u32 = 12;
+    }
+    /// Reserved ABI56: one native read followed by immutable copied-byte chunks.
+    /// BEGIN(action1,token,total,x,y,w,h,format,type)=36 bytes;
+    /// CHUNK(action2,token,offset,count)=16; RELEASE(action3,token)=8.
+    /// Checked reply: status,token,count,chunk bytes,QUERY_REPLY_MAGIC.
+    pub const QOP_SERVER_WAIT: u32 = 0x0035;
+    /// Server-wait reply word 2: the destination may proceed at once (a
+    /// native wait was enqueued on its context, or nothing is pending).
+    pub const SERVER_WAIT_ORDERED: u32 = 0;
+    /// Server-wait reply word 2: the caller must observe the signal before it
+    /// issues later commands (no shared native command stream).
+    pub const SERVER_WAIT_CLIENT_SIGNAL: u32 = 1;
+    /// Publish one fence of this object session for a `sync_file`
+    /// (`DRM_IOCTL_WPK_EXPORT_FENCE`). Kernel-issued only; the guest never
+    /// sends it. in: [fence token, kernel export id] (8 bytes); out: the
+    /// 16-byte fence reply `[status, token, disposition, magic]`, where
+    /// disposition [`EXPORT_FENCE_ORDERED`] means the fence is on the shared
+    /// native context (complete in submission order) and
+    /// [`EXPORT_FENCE_RETAINED`] means the host retained it under the export
+    /// id for polling, because it is on a separate native context.
+    pub const QOP_EXPORT_FENCE: u32 = 0x0036;
+    pub const EXPORT_FENCE_ORDERED: u32 = 0;
+    pub const EXPORT_FENCE_RETAINED: u32 = 1;
+    pub const QOP_OBJECT_CAPTURE: u32 = 0x0034;
+    pub const QOP_READBACK_CAPTURE: u32 = 0x0033;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -4278,6 +4499,11 @@ pub mod gl {
         pub read_surface_id: u32,
     }
 
+    /// `GlContextAttrs::flags`: an EGL robust buffer access context
+    /// (EGL_CONTEXT_OPENGL_ROBUST_ACCESS). Every draw in it keeps its vertex
+    /// fetches in range instead of failing (EXT_robustness section 2.8).
+    pub const CONTEXT_FLAG_ROBUST_ACCESS: u32 = 1;
+
     /// Argument to `GLIO_CREATE_CONTEXT`. Total: 16 bytes.
     /// Sharing is resolved against live same-process, same-generation
     /// contexts before entering the renderer.
@@ -4288,8 +4514,8 @@ pub mod gl {
         pub client_version: u32,
         /// Source context identity, or zero for an independent object group.
         pub share_context_id: u32,
-        /// Reserved; must be zero.
-        pub reserved: u32,
+        /// `CONTEXT_FLAG_*` bits; any other bit is `EINVAL`.
+        pub flags: u32,
         /// Kernel-issued context identity. Zero on input, nonzero on success.
         pub context_id: u32,
     }
@@ -4304,7 +4530,8 @@ pub mod gl {
         pub width: u32,
         /// Requested height, replaced by accepted height on creation.
         pub height: u32,
-        /// EGL config id (opaque; v1 reports a single config "1").
+        /// Surface storage config: `surface_config(samples)` on creation;
+        /// updates name single-sampled RGBA8/D24S8 storage (1).
         pub config_id: u32,
         /// First word is the caller's target GEM handle; remaining words zero.
         pub reserved: [u32; 4],
@@ -4374,6 +4601,34 @@ pub mod gl {
         pub out_buf_ptr: u64,
         pub out_buf_len: u32,
         pub reserved: u32,
+    }
+
+    /// Phase receipt for one synchronous invocation, not a retry token.
+    /// Inputs are zero. Negative rc values are errno; unattempted query_rc is
+    /// zero. Only the nested checked-query reply can accept a GL mutation.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSubmitQueryResult {
+        pub completed_phase: u32,
+        pub submit_rc: i32,
+        pub query_rc: i32,
+        pub result_magic: u32,
+    }
+    /// wasm32 ordered submit/query argument, 48 bytes, InOut.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSubmitQueryInfo {
+        pub submit: GlSubmitInfo,
+        pub query: GlQueryInfo,
+        pub result: GlSubmitQueryResult,
+    }
+    /// wasm64 ordered submit/query argument, 64 bytes, InOut.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSubmitQueryInfo64 {
+        pub submit: GlSubmitInfo,
+        pub query: GlQueryInfo64,
+        pub result: GlSubmitQueryResult,
     }
 
 }
@@ -4452,6 +4707,7 @@ pub mod dri {
     pub const DRM_CLIENT_CAP_UNIVERSAL_PLANES: u64 = 2;
     pub const DRM_CLIENT_CAP_ATOMIC: u64 = 3;
     pub const DRM_CLIENT_CAP_ASPECT_RATIO: u64 = 4;
+    pub const DRM_CLIENT_CAP_WRITEBACK_CONNECTORS: u64 = 5;
     pub const DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT: u64 = 6;
 
     // --- DRM fourcc pixel formats ----------------------------------------
@@ -4467,6 +4723,180 @@ pub mod dri {
     pub const DRM_FORMAT_XBGR8888: u32 = 0x34324258;
     /// `fourcc('R','G','1','6')` — 5-6-5 RGB.
     pub const DRM_FORMAT_RGB565: u32 = 0x36314752;
+    /// `fourcc('R','8',' ',' ')` — one 8-bit red channel.
+    pub const DRM_FORMAT_R8: u32 = 0x20203852;
+    /// `fourcc('G','R','8','8')` — R then G bytes in little-endian memory.
+    pub const DRM_FORMAT_GR88: u32 = 0x38385247;
+    /// `fourcc('A','R','3','0')` — 2-10-10-10 alpha + RGB, blue in the low bits.
+    pub const DRM_FORMAT_ARGB2101010: u32 = 0x30335241;
+    /// `fourcc('X','R','3','0')` — 2-10-10-10 padding + RGB, blue in the low bits.
+    pub const DRM_FORMAT_XRGB2101010: u32 = 0x30335258;
+    /// `fourcc('A','B','3','0')` — 2-10-10-10 alpha + BGR, red in the low bits.
+    pub const DRM_FORMAT_ABGR2101010: u32 = 0x30334241;
+    /// `fourcc('X','B','3','0')` — 2-10-10-10 padding + BGR, red in the low bits.
+    pub const DRM_FORMAT_XBGR2101010: u32 = 0x30334258;
+    /// `fourcc('A','B','4','H')` — four little-endian IEEE half floats, R first.
+    pub const DRM_FORMAT_ABGR16161616F: u32 = 0x48344241;
+    /// `fourcc('X','B','4','H')` — RGB half floats then a padding half.
+    pub const DRM_FORMAT_XBGR16161616F: u32 = 0x48344258;
+    /// `fourcc('N','V','1','2')` — Y plane, then a 2x2-subsampled plane of
+    /// Cb,Cr byte pairs.
+    pub const DRM_FORMAT_NV12: u32 = 0x3231564e;
+    /// `fourcc('N','V','2','1')` — NV12 with Cr,Cb byte pairs.
+    pub const DRM_FORMAT_NV21: u32 = 0x3132564e;
+    /// `fourcc('Y','U','1','2')` — Y, then 2x2-subsampled Cb and Cr planes.
+    pub const DRM_FORMAT_YUV420: u32 = 0x32315559;
+    /// `fourcc('Y','V','1','2')` — Y, then 2x2-subsampled Cr and Cb planes.
+    pub const DRM_FORMAT_YVU420: u32 = 0x32315659;
+    /// `fourcc('Y','U','Y','V')` — packed Y0,Cb,Y1,Cr bytes per pixel pair.
+    pub const DRM_FORMAT_YUYV: u32 = 0x56595559;
+    /// `fourcc('U','Y','V','Y')` — packed Cb,Y0,Cr,Y1 bytes per pixel pair.
+    pub const DRM_FORMAT_UYVY: u32 = 0x59565955;
+    /// `fourcc('P','0','1','0')` — NV12 layout with little-endian 16-bit
+    /// samples holding 10 bits in their high bits.
+    pub const DRM_FORMAT_P010: u32 = 0x30313050;
+
+    /// The memory layout of a pixel format: `struct drm_format_info` from
+    /// `drivers/gpu/drm/drm_fourcc.c`, for the formats a Kandelo buffer can
+    /// describe. libgbm, libEGL (`libc/glue/drm_format_info.h`) and the
+    /// host (`host/src/webgl/drm-format-info.ts`) carry the same table, so
+    /// every layer sizes and validates a plane identically.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct DrmFormatInfo {
+        pub format: u32,
+        pub num_planes: u32,
+        /// Bytes per sample of each plane (`cpp`); unused planes are 0.
+        pub cpp: [u32; 3],
+        /// Horizontal and vertical chroma subsampling of planes 1 and 2.
+        pub hsub: u32,
+        pub vsub: u32,
+        pub is_yuv: bool,
+        /// The WebGL 2 sized internal format of a GPU-tier buffer of this
+        /// format (0: none can hold it). A GPU buffer has no CPU bytes, so
+        /// formats that differ only in channel order share storage.
+        pub gpu_storage: u32,
+        /// The format's alpha position is padding (X...): its storage keeps
+        /// a stored alpha of 1.0 that rendering never writes.
+        pub opaque: bool,
+        /// The single-plane format each plane is read as (Mesa's per-plane
+        /// DRI formats): NV12's luma is R8 and its chroma GR88, a planar
+        /// YUV420 plane R8, P010's planes R16 and GR1616. A GPU-tier plane
+        /// must be storage of that format. A single-plane format is itself.
+        pub plane_formats: [u32; 3],
+    }
+
+    /// `fourcc('R','1','6',' ')` and `fourcc('G','R','3','2')`: P010's
+    /// planes. No Kandelo buffer stores them on the GPU tier.
+    pub const DRM_FORMAT_R16: u32 = 0x20363152;
+    pub const DRM_FORMAT_GR1616: u32 = 0x32335247;
+
+    const fn rgb(format: u32, cpp: u32, gpu_storage: u32, opaque: bool) -> DrmFormatInfo {
+        DrmFormatInfo { format, num_planes: 1, cpp: [cpp, 0, 0], hsub: 1, vsub: 1, is_yuv: false, gpu_storage, opaque,
+            plane_formats: [format, 0, 0] }
+    }
+    const fn yuv(format: u32, num_planes: u32, cpp: [u32; 3], hsub: u32, vsub: u32, plane_formats: [u32; 3]) -> DrmFormatInfo {
+        DrmFormatInfo { format, num_planes, cpp, hsub, vsub, is_yuv: true, gpu_storage: 0, opaque: false, plane_formats }
+    }
+    const R8_STORAGE: u32 = 0x8229;
+    const RG8_STORAGE: u32 = 0x822b;
+    const RGB565_STORAGE: u32 = 0x8d62;
+    const RGBA8_STORAGE: u32 = 0x8058;
+    const RGB10_A2_STORAGE: u32 = 0x8059;
+    const RGBA16F_STORAGE: u32 = 0x881a;
+
+    /// Every format any Kandelo buffer, framebuffer or image can carry.
+    pub const DRM_FORMATS: [DrmFormatInfo; 20] = [
+        rgb(DRM_FORMAT_R8, 1, R8_STORAGE, false),
+        rgb(DRM_FORMAT_GR88, 2, RG8_STORAGE, false),
+        rgb(DRM_FORMAT_RGB565, 2, RGB565_STORAGE, false),
+        rgb(DRM_FORMAT_XRGB8888, 4, RGBA8_STORAGE, true),
+        rgb(DRM_FORMAT_ARGB8888, 4, RGBA8_STORAGE, false),
+        rgb(DRM_FORMAT_XBGR8888, 4, RGBA8_STORAGE, true),
+        rgb(DRM_FORMAT_ABGR8888, 4, RGBA8_STORAGE, false),
+        rgb(DRM_FORMAT_XRGB2101010, 4, RGB10_A2_STORAGE, true),
+        rgb(DRM_FORMAT_ARGB2101010, 4, RGB10_A2_STORAGE, false),
+        rgb(DRM_FORMAT_XBGR2101010, 4, RGB10_A2_STORAGE, true),
+        rgb(DRM_FORMAT_ABGR2101010, 4, RGB10_A2_STORAGE, false),
+        rgb(DRM_FORMAT_XBGR16161616F, 8, RGBA16F_STORAGE, true),
+        rgb(DRM_FORMAT_ABGR16161616F, 8, RGBA16F_STORAGE, false),
+        yuv(DRM_FORMAT_NV12, 2, [1, 2, 0], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_GR88, 0]),
+        yuv(DRM_FORMAT_NV21, 2, [1, 2, 0], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_GR88, 0]),
+        yuv(DRM_FORMAT_YUV420, 3, [1, 1, 1], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_R8, DRM_FORMAT_R8]),
+        yuv(DRM_FORMAT_YVU420, 3, [1, 1, 1], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_R8, DRM_FORMAT_R8]),
+        yuv(DRM_FORMAT_YUYV, 1, [2, 0, 0], 2, 1, [DRM_FORMAT_YUYV, 0, 0]),
+        yuv(DRM_FORMAT_UYVY, 1, [2, 0, 0], 2, 1, [DRM_FORMAT_UYVY, 0, 0]),
+        yuv(DRM_FORMAT_P010, 2, [2, 4, 0], 2, 2, [DRM_FORMAT_R16, DRM_FORMAT_GR1616, 0]),
+    ];
+
+    pub const fn drm_format_info(format: u32) -> Option<DrmFormatInfo> {
+        let mut i = 0;
+        while i < DRM_FORMATS.len() {
+            if DRM_FORMATS[i].format == format { return Some(DRM_FORMATS[i]); }
+            i += 1;
+        }
+        None
+    }
+
+    impl DrmFormatInfo {
+        /// `drm_format_info_plane_width`: planes after the first are
+        /// subsampled, rounding up.
+        pub const fn plane_width(&self, width: u32, plane: usize) -> u32 {
+            if plane == 0 { width } else { width.div_ceil(self.hsub) }
+        }
+        /// `drm_format_info_plane_height`.
+        pub const fn plane_height(&self, height: u32, plane: usize) -> u32 {
+            if plane == 0 { height } else { height.div_ceil(self.vsub) }
+        }
+        /// `drm_format_info_min_pitch` for a framebuffer of `width` pixels.
+        pub const fn min_pitch(&self, width: u32, plane: usize) -> u64 {
+            self.plane_width(width, plane) as u64 * self.cpp[plane] as u64
+        }
+        /// Bytes a reader of one row of `plane` touches. A packed YUV pair
+        /// (YUYV, UYVY) carries the chroma of both pixels, so a row of odd
+        /// width still reads the whole last pair; otherwise `min_pitch`.
+        pub const fn row_bytes(&self, width: u32, plane: usize) -> u64 {
+            if self.is_yuv && self.num_planes == 1 {
+                (width as u64).div_ceil(self.hsub as u64) * self.hsub as u64 * self.cpp[0] as u64
+            } else {
+                self.min_pitch(width, plane)
+            }
+        }
+    }
+
+    /// Bytes per pixel (`drm_format_info.cpp[0]`) of a format a GPU-tier
+    /// buffer can hold: one whose single plane a WebGL 2 texture stores
+    /// exactly and can render into (R8, RG8, RGB565, RGBA8, RGB10_A2,
+    /// RGBA16F; `DrmFormatInfo::gpu_storage`). None for any other format.
+    pub const fn gpu_storage_format_cpp(format: u32) -> Option<u32> {
+        match drm_format_info(format) {
+            Some(info) if info.gpu_storage != 0 => Some(info.cpp[0]),
+            _ => None,
+        }
+    }
+
+    /// The WebGL 2 sized internal format a GPU-tier buffer of `format` is
+    /// stored in, and whether the format lacks alpha (its stored alpha is
+    /// 1.0). A GPU buffer has no CPU bytes, so formats that differ only in
+    /// channel order within a pixel (ARGB/ABGR) share storage.
+    pub const fn gpu_storage_format(format: u32) -> Option<(u32, bool)> {
+        match drm_format_info(format) {
+            Some(info) if info.gpu_storage != 0 => Some((info.gpu_storage, info.opaque)),
+            _ => None,
+        }
+    }
+
+    /// Whether a GPU-tier buffer allocated (or exported) as `real` can be
+    /// imported as `claimed`: the claimed format must name the same texture
+    /// storage, and a claimed format without alpha needs storage whose
+    /// alpha is the 1.0 that format reads (a view cannot hide stored alpha).
+    /// `real` 0 is a GPU buffer no DRM format describes.
+    pub const fn gpu_storage_import_compatible(real: u32, claimed: u32) -> bool {
+        match (gpu_storage_format(real), gpu_storage_format(claimed)) {
+            (Some((real_storage, real_opaque)), Some((claimed_storage, claimed_opaque))) =>
+                real_storage == claimed_storage && (real_opaque || !claimed_opaque),
+            _ => false,
+        }
+    }
 
     // --- marshalled structs ------------------------------------------------
 
@@ -4600,6 +5030,91 @@ pub mod dri {
     }
 
 
+    /// `_IOWR('d', 0xE4, WpkDrmCheckBoFormat)` — check that the bo named by
+    /// `handle` can be imported as a dma-buf of fourcc `format`. A CPU-tier
+    /// bo is bytes and holds any format (0); a GPU-tier bo is a texture of
+    /// the format it was allocated or exported with, and an import claiming
+    /// a format with other storage is `EINVAL` (`gpu_storage_import_compatible`).
+    /// Unknown handle: `ENOENT`.
+    pub const DRM_IOCTL_WPK_CHECK_BO_FORMAT: u32 = 0xc008_64e4;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmCheckBoFormat {
+        pub handle: u32, // 0  in
+        pub format: u32, // 4  in  the dma-buf's claimed DRM fourcc
+    }
+
+    /// `_IOWR('d', 0xE5, WpkDrmImportPlanarImage)` — import a YUV dma-buf
+    /// image (NV12, NV21, YUV420, YVU420, YUYV, UYVY, P010) as an EGLImage
+    /// source: one bo handle, pitch and offset per
+    /// plane of the format (drm_format_info), and the color conversion
+    /// EGL_EXT_image_dma_buf_import's hints select. The host converts the
+    /// planes to an RGBA image whenever their bytes change; `source` is the
+    /// private token of that image, as `IMPORT_IMAGE` returns.
+    pub const DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE: u32 = 0xc048_64e5;
+
+    /// YCbCr-to-RGB matrices of `WpkDrmImportPlanarImage::color_space`.
+    pub const WPK_YUV_BT601: u32 = 0;
+    pub const WPK_YUV_BT709: u32 = 1;
+    pub const WPK_YUV_BT2020: u32 = 2;
+    /// `WpkDrmImportPlanarImage::chroma_siting` bits: chroma samples sit
+    /// halfway between luma samples (siting 0.5) rather than on the first.
+    pub const WPK_CHROMA_SITING_H_HALF: u32 = 1;
+    pub const WPK_CHROMA_SITING_V_HALF: u32 = 2;
+
+    /// `IMPORT_PLANAR_IMAGE` argument, 72 bytes. Planes past the format's
+    /// count, `source` and `reserved` are zero on input.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+    pub struct WpkDrmImportPlanarImage {
+        pub ctx_id: u32,
+        pub width: u32,
+        pub height: u32,
+        pub format: u32,
+        pub bo_handles: [u32; 3],
+        pub pitches: [u32; 3],
+        pub offsets: [u32; 3],
+        /// `WPK_YUV_BT601`, `_BT709` or `_BT2020`.
+        pub color_space: u32,
+        /// 1: full-range samples; 0: narrow (16-235 for 8 bits).
+        pub full_range: u32,
+        /// `WPK_CHROMA_SITING_*` bits.
+        pub chroma_siting: u32,
+        pub source: u32,
+        pub reserved: u32,
+    }
+
+    /// Publish one GLES object image as an EGLImage source (EGL 1.5 section
+    /// 3.9, KHR_gl_texture_2D_image, KHR_gl_texture_cubemap_image and
+    /// KHR_gl_renderbuffer_image). `target` is `GL_TEXTURE_2D`, a
+    /// `GL_TEXTURE_CUBE_MAP_*` face or `GL_RENDERBUFFER`; `name` and `level`
+    /// select the object in context `ctx_id` on this object session. The
+    /// kernel returns a new GPU-tier bo handle whose storage is that object's
+    /// own image: the object becomes an EGLImage sibling, and respecifying
+    /// or deleting it orphans the image rather than changing it.
+    pub const DRM_IOCTL_WPK_EXPORT_IMAGE: u32 = 0xc030_64e3;
+
+    /// `EXPORT_IMAGE` argument. 48 bytes; every output and reserved word is
+    /// zero on input. `source`/`revision` identify the object's sibling
+    /// state in the exporting context's share group.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmExportImage {
+        pub ctx_id: u32,          // 0   in
+        pub target: u32,          // 4   in
+        pub name: u32,            // 8   in
+        pub level: u32,           // 12  in
+        pub bo_handle: u32,       // 16  out
+        pub width: u32,           // 20  out
+        pub height: u32,          // 24  out
+        pub internal_format: u32, // 28  out  sized GL internal format of the image
+        pub source: u32,          // 32  out  share-group image source token
+        pub revision: u32,        // 36  out  source object's sibling revision
+        pub reserved: [u32; 2],   // 40  zero
+    }
+
+
     /// GPU-bo allocator argument. 16 bytes on wasm32 (4 × u32). `format` and
     /// `usage` are passed through to libgbm's `gbm_bo_create(format, usage)`
     /// from the user side.
@@ -4720,9 +5235,95 @@ pub mod dri {
     /// `_IOWR('d', 0xc6, drm_mode_create_lease)`.
     pub const DRM_IOCTL_MODE_CREATE_LEASE: u32 = 0xc018_64c6;
 
+    /// `_IOWR('d', 0xbc, drm_mode_atomic)` — atomic modeset/flip/test.
+    pub const DRM_IOCTL_MODE_ATOMIC: u32 = 0xc038_64bc;
+
     /// `_IOWR('d', 0xd0, drm_mode_closefb)` — drop an fb id but keep it
     /// on the CRTC that scans it out.
     pub const DRM_IOCTL_MODE_CLOSEFB: u32 = 0xc008_64d0;
+
+    /// Native wasm64 `_IOWR('d', 0x3a, drm_wait_vblank)`. The reply's
+    /// `long tval_sec` / `long tval_usec` and the request's `unsigned long
+    /// signal` are 8 bytes under LP64, so the union is 24 bytes.
+    pub const DRM_IOCTL_WAIT_VBLANK_WASM64: u32 = 0xc018_643a;
+
+    /// `_IOWR('d', 0xae, drm_mode_fb_cmd)` — legacy single-plane ADDFB.
+    pub const DRM_IOCTL_MODE_ADDFB: u32 = 0xc01c_64ae;
+
+    /// `_IOWR('d', 0xa4, drm_mode_crtc_lut)` / `0xa5` — legacy gamma LUT.
+    pub const DRM_IOCTL_MODE_GETGAMMA: u32 = 0xc020_64a4;
+    pub const DRM_IOCTL_MODE_SETGAMMA: u32 = 0xc020_64a5;
+
+    /// `_IOWR('d', 0xb1, drm_mode_fb_dirty_cmd)`.
+    pub const DRM_IOCTL_MODE_DIRTYFB: u32 = 0xc018_64b1;
+
+    /// `_IOWR('d', 0xbd, drm_mode_create_blob)` / `0xbe` destroy.
+    pub const DRM_IOCTL_MODE_CREATEPROPBLOB: u32 = 0xc010_64bd;
+    pub const DRM_IOCTL_MODE_DESTROYPROPBLOB: u32 = 0xc004_64be;
+
+    /// `_IOWR('d', 0xce, drm_mode_fb_cmd2)` — multi-plane GETFB.
+    pub const DRM_IOCTL_MODE_GETFB2: u32 = 0xc068_64ce;
+
+    /// `_IOWR('d', 0x01, drm_unique)`: `(size_t, char *)`, 8 bytes on
+    /// wasm32 and 16 on wasm64.
+    pub const DRM_IOCTL_GET_UNIQUE: u32 = 0xc008_6401;
+    pub const DRM_IOCTL_GET_UNIQUE_WASM64: u32 = 0xc010_6401;
+
+    // `enum drm_vblank_seq_type` (include/uapi/drm/drm.h).
+    pub const DRM_VBLANK_ABSOLUTE: u32 = 0x0;
+    pub const DRM_VBLANK_RELATIVE: u32 = 0x1;
+    pub const DRM_VBLANK_HIGH_CRTC_MASK: u32 = 0x0000_003e;
+    pub const DRM_VBLANK_HIGH_CRTC_SHIFT: u32 = 1;
+    pub const DRM_VBLANK_EVENT: u32 = 0x0400_0000;
+    pub const DRM_VBLANK_FLIP: u32 = 0x0800_0000;
+    pub const DRM_VBLANK_NEXTONMISS: u32 = 0x1000_0000;
+    pub const DRM_VBLANK_SECONDARY: u32 = 0x2000_0000;
+    pub const DRM_VBLANK_SIGNAL: u32 = 0x4000_0000;
+    pub const DRM_VBLANK_TYPES_MASK: u32 = DRM_VBLANK_ABSOLUTE | DRM_VBLANK_RELATIVE;
+    pub const DRM_VBLANK_FLAGS_MASK: u32 =
+        DRM_VBLANK_EVENT | DRM_VBLANK_SIGNAL | DRM_VBLANK_SECONDARY | DRM_VBLANK_NEXTONMISS;
+
+    // `drm_mode_crtc_page_flip.flags` (include/uapi/drm/drm_mode.h).
+    pub const DRM_MODE_PAGE_FLIP_EVENT: u32 = 0x01;
+    pub const DRM_MODE_PAGE_FLIP_ASYNC: u32 = 0x02;
+    pub const DRM_MODE_PAGE_FLIP_TARGET_ABSOLUTE: u32 = 0x4;
+    pub const DRM_MODE_PAGE_FLIP_TARGET_RELATIVE: u32 = 0x8;
+    pub const DRM_MODE_PAGE_FLIP_TARGET: u32 =
+        DRM_MODE_PAGE_FLIP_TARGET_ABSOLUTE | DRM_MODE_PAGE_FLIP_TARGET_RELATIVE;
+    pub const DRM_MODE_PAGE_FLIP_FLAGS: u32 =
+        DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC | DRM_MODE_PAGE_FLIP_TARGET;
+
+    // `drm_mode_atomic.flags` (include/uapi/drm/drm_mode.h).
+    pub const DRM_MODE_ATOMIC_TEST_ONLY: u32 = 0x0100;
+    pub const DRM_MODE_ATOMIC_NONBLOCK: u32 = 0x0200;
+    pub const DRM_MODE_ATOMIC_ALLOW_MODESET: u32 = 0x0400;
+    pub const DRM_MODE_ATOMIC_FLAGS: u32 = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC
+        | DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_ATOMIC_ALLOW_MODESET;
+
+    // `drm_mode_fb_cmd2.flags` and format modifiers.
+    pub const DRM_MODE_FB_INTERLACED: u32 = 1 << 0;
+    pub const DRM_MODE_FB_MODIFIERS: u32 = 1 << 1;
+    pub const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+
+    // `drm_mode_modeinfo` type/flag masks (drm_mode.h) used by
+    // `drm_mode_validate_basic` and `drm_mode_convert_umode`.
+    pub const DRM_MODE_TYPE_PREFERRED: u32 = 1 << 3;
+    pub const DRM_MODE_TYPE_USERDEF: u32 = 1 << 5;
+    pub const DRM_MODE_TYPE_DRIVER: u32 = 1 << 6;
+    pub const DRM_MODE_TYPE_ALL: u32 =
+        DRM_MODE_TYPE_PREFERRED | DRM_MODE_TYPE_USERDEF | DRM_MODE_TYPE_DRIVER;
+    /// PHSYNC..CLKDIV2 without the deprecated BCAST (bit 10) and PIXMUX
+    /// (bit 11), plus the 3D mask.
+    pub const DRM_MODE_FLAG_ALL: u32 = 0x3ff | (1 << 12) | (1 << 13) | DRM_MODE_FLAG_3D_MASK;
+    pub const DRM_MODE_FLAG_3D_MASK: u32 = 0x1f << 14;
+    pub const DRM_MODE_FLAG_3D_MAX: u32 = 8 << 14;
+    pub const DRM_MODE_FLAG_PIC_AR_MASK: u32 = 0x0f << 19;
+    /// Highest defined picture aspect ratio (`DRM_MODE_PICTURE_ASPECT_256_135`).
+    pub const DRM_MODE_FLAG_PIC_AR_MAX: u32 = 4 << 19;
+
+    /// Per-file event space Linux reserves for queued DRM events
+    /// (`drm_file.event_space`).
+    pub const DRM_EVENT_SPACE: usize = 4096;
 
     // --- KMS enums --------------------------------------------------------
 
@@ -4740,11 +5341,17 @@ pub mod dri {
     pub const DRM_MODE_OBJECT_PROPERTY: u32 = 0xb0b0_b0b0;
     pub const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
     pub const DRM_MODE_OBJECT_FB: u32 = 0xfbfb_fbfb;
+    pub const DRM_MODE_OBJECT_BLOB: u32 = 0xbbbb_bbbb;
 
     pub const DRM_MODE_PROP_RANGE: u32 = 1 << 1;
     pub const DRM_MODE_PROP_IMMUTABLE: u32 = 1 << 2;
     pub const DRM_MODE_PROP_ENUM: u32 = 1 << 3;
     pub const DRM_MODE_PROP_BLOB: u32 = 1 << 4;
+    /// Extended property types (`DRM_MODE_PROP_TYPE(n)`, `n << 6`).
+    pub const DRM_MODE_PROP_OBJECT: u32 = 1 << 6;
+    pub const DRM_MODE_PROP_SIGNED_RANGE: u32 = 2 << 6;
+    /// Listed only to files that enabled `DRM_CLIENT_CAP_ATOMIC`.
+    pub const DRM_MODE_PROP_ATOMIC: u32 = 0x8000_0000;
     pub const DRM_PROP_NAME_LEN: usize = 32;
 
     pub const DRM_PLANE_TYPE_OVERLAY: u64 = 0;
@@ -5046,6 +5653,22 @@ pub mod dri {
         pub length: u32,  // 4   in/out
         pub data: u64,    // 8   in
                           // total: 16
+    }
+
+    /// `struct drm_mode_atomic`. 56 bytes; the four arrays are user
+    /// pointers carried as `__u64` on every guest width.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeAtomic {
+        pub flags: u32,           // 0
+        pub count_objs: u32,      // 4
+        pub objs_ptr: u64,        // 8   u32[count_objs]
+        pub count_props_ptr: u64, // 16  u32[count_objs]
+        pub props_ptr: u64,       // 24  u32[sum of count_props]
+        pub prop_values_ptr: u64, // 32  u64[sum of count_props]
+        pub reserved: u64,        // 40  must be zero
+        pub user_data: u64,       // 48  echoed in DRM_EVENT_FLIP_COMPLETE
+                                  // total: 56
     }
 
     /// `struct drm_mode_cursor`. 28 bytes. `struct drm_mode_cursor2`
@@ -5717,6 +6340,33 @@ mod dri_tests {
     fn wpk_extension_sizes_match_wasm32() {
         assert_eq!(size_of::<WpkDrmGpuBoCreate>(), 16);
         assert_eq!(size_of::<WpkDrmBindForeignTexture>(), 16);
+        assert_eq!(size_of::<WpkDrmCheckBoFormat>(), 8);
+        assert_eq!(DRM_IOCTL_WPK_CHECK_BO_FORMAT,
+            ioc(IOC_READ | IOC_WRITE, 'd' as u32, 0xE4, size_of::<WpkDrmCheckBoFormat>() as u32));
+    }
+
+    #[test]
+    fn gpu_storage_import_compatibility_follows_texture_storage() {
+        // Same storage, either channel order.
+        assert!(gpu_storage_import_compatible(DRM_FORMAT_ARGB8888, DRM_FORMAT_ABGR8888));
+        assert!(gpu_storage_import_compatible(DRM_FORMAT_XRGB2101010, DRM_FORMAT_XBGR2101010));
+        // Alpha storage read as a format with alpha; opaque storage either way.
+        assert!(gpu_storage_import_compatible(DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888));
+        assert!(!gpu_storage_import_compatible(DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888));
+        // Same size, different storage.
+        assert!(!gpu_storage_import_compatible(DRM_FORMAT_GR88, DRM_FORMAT_RGB565));
+        assert!(!gpu_storage_import_compatible(DRM_FORMAT_ABGR8888, DRM_FORMAT_ABGR2101010));
+        assert!(!gpu_storage_import_compatible(DRM_FORMAT_R8, DRM_FORMAT_GR88));
+        // A buffer no format describes, or an unknown claim.
+        assert!(!gpu_storage_import_compatible(0, DRM_FORMAT_ABGR8888));
+        assert!(!gpu_storage_import_compatible(DRM_FORMAT_ABGR8888, 0x3231564e));
+        for format in [DRM_FORMAT_R8, DRM_FORMAT_GR88, DRM_FORMAT_RGB565, DRM_FORMAT_XRGB8888,
+            DRM_FORMAT_ARGB8888, DRM_FORMAT_XBGR8888, DRM_FORMAT_ABGR8888, DRM_FORMAT_XRGB2101010,
+            DRM_FORMAT_ARGB2101010, DRM_FORMAT_XBGR2101010, DRM_FORMAT_ABGR2101010,
+            DRM_FORMAT_XBGR16161616F, DRM_FORMAT_ABGR16161616F] {
+            assert!(gpu_storage_import_compatible(format, format));
+            assert_eq!(gpu_storage_format(format).is_some(), gpu_storage_format_cpp(format).is_some());
+        }
     }
 
     #[test]
@@ -5752,6 +6402,74 @@ mod dri_tests {
         assert_eq!(DRM_FORMAT_RGB565, fourcc(b'R', b'G', b'1', b'6'));
         assert_eq!(DRM_FORMAT_ABGR8888, fourcc(b'A', b'B', b'2', b'4'));
         assert_eq!(DRM_FORMAT_XBGR8888, fourcc(b'X', b'B', b'2', b'4'));
+        assert_eq!(DRM_FORMAT_R8, fourcc(b'R', b'8', b' ', b' '));
+        assert_eq!(DRM_FORMAT_GR88, fourcc(b'G', b'R', b'8', b'8'));
+        assert_eq!(DRM_FORMAT_ARGB2101010, fourcc(b'A', b'R', b'3', b'0'));
+        assert_eq!(DRM_FORMAT_XRGB2101010, fourcc(b'X', b'R', b'3', b'0'));
+        assert_eq!(DRM_FORMAT_ABGR2101010, fourcc(b'A', b'B', b'3', b'0'));
+        assert_eq!(DRM_FORMAT_XBGR2101010, fourcc(b'X', b'B', b'3', b'0'));
+        assert_eq!(DRM_FORMAT_ABGR16161616F, fourcc(b'A', b'B', b'4', b'H'));
+        assert_eq!(DRM_FORMAT_XBGR16161616F, fourcc(b'X', b'B', b'4', b'H'));
+    }
+
+    #[test]
+    fn gpu_storage_formats_have_their_drm_cpp() {
+        for (format, cpp) in [(DRM_FORMAT_R8, 1), (DRM_FORMAT_GR88, 2), (DRM_FORMAT_RGB565, 2),
+            (DRM_FORMAT_XRGB8888, 4), (DRM_FORMAT_ARGB8888, 4), (DRM_FORMAT_XBGR8888, 4),
+            (DRM_FORMAT_ABGR8888, 4), (DRM_FORMAT_XRGB2101010, 4), (DRM_FORMAT_ARGB2101010, 4),
+            (DRM_FORMAT_XBGR2101010, 4), (DRM_FORMAT_ABGR2101010, 4),
+            (DRM_FORMAT_XBGR16161616F, 8), (DRM_FORMAT_ABGR16161616F, 8)] {
+            assert_eq!(gpu_storage_format_cpp(format), Some(cpp), "{format:#x}");
+        }
+        // Multi-plane YUV and formats without exact WebGL 2 storage.
+        for format in [0, 0x3231564e /* NV12 */, 0x34324752 /* RGB888 */] {
+            assert_eq!(gpu_storage_format_cpp(format), None, "{format:#x}");
+        }
+    }
+
+    #[test]
+    fn planar_image_import_record_is_72_bytes() {
+        assert_eq!(size_of::<WpkDrmImportPlanarImage>(), 72);
+        assert_eq!(DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE, 0xc000_0000 | (72 << 16) | (0x64 << 8) | 0xe5);
+    }
+
+    #[test]
+    fn yuv_formats_match_linux_drm_format_info() {
+        const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
+            (a as u32) | ((b as u32) << 8) | ((c as u32) << 16) | ((d as u32) << 24)
+        }
+        // drivers/gpu/drm/drm_fourcc.c: num_planes, cpp, hsub, vsub.
+        for (format, code, planes, cpp, hsub, vsub) in [
+            (DRM_FORMAT_NV12, fourcc(b'N', b'V', b'1', b'2'), 2, [1, 2, 0], 2, 2),
+            (DRM_FORMAT_NV21, fourcc(b'N', b'V', b'2', b'1'), 2, [1, 2, 0], 2, 2),
+            (DRM_FORMAT_YUV420, fourcc(b'Y', b'U', b'1', b'2'), 3, [1, 1, 1], 2, 2),
+            (DRM_FORMAT_YVU420, fourcc(b'Y', b'V', b'1', b'2'), 3, [1, 1, 1], 2, 2),
+            (DRM_FORMAT_YUYV, fourcc(b'Y', b'U', b'Y', b'V'), 1, [2, 0, 0], 2, 1),
+            (DRM_FORMAT_UYVY, fourcc(b'U', b'Y', b'V', b'Y'), 1, [2, 0, 0], 2, 1),
+            (DRM_FORMAT_P010, fourcc(b'P', b'0', b'1', b'0'), 2, [2, 4, 0], 2, 2),
+        ] {
+            assert_eq!(format, code);
+            let info = drm_format_info(format).unwrap();
+            assert_eq!((info.num_planes, info.cpp, info.hsub, info.vsub, info.is_yuv),
+                (planes, cpp, hsub, vsub, true), "{format:#x}");
+        }
+        for format in [DRM_FORMAT_R8, DRM_FORMAT_XRGB8888, DRM_FORMAT_ABGR16161616F] {
+            let info = drm_format_info(format).unwrap();
+            assert_eq!((info.num_planes, info.cpp[0], info.is_yuv),
+                (1, gpu_storage_format_cpp(format).unwrap(), false));
+        }
+        assert_eq!(drm_format_info(0x34324752 /* RGB888 */), None);
+        // A 5x3 NV12 frame: 5x3 luma, 3x2 chroma pairs.
+        let nv12 = drm_format_info(DRM_FORMAT_NV12).unwrap();
+        assert_eq!((nv12.plane_width(5, 1), nv12.plane_height(3, 1)), (3, 2));
+        assert_eq!((nv12.min_pitch(5, 0), nv12.min_pitch(5, 1)), (5, 6));
+        // An odd-width YUYV row still ends with a whole Y0,Cb,Y1,Cr group.
+        let yuyv = drm_format_info(DRM_FORMAT_YUYV).unwrap();
+        assert_eq!((yuyv.min_pitch(5, 0), yuyv.row_bytes(5, 0)), (10, 12));
+        // Every format is listed once.
+        for (i, a) in DRM_FORMATS.iter().enumerate() {
+            assert!(DRM_FORMATS[i + 1..].iter().all(|b| b.format != a.format));
+        }
     }
 
     #[test]
@@ -5841,6 +6559,23 @@ mod dri_tests {
             DRM_IOCTL_MODE_ADDFB2,
             ioc(iowr, 'd' as u32, 0xb8, size_of::<WpkDrmModeFbCmd2>() as u32)
         );
+        // LP64 drm_wait_vblank: 8-byte signal / tval_sec / tval_usec.
+        assert_eq!(DRM_IOCTL_WAIT_VBLANK_WASM64, ioc(iowr, 'd' as u32, 0x3a, 24));
+        assert_eq!(
+            DRM_IOCTL_MODE_ADDFB,
+            ioc(iowr, 'd' as u32, 0xae, size_of::<WpkDrmModeFbCmd>() as u32)
+        );
+        assert_eq!(DRM_IOCTL_MODE_GETGAMMA, ioc(iowr, 'd' as u32, 0xa4, 32));
+        assert_eq!(DRM_IOCTL_MODE_SETGAMMA, ioc(iowr, 'd' as u32, 0xa5, 32));
+        assert_eq!(DRM_IOCTL_MODE_DIRTYFB, ioc(iowr, 'd' as u32, 0xb1, 24));
+        assert_eq!(DRM_IOCTL_MODE_CREATEPROPBLOB, ioc(iowr, 'd' as u32, 0xbd, 16));
+        assert_eq!(DRM_IOCTL_MODE_DESTROYPROPBLOB, ioc(iowr, 'd' as u32, 0xbe, 4));
+        assert_eq!(
+            DRM_IOCTL_MODE_GETFB2,
+            ioc(iowr, 'd' as u32, 0xce, size_of::<WpkDrmModeFbCmd2>() as u32)
+        );
+        assert_eq!(DRM_IOCTL_GET_UNIQUE, ioc(iowr, 'd' as u32, 0x01, 8));
+        assert_eq!(DRM_IOCTL_GET_UNIQUE_WASM64, ioc(iowr, 'd' as u32, 0x01, 16));
     }
 
     #[test]
@@ -5869,6 +6604,10 @@ mod dri_tests {
         assert_eq!(size_of::<WpkDrmModeGetProperty>(), 64);
         assert_eq!(size_of::<WpkDrmModeGetBlob>(), 16);
         assert_eq!(size_of::<WpkDrmModeCursor>(), 28);
+        assert_eq!(size_of::<WpkDrmModeAtomic>(), 56);
+        assert_eq!(core::mem::offset_of!(WpkDrmModeAtomic, objs_ptr), 8);
+        assert_eq!(core::mem::offset_of!(WpkDrmModeAtomic, reserved), 40);
+        assert_eq!(core::mem::offset_of!(WpkDrmModeAtomic, user_data), 48);
     }
 
     #[test]
@@ -5920,6 +6659,9 @@ mod dri_tests {
         assert_eq!(DRM_IOCTL_AUTH_MAGIC, ioc(IOC_WRITE, d, 0x11, 4));
         assert_eq!(DRM_IOCTL_MODE_CREATE_LEASE, ioc(iowr, d, 0xc6, 24));
         assert_eq!(DRM_IOCTL_MODE_CLOSEFB, ioc(iowr, d, 0xd0, 8));
+        assert_eq!(DRM_IOCTL_MODE_ATOMIC,
+            ioc(iowr, d, 0xbc, size_of::<WpkDrmModeAtomic>() as u32));
+        assert_eq!(DRM_MODE_ATOMIC_FLAGS, 0x0703);
     }
 }
 
@@ -5934,7 +6676,7 @@ mod gl_tests {
         assert_eq!(size_of::<GlSubmitInfo>(), 8);
         assert_eq!(size_of::<GlContextAttrs>(), 16);
         assert_eq!(core::mem::offset_of!(GlContextAttrs, share_context_id), 4);
-        assert_eq!(core::mem::offset_of!(GlContextAttrs, reserved), 8);
+        assert_eq!(core::mem::offset_of!(GlContextAttrs, flags), 8);
         assert_eq!(core::mem::offset_of!(GlContextAttrs, context_id), 12);
         assert_eq!(size_of::<GlSurfaceAttrs>(), 32);
         assert_eq!(size_of::<GlSurfaceCreateInfo>(), 36);
@@ -5942,6 +6684,13 @@ mod gl_tests {
         assert_eq!(core::mem::offset_of!(GlSurfaceFrontCopyInfo, copy_target_bo),20);
         assert_eq!(size_of::<GlQueryInfo>(), 24);
         assert_eq!(size_of::<GlQueryInfo64>(), 40);
+        assert_eq!(size_of::<GlSubmitQueryResult>(),16);
+        assert_eq!(size_of::<GlSubmitQueryInfo>(),48);
+        assert_eq!(size_of::<GlSubmitQueryInfo64>(),64);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo,query),8);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo,result),32);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo64,query),8);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo64,result),48);
         assert_eq!(core::mem::offset_of!(GlQueryInfo64, in_buf_ptr), 8);
         assert_eq!(core::mem::offset_of!(GlQueryInfo64, in_buf_len), 16);
         assert_eq!(core::mem::offset_of!(GlQueryInfo64, out_buf_ptr), 24);
@@ -5952,6 +6701,27 @@ mod gl_tests {
     #[test]
     fn cmdbuf_len_is_one_mib() {
         assert_eq!(CMDBUF_LEN, 1024 * 1024);
+    }
+
+    #[test]
+    fn image_container_receipt_sizes_preserve_legacy_and_opt_in_layouts() {
+        assert_eq!(QUERY_REPLY_MAGIC, 0x4751_4c33);
+        assert_eq!(IMAGE_MUTATION_LEGACY_REPLY_BYTES, 3 * 4);
+        assert_eq!(IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES, 4 * 4);
+        assert_eq!(IMAGE_DELETION_CONTAINERS_REPLY_BYTES, 5 * 4);
+    }
+
+    #[test]
+    fn error_drain_layout_matches_c_and_typescript_mirrors() {
+        // Mirrored by WPK_GL_ERROR_DRAIN_* (libc/glue/gl_abi.h) and
+        // GL_ERROR_DRAIN_* (host/src/webgl/ops.ts).
+        assert_eq!(error_drain::REQUEST, 0x4744_524e);
+        assert_eq!(error_drain_receipt::REQUEST,0x4752_4350);
+        assert_eq!(error_drain_receipt::REQUEST_BYTES,12);
+        assert_eq!(error_drain_receipt::REPLY_BYTES,52);
+        assert_eq!(error_drain::REQUEST_BYTES, 8);
+        assert_eq!(error_drain::CAPACITY, 8);
+        assert_eq!(error_drain::REPLY_BYTES, 44);
     }
 
     #[test]
@@ -5971,10 +6741,14 @@ mod gl_tests {
             OP_PIXEL_STOREI,
             OP_BLEND_FUNC_SEPARATE,
             OP_BLEND_EQUATION_SEPARATE,
+            OP_CLIENT_ERRORS,
+            OP_ERROR_OBSERVED,
+            OP_TRANSPORT_ERROR_OBSERVED,
             OP_GEN_BUFFERS,
             OP_DELETE_BUFFERS,
             OP_BIND_BUFFER,
             OP_BUFFER_DATA,
+            OP_BUFFER_DATA_SNAPSHOT,
             OP_BUFFER_SUB_DATA,
             OP_GEN_TEXTURES,
             OP_DELETE_TEXTURES,
@@ -5992,6 +6766,7 @@ mod gl_tests {
             OP_ATTACH_SHADER,
             OP_LINK_PROGRAM,
             OP_USE_PROGRAM,
+            OP_USE_PROGRAM_JOURNAL,
             OP_BIND_ATTRIB_LOCATION,
             OP_DELETE_PROGRAM,
             OP_DETACH_SHADER,
@@ -6003,10 +6778,21 @@ mod gl_tests {
             OP_UNIFORM4F,
             OP_UNIFORM_MATRIX4FV,
             OP_UNIFORM4FV,
+            OP_UNIFORM_UPLOAD_BEGIN,
+            OP_UNIFORM_UPLOAD_CHUNK,
+            OP_UNIFORM_UPLOAD_COMMIT,
+            OP_UNIFORM_UPLOAD_CANCEL,
             OP_ENABLE_VERTEX_ATTRIB_ARRAY,
             OP_DISABLE_VERTEX_ATTRIB_ARRAY,
             OP_VERTEX_ATTRIB_POINTER,
             OP_DRAW_ARRAYS,
+            OP_DRAW_CLIENT_ARRAYS,
+            OP_DRAW_BUFFER_SNAPSHOTS,
+            OP_DRAW_FRAMEBUFFER_SNAPSHOTS,
+            OP_DRAW_PREPARED_SNAPSHOTS,
+            OP_DRAW_PREPARED_INLINE,
+            OP_DRAW_PREPARED_INLINE_COMPACT,
+            OP_CLEAR_FRAMEBUFFER_SNAPSHOT,
             OP_DRAW_ELEMENTS,
             OP_VERTEX_ATTRIB_4FV,
             OP_GEN_VERTEX_ARRAYS,
@@ -6076,10 +6862,22 @@ mod gl_tests {
             QOP_BIND_BUFFER,
             QOP_DELETE_BUFFER,
             QOP_SURFACE_CAPABILITIES,
+            QOP_CONTEXT_RESET_SCOPE,
+            QOP_CREATE_SHADER_PROGRAM,
+            QOP_PROGRAM_MUTATION,
+            QOP_PROGRAM_CAPTURE,
+            QOP_PROGRAM_JOURNAL,
+            QOP_PROGRAM_JOURNAL_BARRIER,
+            QOP_ERROR_DRAIN_RECEIPT,
             QOP_CREATE_FENCE,
             QOP_FENCE_STATUS,
             QOP_RELEASE_FENCE,
             QOP_FLUSH,
+            QOP_COMPRESSED_UPLOAD,
+            QOP_SERVER_WAIT,
+            QOP_EXPORT_FENCE,
+            QOP_OBJECT_CAPTURE,
+            QOP_READBACK_CAPTURE,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

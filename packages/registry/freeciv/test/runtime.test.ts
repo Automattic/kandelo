@@ -35,11 +35,12 @@ async function boot() {
   const host = new NodeKernelHost({
     rootfsImage: await fs.saveImage(),
     // The archive records its package-mirror path, which the lazy-asset
-    // directory resolves to `<directory>assets/programs/wasm32/freeciv.zip`.
+    // directory resolves to
+    // `<directory>assets/programs/wasm32/freeciv-browser-bundle/freeciv.zip`.
     rootfsLazyUrlBase: "https://freeciv.test/",
     rootfsLazyAssetDirectory: "https://freeciv.test/",
     rootfsLazyAssets: [{
-      url: "https://freeciv.test/assets/programs/wasm32/freeciv.zip",
+      url: "https://freeciv.test/assets/programs/wasm32/freeciv-browser-bundle/freeciv.zip",
       bytes: archive.bytes,
       sha256: archive.integrity.sha256,
       size: archive.bytes.byteLength,
@@ -77,6 +78,7 @@ describe.skipIf(!bundle)("Freeciv package runtime", () => {
       await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
       const port = (reservation.address() as { port: number }).port;
       await new Promise<void>((resolve) => reservation.close(() => resolve()));
+      const before = output().length;
       const { exit } = await host.spawnFromVfs(
         "/usr/libexec/freeciv/server.wasm",
         ["freeciv-server", "--Announce", "none", "--bind", "127.0.0.1", "--port", String(port),
@@ -86,11 +88,16 @@ describe.skipIf(!bundle)("Freeciv package runtime", () => {
           ownedJob: { id: `freeciv-server-${extra.length}`, timeoutMs: 60_000 } },
       );
       expect(await exit, output()).toBe(0);
+      // The server can exit successfully after rejecting a console setting.
+      // A save/reload alone would therefore pass with a misspelled workload.
+      expect(output().slice(before)).not.toMatch(
+        /^(?:Option ['"][^'"]+['"] not recognized\.|Unknown command\b)/im,
+      );
     };
     try {
       await run([], [
         "set minplayers 0", "set aifill 2", "set endturn 2", "set saveturns 1",
-        "set timeout 1", "set firsttimeout 1",
+        "set timeout 1", "set first_timeout 1",
         "set mapsize PLAYER", "set tilesperplayer 50", "start", "",
       ].join("\n"));
       const saves = (await host.readDirFromVfs("/home/maker")) ?? [];

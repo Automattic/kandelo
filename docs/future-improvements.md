@@ -111,10 +111,11 @@ When `host_call_signal_handler` fails (invalid function table index, handler thr
 Anonymous `MAP_SHARED` inherits one host-owned backing across fork; SysV SHM,
 mappings of files the kernel owns, and stable-identity host-file mappings
 share backings across separately attached or mapped processes. Because each
-PID still owns a different WebAssembly `Memory`, coherence happens only when a
-process crosses a syscall boundary: the host (for the objects whose bytes it
-owns) or the kernel (`SharedMappingTable`) merges bytes changed relative to
-that process's snapshot and then imports peer changes. A direct store does not immediately change another
+PID still owns a different WebAssembly `Memory`, coherence happens only at
+syscall boundaries: the host (for the objects whose bytes it owns) or the
+kernel (`SharedMappingTable`) merges bytes changed relative to a process's
+snapshot and then imports peer changes, the kernel's half when a peer's
+syscall completes. A direct store does not immediately change another
 PID's memory, and futex WAIT/WAKE cannot target the peer's separate
 `SharedArrayBuffer`.
 
@@ -148,14 +149,27 @@ of one file converge at syscall boundaries.
 including `/tmp` and `/dev/shm`, and memfds) are kept coherent by the
 kernel's shared-mapping table (`SharedMappingTable` in
 `crates/runtime-core/src/memory.rs`), which pins the file for its mappings
-and sees descriptor writes through a per-file content generation. Its own
-gap: a sole writer with no live peer publishes only at `msync`, `munmap`,
-`exec`, exit or when another mapping joins, so a descriptor `read` of the
-file does not see a fresh store before then, where Linux's unified page
-cache would. The host kind closes this by publishing every observer before
-a descriptor syscall touches the file's bytes
-(`flushSharedMappingsBeforeFileSyscall`); the kernel has no such
-pre-syscall publication yet.
+and sees descriptor writes through a per-file content generation. It
+publishes every mapping of a file before a descriptor syscall touches the
+file's bytes (`descriptor_fence_for`), as the host does for its kind, and
+pulls mappings lazily, when a peer's syscall completes, skipping processes
+the host proves have not run since their last pull. What remains is cost
+rather than a semantic gap, in order of expected value:
+
+- the host still enters the kernel at every syscall *entry* of a process
+  holding a kernel-owned mapping, only to synchronize SysV attachments; a
+  process with file mappings alone could skip that call;
+- the quiescence query is one host import per pulled process; a completion
+  that pulls many processes could ask once for all of them;
+- kernel-direct wait completions (`publish_transfer_directly`) are refused
+  for any process with a shared mapping and could run the completion pull
+  in the kernel instead;
+- SysV attachments, host-owned anonymous and host-file mappings, and DRI
+  CPU-buffer import synchronization still compare at every boundary, and
+  could adopt the same pull-and-prove protocol;
+- a comparison still reads the whole mapping. Only a store barrier in the
+  SDK (a program-ABI change with a per-store cost) could make it
+  proportional to the bytes actually written.
 
 Both kinds share the observable VM gaps: stores beyond the current file
 size are zero-filled or discarded instead of raising Linux `SIGBUS`, and
@@ -191,6 +205,302 @@ existing Linux-VT guests working and preserve Node/browser parity.
 `host/src/framebuffer/browser-controls.ts`
 (`encodeLinuxMediumRawKeyCode`), `crates/shared/src/ioctl_contract.rs`,
 `docs/posix-status.md`
+
+### Fix the three UDP routing defects behind both hosts' expected failures
+
+PR #1600 made the Node and browser conformance runners boot the same machine (eth0 at 10.0.2.15/24 behind the egress gateway), and three UDP defects then showed up identically on both. They stay listed in `UDP_EXPECTED_FAIL` (`scripts/sortix-expectations.sh`), each with its exact output, and are described in `docs/posix-status.md`:
+
+- **A loopback source routed off the machine.** A UDP socket bound to `127.0.0.1` (for example by an earlier `connect(127.0.0.1)`) can `connect()` to an off-machine address and keeps its loopback source. Linux refuses that route with EINVAL once a route exists (`udp/connect-loopback-reconnect-wan-getsockname`, which prints `127.0.0.1:same port`).
+- **No local delivery to the machine's own address.** A datagram sent to the machine's own eth0 address is handed to the egress gateway, which answers EHOSTUNREACH, instead of being delivered on the machine (`udp/cross-netif-loopback-send-lan-recv`). Linux keeps its own addresses in the local routing table.
+- **The link's broadcast address cannot be bound.** `EgressLink.bindUdp` refuses `10.0.2.255` with EADDRNOTAVAIL; Linux allows binding a local broadcast address (`udp/bind-lan-subnet-broadcast`).
+
+Each fix changes what an existing call returns, so they need an ABI version bump and a regenerated `abi/snapshot.json` (`docs/abi-versioning.md`). Remove the three entries from `UDP_EXPECTED_FAIL` in the same change and update `docs/posix-status.md`. The two remaining entries (`connect-wan-send-reconnect-loopback-send`, `shutdown-r-send`) are the real boundary: no UDP datagram leaves the machine.
+
+**Files:** `crates/runtime-core/src/syscalls.rs` — `sys_connect_impl`, `udp_send_datagram`, `cross_process_loopback_udp_route`; `host/src/networking/egress-link.ts` — `bindUdp`; `scripts/sortix-expectations.sh`
+
+### Close the POSIX gaps both hosts list as expected Sortix failures
+
+Since PR #1600 the Node and browser Sortix runners share their expected failures, so these gaps are listed once, with recorded reasons:
+
+- **`pathconf(_PC_FILESIZEBITS)` is indeterminate.** `filesystem_pathconf_value` returns -1 for it on every filesystem (`basic/unistd/pathconf`, `fpathconf`). Each filesystem should report the bit width it can actually address. Check that file offsets beyond that width fail with EFBIG rather than wrapping; a 64-bit offset narrowed to `usize` in the 32-bit kernel is a suspected case, not yet verified.
+- **Thread CPU-time clocks are not recognized.** musl encodes a thread's CPU clock from `pthread_getcpuclockid()` as `(-tid-1)*8+6`; `host_clock_id` only recognizes the process encoding, so `clock_gettime` returns EINVAL (`basic/pthread/pthread_getcpuclockid`). More broadly, the CPU-time clocks report elapsed monotonic time rather than CPU usage (`docs/posix-status.md`).
+- **There is no `/dev/log` receiver.** `openlog`/`syslog` find nothing to connect to (`basic/syslog/closelog`, `syslog`). A kernel-owned datagram receiver with a bounded, readable log would close it.
+
+Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a pass on an expected failure fails the run on both hosts.
+
+**Files:** `crates/runtime-core/src/syscalls.rs` — `filesystem_pathconf_value`, `host_clock_id`, `is_encoded_process_cpu_clock_id`; `scripts/sortix-expectations.sh`
+
+## Graphics
+
+The current normal partial B1 preview now includes the private-selector and
+framebuffer-retirement corrections. The combined prepared-kernel matrix passes
+378 native browser cases on three engines; the current normal application
+snapshot separately passes six browser and six Node admission controls.
+Full compiler checking still fails24 diagnostics. Optional CTS provisioning,
+complete B1 validation and current-tree physical latency/overhead measurements
+remain required. The private B2 cold-preparation draft passes2229 local source
+controls after correcting a refused finalizer and old-checkout fixture imports;
+it is neither landed nor guest-connected. These are current-iteration tasks.
+
+Framebuffer deletion now reserves native cleanup ownership before reversible
+selector changes and commits retirement after logical deletion. A refused live
+native deletion reports a fatal fault and retains its cleanup receiver; it no
+longer loses the handle after a predicted deletion. Focused source/native
+coverage is recorded in the compatibility ledger. Current full conformance,
+application performance and final stage acceptance remain required.
+
+Private client-array savepoints and widened/padded index selectors now retain
+exact restoration checks inside predicted guest batches. The earlier promoted
+index regression used a zero index and never exercised promotion; its corrected
+valid maximum-byte-index draw proves one native widened draw and an actual
+refused restoration on all three engines. The focused capture/promotion gate
+passes six cases. Broader current-tree validation and performance measurements
+remain required; these private-path checks are not a performance claim or B1
+completion. Guest acceptance remains predicted, and the direct index path gains
+no restoration check.
+
+The guest-driver migration and GPU worker below are now required work in
+the GLES 2.0, EGL 1.5, GBM and single-display KMS baseline (draft PR #1594),
+following the maintainer's 2026-11-03 revision of D-54. They remain
+unimplemented targets rather than supported behavior. The other graphics
+items retain their recorded deferrals. The decisions and their evidence are recorded in
+[the graphics compatibility ledger](graphics/compatibility-v1.md).
+
+### Move GL authority into the guest library and the Rust kernel (current iteration)
+
+Required before this baseline ships. Today the guest
+GLES library encodes commands while the TypeScript host validates them as
+the acceptance authority. Native errors are sampled at batch boundaries
+for context-reset diagnostics rather than guest acceptance. Following Mesa's split, the guest library should own
+GL state, validation, error flags and state queries ("Stage B": local
+`glGetError` for exactly validated commands, asynchronous binds, local state
+queries, program interface fetched once per link, kernel-native GL fences,
+inline client-array `glDrawElements`), and the Rust kernel should own
+submission scheduling, foreign-fence dependencies and fence completion
+("Stage C1"). TypeScript then remains a thin WebGL command executor. This is
+also the planned migration of host GL logic out of TypeScript. Asynchronous
+binds also fix the dEQP-EGL `gles2_shared_render` timeouts, where every
+`glBindTexture` is a synchronous round trip.
+
+Private buffer and image copies retain exact native checks until their
+results can be published safely. Image refresh counts remain stale on failure,
+and possible writes stay counted through reset unwinding. Shared native
+container retargeting also retains exact checks before generation publication;
+a submitting-context reset cannot leave a healthy peer attached to a different
+generation from the one sampling observes. Moving validation
+into the guest must preserve this host storage-validity contract.
+Pending repair after a known host rejection also retains exact native
+restoration checks independently of the active guest batch's predictor.
+The complete remaining native/image audit still needs closure.
+
+The initial B1 source increments preserve local error knowledge across
+scalar and argument-validated setters, retaining the ordinary host command
+records. Ordered error observations clear locally returned flags at the
+same stream position; the fatal audit checks the independent host oracle.
+Unknown operations and ordinary device requests still force a drain. A fully
+checked synchronous mutation receipt can preserve an existing exact proof
+when context, cursor and request-count checks establish that it added no
+error; this does not make binds asynchronous. Array-buffer storage also
+preserves the proof when its binding is separately known. Indeterminate
+mutations revoke binding certainty; an ordinary error drain cannot repair it,
+and storage uses a checked binding-presence query until an acknowledged bind.
+Element-buffer/VAO and large-upload sub-data paths remain conservative.
+Ordinary vertex layouts now reuse existing host slots and can preserve error
+knowledge for the default-VAO scope with known bindings and slots. Converted
+layouts, first installations, nondefault-VAO history and uncertain state
+retain their conservative paths; full attribute/draw authority is unfinished.
+Program selection now has shared C names, current-context references, cold
+native executable captures and checked host-journal transport. Its explicitly
+admitted C prototype connects bounded pending/result custody, generation-token
+caching and ordered shared publication. Ordinary applications now enter it
+automatically at their first eligible program selection, while unknown
+records retain checked validation. Full loss/final-context audit closure and
+application acceptance remain required. A positive link-status cache without complete ownership
+fails a newly shared pthread deletion regression; that prototype
+was not landed. This ownership remains required current-iteration work.
+This is only the start of B1: the remaining exact validation families and their audit
+coverage and application measurements remain required before B1 is complete.
+The maintainer kept asynchronous bindings in B2 and moved the ScummVM <=10
+total synchronous requests per produced buffer gate to B2 completion on
+2026-11-05; all other stage and final gates remain required.
+Completing program selection alone does not
+finish the remaining attribute/draw and other required hot-path validation.
+B2–B6 and C1–C3 remain current-iteration work; no completed driver stage or
+native-feel result follows from the
+focused scalar controls.
+
+A focused native-reset interruption during shared metadata publication now
+recovers only the snapshot-proven prefix and moves its unentered suffix to a
+healthy publisher. Shader public names retire before fallible cleanup, with
+cold native custody surviving the reset. Multiple-owner and inconsistent-
+snapshot controls preserve healthy rendering and explicit pre-exit cleanup.
+Remaining execution-loss, failed-prefix and final-context cases
+still gate ordinary activation; this does not complete B1 or native feel.
+An independent physical-loss control finds the last metadata publisher's
+unsubmitted intents can block backend context destruction. Public context and
+execution ownership remain before process exit despite successful EGL calls.
+Fix that lifecycle path and preserve its independent pre-exit regression.
+
+Error drains now reserve a fixed context receipt and seal each completed
+transfer before copying it to the guest. Lost or malformed replies recover
+read-only without replaying the drain or consuming a later same-valued error.
+The original one-request successful path remains; failure-only recovery must
+then observe fresh queued work before local error knowledge can resume. This
+closes the targeted error-reply custody gap, with native controls and real
+GPU checks on three engines/both widths. Full B1 conformance, loss/final-context
+audit, application measurements and complete preview remain required.
+
+Ordinary link/use no longer pays for an unused selected/prepared executable
+capture cache. Admitted journal caches acquire cold pins only when needed,
+including authoritative unknown-link observations. Focused request-count and
+fault controls cover this increment. Automatic admission now has focused
+three-engine coverage; application latency and full B1 acceptance still
+need validation.
+
+Native desktop measurement remains current-iteration work alongside the driver.
+The owned-window observer now has bounded pixel matching with six headless
+engine/render-mode control cohorts. First-visibility bounds retain capture
+coalescing uncertainty. The moving-pixel controller now fits viewport coordinates and validates native
+pose identities, with passing headless replay on three engines. Its revised
+native-raster learning path now passes a physical Chromium replay on an
+older frozen partial-B1 desktop: Foot, Foot under concurrent ScummVM load,
+and ScummVM's red software cursor, eight responses per cohort with no-op
+controls. It uses actual WindowServer display bounds, not synthetic clocks.
+The final combined tree, Firefox/WebKit physical desktop runs, with/without
+SFWBar, all interaction workloads, stable latency tails, missed frames,
+CPU and total instrumentation overhead remain required. See the
+[native method record](measurements/2026-11-04-native-desktop-cursor-method.md).
+Preserved calibration/screenshot failures do not count as guest latency or
+acceptance; the successful method run does not establish native feel.
+
+Those earlier rows used independent-window capture, which can retain occluded
+content. They establish pixel classification and clock-method evidence, not
+unoccluded selected-display timing. The current tooling adds a display crop
+without exclusions, exact window/overlay authority, persistent original-input
+and refused-tail evidence, and an informative-lower-bound delay qualifier.
+Node, headless three-engine and native model/compiler controls cover that
+source; actual unlocked selected-display calibration remains current-iteration
+work. Sparse capture is explicitly uncertain, and presentation completeness,
+application response oracles, exact worker CPU and total observer overhead
+remain required before any native-feel claim.
+
+This migration must preserve ordinary shared-memory Wayland clients. The
+baseline removes the Foot, mako, GTK and Qt DRM-pool rewrites now that
+wlcompositor maps memfd pools; future graphics transport and scheduling
+must keep that platform behavior and its Node CPU-renderer coverage.
+Mapped BO imports also need receive-completion coherence: a producer may
+publish another buffer update after the consumer's readiness wake. Moving
+execution or queues must preserve that happens-before edge, including when
+a receive writes directly into a mapped buffer. A writer's baseline must
+also advance from the exact bytes published, rather than a later reread of
+its live mapping, so concurrent stores cannot become clean without ever
+reaching canonical storage.
+
+### Run WebGL in a dedicated GPU worker (current iteration)
+
+Designed but not built: a GPU worker owning one WebGL context executes an
+ordered command ring copied at submit, while the kernel keeps buffer, fd and
+fence authority as DRM does. Implement after Stage B, first proving Rust
+queue/fence semantics on the kernel thread (C1), then separating the executor
+(C2), then moving it to the GPU worker (C3). Land and measure each stage
+separately. The maintainer now requires this isolation in the current
+iteration as part of native desktop feel, even if the earlier minimum bar
+is met. Direct guest-to-GPU-worker submission (user-mode queues) remains
+deferred under D-51; reconsider it only with measured submit-hop costs.
+
+### Rework the CI browser job
+
+The CI browser path now calls the supported `./run.sh prepare-browser`, a full
+local build that may exceed the job's time limit on a cold cache. CI does not
+run today and will be reworked before it resumes; budget the build then.
+
+### Implement OpenGL ES 3.0 contexts
+
+Deferred because Cage, Sway and Labwc (through the wlroots GLES2 renderer),
+SFWBar, the current ScummVM path and Kandelo's own wlcompositor (the
+`wayland` and `omarchy` desktops) all use GLES 2, so ES 3.0 was not on the
+desktop's critical path and would roughly double conformance-testing time.
+WebGL 2 is close to ES 3.0, so most entry points map directly; the real work
+is where WebGL 2 falls short: `glMapBufferRange` (a guest-side shadow with
+write-back), ETC2/EAC texture formats (CPU decode where the browser lacks
+them), texture swizzle state (shader variants), primitive restart that cannot
+be disabled, and sync timeouts that must be polled. EGL needs ES3 configs and
+contexts, and dEQP-GLES3 must be packaged and inventoried. A full design and
+work breakdown is in the 2026-11-01 expansion plan (units G0-G13 and GC).
+Today an ES 3 context request fails with `EGL_BAD_MATCH`.
+
+### Render GL on the Node host
+
+Deferred because Node has no WebGL, so GL rendering there needs a software or
+GPU renderer for Node, for example a GLES-on-WebGPU backend over Dawn's Node
+bindings or a headless WebGL 2 implementation. Without an embedder-supplied
+WebGL 2 renderer, `eglInitialize` fails with `EGL_NOT_INITIALIZED` on Node, as
+it does in a browser without WebGL 2. The Node desktop still runs on the CPU
+compositor, and the browser engines carry GL parity testing until this lands.
+
+### Support `EGL_WL_bind_wayland_display` and GBM Wayland-buffer import
+
+Deferred because modern clients and wlroots share buffers through
+linux-dmabuf; the legacy `wl_drm` path this extension serves is not used by
+any program in the current stack. Implementing it means a `wl_drm` server
+global in libEGL, `eglBind/Unbind/QueryWaylandBufferWL`, and the GBM lookup
+behind `gbm_bo_import(GBM_BO_IMPORT_WL_BUFFER)`. That import fails with
+`EINVAL` today, which is also Mesa's behavior when no `wl_drm` is bound.
+
+### Advertise the remaining optional wlroots GL extensions
+
+`GL_EXT_disjoint_timer_query` (wlroots render timers),
+`GL_EXT_texture_type_2_10_10_10_REV` and `GL_EXT_texture_norm16` (10- and
+16-bit client buffers) and `GL_KHR_debug` (debug logging) were deferred
+because no program in the current stack needs them; wlroots works without
+them. Timer queries depend on browser support that Firefox and Safari do not
+reliably provide. `GL_KHR_robustness` and `GL_EXT_read_format_bgra`, which
+wlroots does use, are implemented.
+
+### Expose more than one KMS display
+
+Deferred because no current program needs a second monitor; wlroots can
+already create headless virtual outputs without KMS changes. Multiple
+displays mean extra CRTC/encoder/connector/plane pipes from boot, per-CRTC
+vblank, hotplug through real `NETLINK_KOBJECT_UEVENT` events, one browser pane
+per display, pointer mapping per output, and a measured presentation path,
+since secondary displays may otherwise need a full-frame copy per frame.
+Kandelo exposes one connector and one CRTC today.
+
+### Port IGT and add a `sw_sync` test device
+
+IGT GPU Tools is the Linux graphics community's DRM/KMS uAPI test suite.
+Porting it was deferred because it is substantial (its C tests, a runner, and
+a `sw_sync` timeline test device its sync tests need). Until then, Kandelo's
+KMS, GBM and sync-object coverage comes from Rust and guest tests that mirror
+IGT subtests by name, plus Cage, Sway and Labwc as real consumers.
+
+### Build the compositor packages for wasm64
+
+Deferred because no program needs wasm64 compositors and the wasm32 builds
+work. The foundation is in place: a wasm64 Meson cross file and an
+architecture-aware package build-roots helper. What remains is libffi's
+wasm64 dispatch and closures, a wasm64 Rust target (for librsvg), porting
+about 30 libraries (glib, cairo, pango, libinput, libwayland and others),
+wlroots, Cage, Sway and Labwc, and deciding which images ship which
+architecture and with what memory ceilings on WebKit.
+
+### Offer 10-bit and half-float window surfaces
+
+Deferred because no program in the current stack requests them. EGL window
+configs and `gbm_surface` are 8 bits per channel; 10-bit and FP16 buffers are
+already supported for GBM allocation, EGL dma-buf import and KMS scanout
+(reduced to 8 bits per channel on the 8-bit canvas). Window surfaces would
+need new EGL configs, matching present-target formats and front-copy
+conversion.
+
+### Scan out YUV framebuffers on the KMS primary plane
+
+Deferred because players and compositors import YUV video through EGL, which
+is implemented, and a primary plane that offers only RGB formats is
+conformant (each driver defines its planes' formats). Direct YUV scanout, as
+used by `mpv --vo=drm`, would need the presenter to convert YUV to RGB at
+scanout.
 
 ## Browser
 
@@ -332,6 +642,12 @@ certificates in the browser.
 ### PTY terminal integration with xterm.js
 The kernel has full PTY support (PR #181), and browser UI surfaces should use xterm.js-backed PTYs rather than plain `<div>` output with `appendStdinData`. Connecting PTY pairs to xterm.js gives proper terminal rendering (ANSI escapes, cursor, scrollback) and real terminal behavior (isatty=true, proper termios).
 
+### Make the Internals Syscalls tab show live syscalls, with an end-to-end test
+
+Reported on 2026-10-30: the Syscalls tab of the Internals panel shows nothing on a running machine. Not yet investigated. Trace it through the normal path before changing the UI: `SyscallsTab` subscribes with `host.subscribeSyscalls`, which depends on the kernel worker publishing syscall trace events. Add a Playwright spec that boots a machine, opens Internals → Syscalls, and requires live records to appear, so the tab cannot silently go blank again.
+
+**Files:** `apps/browser-demos/pages/kandelo/panes/Inspector.tsx` — `SyscallsTab`; `web-libs/kandelo-session/src/kernel-host.ts`; `host/src/kernel-worker.ts` (syscall trace events)
+
 ## Package artifacts
 
 ### Restore external software gallery support
@@ -461,6 +777,12 @@ mutable host defaults and fail only when a deferred file is first opened.
 
 **Files:** `host/src/vfs/`, `images/vfs/`, package image builders and metadata
 
+### PHP builds differ between checkouts
+
+On 2026-10-30 a full setup in a second checkout of main (`e4bca8639e`) failed with `php@8.5.12: concurrent cache winner differs from staged build`: the shared cache already held a php/wasm32 artifact under the same key, built in another checkout, with different bytes. The build preserved the winner and recorded receipts, and a rerun took php from the cache. An earlier instance of this class was an absolute checkout path embedded in an artifact (`kandelo.calltypes`, fixed in `scripts/build-musl.sh`). Compare the two builds' receipts and bytes to find what php embeds from its checkout, and remove it so builds under one key are identical wherever they run.
+
+**Files:** `packages/registry/php/`, the local-build cache-winner receipts
+
 ## Performance
 
 ### Revisit an optional wasm32 kernel build for IPC-heavy workloads
@@ -552,6 +874,12 @@ dominate, refill within the kernel entry that drained the pipe so the reader
 never observes it empty, and wake only this pipe's readers and pollers. A larger host-stdin pipe would also cut refills,
 at a kernel-memory cost per spawned process. Copies are the less likely cause;
 the bridge module above addresses them.
+
+### Building small fork-instrumented SDL test programs takes minutes
+
+The DRI resize and SDL2 evdev tests each build a small SDL2 program through the SDK, link it against the resolved SDL2, Wayland, xkbcommon and libffi packages, fork-instrument it and stamp it. On 2026-10-30 that took about 153 and 155 s, while the programs themselves ran in about 1 s. PR #1600 moved those builds out of the tests' time limits but did not make them faster. The split between compiling, linking and instrumentation was not measured; measure it first, then decide whether the instrumenter (for example its baseline when compiler facts are unavailable) or the link is the cost.
+
+**Files:** `host/test/support/compile-sdk-fixture.ts`, `scripts/run-wasm-fork-instrument.sh`, `crates/fork-instrument/`
 
 ## Kernel — regressions
 
@@ -803,3 +1131,387 @@ runtime because the callback's call chain was not instrumented.
 
 **Files:** `crates/fork-instrument/src/call_graph.rs` plus a possible
 `instrument::analyze_callback_registrations` pass.
+
+### Commit baseline test results keyed on what each suite reads
+
+Batch PRs classify every failure against main by rebuilding main in a second checkout and rerunning the full suites there, which takes hours and was thrown away each time. Main's known Vitest and Playwright failures lived only in run logs. Commit a small per-suite record of every result other than a plain pass (failure, expected failure, timeout, error, skip, intermittent, each with a one-line reason), plus totals and provenance. Key it not on the commit but on a digest of what the suite actually consumes: the built artifacts it used, the source paths it was measured to read, and the browser and Node versions. A README change then leaves every baseline current, and a reviewer sees a PR's change in results as a diff. A baseline records reality: it never turns a failing run green, and a stale one is never used for classification.
+
+**Files:** new `tests/baselines/`, an xtask command to record, check and classify, `docs/agent-guidance/validation.md`
+
+The A3 reset-scope follow-up keeps D-49/D-50 logical resets local in libc,
+with a checked failure-only receipt and physical-loss share-group propagation.
+Focused native C, host, Rust and browser device-double controls cover it;
+the final normal-built graphics, desktop and browser-memory runs still need
+the resulting archive/kernel/program/image set. This does not complete B1's
+shared program ownership or any B2–B6/C1–C3 stage.
+
+The B1 default-target increment removes error-query requests for a proven
+zero-target bind/clear prefix. It does not complete the shared program/
+executable model or the remaining object/draw error families. Those, B2–B6 and
+C1–C3 remain required in this iteration, with normal SDK artifacts, application
+measurements and the complete native-feel ship bar.
+
+The C driver now maintains typed namespace, current-context and shader
+attachment records through checked creation/mutation receipts. Creation
+metadata is reserved before native publication; cancellation and unknown
+replies preserve ownership. Current selection still waits for its receipt.
+
+The host now exposes optional context-owned executable capture, checked
+selection and release receipts. It ends each context's cache at retirement,
+while accepted work retains independent native custody. A retired execution
+no longer retains a deleted public program name. Internal group captures
+remain private, and stale/peer-owned generations cannot manufacture a valid
+selection. The real three-engine retirement regression and failed/successful
+peer-relink controls are retained in the graphics compatibility ledger.
+
+The C driver now consumes cold capture/release receipts into bounded selected
+and prepared-generation descriptors. Embedded transport storage avoids later C
+reply allocation, uncertain replies stop new captures, and EGL serializes C
+capture/name retirement with acknowledged host context destruction. Checked
+diagnostic program selection remains synchronous. The host logical journal now
+reserves pending/result cells and independent generation/context custody,
+separates logical names from installed execution, and delays host-computed
+errors until their command positions. Checked kernel/host transport now
+validates current-session authority, publishes batches, executes own-context
+selectors and retains recoverable receipts. Wire-only metadata abandoned at
+context/session retirement is reclaimed; accepted asynchronous jobs must gain
+separate slot custody before C1 admission. The explicitly admitted C
+prototype now connects its immutable shared queue,32-entry generation-
+token cache, 256 bounded slots, caller-prefix submission and retained-
+receipt recovery. Ordinary applications now admit eligible selections
+automatically; checked selection remains the diagnostic and unknown-state path.
+Native OOM during connected C selector execution now has passing three-
+engine peer-isolation and explicit retirement controls, including an
+independent ownership sample before process exit. Unexpected exceptions
+in a preflighted journal transaction now latch a fatal host fault before
+further work, and completion is sealed after all receipt fields.
+Completed-copyout recovery remains available. Final B1 acceptance still
+requires closure of the independent native-loss, uncertain-prefix and
+final-context ownership audit. The known lost-final-publisher
+retirement path now reaches backend acknowledgement before releasing its
+exact C receivers. Healthy unadmitted peers can carry metadata through a
+receiver reserved before local acceptance; unavailable reset proof
+retains ownership with a diagnostic. Foreign publication loss marks its
+actual owner through atomic reset/error state, preserving healthy peers
+and unrelated errors. Three-engine physical and logical-loss regressions
+sample complete explicit cleanup before guest exit; they do not replace
+the full audit or application acceptance. The focused interrupted
+logical publication case now recovers only its snapshot-proven prefix.
+Ordered transport-error markers now prevent an earlier retained flag
+from reappearing after successful publication recovery, while preserving
+unrelated flags and later repetitions. Shared dispatch/lifecycle guards
+now nest on the owning thread while retaining peer exclusion and
+cancellation ordering; only the outer name scope reconciles unpublished
+external candidates. Query, submission and EGL retirement hooks now
+publish metadata without flushing foreign mutable encoders. Audit the
+final context collector alongside the remaining failure paths. Reserve
+all fallible ownership/result metadata before local acceptance. Never
+query a destroyed session, flush a foreign mutable encoder or reuse the
+rejected name-only cache. A private native pin does not establish
+logical ownership. These steps remain current-iteration B1 work; cold
+executable custody does not complete B1 or demonstrate an application
+performance improvement. Full B2–B6, C1–C3 and all correctness,
+conformance, memory and native-feel gates remain required in their
+agreed order.
+
+The current B1 prototype now preserves exact error knowledge across a
+fresh large array-buffer definition and its immediate fill in one
+uninterrupted prefix. Refused definitions stop before fill; lost
+accepted binds use actual binding presence while retaining conservative
+error observation. Independent native and three-engine byte/rendering
+controls cover both fixes. In the frozen SDK workload,20 uploads
+of128KiB change from20 to4 device entries; two command-buffer rollovers
+each require a submit and error drain. The other13 measured operation
+families retain their request counts. This is an operation- count result
+against4de407f20f, not main, application latency, total overhead or
+native-feel acceptance. Remaining B1 upload/draw/object families,
+ordinary activation and complete stage validation still need closure before a
+complete normal-built B1 preview. ScummVM's <=10 total-request gate is required
+at B2 completion under the maintainer's stage-allocation decision.
+B2–B6 and C1–C3 remain required in their recorded order.
+
+The admitted B1 prototype now predicts small matrix2/3/4 errors from a
+bounded exact-generation signature cache. The installed executable stays
+independent of mutable public names across peer relinks, rejected
+selections and deletion. Original records retain independent host
+validation. In24 same-engine-version SDK/GPU comparisons, warmed matrix
+calls change20 to0 device requests for admitted contexts; ordinary
+contexts remain20 and the other13 API-family records are identical. Cold
+signature acquisition remains explicit work. This is a prototype
+operation-count result against intermediate1b8, not application latency,
+main or native-feel acceptance. Ordinary activation, remaining required
+hot families, full stage gates and the complete normal-built preview
+remain required; B4's once-per-link public interface cache is still
+separate work.
+
+R395 extends that exact-generation proof to small scalar/vector/boolean
+and sampler setters. All36 GPU modes pass on three engines and both widths,
+including production and fatal audit, with40 correctness/request scenarios
+per mode. Matched old/new admitted wasm32 production controls keep the same
+engine/kernel and original14 family records:38 scenarios change four warmed
+requests to zero and two already-local cases remain zero. The complete
+40-scenario cold totals increase39 to50 requests on each engine; cold work
+is not hidden. Existing native487, graphics2193/88, Node18/6, ABI and evidence709
+checks pass. The full host compiler still fails the identical24 diagnostics.
+This is an SDK operation-count result against intermediate d099, not current
+application or native-feel evidence; remaining B1 draw/attribute authority,
+conformance, matched measurements and complete-preview acceptance remain open.
+Exact scripts, frozen sources, cold/warm records and comparisons are in
+`.context/graphics-uniform-proof-r395/`.
+
+R398/R400 add the owned-generation proof for selected small inline client
+arrays and preserve old pointer metadata when a rollover refuses a new
+attribute definition. Final native488, graphics2193/88, Node18/6 and36 GPU
+modes pass, with the identical24 compiler diagnostics still open. Three of
+seven inline scenarios change four warmed device requests to zero; complete
+warm totals28 to16 and cold7 to11 are retained. Mixed buffers, multiple
+samplers and framebuffer uncertainty preserve observation. Actual ScummVM's
+recorded draws are buffer-backed, so these inline results do not establish
+an application improvement or closure of its draw drains. Required buffer/
+storage authority and actual application/conformance/latency gates remain
+open. See `.context/graphics-inline-proof-r398/` and
+`.context/graphics-pointer-reservation-r400/`; no complete B1 preview is
+announced. The maintainer wants to wait for all B1 changes.
+
+The optional guest-kind signature now distinguishes external and ordinary2D
+samplers despite their identical native setter type, and preserves translated
+cube kinds. Same-kind multi-sampler and array proofs remain scoped to selected
+inline draws; mixed kinds keep observation. Legacy action8 is unchanged;
+action9 is an additive Program contract requiring coherent normal rebuilds
+under the reserved56/3/17/21 family. The Rust entry shape and authority are
+checked independently from host reflection. Required VBO storage and offscreen
+framebuffer authority, actual application/native-feel measurements and full
+B1 acceptance remain unfinished. R414's36 GPU modes, graphics2196/88,
+Node18/6 and ABI/evidence controls pass; the overall command remains failed
+on the identical24 compiler diagnostics. R413 passes3645 workspace Rust
+checks and its normal kernel build. The matched10-scenario browser request
+comparison (warm28→20, cold18→21 on each engine) is operation attribution,
+not application or native-feel evidence; complete records are retained in
+`.context/graphics-sampler-final-r414/`. The full B1 preview notification waits
+for all B1 changes at the maintainer's request.
+
+C publication must also precede EGL lifetime mutations made without a current
+GL binding. The optional0x3c lifecycle barrier now supplies checked metadata-only
+authority through a live owned public context; ordinary0x3b current-thread
+checks and native submission authority are unchanged. The explicitly admitted
+prototype now integrates it into C lifetime guards and the immutable queue.
+Group-level receipt recovery prevents a second publisher from replaying entered
+intents after response loss. Read-only receipt recovery must preserve execution
+loss. Group ownership is checked before inherited fork mutexes are touched.
+Automatic activation, remaining attribute/draw and other required hot paths,
+full B1 correctness/conformance and ScummVM round-trip measurements remain open.
+A foreign mutable encoder is never a source of submitted commands.
+
+The automatic-admission B1 prototype now starts at the first eligible program
+selection, without an application-specific enable call. The checked diagnostic
+mode remains available through KANDELO_GL_CHECKED_PROGRAM_SELECTION, sampled
+once per context. Its focused108-case three-engine gate includes normal
+sharing/creation/target behavior and automatic hot-path controls, while the
+frozen b45e892d35 normal preview build is complete and available separately
+from final validation. The measured pre-fix ScummVM inventory still uses25 GL
+device requests between produced front copies; these are not display timestamps.
+A standalone rejected numeric getter no longer discards independent program-name
+knowledge. Twelve getter/error/output/selection controls per hot-path case pass
+across both widths, three engines and production/fatal modes. Application impact
+has rebuilt request-count evidence below; current-tree latency and full stage
+acceptance remain open. The <=10 target is required at B2 completion.
+Remaining binds and draw/attribute authority
+must follow the measured path rather than inferred uniform costs: decimal query
+43 is QOP_BIND_BUFFER (0x2b), not a uniform setter. The full864-case R298 component
+regression passes, including pre-exit ownership and all new getter proofs.
+Further application tracing shows13 changing ARRAY_BUFFER selectors per front
+interval, so redundant binding elimination does not address that measured path.
+The next normal producer is frozen17d1b52e8a. R340's independent313-file
+snapshot of its successful normal setup now supplies12 checked/automatic
+ScummVM cohorts across three engines: every2055 automatic interval has24
+requests, compared with25 in every2331 checked interval. Both retain13
+buffer binds,3 image binds and6 error drains; automatic selection replaces
+2 program mutations with1 journal barrier. The <=10 target is unmet even
+from binds alone. The maintainer resolved the dependency: bindings remain
+in B2 and the <=10 total-request gate applies at B2 completion. Other
+stage requirements and the final acceptance bar are unchanged. The
+frozenb45 host observer excludes later host correctness fixes. These are
+client-front request counts, not physical latency, display FPS, overhead,
+main or native-feel acceptance. The frozen17d normal producer completes3h25;
+normal admission and final combined-tree checks remain required. R354 later
+checks the combined host/app source against unchanged normal guest sources:
+61 pass,1 Firefox SNKRX interaction failure and4 existing host-clipboard skips
+of66 desktop cases. Cage, labwc, Sway and both SFWBar compositor checks pass
+on all three engines. This does not close the other desktop/performance
+defects or establish a completed stage.
+
+
+R420 adds the host journal's bounded private buffer-copy ownership foundation,
+with focused source and three-engine real-WebGL checks. Optional action10 and OP_BUFFER_DATA_SNAPSHOT now connect it to the existing
+current-context wire, with raw C guest and three-engine GPU regressions. R432–R444 add cold actual-attribute capture, owned buffer-backed draws and
+the ordinary C serial/token cache/encoder connection for eligible default
+targets, with matched three-engine request controls. R461–R470 add eligible
+offscreen target/input generations, raw-target revocation, reusable receivers
+and provenance-safe CPU refusal, with actual C cross-engine controls.
+R472–R493 connect prepared VBO/inline executable and sampling authority and
+bounded journal decoding, with a coherent normal SDK/kernel and336 actual
+three-engine guest cases. Cold pin/variant publication failures retain exact
+native cleanup custody. R490/R497/R498 then close predicted scalar receiver/cache
+allocation, including ordinary GL decoding, with matched actual C and module
+controls. Complete the remaining stage and full application checks within B1;
+do not turn these checkpoints into a new stage boundary or substitute them for
+application measurements. Ordinary decoding CPU cost, duplicate
+upload costs and final machine memory lifecycle remain unmeasured. The complete
+B1 preview still waits for all B1 changes and required
+checks; B2's asynchronous bindings and moved total-request gate remain separate.
+
+The R445 host source-ownership correction closes the24-diagnostic TypeScript
+gate without changing `rootDir`, public distribution paths or ABI. Its combined
+compiler, focused Node/browser TLS, graphics, Node graphics-refusal and normal
+host-build checks pass. Full host/POSIX/memory/benchmark, B1 offscreen ownership,
+normal application preview and native-feel acceptance remain required; the
+compiler fix does not substitute for those gates.
+
+R449 repairs the native ESSL100 macro-conditional and function-parameter/body
+scope controls with the original native validator retained. Its combined
+graphics/compiler/shader/registry checks pass. Direct pinned CTS programs
+initially expose four Firefox struct-hiding failures. R456 closes those direct
+controls and the12 captured long-multiplication compiler controls across three
+engines; its graphics/compiler/shader/registry checks pass. Final actual-guest
+GLES2/EGL execution remains required in this iteration. Direct shader checks do
+not establish conformance, B1 completion or native desktop feel.
+
+R454/R459 close reproduced lazy-failure presentation and attribution gaps:
+unresolved errors survive remount/CSS expiry and new attempts have distinct
+acknowledgement identity. Actual Node and three-engine SW/native integrity
+and verified-reload controls pass. The original Brave/r8 tofu report is still
+an unverified historical cache hypothesis; final normal desktop/font/profile
+and manual verification remain required. R459's historical browser-app compiler
+gate fails126 existing diagnostics, with no additions against its clean baseline.
+R482 closes the compiler gate with complete browser/Node context inventories,
+213 Node tests,176 focused source checks and nine three-engine browser controls.
+R492 then closes the reproduced ownership-audit propagation failure:118 checks
+and the complete739-source graph pass under the unchanged watchdog, with zero
+removed roots and two obsolete allowances removed. Full host-suite and final
+memory/desktop/conformance/benchmark acceptance remain required. The original
+baseline/candidate heap failures stay recorded; no acceptance criterion changes.
+
+
+B1's exact-resource kernel/host foundation replaces recyclable descriptor
+identity with retained file/buffer capabilities and once-only receipts.
+Complete the guest-library ownership/fork connection, coherent normal
+rebuild and all B1 gates before declaring the stage complete. Preserve the
+remaining B1–B6/C1–C3 order and the approved B2 synchronous-request gate.
+The extra same-file bridge traffic exposed by native ownership controls
+must remain in total-request accounting and application measurements.
+Freeciv display correctness, content latency and teardown failures remain
+part of this iteration; focused controls cannot waive native-feel or final
+three-engine acceptance. Remaining driver work, GLES3, IGT and multiple
+displays remain the proposed subsequent iteration.
+
+
+The current-iteration viewport repair separates monitor layout authority
+from guest canvas fitting and prevents terminal/demo row-height changes
+from altering connector modes. Its matched18-case three-engine functional
+comparison passes, but does not establish Freeciv responsiveness. Resolve
+the observed host teardown failures and rerun the final memory, application
+and latency gates in this iteration; those checks are not future deferrals.
+
+
+The guest exact-resource custody connection is now a source checkpoint with
+focused native regressions. Image-generation metadata now has independent source custody and revoked
+borrowed pointers. Finish detached EGL C-lease ownership, then normally rebuild and execute its registered
+Node/browser fixtures and all B1 gates. Those findings remain current work;
+they are not postponed to B2 or the subsequent driver iteration.
+
+Exact clone completion now preserves transferred Worker channels and rolls
+back only untransferred allocations, with focused integration ownership and
+source-audit evidence. Finish combined host retirement/browser-memory and
+the remaining EGL/Wayland continuations in this iteration, then validate
+coherent normal products. These source checkpoints do not complete B1 or
+change its application, conformance or native-feel acceptance criteria.
+
+Host retirement now distinguishes sealed non-construction from actual
+Worker acknowledgements and Node native joins. Unknown outcomes retain
+ownership; independently proven retirements can settle together without
+changing the JavaScriptCore workaround. Combined browser-memory and normal
+guest checks remain current work. The older full six-leg CTS audit has
+finished with adverse results fully accounted; its completion does not
+admit current source or replace final per-case comparisons.
+
+Maintainer decision D-59 permits an explicit exec/exit-only boundary for
+inherited native Wayland connections after multithreaded fork. Implement
+its loud rejection and exact child/parent resource guarantees now. Ordinary
+Wayland callback/thread-exit cleanup and the remaining graphics/native-feel
+gates remain current work; this is not a general graphics-fork deferral.
+
+Exact mapping IDs, rooted constructor capsules, actor-aware BO/surface/EGL
+queues and pending front-hold consumption now have source/native evidence.
+Execute their normal-target parent/child replacement fixtures next, then
+finish native Wayland continuations, D-59 enforcement and fork-shutdown
+ownership. The private libc fork-epoch primitive is available; boundary
+enforcement is still pending. Keep all native-feel, Freeciv/ScummVM and
+final Node/browser requirements in this iteration.
+
+The B1 fork-completion source checkpoint preserves child allocation custody
+independently of a retired parent request and closes failed-launch inherited
+network mirrors before returning failure. Main Worker absence now has a distinct sealed source-level proof alongside
+actual acknowledgements; actual browser acceptance remains pending and the
+historical missing-main outcomes are not attributed or waived. Complete native Wayland
+retirement and approved D-59 enforcement, then rebuild and execute the full
+Node/browser workloads before calling B1 complete. These remain work in this
+iteration, alongside every native-feel and final acceptance requirement.
+
+The native-ready EGL bridge and metadata-only inherited-Wayland custody root
+are now source foundations. Finish native continuations and D-59 raw entry/
+callback-return enforcement in this iteration, then prove ordinary and child
+lifetimes on rebuilt targets. Explicit retained custody remains distinct from
+completion; native test doubles and unresolved queue observations cannot close
+those requirements or establish performance.
+
+Native Wayland client/window continuation source now has pinned-native and
+independent window/GBM coverage. Complete the pending-capsule EGL consumer and
+raw-client D-59 callback/entry enforcement before final B1 validation. The latest
+matched host lifecycle run still has Chromium PHP-startup missing-main proof on
+both sides; this remains distinct from sealed main absence and needs the full
+memory contract and focused investigation. Native Freeciv3.2.6 SDL2 control is
+now built with the frozen saved world/assets and exact SDL library versions;
+visible rendering, interaction comparability and latency remain unmeasured.
+
+Exact main-worker payload PID checks now match Node for browser fences and
+lifecycle messages. Their composed source checks do not explain historical
+Chromium missing acknowledgements; finish that investigation and the actual
+full browser-memory contract in this iteration, without turning an additional
+per-generation diagnostic into a new acceptance rule or waiving real failures.
+
+The EGL pending-capsule consumer is now integrated with native source-level
+coverage for actual completion, retained pending/error work and explicit D-59
+transfer. Finish raw-client entry/callback enforcement, coherent normal target
+linkage/execution and the full B1 gates in this iteration. The old opaque queue
+observations have stronger fixture assertions; they do not establish actual
+browser or native-feel acceptance and are not a deferral of either requirement.
+
+Normal component builds and the corrected actual target ownership controls
+now pass, including same-BO partial replacement through ordinary and exact
+owned mappings. The unchanged rerun passes16 Node and48 three-engine cases;
+the original full-size-only rejection and its failure evidence remain recorded.
+Finish raw-client enforcement and complete B1/application/native-feel gates in
+this iteration. Selected target controls do not replace full application,
+browser-memory, conformance or performance acceptance.
+
+
+### Graphics source checkpoint and remaining acceptance, 2026-11-07
+
+The latest B1 source now includes raw native Wayland entry/callback custody
+and the approved D-59 rejection, plus session-rooted BO transfers and
+generation-rooted import/format receivers. These prevent completed native
+capture outputs from surviving only on a vanished peer's C stack. Ordinary
+callback cleanup, exact replacement isolation and fresh-child initialization
+remain required behavior. Source/native controls do not establish complete B1.
+Finish combined checks and coherent normal target/application builds, then
+execute the full Node/browser memory, desktop, conformance, POSIX, benchmark
+and native-feel requirements in this iteration. The distinct older teardown
+warning and missing-main diagnostics are not explained by a passing cohort.
+
+D-60 carries a generic potentially upstreamable SDL2 disabled-CRTC restore
+correction with genuine error logging intact. Normal SDL and rebuilt Freeciv
+Node functionality have passed; application rendering/error admission and
+three-engine timing remain required. It is not submitted or accepted upstream.
+All B2–B6 and C1–C3 stages, Freeciv/ScummVM workloads and existing numeric bars
+remain in this iteration. Next-iteration proposals remain the remaining driver
+work, GLES3, IGT and multiple displays; none removes a current requirement.

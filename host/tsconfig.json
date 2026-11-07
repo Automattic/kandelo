@@ -13,7 +13,7 @@
     "declaration": true,
     "sourceMap": true,
     "lib": ["ES2024", "ES2024.SharedMemory", "DOM"],
-    "types": ["node"]
+    "types": ["node", "vite/client"]
   },
   "include": ["src"]
 }

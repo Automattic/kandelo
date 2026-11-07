@@ -1,9 +1,10 @@
-import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeCall } from "./native-recovery.js";
+import { predictsNativeCalls } from "./native-batch.js";
+import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeCall, type NativeChange, rethrowNativeGlFault } from "./native-recovery.js";
 import { vertexAttribute } from "./buffer-references.js";
 import { maxVertexAttributes } from "./limits.js";
 import type { GlBinding } from "./registry.js";
 import type { GlVertexAttribute } from "./buffer-references.js";
-import { allocateNativeBuffer, BUFFER_TRANSFER_BYTES, withBufferTransfer, retireBufferObjects } from "./buffer-storage.js";
+import { allocateNativeBuffer, canonicalBuffer, BUFFER_TRANSFER_BYTES, withBufferTransfer, retireBufferObjects } from "./buffer-storage.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 
 const FIXED = 0x140c, FLOAT = 0x1406, ARRAY = 0x8892;
@@ -18,26 +19,97 @@ function componentBytes(type: number): number {
 }
 function layoutKey(a: GlVertexAttribute): string { return `${a.type}:${a.size}:${a.stride}:${a.offset}`; }
 
+/** Layouts WebGL cannot point at directly. FIXED has no WebGL type and a
+ * stride above 255 exceeds WebGL's limit. ES 2.0 section 2.8 also accepts
+ * any byte offset or stride, while WebGL 1.0 section 6.4 (inherited by
+ * WebGL 2) requires both to be multiples of the component size. Each of
+ * these draws from a tightly packed private view instead. The same rule
+ * selects the native layout of every inverse, so a restored pointer is one
+ * WebGL accepts. An unknown type is not packed; its own validation fails. */
+export function packedVertexLayout(a: Pick<GlVertexAttribute,"type"|"stride"|"offset">): boolean {
+  const width = componentBytes(a.type);
+  return a.type === FIXED || a.stride > 255 || (width > 1 && (a.offset % width !== 0 || a.stride % width !== 0));
+}
+
+/** Reserve scalar inverse and shadow publication before driver effects. A
+ * failed setter may have changed physical state even when its reply throws;
+ * shared repair keeps that uncertainty fenced after the logical owner retires. */
+export function installVertexConstant(b: GlBinding, index: number,
+  x: number, y: number, z: number, w: number): void {
+  const gl = b.gl!, limit = maxVertexAttributes(b);
+  if (limit === null) return;
+  if (!limit) { recordGlError(b,0x502); return; }
+  if (!Number.isInteger(index) || index < 0 || index >= limit) { recordGlError(b,0x501); return; }
+  let previous: [number,number,number,number] | undefined;
+  let replacement: typeof b.shadow.vertexAttribValues | undefined;
+  let changes: NativeChange[];
+  let options: {shared: true};
+  try {
+    previous = b.shadow.vertexAttribValues.get(index);
+    if (!previous) {
+      replacement = new Map();
+      // Lookup only valid native slots, never clone a historically poisoned
+      // unbounded index map. The fresh map is unpublished until acceptance.
+      for (let slot=0;slot<limit;slot++) {
+        const value = b.shadow.vertexAttribValues.get(slot);
+        if (value) replacement.set(slot,value);
+      }
+      replacement.set(index,[x,y,z,w]);
+    }
+    const old = previous ?? [0,0,0,1];
+    const write = () => gl.vertexAttrib4f(index,x,y,z,w);
+    changes = [{apply: () => checkedGlCall(b,write),
+      restore: nativeInverse(b,[["vertexAttrib4f",index,old[0],old[1],old[2],old[3]]])}];
+    options = {shared:true};
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return; }
+  if (!applyNativeChanges(b,changes,options)) return;
+  // Existing tuples are private fixed-size arrays: replacing their scalar
+  // slots publishes without a fallible Map.set/clone after native acceptance.
+  if (previous) { previous[0]=x; previous[1]=y; previous[2]=z; previous[3]=w; }
+  else b.shadow.vertexAttribValues = replacement!;
+}
+
+/** An existing ordinary attribute needs no new native object, shadow slot or
+ * rollback journal inside an authoritative guest batch. Reuse its admitted
+ * slot so a layout-only update cannot fail in metadata reservation. Converted
+ * layouts and first installations keep the transactional allocation path. */
+export function installExistingVertexAttribute(b: GlBinding, index: number,
+  size: number, type: number, normalized: boolean, stride: number, offset: number): boolean {
+  const attribute = b.vertexArrays.get(b.vertexArrayId)?.attributes.get(index);
+  const width = componentBytes(type);
+  if (!attribute || !predictsNativeCalls(b) || !width || type === FIXED ||
+      size < 1 || size > 4 || stride < 0 || stride > 255 || offset < 0 ||
+      stride % width !== 0 || offset % width !== 0) return false;
+  const array = b.shadow.arrayBuffer;
+  const buffer = array && canonicalBuffer(b,array);
+  if (buffer ? !b.bufferStores.has(buffer) : offset !== 0) return false;
+  if (!checkedGlCall(b, () => b.gl!.vertexAttribPointer(index,size,type,normalized,stride,offset))) return true;
+  attribute.buffer = buffer; attribute.size = size; attribute.type = type;
+  attribute.normalized = normalized; attribute.stride = stride; attribute.offset = offset;
+  delete attribute.view;
+  return true;
+}
+
 /** Install every core format transactionally. Metadata capacity precedes native
  * pointer changes, including independent packed views for converted layouts. */
 export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexAttribute): boolean {
   const gl = b.gl!, width = componentBytes(a.type);
   if (!width) { recordGlError(b,0x500); return false; }
   if (a.size < 1 || a.size > 4 || a.stride < 0) { recordGlError(b,0x501); return false; }
-  let limit = 0;
-  if (!checkedGlCall(b, () => { limit = maxVertexAttributes(gl); })) return false;
+  const limit = maxVertexAttributes(b);
+  if (limit === null) return false;
   if (!limit) { recordGlError(b,0x502); return false; }
   if (index >= limit) { recordGlError(b,0x501); return false; }
-  if (a.offset < 0 || a.offset % width || a.stride % width || (!a.buffer && a.offset !== 0)) { recordGlError(b,0x502); return false; }
+  // Without a buffer the encoder owns client memory and always sends offset
+  // zero; a nonzero offset cannot name anything here.
+  if (a.offset < 0 || (!a.buffer && a.offset !== 0)) { recordGlError(b,0x502); return false; }
   const array = b.shadow.arrayBuffer, old = vertexAttribute(b,index);
-  const packed = a.type === FIXED || a.stride > 255;
+  const packed = packedVertexLayout(a);
   const store = a.buffer && b.bufferStores.get(a.buffer);
   if (a.buffer && !store) { recordGlError(b,0x502); return false; }
   const key = packed ? layoutKey(a) : "";
   const candidate = reserveNativeRetirement(b,[["deleteBuffer",null]]);
   if (!candidate) return false;
-  const rollback = reserveNativeRetirement(b,[["deleteBuffer",null]]);
-  if (!rollback) { retireNativeRetirement(candidate); return false; }
   let created = false, installed = false;
   let view = packed && store ? store.converted.get(key) : undefined;
   if (view && b.bufferRetirements.get(view.native)?.complete) {
@@ -45,36 +117,37 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
   }
   try {
     let native = array;
-    if (!a.buffer || (packed && !view)) {
+    if (!a.buffer) native = null;
+    else if (packed && !view) {
       native = allocateNativeBuffer(b,candidate); if (!native) return false;
       if (a.buffer) { view = {native,valid:false}; created = true; }
     } else if (view) native = view.native;
     if (created) {
       store!.converted.set(key,view!); b.bufferViewOwners.set(view!.native,a.buffer!);
     }
-    const oldPacked = old.type === FIXED || old.stride > 255 || old.view !== undefined;
+    const oldPacked = packedVertexLayout(old) || old.view !== undefined;
     const oldNative = old.view ?? (old.buffer && (b.bufferStores.get(old.buffer)?.views.get(ARRAY)?.native ?? old.buffer));
     const type = old.type === FIXED ? FLOAT : old.type, normalized = old.type === FIXED ? false : old.normalized;
     const stride = oldPacked ? 0 : old.stride, offset = oldPacked ? 0 : old.offset;
-    const inverse: NativeCall[] = oldNative ? [["bindBuffer",ARRAY,oldNative],["vertexAttribPointer",index,old.size,type,normalized,stride,offset]]
-      : [["clearVertexAttribute",rollback,index,old.size,type,normalized,stride,offset]];
+    // Native null pointers require offset zero; the logical format and offset
+    // remain authoritative and a failed replacement restores that same null.
+    const inverse: NativeCall[] = [["bindBuffer",ARRAY,oldNative],
+      ["vertexAttribPointer",index,old.size,type,normalized,stride,oldNative ? offset : 0]];
     // The caller owns an unpublished attribute candidate. Reserve its view
     // field too: adding it after pointer installation could still allocate.
     if (packed && view) a.view = view.native;
     const accepted = applyNativeChanges(b,[{apply: () => {
       if (!checkedGlCall(b, () => gl.bindBuffer(ARRAY,native))) return false;
-      if (!a.buffer && !checkedGlCall(b, () => gl.bufferData(ARRAY,0,0x88e4))) return false;
       return checkedGlCall(b, () => gl.vertexAttribPointer(index,a.size,a.type === FIXED ? FLOAT : a.type,
         a.type === FIXED ? false : a.normalized,packed ? 0 : a.stride,packed ? 0 : a.offset));
     },restore:nativeInverse(b,inverse)}],{finalizer:nativeInverse(b,[["bindBuffer",ARRAY,array]])});
     if (!accepted) return false;
     if (a.buffer) transferNativeRetirement(candidate);
     installed = true; return true;
-  } catch { recordGlError(b,0x505); return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   finally {
     if (!installed && created && view) { store!.converted.delete(key); b.bufferViewOwners.delete(view.native); }
     if (!installed || !a.buffer) retireNativeRetirement(candidate);
-    retireNativeRetirement(rollback);
   }
 }
 
@@ -93,7 +166,7 @@ export function prepareConvertedVertexData(b: GlBinding, a: GlVertexAttribute): 
     const vertices = Math.min(count,perChunk);
     input = new Uint8Array(vertices ? (vertices-1)*stride+element : 0);
     output = new Uint8Array(vertices*element);
-  } catch { recordGlError(b,0x505); return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   const gl = b.gl!;
   const accepted = withBufferTransfer(b,store.source,view.native,() => {
     if (!checkedGlCall(b, () => gl.bufferData(COPY_WRITE,count*element,0x88e4))) return false;
@@ -125,6 +198,9 @@ export function collectConvertedVertexData(b: GlBinding): void {
     for (const a of vao.attributes.values()) if (a.view) referenced.add(a.view);
   }
   for (const store of b.bufferStores.values()) for (const [key,view] of store.converted) {
+    // Robust-access padded copies (robust-access.ts) are draw-time caches
+    // of the store, or of a packed view while that view is kept.
+    if (key === "robust" || (key.startsWith("robust:") && store.converted.has(key.slice(7)))) continue;
     if (!referenced.has(view.native) && retireBufferObjects(b,view.native,[view.native])) {
       store.converted.delete(key); b.bufferViewOwners.delete(view.native); b.bufferRetirements.delete(view.native);
     }

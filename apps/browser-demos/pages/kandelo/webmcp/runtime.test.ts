@@ -386,7 +386,9 @@ test("a script whose result cannot be read keeps its live job available for late
   });
   await assert.rejects(runGuestScript(host, "sleep 1", { timeoutMs: 1000 }), /READ_FAILED/);
   const scriptJob = calls.jobs[0]![0];
-  assert.deepEqual(released, []);
+  // The asynchronous release callback still owns/mutates this list. Assert a
+  // snapshot, rather than narrow the live collection to an empty tuple.
+  assert.deepEqual([...released], []);
   live = false;
   for (let index = 0; index < 33; index++) {
     await startGuestJob(host, `next-${index}`, { script: "true" });

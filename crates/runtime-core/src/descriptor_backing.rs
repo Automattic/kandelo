@@ -150,18 +150,22 @@ impl<T> SharedBackingTable<T> {
     }
 
     /// Drop a [`Self::pin`], freeing the value once no OFD and no other
-    /// mapping holds it.
-    pub fn unpin(&mut self, idx: usize) {
+    /// mapping holds it. False when no pin is held: nothing changes.
+    pub fn unpin(&mut self, idx: usize) -> bool {
         let Some(slot) = self.entries.get_mut(idx) else {
-            return;
+            return false;
         };
         let Some(entry) = slot.as_mut() else {
-            return;
+            return false;
         };
-        entry.pins = entry.pins.saturating_sub(1);
+        if entry.pins == 0 {
+            return false;
+        }
+        entry.pins -= 1;
         if entry.pins == 0 && entry.refs == 0 {
             *slot = None;
         }
+        true
     }
 
     /// Whether some OFD still owns the value, as opposed to only a mapping.

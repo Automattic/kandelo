@@ -96,6 +96,7 @@ find "$INSTALL_DIR" -mindepth 1 -delete
 mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
 
 WLSRC="$SRC_DIR/src"
+python3 "$REPO_ROOT/libc/glue/check-wayland-client-layout.py" "$WLSRC"
 WAYLAND_XML="$SRC_DIR/protocol/wayland.xml"
 
 # --- Generate config.h + wayland-version.h ------------------------------
@@ -145,8 +146,26 @@ compile() {
 }
 
 echo "==> Compiling shared TUs (util + private + generated protocol)..."
-UTIL_OBJ="$(compile wayland-util.c)"
-CONN_OBJ="$(compile connection.c)"
+# WHY: keep upstream wl_abort/setters canonical while only owned cold teardown
+# defers ordinary logs until native locks/progress have sealed. The adapter is
+# platform lifetime behavior; upstream utility source remains unchanged.
+UTIL_WRAPPER="$BUILD_DIR/wayland-util-owned.c"
+cat > "$UTIL_WRAPPER" <<EOF
+#define wl_log _wpk_upstream_wl_log
+#include "$WLSRC/wayland-util.c"
+#include "$REPO_ROOT/libc/glue/wayland-owned-log.inc"
+EOF
+UTIL_OBJ="$BUILD_DIR/wayland-util.o"
+wasm32posix-cc -c "${CFLAGS[@]}" -I"$REPO_ROOT/libc/glue" "$UTIL_WRAPPER" -o "$UTIL_OBJ"
+# The shared TU retains original server callbacks when no client context is
+# active; only actual client user-return sites use the owning continuation.
+CONNECTION_WRAPPER="$BUILD_DIR/wayland-connection-owned.c"
+cat > "$CONNECTION_WRAPPER" <<EOF
+#include "$REPO_ROOT/libc/glue/wayland-connection-callback-prelude.inc"
+#include "$WLSRC/connection.c"
+EOF
+CONN_OBJ="$BUILD_DIR/connection.o"
+wasm32posix-cc -c "${CFLAGS[@]}" -I"$REPO_ROOT/libc/glue" "$CONNECTION_WRAPPER" -o "$CONN_OBJ"
 OS_OBJ="$(compile wayland-os.c)"
 PROTO_OBJ="$(compile wayland-protocol.c)"
 SHARED_OBJS=("$UTIL_OBJ" "$CONN_OBJ" "$OS_OBJ" "$PROTO_OBJ")
@@ -160,8 +179,15 @@ cat > "$CLIENT_WRAPPER" <<EOF
 #define wl_display_connect _wpk_upstream_display_connect
 #define wl_display_connect_to_fd _wpk_upstream_display_connect_to_fd
 #define wl_display_disconnect _wpk_upstream_display_disconnect
+#include "$REPO_ROOT/libc/glue/wayland-client-raw-prelude.inc"
 #include "$WLSRC/wayland-client.c"
+#include "$REPO_ROOT/libc/glue/wayland-client-raw-undef.inc"
 #include "$REPO_ROOT/libc/glue/wayland-client-lifetime.inc"
+#include "$REPO_ROOT/libc/glue/wayland-private-queue.inc"
+#include "$REPO_ROOT/libc/glue/wayland-client-retirement.inc"
+#include "$REPO_ROOT/libc/glue/wayland-client-entry-retirement.inc"
+#include "$REPO_ROOT/libc/glue/wayland-client-callback-retirement.inc"
+#include "$REPO_ROOT/libc/glue/wayland-client-raw-entry.inc"
 EOF
 CLIENT_OBJ="$BUILD_DIR/wayland-client.o"
 wasm32posix-cc -c "${CFLAGS[@]}" -I"$REPO_ROOT/libc/glue" "$CLIENT_WRAPPER" -o "$CLIENT_OBJ"
@@ -303,6 +329,9 @@ Requires.private: libffi
 Cflags: -I\${includedir}
 EOF
 
+# This shim calls GBM and the client archive's retained-surface helpers.
+# Export those strong dependencies for every static consumer; its optional
+# weak EGL retarget hook does not itself require linking libEGL.
 cat > "$PC_DIR/wayland-egl.pc" <<EOF
 prefix=$INSTALL_DIR
 libdir=\${prefix}/lib
@@ -312,6 +341,7 @@ Name: wayland-egl
 Description: Wayland EGL backend (wl_egl_window) — kandelo shim
 Version: 18.1.0
 Libs: -L\${libdir} -lwayland-egl
+Requires.private: wayland-client gbm
 Cflags: -I\${includedir}
 EOF
 

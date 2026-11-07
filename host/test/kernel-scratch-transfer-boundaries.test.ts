@@ -5285,3 +5285,45 @@ describe("kernel scratch transfer capacity regressions", () => {
     },
   );
 });
+
+
+describe("DRI mmap original-Memory prime admission", () => {
+  it.each([4, 8] as const)("retains wasm%s success and rolls a refused prime back before EIO", (ptrWidth) => {
+    for (const refused of [false, true]) {
+      const harness = makeScratchHarness(ptrWidth);
+      prepareGenericSyscallHarness(harness,ptrWidth);
+      const bos = harness.worker.bos;
+      const oldMemory = new WebAssembly.Memory({initial:2,maximum:2,shared:true});
+      const mappedAddress = 65_536;
+      bos.setProcessMemoryResolver(() => refused ? oldMemory : harness.channel.memory);
+      bos.create({pid:harness.channel.pid,bo_id:72,size:64,w:4,h:4,stride:16});
+      bos.pixelView(72)!.fill(91);
+      const operations: number[] = [];
+      harness.handleChannel.mockImplementation((pointer: number | bigint) => {
+        const view = new DataView(harness.kernelMemory.buffer,Number(pointer));
+        const operation = view.getUint32(CH_SYSCALL,true);
+        operations.push(operation);
+        if (operation === ABI_SYSCALLS.Mmap) {
+          expect(bos.bind(harness.channel.pid,72,mappedAddress,64)).toBe(0);
+          view.setBigInt64(CH_RETURN,BigInt(mappedAddress),true);
+        } else {
+          expect(operation).toBe(ABI_SYSCALLS.Munmap);
+          expect(view.getBigInt64(CH_ARGS,true)).toBe(BigInt(mappedAddress));
+          expect(view.getBigInt64(CH_ARGS+CH_ARG_SIZE,true)).toBe(65_536n);
+          bos.unbind(harness.channel.pid,72,mappedAddress,65_536);
+          view.setBigInt64(CH_RETURN,0n,true);
+        }
+        view.setUint32(CH_ERRNO,0,true);
+        return 0;
+      });
+      writeChannelSyscall(harness,ABI_SYSCALLS.Mmap,[0n,64n,3n,0x22n,-1n,0n]);
+      dispatchScratchBoundarySyscall(harness);
+      expect(operations).toEqual(refused ? [ABI_SYSCALLS.Mmap,ABI_SYSCALLS.Munmap] : [ABI_SYSCALLS.Mmap]);
+      expect(harness.completeChannel).toHaveBeenCalledOnce();
+      expect(harness.completeChannel.mock.calls[0]?.slice(4,6)).toEqual(refused ? [-1,EIO] : [mappedAddress,0]);
+      expect(bos.findBindingByAddr(harness.channel.pid,mappedAddress)).toBe(refused ? undefined : 72);
+      expect(harness.processBytes[mappedAddress]).toBe(refused ? 0 : 91);
+      expect(new Uint8Array(oldMemory.buffer)[mappedAddress]).toBe(0);
+    }
+  });
+});

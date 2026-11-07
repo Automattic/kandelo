@@ -20,12 +20,16 @@ describe("native deferred content integrity", () => {
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/data`;
     const fs = KandeloImageFs.create();
     fs.registerLazyFile("/data", url, good.length, 0o644, createHash("sha256").update(good).digest("hex"));
-    const host = new NodeKernelHost({ rootfsImage: await fs.saveImage() });
+    const diagnostics: Array<{ source: string; message: string }> = [];
+    const host = new NodeKernelHost({ rootfsImage: await fs.saveImage(),
+      onHostDiagnostic: diagnostic => diagnostics.push(diagnostic) });
     try {
       await host.init();
       const before = await host.statVfsPath("/data");
       await expect(host.readFileFromVfs("/data")).rejects.toThrow();
       expect(fetches, "integrity failure must not trigger an automatic retry").toBe(1);
+      expect(diagnostics).toContainEqual({ pid: 0, source: "vfs-integrity",
+        message: expect.stringMatching(/size or SHA-256 mismatch.*read fails with EIO/) });
       expect(await host.statVfsPath("/data")).toEqual(before);
       const recovered = await host.readFileFromVfs("/data");
       expect(Buffer.compare(recovered!, good)).toBe(0);

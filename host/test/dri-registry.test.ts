@@ -9,11 +9,134 @@
  * / findBindingByAddr / resolver wiring) rather than "the byte-verify
  * failed somewhere in a fork."
  */
-import { describe, expect, it } from "vitest";
-import { GbmBoRegistry } from "../src/dri/registry.js";
+import { describe, expect, it, vi } from "vitest";
+import { GbmBoRegistry, GbmMappingFault } from "../src/dri/registry.js";
+import { mergeChangedByteRuns } from "../src/shared-byte-runs.js";
 
 const BO_SIZE = 4096;
 const BO_ADDR = 0;
+
+describe("BO publication copies", () => {
+  it.each([0, 1])("keeps stores made during publication pending at address %i", (addr) => {
+    const memory = newMemory();
+    const registry = new GbmBoRegistry({ getProcessMemory: () => memory });
+    registry.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    const canonical = registry.pixelView(1)!;
+    registry.bind(100, 1, addr, BO_SIZE);
+    registry.primeBindFromSab(100, 1, memory, addr);
+    const producer = new Uint8Array(memory.buffer, addr, BO_SIZE);
+    producer[32] = 11;
+
+    // A producer can keep running while a peer causes a publication. Model
+    // two stores immediately after the canonical copy: one changes the run
+    // just published, and one changes an earlier byte the scan passed over.
+    // Neither store has been published by this scan, so neither may become
+    // clean in the writer's baseline.
+    const nativeSet = Uint8Array.prototype.set;
+    let wroteDuringCopy = false;
+    const copy = vi.spyOn(Uint8Array.prototype, "set").mockImplementation(
+      function (this: Uint8Array, values: ArrayLike<number>, offset = 0) {
+        nativeSet.call(this, values, offset);
+        if (this.buffer === canonical.buffer && !wroteDuringCopy) {
+          wroteDuringCopy = true;
+          producer[32] = 22;
+          producer[1] = 33;
+        }
+      },
+    );
+    try {
+      registry.syncToSab(1);
+    } finally {
+      copy.mockRestore();
+    }
+    expect(wroteDuringCopy).toBe(true);
+    expect([canonical[1], canonical[32]]).toEqual([0, 11]);
+    registry.syncToSab(1);
+    expect([canonical[1], canonical[32]]).toEqual([33, 22]);
+  });
+
+  it.each([0, 1])("does not copy an unchanged mapping at address %i", (addr) => {
+    const memory = newMemory();
+    const registry = new GbmBoRegistry({ getProcessMemory: () => memory });
+    registry.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    registry.bind(100, 1, addr, BO_SIZE);
+    registry.primeBindFromSab(100, 1, memory, addr);
+    const copy = vi.spyOn(Uint8Array.prototype, "set");
+    try {
+      registry.syncToSab(1);
+      expect(copy).not.toHaveBeenCalled();
+    } finally {
+      copy.mockRestore();
+    }
+  });
+
+  it("keeps an unchanged stale reader's baseline until it imports a publication", () => {
+    const memA = newMemory(), memB = newMemory();
+    const reg = new GbmBoRegistry({ getProcessMemory: pid => pid === 100 ? memA : memB });
+    reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);
+    new Uint8Array(memA.buffer)[17] = 91;
+    reg.syncToSab(1);
+    const copy = vi.spyOn(Uint8Array.prototype, "set");
+    try {
+      reg.syncToSab(1);
+      expect(copy).not.toHaveBeenCalled();
+    } finally {
+      copy.mockRestore();
+    }
+    expect(new Uint8Array(memB.buffer)[17]).toBe(0);
+    expect(reg.pixelView(1)![17]).toBe(91);
+    reg.syncImportsForPid(200, memB);
+    expect(new Uint8Array(memB.buffer)[17]).toBe(91);
+    new Uint8Array(memB.buffer)[18] = 73;
+    reg.syncImportsForPid(100, memA);
+    expect([...new Uint8Array(memA.buffer).slice(17, 19)]).toEqual([91, 73]);
+  });
+
+  it("leaves stores beyond a limited publication pending for the next full scan", () => {
+    const memory = newMemory();
+    const registry = new GbmBoRegistry({ getProcessMemory: () => memory });
+    registry.create({ pid: 100, bo_id: 1, size: 32, w: 4, h: 2, stride: 16 });
+    registry.bind(100, 1, 1024, 16, 8);
+    registry.primeBindFromSab(100, 1, memory, 1024);
+    const source = new Uint8Array(memory.buffer, 1024, 16);
+    source[2] = 91;
+    source[10] = 73;
+    registry.syncToSab(1, 16);
+    expect(registry.pixelView(1)![10]).toBe(91);
+    expect(registry.pixelView(1)![18]).toBe(0);
+    const copy = vi.spyOn(Uint8Array.prototype, "set");
+    try {
+      registry.syncToSab(1, 16);
+      expect(copy).not.toHaveBeenCalled();
+    } finally {
+      copy.mockRestore();
+    }
+    registry.syncToSab(1);
+    expect(registry.pixelView(1)![10]).toBe(91);
+    expect(registry.pixelView(1)![18]).toBe(73);
+  });
+
+  it("still refreshes a reader after writes through a retained canonical view", () => {
+    const memory = newMemory();
+    const registry = new GbmBoRegistry({ getProcessMemory: () => memory });
+    registry.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    const canonical = registry.pixelView(1)!;
+    registry.bind(100, 1, 0, BO_SIZE);
+    registry.primeBindFromSab(100, 1, memory, 0);
+    registry.bind(100, 1, BO_SIZE, BO_SIZE);
+    registry.primeBindFromSab(100, 1, memory, BO_SIZE);
+    canonical[17] = 91;
+    registry.syncImportsForPid(100, memory);
+    expect(new Uint8Array(memory.buffer)[17]).toBe(91);
+    expect(new Uint8Array(memory.buffer)[BO_SIZE + 17]).toBe(91);
+    registry.syncToSab(1);
+    expect(canonical[17]).toBe(91);
+  });
+});
 
 function newMemory(): WebAssembly.Memory {
   return new WebAssembly.Memory({ initial: 1, maximum: 4, shared: true });
@@ -499,7 +622,7 @@ describe("device writes into mapped CPU storage", () => {
     pixels.fill(0);
     expect(reg.pixelView(1)).toEqual(Uint8Array.from({length:16},(_,index)=>index+1));
   });
-  it("rejects short input and any stale mapping before changing canonical or peer bytes", () => {
+  it("rejects short input and retains the admitted Memory after PID resolver replacement", () => {
     const a = newMemory(), b = new WebAssembly.Memory({initial:2,maximum:2,shared:true});
     const memories = new Map([[100,a],[200,b]]);
     const reg = new GbmBoRegistry({getProcessMemory: pid => memories.get(pid)});
@@ -508,11 +631,13 @@ describe("device writes into mapped CPU storage", () => {
     reg.bind(200,1,65536,16); reg.primeBindFromSab(200,1,memories.get(200)!);
     expect(reg.publishDevicePixels(1,new Uint8Array(15))).toBe(false);
     expect(reg.publishDevicePixels(99,new Uint8Array(16))).toBe(false);
-    memories.set(200,newMemory());
-    expect(reg.publishDevicePixels(1,new Uint8Array(16).fill(9))).toBe(false);
-    expect(reg.pixelView(1)).toEqual(new Uint8Array(16));
-    expect(readPattern(a,8,16)).toEqual(new Uint8Array(16));
-    expect(readPattern(b,65536,16)).toEqual(new Uint8Array(16));
+    const replacement = newMemory();
+    memories.set(200,replacement);
+    expect(reg.publishDevicePixels(1,new Uint8Array(16).fill(9))).toBe(true);
+    expect(reg.pixelView(1)).toEqual(new Uint8Array(16).fill(9));
+    expect(readPattern(a,8,16)).toEqual(new Uint8Array(16).fill(9));
+    expect(readPattern(b,65536,16)).toEqual(new Uint8Array(16).fill(9));
+    expect(readPattern(replacement,0,16)).toEqual(new Uint8Array(16));
   });
 });
 
@@ -688,4 +813,232 @@ it("preserves all prior VMA metadata when a replacement observer rejects admissi
   expect(result).toBeLessThan(0);
   expect(registry.get(100,913)?.binding).toEqual({addr:page,len:3*page});
   expect(registry.get(100,914)?.binding).toBeNull();
+});
+
+
+describe("shared-byte changed-run scan", () => {
+  class RecordedDestination extends Uint8Array {
+    writes: [number, number][] = [];
+    override set(values: ArrayLike<number>, offset = 0): void {
+      this.writes.push([offset, values.length]);
+      super.set(values, offset);
+    }
+  }
+
+  // Independent per-byte oracle: it decides publications before invoking the
+  // implementation and never groups/copies data to derive expected contents.
+  function checkMerge(source: Uint8Array, sourceOffset: number, snapshot: Uint8Array,
+    snapshotOffset: number, len: number, destinationOffset: number): void {
+    const destination = new RecordedDestination(len + destinationOffset + 9);
+    destination.fill(0xc7); // Newer canonical bytes must survive unchanged readers.
+    const expected = Uint8Array.from(destination);
+    const writes: [number, number][] = [];
+    const sourceBefore = Uint8Array.from(source), snapshotBefore = Uint8Array.from(snapshot);
+    let changed = false;
+    for (let i = 0; i < len; i++) {
+      if (source[sourceOffset + i] !== snapshot[snapshotOffset + i]) {
+        expected[destinationOffset + i] = source[sourceOffset + i];
+        changed = true;
+        const last = writes.at(-1);
+        if (last && last[0] + last[1] === destinationOffset + i) last[1]++;
+        else writes.push([destinationOffset + i, 1]);
+      }
+    }
+    expect(mergeChangedByteRuns(source, sourceOffset, snapshot, snapshotOffset,
+      destination, destinationOffset, len)).toBe(changed);
+    expect(Uint8Array.from(destination)).toEqual(expected);
+    expect(destination.writes).toEqual(writes);
+    expect(source).toEqual(sourceBefore);
+    expect(snapshot).toEqual(snapshotBefore);
+  }
+
+  it("matches a byte oracle at word, prefix, tail and view boundaries", () => {
+    for (const len of [0, 1, 2, 3, 4, 5, 7, 8, 15, 16, 63, 64, 65, 66, 67, 68, 127, 128, 129, 255, 256, 257, 258, 259, 260, 4093, 4096, 4099]) {
+      for (let sourceAlignment = 0; sourceAlignment < 4; sourceAlignment++) {
+        for (let snapshotAlignment = 0; snapshotAlignment < 4; snapshotAlignment++) {
+          const source = new Uint8Array(new SharedArrayBuffer(len + 24), sourceAlignment, len + 16);
+          const snapshot = new Uint8Array(new ArrayBuffer(len + 24), snapshotAlignment, len + 16);
+          source.fill(0x31); snapshot.fill(0x31);
+          checkMerge(source, 3, snapshot, 5, len, 7);
+          // Differences on both sides of the range must not be published.
+          source[2] = 0xaa; source[3 + len] = 0xbb;
+          for (const relative of [0, 1, 2, 3, 4, 31, 32, 62, 63, 64, len - 3, len - 2, len - 1]) {
+            if (relative >= 0 && relative < len) source[3 + relative] ^= 0x5a;
+          }
+          checkMerge(source, 3, snapshot, 5, len, 7);
+        }
+      }
+    }
+  });
+
+  it("matches an independent scalar oracle on deterministic sparse/dense random ranges", () => {
+    let seed = 0x1ac29f03;
+    const next = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0; };
+    for (let trial = 0; trial < 1500; trial++) {
+      const len = next() % 513, a = next() % 8, b = next() % 8;
+      const sourceOffset = next() % 8, snapshotOffset = next() % 8;
+      const source = new Uint8Array(trial % 2 ? new SharedArrayBuffer(len + 32) : new ArrayBuffer(len + 32), a, len + 20);
+      const snapshot = new Uint8Array(new ArrayBuffer(len + 32), b, len + 20);
+      source.fill(0x4e); snapshot.fill(0x91);
+      for (let i = 0; i < len; i++) {
+        source[sourceOffset + i] = snapshot[snapshotOffset + i] = next() & 255;
+        if (next() % (trial % 2 ? 3 : 37) === 0) source[sourceOffset + i] ^= 0x8b;
+      }
+      checkMerge(source, sourceOffset, snapshot, snapshotOffset, len, next() % 8);
+    }
+  });
+
+  it("reads current shared Wasm buffers after growth without retaining a previous view", () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 3, shared: true });
+    const before = new Uint8Array(memory.buffer, 3, 513);
+    const snapshot = new Uint8Array(new ArrayBuffer(516), 3, 513);
+    before.fill(0x19); snapshot.fill(0x19);
+    checkMerge(before, 0, snapshot, 0, 513, 1);
+    memory.grow(1);
+    const after = new Uint8Array(memory.buffer, 65536 + 3, 513);
+    after.fill(0x19); after[0] = 0x5a; after[512] = 0x6b;
+    checkMerge(after, 0, snapshot, 0, 513, 2);
+    before[259] = 0x7c;
+    checkMerge(before, 0, snapshot, 0, 513, 3);
+  });
+
+  it("does not retain detached unshared Wasm views across growth", () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    const old = new Uint8Array(memory.buffer, 1, 512), snapshot = new Uint8Array(new ArrayBuffer(513), 1, 512);
+    checkMerge(old, 0, snapshot, 0, 512, 0);
+    memory.grow(1);
+    expect(old.length).toBe(0);
+    const current = new Uint8Array(memory.buffer, 65536 + 1, 512);
+    current[255] = 0x42; current[511] = 0x53;
+    checkMerge(current, 0, snapshot, 0, 512, 0);
+  });
+});
+
+describe("original mapping Memory and split-generation custody",()=>{
+  function fixture() {
+    const original=new WebAssembly.Memory({initial:2,maximum:3}),replacement=new WebAssembly.Memory({initial:2,maximum:3});
+    let current=original;
+    const resolver=vi.fn(()=>current),reg=new GbmBoRegistry({getProcessMemory:resolver});
+    reg.create({pid:1,bo_id:71,size:64,w:4,h:4,stride:16});reg.bind(1,71,1024,64);reg.primeBindFromSab(1,71,original,1024);
+    return {original,replacement,reg,resolver,replace(){current=replacement;}};
+  }
+  it("publishes the admitted original mapping rather than the PID resolver successor",()=>{
+    const f=fixture();new Uint8Array(f.original.buffer)[1027]=91;new Uint8Array(f.replacement.buffer)[1027]=44;f.replace();f.resolver.mockClear();
+    f.reg.syncToSab(71);expect(f.reg.pixelView(71)![3]).toBe(91);expect(f.resolver).not.toHaveBeenCalled();
+  });
+  it("refuses prime/import from a different Memory before writes",()=>{
+    const f=fixture();f.replace();new Uint8Array(f.replacement.buffer).fill(33,1024,1088);
+    f.reg.primeBindFromSab(1,71,f.replacement,1024);f.reg.syncImportsForPid(1,f.replacement);
+    expect([...new Uint8Array(f.replacement.buffer,1024,64)]).toEqual(Array(64).fill(33));
+  });
+  it("publishes device data only to each mapping's exact original Memory",()=>{
+    const f=fixture();f.replace();new Uint8Array(f.replacement.buffer).fill(33,1024,1088);
+    expect(f.reg.publishDevicePixels(71,new Uint8Array(64).fill(77))).toBe(true);
+    expect(new Uint8Array(f.original.buffer)[1024]).toBe(77);expect(new Uint8Array(f.replacement.buffer)[1024]).toBe(33);
+  });
+});
+
+describe("kernel-unmapped mapping detach", () => {
+  it("publishes from the original native Memory buffer despite an own shadow property",()=>{
+    const memory=new WebAssembly.Memory({initial:1,maximum:2});
+    const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+    registry.create({pid:3,bo_id:81,size:64,w:4,h:4,stride:16});
+    expect(registry.bind(3,81,1024,64)).toBe(0);
+    expect(registry.primeBindFromSab(3,81,memory,1024)).toBe(true);
+    const replacement=new WebAssembly.Memory({initial:1});
+    new Uint8Array(memory.buffer)[1024]=69;
+    new Uint8Array(replacement.buffer)[1024]=88;
+    Object.defineProperty(memory,"buffer",{get:()=>replacement.buffer,configurable:true});
+    registry.unbind(3,81,1024,64);
+    expect(registry.pixelView(81)![0]).toBe(69);
+    expect(new Uint8Array(replacement.buffer)[1024]).toBe(88);
+  });
+
+  it("detaches a padding-only descendant without reading pixels",()=>{
+    const page=65_536;
+    const memory=new WebAssembly.Memory({initial:4,maximum:5});
+    const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+    registry.create({pid:1,bo_id:91,size:page+64,w:1,h:1,stride:4});
+    expect(registry.bind(1,91,page,2*page,0,2*page)).toBe(0);
+    expect(registry.primeBindFromSab(1,91,memory,page)).toBe(true);
+    new Uint8Array(memory.buffer,page,page+64).fill(37);
+    registry.unbind(1,91,page,page);
+    expect(registry.findBindingByAddr(1,2*page)).toBe(91);
+    registry.unbind(1,91,2*page,page);
+    expect(registry.pixelView(91)).toEqual(new Uint8Array(page+64).fill(37));
+    expect(registry.get(1,91)!.binding).toBeNull();
+  });
+
+  it("refuses reentrant detach from a change observer as a fatal fault",()=>{
+    const memory=new WebAssembly.Memory({initial:1,maximum:2});
+    const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+    registry.create({pid:3,bo_id:81,size:64,w:4,h:4,stride:16});
+    expect(registry.bind(3,81,1024,64)).toBe(0);
+    let reentry:unknown;
+    const observer=registry.onChange(()=>{
+      expect(registry.bind(3,81,2048,64)).toBeLessThan(0);
+      try { registry.unbind(3,81); } catch (error) { reentry=error; }
+    });
+    registry.unbind(3,81,1040,16);observer();
+    expect(reentry).toBeInstanceOf(GbmMappingFault);
+    expect(registry.findBindingByAddr(3,1024)).toBe(81);
+    expect(registry.findBindingByAddr(3,1056)).toBe(81);
+  });
+});
+
+// The kernel has already unmapped these ranges (munmap, exec, exit) and will
+// reuse them. A final writeback that cannot be published is lost data, and a
+// binding left registered would publish whatever the process later stores at
+// the reused address. Neither may be recorded and survived: the registry
+// reports a fatal GbmMappingFault through onFault and throws.
+it("makes a lost final writeback of a kernel-unmapped mapping a fatal fault",()=>{
+  const memory=new WebAssembly.Memory({initial:1});
+  const faults:unknown[]=[];
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory,onFault:fault=>faults.push(fault)} as any);
+  registry.create({pid:5,bo_id:93,size:64,w:4,h:4,stride:16});
+  registry.bind(5,93,1024,64);registry.primeBindFromSab(5,93,memory,1024);
+  new Uint8Array(memory.buffer,1024,64).fill(57);
+  const failure=vi.spyOn(Uint8Array.prototype,"set").mockImplementationOnce(()=>{throw new Error("publication failed");});
+  let thrown:unknown;
+  try { registry.releaseProcess(5); } catch (error) { thrown=error; } finally {failure.mockRestore();}
+  expect(thrown).toBeInstanceOf(GbmMappingFault);
+  expect((thrown as Error).message).toBe(
+    "GBM BO 93: the final writeback of pid 5's unmapped range 0x400+64 could not be published: publication failed");
+  expect(faults).toEqual([thrown]);
+});
+
+it("makes publication from a primed mapping that lost its address space a fatal fault",()=>{
+  // A primed mapping always keeps the Memory it was primed from; without it
+  // the writer's bytes can never reach the BO.
+  const memory=new WebAssembly.Memory({initial:1});
+  const faults:unknown[]=[];
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory,onFault:fault=>faults.push(fault)} as any);
+  registry.create({pid:5,bo_id:94,size:64,w:4,h:4,stride:16});
+  registry.bind(5,94,1024,64);registry.primeBindFromSab(5,94,memory,1024);
+  (registry as any).bos.get(94).bindingsByPid.get(5).get(1024).lineage.memory=null;
+  expect(()=>registry.syncToSab(94)).toThrow(GbmMappingFault);
+  expect(faults).toHaveLength(1);
+  expect((faults[0] as Error).message).toBe(
+    "GBM BO 94: pid 5's primed mapping 0x400+64 has no address space to publish from");
+});
+
+it("reports a mapping fault through the kernel's host fault callback",async()=>{
+  const { WasmPosixKernel } = await import("../src/kernel.js");
+  const { VirtualPlatformIO } = await import("../src/vfs/vfs.js");
+  const { NodeTimeProvider } = await import("../src/vfs/time.js");
+  const { FixedTreeBackend } = await import("./support/fixed-tree-backend.js");
+  const memory=new WebAssembly.Memory({initial:1});
+  const io=new VirtualPlatformIO([{mountPoint:"/",backend:new FixedTreeBackend({"/":{mode:0o040755,ino:1}})}],new NodeTimeProvider());
+  const faults:unknown[]=[];
+  const kernel=new WasmPosixKernel({maxWorkers:1,dataBufferSize:65536,useSharedMemory:true},io,
+    {getProcessMemory:()=>memory,onHostFault:(fault:Error)=>faults.push(fault)} as any);
+  kernel.bos.setProcessMemoryResolver(()=>memory);
+  kernel.bos.create({pid:7,bo_id:95,size:64,w:4,h:4,stride:16});
+  kernel.bos.bind(7,95,1024,64);kernel.bos.primeBindFromSab(7,95,memory,1024);
+  new Uint8Array(memory.buffer,1024,64).fill(3);
+  const failure=vi.spyOn(Uint8Array.prototype,"set").mockImplementationOnce(()=>{throw new Error("publication failed");});
+  try { expect(()=>kernel.bos.unbind(7,95,1024,64)).toThrow(/GBM BO 95: .*0x400\+64.*publication failed/); }
+  finally {failure.mockRestore();}
+  expect(faults).toHaveLength(1);
+  expect((faults[0] as Error).message).toMatch(/pid 7's unmapped range 0x400\+64/);
 });

@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <pthread.h>
 int graphics_pthread_mutex_lock(pthread_mutex_t *);
@@ -17,6 +18,8 @@ int graphics_fstat(int, struct stat *);
 void *graphics_mmap(void *, size_t, int, int, int, off_t);
 int graphics_munmap(void *, size_t);
 int graphics_ioctl(int, unsigned long, ...);
+int graphics_poll(struct pollfd *, nfds_t, int);
+int graphics_fcntl(int, int, ...);
 void *graphics_malloc(size_t);
 void *graphics_calloc(size_t, size_t);
 void graphics_free(void *);
@@ -26,6 +29,8 @@ void graphics_free(void *);
 #define mmap graphics_mmap
 #define munmap graphics_munmap
 #define ioctl graphics_ioctl
+#define poll graphics_poll
+#define fcntl graphics_fcntl
 #define malloc graphics_malloc
 #define calloc graphics_calloc
 #define free graphics_free

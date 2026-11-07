@@ -21,6 +21,7 @@
 #include <gbm.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -110,16 +111,23 @@ int main(void)
         fprintf(stderr, "FAIL: dma-buf format count %d\n", count);
         return 1;
     }
-    EGLint formats[16];
-    for (int i = 0; i < 16; i++) formats[i] = -1;
+    /* The advertised set may grow. Keep a sentinel beyond the requested
+     * prefix without imposing a fixture-only limit on the EGL format list. */
+    EGLint *formats = calloc((size_t)count, sizeof *formats);
+    if (!formats) {
+        fprintf(stderr, "FAIL: allocate %d dma-buf format slots\n", count);
+        return 1;
+    }
+    for (int i = 0; i < count; i++) formats[i] = -1;
     EGLint returned = 0;
-    if (count > 16
-        || !eglQueryDmaBufFormatsEXT(dpy, count - 1, formats, &returned)
+    if (!eglQueryDmaBufFormatsEXT(dpy, count - 1, formats, &returned)
         || returned != count - 1 || formats[count - 1] != -1) {
         fprintf(stderr, "FAIL: max %d formats returned %d, slot %d = %d\n",
                 count - 1, returned, count - 1, formats[count - 1]);
+        free(formats);
         return 1;
     }
+    free(formats);
     EGLuint64KHR modifiers[4] = { DRM_FORMAT_MOD_INVALID };
     EGLBoolean external[4] = { EGL_TRUE };
     EGLint modifier_count = 0;
@@ -213,7 +221,7 @@ int main(void)
         cpu_fd, 3, 2, DRM_FORMAT_XRGB8888, (EGLint) cpu_stride, 0,
     };
     struct plane bad = cpu;
-    bad.fourcc = DRM_FORMAT_RGB565;
+    bad.fourcc = fourcc_code('B', 'A', 'D', '!');
     if (import_fails(dpy, "unsupported fourcc", bad, NULL, EGL_BAD_MATCH))
         return 1;
     const EGLint tiled_modifier[] = {
@@ -302,9 +310,13 @@ int main(void)
     glGenRenderbuffers(2, renderbuffers);
     glBindRenderbuffer(GL_RENDERBUFFER, renderbuffers[0]);
     glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, cpu_image);
+    GLint cpu_rbo_width = 0, cpu_rbo_height = 0;
+    glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &cpu_rbo_width);
+    glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_HEIGHT, &cpu_rbo_height);
     GLenum error = glGetError();
-    if (error != GL_INVALID_OPERATION) {
-        fprintf(stderr, "FAIL: CPU-tier renderbuffer storage: 0x%x\n", error);
+    if (error != GL_NO_ERROR || cpu_rbo_width != cpu.width || cpu_rbo_height != cpu.height) {
+        fprintf(stderr, "FAIL: CPU-tier renderbuffer storage: %dx%d, error 0x%x\n",
+                cpu_rbo_width, cpu_rbo_height, error);
         return 1;
     }
     glBindRenderbuffer(GL_RENDERBUFFER, renderbuffers[1]);

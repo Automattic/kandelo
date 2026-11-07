@@ -13,8 +13,10 @@ inputs = [
   "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
   "packages/registry/shell/source-rootfs-shell-dependency-contract.mjs",
   "packages/registry/shell/source-rootfs-shell-demo.json",
+  "packages/registry/shell/eager-budget.json",
   "packages/registry/shell/scummvm-freeware-games.json",
   "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+  "images/vfs/scripts/image-eager-budget.ts",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
   "images/vfs/scripts/package-session-files.ts",
   "scripts/package-runtime-file.ts",
@@ -60,7 +62,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 63
+revision = 67
 # WHY: source-package composition changes the product bytes. Keep ordinary
 # resolution closed until this exact revision is rebuilt and admitted.
 publication_state = "pending"

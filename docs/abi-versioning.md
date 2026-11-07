@@ -149,8 +149,12 @@ validation.
 
 The KMS cursor transport uses this mechanism: `kernel_kms_cursor_configure`
 and `kernel_kms_cursor_read` are optional in ABI 50 and required from ABI
-51. New hosts negotiate protocol 1; older hosts load the kernel with cursor
-capability disabled. No cursor host import is required. See
+51. The current unpublished ABI 56 / host 3 family negotiates protocol 3,
+whose 40-byte record includes exact master-lease and framebuffer identity.
+Protocols 1 and 2 are refused; matching numeric versions alone do not admit
+artifacts from an earlier source checkpoint. The `kms_cursor_transport`
+snapshot section belongs to the kernel-host surface, leaving the program
+contract digest unchanged. No cursor host import is required. See
 [the cursor transport contract](architecture.md) for the record layout and
 ownership rules.
 
@@ -2387,12 +2391,229 @@ and preserves the new program-only contract digest and exact kernel-host
 version check. Keep 56 across increments of this unpublished effort.
 Kernel-host version 3 covers the incompatible graphics import signatures,
 session routing, acknowledged resources and exact DRM file/grant identity.
+The same unpublished host3 contract also includes the required read-only
+`host_proc_compare_bytes(pid: i32, addr: i64, snapshot: i32, len: i32) -> i32`
+import used by file-mapping publication. The snapshot pointer names an
+initialized Rust slice lent only for that synchronous comparison. Results
+are exactly0 for equal,1 for different,2 for unavailable native comparison,
+or negative errno. A result of2 triggers the normal separately validated
+owned-copy read; it never means equality. All native authority remains
+inside the synchronous host call. Both hosts must implement it. Earlier development
+host3 kernels and hosts are not interchangeable with this regenerated
+contract; rebuild them together. This completes the already-reserved
+successor to main's host2 rather than allocating another development ABI.
 The GL operation table stays 17 and fork-state record version stays 21.
+
+The required kernel-host export `kernel_get_process_exec_generation`
+copies the current image's unsigned 64-bit generation into an exact
+eight-byte host scratch lease, in little-endian order. Its arguments are
+`(pid: u32, output: *mut u8, capacity: u32)` and its result is eight on
+success or negative errno without output mutation. Pending spawn children
+may register before publication; absent and reaped limbo identities
+return ESRCH. Keep status separate from the generation's full 64 bits.
+The getter supports binding a host registration to its actual Rust image;
+it does not grant deferred cleanup authority or enable public retained
+query scheduling. This addition completes the same unpublished host3
+contract and requires matching regenerated kernel/host artifacts.
+
+The same unpublished host3 contract makes the five DRI/GL cleanup imports
+return `i32`: `host_gbm_bo_unbind`, `host_gbm_bo_destroy`,
+`host_gl_unbind`, `host_kms_rmfb` and `host_kms_drop_master`. They were
+void, so a host that failed to release a buffer, framebuffer, grant or GL
+session was indistinguishable from one that succeeded. The only value a
+host may return is `wasm_posix_shared::dri_cleanup_status::COMPLETE`
+(`0`). A host that cannot finish reports a fatal host fault by throwing
+out of the import, which stops the kernel instance; the kernel traps on
+any other returned value. An earlier revision of this unpublished contract
+also defined `1` (host retained) and recorded negative refusals and lost
+unbind writebacks in `/proc/kandelo/writeback_losses`; both are removed,
+since a release the host cannot finish is a host-internal fault, not a
+recoverable loss. The `dri_cleanup_status` kernel-host snapshot section
+and the generated `DRI_CLEANUP_COMPLETE` TypeScript constant carry the
+contract. Earlier host3 kernels and hosts are not interchangeable with this
+contract; rebuild them together.
+
+The same unpublished host3 contract adds the kernel export
+`kernel_report_host_mapping_writeback_error(pid, map_addr, dev, ino,
+told_fd)`. The host calls it when it cannot write a mapping's dirty bytes
+back to a host-mounted file, so the kernel records the loss and reports it
+as `EIO` once to every open description of the file (identified by its
+`host_fstat` device and inode), as it does for kernel-owned files.
+
+The same unpublished host3 contract adds the required import
+`host_proc_quiescent_epoch(pid: i32) -> i64`. It returns the mutation
+epoch of the process's memory while the process is provably quiescent
+(every thread channel at `CH_PENDING`, no vfork child sharing the
+memory) and -1 otherwise; the host changes the epoch before any guest
+code of the process can run again and at every host write into its
+memory, including each `host_proc_write_bytes`. The kernel uses it to
+prove a shared-mapping comparison redundant (`CleanStamp` in
+`crates/runtime-core/src/memory.rs`). A required import is an
+incompatible kernel-host change, so a host3 kernel or host from before
+it is not interchangeable with one after it; rebuild them together. The
+program digest is unchanged, so programs, packages and images stay
+valid. `scripts/check-abi-version.sh` classifies the change as
+incompatible against a base from inside this unpublished family (for
+example `ABI_CHECK_BASE_REF=07e8e10aec`) and as consistent against main,
+whose kernel-host version is 2; the decision to keep it within host 3
+follows the treatment of `host_proc_compare_bytes` above.
+
+The same contract changes what `kernel_shared_mapping_sync_process`'s
+`force` argument means (`sync_force` in `crates/runtime-core/src/memory.rs`,
+`KERNEL_SHARED_MAPPING_SYNC_*` in `host/src/kernel-worker.ts`): `0` is a
+syscall completion, at which the kernel pulls every other mapper of the
+process's kernel-owned files and refreshes the process; the new `3` is a
+syscall entry, at which it does no kernel-file work and only synchronizes
+SysV attachments; `1` stays a forced publication (fork, exec preflight,
+exit, teardown); and `2`, which claimed a completion unchanged since its
+entry, is retired and read as `0`. The signature is unchanged, so the
+snapshot does not record it, but a host and kernel from either side of the
+change are not interchangeable: an older kernel reads `3` as a forced sync
+(correct, slower), while an older host would never pass `3` and would
+leave a newer kernel pulling at both boundaries. Rebuild them together.
+
+The same contract drops the four optional kernel exports
+`kernel_gl_query_capture`, `kernel_gl_query_session`,
+`kernel_gl_query_advance` and `kernel_gl_query_release`, and the reserved
+`host_gl_query` operation `0x7ffffffe` they drove. Only a test hook ever
+called them: production `GLIO_QUERY` runs synchronously within the ioctl.
+A guest query with that operation number now reaches the renderer as an
+unknown operation.
 
 Regenerate the snapshot, C/TypeScript declarations and standalone resolver
 from the merged source. All normal SDK, kernel, program, package and image
 artifacts require rebuilding for the combined program surface. Historical
 ABI 55 graphics results do not validate the newly combined implementation.
+
+### Additive glGetError drain within ABI 56 and operation table 17
+
+`QOP_GET_ERROR` gains an 8-byte input form: the existing ES2 client-flag
+mask followed by `shared::gl::error_drain::REQUEST` (`0x4744524e`). Its
+reply is exactly 44 bytes: count, retained, eight error slots and
+`QUERY_REPLY_MAGIC`. The renderer captures native flags, merges the mask,
+then moves up to eight recorded flags, oldest first, into the reply and
+removes them from the context; `retained` is 1 when flags remain. Unused
+slots are zero. The empty and 4-byte inputs keep their exact pop-one
+meaning and 4-byte reply, so existing binaries are unaffected. The kernel
+forwards query bytes without decoding them, so no ioctl, marshalled
+structure, snapshot section or program digest changes; Rust, C
+(`gl_abi.h`) and TypeScript (`ops.ts`) mirror the constants.
+
+The operation table stays 17 under the unpublished program 56 / host 3 /
+GL 17 / fork 21 family: like the multisampled surface configs below, this
+is a new accepted form of an existing value. A libGLESv2 built with it
+needs a renderer that decodes it; an older renderer rejects the 8-byte
+input with `EINVAL`, which libGLESv2 reports as `GL_INVALID_OPERATION`
+rather than misreading a reply. Packages linking libGLESv2 must be rebuilt
+to use the form; `libc/glue` is a global package input, so the normal
+build re-keys them.
+
+The guest semantics that depend on it (answering later `glGetError` calls
+locally until the next device request) are described in
+`docs/architecture.md` with the host error-flag contract.
+
+### Ordered guest error observations within ABI 56 and GL table 17
+
+`OP_ERROR_OBSERVED` (`0x001f`) adds an 8-byte payload containing two
+little-endian u32 masks: the pending command-predicted flags and the single
+flag bit already returned locally. Both use bits 0,1,2,5,6 for the five ES2
+flags; the consumed mask is zero or one bit of the pending mask. Malformed
+records reject the complete batch before effects. The host consumes only
+that flag in the selected context, at this position in the stream. It
+neither clears other flags nor interrupts private upload transactions.
+The audit compares the pending mask with its independent host validator
+before consumption; a mismatch is fatal in fatal mode. Production consumes
+the locally reported flag without trusting the expected mask to change
+command acceptance or any other context's state.
+
+Existing operations and layouts remain unchanged. The kernel forwards
+opaque command bytes, so no syscall, marshalled structure, snapshot section
+or program digest changes. Rust, C and TypeScript mirror the new constant.
+Keep program 56 / unpublished host 3 / GL 17 / fork 21. Old binaries retain
+their existing error drains. New libGLESv2 consumers need the updated host:
+an older host rejects the new record with `EINVAL`, rather than silently
+misreading it. Rebuild the libraries, linked consumers and host together
+through the normal build graph. Both SDK layout checks and the current
+kernel/snapshot check pass without changing the reserved family.
+
+### Ordered transport-error observations within ABI 56 and GL table 17
+
+`OP_TRANSPORT_ERROR_OBSERVED` (`0x0020`) has an empty payload. It denotes
+an `INVALID_OPERATION` already returned by a failed guest transport call.
+The host consumes only that coalesced flag at this record's exact position,
+leaving other flags, other contexts and errors from later commands intact.
+It performs no native operation or upload interruption. Unlike the ordinary
+`OP_ERROR_OBSERVED`, this record claims no exact knowledge of other flags.
+The existing exact-mask audit remains unchanged. Nonempty payloads reject the
+whole command batch before effects.
+
+The C failure path reserves its header in advance alongside the existing
+error trailer, without allocation or another submission. Consecutive failed
+observations with no intervening record coalesce; this bounded scan runs only
+on failure. This does not recover arbitrary error flags lost with an unknown
+error-drain reply; retained drain-reply custody remains unfinished work.
+
+The new optional Program section `gl_transport_error_observation` records
+this command without changing any previous snapshot entry. Its addition
+changes the program-contract digest. Keep versions56/3/17/21, and rebuild
+matching SDKs, linked programs, kernel and images normally. Old programs keep
+their existing path; an old host rejects the new record rather than silently
+accepting it. Future changes to this established section are exact-match
+compatibility checks, including its error value, empty payload and effect.
+
+### Additive multisampled surface configs within ABI 56
+
+Two existing values gain new accepted forms; no layout, operation number
+or snapshot record changes. `GlSurfaceAttrs.config_id` on
+`GLIO_CREATE_SURFACE` is a storage config word: the low byte stays `1`
+(RGBA8 with DEPTH24_STENCIL8) and bits 8..16 carry a sample count, zero
+for single-sampled storage or 2..31 (`shared::gl::surface_config`). The
+kernel rejects every other word with `EINVAL`; the host rejects a count
+its renderer cannot allocate exactly with `EINVAL`. `GLIO_UPDATE_SURFACE`
+still requires `1`: it names single-sampled BO storage, and a
+multisampled surface keeps its multisampled storage across a retarget.
+`QOP_SURFACE_CAPABILITIES` accepts a 20-byte reply in addition to the
+16-byte one: width, height, pixels, the supported sample-count mask (bit
+n = n samples) and the completion magic. Existing binaries keep sending
+config `1` and the 16-byte query unchanged. A libEGL built after this
+addition sends the 20-byte query from `eglInitialize`, so it needs a
+kernel and host with this change, as the additive-epoch rule below
+describes.
+
+### Additive robust-access context flag within ABI 56
+
+`GlContextAttrs` word 2 (offset 8), previously a reserved zero, is now
+`flags`. Bit 0 is `shared::gl::CONTEXT_FLAG_ROBUST_ACCESS`: EGL created
+the context with `EGL_CONTEXT_OPENGL_ROBUST_ACCESS(_EXT)` = `EGL_TRUE`,
+and the host keeps every draw's vertex fetches in range for it (robust
+buffer access, `host/src/webgl/robust-access.ts`). The kernel and host
+reject any other bit with `EINVAL`. The layout is unchanged; the
+snapshot records only the field's new name. Existing binaries send zero
+and are unaffected. A libEGL built after this addition sends the flag for
+robust contexts only, so those need a kernel and host with this change.
+
+Within the same family, the host reports a lost WebGL renderer (a
+graphics reset) as `ENODEV` on `GLIO_SUBMIT`, `GLIO_QUERY`,
+`GLIO_PRESENT`, `GLIO_MAKE_CURRENT` and shared `GLIO_CREATE_CONTEXT`,
+where present and make-current previously answered `EIO`. Earlier
+libEGL builds already map `ENODEV` to `EGL_CONTEXT_LOST`.
+
+### Additive vblank-time export within ABI 56
+
+`kernel_vblank_elapsed(elapsed_us: u32) -> u32` is an additive kernel
+export (the kernel-host surface; programs are unaffected). It counts one
+vblank that happened `elapsed_us` microseconds before the call: the
+kernel stamps it with its own `CLOCK_MONOTONIC` minus that age, never
+earlier than the previous vblank's time. The browser host passes the age
+of the display frame (`requestAnimationFrame`) that the vblank landed on,
+so flip events, `WAIT_VBLANK` replies and out-fences carry the frame's
+time rather than the moment the kernel worker got to run; timer vblanks
+pass 0. `kernel_vblank()` remains and is now `kernel_vblank_elapsed(0)`.
+WHY an age rather than an absolute time: the host's frame clock and the
+kernel's `CLOCK_MONOTONIC` source need not share an origin, only a rate.
+A host that finds no `kernel_vblank_elapsed` export calls `kernel_vblank`,
+which stamps the call time as before. `HOST_ADAPTER_VERSION` is unchanged:
+no export the host requires and no import the kernel requires changed.
 
 ## The snapshot
 
@@ -2650,6 +2871,24 @@ process-expected globals, the `env` imports programs link against, and
 the fork-instrumentation artifact contract (`wpk_fork_*` exports,
 save-buffer and frame formats).
 
+The `gl_inline_client_draw` program section also binds the owned client-array
+draw record emitted by libGLESv2: opcode, header and attribute layouts,
+component types, size limits and original vertex-index interpretation.
+Programs emit these bytes even though the host decodes them, so this is a
+program contract. Adding the section changes the program digest and rebuilds
+programs, libraries and images through the normal build graph. The unpublished
+combined graphics effort keeps its reserved program 56 / host 3 / GL table 17 /
+fork 21 numbers across increments at the user's request; that does not permit
+artifacts with an older contract digest to run against a newer candidate.
+
+The optional `gl_program_uniform_guest_signature` program section adds journal
+action9 without changing action8's request, reply, reserved words or authority.
+The new action preserves the48-byte reply and reports both native setter and
+guest reflection types, so external2D and ordinary2D samplers are distinguishable.
+Its Program classification changes the contract digest and requires coherent
+SDK, kernel, program and image rebuilds even though the reserved56/3/17/21
+version family is unchanged. Existing action8 bytes do not gain a new meaning.
+
 The sections under `abi_surfaces.kernel_host` are not in it: kernel
 exports, kernel imports (`env.host_*`), host-adapter metadata, the
 export filter policy, and the wire formats only the kernel and host
@@ -2716,3 +2955,21 @@ older large-spawn reservation/fallback contract, and changes the synchronization
 semantics of reusable storage. By contrast, identical generated spawn/native
 layout constants and an internal TypeScript pointer-plus-capacity value would
 not by themselves require an ABI version bump.
+
+### Graphics reset scope within the unpublished ABI 56 family
+
+`QOP_CONTEXT_RESET_SCOPE` adds unused GL17 query tag `0x37`. Existing query
+inputs, replies and opcodes remain unchanged. It has no input and a checked
+12-byte reply `[status=0, scope, QUERY_REPLY_MAGIC]`: scope zero is healthy,
+one is a logical context reset, and two is physical renderer loss. It may
+read the caller's retained object session before MakeCurrent or after reset;
+it requires its own live context and grants no other state-query authority.
+It does not replay state, consume native error flags or wait on buffer fences.
+
+LibEGL asks only after a loss reply. A known physical loss invalidates its
+share group; D-49/D-50 logical resets invalidate only the guilty context.
+An unavailable scope is diagnosed and retained locally, never inferred to
+have destroyed healthy peers. Versions remain program56 / host3 / GL17 /
+fork21. The additive snapshot section changes the program contract digest,
+so the next coherent build must rebuild programs and images normally; an
+older frozen preview does not contain this fix merely because versions match.

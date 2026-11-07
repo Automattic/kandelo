@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
+import { NativeGlFault } from "../src/webgl/native-recovery.js";
 
 function fixture() {
   let serial=0;
@@ -22,6 +23,7 @@ function fixture() {
   const retain=()=>Reflect.get(reg,"retainContextExecution")?.call(reg,7,11,muxer) as ReturnType<GlContextRegistry["retainContextExecution"]>|undefined;
   return {reg,binding,memory,gl,texture,muxer,live,deleted,errors,retain};
 }
+function caught(call:()=>unknown):Error|undefined{try{call();}catch(error){return error as Error;}return undefined;}
 it("revokes public context lookup without deleting a retained execution owner",()=>{
   const f=fixture(),lease=f.retain();
   f.reg.destroyContext(7,11);
@@ -84,63 +86,51 @@ it("leaves the public owner usable after replacement-slot allocation fails",()=>
   create.mockRestore();const lease=f.retain()!;expect(lease).not.toBeNull();
   f.reg.destroyContext(7,11);expect(lease.release()).toBe(true);f.reg.unbind(7);expect(f.live.size).toBe(0);
 });
-it("retains cleanup when selected-peer error capture fails and retries only its renderer",()=>{
+it("faults when selected-peer error capture fails before retiring a context",()=>{
   const f=fixture(),lease=f.retain()!;f.reg.destroyContext(7,11);
   const peer=f.reg.get(7,11)!;peer.gl=f.gl;peer.contextId=2;f.muxer.switchTo(peer);f.errors.push(0x500);
   const read=vi.spyOn(f.gl,"getError").mockImplementation(()=>{throw new Error("error read failed");});
-  expect(lease.release()).toBe(false);expect(f.live.has(f.texture)).toBe(true);
-  expect(lease.context).toBe(f.gl);expect(lease.clone()).toBeNull();expect(()=>lease.binding).toThrow("released");
-  expect(f.reg.retryExecutionRetirements({} as WebGL2RenderingContext)).toBe(true);
-  expect(f.reg.retryExecutionRetirements(f.gl)).toBe(false);expect(f.deleted).toEqual([]);
-  read.mockRestore();expect(f.reg.retryExecutionRetirements(f.gl)).toBe(true);
-  expect(peer.errors).toEqual([0x500]);expect(lease.release()).toBe(true);
-  f.reg.unbind(7);expect(f.live.size).toBe(0);
+  try {
+    const fault=caught(()=>lease.release());
+    expect(fault).toBeInstanceOf(NativeGlFault);
+    expect(fault!.message).toMatch(/could not read the selected owner's error flags before retiring a context/);
+    expect(f.live.has(f.texture)).toBe(true);expect(f.deleted).toEqual([]);
+  } finally {read.mockRestore();}
 });
-it("does not replay accepted image cleanup while a local-container deletion rejects",()=>{
+it("faults when the live renderer refuses a retired context's local-container deletion",()=>{
   const f=fixture(),vao=f.gl.createVertexArray()!;f.binding.vaos.set(9,vao);
   const lease=f.retain()!;f.reg.destroyContext(7,11);
-  const destroy=f.gl.deleteVertexArray.bind(f.gl);let reject=true;
-  f.gl.deleteVertexArray=value=>{if(value===vao && reject)throw new Error("VAO retirement rejected");destroy(value);};
-  expect(lease.release()).toBe(false);expect(f.live.has(f.texture)).toBe(false);expect(f.live.has(vao)).toBe(true);
-  expect(f.reg.retryExecutionRetirements(f.gl)).toBe(false);
-  expect(f.deleted.filter(value=>value===f.texture)).toHaveLength(1);
-  reject=false;expect(lease.release()).toBe(true);expect(f.deleted.filter(value=>value===vao)).toHaveLength(1);
-  f.reg.unbind(7);expect(f.live.size).toBe(0);
+  const destroy=f.gl.deleteVertexArray.bind(f.gl);
+  f.gl.deleteVertexArray=value=>{if(value===vao)throw new Error("VAO retirement rejected");destroy(value);};
+  const fault=caught(()=>lease.release());
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(/live renderer refused deleteVertexArray of an object the host retired/);
+  expect(f.deleted.filter(value=>value===f.texture)).toHaveLength(1);expect(f.live.has(vao)).toBe(true);
 });
-it("retains rejected image ownership after an accepted prefix and collects it on retry",()=>{
+it("faults when the live renderer refuses a retired image after an accepted prefix",()=>{
   const f=fixture(),second=f.gl.createTexture()!;f.binding.textures.set(2,second);
   const lease=f.retain()!;f.reg.destroyContext(7,11);
-  const destroy=f.gl.deleteTexture.bind(f.gl);let reject=true;
-  f.gl.deleteTexture=value=>{if(value===second && reject)throw new Error("texture retirement rejected");destroy(value);};
-  expect(lease.release()).toBe(false);expect(f.live.has(f.texture)).toBe(false);expect(f.live.has(second)).toBe(true);
-  expect(f.binding.textures.get(2)).toBe(second);expect(f.binding.cmdbufView).toBeNull();
-  expect(f.reg.retryExecutionRetirements(f.gl)).toBe(false);
-  expect(f.deleted.filter(value=>value===f.texture)).toHaveLength(1);
-  reject=false;expect(lease.release()).toBe(true);
-  expect(f.deleted.filter(value=>value===second)).toHaveLength(1);f.reg.unbind(7);expect(f.live.size).toBe(0);
+  const destroy=f.gl.deleteTexture.bind(f.gl);
+  f.gl.deleteTexture=value=>{if(value===second)throw new Error("texture retirement rejected");destroy(value);};
+  const fault=caught(()=>lease.release());
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(/live renderer refused deleteTexture of an object the host retired/);
+  expect(f.deleted.filter(value=>value===f.texture)).toHaveLength(1);expect(f.live.has(second)).toBe(true);
+  expect(f.binding.cmdbufView).toBeNull();
 });
-it("releases a completed retry token without touching the newly selected owner",()=>{
-  const f=fixture(),vao=f.gl.createVertexArray()!;f.binding.vaos.set(9,vao);
-  const lease=f.retain()!;f.reg.destroyContext(7,11);
-  const destroy=f.gl.deleteVertexArray.bind(f.gl);let reject=true;
-  f.gl.deleteVertexArray=value=>{if(value===vao && reject)throw new Error("VAO retirement rejected");destroy(value);};
-  expect(lease.release()).toBe(false);reject=false;
-  expect(f.reg.retryExecutionRetirements(f.gl)).toBe(true);
-  const peer=f.reg.get(7,11)!;peer.gl=f.gl;peer.contextId=2;f.muxer.switchTo(peer);
-  const read=vi.spyOn(f.gl,"getError").mockImplementation(()=>{throw new Error("peer error read failed");});
-  try {expect(lease.release()).toBe(true);expect(read).not.toHaveBeenCalled();}
-  finally {read.mockRestore();f.muxer.invalidateCurrent();f.reg.unbind(7);}
-  expect(f.deleted.filter(value=>value===vao)).toHaveLength(1);expect(f.live.size).toBe(0);
-});
-it("keeps a retained executable until a failed unbind can be acknowledged",()=>{
+it("faults when the live renderer refuses to uninstall a retired context's program",()=>{
   const f=fixture(),program=f.gl.createProgram()!;f.binding.currentProgram=program;f.binding.shadow.currentProgram=program;
   f.gl.useProgram(program);
   const lease=f.retain()!;f.reg.destroyContext(7,11);
-  const use=f.gl.useProgram.bind(f.gl);let reject=true;
-  f.gl.useProgram=value=>{if(value===null && reject)throw new Error("program unbind rejected");use(value);};
-  expect(lease.release()).toBe(false);expect(f.live.has(program)).toBe(true);
-  reject=false;expect(lease.release()).toBe(true);expect(f.gl.getParameter(0x8b8d)).toBeNull();
-  expect(f.deleted.filter(value=>value===program)).toHaveLength(1);f.reg.unbind(7);expect(f.live.size).toBe(0);
+  const use=f.gl.useProgram.bind(f.gl);
+  f.gl.useProgram=value=>{if(value===null)throw new Error("program unbind rejected");use(value);};
+  const fault=caught(()=>lease.release());
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  // destroyContextResources unbinds the executable before the checked
+  // uninstall; the refusal surfaces there as the generic retirement fault.
+  expect(fault!.message).toMatch(/retiring a context's native objects threw/);
+  expect((fault!.cause as Error).message).toBe("program unbind rejected");
+  expect(f.live.has(program)).toBe(true);expect(f.gl.getParameter(0x8b8d)).toBe(program);
 });
 it("preserves shared group objects through retirement of one retained execution",()=>{
   const f=fixture();f.reg.bind({pid:7,sessionId:12,cmdbufAddr:512,cmdbufLen:40});
@@ -170,4 +160,62 @@ it("preserves a public surface across replacement and retires it separately",()=
   f.reg.destroyContext(7,11);expect(f.reg.getSurface(7,71)).toBe(surface);
   expect(lease.release()).toBe(true);expect(surface.ownerAlive).toBe(true);
   f.reg.destroySurface(7,11);expect(surface.ownerAlive).toBe(false);f.reg.unbind(7);
+});
+
+it("does not run native cleanup for admitted live execution",()=>{
+  const f=fixture();
+  const lease=f.reg.retainContextExecution(7,11,f.muxer)!;
+  expect(lease).not.toBeNull();
+  const prepare=vi.spyOn(f.muxer,"prepareRetirement"),read=vi.spyOn(f.gl,"getError");
+  try {
+    expect(f.deleted).toEqual([]);expect(f.reg.getContext(7,1)).toBe(f.binding);
+    expect(lease.release()).toBe(true);
+    expect(prepare).not.toHaveBeenCalled();expect(read).not.toHaveBeenCalled();
+    // Ending an execution admission does not retire the public context.
+    expect(f.live.has(f.texture)).toBe(true);expect(f.deleted).toEqual([]);
+  } finally {prepare.mockRestore();read.mockRestore();f.reg.unbind(7);}
+  expect(f.live.size).toBe(0);
+});
+
+it("does not treat retained retired execution as runnable cleanup",()=>{
+  const f=fixture(),first=f.reg.retainContextExecution(7,11,f.muxer)!,second=first.clone()!;
+  f.reg.destroyContext(7,11);
+  const prepare=vi.spyOn(f.muxer,"prepareRetirement"),read=vi.spyOn(f.gl,"getError");
+  try {
+    expect(first.release()).toBe(true);
+    expect(prepare).not.toHaveBeenCalled();expect(read).not.toHaveBeenCalled();
+    expect(f.live.has(f.texture)).toBe(true);expect(second.binding).toBe(f.binding);
+    expect(second.release()).toBe(true);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(f.deleted.filter(value=>value===f.texture)).toHaveLength(1);
+  } finally {prepare.mockRestore();read.mockRestore();f.reg.unbind(7);}
+  expect(f.live.size).toBe(0);
+});
+
+it("faults when the final execution release cannot read the selected owner's error flags",()=>{
+  const f=fixture(),lease=f.reg.retainContextExecution(7,11,f.muxer)!;
+  f.reg.destroyContext(7,11);f.errors.push(0x500);
+  const read=vi.spyOn(f.gl,"getError").mockImplementation(()=>{throw new Error("selected error capture failed");});
+  try {
+    const fault=caught(()=>lease.release());
+    expect(fault).toBeInstanceOf(NativeGlFault);
+    expect(fault!.message).toMatch(/could not read the selected owner's error flags before retiring a context/);
+    expect(f.errors).toEqual([0x500]);expect(f.deleted).toEqual([]);expect(f.live.has(f.texture)).toBe(true);
+  } finally {read.mockRestore();}
+});
+
+it("confines a retirement fault to its exact registry and physical renderer",()=>{
+  const f=fixture(),g=fixture();
+  const first=f.reg.retainContextExecution(7,11,f.muxer)!,second=g.reg.retainContextExecution(7,11,g.muxer)!;
+  f.reg.destroyContext(7,11);g.reg.destroyContext(7,11);
+  const readF=vi.spyOn(f.gl,"getError").mockImplementation(()=>{throw new Error("first renderer unavailable");});
+  const readG=vi.spyOn(g.gl,"getError");
+  try {
+    expect(caught(()=>first.release())).toBeInstanceOf(NativeGlFault);
+    expect(readG).not.toHaveBeenCalled();expect(g.deleted).toEqual([]);expect(f.deleted).toEqual([]);
+  } finally {readF.mockRestore();readG.mockRestore();}
+  // The other registry's renderer retires normally.
+  expect(second.release()).toBe(true);
+  expect(g.deleted.filter(value=>value===g.texture)).toHaveLength(1);
+  g.reg.unbind(7);expect(g.live.size).toBe(0);
 });

@@ -6,8 +6,9 @@ set -euo pipefail
 #   libc:   functional-regression | math
 #   sortix: include | basic | runtime
 # Omitting the group preserves the complete local suite behavior.
-# Set PREPARE_BROWSER_ASSETS=1 when the caller supplied an already-materialized
-# binaries/ artifact but intentionally deferred local browser asset generation.
+# Set PREPARE_BROWSER_ASSETS=1 when the caller deferred browser asset
+# generation: the browser suite then runs `./run.sh prepare-browser`, the
+# supported local SourceOnly build of what the browser app demands.
 # Prepare-merge also sets VERIFY_BROWSER_PRODUCTION_BUILD=1 to compile the
 # ordinary Pages-shaped product before closed test transport is exposed.
 
@@ -427,7 +428,8 @@ NODE
     if [ -s "$source_shared_declared" ]; then
         (
             cd host
-            npx vitest run \
+            bash "$REPO_ROOT/scripts/record-test-report.sh" vitest \
+                npx vitest run \
                 "${prepared_excludes[@]}" \
                 "${disabled_software_vitest_excludes[@]}"
         )
@@ -442,7 +444,8 @@ NODE
         test_pattern="(^|[^A-Z0-9_])${test_marker}([^A-Z0-9_]|$)"
         (
             cd host
-            npx vitest run "$selected_path" \
+            bash "$REPO_ROOT/scripts/record-test-report.sh" vitest \
+                npx vitest run "$selected_path" \
                 --testNamePattern="$test_pattern"
         )
     done
@@ -726,7 +729,8 @@ case "$suite" in
             # memory from one case into the next.
             (
                 cd host
-                npx vitest run \
+                bash "$REPO_ROOT/scripts/record-test-report.sh" vitest \
+                    npx vitest run \
                     "${vitest_args[@]}" \
                     "${resource_excludes[@]}" \
                     "${disabled_software_vitest_excludes[@]}"
@@ -742,7 +746,8 @@ case "$suite" in
                 test_pattern="(^|[^A-Z0-9_])${test_marker}([^A-Z0-9_]|$)"
                 (
                     cd host
-                    npx vitest run \
+                    bash "$REPO_ROOT/scripts/record-test-report.sh" vitest \
+                        npx vitest run \
                         "../${resource_files[$index]}" \
                         --testNamePattern="$test_pattern"
                 )
@@ -761,7 +766,8 @@ case "$suite" in
         if [ "$group" = "all" ] || [ "$group" = "1/2" ]; then
             (
                 cd host
-                KANDELO_VITEST_RUNTIME=bun bun x --bun vitest run \
+                KANDELO_VITEST_RUNTIME=bun bash "$REPO_ROOT/scripts/record-test-report.sh" vitest \
+                    bun x --bun vitest run \
                     test/teardown-reclaim.test.ts \
                     test/pthread.test.ts \
                     test/heap-safepoint.test.ts
@@ -778,10 +784,14 @@ case "$suite" in
             [ "${PREPARE_BROWSER_ASSETS:-0}" = "1" ]; then
             # Publication-pending packages are deliberately absent from the
             # prepared release ledger. Materialize their exact PR recipes as
-            # local test generations before the ordinary fetch-only browser
-            # pass proves that every browser dependency is now resolvable.
+            # local test generations in the prepared binaries/ tree.
             bash scripts/materialize-ci-publication-blockers.sh
-            ./run.sh --already-materialized --fetch-only prepare-browser
+            # WHY plain `prepare-browser`: browser commands build the local
+            # SourceOnly graph and reject the retired binary-selection modes.
+            # `--already-materialized` exits 2 there, and run.sh no longer
+            # parses `--fetch-only` at all (it becomes an unknown command),
+            # so the old spelling failed before preparing anything.
+            ./run.sh prepare-browser
             if [ "${VERIFY_BROWSER_PRODUCTION_BUILD:-false}" = "true" ] || \
                 [ "${VERIFY_BROWSER_PRODUCTION_BUILD:-0}" = "1" ]; then
                 run_pages_shaped_browser_build
@@ -799,10 +809,12 @@ case "$suite" in
                     npx playwright install chromium firefox webkit
             fi
             run_timed 20m "Run Chromium browser demo smoke suite" \
-                npx playwright test --grep-invert "@slow|@trap-signal" \
+                bash "$REPO_ROOT/scripts/record-test-report.sh" playwright \
+                    npx playwright test --grep-invert "@slow|@trap-signal" \
                     --project=chromium
             run_timed 10m "Run cross-browser contract smoke suite" \
-                npx playwright test \
+                bash "$REPO_ROOT/scripts/record-test-report.sh" playwright \
+                    npx playwright test \
                     test/boot-current-boundary.spec.ts \
                     test/coi.spec.ts \
                     test/vfs-import-seal-boundary.spec.ts \

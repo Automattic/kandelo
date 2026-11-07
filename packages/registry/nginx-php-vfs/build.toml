@@ -15,6 +15,8 @@ inputs = [
   "images/vfs/scripts/shell-lazy-archives.ts",
   "images/vfs/scripts/source-extract-helper.ts",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
+  "images/vfs/scripts/package-session-files.ts",
+  "scripts/package-runtime-file.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "images/vfs/lib/init/shell-binaries.ts",
   "images/rootfs/etc/services",

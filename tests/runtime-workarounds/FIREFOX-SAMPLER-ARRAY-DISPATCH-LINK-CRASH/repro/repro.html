@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><canvas id="c" width="1" height="1"></canvas><script>
+const gl = document.querySelector('canvas').getContext('webgl2');
+const variant = false;
+const vertex = `#version 300 es
+void main() { gl_Position=vec4(0,0,0,1); gl_PointSize=1.0; }`;
+const fragment = `#version 300 es
+precision highp float;
+uniform highp sampler2DArray a[2];
+out vec4 color;
+vec4 sampleOne(highp sampler2DArray s) { return textureLod(s,vec3(0.5,0.5,0),0.0); }
+${variant ? `vec4 selectOne(highp sampler2DArray s0, highp sampler2DArray s1, int index) {
+ switch(index) {case 0:return sampleOne(s0);case 1:return sampleOne(s1);} return vec4(0);
+}` : `vec4 selectOne(highp sampler2DArray samplers[2], int index) {
+ switch(index) {case 0:return sampleOne(samplers[0]);case 1:return sampleOne(samplers[1]);} return vec4(0);
+}`}
+void main() { vec4 v=vec4(0); for(int i=0;i<2;i++) v+=selectOne(${variant ? 'a[0],a[1]' : 'a'},i); color=v/2.0; }`;
+const shader = (type, source) => {const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);
+if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s;};
+try {
+ const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,vertex));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,fragment));
+ console.log('about to link',variant?'scalar':'array');gl.linkProgram(p);
+ const ok=gl.getProgramParameter(p,gl.LINK_STATUS);
+ window.__reproVerdict={verdict:ok?'not-reproduced':'reproduced',details:ok?'valid sampler shader linked':gl.getProgramInfoLog(p)};
+} catch(error) {window.__reproVerdict={verdict:'inconclusive',details:String(error)};}
+</script>

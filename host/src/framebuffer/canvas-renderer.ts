@@ -1,9 +1,9 @@
 /**
  * Browser canvas renderer for `/dev/fb0` bindings.
  *
- * `attachCanvas(canvas, registry, pid, opts)` starts a `requestAnimationFrame`
- * loop that reads the bound region of the process's wasm Memory SAB and
- * blits it to a 2D canvas. The kernel emits BGRA32 pixels; canvas
+ * `attachCanvas(canvas, registry, pid)` starts a `requestAnimationFrame`
+ * loop that reads independent host pixels and blits them to a 2D canvas.
+ * An explicit memory accessor also supports renderers inside an owning realm. The kernel emits BGRA32 pixels; canvas
  * `ImageData` expects RGBA, so each frame swizzles into a parallel RGBA
  * scratch buffer.
  *
@@ -16,9 +16,9 @@
  *     (see `FramebufferRegistry.rebindMemory`, fired after `Memory.grow`).
  *   - Canvas size auto-syncs to `binding.{w,h}` so the consumer doesn't
  *     have to pre-size the element.
- *   - The renderer does NOT subscribe to `registry.onChange`; the RAF loop
- *     polls. That keeps state simple and avoids a per-bind/unbind handler
- *     stack. The polling cost is ~one Map lookup per frame.
+ *   - The RAF loop reads the registry. Independent-only attachment also
+ *     validates storage ownership at attachment/bind events, without adding
+ *     a memory-source decision to every ordinary frame.
  */
 import type { FramebufferRegistry } from "./registry.js";
 
@@ -37,7 +37,7 @@ export function attachCanvas(
   canvas: HTMLCanvasElement,
   registry: FramebufferRegistry,
   pid: number,
-  opts: CanvasAttachOpts,
+  opts?: CanvasAttachOpts,
 ): () => void {
   const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) throw new Error("canvas 2d context unavailable");
@@ -48,6 +48,25 @@ export function attachCanvas(
   let scratchRgba: Uint8ClampedArray<ArrayBuffer> | null = null;
 
   let raf = 0;
+  let offOwnership: (() => void) | undefined;
+  const requireIndependentPixels = () => {
+    const binding = registry.get(pid);
+    if (binding && binding.hostBuffer === null) {
+      cancelAnimationFrame(raf);
+      offOwnership?.();
+      throw new Error(`Framebuffer ${pid} has no independent pixel storage; this renderer cannot access process memory`);
+    }
+  };
+  if (opts === undefined) {
+    // WHY: browser bindings publish bounded pixel mirrors with their metadata.
+    // A missing mirror is a protocol fault, not permission to recover a whole
+    // guest memory on the persistent page. Check new bindings once, and retire
+    // this exact RAF/listener on fault instead of silently painting nothing.
+    requireIndependentPixels();
+    offOwnership = registry.onChange((changedPid, event) => {
+      if (changedPid === pid && event === "bind") requireIndependentPixels();
+    });
+  }
   const tick = () => {
     raf = requestAnimationFrame(tick);
 
@@ -62,6 +81,7 @@ export function attachCanvas(
         // Write-based binding: the host owns the pixel buffer.
         binding.view = binding.hostBuffer;
       } else {
+        if (opts === undefined) { requireIndependentPixels(); return; }
         const memory = opts.getProcessMemory(pid);
         if (!memory) return;
         try {
@@ -88,7 +108,7 @@ export function attachCanvas(
   };
 
   raf = requestAnimationFrame(tick);
-  return () => cancelAnimationFrame(raf);
+  return () => { cancelAnimationFrame(raf); offOwnership?.(); };
 }
 
 /**

@@ -23,13 +23,13 @@ inputs = [
   "programs/kclipd.c",
   "libc/musl-overlay/include/kandelo/clipboard.h",
   "packages/registry/wayland-demo/desktops/data/applications/clock.desktop",
+  "packages/registry/wayland-demo/desktops/data/applications/kandelo-terminal.desktop",
   "packages/registry/wayland-demo/desktops/data/applications/nano.desktop",
   "packages/registry/wayland-demo/desktops/data/applications/nethack.desktop",
-  "packages/registry/wayland-demo/desktops/data/applications/paint.desktop",
   "packages/registry/wayland-demo/desktops/data/applications/qtgallery.desktop",
   "packages/registry/wayland-demo/desktops/data/applications/scummvm.desktop",
-  "packages/registry/wayland-demo/desktops/data/applications/terminal.desktop",
   "packages/registry/wayland-demo/desktops/data/applications/vim.desktop",
+  "packages/registry/wayland-demo/desktops/data/applications/wayland-demo.desktop",
   "packages/registry/wayland-demo/desktops/data/quickshell/Bar.qml",
   "packages/registry/wayland-demo/desktops/data/quickshell/Launcher.qml",
   "packages/registry/wayland-demo/desktops/data/quickshell/LockScreen.qml",
@@ -63,6 +63,7 @@ inputs = [
   "libc/glue/libegl_stub.c",
   "libc/glue/libglesv2_stub.c",
   "libc/glue/gl_abi.h",
+  "libc/glue/drm_format_info.h",
   "scripts/build-musl.sh",
   "scripts/build-dri-stubs.sh",
   "scripts/build-gles-stubs.sh",
@@ -70,4 +71,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = ""
-revision    = 9
+revision    = 13

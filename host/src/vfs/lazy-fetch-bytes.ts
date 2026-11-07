@@ -102,14 +102,14 @@ async function boundedResponseBytes(response: Response, maxBytes?: number, onPro
  * Only transient transport errors retry. The kernel verifies the returned
  * bytes' length/digest and never asks this transport to retry integrity errors.
  */
-export async function fetchLazyResourceBytes(fetcher: LazyFetch, url: string, maxBytes?: number, onProgress?: DeferredByteProgress): Promise<Uint8Array> {
+export async function fetchLazyResourceBytes(fetcher: LazyFetch, url: string, maxBytes?: number, onProgress?: DeferredByteProgress, init?: { cache?: RequestCache }): Promise<Uint8Array> {
   if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) {
     throw new Error("Invalid native lazy resource byte bound");
   }
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     let response: Response | undefined;
     try {
-      response = await fetcher(url);
+      response = await (init === undefined ? fetcher(url) : fetcher(url, init));
       if (!response.ok) throw new HttpFailure(response.status, response.headers.get("retry-after"), url);
       return await boundedResponseBytes(response, maxBytes, onProgress);
     } catch (error) {

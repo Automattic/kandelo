@@ -5,7 +5,7 @@ import type { VfsImageFilesystem } from "../src/vfs/vfs-image-filesystem";
 import { extractZipEntry, parseZipCentralDirectory } from "../src/vfs/zip";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
-type Compositor = "cage" | "sway";
+type Compositor = "cage" | "sway" | "labwc";
 
 /** The card has a render node, so wlroots' automatic choice is its GLES2
  *  renderer, which draws through the host's WebGL2 bridge. The Node host

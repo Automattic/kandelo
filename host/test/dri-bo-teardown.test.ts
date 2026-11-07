@@ -91,7 +91,7 @@ it("exec retires memory aliases while preserving open cursor and scanout ownersh
   kernel.releaseProcessViews(10);
 });
 
-it("process retirement preserves cursor ownership until the kernel drops the master file", () => {
+it("process retirement and a master drop keep the cursor until the kernel retires its BO", () => {
   const { kernel, imports } = harness();
   kernel.bos.create(bo(10, 1));
   kernel.bos.bind(10, 1, 0, 4096);
@@ -104,7 +104,9 @@ it("process retirement preserves cursor ownership until the kernel drops the mas
   // not proof that this DRM file or its cursor has reached its final close.
   kernel.releaseProcessViews(10);
   expect(kernel.kms.cursorSnapshot().pixels).toBe(pixels);
+  // The cursor plane is device state: dropping master keeps it shown.
   imports.env.host_kms_drop_master(10, 1n, 1n);
-  expect(kernel.kms.cursorSnapshot().pixels).toBeNull();
+  expect(kernel.kms.cursorSnapshot().pixels).toBe(pixels);
   imports.env.host_gbm_bo_destroy(10, 1);
+  expect(kernel.kms.cursorSnapshot().pixels).toBeNull();
 });

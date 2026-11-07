@@ -35,6 +35,13 @@ export interface GlShadowState {
   blendFunc: { srcRGB: number, dstRGB: number, srcA: number, dstA: number };
   blendEquation: { rgb: number, alpha: number };
   blendColor: [number, number, number, number];
+  /** Derived from blendFunc and blendColor (blend-constant.ts): the logical
+   * RGB source factor a draw folds into its fragment color while the RGB
+   * factors form a pair WebGL rejects; null otherwise. */
+  blendSourceFactor: [number, number, number] | null;
+  /** Stable context-owned factor bank; revisions invalidate shared twins. */
+  blendSourceValues:[number,number,number];
+  blendSourceVersion:number;
 
   cullFaceEnabled: boolean;
   cullFace: number;
@@ -60,10 +67,34 @@ export interface GlShadowState {
   defaultTextures: Map<number, WebGLTexture>;
   textureUnits: (WebGLTexture | null)[];
   cubeTextureUnits: (WebGLTexture | null)[];
+  /** OES_EGL_image_external bindings. An external texture has no native
+   * target of its own: its native texture is bound to a unit's TEXTURE_2D
+   * only for the draws whose program samples it (external-texture.ts). */
+  externalTextureUnits: (WebGLTexture | null)[];
   pixelStore: Map<number, number>;
 
   unpackAlignment: number;
   packAlignment: number;
+
+  /** Derived from guest state, never reported: facts about the draw
+   * framebuffer's color storage (opaque-alpha.ts), with the framebuffer and
+   * inputs revision they were derived for. `locked`: the storage has no
+   * alpha, so the native COLOR_WRITEMASK is the guest mask with alpha
+   * cleared. `writes`: the storage's write count (image-writes.ts), advanced
+   * by every draw and clear. */
+  drawTarget: { fbo: WebGLFramebuffer | null | undefined; revision: number; locked: boolean;
+    writes: { count: number } | null };
+  /** Derived: the 2D texture units bound to an EGLImage sibling view
+   * (image-storage.ts), as of a framebuffer-inputs revision. */
+  sourcedUnits: { revision: number; units: number[] };
+  /** Derived: per-unit sampling traits of the bound 2D and cube textures
+   * (bit 1: level 0 is a depth image, depth-sampling.ts; bit 2: the filters
+   * switch from magnification to minification at lambda 0.5,
+   * lod-switchover.ts), how many units have each and any, and texture
+   * zero's traits, as of a sampling revision (texture-levels.ts). A draw
+   * while `any` and `defaults` are 0 does no sampling work; a bind looks up
+   * only the texture it binds. */
+  samplingUnits: { revision: number; any: number; depth: number; half: number; defaults: number; flat: number[]; cube: number[] };
 }
 
 export interface GlStencilFaceState {
@@ -117,6 +148,9 @@ export function defaultShadow(): GlShadowState {
     blendFunc: { srcRGB: 1, dstRGB: 0, srcA: 1, dstA: 0 },
     blendEquation: { rgb: 0x8006, alpha: 0x8006 },   // GL_FUNC_ADD
     blendColor: [0, 0, 0, 0],
+    blendSourceFactor: null,
+    blendSourceValues:[0,0,0],
+    blendSourceVersion:0,
     cullFaceEnabled: false,
     cullFace: 0x0405,    // GL_BACK
     frontFace: 0x0901,   // GL_CCW
@@ -131,9 +165,13 @@ export function defaultShadow(): GlShadowState {
     defaultTextures: new Map(),
     textureUnits: new Array(32).fill(null),
     cubeTextureUnits: new Array(32).fill(null),
+    externalTextureUnits: new Array(32).fill(null),
     pixelStore: new Map(EXTRA_PIXEL_STORE_DEFAULTS),
     unpackAlignment: 4,
     packAlignment: 4,
+    drawTarget: { fbo: undefined, revision: -1, locked: false, writes: null },
+    sourcedUnits: { revision: -1, units: [] },
+    samplingUnits: { revision: -1, any: 0, depth: 0, half: 0, defaults: 0, flat: [], cube: [] },
   };
 }
 
@@ -171,8 +209,9 @@ export function setCap(s: GlShadowState, cap: number, enabled: boolean): void {
   }
 }
 
-// WebGL2 unpack/pack state can be changed through the bridge and by device
-// uploads even when the guest encoder gathers GLES rows itself.
+// WebGL2-only pack/unpack state. GLES 2 guests cannot set it (glPixelStorei
+// admits only the alignments); host device uploads change it temporarily, and
+// owner switches restore these private defaults.
 export const EXTRA_PIXEL_STORE_DEFAULTS: readonly (readonly [number, number])[] = [
   [0x0cf2, 0], [0x0cf3, 0], [0x0cf4, 0], // unpack row length, skip rows/pixels
   [0x806e, 0], [0x806d, 0], // unpack image height, skip images

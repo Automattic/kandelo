@@ -1,8 +1,6 @@
 import { expect, it } from "vitest";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
-import { setupMainForward, type GlForwardMessage } from "../src/webgl/main-forward.js";
-import { createGlForwardQueryMailbox, prepareGlForwardQuery, waitForGlForwardQuery } from "../src/webgl/main-forward-query.js";
 import { OP_CLEAR_COLOR } from "../src/webgl/ops.js";
 
 function colors(): Uint8Array {
@@ -46,19 +44,4 @@ it.each([4,8] as const)("native submission decodes its accepted snapshot after t
     expect(new DataView(guest.buffer,guest.byteOffset,40).getFloat32(28,true)).toBe(1);
     expect(binding.cmdbufView?.buffer).toBe(memory.buffer);
   } finally {kernel.releaseProcessViews(7);}
-});
-
-it("main forwarding decodes an owned snapshot even when a renderer callback rewrites the delivered message", () => {
-  const bytes=colors(),native=renderer(()=>replaceSecond(bytes));
-  let listener: ((event:MessageEvent)=>void)|null=null;
-  const worker={addEventListener(_type:"message",next:(event:MessageEvent)=>void){listener=next;},removeEventListener(){listener=null;}};
-  const dispose=setupMainForward(worker,{width:1,height:1,getContext:()=>native.gl} as unknown as HTMLCanvasElement,7);
-  const fire=(data:GlForwardMessage)=>listener!({data} as MessageEvent);
-  try {
-    const mailbox=createGlForwardQueryMailbox();prepareGlForwardQuery(mailbox,0);
-    fire({type:"gl_forward_create_context",pid:7,sessionId:11,mailbox});expect(waitForGlForwardQuery(mailbox).rc).toBe(0);
-    fire({type:"gl_forward_submit",pid:7,sessionId:11,bytes});
-    expect(native.observed.slice(-2)).toEqual([[1,0,0,1],[0,0,1,1]]);
-    expect(new DataView(bytes.buffer).getFloat32(28,true)).toBe(1);
-  } finally {dispose();}
 });

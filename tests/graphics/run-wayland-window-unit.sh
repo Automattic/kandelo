@@ -25,8 +25,12 @@ if [ ! -f "$protocol_xml" ]; then
 fi
 wayland-scanner client-header "$protocol_xml" "$output_dir/include/linux-dmabuf-v1-client-protocol.h"
 clang -g -O1 -pthread -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" -fno-sanitize-recover=all -fno-omit-frame-pointer \
+    -I"$repo_root/libc/glue" -include "$repo_root/tests/graphics/libc/wayland-window-double.h" \
+    -c "$repo_root/libc/glue/drm_owned.c" -o "$output_dir/owned.o"
+clang -g -O1 -pthread -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" -fno-sanitize-recover=all -fno-omit-frame-pointer \
     -I"$output_dir/include" -I"$repo_root/libc/glue" \
-    "$repo_root/tests/graphics/libc/wayland-window.c" -o "$output_dir/wayland-window"
+    "$repo_root/tests/graphics/libc/wayland-window.c" "$output_dir/owned.o" \
+    "$repo_root/tests/graphics/libc/owned-resource-peer.c" "$repo_root/tests/graphics/libc/native-graphics-optional.c" -o "$output_dir/wayland-window"
 python3 - "$output_dir/wayland-window" <<'PYTHON'
 import subprocess,sys
 try:

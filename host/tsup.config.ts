@@ -31,6 +31,14 @@ export default defineConfig({
     js: hostBuildFingerprintBanner(hostRoot),
   },
   onSuccess: async () => {
+    // Bundling erases the vendored source directory, but redistribution must
+    // keep its upstream attribution and documented local modifications.
+    const tlsNoticeDir = resolve(hostRoot, "dist/networking/tls");
+    mkdirSync(tlsNoticeDir, { recursive: true });
+    copyFileSync(
+      resolve(hostRoot, "src/networking/tls/NOTICE"),
+      resolve(tlsNoticeDir, "NOTICE"),
+    );
     const outputDir = resolve(hostRoot, "dist/audio");
     mkdirSync(outputDir, { recursive: true });
     copyFileSync(

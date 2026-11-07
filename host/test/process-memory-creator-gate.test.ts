@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ProcessMemoryCreatorGate } from "../src/process-memory-creator-gate";
+import { ProcessMemoryCreatorGate, isProcessMemoryCreatorAdmissionClosed } from "../src/process-memory-creator-gate";
 
 function deferred() {
   let resolve!: () => void;
@@ -11,6 +11,18 @@ function deferred() {
 }
 
 describe("process memory creator destroy gate", () => {
+  it("brands only an actual terminal admission refusal, never copied error text", async () => {
+    const gate = new ProcessMemoryCreatorGate();
+    await gate.closeAndWait();
+    let refusal: unknown;
+    try { gate.acquire("a pthread Worker"); } catch (error) { refusal = error; }
+    expect(refusal).toBeInstanceOf(Error);
+    expect(isProcessMemoryCreatorAdmissionClosed(refusal)).toBe(true);
+    expect(isProcessMemoryCreatorAdmissionClosed(new Error((refusal as Error).message))).toBe(false);
+    expect(isProcessMemoryCreatorAdmissionClosed(Object.create(refusal as Error))).toBe(false);
+    expect(isProcessMemoryCreatorAdmissionClosed({message: (refusal as Error).message})).toBe(false);
+    expect(isProcessMemoryCreatorAdmissionClosed(null)).toBe(false);
+  });
   it("drains an admitted creator before running one terminal destroy sweep", async () => {
     const gate = new ProcessMemoryCreatorGate();
     const spawn = deferred();

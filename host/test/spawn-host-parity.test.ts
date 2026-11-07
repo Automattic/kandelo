@@ -119,6 +119,16 @@ function expectDeadStartUsesOrdinaryTeardown(handler: string, entry: string): vo
 }
 
 describe("spawn host parity", () => {
+  it("both clone adapters use the shared terminal creator admission gate", () => {
+    for (const entry of [nodeEntry, browserEntry]) {
+      const source = readFileSync(entry, "utf8");
+      const start = source.indexOf("onClone:");
+      const end = source.indexOf("onThreadExit:", start);
+      expect(start).toBeGreaterThanOrEqual(0); expect(end).toBeGreaterThan(start);
+      expect(source.slice(start, end)).toMatch(/onClone:\s*\(attachment\)\s*=>\s*processMemoryCreators\.run\(\s*"a pthread Worker",\s*\(\) => handleClone\(attachment\),\s*\)/);
+    }
+  });
+
   it("both exec callbacks carry one opaque prepared-target request", () => {
     const shared = readFileSync(sharedWorker, "utf8");
     expect(shared).toMatch(/onExec\?:\s*ExecLaunchCallback/);

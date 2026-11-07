@@ -1,14 +1,28 @@
+import type {GlWirePayload} from "./wire-payload.js";
+import {GlErrorDrainReceipt} from "./error-query.js";
+import { retireProgramJournal, createProgramJournalControl, type GlProgramJournal, type GlProgramJournalControl } from "./program-journal.js";
+import { retireContextProgramCaptures, retireLastPublicProgramCaptures } from "./program-captures.js";
+import { forgetRendererLoss, rendererObjectEpoch } from "./renderer-loss.js";
+import { cubeExtraTextures } from "./cube-storage.js";
+import type { GlObjectCapture } from "./object-capture.js";
+import type { GlCompressedUpload } from "./compressed-upload.js";
+import type { GlReadbackCapture } from "./readback-capture.js";
+import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { CpuImageStorage } from "./cpu-image-storage.js";
+import type { GbmBoRegistry } from "../dri/registry.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
+import { gpuStorageFormat } from "./gpu-storage-format.js";
+import { clearStorageAlphaToOne, setOpaqueAlphaStorage } from "./opaque-alpha.js";
 import { revokeForeignBo } from "./foreign-retirement.js";
+import { GlOperationStream } from "./operation-stream.js";
 import { GlFenceOwner } from "./fences.js";
 import type { GlClientArrayFields } from "./client-array.js";
-import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, type NativeRetirement, type NativeDeletion } from "./native-recovery.js";
+import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, nativeGlFault, NativeGlFault, type NativeRetirement, type NativeDeletion, rethrowNativeGlFault } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
-import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
-import type { GlUniformLookup } from "./uniform-queries.js";
-import type { GlSurfaceCreation } from "./surface-create.js";
+import { destroyTextureView, destroyRenderbufferView, retireExportedImage, type GlExportedImage } from "./image-storage.js";
+import type { GlUniformUpload } from "./uniform-upload.js";
+import { replaceUniformLookup, type GlUniformLookup } from "./uniform-queries.js";
 /**
  * Tracks live `/dev/dri/renderD128` GLES sessions reported by the kernel.
  *
@@ -18,24 +32,25 @@ import type { GlSurfaceCreation } from "./surface-create.js";
  *
  *   - the cmdbuf region (a slice of the process's wasm Memory SAB),
  *   - a lazily-built `WebGL2RenderingContext` once a canvas is attached,
- *   - object-group maps for shareable GL names and uniform locations,
+ *   - object-group maps for shareable GL names,
  *   - context-local state, errors, VAOs and framebuffer containers.
  *
  * The cmdbuf view is built lazily on the first `host_gl_submit` and
  * invalidated on `WebAssembly.Memory.grow()` via `rebindMemory(pid)`,
  * mirroring the framebuffer registry's pattern.
  *
- * Uniform-location indexing uses a monotonic `nextUniformLoc` counter
- * (never decremented) rather than `Map.size`. Map.size shrinks on delete
- * and would collide with prior indices that the C side may still hold.
- * Indices are int-keyed (not stringified) so the cmdbuf u32 round-trips
- * cleanly without `Map<string, ...>` / `Map<number, ...>` mismatches.
+ * Uniform locations belong to native executables, not to bindings or
+ * groups: each program numbers its own uniforms (uniform-layout.ts).
  */
 import { defaultShadow, type GlShadowState } from "./shadow.js";
 import type { GlDrawableBinding } from "./current.js";
+import { GlSubmitExecution, type GlExecutionDrawable } from "./submit-execution.js";
+import type { GlMuxer } from "./muxer.js";
 import { replaceDefaultFramebuffer } from "./framebuffer.js";
+import { framebufferInputsChanged } from "./framebuffer-revision.js";
 import { createGlObjectGroup, exposeGlSharedObjects, type GlObjectGroup, type GlSharedObjects } from "./object-group.js";
-import { finalizeProgram, releaseRetainedExecutable } from "./program-objects.js";
+import { finalizeProgram, releaseRetainedExecutable, retireProgramNameOwner, retireShaderObjects } from "./program-objects.js";
+import { releaseReversedDepthTwin } from "./reversed-depth.js";
 import { collectRetiredImages, type GlImageAttachment } from "./image-references.js";
 import { destroyBufferStorage } from "./buffer-storage.js";
 import { collectRetiredBuffers, defaultVertexArray, type GlVertexArray } from "./buffer-references.js";
@@ -65,21 +80,6 @@ export type GlBindingInput = {
   cmdbufLen: number;
 };
 
-/** Bytes handed to `onSubmit` are non-shared — the caller copies them
- *  out of the SAB-backed cmdbuf so the channel may transfer the buffer. */
-export type GlForwardChannel = {
-  /** Zero acknowledges a live renderer; negative errno leaves no context. */
-  onCreateContext(sessionId?: number, shareSessionId?: number): number;
-  onDestroyContext(sessionId?: number): void;
-  onCreateSurface?(surface: GlSurfaceCreation, sessionId?: number): {rc: number; width: number; height: number};
-  onDestroySurface?(surfaceId: number, sessionId?: number): void;
-  onUnbind?(sessionId: number): void;
-  onMakeCurrent?(drawable: GlDrawableBinding, sessionId?: number): number;
-  onPresent?(sessionId?: number): number;
-  onSubmit(bytes: Uint8Array, sessionId?: number): void;
-  onQuery?(op: number, input: Uint8Array, outLen: number, sessionId?: number): { rc: number; bytes: Uint8Array };
-};
-
 export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlClientArrayFields & {
   surface: GlSurfaceResources;
   drawSurface: GlSurfaceResources | null;
@@ -87,33 +87,53 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   sessionId: number;
   displayFileId: bigint | null;
   currentDrawable: GlDrawableBinding | null;
+  /** Present only while an accepted work item selects its retained storage. */
+  executionDrawable?: GlExecutionDrawable;
   hasBeenCurrent: boolean;
   /** Undefined means no driver savepoint; null captures the zero binding.
    * This pin survives submit boundaries and is never a public object name. */
   savedClientArrayBuffer: WebGLBuffer | null | undefined;
+  uniformUpload: GlUniformUpload | null;
+  uniformUploadSerial: number;
   uniformLookup: GlUniformLookup | null;
   uniformLookupSerial: number;
+  compressedUpload: GlCompressedUpload | null;
+  compressedUploadSerial: number;
   shaderUpload: GlShaderSourceUpload | null;
   shaderUploadSerial: number;
+  objectCapture: GlObjectCapture | null;
+  objectCaptureSerial: number;
+  readbackCapture: GlReadbackCapture | null;
+  readbackCaptureSerial: number;
   /** No attachments: native framebuffer operations enforce surfaceless
    * incompleteness. This object never has a guest-visible name. */
   undefinedDefaultFbo: WebGLFramebuffer | null;
+  /** Private ARRAY_BUFFER that client-array draws upload into
+   * (private-client-draw.ts); created on first use, deleted with the
+   * context. Never a guest name. */
+  clientArrayStream: WebGLBuffer | null;
   /** Lazy view of `[cmdbufAddr, cmdbufAddr+cmdbufLen)` of the process's
    *  wasm Memory SAB. Built on the first submit and dropped to `null`
    *  by `rebindMemory` after a `Memory.grow()`. */
   cmdbufView: Uint8Array | null;
+  /** Cold native-context admission owns one reusable synchronous decoder. */
+  wirePayload:GlWirePayload|null;
 
   /** Live WebGL2 context, lazily constructed at `host_gl_create_context`
    *  time once the embedder has attached a canvas. */
   gl: WebGL2RenderingContext | null;
   /** Fence lifetime is independent of context-local state. */
   fences: GlFenceOwner;
+  operations: GlOperationStream;
   /** The canvas backing this binding's WebGL2 context. Set by
    *  `attachCanvas` before the program calls `eglCreateContext`. */
   canvas: HTMLCanvasElement | OffscreenCanvas | null;
 
   /** Kernel-issued EGL backend context identity. */
   contextId: GlContextHandle | null;
+  /** Created with EGL robust buffer access (robust-access.ts): every draw
+   * keeps native vertex fetches in range instead of WebGL's error. */
+  robustAccess: boolean;
 
   objects: GlObjectGroup;
   errors: number[];
@@ -137,11 +157,14 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   /** Logical name remains current when the latest link attempt failed and
    * currentProgram still holds an earlier installed native executable. */
   currentProgramId: number;
+  /** Optional driver journal; never consulted by draw/uniform hot paths. */
+  programJournal?: GlProgramJournal;
+  programJournalControl: GlProgramJournalControl;
+  errorDrainReceipt:GlErrorDrainReceipt;
+  logicalProgramCurrent?: {name: number};
 
 
   shadow: GlShadowState;
-
-  forward: GlForwardChannel | null;
 };
 
 export type GlChangeEvent = "bind" | "unbind";
@@ -169,8 +192,6 @@ type ExecutionRecord = {
   muxer: WeakRef<GlExecutionRetirementGuard>;
   references: number;
   retired: boolean;
-  cleaned: boolean;
-  cleanup: NativeRetirement | null;
   gpuBos: ReadonlyMap<number,GpuBo>;
   records: Set<ExecutionRecord>;
   contexts: WeakMap<GlBinding,ExecutionRecord>;
@@ -186,9 +207,10 @@ export class GlContextExecutionLease {
   static acquire(record: ExecutionRecord): GlContextExecutionLease | null {
     if (record.references >= Number.MAX_SAFE_INTEGER) return null;
     try { const lease = new GlContextExecutionLease(record); record.references++; return lease; }
-    catch { return null; }
+    catch (caught) { rethrowNativeGlFault(caught); return null; }
   }
   get context(): WebGL2RenderingContext | null { return this.#record?.gl ?? null; }
+  get retired(): boolean { return this.#record?.retired ?? false; }
   get binding(): GlBinding {
     if (!this.#record || this.#released) throw new Error("Context execution lease is released");
     return this.#record.binding;
@@ -199,10 +221,10 @@ export class GlContextExecutionLease {
   release(): boolean {
     const record = this.#record;
     if (!record) return true;
-    if (!this.#released) { this.#released = true; record.references--; }
-    if (record.retired && record.references === 0) {
-      if (!collectExecution(record)) return false;
-    } else if (!record.retired && record.references === 0) {
+    const releasedNow=!this.#released;
+    if (releasedNow) { this.#released = true; record.references--; }
+    if (record.retired && record.references === 0) collectExecution(record);
+    else if (!record.retired && record.references === 0) {
       record.records.delete(record); record.contexts.delete(record.binding);
     }
     this.#record = null;
@@ -227,40 +249,40 @@ function reserveExecutionCleanup(record: ExecutionRecord): NativeRetirement | nu
   add(["deleteVertexArray",b.shadow.defaultVao]);
   for (const object of b.fbos.values()) add(["deleteFramebuffer",object]);
   add(["deleteFramebuffer",b.undefinedDefaultFbo]);
-  for (const object of b.shadow.defaultTextures.values()) add(["deleteTexture",object]);
-  return reserveNativeRetirement({gl:record.gl,errors:[]},calls);
+  add(["deleteBuffer",b.clientArrayStream]);
+  for (const object of b.shadow.defaultTextures.values()) {
+    add(["deleteTexture",object]);
+    // Texture zero of TEXTURE_CUBE_MAP may own more 2D array storage (cube-storage.ts).
+    for (const storage of cubeExtraTextures(object)) add(["deleteTexture",storage]);
+  }
+  return reserveNativeRetirement({gl:record.gl,errors:[],nativeEpoch:rendererObjectEpoch(b)},calls);
 }
 
-function collectExecution(record: ExecutionRecord): boolean {
-  if (!record.retired || record.references !== 0) return true;
-  // A registry retry may already have completed this lease's cleanup.
-  // Releasing its old token must not recapture or invalidate a new owner.
-  if (record.cleaned && record.cleanup?.complete) {
-    record.records.delete(record); record.contexts.delete(record.binding);
-    return true;
-  }
+/** Delete a retired context's native objects once its last accepted
+ * execution ends. Each step completes or is a NativeGlFault: nothing retries
+ * this later. A lost renderer's objects are dropped without native calls
+ * (native-recovery.ts). */
+function collectExecution(record: ExecutionRecord): void {
+  if (!record.retired || record.references !== 0) return;
   try {
     const muxer = record.muxer.deref();
-    if (muxer) { if (!muxer.prepareRetirement()) return false; }
-    else captureNativeGlErrors(record.gl,null);
-    if (!record.cleaned) {
-      record.cleanup ??= reserveExecutionCleanup(record);
-      if (!record.cleanup) return false;
-      retireNativeRepair(record.gl,record.binding.shadow);
-      if (!repairNativeState(record.gl)) return false;
-      destroyContextResources(record.binding,record.gpuBos,record.cleanup);
-      record.cleaned = true;
-    }
-    const cleanup = record.cleanup!;
+    if (muxer) {
+      if (!muxer.prepareRetirement()) nativeGlFault("could not read the selected owner's error flags before retiring a context");
+    } else captureNativeGlErrors(record.gl,null);
+    const cleanup = reserveExecutionCleanup(record) ?? nativeGlFault("could not reserve a retired context's native cleanup");
+    retireNativeRepair(record.gl,record.binding.shadow);
+    if (!repairNativeState(record.gl)) nativeGlFault("a retired context's cleanup ran inside an in-flight native change");
+    destroyContextResources(record.binding,record.gpuBos,cleanup);
     const installed = record.gl.getParameter(0x8b8d) as WebGLProgram | null;
     if (installed && cleanup.calls.some(call => call[0] === "deleteProgram" && call[1] === installed) &&
-        !checkedGlCall(cleanup.owner,()=>record.gl.useProgram(null))) return false;
-    if (!cleanup.pending) {
-      if (!retireNativeRetirement(cleanup)) return false;
-    } else if (!repairNativeState(record.gl) || !cleanup.complete) return false;
+        !checkedGlCall(cleanup.owner,()=>record.gl.useProgram(null)) && !record.gl.isContextLost?.())
+      nativeGlFault("the live renderer refused to uninstall a retired context's program");
+    if (!retireNativeRetirement(cleanup)) nativeGlFault("a retired context's native objects were not deleted");
     record.records.delete(record); record.contexts.delete(record.binding);
-    return true;
-  } catch { return false; }
+  } catch(error) {
+    if (error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
+    nativeGlFault("retiring a context's native objects threw", error);
+  }
 }
 
 export class GlContextRegistry {
@@ -277,31 +299,25 @@ export class GlContextRegistry {
    *  foreign textures (`0x4000_0000`) so a stray id never resolves to
    *  the wrong table when debugging. */
   private nextGpuBoTexId = 0x6000_0000;
-  /** Channels installed before `bind()` fires; drained when it does, so
-   *  the embedder can wire forwarding without racing `host_gl_bind`. */
-  private pendingForwards = new Map<number, GlForwardChannel>();
-  /** Canvases attached before `bind()` fires; drained on bind, mirroring
-   *  pendingForwards. Without this, an embedder that calls
+  /** Canvases attached before `bind()` fires; drained on bind. Without this, an embedder that calls
    *  `attachCanvas(pid, …)` synchronously after `spawn()` would race
    *  the program's own `eglInitialize → host_gl_bind` and silently
    *  drop the canvas, leaving every subsequent submit a no-op. */
   private pendingCanvases = new Map<number, HTMLCanvasElement | OffscreenCanvas>();
 
   bind(b: GlBindingInput): void {
-    const forward = this.pendingForwards.get(b.pid)
-      ?? this.list().find(value => value.pid === b.pid && value.forward)?.forward ?? null;
-    this.pendingForwards.delete(b.pid);
     const canvas = this.getCanvas(b.pid);
     this.pendingCanvases.delete(b.pid);
     const sessionId = (b.sessionId ?? 0) >>> 0;
     if (this.get(b.pid, sessionId)) throw new Error("GL session is already bound");
-    const binding = this.newBinding(b,canvas,forward);
+    const binding = this.newBinding(b,canvas);
     this.bindings.set(`${binding.pid}:${sessionId}`, binding);
     for (const l of this.listeners) l(b.pid, "bind");
   }
 
-  private newBinding(b: GlBindingInput, canvas: GlBinding["canvas"], forward: GlForwardChannel | null): GlBinding {
+  private newBinding(b: GlBindingInput, canvas: GlBinding["canvas"]): GlBinding {
     const sessionId = (b.sessionId ?? 0) >>> 0;
+    const operations = new GlOperationStream();
     const binding: GlBinding = exposeSurfaceResources(exposeGlSharedObjects({
       surface: createSurfaceResources(b.pid), drawSurface: null, readSurface: null,
       objects: createGlObjectGroup(),
@@ -311,14 +327,20 @@ export class GlContextRegistry {
       currentDrawable: null,
       hasBeenCurrent: false,
       savedClientArrayBuffer: undefined,
+      uniformUpload: null,
+      uniformUploadSerial: 0,
       uniformLookup: null,
       uniformLookupSerial: 0,
       undefinedDefaultFbo: null,
+      clientArrayStream: null,
       cmdbufView: null,
+      wirePayload:null,
       gl: null,
-      fences: new GlFenceOwner(),
+      fences: new GlFenceOwner({pid:b.pid,sessionId,operations}),
+      operations,
       canvas,
       contextId: null,
+      robustAccess: false,
       errors: [],
       vaos: new Map(),
       fbos: new Map(),
@@ -328,10 +350,17 @@ export class GlContextRegistry {
       claimedKmsCrtc: null,
       currentProgram: null,
       currentProgramId: 0,
+      programJournalControl: createProgramJournalControl(),
+      errorDrainReceipt:new GlErrorDrainReceipt(),
       shadow: defaultShadow(),
+      compressedUpload: null,
+      compressedUploadSerial: 0,
       shaderUpload: null,
       shaderUploadSerial: 0,
-      forward,
+      objectCapture: null,
+      objectCaptureSerial: 0,
+      readbackCapture: null,
+      readbackCaptureSerial: 0,
     }));
     binding.objects.members.add(binding);
     return binding;
@@ -341,14 +370,14 @@ export class GlContextRegistry {
    * caller acknowledges work that can outlive this public context. */
   retainContextExecution(pid: number, sessionId: number, muxer: GlExecutionRetirementGuard): GlContextExecutionLease | null {
     const b = this.get(pid,sessionId);
-    if (!b?.gl || b.contextId === null || b.forward || muxer.context !== b.gl) return null;
+    if (!b?.gl || b.contextId === null || muxer.context !== b.gl) return null;
     let record = this.executions.get(b);
     try {
       if (!record) {
         const replacement = this.newBinding({pid:b.pid,sessionId:b.sessionId,cmdbufAddr:b.cmdbufAddr,
-          cmdbufLen:b.cmdbufLen},b.canvas,b.forward);
+          cmdbufLen:b.cmdbufLen},b.canvas);
         record = {binding:b,replacement,key:`${b.pid}:${b.sessionId}`,gl:b.gl,canvas:b.canvas,muxer:new WeakRef(muxer),
-          references:0,retired:false,cleaned:false,cleanup:null,records:this.executionRecords,
+          references:0,retired:false,records:this.executionRecords,
           contexts:this.executions,gpuBos:this.gpuBos};
         this.executionRecords.add(record);
         try { this.executions.set(b,record); }
@@ -359,30 +388,30 @@ export class GlContextRegistry {
         this.executionRecords.delete(record); this.executions.delete(b);
       }
       return lease;
-    } catch { return null; }
+    } catch (caught) { rethrowNativeGlFault(caught); return null; }
   }
 
-  /** Only failed, unreferenced retirement blocks admission on its physical
-   * context. Retained execution is deliberate ownership, not a repair error. */
-  retryExecutionRetirements(gl?: WebGL2RenderingContext): boolean {
-    let complete = true;
-    for (const record of this.executionRecords) if (record.retired && record.references === 0 && (!gl || record.gl === gl))
-      complete = collectExecution(record) && complete;
-    return complete;
+  retainSubmitExecution(binding: GlBinding, muxer: GlMuxer): GlSubmitExecution | null {
+    if (this.get(binding.pid, binding.sessionId) !== binding) return null;
+    return GlSubmitExecution.capture(this, binding, muxer);
   }
 
-  unbind(pid: number, sessionId?: number): void {
+  /** Retire every matching session. Public lookup always ends. Returns
+   * false when accepted execution still holds a retired context's native
+   * objects, which that execution releases when it finishes; true when all
+   * native state was released now. Throws the first native cleanup fault. */
+  unbind(pid: number, sessionId?: number): boolean {
     if (sessionId !== undefined) sessionId >>>= 0;
     let failure: unknown;
+    let released = true;
     for (const b of this.list()) {
       if (b.pid !== pid || (sessionId !== undefined && b.sessionId !== sessionId)) continue;
       b.cmdbufView = null;
-      const forward = b.forward;
+      b.operations.close();
       try {
-        this.retireContextBinding(b,false);
+        if (!this.retireContextBinding(b,false)) released = false;
         retireSurface(b.surface);
-        forward?.onUnbind?.(b.sessionId);
-      } catch (error) {
+      } catch (error) { rethrowNativeGlFault(error);
         failure ??= error;
       } finally {
         b.fences.close();
@@ -391,10 +420,10 @@ export class GlContextRegistry {
       for (const l of this.listeners) l(pid, "unbind");
     }
     if (sessionId === undefined || !this.list().some(b => b.pid === pid)) {
-      this.pendingForwards.delete(pid);
       this.pendingCanvases.delete(pid);
     }
     if (failure) throw failure;
+    return released;
   }
 
   /** Public lookup ends immediately. Accepted work may retain old execution;
@@ -405,26 +434,42 @@ export class GlContextRegistry {
     this.retireContextBinding(b,true);
   }
 
-  private retireContextBinding(b: GlBinding, replace: boolean): void {
+  /** True when native resources were destroyed now; false when an accepted
+   * execution retains them and retires them when it completes. */
+  private retireContextBinding(b: GlBinding, replace: boolean): boolean {
+    retireProgramJournal(b);
+    retireContextProgramCaptures(b);
+    retireLastPublicProgramCaptures(b,this.bindings.values());
+    // Copied replies own no native execution; public context retirement revokes
+    // their private transfer immediately, even while native work is retained.
+    b.objectCapture = null; b.readbackCapture = null;
+    b.compressedUpload = null;
     const record = this.executions.get(b);
     if (record && record.references > 0) {
+      // An accepted execution retains native state, never a destroyed public
+      // context's program-name reference. Keep its installed executable for
+      // that execution while making delete-pending names disappear on time.
+      retireProgramNameOwner(b);
       const next = record.replacement;
       next.canvas = b.canvas;
-      next.forward = b.forward;
       if (b.surfaceId !== null) next.surface = b.surface;
       next.fences = b.fences;
-      next.objects.nextUniformLoc = b.objects.nextUniformLoc;
+      next.operations = b.operations;
       next.objects.nextForeignTexId = b.objects.nextForeignTexId;
       next.objects.nextImageSource = b.objects.nextImageSource;
       if (replace) this.bindings.set(record.key,next);
+      // Pending compressed staging has no native effect and cannot survive
+      // retirement into a replacement logical context, even while an earlier
+      // accepted execution retains its native repair/retirement leases.
+      b.compressedUpload = null;
       // The retired execution owns native/scalar state, never the session's
-      // borrowed guest cache or its forwarding transport.
-      b.cmdbufView = null; b.forward = null; b.canvas = record.canvas;
+      // borrowed guest cache.
+      b.cmdbufView = null; b.canvas = record.canvas;
       record.retired = true;
-      return;
+      return false;
     }
     destroyContextResources(b,this.gpuBos);
-    this.retryForeignRetirements();
+    return true;
   }
 
   destroySurface(pid: number, sessionId?: number): void {
@@ -459,10 +504,10 @@ export class GlContextRegistry {
     const target = this.get(pid,targetSession), source = this.get(pid,sourceSession);
     if (!target || !source || target === source || !target.gl || target.gl !== source.gl
         || target.contextId === null || source.contextId === null || target.hasBeenCurrent || target.savedClientArrayBuffer !== undefined
-        || target.uniformLookup !== null || target.objects.members.size !== 1) return false;
+        || target.compressedUpload !== null || target.uniformUpload !== null || target.uniformLookup !== null || target.objectCapture !== null || target.readbackCapture !== null || target.objects.members.size !== 1) return false;
     const names = target.objects;
     if (names.bufferRetirements.size || names.imageRetirements.size || names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
-        || names.rbos.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformLocationNames.size || names.uniformLocations.size || names.foreignTextures.size
+        || names.rbos.size || names.programQueryPins.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.foreignTextures.size
         || names.retiredTextures.size || names.retiredBuffers.size || names.retiredRenderbuffers.size
         || names.shaderDeletePending.size || names.programDeletePending.size) return false;
     // Reserve membership before removing the old owner; allocation failure
@@ -506,7 +551,7 @@ export class GlContextRegistry {
 
   detachCanvas(pid: number): void {
     this.pendingCanvases.delete(pid);
-    for (const b of this.list()) if (b.pid === pid) { b.canvas = null; b.gl = null; }
+    for (const b of this.list()) if (b.pid === pid) { b.objectCapture = null; b.readbackCapture = null; b.compressedUpload = null; b.canvas = null; b.gl = null; }
   }
 
   /** Bound canvas, or staged `pendingCanvases` entry if `attachCanvas`
@@ -518,17 +563,6 @@ export class GlContextRegistry {
     return this.pendingCanvases.get(pid) ?? null;
   }
 
-  attachMainForward(pid: number, channel: GlForwardChannel): void {
-    const bindings = this.list().filter(b => b.pid === pid);
-    if (bindings.length === 0) this.pendingForwards.set(pid, channel);
-    for (const b of bindings) b.forward = channel;
-  }
-
-  detachMainForward(pid: number): void {
-    this.pendingForwards.delete(pid);
-    for (const b of this.list()) if (b.pid === pid) b.forward = null;
-  }
-
   /** Delete every binding's foreign texture for a destroyed bo (the bo
    *  is the texture's canonical owner — see shared's
    *  `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` doc). Called from the host's
@@ -537,44 +571,50 @@ export class GlContextRegistry {
    *  This DELIBERATELY leaves `gpuBos` untouched: a GPU-tier bo's texture
    *  is owned by the bo itself (this registry), not by any binding, and
    *  is released only via `destroyGpuBo` on bo destroy. */
-  private foreignRetirements = new Map<number, Map<GlObjectGroup, GlBinding>>();
-
-  /** A cleanup-only view retains the original group/native context across
-   * member retirement. It never enters command dispatch or guest authority. */
-  private foreignRetirementOwners(bo: number): Map<GlObjectGroup, GlBinding> {
-    let owners = this.foreignRetirements.get(bo);
-    if (!owners) { owners = new Map(); this.foreignRetirements.set(bo,owners); }
+  /** Every object group that can hold a native view of a BO, including
+   * groups whose public context is gone but whose accepted execution still
+   * owns the native context. A cleanup-only view never enters command
+   * dispatch or guest authority. */
+  private foreignViewOwners(): GlBinding[] {
+    const owners = new Map<GlObjectGroup, GlBinding>();
     const bindings = new Set([...this.bindings.values(),...Array.from(this.executionRecords,record=>record.binding)]);
-    for (const b of bindings) if (b.gl && !owners.has(b.objects)) {
-      const cleanup = exposeGlSharedObjects({objects:b.objects,gl:b.gl,errors:b.errors});
-      owners.set(b.objects,cleanup as GlBinding);
-    }
-    return owners;
+    for (const b of bindings) if (b.gl && !owners.has(b.objects))
+      owners.set(b.objects, exposeGlSharedObjects({objects:b.objects,gl:b.gl,errors:b.errors}) as GlBinding);
+    return [...owners.values()];
   }
+  /** Delete every native view and allocation of a destroyed bo: foreign
+   * textures in every group, its GPU-tier storage, CPU-image mirrors and an
+   * exported image. False when a native deletion was refused. */
+  retireForeignBo(bo: number): boolean {
+    return this.dropForeignTexturesForBo(bo) && this.destroyGpuBo(bo) && this.cpuImages.retire(bo) && this.retireExportedBo(bo);
+  }
+  /** Revoke every group's foreign texture views of `bo`. */
   dropForeignTexturesForBo(bo: number): boolean {
-    const pending = this.foreignRetirements.has(bo);
-    let accepted = true;
-    for (const b of this.foreignRetirementOwners(bo).values()) accepted = revokeForeignBo(b,bo) && accepted;
-    if (accepted && !pending) this.foreignRetirements.delete(bo);
-    return accepted;
+    let complete = true;
+    for (const b of this.foreignViewOwners()) complete = revokeForeignBo(b,bo) && complete;
+    return complete;
   }
-  retireForeignBo(bo: number): void {
-    this.foreignRetirementOwners(bo);
-    if (this.dropForeignTexturesForBo(bo) && this.destroyGpuBo(bo) && this.cpuImages.retire(bo)) this.foreignRetirements.delete(bo);
+  /** Exported GLES images keyed by their GPU-tier bo (EXPORT_IMAGE). The
+   *  record owns the source object's storage once the object stops using
+   *  it; bo retirement releases it. */
+  private exportedImages = new Map<number, GlExportedImage>();
+  publishExportedImage(record: GlExportedImage): void { this.exportedImages.set(record.bo, record); }
+  exportedImage(bo: number): GlExportedImage | undefined {
+    const record = this.exportedImages.get(bo);
+    return record?.boLive ? record : undefined;
   }
-  retryForeignRetirements(): void {
-    for (const bo of this.foreignRetirements.keys()) this.retireForeignBo(bo);
+  /** The GPU-tier storage KMS presents for `bo`: a GBM GPU bo or an
+   *  exported GLES image (exportedImageScanout gives the latter's reader). */
+  scanoutSource(bo: number): GpuBo | GlExportedImage | undefined {
+    return this.gpuBo(bo) ?? this.exportedImage(bo);
   }
-  hasForeignRetirements(): boolean { return this.foreignRetirements.size !== 0; }
-  *foreignRetirementContexts(): Iterable<WebGL2RenderingContext> {
-    for (const owners of this.foreignRetirements.values()) for (const b of owners.values()) if (b.gl) yield b.gl;
+  private retireExportedBo(bo: number): boolean {
+    const record = this.exportedImages.get(bo);
+    if (!record) return true;
+    if (!retireExportedImage(record)) return false;
+    this.exportedImages.delete(bo);
+    return true;
   }
-  groupHasForeignRetirement(b: GlBinding): boolean {
-    for (const bo of b.foreignTextureBos.values()) if (this.foreignRetirements.has(bo)) return true;
-    for (const source of b.imageSources.values()) if (this.foreignRetirements.has(source.bo)) return true;
-    return false;
-  }
-
   /** Allocate a GPU-tier bo (`DRM_IOCTL_WPK_CREATE_GPU_BO`): an empty
    *  `w×h` RGBA texture plus a color-attachment FBO on `gl` (the shared
    *  multiplexer context). Idempotent — a second call for a live `bo_id`
@@ -591,21 +631,35 @@ export class GlContextRegistry {
     gl: WebGL2RenderingContext,
     w: number,
     h: number,
+    format = 0x34324241,
   ): number | null {
     if (!Number.isInteger(bo_id) || bo_id <= 0 || bo_id > 0xffff_ffff ||
         !Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0 ||
-        w > 0x7fff_ffff || h > 0x7fff_ffff || gl.isContextLost?.() ||
-        this.foreignRetirements.has(bo_id)) return null;
-    if (!this.retryExecutionRetirements(gl) || !repairNativeState(gl)) return null;
+        w > 0x7fff_ffff || h > 0x7fff_ffff || gl.isContextLost?.()) return null;
+    if (!repairNativeState(gl)) return null;
     const existing = this.gpuBos.get(bo_id);
     if (existing) return !existing.retirement.pending && existing.gl === gl && existing.w === w && existing.h === h
       ? existing.texId : null;
     if (this.nextGpuBoTexId > 0x7fff_ffff) return null;
+    // The kernel admits only formats with exact texture storage.
+    const storage = gpuStorageFormat(format);
+    if (!storage) throw new Error(`GPU BO ${bo_id} has no texture storage for format ${format}`);
     const texId = this.nextGpuBoTexId;
-    return allocateGpuStorage(gl,w,h,texId,allocation=>{
+    if (!allocateGpuStorage(gl,w,h,texId,allocation=>{
       this.gpuBos.set(bo_id,allocation);
       this.nextGpuBoTexId++;
-    }) ? texId : null;
+    },storage)) return null;
+    // A format without alpha lives in storage with alpha: alpha starts at
+    // 1.0 and is never written (opaque-alpha.ts).
+    if (storage.opaque) {
+      const allocation = this.gpuBos.get(bo_id)!;
+      if (!checkedGlCall({gl,errors:[]},()=>clearStorageAlphaToOne(gl,
+          target=>gl.framebufferTexture2D(target,0x8ce0,0x0de1,allocation.tex,0)))) {
+        this.destroyGpuBo(bo_id); return null;
+      }
+      setOpaqueAlphaStorage(allocation.tex,true);
+    }
+    return texId;
   }
 
   /** The GPU-tier bo for `bo_id`, or undefined if it is CPU-tier /
@@ -613,7 +667,7 @@ export class GlContextRegistry {
    *  storage to construct a distinct logical view without a CPU upload. */
   gpuBo(bo_id: number): GpuBo | undefined {
     const entry = this.gpuBos.get(bo_id);
-    return this.foreignRetirements.has(bo_id) || entry?.retirement.pending ? undefined : entry;
+    return entry?.retirement.pending ? undefined : entry;
   }
 
   /** Apply the GPU-tier producer render-target redirect for `b` if both
@@ -666,11 +720,19 @@ export class GlContextRegistry {
 
 function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>, cleanup?: NativeRetirement): void {
   const gl = b.gl;
+  retireShaderObjects(b);
   if (gl) retireNativeRepair(gl, b.shadow);
-  b.uniformLookup = null;
+  b.uniformUpload = null;
+  b.uniformUploadSerial = 0;
+  replaceUniformLookup(b,null);
   b.uniformLookupSerial = 0;
+  b.compressedUpload = null;
+  b.compressedUploadSerial = 0;
   b.shaderUpload = null;
   b.shaderUploadSerial = 0;
+  b.objectCapture = null; b.readbackCapture = null;
+  b.objectCaptureSerial = 0;
+  b.readbackCaptureSerial = 0;
   b.savedClientArrayBuffer = undefined;
   b.clientArrayRestore = undefined;
   b.clientArrayEndRequested = false;
@@ -705,15 +767,18 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
       if (cleanup) for (const [name,value] of b.buffers) if (value === object) b.buffers.delete(name);
     }
     if (!cleanup) for (const object of b.shaders.values()) gl?.deleteShader(object);
-    if (!cleanup) for (const object of programs) gl?.deleteProgram(object);
+    if (!cleanup) for (const object of programs) {
+      gl?.deleteProgram(object);
+      if (gl) releaseReversedDepthTwin({gl,errors:[]},object);
+    }
     for (const object of new Set(b.rbos.values())) if (gl) {
       const accepted = destroyRenderbufferView(b,object);
       if (cleanup && !accepted) throw new Error("Renderbuffer retirement remains pending");
       if (cleanup) for (const [name,value] of b.rbos) if (value === object) b.rbos.delete(name);
     }
-    for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocations,
-      b.uniformLocationPrograms,b.uniformLocationNames,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
+    for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
     b.imageSources.clear();
+    b.programQueryPins.clear();
     b.shaderDeletePending.clear(); b.programDeletePending.clear();
   } else {
     if (installedName) finalizeProgram(b, installedName);
@@ -723,11 +788,11 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   for (const object of b.fbos.values()) if (gl && !cleanup) { retireNativeObject(gl,object); gl.deleteFramebuffer(object); }
   b.vaos.clear(); b.fbos.clear();
   b.framebufferAttachments.clear();
+  framebufferInputsChanged();
   b.vertexArrays.clear();
   collectRetiredImages(b);
   collectRetiredBuffers(b);
   b.objects = createGlObjectGroup();
-  b.objects.nextUniformLoc = objects.nextUniformLoc;
   b.objects.nextForeignTexId = objects.nextForeignTexId;
   b.objects.nextImageSource = objects.nextImageSource;
   b.objects.members.add(b);
@@ -736,6 +801,8 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   b.errors = [];
   if (gl && b.undefinedDefaultFbo && !cleanup) { retireNativeObject(gl,b.undefinedDefaultFbo); gl.deleteFramebuffer(b.undefinedDefaultFbo); }
   b.undefinedDefaultFbo = null;
+  if (gl && b.clientArrayStream && !cleanup) { retireNativeObject(gl,b.clientArrayStream); gl.deleteBuffer(b.clientArrayStream); }
+  b.clientArrayStream = null;
   if (b.shadow.defaultVao) {
     if (!cleanup) b.gl?.deleteVertexArray(b.shadow.defaultVao);
     b.shadow.defaultVao = null;
@@ -751,11 +818,16 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   }
   b.currentProgram = null;
   b.currentProgramId = 0;
+  b.logicalProgramCurrent = undefined;
+  b.errorDrainReceipt.reset();
+  b.programJournalControl.receipt.fill(0);b.programJournalControl.receipt[11]=0x47514c33;
   b.currentDrawable = null;
   b.hasBeenCurrent = false;
   b.shadow = defaultShadow();
   b.vertexArrayId = 0;
   b.vertexArrays.set(0,defaultVertexArray());
   b.contextId = null;
+  b.robustAccess = false;
+  forgetRendererLoss(b);
   b.gl = null;
 }

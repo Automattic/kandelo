@@ -1,0 +1,22 @@
+id = "FIREFOX-RENDERBUFFER-EMPTY-SIZE"
+kind = "bug"
+status = "confirmed"
+runtimes = ["firefox"]
+summary = "RENDERBUFFER_WIDTH and RENDERBUFFER_HEIGHT read 0 after storage with one zero dimension"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["firefox"]
+self_judging = true
+timeout_seconds = 60
+
+[[observed]]
+runtime = "firefox"
+version = "155.0"
+os = "macos"
+reproduced = true
+date = 2026-11-02
+source = "suite"
+released = false

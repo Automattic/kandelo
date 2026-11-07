@@ -1,6 +1,20 @@
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
+import { externalShaderSource, type ExternalShaderSource } from "./external-texture.js";
+import { builtinLimitShaderSource, guestBuiltinLimits } from "./limits.js";
+import { standardDerivativesShaderSource } from "./essl3-translation.js";
+
+/** The ES 1.00 source the host compiles for a shader: the guest's source
+ * after the built-in limit (limits.ts), standard derivatives
+ * (essl3-translation.ts) and external sampler (external-texture.ts)
+ * rewrites, which leave a source that needs none unchanged. CompileShader
+ * compiles it, or its ESSL 3.00 translation (essl3-translation.ts). */
+const nativeSources = new WeakMap<WebGLShader, ExternalShaderSource>();
+export function nativeShaderSource(shader: WebGLShader): ExternalShaderSource | undefined {
+  return nativeSources.get(shader);
+}
 
 export type GlShaderSourceUpload = {
   name: number;
@@ -21,12 +35,24 @@ function shaderObject(b: GlBinding, name: number): WebGLShader | null {
 export function installShaderSource(b: GlBinding, shader: WebGLShader, bytes: Uint8Array<ArrayBuffer>): boolean {
   let source: string;
   try { source = new TextDecoder().decode(bytes); }
-  catch { recordGlError(b,0x505); return false; }
-  const prior = b.shaderSources.get(shader);
-  try { b.shaderSources.set(shader,bytes); }
-  catch { recordGlError(b,0x505); return false; }
-  if (!checkedGlCall(b, () => b.gl!.shaderSource(shader,source))) {
+  catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
+  const prior = b.shaderSources.get(shader), priorNative = nativeSources.get(shader);
+  // Read before the rewrite's fault handling: a renderer whose limits cannot
+  // hold the private reservations is a renderer fault, as at the query.
+  const limits = source.includes("gl_Max") ? guestBuiltinLimits(b) : null;
+  // GetShaderSource returns the guest's bytes; WebGL compiles the built-in
+  // limit, standard derivatives and external sampler rewrites, made once
+  // here (limits.ts, essl3-translation.ts, external-texture.ts).
+  let native: ExternalShaderSource;
+  try {
+    native = externalShaderSource(standardDerivativesShaderSource(limits ? builtinLimitShaderSource(source, limits) : source));
+    b.shaderSources.set(shader,bytes);
+  }
+  catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
+  nativeSources.set(shader,native);
+  if (!checkedGlCall(b, () => b.gl!.shaderSource(shader,native.text))) {
     if (prior) b.shaderSources.set(shader,prior); else b.shaderSources.delete(shader);
+    if (priorNative) nativeSources.set(shader,priorNative); else nativeSources.delete(shader);
     return false;
   }
   return true;
@@ -53,7 +79,7 @@ export function runShaderSourceUpload(b: GlBinding, input: Uint8Array, out: Uint
       b.shaderUpload = null;
       let bytes: Uint8Array<ArrayBuffer>;
       try { bytes = new Uint8Array(arg); }
-      catch { recordGlError(b,0x505); return -12; }
+      catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return -12; }
       b.shaderUpload = {name,shader,token,bytes,cursor:0};
     } else {
       const upload = b.shaderUpload;

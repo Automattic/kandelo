@@ -1,5 +1,31 @@
 # Kandelo Agent Guidance
 
+## Execution scope
+
+Kandelo implements a POSIX-compatible operating-system environment
+for WebAssembly, with browser and Node.js hosts.
+
+Interpret runtime terminology in the component being changed.
+Guest processes, guest credentials, guest filesystems, and virtual
+network state are implemented by Kandelo. Distinguish these from
+the embedding host's processes, credentials, filesystem, and network.
+
+For each task, identify whether the affected behavior touches one or
+more of:
+
+- guest/kernel semantics;
+- the browser or Node.js host adapter;
+- a local development or conformance-test fixture; or
+- an external service or deployed system.
+
+Use the implementation and relevant architecture documentation to
+establish that boundary. Name actual host paths and network targets
+when they are involved.
+
+When a concern arises, identify the concrete operation, resource,
+and boundary at issue. Continue independent, permitted work and
+report the specific remaining blocker.
+
 This file is the loaded guidance for agents working in this repository. Treat
 it as a contract router: it names the platform contracts that must be preserved
 and points to the focused guidance and reference docs that carry the full
@@ -106,11 +132,17 @@ tests where possible and manually verify user-visible browser demo fixes with
 `./run.sh browser`.
 
 Runs under 10 minutes: one foreground Bash call with output to a log file.
-Longer runs: `scripts/agent-job start`, then repeat `scripts/agent-job wait
-<id>` (it blocks on the job's PID up to 9 minutes per call). To wait on
-another workspace's build, find it with `scripts/agent-job list --all` and
-wait on its id (or `wait --peer <text>`), not on its PID. Do not poll with
-`sleep` or `pgrep -f`, never end a headless session's or subagent's turn to
+Longer runs: use `scripts/agent-job start`. Interactive main sessions: run
+`scripts/agent-job wait <id> --timeout 0` once with Bash's
+`run_in_background`, then act on its single completion notification.
+Headless sessions and subagents repeat foreground `scripts/agent-job wait
+<id>` only when the wait-window notice says the job is still running
+(up to 9 minutes per call). `FAILED (exit 124)` is final, not a retry.
+To wait on another workspace's build, find it with
+`scripts/agent-job list --all` and wait on its id (or `wait --peer <text>`),
+not on its PID. After a selector wait times out, retry by its resolved id,
+never by `--peer` again. Do not poll with Monitor/status-file loops,
+`sleep` or `pgrep -f`; never end a headless session's or subagent's turn to
 wait, and do not make subagents wait on whole-tree builds. Why: each poll
 turn re-reads the whole conversation; `pgrep -f` matches the waiting shell
 and never returns; a headless session or subagent stops when its turn ends,

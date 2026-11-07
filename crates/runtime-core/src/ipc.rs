@@ -1431,6 +1431,12 @@ impl IpcTable {
         Ok(len as u32)
     }
 
+    /// The key a live segment was created with, for `/proc/<pid>/maps`.
+    /// `None` once `IPC_RMID` removed it.
+    pub fn shm_key(&self, shmid: i32) -> Option<i32> {
+        self.shm_segments.get(&shmid).map(|seg| seg.key)
+    }
+
     /// Detach from a shared memory segment.
     pub fn shmdt(&mut self, shmid: i32, pid: u32) -> Result<(), Errno> {
         let seg = self.shm_segments.get_mut(&shmid).ok_or(Errno::EINVAL)?;

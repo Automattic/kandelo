@@ -1,7 +1,5 @@
-import { expect, it, vi } from "vitest";
-import { hasNativeRepair } from "../src/webgl/native-recovery.js";
-import { runGlQuery } from "../src/webgl/query.js";
-import * as O from "../src/webgl/ops.js";
+import { afterEach, expect, it, vi } from "vitest";
+import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { blitGpuScanout, ensurePresentTarget } from "../src/webgl/present-target.js";
 
@@ -188,8 +186,20 @@ class SurfaceFailureGl {
   deleteRenderbuffer(value:object) { this.deleted.push(value); }
 }
 
+afterEach(() => setNativeGlFaultReporter(null));
+/** Run `call`, which a live renderer's refusal must turn into exactly one
+ * reported NativeGlFault, whether or not the caller rethrows it. */
+function reportsOneFault(call: () => unknown, message: RegExp): void {
+  const reported: Error[] = [];
+  setNativeGlFaultReporter(fault => reported.push(fault));
+  try { call(); } catch (error) { expect(error).toBe(reported[0]); }
+  expect(reported).toHaveLength(1);
+  expect(reported[0]).toBeInstanceOf(NativeGlFault);
+  expect(reported[0].message).toMatch(message);
+}
+
 for (const stage of ["storage","finalizer"] as const) {
-  it(`retains failed surface ${stage} restoration and candidate cleanup after creator retirement`, () => {
+  it(`makes a refused surface ${stage} restoration a fatal fault`, () => {
     const reg = new GlContextRegistry(), native = new SurfaceFailureGl();
     const gl = native as unknown as WebGL2RenderingContext;
     reg.bind({pid:1,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
@@ -197,40 +207,24 @@ for (const stage of ["storage","finalizer"] as const) {
     const b = reg.get(1,11)!, peer = reg.get(1,12)!; b.gl = peer.gl = gl;
     b.canvas = {width:4,height:3} as HTMLCanvasElement;
     native.rejectStorage = stage === "storage"; native.rejectRestore = true;
-    expect(ensurePresentTarget(b)).toBe(false); expect(b.presentTarget).toBeNull();
-    expect(hasNativeRepair(gl)).toBe(true); expect(native.deleted).toEqual([]);
-    const allocations = native.created.length, out = new Uint8Array(4).fill(165);
-    reg.unbind(1,11);
-    expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-    expect([...out]).toEqual([165,165,165,165]); expect(native.created).toHaveLength(allocations);
-    native.rejectRestore = false; native.rejectDelete = true;
-    expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-    expect([native.active,native.texture,native.read,native.draw,native.rbo]).toEqual([0x84c2,native.oldTexture,native.oldRead,native.oldDraw,native.oldRbo]);
-    native.rejectDelete = false;
-    expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-    expect([...out]).toEqual([0,0,0,0]); expect(hasNativeRepair(gl)).toBe(false);
-    expect(native.deleted).toHaveLength(3);
-    for (const object of native.created) expect(native.deleted.filter(value=>value === object)).toHaveLength(1);
-    expect(native.storageCalls).toBe(1); expect(b.errors).toEqual([]); expect(peer.errors).toEqual([]);
-    reg.unbind(1,12);
+    reportsOneFault(() => ensurePresentTarget(b),
+      /live renderer refused to restore native state after a rejected change/);
+    expect(b.presentTarget).toBeNull(); expect(native.storageCalls).toBe(1);
+    expect(b.errors).toEqual([]); expect(peer.errors).toEqual([]);
   });
 }
 
-it("keeps accepted resized storage while old native deletion remains fenced", () => {
+it("makes a refused deletion of resized-away storage a fatal fault", () => {
   const reg = new GlContextRegistry(), native = new SurfaceFailureGl();
   const gl = native as unknown as WebGL2RenderingContext;
   reg.bind({pid:1,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
   const b = reg.get(1,11)!; b.gl = gl; b.canvas = {width:4,height:3} as HTMLCanvasElement;
   expect(ensurePresentTarget(b)).toBe(true); const old = b.presentTarget!;
   native.rejectDelete = true; b.canvas.width = 8;
-  expect(ensurePresentTarget(b)).toBe(true); const accepted = b.presentTarget!;
+  reportsOneFault(() => ensurePresentTarget(b),
+    /live renderer refused deleteFramebuffer of an object the host retired/);
+  // The replacement was published before the old storage's deletion faulted.
+  const accepted = b.presentTarget!;
   expect(accepted).not.toBe(old); expect(b.shadow.fbo).toBe(accepted.fbo);
-  expect(hasNativeRepair(gl)).toBe(true);
-  const output = new Uint8Array(4).fill(165);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output)).toBe(-5);
-  native.rejectDelete = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output)).toBe(4);
-  expect(b.presentTarget).toBe(accepted); expect(native.storageCalls).toBe(2);
-  reg.unbind(1,11);
-  for (const object of native.created) expect(native.deleted.filter(value=>value === object)).toHaveLength(1);
+  expect(native.storageCalls).toBe(2); expect(native.deleted).not.toContain(old.fbo);
 });

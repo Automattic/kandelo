@@ -1,4 +1,4 @@
-import { applyNativeChanges, nativeInverse, type NativeCompletion } from "./native-recovery.js";
+import { applyNativeChanges, bookkeepingNativeInverse, type NativeCompletion, rethrowNativeGlFault } from "./native-recovery.js";
 import { recordGlError, type GlErrorState } from "./errors.js";
 import type { GlShadowState } from "./shadow.js";
 
@@ -30,7 +30,7 @@ export function reconcileClientArrayRestore(b: Owner, gl: WebGL2RenderingContext
   try {
     const ticket = b.clientArrayRestore ??= {saved,completion:{submitted:false,complete:false}};
     if (!ticket.completion.submitted) applyNativeChanges({gl,errors:b.errors,shadow:b.shadow},[],{
-      finalizer:nativeInverse({gl,errors:b.errors},[["bindBuffer",0x8892,ticket.saved]]),completion:ticket.completion,
+      finalizer:bookkeepingNativeInverse({gl,errors:b.errors},[["bindBuffer",0x8892,ticket.saved]]),completion:ticket.completion,
     });
     if (!ticket.completion.complete) return false;
     b.shadow.arrayBuffer = ticket.saved;
@@ -38,7 +38,7 @@ export function reconcileClientArrayRestore(b: Owner, gl: WebGL2RenderingContext
     b.clientArrayRestore = undefined;
     b.clientArrayEndRequested = false;
     return true;
-  } catch { recordGlError(b,0x505); return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
 }
 
 export function endClientArray(b: Owner & {gl: WebGL2RenderingContext|null}): void {

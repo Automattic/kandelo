@@ -18,6 +18,7 @@ OUT="$REPO_ROOT/host/dist"
 STAMP="$OUT/.input-hash"
 HOST_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \
     host/src \
+    host/scripts \
     host/tsup.config.ts \
     host/tsconfig.json \
     host/package.json \

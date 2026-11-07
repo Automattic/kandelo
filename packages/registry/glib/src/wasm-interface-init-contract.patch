@@ -1,0 +1,1282 @@
+Subject: [PATCH] Preserve full interface init callbacks and adapt unary sites explicitly
+
+GInterfaceInitFunc has two arguments. Keep its public registration macros at
+that arity; a shared one-argument trampoline must not erase genuine callbacks.
+Known one-argument initializers use explicit GLib unary adapter macros.
+Apply after the existing callback-signature portability patch.
+
+--- a/gio/gapplication.c
++++ b/gio/gapplication.c
+@@ -294,8 +294,8 @@
+ static void g_application_action_map_iface_init (GActionMapInterface *);
+ G_DEFINE_TYPE_WITH_CODE (GApplication, g_application, G_TYPE_OBJECT,
+  G_ADD_PRIVATE (GApplication)
+- G_IMPLEMENT_INTERFACE (G_TYPE_ACTION_GROUP, g_application_action_group_iface_init)
+- G_IMPLEMENT_INTERFACE (G_TYPE_ACTION_MAP, g_application_action_map_iface_init))
++ G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ACTION_GROUP, g_application_action_group_iface_init)
++ G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ACTION_MAP, g_application_action_map_iface_init))
+ 
+ /* GApplicationExportedActions {{{1 */
+ 
+@@ -319,7 +319,7 @@
+ static GType g_application_exported_actions_get_type   (void);
+ static void  g_application_exported_actions_iface_init (GRemoteActionGroupInterface *iface);
+ G_DEFINE_TYPE_WITH_CODE (GApplicationExportedActions, g_application_exported_actions, G_TYPE_SIMPLE_ACTION_GROUP,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_REMOTE_ACTION_GROUP, g_application_exported_actions_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_REMOTE_ACTION_GROUP, g_application_exported_actions_iface_init))
+ 
+ static void
+ g_application_exported_actions_activate_action_full (GRemoteActionGroup *remote,
+--- a/gio/gbufferedinputstream.c
++++ b/gio/gbufferedinputstream.c
+@@ -131,7 +131,7 @@
+ 			 g_buffered_input_stream,
+ 			 G_TYPE_FILTER_INPUT_STREAM,
+                          G_ADD_PRIVATE (GBufferedInputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_SEEKABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SEEKABLE,
+ 						g_buffered_input_stream_seekable_iface_init))
+ 
+ static void
+--- a/gio/gbufferedoutputstream.c
++++ b/gio/gbufferedoutputstream.c
+@@ -121,7 +121,7 @@
+ 			 g_buffered_output_stream,
+ 			 G_TYPE_FILTER_OUTPUT_STREAM,
+                          G_ADD_PRIVATE (GBufferedOutputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_SEEKABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SEEKABLE,
+ 						g_buffered_output_stream_seekable_iface_init))
+ 
+ 
+--- a/gio/gbytesicon.c
++++ b/gio/gbytesicon.c
+@@ -59,8 +59,8 @@
+ static void g_bytes_icon_icon_iface_init          (GIconIface          *iface);
+ static void g_bytes_icon_loadable_icon_iface_init (GLoadableIconIface  *iface);
+ G_DEFINE_TYPE_WITH_CODE (GBytesIcon, g_bytes_icon, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ICON, g_bytes_icon_icon_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_LOADABLE_ICON, g_bytes_icon_loadable_icon_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ICON, g_bytes_icon_icon_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_LOADABLE_ICON, g_bytes_icon_loadable_icon_iface_init))
+ 
+ static void
+ g_bytes_icon_get_property (GObject    *object,
+--- a/gio/gcharsetconverter.c
++++ b/gio/gcharsetconverter.c
+@@ -60,9 +60,9 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GCharsetConverter, g_charset_converter, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_CONVERTER,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_CONVERTER,
+ 						g_charset_converter_iface_init);
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+ 						g_charset_converter_initable_iface_init))
+ 
+ static void
+--- a/gio/gconverterinputstream.c
++++ b/gio/gconverterinputstream.c
+@@ -96,7 +96,7 @@
+ 			 g_converter_input_stream,
+ 			 G_TYPE_FILTER_INPUT_STREAM,
+                          G_ADD_PRIVATE (GConverterInputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_POLLABLE_INPUT_STREAM,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POLLABLE_INPUT_STREAM,
+ 						g_converter_input_stream_pollable_iface_init))
+ 
+ static void
+--- a/gio/gconverteroutputstream.c
++++ b/gio/gconverteroutputstream.c
+@@ -111,7 +111,7 @@
+ 			 g_converter_output_stream,
+ 			 G_TYPE_FILTER_OUTPUT_STREAM,
+                          G_ADD_PRIVATE (GConverterOutputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_POLLABLE_OUTPUT_STREAM,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POLLABLE_OUTPUT_STREAM,
+ 						g_converter_output_stream_pollable_iface_init))
+ 
+ static void
+--- a/gio/gdataoutputstream.c
++++ b/gio/gdataoutputstream.c
+@@ -73,7 +73,7 @@
+ 			 g_data_output_stream,
+ 			 G_TYPE_FILTER_OUTPUT_STREAM,
+                          G_ADD_PRIVATE (GDataOutputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_SEEKABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SEEKABLE,
+ 						g_data_output_stream_seekable_iface_init))
+ 
+ 
+--- a/gio/gdbusactiongroup.c
++++ b/gio/gdbusactiongroup.c
+@@ -125,8 +125,8 @@
+ static void g_dbus_action_group_remote_iface_init (GRemoteActionGroupInterface *iface);
+ static void g_dbus_action_group_iface_init        (GActionGroupInterface       *iface);
+ G_DEFINE_TYPE_WITH_CODE (GDBusActionGroup, g_dbus_action_group, G_TYPE_OBJECT,
+-  G_IMPLEMENT_INTERFACE (G_TYPE_ACTION_GROUP, g_dbus_action_group_iface_init)
+-  G_IMPLEMENT_INTERFACE (G_TYPE_REMOTE_ACTION_GROUP, g_dbus_action_group_remote_iface_init))
++  G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ACTION_GROUP, g_dbus_action_group_iface_init)
++  G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_REMOTE_ACTION_GROUP, g_dbus_action_group_remote_iface_init))
+ 
+ static void
+ g_dbus_action_group_changed (GDBusConnection *connection,
+--- a/gio/gdbusconnection.c
++++ b/gio/gdbusconnection.c
+@@ -658,8 +658,8 @@
+ static void async_initable_iface_init (GAsyncInitableIface *async_initable_iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GDBusConnection, g_dbus_connection, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ASYNC_INITABLE, async_initable_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE, initable_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ASYNC_INITABLE, async_initable_iface_init)
+                          );
+ 
+ /*
+--- a/gio/gdbusdaemon.c
++++ b/gio/gdbusdaemon.c
+@@ -74,8 +74,8 @@
+ 
+ #define g_dbus_daemon_get_type _g_dbus_daemon_get_type
+ G_DEFINE_TYPE_WITH_CODE (GDBusDaemon, g_dbus_daemon, _G_TYPE_FREEDESKTOP_DBUS_SKELETON,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, initable_iface_init)
+-			 G_IMPLEMENT_INTERFACE (_G_TYPE_FREEDESKTOP_DBUS, g_dbus_daemon_iface_init))
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE, initable_iface_init)
++			 G_IMPLEMENT_INTERFACE_UNARY (_G_TYPE_FREEDESKTOP_DBUS, g_dbus_daemon_iface_init))
+ 
+ typedef struct {
+   GDBusDaemon *daemon;
+--- a/gio/gdbusinterfaceskeleton.c
++++ b/gio/gdbusinterfaceskeleton.c
+@@ -93,7 +93,7 @@
+ 
+ G_DEFINE_ABSTRACT_TYPE_WITH_CODE (GDBusInterfaceSkeleton, g_dbus_interface_skeleton, G_TYPE_OBJECT,
+                                   G_ADD_PRIVATE (GDBusInterfaceSkeleton)
+-                                  G_IMPLEMENT_INTERFACE (G_TYPE_DBUS_INTERFACE, dbus_interface_interface_init))
++                                  G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_DBUS_INTERFACE, dbus_interface_interface_init))
+ 
+ static void
+ g_dbus_interface_skeleton_finalize (GObject *object)
+--- a/gio/gdbusobjectmanagerclient.c
++++ b/gio/gdbusobjectmanagerclient.c
+@@ -183,9 +183,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GDBusObjectManagerClient, g_dbus_object_manager_client, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GDBusObjectManagerClient)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ASYNC_INITABLE, async_initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_DBUS_OBJECT_MANAGER, dbus_object_manager_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE, initable_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ASYNC_INITABLE, async_initable_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_DBUS_OBJECT_MANAGER, dbus_object_manager_interface_init))
+ 
+ static void maybe_unsubscribe_signals (GDBusObjectManagerClient *manager);
+ 
+--- a/gio/gdbusobjectmanagerserver.c
++++ b/gio/gdbusobjectmanagerserver.c
+@@ -112,7 +112,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GDBusObjectManagerServer, g_dbus_object_manager_server, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GDBusObjectManagerServer)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_DBUS_OBJECT_MANAGER, dbus_object_manager_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_DBUS_OBJECT_MANAGER, dbus_object_manager_interface_init))
+ 
+ static void g_dbus_object_manager_server_constructed (GObject *object);
+ 
+--- a/gio/gdbusobjectproxy.c
++++ b/gio/gdbusobjectproxy.c
+@@ -61,7 +61,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GDBusObjectProxy, g_dbus_object_proxy, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GDBusObjectProxy)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_DBUS_OBJECT, dbus_object_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_DBUS_OBJECT, dbus_object_interface_init))
+ 
+ static void
+ g_dbus_object_proxy_finalize (GObject *object)
+--- a/gio/gdbusobjectskeleton.c
++++ b/gio/gdbusobjectskeleton.c
+@@ -70,7 +70,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GDBusObjectSkeleton, g_dbus_object_skeleton, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GDBusObjectSkeleton)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_DBUS_OBJECT, dbus_object_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_DBUS_OBJECT, dbus_object_interface_init))
+ 
+ 
+ static void
+--- a/gio/gdbusproxy.c
++++ b/gio/gdbusproxy.c
+@@ -187,9 +187,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GDBusProxy, g_dbus_proxy, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GDBusProxy)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_DBUS_INTERFACE, dbus_interface_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ASYNC_INITABLE, async_initable_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_DBUS_INTERFACE, dbus_interface_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE, initable_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ASYNC_INITABLE, async_initable_iface_init))
+ 
+ static void
+ g_dbus_proxy_finalize (GObject *object)
+--- a/gio/gdbusserver.c
++++ b/gio/gdbusserver.c
+@@ -161,7 +161,7 @@
+ static void initable_iface_init       (GInitableIface *initable_iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GDBusServer, g_dbus_server, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, initable_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE, initable_iface_init))
+ 
+ static void
+ g_dbus_server_dispose (GObject *object)
+--- a/gio/gdebugcontrollerdbus.c
++++ b/gio/gdebugcontrollerdbus.c
+@@ -196,9 +196,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GDebugControllerDBus, g_debug_controller_dbus, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GDebugControllerDBus)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_debug_controller_dbus_initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_DEBUG_CONTROLLER,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_DEBUG_CONTROLLER,
+                                                 g_debug_controller_dbus_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_DEBUG_CONTROLLER_EXTENSION_POINT_NAME,
+--- a/gio/gdesktopappinfo.c
++++ b/gio/gdesktopappinfo.c
+@@ -136,7 +136,7 @@
+ } UpdateMimeFlags;
+ 
+ G_DEFINE_TYPE_WITH_CODE (GDesktopAppInfo, g_desktop_app_info, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_APP_INFO, g_desktop_app_info_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_APP_INFO, g_desktop_app_info_iface_init))
+ 
+ /* DesktopFileDir implementation {{{1 */
+ 
+--- a/gio/gdummyfile.c
++++ b/gio/gdummyfile.c
+@@ -55,7 +55,7 @@
+ 
+ #define g_dummy_file_get_type _g_dummy_file_get_type
+ G_DEFINE_TYPE_WITH_CODE (GDummyFile, g_dummy_file, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_FILE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_FILE,
+ 						g_dummy_file_file_iface_init))
+ 
+ #define SUB_DELIM_CHARS  "!$&'()*+,;="
+--- a/gio/gdummyproxyresolver.c
++++ b/gio/gdummyproxyresolver.c
+@@ -42,7 +42,7 @@
+ 
+ #define g_dummy_proxy_resolver_get_type _g_dummy_proxy_resolver_get_type
+ G_DEFINE_TYPE_WITH_CODE (GDummyProxyResolver, g_dummy_proxy_resolver, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_PROXY_RESOLVER,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_PROXY_RESOLVER,
+ 						g_dummy_proxy_resolver_iface_init)
+ 			 _g_io_modules_ensure_extension_points_registered ();
+ 			 g_io_extension_point_implement (G_PROXY_RESOLVER_EXTENSION_POINT_NAME,
+--- a/gio/gdummytlsbackend.c
++++ b/gio/gdummytlsbackend.c
+@@ -57,7 +57,7 @@
+ 
+ #define g_dummy_tls_backend_get_type _g_dummy_tls_backend_get_type
+ G_DEFINE_TYPE_WITH_CODE (GDummyTlsBackend, g_dummy_tls_backend, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_TLS_BACKEND,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_TLS_BACKEND,
+ 						g_dummy_tls_backend_iface_init)
+ 			 _g_io_modules_ensure_extension_points_registered ();
+ 			 g_io_extension_point_implement (G_TLS_BACKEND_EXTENSION_POINT_NAME,
+@@ -144,7 +144,7 @@
+ 
+ #define g_dummy_tls_certificate_get_type _g_dummy_tls_certificate_get_type
+ G_DEFINE_TYPE_WITH_CODE (GDummyTlsCertificate, g_dummy_tls_certificate, G_TYPE_TLS_CERTIFICATE,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+ 						g_dummy_tls_certificate_initable_iface_init))
+ 
+ static void
+@@ -248,7 +248,7 @@
+ G_DEFINE_TYPE_WITH_CODE (GDummyTlsConnection, g_dummy_tls_connection, G_TYPE_TLS_CONNECTION,
+ 			 G_IMPLEMENT_INTERFACE (G_TYPE_TLS_CLIENT_CONNECTION, NULL)
+ 			 G_IMPLEMENT_INTERFACE (G_TYPE_TLS_SERVER_CONNECTION, NULL)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+ 						g_dummy_tls_connection_initable_iface_init))
+ 
+ static void
+@@ -370,7 +370,7 @@
+                          G_IMPLEMENT_INTERFACE (G_TYPE_DTLS_CONNECTION, NULL);
+                          G_IMPLEMENT_INTERFACE (G_TYPE_DTLS_CLIENT_CONNECTION, NULL);
+                          G_IMPLEMENT_INTERFACE (G_TYPE_DTLS_SERVER_CONNECTION, NULL);
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_dummy_dtls_connection_initable_iface_init);)
+ 
+ static void
+@@ -458,9 +458,9 @@
+ 
+ #define g_dummy_tls_database_get_type _g_dummy_tls_database_get_type
+ G_DEFINE_TYPE_WITH_CODE (GDummyTlsDatabase, g_dummy_tls_database, G_TYPE_TLS_DATABASE,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_TLS_FILE_DATABASE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_TLS_FILE_DATABASE,
+                                                 g_dummy_tls_database_file_database_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_dummy_tls_database_initable_iface_init))
+ 
+ 
+--- a/gio/gemblem.c
++++ b/gio/gemblem.c
+@@ -64,7 +64,7 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GEmblem, g_emblem, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ICON, g_emblem_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ICON, g_emblem_iface_init))
+ 
+ static void
+ g_emblem_get_property (GObject    *object,
+--- a/gio/gemblemedicon.c
++++ b/gio/gemblemedicon.c
+@@ -59,7 +59,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GEmblemedIcon, g_emblemed_icon, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GEmblemedIcon)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ICON,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ICON,
+                          g_emblemed_icon_icon_iface_init))
+ 
+ 
+--- a/gio/gfileicon.c
++++ b/gio/gfileicon.c
+@@ -68,9 +68,9 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GFileIcon, g_file_icon, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ICON,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ICON,
+                                                 g_file_icon_icon_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_LOADABLE_ICON,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_LOADABLE_ICON,
+                                                 g_file_icon_loadable_icon_iface_init))
+ 
+ static void
+--- a/gio/gfileinputstream.c
++++ b/gio/gfileinputstream.c
+@@ -76,7 +76,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GFileInputStream, g_file_input_stream, G_TYPE_INPUT_STREAM,
+                          G_ADD_PRIVATE (GFileInputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_SEEKABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SEEKABLE,
+ 						g_file_input_stream_seekable_iface_init))
+ 
+ static void
+--- a/gio/gfileiostream.c
++++ b/gio/gfileiostream.c
+@@ -88,7 +88,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GFileIOStream, g_file_io_stream, G_TYPE_IO_STREAM,
+                          G_ADD_PRIVATE (GFileIOStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_SEEKABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SEEKABLE,
+ 						g_file_io_stream_seekable_iface_init))
+ 
+ static void
+--- a/gio/gfileoutputstream.c
++++ b/gio/gfileoutputstream.c
+@@ -80,7 +80,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GFileOutputStream, g_file_output_stream, G_TYPE_OUTPUT_STREAM,
+                          G_ADD_PRIVATE (GFileOutputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_SEEKABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SEEKABLE,
+ 						g_file_output_stream_seekable_iface_init));
+ 
+ static void
+--- a/gio/ghttpproxy.c
++++ b/gio/ghttpproxy.c
+@@ -57,7 +57,7 @@
+ 
+ #define g_http_proxy_get_type _g_http_proxy_get_type
+ G_DEFINE_TYPE_WITH_CODE (GHttpProxy, g_http_proxy, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_PROXY,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_PROXY,
+                                                 g_http_proxy_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_PROXY_EXTENSION_POINT_NAME,
+@@ -399,7 +399,7 @@
+ 
+ #define g_https_proxy_get_type _g_https_proxy_get_type
+ G_DEFINE_TYPE_WITH_CODE (GHttpsProxy, g_https_proxy, G_TYPE_HTTP_PROXY,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_PROXY,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_PROXY,
+                                                 g_http_proxy_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_PROXY_EXTENSION_POINT_NAME,
+--- a/gio/ginetaddressmask.c
++++ b/gio/ginetaddressmask.c
+@@ -51,7 +51,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GInetAddressMask, g_inet_address_mask, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GInetAddressMask)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+ 						g_inet_address_mask_initable_iface_init))
+ 
+ enum
+--- a/gio/ginetsocketaddress.c
++++ b/gio/ginetsocketaddress.c
+@@ -56,7 +56,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GInetSocketAddress, g_inet_socket_address, G_TYPE_SOCKET_ADDRESS,
+                          G_ADD_PRIVATE (GInetSocketAddress)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_SOCKET_CONNECTABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SOCKET_CONNECTABLE,
+                                                 g_inet_socket_address_connectable_iface_init))
+ 
+ enum {
+--- a/gio/gliststore.c
++++ b/gio/gliststore.c
+@@ -61,7 +61,7 @@
+ static void g_list_store_iface_init (GListModelInterface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GListStore, g_list_store, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_LIST_MODEL, g_list_store_iface_init));
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_LIST_MODEL, g_list_store_iface_init));
+ 
+ static GParamSpec *properties[N_PROPERTIES] = { NULL, };
+ 
+--- a/gio/glocalfile.c
++++ b/gio/glocalfile.c
+@@ -116,7 +116,7 @@
+ 
+ #define g_local_file_get_type _g_local_file_get_type
+ G_DEFINE_TYPE_WITH_CODE (GLocalFile, g_local_file, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_FILE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_FILE,
+ 						g_local_file_file_iface_init))
+ 
+ static char *find_mountpoint_for (const char *file, dev_t dev, gboolean resolve_basename_symlink);
+--- a/gio/glocalfileinputstream.c
++++ b/gio/glocalfileinputstream.c
+@@ -58,7 +58,7 @@
+ #ifdef G_OS_UNIX
+ G_DEFINE_TYPE_WITH_CODE (GLocalFileInputStream, g_local_file_input_stream, G_TYPE_FILE_INPUT_STREAM,
+                          G_ADD_PRIVATE (GLocalFileInputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_FILE_DESCRIPTOR_BASED,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_FILE_DESCRIPTOR_BASED,
+ 						g_file_descriptor_based_iface_init))
+ #else
+ G_DEFINE_TYPE_WITH_CODE (GLocalFileInputStream, g_local_file_input_stream, G_TYPE_FILE_INPUT_STREAM,
+--- a/gio/glocalfileoutputstream.c
++++ b/gio/glocalfileoutputstream.c
+@@ -89,7 +89,7 @@
+ #ifdef G_OS_UNIX
+ G_DEFINE_TYPE_WITH_CODE (GLocalFileOutputStream, g_local_file_output_stream, G_TYPE_FILE_OUTPUT_STREAM,
+                          G_ADD_PRIVATE (GLocalFileOutputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_FILE_DESCRIPTOR_BASED,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_FILE_DESCRIPTOR_BASED,
+ 						g_file_descriptor_based_iface_init))
+ #else
+ G_DEFINE_TYPE_WITH_CODE (GLocalFileOutputStream, g_local_file_output_stream, G_TYPE_FILE_OUTPUT_STREAM,
+--- a/gio/gmemoryinputstream.c
++++ b/gio/gmemoryinputstream.c
+@@ -100,9 +100,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GMemoryInputStream, g_memory_input_stream, G_TYPE_INPUT_STREAM,
+                          G_ADD_PRIVATE (GMemoryInputStream)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_SEEKABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SEEKABLE,
+                                                 g_memory_input_stream_seekable_iface_init);
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_POLLABLE_INPUT_STREAM,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POLLABLE_INPUT_STREAM,
+                                                 g_memory_input_stream_pollable_iface_init);
+ 			 )
+ 
+--- a/gio/gmemorymonitordbus.c
++++ b/gio/gmemorymonitordbus.c
+@@ -47,9 +47,9 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GMemoryMonitorDBus, g_memory_monitor_dbus, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_memory_monitor_dbus_initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_MEMORY_MONITOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_MEMORY_MONITOR,
+                                                 g_memory_monitor_dbus_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_MEMORY_MONITOR_EXTENSION_POINT_NAME,
+--- a/gio/gmemorymonitorportal.c
++++ b/gio/gmemorymonitorportal.c
+@@ -41,9 +41,9 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GMemoryMonitorPortal, g_memory_monitor_portal, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_memory_monitor_portal_initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_MEMORY_MONITOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_MEMORY_MONITOR,
+                                                 g_memory_monitor_portal_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_MEMORY_MONITOR_EXTENSION_POINT_NAME,
+--- a/gio/gmemorymonitorwin32.c
++++ b/gio/gmemorymonitorwin32.c
+@@ -48,9 +48,9 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GMemoryMonitorWin32, g_memory_monitor_win32, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_memory_monitor_win32_initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_MEMORY_MONITOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_MEMORY_MONITOR,
+                                                 g_memory_monitor_win32_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_MEMORY_MONITOR_EXTENSION_POINT_NAME,
+--- a/gio/gmemoryoutputstream.c
++++ b/gio/gmemoryoutputstream.c
+@@ -118,9 +118,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GMemoryOutputStream, g_memory_output_stream, G_TYPE_OUTPUT_STREAM,
+                          G_ADD_PRIVATE (GMemoryOutputStream)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_SEEKABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SEEKABLE,
+                                                 g_memory_output_stream_seekable_iface_init);
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_POLLABLE_OUTPUT_STREAM,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POLLABLE_OUTPUT_STREAM,
+                                                 g_memory_output_stream_pollable_iface_init))
+ 
+ 
+--- a/gio/gnetworkaddress.c
++++ b/gio/gnetworkaddress.c
+@@ -92,7 +92,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GNetworkAddress, g_network_address, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GNetworkAddress)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_SOCKET_CONNECTABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SOCKET_CONNECTABLE,
+                                                 g_network_address_connectable_iface_init))
+ 
+ static void
+--- a/gio/gnetworkmonitorbase.c
++++ b/gio/gnetworkmonitorbase.c
+@@ -66,9 +66,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GNetworkMonitorBase, g_network_monitor_base, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GNetworkMonitorBase)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_network_monitor_base_initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_NETWORK_MONITOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_NETWORK_MONITOR,
+                                                 g_network_monitor_base_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_NETWORK_MONITOR_EXTENSION_POINT_NAME,
+--- a/gio/gnetworkmonitornetlink.c
++++ b/gio/gnetworkmonitornetlink.c
+@@ -71,9 +71,9 @@
+ #define g_network_monitor_netlink_get_type _g_network_monitor_netlink_get_type
+ G_DEFINE_TYPE_WITH_CODE (GNetworkMonitorNetlink, g_network_monitor_netlink, G_TYPE_NETWORK_MONITOR_BASE,
+                          G_ADD_PRIVATE (GNetworkMonitorNetlink)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_NETWORK_MONITOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_NETWORK_MONITOR,
+                                                 g_network_monitor_netlink_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_network_monitor_netlink_initable_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_NETWORK_MONITOR_EXTENSION_POINT_NAME,
+--- a/gio/gnetworkmonitornm.c
++++ b/gio/gnetworkmonitornm.c
+@@ -80,9 +80,9 @@
+ #define g_network_monitor_nm_get_type _g_network_monitor_nm_get_type
+ G_DEFINE_TYPE_WITH_CODE (GNetworkMonitorNM, g_network_monitor_nm, G_TYPE_NETWORK_MONITOR_NETLINK,
+                          G_ADD_PRIVATE (GNetworkMonitorNM)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_NETWORK_MONITOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_NETWORK_MONITOR,
+                                                 g_network_monitor_nm_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_network_monitor_nm_initable_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_NETWORK_MONITOR_EXTENSION_POINT_NAME,
+--- a/gio/gnetworkmonitorportal.c
++++ b/gio/gnetworkmonitorportal.c
+@@ -50,9 +50,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GNetworkMonitorPortal, g_network_monitor_portal, G_TYPE_NETWORK_MONITOR_BASE,
+                          G_ADD_PRIVATE (GNetworkMonitorPortal)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_NETWORK_MONITOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_NETWORK_MONITOR,
+                                                 g_network_monitor_portal_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_network_monitor_portal_initable_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_NETWORK_MONITOR_EXTENSION_POINT_NAME,
+--- a/gio/gnetworkservice.c
++++ b/gio/gnetworkservice.c
+@@ -86,7 +86,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GNetworkService, g_network_service, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GNetworkService)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_SOCKET_CONNECTABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SOCKET_CONNECTABLE,
+                                                 g_network_service_connectable_iface_init))
+ 
+ static void
+--- a/gio/gosxnetworkmonitor.c
++++ b/gio/gosxnetworkmonitor.c
+@@ -97,7 +97,7 @@
+   GSource *route_change_source; /* (owned) (nullable) */
+ };
+ 
+-G_DEFINE_TYPE_WITH_CODE (GOsxNetworkMonitor, g_osx_network_monitor, G_TYPE_NETWORK_MONITOR_BASE, G_IMPLEMENT_INTERFACE (G_TYPE_NETWORK_MONITOR, g_osx_network_monitor_iface_init) G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, g_osx_network_monitor_initable_iface_init) _g_io_modules_ensure_extension_points_registered ();
++G_DEFINE_TYPE_WITH_CODE (GOsxNetworkMonitor, g_osx_network_monitor, G_TYPE_NETWORK_MONITOR_BASE, G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_NETWORK_MONITOR, g_osx_network_monitor_iface_init) G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE, g_osx_network_monitor_initable_iface_init) _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_NETWORK_MONITOR_EXTENSION_POINT_NAME,
+                                                          g_define_type_id,
+                                                          "osx",
+--- a/gio/gpowerprofilemonitordbus.c
++++ b/gio/gpowerprofilemonitordbus.c
+@@ -59,9 +59,9 @@
+ #define POWERPROFILES_DBUS_PATH "/org/freedesktop/UPower/PowerProfiles"
+ 
+ G_DEFINE_TYPE_WITH_CODE (GPowerProfileMonitorDBus, g_power_profile_monitor_dbus, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_power_profile_monitor_dbus_initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_POWER_PROFILE_MONITOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POWER_PROFILE_MONITOR,
+                                                 g_power_profile_monitor_dbus_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_POWER_PROFILE_MONITOR_EXTENSION_POINT_NAME,
+--- a/gio/gpowerprofilemonitorportal.c
++++ b/gio/gpowerprofilemonitorportal.c
+@@ -49,9 +49,9 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GPowerProfileMonitorPortal, g_power_profile_monitor_portal, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_power_profile_monitor_portal_initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_POWER_PROFILE_MONITOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POWER_PROFILE_MONITOR,
+                                                 g_power_profile_monitor_portal_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_POWER_PROFILE_MONITOR_EXTENSION_POINT_NAME,
+--- a/gio/gpropertyaction.c
++++ b/gio/gpropertyaction.c
+@@ -100,7 +100,7 @@
+ 
+ static void g_property_action_iface_init (GActionInterface *iface);
+ G_DEFINE_TYPE_WITH_CODE (GPropertyAction, g_property_action, G_TYPE_OBJECT,
+-  G_IMPLEMENT_INTERFACE (G_TYPE_ACTION, g_property_action_iface_init))
++  G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ACTION, g_property_action_iface_init))
+ 
+ enum
+ {
+--- a/gio/gproxyresolverportal.c
++++ b/gio/gproxyresolverportal.c
+@@ -36,7 +36,7 @@
+ static void g_proxy_resolver_portal_iface_init (GProxyResolverInterface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GProxyResolverPortal, g_proxy_resolver_portal, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_PROXY_RESOLVER,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_PROXY_RESOLVER,
+                                                 g_proxy_resolver_portal_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_PROXY_RESOLVER_EXTENSION_POINT_NAME,
+--- a/gio/gresourcefile.c
++++ b/gio/gresourcefile.c
+@@ -94,7 +94,7 @@
+ 
+ #define g_resource_file_get_type _g_resource_file_get_type
+ G_DEFINE_TYPE_WITH_CODE (GResourceFile, g_resource_file, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_FILE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_FILE,
+ 						g_resource_file_file_iface_init))
+ 
+ #define g_resource_file_enumerator_get_type _g_resource_file_enumerator_get_type
+--- a/gio/gsettings.c
++++ b/gio/gsettings.c
+@@ -3401,7 +3401,7 @@
+ static GType g_settings_action_get_type (void);
+ static void g_settings_action_iface_init (GActionInterface *iface);
+ G_DEFINE_TYPE_WITH_CODE (GSettingsAction, g_settings_action, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ACTION, g_settings_action_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ACTION, g_settings_action_iface_init))
+ 
+ enum
+ {
+--- a/gio/gsimpleaction.c
++++ b/gio/gsimpleaction.c
+@@ -50,7 +50,7 @@
+ 
+ static void g_simple_action_iface_init (GActionInterface *iface);
+ G_DEFINE_TYPE_WITH_CODE (GSimpleAction, g_simple_action, G_TYPE_OBJECT,
+-  G_IMPLEMENT_INTERFACE (G_TYPE_ACTION, g_simple_action_iface_init))
++  G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ACTION, g_simple_action_iface_init))
+ 
+ enum
+ {
+--- a/gio/gsimpleactiongroup.c
++++ b/gio/gsimpleactiongroup.c
+@@ -47,9 +47,9 @@
+ G_DEFINE_TYPE_WITH_CODE (GSimpleActionGroup,
+   g_simple_action_group, G_TYPE_OBJECT,
+   G_ADD_PRIVATE (GSimpleActionGroup)
+-  G_IMPLEMENT_INTERFACE (G_TYPE_ACTION_GROUP,
++  G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ACTION_GROUP,
+                          g_simple_action_group_iface_init);
+-  G_IMPLEMENT_INTERFACE (G_TYPE_ACTION_MAP,
++  G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ACTION_MAP,
+                          g_simple_action_group_map_iface_init))
+ 
+ static gchar **
+--- a/gio/gsimpleasyncresult.c
++++ b/gio/gsimpleasyncresult.c
+@@ -238,7 +238,7 @@
+ 
+ 
+ G_DEFINE_TYPE_WITH_CODE (GSimpleAsyncResult, g_simple_async_result, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_ASYNC_RESULT,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ASYNC_RESULT,
+ 						g_simple_async_result_async_result_iface_init))
+ 
+ static void
+--- a/gio/gsimpleproxyresolver.c
++++ b/gio/gsimpleproxyresolver.c
+@@ -66,7 +66,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GSimpleProxyResolver, g_simple_proxy_resolver, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GSimpleProxyResolver)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_PROXY_RESOLVER,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_PROXY_RESOLVER,
+                                                 g_simple_proxy_resolver_iface_init))
+ 
+ enum
+--- a/gio/gsocket.c
++++ b/gio/gsocket.c
+@@ -292,9 +292,9 @@
+                                       g_networking_init ();
+                                       , /* And now the regular type init code */
+                                       G_ADD_PRIVATE (GSocket)
+-                                      G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                                      G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                              g_socket_initable_iface_init);
+-                                      G_IMPLEMENT_INTERFACE (G_TYPE_DATAGRAM_BASED,
++                                      G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_DATAGRAM_BASED,
+                                                              g_socket_datagram_based_iface_init));
+ 
+ static int
+--- a/gio/gsocketaddress.c
++++ b/gio/gsocketaddress.c
+@@ -64,7 +64,7 @@
+ static GSocketAddressEnumerator *g_socket_address_connectable_proxy_enumerate  (GSocketConnectable      *connectable);
+ 
+ G_DEFINE_ABSTRACT_TYPE_WITH_CODE (GSocketAddress, g_socket_address, G_TYPE_OBJECT,
+-				  G_IMPLEMENT_INTERFACE (G_TYPE_SOCKET_CONNECTABLE,
++				  G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SOCKET_CONNECTABLE,
+ 							 g_socket_address_connectable_iface_init))
+ 
+ /**
+--- a/gio/gsocketinputstream.c
++++ b/gio/gsocketinputstream.c
+@@ -51,13 +51,13 @@
+ #ifdef G_OS_UNIX
+ G_DEFINE_TYPE_WITH_CODE (GSocketInputStream, g_socket_input_stream, G_TYPE_INPUT_STREAM,
+                          G_ADD_PRIVATE (GSocketInputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_POLLABLE_INPUT_STREAM, g_socket_input_stream_pollable_iface_init)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_FILE_DESCRIPTOR_BASED, g_socket_input_stream_file_descriptor_based_iface_init)
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POLLABLE_INPUT_STREAM, g_socket_input_stream_pollable_iface_init)
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_FILE_DESCRIPTOR_BASED, g_socket_input_stream_file_descriptor_based_iface_init)
+ 			 )
+ #else
+ G_DEFINE_TYPE_WITH_CODE (GSocketInputStream, g_socket_input_stream, G_TYPE_INPUT_STREAM,
+                          G_ADD_PRIVATE (GSocketInputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_POLLABLE_INPUT_STREAM, g_socket_input_stream_pollable_iface_init)
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POLLABLE_INPUT_STREAM, g_socket_input_stream_pollable_iface_init)
+ 			 )
+ #endif
+ 
+--- a/gio/gsocketoutputstream.c
++++ b/gio/gsocketoutputstream.c
+@@ -56,13 +56,13 @@
+ #ifdef G_OS_UNIX
+ G_DEFINE_TYPE_WITH_CODE (GSocketOutputStream, g_socket_output_stream, G_TYPE_OUTPUT_STREAM,
+                          G_ADD_PRIVATE (GSocketOutputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_POLLABLE_OUTPUT_STREAM, g_socket_output_stream_pollable_iface_init)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_FILE_DESCRIPTOR_BASED, g_socket_output_stream_file_descriptor_based_iface_init)
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POLLABLE_OUTPUT_STREAM, g_socket_output_stream_pollable_iface_init)
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_FILE_DESCRIPTOR_BASED, g_socket_output_stream_file_descriptor_based_iface_init)
+ 			 )
+ #else
+ G_DEFINE_TYPE_WITH_CODE (GSocketOutputStream, g_socket_output_stream, G_TYPE_OUTPUT_STREAM,
+                          G_ADD_PRIVATE (GSocketOutputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_POLLABLE_OUTPUT_STREAM, g_socket_output_stream_pollable_iface_init)
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POLLABLE_OUTPUT_STREAM, g_socket_output_stream_pollable_iface_init)
+ 			 )
+ #endif
+ 
+--- a/gio/gsocks4aproxy.c
++++ b/gio/gsocks4aproxy.c
+@@ -54,7 +54,7 @@
+ 
+ #define g_socks4a_proxy_get_type _g_socks4a_proxy_get_type
+ G_DEFINE_TYPE_WITH_CODE (GSocks4aProxy, g_socks4a_proxy, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_PROXY,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_PROXY,
+ 						g_socks4a_proxy_iface_init)
+ 			 _g_io_modules_ensure_extension_points_registered ();
+ 			 g_io_extension_point_implement (G_PROXY_EXTENSION_POINT_NAME,
+--- a/gio/gsocks5proxy.c
++++ b/gio/gsocks5proxy.c
+@@ -86,7 +86,7 @@
+ 
+ #define g_socks5_proxy_get_type _g_socks5_proxy_get_type
+ G_DEFINE_TYPE_WITH_CODE (GSocks5Proxy, g_socks5_proxy, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_PROXY,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_PROXY,
+ 						g_socks5_proxy_iface_init)
+ 			 _g_io_modules_ensure_extension_points_registered ();
+ 			 g_io_extension_point_implement (G_PROXY_EXTENSION_POINT_NAME,
+--- a/gio/gsubprocess.c
++++ b/gio/gsubprocess.c
+@@ -176,7 +176,7 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GSubprocess, g_subprocess, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, initable_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE, initable_iface_init))
+ 
+ enum
+ {
+--- a/gio/gtask.c
++++ b/gio/gtask.c
+@@ -627,7 +627,7 @@
+ static void g_task_thread_pool_init (void);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GTask, g_task, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ASYNC_RESULT,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ASYNC_RESULT,
+                                                 g_task_async_result_iface_init);
+                          g_task_thread_pool_init ();)
+ 
+--- a/gio/gthemedicon.c
++++ b/gio/gthemedicon.c
+@@ -71,7 +71,7 @@
+ static void g_themed_icon_update_names (GThemedIcon *themed);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GThemedIcon, g_themed_icon, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_ICON,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ICON,
+ 						g_themed_icon_icon_iface_init))
+ 
+ static void
+--- a/gio/gunixinputstream.c
++++ b/gio/gunixinputstream.c
+@@ -69,9 +69,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GUnixInputStream, g_unix_input_stream, G_TYPE_INPUT_STREAM,
+                          G_ADD_PRIVATE (GUnixInputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_POLLABLE_INPUT_STREAM,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POLLABLE_INPUT_STREAM,
+ 						g_unix_input_stream_pollable_iface_init)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_FILE_DESCRIPTOR_BASED,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_FILE_DESCRIPTOR_BASED,
+ 						g_unix_input_stream_file_descriptor_based_iface_init)
+ 			 )
+ 
+--- a/gio/gunixmount.c
++++ b/gio/gunixmount.c
+@@ -67,7 +67,7 @@
+ 
+ #define g_unix_mount_get_type _g_unix_mount_get_type
+ G_DEFINE_TYPE_WITH_CODE (GUnixMount, g_unix_mount, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_MOUNT,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_MOUNT,
+ 						g_unix_mount_mount_iface_init))
+ 
+ 
+--- a/gio/gunixoutputstream.c
++++ b/gio/gunixoutputstream.c
+@@ -71,9 +71,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GUnixOutputStream, g_unix_output_stream, G_TYPE_OUTPUT_STREAM,
+                          G_ADD_PRIVATE (GUnixOutputStream)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_POLLABLE_OUTPUT_STREAM,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_POLLABLE_OUTPUT_STREAM,
+ 						g_unix_output_stream_pollable_iface_init)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_FILE_DESCRIPTOR_BASED,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_FILE_DESCRIPTOR_BASED,
+ 						g_unix_output_stream_file_descriptor_based_iface_init)
+ 			 )
+ 
+--- a/gio/gunixsocketaddress.c
++++ b/gio/gunixsocketaddress.c
+@@ -85,7 +85,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GUnixSocketAddress, g_unix_socket_address, G_TYPE_SOCKET_ADDRESS,
+                          G_ADD_PRIVATE (GUnixSocketAddress)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_SOCKET_CONNECTABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_SOCKET_CONNECTABLE,
+                                                 g_unix_socket_address_connectable_iface_init))
+ 
+ static void
+--- a/gio/gunixvolume.c
++++ b/gio/gunixvolume.c
+@@ -65,7 +65,7 @@
+ 
+ #define g_unix_volume_get_type _g_unix_volume_get_type
+ G_DEFINE_TYPE_WITH_CODE (GUnixVolume, g_unix_volume, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_VOLUME,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_VOLUME,
+ 						g_unix_volume_volume_iface_init))
+ 
+ static void
+--- a/gio/gwin32appinfo.c
++++ b/gio/gwin32appinfo.c
+@@ -4074,7 +4074,7 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GWin32AppInfo, g_win32_app_info, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_APP_INFO,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_APP_INFO,
+                                                 g_win32_app_info_iface_init))
+ 
+ 
+--- a/gio/gwin32mount.c
++++ b/gio/gwin32mount.c
+@@ -101,7 +101,7 @@
+ 
+ #define g_win32_mount_get_type _g_win32_mount_get_type
+ G_DEFINE_TYPE_WITH_CODE (GWin32Mount, g_win32_mount, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_MOUNT,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_MOUNT,
+ 						g_win32_mount_mount_iface_init))
+ 
+ 
+--- a/gio/gwin32networkmonitor.c
++++ b/gio/gwin32networkmonitor.c
+@@ -61,9 +61,9 @@
+ #define g_win32_network_monitor_get_type _g_win32_network_monitor_get_type
+ G_DEFINE_TYPE_WITH_CODE (GWin32NetworkMonitor, g_win32_network_monitor, G_TYPE_NETWORK_MONITOR_BASE,
+                          G_ADD_PRIVATE (GWin32NetworkMonitor)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_NETWORK_MONITOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_NETWORK_MONITOR,
+                                                 g_win32_network_monitor_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_win32_network_monitor_initable_iface_init)
+                          _g_io_modules_ensure_extension_points_registered ();
+                          g_io_extension_point_implement (G_NETWORK_MONITOR_EXTENSION_POINT_NAME,
+--- a/gio/gwin32registrykey.c
++++ b/gio/gwin32registrykey.c
+@@ -439,7 +439,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GWin32RegistryKey, g_win32_registry_key, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GWin32RegistryKey)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 g_win32_registry_key_initable_iface_init));
+ 
+ static void
+--- a/gio/gzlibcompressor.c
++++ b/gio/gzlibcompressor.c
+@@ -90,7 +90,7 @@
+ }
+ 
+ G_DEFINE_TYPE_WITH_CODE (GZlibCompressor, g_zlib_compressor, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_CONVERTER,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_CONVERTER,
+ 						g_zlib_compressor_iface_init))
+ 
+ static void
+--- a/gio/gzlibdecompressor.c
++++ b/gio/gzlibdecompressor.c
+@@ -95,7 +95,7 @@
+ }
+ 
+ G_DEFINE_TYPE_WITH_CODE (GZlibDecompressor, g_zlib_decompressor, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_CONVERTER,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_CONVERTER,
+ 						g_zlib_decompressor_iface_init))
+ 
+ static void
+--- a/gio/tests/converter-stream.c
++++ b/gio/tests/converter-stream.c
+@@ -55,7 +55,7 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GExpanderConverter, g_expander_converter, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_CONVERTER,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_CONVERTER,
+ 						g_expander_converter_iface_init))
+ 
+ static void
+@@ -171,7 +171,7 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GCompressorConverter, g_compressor_converter, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_CONVERTER,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_CONVERTER,
+ 						g_compressor_converter_iface_init))
+ 
+ static void
+@@ -595,7 +595,7 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GLeftoverConverter, g_leftover_converter, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_CONVERTER,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_CONVERTER,
+ 						g_leftover_converter_iface_init))
+ 
+ static void
+--- a/gio/tests/gtesttlsbackend.c
++++ b/gio/tests/gtesttlsbackend.c
+@@ -35,7 +35,7 @@
+ 
+ #define g_test_tls_backend_get_type _g_test_tls_backend_get_type
+ G_DEFINE_TYPE_WITH_CODE (GTestTlsBackend, g_test_tls_backend, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_TLS_BACKEND,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_TLS_BACKEND,
+ 						g_test_tls_backend_iface_init)
+                          g_io_extension_point_set_required_type (
+                            g_io_extension_point_register (G_TLS_BACKEND_EXTENSION_POINT_NAME),
+@@ -124,7 +124,7 @@
+ 
+ #define g_test_tls_certificate_get_type _g_test_tls_certificate_get_type
+ G_DEFINE_TYPE_WITH_CODE (GTestTlsCertificate, g_test_tls_certificate, G_TYPE_TLS_CERTIFICATE,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+ 						g_test_tls_certificate_initable_iface_init))
+ 
+ static GTlsCertificateFlags
+@@ -330,7 +330,7 @@
+ 			 G_IMPLEMENT_INTERFACE (G_TYPE_TLS_SERVER_CONNECTION, NULL)
+                          G_IMPLEMENT_INTERFACE (G_TYPE_DATAGRAM_BASED, NULL)
+ 			 G_IMPLEMENT_INTERFACE (G_TYPE_DTLS_CONNECTION, NULL)
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+ 						g_test_tls_connection_initable_iface_init))
+ 
+ static void
+@@ -433,9 +433,9 @@
+ 
+ #define g_test_tls_database_get_type _g_test_tls_database_get_type
+ G_DEFINE_TYPE_WITH_CODE (GTestTlsDatabase, g_test_tls_database, G_TYPE_TLS_DATABASE,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+ 						g_test_tls_database_initable_iface_init);
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_TLS_FILE_DATABASE,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_TLS_FILE_DATABASE,
+ 						g_test_tls_file_database_file_database_interface_init))
+ 
+ static void
+--- a/gio/tests/proxy-test.c
++++ b/gio/tests/proxy-test.c
+@@ -102,7 +102,7 @@
+ static GType _g_test_proxy_resolver_get_type (void);
+ #define g_test_proxy_resolver_get_type _g_test_proxy_resolver_get_type
+ G_DEFINE_TYPE_WITH_CODE (GTestProxyResolver, g_test_proxy_resolver, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_PROXY_RESOLVER,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_PROXY_RESOLVER,
+ 						g_test_proxy_resolver_iface_init)
+ 			 g_io_extension_point_implement (G_PROXY_RESOLVER_EXTENSION_POINT_NAME,
+ 							 g_define_type_id,
+@@ -239,7 +239,7 @@
+ static GType _g_test_alt_proxy_resolver_get_type (void);
+ #define g_test_alt_proxy_resolver_get_type _g_test_alt_proxy_resolver_get_type
+ G_DEFINE_TYPE_WITH_CODE (GTestAltProxyResolver, g_test_alt_proxy_resolver, g_test_proxy_resolver_get_type (),
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_PROXY_RESOLVER,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_PROXY_RESOLVER,
+ 						g_test_alt_proxy_resolver_iface_init);
+                          )
+ 
+@@ -399,7 +399,7 @@
+ static GType _g_proxy_a_get_type (void);
+ #define g_proxy_a_get_type _g_proxy_a_get_type
+ G_DEFINE_TYPE_WITH_CODE (GProxyA, g_proxy_a, g_proxy_base_get_type (),
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_PROXY,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_PROXY,
+ 						g_proxy_a_iface_init)
+ 			 g_io_extension_point_implement (G_PROXY_EXTENSION_POINT_NAME,
+ 							 g_define_type_id,
+@@ -444,7 +444,7 @@
+ static GType _g_proxy_b_get_type (void);
+ #define g_proxy_b_get_type _g_proxy_b_get_type
+ G_DEFINE_TYPE_WITH_CODE (GProxyB, g_proxy_b, g_proxy_base_get_type (),
+-			 G_IMPLEMENT_INTERFACE (G_TYPE_PROXY,
++			 G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_PROXY,
+ 						g_proxy_b_iface_init)
+ 			 g_io_extension_point_implement (G_PROXY_EXTENSION_POINT_NAME,
+ 							 g_define_type_id,
+--- a/gio/win32/gwinhttpfile.c
++++ b/gio/win32/gwinhttpfile.c
+@@ -41,7 +41,7 @@
+ 
+ #define g_winhttp_file_get_type _g_winhttp_file_get_type
+ G_DEFINE_TYPE_WITH_CODE (GWinHttpFile, g_winhttp_file, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_FILE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_FILE,
+                                                 g_winhttp_file_file_iface_init))
+ 
+ static void
+--- a/gobject/gtype.h
++++ b/gobject/gtype.h
+@@ -2121,6 +2121,17 @@
+  * Since: 2.4
+  */
+ #define G_IMPLEMENT_INTERFACE(TYPE_IFACE, iface_init)       { \
++  const GInterfaceInfo g_implement_interface_info = { \
++    (GInterfaceInitFunc)(void (*)(void)) iface_init, NULL, NULL \
++  }; \
++  g_type_add_interface_static (g_define_type_id, TYPE_IFACE, &g_implement_interface_info); \
++}
++
++/* Kandelo: the public macro retains the two-argument GInterfaceInitFunc
++ * contract. Use this explicit adapter only for a one-argument initializer;
++ * inferring arity from the first parameter type would misclassify typed
++ * two-argument callbacks. interface_data owns the unary callback pointer. */
++#define G_IMPLEMENT_INTERFACE_UNARY(TYPE_IFACE, iface_init)       { \
+   const GInterfaceInfo g_implement_interface_info = { \
+     g_wasm_iface_init_thunk, NULL, (gpointer) (void (*)(void)) iface_init \
+   }; \
+--- a/gobject/gtypemodule.h
++++ b/gobject/gtypemodule.h
+@@ -251,6 +251,17 @@
+  */
+ #define G_IMPLEMENT_INTERFACE_DYNAMIC(TYPE_IFACE, iface_init)       { \
+   const GInterfaceInfo g_implement_interface_info = { \
++    (GInterfaceInitFunc)(void (*)(void)) iface_init, NULL, NULL \
++  }; \
++  g_type_module_add_interface (type_module, g_define_type_id, TYPE_IFACE, &g_implement_interface_info); \
++}
++
++/* Kandelo: the public macro retains the two-argument GInterfaceInitFunc
++ * contract. Use this explicit adapter only for a one-argument initializer;
++ * inferring arity from the first parameter type would misclassify typed
++ * two-argument callbacks. interface_data owns the unary callback pointer. */
++#define G_IMPLEMENT_INTERFACE_DYNAMIC_UNARY(TYPE_IFACE, iface_init)       { \
++  const GInterfaceInfo g_implement_interface_info = { \
+     g_wasm_iface_init_thunk, NULL, (gpointer) (void (*)(void)) iface_init \
+   }; \
+   g_type_module_add_interface (type_module, g_define_type_id, TYPE_IFACE, &g_implement_interface_info); \
+--- a/gobject/tests/binding.c
++++ b/gobject/tests/binding.c
+@@ -55,7 +55,7 @@
+ GType baa_get_type (void);
+ 
+ G_DEFINE_TYPE_WITH_CODE (Baa, baa, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (foo_get_type (), baa_init_foo))
++                         G_IMPLEMENT_INTERFACE_UNARY (foo_get_type (), baa_init_foo))
+ 
+ static void
+ baa_init (Baa *baa)
+--- a/gobject/tests/dynamictests.c
++++ b/gobject/tests/dynamictests.c
+@@ -259,7 +259,7 @@
+ 
+ static GType dyn_obj_get_type (void);
+ G_DEFINE_DYNAMIC_TYPE_EXTENDED(DynObj, dyn_obj, G_TYPE_OBJECT, 0,
+-                      G_IMPLEMENT_INTERFACE_DYNAMIC(dyn_iface_get_type (), dyn_obj_iface_init))
++                      G_IMPLEMENT_INTERFACE_DYNAMIC_UNARY(dyn_iface_get_type (), dyn_obj_iface_init))
+ 
+ 
+ static void
+--- a/gobject/tests/dynamictype.c
++++ b/gobject/tests/dynamictype.c
+@@ -72,7 +72,7 @@
+ static void dynamic_object_iface_init (TestIface *iface);
+ 
+ G_DEFINE_DYNAMIC_TYPE_EXTENDED(DynamicObject, dynamic_object, G_TYPE_OBJECT, 0,
+-                               G_IMPLEMENT_INTERFACE_DYNAMIC (TEST_TYPE_IFACE,
++                               G_IMPLEMENT_INTERFACE_DYNAMIC_UNARY (TEST_TYPE_IFACE,
+                                                               dynamic_object_iface_init));
+ 
+ static void
+--- a/gobject/tests/ifaceproperties.c
++++ b/gobject/tests/ifaceproperties.c
+@@ -554,7 +554,7 @@
+ 
+ static GType base2_object_get_type (void);
+ G_DEFINE_TYPE_WITH_CODE (Base2Object, base2_object, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (TEST_TYPE_IFACE,
++                         G_IMPLEMENT_INTERFACE_UNARY (TEST_TYPE_IFACE,
+                                                 base2_object_test_iface_init))
+ 
+ static void
+--- a/gobject/tests/param.c
++++ b/gobject/tests/param.c
+@@ -1331,7 +1331,7 @@
+ 
+ static GType test_implementation_get_type (void);
+ G_DEFINE_TYPE_WITH_CODE (TestImplementation, test_implementation, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (test_interface_get_type (), test_implementation_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (test_interface_get_type (), test_implementation_iface_init))
+ 
+ static void test_implementation_class_init (TestImplementationClass *class)
+ {
+--- a/gobject/tests/signals.c
++++ b/gobject/tests/signals.c
+@@ -164,7 +164,7 @@
+ GType baa_get_type (void);
+ 
+ G_DEFINE_TYPE_WITH_CODE (Baa, baa, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (foo_get_type (), baa_init_foo))
++                         G_IMPLEMENT_INTERFACE_UNARY (foo_get_type (), baa_init_foo))
+ 
+ static void
+ baa_init (Baa *baa)
+--- a/gobject/tests/threadtests.c
++++ b/gobject/tests/threadtests.c
+@@ -49,7 +49,9 @@
+     }
+ }
+ 
+-static void interface_per_class_init (void) { call_counter_init (NULL); }
++static void interface_per_class_init (gpointer iface G_GNUC_UNUSED,
++                                      gpointer data G_GNUC_UNUSED)
++{ call_counter_init (NULL); }
+ 
+ /* define 3 test interfaces */
+ typedef GTypeInterface MyFace0Interface;
+--- a/gobject/tests/type.c
++++ b/gobject/tests/type.c
+@@ -149,7 +149,7 @@
+ static void bazo_iface_init (BazInterface *i);
+ 
+ G_DEFINE_TYPE_WITH_CODE (Bazo, bazo, G_TYPE_INITIALLY_UNOWNED,
+-                         G_IMPLEMENT_INTERFACE (baz_get_type (),
++                         G_IMPLEMENT_INTERFACE_UNARY (baz_get_type (),
+                                                 bazo_iface_init);)
+ 
+ static void
+--- a/gobject/tests/value.c
++++ b/gobject/tests/value.c
+@@ -738,7 +738,7 @@
+ typedef GObject TestObjectB; typedef GObjectClass TestObjectBClass;
+ static void test_object_b_iface_init (TestInterfaceInterface *iface) { }
+ G_DEFINE_TYPE_WITH_CODE (TestObjectB, test_object_b, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (test_interface_get_type (), test_object_b_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (test_interface_get_type (), test_object_b_iface_init))
+ static void test_object_b_class_init (TestObjectBClass *class) { }
+ static void test_object_b_init (TestObjectB *b) { }
+ 
+@@ -752,7 +752,7 @@
+ typedef GObject TestObjectA2; typedef GObjectClass TestObjectA2Class;
+ static void test_object_a2_iface_init (TestInterfaceInterface *iface) { }
+ G_DEFINE_TYPE_WITH_CODE (TestObjectA2, test_object_a2, test_object_a_get_type (),
+-                         G_IMPLEMENT_INTERFACE (test_interface_get_type (), test_object_a2_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (test_interface_get_type (), test_object_a2_iface_init))
+ static void test_object_a2_class_init (TestObjectA2Class *class) { }
+ static void test_object_a2_init (TestObjectA2 *b) { }
+ 

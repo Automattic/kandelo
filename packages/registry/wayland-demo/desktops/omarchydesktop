@@ -29,7 +29,12 @@ export FONTCONFIG_FILE="$DATA/fonts/fonts.conf"
 # the compositor's socket as $XDG_RUNTIME_DIR/wayland-0, and /tmp is the one
 # directory every uid can write under this kernel (see wldesktop).
 export XDG_RUNTIME_DIR=/tmp
-# The launcher lists $XDG_DATA_DIRS/applications/*.desktop.
+# The launcher lists $XDG_DATA_DIRS/applications/*.desktop. An entry here
+# replaces a system entry with the same desktop-file ID: kandelo-terminal,
+# scummvm and wayland-demo (Paint) are the IDs the SFWBar desktops install
+# in /usr/share/applications, and this desktop's own variants of those
+# applications (foot with this desktop's config) take their place rather
+# than appearing beside them.
 export XDG_DATA_DIRS=$DATA:/usr/share
 # QtQuick clients render through the software scenegraph: a Wayland client
 # has no GL surface of its own here.

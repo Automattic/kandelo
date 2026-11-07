@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { withNativeBatch } from "../src/webgl/native-batch.js";
+import { describe, expect, it, vi } from "vitest";
+import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import {
   decodeAndDispatch,
   GL_SUBMIT_EINVAL,
@@ -7,6 +9,9 @@ import { runGlQuery } from "../src/webgl/query.js";
 import * as O from "../src/webgl/ops.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { applyCurrentDrawable } from "../src/webgl/current.js";
+import { maxVertexAttributes } from "../src/webgl/limits.js";
+import { activeVertexArray } from "../src/webgl/buffer-references.js";
+import { framebufferInputsChanged } from "../src/webgl/framebuffer-revision.js";
 
 /**
  * Hand-rolled WebGL2 stand-in. Records every dispatched call as
@@ -137,6 +142,10 @@ class RecordingGl {
   bindFramebuffer(t: number, f: unknown) { this.log.push(["bindFramebuffer", [t, f]]); }
   deleteFramebuffer(f: unknown) { this.log.push(["deleteFramebuffer", [f]]); }
   framebufferTexture2D(...a: unknown[]) { this.log.push(["framebufferTexture2D", a]); }
+  framebufferTextureLayer(...a: unknown[]) { this.log.push(["framebufferTextureLayer", a]); }
+  texImage3D(...a: unknown[]) { this.log.push(["texImage3D", a]); }
+  texSubImage3D(...a: unknown[]) { this.log.push(["texSubImage3D", a]); }
+  copyTexSubImage3D(...a: unknown[]) { this.log.push(["copyTexSubImage3D", a]); }
   bindRenderbuffer(t: number, r: unknown) { this.log.push(["bindRenderbuffer", [t, r]]); }
   deleteRenderbuffer(r: unknown) { this.log.push(["deleteRenderbuffer", [r]]); }
   renderbufferStorage(...a: number[]) { this.log.push(["renderbufferStorage", a]); }
@@ -149,6 +158,7 @@ class RecordingGl {
   getParameter(p: number) {
     if (p === 0x8f36 || p === 0x8f37) return this.boundBuffers.get(p) ?? null;
     if (p === 0x1F03 /* GL_EXTENSIONS */) return "WEBGL_test";
+    if (p === 0x84e8 /* MAX_RENDERBUFFER_SIZE */) return 4096;
     return 42;
   }
   getUniformLocation(_p: unknown, name: string) {
@@ -157,6 +167,7 @@ class RecordingGl {
   getAttribLocation(_p: unknown, _name: string) { return 7; }
   getShaderParameter(_s: unknown, _p: number) { return true; }
   getShaderInfoLog(_s: unknown) { return "shader log"; }
+  getActiveUniform() { return {name:"u_color",type:0x8b52,size:1}; }
   getProgramParameter(_p: unknown, _q: number) { return 1; }
   getProgramInfoLog(_p: unknown) { return "program log"; }
   readPixels(_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, dst: Uint8Array) {
@@ -175,13 +186,18 @@ function setupBinding(gl: RecordingGl, capacity = 4096) {
   return { reg, b };
 }
 
-function seedUniform(b: ReturnType<typeof setupBinding>["b"]): void {
+/** Install program 1 whose native reflection is `uniforms`, numbered per
+ * program in that order (uniform-layout.ts). The default is one array
+ * `u` of `type` whose element `location` has four elements remaining. */
+function seedUniform(b: ReturnType<typeof setupBinding>["b"], type=0x8b5c, location=1,
+    uniforms=[{name:"u[0]",type,size:location+4}]): void {
   const program = {} as WebGLProgram;
   b.programs.set(1, program);
   b.shadow.currentProgram = b.currentProgram = program;
   b.currentProgramId = 1;
-  b.uniformLocations.set(1, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
-  b.uniformLocationPrograms.set(1, 1);
+  const gl = b.gl as unknown as { getActiveUniform: (p: unknown, i: number) => unknown; getProgramParameter: (p: unknown, q: number) => unknown };
+  gl.getActiveUniform = (_p, index) => uniforms[index] ?? null;
+  gl.getProgramParameter = (_p, pname) => pname === 0x8b86 ? uniforms.length : 1;
 }
 
 it("preserves legacy extension queries and gates new capabilities by table version", () => {
@@ -215,6 +231,225 @@ class Tlv {
     return { p: start };
   }
 }
+
+describe("ordered client error flags", () => {
+  it("consumes a locally observed flag before a later command records it again", () => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const enable = () => {
+      const h = t.op(O.OP_ENABLE,4); t.view.setUint32(h.p,0xdead,true);
+    };
+    const observed = (expected: number, consumed: number) => {
+      const h = t.op(O.OP_ERROR_OBSERVED,8);
+      t.view.setUint32(h.p,expected,true);t.view.setUint32(h.p+4,consumed,true);
+    };
+    enable(); observed(1,1); enable(); observed(1,0);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.errors).toEqual([0x500]);
+    expect(gl.log).toEqual([]);
+  });
+
+  it("clears only the reported flag, preserving other flags and context peers", () => {
+    const gl = new RecordingGl(), { reg,b } = setupBinding(gl);
+    reg.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+    const peer = reg.get(1,2)!;
+    b.errors.push(0x500,0x501);peer.errors.push(0x500);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_ERROR_OBSERVED,8);
+    t.view.setUint32(h.p,3,true);t.view.setUint32(h.p+4,1,true);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.errors).toEqual([0x501]);expect(peer.errors).toEqual([0x500]);
+    expect(gl.log).toEqual([]);
+  });
+
+  it.each([[8,0],[3,3],[1,2],[0,1]])("refuses malformed error observations %j before batch effects", (expected,consumed) => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    let h = t.op(O.OP_CLEAR,4);t.view.setUint32(h.p,0x4000,true);
+    h = t.op(O.OP_ERROR_OBSERVED,8);
+    t.view.setUint32(h.p,expected!,true);t.view.setUint32(h.p+4,consumed!,true);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(gl.log).toEqual([]);expect(b.errors).toEqual([]);
+  });
+
+  it.each([[],[0x502],[0x500,0x502,0x505]].map(flags=>({flags})))("orders a transport observation without claiming other flags: $flags", ({flags}) => {
+    const gl = new RecordingGl(), {reg,b} = setupBinding(gl);
+    reg.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+    const peer=reg.get(1,2)!;peer.errors.push(0x502);
+    b.errors.push(...flags);
+    const t=new Tlv(b.cmdbufView!.buffer);
+    t.op(O.OP_TRANSPORT_ERROR_OBSERVED,0);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.errors).toEqual(flags.filter(value=>value!==0x502));
+    expect(peer.errors).toEqual([0x502]);expect(gl.log).toEqual([]);
+    // A suffix can set the same flag again after the observation.
+    const h=t.op(O.OP_CLIENT_ERRORS,4);t.view.setUint32(h.p,4,true);
+    expect(decodeAndDispatch(b,4,t.p-4)).toBe(0);
+    expect(b.errors).toEqual([...flags.filter(value=>value!==0x502),0x502]);
+  });
+
+  it("refuses a nonempty transport-observation payload before any effects", () => {
+    const gl=new RecordingGl(), {b}=setupBinding(gl);
+    b.errors.push(0x502);
+    const t=new Tlv(b.cmdbufView!.buffer);
+    const h=t.op(O.OP_CLEAR,4);t.view.setUint32(h.p,0x4000,true);
+    t.op(O.OP_TRANSPORT_ERROR_OBSERVED,4);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(b.errors).toEqual([0x502]);expect(gl.log).toEqual([]);
+  });
+
+  it("merges repeated client/native flags once while retaining unrelated flags", () => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const pending = [0x500,0x505,0];
+    gl.getError = () => pending.shift() ?? 0;
+    const t = new Tlv(b.cmdbufView!.buffer);
+    for (const mask of [0x03,0x01]) {
+      const h = t.op(O.OP_CLIENT_ERRORS,4); t.view.setUint32(h.p,mask,true);
+    }
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(gl.log).toEqual([]);
+    const results: number[] = [], out = new Uint8Array(4);
+    for (let i=0;i<4;i++) {
+      expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+      results.push(new DataView(out.buffer).getUint32(0,true));
+    }
+    expect(results).toEqual([0x500,0x501,0x505,0]);
+  });
+
+  const drainRequest = (mask = 0, mode = O.GL_ERROR_DRAIN_REQUEST) => {
+    const input = new Uint8Array(O.GL_ERROR_DRAIN_REQUEST_BYTES), view = new DataView(input.buffer);
+    view.setUint32(0, mask, true); view.setUint32(4, mode, true);
+    return input;
+  };
+  const readDrain = (out: Uint8Array) => {
+    const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+    const words = Array.from({ length: out.byteLength / 4 }, (_, i) => view.getUint32(4 * i, true));
+    return { count: words[0], retained: words[1], errors: words.slice(2, 2 + O.GL_ERROR_DRAIN_CAPACITY),
+      magic: words[2 + O.GL_ERROR_DRAIN_CAPACITY] };
+  };
+
+  it("drains every recorded flag in recording order in one reply", () => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const pending = [0x505, 0x500, 0];
+    gl.getError = () => pending.shift() ?? 0;
+    b.errors.push(0x502);
+    const owner = b.errors, out = new Uint8Array(O.GL_ERROR_DRAIN_REPLY_BYTES).fill(0xff);
+    expect(runGlQuery(b, O.QOP_GET_ERROR, drainRequest(0x03), out)).toBe(O.GL_ERROR_DRAIN_REPLY_BYTES);
+    // Recorded, then native, then the client mask; 0x500 appears once.
+    expect(readDrain(out)).toEqual({ count: 4, retained: 0, errors: [0x502, 0x505, 0x500, 0x501, 0, 0, 0, 0],
+      magic: 0x47514c33 });
+    // The muxer may alias this array as its error owner: mutate in place.
+    expect(b.errors).toBe(owner); expect(b.errors).toEqual([]);
+    expect(runGlQuery(b, O.QOP_GET_ERROR, drainRequest(), out)).toBe(O.GL_ERROR_DRAIN_REPLY_BYTES);
+    expect(readDrain(out)).toMatchObject({ count: 0, retained: 0, errors: [0, 0, 0, 0, 0, 0, 0, 0] });
+  });
+
+  const receiptRequest=(tx:number,mask=0)=>new Uint8Array(new Uint32Array([mask,O.GL_ERROR_DRAIN_RECEIPT_REQUEST,tx]).buffer);
+  const readReceipt=(b:ReturnType<typeof setupBinding>["b"],tx:number,out=new Uint8Array(O.GL_ERROR_DRAIN_RECEIPT_BYTES))=>{
+    const rc=runGlQuery(b,O.QOP_ERROR_DRAIN_RECEIPT,new Uint8Array(new Uint32Array([tx]).buffer),out);
+    return {rc,words:[...new Uint32Array(out.buffer,out.byteOffset,out.length/4)]};
+  };
+  it("seals error custody before copyout and recovers without a second native drain",()=>{
+    const gl=new RecordingGl(),{b}=setupBinding(gl);let reads=0;gl.getError=()=>{reads++;return 0;};
+    b.errors.push(0x500,0x501,0x502);const out=new Uint8Array(O.GL_ERROR_DRAIN_RECEIPT_BYTES);
+    const fail=vi.spyOn(out,"set").mockImplementation(()=>{throw new Error("copyout lost");});
+    try{expect(()=>runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(1),out)).toThrow("copyout lost");}finally{fail.mockRestore();}
+    expect(b.errors).toEqual([]);const before=reads;
+    b.errors.push(0x502);const recovered=readReceipt(b,1);
+    expect(recovered.rc).toBe(52);expect(recovered.words).toEqual([0,1,3,0,0x500,0x501,0x502,0,0,0,0,0,0x47514c33]);
+    expect(reads).toBe(before);expect(b.errors).toEqual([0x502]);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(1),out)).toBe(-22);
+    expect(b.errors).toEqual([0x502]);expect(reads).toBe(before);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(2),out)).toBe(52);
+    expect(readReceipt(b,2).words.slice(0,5)).toEqual([0,2,1,0,0x502]);
+  });
+  it("proves nonentry only for the exact successor and permits bounded transaction wrap",()=>{
+    const gl=new RecordingGl(),{b}=setupBinding(gl);gl.getError=()=>{throw new Error("unexpected native read");};
+    expect(readReceipt(b,1).words).toEqual([1,1,0,0,0,0,0,0,0,0,0,0,0x47514c33]);
+    expect(readReceipt(b,0).rc).toBe(-22);expect(readReceipt(b,2).rc).toBe(-22);
+    b.errorDrainReceipt.valid=true;b.errorDrainReceipt.words[1]=0xffff_ffff;
+    expect(readReceipt(b,0).words[0]).toBe(1);
+    gl.getError=()=>0;
+    expect(runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(0),new Uint8Array(52))).toBe(52);
+    expect(readReceipt(b,0).words.slice(0,4)).toEqual([0,0,0,0]);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(1),new Uint8Array(52))).toBe(52);
+  });
+  it("retains indeterminate custody and rejects another drain",()=>{
+    const gl=new RecordingGl(),{b}=setupBinding(gl);b.errors.push(0x500);
+    const fail=vi.spyOn(b.errors,"splice").mockImplementation(()=>{throw new Error("bookkeeping failed");});
+    try{expect(()=>runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(1),new Uint8Array(52))).toThrow(NativeGlFault);}finally{fail.mockRestore();}
+    const before=b.errors.slice();expect(readReceipt(b,1).words.slice(0,2)).toEqual([2,1]);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,receiptRequest(2),new Uint8Array(52))).toBe(-22);expect(b.errors).toEqual(before);
+  });
+  it.each([[0,52],[8,52],[4,48],[4,56]])("preflights recovery input%d/output%d before native access",(input,output)=>{
+    const gl=new RecordingGl(),{b}=setupBinding(gl);gl.getError=()=>{throw new Error("unexpected native read");};
+    b.errors.push(0x500);expect(runGlQuery(b,O.QOP_ERROR_DRAIN_RECEIPT,new Uint8Array(input),new Uint8Array(output))).toBe(-22);
+    expect(b.errors).toEqual([0x500]);
+  });
+
+  it("reports flags beyond the reply capacity as retained", () => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    gl.getError = () => 0;
+    const recorded = Array.from({ length: O.GL_ERROR_DRAIN_CAPACITY + 2 }, (_, i) => 0x9000 + i);
+    b.errors.push(...recorded);
+    const out = new Uint8Array(O.GL_ERROR_DRAIN_REPLY_BYTES);
+    expect(runGlQuery(b, O.QOP_GET_ERROR, drainRequest(), out)).toBe(O.GL_ERROR_DRAIN_REPLY_BYTES);
+    expect(readDrain(out)).toMatchObject({ count: O.GL_ERROR_DRAIN_CAPACITY, retained: 1,
+      errors: recorded.slice(0, O.GL_ERROR_DRAIN_CAPACITY) });
+    expect(b.errors).toEqual(recorded.slice(O.GL_ERROR_DRAIN_CAPACITY));
+    expect(runGlQuery(b, O.QOP_GET_ERROR, drainRequest(), out)).toBe(O.GL_ERROR_DRAIN_REPLY_BYTES);
+    expect(readDrain(out)).toMatchObject({ count: 2, retained: 0 });
+  });
+
+  it.each([
+    ["an unknown mode word", drainRequest(0, 0), O.GL_ERROR_DRAIN_REPLY_BYTES],
+    ["an unsupported mask bit", drainRequest(0x08), O.GL_ERROR_DRAIN_REPLY_BYTES],
+    ["a legacy-sized reply", drainRequest(), 4],
+    ["an oversized reply", drainRequest(), O.GL_ERROR_DRAIN_REPLY_BYTES + 4],
+    ["a 12-byte request", new Uint8Array(12), O.GL_ERROR_DRAIN_REPLY_BYTES],
+  ])("rejects a drain with %s before consuming any flag", (_name, input, outBytes) => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    let nativeReads = 0;
+    gl.getError = () => { nativeReads++; return 0; };
+    b.errors.push(0x501);
+    expect(runGlQuery(b, O.QOP_GET_ERROR, input, new Uint8Array(outBytes))).toBe(-22);
+    expect(b.errors).toEqual([0x501]); expect(nativeReads).toBe(0);
+  });
+
+  it("propagates a native fault from a command even when CPU-image publication then fails", () => {
+    // A finally that returned EIO used to replace the fault with a result.
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const fault = new NativeGlFault("the live renderer refused deleteTexture of an object the host retired");
+    gl.clear = () => { throw fault; };
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_CLEAR,4); t.view.setUint32(h.p,0x4000,true);
+    let published = 0;
+    expect(() => decodeAndDispatch(b,0,t.p,{before:()=>true, after:()=>{ published++; return false; }})).toThrow(fault);
+    expect(published).toBe(1);
+  });
+
+  it.each([0x08,0x10,0x80,0xffff_ffff])("rejects unsupported mask %i before any batch effect", mask => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    let h = t.op(O.OP_CLEAR,4); t.view.setUint32(h.p,0x4000,true);
+    h = t.op(O.OP_CLIENT_ERRORS,4); t.view.setUint32(h.p,mask,true);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(gl.log).toEqual([]); expect(b.errors).toEqual([]);
+  });
+
+  it("keeps flags on the selected context rather than a shared object peer", () => {
+    const gl = new RecordingGl(), { reg,b } = setupBinding(gl);
+    reg.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+    const peer = reg.get(1,2)!;
+    b.contextId=1;peer.contextId=2;peer.gl=b.gl;
+    expect(reg.shareObjects(1,2,0)).toBe(true);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_CLIENT_ERRORS,4); t.view.setUint32(h.p,0x67,true);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.errors).toEqual([0x500,0x501,0x502,0x505,0x506]);
+    expect(peer.errors).toEqual([]);
+  });
+});
 
 describe("logical framebuffer bindings", () => {
   function setup() {
@@ -454,27 +689,26 @@ describe("shared buffer deletion", () => {
     send(a,O.OP_BIND_BUFFER,[0x8892,0]);expect(a.bufferStores.has(object)).toBe(false);
     expect(b.shadow.arrayBuffer).toBe(replacement);reg.unbind(7);
   });
-  it("automatically publishes a repaired capture and releases it on context retirement",()=>{
-    const {gl,reg,a,b,send}=setup();
+  it("makes a refused client-array restoration of a peer-deleted capture a fatal fault",()=>{
+    const {gl,a,b,send}=setup(),reported:Error[]=[];
     send(a,O.OP_BIND_BUFFER,[0x8892,71]);send(a,O.OP_BUFFER_DATA,[0x8892,4,0x88e4]);const old=a.shadow.arrayBuffer!;
     send(a,0x0105,[]);send(a,O.OP_BIND_BUFFER,[0x8892,72]);const temporary=a.shadow.arrayBuffer;
     send(b,O.OP_DELETE_BUFFERS,[1,71]);
-    const original=gl.bindBuffer.bind(gl);let reject=true;
-    gl.bindBuffer=(target:number,value:unknown)=>{if(target===0x8892 && value===old && reject)throw new Error("restore rejected");original(target,value);};
+    const original=gl.bindBuffer.bind(gl);
+    gl.bindBuffer=(target:number,value:unknown)=>{if(target===0x8892 && value===old)throw new Error("restore rejected");original(target,value);};
     const bytes = a.cmdbufView!, v = new DataView(bytes.buffer);
     v.setUint16(0,0x0106,true); v.setUint16(2,0,true);
-    expect(decodeAndDispatch(a,0,4)).toBe(-5);
-    expect(a.shadow.arrayBuffer).toBe(temporary);expect(a.bufferStores.has(old)).toBe(true);
-    expect(a.errors).not.toEqual([]);
-    const out = new Uint8Array(4).fill(0xa5);
-    expect(runGlQuery(a,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-    expect([...out]).toEqual([165,165,165,165]);
+    setNativeGlFaultReporter(fault=>reported.push(fault));
+    let thrown:unknown;
+    try { decodeAndDispatch(a,0,4); } catch (error) { thrown = error; }
+    finally { setNativeGlFaultReporter(null); }
+    expect(thrown).toBeInstanceOf(NativeGlFault);
+    expect((thrown as Error).message).toMatch(/live renderer refused to restore native state after a rejected change/);
+    expect(reported.length).toBeGreaterThan(0);expect(reported.at(-1)).toBe(thrown);
+    // The refused restoration is never published as logical state.
+    expect(a.shadow.arrayBuffer).toBe(temporary);expect(a.savedClientArrayBuffer).toBe(old);
+    expect(a.bufferStores.has(old)).toBe(true);
     expect(gl.log.some(([name])=>name==="drawArrays")).toBe(false);
-    reject=false;
-    expect(runGlQuery(a,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-    expect(a.shadow.arrayBuffer).toBe(old); expect(a.savedClientArrayBuffer).toBeUndefined();
-    send(a,0x0105,[]);send(a,O.OP_BIND_BUFFER,[0x8892,72]);reg.destroyContext(7,11);
-    expect(b.bufferStores.has(old)).toBe(false);reg.unbind(7);
   });
   it("keeps zero savepoints distinct from absent ones and rejects nested captures",()=>{
     const {a,send}=setup();
@@ -584,11 +818,19 @@ describe("shared buffer deletion", () => {
     const savedRead = gl.createBuffer(), savedWrite = gl.createBuffer(); gl.bindBuffer(0x8f36,savedRead); gl.bindBuffer(0x8f37,savedWrite);
     send(a,O.OP_DRAW_ELEMENTS,[3,40000,0x1401,1]);
     expect(gl.indexDraws).toHaveLength(1);
-    expect(gl.indexDraws[0]).toMatchObject({mode:3,count:40000,type:0x1403,offset:0});
-    expect(new Uint16Array(gl.indexDraws[0].data.buffer)).toEqual(Uint16Array.from(values.subarray(1)));
+    // The whole buffer is widened once; the draw starts at index 1 of it.
+    expect(gl.indexDraws[0]).toMatchObject({mode:3,count:40000,type:0x1403,offset:2});
+    expect(new Uint16Array(gl.indexDraws[0].data.buffer)).toEqual(Uint16Array.from(values));
+    // One scan finds 255; one widening pass reads in bounded chunks.
     expect(gl.log.filter(([name]) => name === "getBufferSubData")).toEqual([
-      ["getBufferSubData",[0x8f36,1,32768]], ["getBufferSubData",[0x8f36,32769,7232]]]);
-    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(1);
+      ["getBufferSubData",[0x8f36,0,32768]],
+      ["getBufferSubData",[0x8f36,0,32768]], ["getBufferSubData",[0x8f36,32768,7233]]]);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(0);
+    // Unchanged contents draw again without reading or converting indices.
+    const reads = gl.log.filter(([name]) => name === "getBufferSubData").length;
+    send(a,O.OP_DRAW_ELEMENTS,[3,40000,0x1401,1]);
+    expect(gl.log.filter(([name]) => name === "getBufferSubData")).toHaveLength(reads);
+    expect(gl.indexDraws[1]).toMatchObject({mode:3,count:40000,type:0x1403,offset:2});
     expect(a.vertexArrays.get(0)!.element).toBe(object); expect(a.bufferStores.size).toBe(1);
     expect(gl.bufferContents.get(object)).toEqual(values);
     expect(gl.getParameter(0x8f36)).toBe(savedRead); expect(gl.getParameter(0x8f37)).toBe(savedWrite);
@@ -602,8 +844,8 @@ describe("shared buffer deletion", () => {
     send(a,O.OP_BUFFER_SUB_DATA,[0x8893,0,bytes.length],bytes);
     send(a,O.OP_DRAW_ELEMENTS,[5,3,0x1403,2]);
     expect(gl.indexDraws).toHaveLength(1);
-    expect(gl.indexDraws[0]).toMatchObject({mode:5,count:3,type:0x1405,offset:0});
-    expect(new Uint32Array(gl.indexDraws[0].data.buffer)).toEqual(new Uint32Array([0,65535,1]));
+    expect(gl.indexDraws[0]).toMatchObject({mode:5,count:3,type:0x1405,offset:4});
+    expect(new Uint32Array(gl.indexDraws[0].data.buffer)).toEqual(new Uint32Array([123,0,65535,1]));
     expect(gl.bufferContents.get(a.buffers.get(71)!)).toEqual(bytes); expect(a.errors).toEqual([]);
   });
 
@@ -611,7 +853,8 @@ describe("shared buffer deletion", () => {
     const {gl,a,send} = setup();
     send(a,O.OP_BIND_BUFFER,[0x8893,71]); send(a,O.OP_BUFFER_DATA,[0x8893,4,0x88e4]);
     const calls = gl.log.length;
-    for (const words of [[7,1,0x1401,0],[0,1,0x1405,0],[0,-1,0x1401,0],[0,1,0x1403,1],[0,3,0x1403,0]]) {
+    // An unaligned index offset is valid GLES (section 2.8); only range errors remain.
+    for (const words of [[7,1,0x1401,0],[0,1,0x1405,0],[0,-1,0x1401,0],[0,3,0x1403,0]]) {
       send(a,O.OP_DRAW_ELEMENTS,words);
     }
     expect(gl.log.length).toBe(calls); expect(gl.indexDraws).toEqual([]);
@@ -627,21 +870,25 @@ describe("shared buffer deletion", () => {
     const read = gl.getBufferSubData.bind(gl); gl.getBufferSubData = () => { errors.push(0x505); };
     send(a,O.OP_DRAW_ELEMENTS,[0,1,0x1401,0]);
     expect(gl.indexDraws).toEqual([]);
-    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(1);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(0);
     expect(a.vertexArrays.get(0)!.element).toBe(object); expect(a.bufferStores.get(object)!.source).toBe(object);
     expect(gl.getParameter(0x8f36)).toBeNull(); expect(gl.getParameter(0x8f37)).toBeNull();
     gl.getBufferSubData = read; send(a,O.OP_DRAW_ELEMENTS,[0,1,0x1401,0]);
     expect(new Uint16Array(gl.indexDraws[0].data.buffer)).toEqual(new Uint16Array([255]));
-    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(2);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(0);
+    expect(gl.boundBuffers.get(0x8893)).toBe(object);
     expect(a.errors).toContain(0x505);
   });
 
   it("keeps the original element binding after promotion allocation fails", () => {
     const {gl,a,send} = setup();
     send(a,O.OP_BIND_BUFFER,[0x8893,71]); send(a,O.OP_BUFFER_DATA,[0x8893,1,0x88e4]);
+    // A stored 255 needs the widened form, whose buffer cannot be allocated.
+    send(a,O.OP_BUFFER_SUB_DATA,[0x8893,0,1],new Uint8Array([255]));
     const object = a.buffers.get(71)!, calls = gl.log.length;
     gl.createBuffer = () => null as any; send(a,O.OP_DRAW_ELEMENTS,[0,1,0x1401,0]);
-    expect(gl.log.length).toBe(calls); expect(gl.indexDraws).toEqual([]);
+    expect(gl.log.slice(calls).some(([name]) => name === "drawElements" || name === "bufferData")).toBe(false);
+    expect(gl.indexDraws).toEqual([]);
     expect(a.vertexArrays.get(0)!.element).toBe(object); expect(a.errors).toContain(0x505);
   });
 
@@ -859,9 +1106,66 @@ describe("shared buffer deletion", () => {
     expect(b.vertexArrays.get(0)!.element).toBe(old);
     expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toEqual([]);
     expect(gl.log.filter(([name]) => name === "vertexAttribPointer")).toEqual([
-      ["vertexAttribPointer",[0,2,0x1406,false,8,4]], ["vertexAttribPointer",[0,2,0x1406,false,8,4]]]);
+      ["vertexAttribPointer",[0,2,0x1406,false,8,4]], ["vertexAttribPointer",[0,2,0x1406,false,8,0]]]);
     send(b,O.OP_BIND_BUFFER,[0x8893,0]);
     expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toEqual([["deleteBuffer",[old]]]);
+  });
+
+  it("updates an existing ordinary pointer without cloning its shadow map", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    send(a,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+    const attributes = a.vertexArrays.get(0)!.attributes;
+    const slot = attributes.get(0)!;
+    const OriginalMap = globalThis.Map;
+    let clones = 0;
+    class RefuseAttributeClone<K,V> extends OriginalMap<K,V> {
+      constructor(entries?: Iterable<readonly [K,V]> | null) {
+        if (entries === attributes as unknown) { clones++; throw new Error("metadata capacity unavailable"); }
+        super(entries);
+      }
+    }
+    try {
+      globalThis.Map = RefuseAttributeClone as typeof Map;
+      expect(withNativeBatch(a,"existing ordinary pointer",() => send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,3,0x1406,1,12,4]))).toBe(0);
+    } finally { globalThis.Map = OriginalMap; }
+    expect(clones).toBe(0);
+    expect(a.vertexArrays.get(0)!.attributes).toBe(attributes);
+    expect(attributes.get(0)).toBe(slot);
+    expect(slot).toEqual({buffer:a.buffers.get(71),enabled:true,size:3,type:0x1406,normalized:true,stride:12,offset:4});
+    expect(gl.log.filter(([name])=>name==="vertexAttribPointer").at(-1)).toEqual(["vertexAttribPointer",[0,3,0x1406,true,12,4]]);
+    expect(a.errors).toEqual([]);
+  });
+
+  it.each([
+    {kind:"first installation",initialize:false,batch:true,type:0x1406,stride:0,offset:0},
+    {kind:"fixed conversion",initialize:true,batch:true,type:0x140c,stride:0,offset:0},
+    {kind:"large stride",initialize:true,batch:true,type:0x1406,stride:300,offset:0},
+    {kind:"unaligned offset",initialize:true,batch:true,type:0x1406,stride:0,offset:1},
+    {kind:"private exact ownership",initialize:true,batch:false,type:0x1406,stride:0,offset:0},
+  ])("keeps metadata reservation for $kind", ({initialize,batch,type,stride,offset}) => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    if (initialize) send(a,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+    const attributes = a.vertexArrays.get(0)!.attributes;
+    const OriginalMap = globalThis.Map;
+    let clones = 0;
+    class RefuseAttributeClone<K,V> extends OriginalMap<K,V> {
+      constructor(entries?: Iterable<readonly [K,V]> | null) {
+        if (entries === attributes as unknown) { clones++; throw new Error("metadata capacity unavailable"); }
+        super(entries);
+      }
+    }
+    const nativeCalls = gl.log.filter(([name])=>name==="vertexAttribPointer").length;
+    try {
+      globalThis.Map = RefuseAttributeClone as typeof Map;
+      const update = () => send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,type,0,stride,offset]);
+      if (batch) expect(withNativeBatch(a,"fallible layout",update)).toBe(0);
+      else update();
+    } finally { globalThis.Map = OriginalMap; }
+    expect(clones).toBe(1); expect(a.errors).toEqual([0x505]);
+    expect(a.vertexArrays.get(0)!.attributes).toBe(attributes);
+    expect(gl.log.filter(([name])=>name==="vertexAttribPointer")).toHaveLength(nativeCalls);
   });
 
   it("preserves accepted pointer state when a later native pointer update fails", () => {
@@ -878,15 +1182,16 @@ describe("shared buffer deletion", () => {
     expect(a.errors).toContain(0x501);
   });
 
-  it("keeps names and references intact when buffer-zero clearing cannot allocate", () => {
+  it("clears buffer-zero references even when new native allocation is unavailable", () => {
     const {gl,a,send} = setup();
     send(a,O.OP_GEN_BUFFERS,[1,71]);
     send(a,O.OP_BIND_BUFFER,[0x8892,71]); const old = a.buffers.get(71)!; send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]);
     gl.createBuffer = () => null as any;
     send(a,O.OP_DELETE_BUFFERS,[1,71]);
-    expect(a.buffers.get(71)).toBe(old); expect(a.shadow.arrayBuffer).toBe(old);
-    expect(a.vertexArrays.get(0)!.attributes.get(0)!.buffer).toBe(old);
-    expect(a.errors).toContain(0x505);
+    expect(a.buffers.has(71)).toBe(false); expect(a.shadow.arrayBuffer).toBeNull();
+    expect(a.vertexArrays.get(0)!.attributes.get(0)!.buffer).toBeNull();
+    expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toHaveLength(1);
+    expect(a.errors).toEqual([]);
   });
 
   it("returns to the private default VAO and retains its element binding", () => {
@@ -1093,7 +1398,7 @@ describe("cmdbuf decoder — TLV walker", () => {
   it("UniformMatrix3fv reads nine floats per matrix", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
-    seedUniform(b);
+    seedUniform(b,0x8b5b);
     const mat: number[] = [];
     for (let i = 0; i < 18; i++) mat.push(i * 0.25);
 
@@ -1147,7 +1452,7 @@ describe("cmdbuf decoder — TLV walker", () => {
     // later frame with the stale one.
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
-    seedUniform(b);
+    seedUniform(b,0x8b5c,1,[{name:"u[0]",type:0x8b5c,size:2},{name:"u2",type:0x8b52,size:1}]);
     // SDL updates a named texture. Keep this fixture about unaligned
     // record layout rather than lazy creation of GLES texture zero.
     const texture = gl.createTexture() as unknown as WebGLTexture;
@@ -1173,7 +1478,7 @@ describe("cmdbuf decoder — TLV walker", () => {
     t.view.setUint32(m.p + 8, 0, true);
     for (let i = 0; i < 16; i++) t.view.setFloat32(m.p + 12 + i * 4, mat[i], true);
     const u = t.op(O.OP_UNIFORM4FV, 8 + 4 * 4);
-    t.view.setInt32(u.p, 1, true);
+    t.view.setInt32(u.p, 2, true);
     t.view.setUint32(u.p + 4, 1, true);
     for (let i = 0; i < 4; i++) t.view.setFloat32(u.p + 8 + i * 4, vec[i], true);
     const d = t.op(O.OP_DRAW_ARRAYS, 12);
@@ -1278,6 +1583,7 @@ describe("shader/program deferred deletion", () => {
     send(O.OP_CREATE_SHADER, 0x8b31, 11);
     send(O.OP_CREATE_PROGRAM, 12);
     send(O.OP_ATTACH_SHADER,12,11);
+    send(O.OP_LINK_PROGRAM,12);
     send(O.OP_USE_PROGRAM,12);
     send(O.OP_DELETE_SHADER,11);
     send(O.OP_DELETE_PROGRAM,12);
@@ -1312,10 +1618,22 @@ describe("shader/program deferred deletion", () => {
     expect(gl.log.filter(([method]) => method === "detachShader")).toHaveLength(2);
   });
 
+  it("predicts UseProgram of a never-linked program without a native call", () => {
+    const { b, gl, send, query } = setup();
+    send(O.OP_CREATE_PROGRAM, 12);
+    const calls = gl.log.length;
+    send(O.OP_USE_PROGRAM, 12);
+    expect(b.currentProgram).toBeNull();
+    expect(gl.log).toHaveLength(calls);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+  });
+
   it("preserves the prior program when the driver rejects a switch", () => {
     const { b, gl, send, query } = setup();
     send(O.OP_CREATE_PROGRAM,12);
     send(O.OP_CREATE_PROGRAM,13);
+    send(O.OP_LINK_PROGRAM,12);
+    send(O.OP_LINK_PROGRAM,13);
     send(O.OP_USE_PROGRAM,12);
     send(O.OP_DELETE_PROGRAM,12);
     let pending = 0;
@@ -1356,6 +1674,89 @@ describe("query handler", () => {
     return { gl, b };
   }
 
+  it.each([O.QOP_GET_INTEGERV, O.QOP_GET_FLOATV])("numeric getter %i rejects unsupported pnames before native access", (op) => {
+    const { b, gl } = setup();
+    let calls = 0;
+    gl.getParameter = () => { calls++; return 42; };
+    for (const pname of [0xffffffff, 0, 0x1f00, 0x821b]) {
+      const request = new Uint8Array(new Uint32Array([pname]).buffer);
+      const reply = new Uint8Array(16).fill(0xa5);
+      expect(runGlQuery(b, op, request, reply)).toBe(-22);
+      expect([...reply]).toEqual(Array(16).fill(0xa5));
+      expect(b.errors.splice(0)).toEqual([0x500]);
+    }
+    expect(calls).toBe(0);
+  });
+
+  it.each([O.QOP_GET_SHADERIV, O.QOP_GET_PROGRAMIV])("object getter %i rejects unsupported pnames before native access", (op) => {
+    const { b, gl } = setup();
+    b.shaders.set(7, {} as WebGLShader);
+    b.programs.set(9, {} as WebGLProgram);
+    let calls = 0;
+    gl.getShaderParameter = () => { calls++; return true; };
+    gl.getProgramParameter = () => { calls++; return 42; };
+    for (const pname of [0xffffffff, 0, 0x8b8d]) {
+      const request = new Uint8Array(new Uint32Array([op === O.QOP_GET_SHADERIV ? 7 : 9, pname]).buffer);
+      const reply = new Uint8Array(4).fill(0xa5);
+      expect(runGlQuery(b, op, request, reply)).toBe(-22);
+      expect([...reply]).toEqual([0xa5, 0xa5, 0xa5, 0xa5]);
+      expect(b.errors.splice(0)).toEqual([0x500]);
+    }
+    expect(calls).toBe(0);
+  });
+
+  it.each([O.QOP_GET_SHADERIV, O.QOP_GET_PROGRAMIV])("object getter %i preserves name/kind error precedence for an invalid pname", (op) => {
+    const { b } = setup();
+    b.shaders.set(7, {} as WebGLShader);
+    b.programs.set(9, {} as WebGLProgram);
+    for (const [name, error] of [[0xffffffff, 0x501], [op === O.QOP_GET_SHADERIV ? 9 : 7, 0x502]]) {
+      const reply = new Uint8Array(4).fill(0xa5);
+      expect(runGlQuery(b, op, new Uint8Array(new Uint32Array([name, 0xffffffff]).buffer), reply)).toBe(-22);
+      expect([...reply]).toEqual([0xa5, 0xa5, 0xa5, 0xa5]);
+      expect(b.errors.splice(0)).toEqual([error]);
+    }
+  });
+
+  it("rejecting a pname preserves prior native errors and confines logical errors to the owner", () => {
+    const { b, gl } = setup();
+    const peer = setup().b;
+    let pending = 0x505;
+    gl.getError = () => { const error = pending; pending = 0; return error; };
+    const reply = new Uint8Array(4).fill(0xa5);
+    expect(runGlQuery(b, O.QOP_GET_INTEGERV, new Uint8Array(new Uint32Array([0xffffffff]).buffer), reply)).toBe(-22);
+    const errors: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      expect(runGlQuery(b, O.QOP_GET_ERROR, new Uint8Array(), reply)).toBe(4);
+      errors.push(new DataView(reply.buffer).getUint32(0, true));
+    }
+    expect(errors.slice(0, 2).sort()).toEqual([0x500, 0x505]);
+    expect(errors[2]).toBe(0);
+    expect(peer.errors).toEqual([]);
+  });
+
+  // WebGL2-only names are rejected for the guest (webgl-es2-enums.test.ts).
+  it.each([0x0d33, 0x8b4c, 0x8b8b, 0x8dfd, 0x0d05])("preserves supported GLES state pname %i", (pname) => {
+    const { b, gl } = setup();
+    const seen: number[] = [];
+    gl.getParameter = (name: number) => { seen.push(name); return 23; };
+    const reply = new Uint8Array(4);
+    expect(runGlQuery(b, O.QOP_GET_INTEGERV, new Uint8Array(new Uint32Array([pname]).buffer), reply)).toBe(4);
+    // MAX_FRAGMENT_UNIFORM_VECTORS reserves the blend-fold variant's row (limits.ts).
+    expect(new DataView(reply.buffer).getInt32(0, true)).toBe(pname === 0x8dfd ? 22 : 23);
+    expect(seen).toEqual([pname]);
+  });
+
+  it.each([0x8b82, 0x8b83, 0x8b85, 0x8b86, 0x8b89])("preserves supported program pname %i", (pname) => {
+    const { b, gl } = setup();
+    b.programs.set(9, {} as WebGLProgram);
+    const seen: number[] = [];
+    gl.getProgramParameter = (_program: unknown, name: number) => { seen.push(name); return 23; };
+    const reply = new Uint8Array(4);
+    expect(runGlQuery(b, O.QOP_GET_PROGRAMIV, new Uint8Array(new Uint32Array([9, pname]).buffer), reply)).toBe(4);
+    expect(new DataView(reply.buffer).getInt32(0, true)).toBe(23);
+    expect(seen).toEqual([pname]);
+  });
+
   it.each([O.QOP_GET_INTEGERV, O.QOP_GET_FLOATV])("query %i returns guest object names instead of native objects", (op) => {
     const { b, gl } = setup();
     const cases: [number, Map<number, any>][] = [
@@ -1367,6 +1768,8 @@ describe("query handler", () => {
       const object = {};
       names.set(73, object);
       gl.getParameter = () => object as any;
+      // A cube binding is the guest's (cube maps are 2D array textures natively).
+      if (pname === 0x8514) b.shadow.cubeTextureUnits[b.shadow.activeTexture] = object as WebGLTexture;
       const request = new Uint8Array(4);
       new DataView(request.buffer).setUint32(0, pname, true);
       const reply = new Uint8Array(4);
@@ -1513,7 +1916,7 @@ describe("query handler", () => {
     expect(names).toEqual([0x86a3]);
   });
 
-  it("QOP_GET_UNIFORM_LOC reuses live locations and allocates monotonic replacement indices", () => {
+  it("QOP_GET_UNIFORM_LOC numbers each program's uniforms from zero", () => {
     const { b } = setup();
     // Plant a "program" object so the lookup succeeds.
     const prog = { kind: "program", id: 1 } as unknown as WebGLProgram;
@@ -1528,19 +1931,19 @@ describe("query handler", () => {
     const o1 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o1)).toBe(4);
     const idx1 = new DataView(o1.buffer).getInt32(0, true);
-    expect(idx1).toBe(1);
-    expect(b.uniformLocations.has(1)).toBe(true);
+    expect(idx1).toBe(0);
 
     const o2 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o2)).toBe(4);
     const idx2 = new DataView(o2.buffer).getInt32(0, true);
     expect(idx2).toBe(idx1);
 
-    // Removing the live record must never recycle its published index.
-    b.uniformLocations.delete(1);
+    // A second program with the same declarations gets the same number.
+    b.programs.set(8, { kind: "program", id: 2 } as unknown as WebGLProgram);
+    new DataView(inp.buffer).setUint32(0, 8, true);
     const o3 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o3)).toBe(4);
-    expect(new DataView(o3.buffer).getInt32(0, true)).toBe(2);
+    expect(new DataView(o3.buffer).getInt32(0, true)).toBe(idx1);
   });
 
   it("QOP_GET_UNIFORM_LOC returns -1 for a missing uniform", () => {
@@ -1613,7 +2016,8 @@ describe("GLES texture upload marshalling", () => {
     });
   }
 
-  it("translates GLES2 allocation formats while preserving sized requests", () => {
+  // Sized GLES3 requests are rejected before this point (webgl-es2-formats).
+  it("translates GLES2 allocation formats to their WebGL 2 sized equivalents", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
     for (const [internal, format, type, expected] of [
@@ -1621,7 +2025,6 @@ describe("GLES texture upload marshalling", () => {
       [0x8227, 0x8227, 0x1406, 0x8230], // RG float -> RG32F
       [0x1902, 0x1902, 0x1403, 0x81a5], // depth short -> depth16
       [0x84f9, 0x84f9, 0x84fa, 0x88f0], // packed depth/stencil
-      [0x8058, 0x1908, 0x1401, 0x8058], // explicit RGBA8
     ]) {
       const t = new Tlv(b.cmdbufView!.buffer);
       const h = t.op(O.OP_TEX_IMAGE_2D, 36);
@@ -1713,6 +2116,39 @@ describe("GLES2 core object queries", () => {
     expect(query(O.QOP_GET_TEX_PARAMETER,[0x0de1,0x813c],4).status).toBe(1);
     expect(query(O.QOP_GET_RENDERBUFFER_PARAMETER,[0x8d41,0x8cab],4).status).toBe(1); expect(b.errors).toContain(0x500);
   });
+  it("reports the specified renderbuffer size when the engine reports an empty image as 0x0", () => {
+    // FIREFOX-RENDERBUFFER-EMPTY-SIZE: Firefox answers 0 for both dimensions
+    // after storage with one zero dimension; the specified image is 0x29.
+    const {gl,send,query} = setup();
+    Object.assign(gl,{getRenderbufferParameter: () => 0});
+    const size = (pname: number) => new DataView(query(O.QOP_GET_RENDERBUFFER_PARAMETER,[0x8d41,pname],4).bytes.buffer,4,4).getInt32(0,true);
+    send(O.OP_BIND_RENDERBUFFER,[0x8d41,9]);
+    send(O.OP_RENDERBUFFER_STORAGE,[0x8d41,0x8056,84,66]);
+    expect([size(0x8d42),size(0x8d43)]).toEqual([84,66]);
+    send(O.OP_RENDERBUFFER_STORAGE,[0x8d41,0x8056,0,29]);
+    expect([size(0x8d42),size(0x8d43)]).toEqual([0,29]);
+    // A rejected call leaves the previous image (and its size) in place.
+    const errors: number[] = []; gl.getError = () => errors.shift() ?? 0;
+    Object.assign(gl,{renderbufferStorage: () => errors.push(0x505)});
+    send(O.OP_RENDERBUFFER_STORAGE,[0x8d41,0x8056,17,14]);
+    expect([size(0x8d42),size(0x8d43)]).toEqual([0,29]);
+  });
+  it("fails validation of a program without a linked executable when the engine reports success", () => {
+    // FIREFOX-VALIDATE-UNLINKED-PROGRAM: Firefox answers VALIDATE_STATUS TRUE
+    // after ValidateProgram on a program whose link failed.
+    const {gl,b,send} = setup(); let linked = false;
+    Object.assign(gl,{validateProgram: () => {},
+      getProgramParameter: (_program: unknown, pname: number) => pname === 0x8b82 ? linked : true});
+    const status = () => {
+      const input = new Uint8Array(new Uint32Array([12,0x8b83]).buffer), out = new Uint8Array(4);
+      expect(runGlQuery(b,O.QOP_GET_PROGRAMIV,input,out)).toBe(4);
+      return new DataView(out.buffer).getInt32(0,true);
+    };
+    send(O.OP_CREATE_PROGRAM,[12]);
+    send(O.OP_VALIDATE_PROGRAM,[12]); expect(status()).toBe(0);
+    linked = true; expect(status()).toBe(0); // until the next ValidateProgram
+    send(O.OP_VALIDATE_PROGRAM,[12]); expect(status()).toBe(1);
+  });
   it("validates only logical programs and preserves native rejection errors", () => {
     const {gl,b,send} = setup(); Object.assign(gl,{validateProgram: (program: unknown) => gl.log.push(["validateProgram",[program]])});
     send(O.OP_CREATE_PROGRAM,[12]); send(O.OP_CREATE_SHADER,[0x8b31,11]);
@@ -1725,5 +2161,122 @@ describe("GLES2 core object queries", () => {
     Object.assign(gl,{getActiveAttrib: () => { errors.push(0x505); return {name:"partial",size:1,type:0x1406}; }});
     const failed = query(O.QOP_GET_ACTIVE_ATTRIB,[12,0,0,8],20);
     expect(failed.status).toBe(1); expect(failed.bytes.every(v => v === 0)).toBe(true); expect(b.errors).toEqual([0x505]);
+  });
+});
+
+/**
+ * Native GL error flags are sticky and belong to the selected logical
+ * context until something captures them (errors.ts, muxer.ts). Calls whose
+ * acceptance the host already knows (a validated capability, an attribute
+ * index below the renderer's limit) therefore spend no getError of their
+ * own, and a pending flag reaches the guest's glGetError exactly once,
+ * whichever capture moves it. ES 2.0 section 2.5: one flag per error code,
+ * one flag returned and cleared per GetError, in an order the
+ * implementation chooses.
+ */
+describe("deferred native error ownership", () => {
+  function setup() {
+    const gl = new RecordingGl(), pending: number[] = [];
+    let reads = 0;
+    gl.getError = () => { reads++; return pending.shift() ?? 0; };
+    const { b } = setupBinding(gl);
+    const send = (op: number, ...words: number[]) => {
+      const tlv = new Tlv(b.cmdbufView!.buffer);
+      const record = tlv.op(op, words.length*4);
+      words.forEach((word, i) => tlv.view.setUint32(record.p+i*4, word, true));
+      expect(decodeAndDispatch(b,0,tlv.p)).toBe(0);
+    };
+    const getError = () => {
+      const output = new Uint8Array(4);
+      expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output)).toBe(4);
+      return new DataView(output.buffer).getUint32(0,true);
+    };
+    return { b, gl, pending, send, getError, reads: () => reads };
+  }
+
+  it("predicts TexParameter value errors (ES 2.0 table 3.10) with no native call or flag read", () => {
+    const { b, gl, send, reads } = setup();
+    send(O.OP_BIND_TEXTURE, 0x0de1, 5);
+    const calls = gl.log.filter(([name]) => name === "texParameteri").length, before = reads();
+    send(O.OP_TEX_PARAMETERI, 0x0de1, 0x2800 /* MAG_FILTER */, 0x2700 /* a MIN-only value */);
+    send(O.OP_TEX_PARAMETERI, 0x0de1, 0x2802 /* WRAP_S */, 0);
+    expect(b.errors).toEqual([0x500]);
+    expect(gl.log.filter(([name]) => name === "texParameteri")).toHaveLength(calls);
+    expect(reads()).toBe(before);
+    send(O.OP_TEX_PARAMETERI, 0x0de1, 0x2802, 0x812f);
+    expect(gl.log.filter(([name]) => name === "texParameteri")).toHaveLength(calls + 1);
+  });
+
+  it("predicts INVALID_FRAMEBUFFER_OPERATION from the renderer's completeness, queried once per framebuffer revision", () => {
+    const { b, gl, send, reads } = setup();
+    let status = 0x8cd6, statusQueries = 0;
+    gl.checkFramebufferStatus = () => { statusQueries++; return status; };
+    send(O.OP_GEN_FRAMEBUFFERS, 1, 7);
+    send(O.OP_BIND_FRAMEBUFFER, 0x8d40, 7);
+    const before = reads(), clears = gl.log.filter(([name]) => name === "clear").length;
+    send(O.OP_CLEAR, 0x4000); send(O.OP_CLEAR, 0x4000);
+    expect(b.errors).toEqual([0x506]);
+    expect(gl.log.filter(([name]) => name === "clear")).toHaveLength(clears);
+    expect(statusQueries).toBe(1);
+    expect(reads()).toBe(before);
+    // Once the framebuffer's inputs change the status is asked again.
+    status = 0x8cd5;
+    framebufferInputsChanged();
+    send(O.OP_CLEAR, 0x4000);
+    expect(statusQueries).toBe(2);
+    expect(gl.log.filter(([name]) => name === "clear")).toHaveLength(clears + 1);
+  });
+
+  it("toggles ES 2.0 capabilities without reading error flags", () => {
+    const { b, gl, send, reads } = setup();
+    send(O.OP_ENABLE, 0x0be2); send(O.OP_ENABLE, 0x0c11); send(O.OP_DISABLE, 0x0be2);
+    expect(reads()).toBe(0);
+    expect(b.shadow.blendEnabled).toBe(false); expect(b.shadow.scissor.enabled).toBe(true);
+    expect(gl.log.filter(([name]) => name === "enable" || name === "disable")).toHaveLength(3);
+    // A capability ES 2.0 does not have is still INVALID_ENUM with no native call.
+    const calls = gl.log.length; send(O.OP_ENABLE, 0x8c89);
+    expect(gl.log.length).toBe(calls); expect(b.errors).toEqual([0x500]);
+  });
+
+  it("toggles attribute arrays below the renderer's limit without reading flags; past it the host predicts INVALID_VALUE", () => {
+    const { b, gl, pending, send, reads, getError } = setup();
+    // The limit read once from this renderer (RecordingGl reports 42).
+    expect(maxVertexAttributes({ gl: b.gl, errors: [] })).toBe(42);
+    const before = reads();
+    send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY, 3); send(O.OP_DISABLE_VERTEX_ATTRIB_ARRAY, 3);
+    send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY, 4);
+    expect(reads()).toBe(before);
+    expect(activeVertexArray(b).attributes.get(4)?.enabled).toBe(true);
+    expect(activeVertexArray(b).attributes.get(3)?.enabled).toBe(false);
+    // ES 2.0 section 2.7: index >= MAX_VERTEX_ATTRIBS is INVALID_VALUE. The
+    // host predicts it from the cached limit (es2-validation.ts, Stage A2)
+    // and issues no native call, so no native flag is read either.
+    let nativeCalls = 0;
+    gl.enableVertexAttribArray = () => { nativeCalls++; pending.push(0x501); };
+    send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY, 42);
+    expect(nativeCalls).toBe(0);
+    expect(reads()).toBe(before);
+    expect(activeVertexArray(b).attributes.get(42)?.enabled).not.toBe(true);
+    expect(getError()).toBe(0x501); expect(getError()).toBe(0);
+  });
+
+  it("returns each pending flag once, whichever capture moves it, and never invents one", () => {
+    const { b, pending, send, getError } = setup();
+    // A native flag left by an unchecked call, then the same and another
+    // error recorded by host validation in a later submission.
+    pending.push(0x502);
+    send(O.OP_ENABLE, 0x0be2);
+    send(O.OP_ENABLE, 0x8c89);
+    b.errors.push(0x502);
+    expect(new Set([getError(), getError()])).toEqual(new Set([0x500, 0x502]));
+    expect(getError()).toBe(0); expect(getError()).toBe(0);
+  });
+
+  it("keeps a renderer whose flags never clear a loud failure at the next capture", () => {
+    const { b, gl, send, getError } = setup();
+    send(O.OP_ENABLE, 0x0be2);
+    gl.getError = () => 0x502;
+    expect(() => getError()).toThrow("Native GL error state did not clear");
+    expect(b.errors).toEqual([0x502]);
   });
 });

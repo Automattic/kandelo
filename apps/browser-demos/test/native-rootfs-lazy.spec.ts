@@ -23,7 +23,9 @@ async function readNativeImage(page: Page, baseURL: string, image: Uint8Array, p
     let stdout = "";
     let stderr = "";
     const downloads: Array<{ id: string; url: string; status: string }> = [];
+    const diagnostics: Array<{ source: string; message: string }> = [];
     const kernel = new BrowserKernel({ kernelOwnedFs: true,
+      onHostDiagnostic: (diagnostic: { source: string; message: string }) => diagnostics.push(diagnostic),
       onStdout: (bytes: Uint8Array) => { stdout += new TextDecoder().decode(bytes); },
       onStderr: (bytes: Uint8Array) => { stderr += new TextDecoder().decode(bytes); },
       onLazyDownload: (event: { id: string; url: string; status: string }) => {
@@ -48,7 +50,7 @@ async function readNativeImage(page: Page, baseURL: string, image: Uint8Array, p
           { env: ["INITIAL=parent", "REMOVE=before-fork"] });
         exitCode = await exit;
       }
-      return { before, after: await kernel.statVfsPath(path), reads, stdout, stderr, exitCode, downloads };
+      return { before, after: await kernel.statVfsPath(path), reads, stdout, stderr, exitCode, downloads, diagnostics };
     } finally { await kernel.destroy(); }
   }, { moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href, kernelUrl, imageUrl, path, executable, lazyUrlMap });
 }
@@ -117,4 +119,24 @@ test("native lazy archive launches a guest that forks and re-execs with real env
   expect(result.stdout).toContain("EMPTY_ENV_PASS");
   expect(result.stderr).toBe("");
   expect(fetches).toBe(1);
+});
+
+test("native lazy integrity rejection is loud and a deliberate later read reloads verified bytes", async ({ page, baseURL }) => {
+  test.setTimeout(120_000);
+  const url = new URL("/__native_lazy_rejected_font.bin", baseURL).href;
+  const good = new TextEncoder().encode("verified font data"), bad = good.slice();
+  bad[0] ^= 0xff;
+  const fs = KandeloImageFs.create();
+  fs.registerLazyFile("/font", url, good.length, 0o644, digest(good));
+  let fetches = 0;
+  await page.route(url, route => route.fulfill({ body: Buffer.from(++fetches === 1 ? bad : good) }));
+  const result = await readNativeImage(page, baseURL!, await fs.saveImage(), "/font");
+  expect(result.reads[0].error).toBeDefined();
+  expect(result.reads[1]).toEqual({ text: "verified font data" });
+  expect(result.before).toEqual(result.after);
+  expect(fetches).toBe(2);
+  expect(result.diagnostics).toContainEqual({ pid: 0, source: "vfs-integrity",
+    message: expect.stringMatching(/size or SHA-256 mismatch.*read fails with EIO/) });
+  expect(result.downloads.map(event => event.status).filter(status => status !== "progress"))
+    .toEqual(["started", "complete", "error", "started", "complete"]);
 });

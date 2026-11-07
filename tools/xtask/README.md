@@ -2,6 +2,9 @@
 
 Repo-local build/release utilities. Subcommands:
 
+- `test-failures <conformance|vitest|playwright> <report> <context.json>`
+  — import failures and anomalies as JSON. See [failure evidence](../../tests/baselines/README.md).
+
 - `dump-abi` — regenerate `abi/snapshot.json` from authoritative sources.
 - `check-package-imports [--require-startup] <wasm>...` — audit process
   imports against shared host declarations and the current SDK's typed
@@ -53,3 +56,30 @@ without callers having to remember `--target`. It is gated on the
 nightly-only `per-package-target` feature, and currently panics inside
 the cargo resolver on our toolchain (`cargo 1.91.0-nightly`). Until it
 stabilises, the explicit `--target` flag is the supported path.
+
+### Optional node disk reserve
+
+Set `KANDELO_LOCAL_BUILD_MIN_FREE_BYTES` to a positive decimal byte count to
+refuse new local-build node children when `statvfs` reports less available
+space on the checkout, source-cache or output filesystem. Unset preserves
+ordinary behavior and performs no disk-space queries. Invalid values fail
+before aggregate preparation; filesystem-query errors fail admission loudly.
+Cached nodes that require no child remain eligible.
+
+Set the variable inside the canonical development shell; an outer export is
+not retained by its curated environment:
+
+```bash
+scripts/dev-shell.sh env KANDELO_LOCAL_BUILD_MIN_FREE_BYTES=17179869184 \
+  bash scripts/setup.sh --all-packages --jobs 1
+```
+
+The example chooses a 16 GiB admission floor, not a universal build-space
+requirement. Choose the floor and initial headroom for the selected workload.
+
+This checks admission, not peak space or reserved capacity: an admitted node,
+bootstrap/aggregate preparation outside the node scheduler, temporary files on
+other filesystems, or unrelated processes may consume additional space. Use
+`--jobs 1` when a single admitted node at a time is intended. A refusal fails
+that node and blocks its dependents through the ordinary scheduler; already
+running nodes finish normally. No automatic retry or waiting is added.

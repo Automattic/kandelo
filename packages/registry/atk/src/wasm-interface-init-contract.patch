@@ -1,0 +1,51 @@
+Subject: [PATCH] Preserve full interface init callbacks and adapt unary sites explicitly
+
+GInterfaceInitFunc has two arguments. Keep its public registration macros at
+that arity; a shared one-argument trampoline must not erase genuine callbacks.
+Known one-argument initializers use explicit GLib unary adapter macros.
+Apply after the existing callback-signature portability patch.
+
+--- a/atk/atkplug.c
++++ b/atk/atkplug.c
+@@ -41,7 +41,7 @@
+ static gint AtkPlug_private_offset;
+ 
+ G_DEFINE_TYPE_WITH_CODE (AtkPlug, atk_plug, ATK_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_COMPONENT, atk_component_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_COMPONENT, atk_component_interface_init)
+                          G_ADD_PRIVATE(AtkPlug))
+ 
+ static AtkObject*
+--- a/atk/atksocket.c
++++ b/atk/atksocket.c
+@@ -64,7 +64,7 @@
+                                                    AtkCoordType  coord_type);
+ 
+ G_DEFINE_TYPE_WITH_CODE (AtkSocket, atk_socket, ATK_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_COMPONENT, atk_component_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_COMPONENT, atk_component_interface_init))
+ 
+ static void
+ atk_socket_init (AtkSocket* obj)
+--- a/tests/testdocument.c
++++ b/tests/testdocument.c
+@@ -51,7 +51,7 @@
+ G_DEFINE_TYPE_WITH_CODE (TestDocument,
+                          test_document,
+                          ATK_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_DOCUMENT,
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_DOCUMENT,
+                                                 test_document_interface_init));
+ 
+ static void
+--- a/tests/testvalue.c
++++ b/tests/testvalue.c
+@@ -84,7 +84,7 @@
+ G_DEFINE_TYPE_WITH_CODE (TestValue,
+                          test_value,
+                          ATK_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_VALUE,
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_VALUE,
+                                                 test_value_interface_init));
+ 
+ static void

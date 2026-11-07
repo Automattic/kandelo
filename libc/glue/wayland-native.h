@@ -5,19 +5,29 @@
 #define WPK_WAYLAND_OPTIONAL
 #endif
 /* Private same-module capabilities. Never exported on the guest/kernel wire. */
+/* Cold work only: called by EGL after dropping context metadata. A return of
+ * one requests another pass for work reserved to a different live actor. */
+WPK_WAYLAND_OPTIONAL int _wpk_wlegl_drain_deferred(void);
+WPK_WAYLAND_OPTIONAL int _wpk_wl_log_drain_deferred(void);
 WPK_WAYLAND_OPTIONAL int _wpk_wl_display_metadata(const void *, uint64_t *);
 WPK_WAYLAND_OPTIONAL void *_wpk_wl_display_acquire(const void *, uint64_t);
 WPK_WAYLAND_OPTIONAL int _wpk_wl_display_alive(void *);
 WPK_WAYLAND_OPTIONAL void _wpk_wl_display_release(void *);
+WPK_WAYLAND_OPTIONAL void _wpk_wl_display_release_inherited(void *);
 WPK_WAYLAND_OPTIONAL void *_wpk_wl_surface_acquire(const void *, const void **, uint64_t *);
 WPK_WAYLAND_OPTIONAL int _wpk_wl_surface_alive(void *);
 WPK_WAYLAND_OPTIONAL int _wpk_wl_surface_present(void *, void *, int, int);
 WPK_WAYLAND_OPTIONAL void _wpk_wl_surface_release(void *);
-struct wpk_wlegl_frame {int fd; uint32_t handle, width, height;};
+WPK_WAYLAND_OPTIONAL void _wpk_wl_surface_release_inherited(void *);
+WPK_WAYLAND_OPTIONAL void _wpk_wl_proxy_discard_inherited(void *,void *);
+WPK_WAYLAND_OPTIONAL void _wpk_wl_queue_discard_inherited(void *,void *);
+struct wpk_drm_owner;
+struct wpk_wlegl_frame {int fd; uint32_t handle, width, height; struct wpk_drm_owner *owner,*bo_owner;};
 WPK_WAYLAND_OPTIONAL int _wpk_wlegl_acquire(const void *, const void *, uint64_t, void **, struct wpk_wlegl_frame *);
 WPK_WAYLAND_OPTIONAL int _wpk_wlegl_prepare(void *, struct wpk_wlegl_frame *);
 /* Reserves a distinct normalized front; caller must finish on every path. */
 WPK_WAYLAND_OPTIONAL int _wpk_wlegl_prepare_present(void *, struct wpk_wlegl_frame *);
 WPK_WAYLAND_OPTIONAL int _wpk_wlegl_finish(void *, int);
 WPK_WAYLAND_OPTIONAL void _wpk_wlegl_release(void *);
+WPK_WAYLAND_OPTIONAL void _wpk_wlegl_release_inherited(void *);
 #endif

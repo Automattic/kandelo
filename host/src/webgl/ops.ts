@@ -9,6 +9,9 @@
  * `OP_VERSION` newer than its supported table with `ENOSYS`.
  */
 
+/** Private driver selection mirrors shared::gl::GLIO_QUERY. */
+export const GLIO_QUERY = 0x49;
+
 // --- cmdbuf opcodes (TLV: u16 op, u16 payload_len, payload) ----------------
 
 export const OP_CLEAR                       = 0x0001;
@@ -33,6 +36,8 @@ export const OP_BUFFER_DATA                 = 0x0103;
 export const OP_BUFFER_SUB_DATA             = 0x0104;
 export const OP_BEGIN_CLIENT_ARRAY           = 0x0105;
 export const OP_END_CLIENT_ARRAY             = 0x0106;
+/** Private journal/cell/token followed by an independently validated definition. */
+export const OP_BUFFER_DATA_SNAPSHOT         = 0x0107;
 
 export const OP_GEN_TEXTURES                = 0x0200;
 export const OP_DELETE_TEXTURES             = 0x0201;
@@ -70,6 +75,20 @@ export const OP_ENABLE_VERTEX_ATTRIB_ARRAY  = 0x0500;
 export const OP_DISABLE_VERTEX_ATTRIB_ARRAY = 0x0501;
 export const OP_VERTEX_ATTRIB_POINTER       = 0x0502;
 export const OP_DRAW_ARRAYS                 = 0x0503;
+/** Owned packed client attributes and one nonindexed draw; u16-bounded payload. */
+export const OP_DRAW_CLIENT_ARRAYS          = 0x0506;
+/** Exact retained buffer generations and logical attribute layouts. */
+export const OP_DRAW_BUFFER_SNAPSHOTS       = 0x0507;
+/** Retained target/input generations plus the exact buffer draw layout. */
+export const OP_DRAW_PREPARED_INLINE_COMPACT = 0x050c;
+export const OP_DRAW_PREPARED_INLINE = 0x050b;
+export const OP_DRAW_PREPARED_SNAPSHOTS = 0x050a;
+export const OP_DRAW_FRAMEBUFFER_SNAPSHOTS  = 0x0508;
+export const OP_CLEAR_FRAMEBUFFER_SNAPSHOT  = 0x0509;
+export const INLINE_DRAW_HEADER_BYTES = 16;
+export const INLINE_DRAW_ATTRIBUTE_BYTES = 20;
+export const INLINE_DRAW_MAX_BYTES = 65535;
+export const INLINE_DRAW_MAX_ATTRIBUTES = 16;
 export const OP_DRAW_ELEMENTS               = 0x0504;
 /** `glVertexAttrib4fv(index, value)` — constant (non-array) vertex
  *  attribute. ScummVM's shader pipeline feeds the per-draw color
@@ -92,6 +111,16 @@ export const OP_DELETE_FRAMEBUFFERS         = 0x0707;
 // --- sync query op tags (used in GlQueryInfo.op) --------------------------
 
 export const QOP_GET_ERROR             = 0x01;
+/** Additive QOP_GET_ERROR form (shared::gl::error_drain): input
+ *  [client mask, REQUEST]; checked reply [count, retained,
+ *  errors[CAPACITY], GL_QUERY_REPLY_MAGIC]. See error-query.ts. */
+export const GL_ERROR_DRAIN_REQUEST = 0x4744_524e;
+export const GL_ERROR_DRAIN_RECEIPT_REQUEST = 0x4752_4350;
+export const GL_ERROR_DRAIN_RECEIPT_BYTES = 52;
+export const QOP_ERROR_DRAIN_RECEIPT = 0x003D;
+export const GL_ERROR_DRAIN_REQUEST_BYTES = 8;
+export const GL_ERROR_DRAIN_CAPACITY = 8;
+export const GL_ERROR_DRAIN_REPLY_BYTES = 44;
 export const QOP_GET_STRING            = 0x02;
 export const QOP_GET_INTEGERV          = 0x03;
 export const QOP_GET_FLOATV            = 0x04;
@@ -126,6 +155,9 @@ export const OP_STENCIL_OP_SEPARATE = 0x001A;
 export const OP_POLYGON_OFFSET = 0x001B;
 export const OP_DEPTH_RANGEF = 0x001C;
 export const OP_SAMPLE_COVERAGE = 0x001D;
+export const OP_CLIENT_ERRORS = 0x001E;
+export const OP_ERROR_OBSERVED = 0x001F;
+export const OP_TRANSPORT_ERROR_OBSERVED = 0x0020;
 export const OP_TEX_PARAMETERF = 0x0208;
 export const OP_COMPRESSED_TEX_IMAGE_2D = 0x0209;
 export const OP_COMPRESSED_TEX_SUB_IMAGE_2D = 0x020A;
@@ -140,6 +172,11 @@ export const OP_UNIFORM3IV = 0x040C;
 export const OP_UNIFORM4IV = 0x040D;
 export const OP_UNIFORM_MATRIX2FV = 0x040E;
 export const OP_UNIFORM_MATRIX3FV = 0x040F;
+// Same unpublished epoch: atomic bounded large-uniform transactions.
+export const OP_UNIFORM_UPLOAD_BEGIN = 0x0410;
+export const OP_UNIFORM_UPLOAD_CHUNK = 0x0411;
+export const OP_UNIFORM_UPLOAD_COMMIT = 0x0412;
+export const OP_UNIFORM_UPLOAD_CANCEL = 0x0413;
 export const OP_DELETE_RENDERBUFFERS = 0x0708;
 export const OP_DRAW_BUFFER = 0x0709;
 export const OP_DRAW_BUFFERS = 0x070A;
@@ -164,6 +201,7 @@ export const QOP_GET_FB_ATTACHMENT = 0x001B;
 export const QOP_GET_RENDERBUFFER_PARAMETER = 0x001C;
 export const QOP_GET_TEX_PARAMETER = 0x001D;
 export const OP_VALIDATE_PROGRAM = 0x030B;
+export const OP_USE_PROGRAM_JOURNAL = 0x030C;
 
 // V5: acknowledged, transactional large shader source upload.
 export const QOP_SHADER_SOURCE_UPLOAD = 0x001E;
@@ -203,9 +241,44 @@ export const QOP_BIND_BUFFER = 0x002B;
 export const QOP_DELETE_BUFFER = 0x002C;
 // V16: immutable surface limits before any logical context is current.
 export const QOP_SURFACE_CAPABILITIES = 0x002D;
+/** Reply lengths: limits + magic, or limits + sample-count mask + magic. */
+export const SURFACE_CAPABILITIES_LEN = 16;
+export const SURFACE_CAPABILITIES_SAMPLES_LEN = 20;
+/** Surface creation config word (shared::gl::surface_config): RGBA8/D24S8
+ * storage in the low byte, color/depth/stencil sample count in bits 8..16. */
+export const WPK_SURFACE_CONFIG_RGBA8_D24S8 = 1;
+export const WPK_SURFACE_CONFIG_SAMPLES_SHIFT = 8;
+export const WPK_SURFACE_CONFIG_MAX_SAMPLES = 31;
 
 // V17: retained native fences with caller-known cancellation identities.
 export const QOP_CREATE_FENCE = 0x002E;
 export const QOP_FENCE_STATUS = 0x002F;
 export const QOP_RELEASE_FENCE = 0x0030;
 export const QOP_FLUSH = 0x0031;
+
+// Checked opaque compressed-image staging; full native call only at COMMIT.
+export const QOP_COMPRESSED_UPLOAD = 0x0032;
+// Reserved ABI56: one native read followed by independent copied-byte chunks.
+export const QOP_READBACK_CAPTURE = 0x0033;
+
+// Captured shader/program variable queries: BEGIN, CHUNK, RELEASE.
+export const QOP_OBJECT_CAPTURE = 0x0034;
+
+// Destination server ordering on a kernel-resolved source fence OFD.
+export const QOP_SERVER_WAIT = 0x0035;
+
+// Kernel-issued only (DRM_IOCTL_WPK_EXPORT_FENCE): publish one of this
+// session's fences for a sync_file, retaining it when it is on a separate
+// native context.
+export const QOP_EXPORT_FENCE = 0x0036;
+
+/** Failure-only read-only receipt [status,scope,magic]: 0 healthy, 1 logical
+ * context reset, 2 physical renderer loss. Allowed after reset, no replay. */
+export const QOP_CONTEXT_RESET_SCOPE = 0x0037;
+/** Checked creation: [kind=4 shader/5 program,type,name] -> [status,name,magic]. */
+export const QOP_CREATE_SHADER_PROGRAM = 0x0038;
+export const QOP_PROGRAM_MUTATION = 0x0039;
+/** Context-owned executable capture: acquire1/select2/release3; checked16-byte reply. */
+export const QOP_PROGRAM_CAPTURE = 0x003a;
+export const QOP_PROGRAM_JOURNAL = 0x003B;
+export const QOP_PROGRAM_JOURNAL_BARRIER = 0x003C;

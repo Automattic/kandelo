@@ -1555,6 +1555,48 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     )).toBe(true);
   });
 
+  // A host-mounted file's writeback error is reported like a kernel file's
+  // (Linux errseq): through the kernel to every open description (next
+  // fsync/fdatasync/close), and once to every mapping of the file (next msync).
+  it("reports a failed host-file writeback once to each mapping and to the kernel", () => {
+    const h = createFileHarness();
+    const [pid, peer] = h.pids;
+    const addr = 0x1000;
+    expect(h.map(pid, 4, addr)).toBe(true);
+    expect(h.map(peer, 9, addr)).toBe(true);
+    new Uint8Array(h.memories.get(pid)!.buffer)[addr + 9] = 0xcc;
+    h.io.write.mockReturnValueOnce(0);
+    // An fd syscall whose pre-flush fails answers EIO itself: that fd is told.
+    expect((h.kw as any).flushSharedMappingsBeforeFileSyscall(
+      h.channels.get(pid), ABI_SYSCALLS.Pwrite, [4],
+    )).toBe(false);
+    expect(h.kernelShared.callsTo("kernel_report_host_mapping_writeback_error").map(call => call.args))
+      .toEqual([[pid, 0n, 7n, 99n, 4]]);
+    // The peer's mapping of the file reports it once from its next msync,
+    // even though its own flush now succeeds.
+    expect((h.kw as any).flushSharedMappings(h.channels.get(peer), [addr, 4096], undefined, true)).toBe(false);
+    expect((h.kw as any).flushSharedMappings(h.channels.get(peer), [addr, 4096], undefined, true)).toBe(true);
+    // So does the writer's own mapping; munmap's flush consumes nothing.
+    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096])).toBe(true);
+    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096], undefined, true)).toBe(false);
+    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096], undefined, true)).toBe(true);
+  });
+
+  it("answers a failing msync once for its own host-file writeback failure", () => {
+    const h = createFileHarness();
+    const pid = h.pids[0];
+    const addr = 0x1000;
+    expect(h.map(pid, 4, addr)).toBe(true);
+    new Uint8Array(h.memories.get(pid)!.buffer)[addr + 9] = 0xcc;
+    h.io.write.mockReturnValueOnce(0);
+    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096], undefined, true)).toBe(false);
+    expect(h.kernelShared.callsTo("kernel_report_host_mapping_writeback_error").map(call => call.args))
+      .toEqual([[pid, BigInt(addr), 7n, 99n, -1]]);
+    // The retry writes the kept dirty page; the error was already reported.
+    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096], undefined, true)).toBe(true);
+    expect(h.storage[9]).toBe(0xcc);
+  });
+
   it("skips file-coherence hooks when no shared file backing exists", () => {
     const h = createFileHarness();
     const pid = h.pids[0];

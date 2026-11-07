@@ -31,7 +31,9 @@ const imagePath = join(
   "local-binaries/source-only-v1/programs/wasm32/wordpress.vfs.zst",
 );
 const DATABASE = "/var/www/html/wp-content/database/wordpress.db";
-const ADMIN_HASH = /\$wp\$2y\$10\$[./A-Za-z0-9]{53}/;
+// WordPress hashes with PHP's default bcrypt cost: 10 before PHP 8.4, 12
+// since. The contract here is a per-machine salt, not the work factor.
+const ADMIN_HASH = /\$wp\$2y\$\d{2}\$[./A-Za-z0-9]{53}/;
 
 interface MachineState {
   database: Uint8Array;

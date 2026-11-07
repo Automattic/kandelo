@@ -1,10 +1,33 @@
-import { applyNativeChanges, nativeInverse, repairNativeState, type NativeCall } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, repairNativeState, type NativeCall, rethrowNativeGlFault } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import type { GlSurfaceResources } from "./surface-resources.js";
+import { multisampleResolveStorage, resolveSurfaceMultisample } from "./multisample.js";
 
 const READ = 0x8ca8, DRAW = 0x8ca9, READ_BINDING = 0x8caa, DRAW_BINDING = 0x8ca6;
 const READ_BUFFER = 0x0c02, COLOR0 = 0x8ce0, SCISSOR = 0x0c11;
 type GpuFront = { gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number };
+
+/** The single-sampled render back holding the posted image: a multisampled
+ * surface's resolve storage, otherwise its default framebuffer. */
+function renderBack(surface: GlSurfaceResources): WebGLFramebuffer | null {
+  return surface.multisample ? multisampleResolveStorage(surface)?.fbo ?? null : surface.renderTargetFbo;
+}
+
+/** Pure preflights shared with the state-borrowing caller. Invalid requests
+ * retain their original errno before any private error capture or repair. */
+export function validGbmFrontCopy(surface: GlSurfaceResources, target: GpuFront): boolean {
+  const gl = surface.gl, size = surface.surfaceSize, source = renderBack(surface);
+  return !!gl && !!source && !!size && gl === target.gl && source !== target.fbo &&
+    Number.isInteger(size.width) && Number.isInteger(size.height) &&
+    size.width > 0 && size.height > 0 && size.width === target.w && size.height === target.h;
+}
+
+export function validGbmFrontRead(surface: GlSurfaceResources): boolean {
+  const size = surface.surfaceSize;
+  return !!surface.gl && !!renderBack(surface) && !!size &&
+    Number.isSafeInteger(size.width) && Number.isSafeInteger(size.height) &&
+    size.width > 0 && size.height > 0 && Number.isSafeInteger(size.width * size.height * 4);
+}
 
 /** A window uses GL's bottom-left coordinates; exported linear buffers have
  * row zero at the top. Copy into an unpublished front without changing the
@@ -12,17 +35,16 @@ type GpuFront = { gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; 
  * front. The caller retains both allocations through this synchronous call. */
 export function copyGbmFront(surface: GlSurfaceResources, target: GpuFront,
   capturePriorErrors: () => void): number {
-  const gl = surface.gl, size = surface.surfaceSize, source = surface.renderTargetFbo;
-  if (!gl || !source || !size || gl !== target.gl || source === target.fbo ||
-    !Number.isInteger(size.width) || !Number.isInteger(size.height) ||
-    size.width <= 0 || size.height <= 0 || size.width !== target.w || size.height !== target.h)
-    return -22;
+  if (!validGbmFrontCopy(surface, target)) return -22;
+  const gl = surface.gl!, size = surface.surfaceSize!, source = renderBack(surface)!;
   // Error ownership is captured before entering private driver operations.
   // Repair records retain only native handles/scalars and this private queue.
   const owner = { gl, errors: [] as number[], shadow: {} };
   try {
     capturePriorErrors();
     if (gl.isContextLost() || !repairNativeState(gl)) return -5;
+    // The front is the posted, resolved color buffer (EGL 1.5 3.10.1.2).
+    if (!resolveSurfaceMultisample(surface)) return -5;
     let oldRead: WebGLFramebuffer | null = null, oldDraw: WebGLFramebuffer | null = null;
     let scissor = false;
     if (!checkedGlCall(owner, () => {
@@ -66,26 +88,29 @@ export function copyGbmFront(surface: GlSurfaceResources, target: GpuFront,
         [[scissor ? "enable" : "disable", SCISSOR]])
     });
     return accepted ? 0 : owner.errors.includes(0x505) ? -12 : -5;
-  } catch { return -5; }
+  } catch (caught) { rethrowNativeGlFault(caught); return -5; }
 }
 
-/** Read the private render back into independent bottom-row-first RGBA bytes.
+/** Read the private render back into independent bottom-row-first RGBA bytes
+ * (or, for a CPU image mirror, the readback its storage format needs).
  * The CPU publication caller packs/normalizes those owned bytes only after
  * native restoration has succeeded. No guest view enters a repair record. */
-export function readGbmFront(surface: GlSurfaceResources,
-  capturePriorErrors: () => void): {rc: number; pixels?: Uint8Array<ArrayBuffer>} {
-  const gl = surface.gl, size = surface.surfaceSize, source = surface.renderTargetFbo;
-  if (!gl || !source || !size || !Number.isSafeInteger(size.width) ||
-      !Number.isSafeInteger(size.height) || size.width <= 0 || size.height <= 0 ||
-      !Number.isSafeInteger(size.width * size.height * 4)) return {rc: -22};
-  let pixels: Uint8Array<ArrayBuffer>;
-  try { pixels = new Uint8Array(size.width * size.height * 4); }
-  catch { return {rc: -12}; }
+export function readGbmFront<T extends ArrayBufferView = Uint8Array<ArrayBuffer>>(surface: GlSurfaceResources,
+  capturePriorErrors: () => void,
+  read: {format: number; type: number; buffer: (pixels: number) => T} =
+    {format: 0x1908, type: 0x1401, buffer: pixels => new Uint8Array(pixels * 4) as unknown as T}):
+  {rc: number; pixels?: T} {
+  if (!validGbmFrontRead(surface)) return {rc: -22};
+  const gl = surface.gl!, size = surface.surfaceSize!, source = renderBack(surface)!;
+  let pixels: T;
+  try { pixels = read.buffer(size.width * size.height); }
+  catch (caught) { rethrowNativeGlFault(caught); return {rc: -12}; }
   const owner = {gl, errors: [] as number[], shadow: {}};
   const failed = () => ({rc: owner.errors.includes(0x505) ? -12 : -5});
   try {
     capturePriorErrors();
     if (gl.isContextLost() || !repairNativeState(gl)) return {rc: -5};
+    if (!resolveSurfaceMultisample(surface)) return {rc: -5};
     let oldRead: WebGLFramebuffer | null = null, oldPack: WebGLBuffer | null = null;
     const fields = [0x0d05, 0x0d02, 0x0d04, 0x0d03];
     let values: number[] = [];
@@ -114,12 +139,12 @@ export function readGbmFront(surface: GlSurfaceResources,
         restore: nativeInverse(owner, [["pixelStorei", field, values[index]]])
       })),
       {apply: () => checkedGlCall(owner, () => gl.readPixels(0, 0, size.width, size.height,
-        0x1908, 0x1401, pixels)), restore: nativeInverse(owner)},
+        read.format, read.type, pixels)), restore: nativeInverse(owner)},
     ], {shared: true, finalizer: nativeInverse(owner, readGroup,
       [["bindFramebuffer", READ, oldRead]], [["bindBuffer", 0x88eb, oldPack]],
       fields.map((field, index) => ["pixelStorei", field, values[index]]))});
     return accepted ? {rc: 0, pixels} : failed();
-  } catch { return {rc: -5}; }
+  } catch (caught) { rethrowNativeGlFault(caught); return {rc: -5}; }
 }
 
 /** Pack independent bottom-row-first RGBA readback into a top-row-first

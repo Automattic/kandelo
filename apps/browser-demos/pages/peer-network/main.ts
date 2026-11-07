@@ -182,7 +182,9 @@ async function stopGame() { if (gamePid) await requireMachine().signalProcess(ga
 function screen(pid: number) {
   gamePid = pid; const kernel = requireMachine();
   detachScreen?.(); detachKeyboard?.();
-  detachScreen = attachCanvas(canvas, kernel.framebuffers, pid, { getProcessMemory: (candidate) => kernel.getProcessMemory(candidate) });
+  // Browser framebuffers already own independent pixel mirrors. The page must
+  // never regain a guest-memory accessor to render the peer's game.
+  detachScreen = attachCanvas(canvas, kernel.framebuffers, pid);
   const keyboard = attachLinuxMediumRawKeyboard(canvas, { sendInput: (bytes) => kernel.ptyWrite(pid, bytes) }, { getEnabled: () => gamePid === pid && processes.get(pid)?.exit === null });
   detachKeyboard = () => keyboard.close(); canvas.focus();
 }

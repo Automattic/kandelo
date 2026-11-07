@@ -34,6 +34,16 @@
     }
   },
   {
+    "id": "workaround-repro-creates-shared-memory",
+    "prompt": "You are adding a confirmed runtime-workaround entry whose standalone browser reproduction creates a shared WebAssembly.Memory and instantiates a small Wasm module in a worker. This is read-only: do not edit files or run builds. Besides the entry itself, which repository test will flag the reproduction, why, and what do you change so it passes honestly?",
+    "checks": {
+      "names the kernel-memory audit test": "kernel-scratch-contract",
+      "adds a reviewed allowance": "auditAllowances|allowance",
+      "marks it non-kernel shared memory": "non-kernel|shared-memory",
+      "prints keys with the debug variable": "KANDELO_DEBUG_SCRATCH_AUDIT"
+    }
+  },
+  {
     "id": "weekly-filing-pass",
     "prompt": "Prepare this week's upstream bug-filing pass. This is read-only: describe the plan, do not edit files or run anything. What do you run, what do you hand the maintainer, and what must you not do?",
     "checks": {

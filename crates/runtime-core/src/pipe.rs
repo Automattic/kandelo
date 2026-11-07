@@ -69,6 +69,10 @@ pub struct InFlightFd {
     /// plain CharDevice and the receiver's `PRIME_FD_TO_HANDLE` import fails.
     pub prime_bo: Option<crate::ofd::PrimeBoState>,
     pub dri_snapshot: Option<crate::ofd::DriTransferSnapshot>,
+    /// For `sync_file` and syncobj FDs: the shared kernel object. Holding the
+    /// sidecar is the queued reference (`sync_file`'s `struct file` stays
+    /// alive while in flight on Linux too); the receiver installs a clone.
+    pub sync_state: Option<crate::ofd::DriOfdState>,
     retained_dri: Option<alloc::boxed::Box<crate::ofd::DriOfdState>>,
     /// True after this queued payload has acquired its one machine-wide
     /// backing and OfdId reference. Ownership transfers to the receiver or is
@@ -121,6 +125,7 @@ impl InFlightFd {
             pipe_ref_kind: None,
             prime_bo: None,
             dri_snapshot: None,
+            sync_state: None,
             retained_dri: None,
             owns_reference: false,
         }
@@ -213,6 +218,7 @@ impl InFlightFd {
             pipe_ref_kind: self.pipe_ref_kind,
             prime_bo: self.prime_bo.clone(),
             dri_snapshot: self.dri_snapshot.clone(),
+            sync_state: self.sync_state.clone(),
             retained_dri: None,
             owns_reference: false,
         };

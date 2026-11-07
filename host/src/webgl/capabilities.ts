@@ -20,8 +20,15 @@ const WEBGL2_CORE_GLES2_EXTENSIONS = [
   "GL_EXT_texture_rg",
   // The bridge normalizes GLES's GL_HALF_FLOAT_OES token to WebGL2's
   // GL_HALF_FLOAT token, so LOVE can safely use its GLES2 half-float path.
+  // LUMINANCE/ALPHA float levels are stored as expanded RGBA
+  // (luminance-float.ts), which WebGL2 has no unsized format for.
   "GL_OES_texture_float",
   "GL_OES_texture_half_float",
+  // WebGL2 makes every 16-bit float format texture-filterable (ES 3.0 table
+  // 3.13) with no extension, so LINEAR sampling of half-float textures works
+  // natively; without this name GLES2 would require such a texture to be
+  // incomplete. (WebGL2 has no OES_texture_half_float_linear object to probe.)
+  "GL_OES_texture_half_float_linear",
   // WebGL2 supports depth textures and packed depth/stencil attachments.
   "GL_OES_depth_texture",
   "GL_OES_packed_depth_stencil",
@@ -29,28 +36,33 @@ const WEBGL2_CORE_GLES2_EXTENSIONS = [
   "GL_OES_standard_derivatives",
 ] as const;
 
+// Browser-dependent capabilities with a GLES 2 extension of their own.
+// GL_EXT_color_buffer_float and GL_EXT_float_blend are not advertised to a
+// GLES 2 context although the host may enable the WebGL extensions natively:
+// they require OpenGL ES 3.0 and define no GLES 2 interactions.
 const OPTIONAL_WEBGL_TO_GLES_EXTENSIONS = [
-  {
-    webgl: ["EXT_color_buffer_float"],
-    gles: ["GL_EXT_color_buffer_float", "GL_EXT_color_buffer_half_float"],
-  },
-  {
-    webgl: ["EXT_color_buffer_half_float"],
-    gles: ["GL_EXT_color_buffer_half_float"],
-  },
   {
     webgl: ["OES_texture_float_linear"],
     gles: ["GL_OES_texture_float_linear"],
   },
   {
-    webgl: ["OES_texture_half_float_linear"],
-    gles: ["GL_OES_texture_half_float_linear"],
-  },
-  {
-    webgl: ["EXT_float_blend"],
-    gles: ["GL_EXT_float_blend"],
+    // Either WebGL extension makes R16F, RG16F and RGBA16F color-renderable
+    // on WebGL 2. RGB16F stays unrenderable there, which the GLES extension
+    // permits (issue 2): such a framebuffer reports UNSUPPORTED.
+    webgl: ["EXT_color_buffer_float", "EXT_color_buffer_half_float"],
+    gles: ["GL_EXT_color_buffer_half_float"],
   },
 ] as const;
+
+/** True when the GLES extension string this host returns names `name`.
+ * Optional groups are probed through getExtension, which also enables the
+ * WebGL capability, so an admitted format is one the native call accepts. */
+export function glesExtensionAdvertised(gl: MaybeExtensionProvider, name: string): boolean {
+  if ((WEBGL2_CORE_GLES2_EXTENSIONS as readonly string[]).includes(name)) return true;
+  if (typeof gl.getExtension !== "function") return false;
+  return OPTIONAL_WEBGL_TO_GLES_EXTENSIONS.some(group =>
+    (group.gles as readonly string[]).includes(name) && group.webgl.some(webgl => gl.getExtension?.(webgl)));
+}
 
 export function getGlesExtensionString(gl: MaybeExtensionProvider): string {
   const extensions = new Set<string>(WEBGL2_CORE_GLES2_EXTENSIONS);

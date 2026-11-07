@@ -1,0 +1,90 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+/* Exact pinned client API names. Includes native declarations before only
+ * this TU's allocation/call adapters; no upstream source text is edited. */
+#include <stdlib.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdbool.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <ctype.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
+#include "wayland-client-provenance.inc"
+#include "wayland-client-entry-context.inc"
+#define wl_event_queue_destroy _wpk_raw_native_wl_event_queue_destroy
+#define wl_display_create_queue _wpk_raw_native_wl_display_create_queue
+#define wl_display_create_queue_with_name _wpk_raw_native_wl_display_create_queue_with_name
+#define wl_proxy_create _wpk_raw_native_wl_proxy_create
+#define wl_proxy_destroy _wpk_raw_native_wl_proxy_destroy
+#define wl_proxy_add_listener _wpk_raw_native_wl_proxy_add_listener
+#define wl_proxy_get_listener _wpk_raw_native_wl_proxy_get_listener
+#define wl_proxy_add_dispatcher _wpk_raw_native_wl_proxy_add_dispatcher
+#define wl_proxy_marshal_array_constructor _wpk_raw_native_wl_proxy_marshal_array_constructor
+#define wl_proxy_marshal_array_constructor_versioned _wpk_raw_native_wl_proxy_marshal_array_constructor_versioned
+#define wl_proxy_marshal_flags _wpk_raw_native_wl_proxy_marshal_flags
+#define wl_proxy_marshal_array_flags _wpk_raw_native_wl_proxy_marshal_array_flags
+#define wl_proxy_marshal _wpk_raw_native_wl_proxy_marshal
+#define wl_proxy_marshal_constructor _wpk_raw_native_wl_proxy_marshal_constructor
+#define wl_proxy_marshal_constructor_versioned _wpk_raw_native_wl_proxy_marshal_constructor_versioned
+#define wl_proxy_marshal_array _wpk_raw_native_wl_proxy_marshal_array
+#define wl_display_get_fd _wpk_raw_native_wl_display_get_fd
+#define wl_display_roundtrip_queue _wpk_raw_native_wl_display_roundtrip_queue
+#define wl_display_roundtrip _wpk_raw_native_wl_display_roundtrip
+#define wl_display_read_events _wpk_raw_native_wl_display_read_events
+#define wl_display_prepare_read_queue _wpk_raw_native_wl_display_prepare_read_queue
+#define wl_display_prepare_read _wpk_raw_native_wl_display_prepare_read
+#define wl_display_cancel_read _wpk_raw_native_wl_display_cancel_read
+#define wl_display_dispatch_queue_timeout _wpk_raw_native_wl_display_dispatch_queue_timeout
+#define wl_display_dispatch_timeout _wpk_raw_native_wl_display_dispatch_timeout
+#define wl_display_dispatch_queue _wpk_raw_native_wl_display_dispatch_queue
+#define wl_display_dispatch_queue_pending _wpk_raw_native_wl_display_dispatch_queue_pending
+#define wl_display_dispatch _wpk_raw_native_wl_display_dispatch
+#define wl_display_dispatch_pending _wpk_raw_native_wl_display_dispatch_pending
+#define wl_display_get_error _wpk_raw_native_wl_display_get_error
+#define wl_display_get_protocol_error _wpk_raw_native_wl_display_get_protocol_error
+#define wl_display_flush _wpk_raw_native_wl_display_flush
+#define wl_display_set_max_buffer_size _wpk_raw_native_wl_display_set_max_buffer_size
+#define wl_proxy_set_user_data _wpk_raw_native_wl_proxy_set_user_data
+#define wl_proxy_get_user_data _wpk_raw_native_wl_proxy_get_user_data
+#define wl_proxy_get_version _wpk_raw_native_wl_proxy_get_version
+#define wl_proxy_get_id _wpk_raw_native_wl_proxy_get_id
+#define wl_proxy_set_tag _wpk_raw_native_wl_proxy_set_tag
+#define wl_proxy_get_tag _wpk_raw_native_wl_proxy_get_tag
+#define wl_proxy_get_class _wpk_raw_native_wl_proxy_get_class
+#define wl_proxy_get_interface _wpk_raw_native_wl_proxy_get_interface
+#define wl_proxy_get_display _wpk_raw_native_wl_proxy_get_display
+#define wl_proxy_set_queue _wpk_raw_native_wl_proxy_set_queue
+#define wl_proxy_get_queue _wpk_raw_native_wl_proxy_get_queue
+#define wl_event_queue_get_name _wpk_raw_native_wl_event_queue_get_name
+#define wl_proxy_create_wrapper _wpk_raw_native_wl_proxy_create_wrapper
+#define wl_proxy_wrapper_destroy _wpk_raw_native_wl_proxy_wrapper_destroy
+#include "wayland-util.h"
+#include "wayland-os.h"
+#include "wayland-client.h"
+#include "wayland-private.h"
+#include "timespec-util.h"
+#undef malloc
+#undef calloc
+#undef free
+#define malloc wpk_wl_native_malloc
+#define calloc wpk_wl_native_calloc
+#define zalloc wpk_wl_native_zalloc
+#define free wpk_wl_native_free
+static void wpk_wl_raw_closure_invoke(struct wl_closure *,uint32_t,struct wl_object *,uint32_t,void *);
+static void wpk_wl_raw_closure_dispatch(struct wl_closure *,wl_dispatcher_func_t,struct wl_object *,uint32_t);
+static void wpk_wl_raw_closure_destroy(struct wl_closure *);
+#define wl_closure_invoke wpk_wl_raw_closure_invoke
+#define wl_closure_dispatch wpk_wl_raw_closure_dispatch
+#define wl_closure_destroy wpk_wl_raw_closure_destroy
+static __attribute__((always_inline)) inline void wpk_wl_raw_list_remove(struct wl_list *,int);
+static __attribute__((always_inline)) inline int wpk_wl_raw_arg_count(const char *,int);
+#define wl_list_remove(link) wpk_wl_raw_list_remove(link,__builtin_strcmp(__func__,"dispatch_event")==0)
+#define arg_count_for_signature(signature) wpk_wl_raw_arg_count(signature,__builtin_strcmp(__func__,"destroy_queued_closure")==0)

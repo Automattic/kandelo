@@ -18,9 +18,9 @@ describe("GlContextRegistry", () => {
     expect(reg.shareObjects(7,12,11)).toBe(true);
     const texture = {} as WebGLTexture, buffer = {} as WebGLBuffer, fbo = {} as WebGLFramebuffer;
     a.textures.set(71,texture); a.buffers.set(72,buffer); a.fbos.set(73,fbo);
-    a.nextUniformLoc = 9;
+    a.nextImageSource = 9;
     expect(b.textures.get(71)).toBe(texture); expect(b.buffers.get(72)).toBe(buffer);
-    expect(++b.nextUniformLoc).toBe(10); expect(a.nextUniformLoc).toBe(10);
+    expect(++b.nextImageSource).toBe(10); expect(a.nextImageSource).toBe(10);
     expect(b.fbos.has(73)).toBe(false); expect(b.vaos).not.toBe(a.vaos);
     a.errors.push(0x500); a.shadow.viewport = [1,2,3,4];
     expect(b.errors).toEqual([]); expect(b.shadow.viewport).toEqual([0,0,0,0]);
@@ -30,7 +30,7 @@ describe("GlContextRegistry", () => {
     expect(a.textures.size).toBe(0);
     reg.destroyContext(7,12);
     expect(deleted).toEqual([fbo,texture,buffer]);
-    expect(b.textures.size).toBe(0); expect(b.nextUniformLoc).toBe(10);
+    expect(b.textures.size).toBe(0); expect(b.nextImageSource).toBe(10);
   });
 
   it("refuses sharing a used target or incompatible renderer without changing ownership", () => {
@@ -87,19 +87,6 @@ describe("GlContextRegistry", () => {
     expect(reg.list()).toEqual([]);
   });
 
-  it("retires every session even when a forwarding retirement notification fails", () => {
-    const reg = new GlContextRegistry();
-    reg.attachMainForward(7, {
-      onCreateContext: () => 0, onDestroyContext() {}, onSubmit() {},
-      onUnbind() { throw new Error("port closed"); },
-    });
-    for (const sessionId of [11, 12]) {
-      reg.bind({ pid: 7, sessionId, cmdbufAddr: 0, cmdbufLen: 4 });
-    }
-    expect(() => reg.unbind(7)).toThrow("port closed");
-    expect(reg.list()).toEqual([]);
-  });
-
   it("invalidates every session's cached view after process memory growth", () => {
     const reg = new GlContextRegistry();
     for (const sessionId of [11, 12]) {
@@ -124,8 +111,7 @@ describe("GlContextRegistry", () => {
     expect(b!.contextId).toBeNull();
     expect(b!.surfaceId).toBeNull();
     expect(b!.buffers.size).toBe(0);
-    expect(b!.uniformLocations.size).toBe(0);
-    expect(b!.nextUniformLoc).toBe(0);
+    expect(b!.nextImageSource).toBe(1);
   });
 
   it("unbinds idempotently", () => {
@@ -164,7 +150,7 @@ describe("GlContextRegistry", () => {
     b.foreignTextures.set(100, { tex: texture, texId: 2, w: 1, h: 1, scratch: null });
     b.shadow.currentProgram = b.currentProgram = program;
     b.shadow.defaultVao = vao;
-    b.nextUniformLoc = 10;
+    b.nextImageSource = 10;
     reg.destroyContext(7);
     expect(deleted.filter(object => object === texture)).toHaveLength(1);
     expect(deleted).toContain(program);
@@ -178,7 +164,7 @@ describe("GlContextRegistry", () => {
     expect(b.surfaceId).toBe(2);
     expect(b.surfaceSize).toEqual({ width: 800, height: 600 });
     expect(b.cmdbufAddr).toBe(128);
-    expect(b.nextUniformLoc).toBe(10);
+    expect(b.nextImageSource).toBe(10);
     reg.destroyContext(7);
     expect(deleted.filter(object => object === program)).toHaveLength(1);
   });

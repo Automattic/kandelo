@@ -1,0 +1,36 @@
+FAIL  basic/pthread/pthread_getcpuclockid (exit 1)
+FAIL  basic/syslog/closelog (exit 1)
+FAIL  basic/syslog/syslog (exit 1)
+FAIL  basic/unistd/fpathconf (exit 1)
+FAIL  basic/unistd/pathconf (exit 1)
+SKIP  signal/ppoll-block-raise (relies on signal()'s implementation-defined SA_RESTART; see os-test-local/signal/ppoll-{sarestart,norestart}-*)
+SKIP  signal/ppoll-block-sleep-raise (relies on signal()'s implementation-defined SA_RESTART; see os-test-local/signal/ppoll-{sarestart,norestart}-*)
+XPASS signal/ppoll-block-sleep-write-raise
+FAIL  process/limbo-getpgid (exit 0)
+FAIL  process/limbo-setpgid (exit 0)
+XPASS udp/bind-lan-subnet-first
+XPASS udp/bind-lan-subnet-wrong
+XPASS udp/connect-broadcast-getpeername-so-broadcast
+XPASS udp/connect-broadcast-getsockname-so-broadcast
+FAIL  udp/connect-loopback-get-so-bindtodevice (exit 0)
+FAIL  udp/connect-loopback-reconnect-wan-getsockname (exit 0)
+FAIL  udp/connect-send-error-shutdown-rw-send (exit 1)
+FAIL  udp/connect-send-error-shutdown-w-send (exit 1)
+FAIL  udp/connect-shutdown-rw-reconnect-send (exit 1)
+FAIL  udp/connect-shutdown-rw-send (exit 1)
+FAIL  udp/connect-shutdown-rw-unconnect-send (exit 1)
+FAIL  udp/connect-shutdown-w-send (exit 1)
+FAIL  udp/connect-shutdown-w-unconnect-send (exit 1)
+FAIL  udp/connect-unconnect-shutdown-rw-send (exit 1)
+FAIL  udp/connect-unconnect-shutdown-w-send (exit 1)
+XPASS udp/connect-wan-getsockname
+XPASS udp/connect-wan-unconnect-rebind-any-getsockname
+XPASS udp/connect-wan-unconnect-rebind-same-getsockname
+XPASS udp/cross-netif-lan-send-loopback-recv
+FAIL  udp/get-so-bindtodevice (exit 0)
+FAIL  udp/shutdown-rw-send (exit 1)
+FAIL  udp/shutdown-w-send (exit 1)
+FAIL:    21
+XFAIL:   13
+XPASS:   9
+SKIP:    50

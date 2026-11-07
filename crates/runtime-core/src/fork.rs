@@ -714,6 +714,12 @@ const DRI_TAG_NONE: u8 = 0;
 const DRI_TAG_RENDER_NODE: u8 = 1;
 const DRI_TAG_CARD: u8 = 2;
 const DRI_TAG_PRIME_BO: u8 = 3;
+// sync_file and syncobj fds name reference-counted kernel objects that live
+// as long as any description holds them, so the wire carries only the
+// object's identity and deserialization shares the live object. Additive
+// tags: no earlier stream contains them.
+const DRI_TAG_SYNC_FILE: u8 = 4;
+const DRI_TAG_SYNCOBJ: u8 = 5;
 
 const INPUT_TAG_NONE: u8 = 0;
 const INPUT_TAG_SOME: u8 = 1;
@@ -745,8 +751,11 @@ fn write_kms_fd_state(
     } else {
         0
     })?;
-    w.write_u32(if preserve_master { kms.cursor_bo.unwrap_or(0) } else { 0 })?;
-    w.write_u8(kms.universal_planes as u8)?;
+    // Retired cursor slot: the cursor plane, and its BO reference, are
+    // device state, so no DRM file carries one across fork or exec.
+    w.write_u32(0)?;
+    // One byte of client caps: bit 0 universal planes, bit 1 atomic.
+    w.write_u8(u8::from(kms.universal_planes) | (u8::from(kms.atomic) << 1))?;
     w.write_u32(kms.magic)?;
     w.write_u32(kms.pending_flips.len() as u32)?;
     for flip in &kms.pending_flips {
@@ -778,6 +787,14 @@ fn write_dri_state(
             w.write_u8(DRI_TAG_PRIME_BO)?;
             w.write_u32(p.bo_id)?;
             w.write_u64(p.cookie)
+        }
+        Some(DriOfdState::SyncFile(file)) => {
+            w.write_u8(DRI_TAG_SYNC_FILE)?;
+            w.write_u64(file.id())
+        }
+        Some(DriOfdState::Syncobj(obj)) => {
+            w.write_u8(DRI_TAG_SYNCOBJ)?;
+            w.write_u64(obj.id())
         }
     }
 }
@@ -843,18 +860,21 @@ fn read_dri_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::DriFdState, Errno
         gem: crate::ofd::SharedGemNamespace::new(crate::ofd::GemNamespace { handles, next_handle }),
         gl: None,
         gl_resources: crate::ofd::SharedGlResources::default(),
+        syncobjs: Default::default(),
     })
 }
 
 fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno> {
     use alloc::collections::VecDeque;
     let holds_master = r.read_u8()? != 0;
-    let cursor = r.read_u32()?;
-    let cursor_bo = if cursor == 0 { None } else {
-        crate::dri::with_registry(|reg| reg.incref(cursor));
-        Some(cursor)
-    };
-    let universal_planes = r.read_u8()? != 0;
+    if r.read_u32()? != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let caps = r.read_u8()?;
+    if caps & !3 != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let (universal_planes, atomic) = (caps & 1 != 0, caps & 2 != 0);
     let magic = r.read_u32()?;
     let pending_count = r.read_u32()? as usize;
     if pending_count > 65536 {
@@ -874,12 +894,13 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
     Ok(crate::ofd::KmsFdState {
         master_identity: None,
         holds_master,
-        cursor_bo,
         universal_planes,
+        atomic,
         magic,
         fbs: crate::ofd::SharedKmsFbs::default(),
         pending_flips,
         event_ring: VecDeque::new(),
+        ..Default::default()
     })
 }
 
@@ -949,6 +970,16 @@ fn read_dri_state(
                 cookie,
             })))
         }
+        DRI_TAG_SYNC_FILE => {
+            let file = crate::dri::sync_file::SyncFile::lookup(r.read_u64()?)
+                .ok_or(Errno::EINVAL)?;
+            Some(alloc::boxed::Box::new(DriOfdState::SyncFile(file)))
+        }
+        DRI_TAG_SYNCOBJ => {
+            let obj = crate::dri::syncobj::Syncobj::lookup(r.read_u64()?)
+                .ok_or(Errno::EINVAL)?;
+            Some(alloc::boxed::Box::new(DriOfdState::Syncobj(obj)))
+        }
         _ => return Err(Errno::EINVAL),
     })
 }
@@ -978,6 +1009,9 @@ fn u32_to_handler(v: u32) -> SignalHandler {
 /// Returns the number of bytes written on success, or `Errno::ENOMEM` if
 /// the buffer is too small.
 pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Errno> {
+    if proc.prepared_exec_targets.has_retiring() {
+        return Err(Errno::EBUSY);
+    }
     let mut w = Writer::new(buf);
 
     // ── Header (12 bytes) ──
@@ -1420,6 +1454,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         let dri_state = read_dri_state(&mut r, ofd_id)?;
         let input_state = read_input_state(&mut r)?;
         let mut ofd = OpenFileDesc {
+            exec_close_quarantined: false,
             ofd_id,
             file_id,
             file_type,
@@ -1555,12 +1590,10 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         let len = r.read_u32()? as usize;
         let prot = r.read_u32()?;
         let flags = r.read_u32()?;
-        mappings.push(MappedRegion {
-            addr,
-            len,
-            prot,
-            flags,
-        });
+        // The backing object of a file mapping is not serialized; the
+        // process table copies it from the live parent
+        // (`MemoryManager::inherit_mapping_files`).
+        mappings.push(MappedRegion::anonymous(addr, len, prot, flags));
     }
     memory.set_mappings(mappings);
 
@@ -2128,6 +2161,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         let dri_state = read_dri_state(&mut r, ofd_id)?;
         let input_state = read_input_state(&mut r)?;
         let mut ofd = OpenFileDesc {
+            exec_close_quarantined: false,
             ofd_id,
             file_id,
             file_type,
@@ -3604,7 +3638,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_ownership_survives_exec_but_not_fork() {
+    fn no_file_carries_a_cursor_reference_across_fork_or_exec() {
         use crate::ofd::{DriFdState, DriOfdState, KmsFdState};
         let _lock = crate::dri::bo::TEST_REGISTRY_LOCK
             .lock()
@@ -3621,42 +3655,19 @@ mod tests {
         proc.ofd_table.get_mut(ofd).unwrap().dri_state =
             Some(alloc::boxed::Box::new(DriOfdState::Card {
                 dri: DriFdState::default(),
-                kms: KmsFdState {
-                    holds_master: true,
-                    cursor_bo: Some(bo),
-                    ..Default::default()
-                }.into(),
+                kms: KmsFdState { holds_master: true, ..Default::default() }.into(),
             }));
         proc.fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd), 0)
             .unwrap();
+        // The cursor plane's BO reference is device state: neither wire
+        // takes or carries one.
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
-        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
-        assert_eq!(
-            child.ofd_table.get(ofd).unwrap().kms().unwrap().cursor_bo,
-            None
-        );
-        assert_eq!(
-            crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
-            1
-        );
+        deserialize_fork_state(&buf[..written], 99).unwrap();
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
-        let replacement = deserialize_exec_state(&buf[..written], 1).unwrap();
-        assert_eq!(
-            replacement
-                .ofd_table
-                .get(ofd)
-                .unwrap()
-                .kms()
-                .unwrap()
-                .cursor_bo,
-            Some(bo)
-        );
-        assert_eq!(
-            crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
-            2
-        );
+        deserialize_exec_state(&buf[..written], 1).unwrap();
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
     }
 
     #[test]
@@ -3684,7 +3695,7 @@ mod tests {
                 height: 63,
                 pixel_format: 0x34325241, // AR24
                 stride: 64 * 4,
-                offset: 16,
+                offset: 16, flags: 0,
             },
         );
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =

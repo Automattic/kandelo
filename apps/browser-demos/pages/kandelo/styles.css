@@ -732,6 +732,9 @@
   flex: 0 0 auto;
 }
 
+/* Match the 34px demo-controls row: terminal tabs are 26px high plus
+   padding and borders. A taller row would resize the guest monitor merely
+   when switching views, including between a mode query and its first flip. */
 .kdock-view-tabs {
   width: 100%;
   min-height: 34px;
@@ -739,7 +742,7 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 4px;
+  padding: 3px 4px;
   border: 1px solid var(--kdock-border);
   border-radius: 10px;
   background: var(--kdock-bg-sunk);
@@ -1449,7 +1452,10 @@
   z-index: 20;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.45);
+  /* Drawn over whatever the guest last painted, so the scrim alone must
+     carry the white text to WCAG AA (4.5:1) even over a white frame; that
+     needs at least 0.54 alpha. */
+  background: rgba(0, 0, 0, 0.62);
   color: #fff;
   font-size: 15px;
   pointer-events: none;
@@ -1484,7 +1490,8 @@
 
 .kdownload-toast-error {
   border-color: color-mix(in oklch, var(--k-err) 52%, var(--k-border));
-  animation: kdownload-toast-fade-error 5s ease-out forwards;
+  /* An unresolved VFS/transport failure needs acknowledgement or recovery;
+     fading it independently would hide the retained error state. */
 }
 
 .kpcm-audio-status {
@@ -1587,6 +1594,9 @@
 
 .kdownload-toast-error .kdownload-toast-detail {
   color: var(--k-err-ink);
+  /* The attributed failure must be readable without discovering a tooltip. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .kdownload-toast-bar {
@@ -1629,16 +1639,6 @@
   }
 }
 
-@keyframes kdownload-toast-fade-error {
-  0%, 72% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-}
 
 .kdock-icon {
   width: 18px;

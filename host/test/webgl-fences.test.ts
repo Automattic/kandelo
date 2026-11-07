@@ -1,12 +1,10 @@
 import { expect, it, vi } from "vitest";
-import { GlContextRegistry, type GlBindingInput } from "../src/webgl/registry.js";
+import { GlContextRegistry } from "../src/webgl/registry.js";
 import { GlFenceOwner } from "../src/webgl/fences.js";
-import { hasNativeRepair, repairNativeState } from "../src/webgl/native-recovery.js";
+import { hasNativeRepair, NativeGlFault } from "../src/webgl/native-recovery.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
-import { setupMainForward, type GlForwardMessage } from "../src/webgl/main-forward.js";
-import { createGlForwardQueryMailbox, prepareGlForwardQuery, waitForGlForwardQuery } from "../src/webgl/main-forward-query.js";
 
 function driver() {
   let serial = 0;
@@ -49,6 +47,10 @@ function fixture() {
   const owner = new GlFenceOwner();
   const source = { gl: native.gl, errors: [] as number[] };
   return { native, owner, source };
+}
+function caught(call: () => unknown): Error | undefined {
+  try { call(); } catch (error) { return error as Error; }
+  return undefined;
 }
 function published(value: ReturnType<typeof fixture>) {
   const candidate = value.owner.prepare(value.source)!;
@@ -133,29 +135,21 @@ it("preserves existing GL flags while keeping internal creation errors private",
   expect(value.owner.prepare(value.source)).toBeNull();
   expect(value.source.errors).toEqual([0x500]);
 });
-it("retains rejected candidate deletion and fences admission until cleanup succeeds", () => {
+it("faults when the live renderer refuses deletion of a rejected candidate", () => {
   const value = fixture();
   value.native.creationError(0x505); value.native.deletionError(0x502);
-  expect(value.owner.prepare(value.source)).toBeNull();
+  const fault = caught(() => value.owner.prepare(value.source));
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(/live renderer refused deleteSync of an object the host retired/);
   expect(value.native.live.size).toBe(1);
-  expect(hasNativeRepair(value.native.gl)).toBe(true);
-  expect(value.owner.prepare(value.source)).toBeNull();
-  value.native.creationError(0); value.native.deletionError(0);
-  expect(repairNativeState(value.native.gl)).toBe(true);
-  expect(value.native.deleted).toHaveLength(1);
-  const token = published(value); value.owner.destroy(token);
-  expect(value.native.deleted).toHaveLength(2);
+  expect(value.native.deleted).toHaveLength(0);
 });
-it("keeps failed final deletion owned after session removal", () => {
+it("faults when the live renderer refuses final deletion at session removal", () => {
   const value = fixture(); published(value);
-  value.native.deletionError(0x502); value.owner.close();
-  expect(hasNativeRepair(value.native.gl)).toBe(true);
+  value.native.deletionError(0x502);
+  expect(() => value.owner.close()).toThrow(NativeGlFault);
   expect(value.native.live.size).toBe(1);
-  value.native.deletionError(0);
-  expect(repairNativeState(value.native.gl)).toBe(true);
-  expect(value.native.deleted).toHaveLength(1);
-  expect(repairNativeState(value.native.gl)).toBe(true);
-  expect(value.native.deleted).toHaveLength(1);
+  expect(value.native.deleted).toHaveLength(0);
 });
 it.each([undefined, null, 0, 0x9117, 0.5])("does not turn malformed native status %s into completion", (status) => {
   const value = fixture(), token = published(value);
@@ -230,44 +224,6 @@ it.each(["fd-close", "process-exit"] as const)("captures a peer's flags before r
   kernel.releaseProcessViews(8);
 });
 
-it("preserves a forwarded peer's flags when unbinding a creatorless fence", () => {
-  const native = driver();
-  const gl = new Proxy(native.gl, { get(target, name) {
-    return Reflect.get(target, name) ?? (() => null);
-  } });
-  let registry!: GlContextRegistry;
-  const original = GlContextRegistry.prototype.bind;
-  const observe = vi.spyOn(GlContextRegistry.prototype, "bind").mockImplementation(function (this: GlContextRegistry, input: GlBindingInput) {
-    original.call(this, input); registry = this;
-  });
-  let listener: ((event: MessageEvent) => void) | null = null;
-  const worker = {
-    addEventListener(_type: "message", value: (event: MessageEvent) => void) { listener = value; },
-    removeEventListener() { listener = null; },
-  };
-  const fire = (data: GlForwardMessage) => listener!({ data } as MessageEvent);
-  const dispose = setupMainForward(worker, { width: 1, height: 1, getContext: () => gl } as unknown as HTMLCanvasElement, 7);
-  try {
-    for (const sessionId of [11, 12]) {
-      const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox, 0);
-      fire({ type: "gl_forward_create_context", pid: 7, sessionId, mailbox });
-      expect(waitForGlForwardQuery(mailbox).rc).toBe(0);
-    }
-    const creator = registry.get(7, 11)!, peer = registry.get(7, 12)!;
-    const candidate = creator.fences.prepare(creator)!; candidate.publish();
-    fire({ type: "gl_forward_destroy_context", pid: 7, sessionId: 11 });
-    expect(creator.gl).toBeNull();
-    const bytes = new Uint8Array(8), words = new DataView(bytes.buffer);
-    words.setUint16(0, 1, true); words.setUint16(2, 4, true); words.setUint32(4, 0x4000, true);
-    fire({ type: "gl_forward_submit", pid: 7, sessionId: 12, bytes });
-    expect(peer.errors).toEqual([]);
-    native.errors.push(0x500);
-    fire({ type: "gl_forward_unbind", pid: 7, sessionId: 11 });
-    expect(peer.errors).toEqual([0x500]);
-    expect(native.deleted).toHaveLength(1);
-  } finally { dispose(); observe.mockRestore(); }
-});
-
 it("releases an empty cleanup reservation when native fence allocation returns null", () => {
   const value = fixture();
   value.native.gl.fenceSync = () => null;
@@ -298,16 +254,25 @@ it("refuses token exhaustion instead of wrapping onto an older identity", () => 
   expect(value.native.deleted).toHaveLength(1);
 });
 
-it.each(["candidate", "published"] as const)("keeps the native context reachable for rejected %s cleanup through owner retirement", kind => {
+it.each(["candidate", "published"] as const)("faults when the live renderer refuses %s cleanup", kind => {
   const value = fixture(), candidate = value.owner.prepare(value.source)!;
   if (kind === "published") candidate.publish();
   value.native.deletionError(0x502);
-  if (kind === "published") value.owner.destroy(candidate.token);
-  else candidate.cancel();
-  expect(value.owner.contexts().has(value.native.gl)).toBe(true);
-  expect(value.owner.acquire(candidate.token)).toBeNull();
-  value.native.deletionError(0);
-  value.owner.close();
-  expect(value.native.deleted).toHaveLength(1);
-  expect(value.owner.contexts().size).toBe(0);
+  const fault = caught(kind === "published" ? () => value.owner.destroy(candidate.token) : () => candidate.cancel());
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(/live renderer refused deleteSync of an object the host retired/);
+  expect(value.native.live.size).toBe(1);
+  expect(value.native.deleted).toHaveLength(0);
+});
+
+it("keeps an off-batch native polling failure private after capturing the selected guest's flags", () => {
+  const value = fixture(), token = published(value);
+  const lease = value.owner.acquire(token)!;
+  const selected = {errors: [] as number[]};
+  value.native.errors.push(0x501);
+  value.native.gl.getSyncParameter = () => { value.native.errors.push(0x502); return 0x9118; };
+  expect(lease.poll(selected)).toBeNull();
+  expect(selected.errors).toEqual([0x501]);
+  expect(value.source.errors).toEqual([]);
+  lease.release(); value.owner.destroy(token);
 });

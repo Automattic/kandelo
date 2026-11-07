@@ -1,0 +1,22 @@
+Subject: [PATCH] Preserve the public void GChildWatchFunc dispatch contract
+
+The native dispatcher ignores the existing inner GClosure boolean result.
+Keep that inner BOOLEAN/PID GValue protocol while adapting the outer
+callback to its exact public type.
+
+--- a/gobject/gsourceclosure.c
++++ b/gobject/gsourceclosure.c
+@@ -143,0 +144,10 @@
++/* GChildWatchFunc has a void return. Preserve the existing inner
++ * GClosure BOOLEAN/PID GValue protocol, whose result the source ignores. */
++static void
++g_child_watch_closure_dispatch (GPid     pid,
++                                gint     status,
++                                gpointer data)
++{
++  (void) g_child_watch_closure_callback (pid, status, data);
++}
++
+@@ -205 +215 @@
+-        closure_callback = (GSourceFunc)g_child_watch_closure_callback;
++        closure_callback = G_SOURCE_FUNC (g_child_watch_closure_dispatch);

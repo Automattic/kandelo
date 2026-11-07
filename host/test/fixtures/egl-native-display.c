@@ -38,12 +38,18 @@ int main(void) {
     CHECK(eglGetDisplay((EGLNativeDisplayType)a) == da);
     CHECK(eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, a, NULL) == da);
     CHECK(eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, NULL, NULL) == defaults);
-    CHECK(eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, (void *)(uintptr_t)1, NULL) == EGL_NO_DISPLAY);
+    CHECK(eglGetPlatformDisplay(0xffffffffu, NULL, NULL) == EGL_NO_DISPLAY);
     CHECK(eglGetError() == EGL_BAD_PARAMETER);
+    /* EGL 1.5 section 3.2 / EXT_platform_base: a supported platform with
+     * no matching native display returns NO_DISPLAY without an error. */
+    CHECK(eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, (void *)(uintptr_t)1, NULL) == EGL_NO_DISPLAY);
+    CHECK(eglGetError() == EGL_SUCCESS);
+    CHECK(eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, (void *)(uintptr_t)1, NULL) == EGL_NO_DISPLAY);
+    CHECK(eglGetError() == EGL_SUCCESS);
     void *guard = mmap(NULL, 65536, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(guard != MAP_FAILED);
     CHECK(eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, guard, NULL) == EGL_NO_DISPLAY);
-    CHECK(eglGetError() == EGL_BAD_PARAMETER && munmap(guard, 65536) == 0);
+    CHECK(eglGetError() == EGL_SUCCESS && munmap(guard, 65536) == 0);
     CHECK(eglInitialize(da, NULL, NULL) && eglInitialize(db, NULL, NULL));
     CHECK(eglInitialize(dc, NULL, NULL) && eglInitialize(defaults, NULL, NULL));
     CHECK(eglInitialize(da, NULL, NULL));
@@ -67,9 +73,13 @@ int main(void) {
     CHECK(eglGetCurrentDisplay() == EGL_NO_DISPLAY);
     CHECK(ioctl(independent, DRM_IOCTL_SET_MASTER, 0) == 0);
     EGLint configs = -1;
-    CHECK(eglGetConfigs(dc, NULL, 0, &configs) && configs == 1);
+    CHECK(eglGetConfigs(dc, NULL, 0, &configs) && configs > 0);
+    EGLConfig first_config = NULL, same_config = NULL;
+    EGLint returned = -1, same_count = -1;
+    CHECK(eglGetConfigs(dc, &first_config, 1, &returned) && returned == 1 && first_config);
     CHECK(eglTerminate(defaults));
-    CHECK(eglGetConfigs(dc, NULL, 0, &configs) && configs == 1);
+    CHECK(eglGetConfigs(dc, NULL, 0, &same_count) && same_count == configs);
+    CHECK(eglGetConfigs(dc, &same_config, 1, &returned) && returned == 1 && same_config == first_config);
     struct gbm_device *replacement = gbm_create_device(independent);
     CHECK(replacement);
     EGLDisplay dn = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, replacement, NULL);

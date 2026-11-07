@@ -1,0 +1,22 @@
+id = "FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM"
+kind = "bug"
+status = "confirmed"
+runtimes = ["firefox"]
+summary = "Vertex-stage gl_DepthRange reads another uniform when both stages use it"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["firefox"]
+self_judging = true
+timeout_seconds = 60
+
+[[observed]]
+runtime = "firefox"
+version = "155.0"
+os = "macos"
+reproduced = true
+date = 2026-11-01
+source = "suite"
+released = false

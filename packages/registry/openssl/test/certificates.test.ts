@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   certificateToPEM,
   generateCertificate,
-} from "../src/tls/certificates";
+} from "../../../../host/src/networking/tls/certificates";
 
 async function parsedSerialNumber(serialNumber: number[]): Promise<string> {
   const generated = await generateCertificate({

@@ -99,12 +99,16 @@ if [ ! -d "$SRC_DIR" ]; then
     # Match the getter definition and declaration: wasm calls have exact arity.
     # Upstream fix: GNOME/gtk 022c36a1379d82b4212a298ed6eaec02bc0ed7f1.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/fix-slowdown-prototype.patch"
-    # GDK backs its wl_shm pools with memfd_create/shm_open. A memfd is
-    # private to the process that made it here, so the compositor's
-    # gbm_bo_import(GBM_BO_IMPORT_FD) rejects the fd and the window shows
-    # no pixels. The patch allocates the pool as a DRI bo instead — the
-    # same shape foot and mako already use.
-    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-shm-gbm-pool.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-interface-init-contract.patch"
+    # Base application virtuals must preserve their exact function signatures.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-application-default-vfuncs.patch"
+    # Connected GTK widget signals preserve the closure userdata argument.
+    patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-widget-signal-contracts.patch"
+    # Closure/weak cleanup retains the public two-argument notifier contract.
+    patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-closure-notifier-contract.patch"
+    # Accessibility handlers connected to void signals take the closure-data
+    # argument and return nothing, as GLib's marshallers call them.
+    patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-a11y-signal-contracts.patch"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.
@@ -171,8 +175,7 @@ echo "==> Configuring gtk+ for wasm32..."
     # configure reads lists these, and a link without them fails on the
     # undefined symbols:
     #   - libEGL, libGLESv2, libgbm, libdrm (base sysroot):
-    #     wayland-shm-gbm-pool.patch makes GDK allocate its wl_shm pools
-    #     with libgbm, and libwayland-egl calls libgbm and libEGL;
+    #     libwayland-egl calls the sysroot graphics libraries;
     #   - libiconv: fontconfig parses its configuration with libxml2, and
     #     this libxml2 converts encodings through GNU libiconv;
     #   - libc++, libc++abi: pango shapes through harfbuzz, which is C++.

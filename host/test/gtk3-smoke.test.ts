@@ -24,7 +24,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { resolveBinary } from "../src/binary-resolver";
+import { localBinariesDir } from "../src/binary-resolver";
 import { WLROOTS_ENV, compositorBytes, requireSession, sessionRootfs } from "./wlroots-session";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -34,7 +34,8 @@ const INCONSOLATA = join(
   "third_party/Inconsolata-Regular.ttf",
 );
 
-const gtkSmokeBin = resolveBinary("programs/gtk3_smoke.wasm");
+// The normal SDK program builder owns this fixture; it is not a package artifact.
+const gtkSmokeBin = join(localBinariesDir(), "programs/wasm32/gtk3_smoke.wasm");
 requireSession("cage");
 
 const FONT_DIR = "/usr/share/fonts";
@@ -73,7 +74,7 @@ describe("gtk3 — packaged GTK 3.24 wayland client on cage", () => {
       const diagnostics: unknown[] = [];
       const host = new NodeKernelHost({
         rootfsImage: await sessionRootfs("cage", [
-          { path: "/usr/bin/gtk3_smoke", bytes: new Uint8Array(readFileSync(gtkSmokeBin!)), mode: 0o755 },
+          { path: "/usr/bin/gtk3_smoke", bytes: new Uint8Array(readFileSync(gtkSmokeBin)), mode: 0o755 },
           {
             path: `${FONT_DIR}/Inconsolata-Regular.ttf`,
             bytes: new Uint8Array(readFileSync(INCONSOLATA)),

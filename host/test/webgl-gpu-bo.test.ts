@@ -18,7 +18,7 @@ import { describe, expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { registerImageSource } from "../src/webgl/image-storage.js";
 import { prepareBorrowedSurfaceTarget, retainSurfaceStorage } from "../src/webgl/surface-resources.js";
-import { hasNativeRepair } from "../src/webgl/native-recovery.js";
+import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 
 const GL = {
   TEXTURE_2D: 0x0de1,
@@ -128,6 +128,34 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     expect(calls.framebufferRenderbuffer).toEqual([
       [GL.FRAMEBUFFER, GL.DEPTH_STENCIL_ATTACHMENT, GL.RENDERBUFFER, entry.depthStencil],
     ]);
+  });
+
+  it.each([
+    ["R8", 0x20203852, 0x8229, 0x1903, 0x1401],
+    ["GR88", 0x38385247, 0x822b, 0x8227, 0x1401],
+    ["RGB565", 0x36314752, 0x8d62, 0x1907, 0x8363],
+    ["ARGB8888", 0x34325241, 0x8058, 0x1908, 0x1401],
+    ["ABGR2101010", 0x30334241, 0x8059, 0x1908, 0x8368],
+    ["ARGB2101010", 0x30335241, 0x8059, 0x1908, 0x8368],
+    ["ABGR16161616F", 0x48344241, 0x881a, 0x1908, 0x140b],
+  ])("stores a %s GPU bo in its exact WebGL 2 internal format", (_name, fourcc, internal, format, type) => {
+    const { gl, calls } = makeFakeGl();
+    const reg = new GlContextRegistry();
+    expect(reg.createGpuBo(42, gl, 5, 3, fourcc)).not.toBeNull();
+    expect(calls.texImage2D[0]).toEqual([GL.TEXTURE_2D, 0, internal, 5, 3, 0, format, type, null]);
+  });
+
+  it("does not publish storage the renderer cannot render into (RGBA16F without EXT_color_buffer_float)", () => {
+    const { gl } = makeFakeGl();
+    (gl as unknown as { checkFramebufferStatus: () => number }).checkFramebufferStatus = () => 0x8cd6;
+    const reg = new GlContextRegistry();
+    expect(reg.createGpuBo(42, gl, 5, 3, 0x48344241)).toBeNull();
+    expect(reg.gpuBo(42)).toBeUndefined();
+  });
+
+  it("refuses a format the kernel never admits loudly, as a host fault", () => {
+    const { gl } = makeFakeGl();
+    expect(() => new GlContextRegistry().createGpuBo(42, gl, 5, 3, 0x3231564e)).toThrow("no texture storage");
   });
 
   it("distinct bos get distinct ids from the GPU band", () => {
@@ -250,14 +278,13 @@ it("rejects a native GPU allocation error before publishing canonical storage",(
   expect(calls.deletedFramebuffers).toHaveLength(1);expect(calls.deletedTextures).toHaveLength(1);
   expect(calls.deletedRenderbuffers).toHaveLength(1);expect(gl.getError()).toBe(0);
 });
-it("does not replay accepted GPU deletion members after a later member rejects",()=>{
+it("faults when the live renderer refuses a GPU BO texture deletion",()=>{
   const {gl,calls}=makeFakeGl(),reg=new GlContextRegistry();reg.createGpuBo(41,gl,2,2);
-  const destroy=gl.deleteTexture.bind(gl);let reject=true;
-  gl.deleteTexture=value=>{if(reject)throw new Error("texture delete rejected");destroy(value);};
-  expect(reg.destroyGpuBo(41)).toBe(false);reject=false;
-  expect(reg.destroyGpuBo(41)).toBe(true);
-  expect(calls.deletedFramebuffers).toHaveLength(1);expect(calls.deletedRenderbuffers).toHaveLength(1);
-  expect(calls.deletedTextures).toHaveLength(1);
+  gl.deleteTexture=()=>{throw new Error("texture delete rejected");};
+  let fault: unknown;try{reg.destroyGpuBo(41);}catch(error){fault=error;}
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect((fault as Error).message).toMatch(/live renderer refused deleteTexture/);
+  expect(calls.deletedTextures).toEqual([]);
 });
 it("keeps a borrowed GPU allocation while a copied surface lease outlives public BO retirement",()=>{
   const {gl,calls}=makeFakeGl(),reg=new GlContextRegistry();reg.createGpuBo(41,gl,2,2);
@@ -298,26 +325,21 @@ it("keeps retired BO generations and cloned surface leases disjoint from ID reus
   expect(reg.gpuBo(41)).toBe(fresh);expect(reg.destroyGpuBo(41)).toBe(true);
   expect(calls.deletedFramebuffers).toEqual([old.fbo,fresh.fbo]);reg.unbind(7);
 });
-it("keeps a rejected candidate and selector inverse until restoration accepts",()=>{
-  const {gl,calls,state}=makeFakeGl(),reg=new GlContextRegistry();const bind=gl.bindFramebuffer.bind(gl);let reject=true;
-  gl.bindFramebuffer=(target,framebuffer)=>{if(reject && framebuffer===state.readBinding)throw new Error("read selector rejected");bind(target,framebuffer);};
-  expect(reg.createGpuBo(41,gl,2,2)).toBeNull();expect(reg.gpuBo(41)).toBeUndefined();
-  expect(hasNativeRepair(gl)).toBe(true);expect(calls.deletedFramebuffers).toEqual([]);
-  expect(reg.createGpuBo(42,gl,2,2)).toBeNull();expect(calls.texImage2D).toHaveLength(1);
-  reject=false;expect(reg.createGpuBo(42,gl,2,2)).not.toBeNull();
-  expect(calls.deletedFramebuffers).toHaveLength(1);expect(calls.deletedTextures).toHaveLength(1);
-  expect(hasNativeRepair(gl)).toBe(false);expect(reg.destroyGpuBo(42)).toBe(true);
+it("faults when the live renderer refuses the selector restoration of a rejected GPU allocation",()=>{
+  const {gl,state}=makeFakeGl(),reg=new GlContextRegistry();const bind=gl.bindFramebuffer.bind(gl);
+  gl.bindFramebuffer=(target,framebuffer)=>{if(framebuffer===state.readBinding)throw new Error("read selector rejected");bind(target,framebuffer);};
+  // The reporter latches the fault and allocation rethrows it.
+  const faults: Error[]=[];setNativeGlFaultReporter(fault=>faults.push(fault));
+  let thrown: unknown;
+  try{reg.createGpuBo(41,gl,2,2);}catch(error){thrown=error;}finally{setNativeGlFaultReporter(null);}
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toMatch(/live renderer refused to restore native state/);
+  expect(faults).toEqual([thrown]);
+  expect(reg.gpuBo(41)).toBeUndefined();
 });
-it("keeps an unheld failed retirement hidden and refuses recreation until checked cleanup",()=>{
-  const {gl,calls}=makeFakeGl(),reg=new GlContextRegistry();reg.createGpuBo(41,gl,2,2);const old=reg.gpuBo(41)!;
-  const remove=gl.deleteFramebuffer.bind(gl);let reject=true;
-  gl.deleteFramebuffer=value=>{if(reject)throw new Error("FBO retirement rejected");remove(value);};
-  expect(reg.destroyGpuBo(41)).toBe(false);expect(reg.gpuBo(41)).toBeUndefined();
-  reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});const b=reg.get(7,11)!;
-  b.gl=gl;b.pendingRenderTargetBoId=41;expect(reg.applyRenderTarget(b)).toBe(false);
-  expect(calls.deletedTextures).toEqual([]);expect(calls.deletedRenderbuffers).toEqual([]);
-  expect(reg.createGpuBo(41,gl,2,2)).toBeNull();expect(calls.texImage2D).toHaveLength(1);
-  reject=false;expect(reg.destroyGpuBo(41)).toBe(true);
-  expect(calls.deletedFramebuffers).toEqual([old.fbo]);expect(calls.deletedTextures).toEqual([old.tex]);
-  reg.unbind(7);
+it("faults when the live renderer refuses an unheld GPU BO framebuffer retirement",()=>{
+  const {gl}=makeFakeGl(),reg=new GlContextRegistry();reg.createGpuBo(41,gl,2,2);
+  gl.deleteFramebuffer=()=>{throw new Error("FBO retirement rejected");};
+  expect(()=>reg.destroyGpuBo(41)).toThrow(/live renderer refused deleteFramebuffer/);
+  expect(reg.gpuBo(41)).toBeUndefined();
 });

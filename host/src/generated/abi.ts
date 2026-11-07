@@ -5,6 +5,15 @@ export const ABI_VERSION = 56 as const;
 export const ABI_CUSTOM_SECTION = "wasm-posix-abi" as const;
 export const ABI_KERNEL_EXPORT = "__abi_version" as const;
 
+export const GL_QUERY_REPLY_MAGIC = 1196510259 as const;
+export const GL_IMAGE_MUTATION_LEGACY_REPLY_BYTES = 12 as const;
+export const GL_IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES = 16 as const;
+export const GL_IMAGE_DELETION_CONTAINERS_REPLY_BYTES = 20 as const;
+export const KMS_CURSOR_PROTOCOL_VERSION = 4 as const;
+export const KMS_CURSOR_RECORD_BYTES = 40 as const;
+export const KMS_CURSOR_FRAMEBUFFER_OFFSET = 36 as const;
+export const DRI_CLEANUP_COMPLETE = 0 as const;
+
 /* Kandelo's reference instant: the first Kandelo commit's time. Stamped
 * on image files when no time is supplied; never 0, which software
 * reads as "no timestamp" (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). */
@@ -501,6 +510,10 @@ export const WAKEUP_EVENT_FIELDS = {
   idx: { offset: 0, size: 4, type: "u32" },
   wakeType: { offset: 4, size: 1, type: "u8" },
 } as const;
+export const WAKEUP_EVENT_RESERVED_INDICES = {
+  fenceReady: 4294967295,
+  fenceHostWork: 4294967294,
+} as const;
 
 export const WAIT_COMPLETION_RECORD_BYTES = 24 as const;
 export const KERNEL_WAIT_PARKED_ERRNO = 65536 as const;
@@ -851,6 +864,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_get_dirfd_path",
   "kernel_get_fd_path",
   "kernel_get_parent_pid",
+  "kernel_get_process_exec_generation",
   "kernel_get_process_exit_signal",
   "kernel_get_process_state",
   "kernel_get_socket_timeout_ms",
@@ -921,6 +935,8 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_clipboard_guest_read",
   "kernel_clipboard_offer",
   "kernel_clipboard_stage",
+  "kernel_epoll_wait_retry_state",
+  "kernel_owned_mapping_finish",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
   "kernel_set_max_addr",
@@ -1745,6 +1761,7 @@ export const ERRNO = {
   ENOMSG: 42,
   EIDRM: 43,
   ENODATA: 61,
+  ETIME: 62,
   EPROTO: 71,
   EOVERFLOW: 75,
   EBADFD: 77,
@@ -2066,6 +2083,7 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   72: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
   73: { argKind: "pointer", direction: "in", wasm32Size: 24, wasm64Size: 40 },
   74: { argKind: "pointer", direction: "in", wasm32Size: 32, wasm64Size: 32 },
+  75: { argKind: "pointer", direction: "inout", wasm32Size: 48, wasm64Size: 64 },
   17920: { argKind: "pointer", direction: "out", wasm32Size: 160, wasm64Size: 160 },
   17921: { argKind: "pointer", direction: "in", wasm32Size: 160, wasm64Size: 160 },
   17922: { argKind: "pointer", direction: "out", wasm32Size: 80, wasm64Size: 80 },
@@ -2114,7 +2132,9 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   1074024464: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
   1074025521: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
   1074029585: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
+  1074291203: { argKind: "pointer", direction: "in", wasm32Size: 8, wasm64Size: 8 },
   1074291721: { argKind: "pointer", direction: "in", wasm32Size: 8, wasm64Size: 8 },
+  1074806277: { argKind: "pointer", direction: "in", wasm32Size: 16, wasm64Size: 16 },
   1074816013: { argKind: "pointer", direction: "in", wasm32Size: 16, wasm64Size: 16 },
   2147763457: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
   2147766274: { argKind: "pointer", direction: "out", wasm32Size: 4, wasm64Size: 4 },
@@ -2144,37 +2164,72 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   3221508106: { argKind: "pointer", direction: "inout", wasm32Size: 4, wasm64Size: 4 },
   3221513391: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
   3221513396: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
+  3221513406: { argKind: "pointer", direction: "in", wasm32Size: 4, wasm64Size: 4 },
+  3221774850: { argKind: "pointer", direction: "inout", wasm32Size: 8, wasm64Size: 8 },
+  3221775361: { argKind: "pointer", direction: "inout", wasm32Size: 8, wasm64Size: null },
+  3221775551: { argKind: "pointer", direction: "inout", wasm32Size: 8, wasm64Size: 8 },
+  3221775552: { argKind: "pointer", direction: "inout", wasm32Size: 8, wasm64Size: 8 },
   3221775568: { argKind: "pointer", direction: "in", wasm32Size: 8, wasm64Size: 8 },
+  3221775588: { argKind: "pointer", direction: "in", wasm32Size: 8, wasm64Size: 8 },
   3222037549: { argKind: "pointer", direction: "inout", wasm32Size: 12, wasm64Size: 12 },
   3222037550: { argKind: "pointer", direction: "inout", wasm32Size: 12, wasm64Size: 12 },
+  3222299649: { argKind: "pointer", direction: "inout", wasm32Size: null, wasm64Size: 16 },
   3222299660: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
-  3222299706: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
+  3222299706: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: null },
   3222299819: { argKind: "pointer", direction: "in", wasm32Size: 16, wasm64Size: 16 },
   3222299820: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
   3222299827: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
   3222299829: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
+  3222299837: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
+  3222299841: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
+  3222299842: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
+  3222299844: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
+  3222299845: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
   3222299872: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
   3222299873: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
+  3222299878: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
   3222561958: { argKind: "pointer", direction: "inout", wasm32Size: 20, wasm64Size: 20 },
+  3222823994: { argKind: "pointer", direction: "inout", wasm32Size: null, wasm64Size: 24 },
   3222824112: { argKind: "pointer", direction: "in", wasm32Size: 24, wasm64Size: 24 },
+  3222824113: { argKind: "pointer", direction: "in", wasm32Size: 24, wasm64Size: 24 },
   3222824122: { argKind: "pointer", direction: "in", wasm32Size: 24, wasm64Size: 24 },
+  3222824129: { argKind: "pointer", direction: "inout", wasm32Size: 24, wasm64Size: 24 },
+  3222824130: { argKind: "pointer", direction: "inout", wasm32Size: 24, wasm64Size: 24 },
   3222824134: { argKind: "pointer", direction: "inout", wasm32Size: 24, wasm64Size: 24 },
+  3222824139: { argKind: "pointer", direction: "inout", wasm32Size: 24, wasm64Size: 24 },
+  3222824141: { argKind: "pointer", direction: "inout", wasm32Size: 24, wasm64Size: 24 },
+  3222824143: { argKind: "pointer", direction: "inout", wasm32Size: 24, wasm64Size: 24 },
   3223086243: { argKind: "pointer", direction: "in", wasm32Size: 28, wasm64Size: 28 },
   3223086253: { argKind: "pointer", direction: "inout", wasm32Size: 28, wasm64Size: 28 },
+  3223086254: { argKind: "pointer", direction: "inout", wasm32Size: 28, wasm64Size: 28 },
+  3223348388: { argKind: "pointer", direction: "in", wasm32Size: 32, wasm64Size: 32 },
+  3223348389: { argKind: "pointer", direction: "in", wasm32Size: 32, wasm64Size: 32 },
   3223348402: { argKind: "pointer", direction: "inout", wasm32Size: 32, wasm64Size: 32 },
   3223348406: { argKind: "pointer", direction: "inout", wasm32Size: 32, wasm64Size: 32 },
   3223348409: { argKind: "pointer", direction: "inout", wasm32Size: 32, wasm64Size: 32 },
+  3223348419: { argKind: "pointer", direction: "inout", wasm32Size: 32, wasm64Size: 32 },
+  3223348428: { argKind: "pointer", direction: "inout", wasm32Size: 32, wasm64Size: 32 },
   3223348450: { argKind: "pointer", direction: "inout", wasm32Size: 32, wasm64Size: 32 },
   3223610368: { argKind: "pointer", direction: "inout", wasm32Size: 36, wasm64Size: null },
   3223610555: { argKind: "pointer", direction: "in", wasm32Size: 36, wasm64Size: 36 },
+  3223872707: { argKind: "pointer", direction: "inout", wasm32Size: 40, wasm64Size: 40 },
+  3223872714: { argKind: "pointer", direction: "inout", wasm32Size: 40, wasm64Size: 40 },
+  3224387075: { argKind: "pointer", direction: "inout", wasm32Size: 48, wasm64Size: 48 },
   3224396983: { argKind: "pointer", direction: "in", wasm32Size: 48, wasm64Size: 48 },
+  3224397002: { argKind: "pointer", direction: "inout", wasm32Size: 48, wasm64Size: 48 },
+  3224397027: { argKind: "pointer", direction: "inout", wasm32Size: 48, wasm64Size: 48 },
+  3224911364: { argKind: "pointer", direction: "inout", wasm32Size: 56, wasm64Size: 56 },
+  3224921276: { argKind: "pointer", direction: "inout", wasm32Size: 56, wasm64Size: 56 },
   3225445376: { argKind: "pointer", direction: "inout", wasm32Size: null, wasm64Size: 64 },
   3225445536: { argKind: "pointer", direction: "inout", wasm32Size: 64, wasm64Size: 64 },
   3225445546: { argKind: "pointer", direction: "inout", wasm32Size: 64, wasm64Size: 64 },
+  3225969893: { argKind: "pointer", direction: "inout", wasm32Size: 72, wasm64Size: 72 },
   3226494119: { argKind: "pointer", direction: "inout", wasm32Size: 80, wasm64Size: 80 },
   3228066977: { argKind: "pointer", direction: "inout", wasm32Size: 104, wasm64Size: 104 },
   3228066978: { argKind: "pointer", direction: "in", wasm32Size: 104, wasm64Size: 104 },
   3228067000: { argKind: "pointer", direction: "inout", wasm32Size: 104, wasm64Size: 104 },
+  3228067022: { argKind: "pointer", direction: "inout", wasm32Size: 104, wasm64Size: 104 },
+  3242222823: { argKind: "pointer", direction: "inout", wasm32Size: 320, wasm64Size: 320 },
 };
 
 export interface IoctlRequestFamily {

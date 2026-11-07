@@ -1172,6 +1172,114 @@ static void test_call_arity22(void)
     check_i64("call i32x22 -> i64", rl, expect);
 }
 
+/* Long heterogeneous calls need all four ABI word classes. A large arity
+ * is not evidence that every argument is an i32: generic scalar marshallers
+ * retain the f32/f64 and i64 values among ordinary word arguments. */
+#define LONG_RECORD_PARAMS \
+    uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, \
+    uint32_t a5, uint32_t a6, uint32_t a7, uint32_t a8, uint32_t a9, \
+    float a10, double a11, uint32_t a12, uint32_t a13, uint32_t a14, \
+    uint32_t a15, uint32_t a16, uint32_t a17, uint64_t a18, uint64_t a19
+#define LONG_RECORD_ARGS \
+    a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, \
+    a14, a15, a16, a17, a18, a19
+
+static unsigned long_record_calls;
+static void t_long_record(LONG_RECORD_PARAMS)
+{
+    uint32_t words[] = { a0, a1, a2, a3, a4, a5, a6, a7, a8, a9,
+                         a12, a13, a14, a15, a16, a17 };
+    for (unsigned i = 0; i < 16; i++)
+        CHECK(words[i] == 0x13570000u + i * 37u, "long mixed i32 slot");
+    check_f32("long mixed f32", a10, -13.75f);
+    check_f64("long mixed f64", a11, 9007199254740991.0);
+    CHECK(a18 == UINT64_C(0x1122334455667788), "long mixed first i64");
+    CHECK(a19 == UINT64_C(0x8877665544332211), "long mixed second i64");
+    long_record_calls++;
+}
+
+static uint64_t t_long_record_data(LONG_RECORD_PARAMS, uint32_t data)
+{
+    t_long_record(LONG_RECORD_ARGS);
+    CHECK(data == 0xa5b6c7d8u, "long mixed trailing word");
+    return a18 ^ a19;
+}
+
+static void test_call_long_mixed(void)
+{
+    ffi_cif cif;
+    ffi_type *types[21];
+    uint32_t words[17];
+    float f = -13.75f;
+    double d = 9007199254740991.0;
+    uint64_t wide[] = { UINT64_C(0x1122334455667788),
+                        UINT64_C(0x8877665544332211) };
+    void *values[21];
+    for (unsigned i = 0; i < 16; i++) {
+        unsigned slot = i < 10 ? i : i + 2;
+        words[i] = 0x13570000u + i * 37u;
+        types[slot] = &ffi_type_uint32;
+        values[slot] = &words[i];
+    }
+    types[10] = &ffi_type_float; values[10] = &f;
+    types[11] = &ffi_type_double; values[11] = &d;
+    types[18] = types[19] = &ffi_type_uint64;
+    values[18] = &wide[0]; values[19] = &wide[1];
+    words[16] = 0xa5b6c7d8u;
+    types[20] = &ffi_type_uint32; values[20] = &words[16];
+    CHECK(ffi_prep_cif(&cif, FFI_DEFAULT_ABI, 20, &ffi_type_void, types)
+          == FFI_OK, "prep long mixed void");
+    ffi_call(&cif, (void (*)(void)) t_long_record, NULL, values);
+    CHECK(long_record_calls == 1, "long mixed void callback executed");
+    uint64_t result = 0;
+    CHECK(ffi_prep_cif(&cif, FFI_DEFAULT_ABI, 21, &ffi_type_uint64, types)
+          == FFI_OK, "prep long mixed return and data");
+    ffi_call(&cif, (void (*)(void)) t_long_record_data, &result, values);
+    CHECK(result == (wide[0] ^ wide[1]), "long mixed i64 return");
+    CHECK(long_record_calls == 2, "long mixed data callback executed");
+}
+
+#undef LONG_RECORD_PARAMS
+#undef LONG_RECORD_ARGS
+
+/* Eight logical arguments plus callback data must retain the floating pair
+ * too; limiting mixed calls to arity eight drops this ordinary ABI shape. */
+static unsigned mixed9_calls;
+static void t_mixed9(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3,
+                     uint32_t a4, uint32_t a5, double a6, float a7,
+                     uint32_t data)
+{
+    uint32_t words[] = { a0, a1, a2, a3, a4, a5 };
+    for (unsigned i = 0; i < 6; i++)
+        CHECK(words[i] == 0x24680000u + 17u * i, "nine-argument word");
+    check_f64("nine-argument f64", a6, -0.3125);
+    check_f32("nine-argument f32", a7, 123.5f);
+    CHECK(data == 0xfedcba98u, "nine-argument callback data");
+    mixed9_calls++;
+}
+
+static void test_call_mixed9(void)
+{
+    ffi_cif cif;
+    ffi_type *types[9];
+    uint32_t words[7];
+    double d = -0.3125;
+    float f = 123.5f;
+    void *values[9];
+    for (unsigned i = 0; i < 6; i++) {
+        words[i] = 0x24680000u + 17u * i;
+        types[i] = &ffi_type_uint32; values[i] = &words[i];
+    }
+    types[6] = &ffi_type_double; values[6] = &d;
+    types[7] = &ffi_type_float; values[7] = &f;
+    words[6] = 0xfedcba98u;
+    types[8] = &ffi_type_uint32; values[8] = &words[6];
+    CHECK(ffi_prep_cif(&cif, FFI_DEFAULT_ABI, 9, &ffi_type_void, types)
+          == FFI_OK, "prep nine-argument callback");
+    ffi_call(&cif, (void (*)(void)) t_mixed9, NULL, values);
+    CHECK(mixed9_calls == 1, "nine-argument callback executed");
+}
+
 int main(void)
 {
     init_struct_types();
@@ -1181,6 +1289,8 @@ int main(void)
     test_call_mixed();
     test_small_ints();
     test_call_arity22();
+    test_call_long_mixed();
+    test_call_mixed9();
     test_closures_scalar();
     test_closure_pool_reuse();
 #ifdef __wasm__

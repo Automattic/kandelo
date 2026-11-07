@@ -1,3 +1,4 @@
+import { recordComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -11,7 +12,10 @@ import {
   createWasmPosixKernelTestHarness,
   WasmPosixKernel,
 } from "../src/kernel";
-import { QOP_GET_ERROR, QOP_FINISH } from "../src/webgl/ops";
+import { QOP_GET_ERROR, QOP_FINISH, QOP_PROGRAM_JOURNAL_BARRIER, QOP_PROGRAM_JOURNAL, QOP_PROGRAM_CAPTURE } from "../src/webgl/ops";
+import {markRendererReset,rendererLost} from "../src/webgl/renderer-loss";
+import {NativeGlFault} from "../src/webgl/native-recovery";
+import {NativeContextReset} from "../src/webgl/native-batch";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 function hostileBytes(length: number, reportedLength = 1): Uint8Array {
@@ -37,6 +41,7 @@ function kernelHarness(
   memory: WebAssembly.Memory;
 } {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  recordComparisonMemoryShape(memory, 4, false, 2);
   const kernel = createWasmPosixKernelTestHarness({
     io: io as any,
     callbacks: callbacks as any,
@@ -69,6 +74,7 @@ function fullKernelHarness(
 } {
   const memory = suppliedMemory
     ?? new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  if (!suppliedMemory) recordComparisonMemoryShape(memory, 4, false, 2);
   const kernel = createWasmPosixKernelTestHarness({
     io: io as any,
     callbacks: callbacks as any,
@@ -83,6 +89,140 @@ function fullKernelHarness(
   }) as WasmPosixKernel & Record<string, any>;
   return { kernel, memory };
 }
+
+describe("Rust-lent process snapshot comparisons", () => {
+  it("requests an owned read for unknown metadata only after validating both full ranges", () => {
+    const processMemory = new WebAssembly.Memory({ initial: 1 });
+    const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory: () => processMemory });
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+    expect(imports.env.host_proc_compare_bytes(7, 0n, 4096, 64)).toBe(2);
+    expect(imports.env.host_proc_compare_bytes(7, 65535n, 4096, 64)).toBe(-14);
+    expect(imports.env.host_proc_compare_bytes(7, 0n, 131071, 64)).toBe(-14);
+  });
+
+  it("does not turn an authenticated descriptor/import mismatch into capability fallback", () => {
+    const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    // Deliberately lie at the trusted constructor boundary to force LinkError.
+    recordComparisonMemoryShape(processMemory, 8, false, 2);
+    const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory: () => processMemory });
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+    expect(imports.env.host_proc_compare_bytes(7, 0n, 4096, 64)).toBe(-14);
+  });
+
+  it.each([4, 8] as const)("compares exact aligned, unaligned and tail ranges at kernel width %i", width => {
+    const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
+    recordComparisonMemoryShape(processMemory, 4, true, 2);
+    const { kernel, memory } = kernelHarness({}, width, {}, { getProcessMemory: () => processMemory });
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+    const compare = imports.env.host_proc_compare_bytes;
+    const current = new Uint8Array(processMemory.buffer), baseline = new Uint8Array(memory.buffer);
+    for (const sourceOffset of [0, 1, 2, 3, 4, 7]) {
+      for (const snapshotOffset of [0, 1, 2, 3, 4, 7]) {
+        for (const len of [0, 1, 2, 3, 4, 7, 8, 9, 15, 255, 256, 257, 4096]) {
+          const bytes = Uint8Array.from({ length: len }, (_, i) => (i * 29 + 17) & 255);
+          const pointer = 4096 + snapshotOffset;
+          current.set(bytes, sourceOffset); baseline.set(bytes, pointer);
+          const kernelPointer = width === 8 ? BigInt(pointer) : pointer;
+          expect(compare(7, BigInt(sourceOffset), kernelPointer, len)).toBe(0);
+          for (const difference of new Set(len ? [0, Math.floor(len / 2), len - 1] : [])) {
+            current[sourceOffset + difference] ^= 255;
+            expect(compare(7, BigInt(sourceOffset), kernelPointer, len)).toBe(1);
+            expect(baseline.slice(pointer, pointer + len)).toEqual(bytes);
+            current[sourceOffset + difference] ^= 255;
+          }
+        }
+      }
+    }
+  });
+
+  it("validates the entire Rust range before resolving process memory", () => {
+    const getProcessMemory = vi.fn(() => new WebAssembly.Memory({ initial: 1 }));
+    const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory });
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+    for (const [pointer, len] of [[0, 1], [131071, 2], [4096, -1], [4096, 1.5]])
+      expect(imports.env.host_proc_compare_bytes(7, 0n, pointer, len)).toBe(-14);
+    expect(getProcessMemory).not.toHaveBeenCalled();
+  });
+
+  it("refuses invalid full process ranges before returning an early difference", () => {
+    const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    recordComparisonMemoryShape(processMemory, 4, false, 2);
+    const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory: () => processMemory });
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+    new Uint8Array(memory.buffer)[4096] = 91;
+    for (const [address, len] of [[65535n, 2], [0x100000000n, 1], [-1n, 1], [0xffffffffffffffffn, 2]] as const)
+      expect(imports.env.host_proc_compare_bytes(7, address, 4096, len)).toBe(-14);
+    expect(new Uint8Array(memory.buffer)[4096]).toBe(91);
+  });
+
+  it("revalidates the native borrow after a provider grows unshared kernel memory", () => {
+    const memory = new WebAssembly.Memory({ initial: 2, maximum: 3 });
+    recordComparisonMemoryShape(memory, 4, false, 3);
+    const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    recordComparisonMemoryShape(processMemory, 4, false, 2);
+    const bytes = Uint8Array.from([1, 2, 3, 4]);
+    new Uint8Array(memory.buffer, 4096, 4).set(bytes);
+    new Uint8Array(processMemory.buffer, 0, 4).set(bytes);
+    const { kernel } = fullKernelHarness({}, { getProcessMemory: () => { memory.grow(1); return processMemory; } }, 4, memory);
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+    expect(imports.env.host_proc_compare_bytes(7, 0n, 4096, 4)).toBe(0);
+    expect(new Uint8Array(memory.buffer, 4096, 4)).toEqual(bytes);
+    expect(new Uint8Array(processMemory.buffer, 0, 4)).toEqual(bytes);
+  });
+
+  it("returns EFAULT for absent or throwing process-memory providers", () => {
+    for (const callbacks of [{}, { getProcessMemory: () => null }, {
+      getProcessMemory: () => { throw new Error("retired process"); },
+    }]) {
+      const { kernel, memory } = kernelHarness({}, 4, {}, callbacks);
+      const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+      new Uint8Array(memory.buffer, 4096, 4).fill(91);
+      expect(imports.env.host_proc_compare_bytes(7, 0n, 4096, 4)).toBe(-14);
+      expect(new Uint8Array(memory.buffer, 4096, 4)).toEqual(Uint8Array.of(91, 91, 91, 91));
+    }
+  });
+
+  it("uses the current process buffer when the provider grows it", () => {
+    const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    recordComparisonMemoryShape(processMemory, 4, false, 2);
+    const { kernel, memory } = kernelHarness({}, 4, {}, {
+      getProcessMemory: () => { processMemory.grow(1); return processMemory; },
+    });
+    const bytes = Uint8Array.of(2, 3, 5, 7);
+    new Uint8Array(processMemory.buffer, 65532, 4).set(bytes);
+    new Uint8Array(memory.buffer, 4096, 4).set(bytes);
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+    expect(imports.env.host_proc_compare_bytes(7, 65532n, 4096, 4)).toBe(0);
+    expect(new Uint8Array(memory.buffer, 4096, 4)).toEqual(bytes);
+    expect(new Uint8Array(processMemory.buffer, 65532, 4)).toEqual(bytes);
+  });
+
+  it("ignores forged buffer properties and replaced view constructors", () => {
+    const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    recordComparisonMemoryShape(processMemory, 4, false, 2);
+    const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory: () => processMemory });
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+    const current = new Uint8Array(processMemory.buffer, 0, 257), baseline = new Uint8Array(memory.buffer, 4096, 257);
+    current.fill(91); baseline.fill(91);
+    Object.defineProperty(memory, "buffer", { configurable: true, get: () => { throw new Error("forged kernel buffer"); } });
+    Object.defineProperty(processMemory, "buffer", { configurable: true, get: () => { throw new Error("forged process buffer"); } });
+    const originalModule = WebAssembly.Module, originalInstance = WebAssembly.Instance;
+    WebAssembly.Module = function () { throw new Error("replaced module constructor"); } as any;
+    WebAssembly.Instance = function () { throw new Error("replaced instance constructor"); } as any;
+    vi.stubGlobal("Uint8Array", function () { throw new Error("replaced byte constructor"); });
+    vi.stubGlobal("Uint32Array", function () { throw new Error("replaced word constructor"); });
+    try {
+      expect(imports.env.host_proc_compare_bytes(7, 0n, 4096, 257)).toBe(0);
+      current[256] = 73;
+      expect(imports.env.host_proc_compare_bytes(7, 0n, 4096, 257)).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+      WebAssembly.Module = originalModule; WebAssembly.Instance = originalInstance;
+      delete (memory as any).buffer; delete (processMemory as any).buffer;
+    }
+    expect(baseline[256]).toBe(91); expect(current[256]).toBe(73);
+  });
+});
 
 describe("WasmPosixKernel public API scratch ownership", () => {
   it("converts public export pointers losslessly for each Wasm width", () => {
@@ -1164,6 +1304,58 @@ describe("Rust-owned host import ranges", () => {
     )).toBe(-14);
   });
 
+  it.each([4, 8] as const)(
+    "copies a large process range into an independent wasm%s Rust destination",
+    (pointerWidth) => {
+      const processMemory = new WebAssembly.Memory({ initial: 1 });
+      const { kernel, memory } = fullKernelHarness({}, {
+        getProcessMemory: () => processMemory,
+      }, pointerWidth);
+      const imports = kernel.testAuthority.buildImportObject(memory) as {
+        env: Record<string, (...args: any[]) => any>;
+      };
+      const length = 48 * 1024 + 3;
+      const source = new Uint8Array(processMemory.buffer, 31, length);
+      for (let i = 0; i < length; i++) source[i] = (i * 37) & 255;
+      const expected = source.slice();
+      new Uint8Array(memory.buffer).fill(0xa5, 4095, 4097 + length);
+
+      expect(imports.env.host_proc_read_bytes(
+        7, 31n, pointerWidth === 8 ? 4096n : 4096, length,
+      )).toBe(0);
+      source.fill(0);
+      expect(new Uint8Array(memory.buffer, 4096, length)).toEqual(expected);
+      expect(new Uint8Array(memory.buffer)[4095]).toBe(0xa5);
+      expect(new Uint8Array(memory.buffer)[4096 + length]).toBe(0xa5);
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rechecks the wasm%s Rust allocation after process lookup grows memory",
+    (pointerWidth) => {
+      const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+      const memory = new WebAssembly.Memory({ initial: 2, maximum: 3 });
+      const { kernel } = fullKernelHarness({}, {
+        getProcessMemory: () => {
+          memory.grow(1);
+          processMemory.grow(1);
+          new Uint8Array(processMemory.buffer, 65568, 4).set([9, 8, 7, 6]);
+          return processMemory;
+        },
+      }, pointerWidth, memory);
+      const imports = kernel.testAuthority.buildImportObject(memory) as {
+        env: Record<string, (...args: any[]) => any>;
+      };
+      new Uint8Array(memory.buffer).fill(0xa5, 4095, 4101);
+
+      expect(imports.env.host_proc_read_bytes(
+        7, 65568n, pointerWidth === 8 ? 4096n : 4096, 4,
+      )).toBe(0);
+      expect(new Uint8Array(memory.buffer, 4095, 6))
+        .toEqual(new Uint8Array([0xa5, 9, 8, 7, 6, 0xa5]));
+    },
+  );
+
   it("rejects a guest address above 4 GiB instead of aliasing its low bits", () => {
     // The regression the `u64` widening exists to make impossible: a wasm64
     // guest address whose low 32 bits name a perfectly valid offset in the
@@ -1241,8 +1433,8 @@ describe("Rust-owned host import ranges", () => {
   it("preflights GL output before executing a query", () => {
     const { kernel, memory } = fullKernelHarness();
     kernel.gl.bind({ pid: 7, cmdbufAddr: 4096, cmdbufLen: 4096 });
-    const getError = vi.fn().mockReturnValueOnce(0)
-      .mockReturnValueOnce(0x1234).mockReturnValue(0);
+    const getError = vi.fn().mockReturnValue(0);
+    kernel.gl.get(7)!.errors.push(0x501);
     kernel.gl.get(7)!.gl = new Proxy({ getError }, {
       get(target, name) {
         if (name === "getError") return target.getError;
@@ -1272,13 +1464,13 @@ describe("Rust-owned host import ranges", () => {
       memory.buffer.byteLength - 4,
       4,
     )).toBe(4);
-    expect(getError).toHaveBeenCalledTimes(3);
+    expect(getError).toHaveBeenCalledTimes(1);
     expect(
       new DataView(memory.buffer).getUint32(
         memory.buffer.byteLength - 4,
         true,
       ),
-    ).toBe(0x1234);
+    ).toBe(0x501);
   });
 
   it.each([4, 8] as const)(
@@ -1365,56 +1557,198 @@ it("GL queries select the caller's state even without a command submission", () 
   }
 });
 
-it.each([4,8] as const)("completion queries preflight before native or forwarded work at wasm%d widths", (width) => {
+it.each([4,8] as const)("completion queries preflight before native work at wasm%d widths", (width) => {
   const {kernel,memory} = fullKernelHarness({}, {}, width);
-  const native = vi.fn(), forwarded = vi.fn(() => ({rc:0,bytes:new Uint8Array()}));
-  for(const pid of [7,8]) kernel.gl.bind({pid,cmdbufAddr:4096,cmdbufLen:4096});
+  const native = vi.fn();
+  kernel.gl.bind({pid:7,cmdbufAddr:4096,cmdbufLen:4096});
   kernel.gl.get(7)!.gl = new Proxy({}, {get() { return native; }}) as WebGL2RenderingContext;
-  kernel.gl.attachMainForward(8,{onCreateContext() {return 0;},onDestroyContext() {},onSubmit() {},onQuery:forwarded});
   const imports = kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
   const ptr = (value:number) => width === 8 ? BigInt(value) : value;
   const output = new Uint8Array(memory.buffer,8192,4); output.fill(0xa5);
-  for(const pid of [7,8]) {
-    expect(imports.env.host_gl_query(pid,QOP_FINISH,ptr(4096),ptr(4),ptr(0),ptr(0))).toBe(-22);
-    expect(imports.env.host_gl_query(pid,QOP_FINISH,ptr(0),ptr(0),ptr(8192),ptr(4))).toBe(-22);
-  }
+  expect(imports.env.host_gl_query(7,QOP_FINISH,ptr(4096),ptr(4),ptr(0),ptr(0))).toBe(-22);
+  expect(imports.env.host_gl_query(7,QOP_FINISH,ptr(0),ptr(0),ptr(8192),ptr(4))).toBe(-22);
   expect([...output]).toEqual([0xa5,0xa5,0xa5,0xa5]);
-  expect(native).not.toHaveBeenCalled(); expect(forwarded).not.toHaveBeenCalled();
-  expect(imports.env.host_gl_query(8,QOP_FINISH,ptr(0),ptr(0),ptr(0),ptr(0))).toBe(0);
-  forwarded.mockReturnValue({rc:-5,bytes:new Uint8Array()});
-  expect(imports.env.host_gl_query(8,QOP_FINISH,ptr(0),ptr(0),ptr(0),ptr(0))).toBe(-5);
+  expect(native).not.toHaveBeenCalled();
 });
 
-it.each([4, 8] as const)("forwarded GL queries preflight and copy replies at wasm%d boundaries", (width) => {
-  const { kernel, memory } = fullKernelHarness({}, {}, width);
-  kernel.gl.bind({ pid: 7, cmdbufAddr: 4096, cmdbufLen: 4096 });
-  const output = new Uint8Array(memory.buffer, memory.buffer.byteLength - 4, 4);
-  const reply = vi.fn(() => ({ rc: 4, bytes: new Uint8Array([1,2,3,4]) }));
-  kernel.gl.attachMainForward(7, {
-    onCreateContext() { return 0; }, onDestroyContext() {}, onSubmit() {}, onQuery: reply,
-  });
-  const imports = kernel.testAuthority.buildImportObject(memory) as {
-    env: Record<string, (...args: any[]) => any>;
-  };
-  const ptr = (value: number) => width === 8 ? BigInt(value) : value;
-  const query = (address: number) => imports.env.host_gl_query(
-    7, QOP_GET_ERROR, ptr(0), ptr(0), ptr(address), ptr(4),
-  );
-  expect(query(memory.buffer.byteLength - 2)).toBe(-14);
-  expect(reply).not.toHaveBeenCalled();
-  expect(query(memory.buffer.byteLength - 4)).toBe(4);
-  expect([...output]).toEqual([1,2,3,4]);
-  for (const invalid of [
-    { rc: 5, bytes: new Uint8Array(5) },
-    { rc: 4, bytes: new Uint8Array(3) },
-    { rc: 0.5, bytes: new Uint8Array(4) },
-  ]) {
-    output.fill(0xa5);
-    reply.mockReturnValue(invalid);
-    expect(query(memory.buffer.byteLength - 4)).toBe(-5);
-    expect([...output]).toEqual([0xa5,0xa5,0xa5,0xa5]);
-  }
-  reply.mockImplementation(() => { throw new Error("forwarder stopped"); });
-  expect(query(memory.buffer.byteLength - 4)).toBe(-5);
-  expect([...output]).toEqual([0xa5,0xa5,0xa5,0xa5]);
+it.each([4,8] as const)("capture queries reserve custody only after the full wasm%d destination preflight",(width)=>{
+  const {kernel,memory}=fullKernelHarness({}, {}, width);
+  kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+  const b=kernel.gl.get(7,0)!,program={};b.contextId=21;b.programs.set(20,program);b.programShaders.set(20,new Set());
+  b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null,getProgramParameter:()=>true},
+    {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+  const retained=vi.spyOn(kernel.gl,"retainContextExecution");
+  const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+  const ptr=(n:number)=>width===8?BigInt(n):n;
+  new Uint32Array(memory.buffer,4096,2).set([1,20]);
+  expect(imports.env.host_gl_query(7,QOP_PROGRAM_CAPTURE,ptr(4096),ptr(8),ptr(memory.buffer.byteLength-2),ptr(16),0)).toBe(-14);
+  expect(retained).not.toHaveBeenCalled();expect(b.programQueryPins.size).toBe(0);
+  expect(imports.env.host_gl_query(7,QOP_PROGRAM_CAPTURE,ptr(4096),ptr(8),ptr(8192),ptr(16),0)).toBe(16);
+  expect([...new Uint32Array(memory.buffer,8192,4)]).toEqual([0,1,1,0x47514c33]);
+  expect(retained).toHaveBeenCalledTimes(1);expect(b.programQueryPins.get(program)).toBe(1);
+  new Uint32Array(memory.buffer,4096,2).set([3,1]);
+  expect(imports.env.host_gl_query(7,QOP_PROGRAM_CAPTURE,ptr(4096),ptr(8),ptr(8192),ptr(16),0)).toBe(16);
+  expect([...new Uint32Array(memory.buffer,8192,4)]).toEqual([0,1,0,0x47514c33]);
+  expect(retained).toHaveBeenCalledTimes(1);expect(b.programQueryPins.size).toBe(0);
+  kernel.gl.destroyContext(7,0);
+});
+
+it.each([4,8] as const)("capture reservation OOM remains ordinary and leaves the wasm%d context alive",(width)=>{
+  const {kernel,memory}=fullKernelHarness({}, {}, width);
+  kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+  const b=kernel.gl.get(7,0)!;b.contextId=21;b.programs.set(20,{});
+  b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null,getProgramParameter:()=>true},
+    {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+  vi.spyOn(kernel.gl,"retainContextExecution").mockReturnValue(null);
+  const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+  const ptr=(n:number)=>width===8?BigInt(n):n;
+  new Uint32Array(memory.buffer,4096,2).set([1,20]);
+  expect(imports.env.host_gl_query(7,QOP_PROGRAM_CAPTURE,ptr(4096),ptr(8),ptr(8192),ptr(16),0)).toBe(16);
+  expect([...new Uint32Array(memory.buffer,8192,4)]).toEqual([1,0,0,0x47514c33]);
+  expect(b.errors).toContain(0x505);expect(b.contextId).toBe(21);expect(b.currentProgram).toBeNull();
+  expect(b.programQueryPins.size).toBe(0);kernel.gl.destroyContext(7,0);
+});
+
+it.each([4,8] as const)("journal controls preflight before custody at wasm%d width and keep recovery native-free",(width)=>{
+ const {kernel,memory}=fullKernelHarness({}, {}, width);
+ kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+ const b=kernel.gl.get(7,0)!;b.contextId=21;
+ b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null},
+   {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+ const retained=vi.spyOn(kernel.gl,"retainContextExecution");
+ const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+ const ptr=(n:number)=>width===8?BigInt(n):n;
+ new Uint32Array(memory.buffer,4096,3).set([1,1,4]);
+ expect(imports.env.host_gl_query(7,QOP_PROGRAM_JOURNAL,ptr(4096),ptr(12),ptr(memory.buffer.byteLength-2),ptr(48),0)).toBe(-14);
+ expect(retained).not.toHaveBeenCalled();expect(b.programJournal).toBeUndefined();
+ expect(imports.env.host_gl_query(7,QOP_PROGRAM_JOURNAL,ptr(4096),ptr(12),ptr(8192),ptr(48),0)).toBe(48);
+ expect([...new Uint32Array(memory.buffer,8192,12)]).toEqual([0,1,1,1,4,0,0,0,0,0,0,0x47514c33]);
+ expect(retained).toHaveBeenCalledTimes(1);
+ const native=vi.spyOn(b.gl!,"getError").mockImplementation(()=>{throw new Error("read-only native drain");});
+ const restore=vi.spyOn(kernel.gl.cpuImages,"prepare");
+ new Uint32Array(memory.buffer,4096,1).set([6]);
+ expect(imports.env.host_gl_query(7,QOP_PROGRAM_JOURNAL,ptr(4096),ptr(4),ptr(8192),ptr(48),0)).toBe(48);
+ expect(retained).toHaveBeenCalledTimes(1);expect(native).not.toHaveBeenCalled();expect(restore).not.toHaveBeenCalled();
+ expect(b.programJournalControl.receipt.buffer).not.toBe(memory.buffer);
+ native.mockRestore();restore.mockRestore();kernel.gl.destroyContext(7,0);
+});
+
+it.each([4,8] as const)("journal metadata preserves partial uploads and older flags through the wasm%d import",width=>{
+ const {kernel,memory}=fullKernelHarness({}, {}, width);
+ kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+ const b=kernel.gl.get(7,0)!;b.contextId=21;
+ b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null},
+   {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+ const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+ const ptr=(n:number)=>width===8?BigInt(n):n;
+ const upload={} as NonNullable<typeof b.uniformUpload>,compressed={} as NonNullable<typeof b.compressedUpload>;
+ b.uniformUpload=upload;b.compressedUpload=compressed;b.errors=[0x500];
+ const query=(words:number[],out=8192)=>{
+  new Uint32Array(memory.buffer,4096,words.length).set(words);
+  return imports.env.host_gl_query(7,QOP_PROGRAM_JOURNAL,ptr(4096),ptr(words.length*4),ptr(out),ptr(48),0);
+ };
+ expect(query([6])).toBe(48);
+ expect(query([1,1,4],memory.buffer.byteLength-2)).toBe(-14);
+ expect(b.uniformUpload).toBe(upload);expect(b.compressedUpload).toBe(compressed);expect(b.errors).toEqual([0x500]);
+ expect(query([6,123])).toBe(-22);
+ expect(b.uniformUpload).toBe(upload);expect(b.errors).toEqual([0x500]);
+ const native=vi.spyOn(b.gl,"getError").mockImplementation(()=>{throw new Error("metadata read sampled native errors");});
+ try{expect(query([6])).toBe(48);expect(query([7,123])).toBe(48);expect(native).not.toHaveBeenCalled();}
+ finally{native.mockRestore();}
+ expect(query([1,1,4])).toBe(48);
+ expect(b.uniformUpload).toBe(upload);expect(b.compressedUpload).toBe(compressed);expect(b.errors).toEqual([0x500]);
+ markRendererReset(b);
+ const lostNative=vi.spyOn(b.gl,"getError").mockImplementation(()=>{throw new Error("reset recovery sampled native errors");});
+ try{expect(query([6])).toBe(48);expect(query([7,1])).toBe(48);expect(lostNative).not.toHaveBeenCalled();}
+ finally{lostNative.mockRestore();}
+ expect(rendererLost(b)).toBe(true);expect(b.uniformUpload).toBe(upload);expect(b.compressedUpload).toBe(compressed);
+ b.uniformUpload=null;b.compressedUpload=null;kernel.gl.destroyContext(7,0);
+});
+
+it.each([4,8] as const)("ordinary query destination preflight precedes upload interruption at wasm%d width",width=>{
+ const {kernel,memory}=fullKernelHarness({}, {}, width);
+ kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+ const b=kernel.gl.get(7,0)!;b.contextId=21;
+ const finish=vi.fn();
+ b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null,finish},
+   {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+ const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+ const ptr=(n:number)=>width===8?BigInt(n):n,upload={} as NonNullable<typeof b.uniformUpload>;
+ b.uniformUpload=upload;b.errors=[0x500];
+ expect(imports.env.host_gl_query(7,QOP_GET_ERROR,ptr(0),ptr(0),ptr(memory.buffer.byteLength-2),ptr(4),0)).toBe(-14);
+ expect(b.uniformUpload).toBe(upload);expect(b.errors).toEqual([0x500]);
+ expect(imports.env.host_gl_query(7,QOP_FINISH,ptr(0),ptr(0),ptr(0),ptr(0),0)).toBe(-5);
+ expect(b.uniformUpload).toBeNull();expect(b.errors).toEqual([0x500,0x502]);expect(finish).not.toHaveBeenCalled();
+ kernel.gl.destroyContext(7,0);
+});
+
+it.each([4,8] as const)("lifecycle journal import confines metadata and preserves transfers at wasm%d width",width=>{
+ const {kernel,memory}=fullKernelHarness({}, {}, width);
+ kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+ const b=kernel.gl.get(7,0)!;b.contextId=21;
+ b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null},
+   {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+ const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+ const ptr=(n:number)=>width===8?BigInt(n):n;
+ const query=(op:number,words:number[],out=8192)=>{
+  new Uint32Array(memory.buffer,4096,words.length).set(words);
+  return imports.env.host_gl_query(7,op,ptr(4096),ptr(words.length*4),ptr(out),ptr(48),0);
+ };
+ expect(query(QOP_PROGRAM_JOURNAL,[1,1,4])).toBe(48);
+ const journal=b.programJournal!,execute=vi.spyOn(journal,"execute"),retain=vi.spyOn(kernel.gl,"retainContextExecution");
+ const upload={} as NonNullable<typeof b.uniformUpload>;b.uniformUpload=upload;b.errors=[0x500];
+ const native=vi.spyOn(b.gl,"getError").mockImplementation(()=>{throw new Error("lifecycle read native drain");});
+ try {
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[6],memory.buffer.byteLength-2)).toBe(-14);
+  for(const words of [[1,2,4],[2,2,1],[4,2,1,1],[5,2]])expect(query(QOP_PROGRAM_JOURNAL_BARRIER,words)).toBe(-22);
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[6])).toBe(48);
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[7,journal.id])).toBe(48);expect(native).not.toHaveBeenCalled();
+ }finally{native.mockRestore();}
+ expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[3,2,1,journal.id,0,1,0,1,0,0,0])).toBe(48);
+ expect(execute).not.toHaveBeenCalled();expect(retain).not.toHaveBeenCalled();
+ expect(b.uniformUpload).toBe(upload);expect(b.errors).toEqual([0x500]);
+ markRendererReset(b);
+ const lostNative=vi.spyOn(b.gl,"getError").mockImplementation(()=>{throw new Error("lifecycle recovery sampled lost renderer");});
+ try {
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[6])).toBe(48);
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[7,journal.id])).toBe(48);
+  expect(query(QOP_PROGRAM_JOURNAL_BARRIER,[3,3,1,journal.id,1,2,0,2,0,0,0])).toBe(-19);
+  expect(b.programJournalControl.receipt[1]).toBe(2);expect(lostNative).not.toHaveBeenCalled();
+ }finally{lostNative.mockRestore();}
+ expect(rendererLost(b)).toBe(true);expect(b.uniformUpload).toBe(upload);
+ b.uniformUpload=null;kernel.gl.destroyContext(7,0);
+});
+
+for(const kind of ["unexpected","reset"] as const)it.each([4,8] as const)(`journal ${kind} failure preserves the host fault policy at wasm%d width`,width=>{
+ const onHostFault=vi.fn(),{kernel,memory}=fullKernelHarness({}, {onHostFault}, width);
+ kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+ const b=kernel.gl.get(7,0)!;b.contextId=21;
+ b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null},
+  {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+ const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+ const ptr=(n:number)=>width===8?BigInt(n):n;
+ const query=(words:number[])=>{
+  new Uint32Array(memory.buffer,4096,words.length).set(words);
+  return imports.env.host_gl_query(7,QOP_PROGRAM_JOURNAL,ptr(4096),ptr(words.length*4),ptr(8192),ptr(48),0);
+ };
+ expect(query([1,1,4])).toBe(48);
+ const journal=b.programJournal!,original=journal.publish.bind(journal);
+ const cause=kind==="reset"?new NativeContextReset("controlled import reset"):new Error("controlled import publication failure");
+ const publish=vi.spyOn(journal,"publish").mockImplementation((...args)=>{
+  expect(original(...args)).toBe(true);
+  if(kind==="reset")markRendererReset(b);
+  throw cause;
+ });
+ new Uint8Array(memory.buffer,8192,48).fill(0xa5);
+ try{
+  const mutation=()=>query([3,2,2,journal.id,0,1,0,1,0,0,0,journal.id,1,2,0,2,0,0,0]);
+  if(kind==="unexpected"){
+   let thrown:unknown;try{mutation();}catch(error){thrown=error;}
+   expect(thrown).toBeInstanceOf(NativeGlFault);expect(onHostFault).toHaveBeenCalledExactlyOnceWith(thrown);
+   expect((thrown as Error).cause).toBe(cause);
+  }else{expect(mutation()).toBe(-19);expect(onHostFault).not.toHaveBeenCalled();expect(rendererLost(b)).toBe(true);}
+  expect([...new Uint8Array(memory.buffer,8192,48)]).toEqual(new Array(48).fill(0xa5));
+  expect(b.programJournalControl.receipt.slice(0,3)).toEqual(new Uint32Array([2,2,3]));
+  expect(journal.publishedTicket).toBe(1);expect(publish).toHaveBeenCalledTimes(1);
+ }finally{publish.mockRestore();kernel.gl.destroyContext(7,0);}
 });

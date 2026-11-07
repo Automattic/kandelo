@@ -1,0 +1,78 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Vertex-stage gl_DepthRange with another uniform in the program</title>
+<pre id="result">Running</pre>
+<script>
+// Standalone WebGL 2 with GLSL ES 1.00 shaders. No Kandelo code.
+//
+// GLSL ES 1.00 section 7.5 and ES 2.0 section 2.12.1: gl_DepthRange holds the
+// current depth range in every shader stage. A vertex shader passes
+// gl_DepthRange (near, far, diff) to the fragment shader in a varying; the
+// fragment shader writes it out. Both stages read gl_DepthRange.
+//
+// control:  no other uniform in the program.
+// test:     the fragment shader also declares one ordinary float uniform,
+//           set to 0.5 (a value different from every depth-range component).
+// Expected in both: (0.25, 0.75, 0.5) after gl.depthRange(0.25, 0.75).
+try {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 1;
+  const gl = canvas.getContext('webgl2', { antialias: false });
+  if (!gl) throw Error('WebGL2 unavailable');
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw Error('framebuffer incomplete');
+  gl.viewport(0, 0, 1, 1);
+
+  const vertex = 'varying mediump vec4 v;\n' +
+    'void main() {\n' +
+    '  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n' +
+    '  gl_PointSize = 1.0;\n' +
+    '  v = vec4(gl_DepthRange.near, gl_DepthRange.far, gl_DepthRange.diff, 1.0);\n' +
+    '}\n';
+  const control = 'precision mediump float;\nvarying vec4 v;\n' +
+    'void main() { gl_FragColor = gl_DepthRange.near > 2.0 ? vec4(0.0) : v; }\n';
+  const test = 'precision mediump float;\nvarying vec4 v;\nuniform float u_other;\n' +
+    'void main() { gl_FragColor = u_other > 2.0 ? vec4(gl_DepthRange.near) : v; }\n';
+
+  function run(fragment) {
+    const program = gl.createProgram();
+    for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source); gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw Error(gl.getShaderInfoLog(shader));
+      gl.attachShader(program, shader);
+    }
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw Error(gl.getProgramInfoLog(program));
+    gl.useProgram(program);
+    const other = gl.getUniformLocation(program, 'u_other');
+    if (other) gl.uniform1f(other, 0.5);
+    gl.depthRange(0.25, 0.75);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.POINTS, 0, 1);
+    const pixel = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+    const error = gl.getError();
+    gl.deleteProgram(program);
+    return { rgba: [...pixel].map(x => +(x / 255).toFixed(3)), error };
+  }
+  const expected = [0.25, 0.75, 0.5, 1];
+  const near = (a) => a.every((x, i) => Math.abs(x - expected[i]) <= 2 / 255);
+  const controlResult = run(control), testResult = run(test);
+  // The control shows the signal works: vertex-stage gl_DepthRange is
+  // correct when the program has no other uniform.
+  const verdict = controlResult.error || testResult.error || !near(controlResult.rgba) ? 'inconclusive'
+    : near(testResult.rgba) ? 'not-reproduced' : 'reproduced';
+  const details = { expected, control: controlResult, test: testResult, renderer: gl.getParameter(gl.RENDERER),
+    note: 'test.rgba[0] equal to 0.5 means the vertex stage read u_other in place of gl_DepthRange.near' };
+  window.__reproVerdict = { verdict, details: JSON.stringify(details) };
+  document.querySelector('#result').textContent = JSON.stringify(window.__reproVerdict, null, 2);
+} catch (error) {
+  window.__reproVerdict = { verdict: 'inconclusive', details: JSON.stringify({ error: String(error) }) };
+}
+</script>

@@ -1,9 +1,17 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./support/browser-memory-boundary";
+
+// Decision D-29: a native deletion or state restoration of host-owned GL
+// state that a live renderer refuses is a fatal host fault (NativeGlFault in
+// host/src/webgl/native-recovery.ts), reported before it is thrown. These
+// are its messages; a forward change the renderer rejects is still rolled
+// back and reported as an ordinary GL error.
+const REFUSED_RESTORE = "the live renderer refused to restore native state after a rejected change";
+const refusedDeletion = (method: string) => `the live renderer refused ${method} of an object the host retired`;
 
 // Actual WebGL rendering through the shared decoder and muxer. This checks
 // host execution pixels; guest ABI/compositor integration has separate tests.
@@ -23,7 +31,7 @@ for (const kind of ["client", "fixed", "max-byte", "max-short", "bound-byte", "b
     } finally { rmSync(temporary,{recursive:true,force:true}); }
     await page.goto("/trap-signal-test.html");
     const result = await page.evaluate(async ({sourceRoot,trace}) => {
-      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
       const { GlContextRegistry } = await import(base+"registry.ts");
       const { GlMuxer } = await import(base+"muxer.ts");
       const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -98,7 +106,7 @@ test("actual C display generations keep their command streams and rendered targe
   await installBrowserMemoryBoundaryProbe(page);
   await page.goto("/trap-signal-test.html");
   const result = await page.evaluate(async ({sourceRoot,trace}) => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -147,7 +155,7 @@ test("op-table v3 queries preserve logical state, sparse indices and single GL e
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async sourceRoot => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -224,7 +232,7 @@ test("remaining GLES2 core object queries retain source and attachment identitie
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async sourceRoot => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts"), { decodeAndDispatch } = await import(base+"bridge.ts");
     const { runGlQuery } = await import(base+"query.ts"), O = await import(base+"ops.ts");
     const canvas = document.createElement("canvas"), gl = canvas.getContext("webgl2");
@@ -290,7 +298,7 @@ for (const cube of [false,true]) {
     await page.goto("/trap-signal-test.html");
     const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
     const result = await page.evaluate(async ({sourceRoot,cube}) => {
-      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
       const { GlContextRegistry } = await import(base+"registry.ts"), { GlMuxer } = await import(base+"muxer.ts");
       const { decodeAndDispatch } = await import(base+"bridge.ts"), { runGlQuery } = await import(base+"query.ts"), O = await import(base+"ops.ts");
       const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
@@ -354,7 +362,7 @@ for (const cube of [false,true]) {
       const bindingName = new DataView(query(a,O.QOP_GET_INTEGERV,[cube ? gl.TEXTURE_BINDING_CUBE_MAP : gl.TEXTURE_BINDING_2D],4).buffer).getUint32(0,true);
       const predicate = query(a,O.QOP_IS_OBJECT,[1,0],12), isZero = new DataView(predicate.buffer).getUint32(4,true);
       send(a,O.OP_TEX_PARAMETERI,[target,0x813c,1]);
-      const foreignParameter = [new DataView(query(a,O.QOP_GET_ERROR,[],4).buffer).getUint32(0,true),gl.getTexParameter(target,0x813c)];
+      const foreignParameter = [new DataView(query(a,O.QOP_GET_ERROR,[],4).buffer).getUint32(0,true),gl.getTexParameter(cube ? gl.TEXTURE_2D_ARRAY : target,0x813c)];
       const afterParameter = parameter(a,gl.TEXTURE_MIN_FILTER), errors = [new DataView(query(a,O.QOP_GET_ERROR,[],4).buffer).getUint32(0,true),new DataView(query(b,O.QOP_GET_ERROR,[],4).buffer).getUint32(0,true)];
       const zeroB = b.shadow.defaultTextures.get(target)!; mux.invalidateCurrent(); reg.destroyContext(93,1);
       const retirement = [gl.isTexture(zeroA),gl.isTexture(zeroB)]; pixels.push(render(b));
@@ -366,8 +374,7 @@ for (const cube of [false,true]) {
   });
 }
 
-for (const forwarded of [false,true]) {
-test(`actual C shader source upload crosses query chunks and renders after commit${forwarded ? " through main forwarding" : ""}`, async ({ page }) => {
+test(`actual C shader source upload crosses query chunks and renders after commit`, async ({ page }) => {
   const root = fileURLToPath(new URL("../../../",import.meta.url)), temporary = mkdtempSync(join(root,".context/graphics-shader-trace-"));
   let frames: number[];
   try {
@@ -379,84 +386,8 @@ test(`actual C shader source upload crosses query chunks and renders after commi
   } finally { rmSync(temporary,{recursive:true,force:true}); }
   await installBrowserMemoryBoundaryProbe(page);
   await page.goto("/trap-signal-test.html");
-  const result = await page.evaluate(async ({sourceRoot,frames,forwarded}) => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`,location.href).href;
-    if (forwarded) {
-      const { setupMainForward } = await import(base+"main-forward.ts");
-      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
-      const expected = "precision mediump float; /*"+"X".repeat(140000)+"*/ void main(){gl_FragColor=vec4(0.,1.,1.,1.);}";
-      const source = `
-        import { createMainForwardChannel } from ${JSON.stringify(base+"main-forward.ts")};
-        import * as O from ${JSON.stringify(base+"ops.ts")};
-        let channel;
-        onmessage = event => {
-          try {
-            if (event.data.retire) { channel.onDestroyContext(); channel.onUnbind(1); postMessage({type:"upload_retired"}); return; }
-            channel = createMainForwardChannel({postMessage: message => postMessage(message)},94,1);
-            if (channel.onCreateContext() || channel.onCreateSurface({surfaceId:1,kind:1,width:1,height:1,configId:1,targetBoId:0}).rc
-                || channel.onMakeCurrent({drawSurfaceId:1,readSurfaceId:1,width:1,height:1})) throw new Error("forwarded creation failed");
-            const memory = new WebAssembly.Memory({initial:2,maximum:2,shared:true}), scratch = new Uint8Array(memory.buffer);
-            const data = new Uint8Array(event.data.frames), view = new DataView(data.buffer);
-            let queries = 0, maximum = 0;
-            for (let offset=0; offset<data.length;) {
-              const kind = view.getUint32(offset,true), op = view.getUint32(offset+4,true), size = view.getUint32(offset+8,true), cap = view.getUint32(offset+12,true);
-              offset += 16; scratch.set(data.subarray(offset,offset+size)); offset += size;
-              if (kind === 1) channel.onSubmit(scratch.subarray(0,size));
-              else {
-                maximum = Math.max(maximum,size); queries++;
-                const answer = channel.onQuery(op,scratch.subarray(0,size),cap), reply = new DataView(answer.bytes.buffer);
-                if (answer.rc !== 12 || reply.getUint32(0,true) || reply.getUint32(4,true) !== new DataView(memory.buffer).getUint32(8,true) || reply.getUint32(8,true) !== 0x47514c33) throw new Error("forwarded upload failed");
-              }
-              scratch.fill(0);
-            }
-            const expected = ${JSON.stringify(expected)}, bytes = new Uint8Array(expected.length);
-            for (let offset=0; offset<bytes.length; offset+=64000) {
-              const count = Math.min(64000,bytes.length-offset); new Uint32Array(memory.buffer,0,3).set([2,offset,count]);
-              const answer = channel.onQuery(O.QOP_GET_SHADER_SOURCE,scratch.subarray(0,12),count+12);
-              if (answer.rc !== count+12 || new DataView(answer.bytes.buffer).getUint32(0,true)) throw new Error("forwarded source read failed");
-              bytes.set(answer.bytes.subarray(8,8+count),offset);
-            }
-            new Uint32Array(memory.buffer,0,2).set([2,0x8b81]);
-            const compiled = channel.onQuery(O.QOP_GET_SHADERIV,scratch.subarray(0,8),4);
-            new Uint32Array(memory.buffer,0,6).set([0,0,1,1,0x1908,0x1401]);
-            const pixels = channel.onQuery(O.QOP_READ_PIXELS,scratch.subarray(0,24),4), error = channel.onQuery(O.QOP_GET_ERROR,scratch.subarray(0,0),4);
-            if (compiled.rc !== 4 || pixels.rc !== 4 || error.rc !== 4) throw new Error("forwarded final query failed");
-            postMessage({type:"upload_done",result:{queries,maximum,sourceMatches:new TextDecoder().decode(bytes)===expected,compiled:!!new DataView(compiled.bytes.buffer).getUint32(0,true),pending:null,pixels:[...pixels.bytes],error:new DataView(error.bytes.buffer).getUint32(0,true)}});
-          } catch (error) { postMessage({type:"upload_failed",error:String(error)}); }
-        };
-      `;
-      const url = URL.createObjectURL(new Blob([source],{type:"text/javascript"})), worker = new Worker(url,{type:"module"});
-      let mailboxes = 0, independent = true;
-      worker.addEventListener("message",event => {
-        const message = event.data;
-        if (message?.mailbox) {
-          const bytes = new Uint8Array(message.mailbox); if (bytes[bytes.length-1] !== 123) { mailboxes++; bytes[bytes.length-1] = 123; }
-          independent &&= bytes.length === 65556;
-        }
-        if (message?.input) independent &&= !(message.input.buffer instanceof SharedArrayBuffer);
-        if (message?.bytes) independent &&= !(message.bytes.buffer instanceof SharedArrayBuffer);
-      });
-      const dispose = setupMainForward(worker,canvas,94);
-      const wait = (type: string) => new Promise<any>((resolve,reject) => {
-        const cleanup = () => { clearTimeout(timeout); worker.removeEventListener("message",listener); worker.removeEventListener("error",failed); };
-        const timeout = setTimeout(() => { cleanup(); reject(new Error("forwarded upload timeout; mailboxes="+mailboxes)); },45000);
-        const failed = (event: ErrorEvent) => { cleanup(); reject(new Error(event.message)); };
-        const listener = (event: MessageEvent) => {
-          if (event.data?.type === type || event.data?.type === "upload_failed") {
-            cleanup();
-            if (event.data.type === "upload_failed") reject(new Error(event.data.error)); else resolve(event.data.result);
-          }
-        }; worker.addEventListener("message",listener); worker.addEventListener("error",failed);
-      });
-      try {
-        const done = wait("upload_done"); worker.postMessage({frames}); const result = await done;
-        const gl = canvas.getContext("webgl2")!, program = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram;
-        const fragment = gl.getAttachedShaders(program)!.find(shader => gl.getShaderParameter(shader,gl.SHADER_TYPE) === gl.FRAGMENT_SHADER)!;
-        result.nativeMatches = gl.getShaderSource(fragment) === expected;
-        const retired = wait("upload_retired"); worker.postMessage({retire:true}); await retired;
-        result.retired = !gl.isShader(fragment); result.mailboxes = mailboxes; result.independent = independent; return result;
-      } finally { dispose(); worker.terminate(); URL.revokeObjectURL(url); }
-    }
+  const result = await page.evaluate(async ({sourceRoot,frames}) => {
+    const base = new URL(`/@fs${sourceRoot}host/src/webgl/`,location.href).href;
     const { GlContextRegistry } = await import(base+"registry.ts"), { GlMuxer } = await import(base+"muxer.ts");
     const { decodeAndDispatch } = await import(base+"bridge.ts"), { runGlQuery } = await import(base+"query.ts"), O = await import(base+"ops.ts");
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
@@ -464,16 +395,26 @@ test(`actual C shader source upload crosses query chunks and renders after commi
     const reg = new GlContextRegistry(), mux = new GlMuxer(gl); reg.bind({pid:94,sessionId:1,cmdbufAddr:0,cmdbufLen:1<<20});
     const b = reg.get(94,1)!; b.gl = gl; b.contextId = 1; b.cmdbufView = new Uint8Array(1<<20); mux.switchTo(b);
     const data = new Uint8Array(frames), view = new DataView(data.buffer);
-    let queries = 0, maximum = 0;
+    let queries = 0, maximum = 0, uploadedNativeSource: string | null = null;
     for (let offset=0; offset<data.length;) {
       const kind = view.getUint32(offset,true), op = view.getUint32(offset+4,true), length = view.getUint32(offset+8,true), cap = view.getUint32(offset+12,true);
       offset += 16; const input = data.slice(offset,offset+length); offset += length;
       if (kind === 1) { b.cmdbufView!.set(input); if (decodeAndDispatch(b,0,input.length)) throw new Error("C command failed"); }
       else if (kind === 2) {
-        const out = new Uint8Array(cap); maximum = Math.max(maximum,length); queries++;
-        if (runGlQuery(b,op,input,out) !== 12) throw new Error("C upload query transport failed");
-        const reply = new DataView(out.buffer);
-        if (reply.getUint32(0,true) || reply.getUint32(4,true) !== new DataView(input.buffer).getUint32(8,true) || reply.getUint32(8,true) !== 0x47514c33) throw new Error("C upload rejected");
+        const out = new Uint8Array(cap);
+        if (runGlQuery(b,op,input,out) !== cap) throw new Error("C query transport failed");
+        if (op === O.QOP_FLUSH) { if (cap !== 0 || length !== 0) throw new Error("malformed flush trace"); continue; }
+        const reply = new DataView(out.buffer), request = new DataView(input.buffer);
+        if (cap !== 12 || reply.getUint32(0,true) || reply.getUint32(8,true) !== 0x47514c33) throw new Error("C query rejected");
+        if (op === O.QOP_SHADER_SOURCE_UPLOAD) {
+          maximum = Math.max(maximum,length); queries++;
+          if (reply.getUint32(4,true) !== request.getUint32(8,true)) throw new Error("C upload token mismatch");
+          if (request.getUint32(0,true) === 3) uploadedNativeSource = gl.getShaderSource(b.shaders.get(2)!);
+        } else if (op === O.QOP_CREATE_SHADER_PROGRAM) {
+          if (reply.getUint32(4,true) !== request.getUint32(8,true)) throw new Error("C creation identity mismatch");
+        } else if (op === O.QOP_PROGRAM_MUTATION) {
+          if (reply.getUint32(4,true) !== 1) throw new Error("C program mutation rejected");
+        } else throw new Error(`unexpected C query ${op}`);
       } else throw new Error("unknown C protocol trace frame");
     }
     const expected = "precision mediump float; /*"+"X".repeat(140000)+"*/ void main(){gl_FragColor=vec4(0.,1.,1.,1.);}";
@@ -487,21 +428,20 @@ test(`actual C shader source upload crosses query chunks and renders after commi
     if (runGlQuery(b,O.QOP_READ_PIXELS,read,pixels) !== 4) throw new Error("readback failed");
     const error = new Uint8Array(4); runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),error);
     const fragment = b.shaders.get(2)!;
-    const result = {queries,maximum,sourceMatches:new TextDecoder().decode(bytes) === expected,nativeMatches:gl.getShaderSource(fragment) === expected,
+    const result = {queries,maximum,sourceMatches:new TextDecoder().decode(bytes) === expected,nativeMatches:uploadedNativeSource === expected,
       retired:false,mailboxes:0,independent:true,compiled:gl.getShaderParameter(fragment,gl.COMPILE_STATUS),pending:b.shaderUpload !== null,pixels:[...pixels],error:new DataView(error.buffer).getUint32(0,true)};
     mux.invalidateCurrent(); reg.destroyContext(94,1); result.retired = !gl.isShader(fragment); return result;
-  },{sourceRoot:process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root,frames,forwarded});
-  expect(result).toEqual({queries:5,maximum:65536,sourceMatches:true,nativeMatches:true,retired:true,mailboxes:forwarded ? 1 : 0,independent:true,compiled:true,pending:forwarded ? null : false,pixels:[0,255,255,255],error:0});
+  },{sourceRoot:process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root,frames});
+  expect(result).toEqual({queries:5,maximum:65536,sourceMatches:true,nativeMatches:true,retired:true,mailboxes:0,independent:true,compiled:true,pending:false,pixels:[0,255,255,255],error:0});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
-}
 
 for (const width of [1,2]) {
   test(`maximum ${width*8}-bit VBO indices preserve strip topology and shared storage`, async ({ page }) => {
     await page.goto("/trap-signal-test.html");
     const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
     const result = await page.evaluate(async ({sourceRoot,width}) => {
-      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
       const { GlContextRegistry } = await import(base+"registry.ts");
       const { GlMuxer } = await import(base+"muxer.ts");
       const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -593,7 +533,7 @@ for (const first of ["vertex", "index", "fixed"] as const) {
     await page.goto("/trap-signal-test.html");
     const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
     const result = await page.evaluate(async ({sourceRoot,first}) => {
-      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
       const { GlContextRegistry } = await import(base+"registry.ts");
       const { GlMuxer } = await import(base+"muxer.ts");
       const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -708,7 +648,7 @@ for (const kind of ["attribute", "element"] as const) {
     await page.goto("/trap-signal-test.html");
     const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
     const result = await page.evaluate(async ({sourceRoot,kind}) => {
-      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
       const { GlContextRegistry } = await import(base+"registry.ts");
       const { GlMuxer } = await import(base+"muxer.ts");
       const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -811,7 +751,7 @@ test("deleted shared renderbuffers retain bindings and unbound framebuffer stora
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
   const result = await page.evaluate(async sourceRoot => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -874,7 +814,7 @@ test("internal object groups share textures and programs while context state and
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
   const result = await page.evaluate(async sourceRoot => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { decodeAndDispatch } = await import(base+"bridge.ts");
@@ -973,178 +913,29 @@ test("surfaceless framebuffer zero rejects rendering while user framebuffers rem
   await installBrowserMemoryBoundaryProbe(page);
   await page.goto("/trap-signal-test.html");
   const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const result = await page.evaluate(async sourceRoot => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
-    const { setupMainForward } = await import(base + "main-forward.ts");
+  const result = await page.evaluate(async root => {
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
     document.body.replaceChildren(canvas);
-    const gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true })!;
-    if (!gl) throw new Error("WebGL2 is required");
-    gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT);
-    const source = `
-      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
-      import * as O from ${JSON.stringify(base + "ops.ts")};
-      onmessage = () => {
-        try {
-          const c = createMainForwardChannel({ postMessage: m => postMessage(m) }, 81, 101);
-          if (c.onCreateContext() !== 0 || c.onMakeCurrent({drawSurfaceId:0,readSurfaceId:0,width:0,height:0}) !== 0)
-            throw new Error("surfaceless bind failed");
-          const send = (op, words, tail = new Uint8Array(), float = false) => {
-            const bytes = new Uint8Array(4+words.length*4+tail.length), v = new DataView(bytes.buffer);
-            v.setUint16(0,op,true); v.setUint16(2,bytes.length-4,true);
-            words.forEach((word,i) => float ? v.setFloat32(4+i*4,word,true) : v.setUint32(4+i*4,word,true));
-            bytes.set(tail,4+words.length*4); c.onSubmit(bytes);
-          };
-          const query = (op, words = [], size = 4) => {
-            const bytes = new Uint8Array(words.length*4), v = new DataView(bytes.buffer);
-            words.forEach((word,i) => v.setUint32(i*4,word,true));
-            return c.onQuery(op,bytes,size);
-          };
-          const number = (op,words = []) => {
-            const reply = query(op,words); if (reply.rc !== 4) throw new Error("query failed: "+reply.rc);
-            return new DataView(reply.bytes.buffer).getUint32(0,true);
-          };
-          const error = () => number(O.QOP_GET_ERROR);
-          const status = () => number(O.QOP_CHECK_FB_STATUS,[0x8d40]);
-          const initialStatus = status();
-          const viewportReply = query(O.QOP_GET_INTEGERV,[0x0ba2],16);
-          const viewport = [...new Int32Array(viewportReply.bytes.buffer)];
-          for (const [name,type,text] of [
-            [11,0x8b31,"void main(){gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=1.;}"],
-            [12,0x8b30,"precision mediump float;void main(){gl_FragColor=vec4(0.,1.,0.,1.);}"]]) {
-            send(O.OP_CREATE_SHADER,[type,name]);
-            const bytes = new TextEncoder().encode(text); send(O.OP_SHADER_SOURCE,[name,bytes.length],bytes);
-            send(O.OP_COMPILE_SHADER,[name]);
-            if (number(O.QOP_GET_SHADERIV,[name,0x8b81]) !== 1) throw new Error("shader failed");
-          }
-          send(O.OP_CREATE_PROGRAM,[13]); send(O.OP_ATTACH_SHADER,[13,11]); send(O.OP_ATTACH_SHADER,[13,12]);
-          send(O.OP_LINK_PROGRAM,[13]); if(number(O.QOP_GET_PROGRAMIV,[13,0x8b82]) !== 1) throw new Error("link failed");
-          send(O.OP_USE_PROGRAM,[13]); send(O.OP_VIEWPORT,[0,0,1,1]);
-          send(O.OP_GEN_TEXTURES,[2,7,8]); send(O.OP_BIND_TEXTURE,[0x0de1,7]);
-          send(O.OP_TEX_IMAGE_2D,[0x0de1,0,0x1908,1,1,0,0x1908,0x1401,4],new Uint8Array([255,0,0,255]));
-          send(O.OP_GEN_BUFFERS,[1,5]); send(O.OP_BIND_BUFFER,[0x8893,5]);
-          send(O.OP_BUFFER_DATA,[0x8893,2,0x88e4]);
-          const setupError = error(), errors = [];
-          for (const [op,words] of [
-            [O.OP_CLEAR,[0x4000]], [O.OP_DRAW_ARRAYS,[0,0,1]], [O.OP_DRAW_ELEMENTS,[0,1,0x1403,0]],
-            [O.OP_COPY_TEX_IMAGE_2D,[0x0de1,0,0x1908,0,0,1,1,0]],
-            [O.OP_COPY_TEX_SUB_IMAGE_2D,[0x0de1,0,0,0,0,0,1,1]]]) {
-            send(op,words); errors.push(error());
-          }
-          const read = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]);
-          errors.push(error());
-          send(O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,7,0]);
-          const attachmentError = error(), statusAfterAttachment = status();
-          send(O.OP_GEN_FRAMEBUFFERS,[1,4]); send(O.OP_BIND_FRAMEBUFFER,[0x8d40,4]);
-          send(O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,7,0]);
-          const copiedTexture = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]);
-          send(O.OP_BIND_TEXTURE,[0x0de1,8]); send(O.OP_TEX_IMAGE_2D,[0x0de1,0,0x1908,1,1,0,0x1908,0x1401,0]);
-          send(O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,8,0]);
-          const userStatus = status();
-          send(O.OP_CLEAR_COLOR,[0,1,0,1],new Uint8Array(),true); send(O.OP_CLEAR,[0x4000]);
-          send(O.OP_DRAW_ARRAYS,[0,0,1]); send(O.OP_DRAW_ELEMENTS,[0,1,0x1403,0]);
-          const userPixels = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]), userError = error();
-          send(O.OP_BIND_FRAMEBUFFER,[0x8ca9,0]);
-          const splitPixels = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]);
-          const split = {draw:status(),read:number(O.QOP_CHECK_FB_STATUS,[0x8ca8]),
-            drawName:number(O.QOP_GET_INTEGERV,[0x8ca6]),readName:number(O.QOP_GET_INTEGERV,[0x8caa]),
-            pixels:[...splitPixels.bytes],error:error()};
-          send(O.OP_CLEAR,[0x4000]); split.clearError = error();
-          send(O.OP_BIND_FRAMEBUFFER,[0x8d40,4]);
-          send(O.OP_DELETE_FRAMEBUFFERS,[1,4]); const deletedStatus = status();
-          send(O.OP_CLEAR,[0x4000]); const deletedError = error();
-          c.onDestroyContext();
-          postMessage({type:"surface_done",results:{initialStatus,viewport,setupError,errors,
-            readRc:read.rc,readBytes:[...read.bytes],attachmentError,statusAfterAttachment,
-            copiedTextureRc:copiedTexture.rc,copiedTexture:[...copiedTexture.bytes],
-            userStatus,userPixels:[...userPixels.bytes],userError,split,deletedStatus,deletedError}});
-        } catch(error) { postMessage({type:"surface_failed",error:String(error)}); }
-      };
-    `;
-    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    const worker = new Worker(url, { type: "module" }); const dispose = setupMainForward(worker,canvas,81);
+    const worker = new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/surfaceless-worker.ts`,location.href),{type:"module"});
     try {
-      const results = await new Promise<Record<string, unknown>>((resolve,reject) => {
+      return await new Promise<Record<string, unknown>>((resolve,reject) => {
         const timeout = setTimeout(() => reject(new Error("surfaceless test timed out")),45_000);
         worker.addEventListener("error", event => { clearTimeout(timeout); reject(new Error(event.message)); });
         worker.addEventListener("message",({data}) => {
           if(data.type === "surface_done") { clearTimeout(timeout); resolve(data.results); }
           if(data.type === "surface_failed") { clearTimeout(timeout); reject(new Error(data.error)); }
-        }); worker.postMessage({type:"start"});
+        });
+        // The kernel worker owns the renderer; the page only hands over the canvas.
+        const offscreen = canvas.transferControlToOffscreen();
+        worker.postMessage({canvas:offscreen},[offscreen]);
       });
-      gl.bindFramebuffer(gl.FRAMEBUFFER,null);
-      const canvasPixels = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,canvasPixels);
-      return {...results,canvasPixels:[...canvasPixels]};
-    } finally { dispose(); worker.terminate(); URL.revokeObjectURL(url); }
+    } finally { worker.terminate(); }
   },root);
   expect(result).toEqual({initialStatus:0x8219,viewport:[0,0,0,0],setupError:0,
     errors:Array(6).fill(0x506),readRc:-22,readBytes:[],attachmentError:0x502,statusAfterAttachment:0x8219,
     copiedTextureRc:4,copiedTexture:[255,0,0,255],userStatus:0x8cd5,userPixels:[0,255,0,255],userError:0,
-    split:{draw:0x8219,read:0x8cd5,drawName:0,readName:4,pixels:[0,255,0,255],error:0,clearError:0x506},
+    split:{bindError:0x500,draw:0x8cd5,read:0,readError:0x500,drawName:4,readNameRc:-22,readNameError:0x500,clearError:0},
     deletedStatus:0x8219,deletedError:0x506,canvasPixels:[0,0,255,255]});
-  expect(await memoryBoundaryFailures(page)).toEqual([]);
-});
-
-test("forwarded native errors stay with their owner across switches and invalidation", async ({ page }) => {
-  await installBrowserMemoryBoundaryProbe(page);
-  await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const results = await page.evaluate(async sourceRoot => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
-    const { setupMainForward } = await import(base + "main-forward.ts");
-    const canvas = document.createElement("canvas");
-    document.body.replaceChildren(canvas);
-    const source = `
-      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
-      import * as O from ${JSON.stringify(base + "ops.ts")};
-      onmessage = () => {
-        try {
-          const channels = [101,102].map(session => createMainForwardChannel(
-            { postMessage: message => postMessage(message) }, 71, session));
-          const drawables = [101,102].map(id => ({drawSurfaceId:id,readSurfaceId:id,width:1,height:1}));
-          for (const [index,channel] of channels.entries()) {
-            if (channel.onCreateContext() !== 0
-                || channel.onCreateSurface({surfaceId:101+index,kind:1,width:1,height:1,configId:1,targetBoId:0}).rc !== 0
-                || channel.onMakeCurrent(drawables[index]) !== 0)
-              throw new Error("failed to bind renderer");
-          }
-          const invalid = new Uint8Array(16), v = new DataView(invalid.buffer);
-          v.setUint16(0, O.OP_TEX_PARAMETERI, true); v.setUint16(2, 12, true);
-          v.setUint32(4, 0xdead, true); // invalid native texture target
-          v.setUint32(8, 0x2801, true); v.setUint32(12, 0x2600, true);
-          const error = channel => {
-            const reply = channel.onQuery(O.QOP_GET_ERROR, new Uint8Array(), 4);
-            if (reply.rc !== 4) throw new Error("error query failed: " + reply.rc);
-            return new DataView(reply.bytes.buffer).getUint32(0, true);
-          };
-          const results = [];
-          for (const invalidate of [false,true]) {
-            channels[0].onSubmit(invalid);
-            if (invalidate && channels[1].onMakeCurrent(drawables[1]) !== 0)
-              throw new Error("replacement bind failed");
-            results.push([error(channels[1]), error(channels[0]), error(channels[0])]);
-          }
-          channels.forEach(channel => channel.onDestroyContext());
-          postMessage({ type: "errors_done", results });
-        } catch (error) { postMessage({ type: "errors_failed", error: String(error) }); }
-      };
-    `;
-    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    const worker = new Worker(url, { type: "module" });
-    const dispose = setupMainForward(worker, canvas, 71);
-    try {
-      return await new Promise<number[][]>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("error isolation timed out")), 45_000);
-        worker.addEventListener("error", event => { clearTimeout(timeout); reject(new Error(event.message)); });
-        worker.addEventListener("message", ({ data }) => {
-          if (data.type === "errors_done") { clearTimeout(timeout); resolve(data.results); }
-          if (data.type === "errors_failed") { clearTimeout(timeout); reject(new Error(data.error)); }
-        });
-        worker.postMessage({ type: "start" });
-      });
-    } finally { dispose(); worker.terminate(); URL.revokeObjectURL(url); }
-  }, root);
-  expect(results).toEqual([[0,0x500,0],[0,0x500,0]]);
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 
@@ -1153,7 +944,7 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     ?? fileURLToPath(new URL("../../../", import.meta.url));
   await page.goto("/trap-signal-test.html");
   const result = await page.evaluate(async (sourceRoot) => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base + "registry.ts");
     const { GlMuxer } = await import(base + "muxer.ts");
     const { decodeAndDispatch } = await import(base + "bridge.ts");
@@ -1164,34 +955,12 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     document.body.replaceChildren(canvas);
     const gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error("WebGL2 is required by this rendered contract test");
-    const shader = (type: number, source: string) => {
-      const object = gl.createShader(type)!;
-      gl.shaderSource(object, source); gl.compileShader(object);
-      if (!gl.getShaderParameter(object, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(object)!);
-      return object;
-    };
-    const vertex = shader(gl.VERTEX_SHADER, "attribute vec2 p; void main(){gl_Position=vec4(p,0.,1.);}");
-    const fragment = shader(gl.FRAGMENT_SHADER, `precision mediump float;
-      uniform sampler2D image2d; uniform samplerCube imageCube;
-      void main(){gl_FragColor=vec4(texture2D(image2d,vec2(.5)).rgb+
-        textureCube(imageCube,vec3(1.,0.,0.)).rgb,1.);}`);
-    const program = gl.createProgram()!;
-    gl.attachShader(program, vertex); gl.attachShader(program, fragment);
-    gl.bindAttribLocation(program, 0, "p"); gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program)!);
-    gl.useProgram(program);
-    gl.uniform1i(gl.getUniformLocation(program, "image2d"), 0);
-    gl.uniform1i(gl.getUniformLocation(program, "imageCube"), 1);
-    const vertices = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,3,-1,-1,3]), gl.STATIC_DRAW);
     const registry = new GlContextRegistry();
     const muxer = new GlMuxer(gl);
     const bindings = [1,2].map(pid => {
       registry.bind({ pid, cmdbufAddr: 0, cmdbufLen: 4096 });
       const b = registry.get(pid)!;
       b.gl = gl; b.cmdbufView = new Uint8Array(4096);
-      b.buffers.set(1, vertices); b.programs.set(1, program);
       b.shadow.viewport = [0,0,16,16];
       b.shadow.scissor.rect = [0,0,16,16];
       return b;
@@ -1211,6 +980,23 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
       send(b, ops.OP_ACTIVE_TEXTURE, [gl.TEXTURE0+unit]);
       send(b, ops.OP_BIND_TEXTURE, [target,name]);
     };
+    for (const b of bindings) {
+      for (const [name,type,source] of [[11,gl.VERTEX_SHADER,"attribute vec2 p; void main(){gl_Position=vec4(p,0.,1.);}"],
+        [12,gl.FRAGMENT_SHADER,"precision mediump float;uniform sampler2D image2d;uniform samplerCube imageCube;void main(){gl_FragColor=vec4(texture2D(image2d,vec2(.5)).rgb+textureCube(imageCube,vec3(1.,0.,0.)).rgb,1.);}"]] as const) {
+        const bytes = [...new TextEncoder().encode(source)];
+        send(b,ops.OP_CREATE_SHADER,[type,name]); send(b,ops.OP_SHADER_SOURCE,[name,bytes.length],false,bytes); send(b,ops.OP_COMPILE_SHADER,[name]);
+      }
+      send(b,ops.OP_CREATE_PROGRAM,[1]); send(b,ops.OP_ATTACH_SHADER,[1,11]); send(b,ops.OP_ATTACH_SHADER,[1,12]);
+      send(b,ops.OP_BIND_ATTRIB_LOCATION,[1,0,1],false,[112]); send(b,ops.OP_LINK_PROGRAM,[1]); send(b,ops.OP_USE_PROGRAM,[1]);
+      for (const [name,unit] of [["image2d",0],["imageCube",1]] as const) {
+        const bytes = new TextEncoder().encode(name), input = new Uint8Array(8+bytes.length), out = new Uint8Array(4);
+        new DataView(input.buffer).setUint32(0,1,true); new DataView(input.buffer).setUint32(4,bytes.length,true); input.set(bytes,8);
+        if (runGlQuery(b,ops.QOP_GET_UNIFORM_LOC,input,out) !== 4 || new DataView(out.buffer).getInt32(0,true) < 0) throw new Error("sampler lookup failed");
+        send(b,ops.OP_UNIFORM1I,[new DataView(out.buffer).getInt32(0,true),unit]);
+      }
+      const bytes = [...new Uint8Array(new Float32Array([-1,-1,3,-1,-1,3]).buffer)];
+      send(b,ops.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,1]); send(b,ops.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,bytes.length],false,[...bytes,...new Uint8Array(new Uint32Array([gl.STATIC_DRAW]).buffer)]);
+    }
     const configure = (b: typeof bindings[0], color2d: number[], colorCube: number[]) => {
       send(b, ops.OP_GEN_TEXTURES, [2,1,2]);
       for (const [target, name, unit, color] of [
@@ -1232,9 +1018,13 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     configure(bindings[0], [255,0,0,255], [0,255,0,255]);
     configure(bindings[1], [0,0,255,255], [255,0,0,255]);
     send(bindings[0], ops.OP_DISABLE, [gl.DITHER]);
+    send(bindings[0], ops.OP_PIXEL_STOREI, [gl.UNPACK_ALIGNMENT,2]);
+    send(bindings[0], ops.OP_PIXEL_STOREI, [gl.PACK_ALIGNMENT,8]);
+    // GLES 2 admits only the alignments. WebGL2-only names stay private host
+    // defaults on every owner switch.
+    const enumBefore = bindings[0].errors.includes(0x500);
     send(bindings[0], ops.OP_PIXEL_STOREI, [gl.UNPACK_ROW_LENGTH,7]);
-    send(bindings[0], ops.OP_PIXEL_STOREI, [gl.UNPACK_SKIP_ROWS,2]);
-    send(bindings[0], ops.OP_PIXEL_STOREI, [gl.UNPACK_SKIP_PIXELS,1]);
+    const rejectedPixelStore = !enumBefore && bindings[0].errors.includes(0x500);
     const observations = [];
     const nameQueries: number[][] = [];
     const objectQuery = (b: typeof bindings[0], pname: number, float = false) => {
@@ -1256,6 +1046,8 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
       nameQueries.push([texture2d, objectQuery(b, gl.TEXTURE_BINDING_CUBE_MAP, true),
         objectQuery(b, gl.CURRENT_PROGRAM, true), objectQuery(b, gl.ARRAY_BUFFER_BINDING)]);
       observations.push({ index, rgba: [...pixels], dither: gl.isEnabled(gl.DITHER),
+        unpackAlignment: gl.getParameter(gl.UNPACK_ALIGNMENT),
+        packAlignment: gl.getParameter(gl.PACK_ALIGNMENT),
         rowLength: gl.getParameter(gl.UNPACK_ROW_LENGTH),
         skipRows: gl.getParameter(gl.UNPACK_SKIP_ROWS),
         skipPixels: gl.getParameter(gl.UNPACK_SKIP_PIXELS), error: gl.getError() });
@@ -1287,10 +1079,10 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     gl.deleteFramebuffer(fb);
     registry.dropForeignTexturesForBo(50);
     // These objects belong to this short-lived test realm.
-    gl.deleteBuffer(vertices); gl.deleteProgram(program);
-    gl.deleteShader(vertex); gl.deleteShader(fragment);
-    return { observations, nameQueries, physicalStatePreserved, importedPixels: [...importedPixels], importError };
+    muxer.invalidateCurrent(); registry.unbind(1); registry.unbind(2);
+    return { observations, nameQueries, physicalStatePreserved, importedPixels: [...importedPixels], importError, rejectedPixelStore };
   }, root);
+  expect(result.rejectedPixelStore).toBe(true);
   expect(result.physicalStatePreserved).toBe(true);
   expect(result.importedPixels).toEqual([17,29,41,255]);
   expect(result.importError).toBe(0);
@@ -1299,233 +1091,9 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     const first = observation.index === 0;
     expect(observation).toEqual({ index: observation.index,
       rgba: first ? [255,255,0,255] : [255,0,255,255], dither: !first,
-      rowLength: first ? 7 : 0, skipRows: first ? 2 : 0,
-      skipPixels: first ? 1 : 0, error: 0 });
+      unpackAlignment: first ? 2 : 4, packAlignment: first ? 8 : 4,
+      rowLength: 0, skipRows: 0, skipPixels: 0, error: 0 });
   }
-});
-
-for (const sameProcess of [false, true]) {
-test(`forwarded synchronous queries isolate ${sameProcess ? "sessions in one process" : "processes"} with one mailbox per channel`, async ({ page }) => {
-  await installBrowserMemoryBoundaryProbe(page);
-  await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const result = await page.evaluate(async ({ sourceRoot, sameProcess }) => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
-    const { setupMainForward } = await import(base + "main-forward.ts");
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 8;
-    document.body.replaceChildren(canvas);
-    const source = `
-      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
-      import * as O from ${JSON.stringify(base + "ops.ts")};
-      onmessage = () => {
-        try {
-          const channels = [73,74].map((pid,index) => createMainForwardChannel(
-            { postMessage: message => postMessage(message) },
-            ${sameProcess ? 73 : "pid"}, ${sameProcess ? "index + 201" : 0}));
-          const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
-          const bytes = new Uint8Array(memory.buffer);
-          const view = new DataView(memory.buffer);
-          const results = [];
-          for (let round = 0; round < 3; round++) {
-            channels.forEach((channel,index) => {
-              if (channel.onCreateContext() !== 0) throw new Error("renderer did not acknowledge context creation");
-              if (round === 0 && channel.onCreateSurface({surfaceId:index+1,kind:1,width:8,height:8,configId:1,targetBoId:0}).rc !== 0)
-                throw new Error("surface creation failed");
-              if (channel.onMakeCurrent({ drawSurfaceId: index+1, readSurfaceId: index+1, width: 8, height: 8 }) !== 0)
-                throw new Error("renderer did not acknowledge current drawable");
-              view.setUint16(0, O.OP_CLEAR_COLOR, true); view.setUint16(2, 16, true);
-              [index, 1-index, 0, 1].forEach((v,j) => view.setFloat32(4+4*j,v,true));
-              channel.onSubmit(bytes.subarray(0,20));
-            });
-            for (const channel of channels) {
-              // No color command here: the selected owner's prior state must
-              // be restored for both drawing and synchronous queries.
-              view.setUint16(0, O.OP_CLEAR, true); view.setUint16(2, 4, true);
-              view.setUint32(4, 0x4000, true);
-              channel.onSubmit(bytes.subarray(0,8));
-              view.setUint32(0, 0x0c22, true);
-              const state = channel.onQuery(O.QOP_GET_FLOATV, bytes.subarray(0,4), 16);
-              [0,0,1,1,0x1908,0x1401].forEach((v,j) => view.setUint32(j*4,v,true));
-              const pixels = channel.onQuery(O.QOP_READ_PIXELS, bytes.subarray(0,24), 4);
-              const error = channel.onQuery(O.QOP_GET_ERROR, bytes.subarray(0,0), 4);
-              results.push({ stateRc: state.rc, state: [...new Float32Array(state.bytes.buffer)],
-                pixelsRc: pixels.rc, pixels: [...pixels.bytes],
-                errorRc: error.rc, error: [...error.bytes] });
-            }
-            channels.forEach(channel => channel.onDestroyContext());
-          }
-          postMessage({ type: "contract_done", results });
-        } catch (error) { postMessage({ type: "contract_failed", error: String(error) }); }
-      };
-    `;
-    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    const worker = new Worker(url, { type: "module" });
-    const dispose = (sameProcess ? [73] : [73,74]).map(pid => setupMainForward(worker, canvas, pid));
-    // Structured clone produces distinct SAB wrappers over the same storage.
-    // Use an unused payload byte to observe backing reuse across messages.
-    let mailboxCount = 0;
-    const mailboxSizes: number[] = [];
-    let independent = true;
-    try {
-      const results = await new Promise<unknown[]>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("forwarded query did not complete")), 45_000);
-        worker.addEventListener("error", event => { clearTimeout(timeout); reject(new Error(event.message)); });
-        worker.addEventListener("message", ({ data }) => {
-          if (data.type === "gl_forward_query") {
-            const bytes = new Uint8Array(data.mailbox);
-            if (bytes[bytes.length - 1] !== 0x5a) {
-              mailboxCount++;
-              mailboxSizes.push(bytes.length);
-              bytes[bytes.length - 1] = 0x5a;
-            }
-            independent &&= data.input.buffer instanceof ArrayBuffer;
-          } else if (data.type === "gl_forward_submit") {
-            independent &&= data.bytes.buffer instanceof ArrayBuffer;
-          } else if (data.type === "contract_done") {
-            clearTimeout(timeout); resolve(data.results);
-          } else if (data.type === "contract_failed") {
-            clearTimeout(timeout); reject(new Error(data.error));
-          }
-        });
-        worker.postMessage({ start: true });
-      });
-      return { results, independent, mailboxes: mailboxCount, mailboxSizes };
-    } finally {
-      worker.terminate(); dispose.forEach(close => close()); URL.revokeObjectURL(url);
-    }
-  }, { sourceRoot: root, sameProcess });
-  expect(result.independent).toBe(true);
-  expect(result.mailboxes).toBe(2);
-  expect(result.mailboxSizes[0]).toBeLessThan(66_000);
-  expect(result.results).toHaveLength(6);
-  result.results.forEach((value, index) => {
-    expect(value).toEqual({ stateRc: 16, state: [index % 2, 1 - index % 2, 0, 1],
-      pixelsRc: 4, pixels: index % 2 ? [255,0,0,255] : [0,255,0,255],
-      errorRc: 4, error: [0,0,0,0] });
-  });
-  expect(await memoryBoundaryFailures(page)).toEqual([]);
-});
-
-}
-
-test("forwarded first-current initializes viewport and scissor once", async ({ page }) => {
-  await installBrowserMemoryBoundaryProbe(page);
-  await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const result = await page.evaluate(async sourceRoot => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
-    const { setupMainForward } = await import(base + "main-forward.ts");
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 8;
-    document.body.replaceChildren(canvas);
-    const source = `
-      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
-      import * as O from ${JSON.stringify(base + "ops.ts")};
-      onmessage = () => {
-        try {
-          const channel = createMainForwardChannel({ postMessage: m => postMessage(m) }, 77, 321);
-          if (channel.onCreateContext() !== 0) throw new Error("creation failed");
-          const current = (surface) => channel.onMakeCurrent({ drawSurfaceId: surface, readSurfaceId: surface, width: 8, height: 8 });
-          const state = (pname) => {
-            const input = new Uint8Array(4); new DataView(input.buffer).setUint32(0, pname, true);
-            const reply = channel.onQuery(O.QOP_GET_INTEGERV, input, 16);
-            if (reply.rc !== 16) throw new Error("state query failed: " + reply.rc);
-            return [...new Int32Array(reply.bytes.buffer)];
-          };
-          if (current(0) !== 0) throw new Error("surfaceless bind failed");
-          const first = [state(0x0ba2), state(0x0c10)];
-          for (const [op, values] of [[O.OP_VIEWPORT, [1,2,5,6]], [O.OP_SCISSOR, [0,1,4,5]]]) {
-            const bytes = new Uint8Array(20), view = new DataView(bytes.buffer);
-            view.setUint16(0, op, true); view.setUint16(2, 16, true);
-            values.forEach((value, index) => view.setInt32(4 + index * 4, value, true));
-            channel.onSubmit(bytes);
-          }
-          if (channel.onCreateSurface({surfaceId:1,kind:1,width:8,height:8,configId:1,targetBoId:0}).rc !== 0)
-            throw new Error("window creation failed");
-          if (current(1) !== 0) throw new Error("window bind failed");
-          const rebound = [state(0x0ba2), state(0x0c10)];
-          postMessage({ type: "first_current_result", first, rebound });
-        } catch (error) { postMessage({ type: "first_current_failed", error: String(error) }); }
-      };
-    `;
-    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    const worker = new Worker(url, { type: "module" });
-    const dispose = setupMainForward(worker, canvas, 77);
-    try {
-      return await new Promise<{ first: number[][]; rebound: number[][] }>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("first-current contract timed out")), 35_000);
-        worker.addEventListener("message", ({ data }) => {
-          if (data.type === "first_current_result") { clearTimeout(timeout); resolve(data); }
-          if (data.type === "first_current_failed") { clearTimeout(timeout); reject(new Error(data.error)); }
-        });
-        worker.postMessage({ start: true });
-      });
-    } finally { worker.terminate(); dispose(); URL.revokeObjectURL(url); }
-  }, root);
-  expect(result.first).toEqual([[0, 0, 0, 0], [0, 0, 0, 0]]);
-  expect(result.rebound).toEqual([[1, 2, 5, 6], [0, 1, 4, 5]]);
-  expect(await memoryBoundaryFailures(page)).toEqual([]);
-});
-
-test("forwarded creation acknowledges real context loss and restoration", async ({ page }) => {
-  await installBrowserMemoryBoundaryProbe(page);
-  await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const results = await page.evaluate(async sourceRoot => {
-    const moduleUrl = new URL(`/@fs/${sourceRoot}host/src/webgl/main-forward.ts`, location.href).href;
-    const { setupMainForward } = await import(moduleUrl);
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 8;
-    document.body.replaceChildren(canvas);
-    const gl = canvas.getContext("webgl2");
-    if (!gl) throw new Error("WebGL2 is required");
-    const loss = gl.getExtension("WEBGL_lose_context");
-    if (!loss) throw new Error("WEBGL_lose_context is required for the loss regression");
-    const source = `
-      import { createMainForwardChannel } from ${JSON.stringify(moduleUrl)};
-      const channel = createMainForwardChannel({ postMessage: m => postMessage(m) }, 75);
-      onmessage = ({ data }) => {
-        if (data.retry) channel.onDestroyContext();
-        postMessage({ type: "creation_result", rc: channel.onCreateContext() });
-      };
-    `;
-    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    const worker = new Worker(url, { type: "module" });
-    const dispose = setupMainForward(worker, canvas, 75);
-    const create = (retry: boolean) => new Promise<number>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("creation acknowledgement timed out")), 35_000);
-      const receive = ({ data }: MessageEvent) => {
-        if (data.type !== "creation_result") return;
-        clearTimeout(timeout); worker.removeEventListener("message", receive);
-        resolve(data.rc);
-      };
-      worker.addEventListener("message", receive);
-      worker.postMessage({ retry });
-    });
-    function contextEvent(name: "webglcontextlost" | "webglcontextrestored") {
-      return new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error(`${name} did not arrive`)), 10_000);
-        canvas.addEventListener(name, event => {
-          event.preventDefault(); clearTimeout(timeout); resolve();
-        }, { once: true });
-      });
-    }
-    try {
-      const accepted = await create(false);
-      const lost = contextEvent("webglcontextlost");
-      loss.loseContext(); await lost;
-      const rejected = await create(true);
-      const restored = contextEvent("webglcontextrestored");
-      loss.restoreContext(); await restored;
-      const retried = await create(false);
-      return [accepted, rejected, retried];
-    } finally {
-      worker.terminate(); dispose(); URL.revokeObjectURL(url);
-    }
-  }, root);
-  expect(results).toEqual([0, -19, 0]);
-  expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 
 test("deleted current programs survive owner switches and retire after their last reference", async ({ page }) => {
@@ -1533,7 +1101,7 @@ test("deleted current programs survive owner switches and retire after their las
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT
     ?? fileURLToPath(new URL("../../../", import.meta.url));
   const result = await page.evaluate(async (sourceRoot) => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base + "registry.ts");
     const { GlMuxer } = await import(base + "muxer.ts");
     const { decodeAndDispatch } = await import(base + "bridge.ts");
@@ -1642,7 +1210,7 @@ test(`a live surface preserves pixels across ${replaceContext ? "context replace
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async ({sourceRoot,replaceContext}) => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { ensurePresentTarget } = await import(base+"present-target.ts");
@@ -1691,7 +1259,7 @@ test("surface draw/read selectors retain storage across owner retirement and ind
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async sourceRoot => {
-    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const base = `/@fs${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
     const { GlMuxer } = await import(base+"muxer.ts");
     const { resizeSurfaceTarget } = await import(base+"present-target.ts");
@@ -1749,97 +1317,14 @@ test("surface draw/read selectors retain storage across owner retirement and ind
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 
-test("forwarded surface creation acknowledges dimensions and preserves selected pixels through retirement", async ({page}) => {
-  await installBrowserMemoryBoundaryProbe(page);
-  await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../",import.meta.url));
-  const result = await page.evaluate(async sourceRoot => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`,location.href).href;
-    const {setupMainForward} = await import(base+"main-forward.ts");
-    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 8;
-    document.body.replaceChildren(canvas);
-    const source = `
-      import {createMainForwardChannel} from ${JSON.stringify(base+"main-forward.ts")};
-      import * as O from ${JSON.stringify(base+"ops.ts")};
-      onmessage = () => { try {
-        const c = createMainForwardChannel({postMessage:m => postMessage(m)},77,321);
-        const surface = (id,width,height) => c.onCreateSurface({surfaceId:id,kind:1,width,height,configId:1,targetBoId:0});
-        const first = surface(71,3,2);
-        if (first.rc !== 0 || c.onCreateContext() !== 0) throw new Error("creation failed");
-        const bind = (id,width,height) => c.onMakeCurrent({drawSurfaceId:id,readSurfaceId:id,width,height});
-        const clear = (color) => {
-          const bytes = new Uint8Array(28), v = new DataView(bytes.buffer);
-          v.setUint16(0,O.OP_CLEAR_COLOR,true); v.setUint16(2,16,true);
-          color.forEach((n,i) => v.setFloat32(4+i*4,n,true));
-          v.setUint16(20,O.OP_CLEAR,true); v.setUint16(22,4,true); v.setUint32(24,0x4000,true);
-          c.onSubmit(bytes);
-        };
-        const pixels = () => {
-          const input = new Uint8Array(24), v = new DataView(input.buffer);
-          [0,0,1,1,0x1908,0x1401].forEach((n,i) => v.setUint32(i*4,n,true));
-          const reply = c.onQuery(O.QOP_READ_PIXELS,input,4);
-          if (reply.rc !== 4) throw new Error("pixel query failed: "+reply.rc);
-          return [...reply.bytes];
-        };
-        if (bind(71,3,2) !== 0) throw new Error("first bind failed");
-        clear([1,0,0,1]); const red = pixels();
-        c.onDestroySurface(71); const retained = pixels();
-        const second = surface(72,4,1);
-        if (second.rc !== 0 || bind(72,4,1) !== 0) throw new Error("replacement failed");
-        clear([0,1,0,1]); const green = pixels();
-        const rejected = surface(73,5,5).rc;
-        c.onDestroySurface(71); const afterStale = pixels();
-        if (c.onPresent() !== 0) throw new Error("present failed");
-        postMessage({type:"surface_result",first,second,red,retained,green,rejected,afterStale});
-      } catch(error) {postMessage({type:"surface_failed",error:String(error)});} };
-    `;
-    const url = URL.createObjectURL(new Blob([source],{type:"text/javascript"}));
-    const worker = new Worker(url,{type:"module"}), dispose = setupMainForward(worker,canvas,77);
-    try {
-      const result = await new Promise<any>((resolve,reject) => {
-        const timer = setTimeout(() => reject(new Error("surface acknowledgement timed out")),35000);
-        worker.addEventListener("message",({data}) => {
-          if (data.type === "surface_result") {clearTimeout(timer);resolve(data);}
-          if (data.type === "surface_failed") {clearTimeout(timer);reject(new Error(data.error));}
-        });
-        worker.postMessage({start:true});
-      });
-      const gl = canvas.getContext("webgl2")!;
-      const previous = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null);
-      const visible = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,visible);
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER,previous);
-      return {...result,visible:[...visible]};
-    } finally {worker.terminate();dispose();URL.revokeObjectURL(url);}
-  },root);
-  expect(result).toEqual({type:"surface_result",first:{rc:0,width:3,height:2},second:{rc:0,width:4,height:1},
-    red:[255,0,0,255],retained:[255,0,0,255],green:[0,255,0,255],rejected:-16,afterStale:[0,255,0,255],visible:[0,255,0,255]});
-  expect(await memoryBoundaryFailures(page)).toEqual([]);
-});
-
-for (const mode of ["native","forwarded","retarget"] as const) {
+for (const mode of ["native","retarget"] as const) {
   test(`${mode} cross-session surfaces preserve separate pixels and retire after their final selector`, async ({page}) => {
     await installBrowserMemoryBoundaryProbe(page);
     await page.goto("/trap-signal-test.html");
     const root = fileURLToPath(new URL("../../../",import.meta.url));
     const result = await page.evaluate(async ({root,mode}) => {
       const canvas = document.createElement("canvas");canvas.width=canvas.height=8;document.body.replaceChildren(canvas);
-      const gl = mode === "forwarded" ? canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})! : null;
-      const created: object[] = [], deleted: object[] = [], live: Array<() => boolean> = [];
-      if (gl) {
-        for (const [createName,deleteName,isName] of [
-          ["createFramebuffer","deleteFramebuffer","isFramebuffer"],
-          ["createTexture","deleteTexture","isTexture"],
-          ["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],
-        ]) {
-          const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-          api[createName]=() => {const value=create();if(value){created.push(value);live.push(() => isLive(value));}return value;};
-          api[deleteName]=(value:object|null) => {if(value)deleted.push(value);destroy(value);};
-        }
-      }
-      const worker = new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/surface-routing-worker.ts`,location.href),{type:"module"});
-      const {setupMainForward} = await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
-      const dispose = mode === "forwarded" ? setupMainForward(worker,canvas,7) : () => {};
+      const worker = new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/surface-routing-worker.ts`,location.href),{type:"module"});
       try {
         const result = await new Promise<any>((resolve,reject) => {
           const timeout=setTimeout(() => reject(new Error("surface routing worker timed out")),35000);
@@ -1848,17 +1333,10 @@ for (const mode of ["native","forwarded","retarget"] as const) {
             if (data.type === "surface_routing_result") {clearTimeout(timeout);resolve(data);}
             if (data.type === "surface_routing_failed") {clearTimeout(timeout);reject(new Error(data.error));}
           });
-          if (mode === "forwarded") worker.postMessage({mode});
-          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,canvas:offscreen},[offscreen]);}
+          {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,canvas:offscreen},[offscreen]);}
         });
-        if (gl) {
-          const previous=gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null);
-          const visible=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,visible);gl.bindFramebuffer(gl.READ_FRAMEBUFFER,previous);
-          result.visible=[...visible];result.clean=created.length===deleted.length && created.every(value => deleted.includes(value)) && live.every(isLive => !isLive());
-          result.error=gl.getError();
-        }
         return result;
-      } finally {worker.terminate();dispose();}
+      } finally {worker.terminate();}
     },{root,mode});
     expect(result).toEqual({type:"surface_routing_result",red:[255,0,0,255],green:[0,255,0,255],independent:[0,255,0,255],
       blue:mode === "retarget" ? [0,0,255,255] : null,retained:[0,255,0,255],rejected:-22,afterRejected:[0,255,0,255],
@@ -1866,11 +1344,9 @@ for (const mode of ["native","forwarded","retarget"] as const) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
-for(const scenario of ["sync-khr-render","sync-render","core-image-render","shared-records-render","records-basic","names-render","image-target-render","image-bind-render","encoder-array-render","encoder-array-index-render","raw-discard-render","surface-limits-render","platform-window-render","completion-render","pbuffer-basic","pbuffer-zero"] as const) {
-for (const mode of ["native", "forwarded"] as const) {
-  // Forwarded BO-source registration remains an ordinary inventory gap.
-  if((scenario === "raw-discard-render" || scenario === "core-image-render") && mode === "forwarded")continue;
-  test(`actual C ${scenario.startsWith("pbuffer-") ? `${scenario === "pbuffer-zero" ? "zero-sized" : "rendered"} pbuffers preserve the visible canvas` : scenario === "sync-khr-render" ? "KHR fence aliases retain completion and public identity" : scenario === "sync-render" ? "EGL client fences retain completed pixels after creator retirement" : scenario === "core-image-render" ? "core EGL images retain sibling pixels through destruction and respecification" : scenario === "completion-render" ? "completion waits finish before pixels are read" : scenario === "platform-window-render" ? "GBM platform windows preserve pixels around surface operations" : scenario === "surface-limits-render" ? "surface limits preserve current rendering across display generations" : scenario === "raw-discard-render" ? "unpublished raw candidate cleanup permits fresh cube pixels" : scenario === "shared-records-render" ? "public shared contexts retain texture storage after source retirement" : scenario === "records-basic" ? "independent EGL records preserve draw/read pixels" : scenario === "names-render" ? "implicit and generated texture names retain independent storage" : scenario === "image-bind-render" ? "native binding allocation failure preserves binding and dimensionality" : scenario === "image-target-render" ? "a rejected texture target preserves binding and storage" : `client staging restores the retained buffer across a renderer peer deletion${scenario.includes("index") ? " with separate index/vertex views" : ""}`} through ${mode} dispatch`, async ({page}) => {
+for(const scenario of ["sync-khr-render","sync-render","core-image-render","shared-records-render","records-basic","names-render","image-target-render","image-bind-render","encoder-array-render","encoder-array-index-render","encoder-array-legacy-render","encoder-array-index-legacy-render","raw-discard-render","surface-limits-render","platform-window-render","completion-render","pbuffer-basic","pbuffer-zero"] as const) {
+for (const mode of ["native"] as const) {
+  test(`actual C ${scenario.startsWith("pbuffer-") ? `${scenario === "pbuffer-zero" ? "zero-sized" : "rendered"} pbuffers preserve the visible canvas` : scenario === "sync-khr-render" ? "KHR fence aliases retain completion and public identity" : scenario === "sync-render" ? "EGL client fences retain completed pixels after creator retirement" : scenario === "core-image-render" ? "core EGL images retain sibling pixels through destruction and respecification" : scenario === "completion-render" ? "completion waits finish before pixels are read" : scenario === "platform-window-render" ? "GBM platform windows preserve pixels around surface operations" : scenario === "surface-limits-render" ? "surface limits preserve current rendering across display generations" : scenario === "raw-discard-render" ? "unpublished raw candidate cleanup permits fresh cube pixels" : scenario === "shared-records-render" ? "public shared contexts retain texture storage after source retirement" : scenario === "records-basic" ? "independent EGL records preserve draw/read pixels" : scenario === "names-render" ? "implicit and generated texture names retain independent storage" : scenario === "image-bind-render" ? "native binding allocation failure preserves binding and dimensionality" : scenario === "image-target-render" ? "a rejected texture target preserves binding and storage" : `client draws retain the original buffer across renderer peer deletion${scenario.includes("legacy") ? " using large legacy staging" : " using an owned private draw"}${scenario.includes("index") ? " with separate index/vertex views" : ""}`} through ${mode} dispatch`, async ({page}) => {
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const temporary=mkdtempSync(join(root,".context/graphics-egl-record-trace-"));
     let trace:number[];
@@ -1886,70 +1362,23 @@ for (const mode of ["native", "forwarded"] as const) {
     await page.goto("/trap-signal-test.html");
     const result=await page.evaluate(async ({root,mode,trace,scenario})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=8;document.body.replaceChildren(canvas);
-      const gl=mode==="forwarded"?canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})!:null;
-      const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
-      let finishes=0;
-      if(gl && scenario==="completion-render") {const finish=gl.finish.bind(gl);gl.finish=()=>{finishes++;finish();};}
-
-      if(gl)for(const [createName,deleteName,isName] of [
-        ["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createTexture","deleteTexture","isTexture"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],
-        ["fenceSync","deleteSync","isSync"],
-        ...(scenario.startsWith("encoder-array-")?[["createBuffer","deleteBuffer","isBuffer"],["createVertexArray","deleteVertexArray","isVertexArray"]]:[]),
-      ]) {
-        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));}return value;};
-        api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
-      }
-      if(gl && scenario.startsWith("pbuffer-")) { gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT); }
-      const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/egl-record-worker.ts`,location.href),{type:"module"});
-      const {setupMainForward}=await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
-      const dispose=mode==="forwarded"?setupMainForward(worker,canvas,7):()=>{};
-      let capabilityState:unknown[]|null=null,capabilityChecks=0;
-      const physicalState=()=>gl ? [gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING),gl.getParameter(gl.READ_FRAMEBUFFER_BINDING),
-        gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),gl.getParameter(gl.RENDERBUFFER_BINDING)] : [];
+      const worker=new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/egl-record-worker.ts`,location.href),{type:"module"});
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("EGL record replay timed out")),35000);
           worker.addEventListener("error",event=>{clearTimeout(timeout);reject(new Error(event.message));});
           worker.addEventListener("message",({data})=>{
-            if(data.type==="egl_record_capabilities_before")capabilityState=physicalState();
-            if(data.type==="egl_record_capabilities_after") {
-              if(!capabilityState || capabilityState.some((value,index)=>value!==physicalState()[index])) {
-                clearTimeout(timeout);reject(new Error("forwarded surface limits changed native state"));return;
-              }
-              capabilityChecks++;
-            }
-            if(data.type==="egl_record_fail_texture_create") {
-              if(!gl)throw new Error("missing forwarding renderer");
-              const api=gl as any,create=api.createTexture;
-              api.createTexture=()=>{api.createTexture=create;return null;};
-            }
             if(data.type==="egl_record_result"){clearTimeout(timeout);resolve(data);}
             if(data.type==="egl_record_failed"){clearTimeout(timeout);reject(new Error(data.error));}
           });
-          if(mode==="forwarded")worker.postMessage({mode,trace,peerDelete:scenario.startsWith("encoder-array-"),captureUpload:scenario.startsWith("image-")||scenario==="core-image-render",bindFailure:scenario==="image-bind-render",pbuffer:scenario.startsWith("pbuffer-"),zeroSurface:scenario==="pbuffer-zero",capabilities:scenario==="surface-limits-render",completion:scenario==="completion-render"});
-          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,trace,canvas:offscreen,peerDelete:scenario.startsWith("encoder-array-"),captureUpload:scenario.startsWith("image-")||scenario==="core-image-render",bindFailure:scenario==="image-bind-render"||scenario==="raw-discard-render",rawCandidate:scenario==="raw-discard-render",pbuffer:scenario.startsWith("pbuffer-"),zeroSurface:scenario==="pbuffer-zero",capabilities:scenario==="surface-limits-render",completion:scenario==="completion-render"},[offscreen]);}
+          {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,trace,canvas:offscreen,peerDelete:scenario.startsWith("encoder-array-"),captureUpload:scenario.startsWith("image-")||scenario==="core-image-render",bindFailure:scenario==="image-bind-render"||scenario==="raw-discard-render",rawCandidate:scenario==="raw-discard-render",pbuffer:scenario.startsWith("pbuffer-"),zeroSurface:scenario==="pbuffer-zero",capabilities:scenario==="surface-limits-render",completion:scenario==="completion-render"},[offscreen]);}
         });
         if(scenario==="surface-limits-render") {
           if(result.limits.length!==2)throw new Error("missing generation limit query");
-          if(gl) {
-            const dimension=Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
-            if(capabilityChecks!==2 || result.limits.some((values:number[])=>values[0]!==dimension))throw new Error("forwarded native surface limits mismatch");
-          }
           delete result.limits;
         }
-        if(gl) {
-          if(scenario.startsWith("pbuffer-")) {
-            const prior=gl.getParameter(gl.READ_FRAMEBUFFER_BINDING),pixel=new Uint8Array(4);
-            gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);gl.bindFramebuffer(gl.READ_FRAMEBUFFER,prior);
-            result.canvasPixel=[...pixel];result.viewport=[...gl.getParameter(gl.VIEWPORT)];
-          }
-          if(scenario==="completion-render")result.finishes=finishes;
-          result.clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
-          result.error=gl.getError();
-        }
         return result;
-      } finally {worker.terminate();dispose();}
+      } finally {worker.terminate();}
     },{root,mode,trace,scenario});
     expect(result).toEqual(scenario === "sync-khr-render" ? {type:"egl_record_result",observed:[[255,0,0,255]],retiredContexts:[31,32],retiredSurfaces:[131],clean:true,error:0}
     :scenario === "sync-render" ? {type:"egl_record_result",observed:[[255,0,0,255]],retiredContexts:[31],retiredSurfaces:[131],clean:true,error:0}
@@ -1972,22 +1401,13 @@ for (const mode of ["native", "forwarded"] as const) {
 }
 }
 
-for(const mode of ["native","forwarded"] as const) {
+for(const mode of ["native"] as const) {
   test(`ABI 58 shared context construction preserves object identity through ${mode} dispatch`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,mode})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=1;document.body.replaceChildren(canvas);
-      const gl=mode==="forwarded"?canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})!:null;
-      const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
-      if(gl)for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"]]) {
-        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=()=>{const value=create();if(value){created.push(value);live.push(()=>isLive(value));}return value;};
-        api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
-      }
-      const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
-      const {setupMainForward}=await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
-      const dispose=mode==="forwarded"?setupMainForward(worker,canvas,7):()=>{};
+      const worker=new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("shared context worker timed out")),35000);
@@ -1996,12 +1416,10 @@ for(const mode of ["native","forwarded"] as const) {
             if(data.type==="share_context_result"){clearTimeout(timeout);resolve(data);}
             if(data.type==="share_context_failed"){clearTimeout(timeout);reject(new Error(data.error));}
           });
-          if(mode==="forwarded")worker.postMessage({mode});
-          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,canvas:offscreen},[offscreen]);}
+          {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,canvas:offscreen},[offscreen]);}
         });
-        if(gl){result.clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());result.error=gl.getError();}
         return result;
-      } finally {worker.terminate();dispose();}
+      } finally {worker.terminate();}
     },{root,mode});
     expect(result).toEqual({type:"share_context_result",red:[255,0,0,255],sharedRed:[255,0,0,255],sharedGreen:[0,255,0,255],independent:[0,0,255,255],
       survivor:[0,255,0,255],chained:[0,255,0,255],unnamed:[0,255,0,255],publicName:[0,0,0,0],afterReuse:[0,255,0,255],afterPeerDestroy:[0,255,0,255],clean:true,error:0});
@@ -2010,22 +1428,13 @@ for(const mode of ["native","forwarded"] as const) {
 }
 
 
-for(const mode of ["native","forwarded"] as const) {
+for(const mode of ["native"] as const) {
   test(`checked shared uniform values survive source retirement and reject relinked locations through ${mode} dispatch`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,mode})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=1;document.body.replaceChildren(canvas);
-      const gl=mode==="forwarded"?canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})!:null;
-      const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
-      if(gl)for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],["createProgram","deleteProgram","isProgram"],["createShader","deleteShader","isShader"]]) {
-        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));}return value;};
-        api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
-      }
-      const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
-      const {setupMainForward}=await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
-      const dispose=mode==="forwarded"?setupMainForward(worker,canvas,7):()=>{};
+      const worker=new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("uniform values worker timed out")),35000);
@@ -2034,12 +1443,10 @@ for(const mode of ["native","forwarded"] as const) {
             if(data.type==="uniform_values_result"){clearTimeout(timeout);resolve(data);}
             if(data.type==="share_context_failed"){clearTimeout(timeout);reject(new Error(data.error));}
           });
-          if(mode==="forwarded")worker.postMessage({mode,uniforms:true});
-          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,uniforms:true,canvas:offscreen},[offscreen]);}
+          {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,uniforms:true,canvas:offscreen},[offscreen]);}
         });
-        if(gl){result.clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());result.error=gl.getError();}
         return result;
-      } finally {worker.terminate();dispose();}
+      } finally {worker.terminate();}
     },{root,mode});
     const ok=(values:number[])=>({status:0,count:values.length,values});
     const reflected:Array<[string,number,number]>=[["colorValue",1,0x8b52],["normal",1,0x8b5b],["transform",1,0x8b5c],["items[0]",2,0x8b51],["flags",1,0x8b59],["scalar",1,0x1406],["u"+"n".repeat(248),1,0x1406]];
@@ -2051,22 +1458,13 @@ for(const mode of ["native","forwarded"] as const) {
 }
 
 
-for(const mode of ["native","forwarded"] as const) {
+for(const mode of ["native"] as const) {
   test(`delayed shared reservations preserve realized storage through ${mode} dispatch`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,mode})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=1;document.body.replaceChildren(canvas);
-      const gl=mode==="forwarded"?canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})!:null;
-      const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[],counts:Record<string,number>={};
-      if(gl)for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],["createBuffer","deleteBuffer","isBuffer"]]) {
-        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));counts[createName]=(counts[createName]??0)+1;}return value;};
-        api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
-      }
-      const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
-      const {setupMainForward}=await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
-      const dispose=mode==="forwarded"?setupMainForward(worker,canvas,7):()=>{};
+      const worker=new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("reservation worker timed out")),35000);
@@ -2075,12 +1473,10 @@ for(const mode of ["native","forwarded"] as const) {
             if(data.type==="reservation_result"){clearTimeout(timeout);resolve(data);}
             if(data.type==="share_context_failed"){clearTimeout(timeout);reject(new Error(data.error));}
           });
-          if(mode==="forwarded")worker.postMessage({mode,reservations:true});
-          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,reservations:true,canvas:offscreen},[offscreen]);}
+          {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,reservations:true,canvas:offscreen},[offscreen]);}
         });
-        if(gl){result.clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());result.error=gl.getError();result.allocations=[counts.createBuffer??0,counts.createTexture??0,counts.createRenderbuffer??0];}
         return result;
-      } finally {worker.terminate();dispose();}
+      } finally {worker.terminate();}
     },{root,mode});
     expect(result).toEqual({type:"reservation_result",reserved:[false,false,false],realized:[true,true,true],retired:[false,false,false],texturePixels:[255,0,0,255],renderbufferPixels:[0,255,0,255],bufferMaximum:3,bufferBits:15,errors:[[0,0,0,0],[0,0,0,0]],allocations:[2,1,1],clean:true,error:0});
     expect(await memoryBoundaryFailures(page)).toEqual([]);
@@ -2088,14 +1484,17 @@ for(const mode of ["native","forwarded"] as const) {
 }
 
 for (const gpu of [false,true]) {
-test(`raw ${gpu ? "GPU" : "CPU"} upload retains failed utility restoration and candidate cleanup`, async ({page}) => {
+// The upload's utility state (unpack state, unit and texture selection) is
+// restored after the accepted upload. A live renderer that refuses that
+// restoration is a fatal host fault, not a repair fenced until a later query.
+test(`raw ${gpu ? "GPU" : "CPU"} upload whose utility restoration a live renderer refuses is a fatal host fault`, async ({page}) => {
   await installBrowserMemoryBoundaryProbe(page); await page.goto("/trap-signal-test.html");
   const root = fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async ({root,gpu}) => {
-    const base = `/@fs/${root}host/src/webgl/`;
+    const base = `/@fs${root}host/src/webgl/`;
     const {GlContextRegistry} = await import(base+"registry.ts");
     const {bindForeignTexture,bindGpuForeignTexture} = await import(base+"foreign-texture.ts");
-    const {runGlQuery} = await import(base+"query.ts"), O = await import(base+"ops.ts");
+    const {NativeGlFault,setNativeGlFaultReporter} = await import(base+"native-recovery.ts");
     const canvas = document.createElement("canvas"), gl = canvas.getContext("webgl2");
     if (!gl) throw new Error("WebGL2 required");
     const require = (condition: unknown,label: string) => { if (!condition) throw new Error(label); };
@@ -2110,63 +1509,54 @@ test(`raw ${gpu ? "GPU" : "CPU"} upload retains failed utility restoration and c
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D,two);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH,5); gl.pixelStorei(gl.UNPACK_ALIGNMENT,8);
     gl.pixelStorei(gl.UNPACK_SKIP_ROWS,2); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS,3);
-    const before = [gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),
-      ...[gl.UNPACK_ROW_LENGTH,gl.UNPACK_ALIGNMENT,gl.UNPACK_SKIP_ROWS,gl.UNPACK_SKIP_PIXELS].map(p => gl.getParameter(p))];
-    const create = gl.createTexture.bind(gl), destroy = gl.deleteTexture.bind(gl), bind = gl.bindTexture.bind(gl);
+    const create = gl.createTexture.bind(gl), bind = gl.bindTexture.bind(gl);
     const pixel = gl.pixelStorei.bind(gl), image = gl.texImage2D.bind(gl), parameter = gl.texParameteri.bind(gl);
-    const candidates: WebGLTexture[] = [], deleted: WebGLTexture[] = [];
-    let armed = false, block = true, blockCleanup = true, uploads = 0;
+    const candidates: WebGLTexture[] = [];
+    let armed = false, uploads = 0;
     gl.createTexture = () => { const object = create(); if (object) candidates.push(object); return object; };
-    gl.deleteTexture = object => {
-      if (object && candidates.includes(object) && blockCleanup) { bind(0xdead,null); return; }
-      if (object) deleted.push(object); destroy(object);
-    };
     gl.texImage2D = ((...args: Parameters<typeof gl.texImage2D>) => { image(...args); uploads++; armed = true; }) as typeof gl.texImage2D;
     gl.texParameteri = (target,pname,value) => { parameter(target,pname,value); if (gpu) armed = true; };
     gl.bindTexture = (target,object) => {
-      if (gpu && armed && block && object === two) { bind(0xdead,null); return; } bind(target,object);
+      if (gpu && armed && object === two) { bind(0xdead,null); return; } bind(target,object);
     };
     gl.pixelStorei = (pname,value) => {
-      if (!gpu && armed && block && pname === gl.UNPACK_ROW_LENGTH && value === 5) { bind(0xdead,null); return; } pixel(pname,value);
+      if (!gpu && armed && pname === gl.UNPACK_ROW_LENGTH && value === 5) { bind(0xdead,null); return; } pixel(pname,value);
     };
-    const first = gpu ? bindGpuForeignTexture(b,41,canonical)
-      : bindForeignTexture(b,41,new Uint8Array([17,29,41,255]),{w:1,h:1,stride:4});
-    require(first === -5 && armed && candidates.length === 1,"valid candidate then failed restoration");
+    const reported: Error[] = [];
+    setNativeGlFaultReporter((fault: Error) => { reported.push(fault); });
+    let thrown: unknown;
+    try {
+      gpu ? bindGpuForeignTexture(b,41,canonical) : bindForeignTexture(b,41,new Uint8Array([17,29,41,255]),{w:1,h:1,stride:4});
+    } catch (error) { thrown = error; }
+    finally {
+      setNativeGlFaultReporter(null);
+      gl.createTexture = create; gl.bindTexture = bind; gl.pixelStorei = pixel; gl.texImage2D = image; gl.texParameteri = parameter;
+    }
+    require(armed && candidates.length === 1,"valid candidate before the refused restoration");
     require(b.textures.size === 0 && b.foreignTextures.size === 0 && b.foreignTextureBos.size === 0,"unpublished namespace");
-    const output = new Uint8Array(4).fill(0xa5);
-    const blocked = runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output);
-    require(blocked === -5 && output.every(x => x === 165) && deleted.length === 0,"repair fence preserves output and candidate");
-    block = false;
-    require(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output) === -5,"cleanup has independent completion");
-    const after = [gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),
-      ...[gl.UNPACK_ROW_LENGTH,gl.UNPACK_ALIGNMENT,gl.UNPACK_SKIP_ROWS,gl.UNPACK_SKIP_PIXELS].map(p => gl.getParameter(p))];
-    require(before.every((value,i) => value === after[i]),"exact physical state restored");
-    blockCleanup = false;
-    require(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output) === 4,"cleanup retry completion");
-    require(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output) === 4 && deleted.length === 1 && deleted[0] === candidates[0],"candidate deleted once");
-    require(!gl.isTexture(candidates[0]) && (!gpu || gl.isTexture(canonical.tex)),"candidate gone, canonical source alive");
-    gl.createTexture = create; gl.deleteTexture = destroy; gl.bindTexture = bind; gl.pixelStorei = pixel; gl.texImage2D = image; gl.texParameteri = parameter;
+    // Nothing is retried or cleaned up after a fatal fault; the page is
+    // discarded. The textures this test owns keep their pixels.
     const frame = gl.createFramebuffer()!, colors: number[][] = [];
     for (const texture of [zero,two]) {
       gl.bindFramebuffer(gl.FRAMEBUFFER,frame); gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,texture,0);
       require(gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE,"retained texture complete");
       const rgba = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba); colors.push([...rgba]);
     }
-    gl.deleteFramebuffer(frame); gl.deleteTexture(zero); gl.deleteTexture(two); if (gpu) reg.retireForeignBo(41);
-    return {first,blocked,colors,uploads,deleted:deleted.length,error:gl.getError()};
+    return {thrown:thrown instanceof Error && thrown instanceof NativeGlFault ? thrown.name : String(thrown),message:thrown instanceof Error ? thrown.message : null,
+      reported:reported.length === 1 && reported[0] === thrown,colors,uploads};
   },{root,gpu});
-  expect(result).toEqual({first:-5,blocked:-5,colors:[[0,0,255,255],[255,0,0,255]],uploads:gpu?0:1,deleted:1,error:0});
+  expect(result).toEqual({thrown:"NativeGlFault",message:REFUSED_RESTORE,reported:true,colors:[[0,0,255,255],[255,0,0,255]],uploads:gpu?0:1});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 }
 
 for (const fault of ["attachment","unit"]) {
-test(`raw BO revocation retains failed ${fault} inverses and shared native pixels`, async ({page}) => {
+test(`raw BO revocation whose ${fault} inverse a live renderer refuses is a fatal host fault`, async ({page}) => {
   await installBrowserMemoryBoundaryProbe(page); await page.goto("/trap-signal-test.html");
   const root = fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async ({root,fault}) => {
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 2;
-    const worker = new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/foreign-retirement-worker.ts`,location.href),{type:"module"});
+    const worker = new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/foreign-retirement-worker.ts`,location.href),{type:"module"});
     try { return await new Promise<any>((resolve,reject) => {
       const timeout = setTimeout(() => reject(new Error("foreign retirement timed out")),35000);
       worker.addEventListener("error",event => { clearTimeout(timeout); reject(new Error(event.message)); });
@@ -2174,33 +1564,94 @@ test(`raw BO revocation retains failed ${fault} inverses and shared native pixel
       const offscreen = canvas.transferControlToOffscreen(); worker.postMessage({canvas:offscreen,fault},[offscreen]);
     }); } finally { worker.terminate(); }
   },{root,fault});
-  expect(result).toEqual({type:"foreign_retirement_result",fault,colors:Array(fault === "attachment" ? 1 : 2).fill([0,255,0,255]),deadBinds:0,clean:true,error:0});
+  expect(result).toEqual({type:"foreign_retirement_result",fault,thrown:"NativeGlFault",message:REFUSED_RESTORE,
+    reported:true,ownership:true,dirty:true,otherRestored:true});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 }
 
 // Native source registration and logical image views; public C sharing and
 // normal guest ioctl marshalling are separate validation phases.
-test("logical image views preserve sibling parameters, pixels and retained identity",async({page})=>{
+const runImageStorageWorker=async(page:Page,fault?:string)=>{
   await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
   const root=process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
-  const result=await page.evaluate(async(root)=>{
+  return await page.evaluate(async({root,fault})=>{
     const canvas=document.createElement("canvas");canvas.width=canvas.height=4;document.body.replaceChildren(canvas);
-    const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/image-storage-worker.ts`,location.href),{type:"module"});
+    const worker=new Worker(new URL(`/@fs${root}apps/browser-demos/test/support/image-storage-worker.ts`,location.href),{type:"module"});
     try{return await new Promise<any>((resolve,reject)=>{
       const timeout=setTimeout(()=>reject(new Error("image view replay timed out")),35000);
       worker.addEventListener("error",event=>{clearTimeout(timeout);reject(new Error(event.message));});
       worker.addEventListener("message",({data})=>{if(data.type==="image_storage_failed"){clearTimeout(timeout);reject(new Error(data.error));}
-        if(data.type==="image_storage_result"){clearTimeout(timeout);resolve(data);}});
-      const offscreen=canvas.transferControlToOffscreen();worker.postMessage({canvas:offscreen},[offscreen]);
+        if(data.type==="image_storage_result"||data.type==="image_storage_fault"||data.type==="image_storage_forward"){clearTimeout(timeout);resolve(data);}});
+      const offscreen=canvas.transferControlToOffscreen();worker.postMessage({canvas:offscreen,fault},[offscreen]);
     });}finally{worker.terminate();}
-  },root);
+  },{root,fault});
+};
+test("logical image views preserve sibling parameters, pixels and retained identity",async({page})=>{
+  const result=await runImageStorageWorker(page);
   expect(result).toEqual({type:"image_storage_result",namespace:[0,0,255,255],firstParam:0x2600,secondParam:0x2601,
     red:[[255,0,0,255],[255,0,0,255]],rboName:2,green:[[0,255,0,255],[0,255,0,255]],sampledGreen:[0,255,0,255],
     orphan:[[0,0,255,255],[0,255,0,255]],aSource:0,bSource:0,mipOrphan:[0,255,0,255],reimport:[255,0,0,255],rboSource:0,rboOrphan:[[0,0,255,255],[255,0,0,255]],
-    rejected:[0,0,255,255],retargetRejected:[0,0,255,255],reused:[255,255,0,255],retained:[0,0,255,255],retainedState:[0,2],retainedImport:[1,3],retainedImported:[255,0,0,255],reusedAfterPeerImport:[255,255,0,255],afterSourceRetirement:[255,0,0,255],mutationRollback:[[255,255,0,255],[255,0,0,255],[0,0,255,255],[0,0,255,255],[255,255,0,255],[255,0,0,255]],storageReject:[[255,255,0,255],[0,0,255,255]],ownedStorageRetry:[0,0,255,255],framebufferBindReject:[[0,0,255,255],[0,0,255,255]],framebufferBindRetry:[0,0,255,255],bufferBindReject:[[100,11,22,33,44],[100,11,22,33,44],[102,11,22,33,44],[102,11,22,33,44]],bufferBindRetry:[101,103],bufferDeleteRollback:[[0,255,0,255],[0,255,0,255],[0,255,0,255],[0,255,0,255]],bufferDeleteCleared:[0,0,0,0],bufferDeleteRetry:[0,0,255,255],captureEnd:-5,captureBlocked:-5,captureOutput:[165,165,165,165],captureState:[200,0],capturePixels:[0,0,255,255],promotionSubmit:-5,promotionBlocked:-5,promotionDraws:1,promotionPixels:[0,0,255,255],pointerSubmit:-5,pointerBlocked:-5,pointerOutput:[165,165,165,165],pointerPixels:[0,0,255,255],convertedRetryPixels:[0,255,0,255],repairBlocked:-5,repairBlockedOutput:[165,165,165,165],repairPeerBlocked:-5,repairBatchBlocked:-5,repairRestored:[255,0,0,255],storageBlocked:-5,storageBlockedOutput:[165,165,165,165],storageRestored:[[255,0,0,255],[255,0,0,255]],storageState:[1,1],storageCommit:[1,0,2],storageCleanupBlocked:-5,storageOwned:[[0,0,255,255],[0,0,255,255]],rawNamespace:[0,0,255,255],rawParams:[0x2600,0x2601],rawGreen:[0,255,0,255],rawOrphan:[[255,0,0,255],[0,255,0,255]],rawRefresh:[0,255,0,255],rawInvalid:-14,rawBlocked:-5,rawBlockedOutput:[165,165,165,165],rawRevoked:[0,0,1],rawReplacement:[0,0,255,255],rawMissing:0x8cd7,errors:[0,0],clean:true,error:0});
+    rejected:[0,0,255,255],retargetRejected:[0,0,255,255],reused:[255,255,0,255],retained:[0,0,255,255],retainedState:[0,2],retainedImport:[1,3],retainedImported:[255,0,0,255],reusedAfterPeerImport:[255,255,0,255],afterSourceRetirement:[255,0,0,255],mutationRollback:[[255,255,0,255],[255,0,0,255],[0,0,255,255],[0,0,255,255],[255,255,0,255],[255,0,0,255]],storageReject:[[255,255,0,255],[0,0,255,255]],ownedStorageRetry:[0,0,255,255],framebufferBindReject:[[0,0,255,255],[0,0,255,255]],framebufferBindRetry:[0,0,255,255],bufferBindReject:[[100,11,22,33,44],[100,11,22,33,44],[102,11,22,33,44],[102,11,22,33,44]],bufferBindRetry:[101,103],bufferDeleteRollback:[[0,255,0,255],[0,255,0,255]],bufferDeleteCleared:[0,0,0,0],bufferDeleteRetry:[0,0,255,255],convertedRetryPixels:[0,255,0,255],storageCommit:[1,0,2],storageOwned:[[0,0,255,255],[0,0,255,255]],rawNamespace:[0,0,255,255],rawParams:[0x2600,0x2601],rawGreen:[0,255,0,255],rawOrphan:[[255,0,0,255],[0,255,0,255]],rawRefresh:[0,255,0,255],rawInvalid:-14,rawAdmitted:[4,1],rawRevoked:[0,0,1],rawReplacement:[0,0,255,255],rawMissing:0x8cd7,errors:[0,0],clean:true,error:0});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
+// Each refusal of a native restoration or deletion of host-owned state is a
+// fatal host fault: thrown out of the host import and reported once through
+// the kernel's onHostFault, never a -5 reply fencing later GL work while a
+// repair waits for a retry.
+for (const [fault,message,detail] of [
+  ["deleteBuffer",refusedDeletion("deleteBuffer"),{refused:true,logicalDeleted:true}],
+  ["capture",REFUSED_RESTORE,{}],
+  ["promotion",REFUSED_RESTORE,{draws:1,types:[0x1403],refused:true}],
+  ["pointer",REFUSED_RESTORE,{precondition:{error:0,selected:true,installed:true},dirty:true,restored:true}],
+  ["repair",REFUSED_RESTORE,{rejected:true,dirty:true}],
+  ["storage",REFUSED_RESTORE,{rejected:true,dirty:true}],
+  ["storageCleanup",refusedDeletion("deleteTexture"),{retained:true}],
+] as const) {
+  test(`logical image views make a refused ${fault} cleanup or restoration a fatal host fault`,async({page})=>{
+    const result=await runImageStorageWorker(page,fault);
+    expect(result).toEqual({type:"image_storage_fault",scenario:fault,fault:"NativeGlFault",message,reported:true,...detail});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}
+
+// A forward native flag is discovered only at the batch boundary. It resets
+// its context; it does not retroactively turn an accepted forward call into
+// the early failed change exercised by the refused-inverse controls above.
+for (const fault of ["pointerReset","repairReset"] as const) {
+  test(`logical image views isolate a late ${fault} native error from a healthy peer`,async({page})=>{
+    const result=await runImageStorageWorker(page,fault);
+    expect(result).toMatchObject({type:"image_storage_fault",scenario:fault,
+      fault:"returned -19",message:null,reported:false,dirty:true,restores:0,
+      refused:-19,healthy:[0,0,255,255],nativeError:0});
+    if(fault==="pointerReset") expect(result.precondition).toEqual({error:0,selected:true,installed:true});
+    else expect(result.rejected).toBe(true);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]).toContain("gl-context-reset");
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}
+
+for (const [index,method] of ["framebufferTexture2D","bindTexture","framebufferRenderbuffer",
+  "bindRenderbuffer","deleteFramebuffer","bindFramebuffer","bindBuffer","bindBuffer",
+  "vertexAttribPointer","bindBuffer"].entries()) {
+  test(`logical image views isolate forward fault ${index+1} in ${method}`,async({page})=>{
+    const result=await runImageStorageWorker(page,`forward:${index+1}`);
+    if(method==="deleteFramebuffer") {
+      expect(result).toEqual({type:"image_storage_fault",scenario:`forward:${index+1}`,
+        fault:"NativeGlFault",message:refusedDeletion("deleteFramebuffer"),reported:true,
+        index:index+1,method,fired:true});
+    } else {
+      expect(result).toMatchObject({type:"image_storage_forward",scenario:`forward:${index+1}`,
+        index:index+1,method,fired:true,nativeRc:-19,refused:-19,clean:true,nativeError:0});
+      expect(result.healthyBefore).toEqual(index<5?[255,255,0,255]:[0,0,255,255]);
+      expect(result.healthyAfter).toEqual(result.healthyBefore);
+      expect(result.diagnostics).toHaveLength(1);
+      expect(result.diagnostics[0]).toContain("gl-context-reset");
+    }
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}
 
 // Native fence ownership is a source model prerequisite for EGL sync APIs;
 // these checks do not execute the still-unimplemented guest entry points.
@@ -2209,7 +1660,7 @@ test("native fence waiters retain completion and pixels after creator-context de
   await installBrowserMemoryBoundaryProbe(page);
   await page.goto("/trap-signal-test.html");
   const result = await page.evaluate(async (sourceRoot) => {
-    const { GlContextRegistry } = await import(`/@fs/${sourceRoot}host/src/webgl/registry.ts`);
+    const { GlContextRegistry } = await import(`/@fs${sourceRoot}host/src/webgl/registry.ts`);
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
     document.body.replaceChildren(canvas);
     const gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
@@ -2255,26 +1706,15 @@ test("native fence waiters retain completion and pixels after creator-context de
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 
-for (const mode of ["native", "forwarded"] as const) {
+for (const mode of ["native"] as const) {
   test(`retained fence wire queries preserve completion and pixels through ${mode} host imports`, async ({ page }) => {
     const root = fileURLToPath(new URL("../../../", import.meta.url));
     await installBrowserMemoryBoundaryProbe(page);
     await page.goto("/trap-signal-test.html");
     const result = await page.evaluate(async ({ sourceRoot, mode }) => {
-      const { setupMainForward } = await import(`/@fs/${sourceRoot}host/src/webgl/main-forward.ts`);
       const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
       document.body.replaceChildren(canvas);
       const worker = new Worker("/test/support/fence-query-worker.ts", { type: "module" });
-      let dispose: (() => void) | undefined;
-      let gl: WebGL2RenderingContext | null = null, created = 0, deleted = 0;
-      if (mode === "forwarded") {
-        gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
-        if (!gl) throw new Error("Main WebGL2 required");
-        const allocate = gl.fenceSync.bind(gl), destroy = gl.deleteSync.bind(gl);
-        gl.fenceSync = (condition, flags) => { const value = allocate(condition, flags); if (value) created++; return value; };
-        gl.deleteSync = sync => { if (sync) deleted++; destroy(sync); };
-        dispose = setupMainForward(worker, canvas, 91);
-      }
       try {
         const reply = await new Promise<any>((resolve, reject) => {
           const deadline = setTimeout(() => reject(new Error("Fence worker timed out")), 15000);
@@ -2282,19 +1722,12 @@ for (const mode of ["native", "forwarded"] as const) {
           worker.addEventListener("message", ({ data }) => {
             if (data.type === "fence_query_result") { clearTimeout(deadline); resolve(data); }
           });
-          if (mode === "native") {
-            const offscreen = canvas.transferControlToOffscreen();
-            worker.postMessage({ type: "start_fence_query", mode, canvas: offscreen }, [offscreen]);
-          } else worker.postMessage({ type: "start_fence_query", mode });
+          const offscreen = canvas.transferControlToOffscreen();
+          worker.postMessage({ type: "start_fence_query", mode, canvas: offscreen }, [offscreen]);
         });
         if (reply.error) throw new Error(reply.error);
-        if (gl) {
-          const pixels = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-          if (gl.getError() !== 0) throw new Error("Forwarded GL error");
-          reply.pixels = [...pixels]; reply.created = created; reply.deleted = deleted;
-        }
         return reply;
-      } finally { dispose?.(); worker.terminate(); }
+      } finally { worker.terminate(); }
     }, { sourceRoot: process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root, mode });
     expect(result).toEqual({ type: "fence_query_result", signaled: true, retired: 2,
       created: 1, deleted: 1, pixels: [255, 0, 0, 255] });
@@ -2302,12 +1735,12 @@ for (const mode of ["native", "forwarded"] as const) {
   });
 }
 
-for (const mode of ["native","forwarded"] as const) {
+for (const mode of ["native"] as const) {
   test(`owned submission snapshots preserve queued pixels through ${mode} dispatch`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,mode})=>{
-      const base=new URL(`/@fs/${root}host/src/webgl/`,location.href).href;
+      const base=new URL(`/@fs${root}host/src/webgl/`,location.href).href;
       const {GlContextRegistry}=await import(base+"registry.ts"),{GlMuxer}=await import(base+"muxer.ts");
       const {SubmitFrame,SubmitQueue}=await import(base+"submit-queue.ts"),{drainSubmitQueue}=await import(base+"submit-drain.ts");
       const {decodeAndDispatch}=await import(base+"bridge.ts"),O=await import(base+"ops.ts");
@@ -2326,7 +1759,7 @@ for (const mode of ["native","forwarded"] as const) {
       gl.clearColor=(r,g,b,a)=>{if(r===1 && a===1){rewritten++;[0,1,0,1].forEach((value,index)=>view.setFloat32(24+index*4,value,true));}clearColor(r,g,b,a);};
       let cleanup=()=>{};
       try {
-        if(mode==="native") {
+        {
           const reg=new GlContextRegistry();reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:48});
           const binding=reg.get(7,11)!;binding.gl=gl;binding.canvas=canvas;binding.contextId=1;binding.cmdbufView=bytes;
           cleanup=()=>reg.unbind(7,11);
@@ -2334,16 +1767,6 @@ for (const mode of ["native","forwarded"] as const) {
           if(frame.validate((await import(base+"bridge.ts")).validateCommandBuffer)!==0)throw new Error("preflight");
           queue.enqueue(binding,frame);
           if(drainSubmitQueue(queue,()=>mux,decodeAndDispatch)!==0 || binding.cmdbufView!==bytes)throw new Error("drain/view restoration");
-        } else {
-          const {setupMainForward}=await import(base+"main-forward.ts");
-          const M=await import(base+"main-forward-query.ts");
-          let listener:((event:MessageEvent)=>void)|null=null;
-          const worker={addEventListener(_type:"message",next:(event:MessageEvent)=>void){listener=next;},removeEventListener(){listener=null;}};
-          cleanup=setupMainForward(worker,canvas,7);
-          const mailbox=M.createGlForwardQueryMailbox();M.prepareGlForwardQuery(mailbox,0);
-          listener!({data:{type:"gl_forward_create_context",pid:7,sessionId:11,mailbox}} as MessageEvent);
-          if(M.waitForGlForwardQuery(mailbox).rc!==0)throw new Error("context");
-          listener!({data:{type:"gl_forward_submit",pid:7,sessionId:11,bytes}} as MessageEvent);
         }
         const pixel=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);
         return {pixel:[...pixel],rewritten,error:gl.getError()};
@@ -2355,13 +1778,15 @@ for (const mode of ["native","forwarded"] as const) {
 }
 
 for(const partial of [false,true]) {
-  test(`retained surface allocation survives resize and owner retirement${partial?" with partial cleanup retry":""}`,async({page})=>{
+  // partial: the live renderer refuses to delete the retired texture. That is
+  // a fatal host fault (D-29), not a cleanup retried on a later release.
+  test(`retained surface allocation survives resize and owner retirement${partial?", and a refused cleanup is a fatal host fault":""}`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,partial})=>{
       const base=new URL(`/@fs${root}host/src/webgl/`,location.href).href;
       const {GlContextRegistry}=await import(base+"registry.ts"),{resizeSurfaceTarget}=await import(base+"present-target.ts");
-      const {retainSurfaceStorage}=await import(base+"surface-resources.ts"),{hasNativeRepair}=await import(base+"native-recovery.ts");
+      const {retainSurfaceStorage}=await import(base+"surface-resources.ts"),{hasNativeRepair,NativeGlFault,setNativeGlFaultReporter}=await import(base+"native-recovery.ts");
       const canvas=document.createElement("canvas");canvas.width=4;canvas.height=3;document.body.replaceChildren(canvas);
       const gl=canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true})!;if(!gl)throw new Error("no WebGL2");
       const deleted:object[]=[],attempts:object[]=[];
@@ -2381,6 +1806,7 @@ for(const partial of [false,true]) {
       if(!resizeSurfaceTarget(binding,4,3))throw new Error("initial allocation");
       const old=binding.presentTarget!,first=retainSurfaceStorage(binding.surface)!;if(!first)throw new Error("lease");
       const second=first.clone()!;if(!second)throw new Error("clone");
+      let faulted=false;
       try {
         paint(old.fbo,[1,0,0,1]);
         if(!resizeSurfaceTarget(binding,8,6))throw new Error("resize");
@@ -2391,23 +1817,36 @@ for(const partial of [false,true]) {
         const liveAfterFirst=gl.isFramebuffer(second.framebuffer);
         paint(second.framebuffer,[0,1,0,1]);const afterRetirement=read(second.framebuffer);
         gl.bindFramebuffer(gl.FRAMEBUFFER,null);
-        if(partial)rejectTexture=old.tex;
+        if(partial) {
+          rejectTexture=old.tex;faulted=true;
+          const reported:Error[]=[];let thrown:unknown;
+          setNativeGlFaultReporter((fault:Error)=>{reported.push(fault);});
+          try {second.release(null);} catch(error) {thrown=error;} finally {setNativeGlFaultReporter(null);}
+          // Nothing retries or cleans up after a fatal fault.
+          return {replacement,retained,dimensions,liveAfterFirst,afterRetirement,
+            thrown:thrown instanceof Error&&thrown instanceof NativeGlFault?thrown.name:String(thrown),message:thrown instanceof Error?thrown.message:null,
+            reported:reported.length===1&&reported[0]===thrown,
+            textureAttempts:attempts.filter(value=>value===old.tex).length,textureAlive:gl.isTexture(old.tex)};
+        }
         const release=second.release(null),blocked=hasNativeRepair(gl);
-        if(!second.release(null))throw new Error("cleanup retry");
         return {replacement,retained,dimensions,liveAfterFirst,afterRetirement,release,blocked,
           oldDeleted:[old.fbo,old.tex,old.depthStencil].map(value=>deleted.filter(item=>item===value).length),
           textureAttempts:attempts.filter(value=>value===old.tex).length,
           clean:!gl.isFramebuffer(old.fbo)&&!gl.isTexture(old.tex)&&!gl.isRenderbuffer(old.depthStencil),error:gl.getError()};
-      } finally {rejectTexture=null;first.release(null);second.release(null);reg.unbind(7);}
+      } finally {rejectTexture=null;if(!faulted){first.release(null);second.release(null);reg.unbind(7);}}
     },{root,partial});
-    expect(result).toEqual({replacement:[0,0,255,255],retained:[255,0,0,255],dimensions:[4,3],liveAfterFirst:true,
-      afterRetirement:[0,255,0,255],release:!partial,blocked:partial,oldDeleted:[1,1,1],textureAttempts:partial?2:1,clean:true,error:0});
+    const common={replacement:[0,0,255,255],retained:[255,0,0,255],dimensions:[4,3],liveAfterFirst:true,afterRetirement:[0,255,0,255]};
+    expect(result).toEqual(partial
+      ? {...common,thrown:"NativeGlFault",message:refusedDeletion("deleteTexture"),reported:true,textureAttempts:1,textureAlive:true}
+      : {...common,release:true,blocked:false,oldDeleted:[1,1,1],textureAttempts:1,clean:true,error:0});
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
 
 for(const partial of [false,true]) {
-  test(`retained context execution stays independent of a replacement session${partial?" while cleanup retries":""}`,async({page})=>{
+  // partial: the live renderer refuses to delete the retired context's VAO.
+  // That is a fatal host fault (D-29), not a cleanup retried on a later release.
+  test(`retained context execution stays independent of a replacement session${partial?", and a refused cleanup is a fatal host fault":""}`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,partial})=>{
@@ -2416,6 +1855,7 @@ for(const partial of [false,true]) {
       const {resizeSurfaceTarget}=await import(base+"present-target.ts"),{applyCurrentDrawable}=await import(base+"current.ts");
       const {retainSurfaceStorage}=await import(base+"surface-resources.ts"),{SubmitFrame}=await import(base+"submit-queue.ts");
       const {decodeAndDispatch,validateCommandBuffer}=await import(base+"bridge.ts"),{runGlQuery}=await import(base+"query.ts"),O=await import(base+"ops.ts");
+      const {NativeGlFault,setNativeGlFaultReporter}=await import(base+"native-recovery.ts");
       const canvas=document.createElement("canvas");canvas.width=4;canvas.height=3;document.body.replaceChildren(canvas);
       const gl=canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true})!;if(!gl)throw new Error("no WebGL2");
       const live:Array<()=>boolean>=[],deleted:object[]=[];
@@ -2451,7 +1891,7 @@ for(const partial of [false,true]) {
       select(old,31);const oldTexture=texture(old);send(old,[1,0,0,1]);
       const storage=retainSurfaceStorage(old.surface)!,first=reg.retainContextExecution(7,11,muxer)!;
       if(!storage||!first)throw new Error("lease");const second=first.clone()!;
-      const oldVao=old.shadow.defaultVao!;let output:any;
+      const oldVao=old.shadow.defaultVao!;let output:any,faulted=false;
       try {
         muxer.invalidateCurrent();reg.destroyContext(7,11);
         const next=reg.get(7,11)!;if(next===old||reg.getContext(7,1))throw new Error("public identity revived");
@@ -2460,8 +1900,17 @@ for(const partial of [false,true]) {
         send(first.binding,[0,1,0,1]);const green=read(storage.framebuffer);
         send(next,[0,0,1,1]);gl.enable(0xdead);
         if(!first.release())throw new Error("first release");const retained=gl.isTexture(oldTexture);
-        if(partial)rejectVao=oldVao;
-        const accepted=second.release();if(!second.release())throw new Error("retry");
+        if(partial) {
+          rejectVao=oldVao;faulted=true;
+          const reported:Error[]=[];let thrown:unknown;
+          setNativeGlFaultReporter((fault:Error)=>{reported.push(fault);});
+          try {second.release();} catch(error) {thrown=error;} finally {setNativeGlFaultReporter(null);}
+          // Nothing retries or cleans up after a fatal fault.
+          return {blue,green,retained,thrown:thrown instanceof Error&&thrown instanceof NativeGlFault?thrown.name:String(thrown),
+            message:thrown instanceof Error?thrown.message:null,reported:reported.length===1&&reported[0]===thrown,
+            vaoAlive:gl.isVertexArray(oldVao),oldVaoDeletes:deleted.filter(value=>value===oldVao).length};
+        }
+        const accepted=second.release();
         const out=new Uint8Array(4),errors:number[]=[];
         muxer.switchTo(next);
         for(let i=0;i<2;i++){if(runGlQuery(next,O.QOP_GET_ERROR,new Uint8Array(),out)!==4)throw new Error("error query");errors.push(new DataView(out.buffer).getUint32(0,true));}
@@ -2470,17 +1919,22 @@ for(const partial of [false,true]) {
         output={blue,green,preserved,retained,accepted,errors,oldGuestCleared:old.cmdbufView===null,
           oldDeleted:!gl.isTexture(oldTexture)&&!gl.isVertexArray(oldVao),freshAlive:gl.isTexture(fresh),
           oldTextureDeletes:deleted.filter(value=>value===oldTexture).length,oldVaoDeletes:deleted.filter(value=>value===oldVao).length};
-      } finally {rejectVao=null;first.release();second.release();storage.release(null);muxer.invalidateCurrent();reg.unbind(7);}
+      } finally {rejectVao=null;if(!faulted){first.release();second.release();storage.release(null);muxer.invalidateCurrent();reg.unbind(7);}}
       return {...output,clean:live.every(test=>!test()),error:gl.getError()};
     },{root,partial});
-    expect(result).toEqual({blue:[0,0,255,255],green:[0,255,0,255],preserved:[0,0,255,255],retained:true,
-      accepted:!partial,errors:[0x500,0],oldGuestCleared:true,oldDeleted:true,freshAlive:true,oldTextureDeletes:1,oldVaoDeletes:1,clean:true,error:0});
+    expect(result).toEqual(partial
+      ? {blue:[0,0,255,255],green:[0,255,0,255],retained:true,thrown:"NativeGlFault",message:refusedDeletion("deleteVertexArray"),
+        reported:true,vaoAlive:true,oldVaoDeletes:0}
+      : {blue:[0,0,255,255],green:[0,255,0,255],preserved:[0,0,255,255],retained:true,
+        accepted:true,errors:[0x500,0],oldGuestCleared:true,oldDeleted:true,freshAlive:true,oldTextureDeletes:1,oldVaoDeletes:1,clean:true,error:0});
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
 
 for (const partial of [false,true]) {
-  test(`borrowed GPU allocation survives BO identity reuse${partial?" with rejected cleanup":""}`,async({page})=>{
+  // partial: the live renderer refuses to delete the retired BO's texture.
+  // That is a fatal host fault (D-29), not a cleanup retried on a later release.
+  test(`borrowed GPU allocation survives BO identity reuse${partial?", and a refused cleanup is a fatal host fault":""}`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,partial})=>{
@@ -2489,6 +1943,7 @@ for (const partial of [false,true]) {
       const {prepareBorrowedSurfaceTarget,retainSurfaceStorage}=await import(base+"surface-resources.ts");
       const {applyCurrentDrawable}=await import(base+"current.ts"),{SubmitFrame}=await import(base+"submit-queue.ts");
       const {decodeAndDispatch,validateCommandBuffer}=await import(base+"bridge.ts"),O=await import(base+"ops.ts");
+      const {NativeGlFault,setNativeGlFaultReporter}=await import(base+"native-recovery.ts");
       const canvas=document.createElement("canvas");canvas.width=4;canvas.height=3;document.body.replaceChildren(canvas);
       const gl=canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true})!;if(!gl)throw new Error("no WebGL2");
       const live:Array<()=>boolean>=[],deleted:object[]=[];let reject:WebGLTexture|null=null;
@@ -2514,7 +1969,7 @@ for (const partial of [false,true]) {
       const read=(fbo:WebGLFramebuffer)=>{gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);const out=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,out);return [...out];};
       send([1,0,0,1]);const first=retainSurfaceStorage(b.surface)!;if(!first)throw new Error("borrowed lease");
       if(!reg.destroyGpuBo(41))throw new Error("public retirement");const second=first.clone()!;if(!second)throw new Error("retired clone");
-      let output:any;
+      let output:any,faulted=false;
       try {
         const hidden=reg.gpuBo(41)===undefined;
         if(reg.createGpuBo(41,gl,4,3)===null)throw new Error("replacement BO allocation");const fresh=reg.gpuBo(41)!;
@@ -2525,17 +1980,259 @@ for (const partial of [false,true]) {
         gl.bindFramebuffer(gl.FRAMEBUFFER,first.framebuffer);gl.clearColor(0,1,0,1);gl.clear(gl.COLOR_BUFFER_BIT);
         const green=read(first.framebuffer),oldAlive=gl.isTexture(old.tex);
         if(!first.release(null))throw new Error("first release");
-        if(partial)reject=old.tex;
-        const peer={errors:[] as number[]};gl.enable(0xdead);const accepted=second.release(peer);
-        if(!second.release(peer))throw new Error("cleanup retry");
+        const peer={errors:[] as number[]};gl.enable(0xdead);
+        if(partial) {
+          reject=old.tex;faulted=true;
+          const reported:Error[]=[];let thrown:unknown;
+          setNativeGlFaultReporter((fault:Error)=>{reported.push(fault);});
+          try {second.release(peer);} catch(error) {thrown=error;} finally {setNativeGlFaultReporter(null);}
+          // Nothing retries or cleans up after a fatal fault.
+          return {hidden,red,blue,green,oldAlive,thrown:thrown instanceof Error&&thrown instanceof NativeGlFault?thrown.name:String(thrown),
+            message:thrown instanceof Error?thrown.message:null,reported:reported.length===1&&reported[0]===thrown,
+            textureAlive:gl.isTexture(old.tex),textureDeletes:deleted.filter(value=>value===old.tex).length};
+        }
+        const accepted=second.release(peer);
         output={hidden,red,blue,green,oldAlive,accepted,errors:peer.errors,
           oldDeletes:[old.fbo,old.depthStencil,old.tex].map(object=>deleted.filter(value=>value===object).length),
           freshDeleted:!gl.isTexture(fresh.tex)&&!gl.isFramebuffer(fresh.fbo)};
-      } finally {reject=null;first.release(null);second.release(null);muxer.invalidateCurrent();reg.unbind(7);reg.destroyGpuBo(41);}
+      } finally {reject=null;if(!faulted){first.release(null);second.release(null);muxer.invalidateCurrent();reg.unbind(7);reg.destroyGpuBo(41);}}
       return {...output,clean:live.every(check=>!check()),error:gl.getError()};
     },{root,partial});
-    expect(result).toEqual({hidden:true,red:[255,0,0,255],blue:[0,0,255,255],green:[0,255,0,255],oldAlive:true,
-      accepted:!partial,errors:[0x500],oldDeletes:[1,1,1],freshDeleted:true,clean:true,error:0});
+    const common={hidden:true,red:[255,0,0,255],blue:[0,0,255,255],green:[0,255,0,255],oldAlive:true};
+    expect(result).toEqual(partial
+      ? {...common,thrown:"NativeGlFault",message:refusedDeletion("deleteTexture"),reported:true,textureAlive:true,textureDeletes:0}
+      : {...common,accepted:true,errors:[0x500],oldDeletes:[1,1,1],freshDeleted:true,clean:true,error:0});
     expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}
+
+
+for (const retained of [false,true]) {
+  test(`native null attribute clearing preserves logical offsets${retained ? " and an unbound VAO" : " through final buffer retirement"}`, async ({page}) => {
+    await installBrowserMemoryBoundaryProbe(page);
+    await page.goto("/trap-signal-test.html");
+    const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
+    const result = await page.evaluate(async ({sourceRoot,retained}) => {
+      const base = `/@fs${sourceRoot}host/src/webgl/`;
+      const {GlContextRegistry} = await import(base+"registry.ts");
+      const {runGlQuery} = await import(base+"query.ts");
+      const {decodeAndDispatch} = await import(base+"bridge.ts");
+      const O = await import(base+"ops.ts");
+      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 16;
+      document.body.replaceChildren(canvas);
+      const gl = canvas.getContext("webgl2",{alpha:false,antialias:false,preserveDrawingBuffer:true});
+      if (!gl) throw new Error("WebGL2 required");
+      const registry = new GlContextRegistry();
+      const shaders: WebGLShader[] = [];
+      let program: WebGLProgram | null = null;
+      const check = (phase: string) => {const error=gl.getError();if(error)throw new Error(`${phase}: ${error}`);};
+      try {
+        const shader = (type: number, text: string) => {
+          const object=gl.createShader(type); if(!object)throw new Error("shader allocation failed");
+          shaders.push(object);gl.shaderSource(object,text);gl.compileShader(object);
+          if(!gl.getShaderParameter(object,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(object) ?? "shader compile failed");
+          return object;
+        };
+        const vertex=shader(gl.VERTEX_SHADER,"#version 300 es\nlayout(location=0) in vec2 xy;void main(){gl_Position=vec4(xy,0.,1.);gl_PointSize=8.;}");
+        const fragment=shader(gl.FRAGMENT_SHADER,"#version 300 es\nprecision mediump float;out vec4 color;void main(){color=vec4(1.,0.,0.,1.);}");
+        program=gl.createProgram();if(!program)throw new Error("program allocation failed");
+        gl.attachShader(program,vertex);gl.attachShader(program,fragment);gl.linkProgram(program);
+        if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program) ?? "link failed");
+        gl.useProgram(program);check("program");
+        registry.bind({pid:94,cmdbufAddr:0,cmdbufLen:1024});
+        const b=registry.get(94)!;b.gl=gl;b.contextId=1;b.cmdbufView=new Uint8Array(1024);
+        b.shadow.defaultVao=gl.createVertexArray();if(!b.shadow.defaultVao)throw new Error("VAO allocation failed");
+        gl.bindVertexArray(b.shadow.defaultVao);
+        const send=(op: number,words: number[])=>{
+          const view=new DataView(b.cmdbufView!.buffer);view.setUint16(0,op,true);view.setUint16(2,words.length*4,true);
+          words.forEach((word,i)=>view.setUint32(4+i*4,word,true));
+          if(decodeAndDispatch(b,0,4+words.length*4)!==0)throw new Error(`command failed: ${op}`);
+        };
+        const query=(op: number,words: number[])=>{
+          const out=new Uint8Array(12);
+          if(runGlQuery(b,op,new Uint8Array(new Uint32Array(words).buffer),out)!==12)throw new Error(`query transport failed: ${op}`);
+          const reply=new Uint32Array(out.buffer);
+          if(reply[0]!==0||reply[2]!==0x47514c33)throw new Error(`query rejected: ${op}/${[...reply]}`);
+          return reply[1];
+        };
+        query(O.QOP_BIND_BUFFER,[gl.ARRAY_BUFFER,17]);const original=b.buffers.get(17)!;
+        const bytes=[...new Uint32Array(new Float32Array([99,0,0]).buffer)];
+        send(O.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,12,...bytes,gl.STATIC_DRAW]);
+        send(O.OP_VERTEX_ATTRIB_POINTER,[0,2,gl.FLOAT,0,8,4]);send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+        if(retained){
+          send(O.OP_GEN_VERTEX_ARRAYS,[1,3]);send(O.OP_BIND_VERTEX_ARRAY,[3]);
+          send(O.OP_VERTEX_ATTRIB_POINTER,[0,2,gl.FLOAT,0,8,4]);send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+          send(O.OP_BIND_VERTEX_ARRAY,[0]);
+        }
+        // Count the real helper transaction, restoring the native methods even
+        // when the helper rejects. No mock renderer or substitute deletion.
+        const counts={createBuffer:0,bufferData:0,deleteBuffer:0};
+        const restores: Array<()=>void>=[];
+        let deleted=0,onlyOriginalDeleted=true;
+        try {
+          for(const name of ["createBuffer","bufferData","deleteBuffer"] as const){
+            const own=Object.getOwnPropertyDescriptor(gl,name),method=gl[name];
+            Object.defineProperty(gl,name,{configurable:true,writable:true,value:function(this: WebGL2RenderingContext,...args: unknown[]){
+              counts[name]++;if(name==="deleteBuffer"&&args[0]!==original)onlyOriginalDeleted=false;
+              return Reflect.apply(method,this,args);
+            }});
+            restores.push(()=>{if(own)Object.defineProperty(gl,name,own);else Reflect.deleteProperty(gl,name);});
+          }
+          deleted=query(O.QOP_DELETE_BUFFER,[17]);
+        } finally {for(const restore of restores)restore();}
+        const attr=b.vertexArrays.get(0)!.attributes.get(0)!;
+        const state={nameAbsent:!b.buffers.has(17),logicalNull:attr.buffer===null,logicalOffset:attr.offset,
+          nativeNull:gl.getVertexAttrib(0,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING)===null,
+          nativeOffset:gl.getVertexAttribOffset(0,gl.VERTEX_ATTRIB_ARRAY_POINTER),arrayNull:gl.getParameter(gl.ARRAY_BUFFER_BINDING)===null,
+          logicalBinding:query(O.QOP_GET_VERTEX_ATTRIBIV,[0,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING]),
+          logicalStride:query(O.QOP_GET_VERTEX_ATTRIBIV,[0,gl.VERTEX_ATTRIB_ARRAY_STRIDE])};
+        gl.drawArrays(gl.POINTS,0,1);const enabledNullError=gl.getError();
+        gl.drawArrays(gl.POINTS,0,0);const zeroCountNullError=gl.getError();
+        send(O.OP_DISABLE_VERTEX_ATTRIB_ARRAY,[0]);send(O.OP_VERTEX_ATTRIB_4FV,[0,0,0,0,0x3f800000]);
+        gl.clearColor(0,0,0,1);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawArrays(gl.POINTS,0,1);check("disabled generic draw");
+        const pixel=()=>{const out=new Uint8Array(4);gl.readPixels(8,8,1,1,gl.RGBA,gl.UNSIGNED_BYTE,out);check("pixel read");return [...out];};
+        const genericPixel=pixel();let retainedPixel: number[] | null=null;
+        if(retained){send(O.OP_BIND_VERTEX_ARRAY,[3]);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawArrays(gl.POINTS,0,1);check("retained VAO draw");retainedPixel=pixel();}
+        query(O.QOP_BIND_BUFFER,[gl.ARRAY_BUFFER,17]);const replacement=b.buffers.get(17)!;
+        send(O.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,12,...bytes,gl.STATIC_DRAW]);
+        send(O.OP_BIND_VERTEX_ARRAY,[0]);send(O.OP_VERTEX_ATTRIB_POINTER,[0,2,gl.FLOAT,0,8,4]);
+        send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawArrays(gl.POINTS,0,1);check("replacement draw");
+        const replacementPixel=pixel();
+        return {deleted,counts,onlyOriginalDeleted,state,enabledNullError,zeroCountNullError,genericPixel,retainedPixel,replacementPixel,
+          replacementDistinct:replacement!==original,errors:[...b.errors]};
+      } finally {
+        registry.unbind(94);gl.useProgram(null);if(program)gl.deleteProgram(program);
+        for(const shader of shaders)gl.deleteShader(shader);
+        check("owned native cleanup");
+      }
+    },{sourceRoot:root,retained});
+    expect(result).toEqual({deleted:1,counts:{createBuffer:0,bufferData:0,deleteBuffer:retained?0:1},onlyOriginalDeleted:true,
+      state:{nameAbsent:true,logicalNull:true,logicalOffset:4,nativeNull:true,nativeOffset:0,arrayNull:true,logicalBinding:0,logicalStride:8},
+      enabledNullError:0x502,zeroCountNullError:0x502,genericPixel:[255,0,0,255],retainedPixel:retained?[255,0,0,255]:null,
+      replacementPixel:[255,0,0,255],replacementDistinct:true,errors:[]});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}
+
+test("restored native renderers retire old storage without deleting it as new storage", async ({page}) => {
+  await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../",import.meta.url));
+  const result = await page.evaluate(async root => {
+    const base = `/@fs${root}host/src/webgl/`;
+    const {GlContextRegistry} = await import(base+"registry.ts");
+    const {observeRendererLoss,rendererLost} = await import(base+"renderer-loss.ts");
+    const {nativeOwner,reserveNativeRetirement,retireNativeRetirement} = await import(base+"native-recovery.ts");
+    const {destroyBufferStorage} = await import(base+"buffer-storage.ts");
+    const {destroyTextureView,destroyRenderbufferView,retireExportedImage} = await import(base+"image-storage.ts");
+    const canvas = document.createElement("canvas"), gl = canvas.getContext("webgl2");
+    if (!gl) throw new Error("WebGL2 required");
+    const extension = gl.getExtension("WEBGL_lose_context");
+    if (!extension) throw new Error("WEBGL_lose_context required");
+    const reg = new GlContextRegistry(); reg.bind({pid:91,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+    const b = reg.get(91,2)!; b.gl = gl; observeRendererLoss(b);
+    const owner = nativeOwner(b), buffer = gl.createBuffer()!, texture = gl.createTexture()!, renderbuffer = gl.createRenderbuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER,buffer); gl.bufferData(gl.ARRAY_BUFFER,16,gl.STATIC_DRAW);
+    gl.bindTexture(gl.TEXTURE_2D,texture); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+    gl.bindRenderbuffer(gl.RENDERBUFFER,renderbuffer); gl.renderbufferStorage(gl.RENDERBUFFER,gl.RGBA8,1,1);
+    if (!gl.isBuffer(buffer) || !gl.isTexture(texture) || !gl.isRenderbuffer(renderbuffer) || gl.getError()) throw new Error("native storage preparation failed");
+    const wait = (type: string) => new Promise<void>((resolve,reject) => {
+      const timeout = setTimeout(() => reject(new Error(`${type} was not delivered`)),15000);
+      canvas.addEventListener(type,event => { event.preventDefault(); clearTimeout(timeout); resolve(); },{once:true});
+    });
+    const lost = wait("webglcontextlost"); extension.loseContext(); await lost;
+    const restored = wait("webglcontextrestored");
+    // Leave the loss event dispatch before requesting restoration: its
+    // preventDefault decision must have reached the native renderer.
+    await new Promise<void>(resolve => setTimeout(resolve,0));
+    extension.restoreContext(); await restored;
+    const reset = rendererLost(b), calls: string[] = [];
+    // Old native handles are already invalid. Count attempted deletes without
+    // changing what the real renderer would return for an accidental call.
+    for (const method of ["deleteBuffer","deleteTexture","deleteRenderbuffer"] as const) {
+      const native = gl[method].bind(gl);
+      Object.defineProperty(gl,method,{configurable:true,value:(object: any) => { calls.push(method); native(object); }});
+    }
+    const retired = [destroyBufferStorage(b,buffer),destroyTextureView(b,texture),destroyRenderbufferView(b,renderbuffer)];
+    const exported = retireExportedImage({bo:7,gl,nativeEpoch:owner.nativeEpoch!,object:texture,native:texture,renderbuffer:false,
+      width:1,height:1,storage:{target:gl.TEXTURE_2D,level:0,internalFormat:gl.RGBA8,format:gl.RGBA,type:gl.UNSIGNED_BYTE},
+      sourceUsing:false,boLive:true,format:gl.RGBA8});
+    const oldCalls = [...calls];
+    const fresh = {gl,errors:[] as number[]}; observeRendererLoss(fresh);
+    const next = gl.createTexture()!;
+    // The positive control proves a historical loss never excuses a live
+    // failure on the restored generation.
+    Object.defineProperty(gl,"deleteTexture",{configurable:true,value:() => { throw new Error("deliberate live cleanup refusal"); }});
+    const receipt = reserveNativeRetirement(fresh,[["deleteTexture",next]])!;
+    let control = "";
+    try { retireNativeRetirement(receipt); } catch (error) { control = (error as Error).name; }
+    return {reset,retired,exported,oldCalls,freshReset:rendererLost(fresh),control};
+  },root);
+  expect(result).toEqual({reset:true,retired:[true,true,true],exported:true,oldCalls:[],freshReset:false,control:"NativeGlFault"});
+});
+
+for (const existing of [false,true]) for (const audit of [false,true]) {
+  test(`private buffer copy OOM preserves a healthy peer (${existing ? "stale" : "new"} view, ${audit ? "audit" : "production"})`, async ({page}) => {
+    await page.goto("/trap-signal-test.html");
+    const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
+    const result = await page.evaluate(async ({root,existing,audit}) => {
+      const base = `/@fs${root}host/src/webgl/`;
+      const {GlContextRegistry} = await import(base+"registry.ts");
+      const {bindBufferObject,replaceBufferData} = await import(base+"buffer-storage.ts");
+      const nativeBatch = await import(base+"native-batch.ts");
+      const {rendererLost} = await import(base+"renderer-loss.ts");
+      const {configureGlAudit,resetGlAuditForTesting} = await import(base+"native-audit.ts");
+      const {NativeGlFault} = await import(base+"native-recovery.ts");
+      const {setGlDiagnosticReporter} = await import(base+"diagnostics.ts");
+      const gl = document.createElement("canvas").getContext("webgl2");
+      if (!gl) throw new Error("WebGL2 required");
+      const live = new Set<WebGLBuffer>(), diagnostics: string[] = [];
+      const create = gl.createBuffer.bind(gl), drop = gl.deleteBuffer.bind(gl);
+      gl.createBuffer = () => { const value = create(); if (value) live.add(value); return value; };
+      gl.deleteBuffer = value => { drop(value); if (value) live.delete(value); };
+      const registry = new GlContextRegistry();
+      registry.bind({pid:99,sessionId:1,cmdbufAddr:0,cmdbufLen:64});
+      const b = registry.get(99,1)!; b.gl = gl; b.contextId = 1;
+      registry.bind({pid:99,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+      const peer = registry.get(99,2)!; peer.gl = gl; peer.contextId = 2;
+      if (!registry.shareObjects(99,2,1)) throw new Error("share group refused");
+      const requireBind = (owner: typeof b,target: number,name: number) => {
+        if (!bindBufferObject(owner,target,name)) throw new Error("fixture bind refused");
+      };
+      requireBind(b,gl.ARRAY_BUFFER,17);
+      if (existing) { requireBind(b,gl.ELEMENT_ARRAY_BUFFER,17); requireBind(b,gl.ELEMENT_ARRAY_BUFFER,0); }
+      replaceBufferData(b,gl.ARRAY_BUFFER,new Uint8Array([1,2,3,4]),gl.STATIC_DRAW);
+      const store = b.bufferStores.get(b.buffers.get(17)!)!;
+      b.errors.push(gl.INVALID_ENUM); peer.errors.push(gl.INVALID_VALUE);
+      let inject = true, pending = 0, injections = 0;
+      const data = gl.bufferData.bind(gl), error = gl.getError.bind(gl);
+      gl.bufferData = ((...args: Parameters<typeof data>) => {
+        if (inject) { inject = false; pending = gl.OUT_OF_MEMORY; injections++; return; }
+        Reflect.apply(data,gl,args);
+      }) as typeof gl.bufferData;
+      gl.getError = () => { if (pending) { const value = pending; pending = 0; return value; } return error(); };
+      setGlDiagnosticReporter(value => diagnostics.push(value.message));
+      if (audit) configureGlAudit({mode:"fatal",sink:() => {},fault:(message: string) => {throw new NativeGlFault(message);}});
+      try {
+        const reset = nativeBatch.withNativeBatch(b,"private buffer copy OOM",() => bindBufferObject(b,gl.ELEMENT_ARRAY_BUFFER,17) ? 0 : -5);
+        const restored = gl.getParameter(gl.COPY_READ_BUFFER_BINDING) === null &&
+          gl.getParameter(gl.COPY_WRITE_BUFFER_BINDING) === null && gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING) === null;
+        const invalid = existing ? store.views.get(gl.ELEMENT_ARRAY_BUFFER)!.valid === false : !store.views.has(gl.ELEMENT_ARRAY_BUFFER);
+        const beforePeer = live.size;
+        const healthy = nativeBatch.withNativeBatch(peer,"healthy peer after copy OOM",() => bindBufferObject(peer,gl.ELEMENT_ARRAY_BUFFER,17) ? 0 : -5);
+        const bytes = new Uint8Array(4), view = store.views.get(gl.ELEMENT_ARRAY_BUFFER)!;
+        gl.bindBuffer(gl.COPY_READ_BUFFER,view.native); gl.getBufferSubData(gl.COPY_READ_BUFFER,0,bytes); gl.bindBuffer(gl.COPY_READ_BUFFER,null);
+        const nativeError = gl.getError(), lost = [rendererLost(b),rendererLost(peer)];
+        const errors = [b.errors.slice(),peer.errors.slice()];
+        registry.unbind(99);
+        return {reset,healthy,restored,invalid,beforePeer,bytes:[...bytes],nativeError,lost,errors,injections,diagnostics,remaining:live.size};
+      } finally { resetGlAuditForTesting(); setGlDiagnosticReporter(null); registry.unbind(99); }
+    },{root,existing,audit});
+    expect(result.reset).toBe(-19); expect(result.healthy).toBe(0);
+    expect(result.restored).toBe(true); expect(result.invalid).toBe(true);
+    expect(result.beforePeer).toBe(existing ? 2 : 1);
+    expect(result.bytes).toEqual([1,2,3,4]); expect(result.nativeError).toBe(0);
+    expect(result.lost).toEqual([true,false]); expect(result.errors).toEqual([[0x500],[0x501]]);
+    expect(result.injections).toBe(1); expect(result.remaining).toBe(0);
+    expect(result.diagnostics).toHaveLength(1); expect(result.diagnostics[0]).toContain("OUT_OF_MEMORY");
   });
 }

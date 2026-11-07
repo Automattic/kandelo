@@ -312,6 +312,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // Registered caller width selects native addresses, never the kernel's width.
     pointer!(crate::gl::GLIO_QUERY, In, 24, 40),
     pointer!(crate::gl::GLIO_UPDATE_SURFACE, In, 32),
+    pointer!(crate::gl::GLIO_SUBMIT_QUERY, InOut, 48, 64),
     pointer!(crate::fbdev::FBIOGET_VSCREENINFO, Out, 160),
     pointer!(crate::fbdev::FBIOPUT_VSCREENINFO, In, 160),
     pointer!(crate::fbdev::FBIOGET_FSCREENINFO, Out, 80),
@@ -367,7 +368,10 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::oss::SNDCTL_DSP_SETTRIGGER, In, 4),
     pointer!(TIOCSPTLCK, In, 4),
     pointer!(crate::dri::DRM_IOCTL_AUTH_MAGIC, In, 4),
+    // dma-buf implicit-fence import: flags + sync_file fd in.
+    pointer!(crate::dri_sync::DMA_BUF_IOCTL_IMPORT_SYNC_FILE, In, 8),
     pointer!(crate::dri::DRM_IOCTL_GEM_CLOSE, In, 8),
+    pointer!(crate::dri_sync::SYNC_IOC_SET_DEADLINE, In, 16),
     pointer!(crate::dri::DRM_IOCTL_SET_CLIENT_CAP, In, 16),
     pointer!(crate::input::EVIOCGVERSION, Out, 4),
     pointer!(crate::oss::SOUND_PCM_READ_RATE, Out, 4),
@@ -401,15 +405,34 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::oss::SNDCTL_DSP_SETFRAGMENT, InOut, 4),
     pointer!(crate::dri::DRM_IOCTL_MODE_RMFB, In, 4),
     pointer!(crate::dri::DRM_IOCTL_MODE_DESTROY_DUMB, In, 4),
+    pointer!(crate::dri::DRM_IOCTL_MODE_DESTROYPROPBLOB, In, 4),
+    pointer!(crate::dri_sync::DMA_BUF_IOCTL_EXPORT_SYNC_FILE, InOut, 8),
+    // `struct drm_unique` is `(size_t, char *)`: one request per width.
+    pointer!(crate::dri::DRM_IOCTL_GET_UNIQUE, InOut, wasm32 8),
+    // DRM sync objects (drm_syncobj.c). Every pointer member is a __u64,
+    // so one size serves both widths; nested handle/point arrays are
+    // reached by the kernel through HostIO, like GETRESOURCES' arrays.
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_CREATE, InOut, 8),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_DESTROY, InOut, 8),
     pointer!(crate::dri::DRM_IOCTL_MODE_CLOSEFB, In, 8),
+    // handle and claimed fourcc in; the result is the errno alone.
+    pointer!(crate::dri::DRM_IOCTL_WPK_CHECK_BO_FORMAT, In, 8),
     pointer!(crate::dri::DRM_IOCTL_PRIME_HANDLE_TO_FD, InOut, 12),
     pointer!(crate::dri::DRM_IOCTL_PRIME_FD_TO_HANDLE, InOut, 12),
+    pointer!(crate::dri::DRM_IOCTL_GET_UNIQUE_WASM64, InOut, wasm64 16),
     pointer!(crate::dri::DRM_IOCTL_GET_CAP, InOut, 16),
-    pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK, InOut, 16),
+    // `union drm_wait_vblank` holds `unsigned long`/`long` fields, so each
+    // pointer width has its own request number and layout (as VERSION).
+    pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK, InOut, wasm32 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_SETPROPERTY, In, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPROPBLOB, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_MAP_DUMB, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPLANERESOURCES, InOut, 16),
+    pointer!(crate::dri::DRM_IOCTL_MODE_CREATEPROPBLOB, InOut, 16),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD_V1, InOut, 16),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE_V1, InOut, 16),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_RESET, InOut, 16),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_SIGNAL, InOut, 16),
     // width / height / format / usage in; handle and stride out in the
     // format/usage slots (WpkDrmGpuBoCreate). Without an entry
     // the host stages a zero-length buffer and the kernel handler rejects
@@ -420,27 +443,54 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // handler rejects every call with EINVAL, so GPU compositing can
     // never succeed from a real guest.
     pointer!(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, InOut, 16),
+    pointer!(crate::dri_sync::DRM_IOCTL_WPK_EXPORT_FENCE, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETENCODER, InOut, 20),
+    pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK_WASM64, InOut, wasm64 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_PAGE_FLIP, In, 24),
+    pointer!(crate::dri::DRM_IOCTL_MODE_DIRTYFB, In, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_OBJ_SETPROPERTY, In, 24),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, InOut, 24),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, InOut, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_LEASE, InOut, 24),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_QUERY, InOut, 24),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, InOut, 24),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_EVENTFD, InOut, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR, In, 28),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETFB, InOut, 28),
+    pointer!(crate::dri::DRM_IOCTL_MODE_ADDFB, InOut, 28),
+    pointer!(crate::dri::DRM_IOCTL_MODE_GETGAMMA, In, 32),
+    pointer!(crate::dri::DRM_IOCTL_MODE_SETGAMMA, In, 32),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_DUMB, InOut, 32),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPLANE, InOut, 32),
     pointer!(crate::dri::DRM_IOCTL_MODE_OBJ_GETPROPERTIES, InOut, 32),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_WAIT_V1, InOut, 32),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_TRANSFER, InOut, 32),
     pointer!(crate::dri::DRM_IOCTL_WPK_IMPORT_IMAGE, InOut, 32),
     // Linux encodes pointer-sized fields into DRM_IOCTL_VERSION itself.
     pointer!(crate::dri::DRM_IOCTL_VERSION, InOut, wasm32 36),
     pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR2, In, 36),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_WAIT, InOut, 40),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT_V1, InOut, 40),
+    pointer!(crate::dri_sync::SYNC_IOC_MERGE, InOut, 48),
     pointer!(crate::dri::DRM_IOCTL_MODE_SETPLANE, In, 48),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, InOut, 48),
+    // EGL image export: ctx/target/name/level in; bo handle, extent,
+    // internal format and sibling identity out (WpkDrmExportImage).
+    pointer!(crate::dri::DRM_IOCTL_WPK_EXPORT_IMAGE, InOut, 48),
+    pointer!(crate::dri_sync::SYNC_IOC_FILE_INFO, InOut, 56),
+    pointer!(crate::dri::DRM_IOCTL_MODE_ATOMIC, InOut, 56),
     pointer!(crate::dri::DRM_IOCTL_VERSION_WASM64, InOut, wasm64 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETRESOURCES, InOut, 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPROPERTY, InOut, 64),
+    // ctx / extent / format / per-plane handles, pitches and offsets / hints
+    // in, the image's source token out (WpkDrmImportPlanarImage).
+    pointer!(crate::dri::DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE, InOut, 72),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETCONNECTOR, InOut, 80),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETCRTC, InOut, 104),
     pointer!(crate::dri::DRM_IOCTL_MODE_SETCRTC, In, 104),
     pointer!(crate::dri::DRM_IOCTL_MODE_ADDFB2, InOut, 104),
+    pointer!(crate::dri::DRM_IOCTL_MODE_GETFB2, InOut, 104),
+    pointer!(crate::dri_owned::REQUEST, InOut, 320),
 ];
 
 pub fn request_contract(request: u32) -> Option<IoctlRequestContract> {
@@ -493,6 +543,45 @@ pub fn family_request_contract(request: u32) -> Option<IoctlRequestContract> {
 mod tests {
     use super::*;
 
+    /// Linux dispatches DRM ioctls by `_IOC_NR` (`drm_ioctls[]`), and so do
+    /// the DRM permission table and handlers here: two different DRM
+    /// requests may never share a number. Only one request's own encodings
+    /// (a wasm64 layout, or the shorter struct of older headers) do.
+    #[test]
+    fn every_drm_ioctl_has_its_own_number() {
+        use crate::dri::*;
+        use crate::dri_sync::*;
+        let variants: &[(u32, u32)] = &[
+            (DRM_IOCTL_VERSION, DRM_IOCTL_VERSION_WASM64),
+            (DRM_IOCTL_GET_UNIQUE, DRM_IOCTL_GET_UNIQUE_WASM64),
+            (DRM_IOCTL_WAIT_VBLANK, DRM_IOCTL_WAIT_VBLANK_WASM64),
+            (DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD_V1),
+            (DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE_V1),
+            (DRM_IOCTL_SYNCOBJ_WAIT, DRM_IOCTL_SYNCOBJ_WAIT_V1),
+            (DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT_V1),
+        ];
+        let same_ioctl = |a: u32, b: u32| variants.iter()
+            .any(|&(x, y)| (a, b) == (x, y) || (a, b) == (y, x));
+        let is_drm = |r: u32| (r >> 8) & 0xff == u32::from(b'd');
+        let drm = || IOCTL_REQUEST_CONTRACTS.iter().map(|c| c.request).filter(|&r| is_drm(r));
+        for (i, a) in drm().enumerate() {
+            for b in drm().skip(i + 1) {
+                assert!(a & 0xff != b & 0xff || same_ioctl(a, b),
+                    "DRM ioctls {a:#x} and {b:#x} share nr {:#x}", a & 0xff);
+            }
+        }
+        // Kandelo's private requests, contract or not.
+        let wpk = [DRM_IOCTL_WPK_CREATE_GPU_BO, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE,
+            DRM_IOCTL_WPK_IMPORT_IMAGE, DRM_IOCTL_WPK_EXPORT_IMAGE, DRM_IOCTL_WPK_CHECK_BO_FORMAT,
+            DRM_IOCTL_WPK_EXPORT_FENCE];
+        for (i, &a) in wpk.iter().enumerate() {
+            assert!(drm().any(|r| r == a), "{a:#x} has no marshalling contract");
+            for &b in &wpk[i + 1..] {
+                assert_ne!(a & 0xff, b & 0xff, "WPK ioctls {a:#x} and {b:#x} share a number");
+            }
+        }
+    }
+
     #[test]
     fn contracts_are_strictly_sorted_and_unique() {
         assert!(IOCTL_REQUEST_CONTRACTS
@@ -527,6 +616,10 @@ mod tests {
         let query = request_contract(crate::gl::GLIO_QUERY).unwrap();
         assert_eq!(query.size_for_pointer_width(4), Some(24));
         assert_eq!(query.size_for_pointer_width(8), Some(40));
+        let compound=request_contract(crate::gl::GLIO_SUBMIT_QUERY).unwrap();
+        assert_eq!(compound.direction,IoctlDirection::InOut);
+        assert_eq!(compound.size_for_pointer_width(4),Some(48));
+        assert_eq!(compound.size_for_pointer_width(8),Some(64));
     }
 
     /// An ioctl handled in syscalls.rs but absent from this table is
@@ -601,6 +694,7 @@ mod tests {
             crate::dri::DRM_IOCTL_MODE_OBJ_GETPROPERTIES,
             crate::dri::DRM_IOCTL_MODE_OBJ_SETPROPERTY,
             crate::dri::DRM_IOCTL_MODE_CREATE_LEASE,
+            crate::dri::DRM_IOCTL_MODE_ATOMIC,
         ] {
             let contract = request_contract(request).expect("KMS ioctl must have a contract");
             let encoded = (request >> 16) & 0x3fff;

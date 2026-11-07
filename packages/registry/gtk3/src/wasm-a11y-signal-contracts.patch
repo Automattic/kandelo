@@ -1,0 +1,165 @@
+--- a/gtk/a11y/gtkcheckmenuitemaccessible.c
++++ b/gtk/a11y/gtkcheckmenuitemaccessible.c
+@@ -25,7 +25,8 @@
+ G_DEFINE_TYPE (GtkCheckMenuItemAccessible, gtk_check_menu_item_accessible, GTK_TYPE_MENU_ITEM_ACCESSIBLE)
+ 
+ static void
+-toggled_cb (GtkWidget *widget)
++toggled_cb (GtkWidget *widget,
++            gpointer   user_data)
+ {
+   AtkObject *accessible;
+   GtkCheckMenuItem *check_menu_item;
+--- a/gtk/a11y/gtkcomboboxaccessible.c
++++ b/gtk/a11y/gtkcomboboxaccessible.c
+@@ -37,7 +37,8 @@
+                          G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_SELECTION, atk_selection_interface_init))
+ 
+ static void
+-changed_cb (GtkWidget *widget)
++changed_cb (GtkWidget *widget,
++            gpointer   user_data)
+ {
+   GtkComboBox *combo_box;
+   AtkObject *obj;
+--- a/gtk/a11y/gtkentryaccessible.c
++++ b/gtk/a11y/gtkentryaccessible.c
+@@ -371,10 +371,12 @@
+ static void     insert_text_cb             (GtkEditable        *editable,
+                                             gchar              *new_text,
+                                             gint                new_text_length,
+-                                            gint               *position);
++                                            gint               *position,
++                                            gpointer            user_data);
+ static void     delete_text_cb             (GtkEditable        *editable,
+                                             gint                start,
+-                                            gint                end);
++                                            gint                end,
++                                            gpointer            user_data);
+ 
+ static gboolean check_for_selection_change (GtkEntryAccessible *entry,
+                                             GtkEntry           *gtk_entry);
+@@ -1387,7 +1389,8 @@
+ insert_text_cb (GtkEditable *editable,
+                 gchar       *new_text,
+                 gint         new_text_length,
+-                gint        *position)
++                gint        *position,
++                gpointer     user_data)
+ {
+   GtkEntryAccessible *accessible;
+   gint length;
+@@ -1412,7 +1415,8 @@
+ static void
+ delete_text_cb (GtkEditable *editable,
+                 gint         start,
+-                gint         end)
++                gint         end,
++                gpointer     user_data)
+ {
+   GtkEntryAccessible *accessible;
+ 
+--- a/gtk/a11y/gtkmenuitemaccessible.c
++++ b/gtk/a11y/gtkmenuitemaccessible.c
+@@ -32,17 +32,21 @@
+ 
+ #define KEYBINDING_SEPARATOR ";"
+ 
+-static void menu_item_select   (GtkMenuItem *item);
+-static void menu_item_deselect (GtkMenuItem *item);
++static void menu_item_select   (GtkMenuItem *item,
++                                gpointer     user_data);
++static void menu_item_deselect (GtkMenuItem *item,
++                                gpointer     user_data);
+ 
+ static GtkWidget *get_label_from_container   (GtkWidget *container);
+ static gchar     *get_text_from_label_widget (GtkWidget *widget);
+ 
+-static gint menu_item_insert_gtk (GtkMenuShell   *shell,
++static void menu_item_insert_gtk (GtkMenuShell   *shell,
+                                   GtkWidget      *widget,
+-                                  gint            position);
+-static gint menu_item_remove_gtk (GtkContainer   *container,
+-                                  GtkWidget      *widget);
++                                  gint            position,
++                                  gpointer        user_data);
++static void menu_item_remove_gtk (GtkContainer   *container,
++                                  GtkWidget      *widget,
++                                  gpointer        user_data);
+ 
+ static void atk_action_interface_init    (AtkActionIface *iface);
+ static void atk_selection_interface_init (AtkSelectionIface *iface);
+@@ -882,46 +886,50 @@
+   iface->remove_selection = gtk_menu_item_accessible_remove_selection;
+ }
+ 
+-static gint
++/* GtkMenuShell::insert and GtkContainer::remove are void signals whose
++ * connected handlers also receive closure data. The previous gint result
++ * was never consumed: a typed Wasm indirect call must match exactly. */
++static void
+ menu_item_insert_gtk (GtkMenuShell *shell,
+                       GtkWidget    *widget,
+-                      gint          position)
++                      gint          position,
++                      gpointer      user_data)
+ {
+   GtkWidget *parent_widget;
+ 
+-  g_return_val_if_fail (GTK_IS_MENU (shell), 1);
++  g_return_if_fail (GTK_IS_MENU (shell));
+ 
+   parent_widget = gtk_menu_get_attach_widget (GTK_MENU (shell));
+   if (GTK_IS_MENU_ITEM (parent_widget))
+     GTK_CONTAINER_ACCESSIBLE_CLASS (gtk_menu_item_accessible_parent_class)->add_gtk (GTK_CONTAINER (shell), widget, gtk_widget_get_accessible (parent_widget));
+-
+-  return 1;
+ }
+ 
+-static gint
++static void
+ menu_item_remove_gtk (GtkContainer *container,
+-                      GtkWidget    *widget)
++                      GtkWidget    *widget,
++                      gpointer      user_data)
+ {
+   GtkWidget *parent_widget;
+ 
+-  g_return_val_if_fail (GTK_IS_MENU (container), 1);
++  g_return_if_fail (GTK_IS_MENU (container));
+ 
+   parent_widget = gtk_menu_get_attach_widget (GTK_MENU (container));
+   if (GTK_IS_MENU_ITEM (parent_widget))
+     {
+       GTK_CONTAINER_ACCESSIBLE_CLASS (gtk_menu_item_accessible_parent_class)->remove_gtk (container, widget, gtk_widget_get_accessible (parent_widget));
+     }
+-  return 1;
+ }
+ 
+ static void
+-menu_item_select (GtkMenuItem *item)
++menu_item_select (GtkMenuItem *item,
++                  gpointer     user_data)
+ {
+   menu_item_selection (item, TRUE);
+ }
+ 
+ static void
+-menu_item_deselect (GtkMenuItem *item)
++menu_item_deselect (GtkMenuItem *item,
++                    gpointer     user_data)
+ {
+   menu_item_selection (item, FALSE);
+ }
+--- a/gtk/a11y/gtktogglebuttonaccessible.c
++++ b/gtk/a11y/gtktogglebuttonaccessible.c
+@@ -25,7 +25,8 @@
+ G_DEFINE_TYPE (GtkToggleButtonAccessible, gtk_toggle_button_accessible, GTK_TYPE_BUTTON_ACCESSIBLE)
+ 
+ static void
+-gtk_toggle_button_accessible_toggled (GtkWidget *widget)
++gtk_toggle_button_accessible_toggled (GtkWidget *widget,
++                                      gpointer   user_data)
+ {
+   AtkObject *accessible;
+   GtkToggleButton *toggle_button;

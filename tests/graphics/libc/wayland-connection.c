@@ -10,8 +10,36 @@ static int wpk_native_ppoll(struct pollfd *,nfds_t,const struct timespec *,const
 #define wl_display_connect_to_fd _wpk_upstream_display_connect_to_fd
 #define wl_display_disconnect _wpk_upstream_display_disconnect
 #include WPK_WAYLAND_CLIENT_SOURCE
-#include "../../../libc/glue/wayland-client-lifetime.inc"
+#ifndef WPK_WAYLAND_LIFETIME_SOURCE
+#define WPK_WAYLAND_LIFETIME_SOURCE "../../../libc/glue/wayland-client-lifetime.inc"
+#endif
+#include WPK_WAYLAND_LIFETIME_SOURCE
+#ifdef WPK_WL_RAW_ENTRY_ENABLED
+#include "wayland-private-queue.inc"
+#include "wayland-client-retirement.inc"
+#include "wayland-client-entry-retirement.inc"
+#ifndef WPK_WAYLAND_CALLBACK_SOURCE
+#define WPK_WAYLAND_CALLBACK_SOURCE "wayland-client-callback-retirement.inc"
+#endif
+#include WPK_WAYLAND_CALLBACK_SOURCE
+#endif
 #include <assert.h>
+#include "../../../libc/glue/drm_owned.h"
+#include <sys/wait.h>
+#ifdef KANDELO_WAYLAND_NATIVE_EPOCH_DOUBLE
+/* Explicit native control input, not a substitute for the separately tested
+ * target libc thread-count detector. Only named multi-thread fork phases set
+ * this flag; each child advances its own copied scalar before adapter use. */
+static _Atomic uint64_t wpk_native_fixture_epoch;
+static _Atomic int wpk_native_fixture_multithread;
+uint64_t __wasm_posix_native_fork_epoch(void){return atomic_load(&wpk_native_fixture_epoch);}
+static void wpk_fixture_native_epoch_child(void){
+    if(atomic_load(&wpk_native_fixture_multithread))atomic_fetch_add(&wpk_native_fixture_epoch,1);
+}
+__attribute__((constructor)) static void wpk_fixture_native_epoch_install(void){
+    assert(!pthread_atfork(NULL,NULL,wpk_fixture_native_epoch_child));
+}
+#endif
 
 static pthread_mutex_t fixture_wait_mutex=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t fixture_wait_cond=PTHREAD_COND_INITIALIZER;
@@ -20,6 +48,56 @@ struct fixture_dispatch {struct wl_display *display;struct wl_event_queue *queue
 static void *fixture_dispatch_thread(void *data) {
     struct fixture_dispatch *call=data;
     call->result=wl_display_dispatch_queue(call->display,call->queue);return NULL;
+}
+
+static int fork_lock_held,fork_lock_release;
+static void *hold_inherited_locks(void *opaque){
+    struct wl_display *display=opaque;
+#ifdef KANDELO_WL_FORK_CONTROL_PTHREAD
+    pthread_mutex_lock(&wpk_wl_mutex);
+#else
+    _wpk_drm_mutex_lock(&wpk_wl_mutex);
+#endif
+    pthread_mutex_lock(&display->mutex);
+    pthread_mutex_lock(&fixture_wait_mutex);fork_lock_held=1;pthread_cond_broadcast(&fixture_wait_cond);
+    while(!fork_lock_release)pthread_cond_wait(&fixture_wait_cond,&fixture_wait_mutex);
+    pthread_mutex_unlock(&fixture_wait_mutex);pthread_mutex_unlock(&display->mutex);
+#ifdef KANDELO_WL_FORK_CONTROL_PTHREAD
+    pthread_mutex_unlock(&wpk_wl_mutex);
+#else
+    _wpk_drm_mutex_unlock(&wpk_wl_mutex);
+#endif
+    return NULL;
+}
+static void inherited_private_cleanup(struct wl_display *display,void *surface_hold,void *display_hold,int peer){
+    /* A private queue's listener graph must be locally discarded with no
+     * wire messages while the parent's upstream and shim locks remain held. */
+    struct wl_event_queue *queue=wl_display_create_queue(display);assert(queue);
+    struct wl_proxy *buffer=proxy_create(&display->proxy,&wl_buffer_interface,1);assert(buffer);wl_proxy_set_queue(buffer,queue);
+    pthread_t holder;assert(!pthread_create(&holder,NULL,hold_inherited_locks,display));
+    pthread_mutex_lock(&fixture_wait_mutex);while(!fork_lock_held)pthread_cond_wait(&fixture_wait_cond,&fixture_wait_mutex);pthread_mutex_unlock(&fixture_wait_mutex);
+#ifdef KANDELO_WAYLAND_NATIVE_EPOCH_DOUBLE
+    atomic_store(&wpk_native_fixture_multithread,1);
+#endif
+    pid_t child=fork();assert(child>=0);
+#ifdef KANDELO_WAYLAND_NATIVE_EPOCH_DOUBLE
+    if(child)atomic_store(&wpk_native_fixture_multithread,0);
+#endif
+    if(!child){
+        alarm(5);
+        assert(!_wpk_wl_surface_alive(surface_hold));
+#ifndef KANDELO_WL_FORK_CONTROL_PTHREAD
+        _wpk_wl_proxy_discard_inherited(surface_hold,buffer);
+        _wpk_wl_queue_discard_inherited(surface_hold,queue);
+        _wpk_wl_surface_release_inherited(surface_hold);_wpk_wl_display_release_inherited(display_hold);
+#endif
+        _exit(0);
+    }
+    int status;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
+    pthread_mutex_lock(&fixture_wait_mutex);fork_lock_release=1;pthread_cond_broadcast(&fixture_wait_cond);pthread_mutex_unlock(&fixture_wait_mutex);
+    assert(!pthread_join(holder,NULL));
+    struct pollfd pfd={.fd=peer,.events=POLLIN};assert(poll(&pfd,1,0)==0);
+    assert(_wpk_wl_surface_alive(surface_hold));wl_proxy_destroy(buffer);wl_event_queue_destroy(queue);
 }
 
 int main(void) {
@@ -47,6 +125,8 @@ int main(void) {
     assert(bytes==52 && wire[0]==surface->object.id && (wire[1]&0xffffu)==WL_SURFACE_ATTACH);
     assert(wire[2]==buffer->object.id && (wire[6]&0xffffu)==WL_SURFACE_DAMAGE && (wire[12]&0xffffu)==WL_SURFACE_COMMIT);
     wl_proxy_destroy(buffer);
+    (void)_wpk_drm_process_generation();
+    inherited_private_cleanup(display,surface_hold,hold,pair[1]);
     // The real proxy survives public destruction until the native owner lets
     // go, but the destroyed bit revokes all new present/marshal authority.
     wl_proxy_destroy(surface);assert(surface->refcount==1);

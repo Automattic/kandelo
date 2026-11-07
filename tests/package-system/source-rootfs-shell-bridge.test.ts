@@ -76,6 +76,7 @@ const canonicalDependencyContract = join(
   repoRoot,
   "packages/registry/shell/source-rootfs-shell-dependencies.json",
 );
+const canonicalEagerBudget = join(canonicalPackageRoot, "eager-budget.json");
 const roots: string[] = [];
 const MiB = 1024 * 1024;
 const CA_FIXTURE = new TextEncoder().encode("rootfs CA fixture\n");
@@ -312,6 +313,11 @@ function fixturePaths(root: string) {
     mkdirSync(dir, { recursive: true });
     dependencyRoots.set(dependency, dir);
   }
+  writeFileSync(join(dependencyRoots.get("bibata-cursor-theme")!, "bibata-cursor-theme.zip"),
+    zipSync({
+      "icons/default/index.theme": new TextEncoder().encode("[Icon Theme]\nInherits=Bibata-Modern-Ice\n"),
+      "icons/Bibata-Modern-Ice/cursors/left_ptr": new TextEncoder().encode("cursor data fixture"),
+    }));
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (ROOTFS_LAZY_IDS.has(spec.id)) continue;
     const dependency = spec.id === "git-remote-http"
@@ -397,6 +403,9 @@ function fixturePaths(root: string) {
     xkeyboardConfigPath,
     demoConfigPath,
     demoProfileOverlayPath,
+    // The real budget: fixture content is far below it, so only the tests
+    // that substitute a tighter budget exercise a rejection.
+    eagerBudgetPath: canonicalEagerBudget,
     dependencyRoots,
     resolveArtifact,
   };
@@ -478,7 +487,9 @@ describe("canonical source-rootfs shell", () => {
       "packages/registry/shell/source-rootfs-shell-demo.json",
       "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
       "packages/registry/shell/scummvm-freeware-games.json",
+      "packages/registry/shell/eager-budget.json",
       "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+      "images/vfs/scripts/image-eager-budget.ts",
       "images/vfs/scripts/source-rootfs-shell-overlay.ts",
       "images/vfs/scripts/shell-lazy-archives.ts",
       "images/vfs/lib/init/shell-binaries.ts",
@@ -754,6 +765,36 @@ describe("canonical source-rootfs shell", () => {
       ).toMatchObject({ uri: url, size: `${spec!.id} fixture`.length });
       expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
     }
+    // The shared desktop panel must arrive through its one package closure,
+    // including a real loadable module and executable terminal helper.
+    for (const [artifact, guest, mode] of [
+      ["sfwbar.wasm", "/usr/local/bin/sfwbar", 0o755],
+      ["appmenu.so", "/usr/lib/sfwbar/appmenu.so", 0o644],
+      ["sfwbar.config", "/etc/xdg/sfwbar/sfwbar.config", 0o644],
+      ["sway.config", "/etc/xdg/sfwbar/sway.config", 0o644],
+      ["winops.widget", "/etc/xdg/sfwbar/winops.widget", 0o644],
+      ["kandelo-sfwbar", "/usr/local/bin/kandelo-sfwbar", 0o755],
+      ["kandelo-terminal", "/usr/local/bin/kandelo-terminal", 0o755],
+      ["kandelo-terminal.desktop", "/usr/share/applications/kandelo-terminal.desktop", 0o644],
+      ["scummvm.desktop", "/usr/share/applications/scummvm.desktop", 0o644],
+      ["wayland-demo.desktop", "/usr/share/applications/wayland-demo.desktop", 0o644],
+    ] as const) {
+      const spec = SHELL_LAZY_BINARY_SPECS.find(entry => entry.vfsPath === guest)!;
+      expect(spec, guest).toBeDefined();
+      expect(shellLazySpecDependency(spec), guest).toBe("sfwbar");
+      expect(fs.lazyEntries().files.find(file => file.path === guest), guest)
+        .toMatchObject({ uri: `kandelo-lazy:programs/sfwbar/${artifact}` });
+      expect(fs.stat(guest).mode & 0o777, guest).toBe(mode);
+    }
+    // Start-menu entries must name programs actually installed in this image,
+    // including a native Wayland client rather than a nonexistent package name.
+    for (const desktop of ["kandelo-terminal", "scummvm", "wayland-demo"]) {
+      const source = readFileSync(join(repoRoot,
+        `packages/registry/sfwbar/config/${desktop}.desktop`), "utf8");
+      const executable = source.match(/^Exec=(\S+)/m)?.[1];
+      expect(executable, desktop).toBeDefined();
+      expect(fs.stat(executable!).mode & 0o111, `${desktop} executable`).not.toBe(0);
+    }
     // Fixed guest paths retain real metadata without downloading optional
     // voice data. The serialized image must retain the exact ZIP identity.
     expect(fs.isPathDeferred("/usr/share/espeak-ng-data/en_dict")).toBe(true);
@@ -762,7 +803,9 @@ describe("canonical source-rootfs shell", () => {
     );
     for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
       const source = spec.id === "ca-certificates" ? paths.caBundlePath
-        : spec.id === "desktop-data" ? paths.desktopDataPath : paths.espeakNgDataPath;
+        : spec.id === "desktop-data" ? paths.desktopDataPath
+        : spec.id === "cursor-theme" ? paths.resolveArtifact(spec.resolverPath, spec.dependency)
+        : spec.id === "xkeyboard-config" ? paths.xkeyboardConfigPath : paths.espeakNgDataPath;
       const bytes = readFileSync(source);
       expect(fs.isPathDeferred(`${spec.mountPrefix}${spec.requiredMember}`)).toBe(true);
       expect(composed.archives.find(({ uri }) => uri === spec.archiveUrl))
@@ -846,8 +889,12 @@ describe("canonical source-rootfs shell", () => {
     expect(
       text(readVfsFile(fs, "/usr/share/libinput/10-generic-keyboard.quirks")),
     ).toBe("[Generic Keyboard]\n");
-    expect(text(readVfsFile(fs, "/usr/share/X11/xkb/rules/evdev"))).toBe(
-      "! model = keycodes\n",
+    // The keymap data is libxkbcommon's compiled-in root, but only Wayland
+    // programs read it: the path exists at boot with its real size, and its
+    // bytes wait for the first read instead of growing every shell boot.
+    expect(fs.isPathDeferred("/usr/share/X11/xkb/rules/evdev")).toBe(true);
+    expect(fs.stat("/usr/share/X11/xkb/rules/evdev").size).toBe(
+      "! model = keycodes\n".length,
     );
     // Assert byte-for-byte equality against the tracked source for one
     // image shader and one sound shader: a loose "non-empty" check would
@@ -937,7 +984,10 @@ describe("canonical source-rootfs shell", () => {
     });
     const doomLaunch = text(readVfsFile(fs, "/usr/local/bin/doom-launch"));
     expect(doomLaunch).toContain("wad=/doom1.wad");
-    expect(doomLaunch).toContain('/usr/local/bin/fbdoom -iwad "$wad" "$@" &');
+    // The engine reads the keyboard from the terminal the supervisor saved
+    // on fd 3, not the /dev/null a background command would get.
+    expect(doomLaunch).toContain("exec 3<&0");
+    expect(doomLaunch).toContain('/usr/local/bin/fbdoom -iwad "$wad" "$@" <&3 3<&- &');
     expect(resolveDemoPresentation(demo!, "doom")?.touchControls).toBe(true);
     expect(resolveDemoPresentation(demo!, "doom")?.runningPrimary).toEqual([
       "framebuffer",
@@ -1027,6 +1077,23 @@ describe("canonical source-rootfs shell", () => {
       "terminal",
       "syslog",
     ]);
+  });
+
+  it("starts the shared panel through each compositor's normal session contract", () => {
+    const source = JSON.parse(readFileSync(join(repoRoot,
+      "packages/registry/shell/source-rootfs-shell-demo.json"), "utf8"));
+    const sway = source.profiles.sway.init.shellCommand;
+    expect(sway).toContain("/usr/local/bin/sway -c /etc/xdg/sfwbar/sway.config");
+    const labwc = source.profiles.labwc.init.shellCommand;
+    // Labwc parses -s without a shell: the explicit shell is required for
+    // background panel startup followed by the foreground terminal exec.
+    expect(labwc).toContain("/usr/local/bin/labwc -s '/bin/sh -c \"sfwbar");
+    expect(labwc).toContain("-f /etc/xdg/sfwbar/sfwbar.config & exec foot --config=/etc/xdg/labwc/foot.ini");
+    for (const id of ["sway", "labwc"]) {
+      expect(source.profiles[id].identity.summary).toContain("Start");
+      expect(source.profiles[id].identity.summary).toMatch(/task list/);
+      expect(source.profiles[id].identity.summary).toContain("clock");
+    }
   });
 
   it("treats structurally identical package-owned profiles as one shared contract", () => {
@@ -1242,6 +1309,64 @@ describe("canonical source-rootfs shell", () => {
     expect(existsSync(join(root, "eager-program.vfs.zst"))).toBe(false);
   });
 
+  it("rejects eager content over its checked-in budget before writing an output", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    // An eager launcher script far larger than the fixture's other content
+    // stands in for an optional tree written eagerly.
+    writeFileSync(paths.omarchydesktopPath, `#!/bin/sh\n${"#".repeat(64 * 1024)}\n`);
+    const eagerBudgetPath = join(root, "eager-budget.json");
+    const budget = JSON.parse(readFileSync(canonicalEagerBudget, "utf8"));
+    writeFileSync(eagerBudgetPath, JSON.stringify({
+      ...budget,
+      image: "fixture-shell",
+      maxEagerBytes: 32 * 1024,
+      measured: { ...budget.measured, eagerBytes: 32 * 1024 },
+    }));
+
+    let message = "";
+    try {
+      await buildSourceRootfsShellImage({
+        ...paths,
+        eagerBudgetPath,
+        outFile: join(root, "over-budget.vfs.zst"),
+        sourceDateEpoch: "0",
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain(
+      `fixture-shell image exceeds its eager-content budget in ${eagerBudgetPath}`,
+    );
+    expect(message).toMatch(/eager bytes: [\d,]+ exceeds the budget of 32,768/);
+    expect(message).toMatch(/65,547 +\/usr\/local\/bin\/omarchydesktop/);
+    expect(existsSync(join(root, "over-budget.vfs.zst"))).toBe(false);
+  });
+
+  it("rejects a compressed image over its checked-in budget before writing it", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    const eagerBudgetPath = join(root, "eager-budget.json");
+    const budget = JSON.parse(readFileSync(canonicalEagerBudget, "utf8"));
+    writeFileSync(eagerBudgetPath, JSON.stringify({
+      ...budget,
+      maxCompressedBytes: 100,
+      measured: { ...budget.measured, compressedBytes: 100 },
+    }));
+
+    await expect(
+      buildSourceRootfsShellImage({
+        ...paths,
+        eagerBudgetPath,
+        outFile: join(root, "over-budget.vfs.zst"),
+        sourceDateEpoch: "0",
+      }),
+    ).rejects.toThrow(/compressed image bytes: [\d,]+ exceeds the budget of 100/);
+    expect(existsSync(join(root, "over-budget.vfs.zst"))).toBe(false);
+  });
+
   it("rejects a demo profile that no longer launches its owned executable", async () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
@@ -1430,6 +1555,7 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     expect(invocation).toContain(
       `--demo-profile-overlay ${join(repoRoot, "packages/registry/shell/source-rootfs-shell-demo-profiles.json")}`,
     );
+    expect(invocation).toContain(`--eager-budget ${canonicalEagerBudget}`);
   });
 });
 

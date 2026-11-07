@@ -4,6 +4,7 @@ import { activeVertexArray, vertexAttribute } from "./buffer-references.js";
 import { canonicalBuffer, BUFFER_TRANSFER_BYTES, withBufferTransfer } from "./buffer-storage.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import * as O from "./ops.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
 
 export function capabilityEnabled(b: GlBinding, cap: number): boolean | undefined {
   const s = b.shadow;
@@ -49,11 +50,11 @@ export function checkedQueryReply(b: GlBinding, out: Uint8Array, size: number,
   const view = new DataView(out.buffer,out.byteOffset,out.byteLength);
   let payload: Uint8Array<ArrayBuffer>, rc: number;
   try { payload = new Uint8Array(size); }
-  catch {
+  catch (caught) { rethrowNativeGlFault(caught);
     recordGlError(b,0x505); out.fill(0,4,size+4); view.setUint32(0,1,true); view.setUint32(size+4,0x47514c33,true); return size+8;
   }
   try { rc = write(payload); }
-  catch { recordGlError(b,0x505); rc = -12; }
+  catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); rc = -12; }
   view.setUint32(0,rc < 0 ? 1 : 0,true);
   if (rc < 0) out.fill(0,4,size+4); else out.set(payload,4);
   view.setUint32(size+4,0x47514c33,true);
@@ -128,10 +129,11 @@ function runStatePayload(b: GlBinding, op: number, input: Uint8Array, out: Uint8
       if (count <= 0) return fail(b,0x501);
       const width = type === 0x1401 ? 1 : 2;
       const object = activeVertexArray(b).element, store = object && b.bufferStores.get(object);
-      if (!store || offset%width || offset+count*width > store.size) return fail(b,0x502);
+      // Indices may start at any byte offset (ES 2.0 section 2.8).
+      if (!store || offset+count*width > store.size) return fail(b,0x502);
       let reply: Uint8Array<ArrayBuffer>, scratch: Uint8Array<ArrayBuffer>;
       try { reply = new Uint8Array(8196); scratch = new Uint8Array(Math.min(count*width,BUFFER_TRANSFER_BYTES)); }
-      catch { recordGlError(b,0x505); return -12; }
+      catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return -12; }
       const bits = reply.subarray(4);
       let maximum = 0;
       if (!withBufferTransfer(b,store.source,store.source,() => {

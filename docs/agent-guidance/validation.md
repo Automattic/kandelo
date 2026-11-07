@@ -25,6 +25,13 @@ shows old rows. For graphical Quit checks, verify automatic terminal
 handoff, the launching foreground job's exit status, and process cleanup;
 a prompt alone does not establish that contract.
 
+Read terminal history through the terminal's actual scrolling UI. With
+xterm 6, the retained `.xterm-viewport` element has no scrolling range;
+assigning its `scrollTop` does not move the rendered rows. The browser
+fixtures use Shift+PageUp/Down, observe each repaint and restore the live
+bottom. Preserve missing-marker and no-guest-input controls when changing
+that history reader.
+
 A fixture that tests a particular resolution policy must select that policy
 explicitly and restore every changed environment setting in `finally`.
 Run it under the normal suite environment as well as in isolation. A legacy
@@ -59,6 +66,10 @@ The kernel-memory ownership audit excludes the fork instrumenter's offline
 JavaScript fixtures and `scripts/check-fork-memory-artifact.ts`: they create
 private synthetic module memories, never views into a live kernel. Production
 host sources, other scripts, and browser runtime fixtures remain in scope.
+The import-free GLib/GTK callback source fixtures remain audited with exact
+private-memory origin classifications. A direct awaited instantiate result
+may bind only one static `instance` property (optionally renamed); unknown
+or unstable bindings must still fail rather than lose authority tracking.
 
 Keep authored-source audits separate from generated reports and private
 worktrees. Exclude those evidence directories explicitly while retaining
@@ -71,6 +82,32 @@ proxy session can copy the browser's `Headers` object. Check final URLs,
 header values, credentials, and referrer policy; copies do not replay a
 test subclass's `append` calls. Preserve checks for dropped fields and
 the order of repeated values.
+
+## Recorded failures and anomalies
+
+`tests/baselines/` keeps failure evidence, not test allowances. See its
+[recording workflow](../../tests/baselines/README.md). Record failures,
+expected failures, unexpected passes, skips, timeouts, runner errors and
+intermittent results; omit ordinary passes and success counters. Store each
+main run or targeted rerun separately; never replace unrelated evidence
+with a partial report. Existing conformance expectation lists still own
+accepted failures and reasons.
+
+Consult recorded failures before repeating an expensive main run. Compare
+names, reasons, host, command and recorded commit; a known name alone does
+not establish the same defect. If the evidence is insufficient, rerun only
+the relevant failures on main through the normal build path. Historical
+results must be described as historical. Records never turn a failed run
+green, and there is no freshness check or merge requirement.
+
+Use `KANDELO_TEST_REPORT_DIR` inside the dev shell to record JSON and
+console output from each normal Vitest/browser suite process. Keep the
+recorded exit code: JSON alone can omit Vitest unhandled errors.
+Keep raw logs and record provenance: commit, date, selection/command,
+host/runtime versions and load when available. Do not fill unknown historical
+fields from today's environment. Treat load-related failures as anomalies
+to investigate. Preserve observed retry outcomes and report mixed outcomes
+as intermittent; do not select a favorable retry and call it a pass.
 
 ## Validation scope and suite selection
 
@@ -93,7 +130,20 @@ Core validation surface:
 | musl libc-test | `scripts/run-libc-tests.sh` | libc, syscall, and kernel semantic changes |
 | Open POSIX Test Suite | `scripts/run-posix-tests.sh` | POSIX API behavior |
 | Sortix os-test | `scripts/run-sortix-tests.sh --all` | Broad POSIX/kernel regression coverage |
+| Browser conformance | `scripts/run-browser-libc-tests.sh`, `scripts/run-browser-posix-tests.sh`, `scripts/run-browser-sortix-tests.sh --all` | The same suites through the browser host (Chromium) |
 | ABI snapshot | `bash scripts/check-abi-version.sh` | ABI-adjacent changes |
+
+The browser conformance wrappers start their own Vite server on a free
+loopback port each run, so concurrent worktrees do not collide; set
+`KANDELO_BROWSER_TEST_RUNNER_PORT` only to pin one (a pinned port that is
+taken fails the run), inside `scripts/dev-shell.sh bash -c '...'`, since the
+dev shell does not pass it through. A section whose browser runner cannot start counts
+every test in it as an ERROR and fails the run;
+`scripts/test-browser-runner-accounting.sh` checks that for all three
+wrappers. The Node and browser Sortix runners share their expected
+failures, failure reasons and expectation lookup through
+`scripts/sortix-expectations.sh`, so an XPASS or a test that fails on one
+host only is a host divergence to explain, not a list to edit.
 
 For CI-shaped local runs, prefer:
 
@@ -223,10 +273,38 @@ the measurement window or limits. The Node spawn-churn test uses 256
 children with unchanged 2 MiB-per-child and 64 MiB late-growth limits.
 See [the window calibration](../measurements/2026-10-20-process-memory-rss-window.md).
 
+## Native build tools copied between checkouts
+
+A copied `xtask` retains its compile-time repository root. Its authenticated
+program-index source-context commands accept `--source-repo-root` and are
+portable; ordinary package resolve/path/output-path and bootstrap commands
+still use the compiled root. Before those build operations, compile the
+current checkout's release tool with `cargo build --release -p xtask --target
+<host-target>`, or use `run.sh`'s normal tool-freshening path. If native Cargo
+target artifacts were copied too, first run `cargo clean --release -p xtask
+--target <host-target>` in the destination checkout: Cargo can report that
+copied executable as fresh while it still embeds the previous manifest root.
+Verify the resolved package identity against the intended source before
+bootstrapping. Merely setting `WASM_POSIX_XTASK_BIN` to a copied binary does
+not select the current checkout.
+
+Vitest fixture setup and SDK-fixture stamping honor the runner's prepared
+`WASM_POSIX_XTASK_BIN` for index generation and ABI-contract stamping. Prepare
+that tool through the current checkout's normal Cargo path before setting it.
+An explicitly configured missing tool fails; it does not silently rebuild or
+fall back to another executable. Without the override, fixture setup retains
+its ordinary host-target Cargo invocation.
+Prepare that tool before a browser test's clock starts. Preserve the SDK's
+`sdk/.build` cache together with its copied sysroots, then run the normal SDK
+ensures; otherwise preparing a new tool can re-key or replace core outputs.
+
 ## Waiting on long builds and suites
 
-`./run.sh setup`, `local-build`, full Vitest, and the conformance suites can
-run for more than 10 minutes. Full builds include compilation, fork
+`./run.sh setup`, `local-build`, `build-musl.sh`, `build-programs.sh`, and
+`xtask bootstrap` can run for more than 10 minutes, as can full Vitest,
+Playwright, dEQP/graphics CTS, POSIX/libc-test/Sortix suites and benchmarks.
+The same waiting rules apply to a peer workspace's build.
+Full builds include compilation, fork
 instrumentation, and artifact verification; their duration depends on
 package cache reuse. In August and September 2026, agents spent about 12%
 of their input tokens on poll turns and on cache rewrites after long blocking
@@ -241,7 +319,7 @@ turns. For anything longer:
 
 ```bash
 scripts/agent-job start -- ./run.sh setup   # prints a job id (run.sh enters the dev shell itself)
-scripts/agent-job wait <id>      # blocks on the job's PID for up to 9 min; exit 124 = still running, run it again
+scripts/agent-job wait <id>      # up to 9 min; repeat only on the still-running wait-window notice
 scripts/agent-job status [<id>]  # elapsed vs usual duration, local-build progress, live processes
 scripts/agent-job result <id>    # exit status, [suite-health] lines, log tail
 ```
@@ -262,13 +340,19 @@ and the rest ran outside the dev shell from the repo root. If a vitest job
 log's ` RUN  v… <path>` line names the repo root instead of `.../host`, the
 run used the wrong config and toolchain, and its results are invalid.
 
-- **Waiting:** repeat `agent-job wait <id>` in the foreground until it
-  returns the job's status. That is one turn per 9 minutes, never a
-  `sleep`/`tail` poll. If an agent client yields a running terminal session,
-  resume that session to collect the result. An interactive main session may
-  instead run `agent-job wait <id> --timeout 0` in the background and use a
-  completion notification. A headless session or subagent must not end its
-  turn while waiting: it stops there, and the result is lost.
+- **Waiting:** choose by session type. An interactive main session runs
+  `scripts/agent-job wait <id> --timeout 0` once with the Bash tool's
+  `run_in_background` and acts on its single completion notification.
+  Never write Monitor, `until`, or `sleep` loops over status files or
+  `agent-job list`; expiring waiters create re-arm turns. A headless
+  session or subagent repeats foreground `agent-job wait <id>` until it
+  returns the job's status. Repeat only when the wait-window notice says
+  `agent-job: still running`. Exit 124 alone is ambiguous: a finished
+  command can itself exit 124 (for example, when killed by `timeout`).
+  `FAILED (exit 124)` is a completed failure, not a retry. It must not end
+  its turn while waiting: it stops there, and the result is lost. If an
+  agent client yields a running terminal session, resume that session to
+  collect the result.
 - **Subagents** must not wait on whole-tree builds or full suites. A
   subagent's prompt cache expires after 5 minutes, so every long blocking
   call rewrites its whole context. Build what a subagent needs before
@@ -279,9 +363,28 @@ run used the wrong config and toolchain, and its results are invalid.
   `./run.sh …`, not under `scripts/dev-shell.sh`, which drops the events
   variable. `./run.sh local-build --plan` previews a build (cache hits,
   nodes to build, estimated time) before you start it.
+  Use `status` for a specific progress question, not as a periodic waiter.
 - **Locked runs:** `agent-job start` refuses a second locked run (vitest,
-  `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup, local-build) in the
-  same worktree while one is running. Those runs race each other.
+  prepare-browser, `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup,
+  local-build) in the same worktree while one is running. In particular,
+  Vitest and prepare-browser race on program-index generation; serialize
+  them and respect the refusal.
+- **Stable inputs:** never mutate a tree while a job validates it. Mixed
+  inputs invalidate evidence and can break program-index publication.
+  Finish or stop the job before editing, then validate the final tree.
+- **Browser server:** always choose a free worktree-specific
+  `KANDELO_PLAYWRIGHT_PORT` for Playwright suites. `reuseExistingServer`
+  can otherwise silently attach to another tree's server on a shared port.
+- **Suite environment:** `scripts/dev-shell.sh` clears outer variables
+  outside its keep-list. Export suite variables inside `bash -c` when
+  they must reach a test. `KANDELO_PLAYWRIGHT_PORT` is explicitly kept;
+  exporting it inside is also safe:
+
+  ```bash
+  scripts/agent-job start -- scripts/dev-shell.sh bash -c 'export KANDELO_PLAYWRIGHT_PORT=5197; cd apps/browser-demos && npx playwright test'
+  ```
+
+  Choose a free port for this worktree; 5197 is only an example.
 - **Another workspace's build:** waiting on a build that another worktree
   (another Conductor workspace) is running is supported, and `agent-job` is
   the tool for it. Do not hand-roll a `kill -0 <pid>`, `pgrep`, or `sleep`
@@ -306,20 +409,36 @@ run used the wrong config and toolchain, and its results are invalid.
     on build inputs. Once a peer's build finishes, your own run reuses
     whatever it built from the same inputs, so the closer its commit is
     to yours, the more your run can reuse.
+    A peer's result alone does not validate your tree; run your own build
+    or suite through the normal path after it finishes.
   - **`--peer <text>` never guesses.** When no running job's command
     contains `<text>`, or more than one does, it lists the candidates on
     stderr and exits 2; then wait on one by id. A job that itself exits
     2 also makes `wait` exit 2, so read the output.
+  - **Pin retries to the resolved job id.** If a selector wait times out,
+    use the id printed in `waiting on <id>` or the `resume with:` command.
+    Never repeat `--peer`: the original can finish before the next call,
+    so the selector can match a replacement job or miss the original's
+    recorded result. Wait by id to retain that job's outcome.
   - The locked-run check is per worktree: a peer's `local-build` does not
     stop yours from starting. Choosing to wait on it is the agent's call.
 - **Before a suite**, `npx tsx scripts/check-artifact-closures.ts` reports
   any program package whose artifact closure would fail to resolve with
   "Package artifact closure is incomplete". It takes about 3 s once warm, and
   saves the minutes a suite would spend reaching the same error.
+- **Results:** `agent-job result <id>` gives the final exit status, log
+  tail and `[suite-health]` lines. A LOST result means the run failed to
+  record completion; it is not a pass. Search the saved log around
+  relevant errors rather than reading it whole.
 - **Every Vitest run** ends with a `[suite-health]` line. When many files
   fail to load, it groups them by the missing thing, so one line replaces
   scrolling hundreds of failure blocks. `WARN` means part of the suite did
-  not run (a load error or zero tests).
+  not run (a load error, unfinished worker, or zero tests). Unhandled errors
+  and unfinished selected files make its verdict failed even if Vitest's
+  callback reason says passed. Completed test and skip counts stay separate
+  from pending work; intentional cancellation remains interrupted. Check
+  discovered/run/skipped counts: zero tests or load failures cannot support
+  a passing-suite claim.
 - **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
   patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
   `pgrep -f` waiters, and subagents running whole-tree builds or full
@@ -436,19 +555,62 @@ scripts/dev-shell.sh env KANDELO_SORTIX_SOURCE_ROOT=/absolute/os-test \
 
 The runner keeps its build directory below the selected source root;
 SDK, kernel, overrides, and runtime still come from the current worktree.
+The browser wrapper uses the same override:
+
+```bash
+scripts/dev-shell.sh env KANDELO_SORTIX_SOURCE_ROOT=/absolute/os-test \
+  bash scripts/run-browser-sortix-tests.sh --all
+```
+
+Both wrappers fail when a requested suite discovers no tests. After changing
+source selection or accounting, run:
+
+```bash
+scripts/dev-shell.sh bash scripts/test-sortix-source-root.sh
+```
+
+It exercises both real wrappers with the current SDK, a source path containing
+spaces, a refused compilation, and empty include/runtime suites. These controls
+do not replace upstream conformance.
 
 Before blaming a suite failure on your change, confirm it actually is your
 change: a few package/demo tests (e.g. the Erlang `ring` benchmark) can fail for
 environment or artifact reasons unrelated to a given diff. Reproduce the failure
-on a pristine `origin/main` build of the same artifact before attributing it —
-rebuild just the kernel wasm (`cargo build --release -p kandelo -Z
-build-std=core,alloc && cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm
-local-binaries/kernel.wasm`) at `origin/main` and re-run the one test. Report a
-pre-existing failure as pre-existing, not as your regression.
+on a pristine `origin/main` build of the same artifact before attributing it,
+for example in a second worktree at `origin/main` provisioned with its own
+artifacts, and re-run the one test there. Report a pre-existing failure as
+pre-existing, not as your regression.
 
-After editing kernel Rust, rebuild the kernel wasm (`./run.sh setup`) before the
-Vitest/conformance suites — they load `local-binaries/kernel.wasm`, so a stale
-wasm silently runs your OLD kernel code. Setup also checks musl freshness;
+After editing kernel Rust, rebuild the kernel before the Vitest/conformance
+suites. They resolve `kernel.wasm` through the binary resolver, whose first
+tier is the SourceOnly projection, `local-binaries/source-only-v1/kernel.wasm`
+(not `local-binaries/kernel.wasm`), so a stale projection silently runs your
+OLD kernel code. The supported paths:
+
+- `./run.sh setup` rebuilds everything the change makes stale. This is the
+  path for a merge-candidate tree.
+- `./run.sh build kernel` rebuilds only the kernel package and re-pins it in
+  the projection (about four minutes). Kernel cache keys feed other packages'
+  keys, so it also drops every product built against the previous kernel
+  from the projection (`rootfs`, `shell`, the desktop and SDK images, and
+  the images built inside a Kandelo machine such as `nethack`, `lamp` and
+  `wordpress`; it lists each "dropping ... from the published projection").
+  Node Vitest and the conformance runners, which need only the kernel,
+  programs, test fixtures and `host/wasm/rootfs.vfs.zst`, run immediately;
+  browser specs and demos need `./run.sh prepare-browser` (or setup) first.
+  Pass `KANDELO_CACHE_GC_AUTO=0` if the shared cache must not be collected
+  during the build. If its musl freshness check rebuilds a sysroot, rerun
+  `scripts/build-dri-stubs.sh` (and with `--arch wasm64posix`) so `-lgbm`
+  and `-ldrm` resolve again.
+
+Copying a `cargo build` output over the projection's `kernel.wasm` does not
+re-pin it. Under `WASM_POSIX_RESOLUTION_POLICY=source-only-v1` (the browser
+and SourceOnly runs) the projection authority's size and digest check
+rejects the swapped file. The default Node policy resolves it without that
+check, which is enough for a diagnostic kernel (for example one built with a
+cargo feature) in a Node-only experiment; restore the pinned bytes
+afterwards and never use such a run as evidence for the browser or for the
+shipped kernel. Setup also checks musl freshness;
 after editing libc inputs, rebuild linked programs and fixtures through the
 normal setup/program paths. (`bash build.sh` still works as a deprecated
 delegator to `./run.sh setup`.)

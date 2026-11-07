@@ -52,6 +52,15 @@ pub struct GbmBo {
     pub refcount: u32,
     pub prime_cookie: Option<PrimeCookie>,
     pub tier: BoTier,
+    /// The DRM fourcc a GPU-tier bo's texture storage holds (from
+    /// `WPK_CREATE_GPU_BO` or an exported image's internal format); 0 for a
+    /// CPU-tier bo, whose bytes any format may describe, or an exported
+    /// image no DRM format describes.
+    pub format: u32,
+    /// The buffer's implicit fences (`dma_buf.resv`), set and read through
+    /// `DMA_BUF_IOCTL_{IMPORT,EXPORT}_SYNC_FILE` and observed by dma-buf
+    /// `poll`. They live and die with the buffer.
+    pub reservation: crate::dri::fence::Reservation,
 }
 
 pub struct BoRegistry {
@@ -101,9 +110,26 @@ impl BoRegistry {
             refcount: 1,
             prime_cookie: None,
             tier,
+            format: 0,
+            reservation: Default::default(),
         };
         self.map.insert(id, bo);
         Some(self.map.get_mut(&id).unwrap())
+    }
+
+    /// Set the extent and pixel size of a GPU-tier bo whose storage is
+    /// decided by the host after allocation (an exported GLES image). The
+    /// LINEAR-equivalent stride/size follow the same arithmetic as
+    /// allocation.
+    pub fn set_gpu_extent(&mut self, id: BoId, width: u32, height: u32, bpp: u32, format: u32) -> Option<()> {
+        let bo = self.map.get_mut(&id)?;
+        if bo.tier != BoTier::GpuTexture || bpp == 0 { return None; }
+        bo.format = format;
+        let bytes_per_row = width.checked_mul(bpp)?.checked_add(7)? / 8;
+        let stride = bytes_per_row.checked_add(3)? & !3;
+        let size = (stride as u64).checked_mul(height as u64)?;
+        bo.width = width; bo.height = height; bo.bpp = bpp; bo.stride = stride; bo.size = size;
+        Some(())
     }
 
     pub fn alloc(&mut self, width: u32, height: u32, bpp: u32) -> &mut GbmBo {
@@ -113,6 +139,10 @@ impl BoRegistry {
 
     pub fn get(&self, id: BoId) -> Option<&GbmBo> {
         self.map.get(&id)
+    }
+
+    pub fn get_mut(&mut self, id: BoId) -> Option<&mut GbmBo> {
+        self.map.get_mut(&id)
     }
 
     pub fn incref(&mut self, id: BoId) -> Option<u32> {

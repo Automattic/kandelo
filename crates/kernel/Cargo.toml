@@ -14,3 +14,7 @@ wasm-posix-shared = { path = "../shared" }
 
 [target.'cfg(any(target_arch = "wasm32", target_arch = "wasm64"))'.dependencies]
 dlmalloc = { version = "0.2.14", default-features = false }
+
+[features]
+# Diagnostic build: see runtime-core's feature of the same name.
+shared-mapping-proof-verify = ["runtime-core/shared-mapping-proof-verify"]

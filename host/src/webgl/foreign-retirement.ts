@@ -1,8 +1,10 @@
 import type { GlBinding } from "./registry.js";
-import { applyNativeChanges, nativeInverse, repairNativeState, type NativeChange, type NativeCall } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, repairNativeState, type NativeChange, type NativeCall, rethrowNativeGlFault } from "./native-recovery.js";
 import { imageAttachmentCall, textureNative } from "./image-storage.js";
 import { collectRetiredImages } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
+import { framebufferInputsChanged } from "./framebuffer-revision.js";
+import { setTextureUnit } from "./depth-sampling.js";
 
 /** BO ownership expires every raw view generation, including deleted names
  * retained by a peer. A replacement using the number has another identity. */
@@ -13,13 +15,13 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
     objects = new Set();
     for (const [object, owner] of b.foreignTextureBos) if (owner === bo) objects.add(object);
     if (cached) objects.add(cached.tex);
-  } catch { recordGlError(b,0x505); return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   // Storage redefinition can remove the last public view while its old
   // native container still awaits cleanup. That pending renderer repair
   // must finish before its canonical BO backing can retire too.
   if (b.gl && !repairNativeState(b.gl)) return false;
   if (!objects.size) {
-    for (const [token,source] of b.imageSources) if (source.bo === bo) b.imageSources.delete(token);
+    for (const [token,source] of b.imageSources) if (source.bo === bo || source.bos?.includes(bo)) b.imageSources.delete(token);
     return true;
   }
   if (!b.gl) return false;
@@ -27,7 +29,7 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
   let retired: GlBinding["retiredTextures"];
   let changes: NativeChange[];
   let points: {owner: GlBinding; framebuffer: WebGLFramebuffer; point: number}[];
-  let units: {bindings: (WebGLTexture|null)[]; unit: number}[];
+  let units: {owner: GlBinding; cube: boolean; unit: number}[];
   let captures: {unit: number; target: number; pname: number; previous: WebGLTexture|null}[];
   let natives: Set<WebGLTexture>;
   let hasFramebuffers = false;
@@ -42,10 +44,12 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
       retired.set(object,name);
     }
     for (const owner of b.objects.members) {
-      for (const bindings of [owner.shadow.textureUnits,owner.shadow.cubeTextureUnits])
+      for (const cube of [false,true]) {
+        const bindings = cube ? owner.shadow.cubeTextureUnits : owner.shadow.textureUnits;
         for (let unit=0; unit<bindings.length; unit++) if (bindings[unit] && objects.has(bindings[unit]!)) {
-          units.push({bindings,unit}); physicalUnits.add(unit);
+          units.push({owner,cube,unit}); physicalUnits.add(unit);
         }
+      }
       for (const [framebuffer, attachments] of owner.framebufferAttachments) for (const [point,image] of attachments) {
         if (image.kind !== "texture" || !objects.has(image.object)) continue;
         hasFramebuffers = true; points.push({owner,framebuffer,point});
@@ -55,9 +59,10 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
           restore:nativeInverse(b,[["bindFramebuffer",0x8ca9,framebuffer],before])});
       }
     }
-    for (const unit of physicalUnits) for (const [target,pname] of [[0x0de1,0x8069],[0x8513,0x8514]])
+    // Cube maps are 2D array textures natively (cube-storage.ts).
+    for (const unit of physicalUnits) for (const [target,pname] of [[0x0de1,0x8069],[0x8c1a,0x8c1d]])
       captures.push({unit,target,pname,previous:null});
-  } catch { recordGlError(b,0x505); return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   if (changes.length || captures.length) {
     if (!checkedGlCall(b, () => { active = Number(gl.getParameter(0x84e0)); })) return false;
     if (hasFramebuffers && (!checkedGlCall(b, () => { draw = gl.getParameter(0x8ca6); }) ||
@@ -81,16 +86,19 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
         ? [[["bindFramebuffer",0x8ca9,draw]],[["bindFramebuffer",0x8ca8,read]]] : [];
       finalizer.push([["activeTexture",active]]);
       if (!applyNativeChanges(b,changes,{shared:true,finalizer:nativeInverse(b,...finalizer)})) return false;
-    } catch { recordGlError(b,0x505); return false; }
+    } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   }
-  for (const {bindings,unit} of units) bindings[unit] = null;
+  for (const {owner,cube,unit} of units) setTextureUnit(owner,cube,unit,null);
+  for (const owner of b.objects.members)
+    owner.shadow.externalTextureUnits.forEach((object, unit, list) => { if (object && objects.has(object)) list[unit] = null; });
   for (const {owner,framebuffer,point} of points) {
     const attachments = owner.framebufferAttachments.get(framebuffer)!; attachments.delete(point);
     if (!attachments.size) owner.framebufferAttachments.delete(framebuffer);
   }
+  framebufferInputsChanged();
   for (const [name,object] of b.textures) if (objects.has(object)) b.textures.delete(name);
   if (cached && objects.has(cached.tex)) b.foreignTextures.delete(bo);
-  for (const [token,source] of b.imageSources) if (source.bo === bo) b.imageSources.delete(token);
+  for (const [token,source] of b.imageSources) if (source.bo === bo || source.bos?.includes(bo)) b.imageSources.delete(token);
   b.retiredTextures = retired;
   collectRetiredImages(b);
   for (const object of objects) if (b.foreignTextureBos.has(object)) return false;

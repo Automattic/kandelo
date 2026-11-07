@@ -1,6 +1,6 @@
 /**
- * Unmodified upstream foot 1.17.2 (one declared shm patch — gbm prime-fd
- * pools, see packages/registry/foot/patches/) runs as the session client
+ * Upstream foot 1.17.2, using its ordinary shared-memory pools, runs
+ * as the session client
  * of cage, the wlroots kiosk compositor, on the ported font stack.
  *
  * The flow, and what each step proves:
@@ -12,7 +12,7 @@
  *     fcft rasterizes with the staged Inconsolata — foot aborts at
  *     startup if the font stack fails;
  *   - cage maps foot's toplevel only after a commit with a buffer, which
- *     wlroots reads by mapping the pool's PRIME fd, and only a mapped
+ *     wlroots reads by mapping the pool fd, and only a mapped
  *     toplevel gets keyboard focus;
  *   - foot forks dash (fork instrumentation at work), host-injected
  *     keys spell "exit\n" — libinput → cage's keymap → foot's xkb state
@@ -68,7 +68,7 @@ const KEY_ENTER = 28;
 
 describe("foot — upstream terminal on cage + the ported font stack", () => {
   it(
-    "maps through gbm shm pools, types into dash, exits clean",
+    "maps ordinary wl_shm pools, types into dash, exits clean",
     async () => {
       const out = { value: "" };
       const err = { value: "" };

@@ -1,4 +1,3 @@
-import {createMainForwardChannel} from "../../../../host/src/webgl/main-forward";
 import {createWasmPosixKernelTestHarness} from "../../../../host/src/kernel";
 import {createKernelScratchTestInstance} from "../../../../host/test/support/kernel-scratch-instance";
 import * as O from "../../../../host/src/webgl/ops";
@@ -6,12 +5,10 @@ import * as O from "../../../../host/src/webgl/ops";
 // Driver-level ABI 58 construction, not public C sharing or Rust marshalling.
 self.onmessage=({data})=>{
   try {
-    const forwarded=data.mode==="forwarded";
-    const channels=[11,12,13,14].map(session=>createMainForwardChannel({postMessage:message=>postMessage(message)},7,session));
     let gl:WebGL2RenderingContext|null=null,memory:WebAssembly.Memory|null=null;
     let imports:Record<string,(...args:any[])=>any>|null=null;
     const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[],creationCounts:Record<string,number>={};
-    if(!forwarded) {
+    {
       const canvas=data.canvas as OffscreenCanvas;
       gl=canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true});
       if(!gl)throw new Error("native WebGL2 unavailable");
@@ -30,27 +27,21 @@ self.onmessage=({data})=>{
     }
     const requireZero=(rc:number,label:string)=>{if(rc!==0)throw new Error(`${label}: ${rc}`);};
     const create=(i:number,source?:number)=>{
-      if(forwarded)requireZero(channels[i].onCreateContext(11+i,source===undefined?undefined:11+source),"forward create");
-      else {
+      {
         new Uint32Array(memory!.buffer,64,4).set([2,source===undefined?0:21+source,0,0]);
         requireZero(imports!.host_gl_create_context(7,21+i,64,16,11+i),"native create");
       }
     };
-    const current=(i:number)=>requireZero(forwarded?channels[i].onMakeCurrent!({drawSurfaceId:0,readSurfaceId:0,width:0,height:0})
-      :imports!.host_gl_make_current(7,21+i,0,0,11+i),"current");
+    const current=(i:number)=>requireZero(imports!.host_gl_make_current(7,21+i,0,0,11+i),"current");
     const send=(i:number,op:number,words:number[],tail=new Uint8Array())=>{
       const bytes=new Uint8Array(4+4*words.length+tail.length),view=new DataView(bytes.buffer);
       view.setUint16(0,op,true);view.setUint16(2,4*words.length+tail.length,true);
       words.forEach((word,index)=>view.setUint32(4+4*index,word,true));bytes.set(tail,4+4*words.length);
-      if(forwarded)channels[i].onSubmit(bytes);
-      else {new Uint8Array(memory!.buffer,4096,bytes.length).set(bytes);requireZero(imports!.host_gl_submit(7,0,bytes.length,11+i),`submit op ${op.toString(16)}`);}
+      {new Uint8Array(memory!.buffer,4096,bytes.length).set(bytes);requireZero(imports!.host_gl_submit(7,0,bytes.length,11+i),`submit op ${op.toString(16)}`);}
     };
     const query=(i:number,op:number,words:number[],length:number,tail=new Uint8Array())=>{
       const input=new Uint8Array(words.length*4+tail.length),view=new DataView(input.buffer);
       words.forEach((word,index)=>view.setUint32(index*4,word,true));input.set(tail,words.length*4);
-      if(forwarded) {
-        const reply=channels[i].onQuery!(op,input,length);if(reply.rc!==length)throw new Error(`query: ${reply.rc}`);return [...reply.bytes];
-      }
       new Uint8Array(memory!.buffer,64,input.length).set(input);
       const rc=imports!.host_gl_query(7,op,64,input.length,128,length,11+i);if(rc!==length)throw new Error(`query: ${rc}`);
       return [...new Uint8Array(memory!.buffer,128,length)];
@@ -64,7 +55,7 @@ self.onmessage=({data})=>{
       send(i,O.OP_GEN_FRAMEBUFFERS,[1,7]);send(i,O.OP_BIND_FRAMEBUFFER,[0x8d40,7]);
       send(i,O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,17,0]);
     };
-    const destroy=(i:number)=>{if(forwarded)channels[i].onDestroyContext!();else imports!.host_gl_destroy_context(7,21+i);};
+    const destroy=(i:number)=>{imports!.host_gl_destroy_context(7,21+i);};
     if(data.reservations) {
       const isObject=(i:number,kind:number,name:number)=>{
         const view=new DataView(new Uint8Array(query(i,O.QOP_IS_OBJECT,[kind,name],12)).buffer);
@@ -94,12 +85,11 @@ self.onmessage=({data})=>{
       const retired=names.map((name,kind)=>isObject(0,kind,name));
       const errors=[query(0,O.QOP_GET_ERROR,[],4),query(1,O.QOP_GET_ERROR,[],4)];destroy(0);destroy(1);
       for(const i of [0,1]){
-        if(forwarded){channels[i].onUnbind!(11+i);if(channels[i].onPresent!()!==-5)throw new Error("retired session revived");}
-        else imports!.host_gl_unbind(7,11+i);
+        imports!.host_gl_unbind(7,11+i);
       }
-      const clean=forwarded?null:created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
+      const clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
       postMessage({type:"reservation_result",reserved,realized,retired,texturePixels,renderbufferPixels,bufferMaximum,bufferBits,errors,
-        allocations:forwarded?null:[creationCounts.createBuffer??0,creationCounts.createTexture??0,creationCounts.createRenderbuffer??0],clean,error:forwarded?0:gl!.getError()});return;
+        allocations:[creationCounts.createBuffer??0,creationCounts.createTexture??0,creationCounts.createRenderbuffer??0],clean,error:gl!.getError()});return;
     }
     if(data.uniforms) {
       create(0);current(0);storage(0,[0,0,0,255]);attachment(0);
@@ -175,11 +165,10 @@ self.onmessage=({data})=>{
       send(1,O.OP_DELETE_PROGRAM,[20]);const pending=values(1,fresh);send(1,O.OP_USE_PROGRAM,[0]);const afterDelete=values(1,fresh);const deletedError=query(1,O.QOP_GET_ERROR,[],4);
       destroy(1);
       for(const i of [0,1]) {
-        if(forwarded){channels[i].onUnbind!(11+i);if(channels[i].onPresent!()!==-5)throw new Error("retired session revived");}
-        else imports!.host_gl_unbind(7,11+i);
+        imports!.host_gl_unbind(7,11+i);
       }
-      const clean=forwarded?null:created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
-      postMessage({type:"uniform_values_result",stable,peerStable,missingBulk,reflected,shared,integers,booleans,survivor,rendered,failedLink,failedError,retainedExecutable,invalidated,staleError,relinked,pending,afterDelete,deletedError,clean,error:forwarded?0:gl!.getError()});return;
+      const clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
+      postMessage({type:"uniform_values_result",stable,peerStable,missingBulk,reflected,shared,integers,booleans,survivor,rendered,failedLink,failedError,retainedExecutable,invalidated,staleError,relinked,pending,afterDelete,deletedError,clean,error:gl!.getError()});return;
     }
     create(0);current(0);storage(0,[255,0,0,255]);attachment(0);const red=pixels(0);
     create(1,0);current(1);attachment(1);const sharedRed=pixels(1);
@@ -195,11 +184,10 @@ self.onmessage=({data})=>{
     current(3);const afterReuse=pixels(3);destroy(1);const afterPeerDestroy=pixels(3);
     destroy(2);destroy(3);
     for(let i=0;i<4;i++) {
-      if(forwarded){channels[i].onUnbind!(11+i);if(channels[i].onPresent!()!==-5)throw new Error("retired session revived");}
-      else imports!.host_gl_unbind(7,11+i);
+      imports!.host_gl_unbind(7,11+i);
     }
-    const clean=forwarded?null:created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
+    const clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
     postMessage({type:"share_context_result",red,sharedRed,sharedGreen,independent,survivor,chained,unnamed,
-      publicName:publicName.slice(4,8),afterReuse,afterPeerDestroy,clean,error:forwarded?0:gl!.getError()});
+      publicName:publicName.slice(4,8),afterReuse,afterPeerDestroy,clean,error:gl!.getError()});
   } catch(error){postMessage({type:"share_context_failed",error:String(error)});}
 };

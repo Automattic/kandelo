@@ -1,8 +1,12 @@
 import { attachImage, destroyTextureView, destroyRenderbufferView, textureNative, renderbufferNative, imageAttachmentCall } from "./image-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
-import { applyNativeChanges, nativeOwner, nativeInverse, type NativeChange } from "./native-recovery.js";
+import { applyNativeChanges, nativeOwner, nativeInverse, reserveNativeRetirement, retireNativeRetirement, rethrowNativeGlFault, type NativeChange } from "./native-recovery.js";
 import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget } from "./framebuffer.js";
+import { framebufferInputsChanged } from "./framebuffer-revision.js";
+import { setTextureUnit } from "./depth-sampling.js";
+import { TEXTURE_2D_ARRAY } from "./cube-storage.js";
+import { predictsNativeCalls } from "./native-batch.js";
 export type GlImageAttachment = {
   kind: "texture";
   object: WebGLTexture;
@@ -52,7 +56,7 @@ export function attachImageObject(b: GlBinding, kind: number, target: number, po
     else
       containers.delete(framebuffer!);
   }
-  catch {
+  catch (caught) { rethrowNativeGlFault(caught);
     recordGlError(b, 0x505);
     return false;
   }
@@ -66,6 +70,7 @@ export function attachImageObject(b: GlBinding, kind: number, target: number, po
   }))
     return false;
   b.framebufferAttachments = containers;
+  framebufferInputsChanged();
   return true;
 }
 /** Realize a framebuffer only after staging namespace capacity. Logical zero
@@ -78,10 +83,23 @@ export function bindFramebufferObject(b: GlBinding, target: number, name: number
   const gl = b.gl;
   if (!gl)
     return false;
-  const owner = nativeOwner(b), oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
+
   let object = name ? b.fbos.get(name) ?? null : defaultFramebuffer(b, target === 0x8ca8);
   const allocate = name !== 0 && object === null;
   let read = name === 0 && target === 0x8d40 ? defaultFramebuffer(b, true) : object;
+  // Logical zero selects preallocated EGL storage, with no namespace or
+  // retirement change. In an authoritative batch native faults reset this
+  // owner; staging rollback metadata here would add a new guest OOM.
+  if (name === 0 && predictsNativeCalls(b)) {
+    if (target === 0x8d40 && read !== object) {
+      if (!checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, object)) ||
+          !checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, read))) return false;
+    } else if (!checkedGlCall(b, () => gl.bindFramebuffer(target, object))) return false;
+    if (target !== 0x8ca8) b.shadow.fbo = object;
+    if (target !== 0x8ca9) b.shadow.readFbo = read;
+    return true;
+  }
+  const owner = nativeOwner(b), oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
   let changes: NativeChange[];
   try {
     changes = [];
@@ -95,7 +113,7 @@ export function bindFramebufferObject(b: GlBinding, target: number, name: number
           target === 0x8ca9 ? [] : [["bindFramebuffer",0x8ca8,oldRead]]) });
     }
   }
-  catch {
+  catch (caught) { rethrowNativeGlFault(caught);
     recordGlError(b, 0x505);
     return false;
   }
@@ -110,8 +128,8 @@ export function bindFramebufferObject(b: GlBinding, target: number, name: number
     try {
       b.fbos.set(name, object);
     }
-    catch {
-      checkedGlCall(b, () => gl.deleteFramebuffer(object));
+    catch (caught) {
+      checkedGlCall(b, () => gl.deleteFramebuffer(object)); rethrowNativeGlFault(caught);
       recordGlError(b, 0x505);
       return false;
     }
@@ -167,6 +185,7 @@ function commitAttachmentDeletion(b: GlBinding, points: Array<{
     if (!attachments.size)
       b.framebufferAttachments.delete(framebuffer);
   }
+  framebufferInputsChanged();
 }
 /** Delete a public name while retaining the object for other context and
  * container references. Only the calling context's bindings are reset.
@@ -183,7 +202,7 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
     framebuffer: WebGLFramebuffer;
     point: number;
   }>, units: Array<{
-    bindings: Array<WebGLTexture | null>;
+    cube: boolean;
     unit: number;
   }>;
   const previous = b.retiredTextures.get(texture);
@@ -193,20 +212,22 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
     for (const [target, bindings] of [[0x0de1, b.shadow.textureUnits], [0x8513, b.shadow.cubeTextureUnits]] as const) {
       for (let unit = 0; unit < bindings.length; unit++)
         if (bindings[unit] === texture) {
+          // Cube maps are 2D array textures natively (cube-storage.ts).
+          const nativeTarget = target === 0x8513 ? TEXTURE_2D_ARRAY : target;
           const bind = (native: WebGLTexture | null) => {
             if (!checkedGlCall(owner, () => gl.activeTexture(0x84c0 + unit)))
               return false;
-            const accepted = checkedGlCall(owner, () => gl.bindTexture(target, native));
+            const accepted = checkedGlCall(owner, () => gl.bindTexture(nativeTarget, native));
             const restored = checkedGlCall(owner, () => gl.activeTexture(0x84c0 + active));
             return accepted && restored;
           };
-          changes.push({ apply: () => bind(b.shadow.defaultTextures.get(target) ?? null), restore: nativeInverse(owner, [["activeTexture",0x84c0+unit],["bindTexture",target,oldNative]], [["activeTexture",0x84c0+active]]) });
-          units.push({ bindings, unit });
+          changes.push({ apply: () => bind(b.shadow.defaultTextures.get(target) ?? null), restore: nativeInverse(owner, [["activeTexture",0x84c0+unit],["bindTexture",nativeTarget,oldNative]], [["activeTexture",0x84c0+active]]) });
+          units.push({ cube: target === 0x8513, unit });
         }
     }
     b.retiredTextures.set(texture, name);
   }
-  catch {
+  catch (caught) { rethrowNativeGlFault(caught);
     recordGlError(b, 0x505);
     return false;
   }
@@ -217,8 +238,10 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
       b.retiredTextures.set(texture, previous);
     return false;
   }
-  for (const { bindings, unit } of units)
-    bindings[unit] = null;
+  for (const { cube, unit } of units)
+    setTextureUnit(b, cube, unit, null);
+  // External bindings have no native target: the shadow alone binds zero.
+  b.shadow.externalTextureUnits.forEach((object, unit, list) => { if (object === texture) list[unit] = null; });
   commitAttachmentDeletion(b, points);
   b.textures.delete(name);
   for (const [bo, entry] of b.foreignTextures)
@@ -246,7 +269,7 @@ export function deleteRenderbufferName(b: GlBinding, name: number): boolean {
       });
     b.retiredRenderbuffers.set(object, name);
   }
-  catch {
+  catch (caught) { rethrowNativeGlFault(caught);
     recordGlError(b, 0x505);
     return false;
   }
@@ -276,15 +299,22 @@ export function deleteFramebufferName(b: GlBinding, name: number): boolean {
     changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, draw)), restore: nativeInverse(owner, [["bindFramebuffer",0x8ca9,object]]) });
   if (b.shadow.readFbo === object)
     changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, read)), restore: nativeInverse(owner, [["bindFramebuffer",0x8ca8,object]]) });
-  changes.push({apply: () => checkedGlCall(b, () => gl.deleteFramebuffer(object)), restore: nativeInverse(owner)});
-  if (!applyNativeChanges(b, changes)) return false;
-  if (b.shadow.fbo === object)
-    b.shadow.fbo = draw;
-  if (b.shadow.readFbo === object)
-    b.shadow.readFbo = read;
-  b.fbos.delete(name);
-  b.framebufferAttachments.delete(object);
-  return true;
+  // A public deletion first unbinds its container, then retires host-owned
+  // native storage. Deletion cannot be undone: retain its exact cleanup
+  // receiver before mutation instead of predicting it and forgetting a
+  // live framebuffer after logical name removal.
+  const retirement = reserveNativeRetirement(b,[["deleteFramebuffer",null]]);
+  if (!retirement) return false;
+  try {
+    if (!applyNativeChanges(b, changes)) return false;
+    if (b.shadow.fbo === object) b.shadow.fbo = draw;
+    if (b.shadow.readFbo === object) b.shadow.readFbo = read;
+    retirement.calls[0][1] = object;
+    b.fbos.delete(name);
+    b.framebufferAttachments.delete(object);
+    framebufferInputsChanged();
+    return true;
+  } finally { retireNativeRetirement(retirement); }
 }
 export function deleteImageObject(b: GlBinding, kind: number, name: number): boolean {
   if (kind === 1)
@@ -299,7 +329,8 @@ export function deleteImageObject(b: GlBinding, kind: number, name: number): boo
 function imageReferenced(b: GlBinding, kind: GlImageAttachment["kind"], object: object): boolean {
   for (const member of b.objects.members) {
     if (kind === "texture" && (member.shadow.textureUnits.includes(object as WebGLTexture)
-      || member.shadow.cubeTextureUnits.includes(object as WebGLTexture)))
+      || member.shadow.cubeTextureUnits.includes(object as WebGLTexture)
+      || member.shadow.externalTextureUnits.includes(object as WebGLTexture)))
       return true;
     if (kind === "renderbuffer" && member.shadow.renderbuffer === object)
       return true;

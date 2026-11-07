@@ -9,6 +9,7 @@ import { OP_CLEAR } from "../src/webgl/ops.js";
 const FRAME_LEN = 8;
 
 class RecordingGl {
+  isContextLost() { return false; }
   getError() { return 0; }
   log: Array<[string, unknown[]]> = [];
   createVertexArray() { const vao = {}; this.log.push(["createVertexArray", [vao]]); return vao; }

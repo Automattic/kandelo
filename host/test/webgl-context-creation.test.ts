@@ -1,3 +1,4 @@
+import { runUniformUpload } from "../src/webgl/uniform-upload.js";
 import { describe, expect, it, vi } from "vitest";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
@@ -5,15 +6,16 @@ import { ensurePresentTarget } from "../src/webgl/present-target.js";
 import { querySurfaceCapabilities } from "../src/webgl/surface-capabilities.js";
 import { foreignTextureGl } from "./support/foreign-texture-gl";
 import * as O from "../src/webgl/ops.js";
+import { GlContextRegistry } from "../src/webgl/registry.js";
 
-function harness(callbacks = {}) {
+function harness(callbacks = {}, pointerWidth: 4 | 8 = 4) {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   const kernel = createWasmPosixKernelTestHarness({
     io: {} as any,
     callbacks: { getProcessMemory: () => memory, ...callbacks },
     memory,
-    pointerWidth: 4,
-    instance: createKernelScratchTestInstance(4, memory, () => ({}), () => 4096),
+    pointerWidth,
+    instance: createKernelScratchTestInstance(pointerWidth, memory, () => ({}), () => 4096),
   });
   const imports = kernel.testAuthority.buildImportObject(memory) as {
     env: Record<string, (...args: any[]) => any>;
@@ -22,7 +24,7 @@ function harness(callbacks = {}) {
     memory, imports: imports.env,
     setMaster: (pid: number) => imports.env.host_kms_set_master(pid, 1n, 1n),
     create: (pid: number, id = 1, sessionId?: number) =>
-      imports.env.host_gl_create_context(pid, id, 0, 0, sessionId),
+      imports.env.host_gl_create_context(pid, id, pointerWidth === 8 ? 0n : 0, pointerWidth === 8 ? 0n : 0, sessionId),
   };
 }
 
@@ -35,7 +37,7 @@ it("allocates device storage from an attached renderer before EGL context creati
   kernel.gl.attachCanvas(7,{ getContext } as unknown as OffscreenCanvas);
   const binding = kernel.gl.get(7,11)!;
   expect(binding.gl).toBeNull(); expect(binding.contextId).toBeNull();
-  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0,0)).toBe(0);
+  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0x34324241,0)).toBe(0);
   expect(kernel.gl.gpuBo(41)?.gl).toBe(gl);
   expect(getContext).toHaveBeenCalledWith("webgl2", expect.any(Object));
   expect(binding.contextId).toBeNull();
@@ -53,7 +55,7 @@ it("retires a GPU BO through the kernel destroy callback without CPU metadata", 
   kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
   const binding = kernel.gl.get(7,11)!;
   binding.gl = gl; binding.contextId = 21; setMaster(7);
-  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0,0)).toBe(0);
+  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0x34324241,0)).toBe(0);
   const allocation = kernel.gl.gpuBo(41)!;
   expect(allocation).toBeDefined();
   expect(kernel.bos.get(7,41)).toBeUndefined();
@@ -78,9 +80,9 @@ it("preserves selected-owner errors before GPU BO allocation and refuses unread 
   kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});setMaster(7);
   const b=kernel.gl.get(7,11)!;b.gl=gl;b.contextId=21;
   expect(imports.host_gl_submit(7,0,0,11)).toBe(0);errors.push(0x500);
-  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0,0)).toBe(0);expect(b.errors).toEqual([0x500]);
+  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0x34324241,0)).toBe(0);expect(b.errors).toEqual([0x500]);
   const read=gl.getError;gl.getError=()=>{throw new Error("error read rejected");};
-  expect(imports.host_gbm_gpu_bo_create(7,42,2,2,0,0)).toBe(-5);expect(kernel.gl.gpuBo(42)).toBeUndefined();
+  expect(imports.host_gbm_gpu_bo_create(7,42,2,2,0x34324241,0)).toBe(-5);expect(kernel.gl.gpuBo(42)).toBeUndefined();
   gl.getError=read;expect(kernel.gl.destroyGpuBo(41)).toBe(true);kernel.releaseProcessViews(7);
 });
 
@@ -179,7 +181,7 @@ describe("context creation acknowledgement", () => {
     const {kernel, create, imports} = harness();
     const deleted: unknown[] = [];
     const renderer = () => new Proxy({
-      getExtension: () => null, isContextLost: () => false, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null, getError: () => 0,
+      getError: () => 0, getExtension: () => null, isContextLost: () => false, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null, getError: () => 0,
       createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}),
       FRAMEBUFFER_COMPLETE: 0x8cd5, checkFramebufferStatus: () => 0x8cd5,
       deleteFramebuffer: (value: unknown) => deleted.push(value),
@@ -207,7 +209,7 @@ describe("context creation acknowledgement", () => {
     kernel.gl.bind({ displayFileId: 1n, pid:7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
     let allocate = false;
     const framebuffer = {} as WebGLFramebuffer, deleted: unknown[] = [];
-    const gl = { getExtension: () => null, isContextLost: () => false, getError: () => 0,
+    const gl = { getParameter: (p:number) => p===0x0d3a?new Int32Array([16384,16384]):null, getExtension: () => null, isContextLost: () => false, getError: () => 0,
       createFramebuffer: () => allocate ? framebuffer : null,
       deleteFramebuffer: (value: unknown) => deleted.push(value) };
     kernel.gl.attachCanvas(7, { width: 100, height: 80, getContext: () => gl } as unknown as OffscreenCanvas);
@@ -277,7 +279,7 @@ describe("context creation acknowledgement", () => {
   it.each([false, true])("initializes drawable state once (surfaceless first: %s)", surfaceless => {
     const { kernel, create, imports } = harness();
     kernel.gl.bind({ displayFileId: 1n, pid:7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
-    const gl = { getExtension: () => null, isContextLost: () => false,
+    const gl = { getParameter: (p:number) => p===0x0d3a?new Int32Array([16384,16384]):null, getExtension: () => null, isContextLost: () => false,
       createFramebuffer: () => ({}), getError: () => 0 };
     kernel.gl.attachCanvas(7, { width: 320, height: 240, getContext: () => gl } as unknown as OffscreenCanvas);
     expect(create(7, 21, 11)).toBe(0);
@@ -294,27 +296,6 @@ describe("context creation acknowledgement", () => {
     expect(imports.host_gl_make_current(7, 21, 31, 31, 11)).toBe(0);
     expect(b.shadow.viewport).toEqual([1, 2, 5, 6]);
     expect(b.shadow.scissor.rect).toEqual([0, 1, 4, 5]);
-  });
-
-  it("keeps client binding state unchanged after a rejected forwarded make-current", () => {
-    const { kernel, create, imports } = harness();
-    kernel.gl.bind({ displayFileId: 1n, pid:7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
-    let result: number | Error = -12;
-    kernel.gl.attachMainForward(7, {
-      onCreateContext: () => 0, onDestroyContext() {}, onSubmit() {},
-      onMakeCurrent() { if (result instanceof Error) throw result; return result; },
-    });
-    expect(create(7, 21, 11)).toBe(0);
-    const b = kernel.gl.get(7, 11)!;
-    for (const value of [-12, 1, new Error("port closed")]) {
-      result = value;
-      expect(imports.host_gl_make_current(7, 21, 0, 0, 11)).toBe(value === -12 ? -12 : -5);
-      expect(b.currentDrawable).toBeNull();
-      expect(b.hasBeenCurrent).toBe(false);
-    }
-    result = 0;
-    expect(imports.host_gl_make_current(7, 21, 0, 0, 11)).toBe(0);
-    expect(b.hasBeenCurrent).toBe(true);
   });
 
   it("routes command buffers and context retirement independently within one process", () => {
@@ -353,7 +334,7 @@ describe("context creation acknowledgement", () => {
     let available = false;
     const claims: number[] = [];
     const gl = new Proxy({
-      getExtension: () => null, isContextLost: () => false,
+      getError: () => 0, getExtension: () => null, isContextLost: () => false,
     }, { get: (target, key) => Reflect.get(target, key) ?? (() => null) });
     const canvas = { width: 16, height: 16, getContext: () => available ? gl : null };
     const { kernel, create, setMaster } = harness({
@@ -379,7 +360,7 @@ describe("context creation acknowledgement", () => {
     expect(create(7)).toBe(-19); // ENODEV
     expect(b.contextId).toBeNull();
     expect(b.gl).toBeNull();
-    const gl = { getExtension: () => null, isContextLost: () => false };
+    const gl = { getParameter: (p:number) => p===0x0d3a?new Int32Array([16384,16384]):null, getExtension: () => null, isContextLost: () => false };
     kernel.gl.attachCanvas(7, {
       width: 16, height: 16, getContext: () => gl,
     } as unknown as OffscreenCanvas);
@@ -409,20 +390,6 @@ describe("context creation acknowledgement", () => {
     expect(b.claimedKmsCrtc).toBeNull();
   });
 
-  it("publishes a forwarded context only after a successful acknowledgement", () => {
-    const { kernel, create } = harness();
-    kernel.gl.bind({ displayFileId: 1n, pid:7, cmdbufAddr: 0, cmdbufLen: 0 });
-    let rc = -12;
-    kernel.gl.attachMainForward(7, {
-      onCreateContext: () => rc, onDestroyContext() {}, onSubmit() {},
-    });
-    const b = kernel.gl.get(7)!;
-    expect(create(7)).toBe(-12);
-    expect(b.contextId).toBeNull();
-    rc = 0;
-    expect(create(7)).toBe(0);
-    expect(b.contextId).toBe(1);
-  });
 });
 
 
@@ -547,7 +514,7 @@ describe("share group construction",()=>{
     expect(create(7,21,11)).toBe(0);
     kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
     const target=kernel.gl.get(7,12)!,original=target.objects;
-    for(const request of [[2,99,0,0],[2,21,1,0],[2,21,0,22],[1,21,0,0]]) {
+    for(const request of [[2,99,0,0],[2,21,2,0],[2,21,0,22],[1,21,0,0]]) {
       new Uint32Array(memory.buffer,64,4).set(request);
       expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(-22);
       expect(target.contextId).toBeNull();expect(target.objects).toBe(original);
@@ -565,21 +532,6 @@ describe("share group construction",()=>{
     expect(target.contextId).toBeNull();
   });
 });
-it("translates a shared kernel context identity to a reviewed forward session before acknowledgement",()=>{
-  const {kernel,imports,memory,create}=harness();
-  const calls:Array<[number|undefined,number|undefined]>=[];let rc=0;
-  kernel.gl.attachMainForward(7,{onCreateContext:(session,source)=>{calls.push([session,source]);return rc;},onDestroyContext(){},onSubmit(){}});
-  kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
-  kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
-  expect(create(7,21,11)).toBe(0);
-  const target=kernel.gl.get(7,12)!,source=kernel.gl.get(7,11)!;
-  new Uint32Array(memory.buffer,64,4).set([2,21,0,0]);rc=-12;
-  expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(-12);
-  expect(target.contextId).toBeNull();expect(source.contextId).toBe(21);
-  rc=0;expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(0);
-  expect(target.contextId).toBe(22);expect(calls).toEqual([[11,undefined],[12,11],[12,11]]);
-});
-
 it.each([[0,0],[0,3],[4,0],[4,3]])("keeps pbuffer dimensions %s by %s independent of the canvas and never presents them", (width,height) => {
   const {kernel,imports,memory} = harness(); let serial = 0, blits = 0;
   const storage:number[][] = [];
@@ -628,6 +580,49 @@ it("does not turn a previously created master-process pbuffer into a KMS scanout
   expect([canvas.width,canvas.height]).toEqual([11,7]); expect(blits).toBe(0); expect(claims).toEqual([]);
 });
 
+it("creates a pbuffer before any context on the device renderer that context adopts", () => {
+  // EGL 1.5 section 3.5.2: eglCreatePbufferSurface needs a display and a
+  // config, not a context. dEQP (create_surface, render, multicontext,
+  // multithread, negative_api) creates the pbuffer first.
+  const claims:string[] = []; let blits = 0;
+  const gl = new Proxy({isContextLost:()=>false,getError:()=>0,getExtension:()=>null,
+    getParameter:(p:number)=>p === 0x84e0 ? 0x84c0 : null,
+    createTexture:()=>({}),createFramebuffer:()=>({}),createRenderbuffer:()=>({}),
+    checkFramebufferStatus:()=>0x8cd5,blitFramebuffer:()=>{blits++;},
+  },{get:(target,key)=>Reflect.get(target,key)??(()=>null)}) as unknown as WebGL2RenderingContext;
+  const canvas = {width:11,height:7,getContext:()=>gl} as unknown as OffscreenCanvas;
+  const {kernel,imports,memory} = harness({getKmsCrtcIds:()=>[1],getKmsCanvas:()=>canvas,
+    markKmsCanvasGlOwned:()=>claims.push("owned"),onKmsGlPresented:()=>claims.push("presented")});
+  imports.host_gl_bind(7,128,0,11,1n);
+  const b = kernel.gl.get(7,11)!, original = b.surface;
+  const attrs = new Uint32Array(memory.buffer,64,9);
+  // A window surface still needs its canvas or target BO.
+  attrs.set([1,4,3,1,0,0,0,0,0]);
+  expect(imports.host_gl_create_surface(7,70,64,36,11)).toBe(-19);
+  expect(b.surface).toBe(original); expect(b.surfaceId).toBeNull();
+  attrs.set([2,4,3,1,0,0,0,0,0]);
+  expect(imports.host_gl_create_surface(7,71,64,36,11)).toBe(0);
+  expect([...attrs]).toEqual([2,4,3,1,0,0,0,0,0]);
+  expect(b.surfaceId).toBe(71); expect(b.surface.gl).toBe(gl);
+  expect(b.gl).toBeNull(); expect(b.contextId).toBeNull(); expect(b.canvas).toBeNull();
+  expect(imports.host_gl_create_context(7,21,0,0,11)).toBe(0);
+  expect(b.gl).toBe(gl);
+  expect(imports.host_gl_make_current(7,21,71,71,11)).toBe(0);
+  expect(b.shadow.viewport).toEqual([0,0,4,3]);
+  expect(imports.host_gl_present(7,11)).toBe(0);
+  imports.host_gl_make_current(7,0,0,0,11); imports.host_gl_unbind(7,11);
+  expect([canvas.width,canvas.height]).toEqual([11,7]); expect(blits).toBe(0); expect(claims).toEqual([]);
+});
+
+it("fails a pbuffer with ENODEV when the host has no renderer at all", () => {
+  const {kernel,imports,memory} = harness();
+  imports.host_gl_bind(7,128,0,11,1n);
+  const b = kernel.gl.get(7,11)!;
+  new Uint32Array(memory.buffer,64,9).set([2,4,3,1,0,0,0,0,0]);
+  expect(imports.host_gl_create_surface(7,71,64,36,11)).toBe(-19);
+  expect(b.surfaceId).toBeNull(); expect(b.gl).toBeNull();
+});
+
 it("attaches master scanout by display file identity across process aliases", () => {
   const { gl } = foreignTextureGl();
   // The storage stand-in does not otherwise model context availability.
@@ -664,4 +659,51 @@ it("preserves unsigned kernel identities without Number narrowing or wrapping in
   expect(() => imports.host_gl_bind(7, 128, 0, 11, 0n)).toThrow("Missing GL display file identity");
   expect(() => imports.host_gl_bind(7, 128, 0, 11, 1n << 64n)).toThrow("Invalid GL display file identity");
   expect(kernel.gl.list()).toEqual([]);
+});
+
+
+it.each(["query","present","make-current"])("refuses %s before native effects when a uniform call is incomplete",kind=>{
+  const {kernel,imports,memory,create}=harness();
+  const {gl}=foreignTextureGl();Object.assign(gl,{isContextLost:()=>false,getExtension:()=>null,deleteProgram:()=>{}});
+  kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+  kernel.gl.attachCanvas(7,{width:4,height:3,getContext:()=>gl} as unknown as OffscreenCanvas);
+  expect(create(7,21,11)).toBe(0);const b=kernel.gl.get(7,11)!;
+  const program={} as WebGLProgram;b.programs.set(20,program);b.currentProgram=b.shadow.currentProgram=program;b.currentProgramId=20;
+  // Reflection numbers "value" 0..2 (uniform-layout.ts): location 1 has two elements left.
+  Object.assign(gl,{getProgramParameter:(_p:unknown,q:number)=>q===0x8b86?1:true,
+    getActiveUniform:()=>({name:"value[0]",type:0x1406,size:3}),getUniformLocation:()=>({})});
+  const begin=new DataView(new Uint32Array([1,O.OP_UNIFORM1FV,1,20000,0]).buffer);
+  runUniformUpload(b,O.OP_UNIFORM_UPLOAD_BEGIN,begin,()=>{throw new Error("unexpected commit");});
+  const owner=b.uniformUpload;expect(owner?.payload?.byteLength).toBe(16);
+  const native=vi.spyOn(gl,"getError"),before=native.mock.calls.length;
+  const call=()=>kind==="query"?imports.host_gl_query(7,O.QOP_GET_ERROR,0,0,512,4,11):
+    kind==="present"?imports.host_gl_present(7,11):imports.host_gl_make_current(7,0,0,0,11);
+  const queued=b.operations.reserve("commands")!;
+  expect(call()).toBe(-5);expect(b.uniformUpload).toBe(owner);
+  expect(queued.cancel()).toBe(true);
+  const drawable=b.currentDrawable;new Uint8Array(memory.buffer,512,4).fill(0xaa);
+  expect(call()).toBe(-5);expect(b.uniformUpload).toBeNull();expect(b.currentDrawable).toBe(drawable);
+  expect(native.mock.calls).toHaveLength(before);expect(b.errors).toEqual([0x502]);
+  expect([...new Uint8Array(memory.buffer,512,4)]).toEqual([0xaa,0xaa,0xaa,0xaa]);
+  expect(b.operations.pending).toBe(0);native.mockRestore();kernel.releaseProcessViews(7);
+});
+
+it.each([4,8] as const)("recovers error-drain custody without interrupting uploads or native replay (width%d)",width=>{
+  const {kernel,imports,memory,create}=harness({},width);
+  const {gl}=foreignTextureGl();Object.assign(gl,{isContextLost:()=>false,getExtension:()=>null,deleteProgram:()=>{}});
+  kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+  kernel.gl.attachCanvas(7,{width:4,height:3,getContext:()=>gl} as unknown as OffscreenCanvas);
+  expect(create(7,21,11)).toBe(0);const b=kernel.gl.get(7,11)!;
+  const program={} as WebGLProgram;b.programs.set(20,program);b.currentProgram=b.shadow.currentProgram=program;b.currentProgramId=20;
+  Object.assign(gl,{getProgramParameter:(_p:unknown,q:number)=>q===0x8b86?1:true,
+    getActiveUniform:()=>({name:"value[0]",type:0x1406,size:3}),getUniformLocation:()=>({})});
+  runUniformUpload(b,O.OP_UNIFORM_UPLOAD_BEGIN,new DataView(new Uint32Array([1,O.OP_UNIFORM1FV,1,20000,0]).buffer),()=>{throw new Error("unexpected commit");});
+  const owner=b.uniformUpload;expect(owner).not.toBeNull();
+  b.errorDrainReceipt.valid=true;b.errorDrainReceipt.words.set([0,1,1,0,0x500]);b.errorDrainReceipt.words[12]=0x47514c33;
+  b.errors.push(0x501);const native=vi.spyOn(gl,"getError"),before=native.mock.calls.length;
+  new DataView(memory.buffer).setUint32(128,1,true);const ptr=(n:number)=>width===8?BigInt(n):n;
+  expect(imports.host_gl_query(7,O.QOP_ERROR_DRAIN_RECEIPT,ptr(128),ptr(4),ptr(512),ptr(52),11)).toBe(52);
+  expect([...new Uint32Array(memory.buffer,512,13)]).toEqual([0,1,1,0,0x500,0,0,0,0,0,0,0,0x47514c33]);
+  expect(native.mock.calls).toHaveLength(before);expect(b.uniformUpload).toBe(owner);expect(b.errors).toEqual([0x501]);
+  native.mockRestore();kernel.releaseProcessViews(7);
 });

@@ -1,4 +1,6 @@
-import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement } from "./native-recovery.js";
+import { withNativeBookkeeping } from "./native-batch.js";
+import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
+import { bufferUsageError } from "./es2-validation.js";
 import type { GlBinding } from "./registry.js";
 import { prepareConvertedVertexData } from "./vertex-data.js";
 import { activeVertexArray } from "./buffer-references.js";
@@ -18,6 +20,11 @@ export type GlBufferStore = {
   source: WebGLBuffer;
   size: number;
   usage: number;
+  /** Drawable index forms of the contents (index-data.ts). */
+  indexForms?: Map<string, { valid: boolean; direct: boolean; native: WebGLBuffer | null }>;
+  /** Index values and block maxima of the contents, derived for robust
+   * buffer access contexts only (index-data.ts). */
+  indexRanges?: Map<string, { valid: boolean; values: Uint16Array; blocks: Uint16Array }>;
 };
 
 export function canonicalBuffer(b: GlBinding, native: WebGLBuffer): WebGLBuffer {
@@ -47,15 +54,17 @@ function nativeView(b: GlBinding, object: WebGLBuffer | null, target: number): W
 /** Run a bounded transfer without changing native copy bindings. */
 export function withBufferTransfer(b: GlBinding, source: WebGLBuffer, destination: WebGLBuffer,
     operation: () => boolean): boolean {
-  const gl = b.gl!;
-  let read: WebGLBuffer | null = null, write: WebGLBuffer | null = null;
-  if (!checkedGlCall(b, () => {
-    read = gl.getParameter(COPY_READ) as WebGLBuffer | null;
-    write = gl.getParameter(COPY_WRITE) as WebGLBuffer | null;
-  })) return false;
-  return applyNativeChanges(b,[{apply: () => checkedGlCall(b, () => gl.bindBuffer(COPY_READ,source)) &&
-    checkedGlCall(b, () => gl.bindBuffer(COPY_WRITE,destination)) && operation(), restore:nativeInverse(b)}],
-    {finalizer:nativeInverse(b,[["bindBuffer",COPY_READ,read]],[["bindBuffer",COPY_WRITE,write]])});
+  return withNativeBookkeeping(() => {
+    const gl = b.gl!;
+    let read: WebGLBuffer | null = null, write: WebGLBuffer | null = null;
+    if (!checkedGlCall(b, () => {
+      read = gl.getParameter(COPY_READ) as WebGLBuffer | null;
+      write = gl.getParameter(COPY_WRITE) as WebGLBuffer | null;
+    })) return false;
+    return applyNativeChanges(b,[{apply: () => checkedGlCall(b, () => gl.bindBuffer(COPY_READ,source)) &&
+      checkedGlCall(b, () => gl.bindBuffer(COPY_WRITE,destination)) && operation(), restore:nativeInverse(b)}],
+      {finalizer:nativeInverse(b,[["bindBuffer",COPY_READ,read]],[["bindBuffer",COPY_WRITE,write]])});
+  });
 }
 
 /** WebGL forbids native copying between its two buffer classes. Only
@@ -65,7 +74,7 @@ function synchronizeView(b: GlBinding, store: GlBufferStore, view: BufferView): 
   const gl = b.gl!;
   let scratch: Uint8Array<ArrayBuffer>;
   try { scratch = new Uint8Array(Math.min(store.size,BUFFER_TRANSFER_BYTES)); }
-  catch { recordGlError(b,0x505); return false; }
+  catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   const accepted = withBufferTransfer(b,store.source,view.native,() => {
     if (!checkedGlCall(b, () => gl.bufferData(COPY_WRITE,store.size,store.usage))) return false;
     for (let offset=0; offset<store.size; offset+=BUFFER_TRANSFER_BYTES) {
@@ -122,8 +131,8 @@ export function bindBufferObject(b: GlBinding, target: number, name: number): bo
       if (newStore && object) b.bufferStores.set(object,store!);
       else if (newView) store!.views.set(target,view!);
       if (newStore || newView) b.bufferViewOwners.set(view!.native,object!);
-    } catch {
-      discard(); recordGlError(b,0x505); return false;
+    } catch (caught) {
+      discard(); rethrowNativeGlFault(caught); recordGlError(b,0x505); return false;
     }
     const accepted = applyNativeChanges(b,[{apply: () => {
       // Classify before COPY_WRITE; otherwise WebGL classifies index data as
@@ -138,7 +147,7 @@ export function bindBufferObject(b: GlBinding, target: number, name: number): bo
     else vao!.element = object;
     transferNativeRetirement(candidate); committed = true;
     return true;
-  } catch { discardCandidate?.(); recordGlError(b,0x505); return false; }
+  } catch (caught) { discardCandidate?.(); rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   finally { if (!committed) retireNativeRetirement(candidate); }
 }
 
@@ -146,19 +155,31 @@ function updateSource(store: GlBufferStore, target: number): void {
   const source = store.views.get(target)!;
   for (const view of store.views.values()) view.valid = view === source;
   for (const view of store.converted.values()) view.valid = false;
+  if(store.indexForms)for(const form of store.indexForms.values())form.valid=false;
+  if(store.indexRanges)for(const range of store.indexRanges.values())range.valid=false;
   store.source = source.native;
 }
 
-export function replaceBufferData(b: GlBinding, target: number, data: number | Uint8Array<ArrayBuffer>, usage: number): void {
-  if (target !== ARRAY && target !== ELEMENT) { recordGlError(b,0x500); return; }
+export function replaceBufferData(b: GlBinding, target: number, data: number | Uint8Array<ArrayBuffer>, usage: number, preparedIssue?:()=>boolean, preparedByteLength?:number): boolean {
+  if (target !== ARRAY && target !== ELEMENT) { recordGlError(b,0x500); return false; }
   const object = boundBuffer(b,target), store = object && b.bufferStores.get(object);
-  if (!store) { recordGlError(b,0x502); return; }
-  if (!checkedGlCall(b, () => {
+  if (!store) { recordGlError(b,0x502); return false; }
+  // Buffer offsets travel as i32, so a larger store could never be addressed.
+  // ES 2.0 section 2.9 reports a store the GL cannot create as OUT_OF_MEMORY.
+  if (typeof data === "number" && data > 0x7fffffff) { recordGlError(b,0x505); return false; }
+  if(preparedByteLength!==undefined&&(!Number.isInteger(preparedByteLength)||preparedByteLength<0||
+    preparedByteLength>(typeof data==="number"?data:data.byteLength))){recordGlError(b,0x501);return false;}
+  const usageError = bufferUsageError(usage);
+  if (usageError) { recordGlError(b, usageError); return false; }
+  if (!(preparedIssue ? preparedIssue() : checkedGlCall(b, () => {
     if (typeof data === "number") b.gl!.bufferData(target,data,usage);
     else b.gl!.bufferData(target,data,usage);
-  })) return;
-  store.size = typeof data === "number" ? data : data.byteLength;
+  }))) return false;
+  // A cold upload scratch can be larger than its visible source range. Keep
+  // logical storage equal to the accepted bytes, never the scratch capacity.
+  store.size = preparedByteLength??(typeof data === "number" ? data : data.byteLength);
   store.usage = usage; updateSource(store,target);
+  return true;
 }
 
 export function updateBufferData(b: GlBinding, target: number, offset: number, data: Uint8Array<ArrayBuffer>): void {
@@ -210,8 +231,8 @@ export function retireBufferObjects(b: GlBinding, object: WebGLBuffer, natives: 
       retirement = reserveNativeRetirement(b,calls,dependencies) ?? undefined;
       if (!retirement) return false;
       try { b.bufferRetirements.set(object,retirement); }
-      catch { transferNativeRetirement(retirement); throw new RangeError("buffer cleanup ownership failed"); }
-    } catch { recordGlError(b,0x505); return false; }
+      catch (caught) { transferNativeRetirement(retirement); rethrowNativeGlFault(caught); throw new RangeError("buffer cleanup ownership failed"); }
+    } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   }
   return retireNativeRetirement(retirement);
 }
@@ -219,7 +240,8 @@ export function retireBufferObjects(b: GlBinding, object: WebGLBuffer, natives: 
 /** Both native classes and converted stores end with the logical last reference. */
 export function destroyBufferStorage(b: GlBinding, object: WebGLBuffer): boolean {
   const store = b.bufferStores.get(object);
-  const natives = new Set([object, ...[...(store?.views.values() ?? []), ...(store?.converted.values() ?? [])].map(view => view.native)]);
+  const natives = new Set([object, ...[...(store?.views.values() ?? []), ...(store?.converted.values() ?? [])].map(view => view.native),
+    ...[...(store?.indexForms?.values() ?? [])].flatMap(form => form.native ? [form.native] : [])]);
   if (!retireBufferObjects(b,object,natives)) return false;
   for (const native of natives) { b.bufferViewOwners.delete(native); b.bufferRetirements.delete(native); }
   b.bufferStores.delete(object);

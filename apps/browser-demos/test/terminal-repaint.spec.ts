@@ -1,4 +1,32 @@
 import { expect, test } from "@playwright/test";
+import { terminalHistoryMatching } from "./support/terminal-history";
+
+test("terminal history gates find old output and restore the live bottom", async ({ page }) => {
+  await page.goto("/test/fixtures/terminal-repaint.html");
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).__terminalRepaint.listeners("/dev/pts/0"),
+  )).toBe(1);
+  await page.evaluate(() => {
+    const lines = Array.from({ length: 600 }, (_, i) =>
+      i === 200 ? "NOTIFICATION id=1 summary=Theme" : `HISTORY ROW ${i}`);
+    (window as any).__terminalRepaint.emit("/dev/pts/0", `${lines.join("\r\n")}\r\n`);
+  });
+  const terminal = page.locator(".xterm:visible");
+  await expect(terminal.locator(".xterm-rows")).toContainText("HISTORY ROW 599");
+  await expect(terminal.locator(".xterm-rows")).not.toContainText("NOTIFICATION");
+  // The former scanner cannot reach the marker through this retained element.
+  const oldViewport = terminal.locator(".xterm-viewport");
+  await oldViewport.evaluate(node => node.scrollTo(0, 0));
+  await terminal.locator(".xterm-screen").screenshot();
+  await expect(terminal.locator(".xterm-rows")).toContainText("HISTORY ROW 599");
+  expect(await terminalHistoryMatching(terminal, /NOTIFICATION id=1 summary=Theme/))
+    .toMatch(/NOTIFICATION id=1 summary=Theme/);
+  await expect(terminal.locator(".xterm-rows")).toContainText("HISTORY ROW 599");
+  expect(await terminalHistoryMatching(terminal, /MISSING NOTIFICATION/))
+    .not.toMatch(/MISSING NOTIFICATION/);
+  await expect(terminal.locator(".xterm-rows")).toContainText("HISTORY ROW 599");
+  expect(await page.evaluate(() => (window as any).__terminalRepaint.inputs)).toEqual([]);
+});
 
 test("full-screen terminal state survives tab changes and hidden output", async ({ page }) => {
   await page.goto("/test/fixtures/terminal-repaint.html");

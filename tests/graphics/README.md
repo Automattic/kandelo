@@ -1,5 +1,170 @@
 # Graphics conformance provenance
 
+## Current upstream suite entry points
+
+The normal `graphics-cts` package builds original pinned upstream `deqp-egl`,
+`deqp-gles2` and data through the SDK/package resolver. The recorded executable
+inventories contain 4,117 EGL cases and 19,825 GLES2 cases. Enumeration is not
+assertion execution. The [upstream coverage map](../../docs/graphics/cts-coverage-v1.md)
+links 92 case families to baseline areas, preserves inventory hashes and keeps
+conditional extension/configuration applicability distinct from missing work.
+
+`scripts/test-graphics-cts.sh` runs complete bounded GLES2 groups in headless
+Playwright Chromium, Firefox and WebKit. Its selectors are `negative-state`,
+`negative-api` and `color-clear`; exact case manifests and QPA accounting
+preserve upstream outcomes, missing cases and diagnostics.
+`scripts/run-graphics-cts.sh` (below) runs the complete suites, chunked, on
+Node and the three headless engines. The latest
+normal rendering evidence, source/artifact identities and failures are in the
+[compatibility ledger](../../docs/graphics/compatibility-v1.md). These selected
+groups are not full graphics conformance or formal certification.
+
+The separate `graphics-cts-egl` package and its browser runner below are an
+earlier adapted subset retaining selected original assertions. Full `deqp-egl`
+execution beyond inventory and those adapted checks remains acceptance work;
+the two harnesses must not be confused.
+
+PR #1594 requires implementation, normal builds, validation and measurement of
+each frozen B1–B6 and C1–C3 stage in order. Drafting B2–B6 ahead with focused
+checks is approved; it does not replace stage acceptance or authorize landing
+later stages first. Existing inventories and specifications guide the work;
+focused causal controls supplement upstream acceptance. See the current
+maintainer decisions and exact run limits in the compatibility ledger.
+
+## Complete chunked upstream runs
+
+`scripts/run-graphics-cts.sh` runs the complete upstream `deqp-gles2`
+(19,825 cases) or `deqp-egl` (4,117 cases), or any part of it, on one host
+with one command. It only runs normally packaged artifacts (`graphics-cts`
+package outputs and `kernel.wasm`); provision them first as for any suite.
+
+```sh
+# Complete suites, one command per suite and host
+scripts/run-graphics-cts.sh gles2 node
+scripts/run-graphics-cts.sh gles2 chromium
+scripts/run-graphics-cts.sh gles2 firefox
+scripts/run-graphics-cts.sh gles2 webkit
+scripts/run-graphics-cts.sh egl node
+scripts/run-graphics-cts.sh egl chromium
+scripts/run-graphics-cts.sh egl firefox
+scripts/run-graphics-cts.sh egl webkit
+
+# Selectors and strict mode
+scripts/run-graphics-cts.sh gles2 chromium functional.fbo --strict
+scripts/run-graphics-cts.sh gles2 webkit functional.negative_api,info
+scripts/run-graphics-cts.sh gles2 firefox negative-state      # earlier selectors still work
+scripts/run-graphics-cts.sh egl node functional              # every functional family
+
+# Rerun only named chunks of an earlier plan's selection
+KANDELO_CTS_CHUNKS='dEQP-EGL.functional.sharing#004' scripts/run-graphics-cts.sh egl chromium functional.sharing
+```
+
+Selectors: `all` (default); a top-level group (`accuracy`, `capability`,
+`functional`, `info`, `performance`, `stress`); any family of the
+[coverage map](../../docs/graphics/cts-coverage-v1.md), with or without the
+suite root (`functional.fbo`, `dEQP-EGL.functional.image`, `info.vendor`);
+the earlier GLES2 selectors `negative-state`, `negative-api` and
+`color-clear`; or a comma-separated union. The expected cases come from the
+recorded executable inventories in `cts-inventory/`, verified against the
+coverage map's SHA256 values, so a case the executable never runs is reported
+as Missing instead of disappearing.
+
+Chunks never cross a family and hold at most 100 GLES2 or 50 EGL cases
+(`KANDELO_CTS_CHUNK_SIZE`). Each chunk is its own Playwright test and page,
+or its own Vitest test on Node, and each attempt boots a fresh kernel from
+the same image. The chunk's cases go to dEQP through
+`--deqp-caselist-file`. Every run passes `--deqp-visibility=hidden`: the
+Kandelo GBM platform has no visible window or KMS presentation service, so
+the default `windowed` visibility would make every dEQP-EGL window case (and
+the GLES2 render target) NotSupported. The attempt deadline follows dEQP's
+own progress: upstream `tcuTestSessionExecutor.cpp` prints `Test case
+'<path>'..` on stdout as it enters each case, and
+[`cts-progress.mjs`](cts-progress.mjs) gives the guest
+`KANDELO_CTS_ATTEMPT_BASE_MS` (default 60 s) to reach its first case and
+`KANDELO_CTS_CASE_MS` (default 600 s) from each case line to the next. A
+flat per-attempt budget (formerly 60 s + 10 s per case) charged every case
+alike, so one legitimately slow case exhausted a chunk that was still
+progressing. A case that exceeds the per-case limit, or a guest that never
+reaches a case, still expires: a hang fails loudly. Some cases are slower
+than the default limit: dEQP-EGL
+`performance.gles2_shared_render.*_small_call` issues 1.2 million draw calls
+per case, and `egl_image.1_thread_1_context_small_call` passed in 35.6
+minutes in headless Chromium, so running that family to completion needs
+`KANDELO_CTS_CASE_MS=2700000`. If the guest exits abnormally or that
+deadline expires while a case's `#beginTestCaseResult` is open, that case is
+Crash or Timeout, the attempt records the deadline evidence (cases entered,
+last case, time since it began), and the chunk resumes after it in a fresh
+kernel (`KANDELO_CTS_MAX_ATTEMPTS`, default 8). Without such an open case
+nothing can be attributed. dEQP can still end a session early after
+finishing a case: a ResourceError sets `terminateAfter`
+(`tcuTestSessionExecutor.cpp`), and a failed threaded case can abort the
+program from its deinit. An abnormal attempt that finished at least one case
+resumes after the last finished case, as upstream harnesses relaunch dEQP;
+the finished rows keep their verdicts and the chunk stays in
+`crashedChunks`. An attempt that finished nothing leaves the remaining cases
+Missing, since a retry would only repeat it. A lost page
+or host loses only that chunk. Exit status 1 is not abnormal when dEQP's
+own evidence explains it: upstream `tcuMain.cpp` exits with `EXIT_FAILURE`
+after a completed session in which any case failed, so an attempt whose QPA
+ends in `#endSession`, accounts every case with a complete record and
+contains a failed status (anything but Pass, NotSupported, QualityWarning,
+CompatibilityWarning, CapabilityWarning or Waiver) is a normal completion,
+and its Fail rows already carry the verdict. Any other nonzero exit,
+including exit 1 without that evidence, stays abnormal.
+
+Each run writes, under `KANDELO_CTS_OUT` (default
+`.context/graphics-cts-runs/<suite>-<host>-<time>/`):
+
+- `plan.json`: the selected cases and chunks;
+- `<host>/<chunk>.json`: per-case rows, attempts, outcomes, crashed case,
+  page/console/host diagnostics and artifact SHA256s;
+- `<host>/qpa/<chunk>.attempt<N>.qpa`: the raw upstream log of each attempt;
+- `summary.json`: Pass, Fail, NotSupported, QualityWarning,
+  CompatibilityWarning, Crash, Timeout and Missing (plus any other upstream
+  status verbatim) per engine and per family, every chunk with a crash,
+  deadline or absent result (`crashedChunks`: chunk, attempt, case, reason),
+  and accounting errors (unexpected, duplicate or mismatched cases);
+- `cases.tsv`: engine, chunk, family, case, status, attempt and detail for
+  every planned case.
+
+Statuses are never upgraded: NotSupported, warnings and Missing stay as they
+are. Without `--strict` (or `KANDELO_CTS_STRICT=1`) the exit status reports
+only runner failures; a chunk without a result file counts as Missing. With
+`--strict` the run also fails on any Fail, Crash, Timeout or Missing, on any
+other non-passing upstream status (ResourceError, InternalError, ...) and on
+any accounting error. NotSupported, QualityWarning, CompatibilityWarning and
+CapabilityWarning do not fail strict mode; they remain visible per family.
+
+`node --test tests/graphics/cts-plan.test.mjs tests/graphics/cts-accounting.test.mjs`
+are the source-only checks of selection, chunking and accounting. The
+bounded `scripts/test-graphics-cts.sh` runner above is unchanged; the full
+runner is the one for the combined validation phase.
+
+## Host GLSL rewrite check
+
+The runner uses esbuild from the host dependencies and the browser app's
+`@playwright/test` driver, matching the CTS and compositor browser versions.
+Provision both dependency sets before running it. Reports record the actual
+engine versions; the host's standalone Playwright may select older builds.
+
+`node tests/graphics/shader-rewrite-check/run.mjs [output-dir] [engine...]`
+compiles, links and draws the host's private GLSL rewrites (reversed depth
+range, attribute aliasing including the dEQP-GLES2 `bind_aliasing` templates,
+depth-texture luminance sampling, and their combinations) with the real WebGL 2
+compiler of headless Chromium, Firefox and WebKit, proving the ES 2.0 results
+by pixel readback. It bundles the rewriters from `host/src/webgl` and needs no
+Kandelo build; it is not the runtime path or a conformance suite. Its cube-map
+section samples six-layer 2D array storage through the ESSL 3.00 translation
+and checks it against ES 2.0 references computed in the page: per-face linear
+filtering at an edge, the orientation of every face, and the level of detail
+of every pixel of a quad that crosses four face edges, with controls showing
+WebGL's own seamless cube map and an array lookup with implicit derivatives
+failing. `node tests/graphics/shader-rewrite-check/cube-bench.mjs [engine...]`
+measures what those per-face lookups cost against WebGL's own cube map
+(compile time and draw time).
+
+## Initial adapted EGL harness
+
 Upstream: https://github.com/KhronosGroup/VK-GL-CTS
 Revision: `a119e62de3bb38dae67f05abee8acd011e0c729c` (inspected 2026-10-23).
 License: Apache-2.0 for the inspected EGL/GLES2 modules; preserve individual
@@ -13,8 +178,9 @@ Kandelo adapter must supply a GBM display, native window and executable
 entry point through the ordinary SDK; it must not change assertions or
 replace guest EGL/GLES calls with direct host WebGL calls.
 
-Enabled upstream assertions: the surfaceless method described below.
-No guest CTS execution result is claimed until its runner has completed.
+Enabled upstream assertions: the surfaceless method and four complete
+current/context-query classes described below. Execution evidence belongs
+to the named artifact/engine run in the compatibility ledger.
 Do not label translated or inspired regressions as unmodified CTS tests.
 Track enabled cases and exact source hashes here as they are integrated.
 
@@ -24,10 +190,29 @@ for required coverage and separate expansions.
 The first port is `cts/surfaceless-case.inc`: the unchanged
 `SurfacelessContextCase::executeForConfig` method, with its original license
 notice. `cts/upstream.json` records the complete upstream file hash and exact
-method hash. The standalone adapter supplies GBM display/config enumeration,
+method hash. Metadata format v2 also records the complete query-context
+source file, snippet and individual helper/class hashes. The standalone
+adapter supplies GBM display/config enumeration,
 EGL dispatch, logs and results; it does not replace guest EGL calls. It runs
 this method for every enumerated configuration. This is an adapted CTS
 subset, not an execution of the complete dEQP framework or its filter groups.
+
+The second port is `cts/query-context-cases.inc`, containing unchanged
+`GetCurrentContextCase`, `GetCurrentSurfaceCase`, `GetCurrentDisplayCase`
+and `QueryContextCase` classes plus their two upstream API/version helpers.
+The adapter supplies the render-case/logging framework and constructs real
+GBM windows and pbuffers for each advertised GLES2 configuration. It makes
+an actual guest context current before executing all four classes, retains
+aggregate failure, and checks cleanup. EGL version queries and API dispatch
+use the SDK; renderer mocks and host-side WebGL calls do not replace them.
+The call-trace toggle is presentation-only in this standalone log adapter.
+
+The browser runner requires each enabled class to execute, verifies the
+reported configuration/surface/context totals and result messages, and
+records failed exit status/output before asserting success. This is still
+an adapted subset: thread, multi-context, negative API, rendering, image,
+sync and the other upstream groups remain separate coverage work. The
+normal package currently supports only wasm32.
 
 Verify the assertions with:
 
@@ -53,7 +238,7 @@ scripts/dev-shell.sh bash -c 'cd apps/browser-demos && node_modules/.bin/playwri
 ```
 
 It requires a passing result for every enumerated advertised GLES2 config,
-without changing the upstream method or accepting its optional BAD_MATCH
+without changing the imported assertions or accepting the surfaceless method's optional BAD_MATCH
 branch for this advertised capability. Collection alone is not a guest
 CTS result. Normal package/kernel provisioning must finish before execution.
 
@@ -86,7 +271,9 @@ client uploads, sparse-index/prefix/stride guard pages, packed byte output,
 scratch allocation rollback and signed-size overflow rejection, early draw
 enum rejection and maximum byte/short indexed client streams, logical buffer
 and original client-attribute queries, unchanged query outputs on failure,
-single ownership of backend GL errors, and bound byte/short index buffers
+ordered context-owned client/backend error flags, deduplication, distinct
+flags, error drains without allocation, rejected-submit fallback and context
+switch ownership, and bound byte/short index buffers
 combined with client attributes (including failed-query cleanup/retry),
 chunked shader/attribute/list queries with zero-sized outputs, failure
 after a successful first chunk, core parameter queries and retained
@@ -113,7 +300,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 214 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 249 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -266,12 +453,14 @@ The retained-ARRAY cases exercise balanced private staging capture on
 success, allocation failure and zero-count draws. Actual C vertex-first
 and index-first streams are replayed in all three browser engines through
 native worker imports and main forwarding. The fixture injects an explicit
-renderer peer deletion/reuse after the temporary bind, then checks that
+renderer peer deletion/reuse after the temporary bind on the older staging
+path, or before admission of the bounded owned client-draw record. The
+record has no public staging interval to interrupt. Both paths check that
 capturing an attribute from the restored ARRAY draws the original red
 buffer rather than its blue replacement. It checks final native buffer,
 VAO, texture, FBO and renderbuffer retirement. Program setup and peer
 operations are fixture-provided; this proves the host's saved identity
-with actual C staging bytes, not public C sharing or Rust marshalling.
+with actual C draw bytes, not public C sharing or Rust marshalling.
 Host tests separately cover failed native restore/retry, retained capture
 cleanup and malformed/nested BEGIN/END. Complete context-loss recovery
 and interrupted private-name cleanup remain open.
@@ -660,8 +849,9 @@ spans, single admission/consumption, discard and no cached-view revival
 after rebind or teardown. Six browser cases render the original blue
 record despite rewriting input to green, using independent device-sized
 storage. Native/forwarded EGL core/KHR fence controls remain enabled.
-The submit drain is still synchronous; execution/drawable lifetime and
-server-wait barriers remain ordinary implementation work.
+The submit drain is still synchronous; execution/drawable lifetime remains
+ordinary implementation work. Server waits use that synchronous order (see
+`docs/architecture.md`).
 
 
 Owned drawable allocation leases supplement command snapshots. Eleven host
@@ -710,6 +900,21 @@ from the current libdrm package; it never reads a stale sysroot dependency.
 This is source/API evidence, not SDK guest execution, rendered GBM
 front/back storage or complete GBM compatibility.
 
+The same runner then executes `gbm-mesa-semantics.c`, one process per
+case, against Mesa libgbm's public contract: user data is only stored by
+`gbm_bo_set_user_data` and destroyed once by `gbm_bo_destroy`; FD and
+single-plane linear FD_MODIFIER imports are bounded by the real dma-buf
+size, honor the plane offset, mark GPU-tier objects and release a
+rejected GEM name only without a live peer; legacy `GBM_BO_FORMAT_*`
+values become fourccs everywhere; unsupported usages fail; and absent
+planes return Mesa's sentinels with `EINVAL`. Its DRM
+double models a PRIME descriptor as a temporary file whose size is the
+dma-buf size (what Kandelo's PRIME `lseek(SEEK_END)` reports) and a
+GPU-tier BO as a handle whose `MAP_DUMB` fails with `EINVAL`.
+`KANDELO_GBM_CASES` selects cases. `KANDELO_GBM_LIBDRM_PREFIX` may name an
+already-resolved libdrm package prefix when the worktree has no sysroot
+for the resolver; only its public headers are read.
+
 The GBM native control also maps real temporary-file storage behind its
 DRM double. It checks CPU rectangle addresses, independently retained
 views, stale/foreign release tokens, failed final unmap retry and writes
@@ -745,3 +950,53 @@ and is never used by the browser cases. The normal `gbm_surface_smoke`
 program now checks the valid pre-render contract: a window has available
 storage but no lockable produced front. Its previous count-valued two-BO
 locking oracle did not represent rendered GBM behavior.
+
+
+The native hint cases and normal SDK `gles-hints` guest check both the
+core mipmap and advertised OES derivative targets: initial/selected state,
+integer/float/boolean conversions with untouched neighboring elements,
+invalid-enum errors, shared-context independence, deferred current
+retirement and release/restoration. These are authored regressions, not
+unmodified CTS. Node runs both widths with its renderer double; browser
+runs both widths in Chromium, Firefox and WebKit through BrowserKernel.
+The guest checks observable hint semantics, not rendering-quality effects.
+
+
+Positive-location uniform validation keeps reflection with the precise native
+executable that issued each location. The source gate checks compatible
+float/integer/boolean/sampler signatures, positive zero-count validation,
+non-array count errors, ignored array tails, reduced struct fields, failed
+use/link, deferred deletion, shared executable identity and publication rollback.
+The native `encoder-uniform-zero-headers` case protects an unreadable page and
+null sources across all eleven vector/matrix signatures, requiring only the
+original command header and no current-program query. These are encoder/host
+model checks. The normal `gles-hints` guest additionally uses active real GLSL
+uniform declarations; execution after the source increments remains required. Larger arrays use the
+transaction transport described below.
+
+
+Large uniform calls use bounded BEGIN/CHUNK/COMMIT/CANCEL command records.
+The host validates the original count/type before staging only the accepted
+reflected tail; it performs one native setter after a complete transfer with
+unchanged executable/location/context authority. Failed flushes queue replay-safe
+retirement before later valid commands. Native cases cover all eleven signatures,
+protected source ends, exact chunk bytes, multiple submissions and failure both
+during and after the setter. Host source cases additionally cover bad counts and
+types without prefix updates, ignored tails, continuation ordering, allocation,
+token replay/wrap, shared relink, native rejection and retirement. Native and
+forwarded query/present/current tests check refusal without native effects after
+an interrupted call while sharing peers stay independent. Normal both-width
+`gles-hints` guests are prepared to read actual accepted array values in browsers
+and retain their independent framebuffer pixels; execution remains required.
+
+An overlapping newer uniform BEGIN explicitly reports the abandoned call as
+`GL_INVALID_OPERATION`, releases its staging and takes new custody. Stale
+BEGIN/CHUNK/COMMIT/CANCEL traffic cannot erase that newer owner. The focused
+control proves the abandoned prefix never reaches the native setter while the
+replacement can still commit; ordinary C recovery sends CANCEL first.
+
+Exact case selectors use the same pinned inventory as family runs. Pass a full
+case name (or omit `dEQP-GLES2.` / `dEQP-EGL.`), and combine names or families
+with commas. Unknown names and partial leaf prefixes fail before a browser is
+started. This supports focused failed-case checks without changing the complete
+`all` inventory, verdict accounting or case deadlines.

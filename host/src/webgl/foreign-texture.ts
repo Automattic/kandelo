@@ -16,10 +16,19 @@
  * state (active unit, unit-0 TEXTURE_2D binding, unpack state) is saved and
  * restored so the upload does not become part of that owner's GL state.
  */
-import { importImageStorage, registerImageSource } from "./image-storage.js";
+import { importImageStorage, registerImageSource, type GlImageStorage } from "./image-storage.js";
+import { setTextureFilters } from "./lod-switchover.js";
+import type { GpuStorageFormat } from "./gpu-storage-format.js";
+
+/** A GPU bo's views are made in the bo's own storage format. */
+export function gpuSourceStorage(storage: GpuStorageFormat | undefined): GlImageStorage {
+  return storage ? { internalFormat: storage.internalFormat, format: storage.format, type: storage.type } : {};
+}
 import { checkedGlCall, recordGlError } from "./program-objects.js";
-import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement } from "./native-recovery.js";
+import { replaceTextureLevels } from "./texture-levels.js";
+import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
+import { noteStorageWrite } from "./image-writes.js";
 
 const GL_TEXTURE_2D = 0x0de1;
 const GL_UNPACK_ROW_LENGTH = 0x0cf2;
@@ -38,16 +47,16 @@ function allocateForeignName(b: GlBinding, preferred = b.nextForeignTexId): numb
 /** The BO owns canonical GPU pixels; its public names own distinct logical
  * views, so delete/reimport and respecification cannot recycle its identity. */
 export function bindGpuForeignTexture(b: GlBinding, bo: number,
-    gpu: {tex: WebGLTexture; texId: number; w: number; h: number}): number {
+    gpu: {tex: WebGLTexture; texId: number; w: number; h: number; storage?: GpuStorageFormat}): number {
   if (!b.gl) return -5;
   if (!repairNativeState(b.gl)) return -5;
   let entry = b.foreignTextures.get(bo);
   if (entry && b.textures.get(entry.texId) !== entry.tex) {
     try { b.retiredTextures.set(entry.tex, entry.texId); }
-    catch { return -12; }
+    catch (caught) { rethrowNativeGlFault(caught); return -12; }
     b.foreignTextures.delete(bo); entry = undefined;
   }
-  const token = registerImageSource(b, bo, gpu.tex, gpu.w, gpu.h);
+  const token = registerImageSource(b, bo, gpu.tex, gpu.w, gpu.h, undefined, gpuSourceStorage(gpu.storage));
   if (token <= 0) return token;
   if (entry) {
     if (b.textureViews.get(entry.tex)?.source?.token === token) return entry.texId;
@@ -63,6 +72,9 @@ export function bindGpuForeignTexture(b: GlBinding, bo: number,
       recordGlError(b,0x505); return -5;
     }
     b.textures.set(name, object);
+    // Its initial filters are LINEAR (set below), not ES 2.0's mipmapped
+    // pair, so it never switches at lambda 0.5 (lod-switchover.ts).
+    setTextureFilters(object, 0x2601, 0x2601);
     b.foreignTextureBos.set(object, bo);
     b.foreignTextures.set(bo, {tex:object,texId:name,w:gpu.w,h:gpu.h,scratch:null});
     let previous: WebGLTexture|null = null, active = 0;
@@ -77,7 +89,7 @@ export function bindGpuForeignTexture(b: GlBinding, bo: number,
       [["activeTexture",active],["bindTexture",GL_TEXTURE_2D,previous]])});
     if (!initialized || !importImageStorage(b,1,name,token)) return -5;
     transferNativeRetirement(candidate); published = true; return name;
-  } catch { recordGlError(b,0x505); return -12; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return -12; }
   finally {
     if (!published) {
       if (object && b.textures.get(name) === object) b.textures.delete(name);
@@ -127,7 +139,7 @@ export function bindForeignTexture(
   if (!repairNativeState(gl)) return -5;
   let entry = b.foreignTextures.get(bo_id);
   if (entry && b.textures.get(entry.texId) !== entry.tex) {
-    try { b.retiredTextures.set(entry.tex, entry.texId); } catch { return -12; }
+    try { b.retiredTextures.set(entry.tex, entry.texId); } catch (caught) { rethrowNativeGlFault(caught); return -12; }
     b.foreignTextures.delete(bo_id); entry = undefined;
   }
   const isNew = !entry, realloc = !entry || entry.w !== dims.w || entry.h !== dims.h;
@@ -153,15 +165,20 @@ export function bindForeignTexture(
         if (realloc) {
           for (const [pname,value] of [[gl.TEXTURE_MIN_FILTER,gl.LINEAR],[gl.TEXTURE_MAG_FILTER,gl.LINEAR],[gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE],[gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE]])
             if (!checkedGlCall(b, () => gl.texParameteri(GL_TEXTURE_2D,pname,value))) return false;
+          setTextureFilters(entry!.tex, 0x2601, 0x2601);
           return checkedGlCall(b, () => gl.texImage2D(GL_TEXTURE_2D,0,gl.RGBA,dims.w,dims.h,0,gl.RGBA,gl.UNSIGNED_BYTE,entry!.scratch!));
         }
         return checkedGlCall(b, () => gl.texSubImage2D(GL_TEXTURE_2D,0,0,0,dims.w,dims.h,gl.RGBA,gl.UNSIGNED_BYTE,entry!.scratch!));
     });
+    noteStorageWrite(entry.tex);
     if (!accepted) return -5;
     if (candidate) transferNativeRetirement(candidate);
     published = true;
+    // Foreign storage is not a guest specification: no GLES 2 format record.
+    if (realloc) replaceTextureLevels(entry.tex, GL_TEXTURE_2D,
+      {width: dims.w, height: dims.h, internalFormat: 0x1908, format: 0x1908, type: 0x1401, compressed: false});
     entry.w = dims.w; entry.h = dims.h; return entry.texId;
-  } catch { recordGlError(b,0x505); return -5; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return -5; }
   finally {
     if (isNew && !published) {
       if (entry && b.textures.get(entry.texId) === entry.tex) b.textures.delete(entry.texId);

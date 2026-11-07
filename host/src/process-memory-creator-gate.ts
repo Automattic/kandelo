@@ -6,6 +6,23 @@
  * before its first await, wait for every already-admitted creator, and only
  * then sweep the exact process generations and Worker aliases they installed.
  */
+// A message or Error subclass alone is not evidence that destroy refused
+// admission. Only this gate can mint the expected terminal disposition;
+// ordinary Worker/compilation errors must keep their failure diagnostics.
+const closedAdmissions = new WeakSet<object>();
+
+class ProcessMemoryCreatorAdmissionClosedError extends Error {
+  constructor(operation: string) {
+    super(`kernel worker is being destroyed; cannot start ${operation}`);
+    closedAdmissions.add(this);
+  }
+}
+
+export function isProcessMemoryCreatorAdmissionClosed(error: unknown): error is Error {
+  return typeof error === "object" && error !== null
+    && closedAdmissions.has(error);
+}
+
 export class ProcessMemoryCreatorGate {
   private open = true;
   private activeCreators = 0;
@@ -29,9 +46,7 @@ export class ProcessMemoryCreatorGate {
    */
   acquire(operation: string): { release: () => void } {
     if (!this.open) {
-      throw new Error(
-        `kernel worker is being destroyed; cannot start ${operation}`,
-      );
+      throw new ProcessMemoryCreatorAdmissionClosedError(operation);
     }
     this.activeCreators += 1;
     let released = false;

@@ -1,3 +1,4 @@
+import { recordComparisonMemoryShape } from "./process-snapshot-comparator";
 import type { ProcessMemoryAllocationRequest } from "./process-memory";
 
 // Both realms use the same admitted descriptor. Keep this function independent
@@ -54,6 +55,13 @@ export class BrowserProcessMemoryFactory {
     if (this.disposed) {
       return Promise.reject(new Error("Process memory factory is closed"));
     }
+    // Copy the admitted constructor arguments before any asynchronous reply.
+    // Only this self-contained factory proves the returned native Memory type.
+    const descriptor = {
+      ptrWidth: request.ptrWidth,
+      initialPages: request.initialPages,
+      maximumPages: request.maximumPages,
+    };
     return new Promise((resolve, reject) => {
       let worker: Worker | undefined;
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -85,11 +93,18 @@ export class BrowserProcessMemoryFactory {
           // kernel VM. Make one final attempt there, after the worker is gone;
           // admission, ceilings, freshness and rollback remain the allocator's.
           try {
-            memory = createProcessMemory(request);
+            memory = createProcessMemory(descriptor);
             error = undefined;
           } catch (ownerError) {
             error = ownerError instanceof Error
               ? ownerError : new Error(String(ownerError));
+          }
+        }
+        if (!error && memory) {
+          try {
+            recordComparisonMemoryShape(memory, descriptor.ptrWidth, true, descriptor.maximumPages);
+          } catch (metadataError) {
+            error = metadataError instanceof Error ? metadataError : new Error(String(metadataError));
           }
         }
         if (error) reject(error);
@@ -117,7 +132,7 @@ export class BrowserProcessMemoryFactory {
         timer = setTimeout(() => {
           finish(new Error("Process memory construction timed out"));
         }, this.timeoutMs);
-        worker.postMessage({ ...request });
+        worker.postMessage(descriptor);
       } catch (error) {
         finish(error instanceof Error ? error : new Error(String(error)));
       }

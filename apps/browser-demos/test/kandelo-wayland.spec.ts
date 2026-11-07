@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { gotoApp } from "./support/kandelo-machine";
+import { gotoApp, waitForMachineBootInput } from "./support/kandelo-machine";
 
 
 /**
@@ -10,6 +10,7 @@ import { gotoApp } from "./support/kandelo-machine";
  * over the pane and intercept pointer events — and selecting that view.
  */
 async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+  if (label === "Internals") await waitForMachineBootInput(page);
   const internals = page.getByRole("button", { name: "Internals", exact: true });
   await internals.waitFor({ state: "visible", timeout: 30_000 });
   const open = (await internals.getAttribute("aria-pressed")) === "true";
@@ -42,8 +43,13 @@ async function terminalText(page: Page): Promise<string> {
 
 /** Show the terminal and wait until `pattern` appears in it. */
 async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
-  await openSurface(page, "Terminal");
-  await expect.poll(() => terminalText(page), { timeout }).toMatch(pattern);
+  // Select the terminal on every read: when a program starts presenting, the
+  // app hands the view to its display (#1551), and a hidden xterm keeps its
+  // old rows in the DOM.
+  await expect.poll(async () => {
+    await openSurface(page, "Terminal");
+    return terminalText(page);
+  }, { timeout }).toMatch(pattern);
 }
 
 // A command the host could not run, or wldesktop reporting that a program

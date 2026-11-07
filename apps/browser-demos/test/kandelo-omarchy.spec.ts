@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import { gotoApp } from "./support/kandelo-machine";
+import { gotoApp, waitForMachineBootInput } from "./support/kandelo-machine";
+import { footFrame } from "./support/labwc-frame";
+import { typePhysicalText } from "./support/physical-typing";
+import { terminalHistoryMatching } from "./support/terminal-history";
 
 
 /**
@@ -27,6 +30,7 @@ async function launchOmarchy(page: Page) {
  * or the terminal means closing it and selecting that view.
  */
 async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+  if (label === "Internals") await waitForMachineBootInput(page);
   const internals = page.getByRole("button", { name: "Internals", exact: true });
   await internals.waitFor({ state: "visible", timeout: 30_000 });
   const open = (await internals.getAttribute("aria-pressed")) === "true";
@@ -60,25 +64,56 @@ async function terminalText(page: Page): Promise<string> {
 
 /** Show the terminal and wait until `pattern` appears in it. */
 async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
-  await openSurface(page, "Terminal");
-  await expect.poll(() => terminalText(page), { timeout }).toMatch(pattern);
+  // Select the terminal on every read: when a program starts presenting, the
+  // app hands the view to its display (#1551), and a hidden xterm keeps its
+  // old rows in the DOM.
+  await expect.poll(async () => {
+    await openSurface(page, "Terminal");
+    return terminalText(page);
+  }, { timeout }).toMatch(pattern);
 }
 
-/** A theme reload can scroll its initiating command off screen before the
- * terminal view mounts. Read it through the terminal's ordinary scrollback. */
-async function expectTerminalHistory(page: Page, pattern: RegExp) {
-  await openSurface(page, "Terminal");
-  await expect.poll(() => terminalText(page)).not.toBe("");
-  await page.locator(".xterm-screen").hover();
-  let text = "";
-  for (let i = 0; i < 12 && !pattern.test(text); i++) {
-    text = await terminalText(page);
-    if (pattern.test(text)) break;
-    await page.mouse.wheel(0, -200);
-    await page.waitForTimeout(100);
-  }
-  expect(text).toMatch(pattern);
-  await page.mouse.wheel(0, 10_000);
+/** Read rendered rows across the terminal's ordinary DOM scrollback.
+ * Start at the bottom: view handoff preserves an older scroll position, so
+ * scanning upward from that position can miss a newer notification entirely. */
+async function expectTerminalHistory(page: Page, pattern: RegExp, timeout = 60_000) {
+  await expect.poll(async () => {
+    await openSurface(page, "Terminal");
+    return terminalHistoryMatching(page.locator(".xterm:visible").first(), pattern);
+  }, { timeout }).toMatch(pattern);
+}
+
+/** A mapped Foot first presents a blank cursor before its shell is ready.
+ * Require text across several columns of the real client, excluding a lone
+ * cursor cell; typing into the initial PTY can race the shell's tty setup. */
+async function expectFootPrompt(page: Page) {
+  await openSurface(page, "Demo");
+  // Locator screenshots include page overlays above the guest canvas.
+  await expect(page.getByRole("complementary", {name: "Download status"}))
+    .toBeHidden({timeout: 60_000});
+  await expect.poll(async () => {
+    const frame = await footFrame(page);
+    if (!frame.foot) return 0;
+    const png = await page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first().screenshot();
+    return page.evaluate(async ([base64, rect]) => {
+      const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], {type: "image/png"}));
+      const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+      ctx.drawImage(bitmap, 0, 0);
+      const image = ctx.getImageData(rect.x, rect.y, rect.width, Math.min(rect.height, 60));
+      bitmap.close();
+      let columns = 0;
+      for (let x = 0; x < image.width; x++) {
+        for (let y = 0; y < image.height; y++) {
+          const at = (y * image.width + x) * 4;
+          if (Math.min(image.data[at], image.data[at + 1], image.data[at + 2]) > 150) {
+            columns++; break;
+          }
+        }
+      }
+      return columns;
+    }, [png.toString("base64"), frame.foot] as const);
+  }, {timeout: 60_000}).toBeGreaterThan(24);
 }
 
 /** Press a CTRL combo on the desktop. A browser reserves SUPER (Cmd/Win), so
@@ -278,9 +313,9 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
     .not.toMatch(/ABI version mismatch/);
   // GLDRAW is the compositor's proof that it drew this window's texture.
   // Every marker above is protocol — map, focus, tile — and all of them
-  // fire for a window whose wl_shm pool the GPU cannot import (a memfd
-  // pool instead of a gbm prime fd). foot carries the gbm-pool patch that
-  // keeps its pools importable; this is the gate that notices if it stops.
+  // fire for a window even if its wl_shm pixels never reach the GPU.
+  // Foot uses upstream shared-memory pools; this gate requires the mapped
+  // buffer to reach the compositor's actual texture draw.
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
 
   // Gate 5b: a real application through the same path. "vi" narrows to Vim;
@@ -310,10 +345,9 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   await expectTerminal(page, /TILE n=6 i=5 /, 120_000);
   expect(await syslogText(page), "qtgallery binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
-  // The invisible-window gate. Qt's stock backing store allocates memfd
-  // pools; the GL renderer cannot import those, skips the surface, and
-  // every gate above still passes. Qt carries the same gbm-pool patch as
-  // foot and GTK, and GLDRAW only fires once the window's texture was drawn.
+  // The invisible-window gate. Qt's upstream backing store allocates
+  // shared-memory pools. Mapping and focus alone do not prove their pixels
+  // reached the renderer; GLDRAW requires the window's texture to be drawn.
   // The card→dispatch→theme-switch loop is proven by the Node smoke
   // (host/test/qtgallery-smoke.test.ts); this gate proves the browser half.
   await expectTerminal(page, /GLDRAW app_id=qtgallery/, 60_000);
@@ -334,9 +368,9 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   // real org.freedesktop.Notifications.Notify over the dbus-daemon session
   // bus, the shell's notification server answers with the assigned id and
   // maps the card as a layer-shell surface.
-  await expectTerminal(page, /NOTIFY_ID id=\d+/, 60_000);
-  await expectTerminal(page, /NOTIFICATION id=\d+ summary=Theme/, 60_000);
-  await expectTerminal(page, /LAYER ns=notifications /, 60_000);
+  await expectTerminalHistory(page, /NOTIFY_ID id=\d+/);
+  await expectTerminalHistory(page, /NOTIFICATION id=\d+ summary=Theme/);
+  await expectTerminalHistory(page, /LAYER ns=notifications /);
 
   // Gate 6b: CTRL+ALT+Space opens the Omarchy menu — the same launcher at
   // its root level. Down+Enter descends into the theme list, and Enter on
@@ -579,10 +613,20 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
         const menuBytes = (await page.screenshot({ clip })).byteLength;
         await page.mouse.move(x(55), y(125));
         await page.waitForTimeout(250); // upstream button hover state
-        await page.mouse.click(x(55), y(125), { delay: 120 });
-        await expect.poll(async () => (await page.screenshot({ clip })).byteLength, {
-          timeout: 15_000,
-        }).toBeGreaterThan(menuBytes + 1_000);
+        // SNKRX drains mousepressed/mousereleased into one button state
+        // before Input:update derives its pressed edge (engine/init.lua,
+        // engine/game/input.lua). A complete click within one slow frame
+        // disappears upstream even when Wayland delivers both events.
+        // Hold the ordinary press through the resulting painted action,
+        // then release it, including on assertion failure.
+        await page.mouse.down();
+        try {
+          await expect.poll(async () => (await page.screenshot({ clip })).byteLength, {
+            timeout: 15_000,
+          }).toBeGreaterThan(menuBytes + 1_000);
+        } finally {
+          await page.mouse.up();
+        }
         await pressCtrl(page, "KeyJ"); // focus the clock again before closing it
       }
       await pressCtrl(page, "KeyW");
@@ -660,7 +704,12 @@ test("Kandelo omarchy copies and pastes between foot windows through the Wayland
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
   await openSurface(page, "Demo");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
-  await page.keyboard.type("echo notify-send clip-ok\n", { delay: 20 });
+  await expectFootPrompt(page);
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await typePhysicalText(page, "echo notify-send clip-ok; "
+    + "printf '\\033[48;2;30;180;60mCLIPBOARD_SOURCE_READY\\033[0m\\n'\n", {delay: 20});
+  // Observe the executed output before starting Foot's scrollback search.
+  await expect.poll(async () => (await footFrame(page)).green, {timeout: 60_000}).toBeGreaterThan(200);
 
   // Select it from the keyboard (foot's scrollback search, committed with
   // Enter), then copy with SUPER+C.

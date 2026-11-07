@@ -1,65 +1,47 @@
+import { isKernelExportFailure } from "../kernel-entry-gate.js";
+import type { GlUniformLookupBytes } from "./uniform-lookup-bytes.js";
 import type { GlBinding } from "./registry.js";
-import { checkedGlCall, recordGlError } from "./program-objects.js";
+import { recordGlError, programLinkGeneration, linkedProgramForQuery } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
+import { uniformLayout } from "./uniform-layout.js";
 
-export type GlUniformLookup = { program: number; token: number; bytes: Uint8Array<ArrayBuffer>; cursor: number };
-
-function validProgram(b: GlBinding, name: number): WebGLProgram | null {
-  const program = b.programs.get(name);
-  if (!program) { recordGlError(b,b.shaders.has(name) ? 0x502 : 0x501); return null; }
-  let linked = false;
-  if (!checkedGlCall(b,() => { linked = !!b.gl!.getProgramParameter(program,0x8b82); })) return null;
-  if (!linked) { recordGlError(b,0x502); return null; }
-  return program;
+export class GlUniformLookup {
+  cursor=0;
+  constructor(readonly program: number, readonly executable: WebGLProgram,
+      readonly generation: number, readonly token: number,
+      private storage: GlUniformLookupBytes) {}
+  get bytes(): Uint8Array<ArrayBuffer> { return this.storage.bytes; }
+  release(): void { this.storage.release(); }
+}
+export function replaceUniformLookup(b: GlBinding, next: GlUniformLookup | null): void {
+  if(b.uniformLookup===next) return;
+  b.uniformLookup?.release();b.uniformLookup=next;
 }
 
-/** Names denote locations for one successful link, including array aliases.
- * Public indices are never recycled, even after a relink or final deletion. */
+
+/** ES 2.0 section 2.10.4 against the program's latest successful link,
+ * numbered per program (uniform-layout.ts). GLSL names are identifiers plus
+ * field/array selectors; inactive, `gl_`-prefixed or malformed names are -1
+ * without importing WebGL-only name errors. Array indices may carry leading
+ * zeros. Null when the program cannot be queried (error recorded). */
 export function uniformLocation(b: GlBinding, name: number, text: string): number | null {
-  const program = validProgram(b,name);
-  if (!program) return null;
-  // GLSL names are identifiers plus field/array selectors. Inactive or
-  // reserved names return -1 without importing WebGL-only name errors.
+  const program=linkedProgramForQuery(b,name);
+  if(!program) return null;
   if (text.startsWith("gl_") || !/^[A-Za-z_][A-Za-z_0-9]*(?:\[\d+\]|\.[A-Za-z_][A-Za-z_0-9]*)*$/.test(text)) return -1;
-  const nativeText = text.replace(/\[0*(\d+)\]/g,"[$1]");
-  // WebGL limits lookup strings to 256 characters. A root absent from
-  // actual reflection is certainly inactive, regardless of its length.
-  // Active paths exceeding that limit still need shader-name translation.
-  if (nativeText.length > 256) {
-    const root = nativeText.split(/[.\[]/,1)[0];
-    let count = 0, found = false;
-    if (!checkedGlCall(b,() => { count=Number(b.gl!.getProgramParameter(program,0x8b86)); })) return null;
-    for (let index=0;index<count;index++) {
-      let info: WebGLActiveInfo | null = null;
-      if (!checkedGlCall(b,() => { info=b.gl!.getActiveUniform(program,index); })) return null;
-      if (info && (info as WebGLActiveInfo).name.split(/[.\[]/,1)[0] === root) { found=true;break; }
-    }
-    if (!found) return -1;
-  }
-  let native: WebGLUniformLocation | null = null;
-  if (!checkedGlCall(b,() => { native = b.gl!.getUniformLocation(program,nativeText); })) return null;
-  if (!native) return -1;
-  try {
-    const canonical = nativeText.replace(/\[0\]$/,"");
-    for (const [index,known] of b.uniformLocationNames) {
-      if (known === canonical && b.uniformLocationPrograms.get(index) === name && b.uniformLocations.has(index)) return index;
-    }
-    if (b.nextUniformLoc >= 0x7fffffff) { recordGlError(b,0x505); return null; }
-    const index = b.nextUniformLoc+1;
-    try {
-      b.uniformLocations.set(index,native);
-      b.uniformLocationPrograms.set(index,name);
-      b.uniformLocationNames.set(index,canonical);
-    } catch(error) {
-      b.uniformLocations.delete(index); b.uniformLocationPrograms.delete(index); b.uniformLocationNames.delete(index); throw error;
-    }
-    b.nextUniformLoc = index;
-    return index;
-  } catch { recordGlError(b,0x505); return null; }
+  const layout=uniformLayout(b,program);
+  if(!layout) return null;
+  const location=layout.locate(text.replace(/\[0*(\d+)\]/g,"[$1]"));
+  if(location<0) return -1;
+  // Only a name past WebGL's lookup limit reaches the engine here; its
+  // refusal is the real boundary and stays visible, as for attributes.
+  const native=layout.native(b,location);
+  if(native===false) return null;
+  return native ? location : -1;
 }
 
-/** Context-owned lookup bytes can span bounded requests. Commit resolves the
- * then-live shared program; pending name storage never enters the group. */
+/** Context-owned lookup bytes retain an exact executable/link-generation
+ * snapshot between bounded requests, independently of the live name. */
 export function runUniformLookup(b: GlBinding, input: Uint8Array, out: Uint8Array): number {
   if (input.length < 16 || input.length > 65536 || out.length < 16) return -22;
   const v = new DataView(input.buffer,input.byteOffset,input.length);
@@ -73,33 +55,39 @@ export function runUniformLookup(b: GlBinding, input: Uint8Array, out: Uint8Arra
     let location = -1;
     if (action === 0 || action === 1) {
       if (token <= b.uniformLookupSerial) return invalid();
-      if (!validProgram(b,program)) return -22;
+      const executable=linkedProgramForQuery(b,program);
+      if (!executable) return -22;
       b.uniformLookupSerial = token;
-      b.uniformLookup = null;
+      replaceUniformLookup(b,null);
       if (action === 0) {
         const found = uniformLocation(b,program,new TextDecoder().decode(new Uint8Array(input.subarray(16))));
         if (found === null) return -22;
         location = found;
       } else {
-        let bytes: Uint8Array<ArrayBuffer>;
-        try { bytes = new Uint8Array(arg); } catch { recordGlError(b,0x505); return -12; }
-        b.uniformLookup = {program,token,bytes,cursor:0};
+        const storage=b.uniformLookupBudget.allocate(arg);
+        if(!storage) {recordGlError(b,0x505);return -12;}
+        try { b.uniformLookup=new GlUniformLookup(program,executable,programLinkGeneration(b,executable).value,token,storage); }
+        catch (error) { rethrowNativeGlFault(error); if(isKernelExportFailure(error)) throw error; storage.release();recordGlError(b,0x505);return -12; }
       }
     } else {
       const pending = b.uniformLookup;
       if (action === 4) {
         if (pending && (pending.token > token || (pending.token === token && pending.program !== program))) return invalid();
-        b.uniformLookup = null;
+        replaceUniformLookup(b,null);
         b.uniformLookupSerial = Math.max(b.uniformLookupSerial,token);
       } else {
         if (!pending || pending.token !== token || pending.program !== program) return invalid();
         if (action === 2) {
-          if (arg !== pending.cursor || input.length-16 > pending.bytes.length-pending.cursor) { b.uniformLookup=null; return invalid(); }
+          if (arg !== pending.cursor || input.length-16 > pending.bytes.length-pending.cursor) { replaceUniformLookup(b,null); return invalid(); }
           pending.bytes.set(input.subarray(16),arg); pending.cursor+=input.length-16;
         } else {
-          b.uniformLookup = null;
-          if (pending.cursor !== pending.bytes.length) return invalid();
-          const found = uniformLocation(b,program,new TextDecoder().decode(pending.bytes));
+          if (pending.cursor !== pending.bytes.length) {replaceUniformLookup(b,null);return invalid();}
+          const executable=linkedProgramForQuery(b,program);
+          if(!executable) {replaceUniformLookup(b,null);return -22;}
+          if(executable!==pending.executable || programLinkGeneration(b,executable).value!==pending.generation) {replaceUniformLookup(b,null);return invalid();}
+          const text=new TextDecoder().decode(pending.bytes);
+          replaceUniformLookup(b,null);
+          const found = uniformLocation(b,program,text);
           if (found === null) return -22;
           location = found;
         }

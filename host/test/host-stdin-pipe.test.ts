@@ -55,25 +55,50 @@ describe("host-supplied stdin", () => {
     expect(r.stdout.split(" ")[0]).toBe(createHash("sha256").update(big).digest("hex"));
   }, 180_000);
 
-  // Through NodeKernelHost with the test rootfs (runCentralizedProgram's
-  // onStarted hook), so `head` resolves inside Kandelo. A bare NodeKernelHost
-  // with no rootfs exposes the host filesystem, where PATH finds the
-  // macOS binary instead.
   it("appendStdinData wakes a reader blocked on empty stdin", async () => {
-    let appendedAt = 0;
-    const r = await runCentralizedProgram({
-      programPath: dash,
-      argv: ["sh", "-c", "head -c 5"],
-      timeout: 30_000,
-      onStarted: async (stdin, pid) => {
-        await new Promise((resolve) => setTimeout(resolve, 500)); // head blocks in read(0)
-        appendedAt = Date.now();
-        stdin.appendStdinData(pid, enc("hello"));
+    let pid = 0, stdout = "", stderr = "", appendedAt = 0, receivedAt = 0;
+    let readerReady!: () => void;
+    const reading = new Promise<void>(resolve => { readerReady = resolve; });
+    const host = new NodeKernelHost({
+      maxWorkers: 4,
+      rootfsImage: "default",
+      onStdout: (_pid, bytes) => {
+        stdout += new TextDecoder().decode(bytes);
+        if (stdout === "hello" && receivedAt === 0) receivedAt = performance.now();
       },
+      onStderr: (_pid, bytes) => { stderr += new TextDecoder().decode(bytes); },
     });
-    expect(r.exitCode, r.stderr).toBe(0);
-    expect(r.stdout).toBe("hello");
-    expect(Date.now() - appendedAt).toBeLessThan(5_000);
+    await host.init();
+    const unsubscribe = host.subscribeSyscalls(event => {
+      if (pid !== 0 && event.pid >= pid && event.nr === 3 && (event.args[0] === 0 || event.args[0] === 0n)) readerReady();
+    });
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const bytes = readFileSync(dash);
+      const exit = host.spawn(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength),
+        ["sh", "-c", "head -c 5"], {onStarted: started => { pid = started; }});
+      await Promise.race([
+        reading,
+        exit.then(code => { throw new Error(`reader exited before reading stdin: ${code}; ${stderr}`); }),
+        new Promise<never>((_,reject) => {
+          deadline = setTimeout(() => reject(new Error("reader never attempted read(0)")),30000);
+        }),
+      ]);
+      clearTimeout(deadline);
+      unsubscribe();
+      // Observe the empty-pipe read before delivering input. Measure delivery
+      // at stdout, excluding lazy startup and later worker retirement.
+      appendedAt = performance.now();
+      host.appendStdinData(pid,enc("hello"));
+      expect(await exit,stderr).toBe(0);
+      expect(stdout).toBe("hello");
+      expect(receivedAt).toBeGreaterThan(appendedAt);
+      expect(receivedAt-appendedAt).toBeLessThan(5000);
+    } finally {
+      clearTimeout(deadline);
+      unsubscribe();
+      await host.destroy();
+    }
   }, 60_000);
 
   // Host input can race a process's lifetime: a keypress lands after the

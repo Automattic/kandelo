@@ -1,3 +1,4 @@
+import { GlUniformLookupBudget } from "./uniform-lookup-bytes.js";
 import type { NativeRetirement } from "./native-recovery.js";
 import type { GlImageSource, GlTextureView, GlRenderbufferView } from "./image-storage.js";
 import type { GlBufferStore } from "./buffer-storage.js";
@@ -26,19 +27,15 @@ export type GlSharedObjects = {
   /** Original submitted bytes; native decoding must not change source queries. */
   shaderSources: Map<WebGLShader, Uint8Array>;
   programs: Map<number, WebGLProgram>;
+  /** Query leases pin one exact native link generation. */
+  programQueryPins: Map<WebGLProgram, number>;
+  programLinkGenerations: WeakMap<WebGLProgram, { value: number }>;
+  uniformLookupBudget: GlUniformLookupBudget;
   shaderDeletePending: Set<number>;
   programDeletePending: Set<number>;
   programShaders: Map<number, Set<number>>;
   programAttributeBindings: Map<number, Map<string, number>>;
   rbos: Map<number, WebGLRenderbuffer>;
-  /** Number-keyed (NOT string-keyed) so the cmdbuf int round-trips
-   *  cleanly. Indices are assigned by `++nextUniformLoc` and never
-   *  reused so insert/delete cycles cannot collide. */
-  uniformLocations: Map<number, WebGLUniformLocation>;
-  uniformLocationPrograms: Map<number, number>;
-  uniformLocationNames: Map<number, string>;
-  /** Monotonic counter for `uniformLocations`; never decremented. */
-  nextUniformLoc: number;
 
   /** Foreign textures bound from DRI bos (`WPK_BIND_FOREIGN_TEXTURE`),
    *  keyed by bo_id. Each entry mirrors into `textures` under `texId`
@@ -61,15 +58,23 @@ export type GlSharedObjects = {
   externallyOwnedTextures: WeakSet<WebGLTexture>;
 };
 
-export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding> };
+/** Cold shader custody can outlive its public name after a batch reset. */
+export type GlRetiredShader = {
+  owner: {gl:WebGL2RenderingContext|null;errors:number[];nativeEpoch?:number};
+  shader: WebGLShader|null;
+  next: GlRetiredShader|null;
+  queued: boolean;
+  drop: () => void;
+};
+export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding>; retiredShaders:GlRetiredShader|null };
 
 export function createGlObjectGroup(): GlObjectGroup {
   return {
     bufferRetirements:new Map(),imageRetirements:new Map(),imageSources:new Map(),nextImageSource:1,imageRevisions:new Map(),textureViews:new Map(),textureViewOwners:new Map(),renderbufferViews:new Map(),renderbufferViewOwners:new Map(),
-    members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(),
+    members: new Set(), retiredShaders:null, buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(), programQueryPins: new Map(),
+    programLinkGenerations: new WeakMap(), uniformLookupBudget: new GlUniformLookupBudget(),
     rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),
-    uniformLocations: new Map(), uniformLocationPrograms: new Map(), uniformLocationNames: new Map(), nextUniformLoc: 0,
     foreignTextures: new Map(), nextForeignTexId: 0x4000_0000, foreignTextureBos: new Map(),
     retiredTextures: new Map(), retiredBuffers: new Map(), retiredRenderbuffers: new Map(), externallyOwnedTextures: new WeakSet(),
   };

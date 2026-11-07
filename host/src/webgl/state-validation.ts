@@ -1,5 +1,4 @@
 import * as O from "./ops.js";
-import { EXTRA_PIXEL_STORE_DEFAULTS } from "./shadow.js";
 
 const INVALID_ENUM = 0x500;
 const INVALID_VALUE = 0x501;
@@ -8,7 +7,6 @@ const faces = new Set([0x0404, 0x0405, 0x0408]);
 // EXT_blend_minmax is part of the existing advertised WebGL2-backed API.
 const equations = new Set([0x8006, 0x800a, 0x800b, 0x8007, 0x8008]);
 const stencilOps = new Set([0, 0x1e00, 0x1e01, 0x1e02, 0x1e03, 0x150a, 0x8507, 0x8508]);
-const pixelStore = new Set(EXTRA_PIXEL_STORE_DEFAULTS.map(([name]) => name));
 const compare = (value: number) => value >= 0x200 && value <= 0x207;
 const blendFactors = new Set([
   0, 1, 0x0300, 0x0301, 0x0302, 0x0303, 0x0304, 0x0305, 0x0306, 0x0307,
@@ -50,10 +48,12 @@ export function stateArgumentError(op: number, v: DataView): number {
     case O.OP_STENCIL_OP_SEPARATE:
       return faces.has(u()) && [u(4), u(8), u(12)].every(value => stencilOps.has(value)) ? 0 : INVALID_ENUM;
     case O.OP_PIXEL_STOREI: {
+      // GLES 2 sections 3.6.1/4.3.1 define only the two alignments. The
+      // EXT_unpack_subimage names never reach the host (the guest encoder
+      // applies them), and WebGL 2's other names are host-private defaults.
       const name = u(), value = v.getInt32(4, true);
       if (name === 0x0cf5 || name === 0x0d05) return [1, 2, 4, 8].includes(value) ? 0 : INVALID_VALUE;
-      if (!pixelStore.has(name)) return INVALID_ENUM;
-      return value < 0 ? INVALID_VALUE : 0;
+      return INVALID_ENUM;
     }
     default: return 0;
   }

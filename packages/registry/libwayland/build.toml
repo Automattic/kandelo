@@ -1,7 +1,7 @@
 script_path = "packages/registry/libwayland/build-libwayland.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "1dc10fcc1761475964c0108628a800c3c5e468e5"
-revision    = 4
+revision    = 7
 
 # The hand-curated config.h is part of the cache key: editing it (e.g.
 # flipping a HAVE_* to track a sysroot change) must invalidate cached
@@ -13,6 +13,21 @@ inputs = [
   "packages/registry/libwayland/src/config.h",
   "libc/glue/libwayland-egl.c",
   "libc/glue/wayland-client-lifetime.inc",
+  "libc/glue/wayland-client-retirement.inc",
+  "libc/glue/check-wayland-client-layout.py",
+  "libc/glue/wayland-client-provenance.inc",
+  "libc/glue/wayland-client-entry-context.inc",
+  "libc/glue/wayland-client-raw-prelude.inc",
+  "libc/glue/wayland-client-raw-undef.inc",
+  "libc/glue/wayland-client-raw-entry.inc",
+  "libc/glue/wayland-private-queue.inc",
+  "libc/glue/wayland-client-entry-retirement.inc",
+  "libc/glue/wayland-client-callback-retirement.inc",
+  "libc/glue/wayland-connection-callback-prelude.inc",
+  "libc/glue/wayland-fork-boundary.inc",
+  "libc/glue/wayland-owned-log.inc",
+  "libc/glue/wayland-retirement.h",
+  "libc/glue/drm_owned.h",
   "libc/glue/wayland-native.h",
   "libc/glue/gl_abi.h",
   "libc/glue/wayland-egl-include/wayland-egl.h",

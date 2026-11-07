@@ -678,9 +678,14 @@ function commandFailure(
     typeof result.stdout === "string" ? result.stdout.trim() : "",
     result.error?.message ?? "",
   ].filter(Boolean).join("\n");
-  return `${command} ${args.join(" ")} failed${
-    result.status === null ? "" : ` with status ${result.status}`
-  }${detail ? `:\n${detail}` : ""}`;
+  // A child killed by a signal has no status and usually no output; name the
+  // signal, or the failure cannot be diagnosed.
+  const how = result.status !== null
+    ? ` with status ${result.status}`
+    : result.signal
+      ? ` (terminated by ${result.signal})`
+      : "";
+  return `${command} ${args.join(" ")} failed${how}${detail ? `:\n${detail}` : ""}`;
 }
 
 function rustHostTarget(sourceRepoRoot: string): string {

@@ -1,33 +1,26 @@
 import { createWasmPosixKernelTestHarness } from "../../../../host/src/kernel";
 import { createKernelScratchTestInstance } from "../../../../host/test/support/kernel-scratch-instance";
-import { createMainForwardChannel } from "../../../../host/src/webgl/main-forward";
 import * as O from "../../../../host/src/webgl/ops";
 
-// Exercise actual host imports and the existing forwarding mailbox using a
-// synthetic Rust scratch/identity fixture. No guest memory reaches the page.
+// Exercise actual host imports using a synthetic Rust scratch/identity
+// fixture. No guest memory reaches the page.
 self.onmessage = async ({ data }) => {
   if (data.type !== "start_fence_query") return;
   try {
-    const pid = 91, session = 131, forwarded = data.mode === "forwarded";
+    const pid = 91, session = 131;
     const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
     const kernel = createWasmPosixKernelTestHarness({ io: {} as any, memory, pointerWidth: 4,
       callbacks: { getProcessMemory: () => memory },
       instance: createKernelScratchTestInstance(4, memory, () => ({}), () => 4096) });
     kernel.gl.bind({ pid, sessionId: session, cmdbufAddr: 4096, cmdbufLen: 4096 });
     const binding = kernel.gl.get(pid, session)!;
-    let gl: WebGL2RenderingContext | null = null, created = 0, deleted = 0;
-    if (forwarded) {
-      const channel = createMainForwardChannel(self, pid, session);
-      kernel.gl.attachMainForward(pid, channel, session);
-      if (channel.onCreateContext(session) !== 0) throw new Error("Forwarded context creation failed");
-    } else {
-      gl = (data.canvas as OffscreenCanvas).getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
-      if (!gl) throw new Error("Worker WebGL2 required");
-      const allocate = gl.fenceSync.bind(gl), destroy = gl.deleteSync.bind(gl);
-      gl.fenceSync = (condition, flags) => { const value = allocate(condition, flags); if (value) created++; return value; };
-      gl.deleteSync = sync => { if (sync) deleted++; destroy(sync); };
-      binding.gl = gl;
-    }
+    let created = 0, deleted = 0;
+    const gl = (data.canvas as OffscreenCanvas).getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
+    if (!gl) throw new Error("Worker WebGL2 required");
+    const allocate = gl.fenceSync.bind(gl), destroy = gl.deleteSync.bind(gl);
+    gl.fenceSync = (condition, flags) => { const value = allocate(condition, flags); if (value) created++; return value; };
+    gl.deleteSync = sync => { if (sync) deleted++; destroy(sync); };
+    binding.gl = gl;
     binding.contextId = session;
     const imports = kernel.testAuthority.buildImportObject(memory).env as Record<string, (...args: any[]) => any>;
     const submit = (op: number, payload: Uint8Array) => {
@@ -67,12 +60,9 @@ self.onmessage = async ({ data }) => {
     if (!signaled) throw new Error("Fence did not complete");
     query(O.QOP_RELEASE_FENCE, 7); query(O.QOP_RELEASE_FENCE, 7);
     const retired = query(O.QOP_FENCE_STATUS, 7);
-    let pixels: number[] | null = null;
-    if (gl) {
-      const output = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, output);
-      pixels = [...output];
-      if (gl.getError() !== 0) throw new Error("Native GL error");
-    }
+    const output = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, output);
+    const pixels = [...output];
+    if (gl.getError() !== 0) throw new Error("Native GL error");
     imports.host_gl_unbind(pid, session);
     self.postMessage({ type: "fence_query_result", signaled, retired: retired[0], created, deleted, pixels });
   } catch (error) { self.postMessage({ type: "fence_query_result", error: String(error) }); }

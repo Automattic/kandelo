@@ -344,6 +344,64 @@ WordPress payload with an older shell. The shell recipe also owns the complete
 source closure used by its image tools; imported repository modules are
 explicit build inputs.
 
+### Image eager-content budgets
+
+Eager content is the part of an image a machine needs before it can run
+anything: every visitor downloads it, decompresses it and holds it in VFS
+memory before the first prompt. Lazy files and lazy archives cost nothing
+at boot. Choosing one over the other is a one-line decision in a composer,
+so an image can grow without anyone deciding that it should. The browser
+shell did exactly that: an eager copy of the xkeyboard-config keymap tree
+(293 files, 3,332,352 bytes) took the compressed `shell.vfs.zst` from
+1,047,839 to 1,436,395 bytes, and no check noticed. Moving that tree to a
+lazy archive brought it back down.
+
+The shell composer
+(`images/vfs/scripts/build-source-rootfs-shell-image.ts`) now enforces a
+checked-in budget, `packages/registry/shell/eager-budget.json`. It fails
+the package build, writing no image, when any of three limits is exceeded:
+
+| Limit | Measures | Why this number |
+|---|---|---|
+| `maxEagerBytes` | Sum of the sizes of regular files stored in the image (not deferred), once per inode | Deterministic and attributable to paths, so a failure can say what grew; also the boot memory cost |
+| `maxEagerFiles` | Count of the same files | Many small files cost directory and inode records and boot work beyond their bytes |
+| `maxCompressedBytes` | Size of the zstd-19 `shell.vfs.zst` | What a visitor downloads; also catches growth in lazy-file records and directories that adds no eager bytes |
+
+The measurement (`images/vfs/scripts/image-eager-budget.ts`) walks the
+composer's own tree just before serialization, so it runs on the normal
+package path rather than as a separate check over a published artifact.
+`xtask vfs-image describe` reads the written image the way the kernel does
+and agrees with it: the eager set is its entries of `kind` `file` that
+carry a `content_sha256`. The failure message names the budget file, each
+exceeded limit with the current total and the value recorded when the
+budget was set, and the largest eager directories and files.
+
+The budget file also records `measured`, the image's totals when the
+limits were last set. Each limit may sit at most 5% above that
+measurement (the file count gets at least four files of slack), so a
+budget cannot be loosened far enough to hide future growth. The reader
+rejects a budget that breaks this rule, has unknown keys, or omits its
+explanatory `why`, `measurement` and `raising` fields.
+
+When the build fails on the budget:
+
+1. Ask whether the new content can be lazy. Programs belong in
+   `SHELL_LAZY_BINARY_SPECS` and optional data trees in
+   `SHELL_LAZY_DATA_ARCHIVE_SPECS`
+   (`images/vfs/scripts/shell-lazy-archives.ts`); both are fetched on
+   first read on Node and in the browser.
+2. If it must be present at boot, raise the limits and update `measured`
+   to the new image's totals in a commit whose message names the content,
+   its size, and why it must be eager. The failure message prints the
+   current eager totals; a successful build logs all three
+   (`shell eager-content budget: ...`), and `xtask vfs-image describe`
+   on the new image reports the eager files and their sizes.
+3. When content shrinks, lower the limits in the same change so the
+   headroom stays small.
+
+The budget file is a declared input of the shell package, so changing it
+re-runs the composition.
+
 ### Canonical VFS product authority
 
 Canonical VFS product manifests are the lasting product authority. The TOML
@@ -1212,7 +1270,10 @@ libdrm.
 PHP, libiconv, and libxml2 remain wasm32-only because their current recipes
 invoke the wasm32 SDK explicitly. Adding a manifest to the wasm64 set is one
 line, but the corresponding recipe and runtime/link validation must support
-that architecture truthfully:
+that architecture truthfully. The recipe side is listing both architectures
+to `kandelo_package_prepare_build_roots` and taking tool names, the Meson
+cross file, and the sysroot from the variables it sets (see "Recipes build
+only in their work root" below):
 
 ```toml
 arches = ["wasm32", "wasm64"]
@@ -1263,6 +1324,30 @@ non-store, non-UTF-8, oversized, or failing compiler/source inputs fail before
 cache lookup. The declared Repository/DevShell byte traversal is currently a
 Unix-only capability: native non-Unix hosts return the documented
 unsupported-platform error rather than using a weaker pathname-based digest.
+
+Directory build inputs hash their actual working-tree payload, including
+untracked and ignored source files and hidden files such as `.gitignore`,
+`.gitmodules`, and `.gitdir`. One payload encoder and child-selection rule
+serve both the generic and strict Repository/DevShell filesystem access
+policies. They omit only child entries named exactly `.git`: Git
+administration, either an ordinary repository directory or a linked
+worktree/submodule pointer file. Their checkout-specific paths, refs and maintenance
+state must not re-key identical source in another worktree. The traversal
+does not replace source bytes with a gitlink or HEAD: dirty or newly pinned
+source bytes still change identity. An explicit build input naming `.git`
+or a file inside it continues to hash that metadata; recipes that actually
+consume Git metadata must declare it explicitly. Other hidden paths are not
+excluded, and symlink policy is unchanged: the generic walker hashes source
+symlink target spellings without following them, while the strict walker
+rejects source symlinks. The two filesystem walkers remain distinct so the
+strict policy keeps descriptor-relative opens, no-follow validation, and
+file/directory/ancestor reopen checks; it does not delegate source reads to
+the pathname-based generic policy. Both encode admitted regular payload
+with the same tags, relative paths, lengths and bytes. Existing
+declared-input hashing is byte-based and does not include executable bits;
+this differs from the immutable external Git export digest, which includes
+them. Strict source traversal still requires readable regular files and real
+directories and retains descriptor-relative mutation checks.
 
 Program packages that use fork instrumentation also hash the
 fork-instrument host tool inputs (`crates/fork-instrument`, the
@@ -1557,6 +1642,37 @@ fi
 A standalone run (no resolver variables) keeps its trees beside the script,
 as before. `"${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"` is the equivalent
 one-line form for recipes that do not use the helper.
+
+The arguments after the work root list every architecture the recipe builds,
+matching the manifest's `arches`. The helper takes the resolver's
+`WASM_POSIX_DEP_TARGET_ARCH` (a standalone run takes the first listed
+architecture) and fails before creating any root when the request is not in
+the list, so a recipe never builds one architecture under the other's name.
+From that one value it sets:
+
+| Variable | wasm32 | wasm64 |
+|---|---|---|
+| `KANDELO_PACKAGE_TARGET_ARCH` | `wasm32` | `wasm64` |
+| `KANDELO_PACKAGE_SDK_TARGET` | `wasm32posix` | `wasm64posix` |
+| `KANDELO_PACKAGE_MESON_CROSS_FILE` | `<checkout>/sdk/meson/wasm32posix.ini` | `<checkout>/sdk/meson/wasm64posix.ini` |
+| `KANDELO_PACKAGE_SYSROOT` | `$WASM_POSIX_SYSROOT`, else `<checkout>/sysroot` | `$WASM_POSIX_SYSROOT`, else `<checkout>/sysroot64` |
+
+A recipe that builds both uses these instead of spelling `wasm32` itself:
+
+```bash
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32 wasm64
+CC="$KANDELO_PACKAGE_SDK_TARGET-cc"
+meson setup --cross-file "$KANDELO_PACKAGE_MESON_CROSS_FILE" "$BUILD_DIR" "$SRC_DIR"
+```
+
+The sysroot choice is the one the SDK driver makes, so a recipe that passes
+`$KANDELO_PACKAGE_SYSROOT` on to a build system names the same libc the
+wrappers link. A Meson recipe lists every cross file it can select in
+`build.toml` `inputs` (`sdk/meson/wasm32posix.ini` and
+`sdk/meson/wasm64posix.ini`), because the cross file is part of its build
+closure. A single-architecture recipe keeps the one-argument form
+(`kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32`); its roots and
+its rejection of the other architecture are unchanged.
 
 The SDK compiler driver maps `WASM_POSIX_DEP_WORK_DIR` to
 `/usr/src/kandelo-build/<name>` in `-ffile-prefix-map`, so a work root whose
@@ -2451,6 +2567,19 @@ zero sha256) because it fetches no upstream archive.
 | `libffi` | Kandelo's own implementation of the libffi API (`packages/registry/libffi/src/ffi_core.c` plus the dispatch tables `gen-dispatch.sh` generates): one `call_indirect` case per call shape and per closure class. It is not upstream libffi. | libwayland, glib and the GTK stack need `ffi_call` and closures, and upstream libffi's wasm32 port targets Emscripten's JavaScript glue, which Kandelo does not use. | Port upstream libffi for Kandelo's wasm target and drop this implementation. |
 | `libwayland-egl` (shipped by `libwayland`) | `libc/glue/libwayland-egl.c`: the `wl_egl_window` API plus the buffer allocation and present logic that Mesa's EGL Wayland platform owns on Linux. It sits on the sysroot's `libEGL`/`libGLESv2`/`libgbm` stubs, which forward GL to the host's WebGL2 (see "Sysroot libraries are not packages"). | There is no Mesa on Kandelo; SDL2's Wayland backend and other GL clients need a `wl_egl_window`. | Tied to the GL stack: a real EGL with dmabuf import (the GL section of the real-Hyprland inventory) would let upstream libwayland-egl and a real EGL Wayland platform replace it. |
 
+The in-tree libffi call dispatcher emits mixed signatures with at most two
+non-i32 arguments through arity nine and all-i32 calls through arity 22.
+Its full scalar-record family contains nine word fields, an adjacent
+f32/f64 pair (either order), six more word fields and an i64 pair, with
+leading or trailing context/data/sret words through arity 22. These are
+static call-shape families, not caller-specific marshallers. Existing
+small-arity dispatcher functions retain their generated source unchanged. The
+closure trampoline families remain separately bounded by
+`packages/registry/libffi/gen-dispatch.sh`. Dispatch stays partitioned by
+return class and arity; adding a family must retain the Wasm function-body
+size guard and run the scalar matrix on Node and real browser engines.
+
+
 ### Real upstream source, hand-rolled build (use upstream's build system)
 
 These packages fetch real, sha256-pinned upstream archives, but their build
@@ -2495,13 +2624,18 @@ basu.
 Every patch below is applied to real upstream source. They are grouped by
 the boundary they sit at, because that decides who owns the fix.
 
+The former foot, mako, GTK and Qt `wl_shm` DRM-pool patches have been
+retired. wlcompositor maps ordinary pool fds with `MAP_SHARED`; the four
+clients use their upstream shared-memory allocation paths. Rebuilt Node
+smokes, browser desktop specs and before/after measurements are tracked in
+`docs/graphics/compatibility-v1.md`.
+
 **Kandelo platform gaps.** These work around something the platform should
 provide. The fix belongs in the kernel, libc or host, and the patch should be
 dropped once it lands.
 
 | Package | Patch | Gap | Follow-up |
 |---|---|---|---|
-| `foot`, `mako`, `gtk3`, `qtbase` | `foot/patches/0001-shm-gbm-prime-fd-pools.patch`, `mako/patches/0001-pool-buffer-gbm-prime-fd.patch`, `gtk3/src/wayland-shm-gbm-pool.patch`, `qtbase/src/wayland-shm-gbm-pool.patch`: allocate `wl_shm` pools from DRI buffers instead of `memfd`. | wlcompositor imports every `wl_shm` pool with `gbm_bo_import`, so it accepts only DRI-buffer pools. memfd mappings themselves converge across processes at syscall boundaries (`docs/posix-status.md`, `mmap()`), and cage maps memfd pools directly. | Drop all four patches once no client runs on wlcompositor. |
 | `foot` | `patches/0002-serial-font-loading.patch`: load fonts one at a time. | Concurrent `FcFontMatch` calls race under Kandelo's thread model. Not root-caused. | Find the cause in the kernel or runtime; drop the patch. |
 | `libevdev`, `libinput` | `libevdev/patches/0001-linux-uapi-headers-off-linux-and-freebsd.patch`, `libinput/patches/0002-linux-uapi-headers-off-linux-and-freebsd.patch`: on a platform that is neither Linux nor FreeBSD, include the bundled Linux UAPI `<linux/input.h>` and `<linux/uinput.h>`. | The sysroot's `<linux/input.h>` lacks `input_event_sec`/`input_event_usec`, and there is no `<linux/types.h>` or `<linux/uinput.h>`, so both packages compile against their own bundled copies. | Add the missing UAPI headers to `libc/musl-overlay/include/linux/` and drop both patches. |
 | `libinput` | `patches/0001-quirks-empty-dmi-identity-without-dmi.patch`: report the empty DMI identity (`"dmi:"`) when the platform has no DMI source, so the identity-independent quirks still load. | Kandelo exposes no SMBIOS/DMI or devicetree firmware identity. | Expose a machine identity (for example `/sys/class/dmi/id/modalias`) and drop the patch, or send the platform-neutral change upstream. |

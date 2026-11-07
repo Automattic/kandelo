@@ -64,6 +64,7 @@ function fakeCanvas(width = 300, height = 150): {
     framebufferRenderbuffer: () => {},
     deleteTexture: () => {},
     deleteFramebuffer: () => {},
+    activeTexture: () => {},
     bindTexture: () => {},
     bindFramebuffer: () => {},
     texImage2D: () => {},
@@ -157,7 +158,8 @@ it.each([false, true])("rebuilds a recreated EGL window before drawing (new cont
   expect(imports.env.host_gl_present(PID)).toBe(0);
   expect(presented).toEqual([1, 1]);
   contextLost = true;
-  expect(imports.env.host_gl_present(PID)).toBe(-5);
+  // ENODEV: the renderer was lost (a graphics reset; renderer-loss.ts).
+  expect(imports.env.host_gl_present(PID)).toBe(-19);
   expect(imports.env.host_gl_present(PID + 1)).toBe(0);
   expect(presented).toEqual([1, 1]);
 });

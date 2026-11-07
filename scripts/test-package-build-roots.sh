@@ -3,9 +3,14 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
-bash "$REPO_ROOT/scripts/test-package-source-metadata.sh"
-bash "$REPO_ROOT/scripts/test-musl-build-state.sh"
-bash "$REPO_ROOT/scripts/test-package-import-audit-environment.sh"
+case "${KANDELO_PACKAGE_BUILD_ROOTS_TEST_FOCUS:-}" in
+target-arch) ;; # helper-only contract; it reads no registry or sysroot state
+*)
+    bash "$REPO_ROOT/scripts/test-package-source-metadata.sh"
+    bash "$REPO_ROOT/scripts/test-musl-build-state.sh"
+    bash "$REPO_ROOT/scripts/test-package-import-audit-environment.sh"
+    ;;
+esac
 fail() {
     echo "test-package-build-roots.sh: $*" >&2
     exit 1
@@ -123,7 +128,7 @@ if [ "${KANDELO_PACKAGE_BUILD_ROOTS_TEST_FOCUS:-}" = "netcat-automake-aux" ]; th
 fi
 
 case "${KANDELO_PACKAGE_BUILD_ROOTS_TEST_FOCUS:-}" in
-source-dependency|private-sysroot) ;;
+source-dependency|private-sysroot|target-arch) ;;
 *)
     # The program index is a generated artifact (gitignored); generate it here
     # so this build-roots test runs against an up-to-date projection.
@@ -151,6 +156,92 @@ tree_digest() {
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+
+# Target architecture selection. A recipe lists every architecture it builds;
+# the resolver's WASM_POSIX_DEP_TARGET_ARCH picks one (a standalone run takes
+# the first listed), and the helper derives the SDK tool prefix, Meson cross
+# file, and default sysroot from that one value.
+test_target_arch_selection() (
+    set -euo pipefail
+    local arch_root="$TMP_ROOT/target-arch"
+    local direct="$arch_root/direct" err="$arch_root/err"
+    mkdir -p "$arch_root/work" "$arch_root/out"
+    unset WASM_POSIX_DEP_WORK_DIR WASM_POSIX_DEP_OUT_DIR \
+        WASM_POSIX_DEP_SOURCE_DIR WASM_POSIX_DEP_TARGET_ARCH WASM_POSIX_SYSROOT
+
+    expect_target() {
+        local arch="$1" sdk_target="$2" sysroot="$3"
+        [ "${KANDELO_PACKAGE_TARGET_ARCH:-}" = "$arch" ] ||
+            fail "target arch: expected $arch, got ${KANDELO_PACKAGE_TARGET_ARCH:-<unset>}"
+        [ "${KANDELO_PACKAGE_SDK_TARGET:-}" = "$sdk_target" ] ||
+            fail "SDK target: expected $sdk_target, got ${KANDELO_PACKAGE_SDK_TARGET:-<unset>}"
+        [ "${KANDELO_PACKAGE_MESON_CROSS_FILE:-}" = "$REPO_ROOT/sdk/meson/$sdk_target.ini" ] ||
+            fail "Meson cross file: got ${KANDELO_PACKAGE_MESON_CROSS_FILE:-<unset>}"
+        [ -f "$KANDELO_PACKAGE_MESON_CROSS_FILE" ] ||
+            fail "Meson cross file does not exist: $KANDELO_PACKAGE_MESON_CROSS_FILE"
+        [ -x "$REPO_ROOT/sdk/bin/$sdk_target-cc" ] ||
+            fail "SDK compiler wrapper does not exist: $sdk_target-cc"
+        [ "${KANDELO_PACKAGE_SYSROOT:-}" = "$sysroot" ] ||
+            fail "sysroot: expected $sysroot, got ${KANDELO_PACKAGE_SYSROOT:-<unset>}"
+    }
+
+    # A single-architecture recipe keeps its existing call and default.
+    kandelo_package_prepare_build_roots "$direct" wasm32
+    expect_target wasm32 wasm32posix "$REPO_ROOT/sysroot"
+
+    # A multi-architecture recipe defaults to its first architecture when run
+    # standalone, and follows the resolver's request otherwise.
+    kandelo_package_prepare_build_roots "$direct" wasm32 wasm64
+    expect_target wasm32 wasm32posix "$REPO_ROOT/sysroot"
+    WASM_POSIX_DEP_WORK_DIR="$arch_root/work" WASM_POSIX_DEP_OUT_DIR="$arch_root/out" \
+        WASM_POSIX_DEP_TARGET_ARCH=wasm64 \
+        kandelo_package_prepare_build_roots "$direct" wasm32 wasm64
+    expect_target wasm64 wasm64posix "$REPO_ROOT/sysroot64"
+    [ "$KANDELO_PACKAGE_WORK_DIR" = "$arch_root/work" ] ||
+        fail "wasm64 build did not select the caller work root"
+    WASM_POSIX_DEP_TARGET_ARCH=wasm32 \
+        kandelo_package_prepare_build_roots "$direct" wasm32 wasm64
+    expect_target wasm32 wasm32posix "$REPO_ROOT/sysroot"
+
+    # An explicit sysroot wins, exactly as it does in the SDK driver.
+    WASM_POSIX_SYSROOT="$arch_root/private-sysroot" WASM_POSIX_DEP_TARGET_ARCH=wasm64 \
+        kandelo_package_prepare_build_roots "$direct" wasm32 wasm64
+    expect_target wasm64 wasm64posix "$arch_root/private-sysroot"
+
+    # Requests outside the recipe's list fail before any root is created and
+    # leave no stale selection behind.
+    rm -rf "$direct"
+    if (WASM_POSIX_DEP_TARGET_ARCH=riscv64
+        kandelo_package_prepare_build_roots "$direct" wasm32 wasm64) 2>"$err"; then
+        fail "unlisted target architecture was accepted"
+    fi
+    grep -F "package is built for wasm32 wasm64, got riscv64" "$err" >/dev/null ||
+        fail "unlisted target architecture was not explained"
+    [ ! -e "$direct" ] || fail "rejected architecture created the work root"
+    if (unset KANDELO_PACKAGE_TARGET_ARCH
+        WASM_POSIX_DEP_TARGET_ARCH=wasm64
+        kandelo_package_prepare_build_roots "$direct" wasm32 2>/dev/null
+        [ -n "${KANDELO_PACKAGE_TARGET_ARCH:-}" ]); then
+        fail "rejected architecture left a target selection behind"
+    fi
+
+    # The recipe's own list must name SDK architectures.
+    if (kandelo_package_prepare_build_roots "$direct" wasm32 riscv64) 2>"$err"; then
+        fail "recipe listing an unknown architecture was accepted"
+    fi
+    grep -F "unknown package architecture: riscv64" "$err" >/dev/null ||
+        fail "unknown recipe architecture was not explained"
+    if (kandelo_package_prepare_build_roots "$direct") 2>"$err"; then
+        fail "recipe listing no architecture was accepted"
+    fi
+    grep -F "requires a work root and at least one architecture" "$err" >/dev/null ||
+        fail "missing recipe architecture was not explained"
+)
+test_target_arch_selection
+if [ "${KANDELO_PACKAGE_BUILD_ROOTS_TEST_FOCUS:-}" = "target-arch" ]; then
+    echo "test-package-build-roots.sh: target architecture contract ok"
+    exit 0
+fi
 
 source_dep_dash="$TMP_ROOT/source-dependency-dash"
 source_dep_underscore="$TMP_ROOT/source-dependency-underscore"
