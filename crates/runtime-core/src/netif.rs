@@ -130,6 +130,19 @@ pub fn interface_address(iface: &NetworkInterface, host: &mut dyn HostIO) -> Opt
     interface_config(iface, host).map(|config| config.address)
 }
 
+/// Source address for a connection that stays inside this machine. The whole
+/// loopback network is local; any other destination must be the host's actual
+/// interface assignment, not merely an address on the same subnet.
+pub fn local_ipv4_source(destination: [u8; 4], host: &mut dyn HostIO) -> Option<[u8; 4]> {
+    if destination[0] == 127 {
+        Some([127, 0, 0, 1])
+    } else {
+        host.host_network_interface()
+            .filter(|config| config.address == destination)
+            .map(|config| config.address)
+    }
+}
+
 /// `SIOCGIFFLAGS`: loopback is always up. The network interface is up and
 /// running only while the host has given it an address — a machine outside
 /// any network has an interface with nothing behind it. It can broadcast

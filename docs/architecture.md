@@ -4397,6 +4397,18 @@ The host runtime then registers only the virtual listener: separate Kandelo
 machines may listen on identical ports without opening or contending for
 physical host sockets. Other Node listeners retain the native bridge.
 
+The Node offline egress backend owns all of its listeners, including
+loopback and wildcard bindings. It never publishes them on host ports.
+`enableTcpNetwork` controls external dialing, separately from this listener
+ownership contract.
+
+IPv4 TCP connections to `127/8` or the machine's actual assigned address
+stay in the Rust kernel, within or across guest processes. Other addresses
+still use the configured transport, including another host on the same
+subnet. Wildcard listeners and clients retain the connection's actual local
+and peer addresses. IPv4 and IPv6 binds to port zero search past occupied
+ephemeral ports before reporting exhaustion.
+
 User-visible networking is POSIX-first. Guest programs call normal AF_UNIX, AF_INET, and partial AF_INET6 socket syscalls (`socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `sendto`, `recvfrom`, `poll`, and `select`). The Rust kernel owns the socket file descriptors, datagram queues, stream listener state, loopback routing, and errno behavior. Host transports plug in below that layer through `NetworkIO`; they are backends, not the userspace-visible abstraction.
 
 ### Readiness is a kernel decision; backends report facts

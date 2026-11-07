@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FetchNetworkBackend } from "../src/networking/fetch-backend";
 import { TcpNetworkBackend } from "../src/networking/tcp-backend";
+import { OfflineEgressBackend } from "../src/networking/offline-egress-backend";
 import { TlsNetworkBackend } from "../src/networking/tls-network-backend";
 import type { NetworkIO } from "../src/types";
 
@@ -9,6 +10,7 @@ const backends: [string, () => NetworkIO][] = [
   ["browser fetch", () => new FetchNetworkBackend()],
   ["browser TLS", () => new TlsNetworkBackend()],
   ["Node sockets", () => new TcpNetworkBackend()],
+  ["offline", () => new OfflineEgressBackend()],
 ];
 
 describe.each(backends)("the %s egress link", (_name, create) => {
