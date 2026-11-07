@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source236 adds actual native HTTP connection tracking and parser-identity ownership;10list+17request/header+25response component groups pass. Guest C++ and complete Server/list chronology remain open.
+See [source scope](http-connections-integration.md).
+
 Source235 adds actual native TLS async-resource ownership; nine portable-header assertions and three native lifecycle references pass. Guest C++ and four-host behavior remain unvalidated.
 See [source scope](tls-async-owner-integration.md).
 

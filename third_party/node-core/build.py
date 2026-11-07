@@ -2131,6 +2131,16 @@ http_parser_spec = manifest['httpParser']
 for name, item in http_parser_spec['sources'].items():
     if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:
         raise ValueError('HTTP parser source identity mismatch: ' + name)
+# The portable owner consumes these complete unchanged Node list algorithms.
+http_connection_header = (root / 'http-connections.h').read_text()
+for name, item in http_parser_spec['connectionTracking'].items():
+    source = (root / http_parser_spec['sources'][item['source']]['path']).read_text()
+    if source.count(item['start']) != 1:
+        raise ValueError('HTTP connection selection is ambiguous: ' + name)
+    start = source.index(item['start'])
+    selected = source[start:start + item['length']]
+    if hashlib.sha256(selected.encode()).hexdigest() != item['sha256'] or selected not in http_connection_header:
+        raise ValueError('HTTP connection owning source mismatch: ' + name)
 selector = http_parser_spec['clientOptions']
 source = (root / http_parser_spec['sources'][selector['source']]['path']).read_text()
 if source.count(selector['start']) != 1:

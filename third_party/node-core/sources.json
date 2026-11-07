@@ -4783,6 +4783,20 @@
       "start": "  const maxHeaderSize = options.maxHeaderSize;",
       "length": 1070,
       "sha256": "252e96979c6309f45689b236c03c00d8f78a1b2685f6fcbaefd2a30c2c35a652"
+    },
+    "connectionTracking": {
+      "node": {
+        "source": "src/node_http_parser.cc",
+        "start": "struct ParserListNode {",
+        "length": 368,
+        "sha256": "80dbee547d9f8d4b72d2b11588252602af5fb182c32331a79472b7b89ca902c1"
+      },
+      "push": {
+        "source": "src/node_http_parser.cc",
+        "start": "void ListPushBack(ParserListNode* head, ParserListNode* node) {",
+        "length": 179,
+        "sha256": "91c1645a227724121ba320788d1e629a234e4688ebef6b4a92ab493bfd8df585"
+      }
     }
   },
   "objectMarks": {

@@ -7214,3 +7214,7 @@ A real request-publication transaction now roots the freshly allocated native jo
 ### TLS resources retain their actual async owner until finalization
 
 Native TLS allocation now assigns its real TLSWRAP identity and default trigger, captures the actual async frame and environment, and emits init before SSL creation and parent attachment. Reentrant init rollback cannot resurrect a closed owner. Read, write and close consume that same resource; SSL close preserves its identity until foreground wrapper finalization queues destroy. Nine portable-header assertions and three separate native Node lifecycle references pass, alongside source staging and fourteen package-input checks. These controls do not execute the new guest JSAPI or establish TLS shutdown or four-host conformance.
+
+### HTTP connection lists track the actual native request parsers
+
+HTTP request parsers now join a real shared native ConnectionsList with intrusive all/active membership and monotonic header/request deadlines. Queries temporarily root the actual moving parser identities before JS result allocation; list membership does not retain otherwise dead parsers. Foreground finalization detaches membership, and checked cross-realm denial reports an actual access error. Ten portable-list comparisons, seventeen request/header groups and twenty-five unchanged response cases pass using explicit native Node dependencies; these do not execute the new guest JSAPI. Deferred Body/Complete ordering, parser reuse and public HTTP Server remain incomplete.

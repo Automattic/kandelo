@@ -2,6 +2,7 @@
 #include "kandelo-node-http-parser.h"
 #include "mozilla/ScopeExit.h"
 #include "js/Conversions.h"
+#include "js/TracingAPI.h"
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -12,6 +13,7 @@ struct KandeloHttpOwner {
   size_t accounted = 0;
   bool executing = false;
   const bool request;
+  JS::Heap<JSObject*> identity;
   KandeloHttpOwner(std::string method, uint64_t limit, bool insecure, bool relaxed, bool request)
       : parser(std::move(method), limit, insecure, relaxed, request), request(request) {}
   size_t Bytes() const { return sizeof(*this) - sizeof(parser) + parser.AllocationBytes(); }
@@ -31,10 +33,81 @@ static void KandeloHttpFinalize(JS::GCContext*, JSObject* object) {
   JS::RemoveAssociatedMemory(object, owner->accounted, JS::MemoryUse::Embedding3);
   delete owner;
 }
+static void KandeloHttpTrace(JSTracer* tracer, JSObject* object) {
+  const auto value = JS::GetReservedSlot(object, 0);
+  if (!value.isUndefined()) {
+    auto* owner = static_cast<KandeloHttpOwner*>(value.toPrivate());
+    // A self-edge only updates the identity of an already traced live parser.
+    // ConnectionsList never traces this edge or keeps dead parsers alive.
+    JS::TraceEdge(tracer, &owner->identity, "HTTP parser identity");
+  }
+}
 static const JSClassOps KandeloHttpOps = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-    KandeloHttpFinalize, nullptr, nullptr, nullptr };
+    KandeloHttpFinalize, nullptr, nullptr, KandeloHttpTrace };
 static const JSClass KandeloHttpClass = { "KandeloHttpParser",
-    JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_FOREGROUND_FINALIZE, &KandeloHttpOps };
+    JSCLASS_HAS_RESERVED_SLOTS(2) | JSCLASS_FOREGROUND_FINALIZE, &KandeloHttpOps };
+struct KandeloHttpConnectionsOwner {
+  std::shared_ptr<kandelo::http::ConnectionsList> list = std::make_shared<kandelo::http::ConnectionsList>();
+  static constexpr size_t Accounted = sizeof(std::shared_ptr<kandelo::http::ConnectionsList>) +
+      sizeof(kandelo::http::ConnectionsList);
+};
+static void KandeloHttpConnectionsFinalize(JS::GCContext*, JSObject* object) {
+  const auto value = JS::GetReservedSlot(object, 0);
+  if (value.isUndefined()) return;
+  JS::RemoveAssociatedMemory(object, KandeloHttpConnectionsOwner::Accounted, JS::MemoryUse::Embedding3);
+  delete static_cast<KandeloHttpConnectionsOwner*>(value.toPrivate());
+}
+static const JSClassOps KandeloHttpConnectionsOps = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    KandeloHttpConnectionsFinalize, nullptr, nullptr, nullptr };
+static const JSClass KandeloHttpConnectionsClass = { "ConnectionsList",
+    JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_FOREGROUND_FINALIZE, &KandeloHttpConnectionsOps };
+static KandeloHttpConnectionsOwner* KandeloHttpConnections(HandleObject object) {
+  if (!object || JS::GetClass(object) != &KandeloHttpConnectionsClass) return nullptr;
+  const auto value = JS::GetReservedSlot(object, 0);
+  return value.isUndefined() ? nullptr : static_cast<KandeloHttpConnectionsOwner*>(value.toPrivate());
+}
+static bool KandeloHttpConnectionsQuery(JSContext* cx, const CallArgs& args, const char* operation) {
+  RootedObject object(cx, args.get(1).isObject() ? js::CheckedUnwrapDynamic(&args[1].toObject(), cx) : nullptr);
+  if (args.get(1).isObject() && !object) {
+    if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);
+    return false;
+  }
+  auto* owner = KandeloHttpConnections(object);
+  if (!owner) {
+    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Connection query requires its actual native list");
+    return false;
+  }
+  uint32_t headers = 0, request = 0;
+  const bool expired = strcmp(operation, "connectionsExpired") == 0;
+  if (expired && (!args.get(2).isNumber() || !args.get(3).isNumber() ||
+      !JS::ToUint32(cx, args.get(2), &headers) || !JS::ToUint32(cx, args.get(3), &request))) {
+    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Connection expiry requires numeric timeouts");
+    return false;
+  }
+  // Root actual parser identities using only native allocations before any
+  // JS result allocation/wrapping can collect/finalize a list member. This is
+  // a temporary query snapshot, not permanent list -> parser GC ownership.
+  std::vector<std::unique_ptr<JS::PersistentRootedObject>> snapshot;
+  {
+    JS::AutoCheckCannotGC noGC;
+    const auto records = expired ? owner->list->Expired(headers, request) :
+        strcmp(operation, "connectionsIdle") == 0 ? owner->list->Idle() :
+        strcmp(operation, "connectionsActive") == 0 ? owner->list->Active() : owner->list->All();
+    snapshot.reserve(records.size());
+    for (auto* record : records) {
+      auto* parser = static_cast<KandeloHttpOwner*>(record->Owner());
+      MOZ_RELEASE_ASSERT(parser && parser->identity);
+      snapshot.push_back(std::make_unique<JS::PersistentRootedObject>(cx, parser->identity.get()));
+    }
+  }
+  RootedObject result(cx, JS::NewArrayObject(cx, snapshot.size()));
+  if (!result) return false;
+  for (size_t i = 0; i < snapshot.size(); ++i) {
+    RootedValue parser(cx, ObjectValue(*snapshot[i]->get()));
+    if (!JS_WrapValue(cx, &parser) || !JS_DefineElement(cx, result, uint32_t(i), parser, JSPROP_ENUMERATE)) return false;
+  }
+  args.rval().setObject(*result); return true;
+}
 static bool KandeloHttpText(JSContext* cx, HandleObject object, const char* name, const std::string& text) {
   // HTTP field/status bytes are Latin1, not UTF8 paths.
   RootedString string(cx, JS_NewStringCopyN(cx, text.data(), text.size()));
@@ -123,6 +196,27 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
     }
     args.rval().setObject(*array); return true;
   }
+  if (strcmp(operation.get(), "createConnections") == 0) {
+    if (!args.get(1).isObject()) { JS_ReportErrorASCII(cx, "ConnectionsList requires a prototype"); return false; }
+    RootedObject prototype(cx, js::CheckedUnwrapDynamic(&args[1].toObject(), cx));
+    if (!prototype) {
+      if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);
+      return false;
+    }
+    {
+      JSAutoRealm realm(cx, prototype);
+      auto owner = std::make_unique<KandeloHttpConnectionsOwner>();
+      RootedObject object(cx, JS_NewObjectWithGivenProto(cx, &KandeloHttpConnectionsClass, prototype));
+      if (!object) return false;
+      JS::AddAssociatedMemory(object, KandeloHttpConnectionsOwner::Accounted, JS::MemoryUse::Embedding3);
+      JS::SetReservedSlot(object, 0, PrivateValue(owner.release()));
+      args.rval().setObject(*object);
+    }
+    return JS_WrapValue(cx, args.rval());
+  }
+  if (strcmp(operation.get(), "connectionsAll") == 0 || strcmp(operation.get(), "connectionsIdle") == 0 ||
+      strcmp(operation.get(), "connectionsActive") == 0 || strcmp(operation.get(), "connectionsExpired") == 0)
+    return KandeloHttpConnectionsQuery(cx, args, operation.get());
   const bool request = strcmp(operation.get(), "createRequest") == 0;
   if (request || strcmp(operation.get(), "create") == 0) {
     if (!args.get(1).isString() || !args.get(2).isNumber() || !args.get(3).isBoolean() || !args.get(4).isBoolean() ||
@@ -132,11 +226,33 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
     }
     RootedString method(cx, args[1].toString());
     JS::UniqueChars text = JS_EncodeStringToUTF8(cx, method); if (!text) return false;
+    RootedObject connections(cx);
+    std::shared_ptr<kandelo::http::ConnectionsList> list;
+    RootedValue retainedList(cx);
+    if (request) retainedList.set(args.get(5));
+    if (request && !retainedList.isUndefined()) {
+      connections = retainedList.isObject() ? js::CheckedUnwrapDynamic(&retainedList.toObject(), cx) : nullptr;
+      if (retainedList.isObject() && !connections) {
+        if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);
+        return false;
+      }
+      auto* owner = KandeloHttpConnections(connections);
+      if (!owner) {
+        if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Request parser requires its real connection list");
+        return false;
+      }
+      list = owner->list;
+      if (!JS_WrapValue(cx, &retainedList)) return false;
+    }
     auto owner = std::make_unique<KandeloHttpOwner>(text.get(), uint64_t(args[2].toNumber()), args[3].toBoolean(), args[4].toBoolean(), request);
     RootedObject object(cx, JS_NewObjectWithGivenProto(cx, &KandeloHttpClass, nullptr));
     if (!object) return false;
-    KandeloHttpAccount(object, owner.get());
-    JS::SetReservedSlot(object, 0, PrivateValue(owner.release()));
+    owner->identity = object;
+    auto* admitted = owner.release();
+    JS::SetReservedSlot(object, 0, PrivateValue(admitted));
+    JS::SetReservedSlot(object, 1, retainedList);
+    KandeloHttpAccount(object, admitted);
+    if (list) admitted->parser.AttachConnections(std::move(list), admitted);
     args.rval().setObject(*object); return true;
   }
   RootedObject object(cx, args.get(1).isObject() ? js::CheckedUnwrapDynamic(&args[1].toObject(), cx) : nullptr);
@@ -145,6 +261,11 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
     return false;
   }
   auto* owner = static_cast<KandeloHttpOwner*>(JS::GetReservedSlot(object, 0).toPrivate());
+  if (strcmp(operation.get(), "remove") == 0) {
+    owner->parser.RemoveConnections();
+    JS::SetReservedSlot(object, 1, UndefinedValue());
+    args.rval().setUndefined(); return true;
+  }
   // Callback/OOM failure can leave additional native capacity allocated.
   auto account = mozilla::MakeScopeExit([&] { KandeloHttpAccount(object, owner); });
   const bool synchronous = strcmp(operation.get(), "feedRequestHeaders") == 0;

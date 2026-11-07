@@ -1,0 +1,80 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/http-contracts.md",
+    "findingIds": [
+      "H-001",
+      "H-003"
+    ],
+    "relatedFamilies": [
+      "http",
+      "network",
+      "async",
+      "engine"
+    ],
+    "scope": "Partial actual request-parser ConnectionsList/membership/deadline prerequisite. Full Server activation, persistent reuse, Body-before-Complete chronology, timeout/close ownership and full parser lifecycle remain incomplete."
+  },
+  "sourceImplemented": [
+    "Use actual native intrusive all/active membership, shared list lifetime and CLOCK_MONOTONIC deadlines",
+    "Attach the same actual request parser to its private shared connections owner and return actual identities without property/id lookup",
+    "Trace moving parser self-identity without permanent list-to-parser rooting; foreground finalization detaches membership",
+    "Create temporary actual rooted identity snapshots before JS result allocations, preserving native list iterator lifetime",
+    "Report guarded real access denial for new checked-unwrap branches without bypassing security",
+    "Regenerate actual current core and stage declared HTTP header through normal package path while preserving all235owners"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-http236-source-r1/report.json",
+    "sha256": "9843ec3c632a14fd5b5cbc8e4093d39fffbde4d8b0d42eff23c25d5dfcbcdb74",
+    "guardedInputs": 897,
+    "scope": "Normal236source/input/stage/bootstrap +10portablelist/17explicitnative-dependentJSrequest/25unchangedresponsegroups;newguestJSAPIuncompiled;fullServer/reuse/deferredBodychronologyopen"
+  },
+  "packageChecks": {
+    "report": ".context/node26-http236-affected-r1.json",
+    "sha256": "292d89b5912e4ff7b7f87c0346f113962063eb955756a6c9bf77fe14c97ed466",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-http236-source-r1/report.json",
+    "sha256": "9843ec3c632a14fd5b5cbc8e4093d39fffbde4d8b0d42eff23c25d5dfcbcdb74",
+    "normalSourceChecks": 6,
+    "portableListGroups": 10,
+    "requestHeaderGroups": 17,
+    "unchangedResponseCases": 25,
+    "newRootCompilerAttempts": 0,
+    "historicalProducerHelperCompileAttempts": 3,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "deterministicToolCompleted": false,
+    "scope": "Actual portable candidate C++ list/llhttp plus current-root adapter over explicit native Node HTTPParser/ConnectionsList/IncomingMessage/Socket dependencies. New Kandelo JSAPI/GC/realm/OOM not executed; V1 integration tool does not support this executable script patch."
+  },
+  "sealedEvidence": {
+    "report": ".context/http-connections-owner-agent/report.json",
+    "sha256": "d26e4a95172541cb312de0b45965d6e8f3c090a065cc6ac7e260e270ab7f58f8",
+    "reusedEvidence": true,
+    "scope": "Sealed producer10portablelist+17request/header+25unchangedresponse cases,3successful helper compilations, source review/denied-unwrap correction. Four earlier fixture/source-check failures preserved. Not guest JSAPI or full ConnectionsList chronology proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/http-connections-owner-agent/report.json",
+      "sha256": "d26e4a95172541cb312de0b45965d6e8f3c090a065cc6ac7e260e270ab7f58f8",
+      "scope": "Four retained source/fixture setup failures: missing copied bootstrap, missing adapter, native dependency wrapper recursion, overwritten remove recursion. Original assertions unchanged. Independent denied-unwrap source defect corrected separately without runtime reproduction."
+    }
+  ],
+  "remaining": [
+    "Compile and execute actual guest request/list JSAPI, moving GC/weak ownership, denied wrappers, OOM and reentrant finalization on all four hosts",
+    "Implement faithful Body/Complete callback chronology: current native Complete transitions before deferred JS Body callback",
+    "Complete parser reuse/reset/free, persistent requests/pipelining, backpressure/consume, async resource/provider shape and actual timeout/close ownership",
+    "Activate complete public HTTP/HTTPS Server/ServerResponse/OutgoingMessage only after accepted transport, parser and lifecycle prerequisites"
+  ],
+  "at": "2026-11-07T20:23:13.641774+00:00",
+  "recipeRevision": 236,
+  "lastAcceptedEngine": 230,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

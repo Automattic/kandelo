@@ -234,6 +234,7 @@ inputs = [
   "third_party/node-core/http-incoming-adapter.js",
   "third_party/node-core/http-parser-platform-adapter.js",
   "third_party/node-core/http-parser.h",
+  "third_party/node-core/http-connections.h",
   "third_party/node-core/native-http-parser.cpp",
   "third_party/node-core/upstream/http-parser",
   "third_party/node-core/http-server-response-adapter.js",
@@ -762,4 +763,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 235
+revision = 236

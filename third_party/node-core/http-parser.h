@@ -13,6 +13,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "http-connections.h"
 namespace kandelo::http {
 // These are the linked parser's actual catalogs. Node distinguishes the
 // public HTTP method set from the larger parser method-index table.
@@ -153,6 +154,11 @@ class Parser final {
     step.complete = complete_; step.upgrade = upgrade_;
     Error(step); return step;
   }
+  void AttachConnections(std::shared_ptr<ConnectionsList> list, void* owner) {
+    if (!request_ || step_) throw std::logic_error("Connection list requires an idle request parser");
+    connections_.Attach(std::move(list), owner);
+  }
+  void RemoveConnections() { removed_ = true; connections_.Detach(); }
   size_t AllocationBytes() const {
     size_t bytes = sizeof(*this) + HeapString(method_) + HeapString(status_) + HeapString(url_) +
         HeapString(field_) + HeapString(value_) + HeapString(errorCode_) + HeapString(errorReason_);
@@ -168,7 +174,8 @@ class Parser final {
   std::vector<std::string> headers_;
   uint64_t limit_, headerBytes_ = 0, extensionBytes_ = 0;
   bool complete_ = false, upgrade_ = false, informational_ = false;
-  bool oom_ = false, unexpected_ = false;
+  bool oom_ = false, unexpected_ = false, removed_ = false;
+  ConnectionRecord connections_;
   Step* step_ = nullptr;
   HeadersHandler handler_{};
   struct ActiveStep {
@@ -203,6 +210,7 @@ class Parser final {
   // No C++ exception may unwind through unchanged C parser frames.
   template <typename Callback> static int Guard(llhttp_t* parser, Callback callback) noexcept {
     auto& self = *static_cast<Parser*>(parser->data);
+    if (self.removed_) return 0;
     try { return callback(self); }
     catch (const std::bad_alloc&) { self.oom_ = true; }
     catch (const std::length_error&) { self.oom_ = true; }
@@ -220,6 +228,7 @@ class Parser final {
   static int Begin(llhttp_t* parser) noexcept {
     return Guard(parser, [](Parser& s) {
       s.status_.clear(); s.url_.clear(); s.field_.clear(); s.value_.clear(); s.headers_.clear();
+      if (s.request_) s.connections_.Begin();
       s.informational_ = false; s.upgrade_ = false; return 0;
     });
   }
@@ -257,6 +266,7 @@ class Parser final {
   static int Headers(llhttp_t* p) noexcept {
     return Guard(p, [](Parser& s) {
       s.headerBytes_ = 0;
+      if (s.request_) s.connections_.Headers();
       s.informational_ = !s.request_ && s.parser_.status_code >= 100 && s.parser_.status_code < 200 && s.parser_.status_code != 101;
       s.upgrade_ = s.parser_.upgrade || (!s.request_ && s.method_ == "CONNECT");
       Event event(Event::Type::Headers);
@@ -287,6 +297,7 @@ class Parser final {
   }
   static int Complete(llhttp_t* p) noexcept {
     return Guard(p, [](Parser& s) {
+      if (s.request_) s.connections_.Complete();
       Event event(Event::Type::Complete);
       event.headers = std::move(s.headers_); event.informational = s.informational_;
       event.upgrade = s.upgrade_; s.step_->events.push_back(std::move(event));
