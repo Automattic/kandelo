@@ -10,6 +10,45 @@ Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
 Implementation/evaluation checkpoints are pushed to draft PR #1492.
 The full WordPress service goal remains unfinished.
 
+**Memory experiment: maintained and compiled-host validation:** follow-up
+[`f9360b2c3`](https://github.com/Automattic/kandelo/commit/f9360b2c362172e15dfa18f55627c077191b9029)
+adds real worker interleavings and maintained C zeroing tests on the isolated
+branch. Its own clean musl checkout and normal SDK builds produce both
+architectures' fixtures. The maintained gate passes 247 Node checks
+(245 source checks plus two C integrations), all 30 browser checks, zero
+skips/flakes, and the 664-file evidence inventory. Actual worker cases cover
+both memory widths when a peer appends pages, satisfies the requested
+capacity, or leaves a genuine capacity failure. Another eight-file mapping,
+shared-memory and pthread selection passes 34 checks. Its fresh raw pthread
+fixtures initially emit the legacy ABI warning; the test now builds through
+`compileSdkFixture`. All four cases pass again with current stamps and no
+legacy warning, preserving the 10/1 architecture repetition counts.
+
+The host production build and declarations pass. The compiled kernel-worker
+entry's source fingerprint matches, and both C zeroing cases pass through
+that built host. All 152 ownership/budget/audit checks pass. The ABI gate
+rebuilds the kernel, verifies the pinned old-program cohort and confirms an
+unchanged program digest and consistent snapshot/version. No ABI bump or
+audit exception is needed. Job `mmap-maintained-sdk-gates-1107-064536-14b3`
+stopped before tests on an unsupported xtask help invocation; the corrected
+native Cargo build and complete gate pass as
+`mmap-maintained-gates-1107-065249-8e3c` (2m43s). Built-host job
+`mmap-built-host-gates-1107-071916-e75f` passes in 1m24s. Evidence is under
+`.context/go-mmap-fresh-pages/.context/`. Broader conformance, the full
+memory/lifecycle gate, final applications and controlled benchmarks remain
+open before adoption. Primary runtime and its live image build are unchanged.
+
+**Latest-main baseline preparation:** clean `afeedd583ca5` completes its own
+SDK cores, kernel, rootfs and host build in 37m34s. Kernel SHA-256 is
+`f9bad7129738e4aeadca32c05eb0267ec6fff0dd0b7f13ade63ba51197028f1f`;
+rootfs is `f833b30d83c21ba541772eafbd4a83eed2a4c0f5430307d2c31ec7c9df4bb877`
+and passes the layout audit. Full benchmark-product preparation now runs
+separately as `benchmark-main-products-1107-063730-874a`, including its own
+PHP, both MariaDB architectures, database images, WordPress and micro
+fixtures. The private set enables the dormant MariaDB image only for
+validation. No timings run under compilation load. WordPress 43's primary
+normal build is still in its full shell graph, currently LLVM/Clang.
+
 **Parallel validation preparation:** clean latest-main worktree
 `.context/go-benchmark-main-afeed` has its own npm installations and freshly
 built wasm32/wasm64 musl SDK cores. Its normal kernel/rootfs publication is

@@ -331,6 +331,10 @@ POSIX behavior. Consumer/image rebuilds and final WordPress gates remain.
   serialized past the kernel-worker's two-second detach deadline. Settle
   independent thread terminations concurrently, but release each thread's
   exact exit ownership only after that thread's termination resolves.
+  The large live-M results below are historical legacy-toolchain evidence;
+  the selected wasm32 compiler's 297-case gate excludes these optional
+  stress runs. Revalidate bounded live-M/maximum-declaration probes on the
+  selected compiler before carrying those counts into its support claims.
   A 1,024-slot declaration reserves 256 MiB for slot pages. The separate
   maximum-declaration probe defaults to 48 live locked worker Ms and passes
   in Node and all three desktop browser engines; a selectable 256-worker run
