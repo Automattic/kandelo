@@ -31,11 +31,20 @@ describe("validateGuestBuildRequest", () => {
   });
 
   it("refuses mounts the in-kernel tmpfs would shadow", () => {
-    for (const guestPath of ["/tmp", "/tmp/deps", "/root/x", "/var/log"]) {
+    for (const guestPath of ["/tmp", "/tmp/deps", "/run", "/run/x", "/var/run", "/var/run/deps", "/var/lock", "/var/lock/deps"]) {
       expect(() => validateGuestBuildRequest({
         ...base,
         inputs: [{ guestPath, hostPath: "/abs/deps" }],
       }), guestPath).toThrow(/tmpfs/);
+    }
+  });
+
+  it("allows declared inputs beneath the persistent variable-data directories", () => {
+    for (const guestPath of ["/var/log", "/var/tmp", "/var/runtime", "/var/locks"]) {
+      expect(validateGuestBuildRequest({
+        ...base,
+        inputs: [{ guestPath, hostPath: "/abs/deps" }],
+      }).mounts).toContainEqual({ mountPoint: guestPath, hostPath: "/abs/deps", readonly: true });
     }
   });
 

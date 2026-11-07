@@ -4,6 +4,20 @@ import { OwnedJobs } from '../src/owned-jobs';
 
 afterEach(() => vi.useRealTimers());
 describe('owned command families', () => {
+  it('claims only owned stdout and stderr for capture, including descendants and empty chunks', () => {
+    vi.useFakeTimers();
+    const jobs = new OwnedJobs(vi.fn());
+    jobs.create('private', 10, 1000);
+    jobs.inherit(10, 11);
+    expect(jobs.output(99, 'stdout', new Uint8Array([1]))).toBe(false);
+    expect(jobs.output(10, 'stdout', new Uint8Array())).toBe(true);
+    expect(jobs.output(10, 'stdout', new Uint8Array([2]))).toBe(true);
+    expect(jobs.output(11, 'stderr', new Uint8Array([3]))).toBe(true);
+    expect(jobs.read('private', 0, 16)).toMatchObject({ chunks: [
+      { stream: 'stdout', bytes: new Uint8Array([2]) },
+      { stream: 'stderr', bytes: new Uint8Array([3]) },
+    ] });
+  });
   it('refuses invalid timer and output bounds without accepting a job or cursor', () => {
     vi.useFakeTimers();
     const jobs = new OwnedJobs(vi.fn());

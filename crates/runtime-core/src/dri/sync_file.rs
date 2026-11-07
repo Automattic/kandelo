@@ -144,19 +144,15 @@ pub(crate) fn copy_c_string(dst: &mut [u8], src: &[u8]) {
 /// Install a new descriptor for `file` (`anon_inode_getfile("sync_file",
 /// .., 0)` + `fd_install`): read-only, close-on-exec when asked.
 pub fn install_fd(proc: &mut Process, file: SyncFile, cloexec: bool) -> Result<i32, Errno> {
-    let path = alloc::format!("anon_inode:sync_file:{}", file.id()).into_bytes();
-    let ofd = proc.ofd_table.create(crate::ofd::FileType::CharDevice,
-        wasm_posix_shared::flags::O_RDONLY, crate::ofd::SYNC_FILE_FD_HOST_HANDLE, path);
-    proc.ofd_table.get_mut(ofd).expect("fresh OFD").dri_state =
-        Some(alloc::boxed::Box::new(crate::ofd::DriOfdState::SyncFile(file)));
+    let path = crate::IoBuffer::formatted(format_args!("anon_inode:sync_file:{}", file.id()))?;
     let flags = if cloexec { wasm_posix_shared::fd_flags::FD_CLOEXEC } else { 0 };
-    match proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd), flags) {
-        Ok(fd) => Ok(fd),
-        Err(e) => {
-            proc.ofd_table.dec_ref(ofd);
-            Err(e)
-        }
-    }
+    // The prepared FD/OFD owns no published reference until its admitted
+    // sidecar exists; open_descriptor cancels both slots on ENOMEM.
+    proc.open_descriptor(crate::ofd::FileType::CharDevice,
+        wasm_posix_shared::flags::O_RDONLY, &path, flags, move |_, description| {
+            description.dri_state = Some(crate::IoBox::try_new(crate::ofd::DriOfdState::SyncFile(file))?);
+            Ok(crate::ofd::SYNC_FILE_FD_HOST_HANDLE)
+        })
 }
 
 /// `sync_file_fdget`: the `sync_file` behind `fd`, or `None` for a closed fd

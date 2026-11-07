@@ -36,6 +36,10 @@ node_modules/
 # Worktrees
 .worktrees/
 
+# Worktree-owned validation evidence and scratch (all editors and agents).
+/.context/
+test-results/
+
 # Claude Code worktree config (added when an agent runs `claude` inside
 # a worktree — never tracked).
 .superset/
@@ -55,7 +59,7 @@ node_modules/
 # Wasm binaries are build artifacts. The kernel wasm lives under
 # binaries/ (fetched) or local-binaries/ (locally built); test
 # fixtures under host/test/fixtures/ are produced by the vitest
-# global-setup from .wat sources. Nothing tracked under git.
+# global-setup from .wat sources.
 *.wasm
 
 # VFS images are build artifacts produced by

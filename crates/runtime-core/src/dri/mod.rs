@@ -200,16 +200,26 @@ pub fn retire_vblank_for_process(
     wake
 }
 
+#[cfg(test)]
+pub fn drain_pending_flips_for_process(proc: &mut crate::process::Process, seq: u32, sec: u32, usec: u32) {
+    retire_vblank_for_process(proc, seq as u64, sec, usec, true);
+}
+
 /// One host vblank: advance the counter, complete the CRTC's pending flip,
 /// and retire every card0 file's flips, vblank events and waiters. Called
 /// from `kernel_vblank_elapsed` on each tick of the host's present pump, so
 /// `drmModePageFlip → poll → drmHandleEvent` and `drmWaitVBlank` both run
 /// at the real refresh cadence on every host.
 pub fn retire_vblank(host: &mut dyn crate::process::HostIO, tv_sec: u32, tv_usec: u32) -> u64 {
-    let mut seq = 0;
-    crate::process_table::with_processes(|procs| {
-        seq = retire_vblank_over(host, procs, tv_sec, tv_usec);
+    // The table visitor lends one process at a time. Tick and latch once
+    // before visiting it; doing either inside the callback would advance
+    // scanout once per process rather than once per host refresh.
+    let (seq, completed) = begin_vblank(host, tv_sec, tv_usec);
+    let mut wake = completed;
+    crate::process_table::with_processes(|proc| {
+        wake |= retire_vblank_for_process(proc, seq, tv_sec, tv_usec, completed);
     });
+    if wake { VBLANK_WAKE.store(true, Ordering::Relaxed); }
     seq
 }
 
@@ -221,14 +231,7 @@ pub fn retire_vblank_over<'a>(
     tv_sec: u32,
     tv_usec: u32,
 ) -> u64 {
-    let seq = vblank_tick(tv_sec, tv_usec);
-    // A completed commit releases callers parked on it: blocking atomic
-    // commits waiting for their own flip or for the previous one. A commit
-    // whose in-fences have signaled latches here, and its out-fence signals
-    // with this vblank's time, as drm_crtc_send_vblank_event signals
-    // `e->base.fence`.
-    let now_ns = i64::from(tv_sec) * 1_000_000_000 + i64::from(tv_usec) * 1000;
-    let completed = atomic::retire_pending_commit(host, now_ns);
+    let (seq, completed) = begin_vblank(host, tv_sec, tv_usec);
     let mut wake = completed;
     for proc in procs {
         wake |= retire_vblank_for_process(proc, seq, tv_sec, tv_usec, completed);
@@ -237,6 +240,17 @@ pub fn retire_vblank_over<'a>(
         VBLANK_WAKE.store(true, Ordering::Relaxed);
     }
     seq
+}
+
+fn begin_vblank(host: &mut dyn crate::process::HostIO, tv_sec: u32, tv_usec: u32) -> (u64, bool) {
+    let seq = vblank_tick(tv_sec, tv_usec);
+    // A completed commit releases callers parked on it: blocking atomic
+    // commits waiting for their own flip or for the previous one. A commit
+    // whose in-fences have signaled latches here, and its out-fence signals
+    // with this vblank's time, as drm_crtc_send_vblank_event signals
+    // `e->base.fence`.
+    let now_ns = i64::from(tv_sec) * 1_000_000_000 + i64::from(tv_usec) * 1000;
+    (seq, atomic::retire_pending_commit(host, now_ns))
 }
 
 /// A handler signal interrupts `tid`'s parked `WAIT_VBLANK` (the host

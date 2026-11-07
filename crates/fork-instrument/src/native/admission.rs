@@ -8,46 +8,63 @@ use wasm_posix_program_abi::abi;
 use wasmparser::{Parser, Payload};
 
 pub(super) fn reject_instrumented(scan: &Scan<'_>) -> Result<()> {
-    let export_collision = scan.exports.iter().any(|(name, _, _)| {
-        abi::WPK_FORK_REQUIRED_EXPORTS
-            .iter()
-            .any(|entry| entry.name == name)
-            || matches!(
-                name.as_str(),
-                crate::FUNCTION_CATALOG_EXPORT
-                    | instrument::RESUME_CATALOG_EXPORT
-                    | instrument::RESUME_START_EXPORT
-                    | instrument::RESUME_THREAD_EXPORT
-                    | instrument::RESUME_SINK_EXPORT
-                    | static_reference_catalog::EXPORT
-                    | static_reference_catalog::HARVEST_EXPORT
-            )
-            || name.starts_with(abi::WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX)
-            || name.starts_with(abi::WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX)
-    });
-    let metadata_collision = scan.custom_sections.iter().any(|(name, _)| {
-        matches!(
-            *name,
-            abi::WPK_FORK_CAPABILITIES_SECTION
-                | linked_frames::LINKED_FRAME_FORMAT_SECTION
-                | module_exception_codec::FORMAT_SECTION
-                | module_gc_codec::FORMAT_SECTION
-                | abi::WPK_FORK_MODULE_STATE_FORMAT_SECTION
-                | abi::WPK_FORK_IMPORTED_TABLES_SECTION
-                | abi::WPK_FORK_IMPORTED_GLOBALS_SECTION
-                | instrument::RESUME_CATALOG_SECTION
-                | static_reference_catalog::FORMAT_SECTION
-                | instrument::BOUNDARIES_SECTION
-                | crate::UNWIND_TRANSPORT_SECTION
-                | crate::DLOPEN_CONTRACT_SECTION
+    reject_instrumented_input(scan.input())
+}
+
+fn reserved_export(name: &str) -> bool {
+    abi::WPK_FORK_REQUIRED_EXPORTS
+        .iter()
+        .any(|entry| entry.name == name)
+        || matches!(
+            name,
+            crate::FUNCTION_CATALOG_EXPORT
+                | instrument::RESUME_CATALOG_EXPORT
+                | instrument::RESUME_START_EXPORT
+                | instrument::RESUME_THREAD_EXPORT
+                | instrument::RESUME_SINK_EXPORT
+                | static_reference_catalog::EXPORT
+                | static_reference_catalog::HARVEST_EXPORT
         )
-    });
-    ensure!(
-        !export_collision && !metadata_collision,
-        "fork-instrument: input already contains wasm-fork-instrument exports or metadata; rebuild the raw linker output"
-    );
-    for payload in Parser::new(0).parse_all(scan.input()) {
-        if let Payload::ImportSection(section) = payload? {
+        || name.starts_with(abi::WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX)
+        || name.starts_with(abi::WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX)
+}
+
+fn reserved_section(name: &str) -> bool {
+    matches!(
+        name,
+        abi::WPK_FORK_CAPABILITIES_SECTION
+            | linked_frames::LINKED_FRAME_FORMAT_SECTION
+            | module_exception_codec::FORMAT_SECTION
+            | module_gc_codec::FORMAT_SECTION
+            | abi::WPK_FORK_MODULE_STATE_FORMAT_SECTION
+            | abi::WPK_FORK_IMPORTED_TABLES_SECTION
+            | abi::WPK_FORK_IMPORTED_GLOBALS_SECTION
+            | instrument::RESUME_CATALOG_SECTION
+            | static_reference_catalog::FORMAT_SECTION
+            | instrument::BOUNDARIES_SECTION
+            | crate::UNWIND_TRANSPORT_SECTION
+            | crate::DLOPEN_CONTRACT_SECTION
+    )
+}
+
+pub fn reject_instrumented_input(input: &[u8]) -> Result<()> {
+    for payload in Parser::new(0).parse_all(input) {
+        let payload = payload?;
+        if let Payload::ExportSection(section) = &payload {
+            for export in section.clone() {
+                ensure!(
+                    !reserved_export(export?.name),
+                    "fork-instrument: input already contains wasm-fork-instrument exports; rebuild the raw linker output"
+                );
+            }
+        }
+        if let Payload::CustomSection(section) = &payload {
+            ensure!(
+                !reserved_section(section.name()),
+                "fork-instrument: input already contains wasm-fork-instrument metadata; rebuild the raw linker output"
+            );
+        }
+        if let Payload::ImportSection(section) = payload {
             for import in section.into_imports() {
                 let import = import?;
                 ensure!(

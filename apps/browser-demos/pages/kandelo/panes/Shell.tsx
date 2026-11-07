@@ -16,8 +16,10 @@ import { registerTerminalLinks } from "../../../lib/terminal-links";
 import { requestTerminalAutoFocus } from "./terminal-focus";
 import { useExchangeDrop } from "../app/exchange-drop";
 import { ExchangeDropOverlay } from "../app/ExchangeToasts";
+import { parseWebPreviewAddress, PREVIEW_OSC, PREVIEW_OSC_PREFIX } from "../../../../../web-libs/kandelo-session/src/web-preview-address";
 
 export interface ShellProps {
+  onPreviewError?: (message: string) => void;
   dragProps?: import("./PaneHead").PaneHeadDragProps;
   onCollapse?: () => void;
   onMaximize?: () => void;
@@ -45,6 +47,7 @@ export function createShellTerminal(index: number): ShellTerminal {
 }
 
 export const Shell: React.FC<ShellProps> = ({
+  onPreviewError,
   autoFocus = false,
   visible = true,
   terminals: controlledTerminals,
@@ -101,6 +104,7 @@ export const Shell: React.FC<ShellProps> = ({
           active={visible && item.id === activeTerminal?.id}
           autoFocus={autoFocus}
           onFocusTerminalChange={setFocusTerminal}
+          onPreviewError={onPreviewError}
         />
       ))}
     </div>
@@ -108,11 +112,12 @@ export const Shell: React.FC<ShellProps> = ({
 };
 
 const ShellTerminalHost: React.FC<{
+  onPreviewError?: (message: string) => void;
   terminal: ShellTerminal;
   active: boolean;
   autoFocus: boolean;
   onFocusTerminalChange: (focusTerminal: (() => void) | null) => void;
-}> = ({ terminal, active, autoFocus, onFocusTerminalChange }) => {
+}> = ({ terminal, active, autoFocus, onFocusTerminalChange, onPreviewError }) => {
   const host = useKernelHost();
   const status = useStatus();
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -174,6 +179,23 @@ const ShellTerminalHost: React.FC<{
         ? { url: preview.url, port: preview.port }
         : null;
       return { pageUrl: window.location.href, machine };
+    });
+    let replayingHistory = true;
+    const previewFailure = (error: unknown) => {
+      if (disposed) return;
+      const message = `Preview failed: ${error instanceof Error ? error.message : String(error)}`;
+      term.writeln(`\r\n${message}`);
+      onPreviewError?.(message);
+    };
+    const previewRequests = term.parser.registerOscHandler(PREVIEW_OSC, data => {
+      if (!data.startsWith(PREVIEW_OSC_PREFIX)) return false;
+      if (replayingHistory) return true;
+      try {
+        const target = parseWebPreviewAddress(data.slice(PREVIEW_OSC_PREFIX.length));
+        if (!host.openWebPreview) throw new Error("This computer cannot open a web preview");
+        void host.openWebPreview(target).catch(previewFailure);
+      } catch (error) { previewFailure(error); }
+      return true;
     });
     let unsubData = () => {};
     let disposed = false;
@@ -244,6 +266,7 @@ const ShellTerminalHost: React.FC<{
         }
         ptyRef.current = pty;
         unsubData = pty.onData((bytes) => term.write(bytes));
+        term.write("", () => { replayingHistory = false; });
         const onInput = term.onData((data) => pty.write(data));
         const onResize = term.onResize(({ cols, rows }) => {
           if (viewRef.current.active) pty.resize(cols, rows);
@@ -299,12 +322,13 @@ const ShellTerminalHost: React.FC<{
       document.removeEventListener("pointerdown", onDocumentPointerDown, true);
       themeObserver.disconnect();
       links.dispose();
+      previewRequests.dispose();
       term.dispose();
       terminalRef.current = null;
       fitTerminalRef.current = null;
       setAttached(false);
     };
-  }, [host, status, terminal.path]);
+  }, [host, status, terminal.path, onPreviewError]);
 
   React.useEffect(() => {
     if (!active) return;
@@ -410,7 +434,13 @@ function shouldIgnoreTerminalFocusTarget(target: EventTarget | null): boolean {
     ".kdock-shell",
     ".kdock-popover",
     ".kdock-pane",
+    ".kdock-pane-dismiss-layer",
+    ".kdock-popover-dismiss-layer",
+    ".kshare-backdrop",
     ".kdownload-toasts",
+    "dialog",
+    "[role='dialog']",
+    "[popover]",
     "a",
     "button",
     "input",

@@ -366,7 +366,7 @@ pub fn open_stream() -> Result<i64, Errno> {
         return Err(Errno::EBUSY);
     }
     let stream = PcmStream::new();
-    let idx = crate::descriptor_backing::with_pcm_streams(|table| table.alloc(stream));
+    let idx = crate::descriptor_backing::with_pcm_streams(|table| table.try_alloc(stream))?;
     if ACTIVE_STREAM
         .compare_exchange(-1, idx as i32, Ordering::AcqRel, Ordering::Acquire)
         .is_err()

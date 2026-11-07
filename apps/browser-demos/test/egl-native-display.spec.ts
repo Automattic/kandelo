@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { compileSdkFixture } from "../../../host/test/support/compile-sdk-fixture";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";

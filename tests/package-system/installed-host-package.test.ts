@@ -238,6 +238,12 @@ version = "1.0.0"
         "dir",
       );
     }
+    mkdirSync(join(modules, "@noble"));
+    symlinkSync(
+      join(repoRoot, "host", "node_modules", "@noble", "hashes"),
+      join(modules, "@noble", "hashes"),
+      "dir",
+    );
     writeFileSync(
       join(consumer, "package.json"),
       '{"name":"isolated-host-consumer","private":true,"type":"module"}\n',

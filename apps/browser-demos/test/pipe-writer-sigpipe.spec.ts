@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 // A writer blocked on a full pipe whose reader exits must die by SIGPIPE
@@ -11,7 +11,7 @@ async function terminalText(page: Page): Promise<string> {
 }
 
 async function waitForPrompt(page: Page, timeout = 180_000) {
-  await expect.poll(() => terminalText(page), { timeout }).toContain("kandelo$");
+  await expect.poll(() => terminalText(page), { timeout }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
 }
 
 async function focusTerminal(page: Page) {

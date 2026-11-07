@@ -1,21 +1,33 @@
 # Browser Support
 
-> **Contributor note — dual-host parity is load-bearing.** The browser host is a peer of the Node.js host, not a follower. Any change touching host-runtime behavior MUST land symmetrically on both hosts, **in the same PR**. See [`CLAUDE.md`](../CLAUDE.md#two-hosts-browser-and-nodejs--dual-host-parity-is-load-bearing) for the hard requirements. PR #388 (brk-base) and PR #410 (worker exit message) both shipped one-sided fixes that left browser behavior broken for users; those are the failure modes this rule exists to prevent.
+> **Contributor note — dual-host parity is load-bearing.** The browser host is a peer of the Node.js host, not a follower. Any change touching host-runtime behavior MUST land symmetrically on both hosts, **in the same PR**, unless a documented platform boundary explains the difference. See [`CLAUDE.md`](../CLAUDE.md#host-runtime-contract) for the requirements.
 
 ## Overview
 
-Kandelo runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). The shared-kernel architecture uses one kernel Wasm instance in a dedicated web worker, with each process running in a sub-worker.
+Kandelo uses SharedArrayBuffer, workers, `Atomics.waitAsync`, and WebAssembly
+features whose availability varies by browser engine and guest architecture.
+SharedArrayBuffer support alone does not establish support for a browser
+version. The engine-specific validation and limitations below distinguish
+wasm32, wasm64, and host capabilities. The shared-kernel architecture uses
+one kernel Wasm instance in a dedicated worker, with each process running in
+a sub-worker.
 
 ## Required HTTP Headers
 
-SharedArrayBuffer requires cross-origin isolation:
+SharedArrayBuffer requires a secure context (HTTPS, or a trustworthy local
+address such as `127.0.0.1`) and cross-origin isolation:
 
 ```
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-Without these headers, `SharedArrayBuffer` is undefined and the kernel cannot initialize.
+Without cross-origin isolation, `SharedArrayBuffer` is unavailable and the
+kernel cannot initialize. The Vite development server sends these headers.
+Production builds include an isolation service worker for hosts that cannot
+set them directly; its first activation may require a reload. An insecure
+remote HTTP origin cannot be repaired by that service worker. See
+[Directory-scoped production hosting](#directory-scoped-production-hosting).
 
 ## Architecture
 
@@ -56,26 +68,31 @@ Service Worker ──MessagePort──> Kernel Worker       │
   also falls back to a timer. This keeps device clocks, blocked
   syscall retries, and lifecycle timers progressing on WebKit, where an
   uninterrupted MessageChannel chain can starve timers.
-- **WebKit process-memory construction**: spawn, exec and ordinary fork
-  construct fresh shared memories in disposable allocation workers. Native
-  samples found the kernel realm stalled inside JavaScriptCore's synchronous
-  memory collection; moving construction to a fresh realm keeps kernel input,
-  device clocks and process teardown responsive. The allocator owns admission
-  and retirement on every engine. A WebKit fork captures plain bytes before
-  yielding and charges its temporary snapshot and pending child memory against
-  the existing byte budget. Construction fails after 30 seconds if its worker
-  does not reply, and machine shutdown cancels pending construction workers.
-  JavaScriptCore's native allocation retry collects the calling realm. A fresh
-  worker cannot collect retired wrappers held by the owning kernel realm, so
-  a constructor `RangeError` triggers one final allocation in that owner after
-  the disposable worker has terminated. It uses the same admitted descriptor
-  and ceilings; clone errors and timeouts do not take this path. Native
-  collection in this final synchronous attempt can pause the kernel worker.
-  A second failure propagates through ordinary allocation rollback, without
-  relying on finalizer delivery or reducing the guest's address-space limit.
-  This engine boundary requires `blob:` in a deployment's `worker-src` Content
-  Security Policy. Node, Chromium and Firefox retain direct construction and
-  the same independent-address-space fork semantics.
+- **Process-memory construction**: the current source candidate uses canonical
+  allocator-owned native construction on Node and all browser engines. Ordinary
+  fork completes admission and copying into its independent child memory before
+  the first asynchronous yield. Creator admission still covers publication and
+  rollback, and shutdown closes that admission before draining existing creators.
+  Public checkpoint 1.32 retains the earlier disposable-worker construction.
+  Controlled WebKit tests reproduce reservation refusal in that path without
+  OPFS; reducing ceilings delays rather than fixes it. A private control using
+  canonical construction passes both real WordPress/MariaDB mixed workloads.
+  The rebuilt candidate passes all six three-engine editor/recovery cases and
+  all six mixed workloads, plus both WebKit constrained-profile workloads.
+  Six two-ceiling churn cases complete 600 fork/exec cycles across the three
+  engines. These are scoped results, not complete release acceptance. Native
+  construction can pause the owning worker; no host timer can preempt that
+  call. Whole-worker termination is containment, not proof of a completed
+  persistence shutdown. The experimental disposable allocation utility remains
+  available internally but is not the kernel runtime's default. The previous
+  exhaustion-triggered synchronous owner fallback is not restored.
+  Native constructor `RangeError` failures become the allocator's `ENOMEM`
+  resource error on both synchronous and asynchronous paths, preserving the
+  cause and releasing failed pending credits rather than misreporting exec
+  allocation failure as filesystem `EIO`. This does not recover native
+  reservations. The [construction controls](measurements/2026-10-23-webkit-memory-construction.md)
+  record the WebKit application-pressure boundary and private control; they do
+  not establish release acceptance of the new source candidate.
 - **Kernel in dedicated worker**: Browser syscall notification remains event-driven through `Atomics.waitAsync`; it does not poll channels. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue, allowing syscall handling and worker messages to keep progressing together under multi-process bridge load. Node.js keeps its native/default batching unchanged.
 - **The kernel owns the filesystem** (`kernel.boot()`): the page hands `BrowserKernel` a pre-built VFS image, the main thread zstd-decodes it and transfers the bytes to the kernel worker, and the kernel parses it and serves `/` itself (`docs/architecture.md`, "Filesystem"); the scratch mounts and `/dev/shm` are an in-kernel tmpfs. The worker then exec()s `argv[0]` as the first user process. The main thread holds no filesystem and is not in the FS hot path. Service-supervised demos run dinit under the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. Single-program demos exec the language interpreter directly.
   Browser harnesses that must stage a transient file between process spawns use
@@ -83,7 +100,14 @@ Service Worker ──MessagePort──> Kernel Worker       │
   `writeFileToVfs`, and `unlinkFileFromVfs`). The owning worker performs those
   through kernel exports (`kernel_rootfs_read_file`, `kernel_rootfs_write_file`,
   `kernel_rootfs_unlink_file`), so live guests see the change and the main
-  thread never touches filesystem state.
+  thread never touches filesystem state. On both hosts, `writeFileToVfs` also
+  asks Rust to sync rootfs persistence after the final positioned chunk and
+  before acknowledging success. A journal or storage-flush failure rejects the
+  write; an acknowledged install does not leave its last cached blocks behind
+  on page refresh. This is not transactional file replacement: interruption
+  before acknowledgment can leave a partial file. Ordinary guest `write` and
+  `close` keep their POSIX writeback semantics; guests needing a durability
+  boundary still use `fsync`, `fdatasync`, or `sync`.
   Reads follow the same rule. `readFileFromVfs`, `readDirFromVfs` and
   `statVfsPath` ask the worker (both `BrowserKernel` and `NodeKernelHost`
   implement them), and they are the only way `LiveKernelHost.readFile`,
@@ -252,6 +276,317 @@ pipe pair.
 
 ### Filesystem
 - The in-kernel root filesystem and tmpfs hold `/`, the scratch mounts and `/dev/shm`; the browser host mounts no filesystem of its own beneath them (`resolveForBrowser` refuses a scratch mount the tmpfs does not serve).
+- Shell images provide `/home/projects` and the normal `/home/maker` home as
+  image-backed directories owned by `maker`. Homes, `/root`, and `/srv` use
+  the rootfs journal on persistent computers, rather than being hidden by
+  RAM-only scratch mounts. `/var/log` and `/var/tmp` also use the persistent
+  rootfs; `/tmp`, `/run`, and `/dev/shm` remain volatile. `/var/run` links to
+  `/run`. Memory-only computers lose all changes on shutdown.
+- The Kandelo page creates temporary, resizable, OPFS-backed computers by default.
+  **Release compatibility warning:** saved computers from this release will not
+  work in the next release. Export important files before updating Kandelo.
+  The app shows this warning when you choose to save a computer: in the
+  confirmation for keeping one, and when creating one with saved storage. A
+  saved computer then shows a **Warning** tag beside its name in the dock and
+  in Library, and clicking it reopens the warning.
+  The dock truncates the tag with an ellipsis when space is limited.
+  Temporary computers do not show it.
+  Transactional software upgrades remain follow-up work; persistence is not a
+  cross-release compatibility promise. Incompatible storage is not deleted.
+  Each has a stable `?computer=<UUID>` URL that reopens the same computer on
+  reload, without downloading its starting image again. **New computer** inside
+  **Library** offers **Temporary** (default) and **Saved on this device**; Library
+  reopens, renames, keeps, and deletes computers. Both retention modes use the
+  same live journal and bounded caches, not manual snapshots. See
+  [Computer library and retention](#computer-library-and-retention).
+- The explicit experimental persistence controls remain available for
+  storage experiments. Their default mode is fixed-overwrite:
+  `?experimentalPersistence=<name>` (1–128 ASCII letters, digits, `_`, or
+  `-`). Confirming the warning freezes that computer's composed base image
+  in OPFS and boots the existing kernel journal with the same name. Reloading
+  with the same image URL, profile, and name reuses the exact saved bytes;
+  a mismatched identity or damaged image fails boot instead of resetting it.
+  The OPFS manifest checks image length and per-MiB chunk digests, plus a
+  SHA-256 for saved lazy-asset transport metadata. The page refuses
+  boot-link inputs and scripts in this mode, rather than auto-running a
+  URL-supplied script against saved state. The default fixed-overwrite mode is
+  a developer smoke path, not a general persistent computer: only overwrites
+  inside existing regular image files persist; create, append, truncate,
+  rename, and metadata changes are unsupported. Restoring a newly saved custom
+  image does not re-fetch its
+  VFS source; the OPFS manifest also retains lazy-asset transport metadata.
+  Older manifests may re-fetch the source. Scoped Pages products authenticate
+  their compressed source digest while staging into OPFS. The app, kernel, and
+  lazy assets can still need
+  the network, so this is not an offline computer. There is no per-computer
+  reset or upgrade UI; clearing site data removes this origin's machines
+  and other site data. A newly composed base image is streamed into OPFS in
+  acknowledged 1 MiB chunks and published only by the current boot. Direct
+  VFS URLs and scoped Pages products stage source bytes incrementally in OPFS;
+  staging is capped at 64 GiB, independently of the roughly 1 GiB limit on
+  legacy in-memory image decoding and of the browser's available OPFS quota.
+  This is a transport safety bound, not a promise that the browser can store
+  or boot every image below it.
+  Positioned composition uses the staging limit, not the legacy resident
+  decoding limit. Decoded container bytes and the filesystem's logical block
+  ceiling are separate quantities: container framing may extend beyond a
+  fully sized filesystem body. Resident-image profiles still limit both
+  quantities independently. The Rust parser validates the filesystem and
+  supplies its authoritative ceiling. Cross-origin relays can impose smaller
+  response limits independently of persistence; same-origin image hosting
+  does not pass through that relay.
+  Zstd decoding uses at most a 16 MiB window. The image writer reads that
+  source through positioned calls rather than an image-sized staging buffer.
+  A restored image is read from OPFS in positioned pages with a
+  bounded 4 MiB cache, recycling the actual page backings rather than merely
+  dropping their map entries; boot reuses one 1 MiB digest window without a
+  whole-image JavaScript buffer.
+  A separate low-level checked-base API is now under integration:
+  `BrowserKernel.initFromOpfsImage({ persistentImageBinding })` accepts an
+  expected header identity and explicit data/index cache page counts. The
+  Rust reader validates the recorded CRC32C or SHA-256 policy and checks
+  demanded blocks before returning their bytes; normal reopen does not scan
+  the entire base. Its host transport has no hashing or LRU, only one reusable
+  64 KiB ordinary OPFS bounce buffer. Real OPFS worker-restart tests pass for
+  both policies on Chromium, Firefox and WebKit, including journal replay and
+  wrong-root refusal without changing the journal. These are desktop-engine
+  tests, not actual-phone performance measurements. The source composer publishes this format through version 6 computer manifests.
+  New computers default to CRC32C; creation can opt into SHA-256 using
+  `experimentalPersistenceIntegrity=sha256`. Reopen preserves
+  the recorded policy rather than applying a new URL default. CRC32C checks
+  accidental damage; it does not cryptographically bind payload content.
+  Small-image source integration tests cover composition, journal writes,
+  publication and reopening with both policies in all three engines.
+  The frozen WordPress checkpoint still uses its earlier whole-image checks
+  and 4 MiB host cache; a rebuilt application checkpoint remains outstanding.
+  The positioned Rust image module can now stream a new checked base directly
+  to a worker-owned OPFS handle, with explicit CRC32C/SHA-256 creation policy
+  and separate write/readback progress. Browser tests cover both policies,
+  aborting unresolved input/progress callbacks, and kernel restart against
+  that output. The page wraps the worker's closed-output receipt in an atomic
+  saved-computer publication; normal reopen checks only the small header
+  before the kernel performs demand verification. Low-level raw VFSI image exports retain whole-image transport checks.
+  Common image/journal/index/compaction reads
+  reuse one cleared 64 KiB ordinary transport window. Larger requests still
+  allocate temporary buffers and are not covered by that fixed-window claim.
+  File export uses one factory-owned ordinary chunk destination rather than
+  accumulating payload-sized garbage; buffered exports retain owned chunks.
+  Snapshot/digest metadata and aggregate process memory still need admission
+  and measurement. The 256 KiB dirty-block cache holds
+  unsynced writes; `fsync`, `fdatasync`, eviction, and graceful
+  destroy flush it. Once initialized, a persistent browser kernel retains its
+  exclusive journal Web Lock until the worker acknowledges storage closure and
+  terminates; a timed-out destroy retains the lock until the tab closes.
+  Normal persistence has no manual checkpoint action. Image creation and
+  low-level export report bounded byte progress for writing and verification;
+  unmeasured stages remain indeterminate. Automatic compaction retains its
+  journal ownership, verification and generation-publication checks.
+  The page also leases the computer name across boot and kernel lifetime and
+  passes that lease into BrowserKernel. Low-level callers can acquire the same
+  computer lock by naming the computer. BrowserKernel refuses persistent boot
+  without a computer name or claimed page lease; callers that misname the
+  computer can still fork it across different journal names.
+  Larger guest writes are split into cache-sized chunks and
+  may return a short count after a later writeback failure. Browser termination
+  loses unsynced writes without changing
+  the last durable image; an abrupt crash can do the same. Image capacity,
+  runtime memory, and OPFS quota are distinct limits. Resizable creation returns
+  `ENOSPC` when the image's inode table is full. Unlinked files retain their
+  inode slots and remain charged in logical block statistics until their last
+  descriptor or shared mapping closes. Rust computes the composed block
+  footprint with bounded scratch rather than building a snapshot or a
+  file-sized list of allocated blocks for each statistics query. It includes
+  sparse pointer trees, packed directory records, and deferred-file metadata;
+  image loading preserves shared hard-link identities after checkpoints.
+  Embedded files now load through a positioned Rust allocation cursor with
+  three 4 KiB pointer-page slots. Dense and sparse files retain only a density
+  flag and scalar allocation count, not a per-data-block map. Recovery derives
+  composed counts before publishing replayed state; writes charge accepted
+  prefixes, and truncation precomputes the retained count before committing.
+  Cold statistics and namespace space checks use those scalars without image
+  reads. Export streams sparse allocations into the writer without temporary
+  output lists. Pointer pages retain compact arithmetic runs and fall back to
+  one 4 KiB page for fragmented or out-of-order entries; total pointer-page,
+  content-extent, namespace, and recovery budgets remain unfinished.
+  Shutdown also drains any live compaction task before closing journal/index
+  handles, so post-activation cleanup cannot leave it closing a retired
+  generation. Unacknowledged shutdown still retains the browser writer lease.
+  The current activation-control candidate also records which journal
+  generation became writable, separately from its immutable seal. Strict
+  recovery refuses a damaged activated generation instead of silently opening
+  an older retained journal. Source controls are repaired before target
+  mutation, and an unconfirmed activation synchronously stops kernel entry.
+  Checkpoint 1.18 includes these changes and remains under broader application
+  acceptance; checkpoint 1.17 is unchanged. Older unreleased ABI 51 prototype
+  hosts that ignore these records are
+  unsupported writers/downgrade targets. See the
+  [activation contract](architecture.md#filesystem) and
+  [durability coverage](persistence-durability.md#release-acceptance-map).
+  Persistent machines on both hosts allow up to 30 seconds for graceful
+  shutdown, including queued synchronous storage work, live compaction and
+  retirement, process teardown and final sync. This is a bounded wait, not a
+  durability acknowledgement: timeout still forces worker-realm termination
+  and preserves unconfirmed browser ownership. Nonpersistent machines retain
+  their shorter existing deadlines. Storage sync failures remain errors even
+  when the worker acknowledges shutdown.
+  Browser writer ownership is marked unproven before persistent initialization
+  is dispatched, not just after `ready`. A settled `init_error` from the
+  exact current Worker now permits the bounded storage-close handshake
+  before readiness. Raw image and generation handles enter an ownership
+  ledger before validation or publication; failed closes remain unproven
+  even if generation cleanup logs their error. Already-admitted OPFS
+  snapshot operations drain before final closure, including handle
+  acquisition still pending when shutdown starts. Only acknowledged
+  storage closure followed by successful realm termination releases the
+  leases. Fatal/transport failures, unknown initialization state and
+  missing, rejected or malformed acknowledgements remain fail-closed;
+  termination alone is not storage-close proof. Such an unconfirmed
+  computer remains locked in the page until the tab closes.
+  `SDEF` metadata loading uses positioned reads of at most 4 KiB and an 8 MiB
+  charged model/field budget instead of allocating the declared section body.
+  The image writer admits deferred descriptions before creating output inodes;
+  `ENOMEM` identifies this memory policy, separately from disk `ENOSPC` and
+  malformed-input `EINVAL`. The budget does not bound namespace clones,
+  allocator overhead, other metadata carriers, or aggregate process peaks.
+  Rootfs directory loading borrows names from one 4 KiB Rust cursor and retains
+  ancestor positions rather than collecting/sorting whole listings or queuing
+  sibling paths. Node and all three engines accept a 10,241-node positioned
+  fixture through this path. Live namespace size, depth-dependent scratch,
+  publication-policy listings and whole-process peaks still need budgets;
+  this is not an aggregate memory-ceiling guarantee.
+  Post-load FIFO registration also streams borrowed namespace paths and skips
+  FIFO-free trees. Reset removes registrations by the backing pipe's rootfs
+  device identity rather than walking the tree, preserving foreign-mount
+  FIFOs and open endpoints while removing unreachable rootfs aliases. Idle
+  named FIFOs have no data buffer. An I/O open fallibly reserves its 64 KiB
+  buffer against the kernel's shared ordinary I/O admission pool before
+  publishing any endpoint/rendezvous; failure reports `ENOMEM` without leaking
+  an fd or false peer. Last I/O close releases buffer memory even while names
+  or `O_PATH` references remain; fork and in-flight descriptors retain it.
+  These volatile buffers do not consume logical disk blocks or survive a
+  reboot. Registry metadata, other pipe/socket buffers and pipe-table backing
+  also retain ordinary I/O credits; reset is not guaranteed allocation-free.
+  A real guest now creates 1,024 FIFO markers under a 64 MiB kernel ceiling,
+  reaches named-buffer `ENOMEM`, reclaims capacity despite a surviving
+  path-only fd, and verifies every FIFO after strict reboot and a base-only
+  checkpoint boot on all three engines. These checks use persistent profiles;
+  they are not whole-process memory or current WordPress-image acceptance.
+  Rust reserves inode and reclamation-vector capacity before persistent
+  creation commits its journal, and before replay changes the base tree.
+  Arena reservation errors report `ENOMEM`; logical inode exhaustion remains
+  `ENOSPC`. Final inode release needs no free-index-vector growth. Both hosts
+  now configure a shared Rust modeled metadata budget before loading the root
+  image: `rootfsMetadataBytes` defaults to the smaller of 64 MiB and one eighth
+  of the kernel ceiling, with smaller explicit limits allowed. Retained arena
+  capacities, owned names and variable metadata are charged; temporary work
+  has separate two-times-resident headroom. An admission failure reports
+  `ENOMEM` without a misleading format-rebuild hint or stale-generation
+  fallback. This does not yet bound all journal/recovery/FIFO resources or
+  whole-process memory. A new real-guest workflow passes on all three engines
+  with persistent profiles: a 512 MiB logical image, 64 MiB kernel ceiling and
+  64 KiB metadata budget, admission failure, reclamation, strict recovery at
+  the same budget, smaller-budget refusal without journal changes, and
+  checkpoint recovery. This is not arbitrary namespace or whole-process memory
+  acceptance; the broader current-ABI product-image release run remains open.
+  A Node integration test mounts a dense file larger
+  than 32 GiB, writes and syncs its tail through a guest, then strictly recovers
+  that change under a 64 MiB kernel ceiling. This is not a 32 GiB browser
+  installation or export result, nor an aggregate process-memory bound.
+  Sparse write reservations and partial-tail truncation now query the image's
+  positioned pointer metadata; Rust merges those allocations with indexed,
+  tail, and dirty journal blocks without collecting a base list for the query.
+  A source-read error refuses the mutation without changing its live or durable
+  state, while a fully truncated/fenced base is not read. Rust recovery and
+  export receive the existing image byte reader explicitly; no reader is
+  stored on an inode, and the host gains no new filesystem policy.
+  Rust's append-only image writer now synthesizes inode/block bitmap slices
+  from scalar allocation-prefix counts rather than retaining growing bitmap
+  buffers. This changes neither the on-disk format nor logical capacity.
+  Pointer pages, namespaces, inode metadata, and snapshot planning still need
+  their separate budgets; implicit bitmaps are not a complete export bound.
+  Ordinary writes enforce logical block capacity before accepting each
+  cache-sized chunk, including sparse data and indirect-pointer allocations.
+  They allow overwriting allocated blocks when full and return an accepted
+  prefix or `ENOSPC` for writes that need more space. This includes holes
+  inside fixed-overwrite files. Namespace transactions preflight packed
+  directory changes, new inode content, and final-reference reclamation before
+  publishing their journal records; the cached total changes only after the
+  live namespace update succeeds. Partial truncation preserves sparse holes
+  instead of allocating zero-filled blocks. On Node and all three browser
+  engines, mapped `msync`, `fsync`, and `fdatasync` now report logical `ENOSPC`,
+  preserve pending data, and succeed after another descriptor reclaims space;
+  the guest checks sparse bytes beyond 9 GiB after journal reboot and
+  checkpoint. Persistent verified reads preserve deferred descriptions rather
+  than embedding cached content in the next checkpoint. Rust bounds retained
+  verified data to four 1 MiB chunks and chunk-hash tables to 8 MiB across
+  64 files. Persistent ZIP reads now use positioned directory indexes and
+  incremental DEFLATE decoding instead of whole-archive/member buffers. Raw
+  archive verification has its own 8 MiB hash-table and four 1 MiB chunk budgets;
+  directory indexes retain at most 4 MiB across 64 archives, with two bounded
+  incremental readers. Backward seeks outside decoder checkpoints can require
+  prefix decoding again. Closed-asset bundles, URI/namespace metadata, recovery,
+  and export still need aggregate budgets. Cold verification reads the complete
+  file, and evicting its hash table requires verification again. A 96 MiB
+  verified deferred file now survives read, strict reboot, and checkpoint under
+  a 64 MiB kernel ceiling
+  and an 8 MiB logical disk on Node and all three browser engines; host buffers
+  are outside that kernel ceiling. Broader persistence acceptance remains
+  unfinished. Stored and compressed 96 MiB archive members also survive guest
+  reads, strict journal recovery, checkpoint export, and checkpoint boot under
+  the 64 MiB kernel ceiling on Node and all three browser engines. This does
+  not measure whole-process peak memory or prove compressed random-read
+  performance. Persistent deferred downloads now stream into disposable OPFS
+  byte storage, with one download active and at most 64 KiB per storage call.
+  Node uses an unlinked temporary file. Browser ownership locks preserve live
+  caches while later opens reclaim abandoned stores after worker termination;
+  shutdown cancels pending downloads before draining admitted process creators
+  and removes its cache. This lets blocked lazy exec work release its creator
+  token before the normal dirty-file sync. Every deferred transfer, persistent
+  or not, fails with `ETIMEDOUT` after 30 seconds without received bytes;
+  empty chunks and retries do not renew that deadline. Transport preparation
+  (Node's repository path resolution) runs before that deadline starts, under
+  its own 10-minute ceiling. Inspection, prepared exec, and spawn wait for a
+  fetch in flight to settle rather than timing it themselves, so healthy
+  downloads and preparations longer than 30 seconds succeed. Cancellation
+  releases the queue even if a custom fetcher ignores
+  its signal; late responses cannot write or become readable. It cannot force
+  that fetcher to release resources it owns or interrupt synchronous work.
+  The 96 MiB fixture
+  now uses a streaming server instead of a whole-file closed asset. Cached
+  transport is not an offline recovery source, and its quota is separate from
+  logical disk space. Aggregate metadata bounds and workload performance
+  remain unfinished. KIFS's per-file size limit
+  returns `EFBIG` before accepting unrepresentable growth; writes crossing
+  the limit return the accepted prefix. Persistent checkpoints preserve the
+  mounted block and inode capacities and refuse an overcommitted snapshot
+  with `ENOSPC` rather than growing the disk. A 772 MiB decoded image
+  boots under the constrained 768 MiB kernel ceiling in browser tests; this
+  does not make mutable POSIX persistence complete.
+  Browser quota or eviction can remove OPFS data. If the entire
+  computer's OPFS state disappears, its name is
+  treated as new; this mode cannot detect a complete eviction. Do not use
+  valuable data. For experimental namespace and metadata persistence, a new
+  computer may opt into `?experimentalPersistence=<name>&experimentalPersistenceMode=resizable`.
+  The mode is part of the saved computer identity, so changing modes under an
+  existing name fails closed; use a different name rather than attempting an
+  in-place migration. ABI 51 real-page tests on Chromium, Firefox, and WebKit
+  boot the shell, create and sync an image-backed file, reload from OPFS,
+  append and sync it, and verify it after another reload. They also boot
+  WordPress SQLite and WordPress MariaDB, publish a post and upload a PNG,
+  then recover without the source VFS route and verify both the post and
+  uploaded bytes. Chromium
+  crashes and relaunches the browser process immediately after the upload;
+  Firefox and WebKit reload the page. A separate
+  Chromium real-shell test crashes the browser process after `sync`, relaunches
+  the same profile without the source VFS route, and reads the saved file. To
+  try this manually, launch the shell, WordPress SQLite, or WordPress MariaDB
+  from the gallery, then append
+  `&experimentalPersistence=<new-name>&experimentalPersistenceMode=resizable`
+  to that machine URL and confirm the warning before writing. Keep the same
+  URL and browser profile to reopen it. This remains experimental: OPFS can
+  be evicted, full-process crash recovery has only narrow Chromium shell and
+  WordPress coverage, power-loss recovery is unproven, and valuable data must
+  not be entrusted to it.
 - `OpfsFileSystem` — Origin Private File System for browser persistence. Its
   worker assigns session-scoped inode tokens to regular files and uses
   `FileSystemHandle.isSameEntry()` to unify simultaneous opens. Tokens remain
@@ -354,6 +689,7 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
   than `getProcessMemory()`.
 - `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
 - Keyboard input: the demo page maps focused browser `KeyboardEvent` values to Linux input keycodes, encodes them as MEDIUMRAW bytes, and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software decodes those bytes from the tty. Ctrl+Shift+Esc is reserved as the host escape from keyboard capture.
+- The same keys also reach the machine keyboard device `/dev/input/event0` as evdev key events while the framebuffer canvas holds focus, as every key reaches both the console and evdev on Linux. That lets a program bind `/dev/fb0` without a terminal: the retro ROM exchange handler starts the emulator with stdin on `/dev/null`, and the emulator then reads `/dev/input/event0`. A program reads one source, never both, or it sees every key twice; the retro emulators read their terminal when they have one. Images that declare `evdev-input` already feed evdev from their display surface; for other images the shell attaches the evdev source scoped to the KMS canvas and the focused framebuffer canvas (`apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`).
 - Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via
   `FBIOPAN_DISPLAY` is a no-op. Device/CRTC-owned surfaces, per-handle rights,
   serialized presentation, and multi-writer/compositor ownership remain
@@ -375,6 +711,15 @@ pane releases both PS/2 and evdev buttons on pointer cancellation, lost pointer
 capture, window blur, and input teardown, retaining the last absolute position.
 
 ### Audio output (`/dev/dsp`)
+
+Automated browser tests use the shared `playwright-test.ts` fixture to keep
+speaker output silent by default. It inserts a zero-gain final Web Audio
+output while guest PCM, worklets, analysers and autoplay policy remain active.
+The fixture applies before test-owned pages run, including public HTML,
+persistent profiles, reused servers and production previews. Chromium and
+Firefox also retain their native output-mute settings. Audible test playback
+requires `KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO=1` inside the dev shell. System
+speaker and microphone settings are never changed by the test policy.
 
 - The kernel exposes a playback-only OSS `/dev/dsp` frontend over its generic
   PCM stream core. Applications may write U8, signed 16-bit little-endian, or
@@ -406,23 +751,34 @@ capture, window blur, and input teardown, retaining the last absolute position.
   128-frame worklet render quantum adds about 2.7 ms at 48 kHz; the browser's
   `AudioContext.baseLatency` and `outputLatency` are device-specific and must
   be measured separately. Machine teardown first waits for the shared PCM ring
-  to drain. If the context is running, it then suspends the context so Web
+  to drain. Driver close refuses new resume/suspend requests, bounds already
+  admitted transitions, and obtains worklet detach acknowledgement before
+  suspending the context. If the context is running, it then suspends it so Web
   Audio hands already-rendered blocks to the output device and waits a bounded
   interval covering the reported base/output latency and final render quantum
-  before releasing the machine's worklet processor. The processor drops its
-  shared-memory views, closes its kernel connection, acknowledges release, and
-  returns false from rendering. Disconnecting a processor alone is insufficient:
-  a source processor returning true retains its transport inside the
-  page-wide AudioContext. Isolating that transport also bounds any wrappers
-  awaiting collection in this persistent realm. The shared context stays open to
-  avoid WebKit's per-context rendering-thread leak, a suspected WebKit defect
-  recorded in the runtime workaround registry
+  before disconnecting this machine's worklet. The processor clears both mirror
+  views and closes its connection before acknowledging terminal detach; later
+  render callbacks return false. Disconnecting alone does not end a source
+  processor that keeps returning true. The independent mirror bounds retained
+  wrappers without retaining the kernel's address space. A missing acknowledgement
+  is reported and prevents further shared audio attachment until reload, but
+  does not block replacement kernels or persistent-storage handoff. A pending
+  context transition similarly quarantines shared context reuse; late completion
+  does not reopen a closed driver or clear quarantine. Admission is checked
+  again after asynchronous module acquisition. Preparation failures after node
+  construction must retire that node rather than discard its ownership record.
+  The shared context stays open for subsequent machines to avoid a suspected
+  WebKit context-close rendering-thread leak recorded in the runtime registry
   ([`WEBKIT-AUDIOWORKLET-CLOSE-LEAK`](../tests/runtime-workarounds/WEBKIT-AUDIOWORKLET-CLOSE-LEAK/entry.md));
-  explicitly supplied private contexts are closed. A suspended or interrupted context is never resumed
-  implicitly during teardown.
+  explicitly supplied private contexts are closed. A suspended or interrupted
+  context is never resumed implicitly during teardown.
 - **A user gesture is required.** Preparing the PCM driver may leave its
   `AudioContext` suspended. The application must call the session audio-resume
-  path from a click, keypress, or other browser-recognized activation. If the
+  path from a click, keypress, or other browser-recognized activation. A bare
+  modifier key such as Shift is not activation in Chromium or Firefox. The
+  browser holds an early resume pending, so the driver repeats the native call
+  on every later resume request; the first one made after real activation
+  starts the context. If the
   context is suspended or interrupted, the consumer cursor intentionally
   stops: the queue fills, writers apply backpressure, and drain/close stays
   pending instead of pretending audio played. Resuming the context continues
@@ -439,6 +795,21 @@ capture, window blur, and input teardown, retaining the last absolute position.
   shell machine stays silent while a machine that has opened the device still
   surfaces a suspended, errored, interrupted or unavailable sink. The latch is
   what keeps the warning up after a program that played one short sound exits.
+  The current candidate does not attach a worklet to that transport at ready
+  when no guest has opened the device. A trusted resume primes and resumes the
+  shared audio context synchronously without exposing kernel memory. Native
+  demand then binds the normal worklet to the same already activated context;
+  the existing 500 ms activity sample runs independently of UI subscriptions.
+  Explicit `prepareAudio()` still prepares the sink immediately. Shutdown
+  stops automatic demand admission and suspends a primed, unused context
+  without inventing a worklet detach acknowledgement. Actual attached
+  transports retain the strict acknowledgement requirement described above.
+  A bounded preparation wait quarantines an unresolved worklet load; a late
+  continuation cannot attach a transport to a closed driver. Transport
+  descriptors are not held across that module-load await or in the public
+  preparation/resume wrappers' async frames. Checkpoint 1.19 application
+  acceptance is pending; this is not a diagnosed fix for the separate mixed
+  WordPress runtime stall.
 - Browser policy suspension and interruption are recoverable and do not poison
   the stream. A permanent worklet, processor, or sink failure is latched into
   the shared transport instead: blocked calls wake, `write()` and drain return
@@ -524,14 +895,14 @@ kernel, image writer, images, and package artifacts through `run.sh`.
 | mariadb-test | MariaDB + mysqltest | dinit + spawn | Playwright-driven mysql-test runner |
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
 | network | bash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
-| doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. The image's `/usr/local/bin/fbdoom` is a launch wrapper around the lazy `/usr/bin/fbdoom`: on first launch it writes `screenblocks 10` (the full-width view with the status bar, rather than Doom's default view inset in a tiled border) into a missing `~/.fdoom.tar/default.cfg`, Doom's own per-user config (fbDOOM reads it at startup and saves its settings there when it quits, as every Doom does; doomgeneric had compiled both out), because the home directory is an empty tmpfs on every boot and Doom has no system-wide config. Doom's Screen Size option still changes it. |
+| doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. The image's `/usr/bin/fbdoom` is a launch wrapper around the lazy `/usr/libexec/fbdoom`: on first launch it writes `screenblocks 10` (the full-width view with the status bar, rather than Doom's default view inset in a tiled border) into a missing `~/.fdoom.tar/default.cfg`, Doom's own per-user config (fbDOOM reads it at startup and saves its settings there when it quits, as every Doom does; doomgeneric had compiled both out), because Doom has no system-wide config. The managed shareware WAD is installed at `/usr/share/doom/doom1.wad`; custom exchange WADs use `/var/games/doom/user.wad`. Saves live in `$HOME/.fdoom.tar/savegame/doomsav0.dsg` through `doomsav5.dsg`, and persist on saved or temporary disk-backed computers. Doom does not autosave on quit: use Save Game (F2), then Load Game (F3) after restarting. Doom's Screen Size option still changes it. |
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package as a lazy file in the image, fetched when the profile first runs it; its shader presets are baked into the image. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
-| modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
-| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
+| modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
+| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
 | freeciv | Freeciv 3.2.6 SDL2 client + server | dinit | Lazy game/data archive, GLES2 presentation, and direct TCP multiplayer through network sessions. The Multiplayer dock menu hosts or joins the session host on port 5556. Audio and multicast discovery are disabled; see [Freeciv](freeciv.md). |
 | love | Native LÖVE 11.5 games | dinit | SDL2 KMSDRM/EGL/GLES port with Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX selectable through the Games dock menu. Starts Pong; switching restarts the process with the selected game directory. The executable and game tree download lazily. SDL2/OSS audio output is verified in Chromium. Steam integration is disabled. See `packages/registry/love/README.md` for the port's compatibility boundaries. |
-| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
-| omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The desktop data archive also fetches on first read; the terminal-only boot does not download it. |
+| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
+| omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The desktop data archive also fetches on first read; the terminal-only boot does not download it. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -822,7 +1193,7 @@ Hyprland launcher (`hyprdesktop`) and its config
 it. As packaged, the Hyprland tiling machine boots the same `wlcompositor`
 binary as a Hyprland-class tiling window manager (the floating Wayland desktop
 above is its default layout). The image declares one command,
-`/usr/local/bin/hyprdesktop`, which starts the compositor with
+`/usr/bin/hyprdesktop`, which starts the compositor with
 `WLC_LAYOUT=dwindle` and the image's hyprland.conf-shaped
 `/usr/share/kandelo/hyprland/wlcompositor.conf` (named by `WLC_CONFIG`),
 waits for its socket, then starts three real clients — one `wlclock` and
@@ -882,7 +1253,7 @@ package builds it into `kandelo-desktop-data.zip`, which the shell image
 registers as a verified lazy archive under `/usr/share/kandelo`. Its first
 file read downloads the archive; later reads reuse it. The image declares
 one command,
-`/usr/local/bin/omarchydesktop`, which starts a `dbus-daemon` session bus
+`/usr/bin/omarchydesktop`, which starts a `dbus-daemon` session bus
 and the compositor, waits for both sockets and the compositor's Hyprland
 IPC socket, then starts **Quickshell 0.3.1** on the image's `shell.qml`.
 Nothing is staged by the page.
@@ -1302,7 +1673,7 @@ The ScummVM machine (`?vfs=<shell image>&profile=scummvm`) runs unmodified
 upstream ScummVM fullscreen on `/dev/dri/card0`: SDL2's
 KMSDRM backend takes DRM master and renders GLES2 straight to the display,
 and audio goes through OSS on `/dev/dsp`. The program
-(`/usr/bin/scummvm`) and the GUI data the package declares as runtime files
+(`/usr/libexec/scummvm`) and the GUI data the package declares as runtime files
 (themes, icons and fonts under `/usr/share/scummvm`) are lazy files in the
 shell image, fetched on first use.
 
@@ -1319,7 +1690,7 @@ downloads the program plus the one engine of the game it plays. SDL2's
 `--enable-loadso`), and the program links with `--export-all` so a plugin
 resolves every function it imports against it; the package build fails if
 any plugin import has no export to bind to. The machine's command is
-`/usr/local/bin/scummvm`, a small wrapper in the image that:
+`/usr/bin/scummvm`, a small wrapper in the image that:
 
 - names SDL's backends in the environment. The `sdl2` package is built
   with `--disable-libudev`, so SDL's evdev layer only finds the kernel's
@@ -1351,11 +1722,11 @@ The catalog is image content.
 `packages/registry/shell/scummvm-freeware-games.json` lists each game's
 archive URL on `downloads.scummvm.org`, its size, and the SHA-256 the
 ScummVM project publishes beside it; the image builder writes it to
-`/usr/local/share/scummvm-play/games.tsv`, and fails if the ScummVM
+`/usr/share/scummvm-play/games.tsv`, and fails if the ScummVM
 profile's dock menu does not list exactly its games. Each button and menu
 entry is a `dockActions` command: it ends the running ScummVM (the
 framebuffer pane signals the `/dev/fb0` owner, described below), then runs
-`/usr/local/bin/scummvm-play <game>` in the machine's shell. That script
+`/usr/bin/scummvm-play <game>` in the machine's shell. That script
 downloads the archive with the machine's own `curl` — in the browser that
 goes through the CORS proxy described below, because the site grants no CORS
 — reporting a percentage against the catalog size (the guest receives
@@ -1365,7 +1736,7 @@ MiB response limit. If any request fails, it switches to 16 MiB ranges with
 up to three attempts per range. Completed ranges stay downloaded; an
 incomplete attempt is discarded before retrying. If the server ignores
 ranges on a smaller archive, it retries the full request. It then checks the
-SHA-256, unzips into `/usr/share/scummvm-games/<game>`, and deletes the
+SHA-256, unzips into `/var/games/scummvm/<game>`, and deletes the
 archive. ScummVM's own `--add --recursive` then finds the game and records
 it as a launcher target, and the script starts that target; a collection
 (the WAGE games) opens the launcher instead. A failed download or a digest
@@ -1377,7 +1748,7 @@ it again starts it without downloading; nothing persists across a reboot.
 No other game ships with the machine: no Kandelo package carries a commercial
 SCUMM title. Sending a `.zip` to the machine (**Load game data** in the
 display's dock, or a drop) hands it to the machine's scummvm rule (up to
-512 MiB), which extracts it into `/usr/share/scummvm-games` while ScummVM
+512 MiB), which extracts it into `/var/games/scummvm` while ScummVM
 keeps running; the batch's toast says when it is done. ScummVM's "Add Game"
 browser opens in that directory. The extracted game must fit the machine's
 filesystem, which lives in kernel memory beside everything else guests have
@@ -1422,6 +1793,15 @@ Its launcher scales with the display there too: the compositor reports
 the connector's physical size in `wl_output.geometry`, and SDL's Wayland
 backend derives the DPI from it.
 
+Installed Firefox 159/macOS rejects repeated WebGL2 `getContext()` calls on
+the same transferred canvas in the same worker. The host acquires once per
+canvas and shares that native context across the scanout presenter and
+guest EGL contexts; guest-owned GL resources still retire normally.
+This avoids aborting the kernel when starting or replacing ScummVM.
+The standalone reproduction, unaffected bundled-browser controls and
+removal criteria are recorded in
+[`FIREFOX-OFFSCREEN-CONTEXT-REACQUISITION`](../tests/runtime-workarounds/FIREFOX-OFFSCREEN-CONTEXT-REACQUISITION/entry.md).
+
 Gated in the browser by `apps/browser-demos/test/kandelo-scummvm.spec.ts`
 (the GUI data reaches the guest, the config is writable, an upload is
 extracted where the launcher browses, and the freeware menu lists the
@@ -1435,7 +1815,715 @@ checked by hand (Chromium at a device scale factor of 2), because
 Playwright's emulated device scale does not change the size the pane
 reports.
 
+### DOSBox Pure interpreter package
+
+The `dosbox-pure` registry package runs DOS x86 programs inside an
+ordinary Kandelo Wasm process, using the core's interpreter. Its small
+libretro frontend uses `/dev/fb0`, `/dev/dsp`, terminal or evdev keyboard
+input, `/dev/input/mice`, and ordinary VFS files on both hosts. It is
+included lazily in the browser shell image, with `/usr/bin/dos-play`.
+Run `dos-play --list`, then `dos-play dosdefender`, `dos-play vitetris`
+or `dos-play anarch`. These freely licensed demos download on demand;
+the launcher verifies exact sizes and SHA-256 hashes before unpacking,
+preserves upstream notices, and reuses the installed copy on later runs.
+DOS Defender is pinned to 1.0.1, which retains mouse input; 1.1 requires
+gamepad support that this frontend does not provide. There is no separate
+DOS gallery profile. The base shell's **Activities → Apps & Tools → DOS games**
+starts `dos-play keen1`: Commander Keen 1's complete Apogee shareware episode.
+The **Choose game** dock menu switches among Keen and the three freely licensed
+demos, and **Load game** imports local files. The original Keen `VENDOR.DOC`,
+game files and ordering information stay intact; paid episodes are user-supplied.
+Keen's data is downloaded on demand and is absent from the shell image and
+package archives. See the [demo walkthrough and distribution notes](../packages/registry/dosbox-pure/README.md#commander-keen-distribution).
+
+Installed demos and their DOS writes live under
+`$XDG_DATA_HOME/dos-play` (default `$HOME/.local/share/dos-play`).
+`dos-play ./GAME.EXE` or `dos-play /path/to/game.zip` starts local content.
+The launcher passes additional arguments through to DOSBox Pure.
+Downloaded catalog ZIPs are extracted only after verification; local ZIPs
+are opened by the emulator itself.
+
+The base shell's shared exchange handler unpacks dropped ZIPs and inspects
+their contents alongside dropped executables, ROMs and directories. It checks
+DOS headers, uses `retro-run --identify` for console ROMs and runs ScummVM's
+own recursive detector. Windows PE/NE executables are excluded from DOS
+launch. One clear match opens an ordinary terminal with its launch command;
+multiple games, mixed runtimes, raw COM/BAT files and uncertain LE/LX files
+open a terminal picker. Selecting a game uses the normal display handoff.
+`game-play DIRECTORY|ZIP` provides the same inspection from a terminal.
+Without an external terminal consumer, Node exchange imports retain their
+files and report the command to run. The command-line picker can execute the
+chosen game in its current terminal.
+
+Imports, original ZIPs, unpacked data and detection configurations are kept
+under `$XDG_DATA_HOME/kandelo/game-imports`, defaulting to
+`$HOME/.local/share/kandelo/game-imports`. Raw-ROM-only drops retain their
+existing `~/roms` behavior. Unknown archives are saved unchanged to
+`~/Downloads`; rejected archives report the failure and use the ordinary
+save handler for the original input. Stored/deflated single-disk ZIPs are
+bounded to 1,024 entries, 16 path levels and 512 MiB of retained plus unpacked
+data. Unsafe paths, links, conflicting names, encrypted and ZIP64 archives are
+refused. Nested archives inside an extracted ZIP remain data. The shared
+handler replaces the old extension-only ScummVM ZIP rule. See the
+[package guide](../packages/registry/dosbox-pure/README.md#drag-and-drop-in-the-base-shell)
+for the guest command and persistence details.
+
+ZIP writes are stored in per-user save overlays. They are durable only
+when their containing machine is saved. The frontend does not expose
+save-state controls, gamepads, accelerated 3dfx rendering or multiplayer.
+Quitting cancels queued sound before closing `/dev/dsp`, including when the
+browser audio clock is suspended.
+See the [package guide](../packages/registry/dosbox-pure/README.md) for
+commands, device limits and the Node/browser smoke tests.
+
+Native DOSBox recompiler backends generate host CPU instructions, which
+cannot execute from Wasm linear memory. The port explicitly disables
+them. Generating x86-to-Wasm code is an **optional follow-up**, not a
+requirement for this interpreter implementation. It would need a Wasm
+code generator, callable-module loading and code-cache invalidation;
+no game-speed improvement is promised before measurement.
+
+### Retro emulators
+
+Every shell machine carries three emulators from the `retro-emulators`
+package as lazy files, each a libretro core linked with one small frontend
+and named for the emulator it is:
+
+| Command | Shorter name | Systems |
+|---|---|---|
+| `/usr/bin/fceumm` | `retro-nes` | NES |
+| `/usr/bin/genesis-plus-gx` | `retro-genesis` | Mega Drive, Master System, Game Gear |
+| `/usr/bin/snes9x` | `retro-snes` | SNES |
+
+A 240p test suite ROM for each is under `/usr/share/retro-emulators/roms`.
+Nothing is fetched until an emulator runs. Each takes
+`ROM [--state FILE | --info | --keys]` and reads the system from the ROM's
+extension. The emulator draws on `/dev/fb0`, plays through `/dev/dsp` and
+reads the keyboard as a joypad: the arrows, Enter, Right Shift, Z, X, A,
+S, Q and W are the D-pad, Start, Select and the face and shoulder buttons.
+What each key is on a given system comes from the core itself: every
+libretro core names its buttons (`RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS`),
+so Genesis Plus GX calls Right Shift "Mode" and X "C". The emulator prints
+that list when a game starts, before it takes the keyboard, and `--keys`
+prints it and exits. F2 saves a state, F4 loads it, and Ctrl+C quits.
+
+Saves are kept per game in the user's data directory,
+`$XDG_DATA_HOME/retro-emulators` or `~/.local/share/retro-emulators`, named
+after the ROM's file name without its extension, so they last as long as
+the computer does (across reboots for a saved computer, until it closes for
+a temporary one):
+
+- `saves/GAME.srm` is the cartridge's own save memory, the battery-backed
+  RAM a game writes when the player saves inside it. It is loaded when the
+  game starts, and written back within a few seconds of the game changing it
+  and when the game quits (Ctrl+C, or SIGTERM or SIGHUP, which is how the
+  page and the drop handler stop a game). A file of the wrong size is left
+  alone and reported.
+- `states/GAME.state` is the snapshot F2 saves and F4 loads. It is not
+  loaded at start, so a game begins from its title screen or its own save;
+  `retro-run ROM --state FILE` starts from a snapshot.
+
+`retro-run ROM` (eager, `/usr/bin/retro-run`) chooses the emulator from
+the ROM's own bytes, not its name: the iNES magic, the Mega Drive `SEGA`
+header, the Master System and Game Gear `TMR SEGA` header, or a SNES
+header checksum. A file that matches none of them is refused with a
+message. It passes further options to the emulator. With no argument it
+runs the NES test suite. `retro-run --identify FILE` prints the system it
+detected (`nes`, `md`, `sms`, `gg` or `sfc`) and exits 0, or exits 1 when
+the file is not a ROM. `retro-run --keys [FILE]` prints the key list for
+that ROM's emulator.
+
+Dropping a ROM, or a folder holding ROMs, on a machine plays it. ROMs are
+recognised by their contents, because collections name them `.rom`, `.bin`
+or nothing at all: the image's exchange rule `90-retro-rom.handler` takes
+every drop that the game machines' rules do not, and
+`/usr/libexec/kandelo/retro-load-rom` asks `retro-run --identify` about
+each file whose name could be a ROM (a console extension, `.rom`, `.bin`,
+or none). A drop with no ROM in it goes to `exchange-save`, so it is saved
+to `~/Downloads` as before. Otherwise the handler copies the drop into
+`~/roms` as it arrived (a folder keeps its contents) and runs
+`kandelo-terminal --display "retro-run ~/roms/NAME"` for the first ROM in
+path order (see "Terminal requests" below). The page opens a new terminal
+with that command typed at its prompt, stops whatever holds the display,
+and shows the display, so the user sees what the drop ran; once the game
+exits, Up and Enter in that terminal run it again. The drop's status reads
+"opened a terminal: retro-run ~/roms/NAME". Files over 16 MiB are left to
+the catch-all.
+
+Where nothing outside the machine opens terminals (the Node host, or no
+listener for exchange outputs), `kandelo-terminal` fails and the handler
+starts the game in the background instead: it stops the emulator if one is
+playing, starts `retro-run`, and reports "playing NAME" once the emulator
+holds the display, or the emulator's own error. A display already held by
+another program is not taken there: the drop fails with a message saying
+so.
+
+An emulator started in the background has no terminal (kxchgd starts
+handlers with stdin on `/dev/null`), so it reads keys from
+`/dev/input/event0`, which the framebuffer canvas feeds while it has focus
+(see "Framebuffer (`/dev/fb0`)"). Started from a terminal, including one a
+drop opened, the emulator reads the terminal instead. Either way Ctrl+C
+quits it. The keyboard is read raw, so no terminal turns Ctrl+C into a
+signal; the emulator acts on the chord itself.
+Esc alone does nothing, so a stray press does not end a game. The emulator
+keeps its boot-lifetime files in the user's runtime directory,
+`$XDG_RUNTIME_DIR` or `/run/user/<uid>`: its pid in `retro.pid`. A
+background game's output goes to `retro.log` there.
+
+Gated in Node by `host/test/retro-emulators-cli-smoke.test.ts` (each
+emulator initialises its core and lists its keys by the core's button
+names, including F2 and F4; a European ROM's name sets PAL timing; with no
+terminal the emulator reads `/dev/input/event0`, ignores Esc, saves and
+loads a state on F2 and F4 and quits on Ctrl+C there; a battery-backed
+game's save file is loaded at start)
+and in the browser by `apps/browser-demos/test/retro-rom-drop.spec.ts` (a
+dropped ROM opens a terminal with its command and plays, takes keys, keeps
+running on Esc and quits on Ctrl+C, after which Up and Enter in that
+terminal run it again; a SNES ROM named `.rom` still starts Snes9x, a later
+drop replaces the game, a ROM with no extension plays, and a file that is
+not a ROM is saved to `~/Downloads`). The request format and its routing
+are covered by `web-libs/kandelo-session/test/terminal-request.test.ts` and
+`exchange-session.test.ts`.
+
+#### Terminal requests
+
+A program in the machine can ask the page for a terminal running a
+command: `kandelo-terminal [--display] [--title TITLE] COMMAND-LINE`
+(`/usr/bin/kandelo-terminal` in the shell image). It publishes a Kandelo
+exchange output of type `application/x-kandelo-terminal-command`, a small
+JSON object `{"version": 1, "command": …, "title": …, "display":
+"framebuffer"}` (`web-libs/kandelo-session/src/terminal-request.ts`).
+`ExchangeSession` hands such outputs to the app's handler instead of the
+output tray, and the app opens them as an activity: a new terminal tab
+labelled with the title, the command typed at its prompt, and for
+`--display` the display owner stopped and the display shown. The command
+runs as that terminal's login user, the same account a guest publisher
+already is, so a request grants nothing a program in the machine could not
+do itself.
+
+The request is untrusted input. A command must be one line of at most 2,048
+characters with no control characters, because it is typed into a shell;
+the title is shortened to 80 characters; unknown fields, other versions and
+requests over 4 KiB are refused, and a refusal or a failed launch is shown
+as a failed entry with its reason. Activities' limits apply (32 per
+computer, one starting at a time). A page without a handler keeps the
+request as an ordinary output in the tray, and with no output listener at
+all the publish fails with `ENXIO`, so `kandelo-terminal` exits 1 and its
+caller can fall back.
+
 ### Kandelo session UI
+
+#### Computer library and retention
+
+A computer made from the worktree's partial image keeps its saved
+filesystem across reloads but not across rebuilds. The computer records the
+build it was copied from (`partialImageSha256`); booting it after
+`./run.sh partial` produced a different image discards the saved
+filesystem, logs a warning in the boot log, and starts from the new image.
+The persistence identity also includes that digest, so saved state can never
+be opened against a different build.
+
+The dock's **Web** button opens guest websites; **Graphics** shows graphical
+output. **Guide** opens the image-provided instructions and actions.
+New visitors default to the **Kandelo Dark** theme, regardless of the system
+color scheme. Existing saved theme choices, including Auto, remain in effect.
+The early HTML bootstrap and application initialization apply the same theme
+policy, including when preference storage is unavailable. Use
+**More → Appearance** to choose a palette and Light, Dark or Auto mode.
+In full-width mode the bottom tool group is centered on the viewport, not
+the space remaining beside the computer label. On narrow screens the label
+sits beside the top controls, leaving a full-width, scrollable tool row below.
+On phones, the website address gets its own full-width row so the origin and
+path remain readable.
+The bare shell profile declares no Guide; other profiles keep their useful
+image-provided guides. Profiles without a guide omit the dock button.
+**More** groups Share setup, Services, Internals, Appearance and Help/About in
+a compact popup positioned above its dock button before it becomes visible,
+without a sideways entrance. **Share setup…** appears above Services and opens
+**Share setup**: its link describes starting inputs, not the live filesystem
+or a network invitation.
+Activity invitations are captured before managed-computer URL rewriting and
+passed through startup in memory. Removing their capability from the address
+bar must not discard the selected activity. Failed joins show error feedback,
+not green readiness; generic RTC failure reports whether a relay is configured
+without claiming to have identified the network failure's cause.
+Dismissible panels use an accessible close icon at the top rather than a
+duplicate footer button, and clicking outside closes them. Native About and
+Open website dialogs also support Escape; clicking their padding or dragging
+from inside to outside does not dismiss them. Closing a connection picker
+hides it without cancelling its host-owned connection attempt. Boot progress screens retain their existing non-dismissible behavior;
+explicit transaction cancellation and session-leaving actions remain separate.
+Terminal click-to-focus ignores dialogs, popovers and their dismissal layers,
+so interacting with a panel does not queue a competing terminal focus request.
+
+The dock's **Library** opens a gallery of stored computers, with a List view
+available. **New computer** lives inside Library. Creation first chooses a
+distinct filesystem image (not a separate image card for each boot profile),
+then a name, boot profile and Saved/Temporary retention. Shell, Node.js, Doom,
+Quake and the other shell-image profiles share one image card. These listings
+use tracked image metadata; the actual boot still validates the mounted image's
+own declarations.
+
+Temporary is the default for both automatic entry and explicit creation. The
+creation form warns about cleanup, and the dock keeps a separate Temporary
+badge visible rather than relying on a possibly truncated computer title.
+Keeping an existing saved computer does not change its retention on reload.
+
+Every new computer starts with an editable three-word name, such as
+`Bouncy Mango Otter`, selected from playful moods, flavors and animals.
+The refresh icon button, labelled **Generate another name** for assistive
+technology and on hover, replaces the creation form's suggestion without creating
+or renaming a computer. Suggestions avoid the current name and names already in
+the library; manual editing remains available. Names survive reload
+and boot-profile changes; existing computers are not renamed. The underlying
+UUID remains the unique storage and URL identity; a friendly name is neither an
+access token nor a globally unique identifier.
+
+Computer metadata records `storageFormat: "kandelo-opfs-image-v1"`, displayed
+as **Journaled OPFS image** during creation and in Library. It identifies the
+computer's OPFS image-and-journal storage layout independently of its source
+VFS image, boot profile, Saved/Temporary retention and integrity-check policy.
+Future storage implementations must use distinct format identifiers and an
+explicitly supported open path; unknown identifiers fail without replacing
+the computer's files. There is no format selector or conversion in this PR.
+The identifier does not replace the existing binary image, manifest or
+journal format/version checks.
+
+Library marks the active entry **Current computer** in either layout, with an
+accent border and a disabled **Delete** button. Its hover message asks
+the user to open another computer before deleting it. The marker follows the
+current computer UUID, not its editable name. Storage leases still enforce
+deletion exclusion independently of these presentation controls.
+List view surrounds the current row with a full border. Each entry also names
+its initial image alongside the storage format, independently of the selected
+boot profile. Unrecognized images are labelled VFS image rather than guessed.
+
+**More → Help & About** links to feedback on GitHub, the Kandelo blog and the
+repository. **About Kandelo** opens an introduction and technical overview,
+with the same links. These links do not trigger an automatic feedback invitation
+or add separate community dock buttons.
+Activities offer **Network...** for network activities, followed by
+**Start** for local launches aligned at the right edge of each row. Connecting
+reuses a live network session, or creates one when none exists, and prepares
+an invitation link. **Restart network session** is an explicit setup option
+and requires confirmation because it disconnects current peers. Activities that require the room's hosting computer never silently
+replace a joined session.
+
+The dock's **Temporary** tag offers the same confirmed **Keep this computer**
+operation as Library. It changes retention, not filesystem format or directory.
+Keeping a computer recommends deleting it individually through Library when
+it is no longer needed, rather than clearing the origin's storage. Deleting
+a non-current computer always asks for confirmation. Saved computers also
+require typing their exact displayed name; temporary computers do not. The
+current computer remains protected from deletion. The Temporary badge retains an
+accent background in both light and dark themes.
+Boot has a dedicated log view independent of the selected Internals tab; the
+Internals tab preference remains available after boot.
+The Library and creation dialog close when boot begins so that view is visible.
+
+**More → Services** reports current supervisor state separately from next-boot
+enablement, and runs the image's delegated service-control command as the
+normal guest account. Starting a service may stop its declared conflicts.
+**Shortcuts** replaces the Guide dock button. It is hidden when no running
+service declares actions, scripts or a companion. Service controls are not
+shortcuts, and a selected boot profile is not evidence that a service runs.
+
+Images declare these services in `/etc/kandelo/services.json`: version 1 with
+a `services` array. Each entry has an `id` matching its dinit target, `title`,
+`port`, and optional `shortcuts` using the existing action/script/companion
+schema. IDs must be unique bare service names; catalogs are bounded to 64
+entries and 64 KiB. Unsupported versions and fields are refused explicitly.
+`kandelo-service inspect` returns the versioned `KANDELO_SERVICES` tab-separated
+report from the real supervisor; no UI inference from process names or boot
+preferences is used. The UI refreshes after its own controls, on focus and
+catalog changes, and every ten seconds while the page is visible. Query
+failures remove stale shortcuts and remain visible in Services.
+The UI waits for the supervisor's actual control socket before querying it.
+Captured service-command output belongs to its command result on both Node
+and browser, rather than also being broadcast into the boot log. Ordinary
+service startup logs and uncaptured terminal output remain visible.
+When the declared local preview service stops or fails, a warning with an
+icon appears immediately above the dock while Web is selected. It identifies
+the last loaded page without hiding or unmounting the preview, and clears
+when a service for that port runs again. Remote previews
+are not inferred from this computer's supervisor state. Starting a service
+through Services reloads the matching local preview at its root; it does not
+redirect a remote preview or another port.
+
+The download/decompression overlay disappears when both operations have
+completed, releasing keyboard interaction so boot output is visible. Active
+image opening and teardown still block interaction; incomplete
+decompression and errors are not hidden by a completed download.
+Initial persistent-image writing and readback verification also supply typed
+byte progress. Syslog updates one row per phase and boot, including a progress
+bar while running. Show raw log retains all original diagnostic updates;
+warnings and failures are not hidden by row coalescing.
+
+#### Arbitrary guest websites
+
+On a running computer, **Web** opens an **Open website** picker when no preview
+exists. Once a preview exists, its compact origin button (for example,
+`http://localhost:8080`) sits inside the address bar beside the editable path.
+Click that origin to change the target; the picker starts with the current
+computer, port and path. It shows the guest origin, not the browser's internal
+service-worker bridge URL. Connection and validation warnings use a highlighted
+warning notice that retains the underlying message and screen-reader alert.
+Select the protocol (currently HTTP only), this computer or a
+connected computer, its port, and the path. Selectors with no alternative are
+disabled; when only this computer is available, initial focus goes to the port.
+A disconnected selection can still be changed to this computer.
+Connected computers are listed
+with their advertised hostname and network address; the session host is
+marked. The port need not appear in image metadata. Remote servers must bind
+a network-accessible interface rather than only their own loopback address.
+The command also accepts `host`, `peer-1` through `peer-254`, or a
+`10.89.0.N` address for connected-network services.
+
+The existing kernel TCP and service-worker bridge carry the requests. The
+picker validates an HTTP guest destination and probes the server before
+replacing the working preview. A refusal or server error leaves that preview
+intact. Only one connection attempt is admitted at a time. Closing a connecting
+picker hides the form but does not cancel its bounded connection attempt.
+External hosts, URL credentials, non-HTTP schemes, invalid ports and invalid
+peer addresses are refused. This does not publish a public URL or isolate guest
+JavaScript from the app's browser origin.
+
+Newly built shell-family images install `/usr/bin/kandelo-preview`:
+
+```sh
+python3 -m http.server 3000 --bind 0.0.0.0 --directory /home/projects &
+kandelo-preview http://localhost:3000/
+kandelo-preview http://host:3000/
+```
+
+The command uses version 1 of the `kandelo-preview` terminal extension on
+OSC 777. It needs an attached Kandelo UI terminal and refuses
+redirected/piped output. Exit status zero means the request was emitted, not
+that the server answered; asynchronous failures appear in the terminal and
+an app error notice. Successful requests select Web without restarting the
+computer or closing the terminal. Replaying terminal scrollback does not
+repeat preview requests. A terminal without this extension, including a
+plain Node console, does not open a browser pane. No kernel ABI change or
+new host syscall is involved. Existing stored computer images are not silently
+modified to add the command; create a computer from the rebuilt image to get it.
+
+#### Structured syslog progress
+
+Image download, decompression and OPFS-open reporting attach scalar progress
+metadata to log records: a boot-scoped operation ID, label, completed/total
+counters when known, unit and status. Syslog updates each operation's display
+row in place. Active operations with no total use an indeterminate bar;
+completion or failure retires that bar. Error diagnostics remain visible,
+including when the same operation subsequently reports another update.
+**Show raw log** restores every retained record in chronological order within
+the existing bounded history. Ordinary kernel messages are not parsed for
+percentages or suppressed. Rust-internal checks without structured counters
+remain ordinary diagnostics.
+
+New `computer.json` records use metadata schema version 2 and require the
+storage-format identifier. Earlier prototype schema-version-1 records identify
+only this image-backed layout; reads normalize that known metadata schema
+without rewriting disk contents, and the next ordinary metadata update records
+version 2 and its explicit identifier. A missing format in version 2, or an
+unknown explicit format in either schema, is an error. Future formats must not
+use the earlier schema's implicit identification.
+
+**Open** starts a stored computer immediately; the running computer shows
+**Restart** instead. **Options** opens the profiles declared by its saved
+image. **Save** remembers the selected startup profile without restarting.
+**Save and Boot** saves the choice and starts the same computer; **Close**
+discards unsaved changes and returns to Library. The original composition profile remains part of disk identity;
+the selected startup profile is separate metadata. Original image, terminal
+session and service-closure checks still run, and the selected service closure
+is read from the mounted filesystem. Missing profile assets are fetched under a
+32 MiB aggregate intake limit, verified against declared hashes before writing
+through the kernel, and installed before guest launch. Existing files are not
+overwritten. Download failures are visible boot failures, not replacement disks.
+
+The dock's **Activities**, immediately after **Terminal**, provides a searchable
+launcher for the running computer. No activity reboots the computer or changes
+its recorded boot profile. **Apps & Tools**, **Services**, and **Demos**
+group the installed activities. Category and search controls stay at the top
+while the list scrolls, including on phones. A row combines the image's local
+launch and its explicitly linked package sharing recipe, so the same activity
+does not appear again in a separate network category. **Start** launches
+locally; **Network...** opens the existing Network session dialog
+with that activity selected. Connections without a local launch have no Start
+action.
+
+Activities stays open behind network setup. Closing or canceling that dialog
+returns to the same list; a successful network activity can close the picker.
+Starting uses the current room or creates one if none exists. Replacing an
+existing session remains an explicit, confirmed action. Image-linked services
+prepare the selected website before sharing it; the host does not infer the
+selected service from a profile name.
+
+The single visible FFmpeg demo plays a 60-second Big Buck Bunny clip with
+H.264 video and AAC stereo audio. Its download is pinned by SHA-256 in the
+image's asset declarations and is installed before playback. The clip repeats.
+Attribution and the CC BY 3.0 license appear in its description and guide:
+© 2008 Blender Foundation / www.bigbuckbunny.org. The original film's
+[license information](https://peach.blender.org/about/) and the
+[MediaElement sample source](https://github.com/mediaelement/mediaelement-files/tree/4d21a042353022326071acb0251ab75cd6bae114)
+identify its origin. The framebuffer and SDL test-pattern boot profiles remain
+available to explicit diagnostic tests and are hidden from Activities.
+
+Multiplayer procedures retain their declared player requirements; they are not
+rewritten into single-player commands. Switching lists clears the search;
+returning from configuration keeps the selected list and search.
+
+Each launched terminal has a bounded owned-job record. Independent activities
+coexist; another instance of the same activity, two exclusive graphics
+activities, or two managed web servers with the same declared host endpoint
+conflict. The launcher stops those conflicts before starting the replacement,
+not every previously launched activity. Actual display owners and attached
+descendants receive SIGTERM, and failure to exit is shown rather than silently
+reported as success. Closing the remaining owned terminal family uses the
+worker's existing cancellation and release fences. The launcher displays
+available activities without a separate running-activities section. Other
+user terminals and booted services are not cancelled. Only image/package-declared endpoints are planned;
+undeclared socket conflicts still fail through normal guest bind semantics.
+Image-declared game menus dispatch into their graphical activity's owned
+terminal and follow that terminal's output, rather than taking over TTY1.
+
+A running web-service profile opens its existing website without replacing
+init or restarting its database. Other init-only declarations are explicitly
+unavailable as activities until they have runtime service definitions; the
+launcher neither invents elevated commands nor falls back to rebooting.
+Startup selection remains a separate, explicit Library boot operation.
+
+### Image-family prototype
+
+The Library's New computer screen groups the first-party demos into three
+physical image families: **Base Shell**, **Web Stack**, and **WordPress**.
+Image titles come from optional `image.title` metadata in the image's
+`/etc/kandelo/demo.json`; application and boot identities remain profile-owned.
+Specialized image recipes remain build inputs and developer fixtures, not
+additional Library templates. Existing saved computers and imported VFS images
+are not rewritten into these families, and the persistent storage format is
+unchanged.
+
+Web Stack composes the existing static nginx, PHP/Adminer, Python Notes, Ruby
+Todo, and Redis voting-board payloads onto the package shell. Each has a
+separate nginx configuration or application service and its own data directory.
+The five supplied website activities share port 8080, so selecting another stops
+only the previous managed website service set. Ordinary terminals and unrelated
+programs stay open. Redis in this image enables its append-only persistence;
+the original standalone fixture keeps its own configuration.
+
+WordPress has one shared core, plugin and theme tree, one PHP-FPM pool, and
+both preinstalled database payloads. New computers have two independent sites:
+SQLite and MariaDB keep separate posts, settings, database files and uploads
+under `/var/lib/wordpress-sites/{sqlite,mariadb}/wp-content`. MariaDB's database
+remains under `/var/lib/mysql`; SQLite's is inside its site's content directory.
+Per-service nginx configuration selects the site for each request. Switching
+services does not copy WordPress core, migrate a database, or merge the sites.
+Plugin and theme software is shared, not independently isolated. Uploads are
+served from the selected site's directory without executing uploaded PHP;
+database files and the SQLite drop-in are not web-accessible. An older
+single-site layout is refused rather than silently converted. Shipping both
+database payloads means the initial download is not backend-specific.
+The composed request router uses its own regular-file pathname, rather than
+reusing the LAMP router's prewarmed opcode-cache identity. The remaining
+shared WordPress prewarm cache is retained.
+
+The family manifests include website-sharing invitations and the WordPress
+MySQL connection, which opens an interactive MariaDB client on the guest.
+
+Each family profile declares its root init program separately from an optional
+`activity.shellCommand`. Optional `activity.category` is `apps`, `services`,
+or `demos`; `activity.share` names an installed `package/offer`, and
+`activity.visible: false` hides diagnostic profiles from the picker. These
+presentation fields do not make init-only profiles launchable. The init
+program starts the guest supervisor; the shell command is the image's
+explicit live-launch procedure. The browser executes web-service
+preparation as the normal maker account through a bounded owned command family,
+requires successful exit and observed termination, and only then opens its web
+preview. It does not infer root commands from profile names or implement a
+second service supervisor in JavaScript.
+
+The guest `kandelo-service` helper delegates only `list`, `start`, `stop`, `status`,
+`enable`, and `disable` for the image's declared service targets. Its setuid
+entrypoint checks the calling account, root-owned configuration paths and
+arguments, clears inherited groups/environment, and takes a POSIX process lock
+before entering its fixed guest dispatcher. The dinit control socket lives in
+a root-only runtime directory. Guest services and their dependencies are owned
+by dinit, not by the short-lived browser command job. The independent `machine`
+service keeps the supervisor alive when all website activities stop.
+
+Starting an activity stops all competing website targets, including pending
+boot starts, before starting the selected target. A failed dinit start
+attempts to restore the targets that the supervisor previously intended to
+run. Recovery is best effort: a restore request can also fail while the
+old site's dependencies are still stopping, and that failure is reported.
+An HTTP readiness failure after the new target starts is reported without
+rolling back that transition; service switching is not a transaction. The
+`status` and `stop` commands expose and control the actual supervisor state.
+
+`kandelo-service list` lists every declared managed activity with its live dinit
+state and a separate **NEXT BOOT** column. `not-loaded` means dinit has not loaded
+that activity; it is not a claim that the service failed. Running, starting,
+stopping, stopped, failed and skipped states come from one supervisor snapshot,
+not the startup preference. Listing does not start or enable services, select a
+WordPress backend, or load additional service definitions. Supervisor connection
+errors fail the command instead of displaying every activity as stopped.
+
+`start` and `stop` change current runtime state without changing boot preference.
+`enable` and `disable` atomically publish a guest-side startup preference without
+starting or stopping the current application. A boot profile seeds that
+preference initially, and changing the profile explicitly reseeds it; an
+ordinary reload retains the guest's saved preference. More → Services exposes
+these controls, which also work from an ordinary terminal:
+
+```sh
+kandelo-service list
+kandelo-service start web-python
+kandelo-service stop web-python
+kandelo-service enable web-python
+kandelo-service disable web-python
+```
+
+The startup preference is one exclusive website target or no website. It is
+separate from the filesystem's byte capacity, browser quota, memory budget and
+cache limits. This prototype does not increase those limits.
+
+`host/test/image-families-live.test.ts` exercises the real guest services and
+delegated permissions on Node. The browser image-family tests exercise all
+five website activities, verify that a refresh creates a new kernel and a
+visible running document, and reopen the same computer to check its startup
+preference and saved files. Separate WordPress workload tests publish posts,
+upload media, and reopen with the original image unavailable. Refresh recovery
+is established by the new worker and rendered document, not only by a browser
+navigation event or an HTTP response.
+
+Graphics devices are machine capabilities, not prerequisites selected by an
+activity's boot profile. The app attaches one persistent KMS display per
+kernel, including for the bare shell, and discovers framebuffer/KMS owners
+when ordinary shell-launched programs open those devices. KMS uses a
+WebGL2-scanout presenter which can yield to a guest GL context and resume after
+its release; contexts and scanout textures are created on demand. The hidden
+surface supplies connector geometry and bounded ownership telemetry before an
+application starts. The framebuffer and web preview retain separate panes, so
+starting graphics does not replace the running website. The dock's **Web**
+button opens the website with its address and reload controls; **Graphics**
+opens the most recently selected live framebuffer/KMS display. Each button is
+enabled only when its surface is available. Switching between them and Terminal
+does not remount the website or graphics surface, reload the page, or restart
+any guest service. **Activities** follows **Terminal** in the dock. Keyboard/pointer
+capture remains scoped to the corresponding surface. No profile is needed
+merely to run an ABI-compatible downloaded or newly compiled graphics program.
+
+Memory/worker budgets, root mounts and kernel ABI remain machine-level choices.
+Activities do not enlarge Wasm reservations or replace filesystems to satisfy
+per-profile resource requests. Browser permission/gesture requirements also
+remain in force. Clipboard-agent setup and conversion of init-only profiles
+into dynamically supervised services remain separate integration work.
+
+The activity row's **Network...** action uses the same Network
+session form as the dock's network button; Activities has no separate
+session-setup button.
+A declared image sharing link identifies the exact installed package/offer.
+It does not grant additional guest permissions or bypass service admission.
+Display activities use the same live launch and conflict handling as local
+activities.
+
+New computers are temporary by default and can be kept on this device.
+Ordinary filesystem writes
+use the existing Rust-owned persistent filesystem and journal; no manual
+save or checkpoint action is required. Named filesystem checkpoint/restore
+is [future work](future-improvements.md#filesystem-checkpoints-and-restore).
+A saved computer URL names a local UUID, not an image template or a
+shareable copy of its files. Reload reopens that UUID's recorded image/profile
+and journal. Missing or damaged metadata fails explicitly rather than silently
+creating a replacement computer. Gallery/share links select a starting image
+and omit the current local computer ID; they do not share saved changes.
+Opening an image/template URL creates another computer; bookmark the resulting
+local computer URL or reopen it from Library. Image-backed files persist;
+image-declared scratch/tmpfs mounts still reset on reboot.
+
+Boot resolves the selected image's identity before downloading its contents;
+it does not prefetch a separate shell image. New disk-backed computers stream
+the selected image into their staging storage. Reopening an initialized
+computer reads its existing disk and journal without downloading the source
+image again.
+
+OPFS worker messages carry bounded, validated paths relative to the origin's
+storage root, not `FileSystemHandle` objects. Each worker reopens the named
+file without creating missing paths. This covers source staging, image
+composition, live disk reads and low-level image exports, including browsers that
+cannot clone filesystem handles. Existing computer and generation leases
+still protect these files for the operation's lifetime. These are internal
+host storage paths, not guest filesystem paths or an origin-isolation boundary.
+
+Internals → Config reports the successfully mounted filesystem's backend,
+storage-format identifier, OPFS directory, base file/generation/size, checking
+policy, and journal namespace. Its root mount source names OPFS storage rather
+than the original download URL. Retention and eviction protection come from
+the computer library; a temporary computer can still be OPFS-backed. The base
+file size is not logical disk capacity or total browser storage usage.
+
+The filesystem memory table reads `/proc/kandelo/fs_memory` from Rust. Its
+values are **admission credits**, not measured resident RAM or disk bytes.
+Use Refresh to take a new snapshot; no background polling is installed.
+Unavailable details or unsupported report formats are displayed explicitly,
+not replaced with guessed defaults. The kernel reference is labeled
+`kandelo.kernel`, not an image hash.
+
+The browser storage layout is:
+
+```text
+kandelo/computers/<UUID>/
+  computer.json          # versioned name, storage format, descriptor, retention, timestamps
+  retained/             # empty retention marker, removed to begin deletion
+  provisioning/         # removed before the initialized filesystem runs guests
+  filesystem/           # immutable base, journal, generations, control files
+  scratch/              # disposable deferred-download spools
+```
+
+Managed persistence names and their underlying files use the `computer-<UUID>`
+prefix; replacement journals retain that prefix. This prototype starts fresh
+in `kandelo/computers/`. Earlier `kandelo/machines/` directories and their
+`machine.json` records are not read, migrated, or deleted, including by
+temporary-computer cleanup. Open the app root to create a new computer; an old
+saved-computer URL does not silently substitute a new computer.
+
+Source staging files stay in the owning computer's filesystem directory.
+Replacement journals retain that computer's namespace.
+The explicit experimental-name interface continues to use its own existing
+directory; those experiments are not imported into Library. Directories provide
+organization, not browser-origin security isolation.
+
+**Temporary** computers are also OPFS-backed: their filesystem capacity need
+not fit in memory. They survive reload and become eligible for deletion after
+24 hours without opening them. Cleanup runs at startup, during Library refresh,
+on window focus, and every 15 minutes while the app is open. An active exclusive
+runtime lease prevents deletion, and the computer explicitly being reopened is
+not expired before it can boot. Browsers cannot guarantee cleanup immediately
+on tab closure or while Kandelo is not running. Temporary means scheduled for
+deletion, not never written to disk.
+
+**Keep this computer**, beside the Temporary indicator, asks for confirmation
+before changing retention metadata without copying the image,
+rebooting, or changing its UUID/preview route. **Delete** is available for
+inactive computers; open another computer before deleting the current one.
+Deletion first removes the precreated retention marker, without allocating a
+new file when quota is exhausted, and is retried after interruption. Interrupted
+computer creation has a separate marker. Unreadable existing metadata is shown
+in Library and preserved for explicit deletion, never treated as an expired
+temporary computer. Library metadata is capped at 128 KiB per computer and the
+library at 256 computers.
+
+Saved storage is local to the browser profile, not a backup. Explicit saved
+creation and keeping a temporary computer request browser storage protection;
+Library reports whether the browser granted it. Clearing site data can still
+delete every computer. A pending storage-protection permission request does
+not block creating or keeping a computer: local retention and browser eviction
+protection are separate decisions. A failed last-opened timestamp update is a
+visible boot-log warning, not a reason to refuse a readable saved filesystem.
+Boot links carrying inputs/scripts retain their existing
+memory-backed boot path: the disk-backed initializer does not yet accept those
+inputs. Protected candidate/evidence boots also remain outside Library.
+
 
 The Kandelo app at `/pages/kandelo/` keeps the running machine as the primary
 browser canvas and exposes related tools through a bottom dock. Dock controls
@@ -1626,7 +2714,13 @@ the ETag it already saw to `fetchByteRange()` as `entityTag` and fails the
 read if an answer carries a different one.
 
 **Development (`__kandelo_cors_proxy`).** The Vite relay implements the same
-profile. It forwards `Range`, honors `X-Cors-Proxy-Range` the way the
+profile. Its server-side Fetch requests explicitly use `same-origin` mode;
+the default `Sec-Fetch-Mode: cors` causes GitLab's archive hotlink protection
+to reject ordinary guest downloads with HTTP 406. This changes the relay's
+request metadata; credentials remain omitted and the forwarded-header
+allow-list stays in force. GET/HEAD redirects use a fresh server request for
+each hop so downloads can move between origins; POST redirects stay refused.
+It forwards `Range`, honors `X-Cors-Proxy-Range` the way the
 production proxy does (an empty alias is ignored, the alias is never
 forwarded, and an alias that disagrees with `Range` is a `400`), asks upstream
 for the identity encoding on ranged requests and `HEAD` so byte offsets and
@@ -1689,18 +2783,57 @@ transaction, cancellation acknowledgement, and restart reconciliation.
 
 ### Multiple machines under one service worker scope
 
+The guest HTTP bridge preserves an exposed request `User-Agent`. If the
+browser omits that browser-controlled header from the service worker's
+`Request.headers`, it supplies the worker's native `navigator.userAgent`
+instead. Firefox omits it from intercepted navigation headers even though
+ordinary network requests carry it. Without this projection, guest software
+such as WordPress can incorrectly disable its visual editor. This does not
+spoof another browser, change guest application settings, or change Node's
+ordinary HTTP request path.
+
 A single service-worker scope can host several live Kandelo machines at
 once, one per booted browser tab. On `init-bridge` the worker mints a
-three-word, human-readable name (`adjective-color-noun`, e.g.
-`brisk-amber-otter`, drawn from three embedded word lists of 128+ entries
-each) and gives that machine its own stable, shareable URL space at
-`/<scope>/app/<name>/`. The worker keeps one in-memory `InstanceRecord` per
+three-word route name for an unmanaged, memory-only computer
+(`adjective-color-noun`, e.g. `brisk-amber-otter`, drawn from three embedded
+word lists of 128+ entries each). This route name is separate from the
+Library's editable computer title. The worker gives that running machine
+its own URL space at
+`/<scope>/computer/<name>/`. The worker keeps one in-memory `InstanceRecord` per
 name in a registry (name -> record), so two tabs under the same scope route
 independently and never clobber each other's bridge, cookies, or lifecycle
 state.
 
+Experimental persistent computers instead use `p-<64 lowercase hex digits>`:
+native SHA-256 derives the name from a versioned domain, deployment scope,
+and persistent computer name. This small identity digest is unrelated to the
+filesystem's configurable CRC32C/SHA-256 checking policy. The same saved
+computer retains its public URL across ordinary reloads and journal-generation
+changes; a different computer or deployment has a different route. The route
+does not boot an offline computer, transfer OPFS data, or make the computer
+available outside this browser origin/profile. A full kernel boot still
+creates a fresh session and empty cookie jar; login continuity is separate.
+
+A persistent route claim requires a challenge over its transferred reply
+port and two native Web Locks held by the same Lock Manager client: the
+actual computer runtime lease and a nonce proof lease. Their client ids are
+compared to each other, not to service-worker client ids, whose representation
+differs in Chromium. The caller retains the runtime lease until the proof
+lock is released and a per-route lock barrier confirms claim drainage. An
+unconfirmed barrier quarantines the computer until reload instead of
+releasing its lease. This coordinates cooperating same-origin clients; it
+does not isolate malicious scripts sharing the origin.
+
+Claims, cookie writes, restoration and offline deletion serialize through the
+per-route native lock. Cached session/revision checks fence obsolete writes
+and restores; cleanup deletes only the retired session, never a successor's.
+Explicit named-computer URLs are preserved in bodies, JSON, Link headers and
+redirects rather than receiving the current computer's prefix. Only unscoped
+same-host guest URLs receive it. Prototype content already saved with an old
+temporary name is not silently reassigned to another computer.
+
 A request is attributed to a machine one of two ways. A path that already
-contains `/app/<name>/` resolves directly to that machine's record; an
+contains `/computer/<name>/` resolves directly to that machine's record; an
 unknown or malformed name never falls back to another machine, it is a real
 "not found" (see the 503 page below). A root-relative subresource request
 with no name in its path — the common case for a page's own same-origin
@@ -1708,7 +2841,7 @@ asset requests — is attributed by the requesting client's id: the first time
 the worker resolves a named request for a given client, it remembers that
 client is "viewing" that machine, and later nameless requests from the same
 tab or iframe keep routing to it. That same client-id bookkeeping is what
-makes cross-tab viewing work: opening a machine's `/<scope>/app/<name>/` link
+makes cross-tab viewing work: opening a machine's `/<scope>/computer/<name>/` link
 in a second tab reaches the same running machine and relays through the
 bridge on the tab that owns it, rather than starting a second machine, because
 the name in the URL always takes priority over any per-client attribution.
@@ -1738,8 +2871,8 @@ cookies for one machine (WordPress admin cookies, for example) are never
 visible to another machine's requests even though both live under the same
 scope's origin.
 
-Each machine's bridge authority (its live `MessagePort`, session id, and
-cookie jar) is also persisted to IndexedDB under a per-name key as it is
+Each machine's bridge authority (session id and cookie jar, not its live
+`MessagePort`) is also persisted to Cache Storage under a per-name key as it is
 established, independent of the in-memory registry. If the browser
 terminates and restarts the service worker while a machine's host tab is
 still open, the worker has lost every live `MessagePort` but still has each
@@ -1754,13 +2887,14 @@ losing session state once the tab answers.
 A machine goes terminally offline only when its owning tab actually closes
 (a `pagehide`-driven `instance-closing` message, or — for a crashed tab that
 never sends one — the worker noticing on a later request that the owning
-window client is gone). There is no migration of a machine to a different
-host tab: once its host tab is gone, that machine is done, and its durable
-authority and cookie jar are dropped. Starting the demo again mints a new
-machine under a new name.
+window client is gone). Its HTTP authority and cookie jar are dropped, not
+its OPFS filesystem. Starting a memory-only computer again mints a new name.
+Both saved and disk-backed temporary Library computers have stable routes.
+Reopening a disk-backed computer requires its exclusive runtime lease and
+reclaims the same stable route with a fresh boot session.
 
 When a machine goes offline or starts reconnecting, the worker pushes a
-`machine-offline` or `machine-reconnecting` message to every tab currently
+`computer-offline` or `computer-reconnecting` message to every tab currently
 viewing it (any client whose viewing map points at that machine, not just the
 host tab). Demo pages that render a web preview of the machine map that push
 to the preview's `offline` or `reconnecting` status via
@@ -1773,7 +2907,7 @@ that is offline, or whose name was never minted, gets one 503 HTML page
 naming the machine — 503 rather than 404, because the name is a valid route,
 the machine behind it is just not running here. This is the raw-request
 fallback for any request that has no demo chrome to render a status in, such
-as loading `/<scope>/app/<name>/` directly with no page-side listener
+as loading `/<scope>/computer/<name>/` directly with no page-side listener
 attached.
 
 ### Blob-URL iframes (service-worker boundary)
@@ -1809,7 +2943,27 @@ HTML, assets, requests and same-origin iframes still use the bridge.
 
 ## VFS Images
 
+Kandelo-provided images follow the [FHS layout](filesystem-layout.md).
+This governs guest command paths, service content and writable state, for
+both the browser and Node hosts. The app consumes those paths from image
+metadata rather than recreating a second layout after boot.
+
 ### Consumer-owned product selection
+
+A worktree's [partial image](package-management.md#partial-images) is not a
+product and has no place in these registries. On the dev server only,
+`vite/dev-partial-image.ts` lists it as its own gallery machine, first,
+titled `Partial <image> + <packages>`, with its listing read from the
+image's own `demo.json`. It is served at one URL
+(`<base>@kandelo-partial/image.vfs.zst`) with `Cache-Control: no-store`, the
+service worker passes that route straight to the network and never into
+Cache Storage, and a rebuild reloads the page so it always describes the
+image on disk. A production build never carries it. The canonical shell is
+optional on the dev server: when this worktree has not built it, its entry
+shows the ordinary not-built state, the page still loads, and activity
+invitations that need it as the guests' default computer say so instead of
+offering a link. `./run.sh browser --partial` serves what is built without
+first running the full local build.
 
 VFS product definitions live under `images/vfs/products/` and describe what
 an image is. They do not decide where that image appears.
@@ -1883,6 +3037,33 @@ promotion, or production Pages deployment.
 Browser demos use pre-built **VFS images** — binary snapshots of a filesystem tree containing all runtime files, directory structure, configs, and symlinks needed by a demo. At runtime the kernel parses the image in place and serves it as `/`, replacing what would otherwise be hundreds or thousands of individual file creation operations. The format (a `VFSI` container holding a KIFS tree plus `SDEF`/`KLZY` sections describing deferred files) is read and written only by Rust: the kernel reads it (`crates/runtime-core/src/rootfs.rs`) and the image writer (`crates/runtime-core/src/kandelo_image_write.rs`) produces it.
 
 ### How it works
+
+For persistent installs, boot progress keeps the source download byte count
+separate from decoded filesystem bytes. Compressed sources show a second
+decompression bar beneath the download bar; without a known decoded total,
+that bar reports bytes with indeterminate progress until staging completes.
+
+Persistent source staging streams decoded bytes through a disposable OPFS
+worker. Rust computes the decoded source SHA-256 using fixed-size scratch;
+the worker flushes and closes its handle before returning the source receipt.
+The positioned composer verifies the stored source with the same Rust digest
+implementation before parsing it. These two installation passes check the
+downloaded bytes and their stored representation separately; they are not
+part of ordinary reopen. Pinned compressed-source authentication remains a
+transport check, independent of the saved filesystem's CRC32C/SHA-256 policy.
+Transport callbacks receive progress only after the relevant bounded source
+window has been copied for authentication and decoding.
+
+If worker or composer shutdown cannot prove source-handle closure, the page
+retains that source and its ownership lock, refuses further source staging,
+and requires a page reload. Each asynchronous setup boundary rechecks this
+quarantine before opening a creating directory or dispatching a writer.
+Already-created files whose writer was never dispatched can still be removed;
+uncertain writers cannot authorize source deletion.
+Abandoned-source cleanup leaves files whose OPFS handles are still open
+for a later pass. A failed source deletion retains its ownership lock;
+neither case authorizes another boot to remove a busy source file.
+Reopening a saved computer reports an OPFS restore rather than a download.
 
 1. **Build time**: A TypeScript build script creates a `KandeloImageFs`
    (`images/vfs/lib/kandelo-image-fs.ts`), writes files/dirs/symlinks into
@@ -2138,12 +3319,10 @@ inline input, 2 MiB inflated per input, aggregate input size, 32 KiB
 parameters JSON. Zero-byte inputs are accepted; the dialog simply skips
 empty scripts during authoring.
 
-Scripts currently run without a confirmation step because every machine the
-browser app boots is ephemeral. This is a load-bearing boundary: before any
-persistent or restored-machine feature ships, script links must gain an
-explicit show-the-script consent step (see the warning at the execution
-site in `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` and
-`docs/superpowers/specs/2026-09-21-script-bearing-links-design.md`).
+Scripts currently run without a confirmation step. A setup link describes
+starting inputs, not a saved computer's live filesystem. The earlier
+ephemeral-only rationale no longer describes the browser's disk-backed
+computers; it must not be used as a persistence or isolation guarantee.
 
 ### Kandelo demo metadata
 
@@ -2243,8 +3422,10 @@ Files reach a machine through Kandelo exchange (`docs/architecture.md`,
 the terminal, framebuffer, or display surface, or choosing them with the
 dock's "Send files" button, offers them to the machine as one batch. The
 machine's agent and its handler rules decide what happens: the game
-machines' rules load a WAD, a pak or zipped game data, and the catch-all
-saves anything else to `~/Downloads`. Each batch gets a toast with its
+machines' rules load a WAD, a pak or zipped game data; on every shell
+machine a NES, SNES, Mega Drive, Master System or Game Gear ROM is kept in
+`~/roms` and played (see "Retro emulators" below); and the catch-all saves
+anything else to `~/Downloads`. Each batch gets a toast with its
 status and outcome; outputs the machine publishes appear in a tray with
 Save and Dismiss (Save streams through `showSaveFilePicker` where the
 browser has it, and otherwise buffers the output and downloads it). A
@@ -2273,7 +3454,7 @@ before the exchange button:
       "id": "demo",
       "label": "Run the demo",
       "description": "Shown as the button's tooltip",
-      "restart": "/usr/local/bin/run-demo"
+      "restart": "/usr/bin/run-demo"
     },
     {
       "id": "freeware",
@@ -2283,7 +3464,7 @@ before the exchange button:
           "id": "lure",
           "label": "Lure of the Temptress",
           "detail": "6 MB",
-          "restart": "/usr/local/bin/scummvm-play lure"
+          "restart": "/usr/bin/scummvm-play lure"
         },
         {
           "id": "helga-deep-in-trouble",
@@ -2348,7 +3529,7 @@ shared memory at `/dev/shm`; image acceptance should exercise devices such as
 
 KMS demos use the same metadata path. A profile can set
 `runningPrimary` to include `"kms"` and declare an `init.shellCommand` such
-as `/usr/local/bin/modeset`; the VFS image must contain that executable. The
+as `/usr/bin/modeset`; the VFS image must contain that executable. The
 Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
 then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
@@ -2509,13 +3690,13 @@ An image selects its terminal program with the strict experimental file
   "kind": "kandelo-experimental-terminal-session",
   "version": 1,
   "initial": {
-    "path": "/usr/bin/login",
+    "path": "/bin/login",
     "argv": ["login", "-p", "-f", "maker"],
     "uid": 0,
     "gid": 0
   },
   "afterExit": {
-    "path": "/usr/bin/login",
+    "path": "/bin/login",
     "argv": ["login", "-p"],
     "uid": 0,
     "gid": 0
@@ -2572,6 +3753,17 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
+The shell recipe registers Harper 3.0.0 as two lazy archive members:
+`/usr/bin/harper-cli` and `/usr/bin/harper-ls`. For example, use
+`harper-cli lint --format json file.md` for batch checking, or let an LSP
+client launch `harper-ls --stdio`. First use of either command downloads the
+shared `harper-browser-bundle` ZIP (about 23 MiB for the current build);
+launching the other command reuses that archive in the same running machine.
+The ZIP compresses both complete executables; it does not deduplicate their
+uncompressed code or data. Building `harper` prepares the binaries, and
+`harper-browser-bundle` packages them without recompiling. An existing shell
+image gains these references when the shell image is next rebuilt.
+
 Node, WordPress, and LAMP are optional demo profiles. Their VFS asset imports
 are resolved only after that profile is requested; loading the main shell does
 not require or fetch those image bytes. If the selected profile's local or
@@ -2601,14 +3793,16 @@ Malformed authored modules still fail the audit, with their file path in the
 parse error.
 
 The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
-`mysql` account (uid/gid 101). Their writable `/data` directories are
+`mysql` account (uid/gid 101). Their writable `/var/lib/mysql` directories are
 therefore serialized as `101:101` with mode `0775`; `/tmp` remains a
 root-owned `01777` sticky directory.
 
-Generated VFS images are `.gitignore`d rather than committed. Package-backed
-images can be materialized from a current public package archive; the normal
-resolver falls back to the package's source recipe when needed. The `run.sh`
-script handles this automatically before starting the browser.
+Generated VFS images are `.gitignore`d rather than committed. The normal local
+build uses the supported package recipes and content-addressed source cache,
+then publishes a validated projection into `local-binaries/source-only-v1`.
+It has no remote prebuilt-binary fallback. `./run.sh browser` prepares that
+projection before starting Vite. Serving an image's lazy assets over HTTP at
+runtime is a separate operation from resolving a package for a local build.
 
 ### Building VFS images
 
@@ -2656,7 +3850,8 @@ extensions for Composer only; invoking `php` keeps its normal configuration.
 The archive and PHP executable remain deferred until used. For example,
 `composer dump-autoload --no-plugins --no-scripts` generates an autoloader for
 a local project. PHP-FPM is not installed by these declarations.
-`./run.sh --fetch-only build shell-vfs` refuses source fallback.
+`./run.sh build shell-vfs` builds the declared package closure; `run.sh` has
+no `--fetch-only` option.
 
 Shell-derived packages consume that resolved image as a declared dependency.
 Their builders preserve capacity, ABI identity, package-backed lazy transports
@@ -2729,6 +3924,14 @@ authenticated VFS group below belongs to production output and is generated
 only when building a deployable directory-scoped distribution.
 
 ### Directory-scoped production hosting
+
+The Vite preview server preserves the built service worker's authenticated
+VFS manifest cache version while applying its local CORS proxy configuration.
+Replacing a build at the same URL therefore updates the worker and retires
+its previous scoped lazy-asset cache. Saved computers and other deployment
+scopes are not cleared by this cache rotation.
+Browser startup waits for worker updates before resolving catalog manifests,
+so the new catalog cannot race the previous worker's cached group.
 
 The standalone [`apps/spacefast-cors-proxy`](../apps/spacefast-cors-proxy/README.md)
 implements the Playground proxy protocol for Spacefast Functions,
@@ -3004,7 +4207,7 @@ prominent status cards. Descriptions
 and package details are collapsed under About this activity. Package-declared
 warnings appear only for the selected activity, data source, menu choice or
 level; selecting a different option removes the old warning. The
-invitation preview applies the same stored/system theme before host setup,
+invitation preview applies the same saved preference or Kandelo Dark default before host setup,
 so it does not change palettes when the app mounts. New
 invitations include bounded display details so recipients see activity and
 host settings, participant prompts and acquisition hints even before host
@@ -3219,6 +4422,34 @@ detection is best effort (including iPadOS identifying as a Mac); hints do
 not inspect permission state or establish the cause of a failure. Invalid
 invitations and signalling-server errors retain their own messages without
 these peer-link hints. No permission prompts or media access are requested.
+
+#### Chrome local-network connection failures on macOS
+
+Local sessions involving Chrome can fail even after the browsers exchange
+valid connection details and have Local Network permission. On macOS 27.2,
+Firefox 159 hosting and Chrome 156.0.8078.81 joining reproduced this on the
+same Mac. The panel reports a failed peer connection; the mention of an
+unconfigured TURN relay does not establish that a relay is needed for the
+local session.
+
+The failure also reproduced in a standalone WebRTC test containing no
+Kandelo code. In one local-only attempt, Chrome reported 140 UDP send
+errors (`ERR_CONNECTION_RESET`) on the peer socket, and a capture of that
+socket's loopback traffic contained no outgoing Chrome checks. Ordinary
+local HTTP and a local STUN request/reply test succeeded. Changing browser
+profiles, avoiding `.local` names, and adding an explicit Chrome Helper
+firewall rule did not reliably restore peer connections. The exact cause
+and any involvement of the firewall or VPN remain unconfirmed.
+
+Firefox hosting with Safari joining is a tested alternative on this Mac.
+Native Firefox 159 and Safari 27.2 passed five standalone connection tests,
+three completed Kandelo session checks, and guest TCP transfers in both
+directions. A separate test in the user's usual Firefox and Safari windows
+also exchanged messages successfully. These are bounded local checks, not
+proof for every browser profile, physical network, or long-running game.
+The firewall remained enabled and the VPN connected during these Safari
+checks. This observation, recorded on 2026-11-04, does not require changing
+Kandelo's ICE servers or disabling browser or system security settings.
 
 Close and failure subscriptions expose established connection teardown.
 Late failure subscribers receive the recorded connection error once, so an

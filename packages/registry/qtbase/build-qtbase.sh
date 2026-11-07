@@ -189,7 +189,7 @@ TARGET_DEFINES="-D__linux__=1 -DQT_LINUXBASE -I$SCRIPT_DIR/src/include"
 # would differ. Configure against the guest path Qt will actually run
 # under and relocate at install time; the baked string then describes
 # the guest, not this machine.
-GUEST_PREFIX="/usr/local/qt6"
+GUEST_PREFIX="/usr/lib/qt6"
 
 echo "==> Configuring qtbase for wasm32..."
 cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \

@@ -56,6 +56,22 @@ builds and all application, cross-engine and performance acceptance remain
 required; source controls alone do not establish a working preview. Other
 ported-software patches still require the maintainer's permission.
 
+On 2026-11-07 the maintainer approved D-61: adopt main's host-adapter
+ABI 4 when merging its incompatible process-launch interface. The combined
+kernel/host contract includes the unpublished graphics ownership interfaces;
+program ABI 56, GL operation table 17 and fork-state version 21 stay fixed.
+A normally rebuilt matching kernel/host pair is required. This approval does
+not establish compatibility of old host-3 artifacts or waive validation.
+
+On 2026-11-07 the maintainer approved D-62: raise the minimum supported
+program baseline to ABI 56 because no deployed software depends on ABI 55.
+Preserve the original frozen ABI-55 fixtures unchanged as historical and
+negative-admission evidence. Build new ABI-56 fixtures through the normal
+SDK/instrumentation/stamping path; never restamp old fixtures. The baseline
+must pin the source-derived program contract digest and reject ABI-55
+executables clearly. This intentionally supports one program family and
+retains every conformance, parity and normal-build acceptance requirement.
+
 Retain the existing pointer, typing, ScummVM and idle-worker ship bar.
 Additional targets are pointer input to display within one refresh interval
 p50 and two refresh intervals p95; desktop motion, dragging, resizing and
@@ -75,7 +91,7 @@ establish trustworthy input-to-display observations, then remove synchronous
 graphics round trips, isolate GPU work from kernel scheduling, bound frames
 in flight and address pacing and latency tails. All original correctness,
 cross-host, build, defect, conformance and final-validation requirements
-remain required, with ABI program 56 / unpublished host 3 / GL 17 / fork 21.
+remain required, with ABI program 56 / host 4 / GL 17 / fork 21 (D-61).
 Announce availability separately from validation. For B1, the maintainer
 explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent

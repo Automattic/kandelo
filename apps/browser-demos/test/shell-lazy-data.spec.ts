@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 
@@ -23,7 +23,7 @@ test("shell trust roots, speech, file-type and desktop data download only on fir
   await gotoMachineOrSkip(page, "shell");
   await expect.poll(() => page.locator(".xterm-rows").first().textContent(), {
     timeout: 120_000,
-  }).toContain("kandelo$");
+  }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
   expect([...requests.entries()]).toEqual([]);
   const command = [
     "set -eu",

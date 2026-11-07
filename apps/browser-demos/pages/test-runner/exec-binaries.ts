@@ -1,4 +1,5 @@
 import type { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
+import { writeVfsBinary } from "@host/vfs/image-helpers";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
@@ -40,10 +41,7 @@ function writeFileToFs(
   path: string,
   data: ArrayBuffer,
 ): void {
-  const bytes = new Uint8Array(data);
-  const fd = fs.open(path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
-  fs.write(fd, bytes, null, bytes.length);
-  fs.close(fd);
+  writeVfsBinary(fs, path, new Uint8Array(data), 0o755);
 }
 
 /** Populate VFS with actual executable binaries and symlinks for exec. */
@@ -59,7 +57,7 @@ function populateExecBinaries(
     writeFileToFs(fs, "/bin/dash", binaries.dash);
     try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
     try { fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
-    try { fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
+    try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
   }
 
   if (binaries.coreutils) {
@@ -76,14 +74,14 @@ function populateExecBinaries(
     writeFileToFs(fs, "/bin/grep", binaries.grep);
     try { fs.symlink("/bin/grep", "/bin/egrep"); } catch { /* exists */ }
     try { fs.symlink("/bin/grep", "/bin/fgrep"); } catch { /* exists */ }
-    try { fs.symlink("/bin/grep", "/usr/bin/grep"); } catch { /* exists */ }
+    try { fs.symlink("/bin/grep", "/bin/grep"); } catch { /* exists */ }
     try { fs.symlink("/bin/grep", "/usr/bin/egrep"); } catch { /* exists */ }
     try { fs.symlink("/bin/grep", "/usr/bin/fgrep"); } catch { /* exists */ }
   }
 
   if (binaries.sed) {
     writeFileToFs(fs, "/bin/sed", binaries.sed);
-    try { fs.symlink("/bin/sed", "/usr/bin/sed"); } catch { /* exists */ }
+    try { fs.symlink("/bin/sed", "/bin/sed"); } catch { /* exists */ }
   }
 
   if (binaries.genCat) {

@@ -27,6 +27,7 @@ import {
   CH_SIG_SI_CODE,
   CH_SIG_SIGNUM,
   CH_STATUS,
+  CH_TOTAL_SIZE,
   CH_SYSCALL,
   HOST_INTERCEPTED_SYSCALLS,
   ABI_VERSION,
@@ -950,10 +951,10 @@ describe("exec host-state transition", () => {
     expect(handleSyscall).not.toHaveBeenCalled();
   });
 
-  it("does not wake a signal-dead image after async exec failure", async () => {
+  it("retires a signal-dead image without replacing its status after async exec failure", async () => {
     const memory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
+      initial: Math.ceil(CH_TOTAL_SIZE / 65536),
+      maximum: Math.ceil(CH_TOTAL_SIZE / 65536),
       shared: true,
     });
     const channel = createChannel(7, memory, 0);
@@ -997,13 +998,15 @@ describe("exec host-state transition", () => {
     );
     finishExec(-3);
     await flushMicrotasksUntil(
-      () => worker.hostReaped.has(7),
-      "signal-dead exec image was not reaped",
+      () => onExit.mock.calls.length === 1,
+      "signal-dead exec image did not publish exit",
     );
 
     expect(getProcessExitSignal).toHaveBeenCalledWith(7);
     expect(onExit).toHaveBeenCalledWith(7, 139);
-    expect(readChannelStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+    expect(worker.hostReaped.has(7)).toBe(true);
+    expect(readChannelStatus(channel)).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(new DataView(memory.buffer, channel.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
   });
 
   it("does not wake a normally reaped image after async exec failure", async () => {

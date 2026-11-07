@@ -1,18 +1,18 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 
 import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
 import { cageShellTextColumns } from "./support/cage-shell-frame";
 import { screenshotPixelDelta } from "./support/screenshot-pixels";
+import { setInternalsOpen } from "./support/dock";
 
-/** Show the Internals syslog, the demo canvas, or the machine's terminal.
- *  Internals is an overlay toggle in the dock; showing another view means
+/** Show the Internals syslog, Graphics, or the machine's terminal.
+ *  Internals opens through More in the dock; showing another view means
  *  closing it and selecting that view. */
-async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+async function openSurface(page: Page, label: "Internals" | "Graphics" | "Terminal") {
   if (label === "Internals") await waitForMachineBootInput(page);
-  const internals = page.getByRole("button", { name: "Internals", exact: true });
-  await internals.waitFor({ state: "visible", timeout: 30_000 });
-  const open = (await internals.getAttribute("aria-pressed")) === "true";
-  if (open !== (label === "Internals")) await internals.click();
+  await page.getByRole("button", { name: "More", exact: true })
+    .waitFor({ state: "visible", timeout: 30_000 });
+  await setInternalsOpen(page, label === "Internals");
   if (label !== "Internals") {
     const view = page
       .getByLabel("Computer views")
@@ -39,7 +39,7 @@ async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
 }
 
 const canvasLocator = (page: Page) =>
-  page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
+  page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas").first();
 
 /** Full text of the Modeset status chip in the dock ("" while mounting). */
 async function chipText(page: Page): Promise<string> {
@@ -83,14 +83,14 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running .*\/usr\/local\/bin\/cage/);
+    .toMatch(/running .*\/usr\/bin\/cage/);
   expect(await syslogText(page)).not.toMatch(/configured command failed/);
 
   // Gate 1.
   await expectTerminal(page, /WLTERM_READY/, 120_000);
 
   // Gate 2.
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   const canvas = canvasLocator(page);
   await expect(canvas).toBeVisible({ timeout: 30_000 });
   await expect
@@ -116,7 +116,10 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
     async () => cageShellTextColumns(page, await canvas.screenshot(), output),
     { timeout: 60_000, message: "wlterm has rendered the shell's first output" },
   ).toBeGreaterThan(24);
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  // Browser focus must not inject a guest click and change wlterm or
+  // compositor state before the typing-only framebuffer assertion.
+  await canvas.focus();
+  await expect(canvas).toBeFocused();
   // Locator screenshots include DOM overlays above the canvas. The initial
   // lazy-download toasts can finish after the shell prompt is painted; their
   // disappearance is not a change in wlterm's framebuffer.

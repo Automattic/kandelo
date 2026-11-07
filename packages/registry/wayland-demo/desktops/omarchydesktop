@@ -60,12 +60,12 @@ wait_socket() {
     done
 }
 
-/usr/local/bin/dbus-daemon --config-file="$DATA/dbus/session.conf" --nofork &
+/usr/bin/dbus-daemon --config-file="$DATA/dbus/session.conf" --nofork &
 bus_pid=$!
 
 WLC_LAYOUT=dwindle \
 WLC_CONFIG="$DATA/omarchy/wlcompositor.conf" \
-    /usr/local/bin/wlcompositor &
+    /usr/bin/wlcompositor &
 compositor_pid=$!
 
 wait_socket "$SOCKET" "$compositor_pid" wlcompositor || exit 1
@@ -74,12 +74,12 @@ wait_socket "$BUS" "$bus_pid" dbus-daemon || exit 1
 # The host-clipboard agent. It needs only the compositor; if it cannot start
 # (no /dev/kandelo/clipboard in an older kernel) it says why on stderr, the
 # desktop runs on, and a host paste reports that no agent is running.
-/usr/local/bin/kclipd &
+/usr/bin/kclipd &
 wait_socket "$HYPR_IPC" "$compositor_pid" wlcompositor || exit 1
 
 # The shell connects to its sockets exactly once, so it starts only after the
 # compositor and the bus are up.
-/usr/local/bin/quickshell -p "$DATA/quickshell/shell.qml" &
+/usr/bin/quickshell -p "$DATA/quickshell/shell.qml" &
 
 # The compositor's lifetime is the desktop's.
 wait "$compositor_pid"

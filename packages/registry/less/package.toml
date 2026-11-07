@@ -1,7 +1,7 @@
 kind = "program"
 name = "less"
 version = "668"
-kernel_abi = 7
+kernel_abi = 55
 # ncurses: real termcap implementation (libtinfow.a) with xterm-256color/
 # xterm/vt100/dumb entries compiled in, so less can do full-screen paging
 # instead of falling back to a dumb-teletype stub. See build-less.sh.
@@ -22,3 +22,4 @@ script_path = "packages/registry/less/build-less.sh"
 [[outputs]]
 name = "less"
 wasm = "less.wasm"
+original_wasm = "originals/less.wasm"

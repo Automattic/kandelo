@@ -423,6 +423,45 @@ describe("posix_spawn credential/action/target order", () => {
     expect(removeProcess).toHaveBeenCalledExactlyOnceWith(100);
   });
 
+  it.each([false, true])("notifies completed spawn rollback after the parent retires (rejected launch: %s)", async reject => {
+    const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 4 });
+    let finishLaunch!: (result: number) => void;
+    let rejectLaunch!: (error: Error) => void;
+    const onSpawn = vi.fn(() => new Promise<number>((resolve, fail) => {
+      finishLaunch = resolve;
+      rejectLaunch = fail;
+    }));
+    const removeProcess = vi.fn(() => 0);
+    const rolledBack = vi.fn((pid: number) => {
+      expect(removeProcess).toHaveBeenCalledExactlyOnceWith(pid);
+    });
+    const exports = preparedSpawnExports({
+      kernelMemory,
+      targetBytes: authoritativeB,
+      spawnProcess: vi.fn(() => 100),
+      prepareTarget: vi.fn(() => 31),
+      commitTarget: vi.fn(() => 0),
+    });
+    exports.kernel_remove_process = removeProcess;
+    const harness = createSpawnHarness({
+      kernelMemory,
+      callbacks: { onSpawn, onChildLaunchRolledBack: rolledBack },
+      kernelExports: exports,
+    });
+    harness.dispatch("relative-child");
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
+    harness.retireParentChannel();
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      if (reject) rejectLaunch(new Error("injected child Worker launch failure"));
+      else finishLaunch(-12);
+      await vi.waitFor(() => expect(rolledBack).toHaveBeenCalledExactlyOnceWith(100));
+      expect(harness.completeChannel).not.toHaveBeenCalled();
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
   it("removes the still-owned pending child when its bound parent is absent", async () => {
     const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 4 });
     const removeProcess = vi.fn(() => 0);

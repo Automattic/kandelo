@@ -24,6 +24,7 @@ import {
 } from "../../images/vfs/scripts/vfs-image-helpers";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { KANDELO_REFERENCE_EPOCH_SECONDS } from "../src/generated/abi";
+import { assertVfsImageCapacityMetadata } from "../../web-libs/kandelo-session/src/vfs-capacity";
 
 /**
  * The fixture is the producer that ships: these helpers are
@@ -87,11 +88,11 @@ describe("installBashAsPosixShell", () => {
 
     installBashAsPosixShell(fs, bash);
 
-    expect(fs.readFile("/usr/bin/bash")).toEqual(bash);
-    expect(fs.stat("/usr/bin/bash").mode & 0o777).toBe(0o755);
-    expect([...BASH_SHELL_PATHS].sort()).toEqual(["/bin/bash", "/bin/sh", "/usr/bin/sh"]);
+    expect(fs.readFile("/bin/bash")).toEqual(bash);
+    expect(fs.stat("/bin/bash").mode & 0o777).toBe(0o755);
+    expect([...BASH_SHELL_PATHS].sort()).toEqual(["/bin/sh"]);
     for (const path of BASH_SHELL_PATHS) {
-      expect(fs.readlink(path)).toBe("/usr/bin/bash");
+      expect(fs.readlink(path)).toBe("/bin/bash");
       // Follows the link to the same bytes -- /bin/sh IS bash, not a copy.
       expect(fs.readFile(path)).toEqual(bash);
     }
@@ -108,7 +109,7 @@ describe("installBashAsPosixShell", () => {
     installBashAsPosixShell(fs, new Uint8Array([0x62, 0x61, 0x73, 0x68]));
 
     expect(fs.readFile("/bin/dash")).toEqual(dash);
-    expect(fs.readlink("/bin/sh")).toBe("/usr/bin/bash");
+    expect(fs.readlink("/bin/sh")).toBe("/bin/bash");
   });
 
   it("refuses an empty bash rather than publishing a broken /bin/sh", () => {
@@ -395,6 +396,25 @@ describe("product image capacity and headroom contract", () => {
     fs.writeFile("/probe", new Uint8Array(8), 0o644);
     return fs;
   }
+
+  it("reads the saved ceiling independently of the proposed export", async () => {
+    const image = await probeImageFs().saveImage();
+    const capacity = KandeloImageFs.readImageCapacity(image).maxByteLength;
+    const filesystem = KandeloImageFs.create();
+    filesystem.loadImage(image);
+    filesystem.setImageCapacity(capacity + 1024 * 1024);
+    expect(filesystem.loadedImageCapacityBytes()).toBe(capacity);
+    expect(filesystem.exportCapacityBytes()).toBeGreaterThanOrEqual(capacity + 1024 * 1024);
+    expect(KandeloImageFs.readImageCapacity(image).maxByteLength).toBe(capacity);
+  });
+
+  it("validates an image whose container extends past its filesystem ceiling", async () => {
+    const image = await probeImageFs().saveImage();
+    const capacity = { byteLength: image.byteLength, ...KandeloImageFs.readImageCapacity(image) };
+    expect(capacity.byteLength).toBeGreaterThan(capacity.maxByteLength);
+    expect(() => assertVfsImageCapacityMetadata(capacity, capacity.maxByteLength, "full.vfs"))
+      .not.toThrow();
+  });
 
   it("validates the serialized product capacity contract and reports drift", async () => {
     const image = await probeImageFs().saveImage();

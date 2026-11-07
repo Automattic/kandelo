@@ -390,18 +390,15 @@ impl SharedSyncobjs {
 
 /// `drm_syncobj_get_fd`: a new close-on-exec syncobj fd.
 fn install_fd(proc: &mut Process, obj: Syncobj) -> Result<i32, Errno> {
-    let path = alloc::format!("anon_inode:syncobj_file:{}", obj.id()).into_bytes();
-    let ofd = proc.ofd_table.create(crate::ofd::FileType::CharDevice,
-        wasm_posix_shared::flags::O_RDONLY, crate::ofd::SYNCOBJ_FD_HOST_HANDLE, path);
-    proc.ofd_table.get_mut(ofd).expect("fresh OFD").dri_state =
-        Some(alloc::boxed::Box::new(crate::ofd::DriOfdState::Syncobj(obj)));
-    match proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd), wasm_posix_shared::fd_flags::FD_CLOEXEC) {
-        Ok(fd) => Ok(fd),
-        Err(e) => {
-            proc.ofd_table.dec_ref(ofd);
-            Err(e)
-        }
-    }
+    let path = crate::IoBuffer::formatted(format_args!("anon_inode:syncobj_file:{}", obj.id()))?;
+    // Keep the exact object in the prepared sidecar: admission failure
+    // cancels both descriptor slots instead of publishing a partial OFD.
+    proc.open_descriptor(crate::ofd::FileType::CharDevice,
+        wasm_posix_shared::flags::O_RDONLY, &path, wasm_posix_shared::fd_flags::FD_CLOEXEC,
+        move |_, description| {
+            description.dri_state = Some(crate::IoBox::try_new(crate::ofd::DriOfdState::Syncobj(obj))?);
+            Ok(crate::ofd::SYNCOBJ_FD_HOST_HANDLE)
+        })
 }
 
 fn syncobj_from_fd(proc: &Process, fd: i32) -> Option<Syncobj> {

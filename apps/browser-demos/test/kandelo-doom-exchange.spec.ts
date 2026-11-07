@@ -13,7 +13,8 @@
 // obtained the same way. If that fetch is unavailable the whole demo can't run,
 // so the suite skips rather than reporting a false failure.
 
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "../playwright-test";
+import { test } from "./support/persistent-page";
 import {
   existsSync,
   mkdtempSync,
@@ -200,7 +201,7 @@ test("the Doom machine starts with the full-width view and its status bar", asyn
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
   const shell = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows");
   const shellText = () => shell.evaluate((node) => node.textContent ?? "");
-  await expect.poll(shellText, { timeout: 60_000 }).toMatch(/kandelo\$\s*$/);
+  await expect.poll(shellText, { timeout: 60_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-screen").click();
   await page.keyboard.insertText("cat ~/.fdoom.tar/default.cfg");
   await page.keyboard.press("Enter");

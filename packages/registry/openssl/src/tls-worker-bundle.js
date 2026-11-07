@@ -1238,7 +1238,7 @@ var TLS_1_2_Connection = class {
         const appData = await this.readNextMessage(
           ContentTypes.ApplicationData
         );
-        this.serverUpstreamWriter.write(appData.body);
+        await this.serverUpstreamWriter.write(appData.body);
       }
     } catch (e) {
       return;
@@ -1327,7 +1327,7 @@ var TLS_1_2_Connection = class {
     header[3] = length >> 8 & 255;
     header[4] = length & 255;
     const record = concatUint8Arrays([header, payload]);
-    this.clientDownstreamWriter.write(record);
+    await this.clientDownstreamWriter.write(record);
   }
   /**
    * Encrypts data in a TLS 1.2-compliant manner using

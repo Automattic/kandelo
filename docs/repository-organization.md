@@ -1,16 +1,21 @@
 # Repository Organization
 
+For everyday build and test commands, start with [Contributing](../CONTRIBUTING.md).
+
 Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes are the primary product surface; ported software packages, browser apps, VFS images, and automation are kept in separate trees so ownership and CI relevance are easy to reason about.
 
 ## Top-Level Ownership
 
 | Path | Owns | Does not own |
 |------|------|--------------|
-| `crates/kernel/` | Rust kernel implementation: syscalls, process table, fd tables, signals, sockets, PTY, devices | Host runtime, package builds |
+| `crates/runtime-core/` | Engine-independent POSIX subsystems: syscalls, process table, fd tables, filesystems, signals, sockets, PTY, devices | Worker lifecycle, browser APIs, package builds |
+| `crates/kernel/` | Wasm exports and host-import adapter around runtime-core | Independent POSIX implementations, package builds |
 | `crates/program-abi/` | Program ABI version and artifact declarations consumed by the fork instrumenter | Kernel-host-only metadata |
 | `crates/shared/` | Platform contracts and re-exports of program ABI declarations | Fork instrumentation implementation |
 | `host/src/` | TypeScript host runtime shared by Node.js and browser environments | Browser demo UI |
 | `apps/browser-demos/` | Vite app, demo pages, Kandelo web UI, app-local helpers | Core browser host runtime |
+| `apps/signalling/` | Portable PHP piplet, Spacefast database-backed signalling, and server tests | Guest socket semantics, RTC data transport |
+| `apps/spacefast-cors-proxy/` | Optional Spacefast proxy, quota-session service, and combined-site packager | Default browser hosting, guest networking semantics |
 | `web-libs/` | Browser-independent reusable UI/session contracts | App-specific page code |
 | `packages/registry/<name>/` | One ported package: manifest, build script, patches, package-owned demos, package-owned tests | Kernel/host behavior tests |
 | `packages/sets/` | Named product or CI package sets | Package implementation details |
@@ -73,6 +78,7 @@ Package behavior tests live with the package so future CI can map changes to rel
 | `host/test/` | Host/kernel runtime behavior: process lifecycle, VFS semantics, syscalls, worker behavior, host parity |
 | `packages/registry/<name>/test/` | Behavior of a specific ported package |
 | `tests/package-system/` | Package registry and binary-fetching automation |
+| `tests/agent-integration/` | Reviewed-patch tooling, evidence imports and recovery in isolated Git repositories |
 | `tests/test-artifacts/` | Shared host/kernel test artifact ownership manifests |
 | `tests/baselines/` | Failure/anomaly evidence and provenance; not test expectations |
 | `tests/libc/`, `tests/posix/`, `tests/sortix/` | External conformance suites and overlays |
@@ -80,13 +86,28 @@ Package behavior tests live with the package so future CI can map changes to rel
 
 `host/test/` should not be a catch-all for anything launched by the host. If a test primarily proves package behavior, it belongs with that package.
 
+## Reviewed Integration Tooling
+
+[`scripts/agent-integrate`](agent-integration.md) owns optional reviewed-patch
+preflight, application, evidence bookkeeping and checkpointing. Its Python
+implementation and versioned schemas live in `scripts/agent_integration/`.
+Task ledgers and linked local evidence live under the ignored
+`.context/agent-integrations/` directory. Validation command execution stays
+separate; this tool imports reviewed results rather than scheduling checks.
+
+[`scripts/agent-checkpoint`](agent-guidance/campaigns.md) stores immutable
+campaign handoff notes in `.context/agent-checkpoints/`. Its standalone
+implementation is `.claude/hooks/context-checkpoint.py`, which also supplies
+the optional Claude Code context reminder. Neither operation rotates workers
+or validates the claims written in a note.
+
 ## CI Path Categories
 
 The layout is designed so later CI path filters can make conservative, explainable decisions:
 
 | Changed path | Likely relevant checks |
 |--------------|------------------------|
-| `crates/kernel/**`, `libc/glue/**`, `host/src/kernel*.ts`, `host/src/worker*.ts` | Kernel/host build, host vitest, conformance smoke tests, affected browser checks |
+| `crates/runtime-core/**`, `crates/kernel/**`, `libc/glue/**`, `host/src/kernel*.ts`, `host/src/worker*.ts` | Kernel/host build, host vitest, conformance smoke tests, affected browser checks |
 | `host/src/node-*.ts` | Node host checks and host parity tests |
 | `host/src/browser-*.ts`, `host/src/worker-adapter-browser.ts` | Browser host checks, browser UI/tests, host parity tests |
 | `host/src/vfs/**`, `host/src/networking/**`, `host/src/framebuffer/**` | Shared host/runtime checks plus affected package/browser checks |

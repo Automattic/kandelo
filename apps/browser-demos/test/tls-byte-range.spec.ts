@@ -1,6 +1,6 @@
 import { createHmac, X509Certificate } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 function prfReference(secret: Uint8Array, seed: Uint8Array, length: number): string {
   let a = Buffer.from(seed), output = Buffer.alloc(0);

@@ -1,0 +1,19 @@
+script_path = "packages/registry/harper/build-harper.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = [
+  "packages/registry/harper/build-harper.sh",
+  "packages/registry/harper/patches",
+  "scripts/package-rust-build-env.sh",
+  "scripts/build-rust-sysroot.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "sdk/rust/wasm32-unknown-kandelo-std.json",
+  "sdk/rust/libc-kandelo.patch",
+  "sdk/rust/libc-upstream",
+  "sdk/rust/std-overlay",
+  "sdk/rust/std-kandelo.patch",
+]

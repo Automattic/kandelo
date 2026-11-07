@@ -37,6 +37,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIBC_UPSTREAM="$REPO_ROOT/sdk/rust/libc-upstream"      # rust-lang/libc, pinned to the version std uses
 LIBC_PATCH="$REPO_ROOT/sdk/rust/libc-kandelo.patch"    # kandelo delta only
 STD_OVERLAY="$REPO_ROOT/sdk/rust/std-overlay"
+STD_PATCH="$REPO_ROOT/sdk/rust/std-kandelo.patch"
 
 OUT_DIR="${KANDELO_RUST_DIR:-$HOME/.kandelo/rust}"
 MYSYS="$OUT_DIR/sysroot"
@@ -76,7 +77,7 @@ REAL_RUSTC="$REALSYS/bin/rustc"
 STAMP="$OUT_DIR/.inputs-sha256"
 input_digest() {
   {
-    cat "$0" "$LIBC_PATCH" "$REPO_ROOT/sdk/rust/wasm32-unknown-kandelo-std.json"
+    cat "$0" "$LIBC_PATCH" "$STD_PATCH" "$REPO_ROOT/sdk/rust/wasm32-unknown-kandelo-std.json"
     git -C "$LIBC_UPSTREAM" rev-parse HEAD
     git -C "$LIBC_UPSTREAM" diff HEAD
     if [ -d "$STD_OVERLAY" ]; then
@@ -158,6 +159,8 @@ else
   echo "==> No std overlay yet ($STD_OVERLAY absent) — skipping"
 fi
 
+patch --fuzz=0 -d "$MYSYS/lib/rustlib/src/rust/library" -p1 < "$STD_PATCH"
+
 echo "==> Writing rustc wrapper $WRAP"
 mkdir -p "$OUT_DIR"
 cat > "$WRAP" <<EOF
@@ -201,6 +204,14 @@ TOML
 # from STD_BUILD.
 (
   cd "$STD_BUILD"
+  # Installed std rlibs must work with consumer profiles that enable LTO,
+  # like upstream Rust targets. Cargo otherwise omits their LLVM bitcode
+  # when this bootstrap crate itself builds without LTO.
+  if [ -n "${CARGO_ENCODED_RUSTFLAGS:-}" ]; then
+    export CARGO_ENCODED_RUSTFLAGS="${CARGO_ENCODED_RUSTFLAGS}"$'\037''-Cembed-bitcode=yes'
+  else
+    export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Cembed-bitcode=yes"
+  fi
   RUSTC="$WRAP" RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 \
     cargo build --release --quiet \
       -Z build-std=std,panic_abort \

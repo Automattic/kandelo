@@ -1,5 +1,6 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
+import { setInternalsOpen } from "./support/dock";
 import { footFrame, type Rect } from "./support/labwc-frame";
 import { typePhysicalText } from "./support/physical-typing";
 import { runTerminalCommand } from "./support/terminal-command";
@@ -8,7 +9,7 @@ import { runTerminalCommand } from "./support/terminal-command";
 // desktop focus. Worker-scoped headless belongs at file scope.
 test.use({ headless: true, deviceScaleFactor: 1, viewport: { width: 1440, height: 1000 } });
 
-const scene = (page: Page) => page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
+const scene = (page: Page) => page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas").first();
 const owner = async (page: Page) => Number(await page.locator(".kmachine-primary .kmodeset-surface")
   .getAttribute("data-kms-owner-pid"));
 
@@ -39,15 +40,14 @@ async function releasePointer(page: Page) {
   await expect.poll(() => page.evaluate(() => document.pointerLockElement === null)).toBe(true);
 }
 
-async function surface(page: Page, label: "Demo" | "Internals") {
+async function surface(page: Page, label: "Graphics" | "Internals") {
   if (label === "Internals") await waitForMachineBootInput(page);
   await releasePointer(page);
-  const internals = page.getByRole("button", { name: "Internals", exact: true });
-  await expect(internals).toBeEnabled({ timeout: 180_000 });
-  if (((await internals.getAttribute("aria-pressed")) === "true") !== (label === "Internals"))
-    await internals.click();
-  if (label === "Demo") {
-    const demo = page.getByLabel("Computer views").getByRole("button", { name: "Demo", exact: true });
+  await expect(page.getByRole("button", { name: "More", exact: true }))
+    .toBeEnabled({ timeout: 180_000 });
+  await setInternalsOpen(page, label === "Internals");
+  if (label === "Graphics") {
+    const demo = page.getByLabel("Computer views").getByRole("button", { name: "Graphics", exact: true });
     if ((await demo.getAttribute("aria-current")) !== "true") await demo.click();
     await expect(scene(page)).toBeVisible();
   }
@@ -61,7 +61,7 @@ async function processes(page: Page, footCount: number) {
     .toHaveCount(footCount, { timeout: 90_000 });
   await expect(commands.filter({ hasText: /^(?:\/\S*\/)?sfwbar(?:\s|$)/ }))
     .toHaveCount(1, { timeout: 90_000 });
-  await surface(page, "Demo");
+  await surface(page, "Graphics");
 }
 
 /** Read actual guest command results through the shipped VFS inspector.
@@ -516,7 +516,7 @@ async function workspaceRoundTrip(page: Page, initial: Paint) {
     expect(original.id).toBeGreaterThan(0); expect(original.pid).toBeGreaterThan(0);
     expect(on2.windows).toEqual([{ ...original, focused: false }]);
 
-    await surface(page, "Demo");
+    await surface(page, "Graphics");
     await expect.poll(async () => (await paint(page, pager)).returnPager,
       { timeout: 60_000, intervals: [500, 1_000] }).toEqual({ sameInk: true, gray: true, focusedNext: true });
     const on2Frame = await paint(page, pager);
@@ -540,7 +540,7 @@ async function workspaceRoundTrip(page: Page, initial: Paint) {
     expect(returned.phase).toBe("returned"); focusedWorkspace(returned, "1");
     expect(returned.windows).toEqual([original]);
     // The now-empty workspace 2 may legitimately disappear after leaving it.
-    await surface(page, "Demo");
+    await surface(page, "Graphics");
     await screenshot(page, "sway-sfwbar-workspace-1-returned", await paint(page));
     await scene(page).focus();
   } catch (error) {
@@ -561,7 +561,7 @@ for (const compositor of ["sway", "labwc"] as const) {
     test.setTimeout(600_000);
     // Why: the GTK panel is an explicit preset; plain Sway owns its native bar.
     await gotoMachine(page, compositor === "sway" ? "sway-sfwbar" : compositor);
-    await surface(page, "Demo");
+    await surface(page, "Graphics");
     await expect.poll(async () => (await page.locator(".kdemo-surface-controls").allInnerTexts()).join(" "),
       { timeout: 180_000 }).toMatch(/webgl2-gl/i);
     await expect.poll(() => owner(page), { timeout: 180_000 }).toBeGreaterThan(0);

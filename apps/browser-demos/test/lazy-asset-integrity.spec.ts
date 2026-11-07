@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import type { HostDiagnostic } from "../../../host/src/host-diagnostic";
 import type { LazyDownloadEvent } from "../../../host/src/vfs/lazy-download-event";
 import { resolveBinary } from "../../../host/src/binary-resolver";

@@ -114,6 +114,8 @@ export async function buildPythonVfsImage(
   ensureDir(fs, "/tmp");
   fs.chmod("/tmp", 0o1777);
   ensureDirRecursive(fs, "/home");
+  ensureDirRecursive(fs, "/home/maker");
+  fs.chown("/home/maker", 1000, 1000);
   ensureDirRecursive(fs, "/usr/bin");
   ensureDirRecursive(fs, `/usr/lib/${PYTHON_STDLIB}`);
   ensureDirRecursive(fs, "/usr/share/licenses/cpython");

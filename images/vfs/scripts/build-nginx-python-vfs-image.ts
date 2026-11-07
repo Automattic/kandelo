@@ -93,7 +93,7 @@ daemon off;
 master_process on;
 worker_processes 2;
 error_log stderr info;
-pid /tmp/nginx.pid;
+pid /run/nginx.pid;
 
 events {
     worker_connections 64;
@@ -117,7 +117,7 @@ http {
     server {
         listen 8080;
         server_name localhost;
-        root /var/www/notes/static;
+        root /srv/www/notes/static;
         index index.html;
 
         location / {
@@ -202,13 +202,13 @@ export async function buildNginxPythonVfsImage(
       )
     : await loadShellBaseFileSystem(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES);
 
-  fs.chmod("/tmp", 0o777);
+  fs.chmod("/tmp", 0o1777);
   ensureDirRecursive(fs, "/usr/sbin");
   ensureDirRecursive(fs, "/usr/bin");
   ensureDirRecursive(fs, `/usr/lib/${PYTHON_STDLIB}`);
   ensureDirRecursive(fs, "/usr/share/licenses/cpython");
   ensureDirRecursive(fs, "/etc/nginx");
-  ensureDirRecursive(fs, "/var/www/notes");
+  ensureDirRecursive(fs, "/srv/www/notes");
   ensureDirRecursive(fs, "/var/lib/notes");
   ensureDirRecursive(fs, "/var/log");
   ensureDirRecursive(fs, "/tmp/nginx_client_temp");
@@ -232,13 +232,13 @@ export async function buildNginxPythonVfsImage(
   );
 
   // The Python app (app.py, schema.sql, seed.sql, static/index.html).
-  const appCount = copyTreeSorted(fs, APP_DIR, "/var/www/notes");
+  const appCount = copyTreeSorted(fs, APP_DIR, "/srv/www/notes");
 
   // nginx config.
   writeVfsFile(fs, "/etc/nginx/nginx.conf", NGINX_CONF);
 
   // Make the app tree and its writable data dir owned by the demo user.
-  fs.chown("/var/www/notes", DEMO_UID, DEMO_GID);
+  fs.chown("/srv/www/notes", DEMO_UID, DEMO_GID);
   fs.chown("/var/lib/notes", DEMO_UID, DEMO_GID);
   fs.chmod("/var/lib/notes", 0o755);
 
@@ -247,7 +247,7 @@ export async function buildNginxPythonVfsImage(
     {
       name: "notes-app",
       type: "process",
-      command: "/usr/bin/python3 /var/www/notes/app.py",
+      command: "/usr/bin/python3 /srv/www/notes/app.py",
       logfile: "/var/log/notes-app.log",
       restart: false,
       // The shared baseline env-file carries no PYTHONHOME, and dinit reads
@@ -286,7 +286,7 @@ export async function buildNginxPythonVfsImage(
   let prewarmedPyc = 0;
   if (inputs.buildPrograms) {
     prewarmedPyc = await prewarmPythonBytecode(fs, {
-      sourceRoots: [`/usr/lib/${PYTHON_STDLIB}`, "/var/www/notes"],
+      sourceRoots: [`/usr/lib/${PYTHON_STDLIB}`, "/srv/www/notes"],
       label: "nginx-python",
       programs: inputs.buildPrograms,
     });

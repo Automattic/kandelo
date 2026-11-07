@@ -44,7 +44,6 @@ it.each(["unmapped-owner", "mapped-owner", "terminate-owner", "trap-owner"])(
       const exit = host.spawn(Uint8Array.from(readFileSync(fixture.programPath)).buffer,
         ["kms-import-lifetime", mode], {
           uid: 1000, gid: 1000,
-          ownedJob: { id: "cursor-import", timeoutMs: 30_000 },
           onStarted: pid => { rootPid = pid; },
         });
       if (mode === "terminate-owner") {

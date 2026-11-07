@@ -985,12 +985,15 @@ describe("CentralizedKernelWorker Process Management", () => {
       expect(removeProcess).toHaveBeenCalledWith(childPid);
       expect(markProcessSignaled).toHaveBeenCalledWith(parentPid, 11);
       expect(onExit).toHaveBeenCalledWith(parentPid, 139);
+      // The dead process's Worker is woken with EINTR and a retirement marker
+      // so it can unwind; see handleExitedProcessChannel.
       expect(
         Atomics.load(
           new Int32Array(memory.buffer, channelOffset),
           CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
         ),
-      ).toBe(CHANNEL_STATUS_PENDING);
+      ).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(new DataView(memory.buffer, channelOffset).getUint32(CH_ERRNO, true)).toBe(4);
       expect(error).toHaveBeenCalledWith(
         "[handleSyscall] FATAL could not roll back fork child 100: " +
           "Kernel could not remove process 100: errno 5",

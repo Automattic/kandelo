@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { fileURLToPath } from "node:url";
 
 const renderer = fileURLToPath(new URL("../../../host/src/framebuffer/index.ts", import.meta.url));

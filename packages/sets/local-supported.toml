@@ -2,6 +2,7 @@ schema = 1
 policy = "source-only-v1"
 dependency_only = [
   "bytepath-source",
+  "genesis-plus-gx-source",
   "snkrx-source",
   "stb-source",
   "libyaml-source",
@@ -10,11 +11,36 @@ dependency_only = [
   "pcre2-source",
   "ncurses-source",
   "phpcacheadmin-source",
+  "retro-rom-240p-md",
+  "retro-rom-240p-snes",
+  "snes9x-source",
   "sqlite-amalgamation-source",
   "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
 ]
 registry_non_roots = []
+
+[[packages]]
+name = "service-activity-tools"
+class = "platform"
+
+[[packages]]
+name = "web-stack-vfs"
+class = "browser-product"
+
+[[packages]]
+name = "wordpress-family-vfs"
+class = "browser-product"
+
+[[products]]
+id = "browser-web-stack"
+package = "web-stack-vfs"
+manifest = "images/vfs/products/browser-web-stack.toml"
+
+[[products]]
+id = "browser-wordpress-family"
+package = "wordpress-family-vfs"
+manifest = "images/vfs/products/browser-wordpress-family.toml"
 
 [[dormant_products]]
 name = "browser-erlang"
@@ -70,6 +96,10 @@ class = "user-software"
 
 [[packages]]
 name = "binaryen"
+class = "platform"
+
+[[packages]]
+name = "wasm-fork-instrument"
 class = "platform"
 
 [[packages]]
@@ -134,6 +164,10 @@ class = "user-software"
 
 [[packages]]
 name = "diffutils"
+class = "user-software"
+
+[[packages]]
+name = "dosbox-pure"
 class = "user-software"
 
 [[packages]]
@@ -239,6 +273,14 @@ class = "user-software"
 [[packages]]
 name = "harfbuzz"
 class = "platform"
+
+[[packages]]
+name = "harper"
+class = "user-software"
+
+[[packages]]
+name = "harper-browser-bundle"
+class = "user-software"
 
 [[packages]]
 name = "hyprland-protocols"
@@ -582,6 +624,10 @@ class = "user-software"
 
 [[packages]]
 name = "redis"
+class = "user-software"
+
+[[packages]]
+name = "retro-emulators"
 class = "user-software"
 
 [[packages]]

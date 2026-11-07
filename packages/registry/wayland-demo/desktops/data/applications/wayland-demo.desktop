@@ -1,4 +1,4 @@
 [Desktop Entry]
 Type=Application
 Name=Paint
-Exec=/usr/local/bin/wlpaint
+Exec=/usr/bin/wlpaint

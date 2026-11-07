@@ -16,7 +16,7 @@ SOCKET=/tmp/wayland-0
 
 WLC_LAYOUT=dwindle \
 WLC_CONFIG=/usr/share/kandelo/hyprland/wlcompositor.conf \
-    /usr/local/bin/wlcompositor &
+    /usr/bin/wlcompositor &
 compositor_pid=$!
 
 i=0
@@ -37,12 +37,12 @@ done
 
 # A clock and two terminals tile the screen. The foreground terminal is the
 # one whose exit ends the desktop; tear the rest down with it.
-/usr/local/bin/wlclock &
+/usr/bin/wlclock &
 clock_pid=$!
-/usr/local/bin/wlterm &
+/usr/bin/wlterm &
 term_pid=$!
 
-/usr/local/bin/wlterm
+/usr/bin/wlterm
 status=$?
 
 kill "$clock_pid" "$term_pid" "$compositor_pid" 2>/dev/null

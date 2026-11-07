@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { compileSdkFixture } from "../../../host/test/support/compile-sdk-fixture";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";

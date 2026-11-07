@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { TMUX_CONTROL_MARKERS, TMUX_CONTROL_SCRIPT } from "../../../packages/registry/tmux/test/contracts";
 import { tmuxRelPath, tmuxTerminfoFiles } from "../../../packages/registry/tmux/test/artifacts";
 import { devServerAssetUrl } from "./support/dev-server-assets";

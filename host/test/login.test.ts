@@ -205,7 +205,7 @@ function loginRootfsImage(
     bytes(identityWasm),
   );
   fs.createFileWithOwner(
-    "/usr/bin/login",
+    "/bin/login",
     0o4755,
     0,
     0,
@@ -230,7 +230,7 @@ async function runLogin(
     programPath: execArgvWasm,
     argv: [
       "exec-argv",
-      "/usr/bin/login",
+      "/bin/login",
       ...(options.args ?? "maker").split(" "),
     ],
     uid: options.uid ?? 1000,
@@ -302,16 +302,13 @@ describe("first-party guest login", () => {
   });
 
   it("fails instead of starting a shell outside the account's missing canonical home", async () => {
-    // `/home/maker` is one of the kernel's tmpfs scratch mounts, so it always
-    // exists on a booted machine; a missing home needs an account whose home
-    // is not a mount point.
     const result = await runLogin({
       args: "-f maker",
       stdin: "",
       uid: 0,
       gid: 0,
       createHome: false,
-      accountHome: "/home/maker-absent",
+      accountHome: "/home/maker",
     });
 
     expect(result.exitCode).toBe(1);

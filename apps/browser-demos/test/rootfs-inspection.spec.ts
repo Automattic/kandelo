@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { inspectionImage, INSPECTION_MUTATION } from "../../../host/test/support/inspection-image";
 
@@ -27,7 +27,7 @@ test("worker inspection reports native guest writes, mount-crossing links and la
       const missingDir = await kernel.readDirFromVfs("/missing");
       const missingStat = await kernel.statVfsPath("/missing");
       const large = await kernel.readDirFromVfs("/large");
-      const { exit } = await kernel.spawnFromVfs("/usr/bin/bash", ["bash", "-c", command], { env: ["PATH=/bin:/usr/bin"] });
+      const { exit } = await kernel.spawnFromVfs("/bin/bash", ["bash", "-c", command], { env: ["PATH=/bin:/usr/bin"] });
       const status = await exit;
       const changed = await kernel.statVfsPath("/inspection/guest/data");
       const listing = await kernel.readDirFromVfs("/inspection/guest");

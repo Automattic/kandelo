@@ -1,7 +1,7 @@
-# Kandelo-Native SDK Wrappers
+# Kandelo guest SDK
 
-These scripts are the first in-session SDK contract. They are intended to be
-installed into a Kandelo VFS at `/usr/bin` by the `kandelo-sdk` package.
+The Rust `kandelo-cc` driver is installed in `/usr/bin` by the
+`kandelo-sdk` package, with command-name symlinks for the SDK tools.
 
 They assume the compiler package installs LLVM tools here:
 
@@ -17,20 +17,19 @@ They assume the compiler package installs LLVM tools here:
 and SDK data here:
 
 ```text
-/usr/wasm32posix/sysroot
-/usr/wasm32posix/glue
-/usr/wasm32posix/config.site
+/usr/lib/kandelo/wasm32posix/sysroot
+/usr/lib/kandelo/wasm32posix/glue
+/usr/lib/kandelo/wasm32posix/config.site
 ```
 
 The overrides intentionally mirror the host SDK:
 
 ```sh
 WASM_POSIX_LLVM_DIR=/usr/lib/llvm/bin
-WASM_POSIX_SYSROOT=/usr/wasm32posix/sysroot
-WASM_POSIX_GLUE_DIR=/usr/wasm32posix/glue
+WASM_POSIX_SYSROOT=/usr/lib/kandelo/wasm32posix/sysroot
+WASM_POSIX_GLUE_DIR=/usr/lib/kandelo/wasm32posix/glue
 ```
 
-The wrappers are deliberately shell-based for the first milestone because the
-kernel workers already resolve shebang scripts. If argument handling becomes
-too complex, these can be replaced by a small C or Rust command driver without
-changing the VFS contract.
+The driver shares argument handling with the build-machine SDK. Its guest
+resource discovery uses these installed paths; the filesystem layout follows
+[the image policy](../../docs/filesystem-layout.md).

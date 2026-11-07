@@ -181,6 +181,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_ipc_shm_read_chunk",
   "kernel_ipc_shm_write_chunk",
   "kernel_mq_drain_notification",
+  "kernel_overlay_activation_codec",
   "kernel_pipe2",
   "kernel_pipe_read",
   "kernel_pipe_write",
@@ -213,6 +214,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_setsockopt",
   "kernel_socketpair",
   "kernel_spawn_exec_target_prepare",
+  "kernel_spawn_exec_target_prepare_handle",
   "kernel_take_process_timer_cleanup",
   "kernel_tcgetattr",
   "kernel_tcsetattr",
@@ -260,6 +262,7 @@ type KernelScratchExportSnapshot = Readonly<
 
 const REQUIRED_POINTER_0 = intrinsicObjectFreeze([0] as const);
 const REQUIRED_POINTER_1 = intrinsicObjectFreeze([1] as const);
+const REQUIRED_POINTER_1_3 = intrinsicObjectFreeze([1, 3] as const);
 const REQUIRED_POINTER_2 = intrinsicObjectFreeze([2] as const);
 const REQUIRED_POINTER_3 = intrinsicObjectFreeze([3] as const);
 const REQUIRED_POINTER_3_5 = intrinsicObjectFreeze([3, 5] as const);
@@ -275,6 +278,8 @@ export function kernelScratchRequiredPointerArguments(
   name: KernelScratchExportName,
 ): readonly number[] {
   switch (name) {
+    case "kernel_overlay_activation_codec":
+      return REQUIRED_POINTER_1_3;
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
     case "kernel_drain_audio":
@@ -350,6 +355,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_epoll_wake_indices":
     case "kernel_process_metadata_stage":
     case "kernel_exec_target_prepare":
+    case "kernel_spawn_exec_target_prepare_handle":
     case "kernel_exec_target_admit":
     case "kernel_process_metadata_read":
     case "kernel_setsockopt":
@@ -400,6 +406,7 @@ function isKernelScratchExportName(
   value: string,
 ): value is KernelScratchExportName {
   switch (value) {
+    case "kernel_overlay_activation_codec":
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
     case "kernel_dequeue_signal":
@@ -470,6 +477,7 @@ function isKernelScratchExportName(
     case "kernel_socketpair":
     case "kernel_spawn_exec_target_prepare":
     case "kernel_take_process_timer_cleanup":
+    case "kernel_spawn_exec_target_prepare_handle":
     case "kernel_tcgetattr":
     case "kernel_tcsetattr":
     case "kernel_transfer_channel_execute":
@@ -1250,6 +1258,45 @@ export type KernelScratchReserver = (
   minimumCapacity: number,
 ) => KernelScratchReservation;
 
+declare const ownedHostByteDestinationBrand: unique symbol;
+
+export interface OwnedHostByteDestination {
+  readonly [ownedHostByteDestinationBrand]: never;
+}
+
+interface OwnedHostByteDestinationRecord {
+  readonly bytes: Uint8Array;
+  readonly capacity: number;
+}
+
+const ownedHostByteDestinations = new WeakMap<object, OwnedHostByteDestinationRecord>();
+
+export function allocateOwnedHostByteDestination(capacity: number): OwnedHostByteDestination {
+  const checkedCapacity = exactNonNegativeInteger(capacity, "host byte destination capacity");
+  if (checkedCapacity === 0) throw new KernelScratchError("host byte destination is empty");
+  const destination = intrinsicObjectFreeze({}) as OwnedHostByteDestination;
+  intrinsicApply(intrinsicWeakMapSet, ownedHostByteDestinations, [destination, {
+    bytes: new IntrinsicUint8Array(checkedCapacity), capacity: checkedCapacity,
+  }]);
+  return destination;
+}
+
+function ownedHostByteDestinationRecord(destination: OwnedHostByteDestination): OwnedHostByteDestinationRecord {
+  const record = intrinsicApply(intrinsicWeakMapGet, ownedHostByteDestinations, [destination]) as OwnedHostByteDestinationRecord | undefined;
+  if (record === undefined) throw new KernelScratchError("host byte destination was not allocated by its factory");
+  const span = intrinsicUint8ArraySpan(record.bytes, "host byte destination");
+  if (span.byteLength !== record.capacity) throw new KernelScratchError("host byte destination is detached");
+  return record;
+}
+
+export function ownedHostByteDestinationPrefix(destination: OwnedHostByteDestination, length: number): Uint8Array {
+  const record = ownedHostByteDestinationRecord(destination);
+  const checkedLength = exactNonNegativeInteger(length, "host byte destination prefix");
+  checkedRange(0, checkedLength, record.capacity, "host byte destination prefix");
+  const span = intrinsicUint8ArraySpan(record.bytes, "host byte destination");
+  return new IntrinsicUint8Array(span.buffer, span.byteOffset, checkedLength);
+}
+
 export interface KernelScratchLease {
   /**
    * Prove that one range belongs to this allocation without exposing its
@@ -1287,6 +1334,7 @@ export interface KernelScratchLease {
       | bigint
       | KernelScratchExportPointer
     )[],
+    beforeInvoke?: () => void,
   ): number;
   /**
    * Encode the checked address of one source range into another owned range.
@@ -1318,6 +1366,7 @@ export interface KernelScratchLease {
     length?: number,
   ): void;
   copyOut(sourceOffset: number, length: number): Uint8Array;
+  copyToOwnedHostDestination(destination: OwnedHostByteDestination, sourceOffset: number, length: number): void;
   fill(value: number, offset: number, length: number): void;
 }
 
@@ -1649,8 +1698,9 @@ class ActiveKernelScratchLease implements KernelScratchLease {
       | bigint
       | KernelScratchExportPointer
     )[],
+    beforeInvoke?: () => void,
   ): number {
-    return this.#invokeKernelExport(scope, name, args);
+    return this.#invokeKernelExport(scope, name, args, beforeInvoke);
   }
 
   #invokeKernelExport(
@@ -1661,6 +1711,7 @@ class ActiveKernelScratchLease implements KernelScratchLease {
       | bigint
       | KernelScratchExportPointer
     )[],
+    beforeInvoke?: () => void,
   ): number {
     this.#assertValid();
     if (typeof name !== "string" || !isKernelScratchExportName(name)) {
@@ -1884,6 +1935,7 @@ class ActiveKernelScratchLease implements KernelScratchLease {
           scope,
           kernelExport.instance,
           invoke,
+          beforeInvoke,
         );
       if (typeof result !== "number") {
         throw new KernelScratchError(
@@ -2102,6 +2154,15 @@ class ActiveKernelScratchLease implements KernelScratchLease {
       [kernelSource],
     );
     return detached;
+  }
+
+  copyToOwnedHostDestination(destination: OwnedHostByteDestination, sourceOffset: number, length: number): void {
+    const record = ownedHostByteDestinationRecord(destination);
+    const checkedLength = exactNonNegativeInteger(length, `${this.#label} host copy length`);
+    checkedRange(0, checkedLength, record.capacity, `${this.#label} host copy destination`);
+    const source = this.#readableRange(sourceOffset, checkedLength);
+    const kernelSource = new IntrinsicUint8Array(this.#currentMemoryBuffer(), source.pointer, source.length);
+    intrinsicApply(intrinsicUint8ArraySet, record.bytes, [kernelSource]);
   }
 
   fill(value: number, offset: number, length: number): void {

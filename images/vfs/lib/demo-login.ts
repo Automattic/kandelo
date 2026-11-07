@@ -6,7 +6,7 @@ export const DEMO_LOGIN_SHELL = "/bin/sh";
 export const DEMO_LOGIN_PASSWORD = "kandelo";
 export const DEMO_LOGIN_PASSWORD_HASH =
   "$6$kandelo$DKNPruix37YeUx9j4kJIGJ2NvXdqzxDr5b1D3xJZzbwFsNYuep8j3AtxB7OaTD6HWnz/adonyTamRx4XQwJ06/";
-export const DEMO_LOGIN_PROGRAM_PATH = "/usr/bin/login";
+export const DEMO_LOGIN_PROGRAM_PATH = "/bin/login";
 export const DEMO_AUTOLOGIN_MOTD_PATH = "/etc/motd.autologin";
 export const DEMO_SUDOERS_PATH = "/etc/sudoers";
 export const DEMO_SUDOERS = "%wheel ALL=(ALL:ALL) ALL\n";

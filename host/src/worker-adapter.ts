@@ -364,7 +364,7 @@ export class NodeWorkerAdapter implements WorkerAdapter {
   }
 }
 
-class NodeWorkerHandle implements WorkerHandle {
+export class NodeWorkerHandle implements WorkerHandle {
   constructor(private worker: Worker) {}
 
   postMessage(message: unknown, transfer?: Transferable[]): void {

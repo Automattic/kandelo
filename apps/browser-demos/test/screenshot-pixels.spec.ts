@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { screenshotPixelDelta } from "./support/screenshot-pixels";
 
 test("screenshot equality observes pixels rather than PNG encoding", async ({ page }) => {

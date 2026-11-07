@@ -116,6 +116,36 @@ function writeContextRegistry(
 }
 
 describe("browser binary dependencies", () => {
+  it("declares the non-forking policy selected by sealed build scripts", () => {
+    const projection = JSON.parse(
+      readFileSync(join(registryRoot, "program-packages.json"), "utf8"),
+    ) as {
+      packages: Record<string, {
+        members: Array<{ kind: string; forkInstrumentation?: string }>;
+      }>;
+    };
+    let inspected = 0;
+    for (const packageDir of registryPackageDirs()) {
+      const buildPath = join(packageDir, "build.toml");
+      if (!existsSync(buildPath)) continue;
+      const scriptPath = firstTomlString(readFileSync(buildPath, "utf8"), "script_path");
+      if (!scriptPath) continue;
+      const script = readFileSync(join(repoRoot, scriptPath), "utf8");
+      if (!/^\s*export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled\s*$/m.test(script)) continue;
+      const packageName = firstTomlString(
+        readFileSync(join(packageDir, "package.toml"), "utf8"), "name",
+      )!;
+      const outputs = projection.packages[packageName]?.members
+        .filter((member) => member.kind === "output");
+      expect(outputs?.length, packageName).toBeGreaterThan(0);
+      for (const output of outputs!) {
+        expect(output.forkInstrumentation, packageName).toBe("disabled");
+      }
+      inspected += 1;
+    }
+    expect(inspected).toBeGreaterThan(0);
+  });
+
   it("declares the sealed installer policy for the Python VFS package", () => {
     const buildScript = readFileSync(
       join(registryRoot, "python-vfs", "build-python-vfs.sh"),
@@ -1391,6 +1421,41 @@ wasm = "external-command.wasm"
           registryPath: "registry",
         })
       ).toThrow(/invalid generated program package projection member/);
+
+      writeIndex({
+        ...projection,
+        members: [{
+          ...projection.members[0],
+          originalWasm: "originals/external-command.wasm",
+        }],
+      });
+      expect(
+        inspectBrowserBinaryDependencies(fixtureRoot, {
+          registryPath: "registry",
+        }).missingOwners,
+      ).toEqual([]);
+      expect([...packageOutputOwners(fixtureRoot, {
+        registryPath: "registry",
+      }).keys()]).toEqual(["programs/wasm32/external-command.wasm"]);
+
+      for (const originalWasm of [null, true, "", "/private.wasm", "../private.wasm", "originals/../private.wasm", "originals/\ud800.wasm", "originals/\udc00.wasm"]) {
+        writeIndex({
+          ...projection,
+          members: [{ ...projection.members[0], originalWasm }],
+        });
+        expect(() => packageOutputOwners(fixtureRoot, {
+          registryPath: "registry",
+        })).toThrow(/invalid generated program package projection member/);
+      }
+      for (const originalWasm of ["external-command.wasm", "external-command.wasm/original.wasm"]) {
+        writeIndex({
+          ...projection,
+          members: [{ ...projection.members[0], originalWasm }],
+        });
+        expect(() => packageOutputOwners(fixtureRoot, {
+          registryPath: "registry",
+        })).toThrow(/invalid generated original artifact layout/);
+      }
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }

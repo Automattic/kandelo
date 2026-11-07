@@ -117,7 +117,7 @@ export interface AuditOptions {
   virtualSources?: ReadonlyMap<string, string>;
 }
 
-type StateKey = ts.Symbol | ts.FunctionLikeDeclaration;
+type StateKey = ts.Symbol | ts.FunctionLikeDeclaration | ts.Expression;
 
 interface ValueState {
   memory: number;
@@ -2583,6 +2583,7 @@ function expressionState(
         )
       : symbolAtExpression(checker, node);
   const directState = cloneState(stateFor(states, direct));
+  unionState(directState, stateFor(states, node));
   if (isScratchRegionFactorySymbol(direct)) {
     directState.scratchRegionFactory = true;
   }
@@ -4643,6 +4644,9 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
       if (ts.isPropertyDeclaration(current) && current.initializer) {
         return symbolForDeclaration(checker, current) ?? null;
       }
+      if (ts.isPropertyAssignment(current) && current.initializer === child) {
+        return symbolForDeclaration(checker, current) ?? null;
+      }
       if (
         ts.isBinaryExpression(current) &&
         isSimpleAssignment(current) &&
@@ -4681,6 +4685,16 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
               `authority origin has no stable binding: ${finding.key}`,
             );
           } else {
+            if (ts.isExpression(node)) {
+              mergeIntoKey(
+                states,
+                node,
+                ownerState(
+                  classification.authorityOwner,
+                  kind === "wasm-memory-authority" ? "memory" : "instance",
+                ),
+              );
+            }
             mergeIntoKey(
               states,
               target,

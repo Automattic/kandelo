@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ensureServiceWorkerReady,
   initServiceWorkerBridge,
+  UnconfirmedPersistentWebBridgeOwnership,
 } from "./service-worker-bridge";
 
 type Listener = () => void;
@@ -319,6 +320,40 @@ test("ignores sibling controllers without resetting the single readiness budget"
   });
 });
 
+test("waits for a same-URL update to activate and replace the old controller", async () => {
+  const fixture = readyFixture();
+  const update = new FakeWorker("https://example.test/a/service-worker.js");
+  update.state = "installing";
+  fixture.registration.installing = update;
+  await withBrowserGlobals(fixture.pageUrl, fixture.container, async clock => {
+    let settled = false;
+    const ready = ensureServiceWorkerReady("/a/service-worker.js").then(worker => {
+      settled = true;
+      return worker;
+    });
+    await flushPromises();
+    assert.equal(settled, false);
+    fixture.registration.installing = null;
+    fixture.registration.active = update;
+    update.state = "activating";
+    update.emit("statechange");
+    await flushPromises();
+    assert.equal(settled, false);
+    fixture.controller!.state = "redundant";
+    update.state = "activated";
+    update.emit("statechange");
+    await flushPromises();
+    assert.equal(settled, false);
+    fixture.container.controller = update;
+    fixture.container.emit("controllerchange");
+    assert.equal(await ready, update);
+    assert.deepEqual(clock.delays, [10_000]);
+    assert.equal(fixture.container.listenerCount(), 0);
+    assert.equal(fixture.registration.listenerCount(), 0);
+    assert.equal(update.listenerCount(), 0);
+  });
+});
+
 test("times out a wrong controller with the expected script and scope diagnostic", async () => {
   const fixture = readyFixture({
     controllerScriptUrl: "https://example.test/b/service-worker.js",
@@ -478,4 +513,69 @@ test("cleans up when posting bridge initialization throws", async () => {
     );
     assert.equal(clock.count(), 0);
   });
+});
+
+test("persistent initialization does not settle a timeout before the route barrier drains", async () => {
+  const fixture = readyFixture();
+  let acknowledgeProof!: () => void;
+  const proofReceived = new Promise<void>(resolve => { acknowledgeProof = resolve; });
+  let drain!: () => void;
+  const barrier = new Promise<void>(resolve => { drain = resolve; });
+  let barrierEntered!: () => void;
+  const entered = new Promise<void>(resolve => { barrierEntered = resolve; });
+  let proofReleased = false;
+  fixture.controller!.postMessageHandler = (_message, transfer) => {
+    const reply = transfer[1] as MessagePort;
+    reply.onmessage = () => { acknowledgeProof(); };
+    reply.postMessage({ type: "bridge-lease-challenge", nonce: "01234567-89ab-4cde-8fab-0123456789ab" });
+    (transfer[0] as MessagePort).close();
+  };
+  await withBrowserGlobals(fixture.pageUrl, fixture.container, async clock => {
+    Object.defineProperty(navigator, "locks", { value: {
+      request: async (name: string, options: unknown, operation?: (lock: unknown) => Promise<void>) => {
+        if (name.startsWith("kandelo-http-bridge-proof:")) {
+          await operation!({});
+          proofReleased = true;
+        } else {
+          assert.equal(proofReleased, true);
+          barrierEntered();
+          await barrier;
+        }
+      },
+    } });
+    let settled = false;
+    const result = initServiceWorkerBridge("/a/service-worker.js", "/a/", "01234567-89ab-4cde-8fab-0123456789ab", "persistent-one");
+    const rejection = assert.rejects(result, /Timed out initializing/).then(() => { settled = true; });
+    await proofReceived;
+    clock.fire();
+    await entered;
+    assert.equal(settled, false);
+    drain();
+    await rejection;
+    assert.equal(clock.count(), 0);
+  });
+});
+
+test("proof failure still drains the route and a rejected barrier reports uncertain ownership", async () => {
+  for (const rejectBarrier of [false, true]) {
+    const fixture = readyFixture();
+    fixture.controller!.postMessageHandler = (_message, transfer) => {
+      (transfer[1] as MessagePort).postMessage({ type: "bridge-lease-challenge", nonce: "01234567-89ab-4cde-8fab-0123456789ab" });
+      (transfer[0] as MessagePort).close();
+    };
+    await withBrowserGlobals(fixture.pageUrl, fixture.container, async clock => {
+      let barriers = 0;
+      Object.defineProperty(navigator, "locks", { value: {
+        request: async (name: string) => {
+          if (name.startsWith("kandelo-http-bridge-proof:")) throw new Error("proof refused");
+          barriers += 1;
+          if (rejectBarrier) throw new Error("barrier refused");
+        },
+      } });
+      await assert.rejects(initServiceWorkerBridge("/a/service-worker.js", "/a/", "01234567-89ab-4cde-8fab-0123456789ab", "persistent-one"),
+        rejectBarrier ? UnconfirmedPersistentWebBridgeOwnership : /proof refused/);
+      assert.equal(barriers, 1);
+      assert.equal(clock.count(), 0);
+    });
+  }
 });

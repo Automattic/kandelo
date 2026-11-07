@@ -635,7 +635,7 @@ export class TLS_1_2_Connection {
 				const appData = await this.readNextMessage(
 					ContentTypes.ApplicationData
 				);
-				this.serverUpstreamWriter.write(appData.body);
+				await this.serverUpstreamWriter.write(appData.body);
 			}
 		} catch (e) {
 			// Connection closed or TLS alert — stop polling.
@@ -746,7 +746,9 @@ export class TLS_1_2_Connection {
 		header[4] = length & 0xff;
 
 		const record = concatUint8Arrays([header, payload]);
-		this.clientDownstreamWriter.write(record);
+		// Propagate a rejected write to the handshake or stream pump that owns
+		// it; teardown can close the writer while encryption is in flight.
+		await this.clientDownstreamWriter.write(record);
 	}
 
 	/**

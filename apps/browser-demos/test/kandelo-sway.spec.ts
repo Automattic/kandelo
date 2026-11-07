@@ -1,6 +1,7 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "../playwright-test";
 
 import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
+import { setInternalsOpen } from "./support/dock";
 import { typePhysicalText } from "./support/physical-typing";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
@@ -9,15 +10,14 @@ import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs
 // Browser checks must never take the user's desktop focus.
 test.use({ headless: true });
 
-/** Show the Internals syslog, the demo canvas, or the machine's terminal.
- *  Internals is an overlay toggle in the dock; showing another view means
+/** Show the Internals syslog, Graphics, or the machine's terminal.
+ *  Internals is opened through More in the dock; showing another view means
  *  closing it and selecting that view. */
-async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+async function openSurface(page: Page, label: "Internals" | "Graphics" | "Terminal") {
   if (label === "Internals") await waitForMachineBootInput(page);
-  const internals = page.getByRole("button", { name: "Internals", exact: true });
-  await internals.waitFor({ state: "visible", timeout: 30_000 });
-  const open = (await internals.getAttribute("aria-pressed")) === "true";
-  if (open !== (label === "Internals")) await internals.click();
+  await page.getByRole("button", { name: "More", exact: true })
+    .waitFor({ state: "visible", timeout: 30_000 });
+  await setInternalsOpen(page, label === "Internals");
   if (label !== "Internals") {
     const view = page
       .getByLabel("Computer views")
@@ -39,7 +39,7 @@ async function terminalText(page: Page): Promise<string> {
 }
 
 const canvasLocator = (page: Page) =>
-  page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
+  page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas").first();
 
 /** Full text of the Modeset status chip in the dock ("" while mounting). */
 async function chipText(page: Page): Promise<string> {
@@ -202,7 +202,7 @@ async function nativeBarProcess(page: Page) {
   await expect(commands.filter({ hasText: /^(?:\/\S*\/)?swaybar(?:\s|$)/ }))
     .toHaveCount(1, { timeout: 120_000 });
   await expect(commands.filter({ hasText: /^(?:\/\S*\/)?sfwbar(?:\s|$)/ })).toHaveCount(0);
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   await canvasLocator(page).focus();
 }
 
@@ -244,7 +244,7 @@ async function workspaceEvidence(page: Page, file: string, focused: string) {
   const workspaces = JSON.parse(text) as { name: string; focused: boolean; visible: boolean }[];
   expect(workspaces.filter(workspace => workspace.focused).map(workspace => workspace.name)).toEqual([focused]);
   expect(workspaces.find(workspace => workspace.name === focused)?.visible).toBe(true);
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   await canvasLocator(page).focus();
 }
 
@@ -367,11 +367,11 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running .*\/usr\/local\/bin\/sway/);
+    .toMatch(/running .*\/usr\/bin\/sway/);
   expect(await syslogText(page)).not.toMatch(/configured command failed/);
 
   // Gate 1.
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   const canvas = canvasLocator(page);
   await expect(canvas).toBeVisible({ timeout: 30_000 });
   await expect
@@ -389,9 +389,10 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   await expect
     .poll(async () => isFoot(await meanColor(page, await middle(out))), { timeout: 180_000, intervals: [2_000] })
     .toBe(true);
-  // The Demo button keeps the keyboard focus, and keys reach the machine
-  // only while the page body or the demo surface has it.
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  // Return DOM keyboard capture without clicking a guest control: (5,5)
+  // belongs to the real desktop, so a click can change its compositor seat.
+  await canvasLocator(page).focus();
+  await expect(canvasLocator(page)).toBeFocused();
   const prompt = () => outputShot(out, 0, 40, out.width / 2, 200);
   let idle = await prompt();
   await expect
@@ -458,10 +459,10 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   // Gate 7.
   await typePhysicalText(page,
     "WLR_RENDERER=pixman LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo"
-      + " FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/sway -c /usr/share/kandelo/sway/config\n",
+      + " FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/sway -c /usr/share/kandelo/sway/config\n",
     { delay: 20 },
   );
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   // A startup repaint can change the screenshot before the dock drains its
   // 4 Hz statistics. First prove the new session owns the display and its
   // CPU frames reached the scanout presenter; then measure its moving clock.
@@ -559,7 +560,7 @@ for (const deviceScaleFactor of [1, 2]) {
       expect(member("sway/foot.ini")).toContain("dpi-aware=no");
 
       await gotoMachine(page, "sway");
-      await openSurface(page, "Demo");
+      await openSurface(page, "Graphics");
       const canvas = canvasLocator(page);
       await canvas.waitFor({ state: "visible", timeout: 30_000 });
       // Establish density from the actual browser measurement independently

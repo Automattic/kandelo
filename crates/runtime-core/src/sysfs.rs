@@ -17,7 +17,6 @@ use alloc::vec::Vec;
 use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFREG};
 use wasm_posix_shared::{Errno, WasmStat};
 
-use crate::fd::OpenFileDescRef;
 use crate::lock::{FileId, KernelFileKind};
 use crate::ofd::FileType;
 use crate::process::Process;
@@ -287,27 +286,27 @@ pub fn open(proc: &mut Process, path: Vec<u8>, oflags: u32) -> Result<i32, Errno
         fd_flags |= FD_CLOFORK;
     }
 
-    let (ofd_idx, buf_idx) = if node.kind == SysfsKind::Dir {
-        let ofd_idx = proc.ofd_table.create(FileType::Directory, status_flags, SYSFS_DIR_HANDLE, path);
-        proc.ofd_table.get_mut(ofd_idx).unwrap().dir_host_handle = SYSFS_DIR_HANDLE;
-        (ofd_idx, None)
-    } else {
-        let buf_idx = crate::descriptor_backing::with_procfs_bufs(|table| {
-            table.alloc(crate::descriptor_backing::ProcfsBacking::new(node.content))
+    // Why: reserve the descriptor, OFD and path before publishing a global
+    // snapshot backing. Any fallible initializer failure cancels both reserved
+    // slots; after a backing is allocated the prepared publication cannot fail.
+    if node.kind == SysfsKind::Dir {
+        return proc.open_descriptor(FileType::Directory, status_flags, &path, fd_flags, |_, description| {
+            description.dir_host_handle = SYSFS_DIR_HANDLE;
+            Ok(SYSFS_DIR_HANDLE)
         });
-        let host_handle = crate::procfs::procfs_buf_handle(buf_idx);
-        let ofd_idx = proc.ofd_table.create(FileType::Regular, status_flags, host_handle, path);
-        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Kernel {
+    }
+    proc.open_descriptor(FileType::Regular, status_flags, &path, fd_flags, |_, description| {
+        // Why: the retained snapshot must carry its I/O-memory admission.
+        // Copy fallibly instead of adopting an already allocated plain Vec.
+        let content = crate::IoBuffer::copy_from(&node.content)?;
+        let buf_idx = crate::descriptor_backing::with_procfs_bufs(|table| {
+            table.try_alloc(crate::descriptor_backing::ProcfsBacking::new(content))
+        })?;
+        description.file_id = Some(FileId::Kernel {
             kind: KernelFileKind::SysFsRegular,
             object_id: node.ino,
         });
-        (ofd_idx, Some(buf_idx))
-    };
-    proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags).inspect_err(|_| {
-        proc.ofd_table.dec_ref(ofd_idx);
-        if let Some(buf_idx) = buf_idx {
-            crate::descriptor_backing::with_procfs_bufs(|table| table.release(buf_idx));
-        }
+        Ok(crate::procfs::procfs_buf_handle(buf_idx))
     })
 }
 

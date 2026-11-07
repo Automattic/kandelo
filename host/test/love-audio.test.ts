@@ -33,7 +33,7 @@ test("LÖVE headless audio API uses the paced Node device", async () => {
     const code = await host.spawn(
       bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
       ["love", join(root, "share/love/examples/audio-check")],
-      { env: ["SDL_AUDIODRIVER=dsp"], ownedJob: { id: "love-audio-api", timeoutMs: 45_000 } },
+      { env: ["SDL_AUDIODRIVER=dsp"] },
     );
     expect(code, `${stdout}\n${stderr}`).toBe(0);
     expect(stdout).toContain("love: audio API checks passed");
@@ -62,7 +62,6 @@ test("LÖVE reports an unavailable graphics context without trapping", async () 
     const code = await host.spawn(
       bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
       ["love", root],
-      { ownedJob: { id: "love-graphics-capability", timeoutMs: 15_000 } },
     );
     expect(code, stderr).toBe(1);
     // Renderer admission fails at EGL initialization before LÖVE can create

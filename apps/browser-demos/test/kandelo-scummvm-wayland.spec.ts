@@ -1,5 +1,6 @@
-import { expect, test, type Page } from "@playwright/test";
-import { gotoMachine } from "./support/kandelo-machine";
+import { setInternalsOpen } from "./support/dock";
+import { expect, test, type Page } from "../playwright-test";
+import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
 import { typePhysicalText } from "./support/physical-typing";
 import { runTerminalCommand } from "./support/terminal-command";
 import { painted, isLauncher, type Rect } from "./support/scummvm-paint";
@@ -11,9 +12,9 @@ const owner = async (page: Page) => Number(await page.locator(".kmachine-primary
   .getAttribute("data-kms-owner-pid"));
 
 async function showDemo(page: Page) {
-  const internals = page.getByRole("button", { name: "Internals", exact: true });
-  if ((await internals.getAttribute("aria-pressed")) === "true") await internals.click();
-  const demo = page.getByLabel("Computer views").getByRole("button", { name: "Demo", exact: true });
+  await waitForMachineBootInput(page);
+  await setInternalsOpen(page, false);
+  const demo = page.getByLabel("Computer views").getByRole("button", { name: "Graphics", exact: true });
   if ((await demo.getAttribute("aria-current")) !== "true") await demo.click();
   await expect(canvas(page)).toBeVisible();
 }
@@ -40,7 +41,7 @@ test.describe("ScummVM's ordinary Wayland GLES launcher inside Sway", () => {
     // manufacture these files. Existing bug: failed graphics setup exits 0,
     // which is why rendered launcher/dialog assertions precede status checks.
     await canvas(page).click({ position: { x: 100, y: 140 } });
-    await typePhysicalText(page, "/usr/local/bin/scummvm & launch=$!; wait $launch; result=$?; "
+    await typePhysicalText(page, "/usr/bin/scummvm & launch=$!; wait $launch; result=$?; "
       + "printf '%s\\n' $result > /tmp/scumm-sway-result; "
       + "test ! -d /proc/$launch && echo reaped > /tmp/scumm-sway-wrapper; "
       + "ps -A -o pid,comm > /tmp/scumm-sway-processes\n", { delay: 30 });

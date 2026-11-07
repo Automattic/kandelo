@@ -6,6 +6,7 @@
  * and returns { exitCode, stdout, stderr, hostDiagnostics }.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { writeVfsBinary } from "@host/vfs/image-helpers";
 import type { HostDiagnostic } from "@host/host-diagnostic";
 import type { WasmModuleCacheStats } from "@host/wasm-module-cache";
 import type { BrowserCorsProxyConfig } from "@host/networking/browser-cors-proxy";
@@ -391,13 +392,7 @@ async function init() {
         const fileData = file.useWasmBytes
           ? new Uint8Array(wasmBytes)
           : new Uint8Array(file.data!);
-        const fd = buildFs.open(
-          file.path,
-          0x241 /* O_WRONLY|O_CREAT|O_TRUNC */,
-          0o755,
-        );
-        buildFs.write(fd, fileData, null, fileData.length);
-        buildFs.close(fd);
+        writeVfsBinary(buildFs, file.path, fileData, 0o755);
       }
     }
     const vfsImage = await finalizeKernelOwnedImage(buildFs);

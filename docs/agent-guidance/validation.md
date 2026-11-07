@@ -1,5 +1,9 @@
 # Validation Contract
 
+For a shorter contributor introduction, see
+[Contributing](../../CONTRIBUTING.md#prepare-to-run-tests). This guide carries
+the detailed evidence and agent workflow requirements.
+
 Validation is evidence for a specific claim. Do not say "tests pass", "the
 branch is complete", "the browser works", "ABI is fine", or "performance
 improved" unless the evidence for that exact claim has been run and reported.
@@ -10,6 +14,24 @@ Use precise language:
 - "I did not run `Y`."
 - "This change is docs-only; I did not run runtime tests."
 - "This is not fully merge-validated because `Z` remains unrun."
+
+## Keep browser tests quiet
+
+Automated browser tests must leave the computer's speakers silent. Import
+`test` from `apps/browser-demos/playwright-test.ts`, including in private
+diagnostic specs. Its default worker policy silences the final Web Audio
+output in test-owned pages and contexts, while guest PCM, worklets, analysers
+and autoplay behavior remain available for testing. Do not mute the whole
+computer or disable guest audio: either can disrupt a call or invalidate an
+audio test. The policy also covers public HTML fixtures, persistent test
+profiles, reused development servers and production previews.
+
+Standalone package suites use `tests/playwright-test.ts`. Both entry points
+share the same policy while using their runner's own Playwright installation.
+
+Audible playback is an explicit opt-in with
+`KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO=1` inside the dev shell. Use it only when the
+user explicitly wants speaker playback; sampling audio does not require it.
 
 ## Test fixtures must observe the actual contract
 
@@ -202,18 +224,19 @@ builds the host, and runs:
 - The host memory-authority audit, memory budgets, bounded device buffers,
   futex retirement, exit-trap, generation, and teardown regressions;
   blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
-- Four Doom → Quake → Freeciv → LÖVE → cage → sway → tmux → WordPress
+- Four Doom → Quake → Freeciv → LÖVE → cage → sway → tmux + DOS → WordPress
   cycles in each of
   Chromium, Firefox, and WebKit, in one page per engine with the constrained
   memory profile. Games must render and reach running audio through trusted
   activation. Tmux must run two pane shells and leave a detached server
-  alive for machine teardown. WordPress must serve Hello world. Reloads,
+  alive alongside DOSBox playing Keen shareware for machine teardown.
+  WordPress must serve Hello world. Reloads,
   runtime errors, forced teardown, unreviewed shared worker messages, and main-thread
   shared Wasm allocations fail the test.
 
-This gate owns its browser server; set `KANDELO_PLAYWRIGHT_PORT` if the
-default port is occupied. Missing products or the Quake archive fail the
-required run instead of becoming skipped coverage. Initial source builds can
+This gate owns its browser server on an automatically selected free port;
+`KANDELO_PLAYWRIGHT_PORT` can pin one explicitly. Missing products or the
+Quake archive fail the required run instead of becoming skipped coverage. Initial source builds can
 take longer than ten minutes: use `scripts/agent-job` for the complete gate
 when inputs are not already built. Later runs reuse the normal build cache.
 The command is independent of whether GitHub Actions is enabled. The CI
@@ -228,6 +251,13 @@ and live owners matter; low RSS alone does not establish reclamation. The
 protocol type audit covers declared payloads; the runtime probe covers
 actual messages, including dynamically typed RPC results. Neither replaces
 tests that prove device storage is independent of guest memory.
+
+Use a trusted keyboard gesture followed by an audio-state assertion for
+switching fixtures. The production shell handles trusted keydown as well as
+pointerdown. Awaiting a click on its transient Enable toast can instead wait
+for a button that the pointerdown activation has already removed. Preserve
+the running-state assertion, unchanged deadlines and actual audio consumers;
+do not substitute an autoplay override or a direct page-side resume call.
 
 
 Playwright WebKit is useful coverage, but is not native iOS Safari evidence.
@@ -298,6 +328,61 @@ Prepare that tool before a browser test's clock starts. Preserve the SDK's
 `sdk/.build` cache together with its copied sysroots, then run the normal SDK
 ensures; otherwise preparing a new tool can re-key or replace core outputs.
 
+## Playwright storage on macOS
+
+The browser-demos Playwright configuration gives WebKit a
+run-owned CoreFoundation home. WebKit's OPFS data can otherwise land in
+`~/Library/WebKit/org.webkit.Playwright/WebsiteData`, outside the temporary
+profile passed to `launchPersistentContext`. Removing that profile alone
+does not reclaim those bytes. The run-owned home stays stable across browser
+restarts in the same run and is removed after normal suite teardown.
+Use owned persistent contexts for OPFS tests and inherit the project's launch
+environment, as the existing persistence suites do. In the pinned macOS
+WebKit runner, a new nonpersistent context can reject even
+`navigator.storage.getDirectory()` with an `UnknownError`; a subsequent
+cleanup request can then stall. Diagnose the fixture's storage access before
+attributing that failure to filesystem recovery or masking it with retries.
+Firefox retains a separate home directory: macOS privacy
+protection can reject traversal of its standard user directories, even in
+an isolated home. Do not bypass those protections with a blanket sweeper.
+
+WebKit also creates `FileSystemWritableStream*` staging copies in the macOS
+temporary directory's
+`com.apple.WebKit.Networking+org.webkit.Playwright` subdirectory. These are
+file contents, not diagnostic logs. Changing `TMPDIR` does not redirect this
+Darwin-managed directory; see
+[WebKit's temporary-file implementation](https://github.com/WebKit/WebKit/blob/main/Source/WTF/wtf/cocoa/FileSystemCocoa.mm).
+Teardown removes only matching regular,
+single-linked, current-user files absent from the pre-run inventory. It
+refuses cleanup while a Playwright WebKit process is running, checks open
+descriptors with the macOS system `lsof`, and rechecks file identity before
+unlinking. Inspection failures leave the files untouched and emit a warning.
+It never sweeps the whole shared directory or the existing global data store.
+
+Set `KANDELO_PLAYWRIGHT_KEEP_STORAGE=1` inside the dev shell to retain a run
+for diagnosis. For a one-shot command, pass it after the environment boundary:
+`scripts/dev-shell.sh env KANDELO_PLAYWRIGHT_KEEP_STORAGE=1 ...`.
+Do not change the shared dev-shell keep-list just for this browser-runner
+option: that script is a declared toolchain input to every package cache key.
+A killed
+runner cannot execute teardown, and concurrent WebKit runs may defer cleanup;
+retained roots and preexisting shared-directory files need separate, explicit
+inspection before removal. Do not delete an active browser's profile or OPFS
+store to reclaim test space. This housekeeping does not change Kandelo's
+persistence, durability or crash-recovery semantics.
+
+Run-owned homes and browser temporary profiles now live below
+`.context/validation-scratch/<run-uuid>/tmp` in the Git worktree. A runner
+changes only its own `TMPDIR`. Retained local roots can be explicitly
+released with `scripts/agent-job release <run-uuid>` after the runner exits;
+removing the worktree removes these roots even if teardown was skipped.
+This does not redirect Darwin-managed staging files described above.
+
+`npm run test:unit` includes the cleanup safety tests. On macOS, run
+`npx playwright test test/playwright-storage.spec.ts --project=webkit` to
+check real OPFS writes and strict reopen in the isolated home. That regression
+is explicitly macOS/WebKit-only; other platforms and engines skip it.
+
 ## Waiting on long builds and suites
 
 `./run.sh setup`, `local-build`, `build-musl.sh`, `build-programs.sh`, and
@@ -345,8 +430,11 @@ run used the wrong config and toolchain, and its results are invalid.
   `run_in_background` and acts on its single completion notification.
   Never write Monitor, `until`, or `sleep` loops over status files or
   `agent-job list`; expiring waiters create re-arm turns. A headless
-  session or subagent repeats foreground `agent-job wait <id>` until it
-  returns the job's status. Repeat only when the wait-window notice says
+  main session repeats foreground `agent-job wait <id>` (540 s default).
+  A subagent waiting on targeted work uses foreground
+  `agent-job wait <id> --timeout 240`, one wait per Bash call, until it
+  returns the job's status. Keep the explicit timeout on retries, including
+  waits by peer id. Repeat only when the wait-window notice says
   `agent-job: still running`. Exit 124 alone is ambiguous: a finished
   command can itself exit 124 (for example, when killed by `timeout`).
   `FAILED (exit 124)` is a completed failure, not a retry. It must not end
@@ -354,10 +442,14 @@ run used the wrong config and toolchain, and its results are invalid.
   agent client yields a running terminal session, resume that session to
   collect the result.
 - **Subagents** must not wait on whole-tree builds or full suites. A
-  subagent's prompt cache expires after 5 minutes, so every long blocking
-  call rewrites its whole context. Build what a subagent needs before
-  dispatching it. A subagent that discovers it needs one reports the command
-  back instead of running it.
+  subagent's prompt cache was observed to expire after about 5 minutes,
+  so long blocking calls can rewrite its whole context. Return other known
+  long test and benchmark jobs to the parent too: report an existing job's
+  id and command rather than starting a duplicate. Build what a subagent
+  needs before dispatching it. A subagent that discovers it needs one reports the command
+  back instead of running it. For targeted work it must finish itself,
+  keep each blocking call below that cache boundary; a foreground command
+  expected to exceed four minutes should use a job with 240 s waits.
 - **Progress:** for `./run.sh setup`, `local-build`, and `build <target>`,
   `agent-job status` shows nodes done out of the total. Start them as
   `./run.sh …`, not under `scripts/dev-shell.sh`, which drops the events
@@ -372,9 +464,37 @@ run used the wrong config and toolchain, and its results are invalid.
 - **Stable inputs:** never mutate a tree while a job validates it. Mixed
   inputs invalidate evidence and can break program-index publication.
   Finish or stop the job before editing, then validate the final tree.
-- **Browser server:** always choose a free worktree-specific
-  `KANDELO_PLAYWRIGHT_PORT` for Playwright suites. `reuseExistingServer`
-  can otherwise silently attach to another tree's server on a shared port.
+- **Browser server and evidence:** repository Playwright configs select a
+  free loopback port per run and never reuse an existing server. Pin
+  `KANDELO_PLAYWRIGHT_PORT` only when needed; an occupied explicit port
+  fails loudly. Vite retains `--strictPort`, so losing the free-port probe's
+  bind race also fails rather than moving silently to a different origin.
+  Each run owns `test-results/<run-id>/artifacts` and default HTML, blob,
+  JSON and JUnit reports beside it. CI uploads the enclosing `test-results`
+  directory. Explicit `--output`, reporter options or reporter environment
+  paths remain caller-owned: allocate a fresh directory for every process,
+  including base/after runs. A unique worktree alone does not isolate two
+  runs in that worktree. For `--last-failed`, explicitly select that run's
+  artifact directory with `--output`; there is no shared last-run file.
+- **Logs and scratch:** a job exports its private, retained
+  `KANDELO_AGENT_SCRATCH_DIR` through the dev shell. For example, redirect
+  inside the job with `> "$KANDELO_AGENT_SCRATCH_DIR/integ.log" 2>&1`.
+  Every nested `agent-job start` gets a new directory, even if it inherits
+  its parent's scratch variable. For short foreground runs, first allocate
+  a fresh directory with `mktemp -d` and keep the returned path when reading
+  the results. Never use fixed host paths such as `/tmp/integ.log`, or a
+  shared `.context/check.log`, for concurrent runs. The job's own stdout
+  and stderr are already retained in its `output.log`.
+- **Evidence lifecycle:** keep evidence until it has been reviewed, then use
+  `scripts/agent-job release <job-id|playwright-run-uuid>`. Bulk job output
+  lives in `.context/agent-jobs/<job-id>`; Playwright scratch and reports also
+  stay in the worktree. `cleanup` closes the current tree to new runs and
+  refuses active writers. Use `reopen` if work will continue after cleanup.
+  `gc --dry-run` previews reconciliation of removed worktrees and recovery
+  of interrupted releases. UUID ownership prevents a reused worktree path
+  from claiming old evidence; shared caches are outside this cleanup.
+  These commands work independently of any editor or workspace manager.
+  See [contributor cleanup commands](../../CONTRIBUTING.md#retain-and-clean-validation-evidence).
 - **Suite environment:** `scripts/dev-shell.sh` clears outer variables
   outside its keep-list. Export suite variables inside `bash -c` when
   they must reach a test. `KANDELO_PLAYWRIGHT_PORT` is explicitly kept;
@@ -384,9 +504,9 @@ run used the wrong config and toolchain, and its results are invalid.
   scripts/agent-job start -- scripts/dev-shell.sh bash -c 'export KANDELO_PLAYWRIGHT_PORT=5197; cd apps/browser-demos && npx playwright test'
   ```
 
-  Choose a free port for this worktree; 5197 is only an example.
+  Omit the export for automatic selection; 5197 is only a pinned example.
 - **Another workspace's build:** waiting on a build that another worktree
-  (another Conductor workspace) is running is supported, and `agent-job` is
+  is running is supported, and `agent-job` is
   the tool for it. Do not hand-roll a `kill -0 <pid>`, `pgrep`, or `sleep`
   loop on its process. Job records are machine-wide, so every command
   accepts a peer's job id:
@@ -442,7 +562,11 @@ run used the wrong config and toolchain, and its results are invalid.
 - **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
   patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
   `pgrep -f` waiters, and subagents running whole-tree builds or full
-  suites, and every denial says what to do instead. It is opt-in.
+  suites. Subagent `agent-job wait` calls require an explicit positive
+  literal timeout, at most 270 s total per Bash call; wait loops are denied.
+  Use 240 s for scheduling margin, or return the long job to the parent.
+  Main-session wait windows are unchanged. Every denial says what to do
+  instead. It is opt-in.
   - **Install or update** with
     `python3 .claude/hooks/install-hooks.py --user` (all your sessions) or
     `--project-local` (this checkout only). It edits only its own entry,
@@ -451,9 +575,20 @@ run used the wrong config and toolchain, and its results are invalid.
     installed hook is out of date. `--uninstall` removes it. The installed
     hook also tells you itself, once per session, when the checkout you
     work in has a newer `HOOK_VERSION`.
+  - **Automatic maintenance after opting in:** main agents fetch
+    `origin main` and run
+    `python3 .claude/hooks/install-hooks.py --user --update-from-main`
+    at task start and after merging a hook change. Do this directly,
+    without handing the command back to the user. It skips absent
+    installations, never downgrades, serializes concurrent agent updates,
+    and takes both the hook and installer from fetched `origin/main`.
+    It never promotes feature-branch code into the user hook. Existing
+    unversioned copies predate v3 and are eligible for an update.
+    Project-local installations already follow their checkout.
   - **Changing the hook:** bump `HOOK_VERSION` in `wait-guard.py` with any
-    change to a rule or message, and say in the PR to re-run the
-    installer.
+    change to a rule or message. The merging agent refreshes an existing
+    user installation from main and verifies it with `--user --check`
+    from the merged revision. Initial installation remains opt-in.
   - **Scope:** the hook acts only in checkouts that contain
     `scripts/agent-job`.
 
@@ -470,9 +605,9 @@ not found: …/kernel.wasm` (or a program `.wasm`), `sysroot not found`, or
 `libc/musl/src: No such file`. These are not "cannot validate" conditions, and
 they are not a reason to stop short of a goal (running a suite, reproducing a
 failure, or validating a branch before a merge). Building what a task needs is
-part of the task. Build or fetch what is missing:
+part of the task. Build what is missing:
 
-1. **Submodules** (musl, libc-test, os-test) — worktrees do not check them out:
+1. **Submodules** (musl, Rust libc, libc-test, os-test) — worktrees do not check them out:
    ```bash
    git submodule update --init --recursive
    ```
@@ -508,10 +643,13 @@ part of the task. Build or fetch what is missing:
    npm ci            # root — provides tsx used by run-sortix/posix/libc-tests.sh
    (cd host && npm ci)
    ```
-4. **Package artifacts the suites load** — the MariaDB and Perl VFS images, the
-   program `.wasm` files, and the browser VFS products. `./run.sh setup --all`
-   builds all of them from source into `local-binaries/`; there is no separate fetch
-   step. (`scripts/fetch-binaries.sh` was deleted when binary resolution became
+4. **Package artifacts the suites load** — program `.wasm` files and VFS
+   images. `setup --all` source-builds the supported graph declared in
+   `packages/sets/local-supported.toml` into `local-binaries/source-only-v1/`.
+   It does not build excluded packages or dormant standalone images such as
+   `mariadb-vfs` and `perl-vfs`. If a selected test loads one, resolve that
+   recipe through the normal package resolver for its declared architecture.
+   There is no separate fetch step. (`scripts/fetch-binaries.sh` was deleted when binary resolution became
    local-first; do not look for it. A single package can be resolved on demand
    with `cargo xtask build-deps resolve <name>`, which prefers the per-user
    cache and falls back to a source build.)
@@ -535,9 +673,25 @@ part of the task. Build or fetch what is missing:
    scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only --arch wasm64posix
    ```
 
+**Iterating on a few packages first (the default for package work).** Steps
+2, 4 and 5 build the whole supported graph. When the task is porting or
+iterating on one or a few packages, compose a
+[partial image](../package-management.md#partial-images) carrying the rootfs
+base and only those packages instead, and tell the user you are doing so
+(see [Partial images are development builds](packages-and-builds.md#partial-images-are-development-builds)):
+```bash
+scripts/dev-shell.sh ./run.sh partial shell <pkg> [<pkg>...] [--with-tests]
+./run.sh browser --partial
+```
+That builds the kernel, the SDK, the rootfs closure and the named packages,
+and skips the test fixtures of step 5. It supports claims about the named
+packages on the base image only: "the shell works", "the browser works" or
+"the suites pass" still need the full build above and the suites run
+against it. Name the partial image in the report when it is the evidence.
+
 After that the full suites run. Do **not** report "I can't run Vitest / the
 conformance suites / the browser" because a fresh worktree lacks artifacts —
-build or fetch them with the steps above, then run the suite and report the real
+build them with the steps above, then run the suite and report the real
 result. If a suite genuinely cannot run (no network for a package source
 download, no display for browser tests, etc.), name the exact step that failed
 and why; that is different from validation being impossible.

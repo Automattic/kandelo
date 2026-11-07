@@ -26,7 +26,6 @@ describe("KMS display owner notifications through Node's stats handle", () => {
       const exit = host.spawn(Uint8Array.from(readFileSync(fixture.programPath)).buffer,
         ["kms-display-owner", mode], {
           uid: 1000, gid: 1000,
-          ownedJob: { id: "kms-owner", timeoutMs: 30_000 },
           onStarted: started => { pid = started; },
         });
       await expect.poll(() => stdout, { timeout: 15_000 }).toContain("owner retained after child exit");

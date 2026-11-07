@@ -33,6 +33,7 @@ const MODESET_FB_W = 1920;
 const MODESET_FB_H = 1080;
 
 export interface ModesetProps {
+  activityTerminalPath?: string;
   /** Hidden panes remain mounted to advertise their display size. */
   active?: boolean;
   dragProps?: import("./PaneHead").PaneHeadDragProps;
@@ -72,7 +73,7 @@ const ZERO_STATS: KmsStats = {
 
 const RENDERER_LABELS: Record<number, string> = { 1: "2d", 2: "webgl2", 3: "webgl2-gl" };
 
-export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PRIMARY_CRTC, onDockControlsChange, onOwnerChange }) => {
+export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PRIMARY_CRTC, onDockControlsChange, onOwnerChange, activityTerminalPath }) => {
   const host = useKernelHost();
   const status = useStatus();
   // Dropping files on the display (KMS, or a Wayland desktop drawn on it)
@@ -117,7 +118,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     else await host.interruptShellForeground({ timeoutMs: 10_000 });
   }, [host]);
   const dockActions = useDockActions("kms", status === "running" ? stats.presentCount : null,
-    stopDisplayProgram, readPresentCount);
+    stopDisplayProgram, readPresentCount, activityTerminalPath);
 
   // Mount the host's display canvas for this CRTC rather than rendering one:
   // a program's WebGL context is bound to that canvas for good, so a

@@ -1,8 +1,10 @@
 {
   "version": 1,
+  "image": { "title": "Base Shell" },
   "defaultProfile": "shell",
   "profiles": {
     "shell": {
+      "requires": [],
       "identity": {
         "title": "Bare shell",
         "summary": "Bash, dash, coreutils, and the full utility set from the shell image.",
@@ -27,39 +29,10 @@
         ],
         "terminalAccess": "primary",
         "internalsAccess": "drawer"
-      },
-      "guide": {
-        "title": "Shell demo",
-        "summary": "Login and Bash are image-owned; selected package commands arrive lazily on first use.",
-        "groups": [
-          {
-            "title": "Snippets",
-            "actions": [
-              {
-                "id": "hello",
-                "label": "Hello",
-                "description": "Print a short line with the embedded Bash.",
-                "kind": "terminal.run",
-                "payload": "printf '%s\\n' \"hello from Kandelo\""
-              },
-              {
-                "id": "m4",
-                "label": "Lazy M4",
-                "description": "Run M4 from its independently lazy package artifact.",
-                "kind": "terminal.run",
-                "payload": "printf 'define(NAME, Kandelo)Hello, NAME!\\n' | m4"
-              }
-            ]
-          }
-        ],
-        "script": {
-          "title": "Batch script",
-          "language": "bash",
-          "initialText": "printf '%s\\n' \"Hello from a Kandelo guided script\"\nprintf 'cwd: '; pwd"
-        }
       }
     },
     "node": {
+      "requires": ["node-browser-bundle"],
       "identity": {
         "title": "Node.js",
         "summary": "SpiderMonkey-backed Node.js compatibility runtime; node, npm and npx arrive from the shell image's lazy node archive on first use.",
@@ -141,6 +114,7 @@
       }
     },
     "sdl2": {
+      "requires": ["sdl2-demo"],
       "identity": {
         "title": "SDL2 GLSL playground",
         "summary": "SDL2 GLSL shader playground: a live-coding editor (left) beside a GLES2 fragment shader rendered on a 1920×1080 /dev/dri/card0 surface (right), auto-recompiling 250 ms after you stop typing. F1/F2 switch between the image and sound shader, Ctrl+L cycles presets, Ctrl+S persists, ESC quits.",
@@ -162,7 +136,7 @@
         "minHeight": 1080
       },
       "init": {
-        "shellCommand": "/usr/local/bin/sdl2"
+        "shellCommand": "/usr/bin/sdl2"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -173,9 +147,13 @@
         ],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer"
+      },
+      "activity": {
+        "category": "demos"
       }
     },
     "wayland": {
+      "requires": ["wayland-demo"],
       "identity": {
         "title": "Wayland desktop",
         "summary": "A real Wayland stack on /dev/dri/card0: wlcompositor (a wl_shm and xdg-shell server driving KMS) composites three clients — wlclock, wlpaint, and wlterm, a VT100 terminal on the in-tree libkwl toolkit running a forkpty'd shell. Type to drive the shell; drag a titlebar to move a window.",
@@ -198,7 +176,7 @@
         "minHeight": 1080
       },
       "init": {
-        "shellCommand": "/usr/local/bin/wldesktop"
+        "shellCommand": "/usr/bin/wldesktop"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -210,9 +188,13 @@
         "terminalAccess": "drawer",
         "internalsAccess": "drawer",
         "hostPointer": true
+      },
+      "activity": {
+        "category": "demos"
       }
     },
     "cage": {
+      "requires": ["cage", "wayland-demo", "bibata-cursor-theme"],
       "identity": {
         "title": "cage kiosk",
         "summary": "Upstream cage, a wlroots kiosk compositor, on /dev/dri/card0: wlroots' GLES2 renderer draws through the host's WebGL2 bridge into gbm scanout buffers, and cage shows one application full screen — wlterm, a VT100 terminal running a shell. Exiting the shell ends the session.",
@@ -231,7 +213,7 @@
         ]
       },
       "init": {
-        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp /usr/local/bin/cage -- /usr/local/bin/wlterm"
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp /usr/bin/cage -- /usr/bin/wlterm"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -245,6 +227,7 @@
       }
     },
     "labwc": {
+      "requires": ["labwc", "foot", "sfwbar", "wayland-demo", "bibata-cursor-theme"],
       "identity": {
         "title": "labwc stacking desktop",
         "summary": "A lightweight Wayland stacking desktop with decorated Foot windows and an SFWBar panel. Right-click the desktop for its native menu. Alt (Option on Mac)+Return opens a terminal, Alt+J/K cycles windows, Alt+Shift+Q closes a window, and Alt+Shift+E exits the session.",
@@ -263,7 +246,7 @@
         ]
       },
       "init": {
-        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/labwc -s '/bin/sh -c \"sfwbar -f /etc/xdg/sfwbar/sfwbar.config & exec foot --config=/etc/xdg/labwc/foot.ini\"'"
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/labwc -s '/bin/sh -c \"sfwbar -f /etc/xdg/sfwbar/sfwbar.config & exec foot --config=/etc/xdg/labwc/foot.ini\"'"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -282,6 +265,7 @@
       }
     },
     "sway": {
+      "requires": ["sway", "swaybg", "foot", "wayland-demo", "bibata-cursor-theme"],
       "identity": {
         "title": "sway tiling desktop",
         "summary": "Upstream Sway with its native workspace bar and readable Foot terminals. Alt (Option on Mac) + 1–0 switches workspaces; Shift moves a window. Alt+Return opens a terminal; Alt+M, release Alt, then Q asks to exit. The Desktop command mode also controls layout, fullscreen and resize.",
@@ -300,7 +284,7 @@
         ]
       },
       "init": {
-        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/sway -c /usr/share/kandelo/sway/config"
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/sway -c /usr/share/kandelo/sway/config"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -319,6 +303,7 @@
       }
     },
     "sway-sfwbar": {
+      "requires": ["sway", "swaybg", "foot", "wayland-demo", "bibata-cursor-theme", "sfwbar"],
       "identity": {
         "title": "Sway with SFWBar",
         "summary": "An explicit Sway preset with SFWBar Start, task list and clock. The compositor uses the same Alt/Option desktop bindings as plain Sway; this preset keeps the GTK panel separate from the native Swaybar demo.",
@@ -337,7 +322,7 @@
         ]
       },
       "init": {
-        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/sway -c /etc/xdg/sfwbar/sway.config"
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/sway -c /etc/xdg/sfwbar/sway.config"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -356,6 +341,7 @@
       }
     },
     "omarchy": {
+      "requires": ["wayland-demo", "quickshell", "dbus", "foot"],
       "identity": {
         "title": "Omarchy-style desktop",
         "summary": "An Omarchy-style shell on Kandelo's Hyprland-compatible compositor. One Quickshell process draws the wallpaper, bar, launcher (Alt+G), menu (Alt+M), notifications, on-screen display and lock screen (Alt+X). Alt+Shift+Y cycles six live colour themes. The desktop starts bare: open clients from the launcher, Alt+Return (terminal), Alt+C (clock) or Alt+P (paint); Alt+J/K changes focus and Alt+Shift+Q closes a window. Alt is Option on Mac.",
@@ -379,7 +365,7 @@
         "minHeight": 1080
       },
       "init": {
-        "shellCommand": "/usr/local/bin/omarchydesktop"
+        "shellCommand": "/usr/bin/omarchydesktop"
       },
       "presentation": {
         "bootPrimary": "syslog",

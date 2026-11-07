@@ -353,7 +353,7 @@ pub fn read_request(
     path_len: usize,
     blob_addr: u64,
     blob_len: usize,
-) -> Result<(Vec<u8>, ParsedBlob), Errno> {
+) -> Result<(crate::io_buffer::IoBuffer<u8>, ParsedBlob), Errno> {
     if path_len >= platform_limits::PATH_MAX_BYTES {
         return Err(Errno::ENAMETOOLONG);
     }

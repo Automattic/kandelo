@@ -5,7 +5,7 @@ import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesys
  * browser demo. The image starts from shell.vfs.zst, then dinit, the first
  * user process, brings up the full stack:
  *
- *   mariadb           (process)  — starts from a build-time-initialized /data
+ *   mariadb           (process)  — starts from a build-time-initialized /var/lib/mysql
  *   wp-config-init    (internal) — dependency marker. The browser host writes
  *                                  runtime wp-config.php before dinit starts.
  *   smtp-capture      (process)  — local SMTP sink storing mail under /var/mail
@@ -79,7 +79,7 @@ const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
 const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "packages", "registry", "mariadb", "mariadb-install");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 const PHP_FPM_WORKERS = 6;
-const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
+const MARIADB_SOCKET_PATH = "/run/mysqld/mysql.sock";
 const LAMP_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 const MARIADB_ARIA_LOG_FILE_SIZE = 16 * 1024 * 1024;
 const MARIADB_ARIA_PAGECACHE_SIZE = 1024 * 1024;
@@ -109,12 +109,12 @@ function populateMariadb(
 
 function populateNginxConfig(fs: VfsImageFilesystem): void {
   for (const dir of [
-    "/etc/nginx", "/var/www/html", "/var/log/nginx",
+    "/etc/nginx", "/srv/www/html", "/var/log/nginx",
     "/tmp/nginx_client_temp", "/tmp/nginx_fastcgi_temp", "/tmp/nginx_proxy_temp",
   ]) ensureDirRecursive(fs, dir);
 
   const fastcgiParams = `fastcgi_pass 127.0.0.1:9000;
-            fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
+            fastcgi_param SCRIPT_FILENAME /srv/www/fpm-router.php;
             fastcgi_param DOCUMENT_ROOT $document_root;
             fastcgi_param DOCUMENT_URI $document_uri;
             fastcgi_param QUERY_STRING $query_string;
@@ -133,7 +133,7 @@ daemon off;
 master_process on;
 worker_processes 2;
 error_log stderr info;
-pid /tmp/nginx.pid;
+pid /run/nginx.pid;
 
 events {
     worker_connections 64;
@@ -168,7 +168,7 @@ http {
     server {
         listen 8080;
         server_name localhost;
-        root /var/www/html;
+        root /srv/www/html;
         index index.html;
 
         location /wp-includes/css/ { }
@@ -238,7 +238,7 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
   writeVfsFile(
     fs,
     "/etc/php-opcache-blacklist.txt",
-    "/var/www/html/wp-includes/SimplePie/autoloader.php\n",
+    "/srv/www/html/wp-includes/SimplePie/autoloader.php\n",
   );
 
   const fpmRouter = `<?php
@@ -280,8 +280,8 @@ if ($uri !== '/' && is_file($file)) {
 chdir($docRoot);
 include $docRoot . '/index.php';
 `;
-  ensureDirRecursive(fs, "/var/www");
-  writeVfsFile(fs, "/var/www/fpm-router.php", fpmRouter);
+  ensureDirRecursive(fs, "/srv/www");
+  writeVfsFile(fs, "/srv/www/fpm-router.php", fpmRouter);
 }
 
 const MARIADB_BOOTSTRAP_SCRIPT = `# mariadbd --bootstrap doesn't exit at stdin EOF in our wasm port.
@@ -295,7 +295,7 @@ const MARIADB_BOOTSTRAP_SCRIPT = `# mariadbd --bootstrap doesn't exit at stdin E
 # Polling the marker shaves ~30-50s off boot vs the previous fixed
 # 60s sleep — that sleep was the dominant boot-time cost, since the
 # rest of dinit's chain runs concurrently with bootstrap.
-/usr/sbin/mariadbd --no-defaults --user=mysql --datadir=/data --tmpdir=/data/tmp \\
+/usr/sbin/mariadbd --no-defaults --user=mysql --datadir=/var/lib/mysql --tmpdir=/var/tmp/mysql \\
     --default-storage-engine=Aria --skip-grant-tables \\
     --aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE} \\
     --aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE} \\
@@ -304,15 +304,15 @@ const MARIADB_BOOTSTRAP_SCRIPT = `# mariadbd --bootstrap doesn't exit at stdin E
     --innodb-buffer-pool-size=${MARIADB_INNODB_BUFFER_POOL_SIZE} \\
     --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 \\
     --bootstrap --skip-networking --log-warnings=0 \\
-    --log-error=/data/bootstrap.log < /etc/mariadb/bootstrap.sql &
+    --log-error=/var/log/mysql/bootstrap.log < /etc/mariadb/bootstrap.sql &
 PID=$!
 i=0
 while [ $i -lt 60 ]; do
-    if [ -d /data/wordpress ]; then
+    if [ -d /var/lib/mysql/wordpress ]; then
         # Marker present — give mariadbd a moment to flush its writes,
         # then tear it down. The persistent mariadb daemon will start
-        # fresh on the populated /data and serve normal requests.
-        # In build-time preinstall this is the source of the runtime /data
+        # fresh on the populated /var/lib/mysql and serve normal requests.
+        # In build-time preinstall this is the source of the runtime /var/lib/mysql
         # image, so prefer the old conservative bootstrap delay over
         # fast-but-dirty crash recovery on the next daemon start.
         sleep 60
@@ -341,7 +341,7 @@ function buildServices(fs: VfsImageFilesystem): DinitService[] {
       name: "mariadb",
       type: "process",
       command: "/usr/sbin/mariadbd --no-defaults --user=mysql " +
-        "--datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria " +
+        "--datadir=/var/lib/mysql --tmpdir=/var/tmp/mysql --default-storage-engine=Aria " +
         `--aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE} ` +
         `--aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE} ` +
         `--innodb-log-file-size=${MARIADB_INNODB_LOG_FILE_SIZE} ` +
@@ -350,7 +350,7 @@ function buildServices(fs: VfsImageFilesystem): DinitService[] {
         "--skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 " +
         "--sort-buffer-size=262144 --bind-address=0.0.0.0 --port=3306 " +
         `--socket=${MARIADB_SOCKET_PATH} --max-connections=10 ` +
-        "--log-error=/data/error.log",
+        "--log-error=/var/log/mysql/error.log",
       logfile: "/var/log/mariadb.log",
       restart: false,
     },
@@ -385,8 +385,8 @@ const decoder = new TextDecoder();
 
 function patchWordPressPersistentMysqli(fs: VfsImageFilesystem): void {
   for (const path of [
-    "/var/www/html/wp-includes/class-wpdb.php",
-    "/var/www/html/wp-includes/wp-db.php",
+    "/srv/www/html/wp-includes/class-wpdb.php",
+    "/srv/www/html/wp-includes/wp-db.php",
   ]) {
     const source = readOptionalVfsText(fs, path);
     if (source === null) continue;
@@ -444,6 +444,7 @@ export async function buildLampVfsImage(
         LAMP_IMAGE_MAX_BYTES,
       );
   prepareMariadbWritableDirectories(fs);
+  writeVfsFile(fs, "/etc/my.cnf", `[client]\nsocket=${MARIADB_SOCKET_PATH}\n`);
 
   console.log("Writing nginx + php-fpm + msmtpd binaries...");
   ensureDirRecursive(fs, "/usr/sbin");
@@ -464,15 +465,15 @@ export async function buildLampVfsImage(
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", MARIADB_BOOTSTRAP_SCRIPT);
   writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("mariadb"));
   writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
-  ensureDirRecursive(fs, "/var/www/html");
-  writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig("mariadb", "/app", "http"));
-  writeVfsFile(fs, "/var/www/html/kandelo-mysql-bench.php", MYSQL_BENCHMARK_PHP);
+  ensureDirRecursive(fs, "/srv/www/html");
+  writeVfsFile(fs, "/srv/www/html/wp-config.php", renderWordPressConfig("mariadb", "/app", "http"));
+  writeVfsFile(fs, "/srv/www/html/kandelo-mysql-bench.php", MYSQL_BENCHMARK_PHP);
 
   // WordPress-specific dirs + mu-plugin
-  ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
+  ensureDirRecursive(fs, "/srv/www/html/wp-content/mu-plugins");
   writeVfsFile(
     fs,
-    "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",
+    "/srv/www/html/wp-content/mu-plugins/wasm-optimizations.php",
     wordpressSmtpCaptureMuPlugin(),
   );
   writeVfsFile(
@@ -483,6 +484,9 @@ export async function buildLampVfsImage(
 
   console.log("Writing WordPress core files...");
   const wpCount = copyWordPressCoreSource(fs, inputs.wordpressDirectory);
+  ensureDirRecursive(fs, "/srv/www/html/wp-content/uploads");
+  fs.chown("/srv/www/html/wp-content/uploads", 65534, 65534);
+  fs.chmod("/srv/www/html/wp-content/uploads", 0o775);
   patchWordPressPersistentMysqli(fs);
   console.log(`  WordPress core: ${wpCount} files`);
 
@@ -493,13 +497,13 @@ export async function buildLampVfsImage(
 
   // Prewarm opcache: see build-wp-vfs-image.ts for context.
   await prewarmOpcache(fs, {
-    sourceRoots: ["/var/www"],
+    sourceRoots: ["/srv/www"],
     label: "lamp",
     cacheOwner: { uid: 65534, gid: 65534 }, // FPM's nobody account.
     programs: inputs.buildPrograms,
     excludePaths: [
-      "/var/www/html/wp-config.php",
-      "/var/www/html/wp-includes/SimplePie/autoloader.php",
+      "/srv/www/html/wp-config.php",
+      "/srv/www/html/wp-includes/SimplePie/autoloader.php",
     ],
   });
   writeTrackedDemoConfig(fs, "packages/registry/wordpress/lamp-demo.json");

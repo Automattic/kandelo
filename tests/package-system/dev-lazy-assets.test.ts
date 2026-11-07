@@ -91,11 +91,58 @@ describe("dev lazy-asset route", () => {
     expect(approved).toContain("/repo/v1/tmux.wasm");
   });
 
+  it("isolates stale member failures without approving or hiding them", () => {
+    let identity = "old";
+    let batches = 0;
+    const approved: string[] = [];
+    const failure = new Error("Original companion is not owned by the selected package generation");
+    const serve = batchedResolverFiles({
+      projectionPath: "/projection.json",
+      identity: () => identity,
+      listMembers: () => ["programs/wasm32/coreutils.wasm", "programs/wasm32/stale.wasm"],
+      resolveBatch: () => {
+        batches += 1;
+        return ["/cache/coreutils.wasm", identity === "old" ? failure : "/cache/rebuilt.wasm"];
+      },
+      resolveOne: () => null,
+      approve: (file) => {
+        approved.push(file);
+        return file;
+      },
+    });
+    const coreutils = { kind: "file", file: "/cache/coreutils.wasm" };
+    expect(serve("programs/wasm32/coreutils.wasm", "/")).toEqual(coreutils);
+    expect(() => serve("programs/wasm32/stale.wasm", "/")).toThrow(failure);
+    expect(serve("programs/wasm32/coreutils.wasm", "/")).toEqual(coreutils);
+    expect(() => serve("programs/wasm32/stale.wasm", "/")).toThrow(failure);
+    expect(batches).toBe(1);
+    expect(approved).toEqual(["/cache/coreutils.wasm", "/cache/coreutils.wasm"]);
+    identity = "rebuilt";
+    expect(serve("programs/wasm32/stale.wasm", "/")).toEqual({ kind: "file", file: "/cache/rebuilt.wasm" });
+    expect(batches).toBe(2);
+  });
+
+  it("keeps approved checkout paths literal for byte streaming", () => {
+    const serve = batchedResolverFiles({
+      projectionPath: "/p.json",
+      identity: () => "v1",
+      listMembers: () => ["programs/wasm32/tmux.wasm"],
+      resolveBatch: () => ["/Users/me/My Repo/100%/tmux.wasm"],
+      resolveOne: () => null,
+      approve: (file) => file,
+    });
+    // The server streams this approved filename directly. Applying URL
+    // decoding to it would corrupt percent signs or checkout path spaces.
+    expect(serve("programs/wasm32/tmux.wasm", "/")).toEqual({
+      kind: "file", file: "/Users/me/My Repo/100%/tmux.wasm",
+    });
+  });
+
   it("streams a member's bytes exactly, whatever its name", async () => {
     // An extensionless shell script is the case Vite's `/@fs/` route
     // rewrote into a JavaScript module with an inline source map.
     const root = mkdtempSync(join(tmpdir(), "dev-lazy-assets-"));
-    const script = "#!/bin/sh\nexec /usr/local/bin/sfwbar \"$@\"\n";
+    const script = "#!/bin/sh\nexec /usr/bin/sfwbar \"$@\"\n";
     writeFileSync(join(root, "kandelo-sfwbar"), script);
     writeFileSync(join(root, "My Tool.wasm"), new Uint8Array([0, 0x61, 0x73, 0x6d]));
     const listen = (serve: DevLazyAssetOptions["serve"]) => {

@@ -83,7 +83,7 @@ function ensureWritableByPhpFpm(fs: VfsImageFilesystem, path: string): void {
 
 function populateNginxConfig(fs: VfsImageFilesystem): void {
   const dirs = [
-    "/etc/nginx", "/var/www/html", "/var/log/nginx",
+    "/etc/nginx", "/srv/www/html", "/var/log/nginx",
     "/tmp/nginx_client_temp", "/tmp/nginx-wasm/logs",
   ];
   for (const dir of dirs) ensureDirRecursive(fs, dir);
@@ -107,7 +107,7 @@ function populateNginxConfig(fs: VfsImageFilesystem): void {
         # Everything else through PHP-FPM (PHP pages, front controller)
         location @fpm {
             fastcgi_pass 127.0.0.1:9000;
-            fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
+            fastcgi_param SCRIPT_FILENAME /srv/www/fpm-router.php;
             fastcgi_param DOCUMENT_ROOT $document_root;
             fastcgi_param DOCUMENT_URI $document_uri;
             fastcgi_param QUERY_STRING $query_string;
@@ -124,7 +124,7 @@ function populateNginxConfig(fs: VfsImageFilesystem): void {
 
         location / {
             fastcgi_pass 127.0.0.1:9000;
-            fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
+            fastcgi_param SCRIPT_FILENAME /srv/www/fpm-router.php;
             fastcgi_param DOCUMENT_ROOT $document_root;
             fastcgi_param DOCUMENT_URI $document_uri;
             fastcgi_param QUERY_STRING $query_string;
@@ -144,7 +144,7 @@ daemon off;
 master_process on;
 worker_processes 2;
 error_log stderr info;
-pid /tmp/nginx.pid;
+pid /run/nginx.pid;
 
 events {
     worker_connections 64;
@@ -168,7 +168,7 @@ http {
     server {
         listen 8080;
         server_name localhost;
-        root /var/www/html;
+        root /srv/www/html;
         index index.html;
 
 ${extraLocations}
@@ -230,7 +230,7 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
   writeVfsFile(
     fs,
     "/etc/php-opcache-blacklist.txt",
-    "/var/www/html/wp-includes/SimplePie/autoloader.php\n",
+    "/srv/www/html/wp-includes/SimplePie/autoloader.php\n",
   );
 
   // FPM router script
@@ -285,8 +285,8 @@ if ($uri !== '/' && is_file($file)) {
 chdir($docRoot);
 include $docRoot . '/index.php';
 `;
-  ensureDirRecursive(fs, "/var/www");
-  writeVfsFile(fs, "/var/www/fpm-router.php", fpmRouter);
+  ensureDirRecursive(fs, "/srv/www");
+  writeVfsFile(fs, "/srv/www/fpm-router.php", fpmRouter);
 }
 
 /**
@@ -371,20 +371,20 @@ export async function buildWordPressVfsImage(
 
   // Template + default wp-config. The browser host overwrites wp-config.php
   // with the current page prefix/protocol before dinit starts.
-  ensureDirRecursive(fs, "/var/www/html");
+  ensureDirRecursive(fs, "/srv/www/html");
   writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("sqlite"));
   writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
-  writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig("sqlite", "/app", "http"));
+  writeVfsFile(fs, "/srv/www/html/wp-config.php", renderWordPressConfig("sqlite", "/app", "http"));
 
   // WordPress-specific directories
-  ensureWritableByPhpFpm(fs, "/var/www/html/wp-content/database");
-  ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
+  ensureWritableByPhpFpm(fs, "/var/lib/wordpress/sqlite");
+  ensureDirRecursive(fs, "/srv/www/html/wp-content/mu-plugins");
 
   // Keep file-mod operations disabled, but let mail route to the local
   // SMTP capture service and leave outbound HTTP enabled for the bridge.
   writeVfsFile(
     fs,
-    "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",
+    "/srv/www/html/wp-content/mu-plugins/wasm-optimizations.php",
     wordpressSmtpCaptureMuPlugin(),
   );
   writeVfsFile(
@@ -406,12 +406,13 @@ export async function buildWordPressVfsImage(
   );
   console.log(`  SQLite plugin: ${sqliteCount} files`);
   wpCount += sqliteCount;
+  ensureWritableByPhpFpm(fs, "/srv/www/html/wp-content/uploads");
 
   // Drop-in db.php → routes WP_DB_HOST to the SQLite plugin instead of
   // MySQL. setup.sh copies sqlite-database-integration/db.copy into
   // wp-content/db.php; do the same here for the source-extracted path.
   const dbCopy = readFileSync(join(inputs.sqliteDirectory, "db.copy"));
-  writeVfsBinary(fs, "/var/www/html/wp-content/db.php", new Uint8Array(dbCopy), 0o644);
+  writeVfsBinary(fs, "/srv/www/html/wp-content/db.php", new Uint8Array(dbCopy), 0o644);
   wpCount += 1;
 
   // dinit + service tree. nginx → php-fpm → wp-config-init/smtp-capture
@@ -426,13 +427,13 @@ export async function buildWordPressVfsImage(
   // FPM request doesn't pay the parse cost. Issue #493: this collapses
   // the cold-page-render spike from ~900ms to ~450ms in benchmarking.
   await prewarmOpcache(fs, {
-    sourceRoots: ["/var/www"],
+    sourceRoots: ["/srv/www"],
     label: "wp",
     cacheOwner: { uid: PHP_FPM_UID, gid: PHP_FPM_GID },
     programs: inputs.buildPrograms,
     excludePaths: [
-      "/var/www/html/wp-config.php",
-      "/var/www/html/wp-includes/SimplePie/autoloader.php",
+      "/srv/www/html/wp-config.php",
+      "/srv/www/html/wp-includes/SimplePie/autoloader.php",
     ],
   });
   writeTrackedDemoConfig(fs, "packages/registry/wordpress/wordpress-demo.json");

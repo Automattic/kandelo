@@ -1513,10 +1513,12 @@ wasm_require_target_aware_exec_authority() {
     wasm_require_exports "$path" \
         kernel_exec_target_prepare \
         kernel_spawn_exec_target_prepare \
+        kernel_spawn_exec_target_prepare_handle \
         kernel_exec_target_size \
         kernel_exec_target_read \
         kernel_exec_target_cancel \
         kernel_exec_commit \
+        kernel_initial_exec_commit \
         kernel_publish_spawn_child \
         kernel_spawn_exec_commit &&
         wasm_reject_exports "$path" \

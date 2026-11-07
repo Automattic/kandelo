@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 const source=fileURLToPath(new URL("../../../host/src/webgl/",import.meta.url));
 test.use({serviceWorkers:"block"});
 test("fatal batch samples the original native getter and attributes unexpected flags",async({page,browser})=>{

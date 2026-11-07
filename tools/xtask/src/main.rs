@@ -93,6 +93,7 @@ mod local_build_executor;
 mod local_build_timing;
 mod package_archive_limits;
 mod package_matrix;
+mod partial_image;
 mod pkg_manifest;
 mod program_env_imports;
 mod package_imports;
@@ -103,6 +104,7 @@ mod runtime_workarounds;
 mod source_archive_cache;
 mod source_extract;
 mod stamp_abi_contract;
+mod supported_program_baseline;
 mod test_failures;
 mod update_pkg_manifest;
 mod util;
@@ -120,6 +122,22 @@ fn main() -> ExitCode {
         }
     };
     let rest: Vec<String> = args.collect();
+    if matches!(
+        sub.as_str(),
+        "bootstrap"
+            | "local-build"
+            | "partial-image"
+            | "build-deps"
+            | "bundle-program"
+            | "stamp-abi-contract"
+            | "vfs"
+            | "vfs-image"
+    ) {
+        if let Err(error) = supported_program_baseline::check(&repo_root()) {
+            eprintln!("xtask: {error}");
+            return ExitCode::from(1);
+        }
+    }
     if sub == "vfs" {
         return vfs_products::run(rest);
     }
@@ -140,11 +158,13 @@ fn main() -> ExitCode {
         "local-build" => local_build::run(rest),
         "check-determinism" => determinism_check::run(rest),
         "bootstrap" => local_build::run_bootstrap(rest),
+        "partial-image" => partial_image::run(rest),
         "clean" => local_build::run_clean(rest),
         #[cfg(unix)]
         "cache-gc" => cache_gc::run(rest),
         "stamp-abi-contract" => stamp_abi_contract::run(&rest),
         "abi-program-digest" => stamp_abi_contract::run_print(&rest),
+        "check-program-baseline" => supported_program_baseline::run(&rest),
         "runtime-workarounds" => runtime_workarounds::run(rest),
         "verify-fresh" => local_build::run_verify_fresh(rest),
         "test-failures" => test_failures::run(rest),

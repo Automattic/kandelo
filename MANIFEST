@@ -26,11 +26,26 @@
 /srv             d  0755  0  0
 /var             d  0755  0  0
 /var/log         d  0755  0  0
-/var/run         d  0755  0  0
+/run             d  0755  0  0
+/run/lock        d  0755  0  0
+/var/run         l  0777  0  0  target=/run
+/var/lock        l  0777  0  0  target=/run/lock
 /var/tmp         d  1777  0  0
 /bin             d  0755  0  0
+/sbin            d  0755  0  0
+/lib             d  0755  0  0
+/media           d  0755  0  0
+/mnt             d  0755  0  0
+/opt             d  0755  0  0
 /usr             d  0755  0  0
 /usr/bin         d  0755  0  0
+/usr/sbin        d  0755  0  0
+/usr/lib         d  0755  0  0
+/usr/local       d  0755  0  0
+/usr/local/bin   d  0755  0  0
+/usr/local/sbin  d  0755  0  0
+/usr/local/lib   d  0755  0  0
+/usr/local/share d  0755  0  0
 /usr/share       d  0755  0  0
 /usr/share/misc  d  0755  0  0
 /usr/libexec     d  0755  0  0
@@ -86,5 +101,5 @@
 
 # ── Shells ─────────────────────────────────────────────────────────
 # /bin/sh is provided by the generated package manifest as a symlink to
-# /usr/bin/dash. The rootfs/bin/sh file is a legacy source-tree stub and is
+# /bin/bash. The rootfs/bin/sh file is a legacy source-tree stub and is
 # intentionally no longer declared here.

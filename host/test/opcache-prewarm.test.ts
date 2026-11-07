@@ -32,7 +32,7 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
       const fs = KandeloImageFs.create();
       for (const dir of [
         "/tmp",
-        "/var/www",
+        "/srv/www",
         "/var/cache",
         "/usr/lib/php/extensions",
       ]) {
@@ -40,17 +40,17 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
       }
       writeVfsFile(
         fs,
-        "/var/www/a.php",
+        "/srv/www/a.php",
         "<?php function duplicate_for_prewarm_test() { return 1; }\n",
       );
       writeVfsFile(
         fs,
-        "/var/www/b.php",
+        "/srv/www/b.php",
         "<?php function duplicate_for_prewarm_test() { return 2; }\n",
       );
 
       const written = await prewarmOpcache(fs, {
-        sourceRoots: ["/var/www"],
+        sourceRoots: ["/srv/www"],
         label: "duplicate-declarations-test",
       });
       expect(written).toBeGreaterThanOrEqual(2);
@@ -69,20 +69,20 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
 
     try {
       const fs = createPrewarmFs();
-      writeVfsFile(fs, "/var/www/hit.php",
+      writeVfsFile(fs, "/srv/www/hit.php",
         '<?php function cached_value(string $name = "cached-ok"): string { return $name; }\n');
 
       const written = await prewarmOpcache(fs, {
-        sourceRoots: ["/var/www"],
+        sourceRoots: ["/srv/www"],
         label: "cache-consumption-test",
       });
       expect(written).toBeGreaterThanOrEqual(1);
 
-      writeVfsFile(fs, "/var/www/hit.php", "<?php this is invalid php ;\n");
+      writeVfsFile(fs, "/srv/www/hit.php", "<?php this is invalid php ;\n");
 
       const { exitCode, stdout, stderr } = await runPhpFromImage(
         await fs.saveImage(),
-        "require '/var/www/hit.php'; echo cached_value(), '/', (new ReflectionParameter('cached_value', 0))->getDefaultValue();",
+        "require '/srv/www/hit.php'; echo cached_value(), '/', (new ReflectionParameter('cached_value', 0))->getDefaultValue();",
       );
       expect(stderr).toBe("");
       expect(stdout).toBe("cached-ok/cached-ok");
@@ -101,19 +101,19 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
     delete process.env.KANDELO_NO_OPCACHE_PREWARM;
     try {
       const fs = createPrewarmFs();
-      writeVfsFile(fs, "/var/www/hit.php", "<?php echo 'cached-ok:';\n");
+      writeVfsFile(fs, "/srv/www/hit.php", "<?php echo 'cached-ok:';\n");
       const written = await prewarmOpcache(fs, {
-        sourceRoots: ["/var/www"],
+        sourceRoots: ["/srv/www"],
         label: "fpm-cache-owner-test",
         cacheOwner: { uid: 65534, gid: 65534 },
       });
       expect(written).toBeGreaterThanOrEqual(1);
-      writeVfsFile(fs, "/var/www/hit.php", "<?php this is invalid php ;\n");
-      writeVfsFile(fs, "/var/www/new.php", "<?php echo 'new';\n");
+      writeVfsFile(fs, "/srv/www/hit.php", "<?php this is invalid php ;\n");
+      writeVfsFile(fs, "/srv/www/new.php", "<?php echo 'new';\n");
       const { exitCode, stdout, stderr } = await runPhpFromImage(
         await fs.saveImage(),
-        `require '/var/www/hit.php';
-         if (!opcache_compile_file('/var/www/new.php')) { exit(2); }
+        `require '/srv/www/hit.php';
+         if (!opcache_compile_file('/srv/www/new.php')) { exit(2); }
          $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator('/var/cache/opcache'));
          foreach ($files as $file) {
              if ($file->getFilename() === 'new.php.bin') {
@@ -151,10 +151,10 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
 
     try {
       const fs = createPrewarmFs();
-      writeVfsFile(fs, "/var/www/hit.php", "<?php echo 'cached-ok';\n");
+      writeVfsFile(fs, "/srv/www/hit.php", "<?php echo 'cached-ok';\n");
 
       const written = await prewarmOpcache(fs, {
-        sourceRoots: ["/var/www"],
+        sourceRoots: ["/srv/www"],
         label: "validated-timestamps-test",
       });
       expect(written).toBeGreaterThanOrEqual(1);
@@ -162,11 +162,11 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
       // Replace the source. A runtime that accepts the prewarmed entry still
       // prints the cached output; one that rejects it recompiles and fails.
       // The export below stamps the same instant the shipped image carries.
-      writeVfsFile(fs, "/var/www/hit.php", "<?php this is invalid php ;\n");
+      writeVfsFile(fs, "/srv/www/hit.php", "<?php this is invalid php ;\n");
 
       const { exitCode, stdout, stderr } = await runPhpFromImage(
         await fs.saveImage({ normalizeTimestampsMs: 315532800 * 1000 }),
-        "require '/var/www/hit.php';",
+        "require '/srv/www/hit.php';",
         ["-d", "opcache.validate_timestamps=1", "-d", "opcache.revalidate_freq=0"],
       );
       expect(stderr).toBe("");
@@ -202,13 +202,13 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
         const fs = createPrewarmFs();
         writeVfsFile(
           fs,
-          "/var/www/index.php",
+          "/srv/www/index.php",
           '<?php function greet(string $n = "x"): string { return "hi $n"; }\n'
             + 'function sum(int ...$values): int { return array_sum($values); }\n'
             + 'echo greet(), sum(1, 2);\n',
         );
         const written = await prewarmOpcache(fs, {
-          sourceRoots: ["/var/www"],
+          sourceRoots: ["/srv/www"],
           label: "reproducibility-test",
         });
         expect(written).toBeGreaterThanOrEqual(1);
@@ -258,7 +258,7 @@ function createPrewarmFs(): KandeloImageFs {
   const fs = KandeloImageFs.create();
   for (const dir of [
     "/tmp",
-    "/var/www",
+    "/srv/www",
     "/var/cache",
     "/usr/lib/php/extensions",
   ]) {

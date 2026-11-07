@@ -42,11 +42,67 @@
 
 import type { LazyDownloadEvent } from "./lazy-download-event";
 import type { DeferredByteProgress } from "./lazy-fetch-bytes";
+import { StorageMemoryBudget, StorageMetadataMap } from "./storage-memory-budget";
+import type { DeferredByteSource } from "./deferred-byte-spool";
 
 const EAGAIN = -11;
 const EIO = -5;
 const ENOENT = -2;
 const ENOSYS = -38;
+
+const deferredSignals = new WeakMap<Promise<void>, DeferredFetchSignal>();
+
+class DeferredFetchSignal {
+  readonly promise: Promise<void>;
+  private readonly waiters: StorageMetadataMap<number, () => void>;
+  private resolve!: () => void;
+  private next = 0;
+  private settled = false;
+
+  constructor(budget: StorageMemoryBudget) {
+    this.waiters = new StorageMetadataMap(budget);
+    try {
+      this.promise = new Promise(resolve => { this.resolve = resolve; });
+      deferredSignals.set(this.promise, this);
+    } catch (error) { this.waiters.dispose(); throw error; }
+  }
+
+  waitWithin(maxMs: number): Promise<void> {
+    if (this.settled) return Promise.resolve();
+    if (!Number.isSafeInteger(this.next)) throw new RangeError("Deferred wait identifiers exhausted");
+    const token = this.next++;
+    let resolve!: () => void;
+    const wait = new Promise<void>(complete => { resolve = complete; });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (!this.waiters.delete(token)) return;
+      clearTimeout(timer);
+      resolve();
+    };
+    this.waiters.set(token, finish);
+    try { timer = setTimeout(finish, Math.max(0, maxMs)); }
+    catch (error) { this.waiters.delete(token); throw error; }
+    return wait;
+  }
+
+  complete(): void {
+    if (this.settled) return;
+    this.settled = true;
+    deferredSignals.delete(this.promise);
+    for (const finish of this.waiters.values()) finish();
+    this.waiters.dispose();
+    this.resolve();
+  }
+}
+
+function deferredErrno(error: unknown): number {
+  const failure = error as { name?: string; code?: string } | null;
+  if (failure?.name === "QuotaExceededError" || failure?.code === "ENOSPC") return -28;
+  if (failure?.code === "ENOMEM") return -12;
+  if (failure?.code === "EROFS") return -30;
+  if (failure?.name === "TimeoutError" || failure?.code === "ETIMEDOUT") return -110;
+  return EIO;
+}
 
 // The in-kernel rootfs overlay needs no filesystem from the host: the kernel
 // owns materialization and this module only fetches URLs, so nothing here pulls
@@ -61,11 +117,9 @@ const ENOSYS = -38;
 /**
  * Serve container-offset reads straight from the container bytes.
  *
- * The only reader left, and the simplest one it could be: a caller holding
- * the whole container answers in container coordinates without subtracting
- * anything. Both worker entries already hold those bytes — they are what the
- * kernel is handed as `imageBytes` — so nothing has to be a filesystem for the
- * overlay to read its own image.
+ * A caller holding the whole container answers in container coordinates
+ * without subtracting anything. OPFS-backed browser boots instead provide a
+ * positioned reader directly to the kernel worker.
  */
 export function imageReadFromContainer(
   container: Uint8Array,
@@ -135,8 +189,9 @@ function report(
  * failed guest read never starts an unbounded new fetch.
  */
 export function buildRootfsLazyWiring(
-  fetcher: (url: string, onProgress?: DeferredByteProgress) => Promise<Uint8Array>,
+  fetcher: (url: string, onProgress?: DeferredByteProgress) => Promise<Uint8Array | DeferredByteSource>,
   onProgress?: DeferredProgress,
+  metadataBudget = new StorageMemoryBudget(),
 ): {
   deferredProvider: (
     uri: string,
@@ -149,18 +204,26 @@ export function buildRootfsLazyWiring(
    */
   whenFetchSettles: DeferredFetchSettled;
   discardDeferred: (uri: string) => void;
+  dispose: () => void;
 } {
   type Slot =
     | { state: "pending" }
-    | { state: "ready"; bytes: Uint8Array }
-    | { state: "failed" };
-  const slots = new Map<string, Slot>();
+    | { state: "ready"; bytes: Uint8Array | DeferredByteSource }
+    | { state: "failed"; errno: number };
+  const slots = new StorageMetadataMap<string, Slot>(metadataBudget);
   // One promise per fetch in flight, removed once its slot has left
   // `pending`. Each resolves only after the slot is updated, so a reader that
   // awaited it and retries sees the new state rather than EAGAIN again.
-  const inFlight = new Map<string, Promise<void>>();
-  const whenFetchSettles: DeferredFetchSettled = () =>
-    inFlight.size === 0 ? null : Promise.race(inFlight.values());
+  let inFlight: StorageMetadataMap<string, Promise<void>>;
+  try { inFlight = new StorageMetadataMap(metadataBudget); }
+  catch (error) { slots.dispose(); throw error; }
+  let disposed = false;
+  let settlement: DeferredFetchSignal | null = null;
+  const whenFetchSettles: DeferredFetchSettled = () => {
+    if (inFlight.size === 0) return null;
+    settlement ??= new DeferredFetchSignal(metadataBudget);
+    return settlement.promise;
+  };
 
   const deferredProvider = (
     uri: string,
@@ -170,11 +233,19 @@ export function buildRootfsLazyWiring(
     // An empty address is the kernel telling us the image declared none. There
     // is no table to guess from, and guessing would make the host a second
     // author of where bytes live, so it is a refusal rather than a lookup.
-    if (uri === "") return EIO;
+    if (disposed || uri === "") return EIO;
 
     const slot = slots.get(uri);
     if (slot === undefined) {
-      slots.set(uri, { state: "pending" });
+      let complete!: () => void;
+      const pending = new Promise<void>(resolve => { complete = resolve; });
+      try {
+        slots.set(uri, { state: "pending" });
+        inFlight.set(uri, pending);
+      } catch (error) {
+        slots.delete(uri);
+        return deferredErrno(error);
+      }
       const base = {
         id: uri,
         // ONE KIND, because the pipe cannot tell and will not guess. What
@@ -192,10 +263,12 @@ export function buildRootfsLazyWiring(
       };
       report(onProgress, { ...base, status: "started", loadedBytes: 0 });
       const settled = fetchDeferred(uri, fetcher, (loadedBytes, totalBytes) => {
+        if (disposed) return;
         report(onProgress, { ...base, status: "progress", loadedBytes, totalBytes });
       }).then((bytes) => {
+        if (disposed) return;
         if (bytes === undefined) {
-          slots.set(uri, { state: "failed" });
+          slots.set(uri, { state: "failed", errno: EIO });
           report(onProgress, {
             ...base,
             status: "error",
@@ -208,27 +281,34 @@ export function buildRootfsLazyWiring(
         report(onProgress, {
           ...base,
           status: "complete",
-          loadedBytes: bytes.byteLength,
+          loadedBytes: bytes instanceof Uint8Array ? bytes.byteLength : bytes.length,
         });
-      }).catch((reason: unknown) => {
-        slots.set(uri, { state: "failed" });
-        // WHY: the guest sees EIO for all transport failures. Keep the actual
-        // HTTP, native byte-bound or decoder cause in the shared host event,
-        // otherwise a missing font looks like an unexplained rendering defect.
+      }, (reason: unknown) => {
+        if (disposed) return;
+        slots.set(uri, { state: "failed", errno: deferredErrno(reason) });
+        // Keep the real transport/decoder cause alongside its precise errno.
         const detail = reason instanceof Error ? reason.message : String(reason);
         report(onProgress, { ...base, status: "error", loadedBytes: 0,
           error: `fetching ${uri} failed: ${detail}` });
       }).finally(() => {
         inFlight.delete(uri);
+        if (disposed && inFlight.size === 0) inFlight.dispose();
+        const signal = settlement;
+        settlement = null;
+        signal?.complete();
+        complete();
       });
-      inFlight.set(uri, settled);
+      void settled.catch(error => console.error("Deferred transport completion failed", error));
       return EAGAIN;
     }
     if (slot.state === "pending") return EAGAIN;
-    if (slot.state === "failed") return EIO;
+    if (slot.state === "failed") return slot.errno;
 
     const at = Number(offset);
     if (!Number.isSafeInteger(at) || at < 0) return EIO;
+    if (!(slot.bytes instanceof Uint8Array)) {
+      try { return slot.bytes.readAt(at, dest); } catch (error) { return deferredErrno(error); }
+    }
     if (at >= slot.bytes.byteLength) return 0; // end of resource
     const n = Math.min(dest.byteLength, slot.bytes.byteLength - at);
     dest.set(slot.bytes.subarray(at, at + n));
@@ -239,14 +319,20 @@ export function buildRootfsLazyWiring(
     // Only native validation can reject a completed transfer. Pending and
     // terminal transport failures retain their original bounded policy.
     const slot = slots.get(uri);
-    if (slot?.state === "ready") {
+    if (!disposed && slot?.state === "ready") {
       slots.delete(uri);
       report(onProgress, { id: uri, kind: "file", url: uri, status: "error",
-        loadedBytes: slot.bytes.byteLength,
+        loadedBytes: slot.bytes instanceof Uint8Array ? slot.bytes.byteLength : slot.bytes.length,
         error: "Native VFS rejected the transfer: size or SHA-256 mismatch" });
     }
   };
-  return { deferredProvider, whenFetchSettles, discardDeferred };
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    slots.dispose();
+    if (inFlight.size === 0) inFlight.dispose();
+  };
+  return { deferredProvider, whenFetchSettles, discardDeferred, dispose };
 }
 
 /**
@@ -270,13 +356,16 @@ export type DeferredFetchSettled = () => Promise<void> | null;
  * from somewhere other than this pipe — so the wait is the plain `maxMs`
  * timer, which keeps the caller's retry loop yielding to the event loop
  * rather than spinning on microtasks. With a fetch in flight the timer still
- * bounds the wait, so a fetch that never settles cannot outlast the caller's
- * own deadline.
+ * bounds the wait, for a caller that polls at a fixed interval. Callers that
+ * time out a read should wait on a fetch in flight without a deadline: the
+ * transport already bounds it (`withLazyResponse` in `lazy-fetch-bytes.ts`).
  */
 export async function waitForDeferredFetch(
   settled: Promise<void> | null,
   maxMs: number,
 ): Promise<void> {
+  const signal = settled === null ? undefined : deferredSignals.get(settled);
+  if (signal !== undefined) return signal.waitWithin(maxMs);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const elapsed = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, Math.max(0, maxMs));
@@ -289,7 +378,7 @@ export async function waitForDeferredFetch(
 }
 
 /**
- * Fetch the address, preserving a rejection for the provider's diagnostic.
+ * Fetch the address, preserving transport failure for errno and diagnostics.
  *
  * ONE ADDRESS, NO ALTERNATES. This walked a transport list and compared each
  * answer's length against a declared size, trying the next on a mismatch.
@@ -300,10 +389,9 @@ export async function waitForDeferredFetch(
  */
 async function fetchDeferred(
   uri: string,
-  fetcher: (url: string, onProgress?: DeferredByteProgress) => Promise<Uint8Array>,
+  fetcher: (url: string, onProgress?: DeferredByteProgress) => Promise<Uint8Array | DeferredByteSource>,
   onProgress: DeferredByteProgress,
-): Promise<Uint8Array | undefined> {
-  // Let the provider record the real failure before settling its EIO slot;
-  // converting every rejection to undefined erased its attributed cause.
+): Promise<Uint8Array | DeferredByteSource | undefined> {
+  // Preserve the actual rejection for the provider's diagnostic.
   return fetcher(uri, onProgress);
 }

@@ -36,6 +36,12 @@ export class ProcessMemoryCreatorGate {
     return this.runUntilCommitted(operation, () => creator());
   }
 
+  assertOpen(operation: string): void {
+    if (!this.open) {
+      throw new ProcessMemoryCreatorAdmissionClosedError(operation);
+    }
+  }
+
   /**
    * Admit ownership that must transfer out of an async setup callback.
    *
@@ -45,9 +51,7 @@ export class ProcessMemoryCreatorGate {
    * the gate.
    */
   acquire(operation: string): { release: () => void } {
-    if (!this.open) {
-      throw new ProcessMemoryCreatorAdmissionClosedError(operation);
-    }
+    this.assertOpen(operation);
     this.activeCreators += 1;
     let released = false;
     return {

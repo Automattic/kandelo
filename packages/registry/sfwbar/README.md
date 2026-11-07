@@ -5,7 +5,7 @@ demos. The configuration selects a Start menu, a task list with focus and
 window operations, and a clock. The menu enumerates actual XDG desktop
 entries for Terminal, ScummVM and Paint. It launches ordinary guest programs.
 
-Sway supervises `/usr/local/bin/kandelo-sfwbar`, which selects the packaged
+Sway supervises `/usr/bin/kandelo-sfwbar`, which selects the packaged
 configuration and forwards its bar ID and inherited Wayland socket. Sway's
 `swaybar_command` takes an executable pathname, so arguments belong in this
 launcher. Labwc starts SFWBar through its configured shell session.

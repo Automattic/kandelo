@@ -2110,7 +2110,7 @@ pub mod process_memory {
 
     /// Export name of the process-wasm constant-return function that declares
     /// the requested concurrent pthread limit.
-    pub const THREAD_SLOT_DECL_EXPORT: &str = "__wasm_posix_thread_slots";
+    pub const THREAD_SLOT_DECL_EXPORT: &str = wasm_posix_program_abi::abi::THREAD_SLOT_DECL_EXPORT;
 
     /// Legacy kernel MemoryManager::MMAP_BASE. Compact hosts override this
     /// per process but still expose the legacy boundary for compatibility.
@@ -2244,7 +2244,9 @@ pub mod abi {
     ///    epoch for kernel-host-only changes (ABI 55).
     /// 3: graphics sessions, thread-current ownership, acknowledged surfaces,
     ///    and exact DRM file/grant identities across kernel-host imports.
-    pub const HOST_ADAPTER_VERSION: u32 = 3;
+    /// 4: main's initial-process launch and persistent-storage interfaces,
+    ///    combined with the unpublished graphics contracts above.
+    pub const HOST_ADAPTER_VERSION: u32 = 4;
     pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
 
     pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;
@@ -2409,6 +2411,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_has_sa_nocldstop"),
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_len"),
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_ptr"),
+        HostAdapterKernelExport::required("kernel_initial_exec_commit"),
         HostAdapterKernelExport::required("kernel_install_host_stdin_pipe"),
         HostAdapterKernelExport::required("kernel_ipc_shm_lookup_mapping_for_task"),
         HostAdapterKernelExport::required("kernel_ipc_shm_record_mapping_for_process"),
@@ -2455,6 +2458,7 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_set_mmap_base"),
         HostAdapterKernelExport::required("kernel_spawn_exec_commit"),
         HostAdapterKernelExport::required("kernel_spawn_exec_target_prepare"),
+        HostAdapterKernelExport::required("kernel_spawn_exec_target_prepare_handle"),
         HostAdapterKernelExport::required("kernel_spawn_process"),
         HostAdapterKernelExport::required("kernel_take_process_timer_cleanup"),
         HostAdapterKernelExport::required("kernel_tcp_connection_id"),

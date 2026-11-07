@@ -9,7 +9,7 @@
 // builds for Wasm; host-target unit tests exercise a subset.
 #![cfg_attr(not(any(target_arch = "wasm32", target_arch = "wasm64")), allow(dead_code))]
 use crate::process::{HostIO, ProcessState};
-use crate::process_table::{ProcessTable, RemoveProcessResult};
+use crate::process_table::{ProcessTable, ProcessRemovalState};
 use crate::syscalls;
 use wasm_posix_shared::Errno;
 
@@ -65,7 +65,7 @@ impl Request {
 pub(crate) enum Completion {
     Exec,
     Exit(i32),
-    Removed(RemoveProcessResult),
+    Removed(ProcessRemovalState),
     RetryReleased,
     Signaled,
     InitReaped(crate::process_table::InitReap),
@@ -160,13 +160,13 @@ pub(crate) fn run(
             Completion::Signaled
         }
         Request::ReapInit { pid } => {
-            Completion::InitReaped(table.reap_for_init(pid).ok_or(Errno::ECHILD)?)
+            Completion::InitReaped(table.reap_for_init_with_io(pid, host).ok_or(Errno::ECHILD)?)
         }
         Request::Remove { pid, reap } => Completion::Removed(
             if reap {
-                table.reap_process(pid)
+                table.reap_process_with_io(pid, host)
             } else {
-                table.remove_process(pid)
+                table.remove_process_with_io(pid, host)
             }
             .ok_or(Errno::ESRCH)?,
         ),

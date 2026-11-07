@@ -146,26 +146,26 @@ export async function buildKandeloSdkVfsImage(
   fs.setImageCapacity(maximumBytes);
   for (const dir of [
     "/usr", "/usr/bin", "/usr/lib", "/usr/lib/llvm", "/usr/lib/llvm/bin",
-    "/usr/lib/llvm/lib", "/usr/lib/llvm/lib/clang", "/usr/wasm32posix", "/home",
+    "/usr/lib/llvm/lib", "/usr/lib/llvm/lib/clang", "/usr/lib/kandelo/wasm32posix", "/home", "/home/maker",
   ]) ensureDirRecursive(fs, dir);
-  fs.chmod("/home", 0o777);
+  fs.chown("/home/maker", 1000, 1000);
 
-  copyTree(fs, inputs.sysrootDirectory, "/usr/wasm32posix/sysroot");
+  copyTree(fs, inputs.sysrootDirectory, "/usr/lib/kandelo/wasm32posix/sysroot");
   if (inputs.libcxxDirectory !== undefined) {
     copyTree(
       fs,
       join(inputs.libcxxDirectory, "lib"),
-      "/usr/wasm32posix/sysroot/lib",
+      "/usr/lib/kandelo/wasm32posix/sysroot/lib",
     );
     copyTree(
       fs,
       join(inputs.libcxxDirectory, "include", "c++", "v1"),
-      "/usr/wasm32posix/sysroot/include/c++/v1",
+      "/usr/lib/kandelo/wasm32posix/sysroot/include/c++/v1",
     );
   }
   // The driver compiles this glue into every executable it links, as it
   // does on the build machine.
-  copyTree(fs, inputs.glueDirectory, "/usr/wasm32posix/glue");
+  copyTree(fs, inputs.glueDirectory, "/usr/lib/kandelo/wasm32posix/glue");
   // One driver program under every SDK tool name; the name selects the tool.
   writeVfsBinary(fs, "/usr/bin/kandelo-cc", new Uint8Array(readFileSync(inputs.driverPath)), 0o755);
   writeVfsBinary(fs, "/usr/bin/wasm-opt", new Uint8Array(readFileSync(inputs.wasmOptPath)), 0o755);
@@ -175,7 +175,7 @@ export async function buildKandeloSdkVfsImage(
   for (const name of ["cc", "c89", "c99", "c++"]) symlink(fs, "kandelo-cc", `/usr/bin/${name}`);
   writeVfsBinary(
     fs,
-    "/usr/wasm32posix/config.site",
+    "/usr/lib/kandelo/wasm32posix/config.site",
     new Uint8Array(readFileSync(inputs.configSitePath)),
     0o644,
   );
@@ -197,9 +197,10 @@ export async function buildKandeloSdkVfsImage(
   }
   writeVfsFile(
     fs,
-    "/home/hello.c",
+    "/home/maker/hello.c",
     "#include <stdio.h>\n\nint main(void) {\n    puts(\"hello from Kandelo clang\");\n    return 0;\n}\n",
   );
+  fs.chown("/home/maker/hello.c", 1000, 1000);
   await saveImage(fs, inputs.outputPath, inputs.targetAbi === undefined
     ? {}
     : {

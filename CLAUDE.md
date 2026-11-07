@@ -94,6 +94,16 @@ For nontrivial work:
 6. Run validation that supports the exact claim you will make.
 7. Report what changed, what was run, and what was not run.
 
+For a reviewed patch integration, use the optional
+[`scripts/agent-integrate` workflow](docs/agent-integration.md) to validate
+pinned inputs, preserve unrelated work, and journal evidence/checkpoints.
+It imports reviewed check results; command execution remains separate.
+
+For long campaigns, maintain phase checkpoints yourself; do not require the
+user to copy context or manage replacement chats. Read the focused
+[campaign guide](docs/agent-guidance/campaigns.md) when preparing a dispatch
+or handoff. Context reminders are advisory; worker rotation remains a trial.
+
 Do not stop at code reasoning for browser demo bugs, syscall semantics, ABI
 changes, package artifacts, or performance claims.
 
@@ -107,11 +117,29 @@ changes, package artifacts, or performance claims.
 | Host runtime and Node/browser parity | `docs/agent-guidance/host-runtime.md` | `docs/architecture.md`, `docs/browser-support.md` |
 | Package schema, builds, resolver, cache | `docs/agent-guidance/packages-and-builds.md` | `docs/package-management.md`, `docs/porting-guide.md`, `docs/sdk-guide.md` |
 | Browser demos, VFS images, sharing, users | `docs/agent-guidance/browser-and-user.md` | `docs/browser-support.md` |
+| Filesystem image hierarchy and installed guest paths | `docs/agent-guidance/images.md` | `docs/filesystem-layout.md` |
 | Performance claims and benchmarks | `docs/agent-guidance/performance.md` | `docs/profiling.md` |
 | Dev shell, docs, PR/final reports | `docs/agent-guidance/build-docs-and-prs.md` | `docs/repository-organization.md`, `README.md` |
 | Optional Spacefast deployment, publication and examples | `docs/agent-guidance/spacefast-deployment.md` | `apps/spacefast-cors-proxy/README.md`, `.agents/skills/deploying-kandelo-to-spacefast/SKILL.md` |
 
 ## Validation Contract
+
+Main agents: at task start, fetch `origin main`, then run
+`python3 .claude/hooks/install-hooks.py --user --update-from-main`.
+Repeat after merging a hook change. This refreshes an existing user
+installation from fetched `origin/main`, preserves opt-in and never
+downgrades; do it without asking the user to run the installer. Do not run
+plain `--user` from a feature branch as an automatic update. If fetching
+or updating fails, report it and continue independent work. Subagents
+leave user hook maintenance to the parent. See the hook workflow in
+`docs/agent-guidance/validation.md`.
+
+Keep automated browser tests silent through the shared
+`apps/browser-demos/playwright-test.ts` fixture, including private diagnostic
+specs. Leave guest PCM and analysers running for audio checks. Do not mute the
+computer's system output, which can disrupt calls. Audible playback requires
+the user's explicit intent and the documented test opt-in. See
+`docs/agent-guidance/validation.md` "Keep browser tests quiet".
 
 Validation is evidence for a specific claim. Do not say "tests pass", "the
 branch is complete", "the browser works", "ABI is fine", or "performance
@@ -135,9 +163,11 @@ Runs under 10 minutes: one foreground Bash call with output to a log file.
 Longer runs: use `scripts/agent-job start`. Interactive main sessions: run
 `scripts/agent-job wait <id> --timeout 0` once with Bash's
 `run_in_background`, then act on its single completion notification.
-Headless sessions and subagents repeat foreground `scripts/agent-job wait
-<id>` only when the wait-window notice says the job is still running
-(up to 9 minutes per call). `FAILED (exit 124)` is final, not a retry.
+Headless main sessions repeat foreground `scripts/agent-job wait <id>`
+(up to 9 minutes per call). Subagents use `wait <id> --timeout 240` for
+targeted work, one wait per Bash call; return known long jobs to the parent.
+Repeat only when the wait-window notice says the job is still running.
+`FAILED (exit 124)` is final, not a retry.
 To wait on another workspace's build, find it with
 `scripts/agent-job list --all` and wait on its id (or `wait --peer <text>`),
 not on its PID. After a selector wait times out, retry by its resolved id,
@@ -281,6 +311,16 @@ and default source-build hook. `build.toml` owns Kandelo project build/publish
 state: selected script path, source provenance, publish revision, cache
 invalidation, and binary index location.
 
+Port and iterate on packages against a partial image by default:
+`./run.sh partial <image> <pkg>...` builds the rootfs base plus only the named
+packages. Announce it to the user in one sentence before you build (image,
+packages, and that they can ask for the full build), and name it in the final
+report. Use the full build when the user asks for it or the claim is about
+canonical images, the browser as a whole, the suites, or shared platform
+code. A partial image is evidence only for its named packages; build the
+canonical products before a PR. See `docs/agent-guidance/packages-and-builds.md`
+"Partial images are development builds".
+
 Build scripts must honor the resolver contract, use the worktree-local SDK,
 declare every dependency they use, install only into `WASM_POSIX_DEP_OUT_DIR`,
 and produce the outputs declared in package metadata. Fork-using packages must
@@ -382,10 +422,12 @@ whoever can move the ref can change what executes in a job holding
 the sole exception; they resolve to the running commit. Dependabot keeps the
 pins current.
 
-`./run.sh setup` does not rebuild musl once a sysroot already exists —
-it only re-syncs overlay headers. After editing `libc/musl-overlay/` or
-`libc/glue/channel_syscall.c`, run `scripts/build-musl.sh` before relying on
-`./run.sh setup`, Vitest, or conformance tests.
+`./run.sh setup` checks both musl sysroots against source/toolchain inputs
+and installed core-output receipts, rebuilding missing, stale, or altered
+cores. After editing libc inputs, run `setup --all` to refresh linked package
+programs, and `scripts/build-programs.sh` for example/test fixtures before
+Vitest or conformance tests. A rebuilt libc alone does not refresh already
+linked programs. Use the dev shell for these commands.
 
 PR titles and commit subjects must begin with a concise purpose prefix in the
 form `Area: Purpose`, such as `Packages:`, `Kernel:`, `POSIX:`, `CI:`,
@@ -399,6 +441,9 @@ details, or validation. Explain the current problem, who or what it affects,
 and why fixing it matters before describing the mechanics.
 
 Prefer concise PR titles that remain suitable as merge subjects.
+Keep PR descriptions as concise and focused as reasonable while giving a
+junior developer enough clear context to understand the problem, change,
+and relevant validation. See the focused guide for the writing contract.
 Manually wrap prose in PR descriptions and commit-message bodies at
 72 columns. Do not reflow Markdown tables, code blocks, generated
 text, or indivisible URLs and identifiers when wrapping would damage
@@ -438,7 +483,9 @@ layer whose platform behavior is wrong.
 
 | Path | Owns |
 |---|---|
-| `crates/kernel/` | Rust kernel implementation: syscalls, process state, VFS, devices, memory, signals |
+| `crates/runtime-core/` | Engine-independent POSIX implementation: syscalls, process state, VFS, devices, memory, signals |
+| `crates/kernel/` | Wasm interface and host-import adapter around runtime-core |
+| `crates/program-abi/` | Program ABI version and artifact declarations |
 | `crates/shared/` | Shared ABI constants, syscall/interface definitions, host/kernel contract types |
 | `crates/fork-instrument/` | Wasm fork continuation instrumentation |
 | `abi/` | Committed ABI snapshot and generated ABI evidence |

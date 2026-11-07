@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { readFileSync } from "node:fs";
 import { MYSQL_BENCHMARK_PHP } from "../lib/init/mysql-benchmark";
 import {

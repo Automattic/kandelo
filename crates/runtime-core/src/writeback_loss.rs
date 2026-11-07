@@ -133,22 +133,26 @@ impl WritebackLossLog {
     ///
     /// `reason` is last on the line precisely because it is the only field that
     /// may contain spaces.
-    pub fn render(&self) -> Vec<u8> {
-        use alloc::format;
-        let mut out = Vec::new();
-        out.extend_from_slice(format!("total {}\n", self.total).as_bytes());
-        out.extend_from_slice(format!("recorded {}\n", self.records.len()).as_bytes());
-        out.extend_from_slice(format!("dropped {}\n", self.dropped()).as_bytes());
+    pub fn try_render(&self) -> Result<crate::IoBuffer<u8>, wasm_posix_shared::Errno> {
+        let mut out = crate::IoBuffer::new();
+        out.try_write_fmt(format_args!("total {}\nrecorded {}\ndropped {}\n",
+            self.total, self.records.len(), self.dropped()))?;
         for record in &self.records {
-            out.extend_from_slice(
-                format!("loss kind=writeback pid={} addr={:#x} reason=", record.pid, record.operand)
-                    .as_bytes(),
-            );
+            // Why: only genuine writeback failures reach this log; mapping
+            // bookkeeping faults remain fatal rather than fabricated records.
+            out.try_write_fmt(format_args!(
+                "loss kind=writeback pid={} addr={:#x} reason=",
+                record.pid, record.operand,
+            ))?;
+            out.try_reserve(record.reason.len() + 1)?;
             out.extend_from_slice(&record.reason);
             out.push(b'\n');
         }
-        out
+        Ok(out)
     }
+
+    #[cfg(test)]
+    pub fn render(&self) -> Vec<u8> { self.try_render().unwrap().as_slice().to_vec() }
 }
 
 /// Global wrapper for static storage.
@@ -261,8 +265,9 @@ fn mark_open_descriptions(
     matches: impl Fn(&crate::ofd::OpenFileDesc) -> bool,
 ) {
     let pending = unsafe { &mut *GLOBAL_PENDING_WRITEBACK_ERRORS.0.get() };
-    for pid in table.all_pids() {
-        let Some(proc) = table.get(pid) else { continue };
+    // Why: visit every retained process without allocating a PID snapshot.
+    // Shared descriptions still deduplicate by their exact machine-wide OfdId.
+    for proc in table.iter() {
         for (_, ofd) in proc.ofd_table.iter() {
             if Some(ofd.ofd_id.0) != skip && matches(ofd) {
                 pending.insert(ofd.ofd_id.0);
@@ -278,8 +283,8 @@ pub fn take_ofd_writeback_error(ofd_id: u64) -> bool {
 }
 
 /// Render the kernel-wide log as the `/proc/kandelo/writeback_losses` content.
-pub fn render_writeback_losses() -> Vec<u8> {
-    unsafe { (*GLOBAL_WRITEBACK_LOSS_LOG.0.get()).render() }
+pub fn render_writeback_losses() -> Result<crate::IoBuffer<u8>, wasm_posix_shared::Errno> {
+    unsafe { (*GLOBAL_WRITEBACK_LOSS_LOG.0.get()).try_render() }
 }
 
 #[cfg(test)]

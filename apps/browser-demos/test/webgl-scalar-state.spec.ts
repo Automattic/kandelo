@@ -1,6 +1,6 @@
 import {fileURLToPath} from "node:url";
 import {writeFileSync} from "node:fs";
-import {expect,test} from "@playwright/test";
+import {expect,test} from "../playwright-test";
 import {installBrowserMemoryBoundaryProbe,memoryBoundaryFailures} from "./support/browser-memory-boundary";
 const source=fileURLToPath(new URL("../../../host/src/webgl/",import.meta.url));
 test.use({serviceWorkers:"block"});

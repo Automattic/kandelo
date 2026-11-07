@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { gotoMachine as gotoDefaultMachine } from "./support/kandelo-machine";
 import { writeFileSync } from "node:fs";
 import { buildTerminalCommand, parseTerminalCommandResult } from "./support/terminal-command";
@@ -35,7 +35,7 @@ async function showGame(page: Page, { pointerLock = false } = {}) {
     }
     scope.__releaseTestPointerLock();
   }, pointerLock);
-  await page.getByRole("button", { name: "Demo", exact: true }).click({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Graphics", exact: true }).click({ timeout: 60_000 });
   await expect(canvas(page)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText(/Waiting for PAGE_FLIP on CRTC/)).toBeHidden({ timeout: 120_000 });
   await expect.poll(async () => (await canvas(page).screenshot()).byteLength,
@@ -51,7 +51,7 @@ async function terminalLines(page: Page) {
   await screen.screenshot(); // Observe its painted screen before hiding it again.
   const output = await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").evaluate(
     node => [...node.children].map(row => row.textContent).join("\n"));
-  const demo = page.getByRole("button", { name: "Demo", exact: true });
+  const demo = page.getByRole("button", { name: "Graphics", exact: true });
   if (await demo.isEnabled()) await demo.click();
   return output;
 }
@@ -60,7 +60,7 @@ async function guestCommand(page: Page, command: string) {
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
   const slot = page.locator(".kshell-terminal-slot:not([hidden])");
   const transcript = () => slot.locator(".xterm-rows").innerText();
-  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/kandelo\$\s*$/);
+  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   const protocol = buildTerminalCommand(command);
   await slot.locator(".xterm-screen").click();
   await page.keyboard.insertText(protocol.command);
@@ -87,7 +87,7 @@ async function gotoMachine(...args: Parameters<typeof gotoDefaultMachine>) {
   await expect(page.getByRole("button", { name: "Terminal", exact: true }))
     .toHaveAttribute("aria-current", "true", { timeout: 30_000 });
   await expect.poll(() => page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").innerText())
-    .toMatch(/kandelo\$\s*$/);
+    .toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   await guestCommand(page, [
     'mkdir -p "$HOME/.freeciv"',
     'printf "[client]\\nmigration_sdl2_from_sdl=TRUE\\nflag_sdl2_default_screen_size_set=TRUE\\ngui_sdl2_screen.width=960\\ngui_sdl2_screen.height=540\\nsound_effects_volume=25\\n" > "$HOME/.freeciv/freeciv-client-rc-3.2"',
@@ -433,7 +433,7 @@ test.describe("local Freeciv peer routing", () => {
     console.log("Creating the network session");
     await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
     await page.getByLabel("Session name").fill("Freeciv night");
-    await page.getByRole("button", { name: "Create invite", exact: true }).click();
+    await page.getByRole("button", { name: "Start network session", exact: true }).click();
     await expect(page.getByRole("button", { name: "Network session: connected", exact: true }))
       .toBeAttached({ timeout: 30_000 });
     const link = await page.locator("[data-network-link]").getAttribute("data-network-link");
@@ -550,7 +550,7 @@ test("New Game launches Freeciv's own local server child", async ({ page, browse
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
   const slot = page.locator(".kshell-terminal-slot:not([hidden])");
   const transcript = () => slot.locator(".xterm-rows").innerText();
-  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/kandelo\$\s*$/);
+  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   const protocol = buildTerminalCommand([
     "for path in /proc/[0-9]*/cmdline; do",
     "  command=$(tr '\\0' ' ' < \"$path\" 2>/dev/null)",
@@ -622,7 +622,7 @@ for (const density of [1, 2]) {
           .toBe(true);
         const terminal = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows");
         await expect(terminal).toBeVisible();
-        await expect.poll(() => terminal.innerText()).toMatch(/kandelo\$\s*$/);
+        await expect.poll(() => terminal.innerText()).toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
         return terminal;
       };
 

@@ -25,10 +25,12 @@ cat >"$work/target-aware-exec.wat" <<'WAT'
 (module
   (func (export "kernel_exec_target_prepare"))
   (func (export "kernel_spawn_exec_target_prepare"))
+  (func (export "kernel_spawn_exec_target_prepare_handle"))
   (func (export "kernel_exec_target_size"))
   (func (export "kernel_exec_target_read"))
   (func (export "kernel_exec_target_cancel"))
   (func (export "kernel_exec_commit"))
+  (func (export "kernel_initial_exec_commit"))
   (func (export "kernel_publish_spawn_child"))
   (func (export "kernel_spawn_exec_commit")))
 WAT
@@ -38,10 +40,12 @@ cat >"$work/hybrid-exec.wat" <<'WAT'
 (module
   (func (export "kernel_exec_target_prepare"))
   (func (export "kernel_spawn_exec_target_prepare"))
+  (func (export "kernel_spawn_exec_target_prepare_handle"))
   (func (export "kernel_exec_target_size"))
   (func (export "kernel_exec_target_read"))
   (func (export "kernel_exec_target_cancel"))
   (func (export "kernel_exec_commit"))
+  (func (export "kernel_initial_exec_commit"))
   (func (export "kernel_publish_spawn_child"))
   (func (export "kernel_spawn_exec_commit"))
   (func (export "kernel_exec_prepare"))

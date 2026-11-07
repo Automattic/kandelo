@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 test("primary GPU scanout is opaque while preserving source alpha and guest masks", async ({ page, baseURL, browser }) => {
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);

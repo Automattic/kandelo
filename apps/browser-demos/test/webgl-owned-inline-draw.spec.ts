@@ -1,4 +1,4 @@
-import {test,expect} from "@playwright/test";
+import {test,expect} from "../playwright-test";
 import {fileURLToPath} from "node:url";
 import {writeFileSync} from "node:fs";
 import {installBrowserMemoryBoundaryProbe,memoryBoundaryFailures} from "./support/browser-memory-boundary";

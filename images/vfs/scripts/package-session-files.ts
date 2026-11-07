@@ -10,14 +10,20 @@ import type { ShellLazyArchiveResolver } from "./shell-lazy-archives";
 
 export const SHELL_SESSION_PACKAGES = ["fbdoom", "termchat", "tyrquake", "freeciv-browser-bundle", "netcat", "python-browser-bundle", "php"] as const;
 
-export const SHELL_SESSION_IMAGE_PACKAGES = ["nginx-vfs", "nginx-php-vfs", "nginx-python-vfs", "wordpress", "lamp", "ruby-todo-vfs", "redis-vfs"] as const;
+export const SHELL_SESSION_IMAGE_PACKAGES = ["nginx-vfs", "nginx-php-vfs", "nginx-python-vfs", "wordpress", "lamp", "ruby-todo-vfs", "redis-vfs", "web-stack-vfs", "wordpress-family-vfs"] as const;
 
 export const SHELL_SESSION_HELPERS: Record<string, string[]> = { fbdoom: ["doom-activity"], tyrquake: ["quake-data", "quake-activity"] };
 
-export function installPackageSessionFiles(fs: KandeloImageFs, resolveArtifact: ShellLazyArchiveResolver): void {
+export function installPackageSessionFiles(
+  fs: KandeloImageFs,
+  resolveArtifact: ShellLazyArchiveResolver,
+  includesPackage: (pkg: string) => boolean = () => true,
+): void {
   for (const name of SHELL_SESSION_IMAGE_PACKAGES) installImageSessions(fs, name, true);
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   for (const name of SHELL_SESSION_PACKAGES) {
+    // A partial shell carries only its selected packages' activities.
+    if (!includesPackage(name)) continue;
     for (const artifact of SHELL_SESSION_HELPERS[name] ?? []) {
       const file = readPackageRuntimeFileContract(root, name, artifact);
       ensureDirRecursive(fs, file.guestPath.slice(0, file.guestPath.lastIndexOf("/")));

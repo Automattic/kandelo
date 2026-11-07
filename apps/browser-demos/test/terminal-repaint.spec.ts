@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { terminalHistoryMatching } from "./support/terminal-history";
 
 test("terminal history gates find old output and restore the live bottom", async ({ page }) => {

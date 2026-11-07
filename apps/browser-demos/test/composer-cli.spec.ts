@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { gotoMachine } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 
@@ -8,7 +8,7 @@ test("Enter submits Composer's character-by-character choice prompt", async ({ p
   await expect.poll(
     () => page.locator(".xterm-rows").first().textContent(),
     { timeout: 120_000 },
-  ).toContain("kandelo$");
+  ).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
   await runTerminalCommand(page, "composer --version --no-ansi", "Composer version 2.10.3", 120_000);
 
   // Exercise the exact Symfony ChoiceQuestion used by `composer require`
@@ -44,7 +44,7 @@ test("shell loads Composer on first use and generates a working autoloader", asy
   await expect.poll(
     () => page.locator(".xterm-rows").first().textContent(),
     { timeout: 120_000 },
-  ).toContain("kandelo$");
+  ).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
   expect(downloads).toEqual([]);
 
   const version = await runTerminalCommand(

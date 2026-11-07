@@ -1,7 +1,7 @@
 /** Real C guests exercise DRM-file ownership on each browser host. */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { compileSdkFixture } from "../../../host/test/support/compile-sdk-fixture";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";

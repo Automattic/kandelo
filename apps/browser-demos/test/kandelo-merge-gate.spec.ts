@@ -1,5 +1,6 @@
-import { expect, test, type FrameLocator, type Page } from "@playwright/test";
+import { expect, test, type FrameLocator, type Page } from "../playwright-test";
 import { runTerminalCommand } from "./support/terminal-command";
+import { configureNewComputer, currentComputerMetadata } from "./support/computer-library";
 import {
   gotoInPreview,
   gotoMachineOrSkip,
@@ -14,16 +15,9 @@ type BrowserDiagnostics = {
 
 const diagnosticsByPage = new WeakMap<Page, BrowserDiagnostics>();
 const MAX_LOG_LINES = 160;
-// The plain shell demo's login boot env sets PS1 to the literal `kandelo$ `
-// (images/vfs/products/browser-main-shell.toml), but PR #1403 ("Ship bash as
-// the only shell") made bash the login shell for every dinit-service demo's
-// terminal drawer (nginx, nginx-php, nginx-python) without a PS1 override, so
-// those terminals fall back to bash's compiled-in default prompt, which
-// includes the running bash's version. Confirmed against a real chromium run
-// of the nginx demo terminal: the received prompt text is exactly
-// `kandelo-bash-5.2$ `. Match both forms with one shared pattern instead of
-// pinning to a specific bash version.
-const KANDELO_PROMPT = /kandelo(?:-bash-[0-9.]+)?\$ ?/;
+// The image-owned Bash prompt expands the current username, hostname, and
+// directory basename; it changes when the guest changes directories.
+const KANDELO_PROMPT = /maker@[^:\s]+:[^\r\n]*\$ ?/;
 
 test.beforeEach(({ page }) => {
   const diagnostics: BrowserDiagnostics = {
@@ -54,11 +48,7 @@ function trimLog(lines: string[]) {
 }
 
 async function waitForReady(page: Page, timeout = 180_000) {
-  // "Ready" renders inside the demo guide panel, which no longer auto-opens.
-  await ensureGuideOpen(page);
-  await expect
-    .poll(() => page.evaluate(() => document.body.innerText), { timeout })
-    .toContain("Ready");
+  await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout });
 }
 
 async function terminalText(page: Page): Promise<string> {
@@ -79,25 +69,18 @@ async function waitForTerminalContent(
 }
 
 async function ensureGuideOpen(page: Page) {
-  // The demo guide no longer auto-opens; open it from the dock on first use.
-  if (await page.locator("aside.kdemo").count()) return;
-  await page.getByRole("button", { name: "Demo guide" }).click({ timeout: 120_000 });
-  await page.waitForSelector("aside.kdemo", { timeout: 30_000 });
+  if (await page.getByRole("dialog", { name: "Shortcuts", exact: true }).count()) return;
+  await page.getByRole("button", { name: "Shortcuts" }).click({ timeout: 120_000 });
+  await expect(page.getByRole("dialog", { name: "Shortcuts", exact: true })).toBeVisible({ timeout: 30_000 });
 }
 
-async function runGuideScript(
+async function runShellScript(
   page: Page,
   script: string,
   expected: string | RegExp,
   timeout = 120_000,
 ) {
-  await ensureGuideOpen(page);
-  const runButton = page.locator(".kdemo-run").first();
-  await page.locator(".kdemo textarea").first().fill(script);
-  await runButton.click();
-  await waitForTerminalContent(page, expected, timeout);
-  await expect(runButton).toHaveText("Run script", { timeout });
-  await expect(runButton).toBeEnabled();
+  await runTerminalCommand(page, script, expected, timeout);
 }
 
 async function openTerminalDrawer(page: Page) {
@@ -210,24 +193,15 @@ async function runWordPressPreinstalledLogin(page: Page, demo: string, title: st
     // while Launch still assigned the image an undersized custom-image
     // capacity profile.
     await gotoMachineOrSkip(page, "shell");
-    await page.getByRole("button", { name: "New", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Launch New Computer" }))
-      .toBeVisible();
-    await page
-      .locator(".kgal-row", {
-        has: page.locator(".kgal-machine-title", { hasText: title }),
-      })
-      .getByRole("button", { name: "Launch" })
-      .click();
-    // Launch writes `&profile=` — the only channel that selects which machine
-    // inside the image to boot. The image URL itself carries no fragment.
+    await configureNewComputer(page, demo, title);
+    await page.getByRole("button", { name: "Create and boot", exact: true }).click();
     await expect
       .poll(
-        () => new URL(page.url()).searchParams.get("profile"),
+        async () => (await currentComputerMetadata(page)).profileId,
         { timeout: 60_000 },
       )
       .toBe(demo);
-    const vfsParam = new URL(page.url()).searchParams.get("vfs");
+    const vfsParam = (await currentComputerMetadata(page)).descriptor.mounts.find(mount => mount.path === "/")?.ref;
     expect(vfsParam).not.toBeNull();
     expect(vfsParam).not.toContain("#");
     expect(vfsParam).not.toContain("%23");
@@ -271,9 +245,6 @@ async function runWordPressPreinstalledLogin(page: Page, demo: string, title: st
       );
     }
 
-    // "Log in as admin" is a guide ACTION the image declares in its own
-    // demo.json, so it lives in the demo guide panel — which no longer opens
-    // by itself (same reason waitForReady has to open it).
     await ensureGuideOpen(page);
     await page.getByRole("button", { name: /Log in as admin/i }).click();
 
@@ -302,7 +273,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   // like the other terminal tests do.
   await waitForTerminalContent(page, KANDELO_PROMPT, 120_000);
 
-  await runGuideScript(
+  await runShellScript(
     page,
     "vals=(alpha beta)\n" +
       "if [[ ${vals[1]} == beta ]]; then\n" +
@@ -312,7 +283,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
       "fi",
     /KANDELO_BASH_OK:[0-9][^\r\n]*:\/home\/maker/,
   );
-  await runGuideScript(
+  await runShellScript(
     page,
     "vim --version >/tmp/kandelo-vim.out 2>&1\n" +
       "vim_version=$(</tmp/kandelo-vim.out)\n" +
@@ -325,7 +296,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
       "fi",
     "KANDELO_VIM_OK",
   );
-  await runGuideScript(
+  await runShellScript(
     page,
     "nethack -s all >/tmp/kandelo-nethack.out 2>&1\n" +
       "status=$?\n" +
@@ -367,7 +338,7 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   await gotoMachineOrSkip(page, "node");
   await waitForReady(page);
   // The shell image ships one /etc/profile.d for every machine it carries
-  // (#1409), so the prompt is the shared `kandelo$` and no longer names the
+  // (#1409), so the prompt is the shared user/host/directory prompt and no longer names the
   // machine. The machine's identity is its image-declared title.
   await expect(
     page.getByRole("button", { name: /^Current computer: Node\.js,/ }),
@@ -433,7 +404,7 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   );
   await runTerminalCommand(
     page,
-    "set -eu; printf '%s\\n' '<!doctype html><title>Kandelo nginx</title><h1>KANDELO_EDIT_OK</h1>' > /var/www/html/index.html; " +
+    "set -eu; printf '%s\\n' '<!doctype html><title>Kandelo nginx</title><h1>KANDELO_EDIT_OK</h1>' > /srv/www/html/index.html; " +
       "printf 'KANDELO_NGINX_EDIT_OK\\n'",
     "KANDELO_NGINX_EDIT_OK",
   );
@@ -484,7 +455,7 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
 // .toml's [evidence.browser].
 test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the Notes API through the web preview", async ({ page }) => {
   // PARTIALLY-CLOSED BROWSER PLATFORM GAP. notes-app's startup
-  // (`python3 /var/www/notes/app.py`) imports a large slice of the stdlib
+  // (`python3 /srv/www/notes/app.py`) imports a large slice of the stdlib
   // (wsgiref -> http.server -> ... -> email.quoprimime). On first import
   // CPython used to compile each of those modules from *source* — a deeply
   // recursive pass (tokenizer -> parser -> AST -> symtable -> code generator).

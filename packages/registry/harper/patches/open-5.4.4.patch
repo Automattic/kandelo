@@ -1,0 +1,49 @@
+# Use the existing Unix guest URI opener commands. A missing opener
+# remains an I/O error; this does not open anything in the embedding host.
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -117,6 +117,7 @@
+ 
+ #[cfg(any(
+     target_os = "linux",
++    target_os = "kandelo",
+     target_os = "android",
+     target_os = "freebsd",
+     target_os = "dragonfly",
+@@ -131,6 +132,7 @@
+ 
+ #[cfg(not(any(
+     target_os = "linux",
++    target_os = "kandelo",
+     target_os = "android",
+     target_os = "freebsd",
+     target_os = "dragonfly",
+@@ -443,6 +445,7 @@
+ #[cfg(any(
+     test,
+     target_os = "linux",
++    target_os = "kandelo",
+     target_os = "android",
+     target_os = "freebsd",
+     target_os = "dragonfly",
+@@ -457,6 +460,7 @@
+ 
+ #[cfg(any(
+     target_os = "linux",
++    target_os = "kandelo",
+     target_os = "android",
+     target_os = "freebsd",
+     target_os = "dragonfly",
+--- a/src/unix.rs
++++ b/src/unix.rs
+@@ -22,7 +22,10 @@
+ 
+ pub fn commands<T: AsRef<OsStr>>(path: T) -> Vec<Command> {
+     let path = path.as_ref();
++    #[cfg(not(target_os = "kandelo"))]
+     let is_wsl = is_wsl::is_wsl();
++    #[cfg(target_os = "kandelo")]
++    let is_wsl = false;
+     let mut commands = vec![];
+ 
+     if is_wsl {

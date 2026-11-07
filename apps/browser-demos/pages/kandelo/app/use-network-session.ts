@@ -2,6 +2,7 @@ import * as React from "react";
 import type { KernelHost } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { answerNetworkInvite, attachNetworkBridge, createNetworkInvite } from "../../../lib/network-peer";
 import { NetworkSessionController, sessionInvitation, type SessionState } from "../../../lib/network-session";
+import { PROFILE_QUERY_PARAM, VFS_IMAGE_QUERY_PARAM, vfsImageUrlFromDescriptor } from "../url-state";
 
 /**
  * Production uses signalling/piplet.php under the deployment base unless
@@ -14,14 +15,32 @@ function signallingServer(): string | null {
   return new URL(`${import.meta.env.BASE_URL}signalling/piplet.php`, location.href).href;
 }
 
+/**
+ * This page with the machine it runs, for building invitation links. A
+ * Library computer's address names only the computer, so add the image and
+ * profile it was created from. Joiners boot that machine, not a default one.
+ */
+function machinePageHref(host: KernelHost): string {
+  const computer = host.computers?.getSnapshot().current;
+  const image = computer ? vfsImageUrlFromDescriptor(computer.descriptor) : null;
+  if (!computer || !image) return location.href;
+  const url = new URL(location.href);
+  url.searchParams.set(VFS_IMAGE_QUERY_PARAM, image);
+  if (computer.profileId) url.searchParams.set(PROFILE_QUERY_PARAM, computer.profileId);
+  else url.searchParams.delete(PROFILE_QUERY_PARAM);
+  return url.href;
+}
+
 const transport = { createInvite: createNetworkInvite, answerInvite: answerNetworkInvite, bridge: attachNetworkBridge };
 
-export function useNetworkSession(host: KernelHost, initiallyOpen = true, dismissed = false) {
+export type InitialSessionInvitation = ReturnType<typeof sessionInvitation>;
+
+export function useNetworkSession(host: KernelHost, initiallyOpen = true, dismissed = false, initialInvitation?: InitialSessionInvitation) {
   const controller = React.useMemo(() => new NetworkSessionController({
     machine: () => host.getStatus() === "running" ? host : null,
     server: signallingServer,
     transport,
-    pageHref: () => location.href,
+    pageHref: () => machinePageHref(host),
   }), [host]);
   const state = React.useSyncExternalStore(
     React.useCallback((listener: () => void) => controller.subscribe(listener), [controller]),
@@ -36,7 +55,7 @@ export function useNetworkSession(host: KernelHost, initiallyOpen = true, dismis
   // and the Share dialog builds machine links from the current address. Kept
   // in memory, an unjoined invitation still survives a machine switch.
   const [invitation, setInvitation] = React.useState(() => {
-    const found = sessionInvitation(location.href);
+    const found = initialInvitation === undefined ? sessionInvitation(location.href) : initialInvitation;
     if (found) {
       const url = new URL(location.href);
       url.searchParams.delete("network"); url.searchParams.delete("networkName");

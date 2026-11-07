@@ -114,6 +114,14 @@ resolver understands only `>=` constraints, so a recipe needing an exact match
 must check it itself and fail loudly. See
 `packages/registry/qtbase/build-qtbase.sh`.
 
+Perl's bundled host `miniperl` is configured separately from the Wasm target.
+The pinned perl-cross defaults assume glibc's named `LC_ALL` components;
+Darwin returns slash-separated components in category order. The Perl recipe
+supplies the native format through `--host-set-*` options on Darwin only.
+These options must not change the target interpreter's locale configuration
+or disable its locale support. Set `WASM_POSIX_BUILD_JOBS` to bound the recipe's
+make parallelism independently of the outer package scheduler.
+
 **Generators whose output must describe the target**: Some projects build a
 helper from their own sources and run it to write headers or data files the
 program reads, so the helper's answers have to be the target's: type sizes,
@@ -326,11 +334,17 @@ is derived from its `resolverPath`, so a new archive needs no entry anywhere
 else; `tests/package-system/shell-lazy-url-resolution.test.ts` checks that
 every declared address resolves to its package member.
 
+The spec's `dependency` is the package that owns the archive. A
+[partial image](package-management.md#partial-images) installs the archive
+only when that package is selected, so the attribution must be exact.
+
 ### When you also want `/bin/<program>` symlinks
 
-Create image-level aliases in the VFS image builder (see
-`populateExtendedSymlinks` in `build-shell-vfs-image.ts`), not inside the
-archive. Package-owned links that are part of a program's runtime may remain
+Create image-level aliases in the shell overlay
+(`populateSourceRootfsShellOverlay` in
+`images/vfs/scripts/source-rootfs-shell-overlay.ts`, which links
+`/usr/bin/vi` to Vim, guarded by the owning package so a partial image
+without it gets no dangling link), not inside the archive. Package-owned links that are part of a program's runtime may remain
 inside its archive; the deterministic ZIP helper preserves them and the
 registrar validates every member path and link target before adding anything
 to the VFS.
@@ -906,6 +920,27 @@ mkdir -p "$BUILD_DIR"
 
 ### 4. Verify locally
 
+Try the package in a machine first, without building the whole shell.
+Once the package is in the canonical shell's contract (its role in
+`packages/registry/shell/source-rootfs-shell-dependencies.json`, the same
+`name@version` in `packages/registry/shell/package.toml`, and its entry in
+`SHELL_LAZY_BINARY_SPECS` or `SHELL_LAZY_ARCHIVE_SPECS`), compose a partial
+shell carrying the rootfs base and only your package:
+
+```bash
+./run.sh partial shell myprog             # local-binaries/partial/shell-partial.vfs.zst
+./run.sh partial shell myprog --with-tests
+./run.sh browser --partial                # boot it as its own gallery machine
+```
+
+Iterate there. The members come from the shared cache, so a fresh worktree
+pays for the rootfs closure and your package, not for the whole shell. See
+[Partial images](package-management.md#partial-images) for what the image
+contains and what it does not prove. Build the canonical products once,
+before the PR (step 5).
+
+The package's own outputs can also be checked directly:
+
 ```bash
 scripts/dev-shell.sh bash -lc '
   set -euo pipefail
@@ -999,9 +1034,10 @@ release to publish or fetch. A new or changed recipe invalidates the
 package's cache key, so CI (and every developer) rebuilds it from source
 under the new key.
 
-Locally, run `./run.sh browser` (or `./run.sh local-build`) to build the
-package through the local SourceOnly graph and its dependent VFS products,
-then verify the result.
+Locally, iterate against a partial image (step 4), then run
+`./run.sh browser` (or `./run.sh local-build`) once to build the package
+through the local SourceOnly graph and its dependent canonical VFS
+products, and verify the result there before opening the PR.
 
 ### 6. Register in `run.sh` (optional)
 
@@ -1038,6 +1074,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 
 | Software | Script | Build system | Notes |
 |----------|--------|-------------|-------|
+| DOSBox Pure | `packages/registry/dosbox-pure/build-dosbox-pure.sh` | upstream make | x86 interpreter with a POSIX/device libretro frontend; [usage, limits and optional x86-to-Wasm follow-up](../packages/registry/dosbox-pure/README.md) |
 | dash | `packages/registry/dash/build-dash.sh` | autoconf | Minimal POSIX shell |
 | coreutils | `packages/registry/coreutils/build-coreutils.sh` | autoconf | 50+ utilities as multicall binary |
 | grep | `packages/registry/grep/build-grep.sh` | autoconf | PCRE not included |
@@ -1069,6 +1106,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | pango | `packages/registry/pango/build-pango.sh` | meson | 1.56.4 via upstream meson and `sdk/meson/wasm32posix.ini` (newest series whose glib/harfbuzz/fontconfig floors the registry meets): pango/pangoft2/pangocairo, no Xft/libthai/introspection; upstream's pango-view/pango-list/pango-segmentation tools are not published from this library package; `src/wasm-callback-arity.patch` wraps 1-argument free/copy functions cast to `GFunc` (`g_list_foreach` / `g_slist_foreach`) or `GCopyFunc` (`g_ptr_array_copy`) (see the arity section below) |
 | librsvg | `packages/registry/librsvg/build-librsvg.sh` | meson + cargo-c | 2.63.2, the first package with a Rust core: upstream meson builds the C side and runs `cargo cbuild` for `wasm32-unknown-kandelo-std` against a private Rust sysroot the script assembles in its work root; `libc` is pinned to the Kandelo fork, crates are vendored from the tarball's `Cargo.lock` (checksum-verified), and two crates are patched at the custom-target boundary (`patches/`, see docs/package-management.md "Patches"); pixbuf API on, no pixbuf loader/introspection/avif; the converter is the separate rsvg-convert package |
 | rsvg-convert | `packages/registry/rsvg-convert/build-rsvg-convert.sh` | cargo | 2.63.2, librsvg's converter (a Rust program): same source and Rust setup as librsvg (`packages/registry/librsvg/rust-build-env.sh`), built with `cargo build -p rsvg_convert` because upstream's meson rule copies an unsuffixed `rsvg-convert` from the cargo target dir and a Kandelo executable is `rsvg-convert.wasm` |
+| Harper | `packages/registry/harper/build-harper.sh` | cargo + cc | 3.0.0: builds `harper-cli.wasm` and `harper-ls.wasm` from the upstream workspace with its fat LTO release profile and complete parser dependencies. `harper-browser-bundle` ships both under `/usr/bin` in one lazy ZIP. Uses the shared private Rust environment and the SDK for native Tree-sitter C sources. Dependency target-recognition patches and one scoped LLVM compiler-pass workaround are documented in `docs/package-management.md` under "Patches". |
 | gdk-pixbuf | `packages/registry/gdk-pixbuf/build-gdk-pixbuf.sh` | autoconf | 2.36.12 (last autotools release): png loader compiled in statically, no dynamic loader modules; `gio_can_sniff=no` forces builtin signature sniffing — the default `GDK_PIXBUF_USE_GIO_MIME` path selects loaders via `g_content_type_guess`, which returns `application/octet-stream` without a shared-mime-info database and rejects every image as "Unrecognized image file format" |
 | atk | `packages/registry/atk/build-atk.sh` | meson bypass | 2.36.0 (final release; GTK 3.24.34 needs >= 2.32, last autotools 2.28 is too old): hand config.h, glib-mkenums + glib-genmarshal generation, upstream TU list; `src/wasm-callback-arity.patch` adds `gpointer class_data` to 1-argument `class_init` functions and routes atkhyperlink's action interface through `g_wasm_iface_init_thunk` |
 | libepoxy | `packages/registry/libepoxy/build-libepoxy.sh` | autoconf | 1.5.4 via autoreconf (tarball ships no configure; xorg-macros from flake.nix): EGL dispatch only, vendored EGL/KHR platform headers + headers-only egl.pc stub; GL symbols resolve by dlopen at first call, so no GL library exists until a context is created |

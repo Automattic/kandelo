@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -50,7 +50,8 @@ test("the production AudioWorklet drains /dev/dsp after a trusted resume", async
     }
   });
 
-  await page.goto(new URL("/pages/test-runner/", baseURL).href);
+  // This probe spawns only audiotest; it never execs the runner's shell tools.
+  await page.goto(new URL("/pages/test-runner/?minimal=1", baseURL).href);
   await page.waitForFunction(() => (window as any).__testRunnerReady === true);
 
   try {

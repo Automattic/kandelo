@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../playwright-test';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { gotoMachine } from './support/kandelo-machine';
@@ -85,7 +85,7 @@ for (const density of [1, 2])
             try {
                 await gotoMachine(page, 'freeciv');
                 await expect(page.locator('.kdock-status-text')).toHaveAttribute('data-status', 'running', { timeout: 180000 });
-                const demo = page.getByLabel('Computer views').getByRole('button', { name: 'Demo', exact: true });
+                const demo = page.getByLabel('Computer views').getByRole('button', { name: 'Graphics', exact: true });
                 if (await demo.getAttribute('aria-current') !== 'true')
                     await demo.click();
                 await expect(canvas(page)).toBeVisible();

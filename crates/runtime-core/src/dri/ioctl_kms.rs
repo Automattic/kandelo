@@ -1107,13 +1107,16 @@ pub(crate) fn kms_getfb_handle(proc: &mut Process, ofd_idx: usize, fb: &crate::o
     let mut gem = dri.gem.borrow_mut();
     let handle = gem.next_handle;
     let next = handle.checked_add(1).filter(|_| handle != 0).ok_or(Errno::EMFILE)?;
+    // Reserve the name before acquiring its BO reference: an admission
+    // failure must not leave an unreachable registry retain behind.
+    let prepared = gem.handles.prepare_io(handle, fb.bo_id)?;
     crate::dri::with_registry(|r| {
         r.get(fb.bo_id).ok_or(Errno::ENOENT)?.refcount
             .checked_add(1).ok_or(Errno::EOVERFLOW)?;
         r.incref(fb.bo_id);
         Ok(())
     })?;
-    gem.handles.insert(handle, fb.bo_id);
+    gem.handles.publish_io(prepared);
     gem.next_handle = next;
     Ok(handle)
 }
@@ -1209,10 +1212,11 @@ fn kms_add_framebuffer_target(
     {
         return Err(Errno::EINVAL);
     }
+    let slot = crate::prepared_map::PreparedMapSlot::<u32, crate::ofd::KmsFb>::new_in(&crate::io_buffer::IO_MEMORY, 0)?;
     let fb_id = {
         let kms = kms_state_mut(proc, ofd_idx)?;
         let id = kms::allocate_fb_id()?;
-        kms.fbs.borrow_mut().insert(
+        let entry = slot.finish(
             id,
             crate::ofd::KmsFb {
                 bo_id,
@@ -1223,7 +1227,8 @@ fn kms_add_framebuffer_target(
                 offset: req.offsets[0],
                 flags: req.flags & DRM_MODE_FB_INTERLACED,
             },
-        );
+        )?;
+        kms.fbs.borrow_mut().publish_io(entry);
         kms::register_framebuffer(id, kms.fbs.downgrade());
         id
     };

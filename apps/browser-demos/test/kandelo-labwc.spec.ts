@@ -1,12 +1,13 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
+import { setInternalsOpen } from "./support/dock";
 import { typePhysicalText } from "./support/physical-typing";
 import { footFrame, menuChange, panelStart, type Frame, type Rect } from "./support/labwc-frame";
 
 // These real-rendering checks must never claim the user's desktop focus.
 test.use({ headless: true });
 
-async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+async function openSurface(page: Page, label: "Internals" | "Graphics" | "Terminal") {
   if (label === "Internals") await waitForMachineBootInput(page);
   // Real display clicks capture the browser pointer. Follow the shipped
   // Escape-to-release interaction before selecting controls outside the guest.
@@ -15,17 +16,15 @@ async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal")
     await expect.poll(() => page.evaluate(() => document.pointerLockElement === null))
       .toBe(true);
   }
-  const internals = page.getByRole("button", { name: "Internals", exact: true });
-  await internals.waitFor({ state: "visible", timeout: 30_000 });
-  if (((await internals.getAttribute("aria-pressed")) === "true") !== (label === "Internals")) {
-    await internals.click();
-  }
+  await page.getByRole("button", { name: "More", exact: true })
+    .waitFor({ state: "visible", timeout: 30_000 });
+  await setInternalsOpen(page, label === "Internals");
   if (label !== "Internals") {
     const view = page.getByLabel("Computer views").getByRole("button", { name: label, exact: true });
     if ((await view.getAttribute("aria-current")) !== "true") await view.click();
   }
 }
-const canvas = (page: Page) => page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
+const canvas = (page: Page) => page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas").first();
 async function chipText(page: Page) {
   return (await page.locator(".kdemo-surface-controls").filter({ hasText: "flips" }).allInnerTexts()).join(" ");
 }
@@ -43,10 +42,11 @@ async function movePointer(page: Page, frame: Frame, x: number, y: number, steps
   await page.mouse.move(box.x + x * box.width / frame.width, box.y + y * box.height / frame.height, { steps });
 }
 async function focusDemo(page: Page) {
-  await openSurface(page, "Demo");
-  // The dock button otherwise retains keyboard focus. This point is outside
-  // the canvas, so focusing the page does not change the compositor's seat.
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await openSurface(page, "Graphics");
+  // Browser focus must not click a guest window or panel and thereby
+  // replace the compositor focus this test is intended to observe.
+  await canvas(page).focus();
+  await expect(canvas(page)).toBeFocused();
 }
 async function footProcesses(page: Page, count: number, returnToDemo = true) {
   await openSurface(page, "Internals");
@@ -67,7 +67,7 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   await gotoMachine(page, "labwc");
   await openSurface(page, "Internals");
   await expect.poll(async () => (await page.locator(".ksys-line").allInnerTexts()).join("\n"), { timeout: 180_000 })
-    .toMatch(/running .*\/usr\/local\/bin\/labwc/);
+    .toMatch(/running .*\/usr\/bin\/labwc/);
   await focusDemo(page);
   await expect(canvas(page)).toBeVisible({ timeout: 30_000 });
   await expect.poll(() => chipText(page), { timeout: 120_000 }).toMatch(/webgl2-gl/i);

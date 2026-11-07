@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { build as viteBuild, loadConfigFromFile, type Plugin } from "vite";
+import { build as viteBuild, loadConfigFromFile, preview as vitePreview, type Plugin } from "vite";
 
 const appRoot = dirname(fileURLToPath(import.meta.url));
 const configFile = join(appRoot, "vite.config.ts");
@@ -166,5 +166,52 @@ test("Pages asset-group directory requires a private map", async () => {
     );
   } finally {
     process.env = savedEnvironment;
+  }
+});
+
+test("preview retains the built worker's group cache version when overriding its proxy", async () => {
+  const output = mkdtempSync(join(tmpdir(), "kandelo-preview-worker-"));
+  const source = readFileSync(join(appRoot, "public/service-worker.js"), "utf8");
+  const marker = "null /*__KANDELO_VFS_LAZY_CACHE_VERSION__*/";
+  const workerPath = join(output, "service-worker.js");
+  const firstVersion = "a".repeat(64);
+  const nextVersion = "b".repeat(64);
+  writeFileSync(join(output, "index.html"), "<!doctype html><title>Preview</title>");
+  writeFileSync(workerPath, source.replace(marker, JSON.stringify(firstVersion)));
+  try {
+    await withViteBase("/preview/", async () => {
+      const server = await vitePreview({
+        configFile, root: appRoot, logLevel: "silent",
+        build: { outDir: output },
+        preview: { host: "127.0.0.1", port: 0, strictPort: true },
+      });
+      try {
+        const address = server.httpServer.address();
+        assert.ok(address && typeof address !== "string");
+        const url = `http://127.0.0.1:${address.port}/preview/service-worker.js`;
+        const response = await fetch(url);
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get("cache-control"), "no-store");
+        const first = await response.text();
+        assert.ok(first.includes(`var LAZY_ASSET_CACHE_VERSION = "${firstVersion}";`));
+        const proxy = /var CORS_PROXY_CONFIG = ([^\n]+);/u.exec(first);
+        assert.ok(proxy);
+        assert.equal(JSON.parse(proxy[1]!).url, "/preview/__kandelo_cors_proxy?url=");
+
+        // A second build at the same URL must change the worker bytes, so a
+        // returning browser installs it and rotates only its own lazy cache.
+        writeFileSync(workerPath, source.replace(marker, JSON.stringify(nextVersion)));
+        const next = await (await fetch(url)).text();
+        assert.ok(next.includes(`var LAZY_ASSET_CACHE_VERSION = "${nextVersion}";`));
+        assert.notEqual(next, first);
+
+        writeFileSync(workerPath, source);
+        assert.ok((await (await fetch(url)).text()).includes(`var LAZY_ASSET_CACHE_VERSION = ${marker};`));
+      } finally {
+        await new Promise<void>((resolve, reject) => server.httpServer.close(error => error ? reject(error) : resolve()));
+      }
+    });
+  } finally {
+    rmSync(output, { recursive: true, force: true });
   }
 });

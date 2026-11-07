@@ -95,3 +95,171 @@ registration task shows no score difference because `CLAUDE.md` already
 carries the rule; the skill's answers were more concrete (template path,
 an existing entry to extend, the cache-key consequence of editing libc
 glue). This is a small sample, so rerun it when the skill changes.
+
+## Campaign context trial: pre-registration (2026-11-07)
+
+Status: rotation trial not run. The checkpoint helper and advisory context
+reminder are implemented; automatic worker rotation is not enabled.
+The graphics baseline in `evals/build-waiting/README.md` covers 12,114
+deduplicated assistant messages and 715.48M input-equivalent tokens.
+An independent source-transcript pass matched every usage row. Among
+37 subagents with at least 100 messages, median context by life quarter
+was 130k / 267k / 351k / 404k. Median per-agent mean turn cost by quarter
+was 24.5k / 40.0k / 62.6k / 73.5k. These are descriptive statistics,
+not evidence that replacing an agent preserves quality.
+
+**Primary candidate:** hand off at a completed phase to a fresh subagent
+using a notes file, with no inherited conversation. Keep the coordinator
+responsible for long builds and suites under the existing waiting rules.
+Do not rotate an agent merely because a turn counter expires.
+
+**Offline hypothesis:** one reset after message 100 in each qualifying
+subagent, preserving later work and cache outages, models 186–231M fewer
+input-equivalent tokens with a 100k–50k replacement context. This charges
+2x for the entire fresh context, including instructions, notes and source
+reads, and 5x for a 2k-token note. It retains new tail creation and stops
+savings at the next context reduction greater than 20%. An additional
+100k input-equivalent tokens of dispatch/setup per handoff reduces that
+to 183–228M. The checkpoint is a sensitivity calculation, not a safe
+handoff classifier. Savings overlap the existing wait-cache estimate;
+do not add them. The untested assumption is that notes preserve enough
+reasoning to continue without extra recovery work.
+
+**Trial fixed before running:**
+
+- Select six independent, reproducible phase checkpoints from future
+  campaigns before seeing either outcome: three implementation-to-focused-
+  validation transitions and three diagnosis-to-fix transitions. Eligibility
+  is at least 100 messages, at least 250k input-context tokens, and an
+  enumerated next-phase acceptance checklist. Record eligible checkpoints
+  skipped and why. Use isolated snapshots; do not run in the historical
+  graphics workspace or mutate its jobs.
+- At each checkpoint, an outgoing agent writes a note in an isolated fork
+  before arm assignment; preserve the original checkpoint for control.
+  Charge note generation only to treatment. Target 2k tokens; record
+  actual length. Include worktree,
+  commit and dirty paths, decisions/invariants and rejected approaches,
+  exact evidence paths and limits, live job ownership, unresolved failures,
+  and the next check. Control continues the original conversation;
+  treatment starts fresh with the note and reads required guidance and
+  relevant source. Verify the control really retains its prefix: the
+  current fresh-session skill runner alone cannot implement this trial.
+- Pin model, effort, tools, instructions, artifacts and acceptance checks.
+  Alternate arm order and isolate ports, logs and job ownership. Stop each
+  arm on phase completion or after 60 further assistant messages; count an
+  unfinished phase as incomplete. Apply the same limit to one preselected
+  following phase to capture recovery. Do not choose checkpoints retrospectively
+  because they happen to save tokens.
+- Before any model calls, estimate cost from the six historical continuation
+  windows plus notes, dispatch, fresh reads and a recovery allowance; record
+  that estimate and an explicit run budget. Cherry-pick `ea82add28e` before
+  using `evals/build-waiting/run.py` or the agent-skills runner. Save complete
+  streams and deduplicate assistant usage by message id, taking maximum
+  output per id and accounting for every background-wait segment.
+
+**Measure:** primary outcome is total input-equivalent tokens per accepted
+completed phase, including outgoing notes, coordinator dispatch, fresh
+startup/reads and recovery through the following phase. Use
+`input + 0.1 cache_read + 2 cache_creation + 5 output`; report dollars
+separately. Also report all six paired totals, input context per turn,
+turns, wall time, additional reads, duplicated validation and incomplete
+phases. A reviewer blind to the arm checks requirements, actual test
+evidence, invariants/rejected approaches, and unresolved failures; a
+cheaper incomplete or falsely green answer is not an accepted phase.
+
+**Keep rule:** adopt a short dispatch/handoff rule only if accepted phase
+count and every quality check are at least as good, there are no false
+greens or lost required decisions, aggregate tokens per accepted phase
+fall at least 20%, and cost falls in at least five of six pairs. Otherwise
+leave guidance unchanged. After adoption, review five real campaigns;
+any handoff-caused correctness failure, or recovery erasing the cost win
+in two campaigns, suspends the rule pending revision. Six pairs support
+a local adoption decision, not a universal quality claim.
+
+**Deferred alternatives, evaluated separately:** a soft 12k-character
+read-output bound models about 22.7M fewer tokens (3.2%) before extra
+reads, assuming four characters per token; sampled large outputs were
+relevant source/tests. It must allow deliberate expansion. Shortening
+guidance has short-task A/B support in the build-waiting README, but no
+campaign quality result. For either alternative, use the same six-pair
+quality gate, count expansion/recovery costs, change only that variable,
+and require at least 10% lower tokens per accepted phase in five of six
+pairs. Do not combine these interventions with the handoff trial.
+
+### Checkpoint/reminder implementation gate
+
+`scripts/agent-checkpoint` stores required handoff sections and records the
+worktree, HEAD, tracked diff hash and status. Its `check` command checks
+format and that recorded state, not the truth of the note or test results.
+The independent Claude Code and Codex adapters inject one advisory reminder per agent at
+250k recorded input-context tokens. It never denies a tool, ends a session,
+spawns a worker or asks the user to arrange a handoff.
+
+Before installation, run offline regression tests for correct parent/child
+attribution, latest usage after compaction, parallel one-time delivery,
+malformed/missing input, immutable notes, stale tracked state, and preserving
+other hooks during install/check/uninstall. No model calls are needed.
+
+Pre-registered operational measure: select 20 source transcripts evenly
+across the graphics manifest, compare the bounded-tail usage parser with a
+full-record reference, and invoke each hook twice with isolated cache state.
+Keep this implementation only with 20/20 correct context readings, no tool
+decisions or user messages, no repeated reminders, reminder text under 2k
+characters, and p95 process wall time below 250 ms on the measured machine.
+Record results locally; this is an operational gate, not a token-saving or
+quality claim. The graphics workspace and its jobs remain read-only.
+
+After five real reminder uses per client, inspect note creation and recovery costs
+under the handoff trial's accounting. At least four notes must be produced
+at real phase milestones and judged adequate by their coordinator. Any
+lost required decision, premature completion caused by the reminder, or
+two cases requiring the user to relay context means disable/revise it.
+Do not promote automatic rotation without the primary six-pair keep rule.
+
+Run the offline checks with:
+
+```bash
+scripts/dev-shell.sh python3 -B evals/agent-skills/test_context_checkpoint.py
+scripts/dev-shell.sh python3 -B evals/build-waiting/test_wait_guard.py
+```
+
+Operational result (2026-11-07, local macOS, repository dev shell): all 15
+checkpoint/installer regression tests and six existing wait-guard tests
+passed. The 20-transcript check matched 20/20 full-record references, with
+zero repeat reminders across 40 process invocations. Median process time
+was 46 ms, p95 72 ms, and longest reminder 1,093 characters, satisfying
+the operational gate. Raw measurements and the replay script are local in
+`.context/context-growth/checkpoint-measurement.json` and
+`measure-checkpoint.py`. Agent compliance, recovery cost and quality remain
+unmeasured; no model sessions ran and the rotation gate remains closed.
+
+Codex extension measure, fixed before running: sample 20 inactive Kandelo
+rollouts from November 1–6, stratified as ten main and ten child threads,
+evenly by sorted path within each group. Exclude files modified in the last
+hour, pin source hashes, compare the bounded parser to full-record latest
+input usage and call each adapter twice with isolated cache state. Reject
+changing source files rather than attributing a mismatch to the parser.
+Apply the same 20/20, no tool decisions/user messages/repeated reminders,
+under-2k-character reminder and 250 ms p95 operational gate. Add regressions
+for cached-input/session-total confusion, compaction, parent/child identity,
+parallel delivery, both Codex config representations and preserved trust
+records. Codex registration is distinct from its required hook trust review.
+
+The first replay stopped at a rollout without any token-count records.
+The reference comparator was corrected to accept missing usage as an
+explicit silent case, retaining the original 20 selected files. Report
+available/missing usage counts separately; absence of usage is not a zero
+context estimate or a reason to substitute a more convenient transcript.
+
+Codex extension result (2026-11-07, local macOS, repository dev shell):
+22 checkpoint/installer tests and six wait-guard tests passed. All 20
+Codex rollouts matched the full-record reference: 19 had usage, one had
+none and stayed silent. Five reminders were issued on first invocation,
+none repeated across 40 calls. Median process time was 46 ms, p95 49 ms,
+and longest reminder 1,093 characters. A fresh Claude replay still matched
+20/20, with zero repeated reminders and p95 101 ms. Both adapters meet the
+operational gate. Codex source hashes and raw measurements are local in
+`.context/context-growth/codex-checkpoint-measurement.json`; replay uses
+`measure-codex-checkpoint.py`. These are offline process/rollout checks,
+not proof of live client compliance or reduced campaign cost. No model
+sessions ran; automatic rotation remains gated by the quality trial.

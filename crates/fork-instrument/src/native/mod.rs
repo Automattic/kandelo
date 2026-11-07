@@ -7,6 +7,7 @@ use crate::{
 use std::collections::BTreeSet;
 
 mod admission;
+pub use admission::reject_instrumented_input;
 mod analysis;
 mod instrument;
 mod metadata;

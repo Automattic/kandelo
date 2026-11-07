@@ -91,5 +91,6 @@ describe("fork artifact parsing with recursive GC types", () => {
     expect(failures).toContain(
       "missing required kandelo.wpk_fork.capabilities capability",
     );
+    expect(failures.join("\n")).toContain("Rebuild user-built forking programs with the current Kandelo SDK");
   });
 });

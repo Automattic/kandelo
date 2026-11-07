@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 const kernelHostModuleUrl = "/test/lazy-download-summary-browser.ts";
 

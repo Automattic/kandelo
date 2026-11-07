@@ -2,6 +2,6 @@
 Type=Application
 Name=Paint
 Comment=Draw in a native Wayland window
-Exec=/usr/local/bin/wlpaint
+Exec=/usr/bin/wlpaint
 Terminal=false
 Categories=Graphics;

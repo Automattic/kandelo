@@ -1,6 +1,6 @@
 /*
  * programs/sdl2/main.c — entry point for the SDL2 GLSL playground
- * (`sdl2.wasm`, installed at /usr/local/bin/sdl2). Keystrokes typed
+ * (`sdl2.wasm`, installed at /usr/bin/sdl2). Keystrokes typed
  * into the left pane edit a gap buffer (`editor.c`), 250 ms of
  * keystroke-idle triggers a recompile of the user shader, and Ctrl+S
  * writes the editor's contents to `/home/shaders/image/current.frag`

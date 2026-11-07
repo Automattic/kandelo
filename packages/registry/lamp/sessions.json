@@ -7,7 +7,7 @@
     {
       "id": "service",
       "title": "WordPress with MariaDB",
-      "description": "Invite people to browse this image\u2019s running website. Files, posts, forms and other changes stay on the hosting computer.",
+      "description": "Invite people to browse this image’s running website. Files, posts, forms and other changes stay on the hosting computer.",
       "join": "client",
       "attachExisting": true,
       "requiresHost": true,
@@ -15,21 +15,23 @@
         "/etc/kandelo/demo.json",
         "/usr/sbin/nginx"
       ],
-      "fields": []
+      "fields": [],
+      "category": "services"
     },
     {
       "id": "database",
       "title": "WordPress MySQL connection",
       "description": "Connect to the WordPress database with an interactive MariaDB SQL client.",
-      "warning": "Invited people can edit the host\u2019s WordPress database. This demo has no database password.",
+      "warning": "Invited people can edit the host’s WordPress database. This demo has no database password.",
       "join": "database",
       "attachExisting": true,
       "requiresHost": true,
       "hostRequires": [
         "/usr/sbin/mariadbd",
-        "/var/www/html/wp-config.php"
+        "/srv/www/html/wp-config.php"
       ],
-      "fields": []
+      "fields": [],
+      "category": "services"
     }
   ],
   "joins": [

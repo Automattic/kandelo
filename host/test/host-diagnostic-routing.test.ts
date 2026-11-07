@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import { formatHostErrorDiagnostic } from "../src/host-diagnostic";
 import {
   initializeBrowserCorsProxyForWorker,
 } from "../src/browser-kernel-protocol";
@@ -22,6 +23,36 @@ const processWorkerSource = readFileSync(
   join(repoRoot, "host/src/worker-main.ts"),
   "utf8",
 );
+
+describe("bounded host failure causes", () => {
+  it("preserves the underlying allocation refusal before its stack", () => {
+    const cause = new RangeError("Out of memory");
+    const detail = formatHostErrorDiagnostic(new Error("kernel export failed", { cause }));
+    expect(detail).toContain("kernel export failed\nCaused by: Out of memory");
+    expect(detail).toContain("RangeError: Out of memory");
+  });
+
+  it("bounds deep or cyclic cause graphs", () => {
+    const failure = new Error("x".repeat(10000));
+    failure.cause = failure;
+    expect(formatHostErrorDiagnostic(failure).length).toBeLessThanOrEqual(6144);
+    expect(formatHostErrorDiagnostic(new Error("outer", { cause: undefined }))).toContain("Caused by: undefined");
+  });
+
+  it("does not invoke a cause accessor", () => {
+    const failure = new Error("original failure");
+    const getter = vi.fn(() => { throw new Error("must not run"); });
+    Object.defineProperty(failure, "cause", { get: getter });
+    expect(formatHostErrorDiagnostic(failure)).toContain("original failure");
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it("does not let an unreadable error prevent terminal containment", () => {
+    const failure = new Error();
+    Object.defineProperty(failure, "message", { get() { throw new Error("unreadable"); } });
+    expect(formatHostErrorDiagnostic(failure)).toBe("host failure could not be formatted");
+  });
+});
 
 describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
   const source = readFileSync(path, "utf8");

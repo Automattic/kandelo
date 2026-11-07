@@ -80,7 +80,7 @@ describe.skipIf(!jqBinary || !bashBinary)("jq lazy shell execution", () => {
     fs.setImageCapacity(16 * 1024 * 1024);
     ensureDirRecursive(fs, "/usr/bin");
     ensureDirRecursive(fs, "/bin");
-    writeVfsBinary(fs, "/usr/bin/bash", new Uint8Array(readFileSync(bashBinary!)));
+    writeVfsBinary(fs, "/bin/bash", new Uint8Array(readFileSync(bashBinary!)));
     const spec = SHELL_LAZY_BINARY_SPECS.find(({ id }) => id === "jq")!;
     const bytes = new Uint8Array(readFileSync(jqBinary!));
     const url = "https://kandelo.invalid/jq.wasm";
@@ -106,7 +106,7 @@ describe.skipIf(!jqBinary || !bashBinary)("jq lazy shell execution", () => {
       const kernelBytes = readFileSync(tryResolveBinary("kernel.wasm")!);
       await host.init(new Uint8Array(kernelBytes).buffer);
       expect(downloads).toEqual([]);
-      const { exit } = await host.spawnFromVfs("/usr/bin/bash", [
+      const { exit } = await host.spawnFromVfs("/bin/bash", [
         "bash", "-c",
         `printf '%s\\n' '{"answer":42}' | jq -e '.answer' && /bin/jq --version`,
       ], { env: ["PATH=/usr/bin:/bin"] });

@@ -91,14 +91,14 @@ wasm = "kclipd.wasm"
 # stays a consumer with no per-demo staging ladder.
 [[runtime_files]]
 artifact = "wldesktop"
-guest_path = "/usr/local/bin/wldesktop"
+guest_path = "/usr/bin/wldesktop"
 mode = 0o755
 
 # The Hyprland-class tiling desktop. Not installed by the shell image (its
 # machine is off by default); an image that wants it installs both.
 [[runtime_files]]
 artifact = "hyprdesktop"
-guest_path = "/usr/local/bin/hyprdesktop"
+guest_path = "/usr/bin/hyprdesktop"
 mode = 0o755
 
 [[runtime_files]]
@@ -107,7 +107,7 @@ guest_path = "/usr/share/kandelo/hyprland/wlcompositor.conf"
 
 [[runtime_files]]
 artifact = "omarchydesktop"
-guest_path = "/usr/local/bin/omarchydesktop"
+guest_path = "/usr/bin/omarchydesktop"
 mode = 0o755
 
 [[runtime_files]]

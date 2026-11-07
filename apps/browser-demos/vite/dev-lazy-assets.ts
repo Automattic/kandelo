@@ -179,7 +179,7 @@ export interface BatchedResolverFilesOptions {
   /** Every package-mirror path the projection publishes. */
   listMembers(projectionPath: string): string[];
   /** Resolve many paths at once, inside one program-index freshness check. */
-  resolveBatch(relPaths: readonly string[]): Array<string | null>;
+  resolveBatch(relPaths: readonly string[]): Array<string | null | Error>;
   /** Resolve one path the projection does not list (a fetched mirror). */
   resolveOne(relPath: string): string | null;
   /** Check one exact file against the package-cache guard; returns its
@@ -204,7 +204,7 @@ export function batchedResolverFiles(
   options: BatchedResolverFilesOptions,
 ): DevLazyAssetOptions["serve"] {
   let batchIdentity: string | null = null;
-  let resolved = new Map<string, string | null>();
+  let resolved = new Map<string, string | null | Error>();
   return (relPath) => {
     const identity = options.identity(options.projectionPath);
     if (identity !== batchIdentity) {
@@ -218,6 +218,7 @@ export function batchedResolverFiles(
     }
     if (!resolved.has(relPath)) resolved.set(relPath, options.resolveOne(relPath));
     const file = resolved.get(relPath)!;
+    if (file instanceof Error) throw file;
     if (file === null) return null;
     return { kind: "file", file: options.approve(file) };
   };

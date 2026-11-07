@@ -8,7 +8,7 @@ import {
   createKernelEntryGatedInstance,
   KernelEntryGate,
 } from "../src/kernel-entry-gate";
-import { allocateKernelScratchRegion } from "../src/kernel-scratch";
+import { allocateKernelScratchRegion, KernelScratchError } from "../src/kernel-scratch";
 import {
   createWasmPosixKernelTestHarness,
   WasmPosixKernel,
@@ -290,6 +290,7 @@ function makeScratchHarness(
     },
   );
   kernelExports = {
+    kernel_rootfs_export_container_cancel: vi.fn(),
     kernel_handle_channel: handleChannel,
     kernel_blocking_retry_token: blockingRetryToken,
     kernel_blocking_retry_release: blockingRetryRelease,
@@ -971,7 +972,348 @@ describe("complete kernel-owned path transfers", () => {
   );
 });
 
+describe("trusted host executable target preparation", () => {
+  it("commits an unregistered initial image once and captures its secure state", () => {
+    const harness = makeScratchHarness();
+    const consumed = vi.fn();
+    const commit = vi.fn(() => { expect(consumed).toHaveBeenCalledOnce(); return 0; });
+    const cancel = vi.fn(() => 0);
+    harness.kernelExports.kernel_exec_target_size = () => 123n;
+    harness.kernelExports.kernel_initial_exec_commit = commit;
+    harness.kernelExports.kernel_exec_target_cancel = cancel;
+    harness.kernelExports.kernel_process_secure_exec = () => 1;
+    expect(harness.worker.kernelInitialExecCommit(100, 71, 123, consumed)).toBe(0);
+    expect(commit).toHaveBeenCalledExactlyOnceWith(100, 71);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(harness.worker.takeCommittedExecSecureExec(100)).toBe(true);
+    expect(() => harness.worker.takeCommittedExecSecureExec(100)).toThrow(/no committed/);
+  });
+
+  it("cancels rather than committing a registered image or changed initial size", () => {
+    for (const pid of [41, 100]) {
+      const harness = makeScratchHarness();
+      const consumed = vi.fn();
+      const commit = vi.fn(() => 0);
+      const cancel = vi.fn(() => 0);
+      harness.kernelExports.kernel_exec_target_size = () => pid === 41 ? 123n : 124n;
+      harness.kernelExports.kernel_initial_exec_commit = commit;
+      harness.kernelExports.kernel_exec_target_cancel = cancel;
+      expect(harness.worker.kernelInitialExecCommit(pid, 71, 123, consumed)).toBe(pid === 41 ? -EINVAL : -EIO);
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(pid, 71);
+      expect(consumed).toHaveBeenCalledOnce();
+      expect(commit).not.toHaveBeenCalled();
+      expect(() => harness.worker.takeCommittedExecSecureExec(pid)).toThrow(/no committed/);
+    }
+  });
+
+  it("leaves the initial token unconsumed when the entry gate is busy", () => {
+    const harness = makeScratchHarness();
+    const consumed = vi.fn();
+    const commit = vi.fn(() => 0);
+    harness.kernelExports.kernel_initial_exec_commit = commit;
+    harness.kernelExports.kernel_exec_target_size = () => {
+      expect(() => harness.worker.kernelInitialExecCommit(100, 71, 123, consumed))
+        .toThrow(/cannot run while kernel_exec_target_size is active/);
+      return 123n;
+    };
+    expect(harness.worker.execTargetSize(100, 71)).toBe(123n);
+    expect(consumed).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it("reclaims only an image whose scratch preflight failed before the ownership handoff", () => {
+    const harness = makeScratchHarness(4, ["kernel_spawn_exec_target_prepare_handle"]);
+    const discard = vi.spyOn(WasmPosixKernel.prototype, "discardUnclaimedProgramImage");
+    try {
+      expect(() => harness.worker.spawnHostExecTargetPrepare(1, 100, {
+        bytes: Uint8Array.of(0, 97, 115, 109), name: "current-preparer",
+      })).toThrow();
+      expect(discard).toHaveBeenCalledOnce();
+      expect(typeof discard.mock.calls[0][0]).toBe("bigint");
+    } finally { discard.mockRestore(); }
+  });
+
+  it("never closes a possibly consumed image after Rust entry throws", () => {
+    const harness = makeScratchHarness();
+    harness.kernelExports.kernel_spawn_exec_target_prepare_handle = () => {
+      throw new KernelScratchError("failure after consuming the handle");
+    };
+    const discard = vi.spyOn(WasmPosixKernel.prototype, "discardUnclaimedProgramImage");
+    try {
+      expect(() => harness.worker.spawnHostExecTargetPrepare(1, 100, {
+        bytes: Uint8Array.of(0, 97, 115, 109), name: "current-preparer",
+      })).toThrow();
+      expect(discard).not.toHaveBeenCalled();
+    } finally { discard.mockRestore(); }
+  });
+
+  it.each([4, 8] as const)("sends the copied program handle and diagnostic name through a %i-byte scratch lease", (width) => {
+    const harness = makeScratchHarness(width);
+    const prepare = vi.fn((_parent: number, _child: number, handle: bigint, pointer: number | bigint, length: number) => {
+      expect(typeof handle).toBe("bigint");
+      expect(handle).toBeGreaterThan(0n);
+      expect(new TextDecoder().decode(harness.kernelBytes.subarray(Number(pointer), Number(pointer) + length)))
+        .toBe("current-preparer");
+      return 71;
+    });
+    harness.kernelExports.kernel_spawn_exec_target_prepare_handle = prepare;
+    expect(harness.worker.spawnHostExecTargetPrepare(1, 100, { bytes: Uint8Array.of(0, 97, 115, 109), name: "current-preparer" })).toBe(71);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare.mock.calls[0].slice(0, 2)).toEqual([1, 100]);
+    expect(harness.worker.currentHandlePid).toBe(0);
+    expectScratchTailUntouched(harness);
+  });
+
+  it("refuses shared source storage before constructing a retained program handle", () => {
+    const harness = makeScratchHarness();
+    const prepare = vi.fn();
+    harness.kernelExports.kernel_spawn_exec_target_prepare_handle = prepare;
+    expect(harness.worker.spawnHostExecTargetPrepare(1, 100, { bytes: new Uint8Array(new SharedArrayBuffer(8)), name: "current-preparer" })).toBe(-EINVAL);
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke target preparation when the kernel entry gate is busy", () => {
+    const harness = makeScratchHarness();
+    const prepare = vi.fn();
+    harness.kernelExports.kernel_spawn_exec_target_prepare_handle = prepare;
+    harness.kernelExports.kernel_exec_target_size = () => {
+      expect(() => harness.worker.spawnHostExecTargetPrepare(1, 100, {
+        bytes: Uint8Array.of(0, 97, 115, 109), name: "current-preparer",
+      })).toThrow(/cannot run while kernel_exec_target_size is active/);
+      return 0n;
+    };
+    expect(harness.worker.execTargetSize(100, 1)).toBe(0n);
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("normalizes a genuine typed-array span without consulting subclass getters or iterators", () => {
+    const harness = makeScratchHarness();
+    const prepare = vi.fn(() => 71);
+    harness.kernelExports.kernel_spawn_exec_target_prepare_handle = prepare;
+    class HostileBytes extends Uint8Array {}
+    const bytes = new HostileBytes([0, 97, 115, 109]);
+    Object.defineProperties(bytes, {
+      buffer: { get: () => new SharedArrayBuffer(8) },
+      byteLength: { get: () => Number.MAX_SAFE_INTEGER },
+      [Symbol.iterator]: { value: () => { throw new Error("unexpected iterator"); } },
+    });
+    expect(harness.worker.spawnHostExecTargetPrepare(1, 100, { bytes, name: "current-preparer" })).toBe(71);
+    expect(prepare).toHaveBeenCalledOnce();
+  });
+});
+
+describe("filesystem inspection admission", () => {
+  function inspectionHarness(width: 4 | 8, variant: "directory" | "resources") {
+    const harness = makeScratchHarness(width);
+    const budget = harness.worker.rootfsTransportMetadataBudget();
+    const baseline = budget.used;
+    const multiplier = variant === "directory" ? 4 : 2;
+    const held = budget.reserve(budget.limit - baseline - 16 * multiplier - 8);
+    const offsets: number[] = [];
+    let retained = false;
+    let builds = 0;
+    let small = false;
+    let cleanup: "ok" | "errno" | "data" | "trap" = "ok";
+    let nativeTrap = false;
+    const produce = (start: number, pointer: number | bigint, capacity: number) => {
+      const offset = start >>> 0;
+      offsets.push(offset);
+      expect(capacity).toBeGreaterThan(0);
+      if (offset === 0xffff_ffff) {
+        if (cleanup === "errno") return -EIO;
+        if (cleanup === "data") return 1;
+        if (cleanup === "trap") throw new Error("inspection cleanup trapped");
+        retained = false;
+        return 0;
+      }
+      if (offset === 0) {
+        builds++;
+        retained = true;
+      }
+      if (nativeTrap) throw new Error("inspection read trapped");
+      if (small || offset >= 32) {
+        retained = false;
+        return 0;
+      }
+      new Uint8Array(harness.kernelMemory.buffer, Number(pointer), 16).fill(0);
+      return 16;
+    };
+    harness.kernelExports.kernel_rootfs_inspect_directory = (_path: number | bigint, _length: number,
+      offset: number, pointer: number | bigint, capacity: number) => produce(offset, pointer, capacity);
+    harness.kernelExports.kernel_rootfs_lazy_resource_limits = produce;
+    return { harness, budget, baseline, held, offsets, get retained() { return retained; }, get builds() { return builds; },
+      read: () => {
+        if (variant === "directory") return harness.worker.rootfsReadDirectory("/state");
+        const resources = harness.worker.rootfsLazyResourceLimits();
+        try { return [...resources]; } finally { resources.dispose(); }
+      },
+      retry: () => { small = true; },
+      failCleanup: (value: typeof cleanup) => { cleanup = value; },
+      trapRead: () => { nativeTrap = true; } };
+  }
+
+  for (const width of [4, 8] as const) {
+    for (const variant of ["directory", "resources"] as const) {
+      it(`reclaims a refused ${variant} snapshot and retries without a fatal latch at width ${width}`, () => {
+        const fixture = inspectionHarness(width, variant);
+        const before = fixture.budget.used;
+        try {
+          expect(fixture.read).toThrow(expect.objectContaining({ code: "ENOMEM", errno: ENOMEM }));
+          expect(fixture.offsets).toEqual([0, 16, 0xffff_ffff]);
+          expect(fixture.retained).toBe(false);
+          expect(fixture.builds).toBe(1);
+          expect(fixture.budget.used).toBe(before);
+        } finally { fixture.held.release(); }
+        expect(fixture.budget.used).toBe(fixture.baseline);
+        fixture.retry();
+        expect(fixture.read()).toEqual([]);
+        expect(fixture.builds).toBe(2);
+        expect(fixture.budget.used).toBe(fixture.baseline);
+        expectScratchTailUntouched(fixture.harness);
+      });
+
+      for (const outcome of ["errno", "data", "trap"] as const) {
+        it(`keeps failed ${variant} cleanup ${outcome} fatal at width ${width}`, () => {
+          const fixture = inspectionHarness(width, variant);
+          fixture.failCleanup(outcome);
+          try {
+            expect(fixture.read).toThrow();
+            expect(fixture.offsets).toEqual([0, 16, 0xffff_ffff]);
+            expect(fixture.retained).toBe(true);
+          } finally { fixture.held.release(); }
+          expect(fixture.budget.used).toBe(fixture.baseline);
+          fixture.retry();
+          expect(fixture.read).toThrow();
+          expect(fixture.offsets).toEqual([0, 16, 0xffff_ffff]);
+        });
+      }
+
+      it(`does not reinterpret an unexpected ${variant} admission exception at width ${width}`, () => {
+        const fixture = inspectionHarness(width, variant);
+        const reserve = fixture.budget.reserve.bind(fixture.budget);
+        const spy = vi.spyOn(fixture.budget, "reserve").mockImplementationOnce(bytes => {
+          const reservation = reserve(bytes);
+          return { get size() { return reservation.size; }, release: () => reservation.release(),
+            resize: () => { throw new Error("unexpected reservation failure"); } };
+        });
+        try {
+          expect(fixture.read).toThrow();
+          expect(fixture.offsets).toEqual([0]);
+        } finally { spy.mockRestore(); fixture.held.release(); }
+        expect(fixture.budget.used).toBe(fixture.baseline);
+        fixture.retry();
+        expect(fixture.read).toThrow();
+        expect(fixture.offsets).toEqual([0]);
+      });
+
+      it(`does not reenter a trapped ${variant} inspection at width ${width}`, () => {
+        const fixture = inspectionHarness(width, variant);
+        fixture.trapRead();
+        try {
+          expect(fixture.read).toThrow();
+          expect(fixture.offsets).toEqual([0]);
+        } finally { fixture.held.release(); }
+        fixture.retry();
+        expect(fixture.read).toThrow();
+        expect(fixture.offsets).toEqual([0]);
+      });
+    }
+  }
+});
+
 describe("kernel scratch transfer capacity regressions", () => {
+  it("requires export cancellation before starting a plan and never reenters a failed native export", () => {
+    const missing = makeScratchHarness(4, ["kernel_rootfs_export_container_cancel"]);
+    const firstRead = vi.fn(() => 0);
+    missing.kernelExports.kernel_rootfs_export_container_read = firstRead;
+    expect(() => missing.worker.rootfsExportContainerVisit(() => {})).toThrow(/errno 38/);
+    expect(firstRead).not.toHaveBeenCalled();
+    const fatal = makeScratchHarness();
+    fatal.kernelExports.kernel_rootfs_export_container_read = () => { throw new Error("native export trapped"); };
+    expect(() => fatal.worker.rootfsExportContainerVisit(() => {})).toThrow();
+    expect(fatal.kernelExports.kernel_rootfs_export_container_cancel).not.toHaveBeenCalled();
+  });
+
+  it.each([4, 8] as const)("keeps owned export chunks independent and borrowed export payload backing constant for width %s", width => {
+    const harness = makeScratchHarness(width);
+    const read = vi.fn((offset: number, _high: number, pointer: number | bigint) => {
+      const count = offset === 0 ? 3 : offset === 3 ? 5 : offset === 8 ? 2 : 0;
+      new Uint8Array(harness.kernelMemory.buffer, Number(pointer), count).fill(offset + 1);
+      return count;
+    });
+    harness.kernelExports.kernel_rootfs_export_container_read = read;
+    const retained: Uint8Array[] = [];
+    expect(harness.worker.rootfsExportContainerVisit((_offset, bytes) => { retained.push(bytes); })).toBe(10);
+    expect(retained.map(bytes => [...bytes])).toEqual([Array(3).fill(1), Array(5).fill(4), Array(2).fill(9)]);
+    expect(new Set(retained.map(bytes => bytes.buffer)).size).toBe(3);
+    const buffers = new Set<ArrayBufferLike>();
+    const copied: number[][] = [];
+    expect(harness.worker.rootfsExportContainerVisitBorrowed((_offset, bytes) => {
+      expect(bytes.buffer).not.toBe(harness.kernelMemory.buffer);
+      buffers.add(bytes.buffer);
+      copied.push([...bytes]);
+    })).toBe(10);
+    expect(buffers.size).toBe(1);
+    expect(copied).toEqual([Array(3).fill(1), Array(5).fill(4), Array(2).fill(9)]);
+    expect([...harness.worker.rootfsExportContainerRead()]).toEqual([...Array(3).fill(1), ...Array(5).fill(4), ...Array(2).fill(9)]);
+    expect(harness.kernelExports.kernel_rootfs_export_container_cancel).not.toHaveBeenCalled();
+  });
+
+  it.each([4, 8] as const)("rejects asynchronous borrowed sinks and permits retry after synchronous sink failure for width %s", width => {
+    const harness = makeScratchHarness(width);
+    harness.kernelExports.kernel_rootfs_export_container_read = (offset: number, _high: number, pointer: number | bigint) => {
+      if (offset !== 0) return 0;
+      new Uint8Array(harness.kernelMemory.buffer, Number(pointer), 4).fill(0x39);
+      return 4;
+    };
+    expect(() => harness.worker.rootfsExportContainerVisitBorrowed(() => Promise.resolve())).toThrow(/synchronously/);
+    const failure = new Error("file sink failed");
+    try {
+      harness.worker.rootfsExportContainerVisitBorrowed(() => { throw failure; });
+      expect.unreachable("sink failure must propagate");
+    } catch (error) { expect(error).toBe(failure); }
+    expect(harness.worker.rootfsExportContainerVisitBorrowed(() => {})).toBe(4);
+    expect(harness.kernelExports.kernel_rootfs_export_container_cancel).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([4, 8] as const)("contains a detached borrowed sink without poisoning the kernel and advances transferred owned chunks for width %s", width => {
+    const harness = makeScratchHarness(width);
+    const read = vi.fn((offset: number, _high: number, pointer: number | bigint) => {
+      if (offset >= 8) return 0;
+      new Uint8Array(harness.kernelMemory.buffer, Number(pointer), 4).fill(offset + 1);
+      return 4;
+    });
+    harness.kernelExports.kernel_rootfs_export_container_read = read;
+    const detach = (_offset: number, bytes: Uint8Array) => {
+      const backing = bytes.buffer as ArrayBuffer;
+      structuredClone(backing, { transfer: [backing] });
+    };
+    expect(() => harness.worker.rootfsExportContainerVisitBorrowed(detach)).toThrow(/detached/);
+    expect(read).toHaveBeenCalledOnce();
+    expect(harness.worker.rootfsExportContainerVisitBorrowed(() => {})).toBe(8);
+    const owned = vi.fn(detach);
+    expect(harness.worker.rootfsExportContainerVisit(owned)).toBe(8);
+    expect(owned).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([4, 8] as const)("preserves rootfs export errno in transported messages for pointer width %s", (width) => {
+    for (const errno of [ENOMEM, EIO, 28]) {
+      const harness = makeScratchHarness(width);
+      const read = vi.fn(() => -errno);
+      harness.kernelExports.kernel_rootfs_export_container_read = read;
+      const sink = vi.fn();
+      let failure: unknown;
+      try {
+        harness.worker.rootfsExportContainerVisit(sink);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ errno, message: `rootfs export image failed at byte 0 (errno ${errno})` });
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(sink).not.toHaveBeenCalled();
+      expect(harness.kernelExports.kernel_rootfs_export_container_cancel).toHaveBeenCalledOnce();
+    }
+  });
   it("binds allocator authority to the same shared kernel memory", () => {
     const kernelMemory = sharedMemory(2);
     const instance = createKernelScratchTestInstance(
@@ -1370,6 +1712,37 @@ describe("kernel scratch transfer capacity regressions", () => {
     expect(
       harness.kernelBytes.slice(harness.scratchOffset, harness.scratchEnd),
     ).toEqual(scratchBefore);
+    expectScratchTailUntouched(harness);
+  });
+
+  it("rolls back an unpublished mmap when process memory cannot grow and returns ENOMEM", () => {
+    const harness = makeScratchHarness(4);
+    prepareGenericSyscallHarness(harness, 4);
+    const address = harness.processBytes.byteLength;
+    const original = harness.processBytes.slice(0, 32);
+    const calls: number[] = [];
+    harness.handleChannel.mockImplementation((pointer: number | bigint) => {
+      const channel = new DataView(harness.kernelMemory.buffer, Number(pointer));
+      const syscall = channel.getUint32(CH_SYSCALL, true);
+      calls.push(syscall);
+      if (syscall === ABI_SYSCALLS.Mmap) {
+        channel.setBigInt64(CH_RETURN, BigInt(address), true);
+      } else {
+        expect(syscall).toBe(ABI_SYSCALLS.Munmap);
+        expect(channel.getBigInt64(CH_ARGS, true)).toBe(BigInt(address));
+        expect(channel.getBigInt64(CH_ARGS + CH_ARG_SIZE, true)).toBe(65536n);
+        channel.setBigInt64(CH_RETURN, 0n, true);
+      }
+      channel.setUint32(CH_ERRNO, 0, true);
+      return 0;
+    });
+    writeChannelSyscall(harness, ABI_SYSCALLS.Mmap, [0n, 65536n, 3n, 0x22n, -1n, 0n]);
+    dispatchScratchBoundarySyscall(harness);
+    expect(calls).toEqual([ABI_SYSCALLS.Mmap, ABI_SYSCALLS.Munmap]);
+    expect(harness.completeChannel).toHaveBeenCalledTimes(1);
+    expect(harness.completeChannel.mock.calls[0].slice(4, 6)).toEqual([-1, ENOMEM]);
+    expect(harness.channel.memory.buffer.byteLength).toBe(address);
+    expect(harness.processBytes.slice(0, 32)).toEqual(original);
     expectScratchTailUntouched(harness);
   });
 
