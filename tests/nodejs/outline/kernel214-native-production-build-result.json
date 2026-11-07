@@ -1,0 +1,100 @@
+{
+  "at": "2026-11-07T13:07:42.601341+00:00",
+  "sourceCommit": "e115c00ad3e9790a79e07879b33f187bbbcb18aa",
+  "sourceRevision": 214,
+  "originMain": "afeedd583ca5b9169e32a2d316e49d589c0476c4",
+  "command": [
+    "scripts/dev-shell.sh",
+    "./run.sh",
+    "cache-gc",
+    "--apply"
+  ],
+  "nativeBuildCommand": [
+    "cargo",
+    "build",
+    "--release",
+    "-p",
+    "xtask",
+    "--target",
+    "aarch64-apple-darwin",
+    "--quiet"
+  ],
+  "launcher": "run.sh:pkg_xtask_bin",
+  "nativeProductionCompilationSucceeded": true,
+  "nativeLauncherLinkSucceeded": true,
+  "nativeCargoBuildInvocations": 1,
+  "runtimeCoreArtifactIdentity": {
+    "path": "target/aarch64-apple-darwin/release/deps/libruntime_core-0334e8978de1496f.rlib",
+    "sha256": "902d183c36a6515a4566093cdbe4f31b16763943d1d159eff615cdd61d053c61",
+    "bytes": 28761008,
+    "mtimeUTC": "2026-11-07T13:02:44.020723+00:00",
+    "preservedCopy": ".context/node26-native-kernel214-maintenance/artifacts/target/aarch64-apple-darwin/release/deps/libruntime_core-0334e8978de1496f.rlib"
+  },
+  "artifacts": [
+    {
+      "path": "target/aarch64-apple-darwin/release/xtask",
+      "sha256": "2e959e056b6a06daac08676bf085deff343dc8a261eca2b9d7f700ffe09244bc",
+      "bytes": 8219056,
+      "mtimeUTC": "2026-11-07T13:03:28.192061+00:00",
+      "preservedCopy": ".context/node26-native-kernel214-maintenance/artifacts/target/aarch64-apple-darwin/release/xtask"
+    },
+    {
+      "path": "target/aarch64-apple-darwin/release/deps/libruntime_core-0334e8978de1496f.rlib",
+      "sha256": "902d183c36a6515a4566093cdbe4f31b16763943d1d159eff615cdd61d053c61",
+      "bytes": 28761008,
+      "mtimeUTC": "2026-11-07T13:02:44.020723+00:00",
+      "preservedCopy": ".context/node26-native-kernel214-maintenance/artifacts/target/aarch64-apple-darwin/release/deps/libruntime_core-0334e8978de1496f.rlib"
+    },
+    {
+      "path": "target/aarch64-apple-darwin/release/deps/libruntime_core-0334e8978de1496f.rmeta",
+      "sha256": "487c720d6f5e79ddfd0dfad8937b5e5a442a39a66ef8d653069b03d5d13a8f53",
+      "bytes": 8215177,
+      "mtimeUTC": "2026-11-07T13:02:42.103922+00:00",
+      "preservedCopy": ".context/node26-native-kernel214-maintenance/artifacts/target/aarch64-apple-darwin/release/deps/libruntime_core-0334e8978de1496f.rmeta"
+    },
+    {
+      "path": "target/aarch64-apple-darwin/release/deps/runtime_core-0334e8978de1496f.d",
+      "sha256": "8cb4051f24182203c77ccf1068b5264354594628f7f1d23ac23047e7cc9b9592",
+      "bytes": 18103,
+      "mtimeUTC": "2026-11-07T13:02:38.648326+00:00",
+      "preservedCopy": ".context/node26-native-kernel214-maintenance/artifacts/target/aarch64-apple-darwin/release/deps/runtime_core-0334e8978de1496f.d"
+    },
+    {
+      "path": "target/aarch64-apple-darwin/release/.fingerprint/runtime-core-0334e8978de1496f/invoked.timestamp",
+      "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+      "bytes": 48,
+      "mtimeUTC": "2026-11-07T13:02:38.207274+00:00",
+      "preservedCopy": ".context/node26-native-kernel214-maintenance/artifacts/target/aarch64-apple-darwin/release/.fingerprint/runtime-core-0334e8978de1496f/invoked.timestamp"
+    },
+    {
+      "path": "target/aarch64-apple-darwin/release/.fingerprint/runtime-core-0334e8978de1496f/lib-runtime_core.json",
+      "sha256": "670e4caf6a1ccb710060319475ee10125e562dedee2361b60bf607f186f28d00",
+      "bytes": 776,
+      "mtimeUTC": "2026-11-07T13:02:44.042015+00:00",
+      "preservedCopy": ".context/node26-native-kernel214-maintenance/artifacts/target/aarch64-apple-darwin/release/.fingerprint/runtime-core-0334e8978de1496f/lib-runtime_core.json"
+    }
+  ],
+  "matchedCurrentNativeInputs": 703,
+  "nativeSourceManifest": {
+    "path": ".context/fsnotify-composition213/handoff/prior-native-source-inputs.json",
+    "sha256": "e64c00bdf4c6497d14157b8affee7e09847b0e8a11e79bded2447d9d772b7d22"
+  },
+  "log": {
+    "path": ".context/node26-cache-gc215.log",
+    "sha256": "792059500368ef153d46f5e17b432964e02242a04919dba595ff3f6be6766a31"
+  },
+  "sharedCacheRemovedBytes": 0,
+  "sharedCacheSkippedForLiveBuild": true,
+  "guestKernelCompiled": false,
+  "guestEngineCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "overallSuites": 0,
+  "productRebuilds": 0,
+  "limitations": [
+    "Exact underlying rustc command was not recorded by quiet Cargo; top-level Cargo command, fresh crate fingerprint/depfile and artifacts are preserved",
+    "Native Darwin release crate checks production cfg only; this is not Wasm compilation or executed kernel validation",
+    "Existing125 native cases keep their separate exact source/artifact identity; no new runtime tests were run",
+    "Shared GC skipped live cache use; independent root incremental cleanup logical bytes are not attributed physical free-space delta"
+  ]
+}

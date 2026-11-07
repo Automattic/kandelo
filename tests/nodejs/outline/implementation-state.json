@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T12:58:15.873311+00:00",
+  "updatedAt": "2026-11-07T13:07:42.601341+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -46,7 +46,7 @@
   "deployAuthorized": false,
   "overallSuitesRun": 0,
   "productRebuildsRun": 0,
-  "packageOrEngineCompilationsRun": 264,
+  "packageOrEngineCompilationsRun": 265,
   "families": {
     "values": {
       "breadthState": "started",
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "a2fa59b6e9a2bf0650b54fef67be18a4ae2f77e313ed3f895e2143a0066abf6b",
+    "tests/nodejs/outline/status-by-family.md": "f26d5f551267f1ef55a8dfcb97120eb558f121d59b8454a462133dc54278a104",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -2390,7 +2390,8 @@
     "crates/runtime-core/src/descriptor_backing.rs": "d7737a65163856367fbab9312bbc65f7c9801d41c018f7d6b8e862f0ccd43961",
     "crates/runtime-core/src/ofd.rs": "d184cb1586bb045b5175f01f4fbfd47c218dea430b036d57775b3360ad694edd",
     "crates/runtime-core/src/lib.rs": "7be5bb77f0fe28c691d25af8be316289ff1303f7fae13a7bf013825d3a48173d",
-    "docs/fsnotify-descriptor-prerequisite.md": "96a7e0d2c80e3b72a8be0f2fc79e461705e10b2b77906d62388f31c8b7a9bf7d"
+    "docs/fsnotify-descriptor-prerequisite.md": "96a7e0d2c80e3b72a8be0f2fc79e461705e10b2b77906d62388f31c8b7a9bf7d",
+    "tests/nodejs/outline/kernel214-native-production-build-result.json": "81449d2a95058b1333c2d703c50b36eaccd8316210cb8ae02bc40d6c6ff2413b"
   },
   "changes": [
     {
@@ -8308,7 +8309,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real dormant queue/managed descriptor/shared opened-dentry event producers and hardlink replacement correction in dependency order, admitting exact125-case native artifact after703 root identities and preserving public/guest gaps."
+    "reason": "Three implemented owning-layer source slices committed/pushed; canonical qualified audit links, exact native evidence and preparation incident correction/REPL dependency plan recorded without API/family closure."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -47605,11 +47606,11 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/finding-overlay214-20261107T125816Z.tar.gz",
-    "sha256": "93a2b66ec6d589ecb9def2730e5d64ae4e2e79e84443d2b5e7720696cb3448a9",
-    "bytes": 11702512,
-    "scope": "Current214 qualified terminal/tracing/dormant notification source links, explicit preparation incident correction and next REPL/build plans. Metadata only, no new runtime/compiler or closure.",
-    "stateFileNote": "Archived state precedes snapshot reference injection"
+    "path": ".context/node26-implementation-snapshots/native-kernel214-maintenance-20261107T130743Z.tar.gz",
+    "sha256": "dc89eef5f5e24eaa44eb0760483d3fb332efc534d5455d68ab881d9f8e0591ce",
+    "bytes": 26090269,
+    "scope": "Actual native214 runtime-core release compilation via maintenance launcher, artifact/source receipts and bounded cleanup; no guest/fourhost evidence.",
+    "stateFileNote": "Archived state precedes snapshot-reference injection"
   },
   "currentScopedStaticChecks": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -50107,10 +50108,10 @@
     "guestPackageAttempts": 0,
     "guestDependencyCompilations": 0,
     "kernelWasmCompilations": 0,
-    "nativeHelperCompileAttempts": 15,
-    "nativeHelperCompileFailures": 1,
+    "nativeHelperCompileAttempts": 1,
+    "nativeHelperCompileFailures": 0,
     "productRebuilds": 0,
-    "scope": "Count once15 previously pending native Cargo compilation/check invocations: queue5 incl1 missing-fixture failure,descriptor5,dentry5. Exclude readiness4 already counted in207 and all artifact reruns. Native test/check invocations are not underlying rustc per-crate calls. Root performs0 new compiles."
+    "scope": "One real maintenance Cargo release build invocation compiled current native runtime-core and linked xtask. Underlying per-crate rustc calls not counted; no Wasm/guest compilation."
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -50902,7 +50903,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Three implemented owning-layer source slices committed/pushed; canonical qualified audit links, exact native evidence and preparation incident correction/REPL dependency plan recorded without API/family closure."
+    "reason": "Current dormant notification Rust source compiled in actual native production launcher; exact artifact/703-source evidence and scoped cleanup recorded while three independent implementation tasks proceed."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -57476,6 +57477,13 @@
       "bytes": 32834457,
       "scope": "Same214 engine plus dormant kernel queue/descriptor/dentry owners, exact source and125-case reused native evidence; public/ABI/four-host conformance remains unestablished.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/finding-overlay214-20261107T125816Z.tar.gz",
+      "sha256": "93a2b66ec6d589ecb9def2730e5d64ae4e2e79e84443d2b5e7720696cb3448a9",
+      "bytes": 11702512,
+      "scope": "Current214 qualified terminal/tracing/dormant notification source links, explicit preparation incident correction and next REPL/build plans. Metadata only, no new runtime/compiler or closure.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
   "processLifetimeImplementation": {
@@ -61354,6 +61362,18 @@
       "nativeHelperCompileFailures": 1,
       "productRebuilds": 0,
       "scope": "Count once five sealed tiny portable native compiler attempts, including one failure; current root reuses exact admitted compiled owner/header/addon/control artifacts. No new root compilation or guest build."
+    },
+    {
+      "at": "2026-11-07T13:07:42.601341+00:00",
+      "acceptedEngineBuilds": 0,
+      "guestEngineBuildFailures": 0,
+      "guestPackageAttempts": 0,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "nativeHelperCompileAttempts": 15,
+      "nativeHelperCompileFailures": 1,
+      "productRebuilds": 0,
+      "scope": "Count once15 previously pending native Cargo compilation/check invocations: queue5 incl1 missing-fixture failure,descriptor5,dentry5. Exclude readiness4 already counted in207 and all artifact reruns. Native test/check invocations are not underlying rustc per-crate calls. Root performs0 new compiles."
     }
   ],
   "cryptoKdfImplementation": {
@@ -115779,5 +115799,33 @@
     "sha256": "50e1fd82cfe66dd8cae6b49ad591ba45df8c31cbd361d39118a6619ff4757940",
     "sealSha256": "ba70c7f5dcc7031c29325eeba6d1e2440a4375ee7ddfa847735ed5803a284ae0",
     "scope": "Earlier213 planning observation, not current liveness: verified live Moscow graphics build and disk below18GiB threshold. Recheck exact job and free space before selecting latest214 engine/kernel; do not run stale213 or compete blindly."
+  },
+  "kernel214NativeProductionBuild": {
+    "report": "tests/nodejs/outline/kernel214-native-production-build-result.json",
+    "sha256": "81449d2a95058b1333c2d703c50b36eaccd8316210cb8ae02bc40d6c6ff2413b",
+    "sourceRevision": 214,
+    "scope": [
+      "Exact underlying rustc command was not recorded by quiet Cargo; top-level Cargo command, fresh crate fingerprint/depfile and artifacts are preserved",
+      "Native Darwin release crate checks production cfg only; this is not Wasm compilation or executed kernel validation",
+      "Existing125 native cases keep their separate exact source/artifact identity; no new runtime tests were run",
+      "Shared GC skipped live cache use; independent root incremental cleanup logical bytes are not attributed physical free-space delta"
+    ],
+    "nativeProductionCompilationSucceeded": true,
+    "guestKernelCompiled": false,
+    "guestRuntimeValidated": false,
+    "fourHostConformance": false
+  },
+  "maintenanceEvidence215": {
+    "cacheGC": {
+      "path": ".context/node26-cache-gc215.log",
+      "sha256": "792059500368ef153d46f5e17b432964e02242a04919dba595ff3f6be6766a31"
+    },
+    "sharedCacheRemovedBytes": 0,
+    "inactiveRootIncrementalCleanup": {
+      "path": ".context/node26-root-incremental215/result.json",
+      "sha256": "fcbc4822841fa8128f1d2ab62e2eaf808cc2793472a8a8b89d869dac4f12d53f",
+      "logicalBytes": 1197699307
+    },
+    "scope": "Only disposable inactive root debug incremental state removed,2151 authoritative source identities verified unchanged; accepted artifacts/source/evidence/pins/frozen fixtures preserved."
   }
 }
