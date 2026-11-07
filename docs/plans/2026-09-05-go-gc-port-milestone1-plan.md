@@ -10,6 +10,15 @@ Latest main `f762afc10308` is merged as `296c883bd`; ABI remains 55.
 Implementation/evaluation checkpoints are tracked in draft PR #1492.
 The full WordPress service goal remains unfinished.
 
+**Current full-image retry:** job
+`wordpress-wasm32-stable-1107-121249-d310` is running on `6fe140517`.
+It uses the normal full canonical graph and a fresh projection under
+`.context/frankenphp-wasm32-final-stable-source-only-v1`, preserving the
+failed attempt separately. All declared inputs are frozen, including the
+docs helper. Publication, exact image selection, layout audit and two
+Node service cases are the next acceptance points. There is no verified
+replacement preview yet.
+
 **Platform corrections integrated for combined validation:** the guest TCP
 namespace correction, mmap fresh-page clearing and thread-private startup
 buffer retirement are now on the primary branch. Their separate focused
@@ -54,10 +63,16 @@ The first expanded browser run has 298 passes and two outer two-minute timeouts
 in the full os.Root sweep (Firefox and WebKit), zero skips/flakes. Separate
 fresh Firefox invocations of that exact fixture pass on unchanged and
 experimental hosts in 87.0s and 88.7s overall, respectively. Those focused
-passes do not replace the mixed full result. A fresh 300-case browser run
-is now running with both expensive builds terminal, without increasing
-the timeout. It uses the same isolated host implementation and selected
-fixtures. Its result and final memory/lifecycle measurements remain open.
+passes do not replace the mixed full result. A fresh browser run now
+passes all 300 cases across Chromium, Firefox and WebKit, with zero skips
+or flaky cases, in 16m58s overall. It uses the same isolated host
+implementation and selected fixtures, with both expensive builds terminal
+and no timeout increase. The complete os.Root sweep takes 44.3s, 77.9s
+and 115.1s respectively. The last remains close to the two-minute limit;
+the earlier failures are retained rather than reclassified. This proves
+the selected host/fixture run, not final combined-image acceptance or an
+idle-machine performance result. Evidence is the candidate's
+`.context/broad-browser-quiet-reports/playwright.Tuow7Z/`.
 
 **Benchmark baseline preparation stopped at missing SDK prerequisites:**
 the separate clean main checkout completed its SDK cores, kernel, rootfs
@@ -70,7 +85,9 @@ This is incomplete baseline preparation, not evidence of a Go regression.
 The next attempt must provision the baseline's own complete SDK through
 normal bootstrap, preserving the failed report and cached successes.
 That checkout has now advanced cleanly to `f762afc10308`; no benchmark
-timings have run. Heavy preparation waits for the browser run to finish.
+timings have run. The retry script is prepared and syntax checked;
+baseline compilation waits for the primary image retry to avoid running
+two full product builds at once.
 
 **Pthread fork regressions refreshed:** both nested and concurrent pthread
 fork fixtures are compiled through the normal SDK fixture helper, fork
