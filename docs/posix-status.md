@@ -182,7 +182,7 @@ same final-OFD lifetime rules.
 | `unshare()` / `setns()` | Stub | Returns EPERM. No namespace support. |
 | `ptrace()` | Stub | Returns ENOSYS. |
 | `process_vm_readv()` / `process_vm_writev()` | Stub | Returns ENOSYS. |
-| `membarrier()` | Partial | Kandelo issues no cross-thread barrier, and says so. `MEMBARRIER_CMD_QUERY` returns an empty command mask (0), the discovery path that tells a caller to use its own fallback; every barrier command (and any nonzero `flags`) is `EINVAL`, Linux's answer for an unsupported or unregistered command. It used to return 0 for everything on the claim that processes are single-threaded. That is false: `clone(CLONE_VM\|CLONE_THREAD)` gives a process real threads, each its own Worker over one shared `WebAssembly.Memory`, and the kernel cannot run a barrier on another Worker. The 0 was also worse than a failure: musl's `membarrier()` (`src/linux/membarrier.c`) emulates `MEMBARRIER_CMD_PRIVATE_EXPEDITED` with signals only when the syscall fails, so the fake success removed the one working barrier. **Do not restore 0 as a kindness.** Kandelo's `dlopen` does not use musl's `ldso`, so nothing in the tree calls a barrier command today. |
+| `membarrier()` | Partial | Kandelo issues no cross-thread barrier, and says so. `MEMBARRIER_CMD_QUERY` returns an empty command mask (0), the discovery path that tells a caller to use its own fallback; every barrier command (and any nonzero `flags`) is `EINVAL`, Linux's answer for an unsupported or unregistered command. It used to return 0 for everything on the claim that processes are single-threaded. That is false: `clone(CLONE_VM\|CLONE_THREAD)` gives a process real threads, each its own Worker over one shared `WebAssembly.Memory`, and the kernel cannot run a barrier on another Worker. The 0 also suppressed musl's own attempt: musl's `membarrier()` (`src/linux/membarrier.c`) emulates `MEMBARRIER_CMD_PRIVATE_EXPEDITED` with signals (`tkill` of each sibling with `SIGSYNCCALL`, then one `sem_wait` per sibling) only when the syscall fails, so the fake success meant it was never tried. Returning `EINVAL` lets musl attempt that fallback. **Whether the fallback completes in Kandelo is unverified:** Kandelo delivers signals at syscall boundaries, so a compute-bound sibling Worker may never reach one, never take the signal, and never acknowledge, leaving the caller blocked in `sem_wait`. The trade is deliberate: a possible block, which is visible and debuggable, instead of a silent false success, where a missing memory barrier corrupts data without a trace. This project prefers truthful failure over convenient illusion. **Do not "fix" a hang here by restoring 0.** Kandelo's `dlopen` does not use musl's `ldso`, so nothing in the tree calls a barrier command today. |
 | `getcpu()` | Stub | Writes cpu=0, node=0. Single-CPU Wasm. |
 | `get_robust_list()` | Stub | Returns ENOSYS. |
 | `set_thread_area()` | Stub | Returns ENOSYS. |
@@ -843,13 +843,15 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 - **Kernel syscalls:** rt_sigtimedwait, preadv/pwritev, sendfile, statx
 - **Scheduler stubs:** sched_getparam/setparam/getscheduler/setscheduler/priorities/affinity (9 syscalls)
 - **File I/O extensions:** preadv2/pwritev2, fallocate, copy_file_range, splice/tee/vmsplice, readahead
-- **Filesystem stubs:** sync_file_range, chroot, mount/umount2, mknod/mknodat, renameat2, faccessat2/fchmodat2
+- **Filesystem stubs:** chroot, mount/umount2, mknod/mknodat, renameat2, faccessat2/fchmodat2
 - **Time stubs:** clock_settime, settimeofday, adjtimex, utimes/futimesat
-- **Process stubs:** fork/vfork/clone (ENOSYS), execve/execveat, personality, unshare/setns
+- **Process stubs:** fork/vfork/clone (ENOSYS), execve/execveat, unshare/setns
 - **Event stubs:** eventfd2, signalfd4, timerfd_*, inotify_*, fanotify_*
 - **IPC stubs:** SysV msg/sem/shm (12), POSIX mq (6), ipc multiplexer
 - **Extended attributes:** 12 xattr syscalls; `user.` attributes on the exchange filesystem only (ENOTSUP for get/set/remove and an empty list elsewhere)
-- **Remaining:** memfd_create, membarrier, getcpu, splice/tee, POSIX timers, capget/capset, and more
+- **Remaining:** memfd_create, getcpu, splice/tee, POSIX timers, capget/capset, and more
+- **No longer stubs:** `sync_file_range` (whole-file `fsync`), `personality` (ENOSYS, logged) and `membarrier` (empty QUERY mask, EINVAL for barrier commands) were listed above as batch-5 stubs; see their rows in the tables for current behaviour.
+- **Not the live path:** `libc/glue/syscall_glue.c` still answers `return 0` for `SYS_SYNC_FILE_RANGE`, `SYS_PERSONALITY` and `SYS_MEMBARRIER` (the last with a "no-op, single-threaded" comment that is false). No build links that file: the SDK driver (`crates/kandelo-cc/src/driver.rs`, `glue_sources`) links only `channel_syscall.c`, `compiler_rt.c`, `cxxrt.c` and optionally `dlopen.c`, and the channel path reaches the kernel dispatcher, which is what this document describes. Do not read `syscall_glue.c` as authoritative.
 
 ---
 
