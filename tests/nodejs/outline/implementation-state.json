@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T08:47:04.068795+00:00",
+  "updatedAt": "2026-11-07T09:19:34.475462+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -46,7 +46,7 @@
   "deployAuthorized": false,
   "overallSuitesRun": 0,
   "productRebuildsRun": 0,
-  "packageOrEngineCompilationsRun": 216,
+  "packageOrEngineCompilationsRun": 217,
   "families": {
     "values": {
       "breadthState": "started",
@@ -202,7 +202,7 @@
       "breadthState": "started",
       "implementationComplete": false,
       "runtimeConformance": {
-        "node": "200actual native compilation owner/API corrections;199engine attempt failed,200complete compile/link/runtime/fourhost pending.",
+        "node": "Current200engine compiled/linked/normal-check/cache accepted; identified kernel/program ABI55static policy passes. No current guest instantiation or four-host runtime conformance.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -420,8 +420,8 @@
     "third_party/node-web-platform/package-lock.json": "ddb5be6e5d370130c538c38bf2f04ce69ce9ea7b79d9bfbb0a75ac7be6cf89c9",
     "third_party/node-web-platform/package.json": "0b8cfac4546c79619ec56bb64edbb71a0cc0aa370570385b073dd0e59ccd7ff8",
     "third_party/node-core/upstream/mime.js": "4fbea1679908f457f39e6794a82a2988753dbbfae9849c92b13e61646dd5c50e",
-    "tests/nodejs/outline/current-capability-reconciliation.md": "f1d76e71aec4589746df5197492527cf269ff9179bdcc961f87595a7d2836107",
-    "tests/nodejs/outline/current-capability-reconciliation.json": "1369ef9dab793c72b8c7cf5bf2c87d41005474684410c5144b1279450b7fb090",
+    "tests/nodejs/outline/current-capability-reconciliation.md": "e8967e15a7a4c90e41540216df6fae3ff3f830f2ab45c66ebbd7ebad2a0e8f17",
+    "tests/nodejs/outline/current-capability-reconciliation.json": "b3a7737b9515c9f08840468d87f216f5059302d849e6158c4f16160bb6506313",
     "tests/nodejs/outline/deprecation-reconciliation.json": "f827afc82658d23ada3737b0f0c175de0f54ba648d3398f18f01d9c5929e1ee3",
     "third_party/node-core/process-state-adapter.js": "44aaeb3cb8504ff1f7c7fcf94954d9874e283df6668bc75ebcc78dd7414d8792",
     "third_party/node-core/process-state.h": "2ad8733734e10f694bd67069aa752aeed8e65f418f19750d9d2cd54486dac2b6",
@@ -707,7 +707,7 @@
     "host/test/fixtures/node-string-decoder-controls.cjs": "f8486de93aad5c3ba6340de8f3d3a1389485f1aa10c5c5534b636c22dca8d339",
     "third_party/node-core/upstream/string-decoder/src/string_bytes.cc": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d",
     "third_party/node-core/upstream/random-jobs/src/async_wrap.h": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6",
-    "tests/nodejs/outline/README.md": "e867d803858546554db6c5af16a3ee29b20b71962885aae45a688c6766408dcb",
+    "tests/nodejs/outline/README.md": "3792496c3a9576a88655075f876fe68f1b30214af0d8dfb51ce577ea39dc1448",
     "tests/nodejs/outline/string-decoder-implementation-dependencies.md": "3954deecf903ff0155e74951f7ddbc7c0b63ef93b0c90d93512a688cd1a97d63",
     "host/test/node-text-decoder.test.ts": "c259e4757d83bc7ac1a3251ce93d0d348b94add348212f99ecf9bcec2616f365",
     "tests/nodejs/outline/random-implementation-dependencies.md": "0d14d44be5c1d2f6d84dfd7665ffb2be82bda0fa8ce0aebc8a28100ffd921196",
@@ -1043,7 +1043,7 @@
     "third_party/node-core/upstream/keys/src/crypto/crypto_keys.h": "b295605d6b1415e20008b05268bd19c95dfe5abdbb6ec4f199c7c48fac25f029",
     "third_party/node-core/upstream/keys/lib/internal/crypto/util.js": "79c2825d2173435a80f914aeca952032826bb61ea5a2835c315f08ced5963337",
     "third_party/node-core/upstream/keys/lib/internal/crypto/keys.js": "e6c16626648d551dd3aa505a6b386376f6173ae6bab6fd9360acf406ce92e1ff",
-    "tests/nodejs/outline/implementation-review.md": "7c7f0119466da76a02b9da3819e470d0adce9063beb8d24dc5daafd6a20870a6",
+    "tests/nodejs/outline/implementation-review.md": "e7bf6f407a44be467404e4a510d9e9dc56764e0b02c4ad84c85cc2cb0a074082",
     "tests/nodejs/outline/key-implementation-dependencies.md": "8a8ff166f13234d486aeeabbee8b5f44f348994d18993830d802c474a27e056e",
     "tests/nodejs/outline/engine100-integration.md": "0ed009ef5769ee68fa191085da1832315775ec2612cffa16c39eb72dedc84f0b",
     "tests/nodejs/outline/key-finding-progress.json": "be8eedcbe7eee085757e077e4daef4699b06f6f9a84904abeaedcbb4ca1db77b",
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "4eb25e865d95f37349fc8ed88234ebb88c12c97f1b3c8c8309ef456b3f3c9523",
+    "tests/nodejs/outline/status-by-family.md": "a1f9b187e99d5958fa162129e2079c24c875144a661fc98d6d57348442dfeda4",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -2248,7 +2248,8 @@
     "third_party/node-core/tests/zstd-pledge/run-controls.sh": "7e44e53309017ab1cee4f771bef266574dd1c35fd9753f900caafbb5ee6006c0",
     "third_party/node-core/tests/zstd-pledge/control.cjs": "7d10e635149dc271a532f85454f2833d65232967f70d7ab2b0dba49b806ebffe",
     "tests/nodejs/outline/native-bridge-compilation-finding-progress.json": "00e1f3ca74bc1dcce1c35d0b9381e919cb392d321b5356e4c8594d15806e23a3",
-    "tests/nodejs/outline/native-bridge-compilation-integration.md": "e9d08d95ffdb0cf939eb8814d1cb55b7cc77b5180ef6183e95dd19f22b1dea9e"
+    "tests/nodejs/outline/native-bridge-compilation-integration.md": "ec7c80e4785e3cbfe607c3c053288142e58ffef7200d799440615a86571ff764",
+    "tests/nodejs/outline/engine200-build-result.json": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5"
   },
   "changes": [
     {
@@ -7479,16 +7480,16 @@
     }
   ],
   "nextSourceWork": [
-    "Commit/push200native compilation corrections, then retry only selected engine closure",
-    "Record actual199failure once in compilation accounting; leave accepted173status separate",
-    "Preserve newly sealed TLS/TTY/host-order/runner next-batch work; do not extend current200retry",
-    "Once accepted, prepare identified normal projection and focused public binding controls before any broad suite",
-    "Continue breadth-first real shared dependencies; no fullproduct/overall suites until authorized conditions",
-    "Keep nested guest Wasm backend in scope for final phase"
+    "Commit/push accepted200engine evidence and current finding links; all19families remain partial",
+    "Prepare normal bounded current node alias/kernel/test projection if possible without a full product rebuild; verify actual image/executable hashes before focused guest controls",
+    "Run focused current-artifact bootstrap/exit/native owner checks across all four hosts within authorized build constraints; retain timeouts/errors/nonpasses",
+    "Integrate queued real TLS/TTY/host-order/runner/import slices as a separate reviewed batch, not part of200artifact",
+    "Continue full public-core implementation breadth; overall suites/full product rebuild stay deferred",
+    "Nested guest Wasm execution backend remains in scope for final phase"
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Reconciled197collector,198watch ownership and199Zstd requirement evidence, preserved negative-mutant/nonpass/guest boundaries and original IDs, verified separate TLS owner and prepared exact engine plan without runtime closure."
+    "reason": "Diagnosed and corrected actual normal engine compiler errors without weakening native ownership/access checks or assertions, retained full failed-attempt evidence and prepared exact retry."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -41089,6 +41090,14 @@
         "reusedEvidence": true,
         "scope": "Actual normal engine199failure after6m36s,9node closure8cached, no changed frozen sources, no kernel/rootfs/app/fullproduct or overall suite; actual source work deleted by normal resolver after failure."
       }
+    },
+    {
+      "at": "2026-11-07T09:19:34.475462+00:00",
+      "kind": "normal selected engine200build and static artifact policy",
+      "report": "tests/nodejs/outline/engine200-build-result.json",
+      "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5",
+      "guestExecuted": false,
+      "fourHostConformance": false
     }
   ],
   "preservedFailedEvidence": [
@@ -45240,10 +45249,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/native-bridge-compilation-20261107T084705Z.tar.gz",
-    "sha256": "7e01ead38c613d88cd259e2568cf5149e330b93c10f04a96bee20816d79add7e",
-    "bytes": 29119399,
-    "scope": "200actual Root/namespace/FFI API corrections, current portable compiler/control evidence and actual199normal engine failure; no accepted current engine/guest/fourhost artifact",
+    "path": ".context/node26-implementation-snapshots/engine200-accepted-20261107T091935Z.tar.gz",
+    "sha256": "d1d9eb7b69027411eebe4130ba877493b6626bdf5b6e86999160ac6a3d3b5d3d",
+    "bytes": 10960945,
+    "scope": "Source200 accepted engine build evidence and all identified source; binary retained separately by exact hash, no guest execution",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -46213,7 +46222,7 @@
   "focusedCountMeaningThisTurn": "Scoped source/native-dependent controls, not individual API or host-conformance closure",
   "currentCapabilityReconciliation": {
     "path": "tests/nodejs/outline/current-capability-reconciliation.json",
-    "sha256": "1369ef9dab793c72b8c7cf5bf2c87d41005474684410c5144b1279450b7fb090",
+    "sha256": "b3a7737b9515c9f08840468d87f216f5059302d849e6158c4f16160bb6506313",
     "families": 19,
     "retainedMatrixObservations": 13292,
     "deprecations": {
@@ -47737,15 +47746,15 @@
     "state": "OS lookup source and raw c-ares channel plus owned record decoder; public Resolver/channel/request/loop/JSAPI/guest linking/transport/error/malformed and four-host obligations remain open"
   },
   "nativeCompilationAccountingThisTurn": {
-    "acceptedEngineBuilds": 0,
-    "guestEngineBuildFailures": 1,
+    "acceptedEngineBuilds": 1,
+    "guestEngineBuildFailures": 0,
     "guestPackageAttempts": 1,
     "guestDependencyCompilations": 0,
     "kernelWasmCompilations": 0,
-    "nativeHelperCompileAttempts": 1,
+    "nativeHelperCompileAttempts": 0,
     "nativeHelperCompileFailures": 0,
     "productRebuilds": 0,
-    "scope": "One new current-header portable native compile0fail plus one actual failed normal selected engine199attempt, both recorded once. Eight declared dependencies cached; no kernel/rootfs/app/fullproduct/overall builds."
+    "scope": "One selected200engine attempt;8dependencies cached; production build/check/cache acceptance succeeds. Static artifact inspection is not guest execution."
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -48537,7 +48546,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Diagnosed and corrected actual normal engine compiler errors without weakening native ownership/access checks or assertions, retained full failed-attempt evidence and prepared exact retry."
+    "reason": "Normal current200engine compilation/link/checks/cache acceptance succeeds with frozen inputs; exact artifact/ABI evidence preserved. No new runtime conformance claim."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -49671,10 +49680,10 @@
     "guestEngineCompiled": false
   },
   "targetedEngineBuild": {
-    "recipeRevision": 173,
-    "jobId": "node26-engine173-1106-212529-7e48",
-    "report": "tests/nodejs/outline/engine173-build-result.json",
-    "sha256": "1d4e9ccdef6d4d054e26371ba412843a43632a77b7977b83b910b1754fa50bad",
+    "recipeRevision": 200,
+    "jobId": "node26-engine200-1107-035111-4754",
+    "report": "tests/nodejs/outline/engine200-build-result.json",
+    "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5",
     "result": "normal-production-build-and-cache-acceptance-success",
     "productionCompilationSucceeded": true,
     "productionLinkSucceeded": true,
@@ -49682,7 +49691,7 @@
     "acceptedArtifact": true,
     "guestRuntimeValidated": false,
     "currentSourceRevision": 200,
-    "scope": "Normal selected173production engine compilation/link/style/opcode checks, optimization, fork instrumentation and canonical cache acceptance. Static ABI55/kernel-program contract inspection passes. No new product projection, instantiation, guest or four-host runtime evidence."
+    "scope": "Normal selected200production engine compilation/link/style/opcode checks, optimization, fork instrumentation and canonical cache acceptance. Static ABI55/kernel-program contract inspection passes. No new product projection, instantiation, guest or four-host runtime evidence."
   },
   "targetedEngineBuildHistory": [
     {
@@ -51757,16 +51766,30 @@
       "acceptedArtifact": false,
       "guestExecuted": false,
       "changedFrozenSourcePaths": []
+    },
+    {
+      "recipeRevision": 173,
+      "jobId": "node26-engine173-1106-212529-7e48",
+      "report": "tests/nodejs/outline/engine173-build-result.json",
+      "sha256": "1d4e9ccdef6d4d054e26371ba412843a43632a77b7977b83b910b1754fa50bad",
+      "result": "normal-production-build-and-cache-acceptance-success",
+      "productionCompilationSucceeded": true,
+      "productionLinkSucceeded": true,
+      "normalChecksSucceeded": true,
+      "acceptedArtifact": true,
+      "guestRuntimeValidated": false,
+      "currentSourceRevision": 200,
+      "scope": "Normal selected173production engine compilation/link/style/opcode checks, optimization, fork instrumentation and canonical cache acceptance. Static ABI55/kernel-program contract inspection passes. No new product projection, instantiation, guest or four-host runtime evidence."
     }
   ],
   "nativeEmbeddingIntegration": {
-    "at": "2026-11-07T08:47:04.068795+00:00",
+    "at": "2026-11-07T09:19:34.475462+00:00",
     "recipeRevision": 200,
-    "lastAcceptedEngine": 173,
-    "sourceOnly": true,
-    "guestCompiled": false,
+    "lastAcceptedEngine": 200,
+    "sourceOnly": false,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
-    "scope": "200actual native compilation owner/API corrections;199engine attempt failed,200complete compile/link/runtime/fourhost pending."
+    "scope": "Current200native embedding compiled/linked and normal checks accepted; JSAPI behavior, GC/realm/thread ownership and all four hosts unexecuted."
   },
   "asyncAuditedFindingProgress": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -53063,6 +53086,15 @@
       "guestCompiled": false,
       "guestRuntimeValidated": false,
       "scope": "199actual Zstd pledge/error source integrated; portable/native component controls pass, productionJSAPI/error/realm/GC/init chronology/fatal/provider/fourhost incomplete."
+    },
+    {
+      "at": "2026-11-07T08:47:04.068795+00:00",
+      "recipeRevision": 200,
+      "lastAcceptedEngine": 173,
+      "sourceOnly": true,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "scope": "200actual native compilation owner/API corrections;199engine attempt failed,200complete compile/link/runtime/fourhost pending."
     }
   ],
   "bufferPoolImplementation": {
@@ -53371,13 +53403,13 @@
   },
   "sourceCandidateIntegration": {
     "recipeRevision": 200,
-    "sourceOnly": true,
-    "lastAcceptedEngine": 173,
-    "acceptedArtifactCurrentForCandidate": false,
-    "guestCompiled": false,
+    "sourceOnly": false,
+    "lastAcceptedEngine": 200,
+    "acceptedArtifactCurrentForCandidate": true,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
     "fourHostConformance": false,
-    "scope": "Current200combined guest source has no accepted build; accepted173and prior nonpasses retain their scopes. Pending private agent work excluded."
+    "scope": "Current200normal engine artifact compiled and accepted in canonical cache. Existing product projection is not updated. All runtime/four-host obligations remain open; private newer source excluded."
   },
   "vmPlainContextImplementation": {
     "at": "2026-11-05T00:10:14.839714+00:00",
@@ -54729,6 +54761,13 @@
       "sha256": "84239c4d034e44deff94f4b3b12dfb96b65fa2b117f74739e3386ecb175193d1",
       "bytes": 10827202,
       "scope": "Current199source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/native-bridge-compilation-20261107T084705Z.tar.gz",
+      "sha256": "7e01ead38c613d88cd259e2568cf5149e330b93c10f04a96bee20816d79add7e",
+      "bytes": 29119399,
+      "scope": "200actual Root/namespace/FFI API corrections, current portable compiler/control evidence and actual199normal engine failure; no accepted current engine/guest/fourhost artifact",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -56301,6 +56340,16 @@
       "guestRuntimeValidated": false,
       "fourHostConformance": false,
       "scope": "Current199combined guest source has no accepted build; accepted173and prior nonpasses retain their scopes. Pending private agent work excluded."
+    },
+    {
+      "recipeRevision": 200,
+      "sourceOnly": true,
+      "lastAcceptedEngine": 173,
+      "acceptedArtifactCurrentForCandidate": false,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "scope": "Current200combined guest source has no accepted build; accepted173and prior nonpasses retain their scopes. Pending private agent work excluded."
     }
   ],
   "nativeCompilationAccountingHistory": [
@@ -58190,6 +58239,18 @@
       "nativeHelperCompileFailures": 0,
       "productRebuilds": 0,
       "scope": "One previous successful tiny native policy helper compile integrated; all1019captured compiler inputs/artifact verified. Root0new compiles; no engine/kernel/product/overall build."
+    },
+    {
+      "at": "2026-11-07T09:19:34.475462+00:00",
+      "acceptedEngineBuilds": 0,
+      "guestEngineBuildFailures": 1,
+      "guestPackageAttempts": 1,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "nativeHelperCompileAttempts": 1,
+      "nativeHelperCompileFailures": 0,
+      "productRebuilds": 0,
+      "scope": "One new current-header portable native compile0fail plus one actual failed normal selected engine199attempt, both recorded once. Eight declared dependencies cached; no kernel/rootfs/app/fullproduct/overall builds."
     }
   ],
   "cryptoKdfImplementation": {
@@ -61016,7 +61077,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "8de399c060dc059b6c7e260f862726789e23c90f",
+    "pushedThrough": "28eedb975955ad94387b1263c6fe24763291189a",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -99457,6 +99518,24 @@
       "currentGuestConformance": false,
       "nativeHelperAttemptsPendingIntegration": 0,
       "nativeHelperFailuresPendingIntegration": 0
+    },
+    {
+      "path": ".context/general-import-owner-agent",
+      "sealSha256": "7eda080763d4a02cd30f8b5bea7bc9d0f16a0efbf7b73d3b2edfa196096df414",
+      "scope": "Actual shared generic/syntax import completion owner over runner dependency;9native-loader routing groups/runner regressions,0compiles. C++/guest uncompiled; attribute/parser/job/realm/cache/fourhost gaps remain.",
+      "status": "sealed-pending-root-integration",
+      "nativeHelperAttemptsPendingIntegration": 0,
+      "nativeHelperFailuresPendingIntegration": 0,
+      "currentGuestConformance": false
+    },
+    {
+      "path": ".context/tls-plaintext-read-owner-agent",
+      "sealSha256": "105af6f82c7c86bd982b2498627f6509103a341347204b63587e4b68569dd12a",
+      "scope": "Actual retained plaintext/EOF/error ticket under real Promise/context ownership over D01;3native cases488observed assertions,1tiny compile,47source checks. No true TLSWrap/retained-parent/onread/AsyncWrap/HTTPS activation; wrong probe-absence assumption superseded by actual parent proxy trace.",
+      "status": "sealed-pending-root-integration",
+      "nativeHelperAttemptsPendingIntegration": 1,
+      "nativeHelperFailuresPendingIntegration": 0,
+      "currentGuestConformance": false
     }
   ],
   "dnsScopedAddressImplementation": {
@@ -99983,10 +100062,10 @@
     "acceptedPlatformLimits": []
   },
   "latestProductionCompilation": {
-    "recipeRevision": 173,
-    "sourceCommit": "c21391f17f9108597ed5e598dba381b93d756da1",
-    "report": "tests/nodejs/outline/engine173-build-result.json",
-    "sha256": "1d4e9ccdef6d4d054e26371ba412843a43632a77b7977b83b910b1754fa50bad",
+    "recipeRevision": 200,
+    "sourceCommit": "28eedb975955ad94387b1263c6fe24763291189a",
+    "report": "tests/nodejs/outline/engine200-build-result.json",
+    "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5",
     "compiledAndLinked": true,
     "normalBuildAccepted": true,
     "guestExecuted": false,
@@ -102565,7 +102644,7 @@
     "acceptedPlatformLimits": []
   },
   "nextSelectedEngineBuild": {
-    "status": "prepared-not-executed",
+    "status": "completed-build-runtime-unvalidated",
     "sourceAtPreparation": 200,
     "prerequisite": "Commit/push200native compilation corrections; source/registry freeze during normal selected-engine retry",
     "scripts": [
@@ -102590,7 +102669,11 @@
     },
     "mostRecentFailedEngineJob": "node26-engine199-1107-032352-01c0",
     "planPath": ".context/node26-next-engine-build-plan200.json",
-    "planSha256": "4fa86629da58d2983a25fb6a02089f7fd4170466c06e33a86ae6d61857867404"
+    "planSha256": "4fa86629da58d2983a25fb6a02089f7fd4170466c06e33a86ae6d61857867404",
+    "jobId": "node26-engine200-1107-035111-4754",
+    "resultReport": "tests/nodejs/outline/engine200-build-result.json",
+    "resultSha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5",
+    "acceptedArtifactSha256": "331c7af54f1c036b955f5e747a1ddfa9c5ce6ce3c41d5171800341bb081bcb45"
   },
   "messagePortTransferImplementation": {
     "auditRequirements": {
@@ -103371,5 +103454,18 @@
     "acceptedArtifact": false,
     "guestExecuted": false,
     "changedFrozenSourcePaths": []
-  }
+  },
+  "latestProductionCompilationHistory": [
+    {
+      "recipeRevision": 173,
+      "sourceCommit": "c21391f17f9108597ed5e598dba381b93d756da1",
+      "report": "tests/nodejs/outline/engine173-build-result.json",
+      "sha256": "1d4e9ccdef6d4d054e26371ba412843a43632a77b7977b83b910b1754fa50bad",
+      "compiledAndLinked": true,
+      "normalBuildAccepted": true,
+      "guestExecuted": false,
+      "fourHostConformance": false,
+      "scope": "Identified compiled/cache-accepted engine only; product projection and runtime validation separate"
+    }
+  ]
 }

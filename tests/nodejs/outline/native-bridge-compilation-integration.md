@@ -37,3 +37,12 @@ four-host outcomes remain. Selected compilation/link/cache acceptance is separat
 from artifact materialization and actual four-host runtime conformance. No finding
 or family closes;173remains last accepted engine. Full product/overall deferrals
 remain in force, nested guest Wasm backend remains in scope for the final phase.
+
+## Subsequent accepted engine200build
+
+The corrected current source now compiles, links, passes all unchanged Mozilla
+checks, optimization/fork instrumentation and normal cache acceptance. Static
+ABI55/kernel-program policy passes. This supersedes the earlier compilation-
+pending checkpoint above, while preserving the actual199failure. Exact artifact
+and raw evidence: [engine200-build-result.json](engine200-build-result.json).
+No current product projection, guest execution or four-host conformance is claimed.

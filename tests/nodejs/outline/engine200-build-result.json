@@ -1,0 +1,75 @@
+{
+  "at": "2026-11-07T09:19:34.475462+00:00",
+  "recipeRevision": 200,
+  "jobId": "node26-engine200-1107-035111-4754",
+  "sourceCommit": "28eedb975955ad94387b1263c6fe24763291189a",
+  "exitCode": 0,
+  "durationSeconds": 536.9,
+  "sourceWasFrozen": true,
+  "changedFrozenSourcePaths": [],
+  "selectedPlan": {
+    "nodes": 9,
+    "cached": 8,
+    "built": 1
+  },
+  "productionCompilationSucceeded": true,
+  "productionLinkSucceeded": true,
+  "normalChecksSucceeded": true,
+  "normalBuildAccepted": true,
+  "acceptedArtifact": true,
+  "normalCacheReceipt": {
+    "manifestSha256": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
+    "cacheKeySha256": "d901e50d59547dda505725875827bf715eb667c9ba22f48b98925fa36a0a5e01",
+    "cacheReceiptSha256": "7ad9549ce240ee2f7ecba1f298139c6076394bb9ba70aeccc8a5ea7ae6ea2e53",
+    "materializedMembers": [
+      {
+        "sourceArtifact": "js.wasm",
+        "mirrorPath": "programs/wasm32/js.wasm",
+        "mode": 493,
+        "size": 51846613,
+        "sha256": "331c7af54f1c036b955f5e747a1ddfa9c5ce6ce3c41d5171800341bb081bcb45"
+      }
+    ]
+  },
+  "artifact": {
+    "path": ".context/node26-engine200-accepted/artifacts/js.wasm",
+    "bytes": 51846613,
+    "sha256": "331c7af54f1c036b955f5e747a1ddfa9c5ce6ce3c41d5171800341bb081bcb45"
+  },
+  "evidence": {
+    "output.log": {
+      "path": ".context/node26-engine200-accepted/output.log",
+      "sha256": "c6ae90450303ade0ffa72898303f7abf599ff8966b3bbd02fa6895bc84b6d841"
+    },
+    "meta.json": {
+      "path": ".context/node26-engine200-accepted/meta.json",
+      "sha256": "b04416775c602c5e0d806a8a63d6a98bafa33e22d47e6e3cc695956fbdc90539"
+    },
+    "result.json": {
+      "path": ".context/node26-engine200-accepted/result.json",
+      "sha256": "10772b24bdca4dfd18c7d5d604d062a4c32bd9b692fe43d9d99314a3193ed87b"
+    },
+    "preflight-report.json": {
+      "path": ".context/node26-engine200-accepted/preflight-report.json",
+      "sha256": "e1f7a2aa11bfe9ca2029d085321d52e11f2ca29a8f171042db5f711fbdcf4c72"
+    },
+    "preflight-terminal.json": {
+      "path": ".context/node26-engine200-accepted/preflight-terminal.json",
+      "sha256": "23399299566728e80e2c3c3e98cc55a1dd53ce5749aea686f6fc08f8299010aa"
+    },
+    "cache-receipt.json": {
+      "path": ".context/node26-engine200-accepted/cache-receipt.json",
+      "sha256": "6bd169bc3da2377ea8416c7ba2dc9d1163481537c32d780968a0b38e489b82d7"
+    },
+    "artifact-policy.json": {
+      "path": ".context/node26-engine200-accepted/artifact-policy.json",
+      "sha256": "141d2227f4878d34daf9bd8e9c4e8a9fce4588d7aca4a159ceb783b56972ccbe"
+    }
+  },
+  "productProjectionMaterialized": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "fullProductRebuilt": false,
+  "overallSuiteRun": false,
+  "scope": "Normal selected200production engine compilation/link/style/opcode checks, optimization, fork instrumentation and canonical cache acceptance. Static ABI55/kernel-program contract inspection passes. No new product projection, instantiation, guest or four-host runtime evidence."
+}

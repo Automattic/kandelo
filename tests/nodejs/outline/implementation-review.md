@@ -1,5 +1,10 @@
 # Broad implementation review
 
+Source200 now has a normally compiled, linked and cache-accepted engine artifact.
+All three unchanged Mozilla checks and static ABI55/kernel-program policy
+inspection pass. Product projection, guest execution and four-host conformance
+remain separate and unvalidated. See [build evidence](engine200-build-result.json).
+
 The normal selected199engine build failed at native compilation after6m36s, with all frozen source identities unchanged. Source200 fixes the actual Root/namespace/FFI API errors;9current portable groups and25affected checks pass. Complete200engine/guest acceptance remains pending.
 See [source scope](native-bridge-compilation-integration.md).
 
