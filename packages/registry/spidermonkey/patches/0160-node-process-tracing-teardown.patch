@@ -1,0 +1,11 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -17405,2 +17405,8 @@
+   KandeloShutdownNativeAsync(sc);
++  // A Worker retires only its environment. The process sink closes after the
++  // actual main owner has joined Workers and all remaining producers retired.
++  if (sc->isWorker == ShellContext::MainThread &&
++      kandelo::tracing::Process().Finish() != 0) {
++    sc->kandeloNativeTeardownOk = false;
++  }
+   sc->kandeloNativeTeardownComplete = true;

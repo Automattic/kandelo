@@ -7,6 +7,7 @@ function _createNodeConsolePlatform(platform) {
         StringPrototypeSplit, Error, ReflectApply } = primordials;
     const process = platform.process;
     const sessions = new SafeSet();
+    const tracing = platform.tracing;
     function enabled(session, category) {
         const names = StringPrototypeSplit(category, ',');
         for (let i = 0; i < names.length; i++) if (session.categories.has(names[i])) return true;
@@ -18,10 +19,14 @@ function _createNodeConsolePlatform(platform) {
         usePerfetto: false,
         getCategoryEnabledBuffer() { return undefined; },
         isTraceCategoryEnabled(category) {
+            if (tracing && tracing.isTraceCategoryEnabled(category)) return true;
             for (const session of sessions) if (session.active && enabled(session, category)) return true;
             return false;
         },
         trace(phase, category, name, id, value) {
+            // Native process state is shared by every Worker/realm; private
+            // callback subscriptions remain separate per-realm consumers.
+            const published = tracing ? tracing.trace(phase, category, name, id, value) : false;
             let record;
             // Snapshot consumers so reentrant registration does not acquire
             // this in-flight event. Stop retires its owner immediately.
@@ -31,9 +36,14 @@ function _createNodeConsolePlatform(platform) {
                     timestamp: platform.monotonicNanoseconds() });
                 ReflectApply(session.collect, undefined, [record]);
             }
-            return record !== undefined;
+            return published || record !== undefined;
         },
     };
+    if (tracing) {
+        traceBinding.CategorySet = tracing.CategorySet;
+        traceBinding.getEnabledCategories = tracing.getEnabledCategories;
+        traceBinding.hasAgent = tracing.hasAgent;
+    }
     function collect(categories, callback) {
         platform.values.validators.validateArray(categories, 'categories');
         platform.values.validators.validateFunction(callback, 'callback');
@@ -60,6 +70,7 @@ function _createNodeConsolePlatform(platform) {
             catch (error) { modules.delete(name); throw error; }
             modules.set(name, module.exports); return module.exports;
         }
+        if (name === 'internal/worker') return { ownsProcessState: platform.ownsProcessState };
         if (name === 'internal/errors') return platform.values.errors;
         if (name === 'internal/validators') return platform.values.validators;
         if (name === 'internal/util') return platform.values.util;
@@ -75,7 +86,7 @@ function _createNodeConsolePlatform(platform) {
     function internalBinding(name) {
         if (name === 'trace_events') return traceBinding;
         if (name === 'util') return { previewEntries: platform.previewEntries };
-        if (name === 'config') return { hasInspector: false };
+        if (name === 'config') return { hasInspector: false, hasTracing: tracing !== undefined && tracing.hasAgent() };
         throw new Error('Unsupported Console binding: ' + name);
     }
     for (const name of ['log', 'info', 'debug', 'warn', 'error'])
@@ -85,5 +96,6 @@ function _createNodeConsolePlatform(platform) {
     require('internal/console/constructor').initializeGlobalConsole(api);
     /* NODE_CONSOLE_EXPOSE_NAMESPACE */
     return { api, collect, traceBinding, trace: require('internal/trace_events'),
+        get tracing() { return require('trace_events'); },
         install(target) { exposeNamespace(target, 'console', api); } };
 }

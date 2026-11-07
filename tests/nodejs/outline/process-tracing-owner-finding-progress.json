@@ -1,0 +1,102 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/observability.md",
+    "findingIds": [
+      "O-011"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "observability",
+      "processes",
+      "workers",
+      "async",
+      "engine"
+    ],
+    "scope": "Partial actual public tracing backend/category/file ownership prerequisite; no full producer/CLI/schema/guest/four-host closure"
+  },
+  "sourceImplemented": [
+    "Process-wide mutex-protected category refcounts/native file sink shared by real main/Worker contexts",
+    "Unchanged pinned public trace_events validation/retention/descriptors and actual main-owner Worker admission",
+    "Existing pinned Console count/timer producers publish genuine operation records with actual monotonic clock/PID/TID",
+    "Actual guest file descriptor/lazy creation/CLOEXEC/EINTR/short-write/sticky-error/close ownership; no fabricated CPU data",
+    "Preserve independent per-realm private callback trace subscriptions while sharing native process state",
+    "Main-only post-public-Worker-join native producer teardown closes the process sink; no early JS exit listener",
+    "Preserve current TTY/Socket/TLS/module/transfer sources through narrow staging and additive0160 teardown patch"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tracing214-source-r1/report.json",
+    "sha256": "c127a0a3e21b97db8b9bccad8ac701bdbda37dba815e93f66ba424e0487751a5",
+    "guardedInputs": 884,
+    "scope": "Real native process-shared tracing/category/file-sink and main-only post-public-Worker-join teardown source. Current JS/component controls preserve8/9 comparisons and native failed-open timeout; actual new guest JSAPI/teardown/full producer/report/four-host conformance remains incomplete."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tracing214-affected-r1.json",
+    "sha256": "37e9f650bda75141cff25cb9a5781b28fca2d495b61defcdbe1058b152dd53c4",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tracing214-source-r1/report.json",
+    "sha256": "c127a0a3e21b97db8b9bccad8ac701bdbda37dba815e93f66ba424e0487751a5",
+    "comparisons": 9,
+    "passingComparisons": 8,
+    "nonpassingComparisons": 1,
+    "nonpassKinds": [
+      "open-error"
+    ],
+    "failedOpenNativeTimeoutPreserved": true,
+    "freshFailedOpenCandidateExitZero": true,
+    "nativePublicReferencesReused": true,
+    "priorStandaloneOwnerModesPassed": 5,
+    "priorNativeCompilerAttemptsIntegrated": 5,
+    "priorNativeCompilerFailuresIntegrated": 1,
+    "newCompilerAttempts": 0,
+    "unchangedStyleCheckerPassed": true,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Current actual public trace_events/Console algorithms over exact identified portable native owner and explicit Node dependencies. All original9 comparisons/assertions retained,8pass and failed-open native timeout nonpass; no guest teardown/JSAPI/full producer/report acceptance."
+  },
+  "sealedEvidence": {
+    "report": ".context/tracing-owner-agent/REPORT.json",
+    "sha256": "7d3266c6ff4f95743617fe41bc400dd827989b8ee26508d1e57c3389e4d99a8f",
+    "reusedEvidence": true,
+    "scope": "Original sealed20-leaf tracing source and tiny portable owner components;5 compiler attempts incl1 registration/API admission failure,8/9 comparison groups and5 native ownership modes. Failed-open native20s timeout remains; source wait inference is not stack-confirmed outside-runtime attribution."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tracing-owner-agent/REPORT.json",
+      "sha256": "7d3266c6ff4f95743617fe41bc400dd827989b8ee26508d1e57c3389e4d99a8f",
+      "scope": "Failed-open native timeout, initial discarded partial-output limitation,1 native addon compile failure and original source/setup failures retained. No forced hang, weakened assertion, runtime workaround or accepted boundary."
+    },
+    {
+      "report": ".context/node26-tracing214-integration-r1.log",
+      "sha256": "e7985b4b0a061d16c200ddbe81bcd420b7cf970b38f9a9416e8fc10219f35fc4",
+      "scope": "Zero-fuzz staging hunk conflict with later Worker startup header;19 leaves applied once, only failed staging hunk composed narrowly before generation/checks."
+    },
+    {
+      "report": ".context/node26-tracing214-controls-r1/report.json",
+      "sha256": "e88e26cb35d5d2d1bfb0e81c70e5f6ac4c01129ff8f8d90bd3b368d99fc1813f",
+      "scope": "Fresh unchanged9-group comparison keeps open-error differential nonpass; native reference timeout preserved and fresh candidate exits0. Not relabeled passing or unsupported."
+    }
+  ],
+  "remaining": [
+    "Compile actual new guest JSAPI/teardown and validate context/realm/GC/fatal/Worker/source lifecycle on identified artifacts",
+    "Complete native operation/category producers, measurements, CPU/duration/schema/metadata and allocation accounting",
+    "CLI/NODE_OPTIONS/file pattern/rotation/permissions/inspector/Perfetto integration",
+    "Actual failed-open/write/fatal/abrupt-shutdown chronology; native timeout not accepted as platform boundary or passing behavior",
+    "process.report full configuration/schema/process/thread/resource/loaded-library/Worker metadata remains missing",
+    "All four hosts require identified-artifact conformance; source/native components do not close audit findings"
+  ],
+  "at": "2026-11-07T12:49:57.750016+00:00",
+  "recipeRevision": 214,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

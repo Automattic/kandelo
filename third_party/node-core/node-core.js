@@ -28994,6 +28994,69 @@ module.exports = punycode;
     return { require };
 }
 
+// Actual native process category/sink owner. The pinned public wrapper supplies
+// validation/descriptors/retention; native ownership remains shared by Workers.
+function _createNodeTracingOwner(platform) {
+    'use strict';
+    const P = _createNodePrimordials();
+    const { BigInt, BigIntAsUintN, BigIntPrototypeToString, JSONStringify, StringFromCharCode,
+        StringPrototypeIndexOf, StringPrototypeSlice, TypeError, ReflectApply } = P;
+    const operate = platform.native.operatingSystem;
+    function call(operation, ...args) {
+        const result = ReflectApply(operate, platform.native, [operation, ...args]);
+        if (result.error) throw new platform.values.errors.codes.ERR_SYSTEM_ERROR({
+            errno: result.error, code: platform.uv.getSystemErrorName(result.error),
+            message: platform.uv.getSystemErrorMessage(result.error), syscall: operation,
+        });
+        return result.value;
+    }
+    function cstring(value) {
+        const end = StringPrototypeIndexOf(value, '\0');
+        return end === -1 ? value : StringPrototypeSlice(value, 0, end);
+    }
+    class CategorySet {
+        #owner;
+        constructor(categories) { this.#owner = call('trace-create', categories); }
+        enable() { call('trace-enable', this.#owner); }
+        disable() { call('trace-disable', this.#owner); }
+    }
+    return {
+        CategorySet,
+        hasAgent() { return call('trace-has-agent'); },
+        getEnabledCategories() { return call('trace-categories'); },
+        isTraceCategoryEnabled(category) {
+            if (typeof category !== 'string') throw new TypeError('Trace event category must be a string.');
+            return call('trace-enabled', cstring(category));
+        },
+        trace(phase, category, name, id, value) {
+            if (typeof category !== 'string') throw new TypeError('Trace event category must be a string.');
+            category = cstring(category);
+            if (!call('trace-enabled', category)) return false;
+            if (typeof phase !== 'number') throw new TypeError('Trace event phase must be a number.');
+            if (typeof name !== 'string') throw new TypeError('Trace event name must be a string.');
+            if (id !== undefined && id !== null && typeof id !== 'number') throw new TypeError('Trace event id must be a number.');
+            if (name.length === 0) throw new TypeError('Trace event name must not be an empty string.');
+            // The classic pinned writer takes already escaped event names.
+            // Console time helpers perform safeTraceLabel before publishing.
+            // Re-encoding those bytes as a JS JSON string would double escape
+            // real labels and differ from the consumed upstream algorithm.
+            let fields = '{"ph":"' + StringFromCharCode((phase | 0) & 255) +
+                '","cat":"' + category + '","name":"' + cstring(name) + '"';
+            if (id !== undefined && id !== null) {
+                const number = BigInt(id | 0);
+                fields += ',"id":"0x' + BigIntPrototypeToString(BigIntAsUintN(64, number), 16) + '"';
+            }
+            fields += ',"args":{';
+            if (value !== undefined) fields += '"data":' + JSONStringify(value);
+            fields += '}}';
+            // Snapshot argument getters/JSON conversion before crossing the
+            // native sink. No caller object or JS root enters shared state.
+            call('trace-event', category, fields);
+            return true;
+        },
+    };
+}
+
 // Real Console state/stream/clock consumers. The internal trace collector owns
 // actual subscriptions; public trace_events/file/inspector support is separate.
 function _createNodeConsolePlatform(platform) {
@@ -29003,6 +29066,7 @@ function _createNodeConsolePlatform(platform) {
         StringPrototypeSplit, Error, ReflectApply } = primordials;
     const process = platform.process;
     const sessions = new SafeSet();
+    const tracing = platform.tracing;
     function enabled(session, category) {
         const names = StringPrototypeSplit(category, ',');
         for (let i = 0; i < names.length; i++) if (session.categories.has(names[i])) return true;
@@ -29014,10 +29078,14 @@ function _createNodeConsolePlatform(platform) {
         usePerfetto: false,
         getCategoryEnabledBuffer() { return undefined; },
         isTraceCategoryEnabled(category) {
+            if (tracing && tracing.isTraceCategoryEnabled(category)) return true;
             for (const session of sessions) if (session.active && enabled(session, category)) return true;
             return false;
         },
         trace(phase, category, name, id, value) {
+            // Native process state is shared by every Worker/realm; private
+            // callback subscriptions remain separate per-realm consumers.
+            const published = tracing ? tracing.trace(phase, category, name, id, value) : false;
             let record;
             // Snapshot consumers so reentrant registration does not acquire
             // this in-flight event. Stop retires its owner immediately.
@@ -29027,9 +29095,14 @@ function _createNodeConsolePlatform(platform) {
                     timestamp: platform.monotonicNanoseconds() });
                 ReflectApply(session.collect, undefined, [record]);
             }
-            return record !== undefined;
+            return published || record !== undefined;
         },
     };
+    if (tracing) {
+        traceBinding.CategorySet = tracing.CategorySet;
+        traceBinding.getEnabledCategories = tracing.getEnabledCategories;
+        traceBinding.hasAgent = tracing.hasAgent;
+    }
     function collect(categories, callback) {
         platform.values.validators.validateArray(categories, 'categories');
         platform.values.validators.validateFunction(callback, 'callback');
@@ -30625,6 +30698,109 @@ module.exports = {
   EOL: isWindows ? '\r\n' : '\n',
 };
 
+},
+"trace_events": function(module, exports, require, primordials, internalBinding, process) {
+'use strict';
+
+const {
+  ArrayPrototypeJoin,
+  SafeSet,
+} = primordials;
+
+const { hasTracing } = internalBinding('config');
+
+const kMaxTracingCount = 10;
+
+const {
+  ERR_TRACE_EVENTS_CATEGORY_REQUIRED,
+  ERR_TRACE_EVENTS_UNAVAILABLE,
+} = require('internal/errors').codes;
+
+const { ownsProcessState } = require('internal/worker');
+const {
+  CategorySet,
+  getEnabledCategories,
+  hasAgent,
+} = internalBinding('trace_events');
+if (!hasTracing || !ownsProcessState || !hasAgent())
+  throw new ERR_TRACE_EVENTS_UNAVAILABLE();
+
+const { customInspectSymbol } = require('internal/util');
+const { format } = require('internal/util/inspect');
+const {
+  validateObject,
+  validateStringArray,
+} = require('internal/validators');
+
+const enabledTracingObjects = new SafeSet();
+
+class Tracing {
+  #handle;
+  #categories;
+  #enabled = false;
+
+  constructor(categories) {
+    this.#handle = new CategorySet(categories);
+    this.#categories = categories;
+  }
+
+  enable() {
+    if (!this.#enabled) {
+      this.#enabled = true;
+      this.#handle.enable();
+      enabledTracingObjects.add(this);
+      if (enabledTracingObjects.size > kMaxTracingCount) {
+        process.emitWarning(
+          'Possible trace_events memory leak detected. There are more than ' +
+          `${kMaxTracingCount} enabled Tracing objects.`,
+        );
+      }
+    }
+  }
+
+  disable() {
+    if (this.#enabled) {
+      this.#enabled = false;
+      this.#handle.disable();
+      enabledTracingObjects.delete(this);
+    }
+  }
+
+  get enabled() {
+    return this.#enabled;
+  }
+
+  get categories() {
+    return ArrayPrototypeJoin(this.#categories, ',');
+  }
+
+  [customInspectSymbol](depth, opts) {
+    if (typeof depth === 'number' && depth < 0)
+      return this;
+
+    const obj = {
+      enabled: this.enabled,
+      categories: this.categories,
+    };
+    return `Tracing ${format(obj)}`;
+  }
+}
+
+function createTracing(options) {
+  validateObject(options, 'options');
+  validateStringArray(options.categories, 'options.categories');
+
+  if (options.categories.length <= 0)
+    throw new ERR_TRACE_EVENTS_CATEGORY_REQUIRED();
+
+  return new Tracing(options.categories);
+}
+
+module.exports = {
+  createTracing,
+  getEnabledCategories,
+};
+
 }
     };
     const modules = new SafeMap();
@@ -30637,6 +30813,7 @@ module.exports = {
             catch (error) { modules.delete(name); throw error; }
             modules.set(name, module.exports); return module.exports;
         }
+        if (name === 'internal/worker') return { ownsProcessState: platform.ownsProcessState };
         if (name === 'internal/errors') return platform.values.errors;
         if (name === 'internal/validators') return platform.values.validators;
         if (name === 'internal/util') return platform.values.util;
@@ -30652,7 +30829,7 @@ module.exports = {
     function internalBinding(name) {
         if (name === 'trace_events') return traceBinding;
         if (name === 'util') return { previewEntries: platform.previewEntries };
-        if (name === 'config') return { hasInspector: false };
+        if (name === 'config') return { hasInspector: false, hasTracing: tracing !== undefined && tracing.hasAgent() };
         throw new Error('Unsupported Console binding: ' + name);
     }
     for (const name of ['log', 'info', 'debug', 'warn', 'error'])
@@ -30671,6 +30848,7 @@ module.exports = {
 }
 
     return { api, collect, traceBinding, trace: require('internal/trace_events'),
+        get tracing() { return require('trace_events'); },
         install(target) { exposeNamespace(target, 'console', api); } };
 }
 

@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0160-node-process-tracing-teardown.patch",
   "packages/registry/spidermonkey/patches/0159-node-terminal-read-material.patch",
   "packages/registry/spidermonkey/patches/0158-node-socket-receiver-adoption.patch",
   "packages/registry/spidermonkey/patches/0157-node-retained-tls-parent.patch",
@@ -267,6 +268,10 @@ inputs = [
   "third_party/node-core/performance-clock.h",
   "third_party/node-core/process-state.h",
   "third_party/node-core/os-operations.h",
+  "third_party/node-core/tracing-owner.h",
+  "third_party/node-core/native-tracing.cpp",
+  "third_party/node-core/tracing-platform-adapter.js",
+  "third_party/node-core/upstream/console/lib/trace_events.js",
   "third_party/node-core/default-locale.h",
   "third_party/node-core/native-os.cpp",
   "third_party/node-core/native-terminal.cpp",
@@ -730,4 +735,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 213
+revision = 214

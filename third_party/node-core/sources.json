@@ -3221,6 +3221,11 @@
         "path": "upstream/console/lib/internal/util.js",
         "upstreamPath": "lib/internal/util.js",
         "sha256": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951"
+      },
+      "trace_events": {
+        "path": "upstream/console/lib/trace_events.js",
+        "upstreamPath": "lib/trace_events.js",
+        "sha256": "5cfd4b8faea1d2bcd090dfda98db3e5a09aeb44192f5989efa82ba6c584e4a6d"
       }
     },
     "exposeNamespace": {
@@ -3228,7 +3233,7 @@
       "length": 221,
       "sha256": "a7a417d58dbdbd60ba9ac944658bf7b1fa2e95d3222d137427d4f90eb27ed030"
     },
-    "scope": "Actual pinned Console/global/table/time source over stream/inspection/clock/diagnostics and real internal collector state. Public trace files and inspector integration remain open."
+    "scope": "Actual pinned Console and public trace controllers over real process-wide native category/sink ownership and existing classic console producers. Report/complete native producers/CLI/rotation/CPU-time schema/Perfetto and identified-artifact four-host conformance remain open."
   },
   "queryCodecs": {
     "sources": {

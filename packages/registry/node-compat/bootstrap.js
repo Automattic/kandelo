@@ -2660,7 +2660,9 @@ _nodeReadlinePlatform = _createNodeReadlinePlatform({
         throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Node permission policy for persistent REPL history');
     } },
 });
+const _nodeTracingOwner = _createNodeTracingOwner({ native: _nodeNative, values: _nodeValues, uv: _nodeUv });
 const _nodeConsolePlatform = _createNodeConsolePlatform({
+    tracing: _nodeTracingOwner, ownsProcessState: !_nodeNative.workerEnvironment,
     process, values: _nodeValues, inspection: _nodeInspection, Buffer,
     types: util.types, diagnostics: _nodeDiagnostics, readline: _nodeReadlinePlatform,
     previewEntries: (value, pairs) => _nodeNative.previewEntries(value, pairs),
@@ -5266,6 +5268,7 @@ const _builtinModules = {
         isWorker: false,
     },
     'console': _nodeConsolePlatform.api,
+    get trace_events() { return _nodeConsolePlatform.tracing; },
     'async_hooks': _nodeAsyncPlatform.api,
     get domain() { return _nodeDomain ??= _createNodeDomainPlatform({
         process, events, values: _nodeValues, async: _nodeAsyncPlatform,

@@ -635,6 +635,7 @@ marker = '/* NODE_QUERY_CODECS_MODULES */'
 if query_adapter.count(marker) != 1:
     raise ValueError('Review query/Unicode codec source marker')
 bundle += query_adapter.replace(marker, ',\n'.join(query_factories)) + '\n'
+bundle += (root / 'tracing-platform-adapter.js').read_text() + '\n'
 console_manifest = manifest['consolePlatform']
 console_sources = {}
 for name, item in console_manifest['sources'].items():

@@ -71,7 +71,9 @@ static bool KandeloNativeOS(JSContext* cx,unsigned argc,Value* vp) {
       strcmp(name, "tty-input-stop") == 0 || strcmp(name, "tty-input-ref") == 0) {
     return KandeloTerminalDispatch(cx, args, name, args.rval(), &error);
   }
-  if (strcmp(name,"constants") == 0) {
+  if (strncmp(name, "trace-", 6) == 0) {
+    if (!KandeloTraceDispatch(cx, args, name, &value, &error)) return false;
+  } else if (strcmp(name,"constants") == 0) {
     if(!args.get(1).isObject() || !args.get(2).isObject()) {
       JS_ReportErrorASCII(cx,"Constants require the real FS and signal bags");return false;
     }

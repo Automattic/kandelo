@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source214 integrates real process-shared trace categories/file ownership and unchanged public trace_events/Console consumers.8/9 current component comparisons pass; failed-open native timeout remains a nonpass. Guest native bridge/teardown and four-host conformance remain unvalidated.
+See [source scope](process-tracing-owner-integration.md).
+
 Source213 integrates real captured TTY read material and request-counted queued close consumed by stdin. Normal staging/880-input closure/style and bounded portable/native-backed factory checks pass. Public TTY/guest C++/four-host conformance remain incomplete.
 See [source scope](terminal-read-material-integration.md).
 
