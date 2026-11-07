@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 98,
+    "sourceSliceRecords": 100,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 252
+    "findingsWithoutExplicitOrProposedSourceSlice": 249
   },
   "families": [
     {
@@ -367,7 +367,7 @@
         "S-013",
         "S-014"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 3,
+      "findingsWithExplicitOrProposedSourceSlices": 6,
       "sourceRouteAsRecorded": "TLS identity algorithms, actual live OpenSSL protocol/cipher/reuse/Finished/verification metadata source, shared IP/domain helpers and transports ; source142 eager trust capture, real SSL_CTX/SSL ownership, verification rejection and owning-realm handling",
       "remainingAsRecorded": "Complete socket/context/trust/key/certificate/handshake/session ownership, metadata/error/descriptor fidelity, secure pooling/servers and DTLS/QUIC",
       "remainingOwner": "Native SSL_CTX/SSL/certificate/socket/session owners and TLS/HTTPS/DTLS/QUIC wrappers",
@@ -4462,6 +4462,13 @@
           "auditDocument": "tests/nodejs/audit/http.md",
           "scope": "Request/parser/ServerResponse/method catalog source subset; full Server and complete finding obligations remain open",
           "closure": false
+        },
+        {
+          "slice": "http-synchronous-headers",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/http.md",
+          "scope": "Consumed request-header/original-allocation/numeric-decision source prerequisite, not complete parser/Server/lifecycle or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4492,6 +4499,13 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/http.md",
           "scope": "Request/parser/ServerResponse/method catalog source subset; full Server and complete finding obligations remain open",
+          "closure": false
+        },
+        {
+          "slice": "http-synchronous-headers",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/http.md",
+          "scope": "Consumed request-header/original-allocation/numeric-decision source prerequisite, not complete parser/Server/lifecycle or finding closure",
           "closure": false
         }
       ],
@@ -4737,6 +4751,13 @@
           "auditDocument": "tests/nodejs/audit/http.md",
           "scope": "Request/parser/ServerResponse/method catalog source subset; full Server and complete finding obligations remain open",
           "closure": false
+        },
+        {
+          "slice": "http-synchronous-headers",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/http.md",
+          "scope": "Consumed request-header/original-allocation/numeric-decision source prerequisite, not complete parser/Server/lifecycle or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4840,6 +4861,13 @@
         {
           "slice": "tls-context",
           "relation": "explicit"
+        },
+        {
+          "slice": "tls-credential-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "scope": "Actual shared prepared SSL_CTX credential/reference prerequisite; not full public SecureContext/TLS or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -4866,7 +4894,15 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "TLS lifetime and async cancellation",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "tls-credential-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "scope": "Actual shared prepared SSL_CTX credential/reference prerequisite; not full public SecureContext/TLS or finding closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "tls-state"
       ],
@@ -4932,7 +4968,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Exact crypto/TLS backend capabilities",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "tls-credential-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "scope": "Actual shared prepared SSL_CTX credential/reference prerequisite; not full public SecureContext/TLS or finding closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "tls-state"
       ],
@@ -4978,7 +5022,15 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "Actual TLS shutdown, native resource state and failures",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "tls-credential-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "scope": "Actual shared prepared SSL_CTX credential/reference prerequisite; not full public SecureContext/TLS or finding closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "tls-state"
       ],
@@ -19019,6 +19071,149 @@
           "TEST-002"
         ]
       }
+    },
+    "http-synchronous-headers": {
+      "document": "tests/nodejs/outline/http-synchronous-headers-finding-progress.json",
+      "sha256": "112056b15beb14db68eae5fe7fa2d1d2a5ba2abfe780239c22367cb4508b526a",
+      "recordedRevision": 181,
+      "explicitFindingIds": [
+        "H-003",
+        "H-004",
+        "H-013"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-http181-source-r1/report.json",
+          "sha256": "7e23cfe1a642b99016dca4156300887a2dc1d38fd408ea559e02084541ba1b31",
+          "guardedInputs": 817,
+          "scope": "Current actual synchronous HTTPrequest headers/production consumer over original-allocation source; focused portable/native controls, fullServer/shared atomic parser/JSAPI/guest/fourhost gaps retained."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-http181-affected-r1.json",
+          "sha256": "b57d467156b4364df254d69892057dc79e844b9302799912c165730af73e1a8c",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-http181-source-r1/report.json",
+          "sha256": "7e23cfe1a642b99016dca4156300887a2dc1d38fd408ea559e02084541ba1b31",
+          "requestGroups": 16,
+          "portableNativeDifferentials": 11,
+          "unchangedResponseCases": 25,
+          "actualProductionForwarderExecuted": true,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "scope": "Current portable header owner/current actual request consumer/production adapter over real nativeHTTPParser/IncomingMessage and identified sealed llhttp artifacts. Engine Span/GC/realm/detach/resize/transfer and parser async/fatal/guest remain unexecuted."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/http-server-owner-agent/HANDOFF.json",
+          "sha256": "b21d383c9a17bc097d29ed1793eca478a4a23ca6ec896acad8a95cd8726fd992",
+          "reusedEvidence": true,
+          "scope": "32source checks,16requestgroups/11portable-native comparisons,25unchangedresponse cases;10successful tiny compiler steps, genuine private missing Net declaration retained, root177already declares it"
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/http-synchronous-headers-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/http-synchronous-headers-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Real llhttp on_headers_complete invokes stack-scoped synchronous handler before body bytes, with actual callback result controlling that native parser frame; no replayed header event",
+        "Actual native request owner/callback roots and original unshared backing allocation Span survive the synchronous JS callback without a copied input or no-GC JS entry",
+        "Preserve pending actual callback/number-coercion failure after native unwind rather than converting it to a parser packet or fabricated400",
+        "Use exact target IntegerValue int64 saturation then int narrowing, including NaN/infinities and2^63edge cases",
+        "Existing pinned parserOnHeadersComplete/IncomingMessage request consumer and actual curated variadic forwarding consume the new operation; response packet contract unchanged",
+        "Active-step/handler and owner execution guards retire on unwind; no fabricated parser resource/provider/async IDs or fullServer activation"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/http-synchronous-headers-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Full reusable native HTTPParser initialize/reset/execute/finish/pause/resume/remove/free/close and pipelining/original input ownership",
+        "Synchronous body/completion/begin/header-flush callbacks, exact stream backpressure/upgrade/EOF/keepalive/reentry policy",
+        "Actual native HTTPINCOMINGMESSAGE provider/resource/trigger/fatal/Domain callback ownership and native StreamBase consume/unconsume where real",
+        "Real ConnectionsList monotonic parser/request/header timing, active/idle/expiry queries and lifecycle/timeouts",
+        "Shared input atomic consumption is a missing owner, not an accepted engine boundary or copied-snapshot support",
+        "Full pinned HTTP Server/createServer/_connectionListener over those owners; current productionJSAPI/Span/GC/realm/detach/resize/transfer/teardown/fourhost validation"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/http.md",
+      "findingScope": "Consumed request-header/original-allocation/numeric-decision source prerequisite, not complete parser/Server/lifecycle or finding closure",
+      "additionalAuditDocuments": {}
+    },
+    "tls-credential-owner": {
+      "document": "tests/nodejs/outline/tls-credential-owner-finding-progress.json",
+      "sha256": "5f028ac9540d18b62010cb180de721f2b877e176407287414461162e0bc548d8",
+      "recordedRevision": 182,
+      "explicitFindingIds": [
+        "S-003",
+        "S-004",
+        "S-007",
+        "S-009"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tls182-source-r1/report.json",
+          "sha256": "8d515386490ae3f983826f4ab5d07a1e3f97b7a4868c31e699a23efa00b2f7ed",
+          "guardedInputs": 820,
+          "scope": "Current real SSL_CTX credential selections and independent native refs; full SecureContext, ordinary error Set/decorating, guest JSAPI/GC/fourhost remain open."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tls182-affected-r1.json",
+          "sha256": "2ef7e521fc2796ffbea69fcbb5bbde6a373483b335d3836f380766ebba4e010d",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tls182-source-r1/report.json",
+          "sha256": "8d515386490ae3f983826f4ab5d07a1e3f97b7a4868c31e699a23efa00b2f7ed",
+          "credentialDifferentialGroups": 57,
+          "realOwnerLifetimeGroups": 5,
+          "actualProductionForwarderExecuted": true,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "scope": "Current shared portable context owner/selected public algorithms over exact native Node26.13.0/OpenSSL3.5.9 artifact. Actual mutual-auth memory-BIO TLS/record transfer and context claim after V8 wrapper GC, not guest transport/SpiderMonkey finalization."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tls-credentials-owner-agent/report.json",
+          "sha256": "9df70b2f0aa48624823a64414b97d8b12be2b79f7a0c10b8f9065888a16f6440",
+          "reusedEvidence": true,
+          "scope": "36source checks/800private declared inputs,57stock-prototype credential differentials/5actual native handshake-lifetime groups;6successful tiny compiler calls. Generic Error ordinary Set/decorating and full SecureContext/JSAPI remain gaps."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/tls-credential-owner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/tls-credential-owner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Actual shared SSL_CTX receives PEM certificate chains, PEM private keys/passphrases and PFX before existing TCP startup; no second transport or host-TLS delegation",
+        "Exact selected pinned public cert/key/PFX validation/order/array/override/toBuf algorithms consume actual native material",
+        "Actual certificate/issuer X509 references and SSL_CTX-owned key/certificate refs survive intermediate parse cleanup; existing handshake claims its own context reference",
+        "TLS reuses actual172PKCS12 parsing with distinct complete-bundle/password/error policy; real cleansing temporary bytes and preallocated password terminator",
+        "Checked rooted view acquisition follows actual realm/offset/admission and oversized LoadBIO policy; actual curated variadic TLS forwarder and bootstrap Buffer input consumed",
+        "Current authoritative guest OpenSSL3.5.9 pin and accepted173 selected dependency traced separately from native3.5.9 component/config; no pin or ABI change"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/tls-credential-owner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Full public SecureContext/createSecureContext/server/configuration/cipher/security-level/options/getter order and broader TLS protocols",
+        "Actual inherited Error ordinary [[Set]] hooks/nonwritable fields and intermediate secondary-error decoration order; stock-prototype comparison is insufficient",
+        "Opaque OpenSSL physical allocation/accounting and complete teardown/cancellation/termination ownership",
+        "Actual guest JSAPI/realm/checked-wrapper/GC/detach/resize/transfer compile and execution",
+        "Exact selected current guest backend configuration/provider/trust behavior and all-four-host identified-artifact runtime conformance; native3.5.9 is not guest3.5.9 evidence"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/secure-network.md",
+      "findingScope": "Actual shared prepared SSL_CTX credential/reference prerequisite; not full public SecureContext/TLS or finding closure",
+      "additionalAuditDocuments": {}
     }
   },
   "dependencyNarratives": {
@@ -20897,6 +21092,27 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current180mock/loading source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T05:09:23.519984+00:00",
+        "sourceCheckpoint": 182,
+        "sourceHead": "014552ea41478bc44c708d035477626697d824e3",
+        "addedSourceSlices": [
+          "http-synchronous-headers",
+          "tls-credential-owner"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "df5de2830045463e484b1eb2a4081032f2d6ca0c27d790f9c4cc2de4d176cc41"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current181HTTP/182TLS source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }

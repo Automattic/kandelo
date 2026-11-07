@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T04:39:02.277571+00:00",
-  "sourceHead": "810b8bead907f01f3483b9a72878cef187c815e9",
-  "recipeRevision": 180,
+  "at": "2026-11-07T05:09:23.519984+00:00",
+  "sourceHead": "014552ea41478bc44c708d035477626697d824e3",
+  "recipeRevision": 182,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 98,
+    "sourceSliceRecords": 100,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 252
+    "findingsWithoutExplicitOrProposedSourceSlice": 249
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,21 +26,22 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 98,
+  "sourceSliceIdentitiesVerified": 100,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "40bfb523d80ae6d3714380f311af16923b458fb40b8a5effc8bc2e6bcae11eb8"
+    "sha256": "fb79b26c306a2f7c65a8ea4e7c685923631abb49a4d7eec6f1d69e9af1a73d38"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "ec9688542aa92df6bff959fa5812780ca60d4ba0f3bdfb95f2a5c3bd403dc471",
-    "sourceHead": "4ea5ff6ad5ce2ce4a71e31bd083c65be97859eb4",
+    "sha256": "7ad710c6c1dbd7f90210152cc2c3fbac3bce48f06634711e66273a6729b9d81d",
+    "sourceHead": "810b8bead907f01f3483b9a72878cef187c815e9",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "module-mocks-esm-source"
+    "http-synchronous-headers",
+    "tls-credential-owner"
   ]
 }

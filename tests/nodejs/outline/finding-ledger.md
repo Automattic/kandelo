@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 98 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 100 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 252 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 249 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -134,3 +134,20 @@ Accepted173predates current180. Early phases/attributes, async loaders,
 translators/cache/lifecycle, native allocation/error semantics, guest Wasm
 execution and remaining public/four-host conformance remain open. Whole
 module-mocking file coverage is not claimed:3of23top-level groups run.
+
+## Source182 HTTP and TLS progress overlay
+
+Source181 links H-003/H-004/H-013 to the actual synchronous llhttp header
+callback and original-allocation prerequisite. Source182 links
+S-003/S-004/S-007/S-009 to actual shared SSL_CTX credentials and independently
+retained material/context state. These remain partial contributions. Current
+focused native component evidence does not execute new guest JSAPI/GC owners.
+No finding or family is closed.
+
+HTTP still needs reusable parser/lifecycle/body callbacks/ConnectionsList and
+full Server owners. TLS still needs full public SecureContext/configuration,
+ordinary error-property setters and intermediate OpenSSL decoration ordering.
+Native3.5.9 and guest3.5.9 are distinct artifacts/configurations; existing guest
+source pin is unchanged. Accepted173predates current182; combined compilation,
+product projection and guest/four-host conformance remain unestablished.
+Nested guest Wasm execution remains in scope and explicitly scheduled last.

@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T05:08:38.370598+00:00",
+  "updatedAt": "2026-11-07T05:09:23.519984+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "40bfb523d80ae6d3714380f311af16923b458fb40b8a5effc8bc2e6bcae11eb8",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "7ad710c6c1dbd7f90210152cc2c3fbac3bce48f06634711e66273a6729b9d81d",
-    "tests/nodejs/outline/finding-ledger.md": "a152a883dc312dc2042caae035e21f1a24c9ebc3c28896f11e72b93ce728db1d",
+    "tests/nodejs/outline/finding-ledger.json": "fb79b26c306a2f7c65a8ea4e7c685923631abb49a4d7eec6f1d69e9af1a73d38",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "ab5b48595ba0a02aa61db8584493912212bd2f5b3268e962a84b38b143399ab6",
+    "tests/nodejs/outline/finding-ledger.md": "00e15f2e8b5b909164e38b9a35df86a12ffa8f9d3a4ec959cfd3f4c0b35a8425",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -6630,7 +6630,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real synchronous request-header decision/original allocation ownership with current180and focused native-dependent evidence while preserving complete parser/server/async/shared/guest gaps."
+    "reason": "Integrated real shared TLS credentials/reference owners with current181and exact focused native-dependent evidence, preserving full SecureContext/error setter and guest/fourhost gaps."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -43204,10 +43204,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/tls-credential-owner-20261107T050842Z.tar.gz",
-    "sha256": "800c78687284a031b3d597972de87d2bd39b871440a9f481475e9e5712a45169",
-    "bytes": 45657440,
-    "scope": "182real shared TLS credential/context owner and exact focused native evidence; full SecureContext/error setters/JSAPI/guest/fourhost unestablished",
+    "path": ".context/node26-implementation-snapshots/finding-overlay182-20261107T050923Z.tar.gz",
+    "sha256": "d0d87050dcfeeb8de6a722ea9dc9b670ab081c508c893bb15bbe0a728f1ae0b8",
+    "bytes": 10270305,
+    "scope": "Current182source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -46501,7 +46501,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real shared TLS credentials/reference owners with current181and exact focused native-dependent evidence, preserving full SecureContext/error setter and guest/fourhost gaps."
+    "reason": "Reconciled canonical finding navigation with integrated synchronous HTTP/shared TLS credential source and scoped limitations, preserving document-qualified definitions, exact nonpasses and unknown dispositions without API closure."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -52258,6 +52258,13 @@
       "sha256": "1d26adb6af5a7a0143a3592c59a9cc75fd468602721a13e037c3742e0ffe3668",
       "bytes": 32146807,
       "scope": "181real synchronous HTTPheader/original allocation source and identified focused controls; completeServer/JSAPI/guest/fourhost unproven",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/tls-credential-owner-20261107T050842Z.tar.gz",
+      "sha256": "800c78687284a031b3d597972de87d2bd39b871440a9f481475e9e5712a45169",
+      "bytes": 45657440,
+      "scope": "182real shared TLS credential/context owner and exact focused native evidence; full SecureContext/error setters/JSAPI/guest/fourhost unestablished",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -90119,22 +90126,22 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "40bfb523d80ae6d3714380f311af16923b458fb40b8a5effc8bc2e6bcae11eb8",
+    "sha256": "fb79b26c306a2f7c65a8ea4e7c685923631abb49a4d7eec6f1d69e9af1a73d38",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "7ad710c6c1dbd7f90210152cc2c3fbac3bce48f06634711e66273a6729b9d81d"
+      "sha256": "ab5b48595ba0a02aa61db8584493912212bd2f5b3268e962a84b38b143399ab6"
     },
-    "sourceCheckpoint": 180,
+    "sourceCheckpoint": 182,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 98,
+      "sourceSliceRecords": 100,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
-      "findingsWithoutExplicitOrProposedSourceSlice": 252
+      "findingsWithoutExplicitOrProposedSourceSlice": 249
     },
     "individualApiClosure": false,
     "fourHostConformance": false
@@ -90595,6 +90602,28 @@
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 255
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "40bfb523d80ae6d3714380f311af16923b458fb40b8a5effc8bc2e6bcae11eb8",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "7ad710c6c1dbd7f90210152cc2c3fbac3bce48f06634711e66273a6729b9d81d"
+      },
+      "sourceCheckpoint": 180,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 98,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 252
       },
       "individualApiClosure": false,
       "fourHostConformance": false
