@@ -17,6 +17,7 @@ pub mod channel_record_decode;
 pub mod channel_result;
 pub mod channel_scratch;
 pub mod clipboard;
+pub mod console_device;
 pub mod credentials;
 pub mod descriptor_backing;
 pub mod exchange;

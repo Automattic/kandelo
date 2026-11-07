@@ -173,6 +173,10 @@ pub enum VirtualDevice {
     /// per-open cursor held in the OFD file position (see
     /// `crate::kmsg_device`). host_handle -13.
     Kmsg,
+    /// `/dev/console` — the machine's console, write-only in effect: a
+    /// program's bytes go to the host's output stream and nowhere else (see
+    /// `crate::console_device`). host_handle -14.
+    Console,
 }
 
 impl VirtualDevice {
@@ -191,6 +195,7 @@ impl VirtualDevice {
             VirtualDevice::InputEvent { device } => -10 - device as i64,
             VirtualDevice::Clipboard => -12,
             VirtualDevice::Kmsg => -13,
+            VirtualDevice::Console => -14,
         }
     }
 
@@ -210,6 +215,7 @@ impl VirtualDevice {
             -11 => Some(VirtualDevice::InputEvent { device: 1 }),
             -12 => Some(VirtualDevice::Clipboard),
             -13 => Some(VirtualDevice::Kmsg),
+            -14 => Some(VirtualDevice::Console),
             _ => None,
         }
     }
@@ -229,6 +235,7 @@ impl VirtualDevice {
             VirtualDevice::InputEvent { device } => 10 + device as u64,
             VirtualDevice::Clipboard => 12,
             VirtualDevice::Kmsg => 13,
+            VirtualDevice::Console => 14,
         }
     }
 
@@ -265,13 +272,13 @@ const fn makedev(major: u32, minor: u32) -> u64 {
 
 /// Check if a resolved path is a virtual device node.
 ///
-/// `/dev/console` aliases to `/dev/null` (write-discard, read-EOF).
-/// Real consoles aren't meaningful in this hosted kernel — programs
-/// that probe for /dev/console as a fallback log sink should succeed
-/// with a sink that swallows output rather than failing with ENOENT.
+/// `/dev/console` is the machine's console (see `crate::console_device`):
+/// writes reach the host's output stream, reads find end-of-file. It is not
+/// an alias of `/dev/null`.
 fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
     match path {
-        b"/dev/null" | b"/dev/console" => Some(VirtualDevice::Null),
+        b"/dev/null" => Some(VirtualDevice::Null),
+        b"/dev/console" => Some(VirtualDevice::Console),
         b"/dev/zero" => Some(VirtualDevice::Zero),
         b"/dev/urandom" | b"/dev/random" => Some(VirtualDevice::Urandom),
         b"/dev/full" => Some(VirtualDevice::Full),
@@ -4221,7 +4228,8 @@ pub fn validate_scm_rights_transfer_metadata(
                     VirtualDevice::Null
                     | VirtualDevice::Zero
                     | VirtualDevice::Urandom
-                    | VirtualDevice::Full,
+                    | VirtualDevice::Full
+                    | VirtualDevice::Console,
                 ) => Ok(()),
                 // Framebuffer, input, audio, and DRI virtual handles name state
                 // owned by the sending process. Copying the integer would
@@ -5655,6 +5663,10 @@ pub fn sys_read(
                         // making up pixel bytes, matching the existing
                         // "no-op for unsupported access" pattern.
                         VirtualDevice::Null | VirtualDevice::Fb0 | VirtualDevice::DriRenderD128 => 0,
+                        // There is no console input source, so a read finds
+                        // end-of-file, as it did when the node was an alias
+                        // of /dev/null.
+                        VirtualDevice::Console => 0,
                         // Real DSP descriptors use PcmPlayback and O_WRONLY.
                         VirtualDevice::Dsp => return Err(Errno::EBADF),
                         VirtualDevice::InputEvent { .. } => {
@@ -6268,6 +6280,9 @@ pub fn sys_write(
                         // could append could forge a kernel record. Refused
                         // rather than accepted and discarded.
                         VirtualDevice::Kmsg => Err(Errno::EACCES),
+                        // The program's own bytes, to the host and nowhere
+                        // else: the console module cannot reach the ring.
+                        VirtualDevice::Console => crate::console_device::write(host, buf),
                         _ => Ok(buf.len()), // Null, Zero, Urandom, Mice: discard
                     };
                 }
@@ -18465,6 +18480,7 @@ pub fn sys_epoll_ctl(
                     | VirtualDevice::Zero
                     | VirtualDevice::Full
                     | VirtualDevice::Urandom
+                    | VirtualDevice::Console
                     | VirtualDevice::Fb0
             )
         )
@@ -22744,6 +22760,8 @@ mod tests {
         fpathconf_calls: Vec<(i64, i32)>,
         read_calls: usize,
         write_calls: usize,
+        /// Every `(handle, bytes)` the kernel handed to `host_write`, in order.
+        host_writes: Vec<(i64, Vec<u8>)>,
         read_error: Option<Errno>,
         write_error: Option<Errno>,
         read_reported: Option<usize>,
@@ -22892,6 +22910,7 @@ mod tests {
                 fpathconf_calls: Vec::new(),
                 read_calls: 0,
                 write_calls: 0,
+                host_writes: Vec::new(),
                 read_error: None,
                 write_error: None,
                 read_reported: None,
@@ -23335,8 +23354,9 @@ mod tests {
             Ok(self.read_reported.unwrap_or(n))
         }
 
-        fn host_write(&mut self, _handle: i64, buf: &[u8]) -> Result<usize, Errno> {
+        fn host_write(&mut self, handle: i64, buf: &[u8]) -> Result<usize, Errno> {
             self.write_calls += 1;
+            self.host_writes.push((handle, buf.to_vec()));
             if let Some(error) = self.write_error {
                 return Err(error);
             }
@@ -32818,7 +32838,7 @@ mod tests {
         let mut host = MockHostIO::new();
         let devices: &[(&[u8], i64)] = &[
             (b"/dev/null", VirtualDevice::Null.host_handle()),
-            (b"/dev/console", VirtualDevice::Null.host_handle()),
+            (b"/dev/console", VirtualDevice::Console.host_handle()),
             (b"/dev/zero", VirtualDevice::Zero.host_handle()),
             (b"/dev/urandom", VirtualDevice::Urandom.host_handle()),
             (b"/dev/random", VirtualDevice::Urandom.host_handle()),
@@ -42067,19 +42087,6 @@ impl HostIO for NetMock {
     }
 
     #[test]
-    fn test_dev_console_aliases_dev_null() {
-        // /dev/console is an alias for /dev/null: write-discard, read-EOF.
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        let fd = sys_open(&mut proc, &mut host, b"/dev/console", O_RDWR, 0).unwrap();
-        let n = sys_write(&mut proc, &mut host, fd, b"console msg").unwrap();
-        assert_eq!(n, 11);
-        let mut buf = [0u8; 64];
-        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
-        assert_eq!(n, 0);
-    }
-
-    #[test]
     fn test_read_dev_zero_fills() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -42248,7 +42255,7 @@ impl HostIO for NetMock {
         );
         assert_eq!(
             match_virtual_device(b"/dev/console"),
-            Some(VirtualDevice::Null)
+            Some(VirtualDevice::Console)
         );
         assert_eq!(
             match_virtual_device(b"/dev/zero"),
@@ -57218,6 +57225,162 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(ring.head_seq(), before, "the record was dropped");
             let woken = sys_epoll_pwait(&mut proc, &mut host, ep, 1, 0, None).unwrap().1;
             assert!(woken.is_empty(), "a dropped record changed nothing a reader can see");
+        }
+    }
+
+    /// `/dev/console`: the one place a program's bytes leave for the host
+    /// without passing through a file descriptor the program owns. Flow is
+    /// one-way, console-ward; the ring is never written from here.
+    mod console_device_tests {
+        use super::*;
+        use crate::kmsg::{global_kmsg_ring, klog, with_global_ring_selected, KlogSite};
+        use crate::kmsg_device::TEST_LOCK;
+        use wasm_posix_shared::flags::O_NOCTTY;
+
+        const CONSOLE: &[u8] = b"/dev/console";
+
+        #[test]
+        fn writes_to_dev_console_reach_the_console_not_dev_null() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+
+            let null = sys_open(&mut proc, &mut host, b"/dev/null", O_WRONLY, 0).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, null, b"discarded").unwrap(), 9);
+            assert!(host.host_writes.is_empty(), "/dev/null still discards");
+
+            let console = sys_open(&mut proc, &mut host, CONSOLE, O_WRONLY, 0).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, console, b"to the console").unwrap(), 14);
+            assert_eq!(
+                host.host_writes,
+                vec![(crate::console_device::CONSOLE_HOST_HANDLE, b"to the console".to_vec())],
+            );
+        }
+
+        #[test]
+        fn dev_console_is_its_own_device_not_an_alias_of_dev_null() {
+            assert_eq!(VirtualDevice::Console.host_handle(), -14);
+            assert_eq!(VirtualDevice::from_host_handle(-14), Some(VirtualDevice::Console));
+            assert_eq!(match_virtual_device(CONSOLE), Some(VirtualDevice::Console));
+            assert_ne!(VirtualDevice::Console.ino(), VirtualDevice::Null.ino());
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let st = sys_stat(&mut proc, &mut host, CONSOLE).unwrap();
+            assert_eq!(st.st_mode & S_IFMT, wasm_posix_shared::mode::S_IFCHR);
+            assert_eq!(st.st_ino, VirtualDevice::Console.ino());
+        }
+
+        #[test]
+        fn a_write_that_the_host_refuses_fails_rather_than_pretending() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, CONSOLE, O_WRONLY, 0).unwrap();
+            host.write_error = Some(Errno::EIO);
+            assert_eq!(sys_write(&mut proc, &mut host, fd, b"lost"), Err(Errno::EIO));
+        }
+
+        #[test]
+        fn an_empty_write_to_dev_console_reaches_no_one() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, CONSOLE, O_WRONLY, 0).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, fd, b"").unwrap(), 0);
+            assert!(host.host_writes.is_empty());
+        }
+
+        #[test]
+        fn writes_arriving_at_dev_console_never_enter_the_ring() {
+            let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: TEST_LOCK serializes every test that touches the ring.
+            let ring = unsafe { global_kmsg_ring() };
+            ring.clear();
+            let before = ring.head_seq();
+
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let reader = sys_open(&mut proc, &mut host, b"/dev/kmsg", O_RDONLY | O_NONBLOCK, 0).unwrap();
+            let console = sys_open(&mut proc, &mut host, CONSOLE, O_WRONLY, 0).unwrap();
+            // Anything the write path logged would land in the machine-global
+            // ring while it is selected; nothing may.
+            with_global_ring_selected(|| {
+                sys_write(&mut proc, &mut host, console, b"<0>forged kernel panic\n").unwrap();
+                sys_write(&mut proc, &mut host, console, b"6,1,2,-;also forged\n").unwrap();
+            });
+
+            assert_eq!(ring.head_seq(), before, "no record was appended");
+            let mut buf = vec![0u8; 8192];
+            assert_eq!(
+                sys_read(&mut proc, &mut host, reader, &mut buf),
+                Err(Errno::EAGAIN),
+                "a /dev/kmsg reader sees nothing",
+            );
+        }
+
+        #[test]
+        fn log_cons_fallback_from_musl_syslog_reaches_the_console() {
+            // musl `_vsyslog`, when /dev/log is unreachable and LOG_CONS is
+            // set: open("/dev/console", O_WRONLY|O_NOCTTY|O_CLOEXEC), then
+            // dprintf(fd, "%s", message-without-header), then close(fd).
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, CONSOLE, O_WRONLY | O_NOCTTY | O_CLOEXEC, 0)
+                .expect("musl's escape hatch must open");
+            sys_write(&mut proc, &mut host, fd, b"daemon: could not reach syslogd\n").unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert_eq!(
+                host.host_writes,
+                vec![(
+                    crate::console_device::CONSOLE_HOST_HANDLE,
+                    b"daemon: could not reach syslogd\n".to_vec(),
+                )],
+            );
+        }
+
+        #[test]
+        fn reading_dev_console_still_reports_end_of_file() {
+            // There is no console input source; this is unchanged from when
+            // the node was an alias of /dev/null.
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, CONSOLE, O_RDWR, 0).unwrap();
+            let mut buf = [0u8; 16];
+            assert_eq!(sys_read(&mut proc, &mut host, fd, &mut buf).unwrap(), 0);
+        }
+
+        #[test]
+        fn kernel_ring_records_do_not_reach_the_hosts_stdout_stream() {
+            // The host's stdout is attributed to whichever process the kernel
+            // is serving, and programs and test harnesses read it as bytes
+            // the program wrote. A ring record echoed there would appear in
+            // an unrelated program's output (a SIGPIPE death logs one), so
+            // until the host offers a console channel of its own the ring is
+            // not echoed. See docs/architecture.md, "Host-runtime failure
+            // diagnostics are kept separate from guest file descriptor 2".
+            let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut host = MockHostIO::new();
+            host.clock_time = (3, 0);
+            let seq = with_global_ring_selected(|| {
+                klog(&mut host, KlogSite::ProcessKilledBySignal, format_args!("process 5 killed by signal 13 (SIGPIPE)"))
+            });
+            assert!(seq.is_some(), "the record was written to the ring");
+            assert!(host.host_writes.is_empty(), "and was not written to the host's output");
+        }
+
+        #[test]
+        fn the_console_write_path_has_no_access_to_the_ring() {
+            // Structural, not behavioral: the module that carries a program's
+            // bytes to the console must not name the ring or either writer of
+            // it, so a later edit cannot route console writes into it without
+            // first editing this test and answering for it.
+            let source = include_str!("console_device.rs");
+            let code = source.split("#[cfg(test)]").next().unwrap();
+            let code: String = code
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for forbidden in ["kmsg", "klog", "KmsgRing", "with_ring"] {
+                assert!(!code.contains(forbidden), "console_device.rs names `{forbidden}`");
+            }
         }
     }
 }
