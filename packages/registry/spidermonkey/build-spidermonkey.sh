@@ -428,6 +428,7 @@ cp -R "$REPO_ROOT/third_party/node-core/upstream/histogram-reference/deps/histog
 cp "$REPO_ROOT/third_party/node-core/event-loop-delay.h" "$SRC_DIR/js/src/shell/event-loop-delay.h"
 cp "$REPO_ROOT/third_party/node-core/event-loop-delay-lifetime.h" "$SRC_DIR/js/src/shell/event-loop-delay-lifetime.h"
 cp "$REPO_ROOT/third_party/node-core/vm-module-hooks.h" "$SRC_DIR/js/src/shell/kandelo-node-vm-module-hooks.h"
+cp "$REPO_ROOT/third_party/node-core/vm-execution-deadline.h" "$SRC_DIR/js/src/shell/kandelo-node-vm-execution-deadline.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-native-embedding.py" \
     --shell-dir "$SRC_DIR/js/src/shell"
 

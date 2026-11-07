@@ -1,0 +1,92 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/engine.md",
+    "findingIds": [
+      "E-002",
+      "E-009"
+    ],
+    "relatedFamilies": [
+      "engine",
+      "async",
+      "testing",
+      "processes"
+    ],
+    "scope": "Synchronous VM script deadline subset; legacy E002 and explicit E009 are document-qualified navigation, not whole finding closure"
+  },
+  "sourceImplemented": [
+    "Real steady-clock C++ watchdog with explicit cancellation/join and per-context invocation ownership, repeated expiry interrupts",
+    "Actual engine uncatchable interruption and foreign nested-boundary propagation; owning target-realm timeout Error only after unwind/join",
+    "Own literal public timeout forwarding retains unchanged pinned validation and existing compileFunction body",
+    "Preserve actual foreign shell/worker/OOM/forced states and prior173style/vendor/currentPKCS12 ownership"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-vm174-source-r1/report.json",
+    "sha256": "788599c706f153dbace0d9928802422b2101a6f4d769880bd3d9131ce1a6837e",
+    "guardedInputs": 789,
+    "scope": "Real joined native watchdog/frame/interrupt source with original compileFunction unchanged; current8deadline+11validation/native-dependent public comparisons,10portable ownergroups, whole unchanged upstream eachsubject and unchanged style. Production174JSAPI/guest/fourhost not established; wait-failure edge open."
+  },
+  "packageChecks": {
+    "report": ".context/node26-vm174-affected-r1.json",
+    "sha256": "c9caf2383aa0cd922466a7b44779a5b924b296befca8c929a8838c7e9c463c8f",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false,
+    "selection": "tests/package-system/node-core-build-inputs.test.ts",
+    "allReportPassedCases": 25,
+    "otherAffectedVmComponentCases": 11,
+    "scope": "14actual package-contract assertion records within preserved combined25case report;11VMcomponent records are separate"
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-vm174-source-r1/report.json",
+    "sha256": "788599c706f153dbace0d9928802422b2101a6f4d769880bd3d9131ce1a6837e",
+    "portableOwnerGroups": 10,
+    "publicDeadlineComparisons": 8,
+    "validationComparisons": 11,
+    "wholeUnchangedUpstreamSubjects": 2,
+    "affectedVmComponentCases": 11,
+    "packageContractCases": 14,
+    "productionSMExecuted": false,
+    "scope": "Current174public frontend over explicit pinned nativeVM backend and exact reused compiled portable owner; no productionSM, guest or fourhost execution"
+  },
+  "sealedEvidence": {
+    "report": ".context/vm-deadline-agent/handoff.json",
+    "sha256": "55e1ed7889ee011fd3fb25c1002c66e955217f148bf5b7f0345e8200bbea0bc8",
+    "reusedEvidence": true,
+    "scope": "10portable ownergroups,8frontend/reference+11validation,11host cases and unchanged full upstream;3tiny compilation attempts including1missing-dependency failure; no engine/guest proof"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/vm-deadline-agent/negative-assignment/output.log",
+      "sha256": "a9649371328d219b3667e2a7fe0077b76d2950b824d21fb48f0609894bbac155",
+      "kind": "real-private-timeout-forwarding-failure",
+      "reason": "Ordinary assignment let inherited setter consume deadline; final own literal fixes forwarding without weakening assertions"
+    },
+    {
+      "report": ".context/vm-deadline-agent/sdk-missing-dependency/sdk-compile.json",
+      "sha256": "26826c67fba6c4591c0bce6f0a559c62ce766886c67ee3ed9e5adbb1375bdfc4",
+      "kind": "standalone-sdk-missing-declared-dependency",
+      "reason": "Initial compiler invocation lacked actual libcxx includes; final real declared include dependency succeeds"
+    },
+    {
+      "report": ".context/vm-deadline-agent/host-setup-first/host-vm-results.json",
+      "sha256": "6dfde8c4991e61acc88fc902d110a11ffda291ba593035dcb06ec33f9801fd91",
+      "kind": "isolated-component-fixture-errors",
+      "reason": "Initial fixture omitted exposed-internals worker flag and exact pinned upstream source path; assertions preserved"
+    }
+  ],
+  "remaining": [
+    "Wait-failure catch only sends one request; actual persistence under reentrant embedding callback remains unresolved source edge",
+    "Actual174productionJSAPI compilation/interrupt/GC/OOM/realm/worker/foreign-state lifecycle and all four hosts",
+    "Module evaluate scopes, microtaskMode/afterEvaluate, breakOnSigint/debugger/cache/dynamic import and broader VM surface"
+  ],
+  "at": "2026-11-07T03:01:29.172868+00:00",
+  "recipeRevision": 174,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

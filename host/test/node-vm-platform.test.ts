@@ -178,10 +178,20 @@ describe.skipIf(process.versions.node !== target.version)('pinned public VM over
     expect(outcome(() => api.runInContext('Function("return 1")()', context)).error?.name).toBe('EvalError');
   });
 
-  it('keeps unimplemented deadlines, cache, microtasks and import ownership explicit', () => {
-    const { api } = subject(), context = api.createContext({});
-    for (const action of [() => api.runInContext('42', context, { timeout: 1 }),
-      () => new api.Script('42', { cachedData: Buffer.alloc(0) }),
+  it('forwards real deadlines without making termination catchable inside the running VM', () => {
+    const { api } = subject(), sandbox = { caught: false, finalized: false };
+    const context = api.createContext(sandbox);
+    expect(api.runInContext('42', context, { timeout: 1000 })).toBe(42);
+    expect(outcome(() => api.runInContext(
+      'try { while (true) {} } catch (error) { caught = true; } finally { finalized = true; }',
+      context, { timeout: 20 }))).toHaveProperty('error.code', 'ERR_SCRIPT_EXECUTION_TIMEOUT');
+    expect(sandbox).toEqual({ caught: false, finalized: false });
+    expect(api.runInContext('6 * 7', context)).toBe(42);
+  });
+
+  it('keeps unimplemented cache, microtasks and import ownership explicit', () => {
+    const { api } = subject();
+    for (const action of [() => new api.Script('42', { cachedData: Buffer.alloc(0) }),
       () => new api.Script('42', { lineOffset: -1 }),
       () => api.createContext({}, { microtaskMode: 'afterEvaluate' }),
       () => new api.Script('42', { importModuleDynamically() {} })]) {

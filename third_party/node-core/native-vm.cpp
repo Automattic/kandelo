@@ -4,9 +4,74 @@
  * and four-host conformance remain incomplete.
  */
 #include "js/GCAPI.h"
+#include "js/ErrorReport.h"
+#include "js/Exception.h"
+#include "js/Interrupt.h"
+#include "js/Stack.h"
+#include "kandelo-node-vm-execution-deadline.h"
+#include <cmath>
+#include <exception>
 #include <new>
 #include <string>
 #include <vector>
+
+// This interrupt callback does not enter JS or install a catchable exception.
+// The engine's existing interrupt path unwinds catch/finally before the owning
+// native invocation translates only its own termination in the target realm.
+static bool KandeloVmDeadlineInterrupt(JSContext* cx) {
+  if (cx->isThrowingOutOfMemory() || cx->isThrowingOverRecursed() ||
+      cx->isPropagatingForcedReturn()) return true;
+  return !kandelo::vm::ExecutionScope::TriggeredOwner(cx);
+}
+static void KandeloVmRequestDeadlineInterrupt(void* context) noexcept {
+  JS_RequestInterruptCallback(static_cast<JSContext*>(context));
+}
+enum class KandeloVmTermination { None, Timeout, WatchdogFailure };
+static bool KandeloVmExecuteWithDeadline(JSContext* cx, JS::HandleScript script,
+                                        uint32_t milliseconds,
+                                        JS::MutableHandleValue result,
+                                        KandeloVmTermination* termination) {
+  try {
+    kandelo::vm::ExecutionWatchdog watchdog(milliseconds, KandeloVmRequestDeadlineInterrupt, cx);
+    kandelo::vm::ExecutionScope scope(cx, watchdog);
+    const bool ok = JS_ExecuteScript(cx, script, result);
+    watchdog.Cancel();
+    auto* owner = kandelo::vm::ExecutionScope::TriggeredOwner(cx);
+    // Existing exceptions/resource exhaustion, process/worker shutdown and a
+    // separate pending shell cancellation retain their actual owners/status.
+    auto* sc = GetShellContext(cx);
+    if (JS_IsExceptionPending(cx) || cx->isPropagatingForcedReturn() ||
+        sc->quitting || sc->exitCode || sc->serviceInterrupt) return ok;
+    if (owner == &scope) {
+      *termination = watchdog.Failed() ? KandeloVmTermination::WatchdogFailure
+                                      : KandeloVmTermination::Timeout;
+      return false;
+    }
+    if (owner) { JS::ReportUncatchableException(cx); return false; }
+    return ok;
+  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
+  catch (const std::exception& error) {
+    JS_ReportErrorUTF8(cx, "VM execution watchdog: %s", error.what()); return false;
+  }
+}
+static bool KandeloVmReportTermination(JSContext* cx, KandeloVmTermination reason,
+                                      uint32_t milliseconds) {
+  if (reason == KandeloVmTermination::WatchdogFailure) {
+    JS_ReportErrorASCII(cx, "VM execution watchdog wait failed"); return false;
+  }
+  char text[96];
+  snprintf(text, sizeof(text), "Script execution timed out after %ums", milliseconds);
+  RootedString message(cx, JS_NewStringCopyZ(cx, text));
+  RootedString file(cx, JS_GetEmptyString(cx));
+  RootedObject stack(cx); RootedValue exception(cx);
+  if (!message || !JS::CaptureCurrentStack(cx, &stack) ||
+      !JS::CreateError(cx, JSEXN_ERR, stack, file, 0, JS::ColumnNumberOneOrigin(1),
+                       nullptr, message, JS::NothingHandleValue, &exception)) return false;
+  RootedObject object(cx, &exception.toObject());
+  RootedString code(cx, JS_NewStringCopyZ(cx, "ERR_SCRIPT_EXECUTION_TIMEOUT"));
+  if (!code || !JS_DefineProperty(cx, object, "code", code, JSPROP_ENUMERATE)) return false;
+  JS_SetPendingException(cx, exception); return false;
+}
 
 static bool KandeloVmCompileFunction(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);

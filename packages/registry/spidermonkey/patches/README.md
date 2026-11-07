@@ -504,3 +504,13 @@ third-party location; owned stat-poll glue remains under checked shell paths.
 Generated native owners use canonical include paths and explicit inline
 headers. No checker, expected failure, ignore list or algorithm is changed.
 Source/component checks do not establish normal package or runtime acceptance.
+
+### 0131: owned synchronous VM execution deadlines
+
+Route validated script timeouts to a real joined native watchdog and
+context-qualified invocation scope. Propagate uncatchable interruption
+through nested VM boundaries and translate only the owning deadline after
+execution unwinds, in its target realm. Preserve independent shell/worker
+cancellation, OOM and forced-return ownership. This patch is a source slice;
+actual engine interrupt races and the watchdog wait-failure reentry edge
+remain unvalidated/incomplete. No guest or four-host closure is claimed.

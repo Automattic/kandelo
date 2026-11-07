@@ -6880,3 +6880,7 @@ Source172 wires unchanged public PKCS12 validation/wrappers to actual OpenSSL pa
 ### Native owner include and vendor staging
 
 Source173 canonicalizes owning native includes using the exact pinned Mozilla include sorter, gives directory-copy excerpts truthful header names and places unchanged imported HDR/libuv bytes under the real third-party boundary. Owned stat-poll glue stays in the checked shell tree. The unchanged Mozilla style checker passes current source staging. No algorithm, assertion, checker expectation or ignore list changes. Normal selected engine acceptance and guest/four-host behavior remain unestablished. See [scope](../tests/nodejs/outline/native-include-staging-integration.md).
+
+### Scoped synchronous VM deadline ownership
+
+Source174 routes pinned positive VM script timeouts into a joined steady-clock native watchdog and per-context invocation chain. Real engine interruption remains uncatchable inside the running script; only the owning boundary translates after unwinding in the target realm. Existing foreign shell/worker/OOM/forced states retain their owners. The current portable owner and frontend/native-dependency checks do not execute the new SpiderMonkey bridge. The rare wait-failure reentry edge and module/microtask/SIGINT scopes remain open. See [scope](../tests/nodejs/outline/vm-execution-deadline-integration.md).

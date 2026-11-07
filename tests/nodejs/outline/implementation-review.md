@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source174 integrates real joined synchronous VM deadline/frame/interrupt source.10portable owner groups,8deadline+11validation comparisons, whole unchanged upstream eachsubject and25affected checks pass with explicit native dependencies.174SMbinding remains uncompiled; rare wait-failure reentry and guest/fourhost remain open.
+See [source scope](vm-execution-deadline-integration.md).
+
 Source173 now has a normally compiled, linked and cache-accepted engine artifact.
 All three unchanged Mozilla checks and static ABI55/kernel-program policy
 inspection pass. Product projection, guest execution and four-host conformance

@@ -57,9 +57,9 @@ function _createNodeVmPlatform(platform) {
         runInContext(context, timeout, displayErrors, breakOnSigint, breakFirstLine) {
             const script = scripts.get(this);
             if (script === undefined) throw new ERR_INVALID_THIS('Script');
-            if (timeout !== -1) unavailable('owned execution deadline');
             if (breakOnSigint || breakFirstLine) unavailable('owned execution interrupt/debugger');
-            return native.__kandeloVmRunInContext(script, contextGlobal(context), { displayErrors });
+            return native.__kandeloVmRunInContext(script, contextGlobal(context),
+                { displayErrors, timeout: timeout === -1 ? undefined : timeout });
         }
         createCachedData() { return unavailable('persistent script cache'); }
     }

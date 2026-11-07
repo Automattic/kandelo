@@ -1,0 +1,103 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3075,6 +3075,7 @@
+
+   RootedString filenameStr(cx);
+   int32_t lineOffset = 0;
++  uint32_t timeout = 0;
+   if (args.length() >= 3 && args[2].isObject()) {
+     RootedObject o(cx, &args[2].toObject());
+     RootedValue v(cx);
+@@ -3089,6 +3090,14 @@
+     }
+     if (v.isInt32()) {
+       lineOffset = v.toInt32();
++    }
++    if (!JS_GetProperty(cx, o, "timeout", &v)) return false;
++    if (!v.isUndefined()) {
++      if (!v.isNumber() || !std::isfinite(v.toNumber()) || v.toNumber() < 1 ||
++          v.toNumber() > UINT32_MAX || std::floor(v.toNumber()) != v.toNumber()) {
++        JS_ReportErrorASCII(cx, "VM private timeout must be a positive uint32"); return false;
++      }
++      timeout = uint32_t(v.toNumber());
+     }
+   }
+   UniqueChars filenameBytes;
+@@ -3112,6 +3121,7 @@
+
+   RootedValue rval(cx);
+   bool ok = false;
++  auto termination = KandeloVmTermination::None;
+   {
+     JSAutoRealm ar(cx, target);
+
+@@ -3134,7 +3144,12 @@
+     }
+
+     if (script) {
+-      ok = JS_ExecuteScript(cx, script, &rval);
++      ok = timeout ? KandeloVmExecuteWithDeadline(cx, script, timeout, &rval, &termination)
++                   : JS_ExecuteScript(cx, script, &rval);
++      // Pinned native Node creates the timeout Error in the target realm after
++      // execution unwinds and the watchdog joins. Marshal it like other errors.
++      if (termination != KandeloVmTermination::None)
++        ok = KandeloVmReportTermination(cx, termination, timeout);
+     }
+   }
+
+@@ -5078,7 +5093,7 @@
+ static bool ShellInterruptCallback(JSContext* cx) {
+   ShellContext* sc = GetShellContext(cx);
+   if (!sc->serviceInterrupt) {
+-    return true;
++    return KandeloVmDeadlineInterrupt(cx);
+   }
+
+   // Reset serviceInterrupt. CancelExecution or InterruptIf will set it to
+@@ -5088,6 +5103,7 @@
+   sc->serviceInterrupt = false;
+
+   bool result;
++  bool vmTermination = false;
+   if (sc->haveInterruptFunc) {
+     bool wasAlreadyThrowing = cx->isExceptionPending();
+     JS::AutoSaveExceptionState savedExc(cx);
+@@ -5108,6 +5124,9 @@
+       }
+       result = JS_CallFunctionValue(cx, nullptr, sc->interruptFunc,
+                                     JS::HandleValueArray::empty(), &rval);
++      vmTermination = !result && !JS_IsExceptionPending(cx) &&
++          !cx->isPropagatingForcedReturn() && !sc->quitting &&
++          !KandeloVmDeadlineInterrupt(cx);
+     }
+     savedExc.restore();
+
+@@ -5120,14 +5139,14 @@
+     result = false;
+   }
+
+-  if (!result && sc->exitCode == 0) {
++  if (!result && sc->exitCode == 0 && !vmTermination) {
+     static const char msg[] = "Script terminated by interrupt handler.\n";
+     fputs(msg, stderr);
+
+     sc->exitCode = EXITCODE_TIMEOUT;
+   }
+
+-  return result;
++  return result && KandeloVmDeadlineInterrupt(cx);
+ }
+
+ static void GCSliceCallback(JSContext* cx, JS::GCProgress progress,
+@@ -15857,6 +15876,11 @@
+
+ void js::shell::WarningReporter(JSContext* cx, JSErrorReport* report) {
+   ShellContext* sc = GetShellContext(cx);
++  // A real scoped VM termination is reported as its own coded Error after
++  // unwinding. Do not additionally classify it as a global shell warning.
++  // Preserve warnings/cancellation belonging to every other native owner.
++  if (report->errorNumber == JSMSG_TERMINATED && !sc->quitting &&
++      !sc->exitCode && !sc->serviceInterrupt && !KandeloVmDeadlineInterrupt(cx)) return;
+   FILE* fp = ErrorFilePointer();
+
+   MOZ_ASSERT(report->isWarning());

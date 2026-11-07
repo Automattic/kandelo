@@ -101,7 +101,7 @@
     "third_party/node-core/uv-platform-adapter.js": "63b1d8c926c4ad069e1cc0a9efa1965401c45ac7ffe09fb1a1542a374d53581f",
     "third_party/node-core/values-platform-adapter.js": "b5a53d99bc7c228b1225092c5ac0ae18dc1dd97f95d9e12db3bc826546e917a0",
     "third_party/node-core/vm-modules-adapter.js": "d20eb9d38980d6d8622990b324b2a8a1e98d99c8df73a0b3dd28f624bfae5de0",
-    "third_party/node-core/vm-platform-adapter.js": "e44ec14ccb12ed54f4cba302e58e7399487c811e99b0bba660a0fb436cc2e5fc",
+    "third_party/node-core/vm-platform-adapter.js": "a272063884d8438e61cb53e25ddf33dd5abfe47ddc241994dd2a34d0424ea43c",
     "third_party/node-core/warning-platform-adapter.js": "63e20e6db2e5dfc77e1499b08956158a4a74f1d77295bce7cd6509f200f068df",
     "third_party/node-core/worker-platform-adapter.js": "b88251d2f6a91b5e00bb19d6bca33dbcfdd254fc220262bc824f3a8e09502466",
     "third_party/node-core/x509-platform-adapter.js": "d41f246056043877c26acc5ce3314df84df49617a3d1a11794d9ed7b19284ab7",
