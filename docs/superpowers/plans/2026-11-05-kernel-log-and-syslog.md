@@ -868,3 +868,58 @@ git commit -m "Docs: Document the kernel log and syslog facility"
 ## Deferred to follow-up work
 
 Recorded in the spec, deliberately not in this plan: dynamic scratch-mount registration for temporary mounts beneath `/var/log`; userspace `/dev/kmsg` writes; `klogctl` console-level actions 6, 7 and 8; a kernel build flag to omit the ring; and reconciling the browser UI's boot-log pane, which calls itself `syslog` while being fed host-synthesized demo progress lines.
+
+---
+
+## Completion record
+
+Added 2026-11-07, after the work. The step checkboxes above were left as
+written so this section can say where the plan was wrong, rather than hiding
+it behind a tick.
+
+**Done:** Tasks 1-17 and 19-20. Task 18's validation is recorded in the PR.
+
+**Where the plan was wrong.**
+
+- Task 12 claimed toybox "removes the `__linux__` risk the plan previously
+  carried, rather than managing it", on the evidence that `toys/lsb/dmesg.c`
+  is 187 lines with no `linux/` headers. That was the wrong unit of
+  measurement. `lib/portability.c` compiles into every applet, and seven of
+  its functions end in a bare `#error` for a platform it does not enumerate,
+  so nothing built at all. The risk was real; it was answered with a patch
+  that gates each block on `__has_include` of the header it needs instead of
+  on an operating system, which is both upstreamable and not a Linux claim.
+  `__linux__` was never defined.
+- Nothing warned that sysklogd has the same defect in a form that fails
+  *silently*. `src/syslog.h` picks its socket with `#ifndef __linux__`,
+  so Kandelo took the BSD branch and bound `/var/run/log` while musl's
+  `syslog(3)` connects to `/dev/log`. Both halves would have reported
+  success and no message would ever have arrived.
+- Task 11 said `kernel_abi = 56` and Task 12's commit step named
+  `packages/registry/util-linux`. Both were left over from earlier drafts;
+  the ABI is 55 and the package is toybox.
+- Task 11 planned sysklogd's `logger`. It links sysklogd's own libsyslog
+  rather than the system's `syslog(3)`, so it would have proved nothing about
+  the platform path. `logger` comes from toybox instead, whose applet calls
+  the system one, and sysklogd is built `--without-logger`.
+- Task 13's `bare-bones-image.test.ts` planned to assert that `logger` "fails
+  honestly with a diagnostic and non-zero exit when no daemon is running".
+  That is not achievable and should not be: POSIX declares `syslog(3)` to
+  return `void`, and musl ignores the result of its `connect()`, so the
+  message is dropped and the caller is told nothing. The test now pins that
+  silence as the specified behaviour
+  (`host/test/syslog-client.test.ts`).
+- The same task's end-to-end tests were planned against a booted image. The
+  executed evidence is a guest instead, `examples/syslog_client_test.c`, which
+  calls musl's real `openlog`/`syslog` and checks the priority and tag
+  arriving on a socket another process bound. That caught something a booted
+  test would have passed over: musl connects with an abbreviated 11-byte
+  address, not a full `sockaddr_un`.
+
+**Not covered by an executed test.** sysklogd itself running inside a machine:
+parsing `/etc/syslog.conf`, writing `/var/log/messages`, and rotating it. The
+daemon is built, verified to bind `/dev/log` and to read `/dev/kmsg`, and its
+service and config generation are unit-tested, but no test boots it. No
+product recipe opts into the service yet either, so no shipped demo changes
+behaviour; which product should carry a log daemon, against the eager-image
+cost of its 379 KB, is a product decision rather than a platform one.

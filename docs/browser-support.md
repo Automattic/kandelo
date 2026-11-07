@@ -313,6 +313,22 @@ pipe pair.
   `host/test/dinit-image-helpers.test.ts` pin that. An image built by other
   means, such as a bare-bones image with no dinit and no syslog daemon, has
   no `/var/log` unless its builder adds one.
+- Reading the log. `dmesg` prints the kernel's own message ring -- boot
+  details, device first-opens, processes killed by a signal, and every syscall
+  a program asked for that Kandelo does not implement. It needs no daemon and
+  works on every machine, because the ring is a kernel surface: `dmesg` reads
+  it through `/dev/kmsg`, or through `klogctl` with `-S`. Several readers can
+  follow it at once without taking records from each other, so `dmesg -w` and
+  a log daemon coexist.
+- Writing to the log. `logger` sends a message through `syslog(3)` to
+  `/dev/log`, which is where any ported program's own logging goes. Whether
+  anything receives it depends on the image: one that runs the `syslogd`
+  service collects messages into `/var/log/messages`, rotated so they stay
+  inside `/var/log`'s budget; one that does not has no receiver, and the
+  message is dropped. That silence is the specified behaviour rather than a
+  gap -- POSIX declares `syslog(3)` to return `void`, so neither `logger` nor
+  any other program can be told the message went nowhere. Use `logger -s` to
+  see it locally regardless: that also writes it to standard error.
 - The Kandelo page creates temporary, resizable, OPFS-backed computers by default.
   **Release compatibility warning:** saved computers from this release will not
   work in the next release. Export important files before updating Kandelo.
