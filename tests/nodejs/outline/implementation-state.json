@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T17:08:43.860058+00:00",
+  "updatedAt": "2026-11-07T17:21:08.909956+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -46,7 +46,7 @@
   "deployAuthorized": false,
   "overallSuitesRun": 0,
   "productRebuildsRun": 0,
-  "packageOrEngineCompilationsRun": 292,
+  "packageOrEngineCompilationsRun": 293,
   "families": {
     "values": {
       "breadthState": "started",
@@ -474,7 +474,7 @@
     "packages/registry/spidermonkey/README.md": "12f2f8daadb10a91e386221fb3d15886c41c53eec93741e68df1c488b35e4a5f",
     "packages/registry/spidermonkey/patches/README.md": "1d4062d63bf4acae693d70b6f8ac847869461880cbb90c27193c2f25a12d17a8",
     "packages/registry/node-compat/README.md": "d05d796ec268c520a2de1f0fdb066440474ddff19df0b6f57e0a8b3b512b0227",
-    "docs/architecture.md": "f08206dbd1e1171ddb2e552d9b4683368cd31b5e4b9cb047122bf2f3766397ec",
+    "docs/architecture.md": "534996486b638ebd7f40e9a9cd4c7a437b81a624eaa83a5952cce3b60cab5f10",
     "tests/nodejs/outline/breadth-first-implementation.md": "23f1fca112029b1bb19ff884fafb0bb54401eb19b159c915b82a99e81f037492",
     "libc/musl-overlay/src/network/wasm32posix/if_nametoindex.c": "cd62192bfdfa70ed555f18e7d382b5d03355da7d1e93cb5191a3bce7b48056c2",
     "libc/musl-overlay/src/network/wasm32posix/if_nameindex.c": "7bacd44a07d103810ebecfd7ff10364e7b7b8e198b9e29414058516a5edf7a91",
@@ -691,7 +691,7 @@
     "third_party/node-core/upstream/string-decoder/lib/internal/util.js": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951",
     "third_party/node-core/upstream/random-jobs/src/crypto/crypto_util.cc": "78f87b6979b666fb49d74698333e79c40aef549dfa362e3a040caeebf8edde3c",
     "third_party/node-core/native-random.cpp": "c7f6aae50716bfac569e50f921ed0641fe67cdaefa191907a92ac71ee780bba4",
-    "docs/package-management.md": "c6653a359e048ed3dc324d758c97df803bfea0d8bdb1c7554ef4b8b913241b9f",
+    "docs/package-management.md": "31bb9e4fc643051a1089dc1177b0c290f00291cda499ad47dd01e901a6093ed0",
     "third_party/node-core/upstream/string-decoder/src/string_decoder.cc": "34bedf8a3d3b455c89b59fdda5fa622f4c2c9e6eceeb72c7cbfee17e7f62fced",
     "packages/registry/spidermonkey/patches/0072-kandelo-node-random-jobs.patch": "491ae7723c9afc5aba5c3c3abf532fbdaaed3afd3c1ab5074ed789c3a5210188",
     "third_party/node-core/upstream/random-jobs/src/crypto/crypto_random.cc": "03d441e91c8656235de3ec2da735fb92dcb88b0baa4e3a1d97497090b37df9b8",
@@ -941,7 +941,7 @@
     "host/test/fixtures/node-path-metadata-reference.cjs": "b3ac867cf38d6305383f9cb83c2b39b1a738816e6dceda895ed3201f1fa50a67",
     "tests/nodejs/outline/path-metadata-implementation-dependencies.md": "3c02300563b032996d8906bbf4ea7257b983a53cc7714ce642b3af5dd4f9ab42",
     "tests/nodejs/outline/path-metadata-finding-progress.json": "a39dd16478114b475c2a3d348b4d900d4af99d5fd12bdbd2cb02ffc35ebd5941",
-    "docs/browser-support.md": "3b1e2021a37447e15446fea6a5970d83aceeae3398b2264be6c304cee13ec1d6",
+    "docs/browser-support.md": "a3bdc54a7f76e7fd47bdc6840d1b5bb1a43f3d3a7b31660692ddc2531f920377",
     "crates/runtime-core/src/hostdir.rs": "f5a9e09fc5dceff205b735de8c549d6e2615f04e09fcf27ba7e7839b925e8593",
     "third_party/node-core/upstream/path-metadata/lib/fs.js": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3",
     "third_party/node-core/upstream/path-metadata/lib/internal/fs/promises.js": "bdb9f9c75509dbaade2ef68e7d8b1c6fff345f356b1459c8969696d48180ea49",
@@ -2494,7 +2494,8 @@
     "third_party/node-core/tests/import-meta-lazy/control.mjs": "28676654ae79d1c6955b7e709a1eeb8aa0372fd4b2f98a7bd936235fc43a4d0c",
     "third_party/node-core/import-meta-lazy.md": "d6303c5744d68c8d8edbb298fe37d86ef18f4a42da5e279604d0c57e78f8bccf",
     "tests/nodejs/outline/import-meta-lazy-integration.md": "c06d551b4de9f027043a9015717a2d38fd32bb8a811ce0379aed959ef07f3b33",
-    "tests/nodejs/outline/import-meta-patch-encoding-correction.json": "84ceb471b45e06d693d86b89375df9511517f752ba786121b052f016b5e6f41c"
+    "tests/nodejs/outline/import-meta-patch-encoding-correction.json": "84ceb471b45e06d693d86b89375df9511517f752ba786121b052f016b5e6f41c",
+    "tests/nodejs/outline/engine228-preflight-r1.json": "04d96552b140b39297c3bd6af090f6e4cce87f0c1d408dc005efef9451adfa08"
   },
   "changes": [
     {
@@ -48809,15 +48810,51 @@
     "Shared callback policy compiles with explicit hook/context/queue boundary adapters and matches real native Node-API/libuv behavior in eight scenarios, with expected termination codes 1/17 retained. SpiderMonkey rooted/context/checkpoint adapter, engine/root-entry patch and changed DNS/FS/codec owners remain uncompiled. Full rejection events/modes/uncaught recovery, weak-reference/zero-ID/VM/worker and complete loop phases remain missing or unvalidated. Native addon loading in the reference does not imply a guest addon implementation."
   ],
   "mainReconciliation": {
-    "at": "2026-11-07T17:02:44.475242+00:00",
-    "fetchedMain": "f762afc103086b6b37ee2cfbb7306be1c1aa707a",
+    "at": "2026-11-07T17:21:08.909956+00:00",
+    "fetchedMain": "a5e13105e7f65072c75e2f398259ba42b3cf9db0",
     "mainIsAncestor": true,
-    "action": "Fetched current main and verified ancestry; no merge needed, current source changes and unrelated local work preserved.",
-    "fetchLog": ".context/node26-main-fetch228.log",
-    "fetchLogSha256": "90350fb88a57c119cc78660ab07ca2eb3cbd1daaee9e4aa9a7d63b8860fd3fa8",
+    "headBefore": "ee9f36a5b3b7f05578fa095d6197c83e8734f60c",
+    "mergeCommit": "1544ae003a74e6dfa35c8bc7968f06257021e258",
+    "action": "Normal main merge after externally advanced shared ref stopped old engine preflight. Three owned docs updated explicitly; source/runtime pin and independent changes preserved. No current combined host/runtime conformance claim.",
+    "protectedIdentityChanges": {
+      "docs/architecture.md": {
+        "beforeSha256": "f08206dbd1e1171ddb2e552d9b4683368cd31b5e4b9cb047122bf2f3766397ec",
+        "afterSha256": "534996486b638ebd7f40e9a9cd4c7a437b81a624eaa83a5952cce3b60cab5f10"
+      },
+      "docs/browser-support.md": {
+        "beforeSha256": "3b1e2021a37447e15446fea6a5970d83aceeae3398b2264be6c304cee13ec1d6",
+        "afterSha256": "a3bdc54a7f76e7fd47bdc6840d1b5bb1a43f3d3a7b31660692ddc2531f920377"
+      },
+      "docs/package-management.md": {
+        "beforeSha256": "c6653a359e048ed3dc324d758c97df803bfea0d8bdb1c7554ef4b8b913241b9f",
+        "afterSha256": "31bb9e4fc643051a1089dc1177b0c290f00291cda499ad47dd01e901a6093ed0"
+      }
+    },
+    "changedMainLeaves": {
+      "docs/architecture.md": "534996486b638ebd7f40e9a9cd4c7a437b81a624eaa83a5952cce3b60cab5f10",
+      "docs/browser-support.md": "a3bdc54a7f76e7fd47bdc6840d1b5bb1a43f3d3a7b31660692ddc2531f920377",
+      "docs/package-management.md": "31bb9e4fc643051a1089dc1177b0c290f00291cda499ad47dd01e901a6093ed0",
+      "host/src/exec-target.ts": "d0e0a50c43bcf2cb0d7c05a2900b35e6d3d795e4b71236138d56f24421be47cd",
+      "host/src/kernel-worker.ts": "a119b44d83f151a06137f8b47e03682db2a6793b5119dbd055240f0be4c764ce",
+      "host/src/node-kernel-worker-entry.ts": "cda40760add794d954bd76104085601bf6a7cb750e9131915656f444ebdc0dfc",
+      "host/src/process-lifecycle.ts": "edf228b453ae8559bb121f9ca82f50402e5cba9f62b64cbefe912e7ada50818f",
+      "host/src/vfs/deferred-byte-spool.ts": "e9dac8c231bab697dcf6acfc8e9ff57e87430c88d5b32b523f9a0b3157d990d3",
+      "host/src/vfs/lazy-fetch-bytes.ts": "97320c0af2abb4466a48935c72792eeb10ea157d9f2603968aef2bb4b862dd15",
+      "host/src/vfs/rootfs-lazy-archives.ts": "03988a98907568ccff6c885f374aaad892ccd41c67f969777e1fe555f44ba243",
+      "host/test/deferred-byte-spool.test.ts": "85092131fd80ccda50e7d9be572693c50a4baf25102b7408e761ccabea4a961d",
+      "host/test/lazy-fetch-bytes.test.ts": "fe147c45dc71ca10798aab9c2b4bdf5cdd77cb5c7a8fed6e0d85f43071217c8d",
+      "host/test/node-rootfs-lazy-cohort.test.ts": "4d927b5f8dd52d5ff87fdec1de432501484fc3451576c40affd4b1a97c561b53",
+      "host/test/partial-image.test.ts": "c8e7f8419464caa00aa4938b512e20ce8b843e622fa9b47e10ca574d758786e4",
+      "tools/xtask/src/build_deps.rs": "9a270262b4e128e428799deefcddb11f29209841981a23dfd922bd86e893e4e6"
+    },
+    "unrelatedDirtyIdsPreserved": {
+      "apps/browser-demos/test/node-core-compat.spec.ts": "d595f9cc14d5bc836fb1baec855081611e8be96fde76650ad6d8f74675cfc9e3",
+      "host/test/node-core-compat.test.ts": "2425f8e35e947a1f0fce8c60bf546c9368122f677e86468e726e505126fce733",
+      "scripts/nodejs-guest-runner.ts": "27d60d8632ac29d8d3eacc48c1b8b0579519d519b9f42dcc54c60c9677a80009"
+    },
     "evidence": {
-      "report": ".context/node26-meta228-source-r1/main-reconciliation.json",
-      "sha256": "d30870fc584f7a446b69c027c4acf8cd0301fbe26a294fbb5a5219e60b5c30a3"
+      "report": ".context/node26-engine228-preflight-r1/main-reconciliation.json",
+      "sha256": "f5089718456976ffd22d70601f69d30054962c1b58a1828e9db1c9b1d562419a"
     }
   },
   "storageMaintenance": {
@@ -49196,10 +49233,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/finding-overlay228-20261107T170843926680Z.tar.gz",
-    "sha256": "8e28cbc194bc6a17f5caa26b03aa9aa13b3d55cf952e0768da5ee2ac95c28c25",
-    "bytes": 11752366,
-    "scope": "Current228qualified import metadata owner finding link. Metadata only, no new runtime/compiler/closure.",
+    "path": ".context/node26-implementation-snapshots/main228-preflight-r2-20261107T172108951436Z.tar.gz",
+    "sha256": "b593dbbec359b5fd3af1188b019280d010ae3aa73a6923d0eb9e991be9704b22",
+    "bytes": 11784096,
+    "scope": "Current228plus reconciled maina5e131, actual native xtask compilation/preflight failure evidence. Guest C++not attempted; all19partial.",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -51693,15 +51730,16 @@
     "state": "OS lookup source and raw c-ares channel plus owned record decoder; public Resolver/channel/request/loop/JSAPI/guest linking/transport/error/malformed and four-host obligations remain open"
   },
   "nativeCompilationAccountingThisTurn": {
-    "acceptedEngineBuilds": 0,
+    "nativeHelperCompileAttempts": 1,
+    "nativeHelperCompileFailures": 0,
+    "guestEngineAttempts": 0,
     "guestEngineBuildFailures": 0,
     "guestPackageAttempts": 0,
     "guestDependencyCompilations": 0,
     "kernelWasmCompilations": 0,
-    "nativeHelperCompileAttempts": 0,
-    "nativeHelperCompileFailures": 0,
     "productRebuilds": 0,
-    "scope": "0newcompiler/engine/kernel/library/product builds in source slice. Existing lazy-reference addon reused,17native-dependent groups and14package checks. Separate targeted engine compilation is next."
+    "preflightFailures": 1,
+    "scope": "Actual successful native xtask compilation plus main-review preflight failure. Never counted as failed guest C++build or native/four-host compatibility."
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -59393,6 +59431,13 @@
       "bytes": 11748943,
       "scope": "Current228patch-context encoding correction, unchanged actual C++algorithm/pre/post/native control scope. Original checkpoint failure retained; no new runtime/compiler/closure.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/finding-overlay228-20261107T170843926680Z.tar.gz",
+      "sha256": "8e28cbc194bc6a17f5caa26b03aa9aa13b3d55cf952e0768da5ee2ac95c28c25",
+      "bytes": 11752366,
+      "scope": "Current228qualified import metadata owner finding link. Metadata only, no new runtime/compiler/closure.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
   "processLifetimeImplementation": {
@@ -63642,6 +63687,18 @@
       "nativeHelperCompileFailures": 0,
       "productRebuilds": 0,
       "scope": "0newcompiler/engine/kernel/library/product builds. Normal source/core/bootstrap/native staging and18native-dependent groups/8upstreamsubjects/2unref-exit subjects plus14package checks only."
+    },
+    {
+      "at": "2026-11-07T17:21:08.374541+00:00",
+      "acceptedEngineBuilds": 0,
+      "guestEngineBuildFailures": 0,
+      "guestPackageAttempts": 0,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "nativeHelperCompileAttempts": 0,
+      "nativeHelperCompileFailures": 0,
+      "productRebuilds": 0,
+      "scope": "0newcompiler/engine/kernel/library/product builds in source slice. Existing lazy-reference addon reused,17native-dependent groups and14package checks. Separate targeted engine compilation is next."
     }
   ],
   "cryptoKdfImplementation": {
@@ -116898,6 +116955,18 @@
         "report": ".context/node26-decoder220-source-r1/main-reconciliation.json",
         "sha256": "552ae93997f3510f71ec0ebef5dac796f6abfc4429e2f0f74e1aef16b149a4e2"
       }
+    },
+    {
+      "at": "2026-11-07T17:02:44.475242+00:00",
+      "fetchedMain": "f762afc103086b6b37ee2cfbb7306be1c1aa707a",
+      "mainIsAncestor": true,
+      "action": "Fetched current main and verified ancestry; no merge needed, current source changes and unrelated local work preserved.",
+      "fetchLog": ".context/node26-main-fetch228.log",
+      "fetchLogSha256": "90350fb88a57c119cc78660ab07ca2eb3cbd1daaee9e4aa9a7d63b8860fd3fa8",
+      "evidence": {
+        "report": ".context/node26-meta228-source-r1/main-reconciliation.json",
+        "sha256": "d30870fc584f7a446b69c027c4acf8cd0301fbe26a294fbb5a5219e60b5c30a3"
+      }
     }
   ],
   "sqliteLifecycleImplementation": {
@@ -125957,5 +126026,17 @@
       "sha256": "84ceb471b45e06d693d86b89375df9511517f752ba786121b052f016b5e6f41c",
       "scope": "Only unified-diff context encoding changed to zero context; actual pre/post C++bytes unchanged and strict original inverse/new forward/inverse/forward replay verified. Original patch/log/checkpoint snapshot preserved."
     }
+  },
+  "selectedEngineAttemptHistory": [
+    {
+      "report": "tests/nodejs/outline/engine228-preflight-r1.json",
+      "sha256": "04d96552b140b39297c3bd6af090f6e4cce87f0c1d408dc005efef9451adfa08",
+      "scope": "Actual successful native xtask compilation plus main-review preflight failure. Never counted as failed guest C++build or native/four-host compatibility."
+    }
+  ],
+  "engine228PreflightR1": {
+    "report": "tests/nodejs/outline/engine228-preflight-r1.json",
+    "sha256": "04d96552b140b39297c3bd6af090f6e4cce87f0c1d408dc005efef9451adfa08",
+    "guestEngineAttempted": false
   }
 }

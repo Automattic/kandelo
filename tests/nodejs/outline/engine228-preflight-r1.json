@@ -1,0 +1,59 @@
+{
+  "at": "2026-11-07T17:21:08.374541+00:00",
+  "recipeRevision": 228,
+  "jobId": "node26-engine228-1107-121057-453d",
+  "result": "Stopped at current-main ancestry preflight before any guest engine compilation",
+  "exitCode": 1,
+  "elapsedSeconds": 69.7,
+  "nativeToolBuildAttempts": 1,
+  "nativeToolBuildFailures": 0,
+  "nativeCargoArtifactsFreshFalse": [
+    {
+      "packageId": "path+file:///Users/brandon/conductor/workspaces/kandelo/davao/tools/xtask#0.1.0",
+      "target": "xtask",
+      "kind": [
+        "bin"
+      ],
+      "filenames": [
+        "/Users/brandon/conductor/workspaces/kandelo/davao/target/aarch64-apple-darwin/release/xtask"
+      ],
+      "executable": "/Users/brandon/conductor/workspaces/kandelo/davao/target/aarch64-apple-darwin/release/xtask"
+    }
+  ],
+  "guestEngineAttempts": 0,
+  "guestEngineFailures": 0,
+  "overallSuites": 0,
+  "productRebuilds": 0,
+  "guestRuntimeValidated": false,
+  "scope": "Actual successful native xtask compilation plus main-review preflight failure. Never counted as failed guest C++build or native/four-host compatibility.",
+  "evidence": {
+    "native-tool-result.json": {
+      "path": ".context/node26-engine228-preflight-r1/native-tool-result.json",
+      "sha256": "16d81446087ff8e427fe8e5c5911e51d527b380abc24213feefb9c5b9bbe9826"
+    },
+    "plan.json": {
+      "path": ".context/node26-engine228-preflight-r1/plan.json",
+      "sha256": "252b891b279f5bcc7011df95da634d8bfc6a8c68bfac07b0bb4981e21e82e2ec"
+    },
+    "result.json": {
+      "path": ".context/node26-engine228-preflight-r1/result.json",
+      "sha256": "029fac6372b602836cd6ebd9d94204f59021839455e13380139362f80ce20b52"
+    },
+    "source-preflight.json": {
+      "path": ".context/node26-engine228-preflight-r1/source-preflight.json",
+      "sha256": "2537b7af72bc546f990134010a583076c2790cbef18b463294c030f661009608"
+    },
+    "output.log": {
+      "path": ".context/node26-engine228-preflight-r1/output.log",
+      "sha256": "a7a886da927249058c7dca129caf26d5e776fa5f86134b36f55a2c24c11eefb7"
+    },
+    "native-cargo.jsonl": {
+      "path": ".context/node26-engine228-preflight-r1/native-cargo.jsonl",
+      "sha256": "5aeeec256c658a74075614805e5d9c1d2b816f75c6d535784618ecf1070c15db"
+    },
+    "meta.json": {
+      "path": ".context/node26-engine228-preflight-r1/meta.json",
+      "sha256": "dcd8c839d902fbb6254dc67994ec7e02aa872255c51a54dbe098f8c8ef8cc84a"
+    }
+  }
+}
