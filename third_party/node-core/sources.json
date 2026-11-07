@@ -4972,6 +4972,26 @@
         "path": "upstream/terminal/deps/uv/include/uv.h",
         "upstreamPath": "deps/uv/include/uv.h",
         "sha256": "bb9ed99b80cd22c58361bffdfbb2aa7029ce0391cde616745c0072a6f3c03219"
+      },
+      "deps/uv/src/unix/stream.c": {
+        "path": "upstream/terminal/deps/uv/src/unix/stream.c",
+        "upstreamPath": "deps/uv/src/unix/stream.c",
+        "sha256": "736cd948a28acdb1544dd683becd78fb744e79de55562229da54923b20f41c7c"
+      },
+      "deps/uv/src/unix/core.c": {
+        "path": "upstream/terminal/deps/uv/src/unix/core.c",
+        "upstreamPath": "deps/uv/src/unix/core.c",
+        "sha256": "18bfd5f2045417f8ace5d76e222bf7441b31ead5fc2cbaf6225965e0afea8767"
+      },
+      "src/stream_base.cc": {
+        "path": "upstream/terminal/src/stream_base.cc",
+        "upstreamPath": "src/stream_base.cc",
+        "sha256": "01fec064aec0edb72ee9577ac10c7351b56e0e6159a7a456635d0330dcff6704"
+      },
+      "lib/internal/stream_base_commons.js": {
+        "path": "upstream/terminal/lib/internal/stream_base_commons.js",
+        "upstreamPath": "lib/internal/stream_base_commons.js",
+        "sha256": "e114197ceac878eeb7e61410c5ccdbf3d23071be6d583220260f1364557769e6"
       }
     },
     "setRawMode": {
@@ -4979,6 +4999,12 @@
       "start": "ReadStream.prototype.setRawMode = function(mode) {",
       "length": 703,
       "sha256": "5cc97cc54043008360f98f002b3f960aa09542f5df0c654ab7a5495e1c2d19cd"
+    },
+    "outputMethods": {
+      "source": "lib/tty.js",
+      "start": "WriteStream.prototype.isTTY = true;",
+      "length": 1425,
+      "sha256": "caeb3ed47d8740ace827c0d28d7c9c564d796bd90aa175a9d387659dcc5af2f7"
     }
   },
   "warningPlatform": {

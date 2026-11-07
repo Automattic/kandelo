@@ -1567,17 +1567,6 @@ const _startTime = Date.now();
 
 // Lazy stream creation for stdout/stderr/stdin
 let _stdout, _stderr, _stdin;
-// Per-fd cached winsize. Refreshed lazily on first read and on SIGWINCH.
-// Caching matters: ink reads process.stdout.columns hundreds of times per
-// render and routes the result into cursor-position math; an ioctl per read
-// is both slow and risks racing the kernel's PTY state during a resize.
-const _wsCache = new Map();
-function _refreshWs(fd) {
-    const ws = os.ttyGetWinSize(fd);
-    if (ws) _wsCache.set(fd, ws);
-    return _wsCache.get(fd) || null;
-}
-
 let _nodeReadlinePlatform;
 function _cursorTo(...args) { return _nodeReadlinePlatform.callbacks.cursorTo(...args); }
 function _moveCursor(...args) { return _nodeReadlinePlatform.callbacks.moveCursor(...args); }
@@ -1588,44 +1577,24 @@ function _createWriteStream(fd) {
     if (fd === 1 && _stdout) return _stdout;
     if (fd === 2 && _stderr) return _stderr;
     const output = _nodeFdStreamPlatform.writable(fd);
-    if (os.isatty(fd)) {
-        output.isTTY = true;
-        output.cursorTo = (x, y, cb) => _cursorTo(output, x, y, cb);
-        output.moveCursor = (dx, dy, cb) => _moveCursor(output, dx, dy, cb);
-        output.clearLine = (dir, cb) => _clearLine(output, dir, cb);
-        output.clearScreenDown = cb => _clearScreenDown(output, cb);
-        Object.defineProperties(output, {
-            columns: { configurable: true, enumerable: true,
-                get() { const ws = _wsCache.get(fd) || _refreshWs(fd); return ws ? ws[0] : undefined; } },
-            rows: { configurable: true, enumerable: true,
-                get() { const ws = _wsCache.get(fd) || _refreshWs(fd); return ws ? ws[1] : undefined; } },
-        });
-        output.getWindowSize = () => [output.columns, output.rows];
-    }
+    _nodeTerminalPlatform.bindOutput(output, fd);
     if (fd === 1) _stdout = output;
     if (fd === 2) _stderr = output;
     return output;
 }
 
-// SIGWINCH (signum 28 on Linux). The kernel raises it on every kernel_pty_set_winsize
-// call; without a JS-side handler the default action is "ignore" and ink/blessed/pi
-// keep using a stale cached columns/rows, so incremental redraws clear the wrong
-// number of rows and old frames stack on top of new ones. The adapter surface
-// does not expose SIGWINCH via os.SIG* constants, so call os.signal with the raw signum.
+// Resize consumer only. The existing private signal registration below remains
+// a separate activation gap; this code does not establish signal delivery.
 try {
     os.signal(28, () => {
-        // Refresh the cache so the next process.stdout.columns read returns the
-        // post-resize value.
-        _refreshWs(1);
-        _refreshWs(2);
-        // Notify subscribers (ink/blessed read this and re-render at the new size).
-        if (_stdout) _stdout.emit('resize');
-        if (_stderr) _stderr.emit('resize');
+        // Refresh each actual borrowed TTY owner. Its pinned method emits
+        // resize only after a successful query finds changed dimensions.
+        if (_stdout) _nodeTerminalPlatform.refreshOutput(_stdout);
+        if (_stderr) _nodeTerminalPlatform.refreshOutput(_stderr);
     });
 } catch (_) {
-    // Some environments (WASI builds, tests) may not support os.signal; if it
-    // throws, fall back to the lazy-cache-only path. Apps that don't read on
-    // resize still render correctly at whatever size was current on first read.
+    // A registration failure leaves the last actual queried dimensions.
+    // Do not synthesize successful resize delivery or terminal dimensions.
 }
 
 function _createReadStream(fd) {
@@ -2669,10 +2638,14 @@ const _nodeStreamPlatform = _createNodeStreamPlatform({
 });
 const stream = _nodeStreamPlatform.api;
 const _nodePortIO = _nodePortsPlatform.initialize(stream);
+const _nodeTerminalPlatform = _createNodeTerminalPlatform({
+    native: _nodeNative, values: _nodeValues, uv: _nodeUv,
+    isTTY: fd => os.isatty(fd), getReadline: () => _nodeReadlinePlatform.api,
+});
 const _nodeFdStreamPlatform = _createNodeFdStreamPlatform({
     stream, Buffer, process, native: _nodeNative,
+    openTerminalOutput: _nodeTerminalPlatform.openOutput,
 });
-const _nodeTerminalPlatform = _createNodeTerminalPlatform({ native: _nodeNative, values: _nodeValues, uv: _nodeUv });
 // Assertion diagnostics load the shared color module, which observes the real
 // stderr stream immediately. Its FD owner must exist before that module loads.
 const assert = _nodeCore.assert;

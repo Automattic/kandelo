@@ -1,0 +1,99 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/terminal.md",
+    "findingIds": [
+      "T-002",
+      "T-006",
+      "T-008",
+      "T-009",
+      "T-010"
+    ],
+    "relatedDocuments": [
+      "tests/nodejs/audit/tty-contracts.md",
+      "tests/nodejs/audit/readline-repl-contracts.md"
+    ],
+    "relatedFamilies": [
+      "terminal",
+      "streams",
+      "processes",
+      "engine"
+    ],
+    "scope": "Bounded process stdio/real output owner dependencies; public TTY classes and full findings remain open"
+  },
+  "sourceImplemented": [
+    "Pinned stdio cursor/color/window methods, actual bind identity and resize consumer over real native window queries",
+    "Actual independent-OFD verified slave reopen/dup initialization, blocking flag/full write completion and owned-extra-fd retirement",
+    "Checked/rooted lease and actual view with real wrapper denial and no-GC source-realm access, preserving original descriptor lifetime",
+    "Additive current160composition preserves TCP/Agent policy, crypto/SQLite/Locks/Body/X509/loading; normal source bundle regeneration"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tty161-source-r1/report.json",
+    "sha256": "a571189fe681e280d3e4cf373e131ee9c0b84475ee4e297049f347c5e2664bb8",
+    "guardedInputs": 752,
+    "scope": "Current verified TTY/OFD/stdout method/source-realm integration; exact source/reference, normal input/bootstrap/unity checks. Native original cases reused separately; no new production JSAPI/native/engine compilation or guest/four-host acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tty161-affected-r1.json",
+    "sha256": "cb404c9351a7266c7c5ad2b5443e8fd6d272404c6bca0c1d56d016343c6f000c",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing package-source checks within24test run"
+  },
+  "fdReadlineRegressions": {
+    "report": ".context/node26-tty161-affected-r1.json",
+    "sha256": "cb404c9351a7266c7c5ad2b5443e8fd6d272404c6bca0c1d56d016343c6f000c",
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Existing unchanged fd-stream/readline assertions with actual decoder dependency fixture"
+  },
+  "sealedNativeOwnerEvidence": {
+    "report": ".context/tty-output-io-agent/REPORT.json",
+    "sha256": "a33c3104032b09ff30ab10fd9da568787fe3a956640ca8cf5703976cbc240229",
+    "reusedEvidence": true,
+    "slavePtyGroups": 12,
+    "ownershipGroups": 7,
+    "scope": "Actual production OutputHandle header/NAPI/native POSIX descriptors plus native stream/byte/timer dependencies; new JSAPI/realm/Wasm path not executed"
+  },
+  "realmSourceReview": {
+    "report": ".context/tty-owner-realm-review-157/checks.json",
+    "sha256": "842f3d41cf848717055230e5514cc2077cbe45ce64a0ec3c49033019e7d9f591",
+    "scope": "12source/API/lifetime review checks;0compile/native cases, not wrapper/GC runtime proof"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tty-output-io-agent/REPORT.json",
+      "sha256": "a33c3104032b09ff30ab10fd9da568787fe3a956640ca8cf5703976cbc240229",
+      "kind": "strict-master-fallback-and-fixture-errors",
+      "reason": "Current master fallback remains runnerexit1; initial missing staging header, unsupported errno and PTY observation fixture failures retained"
+    },
+    {
+      "report": ".context/terminal-output-owner-agent/HANDOFF.md",
+      "sha256": "14987f8b45ab8853750a3b609bfe094d92a44a864ca29adeb098f1dfce034431",
+      "kind": "original-blocking-write-nonpass",
+      "reason": "Original11/12PTYcomparison retained, assertionsunchanged"
+    },
+    {
+      "report": ".context/tty-owner-realm-review-157/REVIEW-RUNS.json",
+      "sha256": "7dfb2906bbcf31ea68e338f72862b2a0388ffee64ab9111af5132e0ebd4184e3",
+      "kind": "source-review-harness-error",
+      "reason": "No-index diff exit1withno whitespace diagnostics initially misclassified; correctedharnesschangednoruntime"
+    }
+  ],
+  "remaining": [
+    "Compile actual production JSAPI/Wasm dup3 and validate movingGC/wrappers/realms/OOM/reentry/teardown and identified artifacts on all four hosts",
+    "Real master/unreopenable/shared-alias blocking/backpressure, partial/EAGAIN queue and external flag changes remain implementation gaps",
+    "Complete public Socket/TTY constructors/async/ref/close/resize/SIGWINCH and broader readline/REPL/history/permissions; arbitrary-fd same-number reopen/dup3 policy and zero/read-only/interrupted/cross-thread cases remain open",
+    "Concrete source gap: output window refresh uses borrowed numeric fd, not the captured output owner; public-fd close/reuse can query the wrong object. Actual-owner size routing is required, not accepted as platform boundary."
+  ],
+  "at": "2026-11-07T00:11:35.822083+00:00",
+  "recipeRevision": 161,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

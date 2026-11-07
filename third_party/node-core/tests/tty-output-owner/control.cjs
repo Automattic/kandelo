@@ -1,0 +1,33 @@
+'use strict';
+const fs=require('node:fs'),tty=require('node:tty'),assert=require('node:assert/strict'),readline=require('node:readline'),{once}=require('node:events');
+const mode=process.argv[2],reportFd=Number(process.env.REPORT_FD),owner=mode==='candidate'?require('./platform.cjs').create(1):null,output=owner?owner.output:process.stdout;
+const report=value=>fs.writeSync(reportFd,JSON.stringify(value)+'\n');
+const errorOf=fn=>{try{return{value:fn()};}catch(error){return{name:error.name,code:error.code,message:error.message};}};
+const snapshot=()=>({isTTY:output.isTTY,columns:output.columns,rows:output.rows,window:output.getWindowSize(),fields:['columns','rows'].map(key=>{const d=Object.getOwnPropertyDescriptor(output,key);return[d.writable,d.enumerable,d.configurable,typeof d.get];})});
+const rows=[];async function add(name,fn){rows.push({name,result:await fn()});}
+const commands=readline.createInterface({input:process.stdin,crlfDelay:Infinity})[Symbol.asyncIterator]();
+(async()=>{
+ assert(tty.isatty(1));assert(output.isTTY);
+ await add('initial real TTY dimensions and writable data fields',()=>snapshot());
+ const resize=[],errors=[];output.on('resize',(...args)=>resize.push(args));output.on('error',e=>errors.push({name:e.name,code:e.code,errno:e.errno,syscall:e.syscall,message:e.message}));
+ report({ready:true});assert.equal((await commands.next()).value,'resize');
+ await add('real resized dimensions and changed-only notification',()=>{output._refreshSize();const first=snapshot();output._refreshSize();assert.equal(resize.length,1);return{first,second:snapshot(),resize:resize.map(args=>args.slice()),errors:errors.slice()};});
+ await add('cached size reads and public mutation semantics',()=>{output.columns=1;output.rows=2;const before=output.getWindowSize();output._refreshSize();return{before,after:output.getWindowSize(),events:resize.length};});
+ await add('cursor methods return actual backpressure and callbacks',async()=>{const traces=[];const old=output._writableState.highWaterMark;output._writableState.highWaterMark=1;
+  for(const [name,args]of[['cursorTo',[2,3]],['moveCursor',[-2,1]],['clearLine',[-1]],['clearScreenDown',[]],['moveCursor',[0,0]]]){let synchronous=true,called=false;const callback=error=>{traces.push({name,event:'callback',error:error===null?'null':typeof error,synchronous});called=true;};const result=output[name](...args,callback);traces.push({name,event:'return',result,called});synchronous=false;while(!called)await new Promise(resolve=>setImmediate(resolve));}
+  output._writableState.highWaterMark=old;return traces;
+ });
+ await add('same real asynchronous Writable delegate preserves false return',async()=>{
+  const traces=[];const sink=new(require('node:stream').Writable)({highWaterMark:1,write(chunk,_encoding,callback){fs.write(1,chunk,0,chunk.length,null,error=>callback(error));}});
+  for(const[name,args]of[['cursorTo',[4,5]],['moveCursor',[1,-1]],['clearLine',[1]],['clearScreenDown',[]]]){let called=false,synchronous=true;const callback=error=>{traces.push([name,'callback',error===null?'null':typeof error,synchronous]);called=true;};const result=output[name].call(sink,...args,callback);assert.equal(result,false);traces.push([name,'return',result,called]);synchronous=false;while(!called)await new Promise(resolve=>setImmediate(resolve));}
+  return traces;
+ });
+ await add('cursor validation uses target errors and argument order',()=>{const result=[];for(const[name,args]of[['cursorTo',[NaN,1]],['cursorTo',[undefined,1]],['cursorTo',[0,0,3]],['moveCursor',[1,2,3]],['clearLine',[0,3]],['clearScreenDown',[3]]])result.push([name,errorOf(()=>output[name](...args))]);return result;});
+ await add('color depth environment priorities and overload counts',()=>{const result=[];for(const env of[{}, {TERM:'dumb'},{TERM:'xterm-256color'},{TERM:'xterm-kitty'},{TERM:'vt100'}, {TMUX:'1'}, {CI:'1'},{CI:'1',GITHUB_ACTIONS:'1'}, {TF_BUILD:'1',AGENT_NAME:'x'},{TEAMCITY_VERSION:'9.0.1'},{TEAMCITY_VERSION:'9.1.0'}, {TERM_PROGRAM:'iTerm.app',TERM_PROGRAM_VERSION:'3.0'}, {COLORTERM:'truecolor'}, {COLORTERM:'true'}, ...['','0','1','2','3','true','false'].map(FORCE_COLOR=>({FORCE_COLOR}))])result.push([env,output.getColorDepth(env),output.hasColors(env),output.hasColors(2,env),output.hasColors(256,env),output.hasColors(16777216,env)]);return result;});
+ await add('color validation and mutable explicit env getter ordering',()=>{const result=[];for(const count of[0,1,-1,1.1,NaN,Infinity,1n,'16',null,true,()=>{}])result.push(errorOf(()=>output.hasColors(count,{})));const calls=[];const env={get FORCE_COLOR(){calls.push('FORCE_COLOR');return '2';},get NO_COLOR(){calls.push('NO_COLOR');return undefined;},get NODE_DISABLE_COLORS(){calls.push('NODE_DISABLE_COLORS');return undefined;}};return{result,depth:output.getColorDepth(env),calls};});
+ await add('pinned method names lengths descriptors',()=>{const result=[];for(const name of['_refreshSize','getWindowSize','getColorDepth','hasColors','cursorTo','moveCursor','clearLine','clearScreenDown']){let proto=output,d;while(proto&&!d){d=Object.getOwnPropertyDescriptor(proto,name);proto=Object.getPrototypeOf(proto);}result.push([name,d.enumerable,d.writable,d.configurable,d.value.name,d.value.length,Object.hasOwn(d.value,'prototype')]);}return result;});
+ await add('regular file stays non-TTY with no terminal fields',()=>{const fd=fs.openSync('/dev/null','w');try{const subject=owner?owner.transport.writable(fd):new(require('node:stream').Writable)({write(_chunk,_enc,callback){callback();}});const bound=owner?owner.terminal.bindOutput(subject,fd):tty.isatty(fd);if(owner){subject.isTTY=true;owner.terminal.refreshOutput(subject);}return{bound,actualTty:tty.isatty(fd),methods:['getWindowSize','getColorDepth','_refreshSize'].map(name=>typeof subject[name]),dimensions:[Object.hasOwn(subject,'columns'),Object.hasOwn(subject,'rows')]};}finally{fs.closeSync(fd);}});
+ await add('destroy retains actual borrowed stdio descriptor',async()=>{const closed=once(output,'close');output.destroy();await closed;fs.fstatSync(1);return{open:true,destroyed:output.destroyed,window:output.getWindowSize()};});
+ await add('real query failure preserves dimensions and emits errno',async()=>{const old=output.getWindowSize(),before=errors.length;if(owner)fs.closeSync(1);else await new Promise(resolve=>output._handle.close(resolve));output._refreshSize();assert.equal(errors.length,before+1);return{old,after:output.getWindowSize(),error:errors.at(-1)};});
+ report({mode,rows});process.stdin.destroy();
+})().catch(error=>{report({fatal:{name:error.name,message:error.message,stack:error.stack}});process.stdin.destroy();process.exitCode=1;});

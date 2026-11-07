@@ -6067,6 +6067,15 @@ inherited-descriptor nonblocking/readiness behavior remain implementation
 and validation work. It does not alter the host/kernel wire ABI or prove
 four-host runtime conformance.
 
+The source161 stdio candidate also owns verified reopened slave-terminal
+output descriptions. Real descriptor duplication preserves public stdio
+numbers; only the independent extra descriptor is closed. Blocking status and
+synchronous write completion are actual OS operations, leaving Writable to
+report backpressure. Terminal leases and original views are checked/rooted
+before bounded source-realm/no-GC access. Master/unreopenable paths retain a
+known async/backpressure gap; public TTY classes and production JSAPI/four-host
+conformance remain open. See [terminal output scope](../tests/nodejs/outline/tty-output-integration.md).
+
 ### Native Node TCP and plain Agent source ownership
 
 The source160 TCP owner retains actual descriptors and original write

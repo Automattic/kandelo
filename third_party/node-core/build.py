@@ -1102,7 +1102,20 @@ selected = selected.replace(old, 'setMode(this, ttyMode)')
 terminal_adapter = (root / 'terminal-platform-adapter.js').read_text()
 if terminal_adapter.count('/* NODE_TERMINAL_SET_RAW */') != 1:
     raise ValueError('Review terminal mode embedding')
-bundle += terminal_adapter.replace('/* NODE_TERMINAL_SET_RAW */', selected) + '\n'
+item = terminal_spec['outputMethods']
+text = (root / terminal_spec['sources'][item['source']]['path']).read_text()
+if text.count(item['start']) != 1:
+    raise ValueError('Ambiguous terminal output methods')
+offset = text.index(item['start']); output_methods = text[offset:offset + item['length']]
+if hashlib.sha256(output_methods.encode()).hexdigest() != item['sha256']:
+    raise ValueError('Terminal output method identity mismatch')
+old = 'this._handle.getWindowSize(winSize)'
+if output_methods.count(old) != 1:
+    raise ValueError('Review borrowed output window seam')
+output_methods = output_methods.replace(old, 'getWindowSize(this, winSize)')
+if terminal_adapter.count('/* NODE_TERMINAL_OUTPUT_METHODS */') != 1:
+    raise ValueError('Review terminal output embedding')
+bundle += terminal_adapter.replace('/* NODE_TERMINAL_SET_RAW */', selected).replace('/* NODE_TERMINAL_OUTPUT_METHODS */', output_methods) + '\n'
 
 readdir_spec = manifest['readdirPlatform']
 for name, item in readdir_spec['sources'].items():

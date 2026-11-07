@@ -1,5 +1,6 @@
 // FD transport beneath the shared stream state machines. These owners borrow
-// process stdio descriptors; a stream transition must never close/reuse them.
+// public stdio descriptors. Supported TTYs initialize a real reopened OFD;
+// later stream transitions never close or reuse the borrowed public number.
 // Exact public Socket/TTY/file subclasses remain separate integration work.
 function _createNodeFdStreamPlatform(platform) {
     'use strict';
@@ -11,12 +12,21 @@ function _createNodeFdStreamPlatform(platform) {
     /* NODE_STDIO_DUMMY_DESTROY */
 
     function writable(fd, options) {
-        // The native operation owns copied bytes through all partial writes
-        // and readiness waits. Writable owns serialization, HWM, drain,
+        const writeTerminal = platform.openTerminalOutput ? platform.openTerminalOutput(fd) : null;
+        // A verified blocking TTY owner completes actual libc writes first.
+        // The generic async operation owns copied bytes through readiness
+        // waits. Writable owns serialization, HWM, drain,
         // encoding, callback-once and end/final/error state above that seam.
         const result = new Writable({
             ...options,
             write(chunk, encoding, callback) {
+                if (writeTerminal) {
+                    let error;
+                    try { error = writeTerminal(chunk); }
+                    catch (failure) { error = failure; }
+                    callback(error);
+                    return;
+                }
                 let promise;
                 try { promise = platform.native.__kandeloFdWrite(fd, chunk); }
                 catch (error) { callback(error); return; }

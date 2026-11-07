@@ -1,5 +1,11 @@
 # Node 26 core implementation outline
 
+Source161 integrates real reopened-terminal output ownership and pinned stdio
+methods with checked/rooted lease/view borrowing.752source inputs and24focused
+checks pass; original native PTY/OFD evidence is separately identified. Master
+fallback remains a strict nonpass. See [TTY scope](tty-output-integration.md).
+Current production JSAPI/guest/four-host conformance remains unvalidated.
+
 Source160 integrates reviewed native TCP ownership/async aliases and plain
 HTTP Agent source. The focused HTTP regression exposed and corrected timeout
 reset ordering; actual Socket fixture dependencies preserve all assertions.
