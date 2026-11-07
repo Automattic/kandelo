@@ -55,7 +55,9 @@ No new full build or benchmark timing has started.
 server runs at
 `http://127.0.0.1:5464/?vfs=http%3A%2F%2F127.0.0.1%3A5464%2F%40kandelo-partial%2Fimage.vfs.zst&profile=wordpress-frankenphp-caddy`.
 A separate Chromium check verifies the served image identity, uses the
-demo's login button and opens the real template editor. The preserved
+demo's login button and saves a heading in the real template editor. Its
+screenshot shows that test-owned temporary machine after the save.
+The preserved
 older static preview remains available. This new URL serves the mutable
 development partial, not a canonical release artifact.
 
@@ -77,9 +79,35 @@ This is one diagnostic run, not a service benchmark or a proven bound.
 Kandelo host activation setup and Go/PHP execution are absent. It narrows
 the several-GiB investigation toward setup/execution costs rather than
 module holding or bare instance creation alone. No forced collection,
-engine flags or application changes are used. Paired real WordPress
-HTTP-workload memory observations on the same artifacts are running;
-the full UI memory/lifecycle gate remains separate and unfinished.
+engine flags or application changes are used. A separate control eagerly
+reads all 92,641 resume-catalog function objects through `table.get`:
+physical footprint changes from 859.4M to 886.5M in that worker. That
+single observation is too small to explain the several-GiB service gap;
+no production optimization is adopted from this hypothesis.
+
+**Real backend-workload memory gate:** job
+`php-upstream-partial-memory-1107-145451-d164` passes three engine cases
+in 10m08s, zero skipped/flaky, on the exact new partial artifacts. It uses
+two PHP threads, editor HTTP bursts/parallel requests, a 90-second soak,
+SIGKILL/restart, a held-request graceful drain and 60 seconds after
+destruction. This is a backend-host diagnostic, not a complete rendered
+WordPress UI or full browser-memory gate. WebKit samples report 5.4G
+after the first request and 9.2G at the last soak sample (144 requests).
+After restart the sample is 5.6G; destruction reports 3.8G, then 832.8M
+after 60 seconds in the same page. These are vmmap physical-footprint
+labels, not process RSS or a proven sustained bound.
+
+At the last soak sample, Go reports about 2.9 MB live heap and 44.4 MB
+Sys, while the two PHP allocator counters total about 62.8 MB. Eight
+guest threads remain reported by `/proc`; growth is not explained by a
+larger observed worker count. Kernel and Caddy linear capacities both
+reach 713,031,680 bytes. They are separate memories: the documented
+`ensure_memory_covers` coupling grows kernel memory for guest addresses.
+Audit the direct-call assumptions described in
+`docs/future-improvements.md` before removing it. None of these counters
+adds up to native footprint; VFS/transport, setup, execution and deferred
+collection attribution remain open. The high footprint is not resolved
+and this functional pass is not production-memory acceptance.
 
 **Visitor-cache configuration follow-up:** both current WordPress stacks
 disable OPcache timestamp validation. Stock cache-plugin activation edits
