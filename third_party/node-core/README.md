@@ -410,6 +410,21 @@ conversion uses the actual supplied signal table. See the
 for scoped evidence and outstanding four-host product validation. These
 changes do not complete util or inspection compatibility.
 
+The existing full parseArgs/diff/debounce/throttle owners are installed by
+util-algorithms-adapter.js over actual argv/immutable startup eval, timer,
+AbortSignal, handled-Promise and monotonic-clock owners. parseArgs and diff
+now use the genuine native lazy DATA property capability already shared with
+Worker exports, preserving holder/realm, descriptors, inheritance and integrity
+transitions instead of a visible JS accessor. This supplies no new native API
+and does not establish guest lazy-property/GC conformance.
+
+util-style-adapter.js installs the exact pinned styleText/cache/color-helper
+sections from lib/util.js. It shares real stream predicates, Buffer hex bytes,
+inspection colors and the existing internal util/colors -> internal/tty policy.
+Default streams remain the actual guest process streams; no isTTY/color depth
+flag is fabricated. Full TTY/OFD/color/realm/Unicode and four-host evidence stay
+separate; setTraceSigInt and full signal tracing remain implementation gaps.
+
 `inspection-adapter.js` supplies the private dependencies of the unchanged
 inspection algorithm. It uses the upstream primordial initializer and
 shared intrinsic brands from `_createNodeCoreTypes`. The SpiderMonkey

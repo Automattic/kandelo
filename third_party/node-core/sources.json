@@ -3444,9 +3444,21 @@
         "start": "ObjectDefineProperties(module.exports, {",
         "length": 331,
         "sha256": "832f90e7d7555548cc967acd269613c399a94c60e75dcfefa4ca39a9d0d51515"
+      },
+      "styleText": {
+        "source": "public",
+        "start": "const kEscape = '\\u001b[';",
+        "length": 6504,
+        "sha256": "e08fde2df467ae1212da45500c9ebaef819ed607488aabdc71129e7991fb2121"
+      },
+      "styleColors": {
+        "source": "public",
+        "start": "let utilColors;",
+        "length": 116,
+        "sha256": "6296c75e8ab43c396afd9c7c9db2f096df3b8cc04b4eda24f83153c559dfd55c"
       }
     },
-    "scope": "Full portable parseArgs/diff/debounce/throttle algorithms over actual owning dependencies. Lazy data-property descriptors/guest timer/async/CLI/realm validation remain open."
+    "scope": "Full portable parseArgs/diff/debounce/throttle algorithms plus pinned styleText/ANSI cache helpers over actual owning dependencies. Native lazy DATA cells route actual export holders; guest timer/async/TTY/color/CLI/realm validation remains open."
   },
   "cryptoRandomJobs": {
     "sources": {

@@ -101556,7 +101556,7 @@ module.exports = {
 function _installNodeUtilAlgorithms(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
-    const { Error, ObjectDefineProperty, ObjectGetOwnPropertyDescriptor, ObjectIsExtensible, ObjectPrototypeHasOwnProperty, SafeMap } = primordials;
+    const { Error, ObjectPrototypeHasOwnProperty, ReflectApply, SafeMap } = primordials;
     const process = platform.process;
     const modules = new SafeMap();
     const factories = {
@@ -102994,25 +102994,14 @@ module.exports = { myersDiff };
         if (name === 'timers') return { getLibuvNow: platform.getLibuvNow };
         throw new Error('Unknown util algorithm binding: ' + name);
     }
-    // These functions execute actual algorithms. V8's invisible lazy data
-    // property hook is still missing in this engine embedding: this JS lazy
-    // accessor is observably different before first read/descriptor lookup.
-    // Keep that as an implementation gap, not an accepted engine exclusion.
+    // Real native DATA cells own lazy initialization, holder/realm identity,
+    // descriptor materialization and inherited/integrity transitions. The
+    // callback is retained by the existing traced native capability owner.
+    const defineNativeLazy = platform.defineNativeLazyDataProperty;
+    function loadLazyExport(id, key) { return require(id)[key]; }
     function lazyData(key, id) {
-        ObjectDefineProperty(platform.util, key, {
-            __proto__: null, configurable: true, enumerable: true,
-            get() {
-                const value = require(id)[key];
-                const descriptor = ObjectGetOwnPropertyDescriptor(this, key);
-                if (descriptor?.configurable || (descriptor === undefined && ObjectIsExtensible(this))) {
-                    ObjectDefineProperty(this, key, { __proto__: null, value,
-                        configurable: true, enumerable: true, writable: true });
-                }
-                return value;
-            },
-            set(value) { ObjectDefineProperty(this, key, { __proto__: null, value,
-                configurable: true, enumerable: true, writable: true }); },
-        });
+        ReflectApply(defineNativeLazy, undefined,
+            [platform.util, key, loadLazyExport, id, 7]);
     }
     lazyData('parseArgs', 'internal/util/parse_args/parse_args');
     lazyData('diff', 'internal/util/diff');
@@ -103034,6 +103023,246 @@ module.exports = { myersDiff };
 });
 
     return { require };
+}
+
+// Complete pinned public styling/cache algorithms consume the real guest
+// stream predicates, byte/inspection state and color/TTY policy owners.
+function _installNodeUtilStyle(platform) {
+    'use strict';
+    const { ArrayIsArray, ObjectGetOwnPropertyNames, RegExpPrototypeExec,
+        SafeMap, StringPrototypeSlice } = _createNodePrimordials();
+    const process = platform.process;
+    const Buffer = platform.Buffer;
+    const inspect = platform.util.inspect;
+    const { validateString, validateObject, validateBoolean, validateOneOf } = platform.values.validators;
+    const { ERR_OUT_OF_RANGE, ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE } = platform.values.errors.codes;
+    const { isReadableStream, isWritableStream, isNodeStream } = platform.streamUtils;
+    function require(name) {
+        if (name === 'internal/util/colors') return platform.values.require(name);
+        throw new platform.values.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('util.styleText dependency ' + name);
+    }
+    let utilColors;
+function lazyUtilColors() {
+  utilColors ??= require('internal/util/colors');
+  return utilColors;
+}
+    const kEscape = '\u001b[';
+const kEscapeEnd = 'm';
+
+// Codes for dim (2) and bold (1) - these share close code 22
+const kDimCode = 2;
+const kBoldCode = 1;
+
+// Close sequence for 24-bit foreground colors (reset to default foreground)
+const kHexCloseSeq = kEscape + '39' + kEscapeEnd;
+
+let styleCache;
+
+const kHexStyleCacheMax = 256;
+
+let hexStyleCache;
+
+function getHexStyleCache() {
+  hexStyleCache ??= new SafeMap();
+  return hexStyleCache;
+}
+
+function codesToStyle(codes) {
+  const openNum = codes[0];
+  return {
+    __proto__: null,
+    openSeq: kEscape + openNum + kEscapeEnd,
+    closeSeq: kEscape + codes[1] + kEscapeEnd,
+    keepClose: openNum === kDimCode || openNum === kBoldCode,
+  };
+}
+
+function getStyleCache() {
+  if (styleCache === undefined) {
+    styleCache = { __proto__: null };
+    const colors = inspect.colors;
+    for (const key of ObjectGetOwnPropertyNames(colors)) {
+      const codes = colors[key];
+      if (codes) {
+        styleCache[key] = codesToStyle(codes);
+      }
+    }
+  }
+  return styleCache;
+}
+
+/**
+ * Returns the cached ANSI escape sequences for a hex color.
+ * Computes and caches on first use to avoid repeated Buffer allocations.
+ * @param {string} hex A valid hex color string (#RGB or #RRGGBB)
+ * @returns {{openSeq: string, closeSeq: string}}
+ */
+function getHexStyle(hex) {
+  const cache = getHexStyleCache();
+  const cached = cache.get(hex);
+  if (cached !== undefined) return cached;
+  const { 0: r, 1: g, 2: b } = hexToRgb(hex);
+  const style = {
+    __proto__: null,
+    openSeq: kEscape + rgbToAnsi24Bit(r, g, b) + kEscapeEnd,
+    closeSeq: kHexCloseSeq,
+  };
+  if (cache.size >= kHexStyleCacheMax)
+    cache.delete(cache.keys().next().value);
+  cache.set(hex, style);
+  return style;
+}
+
+function replaceCloseCode(str, closeSeq, openSeq, keepClose) {
+  const closeLen = closeSeq.length;
+  let index = str.indexOf(closeSeq);
+  if (index === -1) return str;
+
+  let result = '';
+  let lastIndex = 0;
+  const replacement = keepClose ? closeSeq + openSeq : openSeq;
+
+  do {
+    const afterClose = index + closeLen;
+    if (afterClose < str.length) {
+      result += str.slice(lastIndex, index) + replacement;
+      lastIndex = afterClose;
+    } else {
+      break;
+    }
+    index = str.indexOf(closeSeq, lastIndex);
+  } while (index !== -1);
+
+  return result + str.slice(lastIndex);
+}
+
+// Matches #RGB or #RRGGBB
+const hexColorRegExp = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+/**
+ * Parses a hex color string into RGB components.
+ * Supports both 3-digit (#RGB) and 6-digit (#RRGGBB) formats.
+ * @param {string} hex A valid hex color string
+ * @returns {Buffer} The RGB components
+ */
+function hexToRgb(hex) {
+  // Normalize to 6 digits
+  let hexStr;
+  if (hex.length === 4) {
+    // Expand #RGB to #RRGGBB
+    hexStr = hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
+  } else if (hex.length === 7) {
+    hexStr = StringPrototypeSlice(hex, 1);
+  } else {
+    throw new ERR_OUT_OF_RANGE('hex', '#RGB or #RRGGBB', hex);
+  }
+
+  // TODO(araujogui): use Uint8Array.fromHex
+  return Buffer.from(hexStr, 'hex');
+}
+
+/**
+ * Generates the ANSI TrueColor (24-bit) escape sequence for a foreground color.
+ * @param {number} r Red component (0-255)
+ * @param {number} g Green component (0-255)
+ * @param {number} b Blue component (0-255)
+ * @returns {string} The ANSI escape sequence
+ */
+function rgbToAnsi24Bit(r, g, b) {
+  return `38;2;${r};${g};${b}`;
+}
+
+/**
+ * @param {string | string[]} format
+ * @param {string} text
+ * @param {object} [options]
+ * @param {boolean} [options.validateStream] - Whether to validate the stream.
+ * @param {Stream} [options.stream] - The stream used for validation.
+ * @returns {string}
+ */
+function styleText(format, text, options) {
+  const validateStream = options?.validateStream ?? true;
+
+  // Fast path: single format string with validateStream=false
+  if (!validateStream && typeof format === 'string' && typeof text === 'string') {
+    const cache = getStyleCache();
+    if (format === 'none') return text;
+    const style = cache[format];
+    if (style !== undefined) {
+      const processed = replaceCloseCode(text, style.closeSeq, style.openSeq, style.keepClose);
+      return style.openSeq + processed + style.closeSeq;
+    }
+
+    if (format[0] === '#') {
+      let hexStyle = getHexStyleCache().get(format);
+      if (hexStyle === undefined && RegExpPrototypeExec(hexColorRegExp, format) !== null) {
+        hexStyle = getHexStyle(format);
+      }
+      if (hexStyle !== undefined) {
+        const processed = replaceCloseCode(text, hexStyle.closeSeq, hexStyle.openSeq, false);
+        return hexStyle.openSeq + processed + hexStyle.closeSeq;
+      }
+    }
+  }
+
+  validateString(text, 'text');
+  if (options !== undefined) {
+    validateObject(options, 'options');
+  }
+  validateBoolean(validateStream, 'options.validateStream');
+
+  let skipColorize;
+  if (validateStream) {
+    const stream = options?.stream ?? process.stdout;
+    if (
+      !isReadableStream(stream) &&
+      !isWritableStream(stream) &&
+      !isNodeStream(stream)
+    ) {
+      throw new ERR_INVALID_ARG_TYPE('stream', ['ReadableStream', 'WritableStream', 'Stream'], stream);
+    }
+    skipColorize = !lazyUtilColors().shouldColorize(stream);
+  }
+
+  const formatArray = ArrayIsArray(format) ? format : [format];
+  const colors = inspect.colors;
+
+  let openCodes = '';
+  let closeCodes = '';
+  let processedText = text;
+
+  for (const key of formatArray) {
+    if (key === 'none') continue;
+
+    if (typeof key === 'string' && key[0] === '#') {
+      if (RegExpPrototypeExec(hexColorRegExp, key) === null) {
+        throw new ERR_INVALID_ARG_VALUE('format', key,
+                                        'must be a valid hex color (#RGB or #RRGGBB)');
+      }
+      if (skipColorize) continue;
+      const { 0: r, 1: g, 2: b } = hexToRgb(key);
+      const hexOpenSeq = kEscape + rgbToAnsi24Bit(r, g, b) + kEscapeEnd;
+      openCodes += hexOpenSeq;
+      closeCodes = kHexCloseSeq + closeCodes;
+      processedText = replaceCloseCode(processedText, kHexCloseSeq, hexOpenSeq, false);
+      continue;
+    }
+
+    const codes = colors[key];
+    if (!codes) {
+      validateOneOf(key, 'format', ObjectGetOwnPropertyNames(inspect.colors));
+    }
+    const { openSeq, closeSeq, keepClose } = codesToStyle(codes);
+    openCodes += openSeq;
+    closeCodes = closeSeq + closeCodes;
+    processedText = replaceCloseCode(processedText, closeSeq, openSeq, keepClose);
+  }
+
+  if (skipColorize) return text;
+
+  return `${openCodes}${processedText}${closeCodes}`;
+}
+    platform.util.styleText = styleText;
 }
 
 // Actual CSPRNG work is owned by native requests, not synchronous fill deferred

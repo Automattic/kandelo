@@ -1767,6 +1767,14 @@ for marker, text in {
     if algorithm_adapter.count(marker) != 1: raise ValueError('Util algorithm marker mismatch: ' + marker)
     algorithm_adapter = algorithm_adapter.replace(marker, text)
 bundle += algorithm_adapter + '\n'
+style_adapter = (root / 'util-style-adapter.js').read_text()
+for marker, text in {
+    '/* NODE_UTIL_STYLE_COLORS */': selected_platform_section(util_algorithms, 'styleColors'),
+    '/* NODE_UTIL_STYLE_ALGORITHMS */': selected_platform_section(util_algorithms, 'styleText'),
+}.items():
+    if style_adapter.count(marker) != 1: raise ValueError('Util style marker mismatch: ' + marker)
+    style_adapter = style_adapter.replace(marker, text)
+bundle += style_adapter + '\n'
 
 random_jobs = manifest['cryptoRandomJobs']
 for name in random_jobs['sources']: selected_platform_source(random_jobs, name)

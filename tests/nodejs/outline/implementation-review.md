@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source186 integrates genuine native lazy properties for existing util exports, pinned styleText algorithms and the actual fs.constants null-prototype allocation source fix. Focused native-dependent/upstream controls and14package checks pass; current guest/GC/realm/four-host conformance remains open.
+See [source scope](util-style-lazy-integration.md).
+
 Source185 integrates genuine native crypto Errors, owned OpenSSL queues and original identity through7adapters plus sync-random bootstrap. Scoped native controls and14package checks pass. Guest JSAPI, async setter contexts, broader crypto and four-host conformance remain open.
 See [source scope](shared-crypto-error-owner-integration.md).
 

@@ -649,6 +649,7 @@ inputs = [
   "third_party/node-core/upstream/web-data/webidl.js",
   "third_party/node-core/upstream/webidl.js",
   "third_party/node-core/util-algorithms-adapter.js",
+  "third_party/node-core/util-style-adapter.js",
   "third_party/node-core/util-public-adapter.js",
   "third_party/node-core/uv-platform-adapter.js",
   "third_party/node-core/value-helpers-prelude.js",
@@ -662,4 +663,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 185
+revision = 186

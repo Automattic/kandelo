@@ -2572,6 +2572,7 @@ const _nodeUtilClockFloor = _createNodePrimordials().MathFloor;
 const _nodeUtilTimerBase = _nodeUtilClockFloor(_nodeMonotonicStart);
 const _nodeUtilAlgorithms = _installNodeUtilAlgorithms({
     util, values: _nodeValues, process, timers,
+    defineNativeLazyDataProperty: _nodeNative.defineNativeLazyDataProperty,
     addAbortListener: _nodeEventPlatform.addAbortListener,
     markPromiseAsHandled: value => _nodeNative.markPromiseAsHandled(value),
     getLibuvNow: () => _nodeUtilClockFloor(os.timerNow()) - _nodeUtilTimerBase,
@@ -2638,6 +2639,10 @@ const _nodeFdStreamPlatform = _createNodeFdStreamPlatform({
     stream, Buffer, process, native: _nodeNative,
     openTerminalOutput: _nodeTerminalPlatform.openOutput,
 });
+// Public styling consumes actual classic/Web predicates and the shared guest
+// inspection, byte, stdio and color-policy owners; no host capability shim.
+_installNodeUtilStyle({ util, process, Buffer, values: _nodeValues,
+    streamUtils: _nodeStreamPlatform.require('internal/streams/utils') });
 // Assertion diagnostics load the shared color module, which observes the real
 // stderr stream immediately. Its FD owner must exist before that module loads.
 const assert = _nodeCore.assert;

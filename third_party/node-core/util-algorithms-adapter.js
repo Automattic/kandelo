@@ -2,7 +2,7 @@
 function _installNodeUtilAlgorithms(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
-    const { Error, ObjectDefineProperty, ObjectGetOwnPropertyDescriptor, ObjectIsExtensible, ObjectPrototypeHasOwnProperty, SafeMap } = primordials;
+    const { Error, ObjectPrototypeHasOwnProperty, ReflectApply, SafeMap } = primordials;
     const process = platform.process;
     const modules = new SafeMap();
     const factories = {
@@ -34,25 +34,14 @@ function _installNodeUtilAlgorithms(platform) {
         if (name === 'timers') return { getLibuvNow: platform.getLibuvNow };
         throw new Error('Unknown util algorithm binding: ' + name);
     }
-    // These functions execute actual algorithms. V8's invisible lazy data
-    // property hook is still missing in this engine embedding: this JS lazy
-    // accessor is observably different before first read/descriptor lookup.
-    // Keep that as an implementation gap, not an accepted engine exclusion.
+    // Real native DATA cells own lazy initialization, holder/realm identity,
+    // descriptor materialization and inherited/integrity transitions. The
+    // callback is retained by the existing traced native capability owner.
+    const defineNativeLazy = platform.defineNativeLazyDataProperty;
+    function loadLazyExport(id, key) { return require(id)[key]; }
     function lazyData(key, id) {
-        ObjectDefineProperty(platform.util, key, {
-            __proto__: null, configurable: true, enumerable: true,
-            get() {
-                const value = require(id)[key];
-                const descriptor = ObjectGetOwnPropertyDescriptor(this, key);
-                if (descriptor?.configurable || (descriptor === undefined && ObjectIsExtensible(this))) {
-                    ObjectDefineProperty(this, key, { __proto__: null, value,
-                        configurable: true, enumerable: true, writable: true });
-                }
-                return value;
-            },
-            set(value) { ObjectDefineProperty(this, key, { __proto__: null, value,
-                configurable: true, enumerable: true, writable: true }); },
-        });
+        ReflectApply(defineNativeLazy, undefined,
+            [platform.util, key, loadLazyExport, id, 7]);
     }
     lazyData('parseArgs', 'internal/util/parse_args/parse_args');
     lazyData('diff', 'internal/util/diff');

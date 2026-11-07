@@ -1,0 +1,100 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/values.md",
+    "findingIds": [
+      "V-008"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/values-legacy-modules.md": [
+        "V-024"
+      ]
+    },
+    "relatedFamilies": [
+      "values",
+      "filesystem",
+      "streams",
+      "terminal",
+      "workers",
+      "engine"
+    ],
+    "scope": "Consumed native lazy DATA and complete styleText source plus fs.constants allocation prerequisite; not full util/constants aggregate/dependency behavior or finding closure"
+  },
+  "sourceImplemented": [
+    "Existing real parseArgs/diff algorithms consume native lazy DATA cells with actual traced loader/module/holder/realm state and data attributes, replacing visible JS getter/setter wrappers without an accessor fallback",
+    "Complete unchanged pinned styleText/cache/nesting/hex/validation helpers and lazy colors selection are actually loaded over real current stream predicates, Buffer/inspection/process and shared color/TTY policy",
+    "Production bootstrap wires actual native lazy capability and installs styling after stream owners; real stdio metadata/environment governs colors without fabricated isTTY/color-depth/platform fields",
+    "Actual getFsConstants generator allocates a native null-prototype object, preserving selected upstream SDK constant definitions and readonly/enumerable/permanent numeric properties byte-for-byte",
+    "Earlier broad V-008 absence statements explicitly superseded by immutable additive correction: parseArgs/diff/debounce/throttle algorithms were already present, not rewritten or counted as newly supplied"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-util186-source-r1/report.json",
+    "sha256": "94f1a117a88ab4c663279dd52dd6756d77cf4f104ebbeb1fe3922f47cb783713",
+    "guardedInputs": 835,
+    "scope": "Real native lazy DATA routing and complete pinned styleText/stream-color owners; actual fs.constants null-prototype source correction. Native dependency controls are not guest JSAPI/GC/realm/fourhost conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-util186-affected-r1.json",
+    "sha256": "9c04700aaa734f9b00452b92002b620041ed016286a1284fb1a5fb8cfa5ffcc6",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-util186-source-r1/report.json",
+    "sha256": "94f1a117a88ab4c663279dd52dd6756d77cf4f104ebbeb1fe3922f47cb783713",
+    "ordinaryGroups": 21,
+    "actualEvalGroups": 21,
+    "stdioScenarios": 4,
+    "existingScenarios": 8,
+    "unchangedUpstreamDistinctUtilFiles": 3,
+    "parseArgsPerSubjectPassed": 117,
+    "hexRealPTYPerSubjectPassed": 31,
+    "plainStyleRealPTYPerSubject": "exit0with no skip marker; no framework denominator",
+    "nativeFsConstantsReferencePassed": true,
+    "candidateFsConstantsJSAPIExecuted": false,
+    "newCompilerAttempts": 0,
+    "scope": "Current util source consumers over actual pinned V8 lazy DATA and explicit native argv/stream/TTY/color/assert/child dependencies. Native-only unchanged fs.constants reference plus exact allocator source correction, not guest execution. Original pipe skips and old descriptor failure retained."
+  },
+  "sealedEvidence": {
+    "report": ".context/util-arguments-style-agent/handoff.json",
+    "sha256": "8fd7e5f08f87111497447e8657cc1475db7222dc9f42c9fe620c93e3b5195fee",
+    "reusedEvidence": true,
+    "scope": "21focused groups ordinary/real-e,4actual stdio scenarios,8existing scenarios;117parseArgs/31hex per native/candidate and plainstyle actualPTY exit0;42source checks. Original pipe skips/old descriptor failure and missing new input retained.0compiles."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/util-arguments-style-agent/before-lazy.stderr",
+      "sha256": "513cab5e0c9a388c4a642cd5f4c5351b2fbcdfa636d93203bb0b2e1005c4f550",
+      "kind": "old-source-strict-descriptor-regression-nonpass",
+      "reason": "Exact old bundle exposes get/set rather than target value/writable; same strict descriptor assertion exits1. Original source/log/assertion retained."
+    },
+    {
+      "report": ".context/util-arguments-style-agent/upstream-accounting.json",
+      "sha256": "803cd5cc9c4fc8dca20523b226399cbf4b593b1fe69cefc8ba84b95880670965",
+      "kind": "original-native-and-candidate-pipe-TTY-skips",
+      "reason": "Whole plain-style script skip and hex22pass/1skip retained separately; later real-PTY plain/hex runs supplement them, never relabel skips as passing coverage."
+    },
+    {
+      "report": ".context/util-arguments-style-agent/production-input-check.stdout",
+      "sha256": "4bc5198a0414f117d0c839baef765001177f46b49e99194bcdc51a5aa130a38e",
+      "kind": "private-new-production-input-undeclared",
+      "reason": "Private checker exits1 for only util-style-adapter.js. Parent declares that real new input and current closure passes; historical failure remains."
+    }
+  ],
+  "remaining": [
+    "setTraceSigInt and remaining util/Buffer/URL/IDNA/legacy-URL/object-URL/transcode/sys/constants aggregate source gaps",
+    "Actual current guest native lazy DATA holder/realm/GC/materialization/invalidation/retirement and Buffer/stream/TTY/color/timer/fatal dependencies",
+    "Actual fs.constants guest JSAPI compile/execution and platform-conditioned values/descriptors; legacy node:constants aggregate/order/crypto initialization and aliases remain separate gaps",
+    "Whole all-four-host identified-artifact runtime conformance; source/native component/upstream dependencies do not establish guest behavior"
+  ],
+  "at": "2026-11-07T05:41:56.053583+00:00",
+  "recipeRevision": 186,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

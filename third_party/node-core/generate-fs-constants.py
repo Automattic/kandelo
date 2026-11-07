@@ -21,7 +21,7 @@ def generate(root):
         'namespace {\n'+inputs['portable']+inputs['posix']+
         '\nstatic bool KandeloNativeFsConstants(JSContext* cx, unsigned argc, Value* vp) {\n'
         '  CallArgs args = CallArgsFromVp(argc, vp);\n'
-        '  RootedObject target(cx, JS_NewPlainObject(cx));\n'
+        '  RootedObject target(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));\n'
         '  if (!target) return false;\n'
         '#define NODE_DEFINE_CONSTANT(object, name) \\\n'
         '  do { if (!JS_DefineProperty(cx, object, #name, double(name), \\\n'
