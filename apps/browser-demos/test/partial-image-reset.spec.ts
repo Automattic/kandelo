@@ -18,7 +18,7 @@ test.skip(!existsSync(manifestPath) || rebuild === undefined, "set KANDELO_PARTI
 async function ready(page: Page) {
   await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 240_000 });
   await expect.poll(() => page.locator(".xterm-rows").first().textContent(), { timeout: 120_000 })
-    .toMatch(/[@#$] ?/);
+    .toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
 }
 
 test("rebuilding the partial image resets its computer's saved state", async ({ baseURL }) => {
@@ -29,6 +29,9 @@ test("rebuilding the partial image resets its computer's saved state", async ({ 
     try {
       const page = await context.newPage();
       const before = JSON.parse(readFileSync(manifestPath, "utf8")) as { sha256: string };
+      // A partial build that just finished may still be about to reload the
+      // dev server's pages; let that settle before the first boot.
+      await page.waitForTimeout(5_000);
       await page.goto(`/?vfs=${encodeURIComponent("/@kandelo-partial/image.vfs.zst")}`);
       await ready(page);
       const computerUrl = page.url();
@@ -43,10 +46,18 @@ test("rebuilding the partial image resets its computer's saved state", async ({ 
       await page.screenshot({ path: join(repo, ".context/partial-reset-before.png") });
 
       // A rebuild does not.
+      const reloaded = page.waitForEvent("load", { timeout: 60_000 }).catch(() => {});
       execFileSync(join(repo, "run.sh"), ["partial", ...rebuild!], { cwd: repo, stdio: "inherit" });
+      // The dev server reloads the page when partial.json changes.
+      await reloaded;
       const after = JSON.parse(readFileSync(manifestPath, "utf8")) as { sha256: string };
       expect(after.sha256).not.toBe(before.sha256);
-      await page.goto(computerUrl);
+      // The dev server reloads the page itself when partial.json changes;
+      // that reload may interrupt this navigation to the same computer.
+      await page.goto(computerUrl).catch((error: unknown) => {
+        if (!/interrupted by another navigation/.test(String(error))) throw error;
+      });
+      await page.waitForLoadState("domcontentloaded");
       await ready(page);
       expect((await runTerminalCommand(page, "cat ~/partial-marker 2>&1; true")).output).toMatch(/No such file/);
       await page.screenshot({ path: join(repo, ".context/partial-reset-after.png") });

@@ -467,18 +467,20 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
         eprintln!("partial-image: {name} is already in the base; nothing to add");
     }
 
-    // Build the members: the kernel and SDK first (as every package build
-    // does), then the selection and the image's other packages through the
-    // engine, which reuses the shared cache and publishes this worktree's
-    // program view, so the image's lazy files are served.
+    // Build the members: the SDK first (as every package build needs), then
+    // the kernel, the selection and the image's other packages in one engine
+    // pass, which reuses the shared cache and publishes this worktree's
+    // program view so the image's lazy files are served. One pass, not one
+    // for the kernel and one for the packages: each pass regenerates the
+    // program index and republishes the view, about a minute when cached.
     let jobs = crate::local_build::select_job_count(
         request.jobs.as_deref(),
         std::env::var("WASM_POSIX_LOCAL_BUILD_JOBS").ok().as_deref(),
         std::thread::available_parallelism().ok(),
     )?;
-    crate::local_build::run_bootstrap_step(&repo, "engine", jobs, false, false, vec!["kernel".into()])?;
     crate::local_build::run_bootstrap_step(&repo, "sdk", jobs, false, false, Vec::new())?;
     let mut products: BTreeSet<String> = EXTRA_BASE_PACKAGES.iter().map(|name| name.to_string()).collect();
+    products.insert("kernel".to_string());
     products.extend(request.packages.iter().filter(|name| !base.contains(*name)).cloned());
     if request.image.package != "shell" {
         products.extend(shell_free_dependencies(&registry, request.image.package)?);
