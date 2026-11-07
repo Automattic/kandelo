@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
 import ts from "typescript";
-import { createWorkerQuiescence, type WorkerQuiescence, retireWorkerBatch } from "../src/worker-quiescence";
+import { createWorkerQuiescence, type WorkerQuiescence, retireWorkerBatch, processWorkerRetirementProven } from "../src/worker-quiescence";
 import { removeThreadWorkerRegistryEntry } from "../src/thread-worker-disposition";
 import { ThreadExitCoordinator } from "../src/thread-exit-coordinator";
 import { isCurrentProcessGeneration } from "../src/kernel-worker";
@@ -819,7 +819,7 @@ function actualCloneRetirementControl(
     },
     isCurrentProcessGeneration, retryKernelEntryResult, retryKernelEntryResultForGeneration,
     DeferredWorkerHandle, createWorkerAbsence, createWorkerQuiescence, removeThreadWorkerRegistryEntry,
-    retireWorkerBatch, waitForWorkerQuiescence, waitForExecRetirement,
+    retireWorkerBatch, processWorkerRetirementProven, waitForWorkerQuiescence, waitForExecRetirement,
     terminateExitedThreadWorkers: async () => {},
     PROCESS_WORKER_QUIESCENCE_WAIT_MS: 100, EXEC_WORKER_RETIREMENT_WAIT_MS: 5000,
     threadExits: new ThreadExitCoordinator(),

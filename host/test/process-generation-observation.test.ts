@@ -1,10 +1,11 @@
+import { DeferredWorkerHandle } from "../src/deferred-worker-handle";
 import { describe, expect, it, vi } from "vitest";
 import { deliverProcessGenerationEvent, ProcessGenerationObservations, type ProcessGenerationEventData as ProcessGenerationEvent } from "../src/process-generation-observation";
 import { ExactProcessGenerationDetachLedger } from "../src/process-generation-detach";
 import { ForkExternrefProcessOwner } from "../src/fork-externref-process-owner";
 import { ProcessMemoryAllocator } from "../src/process-memory";
 import { retireSupersededExecGeneration, type ProcessGenerationOwnership } from "../src/process-lifecycle";
-import { createWorkerQuiescence, runWithProcessWorkerQuiescence } from "../src/worker-quiescence";
+import { createWorkerQuiescence, runWithProcessWorkerQuiescence, prepareProcessWorkerAbsence, sealProcessWorkerAbsence } from "../src/worker-quiescence";
 
 function setup() {
   const owner = new ForkExternrefProcessOwner();
@@ -38,7 +39,7 @@ describe("real process generation observation", () => {
     r.observations.mainQuiescent(r.generation);
     await r.detach(commit => commit("quiescent"), () => {}, () => false);
     expect(retired(r.events)).toEqual([{ kind: "retired", pid: 41,
-      executionId: r.token.id, mainFence: "acknowledged", threadFences: "acknowledged",
+      executionId: r.token.id, mainFence: "acknowledged", mainAbsent: false, threadFences: "acknowledged",
       threads: 0, acknowledgedThreads: 0, absentThreads: 0, leaseDisposition: "quiescent", registration: "superseded", postCommitFailed: false }]);
     expect(replacementToken.id).not.toBe(r.token.id);
     expect(r.current.get(41)).toBe(replacement);
@@ -418,16 +419,20 @@ for (const peer of ["node", "browser"] as const) {
     const code = ts.transpileModule(declaration!.getText(source), {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
     }).outputText;
-    const build = new Function("processes", "observeProcessGenerations", "externrefProcessOwner", "generationObservations", `${code}\nreturn registerObservedProcess;`);
+    const build = new Function("processes", "observeProcessGenerations", "externrefProcessOwner", "generationObservations", "prepareProcessWorkerAbsence", `${code}\nreturn registerObservedProcess;`);
     for (const enabled of [false, true]) {
       const owner = new ForkExternrefProcessOwner(), token = owner.startGeneration(41);
       const authenticate = vi.spyOn(owner, "generationId");
       const emitted = vi.fn(), observations = new ProcessGenerationObservations(emitted);
       if (enabled) observations.enable();
-      const info = { externrefGeneration: token }, current = new Map();
-      const register = build(current, enabled, owner, observations);
+      const info = { externrefGeneration: token,
+        worker: new DeferredWorkerHandle(() => {throw Error("sealed main must never start");}),
+        workerQuiescence: createWorkerQuiescence(), execRetirement: createWorkerQuiescence() }, current = new Map();
+      const register = build(current, enabled, owner, observations, prepareProcessWorkerAbsence);
       register(41, info);
-      expect(current.get(41)).toBe(info); // Registration is unchanged in both modes.
+      expect(current.get(41)).toBe(info);
+      expect(sealProcessWorkerAbsence(info)).toBe(true);
+      expect(info.workerQuiescence.settled).toBe(false);
       expect(authenticate).toHaveBeenCalledTimes(enabled ? 1 : 0);
       expect(emitted).toHaveBeenCalledTimes(enabled ? 1 : 0);
       if (enabled) expect(emitted).toHaveBeenCalledWith({ kind: "admitted", pid: 41, executionId: token.id });
@@ -457,4 +462,16 @@ it("records sealed absence separately, without counting unknown, duplicate or la
     mainFence: "acknowledged", threadFences: "acknowledged-or-absent", leaseDisposition: "quiescent" });
   r.observations.threadAbsent(r.generation, unknown);
   expect(retired(r.events)).toHaveLength(1);
+});
+
+it("separate main absence cannot manufacture an acknowledged fence or affect a replacement", async () => {
+  const r = setup(); const replacement = {};
+  r.observations.admit(41, replacement, 999);
+  r.observations.mainAbsent(r.generation);
+  r.observations.mainAbsent(r.generation);
+  await r.detach(commit => commit("quiescent"));
+  expect(retired(r.events)[0]).toMatchObject({mainFence: "missing", mainAbsent: true, leaseDisposition: "quiescent"});
+  r.observations.mainAbsent(r.generation); // retired identity remains a tombstone
+  r.observations.retired(replacement, {leaseDisposition: "forced", postCommitFailed: false, detachDisposition: "removed-or-absent"});
+  expect(retired(r.events)[1]).toMatchObject({executionId: 999, mainFence: "missing", mainAbsent: false});
 });

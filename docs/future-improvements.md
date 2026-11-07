@@ -1439,9 +1439,9 @@ final Node/browser requirements in this iteration.
 
 The B1 fork-completion source checkpoint preserves child allocation custody
 independently of a retired parent request and closes failed-launch inherited
-network mirrors before returning failure. Main Worker absence is still being
-proved separately from actual acknowledgements; the historical missing-main
-browser outcomes are not attributed or waived. Complete native Wayland
+network mirrors before returning failure. Main Worker absence now has a distinct sealed source-level proof alongside
+actual acknowledgements; actual browser acceptance remains pending and the
+historical missing-main outcomes are not attributed or waived. Complete native Wayland
 retirement and approved D-59 enforcement, then rebuild and execute the full
 Node/browser workloads before calling B1 complete. These remain work in this
 iteration, alongside every native-feel and final acceptance requirement.

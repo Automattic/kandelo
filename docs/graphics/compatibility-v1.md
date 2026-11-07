@@ -26159,3 +26159,35 @@ from separate translation units. No product fallback, platform-specific linker
 flag or runtime-defect claim is introduced. Producer R625's full fixture run
 passes56s; its original wrong archive argument remains failed. Normal SDK,
 Node/browser, full B1 preview and all final acceptance gates remain required.
+
+### Exact main-Worker absence checkpoint, 2026-11-07
+
+Main generations now prepare their own exact Deferred-handle absence proof at
+cold admission. Retirement may seal only a concrete never-attempted handle,
+permanently preventing later construction; constructor failure, unknown handles,
+termination and timeout remain unproven. No synthetic `memory_quiescent` or
+`exec_retired` is emitted. Node/browser exit, exec, fork/spawn rollback and
+destroy preserve their thread and framebuffer ownership requirements.
+
+Diagnostics report `mainAbsent` separately: an absent main still has
+`mainFence: missing`, while only a real authenticated message is acknowledged.
+The browser comparison must validate that distinction rather than reinterpret
+absence as an ACK. No historical PHP or missing-pthread cause is inferred.
+
+Root `graphics-main-absence-integration-r633-1107-012716-303a` passes19s:
+304 controls/14 files, production and strict new-fixture TypeScript,722-file
+evidence inventory and9 frozen composed paths. Exact commands and private-index
+composition proof are in `.context/graphics-main-absence-integration-r633/`.
+Producer R588 additionally passes10 ownership-audit controls under the unchanged
+300-second guard; final production matches that audited cut. Actual pre-repair
+entry controls have12 failures/12 preserved passes at both widths. Tests execute
+real entry and exit functions, allocator and exact detach ledger, with real
+Node disposable realms for ACK controls; they are not actual-browser results.
+
+A separate ordering review confirms current exec joins its thread batch before
+admitting a successor; destroy drains creators and joins the exact in-flight
+exit teardown. Two comment-only additions explain why the current-main proof
+lookup depends on that ordering. They change no predicate or runtime policy;
+no artificial direct-map mutation is claimed as a production race. Actual
+browser-memory, coherent new-C/kernel consumers and all B1/final gates remain
+required.

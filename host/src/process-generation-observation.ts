@@ -14,6 +14,7 @@ export type ProcessGenerationEventData =
       readonly postCommitFailed: boolean;
       readonly registration: "removed-or-absent" | "superseded";
       readonly mainFence: "acknowledged" | "missing";
+      readonly mainAbsent: boolean;
       readonly threadFences: "acknowledged" | "acknowledged-or-absent" | "missing";
       readonly threads: number;
       readonly acknowledgedThreads: number;
@@ -44,6 +45,7 @@ interface Observation {
   readonly pid: number;
   readonly executionId: number;
   mainFence: boolean;
+  mainAbsent: boolean;
   readonly threads: WeakMap<object, { acknowledged: boolean; absent: boolean }>;
   threadCount: number;
   acknowledgedThreads: number;
@@ -72,7 +74,7 @@ export class ProcessGenerationObservations {
         || executionId <= 0) return false;
     const prior = this.records.get(generation);
     if (prior) return prior.pid === pid && prior.executionId === executionId;
-    this.records.set(generation, { pid, executionId, mainFence: false,
+    this.records.set(generation, { pid, executionId, mainFence: false, mainAbsent: false,
       threads: new WeakMap(), threadCount: 0, acknowledgedThreads: 0, absentThreads: 0,
       exited: false, retired: false });
     deliverProcessGenerationEvent({ kind: "admitted", pid, executionId }, this.emit);
@@ -82,6 +84,12 @@ export class ProcessGenerationObservations {
   mainQuiescent(generation: object): void {
     const row = this.records.get(generation);
     if (row && !row.retired) row.mainFence = true;
+  }
+
+  /** Sealed concrete main-handle absence is never a worker-main ACK. */
+  mainAbsent(generation: object): void {
+    const row = this.records.get(generation);
+    if (row && !row.retired && !row.mainFence) row.mainAbsent = true;
   }
 
   threadAdmitted(generation: object, thread: object): void {
@@ -128,6 +136,7 @@ export class ProcessGenerationObservations {
       postCommitFailed: result.postCommitFailed,
       registration: result.detachDisposition,
       mainFence: row.mainFence ? "acknowledged" : "missing",
+      mainAbsent: row.mainAbsent,
       threadFences: row.threadCount === row.acknowledgedThreads ? "acknowledged"
         : row.threadCount === row.acknowledgedThreads + row.absentThreads
           ? "acknowledged-or-absent" : "missing",

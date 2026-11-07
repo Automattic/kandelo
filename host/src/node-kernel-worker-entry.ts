@@ -96,6 +96,10 @@ import {
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import {
   createWorkerQuiescence,
+  prepareProcessWorkerAbsence,
+  sealProcessWorkerAbsence,
+  processWorkerRetirementProven,
+  waitForProcessWorkerRetirement,
   retireWorkerBatch,
   type WorkerQuiescence,
   waitForExecRetirement,
@@ -248,6 +252,7 @@ interface ForkReplayContext {
 }
 
 interface ProcessInfo extends ProcessGenerationOwnership {
+  workerAbsence?: WorkerAbsence;
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
   programBytes: ArrayBuffer;
@@ -277,6 +282,9 @@ const generationObservations = new ProcessGenerationObservations(event =>
   post({ type: "process_generation_event", event }));
 
 function registerObservedProcess(pid: number, info: ProcessInfo): void {
+  // Prepare before publication/start. Only this exact handle may later prove
+  // no main realm ever existed; observers record absence separately from ACK.
+  prepareProcessWorkerAbsence(info, () => generationObservations.mainAbsent(info));
   processes.set(pid, info);
   if (!observeProcessGenerations) return;
   // Correlation is never lifecycle authority. An unauthenticated/uncertain
@@ -479,7 +487,12 @@ async function terminateThreadWorkers(
     workers: threads,
     // The main guest can also grow this memory. Its terminal fence must be
     // present before overlapping sibling-instance destruction.
-    mayRetireTogether: processes.get(pid)?.workerQuiescence.settled === true,
+    // WHY: exec joins this exact batch before publishing its successor;
+    // destroy drains creators and joins an in-flight exact exit teardown.
+    // This current-main lookup depends on that ordering: admitting a
+    // replacement before this await finishes would authorize the wrong image.
+    mayRetireTogether: processes.get(pid) !== undefined
+      && processWorkerRetirementProven(processes.get(pid)!),
     retirementProven: (thread) => thread.workerAbsence.proven
       || (thread.workerQuiescence.settled
         && (!requireExecRetirement || thread.execRetirement.settled)),
@@ -1904,8 +1917,8 @@ async function handleVfork(
         new Error(`Vfork child ${childPid} exited before Worker launch`),
       );
       forkHostImports.close();
+      sealProcessWorkerAbsence(childGeneration);
       await terminateTrackedWorker(childWorker);
-      childGeneration.workerQuiescence.settle();
       const signal = await retryKernelEntryResult(
         () => kernelWorker.finalizePendingChildTermination(childPid),
       );
@@ -1927,7 +1940,7 @@ async function handleVfork(
     } catch (error) {
       const phase = vforkLifetimes.phaseForChild(childGeneration);
       if (phase === "starting") {
-        childGeneration.workerQuiescence.settle();
+        sealProcessWorkerAbsence(childGeneration);
         const signal = await retryKernelEntryResult(
           () => kernelWorker.finalizePendingChildTermination(childPid),
         );
@@ -1982,6 +1995,7 @@ async function handleVfork(
 
     forkReplay.cancel(error);
     childForkHostImports?.close();
+    if (childGeneration) sealProcessWorkerAbsence(childGeneration);
     if (childWorker) await terminateTrackedWorker(childWorker);
     if (childExternrefGeneration) {
       externrefProcessOwner.releaseGeneration(childExternrefGeneration);
@@ -2225,8 +2239,8 @@ async function handleOrdinaryFork(
         new Error(`Fork child ${childPid} exited before Worker launch`),
       );
       forkHostImports.close();
+      sealProcessWorkerAbsence(childGeneration!);
       await terminateTrackedWorker(worker);
-      processes.get(childPid)?.workerQuiescence.settle();
       const signal = await retryKernelEntryResult(
         () => kernelWorker.finalizePendingChildTermination(childPid),
       );
@@ -2255,6 +2269,9 @@ async function handleOrdinaryFork(
     forkReplay.commit();
   } catch (error) {
     if (lifecycleTeardownStarted) throw error;
+    const mainNeverCreated = childGeneration
+      ? sealProcessWorkerAbsence(childGeneration)
+      : !workerStartAttempted;
     forkReplay.cancel(error);
     childForkHostImports?.close();
     if (childWorker) await terminateTrackedWorker(childWorker);
@@ -2270,12 +2287,12 @@ async function handleOrdinaryFork(
       generation,
       operation: registered ? "deactivate" : "none",
       retire: (commit) => {
-        if (workerStartAttempted) {
+        if (!mainNeverCreated) {
           childMemoryLease.releaseAfterForcedTermination();
         } else {
           childMemoryLease.release();
         }
-        commit(workerStartAttempted ? "forced" : "quiescent");
+        commit(mainNeverCreated ? "quiescent" : "forced");
       },
     });
     if (detachResult.status !== "released") {
@@ -2421,12 +2438,8 @@ async function handleExec(
       }
 
       const [mainQuiescent, threadsQuiescent] = await Promise.all([
-        mainRetirementStarted
-          ? waitForExecRetirement(
-              initiatingInfo.execRetirement,
-              initiatingInfo.workerQuiescence,
-              EXEC_WORKER_RETIREMENT_WAIT_MS,
-            )
+        mainRetirementStarted || sealProcessWorkerAbsence(initiatingInfo)
+          ? waitForProcessWorkerRetirement(initiatingInfo, EXEC_WORKER_RETIREMENT_WAIT_MS, true)
           : Promise.resolve(false),
         terminateThreadWorkers(pid, true),
       ]);
@@ -2888,8 +2901,8 @@ async function handlePosixSpawn(
     }
     if (startDisposition === "dead") {
       processForkHostImports.close();
+      sealProcessWorkerAbsence(childGeneration!);
       await terminateTrackedWorker(worker);
-      processes.get(childPid)?.workerQuiescence.settle();
       const signal = await retryKernelEntryResult(
         () => kernelWorker.finalizePendingChildTermination(childPid),
       );
@@ -2903,6 +2916,9 @@ async function handlePosixSpawn(
     }
   } catch (error) {
     if (lifecycleTeardownStarted) throw error;
+    const mainNeverCreated = childGeneration
+      ? sealProcessWorkerAbsence(childGeneration)
+      : !workerStartAttempted;
     if (newWorker) await terminateTrackedWorker(newWorker);
     forkHostImports?.close();
     if (externrefGeneration) {
@@ -2914,12 +2930,12 @@ async function handlePosixSpawn(
       generation,
       operation: registered ? "deactivate" : "none",
       retire: (commit) => {
-        if (workerStartAttempted) {
+        if (!mainNeverCreated) {
           memoryLease.releaseAfterForcedTermination();
         } else {
           memoryLease.release();
         }
-        commit(workerStartAttempted ? "forced" : "quiescent");
+        commit(mainNeverCreated ? "quiescent" : "forced");
       },
     });
     if (detachResult.status !== "released") {
@@ -3265,14 +3281,11 @@ async function finishProcessExit(
       console.warn(`[kernel-worker] pid=${pid} retirement wake failed: ${String(error)}`);
     }
     const [, threadsQuiescent] = await Promise.all([
-      waitForWorkerQuiescence(
-        info.workerQuiescence,
-        PROCESS_WORKER_QUIESCENCE_WAIT_MS,
-      ),
+      waitForProcessWorkerRetirement(info, PROCESS_WORKER_QUIESCENCE_WAIT_MS),
       terminateThreadWorkers(pid),
     ]);
     await terminateTrackedWorker(expectedWorker);
-    const exactMemoryTeardown = info.workerQuiescence.settled && threadsQuiescent;
+    const exactMemoryTeardown = processWorkerRetirementProven(info) && threadsQuiescent;
 
     // Deactivate process (zombie until reaped or destroy) after worker
     // termination so no further guest syscalls can arrive on its channel.
@@ -3501,10 +3514,7 @@ async function performDestroy() {
       }
       vmInterruptTimers.clear(pid, info);
       const [workerQuiescent, threadsQuiescent] = await Promise.all([
-        waitForWorkerQuiescence(
-          info.workerQuiescence,
-          PROCESS_WORKER_QUIESCENCE_WAIT_MS,
-        ),
+        waitForProcessWorkerRetirement(info, PROCESS_WORKER_QUIESCENCE_WAIT_MS),
         terminateThreadWorkers(pid),
       ]);
       await terminateTrackedWorker(info.worker);

@@ -2507,8 +2507,7 @@ ownership records retain this proof separately from message fences; optional
 generation diagnostics count `absentThreads` separately from
 `acknowledgedThreads` and report `acknowledged-or-absent` when appropriate.
 Batch retirement accepts those exact proofs while a missing proof keeps serial
-containment and forced lease retirement. Main-Worker ACK requirements are
-unchanged. Forced
+containment and forced lease retirement. Main-Worker message fences remain actual ACKs. Forced
 termination drops the kernel realm's aliases but never makes the backing
 eligible for reuse. Whole-host destroy synchronously closes process/pthread
 Worker creation admission, waits for every already-admitted async creator to
@@ -2517,6 +2516,16 @@ It finally terminates the containing kernel Worker even if that bounded
 graceful detach attempt fails or times out. That realm boundary is the final
 release fallback; a false graceful result never asks the main thread to keep a
 partially detached kernel Worker alive.
+
+Every main generation prepares its own exact-handle absence proof before
+publication or deferred start. Cold exit, exec and destroy paths may accept that
+sealed never-attempted proof instead of waiting for a message from a realm that
+never existed. It permanently cancels future starts; a constructor attempt,
+unknown handle, timeout or successful native termination cannot create it.
+Neither message fence is settled synthetically. Optional retirement diagnostics
+retain `mainFence: missing` and report `mainAbsent: true` separately, so absence
+cannot be mistaken for guest return. Rollback and final retirement keep the
+captured generation even when its numeric PID has an exec replacement.
 
 An asynchronously launched fork owns its newly allocated Rust child and
 pre-publication descriptor mirrors until its host callback transfers custody.
