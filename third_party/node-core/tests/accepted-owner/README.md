@@ -35,3 +35,10 @@ retains it through a persistent-root capability, and transfers that same owner
 once. Queued close performs rollback. A separately sealed engine delta detaches
 an accepted watch before any init/rejection reentry and returns before using a
 raw saved next pointer. Those SpiderMonkey paths are source-reviewed only.
+
+The callable-Server followup extracts the actual lexical acceptServer function
+and supplies an explicit captured native listener record to that component
+boundary. The four original scenarios and their twelve connections keep all
+identity/drop/poison/error assertions. Listener state is no longer exposed to
+an overridable public _accept method. Socket option application is the actual
+candidate factory; the deliberately limited Socket/provider boundary remains.

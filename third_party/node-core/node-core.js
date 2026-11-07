@@ -21991,6 +21991,85 @@ Buffer.prototype.swap64 = function swap64() {
 
 }
 
+// Generic public receiver initialization, independent of HTTP or any subclass.
+function _createNodeServerConstructor(platform) {
+    'use strict';
+    const { ObjectDefineProperty, ObjectGetOwnPropertyDescriptor, ObjectSetPrototypeOf } = _createNodePrimordials();
+    const EventEmitter = platform.EventEmitter;
+    const { ERR_INVALID_ARG_TYPE } = platform.values.errors.codes;
+    const { validateNumber } = platform.values.validators;
+    const getDefaultHighWaterMark = platform.getDefaultHighWaterMark;
+    const kEmptyObject = platform.values.util.kEmptyObject;
+    const module = { get exports() { return platform.getExports(); } };
+    function Server(options, connectionListener) {
+        if (!(this instanceof Server)) return new Server(options, connectionListener);
+        EventEmitter.call(this);
+        // Existing real clone mode denies cloning/transfer. A transferable
+        // listener must wait for its actual Worker/native owner, not a flag.
+        platform.markResource(this);
+          if (typeof options === 'function') {
+    connectionListener = options;
+    options = kEmptyObject;
+    this.on('connection', connectionListener);
+  } else if (options == null || typeof options === 'object') {
+    options = { ...options };
+
+    if (typeof connectionListener === 'function') {
+      this.on('connection', connectionListener);
+    }
+  } else {
+    throw new ERR_INVALID_ARG_TYPE('options', 'Object', options);
+  }
+  if (options.keepAliveInitialDelay !== undefined) {
+    validateNumber(
+      options.keepAliveInitialDelay, 'options.keepAliveInitialDelay',
+    );
+
+    if (options.keepAliveInitialDelay < 0) {
+      options.keepAliveInitialDelay = 0;
+    }
+  }
+  if (options.highWaterMark !== undefined) {
+    validateNumber(
+      options.highWaterMark, 'options.highWaterMark',
+    );
+
+    if (options.highWaterMark < 0) {
+      options.highWaterMark = getDefaultHighWaterMark();
+    }
+  }
+
+
+        platform.initializeOwner(this);
+          this.allowHalfOpen = options.allowHalfOpen || false;
+  this.pauseOnConnect = !!options.pauseOnConnect;
+  this.noDelay = Boolean(options.noDelay);
+  this.keepAlive = Boolean(options.keepAlive);
+  this.keepAliveInitialDelay = ~~(options.keepAliveInitialDelay / 1000);
+  this.highWaterMark = options.highWaterMark ?? getDefaultHighWaterMark();
+  if (options.blockList) {
+    if (!module.exports.BlockList.isBlockList(options.blockList)) {
+      throw new ERR_INVALID_ARG_TYPE('options.blockList', 'net.BlockList', options.blockList);
+    }
+    this.blockList = options.blockList;
+  }
+    }
+    Server.prototype = platform.prototype;
+    ObjectDefineProperty(Server.prototype, 'constructor', { value: Server, writable: true, configurable: true });
+    ObjectSetPrototypeOf(Server.prototype, EventEmitter.prototype);
+    ObjectSetPrototypeOf(Server, EventEmitter);
+    for (const name of ['listen', 'address', 'getConnections', 'close', 'ref', 'unref']) {
+        const descriptor = ObjectGetOwnPropertyDescriptor(Server.prototype, name);
+        ObjectDefineProperty(Server.prototype, name, { ...descriptor, enumerable: true });
+    }
+    ObjectDefineProperty(Server.prototype, 'listening', {
+        __proto__: null,
+        get: function() { return platform.listening(this); },
+        configurable: true, enumerable: true,
+    });
+    return Server;
+}
+
 // One guest-realm registry for the public Node diagnostics algorithms and
 // actual Kandelo JavaScript producers. Native C/C++ producers need their own
 // bridge; their absence is not replaced with synthetic diagnostic events.

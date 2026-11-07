@@ -1,0 +1,28 @@
+{
+  "kind": "source-identified-unresolved-execution-prerequisite",
+  "auditFindings": [
+    "NI-003",
+    "NI-007"
+  ],
+  "engineVersion": "140.11.0esr",
+  "officialArchiveSha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028",
+  "sourceIdentities": {
+    ".context/node26-http176-source-r1/stage/js/src/jit/JitOptions.h": "0ced2dd757d644170127e4b31ffd7f640e8470de4dafb9684e2a059dbca5b533",
+    ".context/node26-http176-source-r1/stage/js/src/wasm/WasmFeatures.cpp": "2afd634267f12ef866ea68568c8765b180234157070bc86faf6d4706bd94de95",
+    ".context/node26-http176-source-r1/stage/js/src/vm/GlobalObject.cpp": "6e5ee66034640ab63a0d98b775c81ed15dc2587ad5fe7edc84d5a59164069273",
+    ".context/node26-http176-source-r1/stage/js/src/wasm/WasmBaselineCompile.cpp": "d9c947bf6419b981a8b5856d9ac71d640317b33541fe6ffcfbfbeac75497a663",
+    ".context/node26-http176-source-r1/stage/js/src/wasm/WasmIonCompile.cpp": "16f3151aa3b8978278a2b34426f4d0171c27ee1bc57c1c031d1f36aeb7c99a04",
+    ".context/node26-http176-source-r1/stage/js/src/jit/wasm32/CodeGenerator-wasm32.cpp": "7e4c2e7e0d771ec22f07abbfd9de117924105c7a790f76e76f6e16a6b1ae5e26",
+    ".context/spidermonkey-target-agent/mozilla-raw/js/moz.configure": "7bed9aebfa41bd922c2d92afa81b727a0df43774eb539b20e66fcf4bda535f2b",
+    ".context/spidermonkey-target-agent/archive-source-identities.json": "15f5f03ac05db9267e52ad2c0aee3f8ab1ef6f5a2311474d06510e72fb726020",
+    "packages/registry/spidermonkey/build-spidermonkey.sh": "2db32331543e12038204c5e4fd457af09af167007328ccf4cf99d3a19eeb1f9b"
+  },
+  "sourceConclusion": "Current configured guest engine has no WebAssembly execution backend; native-host WASI component execution is not guest execution. Enabling namespace/configuration alone is insufficient.",
+  "implementationGap": true,
+  "acceptedPlatformBoundary": false,
+  "scopeDecision": "Pending optional user clarification; existing implementation goal retains backend work in scope. No exclusion inferred.",
+  "runtimeTests": 0,
+  "compilations": 0,
+  "guestExecuted": false,
+  "fourHostConformance": false
+}

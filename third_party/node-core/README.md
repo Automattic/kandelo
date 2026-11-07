@@ -1580,3 +1580,23 @@ guessed names or reduced static capability list is used. HTTPS namespace
 aliases and all remaining secure/server/HTTP2 obligations remain open.
 Current source/component evidence does not establish new guest JSAPI or
 four-host behavior. Earlier accepted173predates the new native source.
+
+### Callable Server receiver source followup
+
+The public Server constructor initializes its actual EventEmitter receiver,
+including traditional .call inheritance and class subclasses, rather than
+constructing a second ServerCore instance. Pinned public option/validation
+segments are copied unchanged from the verified complete net source. Actual
+listener state lives in closure-private records retaining the admitted fd and
+its generation; active reinitialization cannot redirect an old pending accept
+through a new binding or mutable public fd field. Accepted sockets receive real
+stream high-water marks, native delay/keepalive options and read-stop state.
+
+Focused native/source-component controls exercise receiver identity, descriptor
+and option/error order, actual TCP accepts, active reinitialization, stale DNS,
+rollback and close/relisten. Existing accepted-owner assertions are retained.
+These controls use explicitly identified native EventEmitter, Duplex and TCP
+providers; production JSAPI/kernel/Promise-fatal behavior is not validated.
+Worker listener transfer, complete Server/Socket lifecycle, borrowed arbitrary
+method receivers and full HTTP Server support remain separate implementation
+gaps. See tests/net-server-receiver/README.md for exact boundaries.

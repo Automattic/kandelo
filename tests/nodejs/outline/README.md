@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source177 integrates actual net.Server supplied-receiver and captured-listener ownership. Current10native/11candidate groups,7actual accepts and existing4scenario/12connection regression plus14package checks pass. ProductionSM/guest/fourhost remain unestablished.
+See [source scope](net-server-receiver-integration.md).
+
 Source176 integrates actual request framing, pinned ServerResponse and compiled35public/47parser method catalogs.27request/25response/12ServerResponse groups,4unchanged-upstream executions and14package checks pass. Live native socket primitives remain8/9with real automatic400 admission gap;176JSAPI/fullserver/guest/fourhost unvalidated.
 See [source scope](http-request-server-response-integration.md).
 

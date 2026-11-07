@@ -504,6 +504,32 @@ marker = '/* NODE_BUFFER_BYTE_ALGORITHMS */'
 if byte_adapter.count(marker) != 1:
     raise ValueError('Review public Buffer byte algorithm marker')
 bundle += byte_adapter.replace(marker, '\n'.join(byte_sections.values())) + '\n'
+server_ctor_item = manifest['netServerConstructor']
+server_ctor_raw = (root / server_ctor_item['source']['path']).read_bytes()
+if hashlib.sha256(server_ctor_raw).hexdigest() != server_ctor_item['source']['sha256']:
+    raise ValueError('Server constructor complete source mismatch')
+server_ctor_selector = server_ctor_item['constructor']
+server_ctor_text = server_ctor_raw.decode('utf8')
+if server_ctor_text.count(server_ctor_selector['start']) != 1:
+    raise ValueError('Server constructor boundary mismatch')
+server_ctor_start = server_ctor_text.index(server_ctor_selector['start'])
+server_ctor_body = server_ctor_text[server_ctor_start:server_ctor_start + server_ctor_selector['length']]
+if hashlib.sha256(server_ctor_body.encode()).hexdigest() != server_ctor_selector['sha256']:
+    raise ValueError('Server constructor body mismatch')
+server_ctor_adapter = (root / 'server-constructor-adapter.js').read_text()
+for name, item in server_ctor_item['sections'].items():
+    if server_ctor_body.count(item['start']) != 1:
+        raise ValueError('Server constructor selected start: ' + name)
+    begin = server_ctor_body.index(item['start'])
+    selected = server_ctor_body[begin:server_ctor_body.index(item['end'], begin)]
+    if hashlib.sha256(selected.encode()).hexdigest() != item['sha256']:
+        raise ValueError('Server constructor selected identity: ' + name)
+    marker = '/* NODE_SERVER_CONSTRUCTOR_' + name.upper() + ' */'
+    if server_ctor_adapter.count(marker) != 1:
+        raise ValueError('Server constructor marker: ' + name)
+    server_ctor_adapter = server_ctor_adapter.replace(marker, selected)
+bundle += server_ctor_adapter + '\n'
+
 diagnostics_item = manifest['diagnosticsPlatform']
 diagnostics_raw = (root / diagnostics_item['source']['path']).read_bytes()
 if hashlib.sha256(diagnostics_raw).hexdigest() != diagnostics_item['source']['sha256']:

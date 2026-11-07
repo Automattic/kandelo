@@ -6892,3 +6892,7 @@ Source175 implements the public backup frontend over real SQLite backup state an
 ### HTTP request framing and shared response ownership
 
 Source176 extends the single actual llhttp owner to request framing and preserves response behavior. Pinned ServerResponse reuses existing OutgoingMessage/IncomingMessage/socket/trace/performance/diagnostic owners. The real compiled HTTP_METHOD_MAP and larger HTTP_ALL_METHOD_MAP remain distinct; public HTTP METHODS sorts the former exactly as the target. Full Server/connection/admission/ConnectionsList and synchronous parser reentry remain missing. A malformed-URL live comparison stays a nonpass rather than fabricating a400. See [scope](../tests/nodejs/outline/http-request-server-response-integration.md).
+
+### Generic Server receiver and captured listener ownership
+
+Source177 initializes the actual supplied inheriting net.Server receiver, using unchanged pinned public option/field segments. Actual active listeners retain distinct private captured fd/generation/ref owners across receiver reinitialization. Existing real TCP/accepted-socket/native option owners remain authoritative. Full opaque listener/worker/fork/fatal/HTTP and four-host behavior remain open. See [source scope](../tests/nodejs/outline/net-server-receiver-integration.md).

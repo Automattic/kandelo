@@ -1,0 +1,92 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network.md",
+    "findingIds": [
+      "N-008",
+      "N-011",
+      "N-013",
+      "N-018"
+    ],
+    "relatedFamilies": [
+      "network",
+      "streams",
+      "http",
+      "async",
+      "engine"
+    ],
+    "scope": "Actual constructor receiver/options and captured listener source subset; no complete finding or public Server closure"
+  },
+  "sourceImplemented": [
+    "Initialize actual call/new/subclass/inheriting supplied Server receiver via pinned unchanged public option/validation/field sections and genuine EventEmitter chain",
+    "Private per-listener captured fd/generation/ref records prevent active old listeners and stale DNS results from being redirected by current receiver reinitialization",
+    "Actual existing accepted-owner/adoption/rollback, socket option/default high-water-mark and paused-read owners before connection publication",
+    "Preserve174VM/175SQLite/176HTTP, real clone denial rather than false Worker transfer, and native-fatal/guest gaps"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-net177-source-r1/report.json",
+    "sha256": "a5e61e802ac6cf4529b75cb9829c4dd6d3f33097d53f4bd7bbf0ff199e561bf6",
+    "guardedInputs": 797,
+    "scope": "Current generic Server supplied-receiver and captured-listener source, 10native/11candidate groups and original accepted-owner regression; guest/four-host unestablished."
+  },
+  "packageChecks": {
+    "report": ".context/node26-net177-affected-r1.json",
+    "sha256": "14ca5487eeff241689c32986f0989c67043e5eb04c9f3076db43d959ee5a03c2",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-net177-source-r1/report.json",
+    "sha256": "a5e61e802ac6cf4529b75cb9829c4dd6d3f33097d53f4bd7bbf0ff199e561bf6",
+    "nativeReferenceGroups": 10,
+    "candidateGroups": 11,
+    "candidateActualTCPAccepts": 7,
+    "acceptedRegressionScenarios": 4,
+    "acceptedRegressionActualTCPAccepts": 12,
+    "newNativeCompilerAttempts": 0,
+    "productionSMExecuted": false,
+    "scope": "Current extracted constructor/listener/accept/adoption source with actual native TCP handles and pinned EventEmitter/Duplex/DNS dependencies, not guest native listener/async/fatal/GC/four-host proof"
+  },
+  "sealedEvidence": {
+    "report": ".context/net-server-receiver-agent/HANDOFF.json",
+    "sha256": "208f1ec94d05e6b05b3482e3c0243b9384a615fcd95e724708df69c2085b48d8",
+    "reusedEvidence": true,
+    "scope": "34private source checks and10native/11candidate groups with7actual accepts; original4scenario/12accept regression; missing recipe input retained as private nonpass, now declared by parent"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/net-server-receiver-agent/candidate-r1.stderr",
+      "sha256": "cb7ae004cca24c2e4fad036c7f72842d375775e76d43b1ce058fefba925d079e",
+      "kind": "incorrect-private-fixture-sentinel",
+      "reason": "Native TCPWrap close reports -22 rather than fixture-assumed -1. Final unchanged ownership assertions require genuinely invalid fd plus real EBADF, checked in both subjects."
+    },
+    {
+      "report": ".context/net-server-receiver-agent/verify-r1.stderr",
+      "sha256": "3a8eeb1b3a19d7df3d089c78d4ebd829e0b33ba5897ee43ee96e003abd43e659",
+      "kind": "textual-hunk-count-fixture-failure",
+      "reason": "Diff formatting is not semantic source scope. Final source checker verifies exact unchanged surrounding source and actual postimages."
+    },
+    {
+      "report": ".context/net-server-receiver-agent/input-declarations-unintegrated.stdout",
+      "sha256": "040d39b8538b7e3f9d65bed9b57260d0cc58f32bc89087f9139d4681b50fdb29",
+      "kind": "private-missing-input-declaration",
+      "reason": "Private790input closure failed genuinely. Root adds actual server-constructor-adapter.js to current recipe and current797input closure passes."
+    }
+  ],
+  "remaining": [
+    "Actual native opaque listener/async-trigger/worker transfer/shutdown/context/fork/GC/ref ownership; current JS records do not close descriptor ABA across all layers",
+    "Full Server listen overloads/Unix paths/fd/BoundSocket/cluster/public symbols/descriptors and arbitrary borrowed method receivers, error/abort/close/relisten/reinit races",
+    "Existing accepted callback Promise rejection versus native fatal boundary, hidden old-listener lifecycle and reset global connection accounting remain unresolved",
+    "Full HTTP Server/admission/ConnectionsList/synchronous parser callback owners and currentguest/fourhost conformance"
+  ],
+  "at": "2026-11-07T03:59:00.688537+00:00",
+  "recipeRevision": 177,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

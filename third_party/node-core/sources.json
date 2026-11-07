@@ -5691,5 +5691,30 @@
       }
     },
     "scope": "Actual ServerResponse over existing outgoing/socket owners; full server/request tracking/consume/reentry remains an implementation gap"
+  },
+  "netServerConstructor": {
+    "source": {
+      "path": "upstream/socket-owner/net.js",
+      "upstreamPath": "lib/net.js",
+      "sha256": "24db4f4a58808f0935265b1a71150989cec8601e971f07ca531d16004f3d6c43"
+    },
+    "constructor": {
+      "start": "function Server(options, connectionListener) {",
+      "length": 2031,
+      "sha256": "7e21849644ccfe411a276e5878e74fcc3b6084c36e71787bbd00461e2ca219eb"
+    },
+    "sections": {
+      "options": {
+        "start": "  if (typeof options === 'function') {",
+        "end": "  this._connections = 0;",
+        "sha256": "5d52d5508d8d3f69504c37324046721dc0800039f5a04b8981dc9f4997a5aedb"
+      },
+      "fields": {
+        "start": "  this.allowHalfOpen = options.allowHalfOpen || false;",
+        "end": "\n}",
+        "sha256": "e300691f028ba505256e18722011884c309f3b2327c183b8e4d115e6bcdd244d"
+      }
+    },
+    "scope": "Unchanged public option/validation/field segments and receiver guard, genuine current per-listener ownership; no fake Node handle/Worker transfer metadata. Transfer remains blocked until its actual owner exists."
   }
 }

@@ -4002,21 +4002,110 @@ const net = (() => {
 
     // Listeners own real kernel fds. A close stops accept immediately and
     // waits for accepted sockets before reporting the server's close event.
+    const ServerWeakMap = _createNodePrimordials().SafeWeakMap;
+    const ServerWeakSet = _createNodePrimordials().SafeWeakSet;
+    const serverOwners = new ServerWeakMap(), serverOwnerTokens = new ServerWeakSet();
+    function serverOwner(server) {
+        const owner = serverOwners.get(server);
+        if (!owner) throw new _nodeValues.errors.codes.ERR_INVALID_THIS('net.Server');
+        return owner;
+    }
+    function publishServerOwner(server, owner) {
+        serverOwners.set(server, owner);
+        server._fd = owner.fd; server._generation = owner.generation;
+        server._referenced = owner.referenced; server._closing = owner.closing;
+    }
+    function initializeServerOwner(server) {
+        // Reinitialization creates a new current binding. An already active
+        // listener remains owned by its actual pending accept closure, as in
+        // Node's old native handle; never reset/reuse that owner's epoch/fd.
+        const owner = { fd: -1, generation: 0, referenced: true,
+            closing: false, opening: false, abortCleanup: null };
+        serverOwnerTokens.add(owner);publishServerOwner(server, owner);
+        server._connections = 0;
+    }
+    function acceptServer(server, owner, generation) {
+        if (!serverOwnerTokens.has(owner) || owner.fd < 0 || owner.generation !== generation) return;
+        const pending = nat.socketAcceptLease(owner.fd);
+        if (!owner.referenced) nat.socketRef(owner.fd, false);
+        pending.then(accepted => {
+            // Native acceptance already owns this descriptor. Every getter,
+            // constructor, listener and failure leaves only the actual lease
+            // to close; successful adoption empties it without a numeric ABA.
+            try {
+                if (owner.fd < 0 || owner.generation !== generation) return;
+                acceptServer(server, owner, generation);
+                if (server.maxConnections != null && server._connections >= server.maxConnections) {
+                    const local = nat.socketAddress(nat.socketAcceptedFd(accepted));
+                    const remote = nat.socketAddress(nat.socketAcceptedFd(accepted), true);
+                    server.emit('drop', { __proto__: null,
+                        localAddress: local.address, localPort: local.port, localFamily: local.family,
+                        remoteAddress: remote.address, remotePort: remote.port, remoteFamily: remote.family,
+                    });
+                    return;
+                }
+                if (server.blockList) {
+                    const remote = nat.socketAddress(nat.socketAcceptedFd(accepted), true);
+                    const family = isIP(remote.address);
+                    if (family && server.blockList.check(remote.address, `ipv${family}`)) return;
+                }
+                const socket = new Socket({ allowHalfOpen: server.allowHalfOpen,
+                    readableHighWaterMark: server.highWaterMark, writableHighWaterMark: server.highWaterMark,
+                    noDelay: server.noDelay, keepAlive: server.keepAlive,
+                    keepAliveInitialDelay: server.keepAliveInitialDelay * 1000 });
+                try { socket._adoptAccepted(accepted); }
+                catch (error) { socket.destroy(); server.emit('error', error); return; }
+                try {
+                    _nodeSocketStream.applyOptions(socket);
+                    if (server.pauseOnConnect) {
+                        const acceptedOwner = socketNativeOwners.get(socket);
+                        acceptedOwner.readStop();acceptedOwner.reading = false;
+                        socket.readableFlowing = false;
+                    }
+                } catch (error) {
+                    // Unpublished initialization owns the actual adopted
+                    // native resource. Close it without consulting mutable
+                    // public handle/destroy methods, then propagate failure.
+                    try { nat.socketOwnerAbortAdoption(socketNativeOwners.get(socket)); } catch (_) {}
+                    throw error;
+                }
+                socket.server = server;
+                server._connections++;
+                socket._onServerSocketClose = () => { server._connections--; maybeCloseServer(server, serverOwner(server)); };
+                server.emit('connection', socket);
+                if (serverSocketChannel.hasSubscribers) serverSocketChannel.publish({ socket });
+                if (!server.pauseOnConnect) socket._scheduleRead();
+            } finally { nat.socketAcceptedClose(accepted); }
+        }, reason => {
+            if (owner.fd >= 0 && owner.generation === generation) server.emit('error', connectError(reason, undefined, undefined, 'accept'));
+        });
+    }
+    function closeServerOwner(server, owner, cb) {
+        if (!serverOwnerTokens.has(owner)) throw new _nodeValues.errors.codes.ERR_INVALID_THIS('net.Server');
+        const running = owner.fd >= 0 || owner.opening;
+        if (cb) server.once('close', () => {
+            let error;
+            if (!running) { error = new Error('Server is not running.'); error.code = 'ERR_SERVER_NOT_RUNNING'; }
+            cb(error);
+        });
+        owner.generation++;owner.opening = false;owner.closing = true;
+        owner.abortCleanup?.();owner.abortCleanup = null;
+        const fd = owner.fd;owner.fd = -1;
+        if (serverOwners.get(server) === owner) { publishServerOwner(server, owner);server._opening = false; }
+        if (fd >= 0) nat.socketClose(fd);
+        maybeCloseServer(server, owner);
+        return server;
+    }
+    function maybeCloseServer(server, owner) {
+        if (!serverOwnerTokens.has(owner) || !owner.closing || server._connections !== 0) return;
+        owner.closing = false;
+        if (serverOwners.get(server) === owner) server._closing = false;
+        queueMicrotask(() => server.emit('close'));
+    }
     class ServerCore extends events.EventEmitter {
-        constructor(options, connectionListener) {
-            super();
-            if (typeof options === 'function') { connectionListener = options; options = {}; }
-            options ??= {};
-            this.allowHalfOpen = !!options.allowHalfOpen;
-            this.pauseOnConnect = !!options.pauseOnConnect;
-            assignBlockList(this, options);
-            this._fd = -1; this._connections = 0; this._generation = 0;
-            this._referenced = true; this._closing = false;
-            this.listening = false;
-            if (connectionListener) this.on('connection', connectionListener);
-        }
         listen(...args) {
-            if (this._fd >= 0 || this._opening) throw argumentError('ERR_SERVER_ALREADY_LISTEN', 'Listen method has been called more than once without closing.');
+            const owner = serverOwner(this);
+            if (owner.fd >= 0 || owner.opening) throw argumentError('ERR_SERVER_ALREADY_LISTEN', 'Listen method has been called more than once without closing.');
             const [options, cb] = normalizeArgs(args);
             for (const option of ['path', 'fd']) {
                 if (options[option] != null) throw argumentError('ERR_NOT_IMPLEMENTED', 'net.Server ' + option + ' is not implemented');
@@ -4038,30 +4127,36 @@ const net = (() => {
             const signal = options.signal;
             if (signal != null && typeof signal.addEventListener !== 'function') throw argumentError('ERR_INVALID_ARG_TYPE', 'The "options.signal" property must be an AbortSignal');
             if (cb) this.once('listening', cb);
-            const generation = ++this._generation;
-            this._opening = true; this._closing = false;
+            const generation = ++owner.generation;
+            this._generation = owner.generation;
+            owner.opening = true; owner.closing = false;this._opening = true;this._closing = false;
             const fail = reason => {
-                if (this._generation !== generation) return;
-                this._opening = false;
-                this._abortCleanup?.(); this._abortCleanup = null;
+                if (owner.generation !== generation || serverOwners.get(this) !== owner) return;
+                owner.opening = false;
+                owner.abortCleanup?.();owner.abortCleanup = null;
+                if (serverOwners.get(this) === owner) this._opening = false;
                 queueMicrotask(() => this.emit('error', connectError(reason, host || '::', port, 'listen')));
             };
             const bind = (address, family) => {
-                if (this._generation !== generation) return;
+                if (owner.generation !== generation || serverOwners.get(this) !== owner) return;
                 let fd;
                 try { fd = nat.socketListen(address, port, family, backlog || 511, ipv6Only, reusePort); }
                 catch (reason) { fail(reason); return; }
-                this._fd = fd; this._opening = false; this.listening = true;
-                this._accept(generation);
+                owner.fd = fd;owner.opening = false;
+                // Only this admitted current binding may publish its result.
+                // Active prior listeners keep their captured accept owners;
+                // pending resolution from a reinitialized receiver is stale.
+                publishServerOwner(this, owner);this._opening = false;
+                acceptServer(this, owner, generation);
                 queueMicrotask(() => {
-                    if (this._generation === generation && this.listening) this.emit('listening');
+                    if (owner.generation === generation && owner.fd >= 0) this.emit('listening');
                 });
             };
             if (signal) {
                 const abort = () => this.close();
                 if (signal.aborted) { queueMicrotask(abort); return this; }
                 const disposable = _nodeEventPlatform.addAbortListener(signal, abort);
-                this._abortCleanup = () => disposable[_nodeDispose]();
+                owner.abortCleanup = () => disposable[_nodeDispose]();
             }
             host ||= '::';
             const family = isIP(host);
@@ -4069,68 +4164,11 @@ const net = (() => {
             else _nodeDnsLookup.lookup(host, (error, address, resolvedFamily) => error ? fail(error) : bind(address, resolvedFamily));
             return this;
         }
-        _accept(generation) {
-            if (this._fd < 0 || this._generation !== generation) return;
-            const pending = nat.socketAcceptLease(this._fd);
-            if (!this._referenced) nat.socketRef(this._fd, false);
-            pending.then(accepted => {
-                // Native acceptance already owns this descriptor. Every getter,
-                // constructor, listener and failure leaves only the actual lease
-                // to close; successful adoption empties it without a numeric ABA.
-                try {
-                    if (this._fd < 0 || this._generation !== generation) return;
-                    this._accept(generation);
-                    if (this.maxConnections != null && this._connections >= this.maxConnections) {
-                        const local = nat.socketAddress(nat.socketAcceptedFd(accepted));
-                        const remote = nat.socketAddress(nat.socketAcceptedFd(accepted), true);
-                        this.emit('drop', { __proto__: null,
-                            localAddress: local.address, localPort: local.port, localFamily: local.family,
-                            remoteAddress: remote.address, remotePort: remote.port, remoteFamily: remote.family,
-                        });
-                        return;
-                    }
-                    if (this.blockList) {
-                        const remote = nat.socketAddress(nat.socketAcceptedFd(accepted), true);
-                        const family = isIP(remote.address);
-                        if (family && this.blockList.check(remote.address, `ipv${family}`)) return;
-                    }
-                    const socket = new Socket({ allowHalfOpen: this.allowHalfOpen });
-                    try { socket._adoptAccepted(accepted); }
-                    catch (error) { socket.destroy(); this.emit('error', error); return; }
-                    socket.server = this;
-                    this._connections++;
-                    socket._onServerSocketClose = () => { this._connections--; this._maybeClose(); };
-                    this.emit('connection', socket);
-                    if (serverSocketChannel.hasSubscribers) serverSocketChannel.publish({ socket });
-                    if (!this.pauseOnConnect) socket._scheduleRead();
-                } finally { nat.socketAcceptedClose(accepted); }
-            }, reason => {
-                if (this._fd >= 0 && this._generation === generation) this.emit('error', connectError(reason, undefined, undefined, 'accept'));
-            });
-        }
-        address() { return this._fd < 0 ? null : nat.socketAddress(this._fd); }
+        address() { const owner = serverOwner(this);return owner.fd < 0 ? null : nat.socketAddress(owner.fd); }
         getConnections(cb) { queueMicrotask(() => cb(null, this._connections)); return this; }
-        close(cb) {
-            const running = this._fd >= 0 || this._opening;
-            if (cb) this.once('close', () => {
-                let error;
-                if (!running) { error = new Error('Server is not running.'); error.code = 'ERR_SERVER_NOT_RUNNING'; }
-                cb(error);
-            });
-            this._generation++; this._opening = false;
-            this.listening = false; this._closing = true;
-            this._abortCleanup?.(); this._abortCleanup = null;
-            if (this._fd >= 0) { const fd = this._fd; this._fd = -1; nat.socketClose(fd); }
-            this._maybeClose();
-            return this;
-        }
-        _maybeClose() {
-            if (!this._closing || this._connections !== 0) return;
-            this._closing = false;
-            queueMicrotask(() => this.emit('close'));
-        }
-        ref() { this._referenced = true; if (this._fd >= 0) nat.socketRef(this._fd, true); return this; }
-        unref() { this._referenced = false; if (this._fd >= 0) nat.socketRef(this._fd, false); return this; }
+        close(cb) { return closeServerOwner(this, serverOwner(this), cb); }
+        ref() { const owner = serverOwner(this);owner.referenced = true;this._referenced = true;if (owner.fd >= 0) nat.socketRef(owner.fd, true);return this; }
+        unref() { const owner = serverOwner(this);owner.referenced = false;this._referenced = false;if (owner.fd >= 0) nat.socketRef(owner.fd, false);return this; }
     }
 
     // Node accepts both call and construct forms, including subclasses.
@@ -4140,10 +4178,15 @@ const net = (() => {
     Object.defineProperty(Socket.prototype, 'constructor', {value:Socket, writable:true, configurable:true});
     Object.setPrototypeOf(Socket, stream.Duplex);
     _nodeSocketStream.installSocket(Socket);
-    function Server(options, listener) { return construct(ServerCore, [options, listener], new.target || Server); }
-    Server.prototype = ServerCore.prototype;
-    Object.defineProperty(Server.prototype, 'constructor', {value:Server, writable:true, configurable:true});
-    Object.setPrototypeOf(Server, events.EventEmitter);
+    const Server = _createNodeServerConstructor({
+        EventEmitter: events.EventEmitter, prototype: ServerCore.prototype, values: _nodeValues,
+        getDefaultHighWaterMark: _nodeStreamPlatform.require('internal/streams/state').getDefaultHighWaterMark,
+        getExports: () => net, initializeOwner: initializeServerOwner,
+        // Do not advertise transfer eligibility without an actual listener
+        // transfer owner. This real engine mode prohibits metadata-only copy.
+        markResource: receiver => _nodeClonePlatform.setMode(receiver, 0),
+        listening: receiver => serverOwners.get(receiver)?.fd >= 0,
+    });
     function createConnection(...args) {
         const [options, cb] = normalizeArgs(args);
         const socket = new Socket(options);

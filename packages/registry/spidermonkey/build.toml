@@ -24,6 +24,7 @@ inputs = [
   "third_party/node-core/socket-owner-sources.json",
   "third_party/node-core/socket-owner.h",
   "third_party/node-core/socket-stream-adapter.js",
+  "third_party/node-core/server-constructor-adapter.js",
   "third_party/node-core/socket-stream-state.h",
   "third_party/node-core/upstream/http-agent",
   "third_party/node-core/upstream/socket-owner",
@@ -623,4 +624,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 176
+revision = 177

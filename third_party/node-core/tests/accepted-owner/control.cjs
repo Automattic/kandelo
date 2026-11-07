@@ -7,8 +7,12 @@ const net=require('node:net'),async=require('node:async_hooks'),{EventEmitter,on
 assert.equal(process.version,'v26.13.0');
 const root=path.resolve(__dirname,'../../../..');
 const source=fs.readFileSync(path.join(root,'packages/registry/node-compat/bootstrap.js'),'utf8');
-const start=source.indexOf('        _accept(generation) {'),end=source.indexOf('        address() {',start);assert(start>=0&&end>start);
-const acceptFactory=Function('nat','Socket','isIP','serverSocketChannel','connectError','return ({'+source.slice(start,end)+'})._accept;');
+const bundle=fs.readFileSync(path.join(root,'third_party/node-core/node-core.js'),'utf8');
+const factories=Function(bundle+';return {values:_createNodeValuesPlatform,socket:_createNodeSocketStream};')();
+const util=require('node:util'),os=require('node:os');
+const values=factories.values({process,Buffer,util,inspection:util,os,signals:os.constants.signals,getDOMException:()=>DOMException});
+const start=source.indexOf('    function acceptServer(server, owner, generation) {'),end=source.indexOf('    function closeServerOwner(',start);assert(start>=0&&end>start);
+const acceptFactory=Function('nat','Socket','isIP','serverSocketChannel','connectError','serverOwnerTokens','socketNativeOwners','_nodeSocketStream','maybeCloseServer','serverOwner',source.slice(start,end)+';return acceptServer;');
 const a=source.indexOf('        _adoptAccepted(lease) {'),b=source.indexOf('        _adoptFd(',a);assert(a>=0&&b>a);
 const adoptFactory=Function('nat','return ({'+source.slice(a,b)+'})._adoptAccepted;');
 const results=[];
@@ -37,9 +41,11 @@ async function scenario(mode,count){
   socketAddress(fd,peer){const handle=[...handles].find(handle=>handle.fd===fd);assert(handle);const value={};assert.equal((peer?handle.getpeername(value):handle.getsockname(value)),0);return value;},
   socketRef(){throw Error('Unref is outside this focused native publication component');},
  };
+ const socketNativeOwners=new WeakMap();
+ const socketStream=factories.socket({Buffer,FastBuffer:Buffer,async:{symbols:{owner_symbol:Symbol('component owner')}},values,types:util.types,native});
  class Socket extends EventEmitter{
-  constructor(options){super();constructed++;this.options=options;assert(ready);assert(ready.fd>=0);this.expectedOwner=ready;}
-  _adoptFd(_fd,owner){assert.equal(owner,this.expectedOwner);this._handle=owner;}
+  constructor(options){super();constructed++;this.options=options;socketStream.initOptions(this,options);assert(ready);assert(ready.fd>=0);this.expectedOwner=ready;}
+  _adoptFd(_fd,owner){assert.equal(owner,this.expectedOwner);this._handle=owner;socketNativeOwners.set(this,owner);}
   destroy(){if(this._handle)close(this._handle);}
   _scheduleRead(){throw Error('This component intentionally uses pauseOnConnect');}
  }
@@ -50,8 +56,9 @@ async function scenario(mode,count){
  server.on('drop',data=>{assert.equal(data.localPort,host.address().port);observations.push({kind:'drop',remotePort:data.remotePort});});
  server.on('error',error=>{throw error;});
  server.on('connection',socket=>{assert.equal(socket._handle,socket.expectedOwner);assert.equal(socket._handle.getAsyncId(),inits.find(entry=>entry.resource===socket.expectedOwner).id);observations.push({kind:'connection',id:socket._handle.getAsyncId(),owner:socket._handle});});
- server._accept=acceptFactory(native,Socket,net.isIP,{hasSubscribers:false},value=>value);
- server._accept(1);
+ const owner={fd:host._handle.fd,generation:1,referenced:true};
+ const accept=acceptFactory(native,Socket,net.isIP,{hasSubscribers:false},value=>value,new WeakSet([owner]),socketNativeOwners,socketStream,()=>{},()=>owner);
+ accept(server,owner,1);
  const deadline=Date.now()+5000;
  try{
   for(let i=0;i<count;i++){const client=net.connect(host.address().port,'127.0.0.1');client.on('error',()=>{});clients.push(client);}
@@ -65,7 +72,7 @@ async function scenario(mode,count){
   return {mode,connections:count,actualDistinctOwners:inits.length,initBeforeConstructor:true,initDescriptorReadIntentionallyNotAttempted:true,fdAtConstructor:'actual live descriptor',sameOwnerPublished:(mode==='normal'||mode==='thenPoison')?count:0,thenReads,closedBeforeAdoption:unclaimed,originalErrorIdentity:mode==='getterThrow'?rejections.every(error=>error===marker):undefined};
  }finally{
   if(ownerPrototype){if(oldThen)Object.defineProperty(ownerPrototype,'then',oldThen);else delete ownerPrototype.then;}
-  hook.disable();server._generation++;server._fd=-1;host._handle.onconnection=originalConnection;
+  hook.disable();owner.generation++;owner.fd=-1;server._generation++;server._fd=-1;host._handle.onconnection=originalConnection;
   for(const handle of handles)close(handle);for(const client of clients)client.destroy();
   await Promise.all([...closing.values()]);await new Promise(resolve=>host.close(resolve));
  }
