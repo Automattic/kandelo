@@ -1,0 +1,94 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem.md",
+    "findingIds": [
+      "FS-002"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "filesystem",
+      "engine"
+    ],
+    "scope": "Partial regular-file write semantics in actual tmpfs owner, not complete public Node write/append/flush/error/asynchronous or four-host closure"
+  },
+  "sourceImplemented": [
+    "Validate actual tmpfs handle/offset/inode/mutability/type on empty writes without charging or growing storage",
+    "Return zero before timestamp/content-generation changes, retaining contents/mode and existing error/type policy",
+    "Keep nonempty write, sparse growth and actual notification producer ownership unchanged",
+    "Add meaningful regression covering empty writes at start/EOF/pastEOF, timestamps, set-ID mode, contents and content generation",
+    "Commit identical standalone native/control source and identify actual rebuilt Cargo root-package library/metadata before execution"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-empty-write214-source-r1/report.json",
+    "sha256": "f5b28187642f481feb182c92da68708472128d26d8c7c41d448de8ff3dd31b6a",
+    "guardedInputs": 884,
+    "scope": "Actual tmpfs empty positioned writes preserve file state; current native production library, four differential cases and45affected unit cases. Same214 engine/884inputs, no Wasm/guest/four-host acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tracing214-affected-r1.json",
+    "sha256": "37e9f650bda75141cff25cb9a5781b28fca2d495b61defcdbe1058b152dd53c4",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": true
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-empty-write214-source-r1/report.json",
+    "sha256": "f5b28187642f481feb182c92da68708472128d26d8c7c41d448de8ff3dd31b6a",
+    "nativeControlCases": 4,
+    "baselineCandidateFailures": 4,
+    "fixedCandidateFailures": 0,
+    "affectedNativeCases": 45,
+    "singleNewRegressionIncludedIn45": true,
+    "matchedNativeSourceInputs": 703,
+    "compilerAttemptsIntegrated": 9,
+    "compilerFailuresIntegrated": 4,
+    "cachedCargoReceiptRetrievalFresh": true,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "engineRecipeChanged": false,
+    "scope": "Current actual native tmpfs crate, four native POSIX/control cases and37tmpfs+8opened-dentry cases. Initial standalone link setup failures, stale033artifact failure and metadata receipt setup failures retained; no source assertion changed. Native feature-unification graphs differ between prior xtask library and current standalone library and are identified, not claimed binary-identical."
+  },
+  "sealedEvidence": {
+    "report": ".context/node26-empty-write215-baseline/report.json",
+    "sha256": "df77d0d1aef7a362fc6dd73ef72205880820e167f48e280193ad36594dc6a73d",
+    "reusedEvidence": true,
+    "scope": "Identified prior native runtime-core library from maintenance launcher plus exact standalone control source: native POSIX4/4pass, candidate4/4fail; pastEOF grows4or0 to4096 and all4change timestamps. Prior library is a different identified transitive Cargo feature graph from current standalone core; runtime-core has no feature-gated write body."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-empty-write215-build-accounting.json",
+      "sha256": "1a77d32673d5d30fd5d80109f6ca1952dbe852dadca81fd48200b09a2c0cfcf1",
+      "scope": "Actual rustc/Cargo compilation invocations. Initial missing host dependency search paths and omitted Cargo LTO profile are control setup errors; no external toolchain defect is claimed. Stale-control compiles but executes old baseline033library and fails; actual Cargo receipt selects current root-package library with matchingf5rmeta. Underlying per-crate rustc calls not double counted."
+    },
+    {
+      "report": ".context/node26-empty-write215-fixed/stale-candidate.stdout",
+      "sha256": "bf37ead5b88a943ac81f06710b901d965a76dda37626c947168fd727811be366",
+      "scope": "Initial fixed standalone control still linked old033library and correctly failed all4cases. Preserve old binary/raw outputs; final actual Cargo receipt selects rebuilt current library. Assertions/source unchanged."
+    },
+    {
+      "report": ".context/node26-empty-write215-fixed/control-compile-r2.log",
+      "sha256": "bd5c3bd34964c2aef04c538c1615123747ec2b3ec09dfaaded32d35e48e2cc89",
+      "scope": "Metadata banner parser failed before preparing compile helper; subsequent helper invocation had no file. Not a runtime or compiler execution."
+    },
+    {
+      "report": ".context/node26-empty-write215-fixed/control-compile-r3.log",
+      "sha256": "d1a4961128922ae23d5c5e4f782e68029fb0021a3b5c4b68283e9f453017aac0",
+      "scope": "Receipt guard assumed dependency-fingerprinted rlib filename, while Cargo reports root-package output alias plus fingerprinted rmeta. Corrected by byte-identical alias/dependency library check before compilation."
+    }
+  ],
+  "remaining": [
+    "Actual current Wasm kernel and identified all-four-host file write behavior; native production/unit evidence is not guest conformance",
+    "Complete public Node filesystem write/append overloads, permissions/errors/flush/asynchronous/fd lifecycle and other originalFS002obligations",
+    "Other filesystem watcher/VFS/provider/metadata/precision/byte-path findings stay open; no audit finding or family closes"
+  ],
+  "at": "2026-11-07T13:32:34.840239+00:00",
+  "recipeRevision": 214,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

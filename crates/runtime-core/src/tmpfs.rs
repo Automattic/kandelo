@@ -1283,6 +1283,17 @@ pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
         return Err(Errno::EINVAL);
     }
     TMPFS.with(|state| {
+        if buf.is_empty() {
+            let inode = state.get(idx).ok_or(Errno::EBADF)?;
+            inode.check_mutable()?;
+            // An empty positioned write may validate the file, but must not
+            // grow it, consume quota or publish a content/timestamp change.
+            return match &inode.kind {
+                InodeKind::Regular(_) => Ok(0),
+                InodeKind::HostBacked { .. } => Err(Errno::EPERM),
+                _ => Err(Errno::EISDIR),
+            };
+        }
         let (st_dev, growth, start) = {
             let inode = state.get(idx).ok_or(Errno::EBADF)?;
             let start = usize::try_from(offset).map_err(|_| Errno::EFBIG)?;
@@ -2929,6 +2940,31 @@ mod tests {
         let h = open(b"/tmp/sparse.bin", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
         assert_eq!(write(h, 4, b"AB").unwrap(), 2);
         assert_eq!(read_all(h), &[0, 0, 0, 0, b'A', b'B']);
+        release_handle(h);
+    }
+
+    #[test]
+    fn empty_positioned_write_preserves_size_timestamps_and_generation() {
+        let path = b"/tmp/empty-positioned-write";
+        let h = open(path, O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        write(h, 0, b"seed").unwrap();
+        chmod(path, 0o6755).unwrap();
+        utimensat(path, 1000, 5, 2000, 7, 2500, 9).unwrap();
+        let before = fstat(h).unwrap();
+        let generation = content_generation(h).unwrap();
+        set_now(3000, 11);
+        for offset in [0, 4, 4096] {
+            assert_eq!(write(h, offset, b"").unwrap(), 0);
+            let after = fstat(h).unwrap();
+            assert_eq!(after.st_size, before.st_size);
+            assert_eq!(after.st_mode, before.st_mode);
+            assert_eq!(after.st_mtime_sec, before.st_mtime_sec);
+            assert_eq!(after.st_mtime_nsec, before.st_mtime_nsec);
+            assert_eq!(after.st_ctime_sec, before.st_ctime_sec);
+            assert_eq!(after.st_ctime_nsec, before.st_ctime_nsec);
+            assert_eq!(content_generation(h).unwrap(), generation);
+        }
+        assert_eq!(read_all(h), b"seed");
         release_handle(h);
     }
 

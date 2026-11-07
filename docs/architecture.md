@@ -7095,3 +7095,7 @@ Source214 adds a process-shared native category multiset and actual descriptor-b
 ### Notification source composition preserves dormant activation
 
 Current source214 composes dormant queue, descriptor and retained opened-dentry owners over the existing shared epoll prerequisite. The detailed ownership and activation limits are in the descriptor and opened-dentry prerequisite notes above; all public inotify slots remain ENOSYS. Same engine214 recipe, unchanged program ABI/snapshot/channel source and existing version20 tags do not establish dynamic guest baseline acceptance. Host wake, full producers/metadata/watch policy and coherent public/fork activation remain implementation gaps.
+
+### Empty tmpfs writes preserve the actual file state
+
+An empty tmpfs positioned write validates its real handle, offset, inode type and mutable state before returning zero. It does not reserve quota, grow a sparse file, change timestamps/mode or advance content generation. Nonempty write and failure paths retain their existing owners. Four direct native POSIX/control cases and45 affected native cases validate this source fix; current Wasm kernel and four-host behavior remain unvalidated.

@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Current214 fixes empty positioned tmpfs writes that previously extended files and changed timestamps. Four native/control cases and45affected native cases pass after the real owner fix. Native build/control setup failures remain; no current Wasm/four-host acceptance follows.
+See [source scope](empty-tmpfs-write-integration.md).
+
 Current214 integrates dormant notification queue/descriptor/opened-dentry source over existing readiness.703 exact root inputs admit125 focused native cases from an identified existing artifact and fresh sealed rerun. No public inotify/fs.watch/guest/four-host acceptance is claimed.
 See [source scope](filesystem-notification-owners-integration.md).
 
