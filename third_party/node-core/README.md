@@ -1491,3 +1491,13 @@ Exact source scope and remaining controls are recorded in
 `tests/nodejs/outline/datagram-verification-obligations.json`. Frozen audit
 requirements and existing nonpasses are unchanged. No syscall, kernel-host
 protocol or program ABI changed for this binding foundation.
+
+### DNS scoped IPv6 source followup
+
+DNS local-source configuration, server tuples and reverse address decoding now
+share the pinned uv_inet_pton byte-address zone policy before using actual
+c-ares owners. The local-address JS gate accepts the same IPv6 prefix instead
+of applying net.isIP's stricter zone grammar to the whole string. Real native
+channel configuration and canonical server reads are exercised by focused
+native components; this does not establish query/provider/guest conformance.
+See [DNS owner scope](../../tests/nodejs/outline/dns-channel-implementation-dependencies.md).

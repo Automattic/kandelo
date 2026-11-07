@@ -111,3 +111,29 @@ The actual adapter control retains its dnsVersion failure and now passes the
 same26 scenarios after forwarding all eight channel/query/configuration/version
 bindings. See port-packets-implementation-dependencies.md. No prior scoped
 result is promoted into guest conformance.
+
+## Scoped IPv6 byte-address followup
+
+Pinned cares_wrap uses uv_inet_pton for local source addresses, server tuples
+and reverse input; its IPv6 parser removes `%zone` before parsing bytes. The
+former raw c-ares parser rejected that suffix. In local-source configuration
+that status was ignored after a separate JS isIP check, so accepted input
+could fail to change the actual channel. The JS check also rejected empty or
+arbitrary zone suffixes that native Node accepts for setLocalAddress.
+
+A bounded shared DNS ParseAddress now implements the pinned fixed-buffer zone
+rule and feeds the actual c-ares setters, server tuple conversion and reverse
+request decoder. Local-family admission uses the same IPv6 prefix rule.
+Zones are not fabricated interface indices or DNS answers. The public
+setServers validation stays unchanged; getServers exposes the actual parsed
+channel addresses/ports, which do not preserve ignored zone text.
+
+Forty-four focused native configuration/component checks match selected public
+callback/promise validation and server results against the exact Node26.13.0
+reference, with production-header parser and actual c-ares channel operations.
+They do not execute production guest JSAPI, reverse-query dispatch, async
+resource metadata or four hosts. EnsureServers fallback/configuration reload,
+permissions, lifecycle/receiver/CCW, maxTimeout limits, default/worker state and
+actual transport/conformance remain open. Constructor/descriptor/error exports
+and promisify are already sourced from pinned public modules; their presence
+is not a new claim of complete runtime support.

@@ -6844,3 +6844,7 @@ Exact source scope and remaining controls are recorded in
 `tests/nodejs/outline/datagram-verification-obligations.json`. Frozen audit
 requirements and existing nonpasses are unchanged. No syscall, kernel-host
 protocol or program ABI changed for this binding foundation.
+
+### DNS scoped byte-address source ownership
+
+Source167 routes local source addresses, resolver server tuples and reverse-address decoding through the same pinned uv_inet_pton-style IPv6 zone rule before actual c-ares operations. The public local-address gate accepts that same prefix policy. Native configuration controls do not prove production JSAPI/query/provider/source-binding or four-host conformance. See [source scope](../tests/nodejs/outline/dns-scoped-address-integration.md).

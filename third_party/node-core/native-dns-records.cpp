@@ -195,9 +195,9 @@ static bool KandeloNativeDnsQuery(JSContext* cx, unsigned argc, Value* vp) {
     state->Retire(); JS::SetReservedSlot(owner, DnsRequestFrame, UndefinedValue());
   });
   if (!KandeloInitializeDnsRequest(cx, owner, state)) return false;
-  if (type == 0 && ares_inet_pton(AF_INET, name.get(), &reverseAddress) != 1) {
+  if (type == 0 && kandelo::dns::ParseAddress(AF_INET, name.get(), &reverseAddress) != 1) {
     reverseFamily = AF_INET6; reverseLength = sizeof(in6_addr);
-    if (ares_inet_pton(AF_INET6, name.get(), &reverseAddress) != 1) {
+    if (kandelo::dns::ParseAddress(AF_INET6, name.get(), &reverseAddress) != 1) {
       args.rval().setInt32(UV__EINVAL); return true;
     }
   }
@@ -268,7 +268,7 @@ static bool KandeloNativeDnsSetServers(JSContext* cx, unsigned argc, Value* vp) 
       auto& server = servers[i];
       server.family = family.toInt32() == 4 ? AF_INET : AF_INET6;
       server.udp_port = server.tcp_port = port.toInt32();
-      if (ares_inet_pton(server.family, address.get(), &server.addr) != 1) {
+      if (kandelo::dns::ParseAddress(server.family, address.get(), &server.addr) != 1) {
         args.rval().setInt32(ARES_EBADSTR); return true;
       }
       server.next = i + 1 < count ? &servers[i + 1] : nullptr;

@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <chrono>
 #include <condition_variable>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -14,6 +15,21 @@
 
 
 namespace kandelo::dns {
+
+// Node cares_wrap calls uv_inet_pton, whose IPv6 parser ignores a %zone.
+// c-ares' parser does not. Apply that same bounded byte-address policy before
+// configuring the real channel or starting reverse DNS; zones are not DNS data.
+inline int ParseAddress(int family, const char* text, void* address) {
+  char plain[INET6_ADDRSTRLEN];
+  if (family == AF_INET6) {
+    if (const char* zone = std::strchr(text, '%')) {
+      const size_t length = size_t(zone - text);
+      if (length >= sizeof(plain)) return 0;
+      std::memcpy(plain, text, length);plain[length] = '\0';text = plain;
+    }
+  }
+  return ares_inet_pton(family, text, address);
+}
 
 struct QueryResult {
   int status = ARES_SUCCESS;
@@ -210,8 +226,8 @@ class Resolver {
     if (!channel_) return ARES_ENOTINITIALIZED;
     in_addr v4{};
     ares_in6_addr v6{};
-    if (ares_inet_pton(AF_INET, ipv4, &v4) != 1 ||
-        (ipv6 && ares_inet_pton(AF_INET6, ipv6, &v6) != 1)) return ARES_EBADSTR;
+    if (ParseAddress(AF_INET, ipv4, &v4) != 1 ||
+        (ipv6 && ParseAddress(AF_INET6, ipv6, &v6) != 1)) return ARES_EBADSTR;
     ares_set_local_ip4(channel_, ntohl(v4.s_addr));
     if (ipv6) ares_set_local_ip6(channel_, reinterpret_cast<const unsigned char*>(&v6));
     return ARES_SUCCESS;
@@ -222,9 +238,9 @@ class Resolver {
     if (!channel_) return ARES_ENOTINITIALIZED;
     in_addr v4{};
     ares_in6_addr v6{};
-    if (family == 4 && ares_inet_pton(AF_INET, text, &v4) == 1)
+    if (family == 4 && ParseAddress(AF_INET, text, &v4) == 1)
       ares_set_local_ip4(channel_, ntohl(v4.s_addr));
-    else if (family == 6 && ares_inet_pton(AF_INET6, text, &v6) == 1)
+    else if (family == 6 && ParseAddress(AF_INET6, text, &v6) == 1)
       ares_set_local_ip6(channel_, reinterpret_cast<const unsigned char*>(&v6));
     else return ARES_EBADSTR;
     return ARES_SUCCESS;

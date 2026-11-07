@@ -4,7 +4,7 @@ function _createNodeDnsLookupPlatform(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
     const { ObjectDefineProperty, ObjectSetPrototypeOf, Symbol, TypeError,
-        ReflectApply } = primordials;
+        ReflectApply, StringPrototypeIndexOf, StringPrototypeSlice } = primordials;
     const { DNSException, codes: { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE,
         ERR_MISSING_ARGS, ERR_METHOD_NOT_IMPLEMENTED } } = platform.values.errors;
     const { validateBoolean, validateFunction, validateNumber, validateOneOf,
@@ -86,6 +86,14 @@ function _createNodeDnsLookupPlatform(platform) {
             }, writable: true, configurable: true, enumerable: true,
         });
     }
+    function localAddressFamily(text) {
+        // Public setLocalAddress validates a string, then uv_inet_pton accepts
+        // any IPv6 zone suffix. isIP alone has a stricter zone grammar.
+        const zone = StringPrototypeIndexOf(text, '%');
+        if (zone !== -1)
+            return isIP(StringPrototypeSlice(text, 0, zone)) === 6 ? 6 : 0;
+        return isIP(text);
+    }
     const methods = {
         getServers() { return native.dnsGetServers(this); },
         setServers(servers) { return native.dnsSetServers(this, servers); },
@@ -95,11 +103,11 @@ function _createNodeDnsLookupPlatform(platform) {
                 const error = new primordials.TypeError(message);
                 error.code = 'ERR_INVALID_ARG_VALUE'; throw error;
             }
-            const firstFamily = isIP(first);
+            const firstFamily = localAddressFamily(first);
             if (!firstFamily) invalid('Invalid IP address.');
             native.dnsSetLocalIP(this, firstFamily, first);
             if (second !== undefined) {
-                const secondFamily = isIP(second);
+                const secondFamily = localAddressFamily(second);
                 if (!secondFamily) invalid('Invalid IP address.');
                 if (firstFamily === secondFamily)
                     invalid(firstFamily === 4 ? 'Cannot specify two IPv4 addresses.' : 'Cannot specify two IPv6 addresses.');

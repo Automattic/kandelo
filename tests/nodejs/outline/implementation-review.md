@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source167 integrates real scopedIPv6 DNS parsing/configuration consumers.44current native-dependent cases and14package checks pass; nativeJSAPI/query/provider/source-bind/guest/fourhost remain open.
+See [source scope](dns-scoped-address-integration.md).
+
 Source166 corrects five reusable persistent-root clears and two owning
 engine declaration/access errors exposed by the actual failed165production
 build. Frozen inputs were unchanged; no artifact was accepted. Current source

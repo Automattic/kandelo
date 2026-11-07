@@ -1,0 +1,68 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network.md",
+    "findingIds": [
+      "N-001",
+      "N-004",
+      "N-017"
+    ],
+    "relatedFamilies": [
+      "network",
+      "engine"
+    ],
+    "scope": "Scoped address/configuration subset; all broader DNS obligations remain open"
+  },
+  "sourceImplemented": [
+    "Shared bounded uv_inet_pton-style IPv6 zone parser routes real c-ares local/server/reverse consumers",
+    "Public local-family gate follows same prefix validation without changing pinned server validation or public DNS source",
+    "Normal combined regeneration preserves all166native root/backing/UDP/HTTP2/TTY/signals source"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-dns167-source-r1/report.json",
+    "sha256": "8d2042a1704b8c9c3f58b1087407fe22be3739c0d8348ae08985fd21f1688d7f",
+    "guardedInputs": 786,
+    "scope": "Current generated DNS scoped-address/configuration source with identified exact actual native c-ares/parser component reused;44focused public/config controls, not guestJSAPI/query/provider/source-binding or fourhost conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-dns167-affected-r1.json",
+    "sha256": "247cf5aa4bf83faacb4d0136f83bce3b400f25f2473a5e516fc0a7a24bc690ea",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-dns167-source-r1/report.json",
+    "sha256": "8d2042a1704b8c9c3f58b1087407fe22be3739c0d8348ae08985fd21f1688d7f",
+    "passed": 44,
+    "failed": 0,
+    "scope": "Current JS with exact reused actual c-ares/native parser, no guest or queries"
+  },
+  "sealedEvidence": {
+    "report": ".context/dns-address-owner-agent/REPORT.json",
+    "sha256": "b6deb3593502db67e9f67041153370896d0d707b1ae95b64d33978c58c44d2a4",
+    "reusedEvidence": true,
+    "scope": "44private configuration/native cases,4compile attempts1failure, exact pin and realc-ares; original preimage/harness nonpasses retained"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/dns-address-owner-agent/SEAL.json",
+      "sha256": "cc251446e55b91ee6b72981e426b41e16e8ced622c14fb2fa0ce3f3df5b3e3cc",
+      "kind": "native-preimage-and-compile-harness-errors",
+      "reason": "4native scoped address and empty-zone preimage failures, strict-warning compile failure and existing Performance setup harness error retained"
+    }
+  ],
+  "remaining": [
+    "Production nativeJSAPI/currentengine/guest/fourhost artifacts",
+    "Query/provider/source-binding/ref/receiver/realm/config reload/permissions/default/worker semantics",
+    "Broader DNS fixture dependency repair and all resolver transport/core conformance obligations"
+  ],
+  "at": "2026-11-07T01:23:11.263880+00:00",
+  "recipeRevision": 167,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
