@@ -1541,3 +1541,14 @@ stages stay in this iteration and the full goal; this does not move them
 to future work or waive B1 or final acceptance. Current normal R760 remains
 in progress. Preview availability and complete-B1 readiness are separate
 claims, each requiring evidence for its own scope.
+
+
+A current normal-built B1 candidate is now runnable after R785's ordinary
+190-node build, with exact-URL Freeciv rendering and three selected Node
+checks passed. The first three-engine quick desktop run remains recorded
+failed at 21/24. Test-only focus and rendered-history corrections then pass
+the complete original Omarchy boot scenario on all three engines in R792;
+other Omarchy cases and every B1 ownership/audit/conformance/memory/measurement
+gate remain required before calling the stage complete. Waybar/full-all
+verification remains required after preview-priority scheduling. B2–B6/C1–C3
+remain in this goal, and physical/native-feel qualification is unfinished.

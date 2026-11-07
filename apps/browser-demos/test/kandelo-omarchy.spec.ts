@@ -116,13 +116,22 @@ async function expectFootPrompt(page: Page) {
   }, {timeout: 60_000}).toBeGreaterThan(24);
 }
 
+/** Return browser keyboard capture without changing the guest pointer seat. */
+async function focusDemo(page: Page) {
+  await openSurface(page, "Demo");
+  const canvas = page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas").first();
+  await expect(canvas).toBeVisible();
+  // The desktop fills (5,5): clicking there opens its exclusive menu and
+  // steals the focus this test is checking. DOM focus sends no guest click.
+  await canvas.focus();
+  await expect(canvas).toBeFocused();
+}
+
 /** Press a CTRL combo on the desktop. A browser reserves SUPER (Cmd/Win), so
  *  the demo binds every action on CTRL too — the path users actually press.
- *  Focus off the canvas placeholder first (BrowserInputSource listens on
- *  window). */
+ *  Focus the display first so the image-declared input gate admits the key. */
 async function pressCtrl(page: Page, key: string, shift = false, alt = false) {
-  await openSurface(page, "Demo");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   await page.keyboard.down("Control");
   if (shift) await page.keyboard.down("Shift");
   if (alt) await page.keyboard.down("Alt");
@@ -134,8 +143,7 @@ async function pressCtrl(page: Page, key: string, shift = false, alt = false) {
 
 /** Press bare keys with the Demo surface focused. */
 async function pressKeys(page: Page, keys: string[]) {
-  await openSurface(page, "Demo");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   for (const key of keys) await page.keyboard.press(key);
 }
 
@@ -381,7 +389,9 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   await pressKeys(page, ["ArrowDown", "Enter"]);
   await expectTerminal(page, /LAUNCHER_LEVEL themes/, 60_000);
   await pressKeys(page, ["Enter"]);
-  await expectTerminal(page, /LAUNCHER_THEME name=[a-z-]+/, 60_000);
+  // Theme/notifier retiling can scroll this real milestone past the live rows
+  // between polls. Read painted history, preserving the same marker and bound.
+  await expectTerminalHistory(page, /LAUNCHER_THEME name=[a-z-]+/, 60_000);
 
   // Gate 7: the bar tracks the desktop. CTRL+2 switches workspace, and the
   // shell's Hyprland module reads the switch off the Hyprland IPC event
@@ -449,8 +459,7 @@ test("Kandelo omarchy survives a rapid 8-window launch storm without SCM_RIGHTS 
   await expectTerminal(page, /WORKSPACE active=2/, 30_000);
 
   // Eight wlclock launches back-to-back (CTRL+K, no delay).
-  await openSurface(page, "Demo");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   await page.keyboard.down("Control");
   for (let i = 0; i < 8; i++) await page.keyboard.press("KeyK", { delay: 0 });
   await page.keyboard.up("Control");
@@ -702,10 +711,9 @@ test("Kandelo omarchy copies and pastes between foot windows through the Wayland
   await pressCtrl(page, "Enter");
   await expectTerminal(page, /TILE n=1 i=0 [\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=1 i=0 /, 60_000);
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
-  await openSurface(page, "Demo");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   await expectFootPrompt(page);
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   await typePhysicalText(page, "echo notify-send clip-ok; "
     + "printf '\\033[48;2;30;180;60mCLIPBOARD_SOURCE_READY\\033[0m\\n'\n", {delay: 20});
   // Observe the executed output before starting Foot's scrollback search.
@@ -771,8 +779,7 @@ test("Kandelo omarchy pastes text from the host clipboard into foot", async ({ p
   await page.waitForTimeout(3_000); // let foot's shell reach its prompt
 
   // The host clipboard holds a command; paste it with the platform chord.
-  await openSurface(page, "Demo");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   await page.evaluate(() => navigator.clipboard.writeText("notify-send host-paste-ok"));
   await page.keyboard.press("ControlOrMeta+KeyV");
   await expectTerminal(page, /SELECTION_SET via=ext-data-control mimes=4/, 30_000);
@@ -792,8 +799,7 @@ test("Kandelo omarchy pastes text from the host clipboard into foot", async ({ p
   await page.waitForTimeout(2_000);
   await page.evaluate(() => navigator.clipboard.writeText("echo should-not-arrive"));
   const receivesBefore = ((await terminalText(page)).match(/SELECTION_RECEIVE/g) ?? []).length;
-  await openSurface(page, "Demo");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   await page.keyboard.press("ControlOrMeta+KeyV");
   await expect(page.getByTestId("kms-paste-error")).toContainText(
     "Paste failed: the clipboard agent is not running in this machine",
@@ -839,8 +845,7 @@ test("Kandelo omarchy copies foot's selection to the host clipboard", async ({ p
   await expectTerminal(page, /TILE n=1 i=0 [\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=1 i=0 /, 60_000);
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
   await page.waitForTimeout(3_000); // let foot's shell reach its prompt
-  await openSurface(page, "Demo");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   await page.keyboard.type("echo copyout-first; echo copyout-second\n", { delay: 20 });
   await page.evaluate(() => navigator.clipboard.writeText("host-before"));
 

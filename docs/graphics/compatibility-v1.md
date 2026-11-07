@@ -27043,3 +27043,68 @@ Late source tails and page errors through teardown refuse success; failed
 writes or close attempts cannot skip other owned cleanup. These tests are
 not physical display/application timing. Native execution still requires
 a separately scheduled visible session; no latency or native-feel claim.
+
+
+### Current normal B1 candidate and desktop-focus correction, 2026-11-07
+
+R785 completes the ordinary demanded normal build in 13m04s at frozen source
+8e65a5f842: all 190 selected nodes (181 cached, nine succeeded), all six
+build/ABI/freshness phases successful, 8,980 source inputs unchanged and
+412 product files recorded. This selects every active browser product and
+required application/desktop dependency. The earlier all-packages R760 run
+was intentionally stopped with supervisor exit 143 after 2h51m while optional
+Waybar alone had spent over 40 minutes in instrumentation. Completed caches
+and source were preserved. Neither that cancelled run nor the demanded build
+is counted as completion of the full all-packages/final-validation inventory;
+Waybar and every full goal requirement remain required.
+
+The current implementation is runnable at localhost:7776/pages/kandelo/ from
+this normal source, served by the ordinary Vite configuration and authenticated
+SourceOnly bank with a private cache. There is no artifact overlay or alternate
+resolver. HTTP isolation headers are verified; an unchanged Freeciv menu case
+passes against this exact URL in 22 seconds. The prior port 6271 preview stays
+available. Availability is separate from complete B1 or native-feel acceptance.
+Node R785 passes all three selected Freeciv/ScummVM cases in 12 seconds, with
+zero skips and 33 consumed files/five owner nodes unchanged. Declared browser
+app typecheck R782 passes 113 browser and 24 Node unit-test roots with zero
+compiler or capability findings. Manual browser UI remains unverified because
+the computer-use provider exposes no connected browser; automated exact-URL
+rendering and screenshot inspection are not relabelled a manual workflow.
+
+The first browser launcher stops before tests because its private temporary
+path exceeds the host Unix-domain socket budget. R788 preserves that failure
+and uses a short private temporary directory with an actual bind/listen
+preflight. No Kandelo product, toolchain or assertion changes. The actual
+three-engine selected run finishes failed after 10m19s: seven of eight cases
+pass in each engine, 21 of 24 total, with only Omarchy's boot scenario failing.
+All source and consumed-product postchecks pass. This establishes selected
+Freeciv menu/exit at both densities, ScummVM direct/Wayland launcher, Cage and
+Wayland input/render coverage; it does not close full B1 or the wider suites.
+
+Chromium's original Omarchy trace proves that its keyboard-focus helper clicks
+the real desktop bar at viewport (5,5), opening an exclusive launcher before
+sending the shortcut. The compositor then correctly retains that launcher's
+keyboard focus. The fixture now focuses the actual focusable display canvas
+without a guest pointer click, and asserts real DOM focus. All eight misleading
+focus clicks are replaced; original keys, tiling/focus/menu/lock assertions,
+timeouts and guards remain unchanged. No compositor, package or SDK changes.
+The focused R790 rerun passes the complete existing scenario on Firefox and
+WebKit. Chromium passes the former focus/tiling/Foot gates, then fails a later
+LAUNCHER_THEME assertion. Its trace proves the marker was rendered at
+24700.303 ms, between a pre-event row read at 24581 ms and the next read at
+24732 ms after retiling output scrolled it away. That one check now uses the
+existing rendered-history reader with the identical regex and 60-second bound.
+No theme dispatch or compositor behavior changes. Focused R792 then passes
+the complete original Omarchy boot scenario on all three engines in 1m41s,
+with all source and consumed-product postchecks valid. Original R788 and R790
+failures, trace frames and separate judgments remain retained; they are not
+relabeled successful full runs. The other Omarchy cases and wider B1 gates
+remain required. This is corrected fixture verification, not a performance
+improvement or complete B1 claim.
+
+Visible recorder R781 separately refuses before any offered test input because
+its owned window's title does not match the requested unique title, although
+it is active. Cleanup succeeds and source/binary checks remain valid. Cause
+is unverified; diagnostic metadata now compiles in R786, but has not supplied
+a new visible observation. No physical application timing or native-feel claim
+follows, and the maintainer's visible session has been released.
