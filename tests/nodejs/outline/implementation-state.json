@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T20:40:43.086647+00:00",
+  "updatedAt": "2026-11-07T21:25:27.975516+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -46,7 +46,7 @@
   "deployAuthorized": false,
   "overallSuitesRun": 0,
   "productRebuildsRun": 0,
-  "packageOrEngineCompilationsRun": 309,
+  "packageOrEngineCompilationsRun": 310,
   "families": {
     "values": {
       "breadthState": "started",
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "ca85ce6e70e94def3aa24e83aeb37ed73726bc52fd87f53ffe140d7af8f81a4a",
+    "tests/nodejs/outline/status-by-family.md": "cfc6e6333409379db81d464eca4959e594f55faafb0a17451a0757f8f59a602b",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -2559,7 +2559,8 @@
     "tests/nodejs/outline/performance-milestone-integration.md": "9d2a7eb815eeca0ffd8891ba3548e22c6c34d87c1d2457baec2a294c25ff52bf",
     "packages/registry/spidermonkey/patches/0173-node-performance-milestones.patch": "c3d23e25f0eaead67d08b8938729f8fad7fb15b8bd1e638d4a2b5a01f90b9b36",
     "tests/nodejs/outline/performance-milestone-finding-progress.json": "19f9b3c81d269e8c8cfaeea827fc7583a1dd43c424f2f0afe9f5399a9b61a234",
-    "third_party/node-core/performance-milestones.md": "c9c0fa776e82cc568a5409ca6105cd6f290237ae339350bff41d3f9bb15ea7d9"
+    "third_party/node-core/performance-milestones.md": "c9c0fa776e82cc568a5409ca6105cd6f290237ae339350bff41d3f9bb15ea7d9",
+    "tests/nodejs/outline/engine238-build-result.json": "69b645fd41b997596410227c7a58f800e3c71cae4bce047ff7ce43dca01170a2"
   },
   "changes": [
     {
@@ -9294,14 +9295,14 @@
     }
   ],
   "nextSourceWork": [
-    "Reconcile source232 through238 qualified finding links using sealed ledger helper; preserve all original definitions, partial status and exact evidence/nonpasses",
-    "Freeze pushed238candidate and run selected SpiderMonkey engine build with normal resolver and8cached dependencies, then scoped identified-artifact guest checks",
-    "Continue independent actual FileHandle fd/clone ownership and VM Script cache/build-identity source foundations privately",
-    "Retain Worker timing order, HTTP Body/Complete/reuse/fullServer, encrypted-output shutdown and broader core gaps; nested guest Wasm last; no full product rebuild or overall suite"
+    "Preserve accepted238 artifact and scoped build proof; no guest/four-host/API closure",
+    "Integrate reviewed next-batch FileHandle lease/transfer, genuine VM encoding/build identity and SQLite/TTY owner work after dependency review",
+    "Complete shared lower owners and breadth-first API findings; retain HTTP chronology/reuse, TLS encrypted-output and Worker timing gaps",
+    "Focused identified-artifact guest checks may follow; overall suites/full product rebuilding remain deferred; nested guest Wasm last"
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated independently reviewed actual timing milestone owners at genuine lifecycle seams, preserving physical unset V8 state and Worker ordering gap, using source-bound journaled check receipts without conformance closure."
+    "reason": "Qualified232\u2013238owner-progress ledger links only; all19familiespartial,237S008atmostshared/238O008only, preserved original definitions/nonpasses/evidence/limits,0newruntime/compiler/closures."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -50547,11 +50548,11 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/finding-overlay238-20261107T204043091213Z.tar.gz",
-    "sha256": "79289e7eb9efc5e1c861c3cf3e6d8482688b19273bbb58096c452099ae9017ca",
-    "bytes": 11979926,
-    "scope": "Source238qualified232\u2013238owner-progress metadata only;0runtime/compiler/closures.",
-    "stateFileNote": "Archived state precedes snapshot reference injection"
+    "path": ".context/node26-implementation-snapshots/engine238-accepted-20261107T212528058900Z.tar.gz",
+    "sha256": "79fdbae661451afacf46f9d5f7cc6ad6bea4db3f402cd42f33e270daccc7f129",
+    "bytes": 14044683,
+    "scope": "Accepted source238 normal engine compile/cache evidence and unchanged source/audit/finding identities. Maintenance preserved payloads; no guest execution, API closure or four-host conformance.",
+    "stateFileNote": "Archived state precedes snapshot-reference injection. Exact Wasm is separately retained and hashed by engine238 terminal receipt."
   },
   "currentScopedStaticChecks": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -53044,15 +53045,15 @@
     "state": "OS lookup source and raw c-ares channel plus owned record decoder; public Resolver/channel/request/loop/JSAPI/guest linking/transport/error/malformed and four-host obligations remain open"
   },
   "nativeCompilationAccountingThisTurn": {
-    "acceptedEngineBuilds": 0,
+    "acceptedEngineBuilds": 1,
+    "guestEngineBuildAttempts": 1,
     "guestEngineBuildFailures": 0,
-    "guestPackageAttempts": 0,
+    "nativeHelperCompileAttempts": 0,
+    "nativeHelperCompileFailures": 0,
     "guestDependencyCompilations": 0,
     "kernelWasmCompilations": 0,
-    "nativeHelperCompileAttempts": 1,
-    "nativeHelperCompileFailures": 0,
     "productRebuilds": 0,
-    "scope": "Account one sealed producer tiny portable clock compilation once308 to309,0failures. Root reuses exact executable/header; zero new compiler/guest/package/product attempts."
+    "scope": "Actual raw Cargo fresh:false completed targets plus failed compiler targets; one selected normal engine package attempt only when real recipe-entry evidence and terminal prove it. Internal engine TUs/Rust archive are raw-log detail, not separate package builds. Preflight failure adds zero guest attempts."
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -53844,7 +53845,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Qualified232\u2013238owner-progress ledger links only; all19familiespartial,237S008atmostshared/238O008only, preserved original definitions/nonpasses/evidence/limits,0newruntime/compiler/closures."
+    "reason": "Normal frozen combined238 engine compilation/link/style/opcode/fork instrumentation and canonical cache acceptance succeeded, exact artifact retained. Runtime execution/four-host/API compatibility unestablished; main ref drift recorded separately."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -54978,10 +54979,10 @@
     "guestEngineCompiled": false
   },
   "targetedEngineBuild": {
-    "recipeRevision": 230,
-    "jobId": "node26-engine230-1107-131443-7cca",
-    "report": "tests/nodejs/outline/engine230-build-result.json",
-    "sha256": "9f34685b04e6c2f3cae386d44c7c857f2bb57b1cf7c7160979df738912f4bc55",
+    "recipeRevision": 238,
+    "jobId": "node26-engine238-1107-160939-59ce",
+    "report": "tests/nodejs/outline/engine238-build-result.json",
+    "sha256": "69b645fd41b997596410227c7a58f800e3c71cae4bce047ff7ce43dca01170a2",
     "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior228 failures and source229 correction remain unchanged.",
     "result": "normal-production-build-and-cache-acceptance-success",
     "productionCompilationSucceeded": true,
@@ -54991,16 +54992,9 @@
     "guestRuntimeValidated": false,
     "currentSourceRevision": 238,
     "artifact": {
-      "path": ".context/node26-engine230-terminal/artifacts/js.wasm",
-      "sha256": "cb4ef448465cd509fa2ec9fb2c6e184f84ce1f9a124ac85a43ed5fb8ea795c33",
-      "bytes": 52029906
-    },
-    "postBuildMainReconciliation": {
-      "report": "tests/nodejs/outline/engine230-main-reconciliation.json",
-      "sha256": "653ae4aa2ac38838db9669f53c08da0c1e8def0f19cda6868953506ec2b72faa",
-      "requiredEngineInputsUnchanged": 891,
-      "compiledSourceHeadUnchanged": "f06beea7fdfa6d83d93b9c9cde85642e76731511",
-      "scope": "Acceptedengine230owninputs unchanged; host/runtime products not validated"
+      "path": ".context/node26-engine238-terminal/artifacts/js.wasm",
+      "sha256": "3cdede1f62ba40787f0703b11a3e6d72c2a0fb10aed060626cc9737661dc39ba",
+      "bytes": 52080061
     }
   },
   "targetedEngineBuildHistory": [
@@ -57104,16 +57098,43 @@
       "guestRuntimeValidated": false,
       "currentSourceRevision": 230,
       "scope": "Normal selected200production engine compilation/link/style/opcode checks, optimization, fork instrumentation and canonical cache acceptance. Static ABI55/kernel-program contract inspection passes. No new product projection, instantiation, guest or four-host runtime evidence."
+    },
+    {
+      "recipeRevision": 230,
+      "jobId": "node26-engine230-1107-131443-7cca",
+      "report": "tests/nodejs/outline/engine230-build-result.json",
+      "sha256": "9f34685b04e6c2f3cae386d44c7c857f2bb57b1cf7c7160979df738912f4bc55",
+      "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior228 failures and source229 correction remain unchanged.",
+      "result": "normal-production-build-and-cache-acceptance-success",
+      "productionCompilationSucceeded": true,
+      "productionLinkSucceeded": true,
+      "normalChecksSucceeded": true,
+      "acceptedArtifact": true,
+      "guestRuntimeValidated": false,
+      "currentSourceRevision": 238,
+      "artifact": {
+        "path": ".context/node26-engine230-terminal/artifacts/js.wasm",
+        "sha256": "cb4ef448465cd509fa2ec9fb2c6e184f84ce1f9a124ac85a43ed5fb8ea795c33",
+        "bytes": 52029906
+      },
+      "postBuildMainReconciliation": {
+        "report": "tests/nodejs/outline/engine230-main-reconciliation.json",
+        "sha256": "653ae4aa2ac38838db9669f53c08da0c1e8def0f19cda6868953506ec2b72faa",
+        "requiredEngineInputsUnchanged": 891,
+        "compiledSourceHeadUnchanged": "f06beea7fdfa6d83d93b9c9cde85642e76731511",
+        "scope": "Acceptedengine230owninputs unchanged; host/runtime products not validated"
+      }
     }
   ],
   "nativeEmbeddingIntegration": {
-    "at": "2026-11-07T20:36:59.633244+00:00",
+    "at": "2026-11-07T21:24:18.718229+00:00",
     "recipeRevision": 238,
-    "lastAcceptedEngine": 230,
-    "sourceOnly": true,
-    "guestCompiled": false,
+    "lastAcceptedEngine": 238,
+    "sourceOnly": false,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
-    "scope": "Source238 actual lifecycle milestone ownership; portable clock/native-reference evidence only, actual guest lifecycle/JSAPI/Worker and four-host conformance remain unestablished."
+    "scope": "Current238 normal C++/embedded bootstrap compiled/linked and canonical cache accepted; no guest JSAPI/lifecycle/API/four-host runtime conformance established. Exact artifact and source identities in engine238 terminal report.",
+    "fourHostConformance": false
   },
   "asyncAuditedFindingProgress": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -58825,6 +58846,15 @@
       "guestCompiled": false,
       "guestRuntimeValidated": false,
       "scope": "Source237 TLS peer/local certificate material and issuer owner; current public method/native fixture component evidence only. New guest C++ and four-host conformance remain unestablished."
+    },
+    {
+      "at": "2026-11-07T20:36:59.633244+00:00",
+      "recipeRevision": 238,
+      "lastAcceptedEngine": 230,
+      "sourceOnly": true,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "scope": "Source238 actual lifecycle milestone ownership; portable clock/native-reference evidence only, actual guest lifecycle/JSAPI/Worker and four-host conformance remain unestablished."
     }
   ],
   "bufferPoolImplementation": {
@@ -59133,13 +59163,13 @@
   },
   "sourceCandidateIntegration": {
     "recipeRevision": 238,
-    "sourceOnly": true,
-    "lastAcceptedEngine": 230,
-    "acceptedArtifactCurrentForCandidate": false,
-    "guestCompiled": false,
+    "sourceOnly": false,
+    "lastAcceptedEngine": 238,
+    "acceptedArtifactCurrentForCandidate": true,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
     "fourHostConformance": false,
-    "scope": "Current238combined guest source has no accepted build; accepted230and prior nonpasses retain their scopes. Pending private agent work excluded."
+    "scope": "Current238 normal build/cache artifact accepted; no guest execution/API/four-host compatibility established."
   },
   "vmPlainContextImplementation": {
     "at": "2026-11-05T00:10:14.839714+00:00",
@@ -60967,6 +60997,13 @@
       "sha256": "08cadedaf8038d0b4681eb219a6d82ac9ecdf1f81e44570fcb4b0bb8f0bea63d",
       "bytes": 31746390,
       "scope": "Source238 genuine lifecycle milestone owners over237TLSX509/236HTTP/currentsharedowners; actual scoped component/reference/source evidence, no guest or API closure.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/finding-overlay238-20261107T204043091213Z.tar.gz",
+      "sha256": "79289e7eb9efc5e1c861c3cf3e6d8482688b19273bbb58096c452099ae9017ca",
+      "bytes": 11979926,
+      "scope": "Source238qualified232\u2013238owner-progress metadata only;0runtime/compiler/closures.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -65474,6 +65511,18 @@
       "nativeHelperCompileFailures": 0,
       "productRebuilds": 0,
       "scope": "Account two sealed producer helper compilations once306 to308,0failures. First artifact unexecuted; root reuses final addon55cb6fb3 and exact six recorded non-system compiled inputs;0newcompiler/guest/package/product attempts."
+    },
+    {
+      "at": "2026-11-07T21:24:18.718229+00:00",
+      "acceptedEngineBuilds": 0,
+      "guestEngineBuildFailures": 0,
+      "guestPackageAttempts": 0,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "nativeHelperCompileAttempts": 1,
+      "nativeHelperCompileFailures": 0,
+      "productRebuilds": 0,
+      "scope": "Account one sealed producer tiny portable clock compilation once308 to309,0failures. Root reuses exact executable/header; zero new compiler/guest/package/product attempts."
     }
   ],
   "cryptoKdfImplementation": {
@@ -131875,6 +131924,11 @@
       "report": "tests/nodejs/outline/engine230-build-result.json",
       "sha256": "9f34685b04e6c2f3cae386d44c7c857f2bb57b1cf7c7160979df738912f4bc55",
       "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior228 failures and source229 correction remain unchanged."
+    },
+    {
+      "report": "tests/nodejs/outline/engine238-build-result.json",
+      "sha256": "69b645fd41b997596410227c7a58f800e3c71cae4bce047ff7ce43dca01170a2",
+      "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior228 failures and source229 correction remain unchanged."
     }
   ],
   "engine228PreflightR1": {
@@ -132801,5 +132855,14 @@
     "individualApiClosure": false,
     "implementationComplete": false,
     "acceptedPlatformLimits": []
+  },
+  "engine238TerminalResult": {
+    "report": "tests/nodejs/outline/engine238-build-result.json",
+    "sha256": "69b645fd41b997596410227c7a58f800e3c71cae4bce047ff7ce43dca01170a2",
+    "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior228 failures and source229 correction remain unchanged.",
+    "jobId": "node26-engine238-1107-160939-59ce",
+    "guestEngineAttempted": true,
+    "acceptedArtifact": true,
+    "evidenceDirectory": ".context/node26-engine238-terminal"
   }
 }
