@@ -10,6 +10,46 @@ Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
 Implementation/evaluation checkpoints are pushed to draft PR #1492.
 The full WordPress service goal remains unfinished.
 
+**Expanded blocking-wait regression gate:** the unchanged f605 runtime now
+has plain-Go and cgo fixtures covering zero, short and multi-checkpoint note
+deadlines, already-notified notes, timed/indefinite wakeups and twelve
+notification/park races. Socket deadlines, readiness, close wakeups and
+blocking pipe reads now cross the 100 ms checkpoint interval. Four fresh
+Node programs complete successfully, and all 12 Chromium/Firefox/WebKit
+cases pass with zero skips/flakes in 53.8 seconds. Evidence is
+`.context/go-wait-checkpoint-expanded/`. Only fixture builds disable
+linkname checks for private runtime observations; package/compiler sources
+and their normal checks are unchanged.
+
+The Node netpoll runs also expose physical-listener collisions. Disabling
+external TCP egress does not control listener exposure. Selecting the normal
+offline egress link still reproduces it: `OfflineEgressBackend` does not
+claim its listener namespace. The isolated checkout
+`.context/offline-egress-listeners` adds a production-worker regression:
+the unchanged backend exposes all three tested IPv4 listeners to the host;
+IPv6 remains private. A backend fix blocks that exposure, then uncovers a
+separate kernel gap routing a connection to its own assigned IPv4 address
+externally. That general routing correction is being evaluated alongside
+the backend fix. Neither change is in the primary host/image build yet;
+the initial Node console warnings and both regression observations remain
+separate. No clean final Node networking gate is claimed from them.
+
+**Prepared memory conformance:** normal prerequisite publication completes
+in 33m11s; a separate Node/Chromium conformance run completes in 2m18s.
+Each host has 20 passing libc/POSIX/Sortix cases and four unchanged expected
+failures, with zero skips, build failures, runner errors or timeouts. Cases
+include shared memory, mapping/unmapping, memory locks, zero allocations,
+allocation/thread exhaustion and the existing 64 KiB-page geometry boundary.
+The accepted failures remain page-access revocation, privileged memory-lock
+limits and that allocation geometry. The run uses its own normal SDK and
+ABI-55 kernel `8b975583234a`, not the earlier Go gate's frozen kernel.
+The clean pinned Sortix source is on a case-sensitive private volume; both
+runners now honor the same source selection. Initial preparation failures
+remain intact. Evidence:
+`.context/go-mmap-fresh-pages/.context/mmap-vendor-conformance-prepared/`.
+This adds focused conformance evidence to the isolated memory candidate;
+the final image, full memory/lifecycle gate and controlled benchmarks remain.
+
 **Regexp upstream candidate evaluated:** the approved shared traversal is
 selected at f605 for all four normal Go consumers. Native/race checks,
 2,022 complete-program comparisons, deep-tree checks and the expanded

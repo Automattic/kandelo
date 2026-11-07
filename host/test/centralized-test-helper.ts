@@ -173,6 +173,9 @@ export interface RunProgramOptions {
    *  programs can dial external hosts via real Node sockets. Worker-thread
    *  mode only — incompatible with `io`. */
   enableTcpNetwork?: boolean;
+  /** Use the browser-shaped isolated egress link without host networking.
+   * Worker-thread mode only; exclusive with enableTcpNetwork. */
+  offlineEgressLink?: boolean;
   /**
    * Map of virtual path → .wasm file path staged into the test rootfs for
    * exact-target exec. The map also remains available to spawn preflight.
@@ -312,6 +315,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
           : mount
       ),
     enableTcpNetwork: options.enableTcpNetwork,
+    offlineEgressLink: options.offlineEgressLink,
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
       stdoutChunks.push(new Uint8Array(data));

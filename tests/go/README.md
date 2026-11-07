@@ -50,13 +50,28 @@ fixture digest to match the kernel, so run the fixture script rather than
 building individual probes directly with `go build`.
 
 The `wait-checkpoints` runtime fixture observes the private host-wait policy
-and calls the target's runtime sleep directly. Its test-only
+and calls the target's runtime sleep and user-goroutine note wait directly.
+Its note layout follows `runtime/note_other.go`. Its test-only
 `-ldflags=-checklinkname=false` permits those private references; production
 recipes keep normal linkname checking. Plain-Go and real cgo builds require
 the host checkpoint to update the policy without shortening three 350 ms
-sleeps. The cgo variant also executes a linked C scalar call. The normal
-browser inventory runs both variants in each engine. This verifies producer
-integration and timing, not physical memory reclamation or an engine defect.
+sleeps. It checks zero, 25 ms and 350 ms note deadlines, an already-notified
+note, timed and indefinite waits notified after 350 ms, and twelve races
+between notification and entering the wait. Each note has one waiter and
+one notifier, and is not cleared while either could still use it. The cgo
+variant also executes a linked C scalar call. The normal browser inventory
+runs both variants in each engine. This verifies producer integration,
+deadlines and wakeups, not physical reclamation or an engine defect.
+
+The plain-Go and cgo `netpoll-basic` probes hold socket deadlines, delayed
+readiness, close wakeups and a blocking pipe read beyond the 100 ms host
+checkpoint interval. The Node runner selects the offline egress link to
+match the browser's guest network instead of enabling external TCP egress:
+
+```sh
+node --import tsx tests/go/wait-checkpoints/run.ts FIXTURE.wasm KERNEL.wasm
+node --import tsx tests/go/netpoll-basic/run.ts FIXTURE.wasm KERNEL.wasm
+```
 
 The `memory-accounting` cgo fixture touches a 32 MiB C allocation and repeats
 64 MiB Go allocation/collection cycles with a soft 32 MiB Go limit. It reports

@@ -50,10 +50,10 @@ const probes: Probe[] = [
     stdout: ["GO MEMORY ACCOUNTING PASS"],
   },
   ...[0, 1].map(cgo => ({
-    name: `Go runtime wait checkpoints retain the sleep duration (cgo=${cgo})`,
+    name: `Go runtime checkpoints retain sleeps, note deadlines and wakeups (cgo=${cgo})`,
     file: `wait-checkpoints-${cgo}.wasm`,
     argv: ["go-wait-checkpoints"],
-    stdout: ["GO WAIT CHECKPOINT PASS"],
+    stdout: ["GO WAIT CHECKPOINT PASS", "GO NOTE DEADLINES PASS", "GO NOTE WAKEUPS PASS"],
   })),
   {
     name: "Go reports kernel-owned credentials and supplementary groups",
@@ -423,13 +423,13 @@ const probes: Probe[] = [
     name: "Go runtime regular-file pollability, TCP readiness, and blocking syscall scheduler release",
     file: "netpoll-basic.wasm",
     argv: ["go-netpoll-basic"],
-    stdout: ["GO NETPOLL PASS"],
+    stdout: ["GO NETPOLL PASS", "GO NETPOLL CHECKPOINTS PASS"],
   },
   {
     name: "Go cgo runtime regular-file pollability, TCP readiness, and blocking syscall scheduler release",
     file: "netpoll-cgo-basic.wasm",
     argv: ["go-netpoll-cgo-basic"],
-    stdout: ["GO NETPOLL PASS"],
+    stdout: ["GO NETPOLL PASS", "GO NETPOLL CHECKPOINTS PASS"],
   },
   {
     name: "Go net TCP dial and listener on IPv4 and IPv6",

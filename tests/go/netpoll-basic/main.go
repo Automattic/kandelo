@@ -25,7 +25,7 @@ func blockingPipe() {
 	defer syscall.Close(pipe[1])
 	written := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(350 * time.Millisecond)
 		_, writeErr := syscall.Write(pipe[1], []byte("pipe wakeup"))
 		written <- writeErr
 	}()
@@ -65,16 +65,21 @@ func main() {
 		panic("os.NewFile failed")
 	}
 	defer server.Close()
-	must(server.SetReadDeadline(time.Now().Add(50 * time.Millisecond)))
+	const waitDuration = 350 * time.Millisecond
+	deadlineStarted := time.Now()
+	must(server.SetReadDeadline(deadlineStarted.Add(waitDuration)))
 	buffer := make([]byte, 32)
 	_, err = server.Read(buffer)
 	if !errors.Is(err, os.ErrDeadlineExceeded) {
 		panic(fmt.Sprintf("read deadline: %v", err))
 	}
+	if time.Since(deadlineStarted) < waitDuration {
+		panic("checkpoint shortened the socket read deadline")
+	}
 	must(server.SetReadDeadline(time.Now().Add(5 * time.Second)))
 	written := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(waitDuration)
 		_, writeErr := syscall.Write(client, []byte("poll wakeup"))
 		written <- writeErr
 	}()
@@ -92,7 +97,7 @@ func main() {
 		readFinished <- readErr
 	}()
 	<-readStarted
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(waitDuration)
 	must(server.Close())
 	select {
 	case readErr := <-readFinished:
@@ -103,6 +108,7 @@ func main() {
 		panic("close did not unblock read")
 	}
 	blockingPipe()
+	fmt.Println("GO NETPOLL CHECKPOINTS PASS")
 	fmt.Println("GO NETPOLL PASS")
 }
 

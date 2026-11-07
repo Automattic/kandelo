@@ -11,5 +11,6 @@ console.log(JSON.stringify({
   exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr,
   hostDiagnostics: result.hostDiagnostics,
 }));
-if (result.exitCode !== 0 || !result.stdout.includes("GO WAIT CHECKPOINT PASS") ||
+if (result.exitCode !== 0 || !["GO WAIT CHECKPOINT PASS", "GO NOTE DEADLINES PASS", "GO NOTE WAKEUPS PASS"]
+    .every(marker => result.stdout.includes(marker)) ||
     result.stderr !== "" || result.hostDiagnostics.length !== 0) process.exitCode = 1;
