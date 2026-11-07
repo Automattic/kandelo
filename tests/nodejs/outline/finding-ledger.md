@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 103 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 104 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 246 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 244 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -183,3 +183,20 @@ recorded. Wider crypto/TLS/per-callsite/error/accounting gaps stay explicit.
 Accepted173predates current185. No finding/family closes and all four-host
 identified-artifact obligations remain. Nested guest Wasm execution stays in
 scope, scheduled after independent core-module work.
+
+## Source186 util and constants progress overlay
+
+V-008 and document-qualified values-legacy-modules.md V-024 now link to
+actual native lazy DATA util consumers, complete pinned styleText algorithms
+and the native fs.constants null-prototype allocation source correction.
+Selected util tests run over explicit native lazy/argv/TTY/color/stream/assert/
+child dependencies. The unchanged native constants reference does not execute
+the corrected guest allocator. No finding or family closes.
+
+The additive source-routing correction supersedes earlier incomplete absence
+claims: parseArgs/diff/debounce/throttle were already real. Original audit,
+source matrices, pipe TTY skips and old descriptor failure remain immutable.
+Actual current guest lazy/constant/realm/GC/dependency semantics and all-four-host
+conformance remain unestablished. Constants aggregation/sys/transcode/legacy URL
+and other public values gaps remain. Accepted173predates current186.
+Nested guest Wasm execution stays in scope, scheduled last.

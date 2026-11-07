@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T05:41:56.053583+00:00",
+  "updatedAt": "2026-11-07T05:45:13.463319+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "19293e006260d142c4f1fb80d0679e3fb06d7e2daa5fd93c4002b02cdd9ec00b",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "df5d443d04f43ad832695fb895d8c838db978a20677824bc9d9d444e490f3f4e",
-    "tests/nodejs/outline/finding-ledger.md": "f60bcf9490509fe207e44f86a05aa70eea4390c2d03cb15d69ef7157138ec1d2",
+    "tests/nodejs/outline/finding-ledger.json": "8575614f965fd0dfc3dfecc232427e0b3fb6b79348f9baf121c3760f5a52b2c4",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "fa0e377a8a6cca09dcfbca24a9f7c298b37a20860816077446766d0c04c21cd1",
+    "tests/nodejs/outline/finding-ledger.md": "4dc7d0687509b4b66c45677ba2113b3cccc9896d02ad83c8c8508f5a03f167ba",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -6816,7 +6816,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Reconciled canonical finding navigation with integrated FFI library/shared native crypto Error source and scoped limitations, preserving document-qualified definitions, exact nonpasses and unknown dispositions without API closure."
+    "reason": "Integrated real native lazy DATA routing/styleText and corrected actual fs.constants prototype allocation without rewriting existing algorithms or hiding pipe skips/old descriptor nonpass; guest and remaining public gaps retained."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -43559,10 +43559,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/util-style-lazy-20261107T054158Z.tar.gz",
-    "sha256": "1acce03e2920e1b3901fd8061760ab2484f618d95dce4be0a1ea3afb02bd8902",
-    "bytes": 33659464,
-    "scope": "186actual util native lazy/style source and native fs.constants allocation correction with scoped native/upstream evidence; current guest dependencies/GC/realm/fourhost unestablished",
+    "path": ".context/node26-implementation-snapshots/finding-overlay186-20261107T054513Z.tar.gz",
+    "sha256": "7ce67ebceb56a0da778691cf0893db3d247c392ed1df243e1654e51b0e3567a3",
+    "bytes": 10422228,
+    "scope": "Current186source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -46856,7 +46856,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real native lazy DATA routing/styleText and corrected actual fs.constants prototype allocation without rewriting existing algorithms or hiding pipe skips/old descriptor nonpass; guest and remaining public gaps retained."
+    "reason": "Reconciled canonical finding navigation with integrated native lazy util/styleText and constants allocation source and scoped limitations, preserving document-qualified definitions, exact nonpasses and unknown dispositions without API closure."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -52698,6 +52698,13 @@
       "sha256": "363348a5ebe67babb6204de94c4dc5809a1c5049320587f9fbf8ace6daadc6e9",
       "bytes": 10405973,
       "scope": "Current185source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/util-style-lazy-20261107T054158Z.tar.gz",
+      "sha256": "1acce03e2920e1b3901fd8061760ab2484f618d95dce4be0a1ea3afb02bd8902",
+      "bytes": 33659464,
+      "scope": "186actual util native lazy/style source and native fs.constants allocation correction with scoped native/upstream evidence; current guest dependencies/GC/realm/fourhost unestablished",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -92194,22 +92201,22 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "19293e006260d142c4f1fb80d0679e3fb06d7e2daa5fd93c4002b02cdd9ec00b",
+    "sha256": "8575614f965fd0dfc3dfecc232427e0b3fb6b79348f9baf121c3760f5a52b2c4",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "df5d443d04f43ad832695fb895d8c838db978a20677824bc9d9d444e490f3f4e"
+      "sha256": "fa0e377a8a6cca09dcfbca24a9f7c298b37a20860816077446766d0c04c21cd1"
     },
-    "sourceCheckpoint": 185,
+    "sourceCheckpoint": 186,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 103,
+      "sourceSliceRecords": 104,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
-      "findingsWithoutExplicitOrProposedSourceSlice": 246
+      "findingsWithoutExplicitOrProposedSourceSlice": 244
     },
     "individualApiClosure": false,
     "fourHostConformance": false
@@ -92736,6 +92743,28 @@
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 249
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "19293e006260d142c4f1fb80d0679e3fb06d7e2daa5fd93c4002b02cdd9ec00b",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "df5d443d04f43ad832695fb895d8c838db978a20677824bc9d9d444e490f3f4e"
+      },
+      "sourceCheckpoint": 185,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 103,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 246
       },
       "individualApiClosure": false,
       "fourHostConformance": false

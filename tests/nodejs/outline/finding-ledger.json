@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 103,
+    "sourceSliceRecords": 104,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 246
+    "findingsWithoutExplicitOrProposedSourceSlice": 244
   },
   "families": [
     {
@@ -72,7 +72,7 @@
         "V-036",
         "V-037"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 1,
+      "findingsWithExplicitOrProposedSourceSlices": 3,
       "sourceRouteAsRecorded": "pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source ; source140/146 actual retained-allocation capability and USER_OWNED commit source",
       "remainingAsRecorded": "Original allocation foundation and selected FS/codec routing are source-only; actual engine/GC/realm/transfer and remaining Buffer/util/URL/IDNA/error/descriptor/CLI/loader/warning behavior and four-host conformance remain open",
       "remainingOwner": "Buffer/string/URL/util/error compatibility adapters and actual native byte/ICU/SavedFrame owners",
@@ -951,7 +951,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "util public helpers",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "util-style-lazy",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/values.md",
+          "scope": "Consumed native lazy DATA and complete styleText source plus fs.constants allocation prerequisite; not full util/constants aggregate/dependency behavior or finding closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "buffer-pool"
       ],
@@ -1306,7 +1314,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "V-024: fs.constants has the wrong prototype",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "util-style-lazy",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/values-legacy-modules.md",
+          "scope": "Consumed native lazy DATA and complete styleText source plus fs.constants allocation prerequisite; not full util/constants aggregate/dependency behavior or finding closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Buffer/string/URL/util/error compatibility adapters and actual native byte/ICU/SavedFrame owners",
@@ -19523,6 +19539,82 @@
           "S-009"
         ]
       }
+    },
+    "util-style-lazy": {
+      "document": "tests/nodejs/outline/util-style-lazy-finding-progress.json",
+      "sha256": "1d6559c15337d1799cdd286fea9791445d10fb8e752f251362720f02caf0e7d6",
+      "recordedRevision": 186,
+      "explicitFindingIds": [
+        "V-008"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-util186-source-r1/report.json",
+          "sha256": "94f1a117a88ab4c663279dd52dd6756d77cf4f104ebbeb1fe3922f47cb783713",
+          "guardedInputs": 835,
+          "scope": "Real native lazy DATA routing and complete pinned styleText/stream-color owners; actual fs.constants null-prototype source correction. Native dependency controls are not guest JSAPI/GC/realm/fourhost conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-util186-affected-r1.json",
+          "sha256": "9c04700aaa734f9b00452b92002b620041ed016286a1284fb1a5fb8cfa5ffcc6",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-util186-source-r1/report.json",
+          "sha256": "94f1a117a88ab4c663279dd52dd6756d77cf4f104ebbeb1fe3922f47cb783713",
+          "ordinaryGroups": 21,
+          "actualEvalGroups": 21,
+          "stdioScenarios": 4,
+          "existingScenarios": 8,
+          "unchangedUpstreamDistinctUtilFiles": 3,
+          "parseArgsPerSubjectPassed": 117,
+          "hexRealPTYPerSubjectPassed": 31,
+          "plainStyleRealPTYPerSubject": "exit0with no skip marker; no framework denominator",
+          "nativeFsConstantsReferencePassed": true,
+          "candidateFsConstantsJSAPIExecuted": false,
+          "newCompilerAttempts": 0,
+          "scope": "Current util source consumers over actual pinned V8 lazy DATA and explicit native argv/stream/TTY/color/assert/child dependencies. Native-only unchanged fs.constants reference plus exact allocator source correction, not guest execution. Original pipe skips and old descriptor failure retained."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/util-arguments-style-agent/handoff.json",
+          "sha256": "8fd7e5f08f87111497447e8657cc1475db7222dc9f42c9fe620c93e3b5195fee",
+          "reusedEvidence": true,
+          "scope": "21focused groups ordinary/real-e,4actual stdio scenarios,8existing scenarios;117parseArgs/31hex per native/candidate and plainstyle actualPTY exit0;42source checks. Original pipe skips/old descriptor failure and missing new input retained.0compiles."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/util-style-lazy-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/util-style-lazy-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Existing real parseArgs/diff algorithms consume native lazy DATA cells with actual traced loader/module/holder/realm state and data attributes, replacing visible JS getter/setter wrappers without an accessor fallback",
+        "Complete unchanged pinned styleText/cache/nesting/hex/validation helpers and lazy colors selection are actually loaded over real current stream predicates, Buffer/inspection/process and shared color/TTY policy",
+        "Production bootstrap wires actual native lazy capability and installs styling after stream owners; real stdio metadata/environment governs colors without fabricated isTTY/color-depth/platform fields",
+        "Actual getFsConstants generator allocates a native null-prototype object, preserving selected upstream SDK constant definitions and readonly/enumerable/permanent numeric properties byte-for-byte",
+        "Earlier broad V-008 absence statements explicitly superseded by immutable additive correction: parseArgs/diff/debounce/throttle algorithms were already present, not rewritten or counted as newly supplied"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/util-style-lazy-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "setTraceSigInt and remaining util/Buffer/URL/IDNA/legacy-URL/object-URL/transcode/sys/constants aggregate source gaps",
+        "Actual current guest native lazy DATA holder/realm/GC/materialization/invalidation/retirement and Buffer/stream/TTY/color/timer/fatal dependencies",
+        "Actual fs.constants guest JSAPI compile/execution and platform-conditioned values/descriptors; legacy node:constants aggregate/order/crypto initialization and aliases remain separate gaps",
+        "Whole all-four-host identified-artifact runtime conformance; source/native component/upstream dependencies do not establish guest behavior"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/values.md",
+      "findingScope": "Consumed native lazy DATA and complete styleText source plus fs.constants allocation prerequisite; not full util/constants aggregate/dependency behavior or finding closure",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/values-legacy-modules.md": [
+          "V-024"
+        ]
+      }
     }
   },
   "dependencyNarratives": {
@@ -21463,6 +21555,26 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current184FFI/185shared crypto-error source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T05:45:13.463319+00:00",
+        "sourceCheckpoint": 186,
+        "sourceHead": "975ab8e329751d269904f0f010d0313756a8a39c",
+        "addedSourceSlices": [
+          "util-style-lazy"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "0d4db6365f49116250b9578fc79683eb776507df4864a9fb039fc4c3bc623207"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current186native lazy util/styleText and fs.constants allocator source contributions and bounded evidence/remaining defects. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }
