@@ -1,0 +1,10 @@
+const fs=require('node:fs');
+const NativeDecoder=globalThis.TextDecoder;
+const source=fs.readFileSync(process.env.KANDELO_DECODER_SOURCE,'utf8');
+const a=source.indexOf('function _nodeBufferSourceBytes('),b=source.indexOf('// Some JavaScript engine parsers',a);
+if(a<0||b<0)throw Error('Actual decoder selection missing');
+const target={TextDecoder:undefined};
+const nativeDecoder=new NativeDecoder('utf-8',{ignoreBOM:true});
+const fast=process.env.KANDELO_DECODER_PATH==='fast';
+const create=new Function('globalThis','_nodeNative','_bufferIsUtf8',source.slice(a,b)+';return globalThis.TextDecoder;');
+globalThis.TextDecoder=create(target,fast?{decodeUtf8(bytes){return nativeDecoder.decode(bytes);}}:{},require('node:buffer').isUtf8);

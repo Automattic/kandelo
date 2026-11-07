@@ -186,7 +186,12 @@ if (typeof globalThis.TextDecoder === 'undefined') {
             validateOptions(options);
             const bytes = input === undefined ? new Uint8Array(0) : _nodeBufferSourceBytes(input, true);
             if (!state.stream) reset(state);
+            // A failed conversion publishes no current-call output/BOM state.
+            // Established stream BOM state survives fatal errors, while the
+            // actual pending decoder bytes/code point are retired below.
+            // The stream getter can reenter and publish newer decoder state.
             state.stream = !!options?.stream;
+            const previousBomSeen = state.bomSeen;
             // Native conversion is valid only for a complete UTF-8 span with no
             // pending sequence. Incomplete or malformed input needs the state
             // machine below; the adapter's one-shot converter cannot retain it.
@@ -199,6 +204,9 @@ if (typeof globalThis.TextDecoder === 'undefined') {
                     state.bomSeen = true;
                     if (!state.ignoreBOM && result.charCodeAt(0) === 0xfeff) result = result.slice(1);
                 }
+                // A completed nonstream call retires its decoder state now,
+                // before a later options getter can reenter the same owner.
+                if (!state.stream) reset(state);
                 return result;
             }
             const parts = [];
@@ -216,7 +224,11 @@ if (typeof globalThis.TextDecoder === 'undefined') {
             }
             function error() {
                 if (state.fatal) {
-                    state.stream = false;
+                    // Keep this call's stream/flush policy and retire partial
+                    // decoder ownership. Only streaming failure preserves the
+                    // BOM state committed before this conversion.
+                    reset(state);
+                    if (state.stream) state.bomSeen = previousBomSeen;
                     const failure = new TypeError('The encoded data was not valid for encoding ' + state.encoding);
                     failure.code = 'ERR_ENCODING_INVALID_ENCODED_DATA';
                     throw failure;
@@ -279,7 +291,9 @@ if (typeof globalThis.TextDecoder === 'undefined') {
                 }
             }
             if (units.length) parts.push(String.fromCharCode(...units));
-            return parts.join('');
+            const result = parts.join('');
+            if (!state.stream) reset(state);
+            return result;
         }
         get encoding() { return stateOf(this).encoding; }
         get fatal() { return stateOf(this).fatal; }

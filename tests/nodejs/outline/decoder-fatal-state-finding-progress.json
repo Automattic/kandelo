@@ -1,0 +1,100 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/web-contracts.md",
+    "findingIds": [
+      "WEB-008"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "web",
+      "values",
+      "streams"
+    ],
+    "scope": "Partial real shared decoder stream/fatal/BOM/pending/nonstream-retirement behavior; full repertoire, input/options and guest/fourhost remain open."
+  },
+  "sourceImplemented": [
+    "Preserve established successful BOM state across streaming fatal conversion while retiring actual pending bytes/code point state",
+    "Capture rollback BOM after the real stream getter, retaining successful nested decode effects",
+    "Build actual current nonstream output before immediately retiring decoder state; fatal nonstream failure also retires rather than restoring stale BOM",
+    "Preserve original/intermediate newly introduced reentry regressions and integrate separate corrections before committing",
+    "Consume existing shared byte/state/optional-valid-UTF8 owners without native-host production delegation"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-decoder220-source-r1/report.json",
+    "sha256": "6c405e4ff64a272f63c4e7f11bfef8e0e8b44789bd38a8c494854aedcc7f42c2",
+    "guardedInputs": 885,
+    "scope": "Actual fatal stream/BOM/pending owner plus reviewed post-getter rollback and completed nonstream retirement.29groups in two native-dependent modes and4unchanged upstream files per3subjects, no guest/full encoding/four-host closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-decoder220-affected-r1.json",
+    "sha256": "7f91ec06594f1d7a8b1c3c9541dcdb2ea8f9cc1aee92954c4c0a33e01f33ceac",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-decoder220-source-r1/report.json",
+    "sha256": "6c405e4ff64a272f63c4e7f11bfef8e0e8b44789bd38a8c494854aedcc7f42c2",
+    "fatalStateGroups": 20,
+    "reentryGroups": 9,
+    "candidateModes": 2,
+    "logicalGroups": 29,
+    "unchangedUpstreamFiles": 4,
+    "upstreamSubjectsPassed": 12,
+    "upstreamSkips": 0,
+    "newDecoderCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "engineCXXChanged": false,
+    "scope": "Actual current shared decoder state/bytes in slow and native validated-UTF8 component modes. Native VM/isUtf8/fast conversion are explicit dependencies, not guest JSAPI/GC/byte lifetime/four-host proof. Original and intermediate regressions remain preserved."
+  },
+  "sealedEvidence": {
+    "report": ".context/textdecoder-fatal-owner-agent/report.json",
+    "sha256": "74bd59383a8c8f0e295cc0dea3010c1bdfabd28c7fad24b3d26ddcf9038a42e8",
+    "reusedEvidence": true,
+    "scope": "Original20state groups in slow/fast modes and4unchanged upstream files\u00d73subjects; independent source review and two separate correction seals add9reentry groups. Final actual root29groups in2modes and12upstream subjects pass; no compiler/guest claims from decoder fixtures."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/textdecoder-fatal-owner-agent/report.json",
+      "sha256": "74bd59383a8c8f0e295cc0dea3010c1bdfabd28c7fad24b3d26ddcf9038a42e8",
+      "scope": "Original8group baseline mismatches per mode retained; full ICU/chronology/GC/realm/native-byte dependencies remain."
+    },
+    {
+      "report": ".context/textdecoder-fatal-review-agent/REPORT.md",
+      "sha256": "01fda63762b824de2f0c39153041c96d0c8c579647b365bdc5744163fe793d93",
+      "scope": "Read-only source review identified stale pre-getter BOM snapshot, with two actual newly introduced reentry regressions confirmed later; no runtime in this review."
+    },
+    {
+      "report": ".context/textdecoder-bom-reentry-correction-agent/handoff/REPORT.md",
+      "sha256": "7956ee30b438a3496d8c6194f90c95d1fdf56f6b20c98994afb9956935bcf339",
+      "scope": "Immutable intermediate strict9case driver passes8/fails1 per mode; successful nonstream retirement still exposed a new regression. Not accepted as preexisting deviation or ship-ready."
+    },
+    {
+      "report": ".context/textdecoder-nonstream-retirement-correction-agent/handoff/HANDOFF.json",
+      "sha256": "4b9ae98650cc80e74d6bb6b639d23c8949960c4659c4a4454d5d015e2c4d34d2",
+      "scope": "Final actual state owner corrects remaining regression; original/intermediate failures/versions remain unchanged, not relabeled passing."
+    },
+    {
+      "report": ".context/node26-native220-maintenance/result.json",
+      "sha256": "f57da5623883cbc8921c63e169e5e16f5fc09efd5a4971534db55ae37398a360",
+      "scope": "CacheGC removed0entries because build lock held;1actual native xtask/runtime Cargo production build separately counted. Initial metadata recorder flat-artifact assumption failed before final record/state mutation, preserved as harness error."
+    }
+  ],
+  "remaining": [
+    "Full ICU/WHATWG encoding repertoire, constructors/options/input/brand/error/descriptor/prototype chronology",
+    "Concurrent/shared/detached/resizable/growable byte/GC/OOM/native conversion ownership",
+    "Complete TextDecoderStream/File/Fetch/Buffer integration and identified-artifact guest/four-host validation",
+    "All other WEB-008/public-core obligations; no API or family closure"
+  ],
+  "at": "2026-11-07T15:02:39.343942+00:00",
+  "recipeRevision": 220,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

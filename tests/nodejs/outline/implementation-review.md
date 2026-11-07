@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source220 corrects actual decoder fatal/reentry/nonstream state ownership. Two independently exposed proposal regressions are fixed before integration;29groups in two component modes and4unchanged focused upstream files×3subjects pass. Full encoding and guest/four-host conformance remain open.
+See [source scope](decoder-fatal-state-integration.md).
+
 Source219 implements actual CommonJS circular-warning and successful-load cleanup ownership, including the independently verified loaded-getter correction.13focused native-dependent groups and an unchanged upstream file match. Pending ESM remains explicitly unsupported and guest/full-loader/four-host behavior stays open.
 See [source scope](cjs-circular-warning-integration.md).
 
