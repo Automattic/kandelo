@@ -1,0 +1,38 @@
+{
+  "at": "2026-11-07T21:59:24.666984+00:00",
+  "fetchedMain": "faf9b31720e868fac7c431d81b5076f40a4c16c1",
+  "previousMain": "8df17e53b27f6570f0938b0e28bb1e9872425524",
+  "headBefore": "49639c5aa2a15c24c89de4de3ee7dbea54147ddd",
+  "mergeCommit": "95ec74e2ddbd421373c53b86f5555749523ba3b0",
+  "mainIsAncestor": true,
+  "action": "Adopt merged campaign checkpoint helper/guidance. No automatic worker rotation or optional context-hook installation. Existing wait guard main maintenance only.",
+  "changedMainLeaves": {
+    ".claude/hooks/context-checkpoint.py": "bfc19783b32da4c80eb95a36f17540026a018b4d22a5695078a89b3118c1ba2c",
+    ".claude/hooks/install-hooks.py": "f0c7825f08a120b0b9de2085f0d931d8572b894228300dc122bcc8d93a37fcf0",
+    "CLAUDE.md": "b52e9cc9764622ee93ba3cf3e84404d8c23960aba868cbf4e122b4894423e9f4",
+    "docs/agent-guidance/README.md": "4e6d79fb79d5917dbaf0c986baadef72083a982a281bb06faa4ed3acd32dad90",
+    "docs/agent-guidance/campaigns.md": "dedbfa3a6ca932592fb136e9f18b0c15c507f2a678ac260a0e4b188d789bd225",
+    "docs/repository-organization.md": "47f331ca4ada4b036bdc903ca01f74b41a6cd1b1d47ba77b207a68e5955bad73",
+    "evals/agent-skills/README.md": "49fee21bd8f9f942fbc56326d68f95b7839c49cf31804a4f7a3c7a17b318457f",
+    "evals/agent-skills/test_context_checkpoint.py": "d415291ed77fd18f6b07318715ca3d9a957b84e70bd8ca5785ea8f083d9e9f11",
+    "evals/build-waiting/test_install_hooks.py": "155904435366c14058a5dd9a72d7a90d12aa4020e6992f06f153d33a4c9c62a3",
+    "scripts/agent-checkpoint": "59ce39618ffeec1ea6537e35825ae97fdb32c83235739556669a6736e1553075"
+  },
+  "protectedIdentityChanges": {},
+  "requiredEngineInputsVerified": 897,
+  "unrelatedDirtyIdsPreserved": {
+    "apps/browser-demos/test/node-core-compat.spec.ts": "d595f9cc14d5bc836fb1baec855081611e8be96fde76650ad6d8f74675cfc9e3",
+    "host/test/node-core-compat.test.ts": "2425f8e35e947a1f0fce8c60bf546c9368122f677e86468e726e505126fce733",
+    "scripts/nodejs-guest-runner.ts": "27d60d8632ac29d8d3eacc48c1b8b0579519d519b9f42dcc54c60c9677a80009"
+  },
+  "acceptedEngine": 238,
+  "acceptedArtifactSha256": "3cdede1f62ba40787f0703b11a3e6d72c2a0fb10aed060626cc9737661dc39ba",
+  "newRuntimeTests": 0,
+  "newCompilations": 0,
+  "newGuidanceRead": [
+    "docs/agent-guidance/campaigns.md",
+    "CLAUDE.md campaign delta",
+    "docs/repository-organization.md campaign delta"
+  ],
+  "scope": "Tooling/coordination reconciliation only; no897engineinputs change and no new runtime compatibility claim. Clone239hotfix remains immediate nextimplementation."
+}
