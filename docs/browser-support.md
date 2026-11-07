@@ -4110,11 +4110,9 @@ the host forwards their traffic in its dedicated kernel worker, and the panel
 lists the computers and addresses the worker reports. Booting another machine
 or leaving ends this computer's part in the session, and a host leaving ends
 it for everyone, with the reason shown. The bare `/pages/peer-network/` page
-connects machines it boots itself, with the same transport. Its Doom/Quake
-controls select guest applications on the connected machine, rather than
-machine profiles. The machine-identity source guard admits only the named
-`PeerNetworkGame` selector type; image-owned machine definitions still belong
-in `/etc/kandelo/demo.json`.
+connects machines it boots itself, with the same transport, and exercises it
+with guest `nc` UDP and a PHP/curl HTTP exchange. Multiplayer games use the
+packages' session activities in the Kandelo app instead.
 
 Both use `purpose: "network-activities-v2"` peer connections, including a
 separate reliable `activity-data-v1` channel for explicitly offered data
