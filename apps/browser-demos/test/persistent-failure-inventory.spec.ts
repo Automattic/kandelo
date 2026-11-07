@@ -1,4 +1,4 @@
-import { expect } from "@playwright/test";
+import { expect } from "../playwright-test";
 import { opfsTest as test } from "./support/opfs-page";
 import { persistentFailureInventory, planPersistentFailureCapture } from "./support/persistent-failure-inventory";
 

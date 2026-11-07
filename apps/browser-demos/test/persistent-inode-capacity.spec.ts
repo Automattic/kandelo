@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { expect, test as baseTest } from "@playwright/test";
+import { expect, test as baseTest } from "../playwright-test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import { startDeferredByteServer, type DeferredByteServer } from "../../../host/test/fixtures/deferred-byte-server";

@@ -1,4 +1,4 @@
-import { test as base } from "@playwright/test";
+import { test as base } from "../../playwright-test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

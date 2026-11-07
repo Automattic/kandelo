@@ -16,7 +16,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, type FrameLocator, type Page } from "@playwright/test";
+import { test, type FrameLocator, type Page } from "../../playwright-test";
 import { parseGalleryRoster } from "../../../../web-libs/kandelo-session/src/gallery-roster";
 import { readLocalSupportedSet } from "../../../../scripts/local-supported-set.mjs";
 

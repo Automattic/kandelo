@@ -1,5 +1,5 @@
 import { setInternalsOpen } from "./support/dock";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { gotoMachine } from "./support/kandelo-machine";

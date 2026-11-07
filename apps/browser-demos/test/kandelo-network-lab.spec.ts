@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { createConnection, createServer, type Server } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium, expect, test, type Browser, type Page } from "@playwright/test";
+import { chromium, expect, test, type Browser, type Page } from "../playwright-test";
 import { runTerminalCommand } from "./support/terminal-command";
 
 // Two computers on separate networks join one session. Each browser runs in

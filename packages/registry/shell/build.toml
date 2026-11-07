@@ -20,6 +20,7 @@ inputs = [
   "packages/registry/shell/source-rootfs-shell-demo.json",
   "packages/registry/shell/scummvm-freeware-games.json",
   "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+  "images/vfs/runtime/game-import.py",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
   "images/vfs/scripts/program-originals.ts",
   "images/vfs/scripts/dependency-original-inputs.ts",
@@ -72,7 +73,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 75
+revision = 82
 # WHY: source-package composition changes the product bytes. Keep ordinary
 # resolution closed until this exact revision is rebuilt and admitted.
 publication_state = "pending"

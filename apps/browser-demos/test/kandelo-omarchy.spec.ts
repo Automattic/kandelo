@@ -1,5 +1,5 @@
 import { setInternalsOpen } from "./support/dock";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { gotoApp } from "./support/kandelo-machine";
 import { configureNewComputer } from "./support/computer-library";
 

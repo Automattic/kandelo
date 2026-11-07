@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const phpBrowserTestPort = Number(process.env.PHP_BROWSER_TEST_PORT ?? 5199);
+const silentAudio = process.env.KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO !== "1";
 
 export default defineConfig({
   testDir: __dirname,
@@ -21,7 +22,13 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { browserName: "chromium" },
+      use: {
+        browserName: "chromium",
+        launchOptions: {
+          args: silentAudio ? ["--mute-audio"] : [],
+          ignoreDefaultArgs: silentAudio ? undefined : ["--mute-audio"],
+        },
+      },
     },
   ],
 });

@@ -1,6 +1,43 @@
 {
   "version": 1,
   "profiles": {
+    "dos-games": {
+      "requires": ["dosbox-pure", "curl", "unzip", "python-browser-bundle"],
+      "identity": {
+        "title": "DOS games",
+        "summary": "Play Commander Keen 1 (Apogee shareware), DOS Defender, vitetris or Anarch. Games download on first use; you can also load your own DOS games.",
+        "accent": "#8b5cf6",
+        "glyph": "DOS",
+        "packages": ["dosbox-pure@local", "bash@local", "coreutils@local"]
+      },
+      "runtime": { "features": ["framebuffer"] },
+      "init": { "shellCommand": "/usr/bin/dos-play keen1" },
+      "activity": { "category": "apps" },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["framebuffer", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "dockActions": [
+        {
+          "id": "games",
+          "label": "Choose game",
+          "description": "Switch games. Each download is size/hash checked and reused on later launches. Commander Keen is Apogee shareware; the other demos are freely licensed.",
+          "menu": [
+            { "id": "keen1", "label": "Commander Keen 1 (Apogee shareware)", "restart": "/usr/bin/dos-play keen1" },
+            { "id": "dosdefender", "label": "DOS Defender", "restart": "/usr/bin/dos-play dosdefender" },
+            { "id": "vitetris", "label": "vitetris", "restart": "/usr/bin/dos-play vitetris" },
+            { "id": "anarch", "label": "Anarch", "restart": "/usr/bin/dos-play anarch" }
+          ]
+        }
+      ],
+      "exchange": { "label": "Load game", "accept": [".zip", ".exe", ".com", ".bat", ".conf"] },
+      "guide": {
+        "title": "DOS games",
+        "summary": "Start with Commander Keen 1: Marooned on Mars, the Apogee shareware episode. Press a key through its opening screens. Arrows move; Ctrl enters a level or jumps; Alt uses the pogo stick once collected; Ctrl+Alt fires. F2 toggles sound. F3 remaps controls, for example to Z/X for jump/pogo on a Mac. Choose game switches to the other demos; DOS Defender uses the mouse and left button. Click the screen to capture input; Esc releases the mouse. Ctrl+Shift+F12 quits DOSBox. Load game or drop a ZIP/folder to inspect your own content. Downloads are kept in this computer; keep the computer in Library to reuse them. Paid Keen episodes are not included."
+      }
+    },
     "freeciv": {
       "requires": ["freeciv-browser-bundle"],
       "identity": {
@@ -265,7 +302,7 @@
       }
     },
     "scummvm": {
-      "requires": ["scummvm", "curl", "unzip"],
+      "requires": ["scummvm", "curl", "unzip", "python-browser-bundle"],
       "identity": {
         "title": "ScummVM",
         "summary": "ScummVM fullscreen on /dev/dri/card0: SDL2's KMSDRM backend takes the display as DRM master and renders GLES2 directly, with OSS audio on /dev/dsp. Play a freeware game fetches any of the freeware adventures the ScummVM project distributes, from inside the machine, and starts it; Load game data takes your own zipped SCUMM title, which you then add from the launcher.",

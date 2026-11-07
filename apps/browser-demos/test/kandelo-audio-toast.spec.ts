@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { machineUrl, VfsProductImageMissing } from "./support/kandelo-machine";
 
 // These tests assert what the app shows BEFORE the user has interacted with

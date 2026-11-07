@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { resolve } from "node:path";
 import { createExecMemoryRefusalImage, EXEC_MEMORY_REFUSAL_LIMITS } from "../../../host/test/fixtures/exec-memory-refusal-image";
 

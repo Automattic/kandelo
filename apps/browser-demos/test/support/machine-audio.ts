@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page } from "../../playwright-test";
 
 /**
  * Activate audio the way a user does. A bare modifier key is not user

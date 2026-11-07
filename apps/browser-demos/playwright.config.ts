@@ -8,6 +8,9 @@ import {
   shouldReuseExistingPlaywrightServer,
 } from "./playwright-server-policy";
 import { browserStorageHome } from "./playwright-storage";
+import type { KandeloWorkerOptions } from "./playwright-test";
+
+const silentAudio = process.env.KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO !== "1";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.KANDELO_PLAYWRIGHT_PORT ?? 5401);
@@ -83,10 +86,6 @@ function playwrightWebServerEnvironment(
     }
   }
   childEnvironment.KANDELO_BROWSER_TEST_NO_HMR = "1";
-  // WebKit has no mute flag (Chromium and Firefox are muted below), so the
-  // dev server routes page audio through a silent gain node instead; see
-  // muteBrowserTestAudio in vite.config.ts.
-  childEnvironment.KANDELO_BROWSER_TEST_MUTE_AUDIO = "1";
   return childEnvironment;
 }
 
@@ -148,12 +147,12 @@ const chromiumLaunchArgs = [
   ...sharedLaunchArgs,
   // Mute the browser's physical output; keep Web Audio processing and
   // autoplay policy intact so audio behavior still gets tested.
-  "--mute-audio",
+  ...(silentAudio ? ["--mute-audio"] : []),
   "--disable-features=MediaEngagementBypassAutoplayPolicies,WebRtcHideLocalIpsWithMdns",
   "--allow-loopback-in-peer-connection",
 ];
 
-export default defineConfig({
+export default defineConfig<{}, KandeloWorkerOptions>({
   globalSetup: join(__dirname, "playwright-storage-setup.ts"),
   testDir: join(__dirname, "test"),
   testMatch: "*.spec.ts",
@@ -164,6 +163,7 @@ export default defineConfig({
   timeout: 120_000,
   workers: process.env.CI ? 1 : undefined,
   use: {
+    silentAudio,
     baseURL:
       protectedBrowserBaseUrl === undefined
         ? `http://127.0.0.1:${port}${assembledSiteRoot === undefined ? "" : "/kandelo/"}`
@@ -222,7 +222,11 @@ export default defineConfig({
       use: {
         browserName: "chromium",
         channel: "chromium",
-        launchOptions: { env: browserLaunchEnv, args: chromiumLaunchArgs },
+        launchOptions: {
+          env: browserLaunchEnv,
+          args: chromiumLaunchArgs,
+          ignoreDefaultArgs: silentAudio ? undefined : ["--mute-audio"],
+        },
       },
     },
     {
@@ -231,7 +235,7 @@ export default defineConfig({
         browserName: "firefox",
         launchOptions: {
           env: firefoxLaunchEnv,
-          firefoxUserPrefs: { "media.volume_scale": "0.0" },
+          firefoxUserPrefs: silentAudio ? { "media.volume_scale": "0.0" } : {},
           args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
         },
       },

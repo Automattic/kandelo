@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Page } from "../../playwright-test";
 
 /** Inspect actual worker messages without retaining their backing storage. */
 export function persistentRealmMemoryFailures(

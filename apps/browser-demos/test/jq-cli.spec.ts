@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { SHELL_LAZY_BINARY_SPECS } from "../../../images/vfs/lib/init/shell-binaries";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { ABI_VERSION } from "../../../host/src/generated/abi";

@@ -1,5 +1,5 @@
 import { setInternalsOpen } from "./support/dock";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 async function openInternals(page: Page) {

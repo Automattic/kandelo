@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page } from "../playwright-test";
 import type { LiveKernelHost } from "../../../web-libs/kandelo-session/src/kernel-host";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { opfsTest as test } from "./support/opfs-page";

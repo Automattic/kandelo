@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { devServerAssetUrl } from "./support/dev-server-assets";
 import {
   DEMO_AUTOLOGIN_MOTD,

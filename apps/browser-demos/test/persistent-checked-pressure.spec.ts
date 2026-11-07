@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { expect } from "@playwright/test";
+import { expect } from "../playwright-test";
 import { checkedPressureImage, servePressureImage, PRESSURE_COLD_BYTES, PRESSURE_SAMPLE_OFFSETS,
   PRESSURE_SEED_FILES, pressureSeedPath, pressureColdByte, retainPressureFixture } from "../../../host/test/fixtures/checked-pressure-image";
 import { opfsTest as test } from "./support/opfs-page";

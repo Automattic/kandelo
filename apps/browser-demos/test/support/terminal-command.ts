@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { Page } from "@playwright/test";
+import type { Page } from "../../playwright-test";
 
 const MARKER_PREFIX = "__KANDELO_TERMINAL_";
 const MARKER_SUFFIX = "__";

@@ -2,7 +2,8 @@ script_path = "packages/registry/cpython/build-cpython.sh"
 inputs = [
   "packages/registry/cpython/build-cpython.sh",
   "packages/registry/cpython/config.site-wasm32-posix",
+  "packages/registry/cpython/posix-subprocess.patch",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 4
+revision    = 5

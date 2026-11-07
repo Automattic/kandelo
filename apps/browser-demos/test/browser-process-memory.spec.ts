@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 for (const ptrWidth of [4, 8] as const) {
   test(`fresh allocation workers preserve a memory${ptrWidth * 8} fork snapshot`, async ({ page }) => {

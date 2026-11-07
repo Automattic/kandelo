@@ -152,6 +152,12 @@ fi
 
 kandelo_package_stage_primary_source cpython "$SRC_DIR" "$WORK_DIR"
 
+# Upstream's WASI target assumes no processes. Kandelo's libc exposes real
+# fork/exec; enable the ordinary subprocess module using those capabilities.
+if ! grep -q "Kandelo uses the WASI configure target" "$SRC_DIR/Lib/subprocess.py"; then
+    kandelo_package_git_apply_patch "$SRC_DIR" "$SCRIPT_DIR/posix-subprocess.patch"
+fi
+
 printf '%s\n' "$PYTHON_VERSION" > "$SOURCE_MARKER"
 
 BUILD_TRIPLET="$("$SRC_DIR/config.guess")"

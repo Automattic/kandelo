@@ -63,7 +63,16 @@ describe("shell selection", () => {
       partialShellSelection([...BASE, "scummvm"]),
     );
     expect(result.included).not.toContain("scummvm");
-    expect(result.excluded).toContainEqual({ profile: "scummvm", missing: ["curl", "unzip"] });
+    expect(result.excluded).toContainEqual({ profile: "scummvm", missing: ["curl", "unzip", "python-browser-bundle"] });
+  });
+
+  it("keeps DOS games only with its launcher and import tools", () => {
+    const config = trackedShellConfig();
+    const engineOnly = filterDemoConfigForSelection(config, partialShellSelection([...BASE, "dosbox-pure"]));
+    expect(engineOnly.excluded).toContainEqual({ profile: "dos-games", missing: ["curl", "unzip", "python-browser-bundle"] });
+    const complete = filterDemoConfigForSelection(config,
+      partialShellSelection([...BASE, "dosbox-pure", "curl", "unzip", "python-browser-bundle"]));
+    expect(complete.included.sort()).toEqual(["dos-games", "shell"]);
   });
 
   it("requires every declared requirement to be a shell package", () => {

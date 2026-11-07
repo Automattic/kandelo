@@ -473,6 +473,7 @@ describe("canonical source-rootfs shell", () => {
       "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
       "packages/registry/shell/scummvm-freeware-games.json",
       "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+      "images/vfs/runtime/game-import.py",
       "images/vfs/scripts/source-rootfs-shell-overlay.ts",
       "images/vfs/scripts/shell-lazy-archives.ts",
       "images/vfs/lib/init/shell-binaries.ts",
@@ -834,6 +835,12 @@ describe("canonical source-rootfs shell", () => {
           digest: new Uint8Array(createHash("sha256").update(bytes).digest()),
         });
     }
+    // DOS support uses package-owned lazy files, including executable mode
+    // for the shell launcher and read-only mode for its catalog/notices.
+    for (const path of ["/usr/bin/dosbox-pure", "/usr/bin/dos-play"])
+      expect(fs.stat(path).mode & 0o777).toBe(0o755);
+    expect(fs.stat("/usr/share/dos-play/games.tsv").mode & 0o777).toBe(0o644);
+
     // The ScummVM machine's dock actions run this script, so it must be an
     // eager executable, and every game it can fetch must be pinned in the
     // catalog it reads: an unverified download would let a changed file
@@ -858,6 +865,15 @@ describe("canonical source-rootfs shell", () => {
     const bakedDemo = parseKandeloDemoConfig(
       text(readVfsFile(fs, KANDELO_DEMO_CONFIG_PATH)),
     )!;
+    expect(resolveDemoInit(bakedDemo, "dos-games")).toEqual({
+      shellCommand: "/usr/bin/dos-play keen1",
+    });
+    const dosMenu = resolveDemoDockActions(bakedDemo, "dos-games")
+      .find(action => action.id === "games");
+    const dosIds = readFileSync(join(repoRoot, "packages/registry/dosbox-pure/games.tsv"), "utf8")
+      .trim().split("\n").map(line => line.split("\t")[0]);
+    expect(dosMenu && "menu" in dosMenu ? dosMenu.menu.map(entry => entry.id).sort() : [])
+      .toEqual(dosIds.sort());
     const scummvmMenu = resolveDemoDockActions(bakedDemo, "scummvm")
       .find((action) => action.id === "freeware");
     expect(scummvmMenu && "menu" in scummvmMenu ? scummvmMenu.menu : null)
@@ -873,13 +889,18 @@ describe("canonical source-rootfs shell", () => {
     // The game machines' exchange rules and handlers: rule files root-owned
     // and not group- or world-writable (kxchgd refuses others), handlers
     // executable.
-    for (const game of ["doom-wad", "quake-pak", "scummvm-zip"]) {
-      const rule = fs.stat(`/etc/kandelo/exchange-handlers.d/50-${game}.handler`);
-      expect([rule.uid, rule.mode & 0o777], game).toEqual([0, 0o644]);
-      const handler = text(readVfsFile(fs, `/etc/kandelo/exchange-handlers.d/50-${game}.handler`))
+    for (const ruleName of ["50-doom-wad", "50-quake-pak", "60-game-content"]) {
+      const rule = fs.stat(`/etc/kandelo/exchange-handlers.d/${ruleName}.handler`);
+      expect([rule.uid, rule.mode & 0o777], ruleName).toEqual([0, 0o644]);
+      const handler = text(readVfsFile(fs, `/etc/kandelo/exchange-handlers.d/${ruleName}.handler`))
         .match(/^run (\S+)$/m)![1]!;
       expect(fs.stat(handler).mode & 0o777, handler).toBe(0o755);
     }
+    expect(fs.stat("/usr/bin/game-play").mode & 0o777).toBe(0o755);
+    expect(fs.stat("/usr/libexec/kandelo/game-import.py").mode & 0o777).toBe(0o644);
+    expect(readVfsFile(fs, "/usr/libexec/kandelo/game-import.py")).toEqual(
+      new Uint8Array(readFileSync(join(repoRoot, "images/vfs/runtime/game-import.py"))),
+    );
     // Doom's wrapper seeds a missing user config with the full-width view
     // and execs the lazy engine, so the engine stays the display's owner.
     const fbdoomWrapper = text(readVfsFile(fs, "/usr/bin/fbdoom"));
@@ -1355,7 +1376,7 @@ describe("canonical source-rootfs shell", () => {
         sourceDateEpoch: "0",
       }),
     ).rejects.toThrow(
-      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, ffmpeg-fbdev, ffmpeg-video, ffplay, freeciv, love, modeset, quake, scummvm",
+      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, dos-games, ffmpeg-fbdev, ffmpeg-video, ffplay, freeciv, love, modeset, quake, scummvm",
     );
   });
 

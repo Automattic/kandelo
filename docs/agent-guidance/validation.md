@@ -15,6 +15,24 @@ Use precise language:
 - "This change is docs-only; I did not run runtime tests."
 - "This is not fully merge-validated because `Z` remains unrun."
 
+## Keep browser tests quiet
+
+Automated browser tests must leave the computer's speakers silent. Import
+`test` from `apps/browser-demos/playwright-test.ts`, including in private
+diagnostic specs. Its default worker policy silences the final Web Audio
+output in test-owned pages and contexts, while guest PCM, worklets, analysers
+and autoplay behavior remain available for testing. Do not mute the whole
+computer or disable guest audio: either can disrupt a call or invalidate an
+audio test. The policy also covers public HTML fixtures, persistent test
+profiles, reused development servers and production previews.
+
+Standalone package suites use `tests/playwright-test.ts`. Both entry points
+share the same policy while using their runner's own Playwright installation.
+
+Audible playback is an explicit opt-in with
+`KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO=1` inside the dev shell. Use it only when the
+user explicitly wants speaker playback; sampling audio does not require it.
+
 ## Test fixtures must observe the actual contract
 
 For graceful server shutdown, hold a real request until the listener has
@@ -239,11 +257,12 @@ builds the host, and runs:
 - The host memory-authority audit, memory budgets, bounded device buffers,
   futex retirement, exit-trap, generation, and teardown regressions;
   blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
-- Four Doom → Quake → Freeciv → LÖVE → tmux → WordPress cycles in each of
+- Four Doom → Quake → Freeciv → LÖVE → tmux + DOS → WordPress cycles in each of
   Chromium, Firefox, and WebKit, in one page per engine with the constrained
   memory profile. Games must render and reach running audio through trusted
   activation. Tmux must run two pane shells and leave a detached server
-  alive for machine teardown. WordPress must serve Hello world. Reloads,
+  alive alongside DOSBox playing Keen shareware for machine teardown.
+  WordPress must serve Hello world. Reloads,
   runtime errors, forced teardown, unreviewed shared worker messages, and main-thread
   shared Wasm allocations fail the test.
 

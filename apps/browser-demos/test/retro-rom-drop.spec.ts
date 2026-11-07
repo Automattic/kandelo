@@ -18,7 +18,7 @@
 // - A file that is not a ROM, even one whose name could be (.md), is saved
 //   to ~/Downloads as any other drop would be.
 
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "../playwright-test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { findRepoRoot } from "../../../host/src/binary-resolver";

@@ -37,6 +37,7 @@ const PROBES: Record<string, string> = {
   tmux: "tmux -V",
   less: "less --version | head -n 1",
   fbdoom: "test -x /usr/bin/fbdoom && test -x /usr/bin/doom-launch && echo fbdoom-wrapper-ok",
+  "dosbox-pure": "dosbox-pure --info; dos-play --list",
 };
 
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -87,6 +88,10 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
       if (manifest!.packages.includes("tmux")) expect(stdout).toMatch(/tmux \d/);
       if (manifest!.packages.includes("less")) expect(stdout).toMatch(/less \d+/);
       if (manifest!.packages.includes("fbdoom")) expect(stdout).toContain("fbdoom-wrapper-ok");
+      if (manifest!.packages.includes("dosbox-pure")) {
+        expect(stdout).toContain("CPU: x86 interpreter");
+        expect(stdout).toContain("keen1");
+      }
     } finally {
       await host.destroy().catch(() => {});
     }

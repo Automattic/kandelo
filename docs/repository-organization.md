@@ -78,12 +78,22 @@ Package behavior tests live with the package so future CI can map changes to rel
 | `host/test/` | Host/kernel runtime behavior: process lifecycle, VFS semantics, syscalls, worker behavior, host parity |
 | `packages/registry/<name>/test/` | Behavior of a specific ported package |
 | `tests/package-system/` | Package registry and binary-fetching automation |
+| `tests/agent-integration/` | Reviewed-patch tooling, evidence imports and recovery in isolated Git repositories |
 | `tests/test-artifacts/` | Shared host/kernel test artifact ownership manifests |
 | `tests/baselines/` | Failure/anomaly evidence and provenance; not test expectations |
 | `tests/libc/`, `tests/posix/`, `tests/sortix/` | External conformance suites and overlays |
 | `apps/browser-demos/test/` | Browser app and demo-page integration behavior |
 
 `host/test/` should not be a catch-all for anything launched by the host. If a test primarily proves package behavior, it belongs with that package.
+
+## Reviewed Integration Tooling
+
+[`scripts/agent-integrate`](agent-integration.md) owns optional reviewed-patch
+preflight, application, evidence bookkeeping and checkpointing. Its Python
+implementation and versioned schemas live in `scripts/agent_integration/`.
+Task ledgers and linked local evidence live under the ignored
+`.context/agent-integrations/` directory. Validation command execution stays
+separate; this tool imports reviewed results rather than scheduling checks.
 
 ## CI Path Categories
 

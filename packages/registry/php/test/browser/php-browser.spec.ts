@@ -14,7 +14,7 @@
  * local/published binary mirrors.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../../../../../tests/playwright-test";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

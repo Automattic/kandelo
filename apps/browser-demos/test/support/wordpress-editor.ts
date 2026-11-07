@@ -1,4 +1,4 @@
-import { expect, type FrameLocator } from "@playwright/test";
+import { expect, type FrameLocator } from "../../playwright-test";
 
 type WordPressEntityWindow = Window & {
   wp: { data: { select(store: "core"): {

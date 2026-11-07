@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "@playwright/test";
+import { test } from "../../playwright-test";
 
 export const opfsTest = test.extend({
   page: async ({ playwright, browserName }, use, testInfo) => {

@@ -704,6 +704,15 @@ capture, window blur, and input teardown, retaining the last absolute position.
 
 ### Audio output (`/dev/dsp`)
 
+Automated browser tests use the shared `playwright-test.ts` fixture to keep
+speaker output silent by default. It inserts a zero-gain final Web Audio
+output while guest PCM, worklets, analysers and autoplay policy remain active.
+The fixture applies before test-owned pages run, including public HTML,
+persistent profiles, reused servers and production previews. Chromium and
+Firefox also retain their native output-mute settings. Audible test playback
+requires `KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO=1` inside the dev shell. System
+speaker and microphone settings are never changed by the test policy.
+
 - The kernel exposes a playback-only OSS `/dev/dsp` frontend over its generic
   PCM stream core. Applications may write U8, signed 16-bit little-endian, or
   signed 16-bit big-endian mono/stereo PCM at 8–192 kHz. The worklet converts
@@ -1725,6 +1734,74 @@ checked by hand (Chromium at a device scale factor of 2), because
 Playwright's emulated device scale does not change the size the pane
 reports.
 
+### DOSBox Pure interpreter package
+
+The `dosbox-pure` registry package runs DOS x86 programs inside an
+ordinary Kandelo Wasm process, using the core's interpreter. Its small
+libretro frontend uses `/dev/fb0`, `/dev/dsp`, terminal or evdev keyboard
+input, `/dev/input/mice`, and ordinary VFS files on both hosts. It is
+included lazily in the browser shell image, with `/usr/bin/dos-play`.
+Run `dos-play --list`, then `dos-play dosdefender`, `dos-play vitetris`
+or `dos-play anarch`. These freely licensed demos download on demand;
+the launcher verifies exact sizes and SHA-256 hashes before unpacking,
+preserves upstream notices, and reuses the installed copy on later runs.
+DOS Defender is pinned to 1.0.1, which retains mouse input; 1.1 requires
+gamepad support that this frontend does not provide. There is no separate
+DOS gallery profile. The base shell's **Activities → Apps & Tools → DOS games**
+starts `dos-play keen1`: Commander Keen 1's complete Apogee shareware episode.
+The **Choose game** dock menu switches among Keen and the three freely licensed
+demos, and **Load game** imports local files. The original Keen `VENDOR.DOC`,
+game files and ordering information stay intact; paid episodes are user-supplied.
+Keen's data is downloaded on demand and is absent from the shell image and
+package archives. See the [demo walkthrough and distribution notes](../packages/registry/dosbox-pure/README.md#commander-keen-distribution).
+
+Installed demos and their DOS writes live under
+`$XDG_DATA_HOME/dos-play` (default `$HOME/.local/share/dos-play`).
+`dos-play ./GAME.EXE` or `dos-play /path/to/game.zip` starts local content.
+The launcher passes additional arguments through to DOSBox Pure.
+Downloaded catalog ZIPs are extracted only after verification; local ZIPs
+are opened by the emulator itself.
+
+The base shell's shared exchange handler unpacks dropped ZIPs and inspects
+their contents alongside dropped executables, ROMs and directories. It checks
+DOS headers, uses `retro-run --identify` for console ROMs and runs ScummVM's
+own recursive detector. Windows PE/NE executables are excluded from DOS
+launch. One clear match opens an ordinary terminal with its launch command;
+multiple games, mixed runtimes, raw COM/BAT files and uncertain LE/LX files
+open a terminal picker. Selecting a game uses the normal display handoff.
+`game-play DIRECTORY|ZIP` provides the same inspection from a terminal.
+Without an external terminal consumer, Node exchange imports retain their
+files and report the command to run. The command-line picker can execute the
+chosen game in its current terminal.
+
+Imports, original ZIPs, unpacked data and detection configurations are kept
+under `$XDG_DATA_HOME/kandelo/game-imports`, defaulting to
+`$HOME/.local/share/kandelo/game-imports`. Raw-ROM-only drops retain their
+existing `~/roms` behavior. Unknown archives are saved unchanged to
+`~/Downloads`; rejected archives report the failure and use the ordinary
+save handler for the original input. Stored/deflated single-disk ZIPs are
+bounded to 1,024 entries, 16 path levels and 512 MiB of retained plus unpacked
+data. Unsafe paths, links, conflicting names, encrypted and ZIP64 archives are
+refused. Nested archives inside an extracted ZIP remain data. The shared
+handler replaces the old extension-only ScummVM ZIP rule. See the
+[package guide](../packages/registry/dosbox-pure/README.md#drag-and-drop-in-the-base-shell)
+for the guest command and persistence details.
+
+ZIP writes are stored in per-user save overlays. They are durable only
+when their containing machine is saved. The frontend does not expose
+save-state controls, gamepads, accelerated 3dfx rendering or multiplayer.
+Quitting cancels queued sound before closing `/dev/dsp`, including when the
+browser audio clock is suspended.
+See the [package guide](../packages/registry/dosbox-pure/README.md) for
+commands, device limits and the Node/browser smoke tests.
+
+Native DOSBox recompiler backends generate host CPU instructions, which
+cannot execute from Wasm linear memory. The port explicitly disables
+them. Generating x86-to-Wasm code is an **optional follow-up**, not a
+requirement for this interpreter implementation. It would need a Wasm
+code generator, callable-module loading and code-cache invalidation;
+no game-speed improvement is promised before measurement.
+
 ### Retro emulators
 
 Every shell machine carries three emulators from the `retro-emulators`
@@ -2551,7 +2628,13 @@ the ETag it already saw to `fetchByteRange()` as `entityTag` and fails the
 read if an answer carries a different one.
 
 **Development (`__kandelo_cors_proxy`).** The Vite relay implements the same
-profile. It forwards `Range`, honors `X-Cors-Proxy-Range` the way the
+profile. Its server-side Fetch requests explicitly use `same-origin` mode;
+the default `Sec-Fetch-Mode: cors` causes GitLab's archive hotlink protection
+to reject ordinary guest downloads with HTTP 406. This changes the relay's
+request metadata; credentials remain omitted and the forwarded-header
+allow-list stays in force. GET/HEAD redirects use a fresh server request for
+each hop so downloads can move between origins; POST redirects stay refused.
+It forwards `Range`, honors `X-Cors-Proxy-Range` the way the
 production proxy does (an empty alias is ignored, the alias is never
 forwarded, and an alias that disagrees with `Range` is a `400`), asks upstream
 for the identity encoding on ranged requests and `HEAD` so byte offsets and

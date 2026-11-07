@@ -4,18 +4,20 @@ import { setInternalsOpen } from "./support/dock";
 // The demo carries no game data, so what these tests prove is the plumbing:
 // the scummvm package's [[runtime_files]] reach /usr/share/scummvm as the
 // shell image's lazy files, the guest owns the pointer, the config lands somewhere
-// ScummVM can rewrite, and the "Load game data" upload extracts into the
-// directory the launcher browses. Reading the guest filesystem through the
+// ScummVM can rewrite, and uploads pass through the shared content detector.
+// Unknown archives stay ordinary downloads while the launcher keeps running.
+// Reading the guest filesystem through the
 // demo's own shell keeps the assertions on real system state rather than on
 // pixels the offscreen KMS canvas makes unreliable to sample.
 
-import { expect, test, type Page } from "@playwright/test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { expect, type Page } from "../playwright-test";
+import { test } from "./support/persistent-page";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { gotoApp } from "./support/kandelo-machine";
-import { configureNewComputer } from "./support/computer-library";
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 /** The [[runtime_files]] packages/registry/scummvm/package.toml declares. */
 const RUNTIME_FILE_NAMES = [
@@ -74,9 +76,7 @@ const canvasLocator = (page: Page) =>
  * execs the engine once SDL's environment and the user's config are set.
  */
 async function bootScummvm(page: Page) {
-  await gotoApp(page, "/");
-  await configureNewComputer(page, "scummvm");
-  await page.getByRole("button", { name: "Create and boot", exact: true }).click();
+  await gotoMachineOrSkip(page, "scummvm");
 
   await openSurface(page, "Internals");
   await expect
@@ -209,7 +209,7 @@ test("the packaged GUI data reaches the guest and the guest owns the pointer", a
     .toContain("CONFIG_WRITABLE");
 });
 
-test("Load game data extracts the archive into the directory the launcher browses", async ({ page }) => {
+test("Load game data preserves an unrecognized archive as a download", async ({ page }) => {
   test.setTimeout(300_000);
   await bootScummvm(page);
 
@@ -217,32 +217,22 @@ test("Load game data extracts the archive into the directory the launcher browse
   const button = page.getByTestId("kms-exchange-button");
   await expect(button).toBeVisible();
   await expect(button).toHaveText(/load game data/i);
+  const owner = await page.locator(".kmodeset-surface").getAttribute("data-kms-owner-pid");
+  expect(Number(owner)).toBeGreaterThan(0);
 
-  // The machine's scummvm zip rule extracts it while ScummVM keeps running.
+  // The authored fixture is not a detected game. The shared importer must
+  // preserve its original bytes and leave the running launcher in place.
   await page.getByTestId("kms-exchange-input").setInputFiles(zipPath);
   await expect.poll(
     () => page.getByTestId("exchange-batch-status").last().textContent(),
-    { timeout: 90_000 },
-  ).toBe("extracted into /var/games/scummvm; add it from the launcher");
-
-  await expect.poll(async () => {
-    await runInShell(
-      page,
-      "test -s /var/games/scummvm/foo/bar.001"
-        + ` && ${marker("EXTRACTED", "OK")}`,
-    );
-    return terminalText(page);
-  }, { timeout: 90_000, intervals: [2_000, 3_000, 5_000] })
-    .toContain("EXTRACTED_OK");
-
-  // Only the extracted game is there: the archive stayed in the exchange
-  // inbox and went with its batch, so the launcher shows no zip.
-  await runInShell(
-    page,
-    `test -e /var/games/scummvm/foo.zip || ${marker("ARCHIVE", "ABSENT")}`,
-  );
+    { timeout: 180_000 },
+  ).toBe("saved to ~/Downloads/foo.zip");
+  await runInShell(page, 'sha256sum "$HOME/Downloads/foo.zip"');
   await expect.poll(() => terminalText(page), { timeout: 60_000 })
-    .toContain("ARCHIVE_ABSENT");
+    .toContain(createHash("sha256").update(readFileSync(zipPath)).digest("hex"));
+  await openSurface(page, "Graphics");
+  await expect(page.locator(".kmodeset-surface")).toHaveAttribute("data-kms-owner-pid", owner!);
+  await expect(canvasLocator(page)).toBeVisible();
 });
 
 // The freeware menu's Beneath a Steel Sky: stop its actual display owner,
