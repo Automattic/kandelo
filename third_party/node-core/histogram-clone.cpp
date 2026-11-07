@@ -2,15 +2,16 @@
 // actual SameProcess serialization packet; no JS objects or private pointers
 // are encoded as script-visible metadata or copied between contexts.
 #include "js/StructuredClone.h"
-#include "kandelo-node-port-queue.h"
+#include "kandelo-node-port-transit-owner.h"
 namespace {
 struct KandeloPortPacket;
-using KandeloPortTransfer = kandelo::ports::EndpointTransfer<KandeloPortPacket>;
+using KandeloPortTransfer = kandelo::ports::TransitTransfer<KandeloPortPacket>;
 struct KandeloHistogramCloneData {
   std::vector<std::shared_ptr<Histogram>> histograms;
   std::vector<std::shared_ptr<KandeloPortTransfer>> ports;
   // Borrowed only during the synchronous write/read operation. These never
   // survive publication of a packet or contain a cross-thread JS reference.
+  kandelo::ports::transit::Node* graphOwner = nullptr;
   const void* sourcePort = nullptr;
   std::vector<const void*> validatedPorts;
   void* readingPorts = nullptr;

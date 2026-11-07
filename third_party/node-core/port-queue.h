@@ -50,6 +50,7 @@ template<class Message> class Endpoint {
   Endpoint(std::shared_ptr<Channel> channel, unsigned side)
       : channel_(std::move(channel)), side_(side) {}
  public:
+  using Owner = std::shared_ptr<Endpoint>;
   enum class Kind { Empty, MessageValue, Close };
   struct Result { Kind kind; std::shared_ptr<Message> message; };
   static auto Pair() {
@@ -187,9 +188,8 @@ template<class Message> class EndpointTransfer {
 // pointer under the same mutex used for dispatch before destroying its fields.
 // Named close leaves other members connected. The pinned Node owner also
 // applies its anonymous-pair close rule to the empty string group key.
-template<class Message> class BroadcastRegistry {
+template<class Message, class Port = Endpoint<Message>> class BroadcastRegistry {
  public:
-  using Port = Endpoint<Message>;
   class Member;
   enum class Posted { Closed, NoDestinations, Delivered };
  private:
@@ -203,7 +203,7 @@ template<class Message> class BroadcastRegistry {
     friend class BroadcastRegistry;
     std::shared_ptr<State> state_;
     const std::string name_;
-    std::shared_ptr<Port> receiver_, ingress_;
+    typename Port::Owner receiver_, ingress_;
     bool attached_ = false;  // Protected by the registry mutex.
     Member(std::shared_ptr<State> state, const std::string& name)
         : state_(std::move(state)), name_(name) {
@@ -214,7 +214,7 @@ template<class Message> class BroadcastRegistry {
     ~Member() { Close(true); }
     Member(const Member&) = delete;
     Member& operator=(const Member&) = delete;
-    const std::shared_ptr<Port>& Receiver() const { return receiver_; }
+    const typename Port::Owner& Receiver() const { return receiver_; }
     void Close(bool abandon = false) noexcept {
       std::lock_guard<std::mutex> lock(state_->mutex);
       auto found = state_->groups.find(name_);

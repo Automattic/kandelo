@@ -1,0 +1,120 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/workers.md",
+    "findingIds": [
+      "R-001",
+      "R-004",
+      "R-013"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/streams.md": [
+        "STR-003",
+        "STR-004"
+      ]
+    },
+    "relatedFamilies": [
+      "workers",
+      "streams",
+      "web",
+      "engine",
+      "async",
+      "observability"
+    ],
+    "scope": "Actual automatic native endpoint/packet/data cycle retirement and bridge ownership prerequisite; no generic stream-transfer, full Worker lifecycle or guest/API closure"
+  },
+  "sourceImplemented": [
+    "Process-shared native graph with actual intrusive external root slots and owning edges, never shared_ptr use_count or inferred JS liveness",
+    "Actual native public bindings/opaque packet boxes/Worker controller startup and queue-pop/read/creation scopes retain semantic roots until genuine handoff",
+    "Real inbox-to-packet, packet-to-data and clone-data-to-transferred-endpoint graph edges",
+    "Mark/barrier/Retiring state rejects late resurrection and retires native-only payloads after releasing graph/channel locks",
+    "Allocation-free collection, context batch drain and unconditional real Node-loop safe point",
+    "Weak graph metadata process-lifetime sentinel outlives static owner slots without retaining payloads"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-portcycle197-source-r1/report.json",
+    "sha256": "43e015460c0d60abc55591ed4f81dbecefd9b3cc89001882968aa7e9c4f2a344",
+    "guardedInputs": 865,
+    "scope": "Actual process-shared native transit graph and bridge/loop safe-point source;9portable groups/negative mutations and unchanged queue, no public JSAPI/guest/fourhost closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-portcycle197-affected-r1.json",
+    "sha256": "a5c7f814f545beae06da6a3478fea8b75116872fe2161218d1a0d81707a77dcb",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-portcycle197-source-r1/report.json",
+    "sha256": "43e015460c0d60abc55591ed4f81dbecefd9b3cc89001882968aa7e9c4f2a344",
+    "portableGraphGroups": 9,
+    "publicationRaces": 100,
+    "allocationFreeCollection": true,
+    "unchangedQueuePackets": 1000,
+    "mutationRejections": 2,
+    "mutationAbortsCountAsCompatibilityPasses": false,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Actual final portable production headers with explicit native owner slots; no production JSAPI/realm/GC/fatal/worker guest execution"
+  },
+  "sealedEvidence": {
+    "report": ".context/messageport-cycle-agent/handoff/report.json",
+    "sha256": "f6a9acc80a77d0f24b5295f8a217d30bae4b78b261a265e9af475889c280ab86",
+    "reusedEvidence": true,
+    "scope": "11tiny attempts10success1assert-macro harness compile failure; final9portable groups,100races, unchanged queue and negative-mutant aborts, normal source checks. Guest/fourhost0."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/messageport-cycle-agent/handoff/report.json",
+      "sha256": "f6a9acc80a77d0f24b5295f8a217d30bae4b78b261a265e9af475889c280ab86",
+      "kind": "preserved-private-compile-and-source-setup-nonpasses",
+      "details": {
+        "tinyCppCompileAttempts": 11,
+        "tinyCppCompileSuccesses": 10,
+        "tinyCppCompileFailures": 1,
+        "failedReason": "Final-r1 assert macro template-comma syntax; predicate corrected by parentheses only",
+        "finalPortableGroups": 9,
+        "finalPublicationRaces": 100,
+        "unchangedQueueControls": 1,
+        "unchangedQueuePackets": 1000,
+        "expectedMutationAborts": {
+          "final-r2": 2,
+          "final-r3": 2
+        },
+        "mutationMeaning": "Same control assertions reject omitted Retire and ignored roots; not four extra passes",
+        "sourceChecksFinal": "source-r4: bundle generation, normal native staging, bootstrap generation, exact pinned26 syntax, unchanged Mozilla style, build-inputs 862covered; all exit0",
+        "sourceChecksEarlier": "source-r2/r3 also successful, not independent conformance; source-r1 missing private patch input failure retained",
+        "metadataSetup": "initial build.toml indentation assertion failed before corrected input insertion; no compiler",
+        "nativeReferenceRuntimeTests": 0,
+        "pinnedNodeSyntaxProcesses": 3,
+        "productionJSAPICompiles": 0,
+        "guestTests": 0,
+        "chromiumTests": 0,
+        "firefoxTests": 0,
+        "webkitTests": 0,
+        "overallSuites": 0,
+        "engineProductBuilds": 0,
+        "historicalIdentityLimit": "r1/r2 portable source controls and logs preserved; final-r3+postimage supply exact complete production header source identity, earlier changing-header attempts are historical only"
+      },
+      "reason": "One template-comma assert macro compile failure, private missing input and metadata indentation failures preserved; final success does not erase earlier attempts."
+    }
+  ],
+  "remaining": [
+    "Compile actual production JSAPI source with normal selected engine build",
+    "Validate GC/finalizer/worker/realm transfer/error/OOM/fatal/shutdown semantics on identified artifacts across all four hosts",
+    "Generic JS host/stream/AbortSignal/FileHandle transfers still rejected; not solved by endpoint graph",
+    "Worker blocked-I/O cancellation/admission, resource options and broader lifecycle gaps remain",
+    "Collector checkpoints run on actual Node turns/API/context shutdown; an execution that never yields to any such safe point has no timely collection guarantee",
+    "Process registry metadata intentionally lives until process termination to outlive static BroadcastRegistry/owner slots; it contains weak node links, not an immortal payload root",
+    "All original nonpasses including native134 getter retransfer abort remain in immutable foundation; no runtime fault/boundary claim"
+  ],
+  "at": "2026-11-07T07:58:36.513874+00:00",
+  "recipeRevision": 197,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -47,6 +47,8 @@ SQLITE_FEATURE = ('#ifndef SQLITE_ENABLE_SESSION\n'
 def canonical_header(name, staged):
     # Portable owner headers use the same short aliases as standalone native
     # controls. At the engine packaging boundary those files live in shell/.
+    if name in ('port-queue.h', 'port-transit-graph.h', 'port-transit-owner.h'):
+        name = 'shell/kandelo-node-' + name
     if name == 'sqlite-limit-names.h':
         name = 'shell/kandelo-node-sqlite-limits.h'
     if not name.startswith('shell/') and (staged / name).is_file():

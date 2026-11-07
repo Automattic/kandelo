@@ -1,0 +1,10 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -5673,4 +5673,7 @@
+         AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
+       }
++      // Retire unreachable native transit graphs on every Node loop turn,
++      // including turns kept alive by unrelated timers or I/O owners.
++      KandeloCollectPortTransit();
+       bool timerReferences;
+       if (!KandeloNodeTimersHaveReferences(cx, &timerReferences)) {

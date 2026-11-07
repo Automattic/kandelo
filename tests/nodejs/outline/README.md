@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source197 integrates actual automatic native transit-cycle ownership and retirement over transfer194.9portable groups/100publication races, unchanged1000-packet queue and25affected checks pass; two deliberate mutants abort and are not compatibility passes. Production JSAPI remains uncompiled.
+See [source scope](port-transit-cycle-integration.md).
+
 Source196 integrates actual TLS cipher/default/protocol policy through shared lazy public ownership and live SSL_CTX operations.27focused policy groups,12existing constants groups and14package checks pass. Unchanged upstream cipher-list evidence is native-only; guest/full SecureContext/secure Agent remain incomplete.
 See [source scope](tls-cipher-policy-integration.md).
 

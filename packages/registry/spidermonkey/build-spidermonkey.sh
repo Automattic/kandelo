@@ -386,6 +386,8 @@ cp "$REPO_ROOT/third_party/node-core/child-wait.h" "$SRC_DIR/js/src/shell/kandel
 cp "$REPO_ROOT/third_party/node-core/performance-clock.h" "$SRC_DIR/js/src/shell/kandelo-node-performance-clock.h"
 cp "$REPO_ROOT/third_party/node-core/monotonic-clock.h" "$SRC_DIR/js/src/shell/kandelo-node-monotonic-clock.h"
 cp "$REPO_ROOT/third_party/node-core/port-queue.h" "$SRC_DIR/js/src/shell/kandelo-node-port-queue.h"
+cp "$REPO_ROOT/third_party/node-core/port-transit-graph.h" "$SRC_DIR/js/src/shell/kandelo-node-port-transit-graph.h"
+cp "$REPO_ROOT/third_party/node-core/port-transit-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-port-transit-owner.h"
 cp "$REPO_ROOT/third_party/node-core/lock-manager.h" "$SRC_DIR/js/src/shell/kandelo-node-lock-manager.h"
 cp "$REPO_ROOT/third_party/node-core/provider-rotation.h" "$SRC_DIR/js/src/shell/kandelo-node-provider-rotation.h"
 cp "$REPO_ROOT/third_party/node-core/sqlite-store.h" \

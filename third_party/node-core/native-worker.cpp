@@ -19,7 +19,7 @@ struct KandeloWorkerControl {
   const char* failure = nullptr;
   unsigned secondaryErrors = 0;
   KandeloPortPacketHandle bootstrap, input, error;
-  std::shared_ptr<KandeloPortEndpoint> parentPort, childPort;
+  KandeloPortEndpointOwner parentPort, childPort;
   js::UniquePtr<js::Thread> thread;
   KandeloWorkerControl(JSRuntime* runtime, uint64_t identity, uint32_t budget)
       : parentRuntime(runtime), id(identity), gcBudget(budget) {}
@@ -30,6 +30,9 @@ struct KandeloWorkerControl {
   }
   void Join() {
     if (!joined && thread) { thread->join(); joined = true; thread.reset(); }
+  }
+  void RetireTransport() noexcept {
+    parentPort.reset(); childPort.reset(); bootstrap.reset(); input.reset(); error.reset();
   }
 };
 using KandeloWorkerOwner = std::shared_ptr<KandeloWorkerControl>;
@@ -48,7 +51,8 @@ static void KandeloCaptureWorkerException(JSContext* cx) {
   }
   JS_ClearPendingException(cx);
   try {
-    auto packet = std::make_shared<KandeloPortPacket>();
+    auto packet = KandeloNewPortPacket();
+    if (!packet) { owner->failure = "Worker error ownership was retired"; return; }
     if (packet->content->data.write(cx, error, UndefinedHandleValue, KandeloMessageClonePolicy())) {
       packet->content->AccountMemory(); packet->AdoptMemory(KandeloNativeMemoryOwner(cx));
       KandeloFlushNativeMemory(cx); owner->error = std::move(packet);
@@ -62,7 +66,7 @@ static bool KandeloWorkersHaveReferences(JSContext* cx) {
   if (found == kandeloWorkerChildren.end()) return false;
   auto& children = found->second;
   for (auto it = children.begin(); it != children.end();) {
-    if ((*it)->abandoned && (*it)->finished.load()) { (*it)->Join(); it = children.erase(it); }
+    if ((*it)->abandoned && (*it)->finished.load()) { (*it)->Join(); (*it)->RetireTransport(); it = children.erase(it); }
     else ++it;
   }
   for (const auto& child : found->second) if (child->referenced) return true;
@@ -72,7 +76,7 @@ static void KandeloShutdownWorkers(JSContext* cx) {
   const auto found = kandeloWorkerChildren.find(cx);
   if (found == kandeloWorkerChildren.end()) return;
   for (const auto& child : found->second) child->Stop();
-  for (const auto& child : found->second) child->Join();
+  for (const auto& child : found->second) { child->Join(); child->RetireTransport(); }
   kandeloWorkerChildren.erase(found);
 }
 static bool KandeloWorkerInterrupt(JSContext* cx) {
@@ -124,6 +128,7 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
     if (!KandeloPortNew(cx, kandeloCurrentWorker->childPort, &port) ||
         !JS_DefineProperty(cx, object, "parentHandle", port, JSPROP_ENUMERATE) ||
         !JS_DefineProperty(cx, object, "threadId", double(kandeloCurrentWorker->id), JSPROP_ENUMERATE)) return false;
+    kandeloCurrentWorker->childPort.reset();
     args.rval().setObject(*object); return true;
   }
   if (!strcmp(operation.get(), "ready")) {
@@ -137,8 +142,10 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
     if (!packet || !bootstrap) return false;
     if (packet->enqueued.exchange(true) || packet->consumed.load())
       return cx->reportKandeloCloneError("Worker input already published or consumed");
+    auto releaseInputBox = mozilla::MakeScopeExit([&] { KandeloReleasePortPacketBox(args.get(1)); });
     if (bootstrap->enqueued.exchange(true) || bootstrap->consumed.load())
       return cx->reportKandeloCloneError("Worker bootstrap already published or consumed");
+    auto releaseBootstrapBox = mozilla::MakeScopeExit([&] { KandeloReleasePortPacketBox(args.get(2)); });
     auto owner = std::make_shared<KandeloWorkerControl>(JS_GetParentRuntime(cx), kandeloWorkerNextId.fetch_add(1), JS_GetGCParameter(cx, JSGC_MAX_BYTES));
     owner->input = std::move(packet);
     owner->bootstrap = std::move(bootstrap);
@@ -152,6 +159,7 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
     RootedObject wrapper(cx, JS_NewObject(cx, &KandeloWorkerClass));
     RootedObject result(cx, JS_NewPlainObject(cx)); RootedValue port(cx);
     if (!wrapper || !result || !KandeloPortNew(cx, owner->parentPort, &port)) return false;
+    owner->parentPort.reset();
     JS::SetReservedSlot(wrapper, 0, PrivateValue(handle.release()));
     if (!JS_DefineProperty(cx, result, "handle", wrapper, JSPROP_ENUMERATE) ||
         !JS_DefineProperty(cx, result, "port", port, JSPROP_ENUMERATE) ||
@@ -204,7 +212,7 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
     owner->Join();
     auto& children = kandeloWorkerChildren[cx];
     children.erase(std::remove(children.begin(), children.end(), owner), children.end());
-    owner->error.reset(); handle->owner.reset(); args.rval().setUndefined(); return true;
+    owner->RetireTransport(); handle->owner.reset(); args.rval().setUndefined(); return true;
   }
   JS_ReportErrorASCII(cx, "Unknown Worker operation"); return false;
 }
