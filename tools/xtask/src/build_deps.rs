@@ -8639,7 +8639,9 @@ where
                 format!("read source-only build input entry below {}: {error}", path.display())
             })?;
             let bytes = entry.file_name().to_bytes();
-            if matches!(bytes, b"." | b"..") {
+            // Git pointers/history describe a checkout, not its source. Keep
+            // the strict and ordinary directory digests identical here.
+            if matches!(bytes, b"." | b".." | b".git") {
                 continue;
             }
             entries.push(OsString::from_vec(bytes.to_vec()));
@@ -9208,6 +9210,12 @@ fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<()
             .map_err(|e| format!("read_dir {}: {e}", path.display()))?;
         entries.sort_by_key(|entry| entry.path());
         for entry in entries {
+            // Submodule/worktree `.git` files contain checkout-specific
+            // paths; standalone `.git` directories contain mutable history.
+            // Hash the working sources, including local edits, instead.
+            if entry.file_name() == ".git" {
+                continue;
+            }
             hash_build_input_entry(h, root, &entry.path())?;
         }
         return Ok(());
@@ -33214,6 +33222,134 @@ libs = ["lib/libF3b.a"]
                 error.contains("canonical repository-relative"),
                 "{invalid:?}: {error}"
             );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_cache_keys_ignore_git_metadata_but_track_source_edits() {
+        let roots = [tempdir("git-input-first"), tempdir("git-input-second")];
+        for root in &roots {
+            fs::create_dir_all(root.join("abi")).unwrap();
+            fs::write(root.join("abi/snapshot.json"), r#"{"abi_version":4}"#).unwrap();
+            fs::create_dir_all(root.join("vendor/libc/src")).unwrap();
+            fs::write(root.join("vendor/libc/src/lib.rs"), "original source\n").unwrap();
+            // These are source inputs, unlike the exact `.git` entry.
+            fs::write(root.join("vendor/libc/.gitignore"), "/target\n").unwrap();
+            for name in ["libArchive", "libRepository", "libDependent"] {
+                let deps: &[&str] = if name == "libDependent" {
+                    &["libRepository@1.0.0"]
+                } else {
+                    &[]
+                };
+                write(root, name, "1.0.0", deps);
+                let input = match name {
+                    "libArchive" => "vendor/libc",
+                    "libRepository" => "vendor",
+                    _ => "libDependent/package.toml",
+                };
+                fs::write(
+                    root.join(name).join("build.toml"),
+                    format!(
+                        "script_path = \"{name}/build.sh\"\ninputs = [{input:?}]\nrepo_url = \"https://example.test/repo.git\"\ncommit = \"UNPUBLISHED\"\n"
+                    ),
+                )
+                .unwrap();
+            }
+            let manifest = root.join("libRepository/package.toml");
+            let contents = fs::read_to_string(&manifest).unwrap();
+            fs::write(
+                manifest,
+                contents.replace("sha256 =", "provider = \"repository\"\nsha256 ="),
+            )
+            .unwrap();
+        }
+        let keys = |root: &Path, policy| {
+            let registry = Registry {
+                roots: vec![root.to_path_buf()],
+            };
+            ["libArchive", "libRepository", "libDependent"].map(|name| {
+                let manifest = registry.load(name).unwrap();
+                compute_sha_with_identity_context(
+                    &manifest,
+                    &registry,
+                    TEST_ARCH,
+                    TEST_ABI,
+                    policy,
+                    &mut BTreeMap::new(),
+                    &mut Vec::new(),
+                    Some(&[]),
+                    root,
+                    Some(&[]),
+                )
+                .unwrap()
+            })
+        };
+        for policy in [ResolvePolicy::Default, ResolvePolicy::SourceOnlyV1] {
+            let baseline = keys(&roots[0], policy);
+            let first_git = roots[0].join("vendor/libc/.git");
+            let second_git = roots[1].join("vendor/libc/.git");
+            fs::write(
+                &first_git,
+                "gitdir: /repo/.git/worktrees/first/modules/libc\n",
+            )
+            .unwrap();
+            fs::write(
+                &second_git,
+                "gitdir: /repo/.git/worktrees/second/modules/libc\n",
+            )
+            .unwrap();
+            assert_eq!(
+                baseline,
+                keys(&roots[0], policy),
+                "adding Git metadata must not move keys"
+            );
+            assert_eq!(
+                baseline,
+                keys(&roots[1], policy),
+                "worktree pointers must not split keys"
+            );
+            fs::remove_file(&second_git).unwrap();
+            fs::create_dir_all(second_git.join("objects")).unwrap();
+            fs::write(second_git.join("HEAD"), "ref: refs/heads/another\n").unwrap();
+            fs::write(second_git.join("objects/arbitrary"), "history\n").unwrap();
+            assert_eq!(
+                baseline,
+                keys(&roots[1], policy),
+                "standalone Git directories are metadata too"
+            );
+
+            for (relative, changed) in [
+                ("src/lib.rs", "edited source\n"),
+                (".gitignore", "/other-target\n"),
+            ] {
+                let source = roots[1].join("vendor/libc").join(relative);
+                let original = fs::read(&source).unwrap();
+                fs::write(&source, changed).unwrap();
+                for (before, after) in baseline.iter().zip(keys(&roots[1], policy)) {
+                    assert_ne!(
+                        *before, after,
+                        "{relative} edits must invalidate consumers under {policy:?}"
+                    );
+                }
+                fs::write(source, original).unwrap();
+            }
+            let added = roots[1].join("vendor/libc/src/new.rs");
+            fs::write(&added, "new local source\n").unwrap();
+            for (before, after) in baseline.iter().zip(keys(&roots[1], policy)) {
+                assert_ne!(*before, after, "new source must invalidate consumers");
+            }
+            fs::remove_file(added).unwrap();
+            let removed = roots[1].join("vendor/libc/src/lib.rs");
+            let original = fs::read(&removed).unwrap();
+            fs::remove_file(&removed).unwrap();
+            for (before, after) in baseline.iter().zip(keys(&roots[1], policy)) {
+                assert_ne!(*before, after, "deleted source must invalidate consumers");
+            }
+            fs::write(removed, original).unwrap();
+            assert_eq!(baseline, keys(&roots[1], policy));
+            fs::remove_file(first_git).unwrap();
+            fs::remove_dir_all(second_git).unwrap();
         }
     }
 
