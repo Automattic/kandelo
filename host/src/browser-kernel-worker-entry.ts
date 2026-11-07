@@ -942,6 +942,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       msg.config.maxProcessMemoryBytes,
     ),
     retirementPressureHook: processMemoryRetirementPressureHook,
+    forkCopy: msg.config.forkCopy,
   });
 
   // The kernel worker owns the machine's filesystem. The `/` image is parsed

@@ -119,6 +119,20 @@ function expectDeadStartUsesOrdinaryTeardown(handler: string, entry: string): vo
 }
 
 describe("spawn host parity", () => {
+  it("both hosts give the process-memory allocator the configured fork copy mode", () => {
+    for (const entry of [nodeEntry, browserEntry]) {
+      expect(readFileSync(entry, "utf8"), entry).toMatch(
+        /new ProcessMemoryAllocator\(\{[\s\S]*?forkCopy: msg\.config\.forkCopy,[\s\S]*?\}\);/,
+      );
+    }
+    for (const host of ["node-kernel-host.ts", "browser-kernel-host.ts"]) {
+      expect(
+        readFileSync(join(repoRoot, "host", "src", host), "utf8"),
+        host,
+      ).toContain("forkCopy: this.options.forkCopy,");
+    }
+  });
+
   it("both exec callbacks carry one opaque prepared-target request", () => {
     const shared = readFileSync(sharedWorker, "utf8");
     expect(shared).toMatch(/onExec\?:\s*ExecLaunchCallback/);

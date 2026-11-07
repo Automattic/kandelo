@@ -324,6 +324,24 @@ export interface ProcessMemoryAllocationRequest {
   maximumPages: number;
 }
 
+/**
+ * How fork copies a parent's address space into the child's new Memory.
+ *
+ * - `"sparse"` (default) skips each 64 KiB page that is all zero in the
+ *   parent. A new Memory is already all zero, so the child sees the same
+ *   bytes, but the host does not commit those pages until the child writes
+ *   them. A large, mostly empty address space (many php-fpm children, for
+ *   example) then holds much less memory. Checking each page costs time: in
+ *   one Node benchmark, fork and clone were about 5-7% slower than dense.
+ * - `"dense"` writes every byte, as Kandelo did before sparse copying. Fork
+ *   is faster, and every page of the child is committed at once. Choose it
+ *   when fork latency matters more than memory, such as fork-heavy builds
+ *   on Node.
+ */
+export type ForkAddressSpaceCopy = "sparse" | "dense";
+
+export const DEFAULT_FORK_ADDRESS_SPACE_COPY: ForkAddressSpaceCopy = "sparse";
+
 export interface ProcessMemoryAllocatorOptions {
   /**
    * Optional host allocation boundary. Admission remains owned by this allocator.
@@ -371,6 +389,8 @@ export interface ProcessMemoryAllocatorOptions {
   retirementPressureHook?: (
     retirement: ProcessMemoryRetirementNotice,
   ) => void;
+  /** Fork address-space copy mode (default `"sparse"`). */
+  forkCopy?: ForkAddressSpaceCopy;
 }
 
 export interface ProcessMemoryLease {
@@ -665,6 +685,7 @@ export class ProcessMemoryAllocator {
   private readonly retirementAdmissionMemoryThreshold: number;
   private readonly retirementAdmissionByteThreshold: number;
   private readonly retirementBackpressureMs: number;
+  private readonly forkCopy: ForkAddressSpaceCopy;
   private readonly maxRetirementTelemetryRecords: number;
   private readonly retirementTelemetryOrder: number[] = [];
   private liveMemories = 0;
@@ -707,6 +728,12 @@ export class ProcessMemoryAllocator {
         DEFAULT_RETIREMENT_ADMISSION_BYTE_THRESHOLD_CAP,
       );
     this.retirementBackpressureMs = options.retirementBackpressureMs ?? 50;
+    this.forkCopy = options.forkCopy ?? DEFAULT_FORK_ADDRESS_SPACE_COPY;
+    if (this.forkCopy !== "sparse" && this.forkCopy !== "dense") {
+      throw new Error(
+        `invalid fork address-space copy mode: ${String(options.forkCopy)}`,
+      );
+    }
     this.maxRetirementTelemetryRecords =
       options.maxRetirementTelemetryRecords ?? 256;
     if (
@@ -772,6 +799,17 @@ export class ProcessMemoryAllocator {
    * A sibling exec can retire the parent while construction is pending;
    * it cannot change the bytes this child inherits.
    */
+  /**
+   * Copy a fork parent's address space into a buffer or Memory this
+   * allocator has just created, using the configured `forkCopy` mode.
+   */
+  copyForkAddressSpace(
+    destination: ArrayBufferLike,
+    source: ArrayBufferLike,
+  ): void {
+    copyProcessAddressSpace(this.forkCopy, destination, source);
+  }
+
   acquireForkClone(
     parentMemory: WebAssembly.Memory,
     ptrWidth: 4 | 8,
@@ -901,7 +939,7 @@ export class ProcessMemoryAllocator {
     try {
       if (source !== undefined) {
         snapshot = new ArrayBuffer(source.byteLength);
-        copyIntoZeroedArrayBuffer(snapshot, source);
+        this.copyForkAddressSpace(snapshot, source);
       }
     } catch (error) {
       this.releaseAllocationReservation(reservedBytes);
@@ -941,7 +979,7 @@ export class ProcessMemoryAllocator {
       const lease = this.registerFreshMemory(request, memory);
       try {
         if (snapshot !== undefined) {
-          copyIntoZeroedArrayBuffer(memory.buffer, snapshot);
+          this.copyForkAddressSpace(memory.buffer, snapshot);
         }
         return lease;
       } catch (error) {
@@ -1454,13 +1492,62 @@ export function acquireForkMemoryClone(
     maximumPages,
   });
   try {
-    copyIntoZeroedArrayBuffer(lease.memory.buffer, parentMemory.buffer);
+    allocator.copyForkAddressSpace(lease.memory.buffer, parentMemory.buffer);
     return lease;
   } catch (error) {
     // This clone has not been registered or exposed to a Worker, so it can be
     // safely retired immediately.
     lease.release();
     throw error;
+  }
+}
+
+const PROCESS_MEMORY_DENSE_COPY_CHUNK_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Copy equal-length process address spaces with the given fork copy mode.
+ *
+ * WHY: the destination must be a buffer or Memory created for this copy,
+ * so it is still all zero. Every caller passes one today. The `"sparse"`
+ * mode depends on that: it leaves a destination page untouched where the
+ * source page is zero. Any future reuse or pooling of process memory must
+ * zero the destination first or use `"dense"`. Otherwise a fork child would
+ * keep the previous owner's bytes wherever its parent's page is zero.
+ */
+export function copyProcessAddressSpace(
+  mode: ForkAddressSpaceCopy,
+  destination: ArrayBufferLike,
+  source: ArrayBufferLike,
+): void {
+  if (mode === "dense") {
+    copyArrayBufferInChunks(destination, source);
+  } else {
+    copyIntoZeroedArrayBuffer(destination, source);
+  }
+}
+
+/**
+ * Copy equal-length process address spaces without relying on one potentially
+ * multi-gigabyte TypedArray view. Writes every byte.
+ */
+export function copyArrayBufferInChunks(
+  destination: ArrayBufferLike,
+  source: ArrayBufferLike,
+  chunkBytes = PROCESS_MEMORY_DENSE_COPY_CHUNK_BYTES,
+): void {
+  if (destination.byteLength !== source.byteLength) {
+    throw new Error(
+      `process memory copy length mismatch: ${source.byteLength}/${destination.byteLength}`,
+    );
+  }
+  if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0) {
+    throw new Error(`invalid process memory copy chunk length: ${chunkBytes}`);
+  }
+  for (let offset = 0; offset < source.byteLength; offset += chunkBytes) {
+    const length = Math.min(chunkBytes, source.byteLength - offset);
+    new Uint8Array(destination, offset, length).set(
+      new Uint8Array(source, offset, length),
+    );
   }
 }
 
