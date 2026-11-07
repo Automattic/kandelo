@@ -5050,7 +5050,7 @@ const _nodeLocksPlatform = _createNodeLocksPlatform({
 globalThis.__kandeloDispatchLocks = _nodeLocksPlatform.dispatch;
 
 
-let _nodeDomain;
+let _nodeDomain, _nodeFfi;
 const _builtinModules = {
     'path': path,
     'events': events,
@@ -5117,6 +5117,17 @@ const _builtinModules = {
             _nodeNative.cliOptions?.experimentalVmModules === true }),
     get test() { return _getNodeTestingPlatform().api; },
     get 'test/reporters'() { return _getNodeTestingPlatform().reporters; },
+    get ffi() { return _nodeFfi ??= _createNodeFfiLibrary({ native: _nodeNative, values: _nodeValues,
+        getVfsLibraryReader() {
+            if (_nodeFsTruncation.vfsState.handlers !== null) {
+                // The pinned constructor consults this reader only for strings.
+                // Main-library/null and native type validation must still work.
+                return function readVirtualLibrary() {
+                    throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Node mounted VFS FFI image owner');
+                };
+            }
+            return null;
+        } }); },
     get sqlite() { return _nodeSqlite ??= _createNodeSqlitePlatform({ native: _nodeNative, values: _nodeValues,
         util, Buffer, TextDecoder, URL: _nodeWebPlatform.URL, fileURLToPath: url.fileURLToPath,
         constants: _nodeNative.sqlite('constants'),
@@ -5343,6 +5354,7 @@ const _nodeBuiltinPolicy = _createNodeBuiltinPolicy({
     load: id => _builtinModules[id],
     getOptionValue: option => option === '--experimental-sqlite'
         ? _nodeNative.cliOptions?.experimentalSqlite === true
+        : option === '--experimental-ffi' ? _nodeNative.cliOptions?.experimentalFfi === true
         : option === '--experimental-stream-iter' && _nodeNative.cliOptions?.experimentalStreamIter === true,
 });
 Module.builtinModules = Object.freeze(_nodeBuiltinPolicy.getAllBuiltinModuleIds());

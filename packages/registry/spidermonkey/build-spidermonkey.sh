@@ -335,6 +335,7 @@ mkdir -p "$SRC_DIR/third_party/kandelo-node/merve"
 cp "$REPO_ROOT/third_party/node-core/upstream/esm-source/deps/merve/merve.h" "$SRC_DIR/third_party/kandelo-node/merve/merve.h"
 cp "$REPO_ROOT/third_party/node-core/upstream/esm-source/deps/merve/merve.cpp" "$SRC_DIR/third_party/kandelo-node/merve/merve.cpp"
 cp "$REPO_ROOT/third_party/node-core/upstream/esm-source/deps/merve/LICENSE-MIT" "$SRC_DIR/third_party/kandelo-node/merve/LICENSE-MIT"
+cp "$REPO_ROOT/third_party/node-core/ffi-library-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-ffi-library-owner.h"
 cp "$REPO_ROOT/third_party/node-core/dns-errors.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-errors.h"
 cp "$REPO_ROOT/third_party/node-core/dns-lookup.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-lookup.h"
 cp "$REPO_ROOT/third_party/node-core/datagram-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-datagram-operations.h"
@@ -578,7 +579,7 @@ PROBE
 fi
 export CFLAGS="${CFLAGS:-} -pthread -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$CODECS_PREFIX/include -I$SQLITE_PREFIX/include -I$SIMDJSON_PREFIX/include -I$NCRYPTO_PREFIX/include"
 export CXXFLAGS="${CXXFLAGS:-} -pthread -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$CODECS_PREFIX/include -I$SQLITE_PREFIX/include -I$SIMDJSON_PREFIX/include -I$NCRYPTO_PREFIX/include"
-export LDFLAGS="${LDFLAGS:-} -pthread -lc++ -lc++abi $NCRYPTO_PREFIX/lib/libncrypto.a $LLHTTP_PREFIX/lib/libllhttp.a $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $CODECS_PREFIX/lib/libz.a $CODECS_PREFIX/lib/libbrotli.a $CODECS_PREFIX/lib/libzstd.a $SQLITE_PREFIX/lib/libsqlite3.a $SIMDJSON_PREFIX/lib/libsimdjson.a $CARES_PREFIX/lib/libcares.a -lm -Wl,-z,stack-size=16777216"
+export LDFLAGS="${LDFLAGS:-} -pthread -ldl -lc++ -lc++abi $NCRYPTO_PREFIX/lib/libncrypto.a $LLHTTP_PREFIX/lib/libllhttp.a $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $CODECS_PREFIX/lib/libz.a $CODECS_PREFIX/lib/libbrotli.a $CODECS_PREFIX/lib/libzstd.a $SQLITE_PREFIX/lib/libsqlite3.a $SIMDJSON_PREFIX/lib/libsimdjson.a $CARES_PREFIX/lib/libcares.a -lm -Wl,-z,stack-size=16777216"
 
 if [ -f "$OBJ_DIR/config.status" ] && {
     ! grep -q 'getrandom_backend' "$OBJ_DIR/config.status" ||

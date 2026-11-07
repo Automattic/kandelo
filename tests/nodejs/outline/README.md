@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source184 integrates real FFI library/symbol/CLI/retirement owners. Focused native-dependent controls and14package checks pass. New guest JSAPI and complete FFI remain unvalidated or missing; the nested Wasm backend stays in scope for the final phase.
+See [source scope](ffi-library-owner-integration.md).
+
 Source183 integrates the complete pinned Response owner over shared Body/Header/Request state.13Response and14Request native/candidate groups plus13existing Body and14package checks pass. Full Fetch transport/policy, guest dependencies/GC and four-host conformance remain open.
 See [source scope](response-owner-integration.md).
 

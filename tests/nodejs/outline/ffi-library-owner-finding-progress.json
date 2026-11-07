@@ -1,0 +1,95 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-001",
+      "NI-005",
+      "NI-008"
+    ],
+    "relatedFamilies": [
+      "native-integration",
+      "loading",
+      "engine",
+      "values",
+      "async"
+    ],
+    "scope": "Actual portable library/symbol/registry/CLI/lifecycle prerequisite; not full FFI/libffi/addon or finding closure"
+  },
+  "sourceImplemented": [
+    "Real DynamicLibrary holder owns libc dlopen/dlsym/dlclose state and actual symbol cache; null symbol address distinguishes real dlerror, consumed handles are not closed twice after unload errors",
+    "Actual ShellContext registry owns open handles, foreground finalizer only marks retirement, owner-thread loop drains and shutdown runs after exit listeners before main/worker status capture with destructor fallback",
+    "Exact pinned public constructor, Symbol.dispose identity and dlclose/dlsym aliases consume real native owners; actual experimental FFI CLI state/default/negation/Node-options and builtin policy route retained",
+    "Actual checked-wrapper failures preserve pending exceptions or report access denial; type/NUL validation remains before closed lookup exactly as pinned source/native evidence",
+    "Mounted-VFS reader only runs for string paths; null/main-library and nonstring native argument validation no longer hit missing private-image owner prematurely",
+    "Actual -ldl recipe input, native fragment/header staging and zero-fuzz0136engine registration over current source; regenerate current bundle without stale whole-file replacement"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-ffi184-source-r1/report.json",
+    "sha256": "20872832efb73b286472774ef39e76606b11dec6ca9df36bfbb9e317838c5e5a",
+    "guardedInputs": 830,
+    "scope": "Real library-symbol/registry/CLI/shutdown source over existing outer guest loader, checked-wrapper denial preserved; native controls separate from new JSAPI/guest/fourhost/fullFFI."
+  },
+  "packageChecks": {
+    "report": ".context/node26-ffi184-affected-r1.json",
+    "sha256": "ca10b68bad81235fe94ce92d2ae4f0dc97fae98edd280155a7579e56727a6519",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-ffi184-source-r1/report.json",
+    "sha256": "20872832efb73b286472774ef39e76606b11dec6ca9df36bfbb9e317838c5e5a",
+    "portableOwnerGroups": 8,
+    "frontendRecordedErrorCases": 11,
+    "frontendManualAnnotationNotCaseCount": 18,
+    "nativeCLIComparisons": 14,
+    "productionVfsAdmissionGroups": 4,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Actual portable host-libc owner and current extracted CLI parser over exact reused artifacts; unchanged selected frontend and exact builtin getter over explicitly pinned native DynamicLibrary. The printed18is a manual annotation, not a discovered-test count. New guest JSAPI/loader/GC/realm/fourhost unexecuted."
+  },
+  "sealedEvidence": {
+    "report": ".context/ffi-library-agent/handoff/report.json",
+    "sha256": "7e0a0d73d104b627bc381a89d862653da273889ccea1019f103fac110310f62e",
+    "reusedEvidence": true,
+    "scope": "Actual host-libc owner8labeled groups; selected public frontend11error observations plus positive assertions;14CLIcomparisons;827private input closure and exact source/engine patch replay.6successful tiny compiles, no guest JSAPI/full FFI conformance."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/ffi-library-agent/handoff/evidence/r1/frontend-component.log",
+      "sha256": "1d036dbfd119ec4cb0e4c6b09600491b8eb756a75b43a47c403f1d93a1b322cd",
+      "kind": "initial-disposal-alias-control-failure",
+      "reason": "Raw native Symbol.dispose alias was not yet normalized by selected public adapter; original assertion failed before real alias hookup. Original assertions/evidence retained."
+    },
+    {
+      "report": ".context/ffi-library-agent/handoff/evidence/source/adapter-syntax.log",
+      "sha256": "78a973d8af3480e2aacab0f44389a73eeac9a2df6fbe87b03138cc73135e05bd",
+      "kind": "incomplete-adapter-prefix-syntax-fixture",
+      "reason": "Open production prefix parsed alone; corrected fixture assembles complete bootstrap, with original SyntaxError retained."
+    },
+    {
+      "report": ".context/ffi-library-agent/handoff/evidence/source-r2/unchanged-style.log",
+      "sha256": "bd50630fa7a902f6841772e8bd5964256328798883ae36105077deaa9c5491e3",
+      "kind": "incomplete-unchanged-shell-checker-context",
+      "reason": "Initial style context omitted unchanged current shell includes; exact context supplied, unchanged checker/assertions retained."
+    }
+  ],
+  "remaining": [
+    "Full FFI getFunction/getFunctions/functions/dlopen convenience, generic signatures/libffi admission/calls/callbacks, typed/raw memory/export/loop APIs and public types/suffix; private memory follow-up is not yet integrated",
+    "Permission activation and real mounted-VFS private-image reader; actual existing guest VFS/libc loading path and errors remain distinct",
+    "Target dlclose policy ignores uv unload errors while guest owner reports actual error after consumed handle; keep this real deviation visible, never retry numeric handle",
+    "Guest JSAPI compile/link and actual dynamic loader execution, checked-wrapper/realm/GC/finalization/thread/shutdown cancellation behavior on all four hosts",
+    "Exact native Error code/property setter/name/stack/getter semantics and actual allocation-ledger projection; current define-own code field is not complete Node coded-error policy",
+    "Portable Node-API/addon/embedding opaque bridge and CPU-native artifact ABI remain separate unresolved contracts; nested guest WebAssembly execution stays in scope for the final phase"
+  ],
+  "at": "2026-11-07T05:25:41.633868+00:00",
+  "recipeRevision": 184,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

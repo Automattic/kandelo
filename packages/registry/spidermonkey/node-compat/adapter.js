@@ -689,6 +689,7 @@
         socketAcceptedFd(lease) { return native.socketAcceptedFd(lease); },
         socketAcceptedClose(lease) { return native.socketAcceptedClose(lease); },
         socketOwnerAdoptAccepted(lease) { return native.socketOwnerAdoptAccepted(lease); },
+        DynamicLibrary: native.DynamicLibrary,
         socketOwnerAdopt(fd) { return native.socketOwnerAdopt(fd); },
         socketOwnerConnect(...args) { return native.socketOwnerConnect(...args); },
         socketOwnerCancelConnect(token) { return native.socketOwnerCancelConnect(token); },

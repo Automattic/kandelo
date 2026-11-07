@@ -1,5 +1,11 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/ffi-library-owner.h",
+  "third_party/node-core/native-ffi-library.cpp",
+  "third_party/node-core/ffi-library-platform-adapter.js",
+  "third_party/node-core/generate-ffi-library.py",
+  "third_party/node-core/upstream/ffi-reference",
+  "packages/registry/spidermonkey/patches/0136-node-ffi-library-owner.patch",
   "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch",
   "packages/registry/spidermonkey/patches/0131-node-vm-execution-deadlines.patch",
   "packages/registry/spidermonkey/patches/0132-node-domain-callback-owner.patch",
@@ -651,4 +657,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 183
+revision = 184

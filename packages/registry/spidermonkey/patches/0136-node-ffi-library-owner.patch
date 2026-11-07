@@ -1,0 +1,99 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4213,7 +4213,7 @@
+       JS_FN("loadEnvFile", (KandeloFsPromiseGuard<KandeloNativeLoadEnvFile>), 1, 0),
+       JS_FS_END,
+   };
+-  if (!JS_DefineFunctions(cx, native, funcs)) {
++  if (!JS_DefineFunctions(cx, native, funcs) || !KandeloDefineFfi(cx, native)) {
+     return false;
+   }
+   return JS_DefineProperty(cx, cx->global(), "__kandeloNodeNative", native, 0);
+@@ -5589,6 +5589,11 @@
+     }
+
+     if (IsKandeloNodeMode()) {
++      if (!KandeloDrainFfi(cx)) {
++        if (KandeloRecoverUncaughtException(cx)) continue;
++        if (sc->quitting) return;
++        AutoReportException report(cx); sc->exitCode = EXIT_FAILURE; return;
++      }
+       bool timerReferences;
+       if (!KandeloNodeTimersHaveReferences(cx, &timerReferences)) {
+         if (sc->quitting) return;
+@@ -9143,6 +9148,7 @@
+         } else sc->exitCode = result.isInt32() ? result.toInt32() : 1;
+       }
+     }
++    KandeloShutdownFfi(sc.get());
+     input->exitCode = sc->exitCode;
+     KillWatchdog(cx);
+   } catch (const std::bad_alloc&) {
+@@ -11485,6 +11491,7 @@
+   bool experimentalVmModules = false;
+   // The declared recipe links the actual SQLite backend (target HAVE_SQLITE).
+   bool experimentalSqlite = true;
++  bool experimentalFfi = true;
+   bool preserveSymlinks = false;
+   bool preserveSymlinksMain = false;
+   std::vector<std::string> conditions;
+@@ -11544,6 +11551,10 @@
+   }
+   if (name == "--preserve-symlinks-main") {
+     kandeloNodeCLI.preserveSymlinksMain = value;
++    return true;
++  }
++  if (name == "--experimental-ffi") {
++    kandeloNodeCLI.experimentalFfi = value;
+     return true;
+   }
+   if (name == "--experimental-sqlite") {
+@@ -16632,6 +16643,7 @@
+         !KandeloDefineBooleanProperty(cx, cli, "experimentalStreamIter", kandeloNodeCLI.experimentalStreamIter, 0) ||
+         !KandeloDefineBooleanProperty(cx, cli, "experimentalVmModules", kandeloNodeCLI.experimentalVmModules, 0) ||
+         !KandeloDefineBooleanProperty(cx, cli, "experimentalSqlite", kandeloNodeCLI.experimentalSqlite, 0) ||
++        !KandeloDefineBooleanProperty(cx, cli, "experimentalFfi", kandeloNodeCLI.experimentalFfi, 0) ||
+         !JS_DefineProperty(cx, cli, "execArgv", execArgs, 0) ||
+         !JS_DefineProperty(cx, cx->global(), "__kandeloNodeCliOptions", cli, 0)) return false;
+   }
+@@ -16973,6 +16985,7 @@
+
+ ShellContext::~ShellContext() {
+   // Children retire their contexts/roots before their parent runtime disappears.
++  KandeloShutdownFfi(this);
+   KandeloShutdownLocks(cx_);
+   KandeloShutdownWorkers(cx_);
+   // Finish/cancel native jobs and retire pins/roots while the JSContext lives.
+@@ -17139,6 +17152,12 @@
+       }
+     }
+
++    // Exit listeners may still use FFI. Retire actual loader owners afterward,
++    // before status is copied; the context destructor is only a fallback.
++    if (!KandeloShutdownFfi(sc)) {
++      restoreNodeStatus = false;
++      result = sc->exitCode;
++    }
+     if (restoreNodeStatus) {
+       // An explicitly assigned zero is meaningful too; do not let the shell's
+       // generic runtime-error code override Node's chosen exit status.
+diff --git a/js/src/shell/jsshell.h b/js/src/shell/jsshell.h
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -185,6 +185,7 @@
+ class OffThreadJob;
+ class KandeloNativeWorkQueue;
+ struct KandeloNativeAsyncState;
++struct KandeloFfiRegistry;
+ struct KandeloUdpRegistry;
+ struct KandeloStatWatcherLoop;
+
+@@ -204,6 +205,7 @@
+   KandeloNativeWorkQueue* kandeloNativeWork = nullptr;
+   KandeloStatWatcherLoop* kandeloStatWatchers = nullptr;
+   KandeloNativeAsyncState* kandeloNativeAsync = nullptr;
++  KandeloFfiRegistry* kandeloFfi = nullptr;
+   KandeloUdpRegistry* kandeloUdp = nullptr;
+
+   // Security callbacks are installed per runtime and retired before this owner.

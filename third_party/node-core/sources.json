@@ -5749,5 +5749,53 @@
     },
     "weakReference": "Reuse exact diagnosticsPlatform.weakReference source selection; actual engine WeakRef with refcounted strong callback lifetime",
     "scope": "Full unchanged Domain algorithms over actual EventEmitter/AsyncHook/process fatal owners; native zero-ID MakeCallback trampoline is separately routed, no guest/provider/Promise/GC completion claim"
+  },
+  "ffiLibrary": {
+    "version": "26.13.0",
+    "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+    "references": {
+      "lib/ffi.js": {
+        "path": "upstream/ffi-reference/lib/ffi.js",
+        "sha256": "e0625a261c64463f6542bc8ad769211e5a23f6b3dd94499ad83eea115b6a5786"
+      },
+      "lib/internal/ffi/vfs.js": {
+        "path": "upstream/ffi-reference/lib/internal/ffi/vfs.js",
+        "sha256": "dac6d088e30e607337ca9113e16764d12c3274f892b9bd106d5850121f209e0c"
+      },
+      "src/node_ffi.cc": {
+        "path": "upstream/ffi-reference/src/node_ffi.cc",
+        "sha256": "0471b7f61da97c36a2e8a1b4fa91640d81d9edc6e15c052d6e25940abe2de8f3"
+      },
+      "src/node_ffi.h": {
+        "path": "upstream/ffi-reference/src/node_ffi.h",
+        "sha256": "e568a290abd534555f65b7d4037b118b8036abccd90bb8ba8e4e4b7d251842e9"
+      },
+      "src/ffi/types.cc": {
+        "path": "upstream/ffi-reference/src/ffi/types.cc",
+        "sha256": "cd6b278e70fb51682ed1808151c8f88f8750a20daadf2870bcedf7a5f655b10f"
+      },
+      "src/node_options.cc": {
+        "path": "upstream/ffi-reference/src/node_options.cc",
+        "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279"
+      }
+    },
+    "selections": {
+      "constructor": {
+        "start": "function DynamicLibrary(path) {",
+        "length": 746,
+        "sha256": "cf1534ec2a0adb1e77adc57e7ad2f843b990f2bb1eb54c631d8ac4c7314a8d35"
+      },
+      "aliases": {
+        "start": "function dlclose(handle) {",
+        "length": 118,
+        "sha256": "f6ef9ba3b7dcc19583400d873d90b74c3e67b5e418abb17f4a00e1a562ed1cfc"
+      },
+      "dispose": {
+        "start": "ObjectDefineProperty(DynamicLibrary.prototype, SymbolDispose, {",
+        "length": 143,
+        "sha256": "983e2a7b30b07bd3662cc781de85ef267bb51638f795a34a3e06bf38749d3724"
+      }
+    },
+    "scope": "DynamicLibrary constructor/path/close/getSymbol/getSymbols/symbols; exact dlclose/dlsym aliases. Function calls, callbacks, pointer memory, mounted Node VFS materialization and remaining FFI exports are implementation gaps."
   }
 }

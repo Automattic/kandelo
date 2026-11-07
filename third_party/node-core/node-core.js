@@ -119322,6 +119322,55 @@ function wasiReturnOnProcExit(rval) {
     })(module, module.exports, require, internalBinding, primordials);
     return module.exports;
 }
+// This public subset consumes real native library/symbol owners. Generic call,
+// callback, pointer-memory and event-loop APIs are still missing, not stubs.
+function _createNodeFfiLibrary(platform) {
+    'use strict';
+    const { FunctionPrototypeCall, ReflectConstruct, ObjectDefineProperty, SymbolDispose } = _createNodePrimordials();
+    const NativeDynamicLibrary = platform.native.DynamicLibrary;
+    const getVfsLibraryReader = platform.getVfsLibraryReader;
+    platform.values.util.emitExperimentalWarning('FFI');
+    function DynamicLibrary(path) {
+  if (new.target === undefined) {
+    // Let the native constructor produce its usual error.
+    return FunctionPrototypeCall(NativeDynamicLibrary, this, path);
+  }
+  const readVirtualLibrary = getVfsLibraryReader();
+  const binary =
+    readVirtualLibrary === null || typeof path !== 'string' ?
+      undefined : readVirtualLibrary(path);
+  return ReflectConstruct(NativeDynamicLibrary,
+                          binary === undefined ? [path] : [path, binary],
+                          new.target);
+}
+DynamicLibrary.prototype = NativeDynamicLibrary.prototype;
+ObjectDefineProperty(DynamicLibrary.prototype, 'constructor', {
+  __proto__: null,
+  configurable: true,
+  value: DynamicLibrary,
+  writable: true,
+});
+
+    // There is no fast-function registry in this implemented subset. Share the
+    // actual native close operation with the exact public disposal descriptor.
+    const close = NativeDynamicLibrary.prototype.close;
+    ObjectDefineProperty(DynamicLibrary.prototype, SymbolDispose, {
+  __proto__: null,
+  configurable: true,
+  value: close,
+  writable: true,
+});
+
+    function dlclose(handle) {
+  handle.close();
+}
+
+function dlsym(handle, symbol) {
+  return handle.getSymbol(symbol);
+}
+
+    return { DynamicLibrary, dlclose, dlsym };
+}
 // Standalone public settings/protocol data; no native sessions are fabricated.
 function _createNodeHttp2Settings(platform) {
     'use strict';

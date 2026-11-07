@@ -2111,6 +2111,8 @@ bundle += x509_adapter.replace('/* NODE_X509_MODULE */',
 
 bundle += '\n' + runpy.run_path(str(root / 'generate-process-signals.py'))['assemble']().rstrip('\n') + '\n'
 bundle += '\n' + runpy.run_path(str(root / 'generate-wasi-policy.py'))['assemble']().rstrip('\n') + '\n'
+# Library/symbol ownership is independent of generic calls and callbacks.
+bundle += runpy.run_path(str(root / 'generate-ffi-library.py'))['render']().rstrip('\n') + '\n'
 # Public HTTP/2 protocol settings are independent of native sessions.
 bundle += runpy.run_path(str(root / 'generate-http2-settings.py'))['render']()['bundle'].rstrip('\n') + '\n'
 
