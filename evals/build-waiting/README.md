@@ -689,6 +689,39 @@ madrid are read-only; local copies are in `.context/graphics-baseline`.
   or a denial encourages polling/evasion. Review the first five real
   subagent uses; two blocked-parent or evasion incidents require revision.
 
+**Identity and replay (2026-11-07).** Claude Code 2.1.316's controlled
+main/subagent probes had the same environment variable names and the
+same Claude process ancestor within each session. Both had `CLAUDECODE=1`
+and `CLAUDE_CODE_ENTRYPOINT=sdk-cli`; neither exposed
+`CLAUDE_CODE_AGENT_ID` or `CLAUDE_AGENT_ID`. These probes do not establish
+a portable environment/process discriminator. Hook inputs did distinguish
+them: no main `agent_id`, and a distinct nonempty id on subagent Bash
+calls. The CLI therefore prints separate hints instead of guessing its
+caller; the hook enforces the bound using the supplied identity.
+
+```bash
+python3 evals/build-waiting/replay-hook.py --since 2026-11-01 --until 2026-11-04 --match kandelo-moscow --samples 25
+```
+
+The replay covered 11,627 Bash calls. The new rule flagged 296 calls from
+25 subagents. A separate pass over the normalized turns found the same
+296 calls and 10 main-session waits, with zero new-rule main denials.
+Review of 25 randomly selected denials (seed 1, normalized transcript
+order) found 25 wait command sites with unsafe requested windows; 23/25
+actually reached `agent-job`, while two failed shell glob expansion first.
+That is 92% executable-wait precision, meeting the 90% policy threshold.
+Only 15/25 sampled calls actually lasted over 270 s; the policy deliberately
+requires a bounded request even when a job happens to have finished.
+
+Across all 296 flagged calls, 194 had Bash-call elapsed time over 270 s,
+24 returned in under 30 s, and median elapsed time was 519.7 s. Elapsed
+time includes any other commands in the same Bash call, so it is not an
+exact measure of time inside `wait`. These are historical classifications,
+not measured savings. Full reviewed commands, result excerpts and the
+duration script are local in `.context/replay-samples.md`,
+`.context/replay-details.json` and `.context/analyze-wait-replay.py`.
+Existing-rule denials are outside this new rule's precision sample.
+
 ### 9. `local-build plan --status` with time estimate
 
 Before a build starts, this prints which nodes are cache hits, which will

@@ -386,8 +386,11 @@ run used the wrong config and toolchain, and its results are invalid.
   `run_in_background` and acts on its single completion notification.
   Never write Monitor, `until`, or `sleep` loops over status files or
   `agent-job list`; expiring waiters create re-arm turns. A headless
-  session or subagent repeats foreground `agent-job wait <id>` until it
-  returns the job's status. Repeat only when the wait-window notice says
+  main session repeats foreground `agent-job wait <id>` (540 s default).
+  A subagent waiting on targeted work uses foreground
+  `agent-job wait <id> --timeout 240`, one wait per Bash call, until it
+  returns the job's status. Keep the explicit timeout on retries, including
+  waits by peer id. Repeat only when the wait-window notice says
   `agent-job: still running`. Exit 124 alone is ambiguous: a finished
   command can itself exit 124 (for example, when killed by `timeout`).
   `FAILED (exit 124)` is a completed failure, not a retry. It must not end
@@ -395,10 +398,14 @@ run used the wrong config and toolchain, and its results are invalid.
   agent client yields a running terminal session, resume that session to
   collect the result.
 - **Subagents** must not wait on whole-tree builds or full suites. A
-  subagent's prompt cache expires after 5 minutes, so every long blocking
-  call rewrites its whole context. Build what a subagent needs before
-  dispatching it. A subagent that discovers it needs one reports the command
-  back instead of running it.
+  subagent's prompt cache was observed to expire after about 5 minutes,
+  so long blocking calls can rewrite its whole context. Return other known
+  long test and benchmark jobs to the parent too: report an existing job's
+  id and command rather than starting a duplicate. Build what a subagent
+  needs before dispatching it. A subagent that discovers it needs one reports the command
+  back instead of running it. For targeted work it must finish itself,
+  keep each blocking call below that cache boundary; a foreground command
+  expected to exceed four minutes should use a job with 240 s waits.
 - **Progress:** for `./run.sh setup`, `local-build`, and `build <target>`,
   `agent-job status` shows nodes done out of the total. Start them as
   `./run.sh …`, not under `scripts/dev-shell.sh`, which drops the events
@@ -479,7 +486,11 @@ run used the wrong config and toolchain, and its results are invalid.
 - **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
   patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
   `pgrep -f` waiters, and subagents running whole-tree builds or full
-  suites, and every denial says what to do instead. It is opt-in.
+  suites. Subagent `agent-job wait` calls require an explicit positive
+  literal timeout, at most 270 s total per Bash call; wait loops are denied.
+  Use 240 s for scheduling margin, or return the long job to the parent.
+  Main-session wait windows are unchanged. Every denial says what to do
+  instead. It is opt-in.
   - **Install or update** with
     `python3 .claude/hooks/install-hooks.py --user` (all your sessions) or
     `--project-local` (this checkout only). It edits only its own entry,

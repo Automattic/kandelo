@@ -148,9 +148,11 @@ Runs under 10 minutes: one foreground Bash call with output to a log file.
 Longer runs: use `scripts/agent-job start`. Interactive main sessions: run
 `scripts/agent-job wait <id> --timeout 0` once with Bash's
 `run_in_background`, then act on its single completion notification.
-Headless sessions and subagents repeat foreground `scripts/agent-job wait
-<id>` only when the wait-window notice says the job is still running
-(up to 9 minutes per call). `FAILED (exit 124)` is final, not a retry.
+Headless main sessions repeat foreground `scripts/agent-job wait <id>`
+(up to 9 minutes per call). Subagents use `wait <id> --timeout 240` for
+targeted work, one wait per Bash call; return known long jobs to the parent.
+Repeat only when the wait-window notice says the job is still running.
+`FAILED (exit 124)` is final, not a retry.
 To wait on another workspace's build, find it with
 `scripts/agent-job list --all` and wait on its id (or `wait --peer <text>`),
 not on its PID. After a selector wait times out, retry by its resolved id,

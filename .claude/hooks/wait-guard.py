@@ -8,6 +8,8 @@ Measured over Aug-Sep 2026 Kandelo transcripts (evals/build-waiting):
   - subagents running whole-tree builds in the foreground: a subagent's prompt
     cache lives 5 minutes, so every long blocking call rewrites its context
     (938M input-equivalent tokens in the baseline, the largest waiting cost).
+  - subagent agent-job waits whose windows outlive that cache: use 240 s
+    for targeted work, or return known long jobs to the parent.
 
 Each denial says what to do instead (scripts/agent-job). A command containing
 the marker `agent-job: allow-wait` passes; that override is logged, and the
@@ -41,8 +43,8 @@ import time
 # installed copies compare it with the checkout's to say they are stale, and
 # every hook-log.jsonl entry records it, so the keep rules can tell which
 # advice an agent was given. 1 = #1455, 2 = #1464 (neither had this line),
-# 3 = the stale-copy notice and this field.
-HOOK_VERSION = 3
+# 3 = the stale-copy notice and this field; 4 = subagent wait windows.
+HOOK_VERSION = 4
 VERSION_LINE = re.compile(r"^HOOK_VERSION = (\d+)$", re.M)
 LOG = os.path.expanduser(os.environ.get("KANDELO_AGENT_JOBS_DIR", "~/.cache/kandelo/agent-jobs"))
 # An escape hatch for the rare legitimate case the rules misjudge. Every
@@ -53,6 +55,9 @@ OVERRIDE = "agent-job: allow-wait"
 # turns. 30 s and up, followed by a look at the output, is the
 # turn-per-check pattern this hook exists to stop.
 POLL_SLEEP_SECONDS = 30
+# Leave scheduling/output margin below the observed five-minute subagent
+# cache lifetime. Main sessions have a longer cache and keep their windows.
+SUBAGENT_WAIT_SECONDS = 270
 
 # A loop waiting on `pgrep -f`. The loop's own shell has the pattern on
 # its command line, so pgrep always finds it and the wait never ends.
@@ -61,7 +66,7 @@ PGREP_WAITER = re.compile(r"\b(until|while)\b[^\n]*?\bpgrep\s+(-\w*\s+)*-\w*f")
 # turn-per-check poll. It is left to the other rules.
 LOOP = re.compile(r"\b(until|while|for)\b.*\bdo\b", re.S)
 PEEK = re.compile(r"tail|cat|grep|rg|wc|ls|ps|pgrep|lsof|du|head|stat|sed|awk")
-WRAPPER = re.compile(r"^(\S*dev-shell\.sh|bash|sh|zsh|-l|-e|-euo|-eu|pipefail|nohup|env|time|exec|command)$")
+WRAPPER = re.compile(r"^(\S*dev-shell\.sh|python3|python|bash|sh|zsh|-l|-e|-euo|-eu|pipefail|nohup|env|time|exec|command)$")
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Heredoc bodies (commit messages, inline scripts) are text, not commands.
 # Matching inside them denied `git commit` for mentioning `./run.sh setup`.
@@ -147,6 +152,42 @@ def whole_tree_run(cmd):
     return False
 
 
+def unsafe_subagent_wait(cmd):
+    """Bound requested agent-job wait time per Bash call, not per process.
+
+    Two short waits in one call can together expire the cache. This shell
+    tokenizer is deliberately limited; aliases, variables and arbitrary
+    scripts are not an enforcement boundary. Never inspect job records here:
+    a job that is done now can be running when a retry is launched.
+    """
+    total, loops = 0, 0
+    for toks in invoked_commands(cmd):
+        if toks[0] in ("while", "until", "for"):
+            loops += 1
+            toks = toks[1:]
+        elif toks[0] == "done":
+            loops = max(0, loops - 1)
+        if not toks:
+            continue
+        if os.path.basename(toks[0]) != "agent-job" or toks[1:2] != ["wait"]:
+            continue
+        if {"--help", "-h"} & set(toks[2:]):
+            continue
+        if loops:
+            return True
+        window = None
+        for i, tok in enumerate(toks[2:], 2):
+            if tok == "--timeout":
+                window = toks[i + 1] if i + 1 < len(toks) else None
+            elif tok.startswith("--timeout="):
+                window = tok.split("=", 1)[1]
+        # Missing/nonliteral bounds may be the 540 s default or unlimited.
+        if window is None or not window.isdigit() or int(window) == 0:
+            return True
+        total += int(window)
+    return total > SUBAGENT_WAIT_SECONDS
+
+
 def decide(payload):
     # Returns (rule, reason). A reason means deny, and it always says what to
     # do instead, because a bare denial just gets retried in another form.
@@ -173,9 +214,17 @@ def decide(payload):
         return "subagent-whole-tree", (
             "Subagents must not wait on whole-tree builds or full suites: a subagent's prompt cache expires "
             "after 5 minutes, so a long blocking call rewrites your whole context, and the parent session "
-            "can wait for free. Stop here and report back to your parent exactly what needs to be built or "
+            "has a longer-lived cache. Stop here and report back to your parent exactly what needs to be built or "
             "run (the command) and why; it will run it and give you the result. Per-package builds and "
             "single vitest files are fine to run yourself.")
+    if payload.get("agent_id") and unsafe_subagent_wait(cmd):
+        return "subagent-wait-window", (
+            "A subagent's prompt cache expires after about 5 minutes; agent-job wait defaults to 540 seconds. "
+            "For whole-tree builds, full suites or other known long jobs, return the job id and command to "
+            "your parent and let it wait. For targeted work you must finish here, use one foreground "
+            "`scripts/agent-job wait <id> --timeout 240` per Bash call (seconds, not milliseconds; maximum "
+            "270 seconds total). Repeat only after `agent-job: still running`, by the resolved id; "
+            "`FAILED (exit 124)` is final. Do not wrap waits in a loop, poll, or end your turn to wait.")
     commands = list(invoked_commands(cmd))
     sleeps = [int(t[1]) for t in commands if t[0] == "sleep" and len(t) > 1 and t[1].isdigit()]
     peeks = [t for t in commands if PEEK.fullmatch(os.path.basename(t[0]))]
