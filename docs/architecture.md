@@ -4511,6 +4511,15 @@ This backend is used by `apps/browser-demos/pages/network/`, which boots multipl
 
 `TcpNetworkBackend` uses Node.js `net.Socket` for external raw TCP. DNS uses `dns.lookup`. Node can therefore provide real socket-level TCP behavior for destinations outside the Kandelo process.
 
+The conformance runners select `OfflineEgressBackend`: it exposes the same
+guest internet interface as the browser while refusing external traffic.
+It also owns all guest TCP listener addresses, preventing the Node host's
+automatic TCP bridge from publishing them as physical host ports. Guest
+loopback stays in the kernel. Separate offline machines may therefore listen
+on the same guest port, including the allocator's initial ephemeral port
+49152, without opening `0.0.0.0:49152` on the developer's computer. Ordinary
+Node embedders that publish real host services retain their existing bridge.
+
 ### Browser
 
 Browsers cannot create external raw TCP or UDP sockets. Local loopback and `LocalVirtualNetwork` sockets work because they are virtual sockets behind the POSIX layer. External browser networking currently uses HTTP-oriented backends:
