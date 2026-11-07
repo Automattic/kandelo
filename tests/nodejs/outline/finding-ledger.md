@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 122 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 124 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 231 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -405,3 +405,34 @@ The accepted200engine excludes201–204; new guest JSAPI remains uncompiled and
 all-four-host conformance unestablished. No finding/family closes, no accepted
 boundary is invented and no overall/fullproduct rebuild ran. The nested guest
 Wasm backend remains in scope for the final phase.
+
+## Source205 receiver order and native signature-reference overlay
+
+STR-003/STR-004 gain a consumed SameProcess version2native-index/JS-constructor
+schedule and context-rooted receiver preflight/phase/finalization owner. Native
+custom slots and complete unique JavaScript coverage are validated before
+constructors; existing native transactions retain rollback. Version1remains
+readable. This prerequisite leaves registered sender rejection unchanged until
+the separately sealed sender/outcome slices are integrated and compiled.
+
+Nine current actual portable groups and14package checks pass; two native-only
+public cases do not establish candidate support. Nine prior successful tiny
+compiles plus one fresh exact-input compile are accounted once. Six historical
+mutation aborts remain negative observations. The initial root evidence-path
+setup error occurred before compilation and stays in raw logs.
+
+The second205slice changes controls only. Correct native callback/frame ownership
+passes the original byte-identical40groups,3lifecycle comparisons and52streaming
+groups; two unchanged upstream files eachsubject exit0 with their CLI-block skip
+retained and uncredited. The original39/40result remains a nonpass. Two prior
+successful tiny compiles are accounted once; no production source/engine input
+or recipe changes and no production runtime fix is inferred. Native private API
+and compiler-identity limitations remain explicit. C-009/C-015are original
+prose/range IDs, not newly recovered standalone definitions; their original
+crypto.md references and all unresolved metadata questions remain intact.
+
+The ledger distinguishes implementation prerequisites from control-only evidence.
+All357lexical IDs,417qualified definitions,52ranges and19families remain. No finding
+or family closes. Accepted200engine excludes201–205new source; guest JSAPI and
+all-four-host conformance remain unvalidated. No overall/fullproduct rebuild ran,
+and nested guest Wasm stays in scope for the final phase.

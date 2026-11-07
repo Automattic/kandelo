@@ -25,7 +25,7 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 122,
+    "sourceSliceRecords": 124,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 231
@@ -2403,6 +2403,15 @@
           "auditDocument": "tests/nodejs/audit/streams.md",
           "scope": "Actual automatic native endpoint/packet/data cycle retirement and bridge ownership prerequisite; no generic stream-transfer, full Worker lifecycle or guest/API closure",
           "closure": false
+        },
+        {
+          "slice": "host-receiver-order",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual ordered receiver/native map/constructor/phase prerequisite; no generic registered sender, WebStream transfer or Worker lifetime closure; combined original streams-contracts.md STR-003/STR-004 reference preserved as narrative",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -2439,6 +2448,15 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/streams.md",
           "scope": "Actual automatic native endpoint/packet/data cycle retirement and bridge ownership prerequisite; no generic stream-transfer, full Worker lifecycle or guest/API closure",
+          "closure": false
+        },
+        {
+          "slice": "host-receiver-order",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual ordered receiver/native map/constructor/phase prerequisite; no generic registered sender, WebStream transfer or Worker lifetime closure; combined original streams-contracts.md STR-003/STR-004 reference preserved as narrative",
           "closure": false
         }
       ],
@@ -5709,6 +5727,15 @@
           "auditDocument": "tests/nodejs/audit/crypto.md",
           "scope": "Actual sync/async one-shot SignJob provider/input/resource/queue ownership; component ALS/frame nonpass and queue-OOM/provider/guest obligations remain",
           "closure": false
+        },
+        {
+          "slice": "signature-frame-control",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Control-only native reference callback/frame evidence correction for existing one-shot source; not new production semantics, original-baseline reclassification or finding closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -5766,6 +5793,21 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/crypto.md",
           "scope": "Actual sync/async one-shot SignJob provider/input/resource/queue ownership; component ALS/frame nonpass and queue-OOM/provider/guest obligations remain",
+          "closure": false
+        },
+        {
+          "slice": "signature-frame-control",
+          "relation": "explicit-original-prose-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "originalProseRefs": [
+            {
+              "document": "tests/nodejs/audit/crypto.md",
+              "findingId": "C-009",
+              "line": 45
+            }
+          ],
+          "standaloneDefinitionRecovered": false,
+          "scope": "Control-only native reference callback/frame evidence correction for existing one-shot source; not new production semantics, original-baseline reclassification or finding closure",
           "closure": false
         }
       ],
@@ -6019,6 +6061,21 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/crypto.md",
           "scope": "Actual sync/async one-shot SignJob provider/input/resource/queue ownership; component ALS/frame nonpass and queue-OOM/provider/guest obligations remain",
+          "closure": false
+        },
+        {
+          "slice": "signature-frame-control",
+          "relation": "explicit-original-prose-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "originalProseRefs": [
+            {
+              "document": "tests/nodejs/audit/crypto.md",
+              "findingId": "C-015",
+              "line": 49
+            }
+          ],
+          "standaloneDefinitionRecovered": false,
+          "scope": "Control-only native reference callback/frame evidence correction for existing one-shot source; not new production semantics, original-baseline reclassification or finding closure",
           "closure": false
         }
       ],
@@ -21743,6 +21800,220 @@
         ]
       },
       "publicRequirementRecords": []
+    },
+    "host-receiver-order": {
+      "document": "tests/nodejs/outline/host-receiver-order-finding-progress.json",
+      "sha256": "7fe0f89595c9fd1fc3c124a74074716a378cf2153b197a59943c43a98337a987",
+      "recordedRevision": 205,
+      "explicitFindingIds": [
+        "STR-003",
+        "STR-004"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-hostorder205-source-r1/report.json",
+          "sha256": "d2c76f89be6f35142380d1a54337b97df1cdde2144038acd014337fef9ae6f5d",
+          "guardedInputs": 877,
+          "scope": "Actual ordered receiver/privatewire/phase owner prerequisite, not generic registered host/stream transfer support or guest/four-host conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-hostorder205-affected-r1.json",
+          "sha256": "cca1ea49b84c7d26797c3aea772a11f3d5a96f6a239f12c0f47b3b249c270dec",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-hostorder205-source-r1/report.json",
+          "sha256": "d2c76f89be6f35142380d1a54337b97df1cdde2144038acd014337fef9ae6f5d",
+          "portableOwnerGroups": 9,
+          "nativeOnlyPublicCases": 2,
+          "genericRegisteredSenderEnabled": false,
+          "newCompilerAttempts": 1,
+          "newCompilerFailures": 0,
+          "previousCompilerAttemptsIntegrated": 9,
+          "previousCompilerFailuresIntegrated": 0,
+          "historicalExpectedMutationAborts": 6,
+          "compiledControl": {
+            "report": ".context/node26-hostorder205-source-r1/controls-r2/compiled-inputs.json",
+            "sha256": "e74ed460536eefa69fe80c4d4be184f36e82a6824e1e15e790ed9fb3995fcf7c",
+            "inputCount": 782,
+            "artifact": {
+              "path": ".context/node26-hostorder205-source-r1/controls-r2/control",
+              "sha256": "a9ddad41a4f0171c0a2271872796ef8a528fdc2d087e09a9cec2183918ae4652",
+              "bytes": 38200
+            }
+          },
+          "unchangedStyleCheckerPassed": true,
+          "productionJSAPICompiled": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Actual portable receiver-order owner and source/staging checks; native public controls establish valid cases, not candidate transfer or guest conformance."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/host-transfer-order-agent/handoff/report.json",
+          "sha256": "eddf2c084b0a1f4be7be02eb0fb8bc924abc3a48a54931493cf9d63268f716b9",
+          "reusedEvidence": true,
+          "scope": "Immutable ordered receiver wire/phase prerequisite;9portable groups overlap across3source revisions,9successful tiny compiles/3positive executions/6expected mutation aborts. Native-only public cases establish validity, not candidate support; no JSAPI compiler/guest proof."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/host-receiver-order-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/host-receiver-order-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "SameProcess private version2wire carries actual native transfer-map indices and local JS constructor indices; version1 remains readable",
+        "Preflight complete descriptor strings/schedule before constructors; require unique complete JS coverage and exact actual custom native slots",
+        "Actual context-rooted receiver placeholders are created in scheduled order around real native transfer reads; main graph and payload finalization consume the frozen order",
+        "Unique noncopyable/nonmovable phase owner advances native completion only after real success; constructor/native failure and late mutation stop later work",
+        "Existing native packet/read owners keep rollback; no JS roots/pointers/global public registration tokens cross packets",
+        "Actual source204TLS/201terminal/197collector/200Root fixes are retained; normal declared/staged VM header and paired private writer/reader patch"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/host-receiver-order-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Complete generic explicit host admission/private identity/source/duplicate/mark/error order and nested kTransferList registry; no type-name or AbortSignal-specific allowances",
+        "Register all transferred JS graph identities including unreachable entries without JS roots crossing packets",
+        "Serialize main graph, detach all buffers, invoke actual JS kTransfer/native moves in combined order and serialize deferred payloads with same memory graph; emit that real combined version2 schedule",
+        "Then validate actual context-local constructors/deserializers/once-only finalization/abort and source/native/receiver mutations through compiled engine and unchanged upstream/native controls",
+        "Actual FileHandle transferable fd/native lease owner, complete stream cancellation/backpressure/messageerror/fatal/GC/OOM/realm/Worker behavior and all4host artifact conformance remain gaps",
+        "Version2 format is private SameProcess, not persistent V8/SM bytes. Old readers reject version2; normal artifact coherence and recipe revision required. No kernel ABI/pin change.",
+        "The pure owner can schedule interleaved constructors; current local writer still emits only native-then-clone order because sender JS transfers remain disabled. This prerequisite is not generic transfer support.",
+        "Actual native read/pointer/sidecar identity validation and rollback remain in existing owners; no portable phase test establishes production JSAPI execution."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "receiver-implementation-prerequisite",
+      "auditDocument": "tests/nodejs/audit/streams.md",
+      "findingScope": "Partial actual ordered receiver/native map/constructor/phase prerequisite; no generic registered sender, WebStream transfer or Worker lifetime closure; combined original streams-contracts.md STR-003/STR-004 reference preserved as narrative",
+      "additionalAuditDocuments": {},
+      "publicRequirementRecords": []
+    },
+    "signature-frame-control": {
+      "document": "tests/nodejs/outline/signature-frame-control-finding-progress.json",
+      "sha256": "42fdcf3447147d14701f106419d6925fde7872d18b8f7c6e1e07101c92b07166",
+      "recordedRevision": 205,
+      "explicitFindingIds": [
+        "C-015",
+        "C-008",
+        "C-009"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-signframe205-source-r1/report.json",
+          "sha256": "b9b7bb6e7625482ccf63dfc6dc81e326ea94e0f71e21b32d9939208f3a0a7151",
+          "guardedInputs": 877,
+          "scope": "Control-only actual captured native callback frame/IDs/resources, not production runtime change, original-baseline reclassification or guest/four-host conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-hostorder205-affected-r1.json",
+          "sha256": "cca1ea49b84c7d26797c3aea772a11f3d5a96f6a239f12c0f47b3b249c270dec",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": true
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-signframe205-source-r1/report.json",
+          "sha256": "b9b7bb6e7625482ccf63dfc6dc81e326ea94e0f71e21b32d9939208f3a0a7151",
+          "oneShotGroups": 40,
+          "oneShotPass": 40,
+          "oneShotNonpass": 0,
+          "originalAssertionsUnchanged": true,
+          "capturedFrameLifecyclePairs": 3,
+          "streamingSignatureGroups": 52,
+          "unchangedUpstreamFilesPerSubject": 2,
+          "upstreamResults": [
+            {
+              "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-sign-verify.js",
+              "sha256": "42870204ed904f967d973efbdef6a0430c2af0d7b141d143ceb8c837e43a1912",
+              "subject": "native",
+              "exit": 0,
+              "assertionsUnchanged": true,
+              "cliBlockSkipped": true,
+              "skipCountsAsPassingCoverage": false
+            },
+            {
+              "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-sign-verify.js",
+              "sha256": "42870204ed904f967d973efbdef6a0430c2af0d7b141d143ceb8c837e43a1912",
+              "subject": "candidate",
+              "exit": 0,
+              "assertionsUnchanged": true,
+              "cliBlockSkipped": true,
+              "skipCountsAsPassingCoverage": false
+            },
+            {
+              "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-verify-failure.js",
+              "sha256": "b288011b7753da4230cb744399515574a82e359b5a4875c6ef2464068f44dbbb",
+              "subject": "native",
+              "exit": 0,
+              "assertionsUnchanged": true,
+              "cliBlockSkipped": false,
+              "skipCountsAsPassingCoverage": false
+            },
+            {
+              "file": ".context/nodejs-lts-cache-v2/node-v26.13.0/test/parallel/test-crypto-verify-failure.js",
+              "sha256": "b288011b7753da4230cb744399515574a82e359b5a4875c6ef2464068f44dbbb",
+              "subject": "candidate",
+              "exit": 0,
+              "assertionsUnchanged": true,
+              "cliBlockSkipped": false,
+              "skipCountsAsPassingCoverage": false
+            }
+          ],
+          "original39of40Preserved": true,
+          "productionRuntimeChanged": false,
+          "engineInputOrRevisionChanged": false,
+          "newCompilerAttempts": 0,
+          "previousHelperCompilerAttemptsIntegrated": 2,
+          "previousHelperCompilerFailuresIntegrated": 0,
+          "compilerIdentityScope": "Exact native artifact, dependency file and frozen local snapshots; full contemporaneous system-header hashes were not recorded by this capsule.",
+          "unchangedStyleCheckerPassed": true,
+          "productionJSAPICompiled": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Control-only callback route/frame owner correction over genuine native Node/V8/libuv/OpenSSL dependencies. No production runtime fix or guest conformance follows."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/signjob-frame-owner-agent/report.json",
+          "sha256": "f51e12e66f76ad9b92cdb87db53ad36cb1f956dabef3ddff7a4c0cbf6114a773",
+          "reusedEvidence": true,
+          "scope": "Immutable control-only source/evidence, standalone native route observation, preserved39/40and corrected40/40/3paired lifecycle controls. Two prior successful tiny helper compiles integrated once; no production engine or guest proof."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/signature-frame-control-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/signature-frame-control-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Control-only component captures genuine V8 continuation frame immediately before actual native resource init",
+        "Exact source/binary-pinned private callback overload receives actual AsyncResource ID/trigger/resource/receiver/destroy and captured frame, matching target CryptoJob route",
+        "Original40assertion groups remain byte-identical; added3paired native/candidate lifecycle controls exercise init/before/callback frame mutation/restoration and destruction",
+        "Standalone no-Kandelo native public-vs-explicit-frame/crypto experiment preserves the observed mismatch without upstream fault attribution",
+        "No runtime/engine/bundle/registry/pin/source revision or guest implementation behavior changes; actual production FsRequestFrame source trace remains unvalidated at runtime"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/signature-frame-control-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual guest FsRequestFrame capture/root/realm/exception/fatal semantics require identified-artifact runtime execution",
+        "Guest callback scope restoration under hooks, GC, result conversion failure, shutdown and workers unvalidated",
+        "No four-host runtime acceptance inferred from current compiled engine200 or portable native component",
+        "Target/source/ABI/registry/package/engine/runtime/TLS/terminal/clone production inputs unchanged",
+        "Private native callback entry is a precisely pinned control dependency, not production Kandelo code; contemporaneous full system-header content hashes were not retained by the sealed helper, only dependency-file and frozen local source identities",
+        "Conditional OpenSSL CLI block in sign-verify remains skipped in each subject and is not credited as compatibility coverage"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "native-reference-control-correction",
+      "auditDocument": "tests/nodejs/audit/crypto.md",
+      "findingScope": "Control-only native reference callback/frame evidence correction for existing one-shot source; not new production semantics, original-baseline reclassification or finding closure",
+      "additionalAuditDocuments": {},
+      "publicRequirementRecords": []
     }
   },
   "dependencyNarratives": {
@@ -23939,6 +24210,31 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current204links real203opaque TLS ownership and204retained read material to immutable qualified findings. Accepted200build remains separate; new source/qualified links do not close runtime/API findings."
+      },
+      {
+        "at": "2026-11-07T10:00:52.422466+00:00",
+        "sourceCheckpoint": 205,
+        "sourceHead": "480041701b2054536426883b4453139a4dfb9b75",
+        "addedSourceSlices": [
+          "host-receiver-order",
+          "signature-frame-control"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "b5149bffb4ed7aa4757a775b5c85fb28d6dafd0142703756881335cd83967fc6"
+        },
+        "latestAcceptedEngine": 200,
+        "acceptedEngineEvidence": {
+          "path": "tests/nodejs/outline/engine200-build-result.json",
+          "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5"
+        },
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current205links real receiver-order prerequisite and control-only native signature-frame evidence. Prose-only C-009/C-015references remain unresolved as standalone definitions; no new definitions/API closure invented. Accepted200excludes newer source."
       }
     ]
   }
