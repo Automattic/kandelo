@@ -403,6 +403,9 @@ and FrankenPHP classic services, or FrankenPHP+Caddy with
 explicit PHP pool capacity for both services (`--php-workers=2` by default).
 The shipped defaults differ: one FPM child and two FrankenPHP threads.
 Those defaults must be a separate user comparison, not an equal-pool claim.
+Browser composition preserves the configured pool when it fits the host's
+pre-fork limit. If that limit lowers the pool, the comparison fails its
+effective-capacity check instead of accepting unequal settings.
 Unlike the `wordpress` suite above, it measures complete
 dynamic homepage responses through the actual dinit service stacks, once on
 the Node host and once through the Chromium browser demo. It verifies that

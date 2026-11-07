@@ -3676,6 +3676,12 @@ uncompressed code or data. Building `harper` prepares the binaries, and
 image gains these references when the shell image is next rebuilt.
 
 Node, WordPress, WordPress on FrankenPHP, and LAMP are optional demo profiles.
+During browser composition, the host limits a single explicit static PHP-FPM pool
+to its memory profile's pre-fork capacity. It preserves a smaller configured
+pool and every other FPM setting. Dynamic pools, includes, environment expressions and
+multiple-pool configurations remain unchanged and use ordinary process
+budget enforcement; the composer does not replace them with a template.
+
 The WordPress image offers three profiles using different dinit targets:
 `wordpress-sqlite` starts nginx/PHP-FPM, `wordpress-frankenphp` starts a
 small Go HTTP server embedding FrankenPHP, and `wordpress-frankenphp-caddy`

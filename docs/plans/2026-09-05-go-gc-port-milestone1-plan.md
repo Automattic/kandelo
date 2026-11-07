@@ -18,6 +18,16 @@ kept frozen in its own checkout; the comparison change is not integrated
 into the primary preview or draft PR branch yet. No performance result or
 visitor-cache behavior is claimed.
 
+The actual smoke then passes both Node services but rejects the browser's
+FPM capacity: the composer rewrites the configured two-worker pool to six.
+That is stronger evidence than the earlier image-only audit; shipped FPM
+configuration is not the final browser configuration. The composer correction
+now caps a single explicit pool while preserving smaller pools and all other
+settings. Configurations it cannot safely recognize remain unchanged for
+ordinary FPM/process-budget handling. Twenty-two configuration cases pass;
+the corrected real browser rerun is still required. This changes Kandelo's
+configuration handling, not PHP or FrankenPHP source.
+
 **Workflow update:** main's campaign checkpoints and per-run validation
 isolation are merged. Both offline-listener fixtures are retained under
 distinct names, with one shared backend implementation. Post-merge checks
