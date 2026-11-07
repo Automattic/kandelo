@@ -272,6 +272,12 @@ Coordination check before creating the package: a util-linux session was noted a
 
 **One bump, program ABI 55 → 56** (`crates/program-abi/src/lib.rs:227`; `crates/shared/src/lib.rs` re-exports it), with a regenerated `abi/snapshot.json` in the same change.
 
+**Correction (2026-11-07), after implementation.** Only the second reason below was ever real. The snapshot records nothing about `VirtualDevice`, its negative `host_handle` sentinels, or the devfs entry list — verified by searching every section of `abi/snapshot.json` for `kmsg`, `VirtualDevice` and `host_handle`, which matches nothing. Adding `/dev/kmsg` therefore never moved the program surface, and neither does adding a real `/dev/console`. The three sections that actually moved (`syscalls`, `syscall_arg_descriptors`, `channel_scalar_contract`) all came from routing the syscall.
+
+A device becomes program surface only when it has a guest-visible *data* contract recorded in its own section, as `clipboard_device_abi` does. A sentinel is internal OFD backing identity and a devfs listing is synthesised, so neither is part of what a program is compiled against.
+
+The epoch was subsequently withdrawn entirely: program ABI stayed at 55 behind an affirmed-predecessor entry, and the bump that briefly existed is described in `docs/abi-versioning.md`. What follows is the original reasoning, with its first reason now known to be mistaken:
+
 Two independent reasons, which is the natural shape rather than a batching contrivance:
 
 1. New `VirtualDevice` sentinels (`Kmsg` at −13, and a real console device), which are OFD backing identities that `fork` serializes.
