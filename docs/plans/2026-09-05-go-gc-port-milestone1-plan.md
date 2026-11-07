@@ -25,12 +25,18 @@ explicitly clearing pages appended by its own `Memory.grow`, using that
 operation's actual previous page count. Reused pages, including another
 thread's growth, still need clearing. The supported helper retains its void
 return value. The experiment passes 239 source tests, six browser helper
-cases (memory32 and memory64 on all three engines), and four actual Node C
+cases (memory32 and memory64 on all three engines), and six actual Node C
 mmap cases using freshly compiled primary-SDK fixtures and frozen kernel
-`a991e3cf`. The browser C gate is in progress after correcting a private
-harness's duplicate Playwright import. This host change is not adopted;
-real zeroing/reuse coverage, footprint measurements, final-image lifecycle
-and performance gates remain required. No memory benefit is claimed.
+`a991e3cf`. The expanded browser C gate passes 18/18, zero skips/flakes,
+in 15.8 seconds: private/shared file mappings, fixed-address reuse, partial
+file-page tails, PROT_NONE followed by mprotect, and in-place/moving remap
+prefix/tail preservation. A private harness initially imports a duplicate
+Playwright copy, then starts Vite in the wrong directory; both failed or
+warned attempts remain separate. The corrected run has no dependency-scan
+failure. Evidence is `.context/go-mmap-fresh-pages/.context/`. This host
+change is not adopted; maintained test integration, inter-isolate growth,
+footprint measurements, final-image lifecycle, conformance and performance
+gates remain required. No memory benefit is claimed.
 
 **Cgo package reproducibility — stable archive prefixes:** the independent
 same-key classic 38 rebuild fails byte equivalence while preserving the
