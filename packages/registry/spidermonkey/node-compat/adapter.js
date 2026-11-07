@@ -477,8 +477,8 @@
                 }
             }
         },
-        configureClone(symbol, errorFactory, serialize, create, deserialize) {
-            return native.configureClone(symbol, errorFactory, serialize, create, deserialize);
+        configureClone(...args) {
+            return native.configureClone(...args);
         },
         createCloneModeSymbol() { return native.createCloneModeSymbol(); },
         markBufferUntransferable(buffer) { return native.markBufferUntransferable(buffer); },

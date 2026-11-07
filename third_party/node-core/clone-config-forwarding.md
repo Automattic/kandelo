@@ -1,0 +1,9 @@
+# Preserve the complete clone configuration boundary
+
+The pinned clone protocol passes one private mode symbol and five callable hooks, including nested transfer-list discovery. The native embedding requires all six arguments. The old curated adapter accepted and forwarded only five, so accepted engine238 guest startup stopped at `Clone configuration requires callable hooks` before the ordinary Node bootstrap completed. Three original guest failures and their exact artifacts remain recorded; none establish key-generation, stream or clone runtime conformance.
+
+The adapter now forwards every actual argument to the existing native receiver. The native callable checks and serialization assertions stay intact. This also preserves later opaque arguments instead of losing them at a handwritten arity boundary.
+
+The permanent `tests/clone-config-forwarding/control.cjs` extracts and executes the actual curated method over an explicit native-facing argument consumer. It checks all six original identities, the native receiver, real invocation of the nested hook, an extra opaque argument and exact propagation of a native sentinel error. It is a forwarding component control, not the SpiderMonkey clone backend or guest conformance. The old method fails two of its three groups; the corrected method passes all three.
+
+The earlier private stream audit followed the caller and native owners but omitted this outer wrapper. Its end-to-end source-activation implication is withdrawn by the separately sealed correction239 receipt; that original audit seal is preserved. Full stream/FileHandle/Worker transfer, native error/GC/realm semantics and four-host conformance remain separate obligations. A limited arity survey can identify other review candidates but cannot prove optional-argument contracts or replace execution.

@@ -7235,3 +7235,7 @@ TLS certificate access now snapshots actual peer/local SSL certificate material 
 ### Performance milestones record their actual lifecycle events
 
 Node timing now reads the actual per-owner monotonic clock and marks native entry, environment creation, pre-user bootstrap completion and final natural loop exit at their owning seams. Existing loopStart and idle accounting are preserved; explicit or fatal exits do not invent a natural loop-exit mark. v8Start stays unset because the guest runs SpiderMonkey. A real Worker bootstrap/loop ordering mismatch remains documented. One portable clock program and four pinned-native lifecycle references pass, alongside source staging and package-input checks; new guest hooks remain unexecuted and Observer queue/GC behavior is unchanged.
+
+### Clone configuration preserves every native hook
+
+The curated SpiderMonkey adapter forwards every clone configuration argument to the existing native receiver. The previous five-argument wrapper dropped nested transfer discovery, so the six-argument native callable validation rejected guest bootstrap before user code. Native validation remains intact. A permanent forwarding component control checks hook identities, receiver, invocation and error propagation; it does not execute SpiderMonkey. Actual guest startup, clone/stream/Worker lifecycle and all four hosts still require identified-artifact validation.

@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source239 repairs the actual curated clone configuration boundary that blocked accepted238 guest startup. Three forwarding component groups pass; guest startup remains unvalidated for239.
+See [source scope](clone-configuration-forwarding-integration.md).
+
 Source238 adds actual lifecycle performance milestones. One portable clock program and four native-reference subjects pass; Worker bootstrap/loop ordering and guest execution remain open.
 See [source scope](performance-milestone-integration.md).
 
