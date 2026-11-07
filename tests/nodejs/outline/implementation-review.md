@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source190 integrates real async-spawn preparation/rollback, own-property pipe publication and ordered source lifetime. Nineteen actual-POSIX groups, unchanged alias diagnostic/upstream spawn-error file and23package/child checks pass. Current JSAPI/kernel/guest/four-host conformance and remaining child semantics stay open.
+See [source scope](spawn-preparation-action-order-integration.md).
+
 Source189 integrates the genuine sys/util alias and pinned lazy initialization/warning owner. Current focused CJS/native differential and unchanged test-sys.js controls pass, with the separate default ESM fixture failures retained. Current guest/four-host conformance is unestablished.
 See [source scope](sys-alias-owner-integration.md).
 

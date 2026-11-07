@@ -68,7 +68,7 @@ describe.skipIf(process.versions.node !== target.version)('child signal and exit
   });
 
   it('preserves ESRCH, EINVAL, ENOSYS and EPERM policy', () => {
-    for (const [errno, code] of [[3, 'ESRCH'], [22, 'EINVAL'], [38, 'ENOSYS'], [1, 'EPERM']] as const) {
+    for (const [errno, code] of [[constants.errno.ESRCH, 'ESRCH'], [constants.errno.EINVAL, 'EINVAL'], [constants.errno.ENOSYS, 'ENOSYS'], [constants.errno.EPERM, 'EPERM']] as const) {
       const actual = subject(errno, code), expected = reference(code);
       expect(result(() => actual.child.kill(0))).toEqual(result(() => expected.child.kill(0)));
       expect(actual.child.killed).toBe(expected.child.killed);

@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0138-node-pipe-own-publication.patch",
   "third_party/node-core/sys-platform-adapter.js",
   "third_party/node-core/upstream/sys.js",
   "third_party/node-core/ffi-borrowed-backing.h",
@@ -673,4 +674,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 189
+revision = 190

@@ -2858,6 +2858,7 @@ const querystring = _nodeQueryCodecs.require('querystring');
 // ============================================================
 
 const child_process = (() => {
+    const _childPrimordials = _createNodePrimordials();
     function syncError(code, message, range = false) {
         const error = range ? new RangeError(message) : new TypeError(message);
         error.code = code; return error;
@@ -3062,11 +3063,16 @@ const child_process = (() => {
     }
 
     function _spawn(command, args, options) {
-        // Node signature: spawn(cmd, [args], [options]) — args may be omitted and
-        // options passed in its place. Extract options BEFORE normalizing args.
+        // Preparation owns all temporary pipe ends until launch succeeds.
+        // Read caller options/getters before acquiring real descriptors, as the
+        // target normalizer does before libuv materializes its pipe handles.
         if (args && !Array.isArray(args)) { options = args; args = []; }
         args = Array.isArray(args) ? args : [];
-        options = options || {};
+        if (options === undefined) options = {};
+        else _nodeValues.validators.validateObject(options, 'options');
+        options = { __proto__: null, ...options };
+        let cwd = options.cwd;
+        if (cwd != null) cwd = _nodeFsStats.getValidatedPath(cwd, 'options.cwd');
         let file = command, argv;
         if (options.shell) { file = '/bin/sh'; argv = ['/bin/sh', '-c', [command].concat(args).join(' ')]; }
         else { argv = [command].concat(args); }
@@ -3074,40 +3080,39 @@ const child_process = (() => {
             ? Object.keys(options.env).map(k => k + '=' + options.env[k])
             : Object.keys(process.env).map(k => k + '=' + process.env[k]);
 
-        // Normalize stdio to a 3-entry array of 'pipe'|'ignore'|'inherit'|<int fd>.
-        let stdio = options.stdio;
-        if (stdio === 'inherit' || stdio === 'ignore' || stdio === 'pipe') stdio = [stdio, stdio, stdio];
-        if (!Array.isArray(stdio)) stdio = ['pipe', 'pipe', 'pipe'];
-        while (stdio.length < 3) stdio.push('pipe');
-
-        const actions = [];
-        const parentClose = [];         // fds to close in the parent after spawn
-        const legs = [null, null, null]; // parent-side fd per stdio index (for 'pipe')
+        let stdio = options.stdio || 'pipe';
+        if (typeof stdio === 'string') {
+            if (!['pipe', 'overlapped', 'ignore', 'inherit'].includes(stdio))
+                throw new _nodeValues.errors.codes.ERR_INVALID_ARG_VALUE('stdio', stdio);
+            stdio = [stdio, stdio, stdio];
+        } else if (!Array.isArray(stdio)) {
+            throw new _nodeValues.errors.codes.ERR_INVALID_ARG_VALUE('stdio', stdio);
+        }
+        while (stdio.length < 3) _childPrimordials.ArrayPrototypePush(stdio, undefined);
+        // Normalize the supported three entries before physical pipe creation.
+        // A later index/fd getter must not lose to an earlier EMFILE, or leak
+        // descriptors. Extra fd/IPC/wrapped-handle support remains separate.
+        const prepared = [null, null, null];
         for (let i = 0; i < 3; i++) {
-            const s = stdio[i];
-            if (s === 'pipe') {
-                const [r, w] = _nn.__kandeloPipe(i !== 0, 3);
-                // fd 0: child reads r, parent writes w. fds 1/2: child writes w, parent reads r.
-                const childEnd = (i === 0) ? r : w;
-                const parentEnd = (i === 0) ? w : r;
-                legs[i] = parentEnd;
-                actions.push({ op: 'dup2', from: childEnd, to: i });
-                actions.push({ op: 'close', fd: r });
-                actions.push({ op: 'close', fd: w });
-                parentClose.push(childEnd);
-            } else if (s === 'ignore') {
-                actions.push({ op: 'open', fd: i, path: '/dev/null', flags: (i === 0 ? 0 : 1), mode: 0 });
-            } else if (s === 'inherit') {
-                actions.push({ op: 'dup2', from: i, to: i });
-            } else if (typeof s === 'number') {
-                actions.push({ op: 'dup2', from: s, to: i });
+            if (!(i in stdio)) continue;
+            let mode = stdio[i];
+            mode ??= 'pipe';
+            if (mode === 'pipe' || mode === 'overlapped' || (typeof mode === 'number' && mode < 0)) {
+                prepared[i] = { mode: 'pipe' };
+            } else if (mode === 'ignore' || mode === 'inherit') {
+                prepared[i] = { mode };
+            } else if (typeof mode === 'number' || typeof mode.fd === 'number') {
+                // Preserve the target's two fd-getter reads and ordinary
+                // native integer conversion; do not prevalidate descriptor
+                // liveness or reserve numeric descriptor identities.
+                prepared[i] = { mode: 'fd', fd: typeof mode === 'number' ? mode : mode.fd };
+            } else {
+                throw new _nodeValues.errors.codes.ERR_INVALID_ARG_VALUE('stdio', mode);
             }
         }
-        if (options.cwd) actions.push({ op: 'chdir', path: String(options.cwd) });
 
         const child = new child_process.ChildProcess();
-        child.stdin = null; child.stdout = null; child.stderr = null;
-        child.pid = undefined; child.exitCode = null; child.signalCode = null;
+        child.exitCode = null; child.signalCode = null;
         child.spawnfile = file; child.spawnargs = argv; child.killed = false; child.connected = false;
         let openReads = 0, exited = false, exitInfo = null, closed = false;
         function _maybeClose() {
@@ -3116,43 +3121,105 @@ const child_process = (() => {
                 child.emit('close', exitInfo.code, exitInfo.signal);
             }
         }
-
-        let pid;
-        try { pid = _spawnWithPath(file, argv, env, actions, options.cwd && String(options.cwd), {detached:!!options.detached}); }
-        catch (err) {
-            // Close every pipe fd already created for this (failed) spawn — both
-            // the child ends (parentClose) and the parent ends (legs). Without
-            // this, a failed spawn (e.g. ENOENT for a missing binary) leaks up
-            // to 6 fds on default 3x'pipe' stdio; a retry loop against a missing
-            // tool then exhausts fds (EMFILE).
-            for (const fd of parentClose) { try { _nn.__kandeloFdClose(fd); } catch (_) {} }
-            for (const fd of legs) { if (fd != null) { try { _nn.__kandeloFdClose(fd); } catch (_) {} } }
-            const status = err && typeof err.errno === 'number' ? -Math.abs(err.errno) : null;
-            if (status !== null) {
-                err = new _nodeValues.errors.ErrnoException(status, 'spawn ' + file);
-                err.path = file; err.spawnargs = argv.slice(1);
+        const actions = [], parentClose = [-1, -1, -1], legs = [null, null, null];
+        // These fixed own data slots record both ends before any subsequent
+        // allocation/callback. Do not adopt an owned native pair through a
+        // user-controlled Array iterator or an allocating push operation.
+        const pipeReads = [-1, -1, -1], pipeWrites = [-1, -1, -1];
+        function rollbackPipes() {
+            for (let i = 0; i < 3; i++) {
+                const read = pipeReads[i], write = pipeWrites[i];
+                pipeReads[i] = pipeWrites[i] = -1;
+                if (read >= 0) { try { _nn.__kandeloFdClose(read); } catch (_) {} }
+                if (write >= 0) { try { _nn.__kandeloFdClose(write); } catch (_) {} }
             }
-            child.exitCode = status;
-            exited = true; exitInfo = { code: status, signal: null };
-            // These descriptor-less stream owners are already closed. Writes
-            // cannot be acknowledged as successful output to a failed process.
-            child.stdin = legs[0] == null ? null : new stream.Writable({ write(_chunk, _encoding, cb) {
-                cb(new _nodeValues.errors.codes.ERR_STREAM_DESTROYED('write'));
-            } });
-            child.stdout = legs[1] == null ? null : new stream.Readable({ read() {} });
-            child.stderr = legs[2] == null ? null : new stream.Readable({ read() {} });
-            child.stdio = [child.stdin, child.stdout, child.stderr];
-            for (const owner of child.stdio) { if (owner) owner.destroy(); }
+        }
+        function failedLaunch(error) {
+            // Only real native Error errno data is an operation outcome.
+            // Unknown JS exceptions keep their original value and identity;
+            // inherited/accessor errno fields must not be invoked here.
+            if (!_nn.isNativeError(error)) throw error;
+            const descriptor = _childPrimordials.ObjectGetOwnPropertyDescriptor(error, 'errno');
+            if (!descriptor || typeof descriptor.value !== 'number') throw error;
+            const status = -Math.abs(descriptor.value);
+            const code = _nodeValues.util.getSystemErrorName(status);
+            if (code !== 'EACCES' && code !== 'EAGAIN' && code !== 'EMFILE' && code !== 'ENFILE' && code !== 'ENOENT')
+                throw new _nodeValues.errors.ErrnoException(status, 'spawn');
+            const limit = code === 'EMFILE' || code === 'ENFILE';
+            if (!limit) {
+                child.pid = undefined;
+                child.stdin = legs[0] == null ? null : new stream.Writable({ write(_chunk, _encoding, cb) {
+                    cb(new _nodeValues.errors.codes.ERR_STREAM_DESTROYED('write'));
+                } });
+                child.stdout = legs[1] == null ? null : new stream.Readable({ read() {} });
+                child.stderr = legs[2] == null ? null : new stream.Readable({ read() {} });
+                child.stdio = [child.stdin, child.stdout, child.stderr];
+            }
             child.kill = function(sig) {
                 if (sig !== 0) _nodeValues.util.convertToValidSignal(sig === undefined ? 'SIGTERM' : sig);
                 return false;
             };
             child.ref = child.unref = function() { return this; };
-            process.nextTick(() => { child.emit('error', err); _maybeClose(); });
+            exited = true; exitInfo = { code: status, signal: null };
+            process.nextTick(() => {
+                child.exitCode = status;
+                if (!limit) for (const owner of child.stdio) { if (owner) owner.destroy(); }
+                // The target constructs runtime errors in its queued onexit
+                // callback and observes the actual mutable public metadata.
+                const operationError = new _nodeValues.errors.ErrnoException(status, 'spawn ' + child.spawnfile);
+                if (child.spawnfile) operationError.path = child.spawnfile;
+                operationError.spawnargs = _childPrimordials.ArrayPrototypeSlice(child.spawnargs, 1);
+                child.emit('error', operationError); _maybeClose();
+            });
             return child;
         }
+
+        let pipeFailure = false;
+        try {
+            for (let i = 0; i < 3; i++) {
+                const entry = prepared[i];
+                if (entry === null) continue;
+                if (entry.mode === 'pipe') {
+                    let pair;
+                    try { pair = _nn.__kandeloPipe(i !== 0, 3); }
+                    catch (error) { pipeFailure = true; throw error; }
+                    pipeReads[i] = pair[0]; pipeWrites[i] = pair[1];
+                    const r = pipeReads[i], w = pipeWrites[i];
+                    const childEnd = i === 0 ? r : w, parentEnd = i === 0 ? w : r;
+                    legs[i] = parentEnd; parentClose[i] = childEnd;
+                    _childPrimordials.ArrayPrototypePush(actions, { op: 'dup2', from: childEnd, to: i });
+                } else if (entry.mode === 'ignore') {
+                    _childPrimordials.ArrayPrototypePush(actions, { op: 'open', fd: i, path: '/dev/null', flags: i === 0 ? 0 : 1, mode: 0 });
+                } else {
+                    _childPrimordials.ArrayPrototypePush(actions, { op: 'dup2', from: entry.mode === 'inherit' ? i : entry.fd, to: i });
+                }
+            }
+            // A later inherited numeric fd may genuinely alias an earlier
+            // prepared pipe source. Keep all owned sources live until every
+            // stdio placement action has consumed its actual descriptor.
+            for (let i = 0; i < 3; i++) {
+                if (pipeReads[i] < 0) continue;
+                _childPrimordials.ArrayPrototypePush(actions,
+                    { op: 'close', fd: pipeReads[i] }, { op: 'close', fd: pipeWrites[i] });
+            }
+            if (cwd) _childPrimordials.ArrayPrototypePush(actions, { op: 'chdir', path: _childPrimordials.String(cwd) });
+        } catch (error) {
+            rollbackPipes();
+            if (pipeFailure) return failedLaunch(error);
+            throw error;
+        }
+        let pid;
+        try { pid = _spawnWithPath(file, argv, env, actions, cwd && _childPrimordials.String(cwd), { detached: !!options.detached }); }
+        catch (error) { rollbackPipes(); return failedLaunch(error); }
         child.pid = pid;
-        for (const fd of parentClose) { try { _nn.__kandeloFdClose(fd); } catch (_) {} }
+        child.stdin = null;
+        for (let i = 0; i < 3; i++) {
+            const fd = parentClose[i];
+            if (fd < 0) continue;
+            if (pipeReads[i] === fd) pipeReads[i] = -1;
+            if (pipeWrites[i] === fd) pipeWrites[i] = -1;
+            try { _nn.__kandeloFdClose(fd); } catch (_) {}
+        }
 
         // stdin (fd 0 pipe): Writable -> fdWrite; end -> fdClose delivers EOF.
         if (legs[0] != null) {

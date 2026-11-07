@@ -1,0 +1,13 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -1528,8 +1528,8 @@
+   if (!arr) return false;
+   RootedValue readVal(cx, Int32Value(fds[0]));
+   RootedValue writeVal(cx, Int32Value(fds[1]));
+-  if (!JS_SetElement(cx, arr, 0, readVal) ||
+-      !JS_SetElement(cx, arr, 1, writeVal)) return false;
++  if (!JS_DefineElement(cx, arr, 0, readVal, JSPROP_ENUMERATE) ||
++      !JS_DefineElement(cx, arr, 1, writeVal, JSPROP_ENUMERATE)) return false;
+   args.rval().setObject(*arr);
+   cleanup.release();
+   return true;
