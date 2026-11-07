@@ -481,7 +481,7 @@ describe("stopped process Worker launch gate", () => {
     expect(onExit).toHaveBeenCalledWith(41, 139);
   });
 
-  it("rolls back only a deferred clone when its thread Worker cannot start", async () => {
+  it.each([false, true])("rolls back only a deferred clone when its thread Worker cannot start (replaced parent word=%s)", async (replaceParentWord) => {
     let processState = 1;
     const memory = createSharedMemory();
     const channel = {
@@ -541,6 +541,7 @@ describe("stopped process Worker launch gate", () => {
       true,
     );
     view.setInt32(replacementPtidPtr, 0x12345678, true);
+    if (replaceParentWord) view.setInt32(ptidPtr, tid + 1, true);
 
     processState = 0;
     expect(
@@ -550,7 +551,7 @@ describe("stopped process Worker launch gate", () => {
 
     expect(cancel).toHaveBeenCalledOnce();
     expect(markSignaled).not.toHaveBeenCalled();
-    expect(view.getInt32(ptidPtr, true)).toBe(0);
+    expect(view.getInt32(ptidPtr, true)).toBe(replaceParentWord ? tid + 1 : 0);
     expect(view.getInt32(replacementPtidPtr, true)).toBe(0x12345678);
     expect(view.getBigInt64(CH_RETURN, true)).toBe(-1n);
     expect(view.getUint32(CH_ERRNO, true)).toBe(12);

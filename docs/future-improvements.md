@@ -1407,3 +1407,10 @@ focused native regressions. Image-generation metadata now has independent source
 borrowed pointers. Finish detached EGL C-lease ownership, then normally rebuild and execute its registered
 Node/browser fixtures and all B1 gates. Those findings remain current work;
 they are not postponed to B2 or the subsequent driver iteration.
+
+Exact clone completion now preserves transferred Worker channels and rolls
+back only untransferred allocations, with focused integration ownership and
+source-audit evidence. Finish combined host retirement/browser-memory and
+the remaining EGL/Wayland continuations in this iteration, then validate
+coherent normal products. These source checkpoints do not complete B1 or
+change its application, conformance or native-feel acceptance criteria.

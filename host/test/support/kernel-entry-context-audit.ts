@@ -88,6 +88,7 @@ const ROOT_INGRESS_METHODS = new Map([
   ["#runOrDeferKernelEntry", 1],
   ["#runOrDeferChannelKernelEntry", 2],
   ["#runOrDeferPendingSpawnCompletionKernelEntry", 2],
+  ["#runOrDeferAllocatedCloneCompletionKernelEntry", 2],
   // This private constructor supplies the facade to an operation while the
   // canonical gate callback still owns its scope. Its call sites are checked
   // separately below; it cannot open an entry from an arbitrary caller.
@@ -99,6 +100,10 @@ const TRANSACTION_COMPLETION_INGRESS_METHODS = new Set([
   // completion must retain cleanup authority when the parent channel has
   // retired, while the completion body separately gates parent-memory writes.
   "#runOrDeferPendingSpawnCompletionKernelEntry",
+  // Clone owns an allocated exact Rust TID even after its caller retires.
+  // The canonical ingress still supplies fresh lexical entry authority; its
+  // completion body must separately prove the original request and image.
+  "#runOrDeferAllocatedCloneCompletionKernelEntry",
 ]);
 const ENTRY_SELECTORS = new Set([
   "#kernelInstanceForEntry",
@@ -545,6 +550,7 @@ export function auditKernelEntryContext(
     ["CentralizedKernelWorker.#runOrDeferKernelEntry", "runOrDeferVoidIngress"],
     ["CentralizedKernelWorker.#runImmediateKernelEntry", "runImmediateVoidIngress"],
     ["CentralizedKernelWorker.#runOrDeferPendingSpawnCompletionKernelEntry", "runOrDeferVoidIngress"],
+    ["CentralizedKernelWorker.#runOrDeferAllocatedCloneCompletionKernelEntry", "runOrDeferVoidIngress"],
   ]);
   const isCanonicalEntryConstruction = (
     call: ts.CallExpression,
@@ -2566,7 +2572,7 @@ export function auditKernelEntryContext(
               call.node,
               "protocol transaction completion must use a reviewed ingress "
                 + "that either validates the exact pending channel or owns "
-                + "pending-spawn cleanup after parent retirement",
+                + "allocated-child cleanup after caller retirement",
             );
           }
           continue;

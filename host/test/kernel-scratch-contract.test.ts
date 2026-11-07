@@ -593,6 +593,12 @@ const reviewedScalarKernelExportCall = (
 });
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#finishOwnedResourceMapping::kernel-export-direct-use::finish( channel.pid, this.guestTidForChannel(channel), token, transaction, errno, )",
+    disposition: "kernel-control",
+    count: 1,
+    why: "This exact optional export takes PID, TID, opaque resource token, u64 transaction and errno, then returns i32 status. These five scalars finish the already-reserved mapping; none is a kernel-memory pointer, borrowed byte range or scratch allocator authority. Actual normal kernel export signature is (i32,i32,i32,i64,i32)->i32.",
+  },
   // Kandelo exchange control calls: scalars in, a scalar status out; every
   // pointer-bearing exchange export goes through KernelScratchLease.
   reviewedScalarKernelExportCall(

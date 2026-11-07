@@ -46,6 +46,26 @@ describe("kernel entry-context static audit", () => {
     `))).toEqual([]);
   });
 
+  it("requires exact canonical gate construction for allocated-clone completion", () => {
+    const cloneFixture = (body: string) => constructionFixture(body).replace(
+      "#runOrDeferKernelEntry(label: string,",
+      "#runOrDeferAllocatedCloneCompletionKernelEntry(_tid: number, label: string,",
+    );
+    expect(auditKernelEntryContext(cloneFixture(`
+      this.#kernelEntryGate.runOrDeferVoidIngress(label, (scope, effects) => {
+        return this.#runKernelEntryOperation(scope, effects, operation);
+      });
+    `))).toEqual([]);
+    const fabricated = auditKernelEntryContext(cloneFixture(`
+      this.#kernelEntryGate.runOrDeferVoidIngress(label, (scope, effects) => {
+        return this.#runKernelEntryOperation({}, effects, operation);
+      });
+    `));
+    expect(fabricated).toEqual(expect.arrayContaining([
+      expect.objectContaining({kind: "nonlexical-entry-operation"}),
+    ]));
+  });
+
   it("rejects an alias in place of the gateway's original operation", () => {
     const violations = auditKernelEntryContext(constructionFixture(`
       const stored = operation;
@@ -666,6 +686,11 @@ describe("kernel entry-context static audit", () => {
           _label: string,
           _operation: (entry: KernelWorkerEntryContext) => void,
         ): void {}
+        #runOrDeferAllocatedCloneCompletionKernelEntry(
+          _tid: number,
+          _label: string,
+          _operation: (entry: KernelWorkerEntryContext) => void,
+        ): void {}
         #kernelInstanceForEntry(
           entry?: KernelWorkerEntryContext,
         ): WebAssembly.Instance {
@@ -811,6 +836,49 @@ describe("kernel entry-context static audit", () => {
       });
     `));
     expect(nonlexicalDetachedSpawnCompletion).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "nonlexical-entry-operation" }),
+    ]));
+
+    const safeCloneCleanup = auditKernelEntryContext(source(`
+      entry.deferProtocolTransactionStart(() => {
+        this.#continuePromise(this.callbacks.launch(), () => {
+          this.#runOrDeferAllocatedCloneCompletionKernelEntry(
+            73, "complete allocated clone", (innerEntry) => this.#finish(innerEntry),
+          );
+        }, (_cause) => {
+          this.#runOrDeferAllocatedCloneCompletionKernelEntry(
+            73, "rollback allocated clone", (innerEntry) => this.#finish(innerEntry),
+          );
+        });
+        return undefined;
+      });
+    `));
+    expect(safeCloneCleanup).toEqual([]);
+
+    const capturedCloneEntry = auditKernelEntryContext(source(`
+      entry.deferProtocolTransactionStart(() => {
+        this.#continuePromise(this.callbacks.launch(), () => {
+          this.#runOrDeferAllocatedCloneCompletionKernelEntry(
+            73, "bad outer authority", (_innerEntry) => this.#finish(entry),
+          );
+        });
+        return undefined;
+      });
+    `));
+    expect(capturedCloneEntry).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "context-detached-capture" }),
+    ]));
+
+    const nonlexicalCloneCleanup = auditKernelEntryContext(source(`
+      entry.deferProtocolTransactionStart(() => {
+        const finish = (innerEntry: KernelWorkerEntryContext) => this.#finish(innerEntry);
+        this.#continuePromise(this.callbacks.launch(), () => {
+          this.#runOrDeferAllocatedCloneCompletionKernelEntry(73, "bad alias", finish);
+        });
+        return undefined;
+      });
+    `));
+    expect(nonlexicalCloneCleanup).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "nonlexical-entry-operation" }),
     ]));
   });

@@ -37,6 +37,7 @@ import type { VfsChangeEvent } from "./vfs/types";
  * explanatory only and generated-file drift tests cover the live values.
  */
 import { ERRNO } from "./generated/abi";
+import { isProcessMemoryCreatorAdmissionClosed } from "./process-memory-creator-gate";
 import { decodeInspectionDirectory, decodeInspectionStat, decodeInspectionResourceLimits } from "./vfs/rootfs-inspection";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 
@@ -2015,9 +2016,15 @@ interface PendingThreadChannelAttachment {
   readonly argPtr: number;
   readonly memory: WebAssembly.Memory;
   attachedChannelOffset?: number;
+  attachedChannel?: ChannelInfo;
 }
 
 interface CloneRollbackState {
+  readonly registration: ProcessRegistration | undefined;
+  readonly request: FrozenChannelRequest | undefined;
+  readonly memory: WebAssembly.Memory;
+  readonly origArgs: number[];
+  transferred?: boolean;
   parentTidWritten: boolean;
   cloneAttachment?: ThreadChannelAttachment;
   pendingAttachment?: PendingThreadChannelAttachment;
@@ -2225,6 +2232,10 @@ export interface CentralizedKernelCallbacks {
    * proof bound to that exact clone result; the callback may read its fields
    * for Worker initialization, then must consume it with
    * `attachThreadChannel`. It cannot supply or replace the PID/TID.
+   * Resolve only after its started or job-control-deferred Worker and memory
+   * owners are published in the exact host generation. Success transfers
+   * lifetime custody there before the caller's result can be published;
+   * rejection retains clone rollback responsibility here.
    */
   onClone?: (attachment: ThreadChannelAttachment) => Promise<void>;
 
@@ -10259,6 +10270,7 @@ export class CentralizedKernelWorker {
         this.listenOnChannel(channel);
       }
       pending.attachedChannelOffset = channelOffset;
+      pending.attachedChannel = channel;
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
       registration.channels = registration.channels.filter(
@@ -15199,7 +15211,7 @@ export class CentralizedKernelWorker {
         ) {
           return false;
         }
-        new DataView(channel.memory.buffer).setInt32(ptidPtr, 0, true);
+        Atomics.compareExchange(new Int32Array(channel.memory.buffer), ptidPtr / 4, tid, 0);
       }
 
       parked.prepared.outputWrites = [];
@@ -22433,8 +22445,16 @@ export class CentralizedKernelWorker {
 
     const tid = retVal;
     const cloneState: CloneRollbackState = {
+      registration: this.processes.get(channel.pid),
+      request: this.activeChannelRequests.get(channel),
+      memory: channel.memory,
+      origArgs,
       parentTidWritten: false,
     };
+    // Event-driven dispatch does not otherwise need the polling flag. Here it
+    // also distinguishes this suspended clone from a mailbox already woken
+    // for teardown, before a later guest request can be selected.
+    channel.handling = true;
 
     try {
       // CLONE_PARENT_SETTID lives in process memory, so the host performs the
@@ -22484,113 +22504,69 @@ export class CentralizedKernelWorker {
 
     const attachment = cloneState.cloneAttachment!;
     entry.deferProtocolTransactionStart(() => {
+      // Destroy can complete the original mailbox while this detached start
+      // waits its turn. Its Rust allocation still needs rollback even though
+      // the channel-dispatch gate would now refuse that old mailbox.
+      if (!this.#isCurrentCloneRequest(channel, cloneState)) {
+        this.#runOrDeferAllocatedCloneCompletionKernelEntry(
+          tid,
+          `cancelled clone launch pid=${channel.pid}`,
+          (cancellationEntry) => {
+            this.#finishFailedCloneWithinKernelEntry(
+              channel, tid, ptidPtr, cloneState, undefined, true,
+              cancellationEntry,
+            );
+            return undefined;
+          },
+          cloneState,
+        );
+        return undefined;
+      }
       let transaction: Promise<void>;
       try {
         transaction = this.#resolvePromise(
           this.callbacks.onClone!(attachment),
         );
       } catch (cause) {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
-          "clone launch failure",
+        this.#runOrDeferAllocatedCloneCompletionKernelEntry(
+          tid,
+          `clone launch failure pid=${channel.pid}`,
           (failureEntry) => {
-            try {
-              this.#rollbackCloneWithinKernelEntry(
-                channel,
-                tid,
-                ptidPtr,
-                cloneState,
-                failureEntry,
-              );
-            } catch (rollbackError) {
-              this.#rethrowKernelEntryFatal(rollbackError);
-              this.#terminateForKernelProtocolFailureWithinKernelEntry(
-                channel,
-                `could not roll back allocated tid ${tid}: ${
-                  rollbackError instanceof Error
-                    ? rollbackError.message
-                    : String(rollbackError)
-                }`,
-                failureEntry,
-              );
-              return undefined;
-            }
-            failureEntry.deferObserverEffect(() => {
-              console.error(`[kernel-worker] onClone failed: ${String(cause)}`);
-              return undefined;
-            });
-            this.completeChannel(
-              channel,
-              SYS_CLONE,
-              origArgs,
-              undefined,
-              -1,
-              12,
-              [],
-              undefined,
-              failureEntry,
+            this.#finishFailedCloneWithinKernelEntry(
+              channel, tid, ptidPtr, cloneState, cause, false, failureEntry,
             );
             return undefined;
           },
+          cloneState,
         );
         return undefined;
       }
       this.#continuePromise(transaction, () => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
-          "clone launch completion",
+        this.#runOrDeferAllocatedCloneCompletionKernelEntry(
+          tid,
+          `clone launch completion pid=${channel.pid}`,
           (completionEntry) => {
-            pendingThreadChannelAttachments.delete(attachment);
-            if (
-              !this.#isAsyncChannelProcessActiveWithinKernelEntry(
-                channel,
-                completionEntry,
-              )
-            ) {
+            // A successful callback without an attachment is a real contract
+            // failure even when teardown already retired its caller.
+            if (cloneState.pendingAttachment?.attachedChannelOffset === undefined) {
+              this.#finishFailedCloneWithinKernelEntry(
+                channel, tid, ptidPtr, cloneState,
+                new Error(`onClone returned without attaching kernel tid ${tid}`),
+                false, completionEntry,
+              );
               return undefined;
             }
+            // The callback published its Worker owner before resolving. A
+            // retired caller only loses result-publication authority; removing
+            // this transferred channel would prevent that Worker's cooperative
+            // exit and its exact memory-quiescence acknowledgement.
+            cloneState.transferred = true;
+            pendingThreadChannelAttachments.delete(attachment);
             if (
-              cloneState.pendingAttachment?.attachedChannelOffset
-                === undefined
+              !this.#isCurrentCloneImageWithinKernelEntry(
+                channel, cloneState, completionEntry,
+              )
             ) {
-              try {
-                this.#rollbackCloneWithinKernelEntry(
-                  channel,
-                  tid,
-                  ptidPtr,
-                  cloneState,
-                  completionEntry,
-                );
-              } catch (rollbackError) {
-                this.#rethrowKernelEntryFatal(rollbackError);
-                this.#terminateForKernelProtocolFailureWithinKernelEntry(
-                  channel,
-                  `clone callback did not attach tid ${tid}, and rollback failed: ${
-                    rollbackError instanceof Error
-                      ? rollbackError.message
-                      : String(rollbackError)
-                  }`,
-                  completionEntry,
-                );
-                return undefined;
-              }
-              completionEntry.deferObserverEffect(() => {
-                console.error(
-                  `[kernel-worker] onClone returned without attaching kernel tid ${tid}`,
-                );
-                return undefined;
-              });
-              this.completeChannel(
-                channel,
-                SYS_CLONE,
-                origArgs,
-                undefined,
-                -1,
-                12,
-                [],
-                undefined,
-                completionEntry,
-              );
               return undefined;
             }
             this.completeChannel(
@@ -22610,56 +22586,131 @@ export class CentralizedKernelWorker {
             );
             return undefined;
           },
+          cloneState,
         );
       }, (cause) => {
-        this.#runOrDeferChannelKernelEntry(
-          channel,
-          "clone launch rejection",
+        this.#runOrDeferAllocatedCloneCompletionKernelEntry(
+          tid,
+          `clone launch rejection pid=${channel.pid}`,
           (failureEntry) => {
-            try {
-              // The callback can reject after partial transport teardown.
-              // ESRCH proves no exact globally non-reused task remains.
-              this.#rollbackCloneWithinKernelEntry(
-                channel,
-                tid,
-                ptidPtr,
-                cloneState,
-                failureEntry,
-              );
-            } catch (rollbackError) {
-              this.#rethrowKernelEntryFatal(rollbackError);
-              this.#terminateForKernelProtocolFailureWithinKernelEntry(
-                channel,
-                `could not roll back allocated tid ${tid}: ${
-                  rollbackError instanceof Error
-                    ? rollbackError.message
-                    : String(rollbackError)
-                }`,
-                failureEntry,
-              );
-              return undefined;
-            }
-            failureEntry.deferObserverEffect(() => {
-              console.error(`[kernel-worker] onClone failed: ${String(cause)}`);
-              return undefined;
-            });
-            this.completeChannel(
-              channel,
-              SYS_CLONE,
-              origArgs,
-              undefined,
-              -1,
-              12,
-              [],
-              undefined,
-              failureEntry,
+            this.#finishFailedCloneWithinKernelEntry(
+              channel, tid, ptidPtr, cloneState, cause, false, failureEntry,
             );
             return undefined;
           },
+          cloneState,
         );
       });
       return undefined;
     });
+  }
+
+  /**
+   * An allocated TID needs cleanup after its caller mailbox has retired.
+   * This canonical ingress therefore does not use the pending-channel gate;
+   * completion bodies separately prove the exact frozen request and image.
+   */
+  #runOrDeferAllocatedCloneCompletionKernelEntry(
+    tid: number,
+    label: string,
+    operation: (entry: KernelWorkerEntryContext) => undefined,
+    state: CloneRollbackState,
+  ): void {
+    this.#kernelEntryGate.runOrDeferVoidIngress(
+      `${label} tid=${tid}`,
+      (scope, effects) => {
+        if (this.#vfsChangeListeners.size && !this.#nativeFsDrainPending) {
+          return this.#runKernelEntryOperation(scope, effects, (entry) =>
+            this.#runNativeFsObservedOperation(entry, operation),
+          );
+        }
+        return this.#runKernelEntryOperation(scope, effects, operation);
+      },
+      state,
+    );
+  }
+
+  /** A logical completion revokes the existing frozen request identity. */
+  #isCurrentCloneRequest(channel: ChannelInfo, state: CloneRollbackState): boolean {
+    const registration = state.registration;
+    if (
+      !registration || !state.request || state.request.syscallNr !== SYS_CLONE
+      || this.processes.get(channel.pid) !== registration
+      || registration.memory !== state.memory || channel.memory !== state.memory
+      || this.execHandoffPids?.has(channel.pid)
+      || !this.isRegisteredChannel(channel) || channel.handling !== true
+      || this.activeChannelRequests.get(channel) !== state.request
+    ) return false;
+    const buffer = state.memory.buffer;
+    const view = new DataView(buffer, channel.channelOffset);
+    return Atomics.load(
+      new Int32Array(buffer, channel.channelOffset),
+      CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+    ) === CH_PENDING && view.getUint32(CH_SYSCALL, true) === SYS_CLONE;
+  }
+
+  #isCurrentCloneImageWithinKernelEntry(
+    channel: ChannelInfo,
+    state: CloneRollbackState,
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    if (!this.#isCurrentCloneRequest(channel, state)
+      || !this.#isProcessExecutionActiveWithinKernelEntry(channel.pid, entry)) return false;
+    // Rust exec commit precedes replacement host registration. The old host
+    // object can still match while it has already lost image authority.
+    const generation = this.#processExecGenerationWithinKernelEntry(channel.pid, entry);
+    if (generation instanceof Error) {
+      this.#terminateForKernelProtocolFailureWithinKernelEntry(
+        channel, `cannot confirm clone exec generation: ${generation.message}`, entry,
+      );
+      return false;
+    }
+    return generation === state.registration!.execGeneration;
+  }
+
+  /** Rollback owns an exact TID independently of the old mailbox's lifetime. */
+  #finishFailedCloneWithinKernelEntry(
+    channel: ChannelInfo,
+    tid: number,
+    ptidPtr: number,
+    state: CloneRollbackState,
+    cause: unknown,
+    cancelled: boolean,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    if (state.transferred) {
+      // Successful launch has already made the thread observable. A later
+      // publication failure cannot undo it as though no Worker ever ran.
+      this.#terminateForKernelProtocolFailureWithinKernelEntry(
+        channel, `clone completion failed after host adoption of tid ${tid}: ${String(cause)}`, entry,
+      );
+      return;
+    }
+    try {
+      this.#rollbackCloneWithinKernelEntry(channel, tid, ptidPtr, state, entry);
+    } catch (rollbackError) {
+      this.#rethrowKernelEntryFatal(rollbackError);
+      this.#terminateForKernelProtocolFailureWithinKernelEntry(
+        channel,
+        `could not roll back allocated tid ${tid}: ${
+          rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+        }`,
+        entry,
+      );
+      return;
+    }
+    // A closed creator gate proves terminal refusal, not Worker failure.
+    // Classify it only AFTER exact rollback; unknown ownership stays fatal.
+    if (!cancelled && !isProcessMemoryCreatorAdmissionClosed(cause)) {
+      entry.deferObserverEffect(() => {
+        console.error(`[kernel-worker] onClone failed: ${String(cause)}`);
+        return undefined;
+      });
+    }
+    if (!this.#isCurrentCloneImageWithinKernelEntry(channel, state, entry)) return;
+    this.completeChannel(
+      channel, SYS_CLONE, state.origArgs, undefined, -1, 12, [], undefined, entry,
+    );
   }
 
   /**
@@ -22683,20 +22734,30 @@ export class CentralizedKernelWorker {
     const attachedChannelOffset =
       state.pendingAttachment?.attachedChannelOffset;
     if (attachedChannelOffset !== undefined) {
-      // Do not let a stale clone continuation tear down a same-PID channel
-      // that now belongs to a replacement exec image.
-      if (this.processes.get(channel.pid)?.memory === channel.memory) {
+      // A slot can be reused by another pthread in the same Memory as well
+      // as by exec. Only the exact attached channel AND Rust TID are ours.
+      const registration = this.processes.get(channel.pid);
+      const attachedChannel = state.pendingAttachment?.attachedChannel;
+      if (registration?.memory === state.memory && attachedChannel
+        && registration.channels.includes(attachedChannel)
+        && this.channelTids.get(`${channel.pid}:${attachedChannelOffset}`) === tid) {
         try {
-          this.removeChannel(channel.pid, attachedChannelOffset);
+          // Complete withdrawal in this entry. The public wrapper would
+          // queue another numeric lookup after this identity proof and Rust
+          // rollback, when a replacement could already own the same slot.
+          this.#removeChannelWithinKernelEntry(channel.pid, attachedChannelOffset, entry);
         } catch (error) {
           this.#rethrowKernelEntryFatal(error);
           transportRollbackError = error;
         }
       }
       state.pendingAttachment!.attachedChannelOffset = undefined;
+      state.pendingAttachment!.attachedChannel = undefined;
     }
     if (state.parentTidWritten) {
-      new DataView(channel.memory.buffer).setInt32(ptidPtr, 0, true);
+      // The original mailbox may already have returned to its caller. Do
+      // not clear a replacement task's word, even if it uses the same address.
+      Atomics.compareExchange(new Int32Array(state.memory.buffer), ptidPtr / 4, tid, 0);
       state.parentTidWritten = false;
     }
     this.#rollbackKernelThreadWithinKernelEntry(

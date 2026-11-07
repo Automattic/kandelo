@@ -25912,3 +25912,30 @@ are detached from global queues before callbacks. Fixing those owning-layer
 continuations, the coherent normal build and all target/final gates remain
 required. Failed sanitizer startup attempts and one invalid mixed-input
 attempt remain recorded and excluded from passing evidence.
+
+### Exact clone completion during teardown, 2026-11-06
+
+Late clone completion now retains authority for its exact allocated TID even
+after the parent's mailbox retires. Rollback withdraws only its attached
+channel, clears only its own parent-TID word, and runs before classifying a
+privately branded creator-gate refusal. Successful attachment transfers the
+Worker to normal generation ownership; a stale parent result cannot revoke
+the channel needed for that Worker's cooperative exit. Genuine failures and
+uncertain cleanup remain loud. Shared Node/browser logic adds no ABI change
+or graphics draw/frame hook. Inline Why comments cover these distinctions.
+
+The integration repeat `graphics-clone-integration-r604-1106-233742-bfc7`
+passes in2m36s:108 lifecycle/ownership/adversarial controls, all10 full source
+audit controls under unchanged limits, host source TypeScript,719-file
+evidence inventory and frozen-source hashes. Exact commands/configs are in
+`.context/graphics-clone-integration-r604/run.sh`. Matched earlier source
+fails22 of27 causal controls and preserves5 existing passes; actual disposable
+Node Workers prove channel/ACK preservation for both pointer widths. These
+are source/host controls, not normal guest execution or browser acceptance.
+Optional strict unit-file compilation still has the same5 baseline errors;
+no unit-typecheck pass is claimed.
+
+Combined host retirement/browser-memory, detached EGL/Wayland continuation
+ownership, coherent normal products and all B1/final gates remain required
+in this iteration. Public6271 is preserved unchanged; this checkpoint is
+not a complete B1 preview or a performance result.

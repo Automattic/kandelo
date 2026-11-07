@@ -2120,6 +2120,30 @@ rather than simulated Ctrl+C input. No guest ABI or syscall changed.
 
 Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
 
+Rust allocates the exact TID before the detached host Worker launch. Every
+late launch outcome keeps cleanup authority for that allocation, including
+after teardown completed the caller's mailbox or exec replaced its image.
+Cleanup enters a fresh canonical kernel scope without requiring the old
+mailbox to remain pending. Publishing a clone result separately requires
+the same frozen request, channel object, registration, Memory and Rust exec
+generation; Rust commits exec before the replacement host registration.
+
+A successful callback that attached its thread transfers ownership to the
+host Worker registry, including a job-control-deferred Worker. If the parent
+result becomes stale afterward, the host keeps that thread's channel until
+ordinary generation teardown and cooperative exit release it. Revoking the
+channel here would prevent the Worker's memory-quiescence acknowledgement.
+Only unlaunched, rejected or unattached allocations use clone rollback.
+
+Rollback removes only the exact attached channel and TID. It clears a
+parent-TID word only while that word still names the allocation, preserving
+replacement task state. A terminal creator-gate refusal has a private error
+identity and is classified only after rollback succeeds. A still-pending
+caller receives failure; genuine Worker failures remain diagnostic and
+uncertain rollback remains fatal. Node and browser share this path without
+a guest ABI or channel-wire change. Cross-engine lifecycle and memory
+acceptance remains required for the combined graphics candidate.
+
 ### Compiled module sharing
 
 Every program a process runs is a `WebAssembly.Module` compiled by the

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { Worker } from "node:worker_threads";
+import { once } from "node:events";
 
 import {
   createCentralizedKernelWorkerTestDouble, CentralizedKernelWorker
@@ -16,7 +18,8 @@ import {
   CH_STATUS,
   CH_SYSCALL,
 } from "../src/generated/abi";
-import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import { installKernelWorkerTestScratch, emptyProcessTimerCleanup } from "./kernel-worker-test-scratch";
+import { ProcessMemoryCreatorGate } from "../src/process-memory-creator-gate";
 
 const PID = 47;
 const KERNEL_TID = 318;
@@ -61,6 +64,7 @@ function makeCloneHarness(
   kernelTid = KERNEL_TID,
   autoAttach = true,
   beforeAttach?: () => void,
+  pointerWidth: 4 | 8 = 4,
 ) {
   const memory = new WebAssembly.Memory({
     initial: 16,
@@ -83,10 +87,17 @@ function makeCloneHarness(
     return 0;
   });
   const notifyThreadExit = vi.fn(() => 0);
+  const onExit = vi.fn();
+  const markProcessSignaled = vi.fn(() => 0);
   let execGeneration = 0n;
+  const getExecGeneration = vi.fn((_pid: number, pointer: number | bigint) => {
+    new DataView(kernelMemory.buffer).setBigUint64(Number(pointer), execGeneration, true);
+    return 8;
+  });
   let worker!: CentralizedKernelWorker;
   worker = createCentralizedKernelWorkerTestDouble({
     callbacks: {
+      onExit,
       onClone: (attachment) => {
         if (autoAttach) {
           beforeAttach?.();
@@ -110,6 +121,7 @@ function makeCloneHarness(
       execGeneration: 0n,
       channels: [channel],
       memory,
+      ptrWidth: pointerWidth,
       explicitMaxAddr: true,
     }]]),
     threadForkContexts: new Map<string, { fnPtr: number; argPtr: number }>(),
@@ -119,16 +131,17 @@ function makeCloneHarness(
     worker as unknown as Record<string, unknown>,
     kernelMemory,
     128,
-    4,
+    pointerWidth,
     {
       kernelExports: {
         kernel_drain_wakeup_events: vi.fn(() => 0),
         kernel_get_process_exit_signal: vi.fn(() => -1),
         kernel_get_process_state: vi.fn(() => 0),
-        kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
-          new DataView(kernelMemory.buffer).setBigUint64(Number(pointer), execGeneration, true);
-          return 8;
-        },
+        kernel_get_process_exec_generation: getExecGeneration,
+        kernel_get_parent_pid: vi.fn(() => 1),
+        kernel_mark_process_signaled: markProcessSignaled,
+        kernel_publish_process_exit: vi.fn(() => 0),
+        kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
         kernel_handle_channel: kernelHandleChannel,
         kernel_set_current_tid: vi.fn(() => 0),
         kernel_thread_exit: notifyThreadExit,
@@ -140,12 +153,16 @@ function makeCloneHarness(
   return {
     channel,
     setGeneration(value: bigint) { execGeneration = value; },
+    setKernelTid(value: number) { kernelTid = value; },
     dispatch(args: readonly number[] = CLONE_ARGS) {
       writeCloneRequest(channel, args);
       (worker as any).handleSyscall(channel);
     },
     kernelHandleChannel,
     notifyThreadExit,
+    onExit,
+    markProcessSignaled,
+    getExecGeneration,
     worker,
   };
 }
@@ -435,7 +452,9 @@ describe("kernel TID authority", () => {
       expect(onClone).not.toHaveBeenCalled();
       expect(h.notifyThreadExit).toHaveBeenCalledTimes(1);
       expect(h.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID, 0);
-      expect(readCloneCompletion(h.channel)).toEqual({status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 12});
+      // Rust already committed another image. Its old mailbox is no longer
+      // ours to complete, even while host registration is catching up.
+      expect(readCloneCompletion(h.channel).status).toBe(CHANNEL_STATUS_PENDING);
       expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
       expect((h.worker as any).activeChannels).toEqual([h.channel]);
       expect((h.worker as any).channelTids.size).toBe(0);
@@ -634,5 +653,317 @@ describe("thread channel ownership", () => {
       .toBe(replacementTid);
     expect((worker as any).threadForkContexts.get(`${PID}:${firstThreadOffset}`))
       .toEqual({ fnPtr: 33, argPtr: 44 });
+  });
+});
+
+
+describe("clone teardown ownership", () => {
+  const parentTidPointer = 0x6000;
+  const cloneArgs = () => [
+    CLONE_ARGS[0] | 0x0010_0000, CLONE_ARGS[1], parentTidPointer,
+    CLONE_ARGS[3], CLONE_ARGS[4], 0,
+  ];
+  const cases = [["wasm32", 4], ["wasm64", 8]] as const;
+  type Attachment = Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0];
+  const parentTid = (h: ReturnType<typeof makeCloneHarness>) =>
+    new DataView(h.channel.memory.buffer).getInt32(parentTidPointer, true);
+  const wakeOriginal = (h: ReturnType<typeof makeCloneHarness>) =>
+    (h.worker as any).completeChannelRaw(h.channel, -1, 4);
+
+  it.each(cases)("%s rolls back before treating closed admission as terminal refusal", async (_name, width) => {
+    const creators = new ProcessMemoryCreatorGate();
+    await creators.closeAndWait();
+    const creator = vi.fn(async () => {});
+    // Both entry adapters use exactly this shared gate/handleClone wrapper.
+    const h = makeCloneHarness(() => creators.run("a pthread Worker", creator), KERNEL_TID, false, undefined, width);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs());
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(h.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID, 0);
+      expect(creator).not.toHaveBeenCalled();
+      expect(parentTid(h)).toBe(0);
+      expect(readCloneCompletion(h.channel)).toEqual({status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 12});
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it.each(cases)("%s retires the allocation if teardown wins before the detached launch", async (_name, width) => {
+    const onClone = vi.fn(async () => {});
+    const h = makeCloneHarness(onClone, KERNEL_TID, false, undefined, width);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs());
+      wakeOriginal(h);
+      const terminal = readCloneCompletion(h.channel);
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(onClone).not.toHaveBeenCalled();
+      expect(parentTid(h)).toBe(0);
+      expect(readCloneCompletion(h.channel)).toEqual(terminal);
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it.each(cases)("%s rolls back a failed launch after its original channel already completed", async (_name, width) => {
+    const launch = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    let attachment!: Attachment;
+    const h = makeCloneHarness(async (raw) => {
+      attachment = raw as Attachment; started.resolve(); return launch.promise;
+    }, KERNEL_TID, true, undefined, width);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs()); await started.promise;
+      wakeOriginal(h); const terminal = readCloneCompletion(h.channel);
+      launch.reject(new Error("real Worker construction failed"));
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(readCloneCompletion(h.channel)).toEqual(terminal);
+      expect(parentTid(h)).toBe(0);
+      expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
+      expect((h.worker as any).threadForkContexts.size).toBe(0);
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("real Worker construction failed"));
+      expectIngressFailureCause(() => h.worker.attachThreadChannel(attachment, 3 * WASM_PAGE_SIZE), "Unknown, expired, or already consumed thread attachment");
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it.each(cases)("%s preserves a transferred live Worker until cooperative exit after caller wake", async (_name, width) => {
+    const launched = Promise.withResolvers<void>();
+    const quiescent = Promise.withResolvers<void>();
+    const workers = new Map<number, Worker>();
+    let thread: Worker | undefined;
+    let exit!: Promise<unknown[]>;
+    let h!: ReturnType<typeof makeCloneHarness>;
+    h = makeCloneHarness(async () => {
+      const child = (h.worker as any).processes.get(PID).channels[1];
+      // A real disposable realm owns this synthetic guest mailbox. It can
+      // acknowledge quiescence only after its actual SYS_EXIT wake arrives;
+      // terminating it or rolling back its channel cannot manufacture proof.
+      thread = new Worker(`
+        const {parentPort, workerData: d} = require("node:worker_threads");
+        const view = new DataView(d.memory.buffer, d.offset);
+        const status = new Int32Array(d.memory.buffer, d.offset);
+        parentPort.on("message", () => {
+          view.setUint32(d.syscall, d.exitSyscall, true);
+          for (let i=0;i<6;i++) view.setBigInt64(d.args+i*d.argSize, 0n, true);
+          Atomics.store(status,d.status/4,d.pending);
+          parentPort.postMessage("exit-pending");
+          const result = Atomics.wait(status,d.status/4,d.pending,1500);
+          parentPort.postMessage(result !== "timed-out" && Atomics.load(status,d.status/4) === d.complete
+            ? "memory_quiescent" : "stalled");
+          parentPort.close();
+        });
+        parentPort.postMessage("ready");
+      `, {eval: true, workerData: {
+        memory: h.channel.memory, offset: child.channelOffset,
+        syscall: CH_SYSCALL, exitSyscall: ABI_SYSCALLS.Exit,
+        args: CH_ARGS, argSize: CH_ARG_SIZE, status: CH_STATUS,
+        pending: CHANNEL_STATUS_PENDING, complete: CHANNEL_STATUS_COMPLETE,
+      }});
+      workers.set(KERNEL_TID, thread);
+      exit = once(thread, "exit");
+      thread.on("message", (message) => {
+        if (message === "exit-pending") (h.worker as any).handleSyscall(child);
+        if (message === "memory_quiescent") quiescent.resolve();
+        if (message === "stalled") quiescent.reject(new Error("transferred thread lost its cooperative exit channel"));
+      });
+      thread.on("exit", () => workers.delete(KERNEL_TID));
+      await once(thread, "message");
+      wakeOriginal(h); launched.resolve();
+    }, KERNEL_TID, true, undefined, width);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs()); await launched.promise;
+      const terminal = readCloneCompletion(h.channel);
+      thread!.postMessage("exit"); await quiescent.promise; await exit;
+      expect(workers.size).toBe(0);
+      expect(h.notifyThreadExit).toHaveBeenCalledExactlyOnceWith(PID, KERNEL_TID, 1);
+      expect(readCloneCompletion(h.channel)).toEqual(terminal);
+      expect(parentTid(h)).toBe(KERNEL_TID); // committed success is not rollback
+      expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally { await thread?.terminate(); consoleError.mockRestore(); }
+  });
+
+  it.each(cases)("%s leaves transferred custody to exec teardown after Rust image replacement", async (_name, width) => {
+    const launch = Promise.withResolvers<void>(); const started = Promise.withResolvers<void>();
+    const h = makeCloneHarness(async () => {started.resolve(); return launch.promise;}, KERNEL_TID, true, undefined, width);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs()); await started.promise;
+      const w = h.worker as any; const child = w.processes.get(PID).channels[1];
+      const reads = h.getExecGeneration.mock.calls.length;
+      h.setGeneration(1n); launch.resolve();
+      await vi.waitFor(() => expect(h.getExecGeneration.mock.calls.length).toBeGreaterThan(reads));
+      expect(h.notifyThreadExit).not.toHaveBeenCalled();
+      expect(parentTid(h)).toBe(KERNEL_TID);
+      expect(readCloneCompletion(h.channel).status).toBe(CHANNEL_STATUS_PENDING);
+      expect(w.processes.get(PID).channels).toEqual([h.channel, child]);
+      // Exec already removed old Rust tasks. Its host generation owner
+      // removes the transport after the old Worker relinquishes memory.
+      w.removeChannel(PID, child.channelOffset);
+      expect(w.processes.get(PID).channels).toEqual([h.channel]);
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it.each(cases)("%s reports a successful but unattached callback after caller retirement", async (_name, width) => {
+    const launch = Promise.withResolvers<void>(); const started = Promise.withResolvers<void>();
+    const h = makeCloneHarness(async () => {started.resolve(); return launch.promise;}, KERNEL_TID, false, undefined, width);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs()); await started.promise; wakeOriginal(h);
+      const terminal = readCloneCompletion(h.channel); launch.resolve();
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(parentTid(h)).toBe(0); expect(readCloneCompletion(h.channel)).toEqual(terminal);
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("onClone returned without attaching kernel tid"));
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it.each(cases)("%s preserves a replacement parent-TID word while rolling back its own task", async (_name, width) => {
+    const launch = Promise.withResolvers<void>(); const started = Promise.withResolvers<void>();
+    const h = makeCloneHarness(async () => {started.resolve(); return launch.promise;}, KERNEL_TID, true, undefined, width);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs()); await started.promise;
+      new DataView(h.channel.memory.buffer).setInt32(parentTidPointer, KERNEL_TID + 1, true);
+      launch.reject(new Error("Worker launch failed after parent word replacement"));
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(h.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID, 0);
+      expect(parentTid(h)).toBe(KERNEL_TID + 1);
+      expect(readCloneCompletion(h.channel)).toEqual({status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 12});
+      expect(consoleError).toHaveBeenCalledOnce();
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it.each(cases)("%s withdraws exact attached transport before Rust task rollback", async (_name, width) => {
+    const h = makeCloneHarness(async () => {throw new Error("launch failed after transport publication");}, KERNEL_TID, true, undefined, width);
+    const atRustCleanup: Array<{channel: boolean; tid: boolean; fork: boolean}> = [];
+    h.notifyThreadExit.mockImplementation(() => {
+      const w = h.worker as any; const key = `${PID}:${2 * WASM_PAGE_SIZE}`;
+      atRustCleanup.push({
+        channel: w.processes.get(PID).channels.some((c: TestChannel) => c.channelOffset === 2 * WASM_PAGE_SIZE),
+        tid: w.channelTids.has(key), fork: w.threadForkContexts.has(key),
+      });
+      return 0;
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs());
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(atRustCleanup).toEqual([{channel: false, tid: false, fork: false}]);
+      expect(parentTid(h)).toBe(0);
+      expect(readCloneCompletion(h.channel)).toEqual({status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 12});
+      expect(consoleError).toHaveBeenCalledOnce();
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it.each(cases)("%s cannot remove a new pthread reusing the old channel slot", async (_name, width) => {
+    const launch = Promise.withResolvers<void>(); const started = Promise.withResolvers<void>();
+    const h = makeCloneHarness(async () => {started.resolve(); return launch.promise;}, KERNEL_TID, true, undefined, width);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs()); await started.promise;
+      const w = h.worker as any; const registration = w.processes.get(PID);
+      const prior = registration.channels[1]; const replacement = {...prior};
+      registration.channels[1] = replacement;
+      w.activeChannels = [h.channel, replacement];
+      w.channelTids.set(`${PID}:${prior.channelOffset}`, KERNEL_TID + 1);
+      w.threadForkContexts.set(`${PID}:${prior.channelOffset}`, {fnPtr: 71, argPtr: 72});
+      launch.reject(new Error("old worker launch failed"));
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(registration.channels).toEqual([h.channel, replacement]);
+      expect(w.activeChannels).toEqual([h.channel, replacement]);
+      expect(w.channelTids.get(`${PID}:${prior.channelOffset}`)).toBe(KERNEL_TID + 1);
+      expect(w.threadForkContexts.get(`${PID}:${prior.channelOffset}`)).toEqual({fnPtr: 71, argPtr: 72});
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it.each(cases)("%s cannot complete or detach a same-PID replacement image", async (_name, width) => {
+    const launch = Promise.withResolvers<void>(); const started = Promise.withResolvers<void>();
+    const h = makeCloneHarness(async () => {started.resolve(); return launch.promise;}, KERNEL_TID, true, undefined, width);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs()); await started.promise;
+      const w = h.worker as any;
+      const memory = new WebAssembly.Memory({initial: 16, maximum: 16, shared: true});
+      const replacement = {...h.channel, memory, i32View: new Int32Array(memory.buffer, h.channel.channelOffset)};
+      writeCloneRequest(replacement, cloneArgs());
+      const view = new DataView(memory.buffer, replacement.channelOffset);
+      view.setBigInt64(CH_RETURN, 987n, true); view.setUint32(CH_ERRNO, 77, true);
+      new DataView(memory.buffer).setInt32(parentTidPointer, KERNEL_TID + 1, true);
+      const registration = {pid: PID, memory, channels: [replacement], ptrWidth: width, explicitMaxAddr: true};
+      w.processes.set(PID, registration); w.activeChannels = [replacement]; h.setGeneration(1n);
+      launch.reject(new Error("old image launch failed"));
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(w.processes.get(PID)).toBe(registration); expect(w.activeChannels).toEqual([replacement]);
+      expect(readCloneCompletion(replacement)).toEqual({status: CHANNEL_STATUS_PENDING, retVal: 987, errno: 77});
+      expect(new DataView(memory.buffer).getInt32(parentTidPointer, true)).toBe(KERNEL_TID + 1);
+      expect(parentTid(h)).toBe(0);
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("old image launch failed"));
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it.each(cases)("%s keeps a later identical clone pending when the old launch rejects", async (_name, width) => {
+    const oldLaunch = Promise.withResolvers<void>(); const newLaunch = Promise.withResolvers<void>();
+    const oldStarted = Promise.withResolvers<void>(); const newStarted = Promise.withResolvers<void>();
+    let h!: ReturnType<typeof makeCloneHarness>;
+    h = makeCloneHarness(async (raw) => {
+      const attachment = raw as Attachment;
+      h.worker.attachThreadChannel(attachment, (attachment.tid === KERNEL_TID ? 2 : 3) * WASM_PAGE_SIZE);
+      if (attachment.tid === KERNEL_TID) {oldStarted.resolve(); return oldLaunch.promise;}
+      newStarted.resolve(); return newLaunch.promise;
+    }, KERNEL_TID, false, undefined, width);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs()); await oldStarted.promise; wakeOriginal(h);
+      h.setKernelTid(KERNEL_TID + 1); h.dispatch(cloneArgs()); await newStarted.promise;
+      oldLaunch.reject(new Error("earlier clone failed after mailbox reuse"));
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(parentTid(h)).toBe(KERNEL_TID + 1);
+      expect(readCloneCompletion(h.channel).status).toBe(CHANNEL_STATUS_PENDING);
+      expect((h.worker as any).channelTids.get(`${PID}:${3 * WASM_PAGE_SIZE}`)).toBe(KERNEL_TID + 1);
+      newLaunch.resolve();
+      await vi.waitFor(() => expect(readCloneCompletion(h.channel).status).toBe(CHANNEL_STATUS_COMPLETE));
+      expect(readCloneCompletion(h.channel)).toEqual({status: CHANNEL_STATUS_COMPLETE, retVal: KERNEL_TID + 1, errno: 0});
+      expect(h.notifyThreadExit).toHaveBeenCalledExactlyOnceWith(PID, KERNEL_TID, 0);
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it("rolls back a synchronous closed-gate refusal without claiming clone success", async () => {
+    const creators = new ProcessMemoryCreatorGate(); await creators.closeAndWait();
+    const h = makeCloneHarness(() => {creators.acquire("a pthread Worker"); return Promise.resolve();}, KERNEL_TID, false);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs());
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(parentTid(h)).toBe(0); expect(consoleError).not.toHaveBeenCalled();
+      expect(readCloneCompletion(h.channel)).toEqual({status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 12});
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it("keeps a closed-gate rollback failure fatal until Rust accepts process termination", async () => {
+    const creators = new ProcessMemoryCreatorGate(); await creators.closeAndWait();
+    const h = makeCloneHarness(() => creators.run("a pthread Worker", async () => {}), KERNEL_TID, false);
+    h.notifyThreadExit.mockReturnValue(-5);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs());
+      await vi.waitFor(() => expect(h.onExit).toHaveBeenCalledOnce());
+      expect(h.markProcessSignaled).toHaveBeenCalledExactlyOnceWith(PID, 11);
+      expect(h.onExit).toHaveBeenCalledExactlyOnceWith(PID, 139);
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("FATAL could not roll back allocated tid"));
+      expect(readCloneCompletion(h.channel).status).toBe(CHANNEL_STATUS_PENDING);
+    } finally { consoleError.mockRestore(); }
+  });
+
+  it("keeps a genuine error visible even when its text copies closed admission", async () => {
+    const h = makeCloneHarness(async () => {throw new Error("kernel worker is being destroyed; cannot start a pthread Worker");});
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(cloneArgs());
+      await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
+      expect(consoleError).toHaveBeenCalledOnce(); expect(parentTid(h)).toBe(0);
+      expect(readCloneCompletion(h.channel).errno).toBe(12);
+    } finally { consoleError.mockRestore(); }
   });
 });
