@@ -202,6 +202,56 @@ export const SHELL_LAZY_BINARY_SPECS = [
     symlinks: [] as string[],
     mode: 0o644,
   })),
+  // retro-emulators: three emulators, each a libretro core named for itself
+  // and linked with one small frontend, plus a starter ROM for each (the
+  // package's declared runtime_files). retro-nes, retro-genesis and
+  // retro-snes are shorter names for them. /usr/bin/retro-run is the image's
+  // launcher; it picks the emulator from the ROM's contents.
+  {
+    id: "fceumm",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/fceumm.wasm",
+    vfsPath: "/usr/bin/fceumm",
+    symlinks: ["/usr/bin/retro-nes"],
+  },
+  {
+    id: "genesis-plus-gx",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/genesis-plus-gx.wasm",
+    vfsPath: "/usr/bin/genesis-plus-gx",
+    symlinks: ["/usr/bin/retro-genesis"],
+  },
+  {
+    id: "snes9x",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/snes9x.wasm",
+    vfsPath: "/usr/bin/snes9x",
+    symlinks: ["/usr/bin/retro-snes"],
+  },
+  {
+    id: "retro-emulators-rom-nes",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/share/retro-emulators/roms/240pee.nes",
+    vfsPath: "/usr/share/retro-emulators/roms/240pee.nes",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "retro-emulators-rom-md",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/share/retro-emulators/roms/240pSuite-md-1.21.bin",
+    vfsPath: "/usr/share/retro-emulators/roms/240pSuite-md-1.21.bin",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "retro-emulators-rom-snes",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/share/retro-emulators/roms/240pSuite-snes-1.03.sfc",
+    vfsPath: "/usr/share/retro-emulators/roms/240pSuite-snes-1.03.sfc",
+    symlinks: [],
+    mode: 0o644,
+  },
   // The Omarchy shell (omarchydesktop starts it) and the Qt client the
   // launcher offers. quickshell.wasm alone is 82 MB.
   { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/bin/quickshell", symlinks: [] },

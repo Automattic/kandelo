@@ -2225,7 +2225,13 @@ async function bootProfile(
     } else {
       // A package activity may open KMS after booting a terminal-only image.
       // Capture only over its real canvas, using the same evdev input path.
-      attachDeclaredInputSource(kernel, machine, tick, host, ".kmodeset-canvas");
+      // A program may likewise bind /dev/fb0 after boot without a terminal to
+      // read keys from (the retro ROM exchange handler starts the emulator so).
+      // On Linux every key reaches the keyboard's evdev device as well as the
+      // console, so while the framebuffer canvas holds focus its keys go to
+      // /dev/input/event0 too. The framebuffer pane still writes them to the
+      // bound program's terminal; a program reads one source or the other.
+      attachDeclaredInputSource(kernel, machine, tick, host, ".kmodeset-canvas", ".kframebuffer-canvas");
     }
 
     if (profile.framebufferTest) {
@@ -2378,6 +2384,7 @@ function attachDeclaredInputSource(
   tick: (msg: string) => void,
   host: Pick<LiveKernelHost, "reportClipboardPasteFailure">,
   activityDisplaySelector?: string,
+  focusedKeyboardSelector?: string,
 ): void {
   const displaySelector = activityDisplaySelector ?? ( machine.runtime.features.includes("kms")
     ? ".kmodeset-canvas"
@@ -2408,8 +2415,11 @@ function attachDeclaredInputSource(
           kernel.setInputCanvasDims(width, height);
         },
       }),
-      shouldCapture: demoSurfaceCaptureGate(
-        () => document.querySelector(displaySelector ?? "main"),
+      shouldCapture: withFocusedKeyboard(
+        demoSurfaceCaptureGate(
+          () => document.querySelector(displaySelector ?? "main"),
+        ),
+        focusedKeyboardSelector,
       ),
       // `clipboard`: the image runs an agent on /dev/kandelo/clipboard, so a
       // browser paste over the machine becomes the guest's selection before
@@ -2463,6 +2473,23 @@ function attachDeclaredInputSource(
 
 
 
+
+/**
+ * Also capture keys while focus is inside `selector`'s element. Only keys:
+ * that surface's own pane owns its pointer.
+ */
+function withFocusedKeyboard(
+  gate: (e: Event) => boolean,
+  selector: string | undefined,
+): (e: Event) => boolean {
+  if (selector === undefined) return gate;
+  return (e) => {
+    if (gate(e)) return true;
+    if (e.type !== "keydown" && e.type !== "keyup") return false;
+    const active = document.activeElement;
+    return active !== null && document.querySelector(selector)?.contains(active) === true;
+  };
+}
 
 interface LoadedVfsImage {
   imageBytes: ArrayBuffer;

@@ -14,9 +14,22 @@
  *   lease until the user saves or dismisses it. Nothing here writes a file
  *   or starts a download: saving is the app's decision.
  *
+ * An output of type TERMINAL_REQUEST_MIME is a request to open a terminal
+ * running a command (`terminal-request.ts`). When the app registers a handler
+ * for those, they go to it instead of the tray; without one they are ordinary
+ * outputs.
+ *
  * Types are structural, like `KernelLike`: this package does not import the
  * host runtime.
  */
+
+import {
+  InvalidTerminalRequestError,
+  MAX_TERMINAL_REQUEST_BYTES,
+  parseTerminalRequest,
+  TERMINAL_REQUEST_MIME,
+  type TerminalRequest,
+} from "./terminal-request";
 
 /** One item to offer: a file (Blob), a stream, or an empty directory. */
 export interface ExchangeOfferItem {
@@ -139,6 +152,7 @@ export class ExchangeSession {
   /** Input entry IDs this session offered, to name an output's provenance. */
   #entryNames = new Map<string, string>();
   #nextKey = 1;
+  #terminalRequests: ((request: TerminalRequest) => Promise<void>) | null = null;
   readonly #consumerListeners = new Set<(state: ExchangeConsumerStateView | null) => void>();
   readonly #batchListeners = new Set<(batches: readonly ExchangeBatchView[]) => void>();
   readonly #outputListeners = new Set<(outputs: readonly ExchangeOutputView[]) => void>();
@@ -267,6 +281,15 @@ export class ExchangeSession {
     return key;
   }
 
+  /**
+   * Open terminals that the machine requests (TERMINAL_REQUEST_MIME outputs)
+   * with `handler`, or stop doing so (null). A handler's rejection is shown
+   * as a failed entry naming the request's title.
+   */
+  setTerminalRequestHandler(handler: ((request: TerminalRequest) => Promise<void>) | null): void {
+    this.#terminalRequests = handler;
+  }
+
   /** Forget a finished batch (its toast was dismissed). */
   dismissBatch(key: string): void {
     this.#removeBatch(key);
@@ -292,6 +315,9 @@ export class ExchangeSession {
   }
 
   #hold(output: Parameters<Parameters<ExchangeLike["onOutput"]>[0]>[0]): Promise<void> {
+    if (output.mimeType === TERMINAL_REQUEST_MIME && this.#terminalRequests) {
+      return this.#openTerminal(output, this.#terminalRequests);
+    }
     return new Promise<void>((finish) => {
       const view: ExchangeOutputView = {
         id: output.id,
@@ -311,6 +337,32 @@ export class ExchangeSession {
         this.#emitOutputs();
       });
     });
+  }
+
+  /**
+   * Read a terminal request, release its lease, and hand it to the app. The
+   * request is consumed either way; a refusal or a failed launch is shown.
+   */
+  async #openTerminal(
+    output: Parameters<Parameters<ExchangeLike["onOutput"]>[0]>[0],
+    open: (request: TerminalRequest) => Promise<void>,
+  ): Promise<void> {
+    let request: TerminalRequest;
+    try {
+      if (output.kind !== "stored") throw new InvalidTerminalRequestError("the request is a stream, not a file");
+      request = parseTerminalRequest(await readBounded(output.read(), MAX_TERMINAL_REQUEST_BYTES));
+    } catch (error) {
+      this.#reportFailed(output.name, `The machine asked for a terminal, but ${errorText(error)}`);
+      return;
+    }
+    // The lease ends when this returns; the launch is the app's business.
+    void open(request).catch((error) => {
+      this.#reportFailed(request.title, `Could not open a terminal: ${errorText(error)}`);
+    });
+  }
+
+  #reportFailed(name: string, status: string): void {
+    this.#putBatch({ key: `local-${this.#nextKey++}`, names: [name], phase: "failed", status });
   }
 
   #setConsumer(state: ExchangeConsumerStateView | null): void {
@@ -349,4 +401,36 @@ export class ExchangeSession {
     const outputs = this.outputs;
     for (const listener of this.#outputListeners) listener(outputs);
   }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** A stream's bytes, refusing more than `limit`. */
+async function readBounded(stream: ReadableStream<Uint8Array>, limit: number): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > limit) {
+        await reader.cancel();
+        throw new InvalidTerminalRequestError(`the request is larger than ${limit} bytes`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }

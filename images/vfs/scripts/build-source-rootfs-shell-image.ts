@@ -388,7 +388,282 @@ done
 status "extracted into $GAMES; add it from the launcher"
 `;
 
-/** Machine-specific exchange rules (the image's, in /etc). */
+/**
+ * The emulator launcher, written eagerly to /usr/bin/retro-run. It picks one
+ * of the three lazy emulators (fceumm, genesis-plus-gx, snes9x) for a ROM and
+ * execs it:
+ * `retro-run game.sfc`, passing any further options (`--state FILE`) to the
+ * emulator. With no argument it runs the NES starter ROM.
+ * `retro-run --identify FILE` prints the system it detected (nes, md, sms, gg
+ * or sfc) and exits 0, or exits 1 when FILE is not a ROM. `retro-run --keys
+ * [FILE]` prints which key is which button for that ROM's emulator.
+ *
+ * WHY it reads the ROM instead of trusting its extension: dumps circulate with
+ * wrong or generic extensions (.bin, .smc for a HiROM game), so the system is
+ * identified the way emulator frontends identify a headerless dump: the iNES
+ * magic at offset 0, "SEGA" at 0x100 for Mega Drive, "TMR SEGA" near the end
+ * of a Master System or Game Gear ROM, and for SNES the header checksum and
+ * its complement at the LoROM/HiROM header offsets (with and without a
+ * 512-byte copier header). A file that matches none of them is rejected with
+ * a message rather than handed to an arbitrary core.
+ *
+ * The cores themselves take the system type from the path's extension, so
+ * the launcher runs the ROM through a symlink named for what it detected.
+ */
+const RETRO_RUN_SCRIPT = `#!/bin/bash
+# Pick the emulator core for a ROM from the ROM's own bytes, then exec it.
+#
+# Every process this script starts takes real time on Kandelo, so it reads the
+# ROM's first 64 KiB once and does everything else with bash builtins. Probing
+# each offset with its own dd|od|tr pipeline took about 25 processes to reach
+# the SNES test, and seconds before a SNES game started.
+IDENTIFY=""; KEYS=""
+case "\${1:-}" in
+    --identify) IDENTIFY=1; shift ;;
+    --keys) KEYS=1; shift ;;
+esac
+ROM=\${1:-/usr/share/retro-emulators/roms/240pee.nes}
+RUN=\${XDG_RUNTIME_DIR:-/run/user/$UID}/retro
+
+if [ ! -r "$ROM" ] || [ -d "$ROM" ]; then
+    echo "retro-run: cannot read ROM: $ROM" >&2
+    exit 1
+fi
+
+# Every signature below lies in the first 66,016 bytes.
+HEX=$(od -An -tx1 -v -N 66016 "$ROM" | tr -d ' \\n')
+# $1=offset $2=count -> H=lowercase hex of those bytes (shorter past the end)
+hex_at() { H=\${HEX:$(( $1 * 2 )):$(( $2 * 2 ))}; }
+
+# A SNES header stores a checksum and its bitwise complement side by side.
+snes_header_at() {
+    hex_at "$1" 4
+    [ \${#H} -eq 8 ] || return 1
+    [ $(( 16#\${H:0:4} ^ 16#\${H:4:4} )) -eq 65535 ]
+}
+
+CORE=""; EXT=""
+hex_at 0 4
+if [ "$H" = "4e45531a" ]; then
+    CORE=/usr/bin/fceumm; EXT=nes
+else
+    hex_at 256 4
+    if [ "$H" = "53454741" ]; then
+        CORE=/usr/bin/genesis-plus-gx; EXT=md
+    fi
+fi
+if [ -z "$CORE" ]; then
+    for off in 32752 16368 8176; do
+        hex_at "$off" 8
+        if [ "$H" = "544d522053454741" ]; then
+            CORE=/usr/bin/genesis-plus-gx; EXT=sms
+            # Region nibble: 5-7 are Game Gear, 3-4 are Master System.
+            hex_at $((off + 15)) 1
+            case \${H:0:1} in 5|6|7) EXT=gg ;; esac
+            break
+        fi
+    done
+fi
+if [ -z "$CORE" ]; then
+    for off in 32732 65500 33244 66012; do
+        if snes_header_at "$off"; then
+            CORE=/usr/bin/snes9x; EXT=sfc
+            break
+        fi
+    done
+fi
+if [ -z "$CORE" ]; then
+    echo "retro-run: $ROM is not a recognised NES, SNES, Mega Drive, Master System or Game Gear ROM" >&2
+    exit 1
+fi
+# --identify FILE: name the system and stop, for callers deciding whether a
+# file is a ROM at all (the ROM exchange handler).
+if [ -n "$IDENTIFY" ]; then echo "$EXT"; exit 0; fi
+
+# The cores read the system type from the path's extension, so give the ROM
+# a name that carries what its contents said. The rest of the name is the
+# ROM's own: FCEUmm takes an iNES 1.0 ROM's TV system from tags such as
+# "(E)" or "(Europe)" in it, and a European game named "rom" runs at NTSC
+# speed and pitch. Only a conservative character set survives.
+NAME=\${ROM##*/}
+BASE=\${NAME%.*}
+BASE=\${BASE//[^A-Za-z0-9 ._()!,&+-]/_}
+BASE=\${BASE:0:120}
+case "$BASE" in ""|.*|-*) BASE="rom$BASE" ;; esac
+case "$ROM" in /*) ;; *) ROM="$PWD/$ROM" ;; esac
+[ -d "$RUN" ] || mkdir -p "$RUN" || exit 1
+LINK="$RUN/$BASE.$EXT"
+ln -sf "$ROM" "$LINK" || exit 1
+[ -n "$KEYS" ] && exec "$CORE" "$LINK" --keys
+exec "$CORE" "$LINK" "\${@:2}"
+`;
+
+/**
+ * kandelo-terminal, written eagerly to /usr/bin/kandelo-terminal: asks the
+ * page showing the machine to open a terminal with a command typed at its
+ * prompt (web-libs/kandelo-session/src/terminal-request.ts). The ROM exchange
+ * handler uses it so a dropped game is a visible, repeatable command.
+ */
+const KANDELO_TERMINAL_SCRIPT = `#!/bin/sh
+# kandelo-terminal [--display] [--title TITLE] COMMAND-LINE
+#
+# Ask the page showing this machine to open a terminal and type COMMAND-LINE
+# at its prompt, as the user would, so the command is visible and can be run
+# again from that terminal's history. COMMAND-LINE is one shell command line,
+# used as written. --display: the command draws on the framebuffer, so the
+# page stops whatever holds the display and shows it.
+#
+# The request is a Kandelo exchange output of type
+# application/x-kandelo-terminal-command. Publishing it fails, and so does
+# this command (exit 1), when nothing outside the machine takes outputs; a
+# page that does not open terminals keeps it as an ordinary output.
+usage() {
+    echo "usage: kandelo-terminal [--display] [--title TITLE] COMMAND-LINE" >&2
+    exit 2
+}
+display=""
+title=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --display) display=1; shift ;;
+        --title) [ $# -ge 2 ] || usage; title=$2; shift 2 ;;
+        --) shift; break ;;
+        -*) usage ;;
+        *) break ;;
+    esac
+done
+[ $# -eq 1 ] && [ -n "$1" ] || usage
+command=$1
+[ -n "$title" ] || title=$command
+
+json_string() {
+    printf '"%s"' "$(printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g')"
+}
+file=$(mktemp "\${KANDELO_WORK:-\${TMPDIR:-/tmp}}/terminal-request.XXXXXX") || exit 1
+{
+    printf '{"version":1,"command":%s,"title":%s' "$(json_string "$command")" "$(json_string "$title")"
+    [ -z "$display" ] || printf ',"display":"framebuffer"'
+    printf '}\\n'
+} > "$file" || { rm -f "$file"; exit 1; }
+kandelo-publish --mime application/x-kandelo-terminal-command \\
+    --name "terminal-\${file##*.}.json" "$file" >/dev/null
+rc=$?
+rm -f "$file"
+exit $rc
+`;
+
+/**
+ * The Kandelo exchange handler for a dropped ROM, on every shell machine: it
+ * keeps the drop in ~/roms and starts the emulator on its first ROM, so
+ * dropping a game, or a folder of them, on the machine plays it. The
+ * machine's view brings the display forward when the emulator binds /dev/fb0.
+ *
+ * WHY it takes every drop and reads contents: ROM collections name files
+ * .rom, .bin or nothing at all, and arrive as folders, so no extension rule
+ * can pick them out. A drop with no ROM in it goes to exchange-save, exactly
+ * as the 99-save catch-all would have handled it.
+ *
+ * The emulator runs outside any terminal (kxchgd gives handlers /dev/null as
+ * stdin), so it reads keys from the machine's keyboard device rather than
+ * from a terminal (packages/registry/retro-emulators/frontend/main.c).
+ *
+ * A dropped ROM replaces the game that is playing: the handler stops the
+ * emulator a previous drop or a terminal started (its pid file names it) and
+ * waits until it is gone, so the display is free. A display held by another
+ * program is not taken; the emulator's own failure (EBUSY on /dev/fb0) is
+ * reported as the batch's status.
+ */
+const RETRO_LOAD_ROM_HANDLER = `#!/bin/sh
+batch="$1"
+status() { setfattr -n user.kandelo.status -v "$1" "$batch" 2>/dev/null || true; }
+RUNTIME=\${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+PIDFILE=$RUNTIME/retro.pid
+LOG=$RUNTIME/retro.log
+
+# A ROM is recognised by its contents (retro-run --identify), not its name:
+# collections name ROMs .rom, .bin or nothing at all, and arrive as folders.
+# Only names that could be a ROM are read, so a dropped photo or archive
+# costs one directory walk. The first ROM in path order is played.
+could_be_rom() {
+    base=\${1##*/}
+    case "$base" in
+        .*) return 1 ;;
+        *.*) ;;
+        *) return 0 ;;
+    esac
+    case "$base" in
+        *.[nN][eE][sS]|*.[sS][fF][cC]|*.[sS][mM][cC]|*.[mM][dD]|*.[gG][eE][nN]|*.[sS][mM][dD]) return 0 ;;
+        *.[sS][mM][sS]|*.[gG][gG]|*.[rR][oO][mM]|*.[bB][iI][nN]) return 0 ;;
+    esac
+    return 1
+}
+rom=$(find "$batch" -type f | sort | while IFS= read -r f; do
+    could_be_rom "$f" || continue
+    /usr/bin/retro-run --identify "$f" >/dev/null 2>&1 && { printf '%s\\n' "$f"; break; }
+done)
+# Not a game: what any other drop gets.
+[ -n "$rom" ] || exec /usr/libexec/kandelo/exchange-save "$batch"
+
+# The batch is removed when this handler exits, so the drop is kept in
+# ~/roms as it arrived: a file as itself, a folder with what is in it.
+dir="$HOME/roms"
+mkdir -p "$dir" || { status "failed: could not create $dir"; exit 1; }
+for entry in "$batch"/*; do
+    cp -Rf "$entry" "$dir/" || { status "failed: could not store $(basename "$entry") in $dir"; exit 1; }
+done
+path=\${rom#"$batch"/}
+name=\${rom##*/}
+
+# The game runs as a command in a terminal of its own, typed at the prompt:
+# the user sees what the drop ran, and once the game exits, Up and Enter run
+# it again. kandelo-terminal asks the page for that terminal. Where nothing
+# outside the machine opens one (the Node host, or no page taking outputs),
+# the game starts in the background instead, as below.
+quoted=$(printf '%s' "$path" | sed "s/'/'\\\\\\\\''/g")
+if /usr/bin/kandelo-terminal --display --title "$name" "retro-run ~/roms/'$quoted'" 2>/dev/null; then
+    status "opened a terminal: retro-run ~/roms/$path"
+    exit 0
+fi
+
+old=$(cat "$PIDFILE" 2>/dev/null)
+if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
+    status "stopping the current game"
+    kill -TERM "$old"
+    tries=0
+    while kill -0 "$old" 2>/dev/null; do
+        tries=$((tries + 1))
+        [ "$tries" -le 50 ] || { status "failed: the running emulator (pid $old) did not stop"; exit 1; }
+        sleep 0.1
+    done
+fi
+rm -f "$PIDFILE"
+
+status "starting $name"
+/usr/bin/retro-run "$dir/$path" </dev/null >"$LOG" 2>&1 &
+pid=$!
+# The emulator publishes its pid once it holds the display, sound and
+# keyboard. The first start of a core fetches it, which can take a while.
+tries=0
+while :; do
+    [ "$(cat "$PIDFILE" 2>/dev/null)" = "$pid" ] && { status "playing $name"; exit 0; }
+    if ! kill -0 "$pid" 2>/dev/null; then
+        # The emulator's own lines start with "[" and its key list with
+        # "Keys for" or two spaces; the last other line is the error.
+        why=$(grep -v -e '^\\[' -e '^Keys for ' -e '^  ' "$LOG" | tail -n 1)
+        [ -n "$why" ] || why=$(tail -n 1 "$LOG")
+        case "$why" in
+            "open /dev/fb0: "*busy*) why="another program holds the display; stop it and drop the ROM again" ;;
+        esac
+        status "failed: $why"
+        exit 1
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -le 1200 ] || { status "failed: the emulator did not start within 2 minutes (see $LOG)"; exit 1; }
+    sleep 0.1
+done
+`;
+
+/** The image's exchange rules (in /etc): the game machines' and the ROM rule. */
 const GAME_EXCHANGE_RULES: ReadonlyArray<{ name: string; handler: string; script: string; rule: string }> = [
   {
     name: "50-doom-wad.handler",
@@ -407,6 +682,23 @@ const GAME_EXCHANGE_RULES: ReadonlyArray<{ name: string; handler: string; script
     handler: "/usr/libexec/kandelo/scummvm-load-zip",
     script: SCUMMVM_LOAD_ZIP_HANDLER,
     rule: "# Game data for ScummVM, zipped: extracted for its launcher.\nmatch extension .zip\nkind file\nmax-bytes 536870912\nrun /usr/libexec/kandelo/scummvm-load-zip\n",
+  },
+  {
+    // Sorted after the game machines' rules and before the 99-save
+    // catch-all: it takes every drop, plays one holding a ROM, and hands
+    // anything else to exchange-save as the catch-all would.
+    name: "90-retro-rom.handler",
+    handler: "/usr/libexec/kandelo/retro-load-rom",
+    script: RETRO_LOAD_ROM_HANDLER,
+    rule: [
+      "# A drop holding a NES, SNES, Mega Drive, Master System or Game Gear",
+      "# ROM, whatever it is named: kept in ~/roms and played. Anything",
+      "# else is saved to ~/Downloads, as the 99-save catch-all would.",
+      "kind any",
+      "max-bytes 16777216",
+      "run /usr/libexec/kandelo/retro-load-rom",
+      "",
+    ].join("\n"),
   },
 ];
 
@@ -1740,7 +2032,12 @@ export async function buildSourceRootfsShellImage(
   // lands in /var/games/doom, owned by the unprivileged handler account.
   writeVfsBinary(fs, "/usr/bin/doom-launch", new TextEncoder().encode(DOOM_LAUNCH_SCRIPT), 0o755);
   ensureDirRecursive(fs, "/usr/share/doom");
-  // The game machines' Kandelo exchange handlers and their rules. The rules
+  // The emulators and their starter ROMs are lazy; only the launcher that
+  // picks one for a ROM is eager. A dropped ROM runs through it too (the
+  // retro ROM exchange handler below).
+  writeVfsBinary(fs, "/usr/bin/retro-run", new TextEncoder().encode(RETRO_RUN_SCRIPT), 0o755);
+  writeVfsBinary(fs, "/usr/bin/kandelo-terminal", new TextEncoder().encode(KANDELO_TERMINAL_SCRIPT), 0o755);
+  // The image's Kandelo exchange handlers and their rules. The rules
   // go in the image's rule directory, which the base rootfs declares
   // (images/rootfs/MANIFEST) with the ownership kxchgd checks; creating it
   // here would hide a base that lacks it. Rule files are root-owned and not
