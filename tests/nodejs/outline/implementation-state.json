@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T18:48:18.293311+00:00",
+  "updatedAt": "2026-11-07T18:50:42.400031+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "464ec4cb145e05ca29f5dfd3781c6e8d93270a2aa20de92a2b5f156bab0ff0f6",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "69f8a1ef5a9b3e49aeeb9ee7dc4a7a1b6d4dd90582f4aedbe60ae8c8d866533f",
-    "tests/nodejs/outline/finding-ledger.md": "b2fdfdfde3e5cda6de6f57282db107c7699099d5222a39a549507c44dacb0a53",
+    "tests/nodejs/outline/finding-ledger.json": "da774e6c0889c2430d3b5070076cdbfe008e7576767f6dc4ca027859aae49593",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "f4ab2d22e1493946cf872291142cda7b60166348f21e7253d3ae5af67c1803b0",
+    "tests/nodejs/outline/finding-ledger.md": "57acf9a769fb9475fa930fca9c01eeb631964f1f1d8daff8e994f12afe477fc9",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -9041,7 +9041,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Qualified socket-shutdown229/eval230source links; shared terminal prerequisites explicitly limited, original definitions/evidence/nonpasses preserved, no closures or new runtime/compiler work; engine230compile status is recorded separately; actual guest/four-host runtime validation remains pending."
+    "reason": "Integrated genuine main SIGWINCH consumer and exact captured-output publication rollback, verified bounded actual components/native resize and independent source review, corrected direct finding qualification toT008 without publicTTY activation."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -49892,10 +49892,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/stdio-resize-20261107T184819Z.tar.gz",
-    "sha256": "11cd8c7e0c42f9bf243e2854b99368bf2b4190c614504492937974d9b767a2f5",
-    "bytes": 20669168,
-    "scope": "231genuine main stdio signal/size/captured-output publication over preserved230source; exact current components/native dependencies and immutable producer/review/clarification/nonpasses. No publicTTY/guest/host closure.",
+    "path": ".context/node26-implementation-snapshots/finding-overlay231-20261107T185042425015Z.tar.gz",
+    "sha256": "7247d0ade82bdd4889584da3658e704492dcf41e162376d3fa8010ba122c78e8",
+    "bytes": 11868301,
+    "scope": "Source231 qualified stdio T008 owner/T010 prerequisite metadata only;0newruntime/compiler/closures.",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -53189,7 +53189,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated genuine main SIGWINCH consumer and exact captured-output publication rollback, verified bounded actual components/native resize and independent source review, corrected direct finding qualification toT008 without publicTTY activation."
+    "reason": "Source231 main stdio T008 partial owner link/T010 shared prerequisite only; original source evidence/definitions/nonpasses preserved,no runtime/compiler work or closures."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -60186,6 +60186,13 @@
       "sha256": "80a57980ae10f814c96a7f05719fc58a31d4e60ce436fabbaf4b681246feca8f",
       "bytes": 11849280,
       "scope": "Current230qualified shutdown/eval shared-prerequisite links, metadata only;0newruntime/compiler/closures.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/stdio-resize-20261107T184819Z.tar.gz",
+      "sha256": "11cd8c7e0c42f9bf243e2854b99368bf2b4190c614504492937974d9b767a2f5",
+      "bytes": 20669168,
+      "scope": "231genuine main stdio signal/size/captured-output publication over preserved230source; exact current components/native dependencies and immutable producer/review/clarification/nonpasses. No publicTTY/guest/host closure.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -67365,7 +67372,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "8804123e97df9cabc0cbd73be6691da81fcd23da",
+    "pushedThrough": "715f6d89fb39a00247d0057ac88be9bb81d2ee90",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -67510,7 +67517,8 @@
       ".context/node26-shutdown229-push.log": "87224d472790f50e4f755298040e7839722cbf5fe7da2230bf3155db908aae83",
       ".context/node26-eval230-push.log": "dde43ff89788f7db96d6ca6c04d7bcfed93409ccc6c9bf787c5786c4159febb1",
       ".context/node26-engine230-main-push.log": "d2e57d98946f1eae3045d7cd3fa6684f71cfc9cfd26a2caa6e8fba1046b30945",
-      ".context/node26-ledger230-push.log": "dc9198dc685571b83443672f8870c0316e64901cb4bb64c9dfca1b7ccaf78a9e"
+      ".context/node26-ledger230-push.log": "dc9198dc685571b83443672f8870c0316e64901cb4bb64c9dfca1b7ccaf78a9e",
+      ".context/node26-stdio231-push.log": "4357a19eb2a3d923c554c9c1bff9b0e9a08612d519c4243a926350ef9a17984c"
     }
   },
   "sourceLedgerCoverageCorrection": {
@@ -120738,19 +120746,19 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "464ec4cb145e05ca29f5dfd3781c6e8d93270a2aa20de92a2b5f156bab0ff0f6",
+    "sha256": "da774e6c0889c2430d3b5070076cdbfe008e7576767f6dc4ca027859aae49593",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "69f8a1ef5a9b3e49aeeb9ee7dc4a7a1b6d4dd90582f4aedbe60ae8c8d866533f"
+      "sha256": "f4ab2d22e1493946cf872291142cda7b60166348f21e7253d3ae5af67c1803b0"
     },
-    "sourceCheckpoint": 230,
+    "sourceCheckpoint": 231,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 153,
+      "sourceSliceRecords": 154,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
       "findingsWithoutExplicitOrProposedSourceSlice": 214
@@ -121786,6 +121794,28 @@
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 218
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "464ec4cb145e05ca29f5dfd3781c6e8d93270a2aa20de92a2b5f156bab0ff0f6",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "69f8a1ef5a9b3e49aeeb9ee7dc4a7a1b6d4dd90582f4aedbe60ae8c8d866533f"
+      },
+      "sourceCheckpoint": 230,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 153,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 214
       },
       "individualApiClosure": false,
       "fourHostConformance": false

@@ -1,14 +1,14 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T18:39:26.010142+00:00",
-  "sourceHead": "b92f49bda1c53d9a3b6c7c69b97b9fac1dbba6c0",
-  "recipeRevision": 230,
+  "at": "2026-11-07T18:50:42.400031+00:00",
+  "sourceHead": "715f6d89fb39a00247d0057ac88be9bb81d2ee90",
+  "recipeRevision": 231,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 153,
+    "sourceSliceRecords": 154,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 214
@@ -26,23 +26,22 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 153,
+  "sourceSliceIdentitiesVerified": 154,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "464ec4cb145e05ca29f5dfd3781c6e8d93270a2aa20de92a2b5f156bab0ff0f6"
+    "sha256": "da774e6c0889c2430d3b5070076cdbfe008e7576767f6dc4ca027859aae49593"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
-  "scope": "Qualified partial source/evidence links only; terminal links prerequisite-only, original definitions/ranges/limits/failures preserved.",
+  "scope": "Qualified partial source link and explicit T010 prerequisite; original definitions/ranges/limits/nonpasses preserved.",
   "previousIntegrityIdentity": {
-    "sha256": "0bb64f5b80dbdd71257cd3371fc4ac1d9f62717631f3002b5f2b7613904eb1a8",
-    "sourceHead": "86195f14278460e0806c39d9444cdd3b861903db",
+    "sha256": "69f8a1ef5a9b3e49aeeb9ee7dc4a7a1b6d4dd90582f4aedbe60ae8c8d866533f",
+    "sourceHead": "b92f49bda1c53d9a3b6c7c69b97b9fac1dbba6c0",
     "scope": "Preserved in prior commit/source snapshot history"
   },
   "sourceProgressOverlaysAdded": [
-    "socket-shutdown",
-    "eval-builtin-bindings"
+    "stdio-resize"
   ],
   "qualifiedReferenceCorrections": [
     {

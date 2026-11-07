@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 153 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 154 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 214 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -740,3 +740,8 @@ Current source230normal engine compilation/cache acceptance: True.
 Actual guest execution/four-host conformance remain unestablished. The separate
 engine230terminal report identifies compiled bytes or retained failure; full
 product rebuilding and overall suites remain deferred.
+
+
+## Source231 stdio owner qualification
+
+T-008 now links actual main stdio dimensions/SIGWINCH source231. T-010 is an explicit shared prerequisite only; public tty.WriteStream is not activated or complete. Original producer T010 wording/evidence remains historical and unchanged. No finding closes. Source records154; findings without exact links214. Original357groups/417qualified definitions/52ranges/19families preserved. Current231 source is uncompiled; accepted230 artifact retained, no guest/four-host conformance. This metadata overlay runs0tests/compilers; counter299 preserved.
