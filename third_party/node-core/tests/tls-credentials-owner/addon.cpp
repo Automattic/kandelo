@@ -1,6 +1,7 @@
 // Test-only N-API bridge to the actual credential/context source. Production
 // uses native-tls-context.cpp and its own realm/GC/handshake owners.
 #include <node_api.h>
+#include "../crypto-errors/napi-error.h"
 #include "kandelo-node-tls-credential-operations.h"
 #include "kandelo-node-tls-context-trust.h"
 #include <atomic>
@@ -12,7 +13,11 @@ static void Check(napi_status value){if(value!=napi_ok)throw std::runtime_error(
 static napi_value Text(napi_env e,const char* text){napi_value v;Check(napi_create_string_utf8(e,text,NAPI_AUTO_LENGTH,&v));return v;}
 static napi_value Num(napi_env e,int n){napi_value v;Check(napi_create_int32(e,n,&v));return v;}
 static void Set(napi_env e,napi_value object,const char* name,napi_value value){Check(napi_set_named_property(e,object,name,value));}
-static napi_value Throw(napi_env e,const kandelo::crypto::Error& error,bool type=false){napi_value message=Text(e,error.what()),exception;Check(type?napi_create_type_error(e,nullptr,message,&exception):napi_create_error(e,nullptr,message,&exception));if(!error.code.empty())Set(e,exception,"code",Text(e,error.code.c_str()));if(!error.library.empty())Set(e,exception,"library",Text(e,error.library.c_str()));if(!error.reason.empty())Set(e,exception,"reason",Text(e,error.reason.c_str()));if(!error.stack.empty()){napi_value stack;Check(napi_create_array_with_length(e,error.stack.size(),&stack));for(size_t i=0;i<error.stack.size();++i)Check(napi_set_element(e,stack,i,Text(e,error.stack[i].c_str())));Set(e,exception,"opensslErrorStack",stack);}Check(napi_throw(e,exception));return nullptr;}
+static napi_value Throw(napi_env e,const kandelo::crypto::Error& error,bool type=false){
+ auto value=kandelo::crypto::test::MakeError(e,error,type?std::optional(kandelo::crypto::ErrorKind::TypeError):std::nullopt);
+ if(!value)return nullptr;Check(napi_throw(e,value));return nullptr;
+}
+
 static void Finalize(napi_env,void* p,void*){delete static_cast<Owner*>(p);--live;}
 static Owner* Unwrap(napi_env e,napi_value object){Owner* value;Check(napi_unwrap(e,object,reinterpret_cast<void**>(&value)));return value;}
 // Capturing native typed storage here is a host component transport seam;

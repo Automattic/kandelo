@@ -3357,11 +3357,9 @@ const crypto = (() => {
         const view = new p.Uint8Array(p.TypedArrayPrototypeGetBuffer(u8),
             p.TypedArrayPrototypeGetByteOffset(u8) + byteOffset, byteLength);
         const error = _nodeNative.randomFillBytes(view);
-        if (error !== undefined) {
-            const failure = new p.Error(error.message);
-            for (const key of p.ObjectKeys(error)) failure[key] = error[key];
-            throw failure;
-        }
+        // Native crypto owns the genuine Error, its realm and decorations.
+        // Preserve its identity and setter/descriptor behavior unchanged.
+        if (error !== undefined) throw error;
         return u8;
     }
 

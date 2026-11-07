@@ -19853,10 +19853,7 @@ function normalizeCShakeParameter(value, name) {
         const result = platform.native.hashDigest(algorithm, input, outputLength,
             functionName !== undefined || customization !== undefined);
         if (!isUint8Array(result)) {
-            const error = new Error(result.message);
-            for (const key of ['library', 'reason', 'code', 'opensslErrorStack'])
-                if (P.ObjectPrototypeHasOwnProperty(result, key)) error[key] = result[key];
-            throw error;
+            throw result;
         }
         const buffer = BufferFrom(result);
         return encoding === 'buffer' ? buffer : toString(buffer, encoding);
@@ -20033,17 +20030,7 @@ function getKeyTypes({ allowKeyObject, allowURL = false }) {
     function call(operation, ...args) {
         const result = platform.native.incrementalHash(operation, ...args);
         if (result.error === undefined) return result.value;
-        const record = result.error;
-        const code = P.ObjectPrototypeHasOwnProperty(record, 'code') ? record.code : undefined;
-        const Ctor = code === 'ERR_CRYPTO_INVALID_DIGEST' ? TypeError :
-            code === 'ERR_OUT_OF_RANGE' ? RangeError : Error;
-        const error = new Ctor(record.message);
-        const fields = ['code', 'library', 'reason', 'opensslErrorStack'];
-        for (let i = 0; i < fields.length; i++) {
-            const key = fields[i];
-            if (P.ObjectPrototypeHasOwnProperty(record, key)) error[key] = record[key];
-        }
-        throw error;
+        throw result.error;
     }
     function output(handle, encoding) {
         const mode = call('encoding', encoding, true);
@@ -98644,14 +98631,7 @@ function _createNodeCryptoKeys(platform) {
     function call(operation, ...args) {
         const packet = platform.native.keyOperation(operation, ...args);
         if (ObjectPrototypeHasOwnProperty(packet, 'error') && packet.error !== undefined) {
-            const record = packet.error;
-            const Ctor = record.code === 'ERR_CRYPTO_INVALID_KEYTYPE' || record.code === 'ERR_OUT_OF_RANGE' ? RangeError :
-                record.code === 'ERR_MISSING_PASSPHRASE' || record.code === 'ERR_INVALID_ARG_VALUE' ||
-                record.code === 'ERR_CRYPTO_INVALID_CURVE' || record.code === 'ERR_CRYPTO_INVALID_JWK' || record.name === 'TypeError' ? TypeError : Error;
-            const error = new Ctor(record.message);
-            for (const field of ['code', 'library', 'reason', 'opensslErrorStack'])
-                if (ObjectPrototypeHasOwnProperty(record, field)) error[field] = record[field];
-            throw error;
+            throw packet.error;
         }
         return packet.value;
     }
@@ -100334,13 +100314,7 @@ function _createNodeCipherPlatform(platform) {
     function call(operation, ...args) {
         const result = platform.native.cipherOperation(operation, ...args);
         if (result.error === undefined) return result.value;
-        const record = result.error, code = record.code;
-        const Ctor = code === 'ERR_CRYPTO_INVALID_KEYLEN' || code === 'ERR_CRYPTO_INVALID_MESSAGELEN' || code === 'ERR_OUT_OF_RANGE' ? RangeError :
-            code === 'ERR_CRYPTO_INVALID_IV' || code === 'ERR_CRYPTO_INVALID_AUTH_TAG' || code === 'ERR_MISSING_ARGS' ? TypeError : Error;
-        const error = new Ctor(record.message);
-        for (const key of ['code', 'library', 'reason', 'opensslErrorStack'])
-            if (ObjectPrototypeHasOwnProperty(record, key)) error[key] = record[key];
-        throw error;
+        throw result.error;
     }
     class CipherBase {
         constructor(encrypt, name, key, iv, tag, cts, xts) {
@@ -100781,21 +100755,12 @@ const validateByteSource = hideStackFrames((val, name) => {
     val);
 });
     const kCryptoJobAsync = 0, kCryptoJobSync = 1, kCryptoJobWebCrypto = 2;
-    function fromNative(record) {
-        if (record === undefined || record === null) return record;
-        const Ctor = record.name === 'TypeError' ? TypeError : record.name === 'RangeError' ? RangeError : Error;
-        const error = new Ctor(record.message);
-        for (const key of ['code', 'library', 'reason', 'opensslErrorStack']) {
-            if (ObjectPrototypeHasOwnProperty(record, key)) error[key] = record[key];
-        }
-        return error;
-    }
     function unwrap(packet) {
-        if (ObjectPrototypeHasOwnProperty(packet, 'error')) throw fromNative(packet.error);
+        if (ObjectPrototypeHasOwnProperty(packet, 'error')) throw packet.error;
         return packet.value;
     }
     function complete(status, syscall, packet) {
-        const error = status < 0 ? platform.makeError(status, syscall) : fromNative(packet[0]);
+        const error = status < 0 ? platform.makeError(status, syscall) : packet[0];
         return ReflectApply(this.ondone, this, [error, status < 0 ? undefined : packet[1]]);
     }
     function PBKDF2Job(mode, password, salt, iterations, length, digest) {
@@ -100819,7 +100784,7 @@ const validateByteSource = hideStackFrames((val, name) => {
             value: function run() {
                 const result = unwrap(platform.native.runKdfJob(this));
                 if (result === undefined) return;
-                return [fromNative(result[0]), result[1]];
+                return [result[0], result[1]];
             } });
     }
     const binding = { PBKDF2Job, ScryptJob, HKDFJob,
@@ -103099,14 +103064,8 @@ function _createNodeCryptoRandomJobs(platform) {
         return result;
     };
     const kCryptoJobAsync = 0;
-    function fromNative(error) {
-        if (error === null || error === undefined) return error;
-        const failure = new primordials.Error(error.message);
-        for (const key of primordials.ObjectKeys(error)) failure[key] = error[key];
-        return failure;
-    }
     function complete(status, syscall, packet) {
-        const error = status < 0 ? platform.makeError(status, syscall) : fromNative(packet);
+        const error = status < 0 ? platform.makeError(status, syscall) : packet;
         return ReflectApply(this.ondone, this, [error]);
     }
     function RandomBytesJob(mode, buffer, offset, size) {
@@ -118548,11 +118507,7 @@ function _createNodeX509Platform(platform) {
     function call(name, ...args) {
         const packet = platform.native.x509Operation(name, ...args);
         if (packet.error !== undefined) {
-            const record = packet.error;
-            const error = new Error(record.message);
-            for (const field of ['code', 'library', 'reason', 'opensslErrorStack'])
-                if (ObjectPrototypeHasOwnProperty(record, field)) error[field] = record[field];
-            throw error;
+            throw packet.error;
         }
         return packet.value;
     }

@@ -13,18 +13,17 @@ static bool KandeloKdfPacket(JSContext* cx, bool failed, HandleValue value, Muta
   result.setObject(*packet); return true;
 }
 static bool KandeloKdfError(JSContext* cx, const kandelo::crypto::Error& error,
-                            MutableHandleValue result, const char* name = "Error") {
-  if (!KandeloDigestError(cx, error, result)) return false;
-  RootedObject object(cx, &result.toObject());
-  RootedString type(cx, JS_NewStringCopyZ(cx, name));
-  return type && JS_DefineProperty(cx, object, "name", type, JSPROP_ENUMERATE);
+                            MutableHandleValue result, const char* name = "Error", bool constructor = false) {
+  const JSExnType type=strcmp(name,"TypeError")==0?JSEXN_TYPEERR:
+      strcmp(name,"RangeError")==0?JSEXN_RANGEERR:JSEXN_ERR;
+  return KandeloDigestError(cx,error,result,type,constructor);
 }
 static bool KandeloKdfConstructorError(JSContext* cx, const kandelo::crypto::KdfError& error,
                                        MutableHandleValue result) {
   RootedValue record(cx);
   const char* name = error.type == kandelo::crypto::KdfError::Type::TypeError ? "TypeError" :
       error.type == kandelo::crypto::KdfError::Type::RangeError ? "RangeError" : "Error";
-  return KandeloKdfError(cx, error, &record, name) && KandeloKdfPacket(cx, true, record, result);
+  return KandeloKdfError(cx, error, &record, name, true) && KandeloKdfPacket(cx, true, record, result);
 }
 static bool KandeloKdfInput(JSContext* cx, HandleValue input, kandelo::crypto::Bytes* result, bool copy,
                              const char* sizeMessage = "KDF input is too large") {

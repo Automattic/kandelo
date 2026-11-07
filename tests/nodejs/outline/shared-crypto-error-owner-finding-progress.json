@@ -1,0 +1,104 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto.md",
+    "findingIds": [
+      "C-001",
+      "C-002",
+      "C-004",
+      "C-005",
+      "C-008"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/secure-network.md": [
+        "S-003",
+        "S-009"
+      ]
+    },
+    "relatedFamilies": [
+      "crypto",
+      "secure-network",
+      "values",
+      "async",
+      "engine"
+    ],
+    "scope": "Shared actual Error/queue/property/identity prerequisite for consumed crypto/TLS paths; not complete public API/per-callsite errors or finding closure"
+  },
+  "sourceImplemented": [
+    "Capture actual operation/worker-local OpenSSL queue, primary number and owned text with pinned Capture/Decorate/ToUpper algorithms; no JS/provider-owned pointer crosses worker handoff",
+    "Create genuine owning-realm intrinsic Error/TypeError/RangeError and retained native kinds; assign actual properties through ordinary [[Set]], preserving false refusal and original setter exceptions",
+    "Create own OpenSSL stack-array elements and preserve ordered secondary-then-explicit-primary decorations without inherited Array setters or rebuilt Error records",
+    "Keep Node native ERR macro Set(...).Check fatal-exception policy distinct from unchecked CryptoErrorStore property setting; exact isolated historical SIGABRT evidence retained",
+    "Seven actual adapters forward native Errors; KDF captures full provider queue with real typed constructor/result policy, TLS credential failures share the genuine owner",
+    "Exact sync-random bootstrap/curated forwarder preserves the original native Error for randomFillSync/getRandomValues, including frozen/nonenumerable/throwing-message-getter and inherited-setter behavior"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-errors185-source-r1/report.json",
+    "sha256": "46277faf23ae7089a0e64132c67e0f46c1849cc9e74a3cfbcf3d2f5b18392936",
+    "guardedInputs": 834,
+    "scope": "Shared genuine native Error/queue/ordinary Set across7adapters and actual sync-random bootstrap; no guest JSAPI/GC/async-context/fullcrypto/fourhost conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-errors185-affected-r1.json",
+    "sha256": "b2ee87964dec64327d7d6eca6db24b7f1767c44f77745560e3aceaac5eae768b",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-errors185-source-r1/report.json",
+    "sha256": "46277faf23ae7089a0e64132c67e0f46c1849cc9e74a3cfbcf3d2f5b18392936",
+    "TLSCredentialGroups": 57,
+    "TLSOwnerLifetimeGroups": 5,
+    "PKCS12Groups": 47,
+    "ordinarySetRealmGCGroups": 55,
+    "queueWorkerOwnerGroups": 5,
+    "syncRandomOriginalErrorGroups": 10,
+    "checkedFatalPolicyHistoricalEvidenceReused": true,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Current shared portable OpenSSL owner and actual consumers over exact identified native components; NAPI is test-only. Sync error deliberately admitted through actual forwarder, not an induced RNG/provider failure. No guest GC/realm/async-context/fourhost execution."
+  },
+  "sealedEvidence": {
+    "report": ".context/crypto-errors-owner-agent/report.json",
+    "sha256": "2d8e155d7be1fc70a30db3e088d65d80a3513c9c441f0aa5c1f84e30ccaba897",
+    "reusedEvidence": true,
+    "scope": "36source checks/816private inputs;57TLS/5ownership/47PKCS12/55property-realm-GC/5queue controls; distinct checked-fatal subprocess evidence.7tiny native attempts/1unused-fixture-helper compile failure; guestJSAPI uncompiled."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/crypto-errors-owner-agent/initial.stderr",
+      "sha256": "4c8073997a6d06a6f6ea6615b8a54795a83b46fd68af87daa0799fb3c7c0ed8d",
+      "kind": "source-generator-reference-assumption",
+      "reason": "Old normalization assertion still scanned a removed legacy helper; exact pinned assertion moved to generated shared owner, original failed preparation retained."
+    },
+    {
+      "report": ".context/crypto-errors-owner-agent/pkcs12-controls-r1/compile.stderr",
+      "sha256": "ff3f01081ac97e1d8a0c8dc5f740589c172e72a3aeb579b76d6d24b6886a389f",
+      "kind": "native-fixture-unused-helper-compile-failure",
+      "reason": "Migration left unused Text fixture helper under Werror. Removed unused helper without assertion changes; original failed compiler output preserved."
+    },
+    {
+      "report": ".context/node26-errors185-missing-report-env-r1/node26-errors185-source-r1.log",
+      "sha256": "8948d26dba2f9a4fa594fab21227549f63d55dc8cb9becadeec76ffbb7d86b75",
+      "kind": "missing-root-PKCS12-report-path-fixture",
+      "reason": "Parent omitted PKCS12_CONTROL_REPORT; path.dirname(undefined) stopped control before generated variants/report. Supplied a writable root-owned output path; unchanged assertions and initial command/logs retained."
+    }
+  ],
+  "remaining": [
+    "Actual guest JSAPI compile/link, security-wrapper/realm/GC/termination/cancellation and all-four-host identified-artifact execution",
+    "Exact async-hooks execution contexts during native error-property setters, stack formatting and C++ unwind/reentrancy timing",
+    "Per-API choice of native error number/fallback/message, unrelated validation/comparison/TLS verification helpers and remaining backend/provider differences",
+    "Broader crypto/WebCrypto/keygen/signatures/exchange/STORE/FIPS and complete TLS/SecureContext/protocol owners",
+    "Opaque OpenSSL/C++ allocator/capacity accounting; migrated fixtures/native component evidence is not guest memory-pressure or complete errors conformance"
+  ],
+  "at": "2026-11-07T05:33:46.016271+00:00",
+  "recipeRevision": 185,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source185 integrates genuine native crypto Errors, owned OpenSSL queues and original identity through7adapters plus sync-random bootstrap. Scoped native controls and14package checks pass. Guest JSAPI, async setter contexts, broader crypto and four-host conformance remain open.
+See [source scope](shared-crypto-error-owner-integration.md).
+
 Source184 integrates real FFI library/symbol/CLI/retirement owners. Focused native-dependent controls and14package checks pass. New guest JSAPI and complete FFI remain unvalidated or missing; the nested Wasm backend stays in scope for the final phase.
 See [source scope](ffi-library-owner-integration.md).
 

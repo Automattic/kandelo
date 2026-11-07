@@ -11,7 +11,7 @@
 #include "kandelo-node-string-bytes.h"
 namespace kandelo::crypto {
 struct KeyError : Error {
-  explicit KeyError(const char* message, const char* code) : Error(message) { this->code = code; }
+  explicit KeyError(const char* message, const char* code) : Error(message) { SetNodeCode(code); }
 };
 // JWK bytes use the exact pinned nbytes lenient decoder, not a JavaScript
 // Buffer callback. UTF-16 code units reach the same low-byte fallback as Node.

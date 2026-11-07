@@ -151,7 +151,7 @@ def main():
     staged_owners = {}
     for path in sorted(staged.iterdir()):
         own = (path.name.startswith(('kandelo-node-', 'histogram-', 'event-loop-delay')) or
-               path.name in ('native-retained-memory.h', 'retained-backing-store.h'))
+               path.name in ('native-retained-memory.h', 'retained-backing-store.h', 'crypto-errors.h'))
         # Bootstrap is generated program data, not an owner include block;
         # native.cpp is regenerated below from its exact fragment inputs.
         if path.name in ('kandelo-node-bootstrap.h', 'kandelo-node-native.cpp'):

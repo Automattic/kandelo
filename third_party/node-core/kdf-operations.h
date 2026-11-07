@@ -15,7 +15,7 @@ namespace kandelo::crypto {
 struct KdfError : Error {
   enum class Type { Error, TypeError, RangeError } type;
   KdfError(const std::string& message, const char* code, Type type)
-      : Error(message), type(type) { this->code = code; stack.clear(); }
+      : Error(message), type(type) { SetNodeCode(code); }
 };
 struct KdfOperation {
   virtual ~KdfOperation() = default;
@@ -70,11 +70,7 @@ inline bool Argon2Supported() {
 #endif
 }
 [[noreturn]] inline void ThrowKdfFailure(const char* message) {
-  const auto number = ERR_get_error();
-  Error error(message, number);
-  if (number) { char text[256]; ERR_error_string_n(number, text, sizeof(text)); error.stack.insert(error.stack.begin(), text); }
-  std::reverse(error.stack.begin(), error.stack.end());
-  throw error;
+  throw Error(message);
 }
 inline Bytes DeriveArgon2(const KdfConfig& config) {
   ERR_clear_error();

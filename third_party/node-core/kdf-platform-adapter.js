@@ -12,21 +12,12 @@ function _createNodeCryptoKdf(platform) {
     const { hideStackFrames } = platform.values.errors;
     /* NODE_KDF_BYTE_HELPERS */
     const kCryptoJobAsync = 0, kCryptoJobSync = 1, kCryptoJobWebCrypto = 2;
-    function fromNative(record) {
-        if (record === undefined || record === null) return record;
-        const Ctor = record.name === 'TypeError' ? TypeError : record.name === 'RangeError' ? RangeError : Error;
-        const error = new Ctor(record.message);
-        for (const key of ['code', 'library', 'reason', 'opensslErrorStack']) {
-            if (ObjectPrototypeHasOwnProperty(record, key)) error[key] = record[key];
-        }
-        return error;
-    }
     function unwrap(packet) {
-        if (ObjectPrototypeHasOwnProperty(packet, 'error')) throw fromNative(packet.error);
+        if (ObjectPrototypeHasOwnProperty(packet, 'error')) throw packet.error;
         return packet.value;
     }
     function complete(status, syscall, packet) {
-        const error = status < 0 ? platform.makeError(status, syscall) : fromNative(packet[0]);
+        const error = status < 0 ? platform.makeError(status, syscall) : packet[0];
         return ReflectApply(this.ondone, this, [error, status < 0 ? undefined : packet[1]]);
     }
     function PBKDF2Job(mode, password, salt, iterations, length, digest) {
@@ -50,7 +41,7 @@ function _createNodeCryptoKdf(platform) {
             value: function run() {
                 const result = unwrap(platform.native.runKdfJob(this));
                 if (result === undefined) return;
-                return [fromNative(result[0]), result[1]];
+                return [result[0], result[1]];
             } });
     }
     const binding = { PBKDF2Job, ScryptJob, HKDFJob,

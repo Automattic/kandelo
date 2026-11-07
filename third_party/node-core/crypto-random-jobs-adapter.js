@@ -26,14 +26,8 @@ function _createNodeCryptoRandomJobs(platform) {
         return result;
     };
     const kCryptoJobAsync = /* NODE_RANDOM_ASYNC_MODE */;
-    function fromNative(error) {
-        if (error === null || error === undefined) return error;
-        const failure = new primordials.Error(error.message);
-        for (const key of primordials.ObjectKeys(error)) failure[key] = error[key];
-        return failure;
-    }
     function complete(status, syscall, packet) {
-        const error = status < 0 ? platform.makeError(status, syscall) : fromNative(packet);
+        const error = status < 0 ? platform.makeError(status, syscall) : packet;
         return ReflectApply(this.ondone, this, [error]);
     }
     function RandomBytesJob(mode, buffer, offset, size) {

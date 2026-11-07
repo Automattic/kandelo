@@ -28,8 +28,6 @@ inline int PasswordCallback(char* bytes, int capacity, int, void* data) {
   char message[128];
   if (primary) ERR_error_string_n(primary,message,sizeof(message));
   kandelo::crypto::Error error(primary ? message : fallback, primary);
-  // Error owns the remaining queue; pinned CryptoErrorStore reverses it.
-  std::reverse(error.stack.begin(),error.stack.end());
   throw error;
 }
 [[noreturn]] inline void PFXFailure(unsigned long error) {

@@ -6,13 +6,7 @@ function _createNodeCipherPlatform(platform) {
     function call(operation, ...args) {
         const result = platform.native.cipherOperation(operation, ...args);
         if (result.error === undefined) return result.value;
-        const record = result.error, code = record.code;
-        const Ctor = code === 'ERR_CRYPTO_INVALID_KEYLEN' || code === 'ERR_CRYPTO_INVALID_MESSAGELEN' || code === 'ERR_OUT_OF_RANGE' ? RangeError :
-            code === 'ERR_CRYPTO_INVALID_IV' || code === 'ERR_CRYPTO_INVALID_AUTH_TAG' || code === 'ERR_MISSING_ARGS' ? TypeError : Error;
-        const error = new Ctor(record.message);
-        for (const key of ['code', 'library', 'reason', 'opensslErrorStack'])
-            if (ObjectPrototypeHasOwnProperty(record, key)) error[key] = record[key];
-        throw error;
+        throw result.error;
     }
     class CipherBase {
         constructor(encrypt, name, key, iv, tag, cts, xts) {

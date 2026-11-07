@@ -81,11 +81,8 @@ exports.create = function create(options = {}) {
     } catch (error) {
       // Getter exceptions propagate directly through the guest JSAPI owner.
       if (!error || !Object.hasOwn(error, 'code')) throw error;
-      // Match the guest native error packet: constructor names are not carried.
-      const record = { message: error.message };
-      for (const key of ['code', 'library', 'reason', 'opensslErrorStack'])
-        if (Object.hasOwn(error, key)) record[key] = error[key];
-      return { error: record, value: undefined };
+      // The guest now transports the genuine native error unchanged.
+      return { error, value: undefined };
     }
   } };
   const url = require('internal/url');

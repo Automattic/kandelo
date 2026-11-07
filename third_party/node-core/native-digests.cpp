@@ -3,6 +3,9 @@
 #include "kandelo-node-string-bytes.h"
 #include "js/ArrayBuffer.h"
 #include "js/Realm.h"
+#include "js/Exception.h"
+#include "js/Stack.h"
+#include "js/PropertyAndElement.h"
 #include "js/SharedArrayBuffer.h"
 #include "js/String.h"
 #include "js/Wrapper.h"
@@ -153,30 +156,67 @@ static bool KandeloCryptoEncodedInput(JSContext* cx, HandleValue input,
   }
   return true;
 }
-static bool KandeloDigestError(JSContext* cx, const kandelo::crypto::Error& failure, MutableHandleValue value) {
-  RootedObject object(cx, JS_NewPlainObject(cx));
-  if (!object) return false;
-  auto property = [&](const char* name, const char* bytes) {
-    RootedValue text(cx);
-    return KandeloFsPathString(cx, bytes, strlen(bytes), &text) &&
-        JS_DefineProperty(cx, object, name, text, JSPROP_ENUMERATE);
-  };
-  if (!property("message", failure.what())) return false;
-  if (!failure.library.empty() && !property("library", failure.library.c_str())) return false;
-  if (!failure.reason.empty() && !property("reason", failure.reason.c_str())) return false;
-  if (!failure.code.empty() && !property("code", failure.code.c_str())) return false;
-  if (!failure.stack.empty()) {
-    RootedObject stack(cx, JS::NewArrayObject(cx, 0));
-    if (!stack) return false;
-    for (size_t i = 0; i < failure.stack.size(); i++) {
-      RootedValue text(cx);
-      if (!KandeloFsPathString(cx, failure.stack[i].data(), failure.stack[i].size(), &text) ||
-          !JS_SetElement(cx, stack, i, text)) return false;
+// All consumers create an actual engine Error on the owning JS thread. C++
+// queue data may have arrived from a worker; no JS root crossed that boundary.
+static bool KandeloDigestError(JSContext* cx,const kandelo::crypto::Error& failure,
+    MutableHandleValue value,std::optional<JSExnType> requested = std::nullopt,bool checkNodeCode = true) {
+  if (JS_IsExceptionPending(cx)) return false;
+  JSExnType type=requested.value_or(JSEXN_ERR);
+  if (!requested && failure.checkedNodeCode) {
+    const auto kind=kandelo::crypto::NativeNodeKind(failure.code);
+    if (kind) {
+      switch(*kind) {
+        case kandelo::crypto::ErrorKind::TypeError: type=JSEXN_TYPEERR;break;
+        case kandelo::crypto::ErrorKind::RangeError: type=JSEXN_RANGEERR;break;
+        case kandelo::crypto::ErrorKind::SyntaxError: type=JSEXN_SYNTAXERR;break;
+        case kandelo::crypto::ErrorKind::URIError: type=JSEXN_URIERR;break;
+        default: break;
+      }
     }
-    RootedValue stackValue(cx, ObjectValue(*stack));
-    if (!JS_DefineProperty(cx, object, "opensslErrorStack", stackValue, JSPROP_ENUMERATE)) return false;
   }
-  value.setObject(*object); return true;
+  RootedString message(cx,JS_NewStringCopyUTF8N(cx,JS::UTF8Chars(failure.message.data(),failure.message.size())));
+  RootedString file(cx,JS_GetEmptyString(cx));RootedObject stack(cx);RootedValue error(cx);
+  if (!message || !JS::CaptureCurrentStack(cx,&stack) ||
+      !JS::CreateError(cx,type,stack,file,0,JS::ColumnNumberOneOrigin(1),nullptr,
+                       message,JS::NothingHandleValue,&error)) return false;
+  RootedObject object(cx,&error.toObject());
+  auto set = [&](const std::string& name,HandleValue field) {
+    RootedString key(cx,JS_NewStringCopyUTF8N(cx,JS::UTF8Chars(name.data(),name.size())));RootedId id(cx);
+    if (!key || !JS_StringToId(cx,key,&id)) return false;
+    RootedValue receiver(cx,ObjectValue(*object));JS::ObjectOpResult result;
+    // Like V8 Set(...).IsNothing(), ignore a nonthrowing false result while
+    // preserving an inherited setter's actual thrown exception.
+    return JS_ForwardSetPropertyTo(cx,object,id,field,receiver,result);
+  };
+  const bool applied=kandelo::crypto::ApplyErrorProperties(failure,
+    [&](const std::vector<std::string>& entries) {
+      RootedObject array(cx,JS::NewArrayObject(cx,entries.size()));if (!array) return false;
+      for (uint32_t i=0;i<entries.size();++i) {
+        RootedString string(cx,JS_NewStringCopyUTF8N(cx,JS::UTF8Chars(entries[i].data(),entries[i].size())));
+        if (!string) return false;RootedValue entry(cx,StringValue(string));
+        // V8 Array::New initializes own elements; inherited Array setters must
+        // not run while the private OpenSSL error stack is materialized.
+        if (!JS_DefineElement(cx,array,i,entry,JSPROP_ENUMERATE)) return false;
+      }
+      RootedValue field(cx,ObjectValue(*array));return set("opensslErrorStack",field);
+    },
+    [&](const std::string& name,const std::string& text) {
+      RootedString string(cx,JS_NewStringCopyN(cx,text.data(),text.size())); // pinned OneByteString
+      if (!string) return false;RootedValue field(cx,StringValue(string));return set(name,field);
+    });
+  if (failure.checkedNodeCode && checkNodeCode) {
+    // Exact native ERR_* macros use Set(...).Check(). False is a valid result;
+    // an exception is a fatal invariant in that distinct coded-error path.
+    MOZ_RELEASE_ASSERT(applied);
+  }
+  if (!applied) return false;
+  value.set(error);return true;
+}
+static bool KandeloThrowCryptoError(JSContext* cx,const kandelo::crypto::Error& failure,
+    std::optional<JSExnType> type = std::nullopt) {
+  RootedValue error(cx);
+  if (!KandeloDigestError(cx,failure,&error,type)) return false;
+  JS_SetPendingException(cx,error);return false;
 }
 static bool KandeloNativeOneShotDigest(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);

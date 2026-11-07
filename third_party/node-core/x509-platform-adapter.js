@@ -8,11 +8,7 @@ function _createNodeX509Platform(platform) {
     function call(name, ...args) {
         const packet = platform.native.x509Operation(name, ...args);
         if (packet.error !== undefined) {
-            const record = packet.error;
-            const error = new Error(record.message);
-            for (const field of ['code', 'library', 'reason', 'opensslErrorStack'])
-                if (ObjectPrototypeHasOwnProperty(record, field)) error[field] = record[field];
-            throw error;
+            throw packet.error;
         }
         return packet.value;
     }

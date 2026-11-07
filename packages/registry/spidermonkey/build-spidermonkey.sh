@@ -373,6 +373,8 @@ cp "$REPO_ROOT/third_party/node-core/read-file-buffer.h" "$SRC_DIR/js/src/shell/
 cp "$REPO_ROOT/third_party/node-core/key-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-key-operations.h"
 cp "$REPO_ROOT/third_party/node-core/x509-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-x509-operations.h"
 cp "$REPO_ROOT/third_party/node-core/cipher-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-cipher-operations.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-crypto-errors.py" --check
+cp "$REPO_ROOT/third_party/node-core/crypto-errors.h" "$SRC_DIR/js/src/shell/crypto-errors.h"
 cp "$REPO_ROOT/third_party/node-core/digest-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-digest-operations.h"
 cp "$REPO_ROOT/third_party/node-core/child-wait.h" "$SRC_DIR/js/src/shell/kandelo-node-child-wait.h"
 cp "$REPO_ROOT/third_party/node-core/performance-clock.h" "$SRC_DIR/js/src/shell/kandelo-node-performance-clock.h"

@@ -1,0 +1,42 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "src/crypto/crypto_util.cc": {
+      "path": "upstream/crypto-errors/src/crypto/crypto_util.cc",
+      "sha256": "78f87b6979b666fb49d74698333e79c40aef549dfa362e3a040caeebf8edde3c"
+    },
+    "src/crypto/crypto_util.h": {
+      "path": "upstream/crypto-errors/src/crypto/crypto_util.h",
+      "sha256": "17ef1d34245c0c4eac4b4b9a154e3350dcb3ad8fcbbfb2673a43472afde6a78f"
+    },
+    "src/node_errors.h": {
+      "path": "upstream/crypto-errors/src/node_errors.h",
+      "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8"
+    },
+    "src/util-inl.h": {
+      "path": "upstream/crypto-errors/src/util-inl.h",
+      "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561"
+    }
+  },
+  "selections": {
+    "capture": {
+      "source": "src/crypto/crypto_util.cc",
+      "start": "void CryptoErrorStore::Capture() {",
+      "length": 335,
+      "sha256": "9fe435ca002ea568bfc695477d4e3b1f89b7559694acfc14284c6229abb4a3b8"
+    },
+    "decorate": {
+      "source": "src/crypto/crypto_util.cc",
+      "start": "Maybe<void> Decorate(Environment* env,\n                     Local<Object> obj,\n                     unsigned long err) {",
+      "length": 5497,
+      "sha256": "7f89e857eecbf5715c2a3f8d96fbe1a8d316f364c79f021e3256127537465071"
+    },
+    "upper": {
+      "source": "src/util-inl.h",
+      "start": "char ToUpper(char c) {",
+      "length": 74,
+      "sha256": "f0692996395a6af61e27f6fdca5b063a31fd7c3f64d299abe1951762c67472b5"
+    }
+  }
+}

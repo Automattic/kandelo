@@ -33,10 +33,7 @@ function _createNodeCryptoDigest(platform) {
         const result = platform.native.hashDigest(algorithm, input, outputLength,
             functionName !== undefined || customization !== undefined);
         if (!isUint8Array(result)) {
-            const error = new Error(result.message);
-            for (const key of ['library', 'reason', 'code', 'opensslErrorStack'])
-                if (P.ObjectPrototypeHasOwnProperty(result, key)) error[key] = result[key];
-            throw error;
+            throw result;
         }
         const buffer = BufferFrom(result);
         return encoding === 'buffer' ? buffer : toString(buffer, encoding);

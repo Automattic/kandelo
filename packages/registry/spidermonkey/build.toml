@@ -241,6 +241,11 @@ inputs = [
   "third_party/node-core/upstream/address-rules/src/node_hash.h",
   "third_party/node-core/random-operations.h",
   "third_party/node-core/digest-operations.h",
+  "third_party/node-core/crypto-errors.h",
+  "third_party/node-core/crypto-errors-template.h",
+  "third_party/node-core/crypto-errors-sources.json",
+  "third_party/node-core/generate-crypto-errors.py",
+  "third_party/node-core/upstream/crypto-errors",
   "third_party/node-core/child-wait.h",
   "third_party/node-core/dns-lookup.h",
   "third_party/node-core/native-dns-lookup.cpp",
@@ -657,4 +662,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 184
+revision = 185

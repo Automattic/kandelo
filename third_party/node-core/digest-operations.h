@@ -1,6 +1,7 @@
 // Actual OpenSSL digest/comparison ownership; no fixed advertised algorithm set.
 #ifndef KANDELO_NODE_DIGEST_OPERATIONS_H
 #define KANDELO_NODE_DIGEST_OPERATIONS_H
+#include "crypto-errors.h"
 #include <algorithm>
 #include <cstdint>
 #include <exception>
@@ -23,69 +24,6 @@ struct Bytes {
   Bytes(Bytes&&) = default;
   Bytes(const Bytes&) = delete;
   ~Bytes() { if (!value.empty()) OPENSSL_cleanse(value.data(), value.size()); }
-};
-struct Error : std::runtime_error {
-  unsigned long number;
-  std::string library, reason, code;
-  std::vector<std::string> stack;
-  explicit Error(const std::string& message, unsigned long number = 0)
-      : std::runtime_error(message), number(number) {
-    if (number) {
-      const char* l = ERR_lib_error_string(number); if (l) library = l;
-      const char* r = ERR_reason_error_string(number); if (r) reason = r;
-      if (r) {
-        const char* lib = "";
-        // Pinned Node OpenSSL error-library prefixes, selected for the actual
-        // OpenSSL provider build. Unknown libraries keep the empty prefix.
-        switch (ERR_GET_LIB(number)) {
-          case ERR_LIB_SYS: lib = "SYS_"; break;
-          case ERR_LIB_BN: lib = "BN_"; break;
-          case ERR_LIB_RSA: lib = "RSA_"; break;
-          case ERR_LIB_DH: lib = "DH_"; break;
-          case ERR_LIB_EVP: lib = "EVP_"; break;
-          case ERR_LIB_BUF: lib = "BUF_"; break;
-          case ERR_LIB_OBJ: lib = "OBJ_"; break;
-          case ERR_LIB_PEM: lib = "PEM_"; break;
-          case ERR_LIB_DSA: lib = "DSA_"; break;
-          case ERR_LIB_X509: lib = "X509_"; break;
-          case ERR_LIB_ASN1: lib = "ASN1_"; break;
-          case ERR_LIB_CONF: lib = "CONF_"; break;
-          case ERR_LIB_CRYPTO: lib = "CRYPTO_"; break;
-          case ERR_LIB_EC: lib = "EC_"; break;
-          case ERR_LIB_SSL: lib = "SSL_"; break;
-          case ERR_LIB_BIO: lib = "BIO_"; break;
-          case ERR_LIB_PKCS7: lib = "PKCS7_"; break;
-          case ERR_LIB_X509V3: lib = "X509V3_"; break;
-          case ERR_LIB_RAND: lib = "RAND_"; break;
-          case ERR_LIB_ENGINE: lib = "ENGINE_"; break;
-          case ERR_LIB_OCSP: lib = "OCSP_"; break;
-          case ERR_LIB_UI: lib = "UI_"; break;
-          case ERR_LIB_COMP: lib = "COMP_"; break;
-          case ERR_LIB_ECDSA: lib = "ECDSA_"; break;
-          case ERR_LIB_ECDH: lib = "ECDH_"; break;
-          case ERR_LIB_CMS: lib = "CMS_"; break;
-          case ERR_LIB_HMAC: lib = "HMAC_"; break;
-          case ERR_LIB_USER: lib = "USER_"; break;
-          case ERR_LIB_PKCS12: lib = "PKCS12_"; break;
-          case ERR_LIB_DSO: lib = "DSO_"; break;
-          case ERR_LIB_OSSL_STORE: lib = "OSSL_STORE_"; break;
-          case ERR_LIB_FIPS: lib = "FIPS_"; break;
-          case ERR_LIB_TS: lib = "TS_"; break;
-          case ERR_LIB_CT: lib = "CT_"; break;
-          case ERR_LIB_ASYNC: lib = "ASYNC_"; break;
-          case ERR_LIB_KDF: lib = "KDF_"; break;
-          case ERR_LIB_SM2: lib = "SM2_"; break;
-        }
-        code = ERR_GET_LIB(number) == ERR_LIB_SSL ? "ERR_" : "ERR_OSSL_";
-        code += lib;
-        for (char c : reason) code += c == ' ' ? '_' : c >= 'a' && c <= 'z' ? char(c - ('a' - 'A')) : c;
-      }
-    }
-    unsigned long next; char text[256];
-    while ((next = ERR_get_error()) != 0) {
-      ERR_error_string_n(next, text, sizeof(text)); stack.emplace_back(text);
-    }
-  }
 };
 [[noreturn]] inline void Fail(const char* fallback) {
   const unsigned long number = ERR_get_error();

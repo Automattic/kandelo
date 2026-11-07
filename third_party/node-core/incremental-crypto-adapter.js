@@ -34,17 +34,7 @@ function _createNodeIncrementalCrypto(platform) {
     function call(operation, ...args) {
         const result = platform.native.incrementalHash(operation, ...args);
         if (result.error === undefined) return result.value;
-        const record = result.error;
-        const code = P.ObjectPrototypeHasOwnProperty(record, 'code') ? record.code : undefined;
-        const Ctor = code === 'ERR_CRYPTO_INVALID_DIGEST' ? TypeError :
-            code === 'ERR_OUT_OF_RANGE' ? RangeError : Error;
-        const error = new Ctor(record.message);
-        const fields = ['code', 'library', 'reason', 'opensslErrorStack'];
-        for (let i = 0; i < fields.length; i++) {
-            const key = fields[i];
-            if (P.ObjectPrototypeHasOwnProperty(record, key)) error[key] = record[key];
-        }
-        throw error;
+        throw result.error;
     }
     function output(handle, encoding) {
         const mode = call('encoding', encoding, true);

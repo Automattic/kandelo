@@ -11,7 +11,7 @@
 #include <string_view>
 namespace kandelo::crypto {
 struct X509Error : Error {
-  X509Error(const char* message, const char* code) : Error(message) { this->code = code; }
+  X509Error(const char* message, const char* code) : Error(message) { SetNodeCode(code); }
 };
 // Pinned Node26.13.0 crypto_pkcs12.cc parser policy, shared by public crypto
 // and the distinct TLS-pfx caller. The helper owns every OpenSSL result; its

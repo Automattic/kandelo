@@ -8,14 +8,7 @@ function _createNodeCryptoKeys(platform) {
     function call(operation, ...args) {
         const packet = platform.native.keyOperation(operation, ...args);
         if (ObjectPrototypeHasOwnProperty(packet, 'error') && packet.error !== undefined) {
-            const record = packet.error;
-            const Ctor = record.code === 'ERR_CRYPTO_INVALID_KEYTYPE' || record.code === 'ERR_OUT_OF_RANGE' ? RangeError :
-                record.code === 'ERR_MISSING_PASSPHRASE' || record.code === 'ERR_INVALID_ARG_VALUE' ||
-                record.code === 'ERR_CRYPTO_INVALID_CURVE' || record.code === 'ERR_CRYPTO_INVALID_JWK' || record.name === 'TypeError' ? TypeError : Error;
-            const error = new Ctor(record.message);
-            for (const field of ['code', 'library', 'reason', 'opensslErrorStack'])
-                if (ObjectPrototypeHasOwnProperty(record, field)) error[field] = record[field];
-            throw error;
+            throw packet.error;
         }
         return packet.value;
     }

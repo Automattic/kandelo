@@ -93,33 +93,6 @@ static bool KandeloTlsTrustBytes(JSContext* cx, HandleValue value,
   if (admitted) return true;
   JS_ReportErrorASCII(cx,"TLS CA must be a string or actual array buffer view");return false;
 }
-static bool KandeloTlsCredentialError(JSContext* cx,const kandelo::crypto::Error& failure, JSExnType type = JSEXN_ERR) {
-  if (JS_IsExceptionPending(cx)) return false;
-  RootedString message(cx,JS_NewStringCopyZ(cx,failure.what())),file(cx,JS_GetEmptyString(cx));
-  RootedObject stack(cx);RootedValue value(cx);
-  if (!message || !JS::CaptureCurrentStack(cx,&stack) ||
-      !JS::CreateError(cx,type,stack,file,0,JS::ColumnNumberOneOrigin(1),nullptr,
-                       message,JS::NothingHandleValue,&value)) return false;
-  RootedObject object(cx,&value.toObject());
-  auto text = [&](const char* name,const std::string& field) {
-    if (field.empty()) return true;
-    RootedString string(cx,JS_NewStringCopyN(cx,field.data(),field.size()));
-    return string && JS_DefineProperty(cx,object,name,string,JSPROP_ENUMERATE);
-  };
-  if (!text("code",failure.code) || !text("library",failure.library) || !text("reason",failure.reason)) return false;
-  if (!failure.stack.empty()) {
-    RootedObject entries(cx,JS::NewArrayObject(cx,failure.stack.size()));
-    if (!entries) return false;
-    for (uint32_t i=0;i<failure.stack.size();++i) {
-      RootedString string(cx,JS_NewStringCopyN(cx,failure.stack[i].data(),failure.stack[i].size()));
-      if (!string) return false;
-      RootedValue entry(cx,StringValue(string));
-      if (!JS_SetElement(cx,entries,i,entry)) return false;
-    }
-    if (!JS_DefineProperty(cx,object,"opensslErrorStack",entries,JSPROP_ENUMERATE)) return false;
-  }
-  JS_SetPendingException(cx,value);return false;
-}
 // Called by the existing fd/SSL handshake owner. Claim an independent native
 // reference before any JS wrapper may be collected; no JS root crosses threads.
 static SSL_CTX* KandeloTlsClaimContext(JSContext* cx, HandleValue options) {
@@ -190,7 +163,7 @@ static bool KandeloNativeTlsContextOperationImpl(JSContext* cx, unsigned argc, V
         // accepts actual views only for its supplied password argument.
         if (!passAdmitted || args[3].isString()) {
           const kandelo::crypto::X509Error error("Pass phrase must be a buffer","ERR_INVALID_ARG_TYPE");
-          return KandeloTlsCredentialError(cx,error,JSEXN_TYPEERR);
+          return KandeloThrowCryptoError(cx,error,JSEXN_TYPEERR);
         }
         pass=reinterpret_cast<const char*>(password.value.data());
       }
@@ -210,7 +183,7 @@ static bool KandeloNativeTlsContextOperationImpl(JSContext* cx, unsigned argc, V
 }
 static bool KandeloNativeTlsContextOperation(JSContext* cx, unsigned argc, Value* vp) {
   try { return KandeloNativeTlsContextOperationImpl(cx, argc, vp); }
-  catch (const kandelo::crypto::Error& error) { return KandeloTlsCredentialError(cx,error); }
+  catch (const kandelo::crypto::Error& error) { return KandeloThrowCryptoError(cx,error); }
   catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
 }
 }  // namespace
