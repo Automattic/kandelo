@@ -2,6 +2,7 @@ import { expect, test, type Locator, type Page } from "../playwright-test";
 
 import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
 import { setInternalsOpen } from "./support/dock";
+import { workspaceButtonPixels } from "./support/sway-workspace-pixels";
 import { typePhysicalText } from "./support/physical-typing";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
@@ -165,33 +166,23 @@ const titleHeight = (out: Output) => paintedBandHeight(out, "top", [40, 85, 119]
 async function workspaceButton(out: Output) {
   const height = await barHeight(out);
   const png = await outputShot(out, 0, out.height - height, out.width / 2, height);
-  return out.canvas.page().evaluate(async ([base64, width, height, bottom]) => {
+  const pixels = await out.canvas.page().evaluate(async (base64) => {
     const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
     const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
     const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
     ctx.drawImage(bitmap, 0, 0);
     const image = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
     bitmap.close();
-    let left = image.width, right = -1, top = image.height, last = -1;
-    for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
-      const at = (y * image.width + x) * 4;
-      if (Math.abs(image.data[at] - 40) <= 2 && Math.abs(image.data[at + 1] - 85) <= 2
-        && Math.abs(image.data[at + 2] - 119) <= 2) {
-        left = Math.min(left, x); right = Math.max(right, x);
-        top = Math.min(top, y); last = Math.max(last, y);
-      }
-    }
-    if (right - left < 8 || last - top < 8) return null;
-    let ink = 0;
-    for (let y = top; y <= last; y++) for (let x = left; x <= right; x++) {
-      const at = (y * image.width + x) * 4;
-      if (Math.min(image.data[at], image.data[at + 1], image.data[at + 2]) > 180) ink++;
-    }
-    if (ink < 4) return null;
-    return { x: left * width / image.width, y: bottom + top * height / image.height,
-      width: (right - left + 1) * width / image.width,
-      height: (last - top + 1) * height / image.height };
-  }, [png.toString("base64"), out.width / 2, height, out.height - height] as const);
+    // Return independent test pixels, so the pure Node oracle requires no
+    // eval/import injection into the app or production rendering changes.
+    return { width: image.width, height: image.height, data: Array.from(image.data) };
+  }, png.toString("base64"));
+  const button = workspaceButtonPixels(pixels);
+  if (button === null) return null;
+  return { x: button.x * (out.width / 2) / pixels.width,
+    y: out.height - height + button.y * height / pixels.height,
+    width: button.width * (out.width / 2) / pixels.width,
+    height: button.height * height / pixels.height };
 }
 
 async function nativeBarProcess(page: Page) {
