@@ -82,6 +82,7 @@ def make_sandbox(arm):
         shutil.copy(REPO / "docs/agent-guidance/validation.md", box / "docs/agent-guidance/validation.md")
         (box / "scripts").mkdir()
         shutil.copy(REPO / "scripts/agent-job", box / "scripts/agent-job")
+        shutil.copy(REPO / "scripts/validation_artifacts.py", box / "scripts/validation_artifacts.py")
         (box / ".claude/hooks").mkdir(parents=True)
         shutil.copy(REPO / ".claude/hooks/wait-guard.py", box / ".claude/hooks/wait-guard.py")
         settings = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [

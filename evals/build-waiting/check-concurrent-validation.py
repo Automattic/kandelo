@@ -17,6 +17,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--baseline-ref', help='replay the config and policy from this git revision')
+parser.add_argument('--project', default='chromium', choices=['chromium', 'firefox', 'webkit'])
 args = parser.parse_args()
 (ROOT / '.context').mkdir(exist_ok=True)
 scratch = Path(tempfile.mkdtemp(prefix='concurrent-validation-', dir=ROOT / '.context'))
@@ -64,7 +65,7 @@ export default {{...base, globalSetup: undefined, testDir: {json.dumps(str(scrat
  testMatch: 'collision.spec.ts', testIgnore: [], workers: 1,
  reporter: [['list'], ['html', {{open: 'never'}}], ['blob'], ['json'], ['junit']],
  webServer: {{...base.webServer, command: `node {server} ${{port}}`, cwd: {json.dumps(str(scratch))}}},
- projects: [base.projects[0]],
+ projects: [base.projects.find(project => project.name === {json.dumps(args.project)})],
 }};
 ''')
 write('collision.spec.ts', f'''import {{test, expect}} from {json.dumps(str(fixture))};

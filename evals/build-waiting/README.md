@@ -774,6 +774,61 @@ The controlled isolation checks meet the pre-landing rule; the five-session
 transcript measure remains pending. No fixed-`/tmp` hook was added, and hook
 precision was not measured.
 
+### 12b. Evidence cleanup lifecycle (measure declared before implementation)
+
+- **Measure:** retained payload bytes after explicit release and after removing
+  an owning worktree; deletion or unreadability of a peer's evidence; live-run
+  cleanup refusals; recovered payloads after skipped teardown.
+- **Keep if:** two real disposable worktrees retain distinct evidence, releasing
+  one finished run preserves its summary and peer files, worktree cleanup
+  refuses active writers, and removal leaves no new payload outside the
+  worktree. Recovery must handle a crashed supervisor and path reuse without
+  deleting a live run, symlink target, shared cache, or new worktree's files.
+- **Controlled checks:** exercise release, cleanup, manual removal, recreated
+  paths with a new UUID, and a killed supervisor with a surviving child. Run
+  concurrent real Playwright/Vitest checks against the new lifecycle. No
+  SIGABRT/SIGSEGV scenarios, and no cleanup against the real shared registry
+  or the protected graphics workspace.
+- **Harm signals:** evidence removed before release, a summary reported LOST
+  merely because its payload was cleaned, any cross-worktree deletion, or
+  cleanup following a symlink. Any such result means revise before landing.
+
+**Controlled result (2026-11-07):** kept. The stdlib lifecycle suite passed
+27 tests through the dev shell, using disposable ordinary Git checkouts and
+worktrees with isolated registries. Checks cover release/dry-run/idempotence,
+active admission refusal and reopening, a killed supervisor with a live child,
+worktree removal, UUID path reuse, symlink refusal, interrupted directory
+deletion after its ownership marker was already removed, and legacy orphan
+payloads. Recorded exit status and bounded log summaries survive removal.
+Both merge-validation workflows now run this suite on Linux CI; local runs
+for this change were on macOS, not Linux.
+
+`scripts/dev-shell.sh python3 evals/build-waiting/check-artifact-lifecycle.py`
+ran real overlapping Chromium runners in two plain Git worktrees, with no
+editor hook or application environment. Cleanup refused while active, release
+preserved the live peer, reusing a path got a new worktree UUID, orphan
+collection preserved the peer, and the same cleanup command worked in an
+ordinary checkout. In that controlled run, managed payload bytes went from
+259 to 0 after release and 261 to 0 after worktree removal. These are fixture
+payload sizes after normal browser teardown, not a disk-space benchmark.
+Evidence is in `.context/artifact-lifecycle-tthrvlq4/result.json`.
+
+Real concurrent Vitest jobs retained separate logs through nested dev shells.
+Concurrent Chromium and Firefox checks retained attachments, all four default
+file reporters, and owned servers; occupied explicit ports failed loudly.
+The 14 browser storage/policy unit tests and the macOS WebKit OPFS strict
+reopen regression passed. Bulk job output and Playwright scratch now live
+inside their worktree; the shared registry retains only metadata, leases and
+bounded summaries for new runs. Explicit output overrides and Darwin-managed
+WebKit staging retain their existing ownership boundaries. No actual shared
+registry cleanup, graphics-workspace cleanup, or shared-cache cleanup was run.
+Two concurrent standalone service-worker suites also passed all 31 tests
+per run after the lifecycle changes; PHP and SpiderMonkey configs collected
+their tests successfully.
+Full host/browser/conformance suites and package runtime suites were not
+rerun for this lifecycle follow-up. Five-session transcript effectiveness
+remains pending under tool 12's original rule.
+
 ## Status after building (2026-10-01)
 
 Pre-landing evidence only. The transcript-based keep rules need about 5 real

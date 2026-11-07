@@ -1,6 +1,5 @@
 import { defineConfig } from "@playwright/test";
-import { lstatSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { playwrightTestIgnoreForEnvironment } from "./playwright-server-policy";
@@ -11,6 +10,7 @@ import type { KandeloWorkerOptions } from "./playwright-test";
 const silentAudio = process.env.KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO !== "1";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const run = playwrightRun(__dirname);
 const port = await playwrightPort(process.env.KANDELO_PLAYWRIGHT_PORT);
 // Specs and nested tools must observe the port selected by this config.
 process.env.KANDELO_PLAYWRIGHT_PORT = String(port);
@@ -119,7 +119,7 @@ const firefoxLaunchEnv: Record<string, string> =
   process.platform === "darwin"
     ? {
         ...browserLaunchEnv,
-        CFFIXED_USER_HOME: mkdtempSync(join(tmpdir(), "kandelo-pw-firefox-home-")),
+        CFFIXED_USER_HOME: browserStorageHome("firefox"),
       }
     : browserLaunchEnv;
 
@@ -153,7 +153,7 @@ const chromiumLaunchArgs = [
 ];
 
 export default defineConfig<{}, KandeloWorkerOptions>({
-  ...playwrightRun(__dirname),
+  ...run,
   globalSetup: join(__dirname, "playwright-storage-setup.ts"),
   testDir: join(__dirname, "test"),
   testMatch: "*.spec.ts",

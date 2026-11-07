@@ -4,11 +4,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const run = playwrightRun(__dirname);
 const phpBrowserTestPort = await playwrightPort(process.env.PHP_BROWSER_TEST_PORT);
 const silentAudio = process.env.KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO !== "1";
 
 export default defineConfig({
-  ...playwrightRun(__dirname),
+  ...run,
   testDir: __dirname,
   testMatch: "php-browser.spec.ts",
   timeout: 180_000,

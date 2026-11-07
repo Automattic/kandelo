@@ -305,7 +305,7 @@ WebKit runner, a new nonpersistent context can reject even
 `navigator.storage.getDirectory()` with an `UnknownError`; a subsequent
 cleanup request can then stall. Diagnose the fixture's storage access before
 attributing that failure to filesystem recovery or masking it with retries.
-Firefox's separate home-directory workaround is unchanged: macOS privacy
+Firefox retains a separate home directory: macOS privacy
 protection can reject traversal of its standard user directories, even in
 an isolated home. Do not bypass those protections with a blanket sweeper.
 
@@ -333,6 +333,13 @@ retained roots and preexisting shared-directory files need separate, explicit
 inspection before removal. Do not delete an active browser's profile or OPFS
 store to reclaim test space. This housekeeping does not change Kandelo's
 persistence, durability or crash-recovery semantics.
+
+Run-owned homes and browser temporary profiles now live below
+`.context/validation-scratch/<run-uuid>/tmp` in the Git worktree. A runner
+changes only its own `TMPDIR`. Retained local roots can be explicitly
+released with `scripts/agent-job release <run-uuid>` after the runner exits;
+removing the worktree removes these roots even if teardown was skipped.
+This does not redirect Darwin-managed staging files described above.
 
 `npm run test:unit` includes the cleanup safety tests. On macOS, run
 `npx playwright test test/playwright-storage.spec.ts --project=webkit` to
@@ -434,6 +441,16 @@ run used the wrong config and toolchain, and its results are invalid.
   the results. Never use fixed host paths such as `/tmp/integ.log`, or a
   shared `.context/check.log`, for concurrent runs. The job's own stdout
   and stderr are already retained in its `output.log`.
+- **Evidence lifecycle:** keep evidence until it has been reviewed, then use
+  `scripts/agent-job release <job-id|playwright-run-uuid>`. Bulk job output
+  lives in `.context/agent-jobs/<job-id>`; Playwright scratch and reports also
+  stay in the worktree. `cleanup` closes the current tree to new runs and
+  refuses active writers. Use `reopen` if work will continue after cleanup.
+  `gc --dry-run` previews reconciliation of removed worktrees and recovery
+  of interrupted releases. UUID ownership prevents a reused worktree path
+  from claiming old evidence; shared caches are outside this cleanup.
+  These commands work independently of any editor or workspace manager.
+  See [contributor cleanup commands](../../CONTRIBUTING.md#retain-and-clean-validation-evidence).
 - **Suite environment:** `scripts/dev-shell.sh` clears outer variables
   outside its keep-list. Export suite variables inside `bash -c` when
   they must reach a test. `KANDELO_PLAYWRIGHT_PORT` is explicitly kept;
@@ -445,7 +462,7 @@ run used the wrong config and toolchain, and its results are invalid.
 
   Omit the export for automatic selection; 5197 is only a pinned example.
 - **Another workspace's build:** waiting on a build that another worktree
-  (another Conductor workspace) is running is supported, and `agent-job` is
+  is running is supported, and `agent-job` is
   the tool for it. Do not hand-roll a `kill -0 <pid>`, `pgrep`, or `sleep`
   loop on its process. Job records are machine-wide, so every command
   accepts a peer's job id:

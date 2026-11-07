@@ -86,7 +86,8 @@ for label, ident in jobs:
                             capture_output=True, text=True)
     (scratch / f'{label}-wait.log').write_text(result.stdout + result.stderr)
     assert result.returncode == 0, result.stdout + result.stderr
-    private = scratch / 'jobs/jobs' / ident / 'scratch'
+    meta = json.loads((scratch / 'jobs/jobs' / ident / 'meta.json').read_text())
+    private = Path(meta['payload_dir']) / 'scratch'
     text = (private / 'integ.log').read_text()
     assert str(scratch / label) in text
     assert f'OWNER-{label}' in text
