@@ -11,7 +11,7 @@ export class ObservationRows {
   private failure?: Error;
   private guarded = false;
   private lastFrame?: { index: number; displayMs: number };
-  constructor(private readonly defaultTimeoutMs = 10_000) {
+  constructor(readonly defaultTimeoutMs = 10_000) {
     assert(Number.isInteger(defaultTimeoutMs) && defaultTimeoutMs > 0 && defaultTimeoutMs <= 60_000);
   }
   get pendingCount() { return this.waiters.length; }

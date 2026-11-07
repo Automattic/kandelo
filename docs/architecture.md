@@ -7041,13 +7041,31 @@ successful responses. Calibration alone may request window rasters; timed
 matching emits scalar identities and scores. The Node/browser graphics
 contract is unchanged by this diagnostic.
 
-ScreenCaptureKit display metadata is an upper endpoint for the first visible
+The current recorder observes a selected-display crop with no window
+exclusions. Each callback checks the exact owned window, foreground/visibility,
+geometry and intersecting overlays; losing authority stops observation loudly.
+An independent-window stream can retain content hidden by another window, so
+older independent-window samples do not establish unoccluded display timing.
+The new crop and authority models still need actual visible calibration.
+
+For a qualified selected-display stream, ScreenCaptureKit metadata is an upper endpoint for the first visible
 response if capture coalesces frames. The preceding captured non-response
 provides the lower endpoint, with asymmetric clock uncertainty on both.
 Clock-only bounds around the first captured response are insufficient.
 Coordinates, actual guest cursor/content correlation and instrumentation
 overhead must be validated before this observer establishes desktop latency.
 Headless DOM/worker pixel controls establish classification only.
+
+Original/coalesced browser timestamps and host offered-stimulus timestamps
+remain separate clock domains in the opt-in evidence ledger. Epoch changes
+retain history; capacity/read failures invalidate completeness instead of
+dropping slow tails. Known offers and the original outcome are persisted before
+an explicitly bounded source-observation RPC. A late reply cannot replace a
+recorded timeout. The injected-delay control requires an informative lower
+visibility bound; a broad upper bound alone cannot qualify the observer.
+Sparse capture may therefore be uncertain without being incorrect.
+`completePresentationCoverage` remains false: capture gaps do not identify
+guest missed frames. These helpers have no production rendering imports.
 
 
 The moving-pixel controller fits CSS viewport coordinates from temporary

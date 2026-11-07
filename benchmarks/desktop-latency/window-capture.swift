@@ -18,6 +18,7 @@ func ticksMs(_ ticks: UInt64) -> Double {
 }
 final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
   var observedApplication: NSRunningApplication?
+  var visibleAuthority: OwnedDisplayCaptureAuthority?
   private let lock = NSLock()
   private var continuation: CheckedContinuation<Void, Never>?
   private var ended = false
@@ -92,6 +93,18 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
   ) {
     guard type == .screen else { return }
     let received = nativeMs()
+    let authorityBegin = nativeMs()
+    do {
+      guard observedApplication?.isActive == true, let visibleAuthority else {
+        throw DisplayAuthorityError.invalid("owned browser lost foreground authority")
+      }
+      try visibleAuthority.check()
+    } catch {
+      emit(["kind":"error", "error":String(describing:error)])
+      finish()
+      return
+    }
+    let authorityEnd = nativeMs()
     guard
       let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false)
         as? [[SCStreamFrameInfo: Any]], let info = attachments.first,
@@ -157,6 +170,9 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       "ptsMs": CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(buffer)) * 1000,
       "width": width, "height": height, "rgb": [p[2], p[1], p[0]],
       "active": observedApplication?.isActive ?? false,
+      "authorityCheckBeginMs": authorityBegin, "authorityCheckEndMs": authorityEnd,
+      "authorityCheckMs": authorityEnd-authorityBegin,
+      "captureAuthority": "selected-display-composition-crop/no-window-exclusions",
       "scaleFactor": info[.scaleFactor] ?? NSNull(),
       "contentScale": info[.contentScale] ?? NSNull(),
     ]
@@ -279,9 +295,21 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       guard displays.contains(where: { $0["containsWindow"] as? Bool == true }) else {
         throw PixelMatcherError.invalid("owned window must fit completely within one display")
       }
+      // A desktop-independent window stream can show content hidden behind
+      // another window. Observe the actual display crop, excluding nothing,
+      // so an overlay remains an occlusion instead of becoming false evidence.
+      let containingDisplays = content.displays.filter { $0.frame.contains(window.frame) }
+      guard containingDisplays.count == 1, let selectedDisplay = containingDisplays.first else {
+        throw PixelMatcherError.invalid("owned window must fit exactly one shareable display")
+      }
+      let sourceRect = try ownedDisplaySourceRect(display:selectedDisplay.frame,window:window.frame)
       let observer = Observer()
       let config = SCStreamConfiguration()
+      config.sourceRect = sourceRect
       observer.observedApplication = application
+      observer.visibleAuthority = OwnedDisplayCaptureAuthority(id:window.windowID,
+        owner:window.owningApplication!.processID,bounds:window.frame)
+      try observer.visibleAuthority!.check()
       let requestedWidth = CommandLine.arguments.count == 4 ? CommandLine.arguments[3] : "512"
       let width = requestedWidth == "points" ? Int(window.frame.width.rounded()) : Int(requestedWidth) ?? 0
       guard (128...2048).contains(width) else {
@@ -299,7 +327,7 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       config.showsCursor = false
       config.capturesAudio = false
       let stream = SCStream(
-        filter: SCContentFilter(desktopIndependentWindow: window), configuration: config,
+        filter: SCContentFilter(display: selectedDisplay, excludingWindows: []), configuration: config,
         delegate: observer)
       try stream.addStreamOutput(
         observer, type: .screen,
@@ -313,6 +341,10 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         "unhidden": unhidden, "hiddenBefore": hiddenBefore, "hiddenAfter": application.isHidden,
         "active": application.isActive, "displays": displays,
         "captureColorSpace": "sRGB",
+        "captureAuthority": "selected-display-composition-crop/no-window-exclusions",
+        "selectedDisplayId": selectedDisplay.displayID,
+        "sourceRect": [sourceRect.origin.x, sourceRect.origin.y, sourceRect.width, sourceRect.height],
+        "completePresentationCoverage": false,
         "windowBounds": [
           window.frame.origin.x, window.frame.origin.y, window.frame.width, window.frame.height,
         ],

@@ -217,3 +217,49 @@ establish the cause or erase the failure. Continuous motion/drag/resize/scroll,
 the complete current-tree native workload/engine matrix, missed-frame accounting and total
 capture/matcher overhead remain required for desktop acceptance. This standalone control is
 not a Stage B application preview or a native-feel result.
+
+## Original-input evidence and selected-display authority
+
+`original-input-evidence.ts` is an opt-in measurement ledger shared unchanged
+by Node and browser controls. It retains original event timestamps, handler
+timestamps, trust, coalesced samples, explicit offered identities and unmatched
+inputs. Epoch resets preserve prior rows and terminal failures. Capacity/read
+failures retain refused endpoint/count evidence and invalidate completeness;
+they must not produce prefix-only latency statistics. The ledger does not
+infer which map, glyph or application response belongs to an input. The cursor
+adapter uses it without a per-input RPC or changes to guest rendering.
+
+The native recorder now captures a selected-display crop with no window
+exclusions, retaining overlay pixels rather than independent-window content.
+Exact owner, visibility, geometry and intersecting overlays are checked;
+recorded authority-check duration is observer overhead. `displayTime` and
+callback receipt remain separate. `completePresentationCoverage` stays false:
+a requested120Hz stream, complete samples or capture gaps do not prove every
+display presentation or guest missed frame. Native clock bounds remain intact;
+WindowServer evidence is not physical-photon or hardware-device timing.
+
+`display-authority-control.swift` tests crop/overlay/replacement/visibility
+models without starting a display stream. Node/headless ledger parity and these
+models do not establish actual selected-display timing or native feel. A newly
+coordinated visible DOM/worker control, real application content oracles,
+full workload/engine/bar/load matrix and total observer overhead remain needed.
+
+The cursor experiment records each offered stimulus in its Node-clock ledger
+before calling the timed trigger, and persists that ledger together with
+original source observations even if a helper or response deadline rejects.
+The offer clock is diagnostic and never replaces the browser event endpoint.
+Source-unavailable and persistence failures remain explicit and preserve the
+original rejection; they cannot turn missing tails into a successful sample.
+
+Local offered-input evidence is written before any source-snapshot RPC. Source
+observation uses the caller's explicit observer budget; timeout/late source
+settlement cannot erase that first artifact or publish recovered success. A
+second artifact records available/unavailable/timeout status. These asynchronous
+budgets do not promise progress through a blocked filesystem or JS thread.
+
+Injected50ms native controls retain the old upper-bound consistency check but
+also require a lower bound proving the delay within the existing2ms browser
+plus0.25ms native clock guards. A broad interval such as[0,1000] is uncertain,
+not proof that the observer caught the delay. Missing informative nonresponse
+frames may therefore refuse native calibration; no clock guard, output pixel,
+full-presentation claim or desktop acceptance criterion is relaxed.

@@ -62,3 +62,15 @@ export function nativeVisibleLatencyBounds(eventAt: number, previousNonResponse:
     throw new Error('native visible observation precedes input');
   return { lo, hi };
 }
+
+
+/** A late upper endpoint alone is not evidence that the observer caught a
+ * known stall. Existing browser/native guards sum to 2.25ms; a wider capture
+ * gap cannot enlarge that allowance. Missing informative pixels is uncertain. */
+export function qualifyInjectedDelayBounds(bounds:{lo:number;hi:number},expectedMs:number,clockToleranceMs:number) {
+  if(![bounds.lo,bounds.hi,expectedMs,clockToleranceMs].every(Number.isFinite)||bounds.lo<0||bounds.hi<bounds.lo||expectedMs<=clockToleranceMs||clockToleranceMs<0||clockToleranceMs>2.25)
+    throw Error('Invalid injected-delay bounds or clock tolerance');
+  const requiredLowerMs=expectedMs-clockToleranceMs;
+  return {status:bounds.lo>=requiredLowerMs?'qualified' as const:'uncertain' as const,
+    requiredLowerMs,bounds,expectedMs,clockToleranceMs};
+}

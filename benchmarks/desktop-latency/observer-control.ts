@@ -7,7 +7,7 @@ import { performance as clock } from 'node:perf_hooks';
 import { randomUUID } from 'node:crypto';
 import { loadavg } from 'node:os';
 import assert from 'node:assert/strict';
-import { clockBounds, nativeVisibleLatencyBounds, quantile, type ClockSample } from './clock-bounds.js';
+import { clockBounds, nativeVisibleLatencyBounds, qualifyInjectedDelayBounds, quantile, type ClockSample } from './clock-bounds.js';
 import { holdObservation } from './observer-promises.js';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const out = process.env.KPERF_NATIVE_METHOD_OUT;
@@ -73,7 +73,7 @@ for (const engine of (process.env.KPERF_NATIVE_ENGINES ?? 'chromium,firefox,webk
   const ext=gl.getExtension('WEBGL_debug_renderer_info');postMessage({kind:'ready',attributes:gl.getContextAttributes(),renderer:gl.getParameter(ext?ext.UNMASKED_RENDERER_WEBGL:gl.RENDERER)});return;}
   if(m.kind==='color'){gl.clearColor(m.rgb[0]/255,m.rgb[1]/255,m.rgb[2]/255,1);gl.clear(gl.COLOR_BUFFER_BIT);gl.flush();
   postMessage({kind:'applied',id:m.id,at:performance.timeOrigin+performance.now()});}};`;
-      await page.evaluate(async (source) => {
+      await page.evaluate(async (source: string) => {
         const g = globalThis as any;
         const canvas = document.createElement('canvas');
         canvas.width = innerWidth;
@@ -213,6 +213,12 @@ for (const engine of (process.env.KPERF_NATIVE_ENGINES ?? 'chromium,firefox,webk
     const delayed = samples.at(-1);
     assert(delayed.input.appliedAt - delayed.input.eventAt >= 49);
     assert(delayed.displayBounds.hi >= 49, 'Observer hid delayed input');
+    const delayQualification=qualifyInjectedDelayBounds(delayed.displayBounds,50,pc.guardMs+nc.guardMs);
+    writeFileSync(join(dir,'delay-calibration.json'),JSON.stringify({qualification:delayQualification,
+      originalInput:delayed.input,previousNonResponse:delayed.previousNonResponse,response:delayed.visible,pc,nc},null,2));
+    // Sparse/coalesced capture can be correct yet unable to prove this delay.
+    // Refuse qualification rather than substitute worker or callback timing.
+    assert.equal(delayQualification.status,'qualified','Native delay calibration uncertain: no informative lower visibility bound');
     const regular = samples.filter(s => !s.delayed), frames = rows.filter(r => r.kind === 'frame');
     for (let index = 1; index < frames.length; index++) {
       assert(frames[index].displayMs >= frames[index - 1].displayMs,

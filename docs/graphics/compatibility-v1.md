@@ -26694,3 +26694,67 @@ runners. It uses the same source, admission floor and serialized normal graph.
 It preserves canonical watcher events and explicit TERM/INT failure status.
 The previously failing compiler and its SDK node now succeed. The complete
 graph is still RUNNING; no later-stage or complete B1 claim is made.
+
+
+### Original-input custody and selected-display method tooling, 2026-11-07
+
+R710-r10 adds only opt-in benchmark tooling: bounded shared Node/browser
+original/coalesced/offer evidence, fresh session identities and persistent
+refused tails; phased local evidence before a bounded browser observation;
+selected-display capture with no window exclusions and exact per-callback
+owner/geometry/foreground/overlay authority. It imports nothing into production
+rendering or the SDK and changes no ABI. Why comments explain the authority,
+clock-domain and failure-custody invariants.
+
+Two actual before controls fail causally. The old custody helper enters a
+never-settling source after an operation rejection without persisting any
+local offers. The old accepted row/clock path admits[0,902.25] and its upper
+endpoint alone passes the known-delay check. The new helper persists local
+phase evidence first, bounds the actual source read and retains late/failed
+outcomes. The shared delay qualifier preserves existing upper/injection
+checks but refuses a lower bound that cannot prove the known delay within
+existing clock guards. Sparse/on-damage capture may be correct yet uncertain;
+there is no new platform boundary or relaxed ship bar.
+
+`graphics-interaction-authority-r710-r10-1107-063241-f3d0` passes30s:
+strict helper/spec/caller types, Node ledger/custody/qualifier controls, six
+three-engine parity/adapter cases, six headless DOM/worker cohorts with all36
+offers/36 original inputs retained,13 native authority models, recorder/matcher
+compilation and existing clocks/rows/promise controls. All5,780 source inputs
+remain unchanged. Earlier runner/type/import failures, the old helper/raw
+causal failures and R9's old implicit-any aggregate failure remain preserved.
+Root applies the exact18 path hashes on the integration tree. These are
+source/model/headless results, not native visibility or application latency.
+
+The fresh recorder preflight reports SCREEN LOCKED before any GUI/capture.
+Actual unlocked calibration remains mandatory; completePresentationCoverage
+stays false. WindowServer evidence is not a physical-photon/HID measurement,
+and capture/rAF/KMS gaps cannot be called guest missed frames. Original
+Freeciv map/text/UI, ScummVM gameplay, typing/drag/resize/scroll, no-bar/load
+matrices, qualified worker CPU, total instrumentation overhead and main/native
+comparisons remain current-iteration acceptance. The exact frozen patch,
+commands, binaries, rejected evidence and next-run prerequisites are in R710-r10
+HANDOFF.md/READINESS.md; no complete B1 or performance claim is made.
+
+
+Root composition R717 confirms all18 authored source hashes exactly match
+R710-r10. Integrated Node controls and strict types pass. Its first aggregate
+fails before any browser case because a private config path substitution
+matches a shorter prefix first. R2 corrects that path but remains FAILED3/6:
+three adapter cases pass; three parity cases lack the already generated Node
+expected JSON in the new output directory. Production bytes remain unchanged.
+R3 supplies the byte-identical expected fixture and an explicit private output
+directory/unique port6703, then
+`graphics-interaction-integration-r717-r3-1107-064456-6217` passes8s:6/6
+three-engine cases, zero skips/flakes,21 source/doc hashes unchanged. Earlier
+failure traces and both aggregates are retained. No browser/runtime defect
+or actual native display success is inferred from these preparation failures
+or the corrected source-only pass.
+
+The standalone generic SDL candidate R715 additionally applies directly to
+SHA-pinned pristine SDL2.32.10 without any earlier Kandelo patch, with zero
+fuzz, then reverses to the exact original bytes. Job
+`graphics-sdl-upstream-r715-1107-063225-b0ce` passes2s. Its code diff is the
+same maintained package0009; only cover text is independent of Kandelo.
+There is no upstream submission or Linux hardware-KMS claim. Normal full
+application and cross-engine acceptance remains required.

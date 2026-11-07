@@ -373,6 +373,17 @@ CPU and total instrumentation overhead remain required. See the
 Preserved calibration/screenshot failures do not count as guest latency or
 acceptance; the successful method run does not establish native feel.
 
+Those earlier rows used independent-window capture, which can retain occluded
+content. They establish pixel classification and clock-method evidence, not
+unoccluded selected-display timing. The current tooling adds a display crop
+without exclusions, exact window/overlay authority, persistent original-input
+and refused-tail evidence, and an informative-lower-bound delay qualifier.
+Node, headless three-engine and native model/compiler controls cover that
+source; actual unlocked selected-display calibration remains current-iteration
+work. Sparse capture is explicitly uncertain, and presentation completeness,
+application response oracles, exact worker CPU and total observer overhead
+remain required before any native-feel claim.
+
 This migration must preserve ordinary shared-memory Wayland clients. The
 baseline removes the Foot, mako, GTK and Qt DRM-pool rewrites now that
 wlcompositor maps memfd pools; future graphics transport and scheduling

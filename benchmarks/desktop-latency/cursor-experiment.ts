@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {createOriginalInputEvidence} from './original-input-evidence.js';
+import {preserveInteractionEvidence,observeInteractionSource} from './interaction-evidence-custody.js';
 import { performance } from 'node:perf_hooks';
 import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
-import { clockBounds, nativeVisibleLatencyBounds, quantile, type ClockSample } from './clock-bounds.js';
+import { clockBounds, nativeVisibleLatencyBounds, qualifyInjectedDelayBounds, quantile, type ClockSample } from './clock-bounds.js';
 import { learnPixelTemplate } from './pixel-template.js';
 import { calibrateViewport, viewportMarkers, mapViewportPoint } from './viewport-calibration.js';
 import { snapshotRaster } from './captured-raster.js';
@@ -30,10 +33,42 @@ class CursorCalibrationPending extends Error {}
 
 /** One shared calibration/correlation path for standalone controls and real
  * desktop sources. Only native observations can supply native timing. */
-export async function measureCursorExperiment(options: {
+type CursorExperimentOptions = {
   page: any; observer: WindowObserver; source: CursorSource; out: string;
   count: number; native: boolean; injectStall: boolean; label: string;
-}) {
+};
+export async function measureCursorExperiment(options: CursorExperimentOptions) {
+  const offered=createOriginalInputEvidence({session:'offered-'+randomUUID()});
+  let completedSource: Awaited<ReturnType<CursorSource['data']>> | undefined;
+  let sourceAttempted=false,sourceFailure:unknown;
+  const budget=options.observer.stream.defaultTimeoutMs;
+  const local=()=>({clock:'node-monotonic',ledger:offered.snapshot()});
+  let evidenceRecord=0;
+  const persist=(record:Record<string,unknown>)=>{
+    const bytes=JSON.stringify(record,null,2);
+    // Never overwrite the first durable offers/source observation while
+    // replacing the convenience final record. Disk failure remains fatal.
+    writeFileSync(join(options.out,'original-input-evidence-'+(++evidenceRecord)+'-'+record.phase+'.json'),bytes);
+    writeFileSync(join(options.out,record.phase==='local-captured'?'original-input-evidence-local.json':'original-input-evidence.json'),bytes);
+  };
+  const readSource=async()=>{
+    persist({phase:'local-captured',operationStatus:'running',localEvidence:local(),sourceStatus:'pending',evidenceAvailable:false});
+    sourceAttempted=true;
+    const observation=await observeInteractionSource(()=>options.source.data(),budget);
+    if(observation.status==='available')completedSource=observation.value as Awaited<ReturnType<CursorSource['data']>>;
+    else sourceFailure=observation.error;
+    persist({phase:'source-observed',operationStatus:'running',localEvidence:local(),sourceStatus:observation.status,
+      sourceEvidence:observation.status==='available'?observation.value:undefined,evidenceAvailable:observation.status==='available'});
+    if(observation.status!=='available')throw observation.error;
+    return completedSource!;
+  };
+  return preserveInteractionEvidence(async()=>runCursorExperiment(options,id=>{
+    if(!offered.offer({id,kind:'cursor-stimulus',offeredAt:performance.now()}))
+      throw Error('Offered-input evidence capacity/identity failure');
+  },readSource),local,()=>completedSource?Promise.resolve(completedSource):sourceAttempted?Promise.reject(sourceFailure):options.source.data(),persist,budget);
+}
+async function runCursorExperiment(options: CursorExperimentOptions,offer:(id:string)=>void,
+  readSource:()=>Promise<Awaited<ReturnType<CursorSource['data']>>>) {
   const { page, observer, source, out, count, native, injectStall, label } = options;
   assert(Number.isInteger(count) && count >= 4 && count <= 120);
   const initialViewport = page.viewportSize(); assert(initialViewport);
@@ -134,6 +169,7 @@ export async function measureCursorExperiment(options: {
   console.log(JSON.stringify({ label, native, phase: 'calibration-verified' }));
   await pose('a'); stream.arm(); await source.reset();
   const noopStart = stream.rows.length;
+  offer('no-op');
   await source.trigger('b', { noOp: true, delayMs: 0 });
   await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)));
   const noop = matched('a', stream.rows.length); await source.pulse(); await observer.flush(); await noop;
@@ -146,12 +182,13 @@ export async function measureCursorExperiment(options: {
     const phaseMs = [0, 3, 7, 11][i % 4];
     await new Promise(resolve => setTimeout(resolve, phaseMs));
     const pending = matched(target, stream.rows.length);
+    offer('response-'+(i+2));
     await source.trigger(target, { noOp: false, delayMs: delayed ? 50 : 0 }); await observer.flush();
     samples.push({ seq: i + 2, target, delayed, phaseMs, visible: await pending });
     if (!native && i % 10 === 9) console.log(JSON.stringify({ label, native, responses: i + 1 }));
   }
   const nativeAfter = await observer.calibrate(), pageAfter = await pageCalibrate();
-  const data = await source.data();
+  const data = await readSource();
   assert.equal(data.inputs.length, total + 1, 'Unplanned or missing source input'); assert.deepEqual(data.errors, []);
   await source.verify();
   const nc = clockBounds([...nativeBefore, ...nativeAfter], .25), pc = clockBounds([...pageBefore, ...pageAfter], 2);
@@ -167,8 +204,18 @@ export async function measureCursorExperiment(options: {
   }
   const delayed = injectStall ? samples.at(-1) : undefined;
   if (delayed) {
-    assert(delayed.input.beforeDrawAt - delayed.input.eventAt >= 49, 'Control did not inject its promised stall');
+    // Keep the worker's epoch-converted value as non-authoritative diagnostic
+    // data. Its local busy interval proves injection; original-input/native
+    // display bounds below independently remain the end-to-end oracle.
+    assert(delayed.input.injectedDelayMs >= 50, 'Control did not inject its promised same-clock stall');
     assert(delayed.displayBounds.hi >= 49, 'Pixel observer hid the known stall');
+    if(native){
+      const qualification=qualifyInjectedDelayBounds(delayed.displayBounds,50,pc.guardMs+nc.guardMs);
+      writeFileSync(join(out,'delay-calibration.json'),JSON.stringify({qualification,input:delayed.input,
+        bounds:delayed.displayBounds,previousNonResponse:delayed.previousNonResponse,response:delayed.visible,pc,nc},null,2));
+      assert.equal(qualification.status,'qualified',
+        'Native delay calibration uncertain: captured lower bound does not prove injected delay within existing clock tolerance');
+    }
   }
   const regular = samples.filter(s => !s.delayed);
   const summary: any = { label, native, responses: regular.length, delayedResponses: injectStall ? 1 : 0,
