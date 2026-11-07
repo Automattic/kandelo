@@ -1,11 +1,13 @@
-# Fetch Request and Body source slice
+# Fetch Response, Request and Body source slice
 
 `fetch-body-sources.json` records whole unchanged Node v26.13.0 Undici files
-and hash-guarded unchanged function sections. The adapter loads the complete pinned Request and Body algorithms and installs
-the pinned Body consumption mixin on the existing Response class. The public stream and
-header list are projected from that class's private state; the adapter neither
-copies an independent body state nor flattens the transport. Stream ownership,
-locking, disturbance and decoder state stay with the actual stream graph.
+and hash-guarded unchanged function sections. The adapter loads the complete
+unchanged pinned Response, Request and Body algorithms. Response now owns its genuine private response record, HeadersList
+and Body record; the adapter neither copies independent public-field state nor
+flattens the transport. Its constructor, error/json/redirect statics, WebIDL
+conversions, descriptors, brand checks and clone use that same source. Stream
+ownership, locking, disturbance and decoder state stay with the actual stream
+graph.
 
 The installed methods are `arrayBuffer`, `bytes`, `text`, `json`, `blob`,
 `formData` and `textStream`. They use actual Buffer/UTF-8 conversion,
@@ -36,8 +38,8 @@ Blob/File parts. A later FormData edit cannot change the already constructed
 body. Empty forms, duplicate/escaped names, CRLF normalization, binary files,
 content types and final CRLF follow the target source. Request/body clones use
 the actual pinned ReadableStreamTee and stream state; no branded stream facade
-or payload-flattening substitute is introduced. Existing Response byte/status/
-clone behavior remains its owner; its new FormData branch uses this extraction.
+or payload-flattening substitute is introduced. Response and Request both use
+this extraction and genuine stream tee owner.
 
 The existing HTTP consumer constructs the real Request and passes its real
 body stream through the existing Readable.fromWeb/pipeline and ClientRequest.
@@ -46,8 +48,8 @@ actual extracted length supplies content-length when no framing header was
 provided. This removes stringification of Blob/FormData/stream bodies. The
 transport is still the current HTTP/TLS implementation, not the full pinned
 Fetch controller. Redirect/filter/decompression/cache/scheme/dispatcher/error
-policy, subtle early-response/upload/abort cleanup, native/GC/worker lifecycle,
-Response static constructors and full text-decoder conformance remain open.
+policy, subtle early-response/upload/abort cleanup, native/GC/worker lifecycle
+and full text-decoder conformance remain open.
 They are implementation gaps or unresolved questions, not accepted host limits.
 
 Exact native construction/multipart/loopback differentials and existing focused
@@ -58,9 +60,22 @@ also misses its cancellation expectation on native26 and candidate; that nonpass
 is preserved as an unresolved target-policy question rather than silently
 counted as conformance or blamed on the runtime.
 
-The existing Response constructor/clone/transport stay separate owners. MIME
-selection now follows the pinned list-splitting/quoted-parameter/charset rules
+The existing HTTP transport constructs a genuine immutable Response through the
+pinned fromInnerResponse/makeResponse owner, retaining its actual extracted
+stream, HeadersList and URL list. This integration does not supply the missing
+Fetch controller policy. FinalizationRegistry cancellation follows the pinned
+owner; its guest GC behavior remains unvalidated. MIME selection now follows the pinned list-splitting/quoted-parameter/charset rules
 rather than the previous media-type regular expression. Body methods reject
 spoofed Response receivers using the actual private response owner predicate
 and shared WebIDL brand check. Public assertions in existing focused controls
 remain unchanged; only their declared source-dependency setup is extended.
+
+The unchanged upstream `test/parallel/test-fetch.mjs` passes natively but fails
+on the current consumer before its Response checks: the existing `async function
+fetch` violates the target's ordinary-function assertion. This remains a Fetch
+implementation gap; replacing Response does not close it. Focused Response
+controls compare constructor/status/header conversion and error order, static
+error/json/redirect, descriptors and private brands, original byte/view ownership,
+stream cloning/cancellation, shared Request/FormData owners and immutable HTTP
+response publication. Their native dependencies and artifact identities must be
+reported separately from guest and four-host conformance.

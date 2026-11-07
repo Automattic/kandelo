@@ -1,4 +1,4 @@
-// Pinned Undici Request and Body algorithms share actual stream, header-list,
+// Pinned Undici Response, Request and Body algorithms share actual stream, header-list,
 // FormData, Blob/File and abort owners. HTTP transport remains its own owner.
 function _createNodeFetchBodyPlatform(platform) {
     'use strict';
@@ -42,7 +42,7 @@ function _createNodeFetchBodyPlatform(platform) {
         return module.exports;
     }
     const body = require('body');
-    require('bodyInit');
-    return { ...body, ...require('request'),
+    const response = require('response');
+    return { ...body, ...response, ...require('request'),
         isFormData: platform.formData.webidl.is.FormData };
 }

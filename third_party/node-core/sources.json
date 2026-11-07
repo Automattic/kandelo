@@ -5514,6 +5514,30 @@
         "start": "webidl.converters.XMLHttpRequestBodyInit =",
         "length": 798,
         "sha256": "ba907657edf355e9ea47d59caa8296fb85d1ebdc2a7eda593948a854244bf643"
+      },
+      "isErrorLike": {
+        "source": "utilSource",
+        "start": "function isErrorLike (",
+        "length": 169,
+        "sha256": "c047f494af1e8dd7703a694998cce00b24d6961af33d9239c682d03753d186f5"
+      },
+      "isValidReasonPhrase": {
+        "source": "utilSource",
+        "start": "function isValidReasonPhrase (",
+        "length": 360,
+        "sha256": "6aabc8dcc222a282d157a8a86f9fe5922a59d28d762d6c1cbadb6b508dcb6870"
+      },
+      "isAborted": {
+        "source": "utilSource",
+        "start": "function isAborted (",
+        "length": 88,
+        "sha256": "a0837ebc6902d3e7d56beea551dcd0800e37a5dfde9e74fb4837163ee47b43ff"
+      },
+      "isCancelled": {
+        "source": "utilSource",
+        "start": "function isCancelled (",
+        "length": 143,
+        "sha256": "32ce0dd01b48fabc8a3bdc8c8db5a35d4a464fe427aab046125fac447d3a0568"
       }
     }
   },

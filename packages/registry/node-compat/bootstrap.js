@@ -6090,142 +6090,6 @@ globalThis.exports = globalThis.module.exports;
     // A start-only shim strands clients that wrap a body with a pull source.
     const WebReadableStream = _nodeWebPlatform.streams.ReadableStream;
 
-    const streamState = _nodeWebPlatform.streamState;
-    const streamPrototype = WebReadableStream.prototype;
-    const getReader = Function.prototype.call.bind(streamPrototype.getReader);
-    const tee = Function.prototype.call.bind(streamPrototype.tee);
-
-    // Fetch clones byte chunks before either tee branch can expose them. The
-    // standard public default-stream tee shares objects, so pair each chunk
-    // with its engine clone before teeing, then select one value per branch.
-    // Native byte-stream tee already copies buffers and preserves BYOB readers.
-    function cloneBody(stream) {
-        if (streamState.isByteStream(stream)) return tee(stream);
-        const reader = getReader(stream);
-        let controller;
-        const paired = new WebReadableStream({
-            start(value) { controller = value; },
-            async pull() {
-                const { value, done } = await reader.read();
-                if (done) { controller.close(); return; }
-                let copy;
-                try { copy = _nodeNative.cloneValue(value); }
-                catch (error) {
-                    controller.error(error);
-                    reader.cancel(error).catch(() => {});
-                    return;
-                }
-                controller.enqueue([value, copy]);
-            },
-            cancel(reason) { return reader.cancel(reason); },
-        });
-        // A tee owns its original reader even after EOF/cancellation. Keeping
-        // this reader also forwards a source error to both branches promptly.
-        reader.closed.catch(error => controller.error(error));
-        return tee(paired).map((branch, index) => {
-            const branchReader = getReader(branch);
-            let branchController;
-            const selected = new WebReadableStream({
-                start(value) { branchController = value; },
-                async pull() {
-                    const { value, done } = await branchReader.read();
-                    if (done) branchController.close();
-                    else branchController.enqueue(value[index]);
-                },
-                cancel(reason) { return branchReader.cancel(reason); },
-            });
-            branchReader.closed.catch(error => branchController.error(error));
-            return selected;
-        });
-    }
-    const responseStates = new WeakMap();
-    function responseState(response) {
-        const state = responseStates.get(response);
-        if (!state) throw new TypeError('Illegal Response receiver');
-        return state;
-    }
-    function responseBody(response) { return responseState(response).body; }
-    function unusable(stream) {
-        return stream !== null && (streamState.isLocked(stream) || streamState.isDisturbed(stream));
-    }
-    class FetchResponse {
-        constructor(body = null, init = {}) {
-            _nodeClonePlatform.protocol.markTransferMode(this, false, false);
-            init = _nodeBodyData.options(init);
-            let status = init.status;
-            if (status === undefined) status = 200;
-            status = Math.trunc(Number(status)) & 0xffff;
-            if (status < 200 || status > 599) throw new RangeError('Response status must be between 200 and 599');
-            if (body != null && (status === 204 || status === 205 || status === 304)) {
-                throw new TypeError('Response status cannot have a body');
-            }
-            let statusText = init.statusText;
-            if (statusText === undefined) statusText = '';
-            if (typeof statusText === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
-            statusText = String(statusText);
-            if (/[^\t\x20-\x7e\x80-\xff]/.test(statusText)) throw new TypeError('Invalid response status text');
-            const headers = new FetchHeaders(init.headers);
-            _nodeFormDataPlatform.headers.setHeadersGuard(headers, 'response');
-            let stream = null, contentType = null;
-            if (body != null) {
-                if (bodyPlatform.isFormData(body)) {
-                    const [extracted, type] = bodyPlatform.extractBody(body);
-                    stream = extracted.stream; contentType = type;
-                } else if (streamState.isReadable(body)) {
-                    if (unusable(body)) throw new TypeError('Response body is disturbed or locked');
-                    stream = body;
-                } else {
-                    const blob = _nodeBodyData.blob(body);
-                    let bytes;
-                    if (blob) { bytes = blob.bytes; contentType = blob.type || null; }
-                    else {
-                        bytes = _nodeBodyData.copyBytes(body);
-                        if (bytes === null) {
-                            if (body instanceof _nodeWebPlatform.URLSearchParams) {
-                                bytes = _nodeBodyData.stringBytes(body.toString());
-                                contentType = 'application/x-www-form-urlencoded;charset=UTF-8';
-                            } else {
-                                bytes = _nodeBodyData.stringBytes(body);
-                                contentType = 'text/plain;charset=UTF-8';
-                            }
-                        }
-                    }
-                    stream = _nodeBodyData.stream(bytes);
-                }
-            }
-            if (contentType !== null && !headers.has('content-type')) headers.set('content-type', contentType);
-            responseStates.set(this, { body: stream, status, statusText, headers, url: '', redirected: false, type: 'default' });
-        }
-        get status() { return responseState(this).status; }
-        get statusText() { return responseState(this).statusText; }
-        get ok() { const status = responseState(this).status; return status >= 200 && status < 300; }
-        get headers() { return responseState(this).headers; }
-        get url() { return responseState(this).url; }
-        get redirected() { return responseState(this).redirected; }
-        get type() { return responseState(this).type; }
-        get bodyUsed() {
-            const stream = responseBody(this);
-            return stream !== null && streamState.isDisturbed(stream);
-        }
-        get body() { return responseBody(this); }
-        clone() {
-            const body = responseBody(this);
-            if (unusable(body)) throw new TypeError('Body is unusable');
-            const state = responseState(this);
-            const clone = new FetchResponse(null, { status: state.status, statusText: state.statusText, headers: state.headers });
-            const clonedState = responseState(clone);
-            _nodeFormDataPlatform.headers.setHeadersGuard(clonedState.headers,
-                _nodeFormDataPlatform.headers.getHeadersGuard(state.headers));
-            clonedState.url = state.url; clonedState.redirected = state.redirected; clonedState.type = state.type;
-            if (body !== null) {
-                const [left, right] = cloneBody(body);
-                state.body = left;
-                clonedState.body = right;
-            }
-            return clone;
-        }
-        get [Symbol.toStringTag]() { return 'Response'; }
-    }
     const bodyPlatform = _createNodeFetchBodyPlatform({
         Buffer, Blob: _nodeBodyData.Blob, File: globalThis.File,
         URL: _nodeWebPlatform.URL, URLSearchParams: _nodeWebPlatform.URLSearchParams,
@@ -6234,19 +6098,7 @@ globalThis.exports = globalThis.module.exports;
         stream: _nodeStreamPlatform, formData: _nodeFormDataPlatform,
         assert, types: util.types,
     });
-    // This is a live projection of the existing private stream/header owners,
-    // not a copied payload or an independently fabricated body state.
-    bodyPlatform.mixinBody(FetchResponse, response => {
-        const state = responseState(response);
-        return { body: state.body === null ? null : { stream: state.body },
-            headersList: _nodeFormDataPlatform.headers.getHeadersList(state.headers) };
-    }, value => responseStates.has(value));
-    Object.defineProperty(FetchResponse, 'name', { value: 'Response', configurable: true });
-    Object.defineProperty(FetchResponse.prototype, Symbol.toStringTag, { value: 'Response', configurable: true });
-    for (const name of ['body', 'bodyUsed', 'status', 'statusText', 'ok', 'headers', 'url', 'redirected', 'type',
-        'arrayBuffer', 'bytes', 'text', 'json', 'blob', 'clone']) {
-        Object.defineProperty(FetchResponse.prototype, name, { enumerable: true });
-    }
+    const FetchResponse = bodyPlatform.Response;
 
     const FetchRequest = bodyPlatform.Request;
 
@@ -6326,14 +6178,16 @@ globalThis.exports = globalThis.module.exports;
                     else if (v !== undefined) respHeaders.set(k, v);
                 }
                 const hasBody = method !== 'HEAD' && ![204, 205, 304].includes(res.statusCode);
-                const response = new FetchResponse(hasBody ? resStream : null, {
+                // The transport publishes the same genuine Response private owner
+                // as public construction, with the actual response stream/header list.
+                const response = bodyPlatform.fromInnerResponse(bodyPlatform.makeResponse({
+                    body: hasBody ? bodyPlatform.extractBody(resStream)[0] : null,
                     status: res.statusCode || 0,
                     statusText: res.statusMessage || '',
-                    headers: respHeaders,
-                });
-                const state = responseState(response);
-                _nodeFormDataPlatform.headers.setHeadersGuard(state.headers, 'immutable');
-                state.url = urlStr; state.type = 'basic';
+                    headersList: _nodeFormDataPlatform.headers.getHeadersList(respHeaders),
+                    urlList: [new _nodeWebPlatform.URL(urlStr)],
+                    type: 'basic',
+                }), 'immutable');
                 resolve(response);
             });
 

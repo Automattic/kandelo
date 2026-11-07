@@ -1,0 +1,79 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/web.md",
+    "findingIds": [
+      "WEB-004",
+      "WEB-009"
+    ],
+    "relatedFamilies": [
+      "web",
+      "streams",
+      "values",
+      "network",
+      "http",
+      "engine"
+    ],
+    "scope": "Real Response constructor/statics/private body/header/clone and consumed HTTP publication source contribution; not complete Fetch/dependency semantics or finding closure"
+  },
+  "sourceImplemented": [
+    "Complete unchanged pinned Undici Response module is actually loaded over shared Body/Headers/WebIDL/Request owners, replacing separate custom constructor/private state/clone code",
+    "Real Response.error/json/redirect statics and exact WebIDL conversion/validation/error order, brand/descriptors/subclass/private header guard/list behavior",
+    "Actual existing byte/view/Blob/FormData extraction, stream tee/clone/cancel and Body consumption lifecycle shared with Request",
+    "Existing HTTP consumer publishes genuine immutable fromInnerResponse(makeResponse(...)) with actual body stream/HeadersList/URL list rather than copied public fields",
+    "Four exact pinned source utility sections added with full-source and section hash guards; no target/ABI pin or production input change"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-response183-source-r1/report.json",
+    "sha256": "604c15ca68172f74f659a90229445c95380ae930732b0bab5ecfa341c3e3326e",
+    "guardedInputs": 820,
+    "scope": "Full unchanged pinned Response owns actual shared Body/Header/Request state and existing HTTP publication; real guest dependency/GC/realm/fourhost and full Fetch transport remain open."
+  },
+  "packageChecks": {
+    "report": ".context/node26-response183-affected-r1.json",
+    "sha256": "2e25da24c3c592f826d6126b2c2f4ad8b4983abb11c05fe5923131a5b0603dcf",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-response183-source-r1/report.json",
+    "sha256": "604c15ca68172f74f659a90229445c95380ae930732b0bab5ecfa341c3e3326e",
+    "responseDifferentialGroups": 13,
+    "unchangedRequestGroups": 14,
+    "unchangedBodyTests": 13,
+    "packageChecks": 14,
+    "actualProductionResponseAndHTTPPublicationExecuted": true,
+    "newCompilerAttempts": 0,
+    "scope": "Actual current complete Response source over explicit native stream/URL/codec/clone/event/HTTP dependencies. Original bytes/private owner/guard and real loopback publication exercised; guest dependency/GC/realm/fourhost not established."
+  },
+  "sealedEvidence": {
+    "report": ".context/response-owner-agent/handoff.json",
+    "sha256": "d046f3c97fe09354f17693ddc505f495da82bff9e431db7bd7545cdef1b424dd",
+    "reusedEvidence": true,
+    "scope": "13Response/14Request native-candidate groups,13unchanged Body tests,54source checks/809private declared inputs and exact0fuzzsource roundtrip. Existing unchanged upstream Fetch ordinary-function failure retained;0compiles/builds."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/response-owner-agent/upstream-candidate.stderr",
+      "sha256": "065831e9671ae1ff5f0cf16df45c4fb72dd7285ec2c9329b3b4b0cc5b589a99c",
+      "kind": "unchanged-upstream-Fetch-ordinary-function-nonpass",
+      "reason": "Native test-fetch.mjs exits0; candidate exits1 at unchanged line16 because existing fetch is AsyncFunction, before server/Response checks. Historical exact source/commands/identities retained; not counted as passing Response conformance."
+    }
+  ],
+  "remaining": [
+    "Full Fetch controller/transport redirect/filter/CORS/cache/dispatcher/scheme/decompression and abort/upload/early-response policy",
+    "Existing flowing classic-HTTP publication lacks pull/backpressure-owned Fetch transport; existing async-function wrapper fails ordinary-function assertion",
+    "Actual guest Body/stream/Blob/Headers/URL/clone/encoding dependencies, finalizer ownership and realm/worker transfer/teardown conformance",
+    "Preserved earlier Body late-abort cancellation question, original failure/unsupported cases and all-four-host identified-artifact conformance"
+  ],
+  "at": "2026-11-07T05:14:29.430271+00:00",
+  "recipeRevision": 183,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

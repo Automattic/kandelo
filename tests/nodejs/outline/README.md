@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source183 integrates the complete pinned Response owner over shared Body/Header/Request state.13Response and14Request native/candidate groups plus13existing Body and14package checks pass. Full Fetch transport/policy, guest dependencies/GC and four-host conformance remain open.
+See [source scope](response-owner-integration.md).
+
 Source182 integrates real shared TLS certificate/key/PFX owners before TCP.57credential differential groups/5native handshake-lifetime groups and14package checks pass. Guest JSAPI/GC and full SecureContext/error setter/four-host conformance remain open.
 See [source scope](tls-credential-owner-integration.md).
 
