@@ -12188,7 +12188,7 @@ pub fn kernel_accept4(
 
 /// Connect to an address. Returns 0 on success, negative errno on error.
 ///
-/// If the same-process loopback connect fails with ECONNREFUSED, searches
+/// If the same-process local connect fails with ECONNREFUSED, searches
 /// all processes in the ProcessTable for a matching listener. This enables
 /// cross-process loopback (e.g. nginx -> php-fpm).
 pub fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
@@ -12212,10 +12212,10 @@ pub fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
                     Err(e) => -(e as i32),
                 }
             } else if family == 2 && addr_len >= 8 {
-                // AF_INET loopback
+                // AF_INET within this machine's own namespace.
                 let ip = [addr[4], addr[5], addr[6], addr[7]];
-                if ip == [127, 0, 0, 1] {
-                    match cross_process_loopback_connect(table, pid, fd, addr) {
+                if let Some(source) = crate::netif::local_ipv4_source(ip, &mut host) {
+                    match cross_process_local_connect(table, pid, fd, addr, source) {
                         Ok(()) => 0,
                         Err(e) => -(e as i32),
                     }
@@ -12249,11 +12249,12 @@ pub fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
 ///
 /// Searches all processes in the ProcessTable for a listening socket on the
 /// target port, then creates global pipe pairs to connect the two processes.
-fn cross_process_loopback_connect(
+fn cross_process_local_connect(
     table: &mut crate::process_table::ProcessTable,
     my_pid: u32,
     fd: i32,
     addr: &[u8],
+    local_source: [u8; 4],
 ) -> Result<(), Errno> {
     use crate::pipe::PipeBuffer;
     use crate::socket::{SocketDomain, SocketState, SocketType};
@@ -12338,7 +12339,7 @@ fn cross_process_loopback_connect(
     // Set up client socket (in current process)
     let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
     let client_addr = if client_sock.bind_addr == [0; 4] {
-        [127, 0, 0, 1]
+        local_source
     } else {
         client_sock.bind_addr
     };
@@ -12360,7 +12361,9 @@ fn cross_process_loopback_connect(
     client.global_pipes = true; // pipes are in global pipe table
     if client.bind_port == 0 {
         client.bind_port = client_port;
-        client.bind_addr = [127, 0, 0, 1];
+    }
+    if client.bind_addr == [0; 4] {
+        client.bind_addr = local_source;
     }
 
     // Push the connection metadata to the listener's shared accept queue.
@@ -12377,7 +12380,7 @@ fn cross_process_loopback_connect(
     let accept_wake_idx = listener_sock.accept_wake_idx;
 
     let pc = crate::socket::PendingConnection {
-        local_addr: [127,0,0,1],
+        local_addr: ip,
         peer_addr: client_addr,
         peer_addr6: [0; 16],
         peer_is_ipv6: false,

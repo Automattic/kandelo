@@ -53,6 +53,15 @@ incomplete until both hosts have the same platform-observable behavior or the
 difference is explicitly justified by a real platform boundary. Do not land
 Node-first or browser-later host changes.
 
+Keep guest listener namespaces separate from host sockets. Node's
+`enableTcpNetwork` selects external dialing; disabling it does not disable
+the ordinary native listener bridge. Isolated conformance fixtures use
+`offlineEgressLink`, whose backend claims every listener through
+`ownsTcpListener`. Session wrappers must preserve that ownership decision.
+Check physical host reachability and guest-local connectivity separately;
+a native listener error can appear on the worker's console outside guest
+stderr and the host-diagnostic callback.
+
 The default Node rootfs-image option preserves caller-owned `ArrayBuffer`
 and `Uint8Array` bytes across initialization. It snapshots the image into a
 private ordinary `ArrayBuffer` and transfers that private buffer to the

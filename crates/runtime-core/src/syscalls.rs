@@ -14143,12 +14143,20 @@ pub fn sys_bind(
             }
 
             let assigned_port = if port == 0 {
-                let p = proc.next_ephemeral_port;
-                proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
-                if proc.next_ephemeral_port == 0 {
+                if proc.next_ephemeral_port < 49152 {
                     proc.next_ephemeral_port = 49152;
                 }
-                p
+                let start = proc.next_ephemeral_port;
+                loop {
+                    let candidate = proc.next_ephemeral_port;
+                    bump_ephemeral_port(proc);
+                    if crate::socket::tcp_can_bind(proc.pid, sock_idx, ip, candidate) {
+                        break candidate;
+                    }
+                    if proc.next_ephemeral_port == start {
+                        return Err(Errno::EADDRINUSE);
+                    }
+                }
             } else {
                 port
             };
@@ -14588,10 +14596,10 @@ fn prepare_inline_stream_accept(proc: &mut Process, listener_idx: usize) -> Resu
 
 /// Connect a socket to an address.
 ///
-/// For AF_INET sockets connecting to 127.0.0.1, performs loopback connect:
+/// For AF_INET sockets connecting to this machine, performs local connect:
 /// finds the listening socket on the target port, creates pipe pairs, and
 /// pushes a pending connection to the listener's backlog.
-/// Non-loopback AF_INET streams delegate to the host via `host_net_connect`;
+/// Other AF_INET streams delegate to the host via `host_net_connect`;
 /// AF_INET6 currently exposes only local `::`/`::1` stream routing.
 /// For AF_UNIX SOCK_STREAM, performs same-process connect via the global
 /// UnixSocketRegistry (cross-process connect is handled in wasm_api.rs).
@@ -14844,10 +14852,7 @@ fn sys_connect_impl(
                 return Err(Errno::ENETUNREACH);
             }
 
-            // Check for loopback address (127.0.0.1)
-            let is_loopback = ip == [127, 0, 0, 1];
-
-            if is_loopback && sock.domain == SocketDomain::Inet {
+            if let Some(local_source) = crate::netif::local_ipv4_source(ip, host) {
                 // UDP DGRAM connect: just record peer address (no listener needed)
                 if sock.sock_type == SocketType::Dgram {
                     let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -14865,7 +14870,7 @@ fn sys_connect_impl(
                     client.peer_port = port;
                     if client.bind_port == 0 {
                         client.bind_port = client_port;
-                        client.bind_addr = [127, 0, 0, 1];
+                        client.bind_addr = local_source;
                     }
                     return Ok(());
                 }
@@ -14905,7 +14910,7 @@ fn sys_connect_impl(
                 // Assign ephemeral port/addr to client if unbound
                 let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
                 let client_addr = if client_sock.bind_addr == [0; 4] {
-                    [127, 0, 0, 1]
+                    local_source
                 } else {
                     client_sock.bind_addr
                 };
@@ -14931,10 +14936,14 @@ fn sys_connect_impl(
                 accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to pipe_b (client's reads)
                 accepted_sock.bind_port = listener_port;
                 if listener_domain == SocketDomain::Inet6 {
-                    accepted_sock.bind_addr6 = listener_addr6;
+                    accepted_sock.bind_addr6 = if is_unspecified_addr6(listener_addr6) {
+                        ipv4_mapped_addr6(ip)
+                    } else {
+                        listener_addr6
+                    };
                     accepted_sock.peer_addr6 = ipv4_mapped_addr6(client_addr);
                 } else {
-                    accepted_sock.bind_addr = listener_addr;
+                    accepted_sock.bind_addr = if listener_addr == [0; 4] { ip } else { listener_addr };
                     accepted_sock.peer_addr = client_addr;
                 }
                 accepted_sock.peer_port = client_port;
@@ -14957,7 +14966,9 @@ fn sys_connect_impl(
                 client.global_pipes = true;
                 if client.bind_port == 0 {
                     client.bind_port = client_port;
-                    client.bind_addr = [127, 0, 0, 1];
+                }
+                if client.bind_addr == [0; 4] {
+                    client.bind_addr = local_source;
                 }
 
                 // Set peer_idx on accepted socket for OOB data exchange
@@ -34814,6 +34825,89 @@ mod tests {
         address[0] = AF_INET as u8;
         let result = sys_connect(&mut proc, &mut host, fd, &address);
         assert_eq!(result, Err(Errno::ECONNREFUSED));
+    }
+
+    #[test]
+    fn test_tcp_connect_local_interface_retains_endpoint_addresses() {
+        use wasm_posix_shared::socket::*;
+
+        fn address(ip: [u8; 4], port: u16) -> [u8; 16] {
+            let mut result = [0; 16];
+            result[0] = AF_INET as u8;
+            result[2..4].copy_from_slice(&port.to_be_bytes());
+            result[4..8].copy_from_slice(&ip);
+            result
+        }
+
+        for ip in [[127, 0, 0, 2], [10, 0, 2, 15], [192, 0, 2, 22]] {
+            for listener_ip in [[0; 4], ip] {
+                for bind_client in [false, true] {
+                    let mut proc = Process::new(9040);
+                    let mut host = MockHostIO::new();
+                    if ip[0] != 127 {
+                        host.network_interface = crate::netif::InterfaceConfig::validated(ip, [255, 255, 255, 0]);
+                    }
+                    let server = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+                    sys_bind(&mut proc, &mut host, server, &address(listener_ip, 35001)).unwrap();
+                    sys_listen(&mut proc, &mut host, server, 1).unwrap();
+                    let client = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+                    if bind_client {
+                        sys_bind(&mut proc, &mut host, client, &address([0; 4], 0)).unwrap();
+                    }
+                    sys_connect(&mut proc, &mut host, client, &address(ip, 35001)).unwrap();
+                    let accepted = sys_accept(&mut proc, &mut host, server).unwrap();
+                    let source = if ip[0] == 127 { [127, 0, 0, 1] } else { ip };
+                    let mut actual = [0; 16];
+                    sys_getsockname(&mut proc, client, &mut actual).unwrap();
+                    assert_eq!(&actual[4..8], &source);
+                    sys_getsockname(&mut proc, accepted, &mut actual).unwrap();
+                    assert_eq!(&actual[4..8], &ip);
+                    sys_getpeername(&mut proc, accepted, &mut actual).unwrap();
+                    assert_eq!(&actual[4..8], &source);
+                    assert!(host.net_connect_calls.is_empty());
+                    sys_close(&mut proc, &mut host, accepted).unwrap();
+                    sys_close(&mut proc, &mut host, client).unwrap();
+                    sys_close(&mut proc, &mut host, server).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_tcp_connect_to_another_interface_host_remains_external() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9041);
+        let mut host = MockHostIO::new();
+        host.network_interface = crate::netif::InterfaceConfig::validated([10, 0, 2, 15], [255, 255, 255, 0]);
+        host.net_connect_result = Err(Errno::EHOSTUNREACH);
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut address = [0; 16];
+        address[0] = AF_INET as u8;
+        address[2..4].copy_from_slice(&35001u16.to_be_bytes());
+        address[4..8].copy_from_slice(&[10, 0, 2, 16]);
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &address), Err(Errno::EHOSTUNREACH));
+        assert_eq!(host.net_connect_calls.len(), 1);
+        assert_eq!(host.net_connect_calls[0].1, [10, 0, 2, 16]);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_ipv4_bind_zero_skips_an_occupied_ephemeral_port() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9042);
+        let mut host = MockHostIO::new();
+        let first = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let second = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut address = [0; 16];
+        address[0] = AF_INET as u8;
+        proc.next_ephemeral_port = 56001;
+        sys_bind(&mut proc, &mut host, first, &address).unwrap();
+        proc.next_ephemeral_port = 56001;
+        sys_bind(&mut proc, &mut host, second, &address).unwrap();
+        sys_getsockname(&proc, second, &mut address).unwrap();
+        assert_eq!(u16::from_be_bytes([address[2], address[3]]), 56002);
+        sys_close(&mut proc, &mut host, first).unwrap();
+        sys_close(&mut proc, &mut host, second).unwrap();
     }
 
     #[test]
