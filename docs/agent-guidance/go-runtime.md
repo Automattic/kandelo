@@ -14,8 +14,10 @@ The active migration uses branch `kandelo-wasm32-prototype`, based on Go
 replace another checkout's untracked artifacts. Inspect its branch/version
 and each package's `go_toolchain` pin first.
 
-The `go-hello` package and SDK wrapper now select `kandelo/wasm32`.
-Caddy/FrankenPHP recipe migration remains pending. The authoritative record
+All four Go recipes and the SDK wrapper now select `kandelo/wasm32`.
+Normal classic FrankenPHP revision 35 passes HTTP, bulk CGI/GC and normal
+shutdown on Node and three browsers. Real Caddy links, but its request
+validation and an upstream Caddy dependency upgrade remain pending. The authoritative record
 is `docs/plans/2026-09-05-go-gc-port-milestone1-plan.md`; `docs/go.md` maps
 consumers to targets. Do not describe historical legacy service evidence as
 validation of the replacement compiler or image.
@@ -78,21 +80,50 @@ validate their behavior. The expanded `os` and `os/exec` suites and
 Repeat the full standard-library build with `CGO_ENABLED=1`: that mode
 selects additional Unix `net` and `os/user` implementations. Kandelo uses
 Go's VFS-backed DNS and account-file paths in both modes for now. The native
-Unix cgo resolver expects unavailable `res_n*` libc entry points, and its
-`struct passwd` pointer fields do not match Kandelo's mixed-width C/Go
-interop representation. Exclude those implementations in the fork, not by
+Unix cgo resolver expects unavailable `res_n*` libc entry points, and account lookup still uses the existing VFS-backed implementation.
+The legacy mixed-width `struct passwd` concern no longer establishes a
+reason to exclude a homogeneous wasm32 binding; revalidate the complete
+native resolver/account API contract before changing those selections. Exclude those implementations in the fork, not by
 adding package-only `netgo` or `osusergo` flags to FrankenPHP.
+
+Before diagnosing reflection as a wasm32 layout bug, compare upstream
+targets and the selected Go experiments. Go 1.28 enables JSONv2 by default;
+`encoding/json.RawMessage` aliases `encoding/json/jsontext.Value`. Caddy
+2.10.2's package/name comparison rejects this on every target. Upstream
+Caddy fixed the comparison using `reflect.TypeFor`; consume a released fix
+rather than patching reflection, disabling JSONv2 or adapting the app.
+
+The clean wasm32 full browser inventory has one known WebKit native-stack
+failure in unchanged `regexp/syntax` compilation. The same source on both
+upstream WASI architectures reproduces it without Kandelo imports. Do not
+reintroduce the legacy iterative fallback described in historical evidence
+below without discussing that library-algorithm change with the maintainer.
+The legacy workaround is absent from the current prototype. Keep this
+finite native-depth boundary separate from collector, linear-memory,
+shadow-stack and POSIX correctness.
 
 ## Memory, threads, and syscalls
 
 - Runtime clock functions participate in scheduler state transitions.
   `casgstatus` can call `nanotime1` while cgo's `exitsyscall` forbids stack
-  growth. Keep Kandelo's monotonic clock path nosplit and use the existing
-  raw channel primitive there; invoking signal callbacks during that
-  transition is unsafe. Ordinary syscall boundaries still own delivery.
+  growth. Keep Kandelo's monotonic clock path nosplit while preserving its
+  existing channel signal checkpoint. A clock-polling M can otherwise own
+  a pending signal indefinitely. The established delivery path queues Go
+  notifications on g0. Removing that checkpoint stalled an HTTP drain;
+  merely making the clock nosplit retains signal behavior.
   The signal/GC and blocked-wait fixtures exercise this path. Do not fix a
   `stack split at bad time` failure by changing the collector or suppressing
   stack guards.
+- For Wasm C libraries, preserve valid empty compatibility archives and
+  their normal `-lm`/`-lutil` flags. GNU archives can contain only the magic;
+  Darwin ranlib can add an empty BSD32 index. The linker accepts strictly
+  object-free versions of those forms, not arbitrary unindexed libraries.
+  Nonempty BSD indexes remain unsupported. `CGO_LDFLAGS` search paths work
+  on the new target; do not copy the legacy link-path application patch.
+- Cooperative-preemption probes need a real split-stack checkpoint. A small
+  leaf can legitimately be NOSPLIT, as the scheduler clock must be. Give a
+  CPU-work fixture a materialized frame; do not insert manual yielding or
+  infer asynchronous preemption from a cooperative test.
 - Base architecture extensions of a direct dependency port on the current
   consumer pin. Extending an earlier x/sys CPU file while omitting newer
   Unix APIs can compile FrankenPHP's archive but fail Caddy's dependencies.
@@ -493,309 +524,116 @@ do not validate against a stale or unstamped binary.
 
 ## Go/Wasm cgo and C linking
 
-The service results and mixed-width adaptations in this section describe
-the legacy `kandelo/wasm` packages. The new `kandelo/wasm32` migration above
-replaces that pointer boundary; do not copy its C accessors or scalar CGI
-adaptations into the new target. Keep final application lifetime/link gates
-explicit while those recipes still select the legacy compiler.
+Use the homogeneous `kandelo/wasm32` target and the normal declared compiler
+build. The older mixed-width `kandelo/wasm` accessor, callback-frame and
+scalar-CGI adaptations are historical evidence in the implementation log;
+do not copy them into new packages. Compiler/link success is one gate;
+real C execution, callbacks, collection and application lifetime are others.
 
-FrankenPHP classic mode embeds a PHP ZTS SAPI through cgo. A working
-`cmd/cgo` frontend is only one layer of that port. The `go-hello` package
-pins the current fork revision, but remains a pure-Go hello program.
-The adjacent fork runs focused Go/C calls and Go-owned and C-created-pthread
-callbacks on Node and Chromium. The `php-zts` package and PHP embed lifecycle
-probe pass on both hosts. The `frankenphp-classic` package now serves a PHP
-request and a static asset through real HTTP on Node and Chromium. A
-source-only WordPress VFS serves homepage and admin requests on Node and
-Chromium, including the browser gallery profile. Do not infer full cgo,
-POSIX conformance, or a WordPress performance advantage from these gates.
-For a bounded same-process PHP request probe, set
-`KANDELO_FRANKENPHP_CHURN_REQUESTS=40` in the Node-host counterpart and
-Chromium kernel-host WordPress tests. They alternate homepage and login PHP
-requests with distinct query strings on one server boot and pass on both
-hosts; they do not establish sustained worker reuse, allocator stability,
-or throughput.
+Trace the complete link path:
 
-Trace the whole link path before changing flags or package recipes:
+- `cmd/cgo` owns C type discovery, DWARF/constants and dynamic imports.
+  Wasm is not ELF, Mach-O, PE or XCOFF. Recognizing its magic does not
+  establish correct types, offsets, symbols or calls. Compare generated
+  Go layouts with the SDK C target, including four-byte pointers and
+  eight-byte `int64` alignment. Test ordinary C pointer fields, fixed
+  pointer arrays, aggregate calls/returns, exported callback frames and
+  escaping field aliases across collection. Preserve ordinary data-pointer
+  GC roots. C function-table handles use the existing non-heap opaque
+  pointer mechanism described above.
+- `cmd/link/internal/loadwasm` reads Wasm objects and their linking,
+  relocation, function, data, table, global, exception-tag and TLS metadata.
+  The internal linker owns the final shared memory, function table, heap,
+  exports and thread slots. A final Go module is not a relocatable object
+  that can simply be passed to `wasm-ld`. Do not suppress unsupported
+  relocations, accept arbitrary invalid archives or route calls through a
+  JavaScript shim that changes the normal process model.
+- Preserve object-local names, weak/strong symbol ownership, initialized
+  data from objects with no functions, transitive archive reachability and
+  constructor/vtable roots. Passive data needs initialization before use.
+  Unused ordinary C call edges must not become link roots. Reject unsupported
+  initializer/finalizer forms visibly. `INIT_FUNCS` defines constructor
+  dispatch; do not reinterpret arbitrary `.init_array` bytes as callable
+  pointers. A cgo-disabled mixed link must not silently discard constructors.
+- Go's resumable call convention differs from the SDK C ABI. Go-to-C frame
+  wrappers and C-to-Go exports need exactly typed Wasm adapters. Ordinary
+  wrappers return void; errno wrappers return i32. C calls cannot directly
+  invoke raw Go table entries with another signature. Test scalar alignment,
+  pointer identity, `errno`, C TLS and both callback ownership paths.
 
-- `src/cmd/cgo/main.go`, `gcc.go`, and `out.go` own C type discovery,
-  DWARF/constant extraction, and dynamic-import handling. Wasm is not
-  ELF, Mach-O, PE, or XCOFF. A magic-byte bypass of object parsing is
-  insufficient: the generated constants, symbols, and imports still need
-  correct interpretations. The WIP Wasm reader in the adjacent fork
-  is not yet a reviewed implementation.
-- Kandelo's C ABI uses 32-bit pointers while Go/Wasm pointers are 64-bit.
-  Exported Go callbacks need a byte-exact C frame: the Go `struct` generated
-  by stock cgo pads pointer fields and can return null even when the Go
-  callback returns a valid pointer. The fork now marshals exported scalar
-  and pointer fields through C-sized byte offsets. Test mixed scalar/pointer
-  arguments and pointer results on C-created pthreads. This does not repair
-  direct Go field access to C structs containing pointers: FrankenPHP's
-  version, header-list, and request-info paths use C accessors at that
-  explicit interop boundary. Audit every new C struct access by comparing
-  C `sizeof`/`offsetof` with generated Go layout before trusting it.
-  In particular, do not initialize a `C.go_string` with a Go pointer-typed
-  struct literal or compare a raw `Bucket.key` field with `nil`: cgo exposes
-  those C addresses as `uint32` on this target. Build the value with a typed
-  C constructor and retrieve the hash key through a typed C accessor.
-- FrankenPHP's CGI bulk registration originally exposed an unsupported
-  pointer-bearing C struct passed by value. Its package patch still uses
-  the scalar/pointer `frankenphp_register_single` entry. The current general
-  bridge now passes 24 consecutive 12-byte pointer-bearing structs, with
-  pointer arguments before and after them, on Node and all three browsers.
-  This test uses C-owned storage. An isolated restoration of the original
-  bulk call compiles with explicit field-width conversions, but compilation
-  is not sufficient to remove the adaptation: those integer fields do not
-  retain Go GC roots for Go-backed strings. Prove argument lifetime and
-  real request behavior before restoring it. Do not call the whole
-  aggregate ABI unsupported on the basis of the older failure, or silently
-  convert Go-managed pointers into raw integers. The remaining scalar path
-  makes extra Go-to-C calls; measure the app before performance claims.
-- Static libraries must be declared through `#cgo LDFLAGS` with
-  `-L${SRCDIR}/lib -l...`; environment-only `CGO_LDFLAGS` does not give the
-  internal linker a search path and can force unsupported external linking.
-  The internal linker selects archive members recursively for referenced C
-  code, including PHP's dependency archives. The `static-archive` and
-  `php-embed` probes cover this path on both hosts.
-- A linked C archive does not imply its functions are exported from the Go
-  executable. The pinned Go linker now accepts explicit
-  `-Wl,--export-dynamic-symbol=<name>` requests through Go's `-ldflags`
-  `-extldflags` value. It selects otherwise-unused archive members, keeps
-  their functions and data live, and exports C functions or immutable data-
-  address globals. `-ldl` also selects the SDK's real Wasm `dlopen` glue,
-  rather than its empty compatibility archive. The `c-exports` probe loads
-  a side module that imports both kinds of symbol on Node.js and all three
-  browsers. On the earlier PHP 8.3 line, `php-zts` built an instrumented
-  `opcache-zts.so` alongside `libphp.a`; it had 290 Wasm imports, including
-  242 functions and 42 globals. The general
-  `scripts/wasm-side-module-c-exports.mjs` utility derives required C
-  exports from its imports. The earlier PHP embed fixture requested those
-  exports and `dlopen`ed the real ZTS module on Node and three browser
-  engines.
-  ZTS side modules must export mutable `__tls_base` for fork replay. This
-  proves import closure and loading, not Zend extension registration,
-  accelerated PHP execution, FrankenPHP integration, or performance parity.
-  Upstream OPcache rejects the PHP `embed` SAPI for acceleration even when
-  an INI successfully registers the extension; it accepts the real
-  FrankenPHP SAPI. Do not rename a probe SAPI to bypass that check.
-  The current PHP 8.5 ZTS package uses upstream's built-in OPcache and
-  publishes only the static embed archive. A separate PHP 8.5 ZTS OPcache
-  Wasm side module fails to link because its external `_tsrm_ls_cache`
-  reference uses a TLS relocation the Wasm linker cannot resolve across
-  modules. Do not duplicate that TLS symbol or bypass the linker error.
-  The PHP 8.5 embed archive and FrankenPHP classic package build. The
-  current PHP embed fixture verifies static OPcache registration with a
-  guest `PHPRC` INI in Node and all three browsers. Its C call to
-  `zend_eval_string` passes an expression when requesting a return value;
-  including a literal `return` made that API fail before the extension
-  check. The standalone FrankenPHP SAPI tests verify file-cache-only
-  OPcache behavior in Node and Chromium; the revision-31 WordPress
-  browser-host tests verify it in Chromium. These bounded request gates do
-  not establish long-lived stability or the visible WordPress editor's
-  browser JavaScript.
-- A Go cgo executable must be fork-instrumented and carry the exact current
-  `kandelo.abi.contract` digest. `install_local_binary` can instrument but
-  does not stamp by itself: instrument first, stamp that fresh artifact, then
-  install it. Unset cross-compiler `CC`/`CXX`/`AR` variables before the
-  host-side Rust instrumentation and stamping builds.
-- `src/cmd/link/internal/ld/lib.go` loads cgo's C objects. Internal mode
-  originally rejected their format; the adjacent fork now imports C functions,
-  initialized data, active table elements, and the CODE relocations reached
-  by `runtime/cgo`, including narrow `reloc.DATA` address references and a
-  bounded per-instance C TLS template. Fork commit `acc452f`
-  asks the SDK compiler for its libc archive and resolves C function-pointer
-  table relocations needed by the selected members.
-  External mode reaches unsupported PC-relative relocations.
-  `src/cmd/link/internal/wasm/asm.go` emits a final Wasm module, not an
-  object that `wasm-ld` can link with the SDK's C Wasm objects. A direct
-  `wasm-ld` attempt on that output rejects it. Do not suppress relocation
-  errors to make the build appear to advance.
-- C objects carry Wasm `linking` and `reloc.*` sections. The pthread
-  callback fixture's C object needs function-index, global-index,
-  table-index, and debug relocations; it references `go_double`,
-  `pthread_create`, `pthread_join`, `__stack_pointer`, and
-  `__table_base`. A linker design must resolve these into one function
-  table and one shared linear memory without colliding with Go's
-  `funcValueOffset`, static data, heap, TLS, or Kandelo's thread slots.
-- Go's Wasm functions use the runtime's resumable call convention, while
-  the SDK's C functions use the Wasm C ABI. A final link also needs
-  real Go-to-C and C-to-Go adapters. `asmcgocall` now makes a typed C call
-  on Go-created Ms. A Wasm-exported `crosscall2` wrapper resumes
-  Go-owned callback goroutines across scheduler yields; the generic
-  `cgocallback` assembly entry remains `UNDEF`. A separate foreign-thread
-  bootstrap now attaches C-created pthreads for the focused callback probe.
-  FrankenPHP additionally
-  starts PHP threads with C `pthread_create`, so callbacks from a thread
-  Go did not create must attach to a valid M, scheduler P, and per-thread
-  Kandelo syscall channel. A same-thread callback alone is insufficient.
+Static archive search paths work through upstream `#cgo LDFLAGS` and
+`CGO_LDFLAGS` on the current target. FrankenPHP's recipes use its documented
+static closure through the latter, with no source patch. Keep upstream's
+normal `-lm` and `-lutil` compatibility archives; the linker accepts strictly
+object-free GNU and empty BSD32-index forms. A library-name exception or
+blanket unsupported-archive bypass would conceal a general linker defect.
+Run `tests/go/cgo/static-archive` for real multi-member and empty archive
+execution on Node and browsers before relying on a larger archive.
 
-Continue linker work from the internal Wasm host-object reader, because the
-Go linker already owns Kandelo's final memory, table, exports, and ABI
-marker. The narrow fixture now verifies Go-to-C calls, C static data,
-function-pointer DATA relocation, and per-instance TLS on Node and Chromium.
-The normal `C.abs` build now validates, fork-instruments, and runs through
-an ABI-stamped Kandelo process on Node and Chromium, including scalar and
-pointer argument frames and distinct musl state on a second Go M. The
-Go-owned callback fixture runs on Node and Chromium, including a scheduler
-yield, timer wait, nested Go-to-C call, and second Go M. The combined pthread
-fixture also executes its C-created callback on Node and Chromium.
-If the internal path cannot
-preserve C function types, table slots, static data and TLS alongside Go's
-layout, evaluate a
-relocatable-Go-object/external-link design explicitly. Never feed a final
-Go module to `wasm-ld` as though it were a relocatable object, implement
-only the object parser and call the link complete, or route calls through a
-host shim that changes Kandelo's normal program model.
+A linked C function is not automatically a dynamic export. Explicit
+`-Wl,--export-dynamic-symbol=<name>` requests through the Go linker's
+`-extldflags` retain otherwise-unused archive members and export functions
+or immutable data-address globals. This supported option does not make the
+unsupported general external-link mode work. `tests/go/cgo/c-exports`
+loads a real side module importing both kinds of symbol. `-ldl` selects
+SDK dynamic-loading glue, not only an empty compatibility archive. The
+`scripts/wasm-side-module-c-exports.mjs` helper derives a side module's
+required exports from its imports; do not invent a partial closure.
 
-`cmd/link/internal/loadwasm` in the adjacent fork decodes imports, symbols,
-signatures, bodies, data and active element segments, and the CODE relocation
-kinds exercised by the C-call, C-data, and runtime/cgo objects. The
-Kandelo-only internal linker imports C functions and initialized data into
-Go's static layout, resolves direct C-to-C calls and memory-relative C-data
-addresses, and maps C function-pointer relocations to Go's existing table.
-Fork commit `2fcbf8c` also resolves C data-address globals that refer to
-symbols in another C object; the checked-in linker fixture verifies this
-through Go assembly on both hosts.
-Fork commit `686572e` records global data symbols even from C objects with
-no function body and retains their static segments. This is required for
-musl archive members that define only data.
-The link-only fixture now makes a narrow Go assembly call to C, including
-an initialized `_Thread_local` value, and executes as a Kandelo process on
-Node and Chromium. Direct table tests also prove per-instance TLS isolation
-on shared memory in both engines. It does not exercise `runtime/cgo` or the
-standard Go/C adapters. The normal `C.abs` build discovers SDK libc and
-executable glue without manual linker flags. Absent weak init/fini bounds
-resolve to zero. The fork now parses standard Wasm `INIT_FUNCS` linking
-metadata, orders C constructors by priority, and runs them after musl
-initialization through a C-ABI function-pointer table. It accepts zero-filled,
-unreferenced initializer-array storage only when its priority matches that
-metadata. Nonzero, relocated, exported, or referenced initializer arrays
-remain rejected; explicit nonempty `.fini_array` segments are also rejected.
-The emitted module
-passes the Node and Chromium process gate with empty stderr and no host
-diagnostics. Use the separate cgo TLS, callback, and pthread suites to
-validate musl/PHP TLS, C-to-Go adapters, and C-created-thread attachment.
-Do not treat the C shim's `_cgo_topofstack` call as
-a direct call to a Go-resumable function. The C-data path is only one link
-layer.
+C TLS and the Go channel handoff have separate ownership. The internal
+mutable C `__tls_base` is instance-local and uses a copied TLS template;
+the immutable exported handoff word identifies the Go channel receiver.
+The host initializes C `__channel_base` too. Cgo obtains its channel through
+the per-instance typed getter, avoiding the shared-word startup race.
+Keep the TLS template within the host's actual thread-control capacity
+and reject overflow or unsupported initializer relocations. Side-module
+TLS also needs fork replay; a successful static TLS probe does not prove
+cross-module TLS relocation support.
 
-Musl C objects use a mutable per-instance TLS base for `_Thread_local` data.
-The Go linker now gives C a distinct internal mutable global, reserves a main
-TLS block, copies its template before `_start`, and exports `__wasm_init_tls`
-for the host's pthread bootstrap. The exported immutable `__tls_base` remains
-the Go channel handoff address; do not conflate it with C TLS. Keep the
-template within the host's 64 KiB thread-control page, and reject overflow
-or unsupported TLS initializer relocations explicitly. Validate musl/PHP TLS,
-C-created threads, fork replay, and both hosts before claiming general TLS
-support. The link-only fixture proves only a simple initialized TLS variable.
+Go-created Ms use Kandelo's thread bootstrap even with cgo enabled. Each
+needs a dedicated C stack and musl thread pointer, initialized before Go
+scheduler entry. Do not use g0's live stack as C shadow-stack storage.
+C-created pthreads instead enter a typed Go bootstrap with their own
+channel, bootstrap stack, M and scheduler attachment. A Go-owned callback
+must retain its C call while the Go scheduler yields; a foreign callback
+must attach and detach through the proper runtime path. Reload resumed
+runtime state rather than trusting Wasm locals across scheduler unwind.
+Test second-Go-M calls, same-thread callbacks, simultaneous C-created
+callbacks and repeated allocation/GC. Never satisfy missing thread or
+callback APIs with no-op symbols.
 
-Kandelo-owned Go Ms use the native `newosprocKandelo` path even when cgo is
-enabled, avoiding the `_cgo_sys_thread_start` gate for those Ms. Each
-Go-created M now gets a separate 8 MiB C stack, reclaimed with the retired
-M, and a 256-byte musl thread-pointer backing store. The host installs its C
-stack pointer and musl thread pointer before the child entry, and the child
-calls `__init_tp` before joining the Go scheduler. The scalar/pointer cgo
-probe checks four worker rounds, including distinct `pthread_self()` and
-thread-local `errno`, on Node and Chromium. C-created pthreads use a separate
-typed Go bootstrap export, musl's `__wasm_thread_init`, an extra Go M/P, and
-the per-instance Kandelo channel. C function pointers cannot call raw Go table
-entries with the wrong Wasm signature. Do not add no-op thread or callback
-symbols to satisfy the linker. The new per-instance C `__channel_base` global
-and Go handoff word must both be initialized by the host; do not conflate
-either with C TLS. The SDK's normal executable glue (syscall, compiler-rt,
-and C++ runtime) is loaded by the Go linker through SDK source queries.
-The shared host assigns a new instance's `__stack_pointer` from the
-`kernel_clone` stack argument. Go passes the dedicated C stack top for cgo
-Ms, not the g0 stack top; reusing g0 here would overwrite live Go frames.
-The musl thread pointer and C TLS block are per-instance, not Go goroutine
-state. Fork commit `8aec831` passes Go's process environment to musl
-`__init_libc` in Go-owned storage; `os.Setenv`/`os.Unsetenv` use C-width
-pointer frames so C `getenv` observes changes. Keep the libc initializer
-separate from the C process entry archive member, and do not allocate its
-environment table with independent C `mmap` while Go still uses a private
-contiguous `sbrk` heap: that collided in the combined process. A Node/Chromium cgo probe verifies this
-narrow environment path. Fork commit `dbec8a7` adds the Wasm constructor
-table and a static `__dso_handle` for C destructor registration. The
-constructor fixture verifies priority order, metadata-only
-`.init_array.150` dispatch, and explicit C `exit(0)` destructor dispatch on
-Node and Chromium. Go-led secure-exec startup passes focused set-ID and
-`POSIX_SPAWN_RESETIDS` transitions on both hosts. The linker accepts only
-zero-filled initializer arrays whose priorities match `INIT_FUNCS` metadata;
-it rejects nonzero, relocated, exported, or referenced arrays rather than
-treating their bytes as callable pointers. LLVM currently rejects
-`.fini_array` sections. Go main return and `os.Exit` use Kandelo's
-process-wide `exit_group` path and do not dispatch registered C exit handlers;
-explicit C `exit(0)` does, and C `_exit(0)` does not. The constructor
-fixture verifies all four paths on Node, Chromium, Firefox, and WebKit.
-This matches the Linux Go runtime's raw `exit_group`
-shutdown, not native macOS Go/cgo's observed C-handler behavior. Broader Go
-security and shutdown semantics remain unproven. A cgo-disabled mixed C/Go
-link must reject C constructor
-metadata rather than silently discard it.
-For Go-owned callbacks, a typed Wasm export wrapper keeps the C call stack
-while Go's resumable scheduler completes the callback. Its linker root must
-traverse Go dependencies even when C relocations eagerly marked the wrapper
-reachable. C-created pthreads need a distinct typed bootstrap export. The
-host invokes it with the kernel thread-slot index before the C start
-function, giving the thread a reserved Go bootstrap stack. The callback
-adapter then uses `needm`/`cgocallbackg`/`dropm`; after a yield it reloads
-g0 from the resumed Go M rather than trusting Wasm locals across the
-scheduler unwind. The focused callback probe exercises two callbacks per C
-thread and a second Go M on Node and Chromium. Its stress mode runs three
-simultaneous C pthread callbacks across eight rounds, with C malloc/free and
-Go allocation/GC between rounds, on both hosts. This is bounded contention
-and reclaim evidence, not general foreign-thread or PHP conformance.
+Musl initialization and the C process entry are separate archive concerns.
+Pass the process environment to `__init_libc`; synchronize Go environment
+changes so C `getenv` observes them. All allocations must share Kandelo's
+mapping manager rather than competing private sbrk regions. Check constructor
+priority and explicit C exit handlers. Go main return and `os.Exit` use
+process-wide raw exit and do not run C atexit handlers; C `exit` does and
+C `_exit` does not. Preserve those distinctions in lifecycle tests.
 
-For a repeatable C function-and-data link proof, run
-`scripts/dev-shell.sh bash tests/go/cgo/link-only/test-link.sh`. It appends
-small SDK C objects to a cgo-free Go archive and verifies C-to-C and C-data
-relocations in the final Wasm module on Node and Chromium. After stamping,
-`tests/go/cgo/link-only/run.ts` and the opt-in Chromium case verify the
-assembly Go-to-C call inside a process. This is not the normal cgo build. The
-standard `C.abs`, Go-owned callback, and focused C-created-pthread callback
-gates pass; broader cgo and PHP lifecycle remain required runtime gates.
+A normal cgo executable is fork-instrumented and carries the exact current
+`kandelo.abi.contract` digest. Unset target `CC`/`CXX`/`AR` before host Rust
+instrumentation/stamping. Install through the package pipeline; do not
+restamp stale artifacts or infer a running service from an archive build.
+Run the focused linker and cgo probes first, then normal PHP embed and
+FrankenPHP requests. Rebuild Kandelo pure/cgo, upstream WASI32, legacy WASI
+and legacy JS standard libraries after toolchain changes.
 
-The Kandelo internal linker now reads cgo `-L` and `-l` flags and explicit
-absolute `.a` paths, then selects referenced SDK C archive members, including
-members reached through another archive member's C relocation. A cgo package
-must declare its library search path with `#cgo LDFLAGS` pointing at a
-resolver-owned archive directory. Setting `CGO_LDFLAGS` alone does not put
-`-L` on this internal-link path, while `-extldflags` selects an external
-link mode that the Kandelo Go/C linker does not support. Run
-`bash tests/go/cgo/static-archive/build.sh`, its Node
-runner, and the opt-in Chromium case before relying on a large archive such as
-`libphp.a`. That fixture proves a small two-member C archive, not general PHP
-linkability or archive relocation coverage.
+PHP ZTS's static archive requires real dependency closure and Wasm
+exception-tag/nonlocal-exit handling. Unsupported ucontext APIs must fail
+honestly; compiled-but-unused PHP Fiber paths do not establish Fiber support.
+PHP 8.5 uses built-in static OPcache in the current package. The historical
+separate PHP 8.3 extension does not prove a PHP 8.5 side module: its external
+TLS relocation remains unsupported. Do not duplicate TLS symbols to conceal
+that error. The real FrankenPHP SAPI accepts OPcache acceleration; the
+`embed` SAPI does not. Never rename a probe SAPI to bypass that check.
 
-PHP ZTS's larger archive additionally requires imported Wasm exception tags
-for `__c_longjmp`, target-owned weak/strong C data symbols, object-local
-function names, transitive static archives, and the documented unsupported
-ucontext stubs for PHP Fibers that are compiled but not used. The
-`tests/go/cgo/php-embed` probe now initializes, evaluates, and shuts down PHP
-through the normal Kandelo process path on Node and Chromium. It does not
-establish that upstream FrankenPHP requests work. In mixed-width cgo, Go's
-8-byte `unsafe.Pointer` must not read a 4-byte C data pointer and adjacent
-bytes; Kandelo's non-TSAN `_cgo_yield` storage is widened so Go observes a
-real nil value. C struct pointer fields and fixed arrays of pointers use
-4-byte `uint32` fields in generated Go types, not native 8-byte Go pointers.
-Convert a C-owned address explicitly through `uintptr` when needed; do not
-store a Go-managed pointer in one of these fields. The mixed-struct probe
-checks field offsets, pointer identity, C struct return, and a by-value C
-call on Node and all three browser engines. Other aggregate shapes and Go
-pointer retention across this boundary still need separate validation.
-
-Use the staged probes in `tests/go/README.md`:
-first a C call, then Go-to-C-to-Go on the calling thread, then a C-created
-pthread callback. For the scratch frontend, run `../bin/go test cmd/cgo`
-from `../go-kandelo/src` under `scripts/dev-shell.sh`. Use `go build -x -work`
-and `llvm-readobj --sections --symbols --relocations` on its generated C
-object to locate the exact build boundary. A successful native-host probe
-checks the fixture only; a successful cgo frontend or link is not proof of
-runtime behavior. Require a process that executes both callback paths on
-Node and Chromium with the normal ABI stamp, matching memory/table layout,
-expected output, empty stderr, and no host diagnostics before building a
-PHP embed library or FrankenPHP. Re-run `js` and `wasip1` builds after
-compiler, linker, or runtime changes.
+The maintained classic Node test verifies static OPcache registration,
+compilation/cache-file creation, PHP/static HTTP, bulk CGI strings during
+observed Go collection, and awaited SIGTERM exit. The shared verifier in
+`tests/go/frankenphp/request-lifetime.ts` also runs in Chromium, Firefox and
+WebKit. Keep these scoped claims separate from real Caddy, WordPress editor,
+long-lived memory and performance gates. Current artifact identities and
+remaining limits are in the implementation progress log.
 
 ## Shutting down embedded runtimes
 

@@ -39,7 +39,7 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
   const serviceConfig = readVfsText(fs, serviceConfigPath);
   configureWordPressRuntime(fs, { port });
   for (const conditions of PHP_OPTIMIZER_CFG_CONDITIONS) {
-    writeVfsFile(fs, `/var/www/html/__kandelo_cfg_${conditions}.php`, phpOptimizerCfgProbe(conditions));
+    writeVfsFile(fs, `/srv/www/html/__kandelo_cfg_${conditions}.php`, phpOptimizerCfgProbe(conditions));
   }
   // The demo helper routes logs to stdio; this test needs the image's log file.
   writeVfsFile(fs, serviceConfigPath, serviceConfig);

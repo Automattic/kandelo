@@ -183,14 +183,14 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
         }
         const template = await kernel.readFileFromVfs("/etc/wp-config-template.php");
         if (!template) throw new Error("WordPress config template missing");
-        await kernel.writeFileToVfs("/var/www/html/wp-config.php", new TextEncoder().encode(
+        await kernel.writeFileToVfs("/srv/www/html/wp-config.php", new TextEncoder().encode(
           decoder.decode(template).replaceAll("@@APP_PATH@@", "/").replaceAll("@@PROTO@@", "http"),
         ));
-        await kernel.writeFileToVfs("/var/www/html/__kandelo_opcache_target.php", new TextEncoder().encode("<?php return 1;"));
+        await kernel.writeFileToVfs("/srv/www/html/__kandelo_opcache_target.php", new TextEncoder().encode("<?php return 1;"));
         for (const probe of optimizerProbes) {
-          await kernel.writeFileToVfs(`/var/www/html/__kandelo_cfg_${probe.conditions}.php`, new TextEncoder().encode(probe.code));
+          await kernel.writeFileToVfs(`/srv/www/html/__kandelo_cfg_${probe.conditions}.php`, new TextEncoder().encode(probe.code));
         }
-        await kernel.writeFileToVfs("/var/www/html/__kandelo_opcache_probe.php", new TextEncoder().encode(`<?php
+        await kernel.writeFileToVfs("/srv/www/html/__kandelo_opcache_probe.php", new TextEncoder().encode(`<?php
 header('Content-Type: application/json');
 $configuration = opcache_get_configuration();
 $target = __DIR__ . '/__kandelo_opcache_target.php';

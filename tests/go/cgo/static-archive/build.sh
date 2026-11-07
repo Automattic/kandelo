@@ -12,6 +12,10 @@ cp "$source_dir/main.go" "$fixture_dir/main.go"
 wasm32posix-cc -O2 -fPIC -c "$source_dir/testdata/square.c" -o "$output_dir/square.o"
 wasm32posix-cc -O2 -fPIC -c "$source_dir/testdata/bias.c" -o "$output_dir/bias.o"
 wasm32posix-ar rcs "$fixture_dir/lib/libsquare.a" "$output_dir/square.o" "$output_dir/bias.o"
+# An object-free archive is valid. Also exercise the SDK's real musl
+# compatibility archive: Darwin's ranlib adds an empty BSD symbol index.
+wasm32posix-ar --format=gnu rcs "$fixture_dir/lib/libempty-gnu.a"
+cp "$repo_root/sysroot/lib/libm.a" "$fixture_dir/lib/libcompat.a"
 
 GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm32 CC=wasm32posix-cc \
     "$go_bin" build -a -o "$output_dir/probe.wasm" "$fixture_dir/main.go"

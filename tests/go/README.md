@@ -399,13 +399,18 @@ the current revision 8 has no `opcache-zts.so` output. Registration alone
 does not prove acceleration or request-level behavior.
 
 The `frankenphp-classic` package is a separate request-level gate. Its
-resolver-built binary serves a PHP request and a static asset through
-Kandelo HTTP on Node and Chromium. It does not by itself prove WordPress:
+resolver-built revision-35 binary serves PHP and static HTTP on Node,
+Chromium, Firefox and WebKit using unchanged upstream FrankenPHP source.
+The shared `frankenphp/request-lifetime.ts` verifier sends 32 requests,
+four concurrently, checking nine exact CGI/body fields with 8 KiB query
+and body payloads. Callers enable Go collection tracing, require a collection
+during the request phase and await exit 0 after SIGTERM before destroying
+the host. This does not by itself prove WordPress or long uptime:
 
 ```sh
 scripts/dev-shell.sh bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh frankenphp-classic wasm32
 scripts/dev-shell.sh bash -c 'prefix=$(cargo xtask build-deps --arch wasm32 resolve frankenphp-classic); npx tsx packages/registry/frankenphp-classic/test/run.ts "$prefix/frankenphp-classic.wasm" "$(scripts/resolve-binary.sh kernel.wasm)"'
-scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_FRANKENPHP_CLASSIC_WASM="$(cd ../.. && cargo xtask build-deps --arch wasm32 resolve frankenphp-classic)/frankenphp-classic.wasm" npx playwright test test/frankenphp-classic.spec.ts --project=chromium'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_FRANKENPHP_CLASSIC_WASM="$(cd ../.. && cargo xtask build-deps --arch wasm32 resolve frankenphp-classic)/frankenphp-classic.wasm" npx playwright test test/frankenphp-classic.spec.ts --project=chromium --project=firefox --project=webkit --workers=1'
 ```
 
 The classic SAPI test checks static OPcache registration, compiles a PHP
@@ -631,7 +636,9 @@ CLI, or full Go conformance. UDP, DNS, and TLS are not the first blockers.
 
 The `kandelo-wasm32-prototype` branch of `kandelo-dev/go` ports Kandelo's
 runtime onto upstream's Go 1.28 development `wasm32` review stack. It is
-separate from the pinned Go 1.25.6 compiler and production packages. The
+the compiler selected by all four current Go package recipes. An adjacent
+`../go-kandelo` checkout can still contain legacy Go 1.25.6; inspect it
+before using that fallback path. The
 implementation log records its exact base and checkpoint revision. Build
 that compiler with the verified Go 1.26.10 bootstrap described there; a
 Go 1.25 bootstrap is too old for this source tree.
@@ -639,8 +646,13 @@ Go 1.25 bootstrap is too old for this source tree.
 The new architecture uses four-byte Go pointers and integers, with
 upstream's eight-byte registers, stack alignment and continuation slots.
 The prototype passes focused plain-Go/cgo tests. Unadapted FrankenPHP
-Go/C source compiles as an archive; final linking, real request behavior
-and a replacement production preview remain separate gates.
+Go/C source now links and runs normally: classic HTTP, bulk CGI/GC string
+checks and normal shutdown pass on Node and all three browsers. Real
+FrankenPHP+Caddy links; Caddy's JSON-alias compatibility upgrade and
+request proof remain pending. The complete 255-case browser compiler gate
+has one WebKit native-stack failure in unchanged regexp compilation;
+upstream WASI controls reproduce it. A replacement WordPress image and
+production preview remain separate gates.
 
 Run its separate fixture inventory without replacing `.context/go-browser`:
 

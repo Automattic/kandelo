@@ -27,16 +27,13 @@ SOURCE_DIR="$WORK_DIR/frankenphp-src"
 MODULE_DIR="$WORK_DIR/xsys-kandelo"
 mkdir -p "$GO_ROOT" "$WORK_DIR/tmp" "$WORK_DIR/gocache" "$WORK_DIR/gopath" "$WORK_DIR/gomodcache"
 
-tar --exclude=.git -cf - -C "$WASM_POSIX_BUILD_GIT_GO_TOOLCHAIN_DIR" . |
-    tar -xf - -C "$GO_ROOT"
-chmod -R u+w "$GO_ROOT"
-export GOROOT_BOOTSTRAP="$(go env GOROOT)"
-(cd "$GO_ROOT/src" && ./make.bash)
+source "$REPO_ROOT/scripts/build-kandelo-go-toolchain.sh"
+kandelo_build_go_toolchain "$WORK_DIR"
+GO_ROOT="$KANDELO_BUILT_GO_ROOT"
 
 kandelo_package_stage_verified_source frankenphp-classic "$SOURCE_DIR" \
     "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$WASM_POSIX_DEP_SOURCE_URL" \
     "$WASM_POSIX_DEP_SOURCE_SHA256" "$WORK_DIR"
-(cd "$SOURCE_DIR" && git apply "$SCRIPT_DIR/frankenphp-kandelo.patch")
 mkdir -p "$SOURCE_DIR/cmd/kandelo-classic" "$SOURCE_DIR/lib"
 cp "$SCRIPT_DIR/main.go" "$SOURCE_DIR/cmd/kandelo-classic/main.go"
 
@@ -61,12 +58,16 @@ link_archive "$WASM_POSIX_DEP_LIBICONV_DIR" libiconv.a
 link_archive "$WASM_POSIX_DEP_ZLIB_DIR" libz.a
 link_archive "$REPO_ROOT/sysroot" libkandelo-ucontext-unsupported.a
 
-export GOENV=off GOTOOLCHAIN=local GOWORK=off GOFLAGS=
+export GOENV=off GOTOOLCHAIN=local GOWORK=off
+export GOMAXPROCS="${GOMAXPROCS:-4}" GOFLAGS="-trimpath -p=${GOMAXPROCS:-4}"
 export GOCACHE="$WORK_DIR/gocache" GOPATH="$WORK_DIR/gopath"
 export GOMODCACHE="$WORK_DIR/gomodcache" GOTMPDIR="$WORK_DIR/tmp"
-export GOROOT="$GO_ROOT" GOOS=kandelo GOARCH=wasm CGO_ENABLED=1 CC=wasm32posix-cc
+export GOROOT="$GO_ROOT" GOOS=kandelo GOARCH=wasm32 CGO_ENABLED=1 CC=wasm32posix-cc
 php_include="$WASM_POSIX_DEP_PHP_ZTS_DIR/include/php"
 export CGO_CFLAGS="-I$php_include -I$php_include/main -I$php_include/Zend -I$php_include/TSRM -I$php_include/sapi/embed -I$php_include/ext"
+# Upstream documents CGO_LDFLAGS for PHP linkage. Supply the declared static
+# closure here; keep its Go/C sources and bulk CGI registration unchanged.
+export CGO_LDFLAGS="-L$SOURCE_DIR/lib -L$REPO_ROOT/sysroot/lib -lphp -licui18n -licuio -licuuc -licudata -lc++ -lc++abi -lcurl -lzip -lxml2 -lssl -lcrypto -lsqlite3 -liconv -lz -lkandelo-ucontext-unsupported -ldl"
 mkdir -p "$MODULE_DIR"
 tar --exclude=.git -cf - -C "$WASM_POSIX_BUILD_GIT_XSYS_DIR" . |
     tar -xf - -C "$MODULE_DIR"

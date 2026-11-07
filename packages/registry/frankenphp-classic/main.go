@@ -17,7 +17,7 @@ import (
 	"github.com/dunglas/frankenphp"
 )
 
-const documentRoot = "/var/www/html"
+const documentRoot = "/srv/www/html"
 
 func main() {
 	if err := run(); err != nil {

@@ -30,16 +30,13 @@ GO_ROOT="$WORK_DIR/go"
 SOURCE_DIR="$WORK_DIR/frankenphp-src"
 mkdir -p "$GO_ROOT" "$WORK_DIR/tmp" "$WORK_DIR/gocache" "$WORK_DIR/gopath" "$WORK_DIR/gomodcache"
 
-tar --exclude=.git -cf - -C "$WASM_POSIX_BUILD_GIT_GO_TOOLCHAIN_DIR" . |
-    tar -xf - -C "$GO_ROOT"
-chmod -R u+w "$GO_ROOT"
-export GOROOT_BOOTSTRAP="$(go env GOROOT)"
-(cd "$GO_ROOT/src" && ./make.bash)
+source "$REPO_ROOT/scripts/build-kandelo-go-toolchain.sh"
+kandelo_build_go_toolchain "$WORK_DIR"
+GO_ROOT="$KANDELO_BUILT_GO_ROOT"
 
 kandelo_package_stage_verified_source frankenphp-caddy "$SOURCE_DIR" \
     "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$WASM_POSIX_DEP_SOURCE_URL" \
     "$WASM_POSIX_DEP_SOURCE_SHA256" "$WORK_DIR"
-(cd "$SOURCE_DIR" && git apply "$REPO_ROOT/packages/registry/frankenphp-classic/frankenphp-kandelo.patch")
 mkdir -p "$SOURCE_DIR/caddy/cmd/kandelo" "$SOURCE_DIR/lib"
 cp "$SCRIPT_DIR/main.go" "$SOURCE_DIR/caddy/cmd/kandelo/main.go"
 
@@ -74,17 +71,26 @@ stage_go_module() {
     (cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" mod edit -replace="$module=../../$name")
 }
 
-export GOENV=off GOTOOLCHAIN=local GOWORK=off GOFLAGS=
+export GOENV=off GOTOOLCHAIN=local GOWORK=off
+export GOMAXPROCS="${GOMAXPROCS:-4}" GOFLAGS="-trimpath -p=${GOMAXPROCS:-4}"
 export GOCACHE="$WORK_DIR/gocache" GOPATH="$WORK_DIR/gopath"
 export GOMODCACHE="$WORK_DIR/gomodcache" GOTMPDIR="$WORK_DIR/tmp"
-export GOROOT="$GO_ROOT" GOOS=kandelo GOARCH=wasm CGO_ENABLED=1 CC=wasm32posix-cc
+export GOROOT="$GO_ROOT" GOOS=kandelo GOARCH=wasm32 CGO_ENABLED=1 CC=wasm32posix-cc
 php_include="$WASM_POSIX_DEP_PHP_ZTS_DIR/include/php"
 export CGO_CFLAGS="-I$php_include -I$php_include/main -I$php_include/Zend -I$php_include/TSRM -I$php_include/sapi/embed -I$php_include/ext"
+# Keep upstream pointer access and bulk CGI registration. Supply its documented
+# static PHP linkage through build flags instead of an application source patch.
+export CGO_LDFLAGS="-L$SOURCE_DIR/lib -L$REPO_ROOT/sysroot/lib -lphp -licui18n -licuio -licuuc -licudata -lc++ -lc++abi -lcurl -lzip -lxml2 -lssl -lcrypto -lsqlite3 -liconv -lz -lkandelo-ucontext-unsupported -ldl"
 stage_go_module xsys "$WASM_POSIX_BUILD_GIT_XSYS_DIR" golang.org/x/sys
 stage_go_module bbolt "$WASM_POSIX_BUILD_GIT_BBOLT_DIR" go.etcd.io/bbolt
 stage_go_module readline "$WASM_POSIX_BUILD_GIT_READLINE_DIR" github.com/chzyer/readline
 stage_go_module logrus "$WASM_POSIX_BUILD_GIT_LOGRUS_DIR" github.com/sirupsen/logrus
 stage_go_module certificate-transparency "$WASM_POSIX_BUILD_GIT_CERTIFICATE_TRANSPARENCY_DIR" github.com/google/certificate-transparency-go
+
+# Caddy 2.10.2 compares JSON type names and panics with Go 1.28's JSONv2
+# aliases (upstream caddyserver/caddy#7274). Upgrade the released dependency;
+# keep both application sources and the compiler's JSON defaults unchanged.
+(cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" get github.com/caddyserver/caddy/v2@v2.11.9)
 
 (cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" build -tags nowatcher \
     -o "$WORK_DIR/frankenphp-caddy.wasm" ./cmd/kandelo)

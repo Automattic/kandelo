@@ -4,12 +4,14 @@ import { resolveBinary } from "../../../host/src/binary-resolver";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { test } from "./support/streamed-artifacts";
 
+const fixtureDir = resolve(process.env.KANDELO_GO_SIGNAL_FIXTURE_DIR ?? "../../.context/go-signals");
+
 for (const mode of ["pure", "cgo"]) {
   for (const probeMode of mode === "cgo" ? ["http-drain", "restart", "signal-gc"] : ["http-drain", "signal-gc"]) {
     test(`Go ${mode} signal ${probeMode}`, async ({ page, baseURL, serveArtifacts }) => {
       test.skip(process.env.KANDELO_GO_SIGNAL_TESTS !== "1", "Build tests/go/signal-basic and set KANDELO_GO_SIGNAL_TESTS=1");
       const urls = await serveArtifacts({
-        program: { path: resolve("../../.context/go-signals", `${mode}.wasm`), contentType: "application/wasm" },
+        program: { path: resolve(fixtureDir, `${mode}.wasm`), contentType: "application/wasm" },
         kernel: { path: resolveBinary("kernel.wasm"), contentType: "application/wasm" },
         image: { bytes: await KandeloImageFs.create().saveImage(), contentType: "application/octet-stream" },
       });
@@ -64,7 +66,7 @@ for (const mode of ["pure", "cgo"]) {
     test(`Go ${mode} signal ${disposition}`, async ({ page, baseURL, serveArtifacts }) => {
       test.skip(process.env.KANDELO_GO_SIGNAL_TESTS !== "1", "Build tests/go/signal-basic and set KANDELO_GO_SIGNAL_TESTS=1");
       const urls = await serveArtifacts({
-        program: { path: resolve("../../.context/go-signals", `${mode}${disposition === "upstream" ? "-stdlib" : ""}.wasm`), contentType: "application/wasm" },
+        program: { path: resolve(fixtureDir, `${mode}${disposition === "upstream" ? "-stdlib" : ""}.wasm`), contentType: "application/wasm" },
         kernel: { path: resolveBinary("kernel.wasm"), contentType: "application/wasm" },
         image: { bytes: await KandeloImageFs.create().saveImage(), contentType: "application/octet-stream" },
       });

@@ -1,18 +1,18 @@
 kind = "program"
 name = "caddy"
-version = "2.10.2"
-kernel_abi = 50
+version = "2.11.9"
+kernel_abi = 55
 arches = ["wasm32"]
-depends_on = []
+depends_on = ["go-bootstrap-source@1.26.10"]
 
 [source]
-url = "https://github.com/caddyserver/caddy/archive/refs/tags/v2.10.2.tar.gz"
-sha256 = "f63f46b7ae68ced0a5c2e31df1b6dfc7656117d162a1bc7fed4bd4afd14ddc8f"
+url = "https://github.com/caddyserver/caddy/archive/refs/tags/v2.11.9.tar.gz"
+sha256 = "fefbe1f72b7a7e244f348c20eba377bb1e6964f51594229d2f38c49eaa2aa9a4"
 provider = "archive"
 
 [license]
 spdx = "Apache-2.0"
-url = "https://github.com/caddyserver/caddy/blob/v2.10.2/LICENSE"
+url = "https://github.com/caddyserver/caddy/blob/v2.11.9/LICENSE"
 
 [build]
 script_path = "packages/registry/caddy/build-caddy.sh"

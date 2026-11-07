@@ -262,7 +262,7 @@ const probes: Probe[] = [
     file: "os-test.wasm",
     argv: ["go-os-test", "-test.run=^TestRoot", "-test.v"],
     stdout: ["--- PASS: TestRootLinkFrom", "--- PASS: TestRootRenameAfterOpen", "PASS"],
-    passedTopLevelTests: 47,
+    passedTopLevelTests: 65,
     directories: ["/tmp", "/testdata", "/testdata/dirfs", "/testdata/dirfs/dir"],
     imageCapacity: 8 * 1024 * 1024,
     dataFiles: ["a", "b", "dir/x"].map((name) => ({
@@ -485,7 +485,8 @@ const probes: Probe[] = [
   {
     name: "upstream Go sync full short suite",
     file: "sync-test.wasm",
-    argv: ["go-sync-test", `-test.run=${process.env.KANDELO_GO_SYNC_FILTER ?? "^Test"}`, "-test.short", "-test.v"],
+    // The upstream sync suite re-execs os.Args[0]; use its real guest path.
+    argv: ["/bin/sync-test.wasm", `-test.run=${process.env.KANDELO_GO_SYNC_FILTER ?? "^Test"}`, "-test.short", "-test.v"],
     stdout: ["PASS"],
     directories: ["/tmp"],
     selfExecPath: "/bin/sync-test.wasm",
@@ -511,7 +512,7 @@ if (process.env.KANDELO_GO_DEPENDENCY_BROWSER_TESTS === "1") {
       file: "bbolt-test.wasm",
       argv: ["go-bbolt-test", "-test.run=^TestKandeloReopen$", "-test.v"],
       stdout: ["--- PASS: TestKandeloReopen", "PASS"],
-      stderrPattern: /^seed: \d+\nquick settings: count=\d+, items=\d+, ksize=\d+, vsize=\d+\n$/,
+      stderrPattern: /^seed: -?\d+\nquick settings: count=\d+, items=\d+, ksize=\d+, vsize=\d+\n$/,
       directories: ["/tmp"],
       imageCapacity: 8 * 1024 * 1024,
     },

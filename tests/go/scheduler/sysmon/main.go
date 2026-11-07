@@ -14,7 +14,14 @@ var spinResult uint64
 
 //go:noinline
 func spinStep(value uint64) uint64 {
-	return value*1664525 + 1013904223
+	// Cooperative preemption needs a split-stack checkpoint. A scalar leaf
+	// can be NOSPLIT, so give this step a materialized frame instead of
+	// depending on the scheduler's deliberately nosplit clock function.
+	var frame [64]uint64
+	frame[value%uint64(len(frame))] = value
+	result := frame[value%uint64(len(frame))]*1664525 + 1013904223
+	runtime.KeepAlive(&frame)
+	return result
 }
 
 func main() {

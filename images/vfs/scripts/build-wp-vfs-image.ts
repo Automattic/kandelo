@@ -438,7 +438,7 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
 }
 
 :{$FRANKENPHP_PORT:8080} {
-\troot * /var/www/html
+\troot * /srv/www/html
 \tphp_server
 }
 `);

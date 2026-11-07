@@ -11,7 +11,8 @@ migration is not complete.
 | Consumer | Selected compiler/target |
 | --- | --- |
 | `go-hello`, `wasm32posix-go` | Go 1.28 development, `kandelo/wasm32`; four-byte Go/C pointers |
-| Caddy and both FrankenPHP recipes | Legacy Go 1.25.6, `kandelo/wasm`; eight-byte Go/four-byte C pointers, pending migration |
+| Custom classic FrankenPHP recipe | Same wasm32 target; unadapted revision 35 passes HTTP, bulk CGI/GC and shutdown on Node and all three browsers |
+| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; normal real-Caddy linking passes, request validation and upstream Caddy upgrade remain in progress |
 
 The [implementation checkpoint](plans/2026-09-05-go-gc-port-milestone1-plan.md)
 records the exact source pins, validation and remaining release gates.
@@ -35,8 +36,8 @@ update its package or VFS image.
 The SDK's `wasm32posix-go` convenience command takes an absolute
 `KANDELO_GO_ROOT` pointing to a built fork. It selects
 `GOOS=kandelo GOARCH=wasm32` and pure Go with `CGO_ENABLED=0`. The existing
-cgo recipes still invoke the fork's `bin/go` directly with
-`GOOS=kandelo`, `GOARCH=wasm`, `CGO_ENABLED=1`, and
+cgo recipes invoke the fork's `bin/go` directly with `GOOS=kandelo`,
+`CGO_ENABLED=1`, their selected architecture from the table above, and
 `CC=wasm32posix-cc` inside the declared dev shell. See the
 [FrankenPHP recipe](../packages/registry/frankenphp-caddy/build-frankenphp-caddy.sh)
 for the complete dependency, compilation, instrumentation, and installation
@@ -90,7 +91,8 @@ Native module/worker costs therefore remain part of service sizing and
 cannot be capped by `GOMEMLIMIT` alone. Final validation of the new image
 default is recorded in the implementation log.
 
-The allocation/reuse fixture makes this distinction observable. With a soft
+Historical legacy-target allocation/reuse measurements illustrate this
+distinction. With a soft
 32 MiB Go limit, Node holds a touched 32 MiB C allocation and a 64 MiB Go
 live set. After Go collection/scavenging, `HeapReleased` rises to about
 67 MiB and Go's accounted budget falls to about 19 MiB, while linear memory
@@ -98,7 +100,10 @@ stays at about 141 MiB. Three subsequent 64 MiB allocations reuse that same
 linear size. This demonstrates reuse and the limits of Go's counters; it
 does not measure physical page reclamation. The fixture also passes in
 Chromium, Firefox and WebKit. See `tests/go/memory-accounting` and the
-implementation log for the exact run scope.
+implementation log for the exact run scope. On the new wasm32 target the
+initial linear size is about 535 MiB: Go's ordinary 32-bit address reservation
+interacts with Kandelo's mmap-backed address space. That byte length is not a
+physical footprint measurement, and reservation/accounting work remains.
 
 The legacy target has different Go/C pointer widths and uses typed C
 accessors at that boundary. The new `wasm32` target uses ordinary typed C
@@ -106,11 +111,27 @@ pointer fields, including escaping field addresses. It preserves eight-byte
 scalar alignment despite four-byte pointers. C function pointers are Wasm
 table handles, represented through cgo's existing non-heap opaque pointer
 type; data pointers retain normal Go collector root semantics. These focused
-tests do not yet prove FrankenPHP's request/string lifetimes. Go main return
+tests and 32-request service checks prove the exercised FrankenPHP bulk-CGI
+string lifetimes under observed collection on Node and three browsers; they
+do not establish long-uptime safety. Go main return
 and `os.Exit` bypass registered C
 exit handlers; explicit C `exit` runs them and C `_exit` bypasses them.
 The [runtime and cgo guide](agent-guidance/go-runtime.md) describes the exact
 contracts and their tests.
+
+The current unmodified regexp compiler still exceeds WebKit's native Wasm
+call depth on the bounded-repeat fixture. Both upstream WASI architectures
+reproduce it without Kandelo imports; Chromium and Firefox pass. The full
+wasm32 browser inventory is 254/255 passing, with that failure retained.
+Resolving it may require an upstream library improvement or general
+instrumentation, which needs maintainer discussion before implementation.
+
+Caddy 2.10.2 also rejects Go 1.28's default JSON type alias during module
+configuration. Upstream corrected this in
+[caddyserver/caddy#7274](https://github.com/caddyserver/caddy/pull/7274).
+The recipes select released Caddy 2.11.9 rather than changing application
+source or disabling the compiler's JSON defaults; new compile/request
+validation is pending.
 
 ## FrankenPHP and WordPress
 

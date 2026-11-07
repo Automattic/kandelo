@@ -20,11 +20,9 @@ GO_ROOT="$WORK_DIR/go"
 SOURCE_DIR="$WORK_DIR/caddy-src"
 mkdir -p "$GO_ROOT" "$WORK_DIR/tmp" "$WORK_DIR/gocache" "$WORK_DIR/gopath" "$WORK_DIR/gomodcache"
 
-tar --exclude=.git -cf - -C "$WASM_POSIX_BUILD_GIT_GO_TOOLCHAIN_DIR" . |
-    tar -xf - -C "$GO_ROOT"
-chmod -R u+w "$GO_ROOT"
-export GOROOT_BOOTSTRAP="$(go env GOROOT)"
-(cd "$GO_ROOT/src" && ./make.bash)
+source "$REPO_ROOT/scripts/build-kandelo-go-toolchain.sh"
+kandelo_build_go_toolchain "$WORK_DIR"
+GO_ROOT="$KANDELO_BUILT_GO_ROOT"
 
 kandelo_package_stage_verified_source caddy "$SOURCE_DIR" \
     "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$WASM_POSIX_DEP_SOURCE_URL" \
@@ -40,10 +38,11 @@ stage_go_module() {
     (cd "$SOURCE_DIR" && "$GO_ROOT/bin/go" mod edit -replace="$module=../$name")
 }
 
-export GOENV=off GOTOOLCHAIN=local GOWORK=off GOFLAGS=
+export GOENV=off GOTOOLCHAIN=local GOWORK=off
+export GOMAXPROCS="${GOMAXPROCS:-4}" GOFLAGS="-trimpath -p=${GOMAXPROCS:-4}"
 export GOCACHE="$WORK_DIR/gocache" GOPATH="$WORK_DIR/gopath"
 export GOMODCACHE="$WORK_DIR/gomodcache" GOTMPDIR="$WORK_DIR/tmp"
-export GOROOT="$GO_ROOT" GOOS=kandelo GOARCH=wasm CGO_ENABLED=0
+export GOROOT="$GO_ROOT" GOOS=kandelo GOARCH=wasm32 CGO_ENABLED=0
 
 stage_go_module xsys "$WASM_POSIX_BUILD_GIT_XSYS_DIR" golang.org/x/sys
 stage_go_module bbolt "$WASM_POSIX_BUILD_GIT_BBOLT_DIR" go.etcd.io/bbolt

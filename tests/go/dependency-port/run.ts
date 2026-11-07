@@ -9,7 +9,7 @@ if (!fixtureDir || !kernelPath) {
 }
 
 const cases = [
-  { name: "bbolt", test: "TestKandeloReopen", stderr: /^seed: \d+\nquick settings: count=\d+, items=\d+, ksize=\d+, vsize=\d+\n$/ },
+  { name: "bbolt", test: "TestKandeloReopen", stderr: /^seed: -?\d+\nquick settings: count=\d+, items=\d+, ksize=\d+, vsize=\d+\n$/ },
   { name: "readline", test: "TestKandeloTerminal", stderr: /^tmpdir: \/tmp\n$/ },
   { name: "logrus", test: "TestKandeloTerminalCheck", stderr: /^$/ },
   { name: "ct-x509", test: "TestKandeloSystemRoots", stderr: /^$/ },

@@ -41,7 +41,7 @@ export async function verifyFrankenPhpGracefulShutdown(
   if (!listener) throw new Error(`${service} listener missing before graceful shutdown`);
   const startedPath = "/tmp/kandelo-php-shutdown-started";
   const releasePath = "/tmp/kandelo-php-shutdown-release";
-  const scriptPath = "/var/www/html/__kandelo_shutdown_probe.php";
+  const scriptPath = "/srv/www/html/__kandelo_shutdown_probe.php";
   const body = "PHP request completed during shutdown\n";
   await host.writeFileToVfs(scriptPath, new TextEncoder().encode(`<?php
 file_put_contents('${startedPath}', '1');

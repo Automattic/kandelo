@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host.ts";
+import { countGoCollections, requestLifetimePhp, verifyRequestStringLifetimes, withDeadline } from "../../../../tests/go/frankenphp/request-lifetime.ts";
 import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs.ts";
 
 const [programPath, kernelPath] = process.argv.slice(2);
@@ -9,11 +10,11 @@ if (!programPath || !kernelPath) {
 
 const image = KandeloImageFs.create();
 image.setImageCapacity(2 * 1024 * 1024);
-for (const directory of ["/tmp", "/var", "/var/cache", "/var/cache/opcache", "/var/www", "/var/www/html"]) {
+for (const directory of ["/tmp", "/var", "/var/cache", "/var/cache/opcache", "/srv", "/srv/www", "/srv/www/html"]) {
   image.mkdir(directory, 0o755);
 }
 image.createFileWithOwner(
-  "/var/www/html/index.php",
+  "/srv/www/html/index.php",
   0o644,
   0,
   0,
@@ -22,7 +23,7 @@ image.createFileWithOwner(
   ),
 );
 image.createFileWithOwner(
-  "/var/www/html/robots.txt",
+  "/srv/www/html/robots.txt",
   0o644,
   0,
   0,
@@ -43,9 +44,9 @@ opcache.file_cache_only=1
 opcache.file_update_protection=0
 opcache.validate_timestamps=0
 `));
-  image.createFileWithOwner("/var/www/html/__kandelo_opcache_target.php", 0o644, 0, 0,
+  image.createFileWithOwner("/srv/www/html/__kandelo_opcache_target.php", 0o644, 0, 0,
     new TextEncoder().encode("<?php return 1;"));
-  image.createFileWithOwner("/var/www/html/__kandelo_opcache_probe.php", 0o644, 0, 0,
+  image.createFileWithOwner("/srv/www/html/__kandelo_opcache_probe.php", 0o644, 0, 0,
     new TextEncoder().encode(`<?php
 header('Content-Type: application/json');
 $configuration = opcache_get_configuration();
@@ -60,7 +61,11 @@ echo json_encode([
 `));
 }
 
+image.createFileWithOwner("/srv/www/html/lifetime.php", 0o644, 0, 0,
+  new TextEncoder().encode(requestLifetimePhp));
+
 let stderr = "";
+let serverExit: Promise<number> | undefined;
 let serverPid = 0;
 const diagnostics: unknown[] = [];
 let ready: (() => void) | undefined;
@@ -82,15 +87,15 @@ const host = new NodeKernelHost({
 try {
   await host.init(Uint8Array.from(readFileSync(kernelPath)).buffer);
   const exit = host.spawn(readFileSync(programPath), [programPath], {
-    env: ["HOME=/tmp", "TMPDIR=/tmp", "FRANKENPHP_NUM_THREADS=3", "PHPRC=/etc/frankenphp"],
+    env: ["HOME=/tmp", "TMPDIR=/tmp", "FRANKENPHP_NUM_THREADS=3", "PHPRC=/etc/frankenphp", "GOGC=1", "GOMEMLIMIT=32MiB", "GODEBUG=gctrace=1"],
     onStarted: (pid) => { serverPid = pid; },
   });
+  serverExit = exit;
   exit.catch(() => {});
-  await Promise.race([
+  await withDeadline(Promise.race([
     readiness,
     exit.then((code) => { throw new Error(`server exited before readiness: ${code}`); }),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("server readiness timeout")), 60_000)),
-  ]);
+  ]), 60_000, "server readiness timeout");
 
   const php = await host.fetchInKernel(8080, {
     method: "GET",
@@ -113,7 +118,11 @@ try {
   }, { timeoutMs: 30_000 });
   const opcacheBody = opcache ? new TextDecoder().decode(opcache.body) : undefined;
   const opcacheResult = opcacheBody ? JSON.parse(opcacheBody) as Record<string, unknown> : undefined;
-  console.log(JSON.stringify({ php, staticAsset, opcache, stderr, diagnostics }));
+  const gcBefore = countGoCollections(stderr);
+  const lifetime = await verifyRequestStringLifetimes(host);
+  const gcAfter = countGoCollections(stderr);
+  if (gcAfter <= gcBefore) throw new Error(`No collection during requests: ${gcBefore} -> ${gcAfter}`);
+  console.log(JSON.stringify({ php, staticAsset, opcache, lifetime, gcBefore, gcAfter, stderr, diagnostics }));
   if (php.status !== 200 || !new TextDecoder().decode(php.body).includes("GET|/welcome?x=1|/index.php") ||
       staticAsset.status !== 200 || new TextDecoder().decode(staticAsset.body) !== "static asset\n" ||
       (opcache?.status !== 200 ||
@@ -127,8 +136,12 @@ try {
   console.error("server stderr", stderr, "diagnostics", diagnostics);
   throw error;
 } finally {
-  if (serverPid !== 0) {
-    await host.signalProcess(serverPid, 15).catch(() => {});
-  }
-  await host.destroy();
+  try {
+    if (serverPid !== 0) await host.signalProcess(serverPid, 15);
+    if (serverExit) {
+      const code = await withDeadline(serverExit, 30_000, "FrankenPHP shutdown timeout");
+      if (code !== 0) throw new Error(`FrankenPHP exited with ${code}`);
+      console.log("normal service exit", code);
+    }
+  } finally { await host.destroy(); }
 }
