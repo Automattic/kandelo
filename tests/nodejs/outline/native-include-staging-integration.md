@@ -31,3 +31,12 @@ and full product rebuilds remain deferred.
 See [scoped ledger](native-include-staging-finding-progress.json),
 [actual171result](engine171-build-result.json) and
 [finding navigation](finding-ledger.md).
+
+## Subsequent normal build
+
+The selected173engine build now passes compilation, linking, all three
+unchanged Mozilla checks, optimization, fork instrumentation and canonical
+cache acceptance. Frozen sources were unchanged. Static ABI55/kernel-program
+contract inspection passes. Exact artifact and raw log identities are in
+[engine173-build-result.json](engine173-build-result.json). This resolve does
+not update the product projection or establish guest/four-host behavior.

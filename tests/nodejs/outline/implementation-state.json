@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T02:25:06.421587+00:00",
+  "updatedAt": "2026-11-07T02:53:39.173790+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -46,7 +46,7 @@
   "deployAuthorized": false,
   "overallSuitesRun": 0,
   "productRebuildsRun": 0,
-  "packageOrEngineCompilationsRun": 108,
+  "packageOrEngineCompilationsRun": 109,
   "families": {
     "values": {
       "breadthState": "started",
@@ -420,8 +420,8 @@
     "third_party/node-web-platform/package-lock.json": "ddb5be6e5d370130c538c38bf2f04ce69ce9ea7b79d9bfbb0a75ac7be6cf89c9",
     "third_party/node-web-platform/package.json": "0b8cfac4546c79619ec56bb64edbb71a0cc0aa370570385b073dd0e59ccd7ff8",
     "third_party/node-core/upstream/mime.js": "4fbea1679908f457f39e6794a82a2988753dbbfae9849c92b13e61646dd5c50e",
-    "tests/nodejs/outline/current-capability-reconciliation.md": "0e3b2acf5818f3231095a2cb2b4f1e702c7f8525cceb2c5618363814baf33a5e",
-    "tests/nodejs/outline/current-capability-reconciliation.json": "cb27ba7ba6fccd731cb8047421a5e22b325e3aa3a8c88f5b36d412294051a247",
+    "tests/nodejs/outline/current-capability-reconciliation.md": "999e3eec07d5f19e916cf3e5912e680f880eeaba786147d4b34ba064fb634cf9",
+    "tests/nodejs/outline/current-capability-reconciliation.json": "e622d4c8a8a197e1964c9f1eab08a99d08c1e973d1204160ebcb30d61497fee2",
     "tests/nodejs/outline/deprecation-reconciliation.json": "1f55b8e29a5c259d412e8dda3897ce3369003be7a0d2e22b0d94ed22ca190aae",
     "third_party/node-core/process-state-adapter.js": "44aaeb3cb8504ff1f7c7fcf94954d9874e283df6668bc75ebcc78dd7414d8792",
     "third_party/node-core/process-state.h": "2ad8733734e10f694bd67069aa752aeed8e65f418f19750d9d2cd54486dac2b6",
@@ -707,7 +707,7 @@
     "host/test/fixtures/node-string-decoder-controls.cjs": "f8486de93aad5c3ba6340de8f3d3a1389485f1aa10c5c5534b636c22dca8d339",
     "third_party/node-core/upstream/string-decoder/src/string_bytes.cc": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d",
     "third_party/node-core/upstream/random-jobs/src/async_wrap.h": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6",
-    "tests/nodejs/outline/README.md": "c8c1aef170b1203942864bdca167ad360c63b869bb939a3587f47011385b69a3",
+    "tests/nodejs/outline/README.md": "4da58d8a12778541b8ac37b7579b6ad8cf4524c27851358a84f9db5cfe67bee7",
     "tests/nodejs/outline/string-decoder-implementation-dependencies.md": "3954deecf903ff0155e74951f7ddbc7c0b63ef93b0c90d93512a688cd1a97d63",
     "host/test/node-text-decoder.test.ts": "c259e4757d83bc7ac1a3251ce93d0d348b94add348212f99ecf9bcec2616f365",
     "tests/nodejs/outline/random-implementation-dependencies.md": "0d14d44be5c1d2f6d84dfd7665ffb2be82bda0fa8ce0aebc8a28100ffd921196",
@@ -1043,7 +1043,7 @@
     "third_party/node-core/upstream/keys/src/crypto/crypto_keys.h": "b295605d6b1415e20008b05268bd19c95dfe5abdbb6ec4f199c7c48fac25f029",
     "third_party/node-core/upstream/keys/lib/internal/crypto/util.js": "79c2825d2173435a80f914aeca952032826bb61ea5a2835c315f08ced5963337",
     "third_party/node-core/upstream/keys/lib/internal/crypto/keys.js": "e6c16626648d551dd3aa505a6b386376f6173ae6bab6fd9360acf406ce92e1ff",
-    "tests/nodejs/outline/implementation-review.md": "d133a12bdbf0cc8e53f2fa50a12c90d850b91fbb6157f5eba39daf31e737b621",
+    "tests/nodejs/outline/implementation-review.md": "7cb452faf87d6e8fa4b4a2aa9ec16dd9fe8bc0c3571f5ea6de0c5c47af970902",
     "tests/nodejs/outline/key-implementation-dependencies.md": "8a8ff166f13234d486aeeabbee8b5f44f348994d18993830d802c474a27e056e",
     "tests/nodejs/outline/engine100-integration.md": "0ed009ef5769ee68fa191085da1832315775ec2612cffa16c39eb72dedc84f0b",
     "tests/nodejs/outline/key-finding-progress.json": "be8eedcbe7eee085757e077e4daef4699b06f6f9a84904abeaedcbb4ca1db77b",
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "366882855ac0b7788ddd9f018e8fec39d90816a108bf6494872fed1b7b85f7c7",
+    "tests/nodejs/outline/status-by-family.md": "4c9d2ef2e176a5ba0437684f258ca535cee6383a44b5dc8549664e8df8711d1d",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -1984,10 +1984,11 @@
     "tests/nodejs/outline/finding-ledger.json": "0c8c390f7ab06df0c39435524baf18e21fea947b46cc4bef6fdd1e8d8ddf84da",
     "tests/nodejs/outline/finding-ledger-integrity.json": "739677fd52397fda11fb2f7f4e9fb0b65d9644988199aa001802504823b873ea",
     "tests/nodejs/outline/finding-ledger.md": "676852fbcf728bbd37e6b9636d9bb596c257b6b14c1e7210c6ae672273ef9702",
-    "tests/nodejs/outline/native-include-staging-integration.md": "a550589973bfd956a4d061169880634e095e611f949338dfb0ad6db030554449",
+    "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
-    "tests/nodejs/outline/main-reconciliation-173.json": "0562221390c324bdd8cdfb74a67ad4c2d6bb3bbfc81380d1e821e9abd9a4bfe3"
+    "tests/nodejs/outline/main-reconciliation-173.json": "0562221390c324bdd8cdfb74a67ad4c2d6bb3bbfc81380d1e821e9abd9a4bfe3",
+    "tests/nodejs/outline/engine173-build-result.json": "1d4e9ccdef6d4d054e26371ba412843a43632a77b7977b83b910b1754fa50bad"
   },
   "changes": [
     {
@@ -6217,13 +6218,14 @@
     }
   ],
   "nextSourceWork": [
-    "Commit/push173 and run normal selected engine build with frozen current inputs",
-    "Integrate real VM deadline owner and sealed SQLite backup/fswatch partialowner, preserving actual kernel notification gap",
-    "Continue independent HTTPrequest/server and modulemock/TTY source work; reconcile per-finding disposition without inferring closure"
+    "Integrate real VM deadline, SQLite backup and captured TTY/fs-event/Domain/CJS mock/HTTP owners additively; declare real inputs and preserve all nonpasses",
+    "Continue actual net.Server receiver initialization and real kernel notification prerequisite",
+    "Use verified release resolver for subsequent selected builds; preserve artifact identity and materialize through normal selected path before future guest validation",
+    "Keep breadth pass, overall suites and full product rebuild deferral distinct; no current four-host conformance"
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated original document-qualified finding ledger with scoped source links, current overlay and integrity evidence; no runtime change or API closure."
+    "reason": "Integrated canonical native include and real vendor staging repair, passed unchanged normal checker and package controls, preserving actual171failure and current172crypto."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -38802,6 +38804,14 @@
         "reusedEvidence": true,
         "scope": "97private sourcechecks,5tiny successful compiles,403histogram rows+27imports and exact172composition; no production engine acceptance or guest runtime"
       }
+    },
+    {
+      "at": "2026-11-07T02:53:39.173790+00:00",
+      "kind": "normal selected engine173build and static artifact policy",
+      "report": "tests/nodejs/outline/engine173-build-result.json",
+      "sha256": "1d4e9ccdef6d4d054e26371ba412843a43632a77b7977b83b910b1754fa50bad",
+      "guestExecuted": false,
+      "fourHostConformance": false
     }
   ],
   "preservedFailedEvidence": [
@@ -42185,10 +42195,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/main-reconciliation173-20261107T022506Z.tar.gz",
-    "sha256": "252466dc9068d2b0be26e4a60da92609cf3fee4bcbcbdb520be1e865b52c0e91",
-    "bytes": 9930190,
-    "scope": "Source173 after latest-main reconciliation, current public-core source unchanged",
+    "path": ".context/node26-implementation-snapshots/engine173-accepted-20261107T025340Z.tar.gz",
+    "sha256": "b337deb9d3e7f81230cb23d206a59977caad1c2f09011ebd3c4c46bc3af1519a",
+    "bytes": 10054950,
+    "scope": "Source173 accepted engine build evidence and all identified source; binary retained separately by exact hash, no guest execution",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -43158,7 +43168,7 @@
   "focusedCountMeaningThisTurn": "Scoped source/native-dependent controls, not individual API or host-conformance closure",
   "currentCapabilityReconciliation": {
     "path": "tests/nodejs/outline/current-capability-reconciliation.json",
-    "sha256": "cb27ba7ba6fccd731cb8047421a5e22b325e3aa3a8c88f5b36d412294051a247",
+    "sha256": "e622d4c8a8a197e1964c9f1eab08a99d08c1e973d1204160ebcb30d61497fee2",
     "families": 19,
     "retainedMatrixObservations": 13292,
     "deprecations": {
@@ -44682,15 +44692,15 @@
     "state": "OS lookup source and raw c-ares channel plus owned record decoder; public Resolver/channel/request/loop/JSAPI/guest linking/transport/error/malformed and four-host obligations remain open"
   },
   "nativeCompilationAccountingThisTurn": {
-    "acceptedEngineBuilds": 0,
+    "acceptedEngineBuilds": 1,
     "guestEngineBuildFailures": 0,
-    "guestPackageAttempts": 0,
+    "guestPackageAttempts": 1,
     "guestDependencyCompilations": 0,
     "kernelWasmCompilations": 0,
-    "nativeHelperCompileAttempts": 5,
+    "nativeHelperCompileAttempts": 0,
     "nativeHelperCompileFailures": 0,
     "productRebuilds": 0,
-    "scope": "Five previously unaccounted private tiny native helper compiles all succeeded; root reused exact source/component evidence and did not compile or rebuild a product."
+    "scope": "One selected173engine attempt;8dependencies cached; production build/check/cache acceptance succeeds. Static artifact inspection is not guest execution."
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -45482,7 +45492,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated canonical native include and real vendor staging repair, passed unchanged normal checker and package controls, preserving actual171failure and current172crypto."
+    "reason": "Normal current173engine compilation/link/checks/cache acceptance succeeds with frozen inputs; exact artifact/ABI evidence preserved. No new runtime conformance claim."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -46577,18 +46587,18 @@
     "guestEngineCompiled": false
   },
   "targetedEngineBuild": {
-    "recipeRevision": 171,
-    "jobId": "node26-engine171-1106-204434-fbf2",
-    "report": "tests/nodejs/outline/engine171-build-result.json",
-    "sha256": "be9df6fabfe923965a17ac13b44b0b4f5afb339b1d23d5b1a5791afbd9b524ea",
-    "result": "production-compile-link-success-normal-style-failure",
+    "recipeRevision": 173,
+    "jobId": "node26-engine173-1106-212529-7e48",
+    "report": "tests/nodejs/outline/engine173-build-result.json",
+    "sha256": "1d4e9ccdef6d4d054e26371ba412843a43632a77b7977b83b910b1754fa50bad",
+    "result": "normal-production-build-and-cache-acceptance-success",
     "productionCompilationSucceeded": true,
     "productionLinkSucceeded": true,
-    "normalChecksSucceeded": false,
-    "acceptedArtifact": false,
+    "normalChecksSucceeded": true,
+    "acceptedArtifact": true,
     "guestRuntimeValidated": false,
     "currentSourceRevision": 173,
-    "scope": "172PKCS12native changes uncompiled; no accepted current package"
+    "scope": "Normal selected173production engine compilation/link/style/opcode checks, optimization, fork instrumentation and canonical cache acceptance. Static ABI55/kernel-program contract inspection passes. No new product projection, instantiation, guest or four-host runtime evidence."
   },
   "targetedEngineBuildHistory": [
     {
@@ -48632,16 +48642,30 @@
       "guestRuntimeValidated": false,
       "currentSourceRevision": 171,
       "scope": "166corrects actual165compiler diagnostics in source;166uncompiled"
+    },
+    {
+      "recipeRevision": 171,
+      "jobId": "node26-engine171-1106-204434-fbf2",
+      "report": "tests/nodejs/outline/engine171-build-result.json",
+      "sha256": "be9df6fabfe923965a17ac13b44b0b4f5afb339b1d23d5b1a5791afbd9b524ea",
+      "result": "production-compile-link-success-normal-style-failure",
+      "productionCompilationSucceeded": true,
+      "productionLinkSucceeded": true,
+      "normalChecksSucceeded": false,
+      "acceptedArtifact": false,
+      "guestRuntimeValidated": false,
+      "currentSourceRevision": 173,
+      "scope": "172PKCS12native changes uncompiled; no accepted current package"
     }
   ],
   "nativeEmbeddingIntegration": {
-    "at": "2026-11-07T02:23:09.373405+00:00",
+    "at": "2026-11-07T02:53:39.173790+00:00",
     "recipeRevision": 173,
-    "lastAcceptedEngine": 116,
-    "sourceOnly": true,
-    "guestCompiled": false,
+    "lastAcceptedEngine": 173,
+    "sourceOnly": false,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
-    "scope": "173actualnormalstaging/unchangedstyle/788inputs and14package checks pass;5priorhelper compiles counted, current production engine/guest/fourhost not established."
+    "scope": "Current173native embedding compiled/linked and normal checks accepted; JSAPI behavior, GC/realm/thread ownership and all four hosts unexecuted."
   },
   "asyncAuditedFindingProgress": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -49686,6 +49710,15 @@
       "guestCompiled": false,
       "guestRuntimeValidated": false,
       "scope": "172publicPKCS12 source integrated47comparisons/wholeupstream eachsubject/14packagechecks;171nativecompile/link succeeded but package stylefailed;172newSM/TLS/guest/fourhost open."
+    },
+    {
+      "at": "2026-11-07T02:23:09.373405+00:00",
+      "recipeRevision": 173,
+      "lastAcceptedEngine": 116,
+      "sourceOnly": true,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "scope": "173actualnormalstaging/unchangedstyle/788inputs and14package checks pass;5priorhelper compiles counted, current production engine/guest/fourhost not established."
     }
   ],
   "bufferPoolImplementation": {
@@ -49994,13 +50027,13 @@
   },
   "sourceCandidateIntegration": {
     "recipeRevision": 173,
-    "sourceOnly": true,
-    "lastAcceptedEngine": 116,
-    "acceptedArtifactCurrentForCandidate": false,
-    "guestCompiled": false,
+    "sourceOnly": false,
+    "lastAcceptedEngine": 173,
+    "acceptedArtifactCurrentForCandidate": true,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
     "fourHostConformance": false,
-    "scope": "117\u2013173combined guest source has no accepted build;accepted116and prior nonpasses retain scopes. Pending private agent work excluded."
+    "scope": "Current173normal engine artifact compiled and accepted in canonical cache. Existing product projection is not updated. All runtime/four-host obligations remain open; private newer source excluded."
   },
   "vmPlainContextImplementation": {
     "at": "2026-11-05T00:10:14.839714+00:00",
@@ -51030,6 +51063,13 @@
       "sha256": "65cfab1ac062a5d239df9d4cd4ba943deb4fe3d44efbae739928a4e6a701e110",
       "bytes": 57543821,
       "scope": "173normalnative include/vendor staging with unchanged style success; no current engine acceptance/guest/fourhost",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/main-reconciliation173-20261107T022506Z.tar.gz",
+      "sha256": "252466dc9068d2b0be26e4a60da92609cf3fee4bcbcbdb520be1e865b52c0e91",
+      "bytes": 9930190,
+      "scope": "Source173 after latest-main reconciliation, current public-core source unchanged",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -52322,6 +52362,16 @@
       "guestRuntimeValidated": false,
       "fourHostConformance": false,
       "scope": "117\u2013172combined guest source has no accepted build;accepted116and prior nonpasses retain scopes. Pending private agent work excluded."
+    },
+    {
+      "recipeRevision": 173,
+      "sourceOnly": true,
+      "lastAcceptedEngine": 116,
+      "acceptedArtifactCurrentForCandidate": false,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "scope": "117\u2013173combined guest source has no accepted build;accepted116and prior nonpasses retain scopes. Pending private agent work excluded."
     }
   ],
   "nativeCompilationAccountingHistory": [
@@ -53875,6 +53925,18 @@
       "productionCompilationSucceeded": true,
       "productionLinkSucceeded": true,
       "normalEngineCheckFailures": 1
+    },
+    {
+      "at": "2026-11-07T02:53:39.173790+00:00",
+      "acceptedEngineBuilds": 0,
+      "guestEngineBuildFailures": 0,
+      "guestPackageAttempts": 0,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "nativeHelperCompileAttempts": 5,
+      "nativeHelperCompileFailures": 0,
+      "productRebuilds": 0,
+      "scope": "Five previously unaccounted private tiny native helper compiles all succeeded; root reused exact source/component evidence and did not compile or rebuild a product."
     }
   ],
   "cryptoKdfImplementation": {
@@ -56701,7 +56763,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "54891ba2ef731e90ec10b1b2fe1a83e5ef5d8c26",
+    "pushedThrough": "c21391f17f9108597ed5e598dba381b93d756da1",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -84622,6 +84684,41 @@
       "scope": "Real owned VM deadline watchdog/frame/interrupt owner; actual production JSAPI uncompiled",
       "status": "sealed-pending-root-integration",
       "currentGuestConformance": false
+    },
+    {
+      "path": ".context/tty-input-owner-agent",
+      "sealSha256": "8cb7c64bc38150babf4b258d3f9a97c4535c8f7e829623af13014dd9aa3bfa38",
+      "scope": "Captured input owner; raw-mode restoration remains nonpassing",
+      "status": "sealed-pending-root-integration",
+      "currentGuestConformance": false
+    },
+    {
+      "path": ".context/native-owner-forwarding-review-173",
+      "sealSha256": "dbaddec3b055803d72ab6571260fb6c16b6fb1e4e8ccf04494fa17d735b60df2",
+      "scope": "Actual production FS/OS forwarding correction; bridge-only controls",
+      "status": "sealed-pending-root-integration",
+      "currentGuestConformance": false
+    },
+    {
+      "path": ".context/domain-owner-agent",
+      "sealSha256": "8afda5b00c0c22fa80e99899b8867a6a141d1b51d1ec8897f3ce3e945de3de7d",
+      "scope": "Real Domain frontend/MakeCallback source owner; production JSAPI uncompiled",
+      "status": "sealed-pending-root-integration",
+      "currentGuestConformance": false
+    },
+    {
+      "path": ".context/module-mocks-agent",
+      "sealSha256": "44b072817c953766b1e5b03369e3a48069b491e079352a4ce9beb81564b4d00d",
+      "scope": "Real CJS mock resolver/hooks/caller-stack source; ESM execution gap",
+      "status": "sealed-pending-root-integration",
+      "currentGuestConformance": false
+    },
+    {
+      "path": ".context/http-request-server-owner-agent",
+      "sealSha256": "6b9794ec9740acd38e9ce03bed4a7095c23f585f31326ce6a61008f7036b87c3",
+      "scope": "Actual request parser/ServerResponse source; full server/admission remains missing",
+      "status": "sealed-pending-root-integration",
+      "currentGuestConformance": false
     }
   ],
   "dnsScopedAddressImplementation": {
@@ -85148,15 +85245,15 @@
     "acceptedPlatformLimits": []
   },
   "latestProductionCompilation": {
-    "recipeRevision": 171,
-    "sourceCommit": "0d262a286edb2754ec6e9f9e0d6751dd16a8bf8b",
-    "report": "tests/nodejs/outline/engine171-build-result.json",
-    "sha256": "be9df6fabfe923965a17ac13b44b0b4f5afb339b1d23d5b1a5791afbd9b524ea",
+    "recipeRevision": 173,
+    "sourceCommit": "c21391f17f9108597ed5e598dba381b93d756da1",
+    "report": "tests/nodejs/outline/engine173-build-result.json",
+    "sha256": "1d4e9ccdef6d4d054e26371ba412843a43632a77b7977b83b910b1754fa50bad",
     "compiledAndLinked": true,
-    "normalBuildAccepted": false,
+    "normalBuildAccepted": true,
     "guestExecuted": false,
     "fourHostConformance": false,
-    "scope": "Actual cross-target production native source/link, not execution or public API coverage"
+    "scope": "Identified compiled/cache-accepted engine only; product projection and runtime validation separate"
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",

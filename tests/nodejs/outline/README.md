@@ -1,5 +1,10 @@
 # Node 26 core implementation outline
 
+Source173 now has a normally compiled, linked and cache-accepted engine artifact.
+All three unchanged Mozilla checks and static ABI55/kernel-program policy
+inspection pass. Product projection, guest execution and four-host conformance
+remain separate and unvalidated. See [build evidence](engine173-build-result.json).
+
 Source173 repairs native include/inline/vendor staging. Current unchanged Mozilla style,788input closure and14package checks pass; private5tiny compiles/histogram controls are reused separately. Normal engine acceptance and guest/fourhost remain open.
 See [source scope](native-include-staging-integration.md).
 
