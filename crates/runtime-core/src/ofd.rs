@@ -1243,6 +1243,27 @@ impl OfdTable {
         Ok(())
     }
 
+    /// Reconstruct one inherited graphics capability without extending the
+    /// fork wire. Hidden library references are not fds or retry pins, but
+    /// their exact descriptions still belong to the forked storage graph.
+    pub(crate) fn retain_graphics_fork_target(&mut self,source:&OfdTable,target:crate::owned_resource::Target)->Result<(),Errno> {
+        let parent=source.get(target.index).ok_or(Errno::EBADF)?;
+        if parent.ofd_id!=target.id || parent.exec_close_quarantined || parent.dri_state.is_none() {return Err(Errno::EBADF);}
+        if self.get(target.index).is_none() {
+            let required=target.index.checked_add(1).ok_or(Errno::ENOMEM)?;
+            self.entries.try_reserve(required.saturating_sub(self.entries.len())).map_err(|_|Errno::ENOMEM)?;
+            let mut inherited=parent.clone();
+            inherited.ref_count=0;
+            // Namespace and file resources are shared; parent's command
+            // addresses/current-thread GL authority never become the child's.
+            if let Some(dri)=inherited.dri_mut() {dri.gl=None;}
+            inherited.reset_directory_iterator_for_reopen();
+            self.entries.resize_with(required.max(self.entries.len()),||None);
+            self.entries[target.index]=Some(inherited);
+        }
+        self.try_inc_ref_exact(target.index,target.id)
+    }
+
     /// Increment the reference count for the OFD at `idx`.
     pub fn inc_ref(&mut self, idx: usize) {
         if let Some(ofd) = self.get_mut(idx) {

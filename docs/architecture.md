@@ -7488,3 +7488,38 @@ constraint, not a guest API or wire ABI change. The guard checks supported
 callers and common capture forms; it is not a general JavaScript alias
 interpreter. Configure-before-import and configure/reset/reconfigure controls
 protect module initialization and import cycles.
+
+
+### Exact graphics file and buffer ownership
+
+The B1 ownership endpoint (`0xc14064e7`, a 320-byte private ioctl packet)
+separates retained graphics resources from public descriptor numbers. A
+capability binds the process and exec generation to an explicit open file
+description reference. Buffer capabilities additionally retain the exact
+internal buffer object and its namespace custody. Closing or replacing a
+public descriptor, or closing and reusing a GEM handle, cannot redirect
+cleanup to the replacement resource. Ordinary descriptor operations retain
+their existing semantics.
+
+Mutations have monotonic transaction identities and immutable receipts. A
+lost reply permits reading that exact receipt, never replaying the native
+operation. Receipt acknowledgement is distinct from resource consumption;
+an error after consumption cannot authorize a second release. Fork copies
+independent child pins and receipt custody, while exec/exit drain the
+process's resources through ordinary complete file-description cleanup.
+Storage inheritance does not grant execution in the parent's GL renderer.
+
+Owned mappings use a staged constructor. The kernel reserves a mapping
+plan without retiring a fixed-address predecessor. While holding the same
+serialized kernel entry, the host grows memory, asks the optional
+`kernel_owned_mapping_finish` export to commit or roll back, and constructs
+new host mapping state before publishing success. Re-reading a completed
+receipt cannot zero or re-prime a mapping that guest code has since used.
+Read-only polls retain their original timeout budget and exact task
+identity; cancellation retires that wait rather than an unrelated request.
+
+The endpoint is additive within program 56, unpublished host 3, GL 17 and
+fork 21. This source checkpoint and its focused controls do not establish
+complete B1 application, browser-memory, conformance or native-feel
+acceptance. The new guest-library connection and coherent normal-built
+preview must complete those gates in this iteration.

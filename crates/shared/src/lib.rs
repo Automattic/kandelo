@@ -3,6 +3,7 @@
 pub mod channel_record;
 pub mod channel_scalar;
 pub mod dri_sync;
+pub mod dri_owned;
 pub mod host_abi;
 pub mod host_raw_syscalls;
 pub mod ioctl_contract;
@@ -2422,6 +2423,7 @@ pub mod abi {
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_configure", 50, 51),
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_read", 50, 51),
         HostAdapterKernelExport::required("kernel_mark_process_signaled"),
+        HostAdapterKernelExport::optional("kernel_owned_mapping_finish"),
         HostAdapterKernelExport::required("kernel_pcm_claim_transport"),
         HostAdapterKernelExport::required("kernel_pcm_clock_update"),
         HostAdapterKernelExport::required("kernel_pcm_reconcile"),

@@ -1,3 +1,6 @@
+#[path="syscalls_owned.rs"]
+mod owned;
+pub(crate) use owned::*;
 extern crate alloc;
 
 use alloc::borrow::Cow;
@@ -1296,6 +1299,9 @@ fn commit_exec_state_impl(
     cancel_fifo_opens_for_process(proc);
     proc.epoll_waits.clear();
 
+    if let Some(locks)=locks.as_deref_mut() {drain_owned_resources(proc,locks,host);} else {
+        drain_owned_resources(proc,&mut AdvisoryLockManager::new(),host);
+    }
     let cloexec_fds: Vec<i32> = proc
         .fd_table
         .iter()
@@ -1539,8 +1545,8 @@ fn validate_gl_query_owner(proc: &Process, ofd_idx: usize) -> Result<(), Errno> 
 /// Freeze the legacy target-width header before either immediate or private
 /// retained execution. The private caller remains disconnected from public
 /// parking; both public synchronous transports use the same captured request.
-fn capture_gl_query_request(
-    proc: &Process, host: &mut dyn HostIO, fd: i32, ofd_idx: usize, buf: &[u8],
+fn capture_gl_query_request_target(
+    proc: &Process, host: &mut dyn HostIO, fd: i32, ofd_idx: usize, buf: &[u8], source:Option<crate::owned_resource::Target>,
 ) -> Result<crate::gl_query_request::GlQueryRequest, Errno> {
     use wasm_posix_shared::gl;
     validate_gl_query_owner(proc, ofd_idx)?;
@@ -1559,16 +1565,17 @@ fn capture_gl_query_request(
         },
         _ => return Err(Errno::EINVAL),
     };
-    capture_gl_query_info(proc, host, fd, ofd_idx, info,
-        gl_session_id(proc, ofd_idx)?, current_tid_for_process(proc))
+    capture_gl_query_info_target(proc, host, fd, ofd_idx, info,
+        gl_session_id(proc, ofd_idx)?, current_tid_for_process(proc),source)
 }
 
 /// Compound callers pass the header, exact session and TID frozen before
 /// submission. Nested input is copied only after that prefix completes; output
 /// probing and immutable request allocation still precede all query effects.
-fn capture_gl_query_info(
+fn capture_gl_query_info_target(
     proc: &Process, host: &mut dyn HostIO, fd: i32, ofd_idx: usize,
     info: wasm_posix_shared::gl::GlQueryInfo64, session: u32, tid: u32,
+    source:Option<crate::owned_resource::Target>,
 ) -> Result<crate::gl_query_request::GlQueryRequest, Errno> {
     use wasm_posix_shared::gl;
     let pid = proc.pid as i32;
@@ -1756,7 +1763,10 @@ fn capture_gl_query_info(
         // KMS fence -- has no native command stream to wait in, so the caller
         // observes the signal before its later commands (CLIENT_SIGNAL).
         let source_fd = i32::from_le_bytes(in_buf[..4].try_into().unwrap());
-        let file = crate::dri::sync_file::from_fd(proc, source_fd).ok_or(Errno::EINVAL)?;
+        let file = match source {Some(target)=>{
+            match proc.ofd_table.get(target.index).and_then(|ofd|ofd.dri_state.as_deref()) {
+                Some(crate::ofd::DriOfdState::SyncFile(file))=>Some(file.clone()),_=>None}
+            },None=>crate::dri::sync_file::from_fd(proc,source_fd)}.ok_or(Errno::EINVAL)?;
         let mut leaves = alloc::vec::Vec::new();
         file.fence().unwrap_into(&mut leaves);
         leaves.retain(|leaf| !leaf.is_signaled());
@@ -1790,7 +1800,8 @@ fn capture_gl_query_info(
         // identity of an object session this process owns. The host completes
         // the wait synchronously, so no reference outlives this request.
         let source_fd = i32::from_le_bytes(in_buf[..4].try_into().unwrap());
-        let source_idx = proc.fd_table.get(source_fd).map_err(|_| Errno::EBADF)?.ofd_ref.0;
+        let source_idx = match source {Some(target)=>target.index,
+            None=>proc.fd_table.get(source_fd).map_err(|_| Errno::EBADF)?.ofd_ref.0};
         let source = dri_state(proc, source_idx)?;
         let source_gl = source.gl.as_ref().ok_or(Errno::EACCES)?;
         if source_gl.role != gl::SESSION_OBJECTS || source_gl.owner_pid != pid
@@ -1807,7 +1818,9 @@ fn capture_gl_query_info(
     let state = dri_state(proc, ofd_idx)?.gl.as_ref().ok_or(Errno::EINVAL)?;
     if state.session_id != session { return Err(Errno::EACCES); }
     let owner = crate::gl_query_request::GlQueryOwner {
-        target: stable_ofd_target(proc, fd)?, pid, exec_generation: proc.exec_generation,
+        target: StableOfdTarget {original_fd:fd,ofd_idx,
+            ofd_id:proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.ofd_id},
+        pid, exec_generation: proc.exec_generation,
         tid, session_id: session,
         display_id: state.display_id, context_id: state.context_id,
         draw_surface_id: state.current.map(|current| current.draw_surface_id),
@@ -1892,8 +1905,8 @@ fn export_gl_fence(proc: &mut Process, host: &mut dyn HostIO, _fd: i32, ofd_idx:
 }
 
 fn query_gl_checked(proc: &mut Process, host: &mut dyn HostIO, fd: i32, ofd_idx: usize,
-    info: wasm_posix_shared::gl::GlQueryInfo64, session: u32, tid: u32) -> Result<(), Errno> {
-    let mut request = capture_gl_query_info(proc, host, fd, ofd_idx, info, session, tid)?;
+    info: wasm_posix_shared::gl::GlQueryInfo64, session: u32, tid: u32, source:Option<crate::owned_resource::Target>) -> Result<(), Errno> {
+    let mut request = capture_gl_query_info_target(proc, host, fd, ofd_idx, info, session, tid,source)?;
     request.execute_immediate(host)?;
     request.publish_immediate(host)
 }
@@ -2013,6 +2026,18 @@ pub(crate) fn handle_dri_ioctl(
     ofd_idx: usize,
     request: u32,
     buf: &mut [u8],
+) -> Result<(), Errno> {
+    handle_dri_ioctl_target(proc,host,fd,ofd_idx,request,buf,None)
+}
+
+pub(crate) fn handle_dri_ioctl_target(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    ofd_idx: usize,
+    request: u32,
+    buf: &mut [u8],
+    owned: Option<&OwnedDriOperands>,
 ) -> Result<(), Errno> {
     use wasm_posix_shared::dri::*;
     use wasm_posix_shared::gl;
@@ -2219,10 +2244,7 @@ pub(crate) fn handle_dri_ioctl(
             }
             let mut req: WpkDrmModeMapDumb =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            let bo_id = *dri_state(proc, ofd_idx)?
-                .gem.borrow().handles
-                .get(&req.handle)
-                .ok_or(Errno::ENOENT)?;
+            let bo_id=owned_dri_bo(proc,ofd_idx,req.handle,0,owned)?;
             // GPU-tier bos have no CPU-side SAB, so they cannot be mapped.
             // Reject here (matching a real driver's EINVAL on a
             // scanout/render-only bo) rather than handing back an offset
@@ -2275,10 +2297,7 @@ pub(crate) fn handle_dri_ioctl(
                 return Err(Errno::EINVAL);
             }
             let access = if req.flags & O_RDWR != 0 { O_RDWR } else { O_RDONLY };
-            let bo_id = *dri_state(proc, ofd_idx)?
-                .gem.borrow().handles
-                .get(&req.handle)
-                .ok_or(Errno::ENOENT)?;
+            let bo_id=owned_dri_bo(proc,ofd_idx,req.handle,0,owned)?;
 
             // Materialise the cookie (idempotent — re-export reuses
             // the existing one). Bump the bo refcount for the new OFD
@@ -2334,8 +2353,9 @@ pub(crate) fn handle_dri_ioctl(
 
             // Look up the prime-fd OFD and clone its prime-bo state.
             let prime = {
-                let entry = proc.fd_table.get(req.fd)?;
-                let prime_ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+                let index=match owned.and_then(|o|o.source) {Some(source)=>source.index,
+                    None=>proc.fd_table.get(req.fd)?.ofd_ref.0};
+                let prime_ofd = proc.ofd_table.get(index).ok_or(Errno::EBADF)?;
                 prime_ofd.prime_bo().cloned().ok_or(Errno::EINVAL)?
             };
 
@@ -2394,7 +2414,7 @@ pub(crate) fn handle_dri_ioctl(
         DRM_IOCTL_WPK_CHECK_BO_FORMAT => {
             if buf.len() < core::mem::size_of::<WpkDrmCheckBoFormat>() { return Err(Errno::EINVAL); }
             let req: WpkDrmCheckBoFormat = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            let bo_id = *dri_state(proc, ofd_idx)?.gem.borrow().handles.get(&req.handle).ok_or(Errno::ENOENT)?;
+            let bo_id=owned_dri_bo(proc,ofd_idx,req.handle,0,owned)?;
             let compatible = crate::dri::with_registry(|r| r.get(bo_id).map(|bo|
                 bo.tier == crate::dri::bo::BoTier::CpuShared
                     || gpu_storage_import_compatible(bo.format, req.format)))
@@ -2417,7 +2437,7 @@ pub(crate) fn handle_dri_ioctl(
             }
             let bo_id = {
                 let dri = dri_state(proc, ofd_idx)?;
-                let bo_id = *dri.gem.borrow().handles.get(&req.bo_handle).ok_or(Errno::ENOENT)?;
+                let bo_id=owned_dri_bo(proc,ofd_idx,req.bo_handle,0,owned)?;
                 let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
                 if !gls.initialized || gls.context_id != Some(req.ctx_id) { return Err(Errno::EINVAL); }
                 bo_id
@@ -2455,9 +2475,8 @@ pub(crate) fn handle_dri_ioctl(
             let mut record = req;
             {
                 let dri = dri_state(proc, ofd_idx)?;
-                let gem = dri.gem.borrow();
                 for plane in 0..planes {
-                    record.bo_handles[plane] = *gem.handles.get(&req.bo_handles[plane]).ok_or(Errno::ENOENT)?;
+                    record.bo_handles[plane]=owned_dri_bo(proc,ofd_idx,req.bo_handles[plane],16+plane as u32*4,owned)?;
                 }
                 let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
                 if !gls.initialized || gls.context_id != Some(req.ctx_id) { return Err(Errno::EINVAL); }
@@ -2577,7 +2596,7 @@ pub(crate) fn handle_dri_ioctl(
             let bo_id;
             {
                 let dri = dri_state(proc, ofd_idx)?;
-                bo_id = *dri.gem.borrow().handles.get(&req.bo_handle).ok_or(Errno::ENOENT)?;
+                bo_id=owned_dri_bo(proc,ofd_idx,req.bo_handle,0,owned)?;
                 let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
                 if !gls.initialized || gls.context_id != Some(req.ctx_id) {
                     return Err(Errno::EINVAL);
@@ -2627,7 +2646,7 @@ pub(crate) fn handle_dri_ioctl(
                     if info.display_fd < -1 || info.display_id != 0 {
                         return Err(Errno::EINVAL);
                     }
-                    let native_ofd = if info.display_fd == -1 {
+                    let native_ofd = if let Some(source)=owned.and_then(|o|o.source) {source.index} else if info.display_fd == -1 {
                         ofd_idx
                     } else {
                         let native = proc.fd_table.get(info.display_fd)?.ofd_ref.0;
@@ -2640,7 +2659,8 @@ pub(crate) fn handle_dri_ioctl(
                     proc.ofd_table.get(native_ofd).ok_or(Errno::EBADF)?.ofd_id
                 }
                 gl::SESSION_OBJECTS => {
-                    let root_ofd = proc.fd_table.get(info.display_fd)?.ofd_ref.0;
+                    let root_ofd = match owned.and_then(|o|o.source) {Some(source)=>source.index,
+                        None=>proc.fd_table.get(info.display_fd)?.ofd_ref.0};
                     let root = dri_state(proc, root_ofd)?
                         .gl
                         .as_ref()
@@ -2825,7 +2845,7 @@ pub(crate) fn handle_dri_ioctl(
             let target = if attrs.reserved[0] == 0 {
                 None
             } else {
-                Some(*dri.gem.borrow().handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?)
+                Some(owned_dri_bo(proc,ofd_idx,attrs.reserved[0],16,owned)?)
             };
             let surface_id = crate::ofd::allocate_gl_id()?;
             {
@@ -2905,7 +2925,7 @@ pub(crate) fn handle_dri_ioctl(
                 let record = dri.gl_resources.borrow().surface.clone().ok_or(Errno::EINVAL)?;
                 let source = record.borrow().target_bo.ok_or(Errno::EINVAL)?;
                 if record.borrow().pending_target_bo.is_some() { return Err(Errno::EBUSY); }
-                let target = *dri.gem.borrow().handles.get(&attrs.reserved[1]).ok_or(Errno::ENOENT)?;
+                let target=owned_dri_bo(proc,ofd_idx,attrs.reserved[1],20,owned)?;
                 if source == target { return Err(Errno::EINVAL); }
                 let valid = crate::dri::with_registry(|r| {
                     let source = r.get(source)?; let target = r.get(target)?;
@@ -2944,7 +2964,7 @@ pub(crate) fn handle_dri_ioctl(
             let dri = dri_state(proc, ofd_idx)?;
             let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
             let surface = gls.surface_id.ok_or(Errno::EINVAL)?;
-            let target = *dri.gem.borrow().handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?;
+            let target=owned_dri_bo(proc,ofd_idx,attrs.reserved[0],16,owned)?;
             let session = gls.session_id;
             let record = dri
                 .gl_resources
@@ -3117,7 +3137,7 @@ pub(crate) fn handle_dri_ioctl(
             Ok(())
         }
         gl::GLIO_QUERY => {
-            let mut request = capture_gl_query_request(proc, host, fd, ofd_idx, buf)?;
+            let mut request = capture_gl_query_request_target(proc, host, fd, ofd_idx, buf,owned.and_then(|o|o.source))?;
             request.execute_immediate(host)?;
             request.publish_immediate(host)
         }
@@ -3152,7 +3172,7 @@ pub(crate) fn handle_dri_ioctl(
                     result.completed_phase = gl::SUBMIT_QUERY_PHASE_QUERY;
                     // Query input is copied only now, after prefix publication.
                     // Output probing still precedes all query effects.
-                    if let Err(error) = query_gl_checked(proc, host, fd, ofd_idx, query, session, tid) {
+                    if let Err(error) = query_gl_checked(proc, host, fd, ofd_idx, query, session, tid,owned.and_then(|o|o.source)) {
                         result.query_rc = -(error as i32);
                     }
                 }
@@ -4783,7 +4803,8 @@ pub fn cancel_host_owned_wait_for_tid(proc: &mut Process, tid: u32) -> bool {
     let owner = ((proc.pid as u64) << 32) | tid as u64;
     let epoll_wait = proc.epoll_waits.iter().any(|(owner, _)| *owner == tid);
     crate::epoll::finish_wait(proc, tid);
-    let mut cancelled = cancel_fifo_open_for_owner(proc, owner) || epoll_wait;
+    let owned_poll=crate::owned_resource::cancel_thread_polls(proc,tid);
+    let mut cancelled = cancel_fifo_open_for_owner(proc, owner) || epoll_wait || owned_poll;
     if proc.cancel_signal_mask_wait_for(tid) {
         cancelled = true;
     }
@@ -9456,7 +9477,10 @@ pub fn sys_pipe2(proc: &mut Process, flags: u32) -> Result<(i32, i32), Errno> {
 /// Get file status information.
 pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmStat, Errno> {
     let ofd_idx = resolve_io_ofd(proc, fd)?;
+    fstat_ofd(proc, host, ofd_idx)
+}
 
+fn fstat_ofd(proc: &Process, host: &mut dyn HostIO, ofd_idx: usize) -> Result<WasmStat, Errno> {
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
@@ -12502,6 +12526,10 @@ fn cleanup_process_for_exit(
         let _ = release_all_blocking_retry_bindings(proc, &mut isolated_locks, host);
     }
 
+    if let Some(locks)=locks.as_deref_mut() {drain_owned_resources(proc,locks,host);} else {
+        drain_owned_resources(proc,&mut AdvisoryLockManager::new(),host);
+    }
+
     // FIFO open keeps a reserved descriptor and endpoint outside the ordinary
     // open-fd walk. A zombie can remain unreaped indefinitely, so waiting for
     // ProcessTable removal would leak both resources past process exit.
@@ -12939,6 +12967,8 @@ pub fn sys_mremap(
     new_len: usize,
     flags: u32,
 ) -> Result<usize, Errno> {
+    if crate::owned_resource::has_pending_mapping(proc) {return Err(Errno::EBUSY);}
+
     const MREMAP_MAYMOVE: u32 = 1;
     const SUPPORTED_FLAGS: u32 = MREMAP_MAYMOVE;
 
@@ -13192,8 +13222,12 @@ fn mapping_file_for_fd(
     host: &mut dyn HostIO,
     fd: i32,
 ) -> Option<crate::memory::MappingFile> {
-    let entry = proc.fd_table.get(fd).ok()?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+    let index = proc.fd_table.get(fd).ok()?.ofd_ref.0;
+    mapping_file_for_ofd(proc, host, index)
+}
+
+fn mapping_file_for_ofd(proc:&Process,host:&mut dyn HostIO,index:usize)->Option<crate::memory::MappingFile> {
+    let ofd = proc.ofd_table.get(index)?;
     let name = if ofd.file_type == FileType::MemFd {
         let mut name = Vec::with_capacity(ofd.path.len() + 11);
         name.push(b'/');
@@ -13203,7 +13237,7 @@ fn mapping_file_for_fd(
     } else {
         ofd.path.clone()
     };
-    let (dev, ino) = sys_fstat(proc, host, fd)
+    let (dev, ino) = fstat_ofd(proc, host, index)
         .map(|st| (st.st_dev, st.st_ino))
         .unwrap_or((0, 0));
     Some(crate::memory::MappingFile { dev, ino, name })
@@ -13221,19 +13255,30 @@ fn mmap_region(
     fd: i32,
     offset: i64,
 ) -> Result<usize, Errno> {
-    if flags & MAP_ANONYMOUS == 0 {
-        // File-backed mapping: validate the fd is open.
-        if fd < 0 {
-            return Err(Errno::EBADF);
-        }
-        // Verify the fd is a valid open file descriptor
-        let _fd_entry = proc.fd_table.get(fd)?;
+    mmap_region_for_ofd(proc,host,addr,len,prot,flags,fd,offset,None)
+}
 
-        // /dev/fb0: map the pixel buffer in process memory and notify the
-        // host. Geometry is fixed at FB_WIDTH × FB_HEIGHT × 4; the caller
-        // must request exactly that length.
-        let entry = proc.fd_table.get(fd)?;
-        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+#[allow(clippy::too_many_arguments)]
+fn mmap_region_for_ofd(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    addr: usize,
+    len: usize,
+    prot: u32,
+    flags: u32,
+    fd: i32,
+    offset: i64,
+    owned_index: Option<usize>,
+) -> Result<usize, Errno> {
+    if crate::owned_resource::has_pending_mapping(proc) {return Err(Errno::EBUSY);}
+
+    if flags & MAP_ANONYMOUS == 0 {
+        // WHY: the ordinary path selects its fd once. A driver capability
+        // supplies an already retained exact OFD; rereading the old fd here
+        // could map a replacement file after concurrent close/dup2.
+        let index = match owned_index {Some(index)=>index,None=>proc.fd_table.get(fd)?.ofd_ref.0};
+        // /dev/fb0 and DRI use their ordinary mapping implementation below.
+        let ofd = proc.ofd_table.get(index).ok_or(Errno::EBADF)?;
         if ofd.is_path_only() {
             return Err(Errno::EBADF);
         }
@@ -13336,7 +13381,7 @@ fn mmap_region(
                 if len != wasm_posix_shared::gl::CMDBUF_LEN {
                     return Err(Errno::EINVAL);
                 }
-                let ofd_idx = proc.fd_table.get(fd)?.ofd_ref.0;
+                let ofd_idx = index;
                 let session_id = gl_session_id(proc, ofd_idx)?;
                 let allocation = DeviceMapAllocation::prepare(proc, addr, len, prot, flags)?;
                 let addr_out = allocation.addr;
@@ -13345,10 +13390,9 @@ fn mmap_region(
                 // earlier `ofd` borrow goes out of scope at the start
                 // of this block; entry remains valid.
                 {
-                    let entry2 = proc.fd_table.get(fd)?;
                     let ofd_mut = proc
                         .ofd_table
-                        .get_mut(entry2.ofd_ref.0)
+                        .get_mut(index)
                         .ok_or(Errno::EBADF)?;
                     if let Some(dri_mut) = ofd_mut.dri_mut() {
                         if let Some(gls) = dri_mut.gl.as_mut() {
@@ -13360,7 +13404,7 @@ fn mmap_region(
                         }
                     }
                 }
-                let ofd_idx = proc.fd_table.get(fd)?.ofd_ref.0;
+                let ofd_idx = index;
                 if let Some(owner) = dri_state_mut(proc, ofd_idx)?
                     .gl_resources.borrow_mut().owner.as_mut()
                 {
@@ -13443,7 +13487,7 @@ fn mmap_region(
 }
 
 /// An allocator reservation whose previous regions survive failed host admission.
-struct DeviceMapAllocation {
+pub(crate) struct DeviceMapAllocation {
     addr: usize,
     len: usize,
     previous: Option<Vec<crate::memory::MappedRegion>>,
@@ -13508,7 +13552,7 @@ impl DeviceMapAllocation {
 }
 
 /// The validated descriptor retains the BO while admission reserves another hold.
-struct DriMappingHold(Option<crate::dri::BoId>);
+pub(crate) struct DriMappingHold(Option<crate::dri::BoId>);
 impl Drop for DriMappingHold {
     fn drop(&mut self) {
         if let Some(bo_id) = self.0 {
@@ -13517,41 +13561,8 @@ impl Drop for DriMappingHold {
     }
 }
 
-fn mmap_dri_bo(
-    proc: &mut Process,
-    host: &mut dyn HostIO,
-    addr: usize,
-    len: usize,
-    prot: u32,
-    flags: u32,
-    bo_id: crate::dri::BoId,
-) -> Result<usize, Errno> {
-    proc.dri_bindings
-        .try_reserve(1)
-        .map_err(|_| Errno::ENOMEM)?;
-    crate::dri::with_registry(|registry| registry.incref(bo_id)).ok_or(Errno::ENOMEM)?;
-    let mut hold = DriMappingHold(Some(bo_id));
-    let allocation = DeviceMapAllocation::prepare(proc, addr, len, prot, flags)?;
-    let mapped = allocation.addr;
-    // Announce the exact mapping extent, including permitted page padding.
-    // The host clips pixel copies to BO storage independently; cleanup must
-    // retain the same range as DriBoBinding rather than a shorter pixel view.
-    if host.gbm_bo_bind(proc.pid as i32, bo_id, mapped, len, 0) < 0 {
-        allocation.rollback(proc);
-        return Err(Errno::ENOMEM);
-    }
-    // Host bind atomically retires overlapping VMA aliases before admitting
-    // this view. Do not unbind that newly admitted view while retiring old
-    // kernel references, especially when the same BO is mapped again.
-    allocation.commit(proc, host, true);
-    proc.dri_bindings.push(crate::process::DriBoBinding {
-        addr: mapped,
-        len,
-        bo_id,
-        bo_offset: 0,
-    });
-    hold.0 = None;
-    Ok(mapped)
+fn mmap_dri_bo(proc:&mut Process,host:&mut dyn HostIO,addr:usize,len:usize,prot:u32,flags:u32,bo_id:crate::dri::BoId)->Result<usize,Errno> {
+    OwnedMappingPlan::bo(proc,addr,len,prot,flags,bo_id)?.commit(proc,host)
 }
 
 /// Reserve device-mapping retirement before the address allocator changes.
@@ -13703,6 +13714,8 @@ pub fn sys_munmap(
     addr: usize,
     len: usize,
 ) -> Result<(), Errno> {
+    if crate::owned_resource::has_pending_mapping(proc) {return Err(Errno::EBUSY);}
+
     if len == 0 {
         return Err(Errno::EINVAL);
     }
@@ -13733,6 +13746,7 @@ pub fn sys_munmap(
 /// If addr is 0, returns the current break.
 /// Otherwise, sets the break to addr and returns the new break.
 pub fn sys_brk(proc: &mut Process, addr: usize) -> usize {
+    if crate::owned_resource::has_pending_mapping(proc) {return proc.memory.get_brk();}
     if addr == 0 {
         proc.memory.get_brk()
     } else {
@@ -24698,6 +24712,8 @@ mod tests {
         );
     }
 
+    mod owned_resource_tests {include!("syscalls_owned_tests.rs");}
+
     // Storage/device unit fixtures intentionally test the local operation.
     // Cross-process resize effects are tested through the production table
     // boundary in process_table::tests::terminal_resize_*.
@@ -24708,6 +24724,9 @@ mod tests {
         request: u32,
         buf: &mut [u8],
     ) -> Result<(), Errno> {
+        if request==wasm_posix_shared::dri_owned::REQUEST {
+            return crate::owned_resource::ioctl(proc,&mut AdvisoryLockManager::new(),host,fd,buf);
+        }
         sys_ioctl_local(proc, host, fd, request, buf, &mut IoctlEffects::default())
     }
 

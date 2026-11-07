@@ -25756,3 +25756,61 @@ Raw results, command, hashes and both accounting judgments remain in
 `.context/graphics-browser-ready-r552-runs/full-libc-r2/` and
 `full-libc-r3-accounting/`. This is the normal pre-ownership-fix baseline,
 not final-tree libc acceptance after the pending B1 resource changes.
+
+
+### 2026-11-06 exact-resource ownership foundation
+
+The normal R494 SDK and real Rust kernel reproduce the descriptor defect:
+`graphics-owned-public-node-before-r554-1106-135442-f34b` runs the actual
+public EGL/DRM program and fails at line48 after old cleanup removes the
+replacement file's same-number buffer handle (`ENOENT`). It reports one
+failed case, zero skipped cases; all 295 normal products and the three
+compiled driver sources remain unchanged. This is causal baseline evidence,
+not a candidate pass or a native-peer-only failure. Program SHA256:
+`61ab8f88cca792c8729d0d3a0a3181e0ccf0588fbc632dfefa060dec2c334310`.
+
+The additive exact-resource kernel and host foundation has these bounded
+checks. None substitutes for the final rebuilt-guest/browser gates.
+
+| Frozen scope | Result |
+|---|---|
+| R549 actual Rust runtime | 2,901 unit + 6 documentation cases pass |
+| R549 shared/kernel crates | 97 shared, 13 kernel unit and 4 integration cases pass |
+| R549 additive ABI policy | 1 selected policy case passes; 847 other xtask cases not selected |
+| R562 combined host controls | 363 cases across 7 files pass; full host-source and changed-test compiler checks pass |
+| Old host with exact same new-wire controls | 44 new controls fail, 130 prior controls pass, as the expected causal before result |
+
+Kernel patch SHA256:
+`17ccaa62669497a96aecb46cf0da83da73c610ba36cd398b95adfc42430c4a69`.
+Host patch SHA256:
+`7165cc452d366ffe760991e43a29ae33d3abfbc6ba81ee8df5b9174b33c81f20`.
+The original kernel snapshot used old normal Wasm only for existing export
+metadata. The first new normal kernel build succeeds, then correctly fails
+the snapshot check because the now-compiled optional mapping-finalizer
+signature was absent. Regeneration from that actual normal kernel adds
+`(i32,i32,i32,i64,i32) -> (i32)` for the optional export; no existing export
+or ABI version changes. The coherent normal rebuild and unchanged ABI check then pass in 22s in
+`graphics-owned-kernel-coherent-r565-1106-190341-7c11`: kernel 12s, ABI 4s,
+source integrity0. Projected kernel SHA256:
+`755e819210202c44ea2ca7bf6371690713463b3571404e84cdb4c8fd44f439df`.
+A final repeat after the two local Rust formatting corrections passes3m45s
+in `graphics-owned-kernel-final-r565-1106-190910-4179`: kernel173s, ABI48s,
+source integrity0. Its normally projected kernel SHA256 is
+`3ae8b8e6309a9fb65097c3036a433b0ea87ad4a47ca7883fc9f35f5eac651b2f`.
+Integration host/type verification passes12s in
+`graphics-owned-checkpoint-r567-1106-190614-1352`; the evidence registry
+matches all715 Vitest files. The optional whole-workspace formatting
+comparison fails on the clean baseline too (129 files), and is not a passing
+formatting gate; its newly added file's two formatting differences were
+corrected without reformatting unrelated source.
+
+Exact commands: `./run.sh build kernel` followed by
+`ABI_CHECK_BASE_REF=679590131f4f9d8b7dfb985c80bc0a085613b150 bash scripts/check-abi-version.sh`.
+The check reports a changed program digest against that base, so every
+program/package must be rebuilt normally before combining it with this
+kernel. The public old preview remains a complete old artifact closure.
+
+Actual Node/browser guest ownership, fork/lifecycle, full conformance,
+desktop, memory and performance gates remain required. Public port6271
+continues to serve the unchanged R494 prototype, with the baseline ownership
+defect disclosed; it is not a complete B1 preview.

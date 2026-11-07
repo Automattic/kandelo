@@ -47,6 +47,7 @@ pub mod net_readiness;
 pub mod netif;
 pub mod netlink;
 pub mod ofd;
+pub mod owned_resource;
 pub mod path;
 pub mod complete_copy;
 pub mod pipe;

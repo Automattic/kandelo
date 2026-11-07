@@ -936,6 +936,7 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_clipboard_offer",
   "kernel_clipboard_stage",
   "kernel_epoll_wait_retry_state",
+  "kernel_owned_mapping_finish",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
   "kernel_set_max_addr",
@@ -2228,6 +2229,7 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   3228066978: { argKind: "pointer", direction: "in", wasm32Size: 104, wasm64Size: 104 },
   3228067000: { argKind: "pointer", direction: "inout", wasm32Size: 104, wasm64Size: 104 },
   3228067022: { argKind: "pointer", direction: "inout", wasm32Size: 104, wasm64Size: 104 },
+  3242222823: { argKind: "pointer", direction: "inout", wasm32Size: 320, wasm64Size: 320 },
 };
 
 export interface IoctlRequestFamily {

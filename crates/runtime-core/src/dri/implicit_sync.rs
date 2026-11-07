@@ -90,6 +90,19 @@ fn pending_buffer_fences(proc: &Process) -> Vec<Fence> {
             bos.extend(dri.gem.borrow().handles.values().copied());
         }
     }
+    // Driver capabilities independently retain storage after raw GEM_CLOSE.
+    // A parked operation also owns its copied BO proofs after the source C
+    // object retires; omitting those holds would bypass its pending writers.
+    for resource in &proc.owned_resources.resources {
+        let mut add=|kind:crate::owned_resource::Kind| {
+            if let crate::owned_resource::Kind::Bo{bo,..}=kind {bos.push(bo);}
+        };
+        if let Some(kind)=resource.kind {add(kind);}
+        if let Some(receipt)=&resource.receipt {
+            if let Some(kind)=receipt.source {add(kind);}
+            for binding in receipt.bindings.iter().flatten() {add(binding.kind);}
+        }
+    }
     bos.sort_unstable();
     bos.dedup();
     super::with_registry(|registry| {

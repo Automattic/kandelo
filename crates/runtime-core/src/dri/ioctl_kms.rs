@@ -12,7 +12,7 @@ use crate::dri::kms;
 use crate::process::{HostIO, Process};
 use crate::syscalls::{
     apply_dri_release_effect, apply_dri_release_effects, current_tid_for_process, dri_state,
-    dri_state_mut, handle_dri_ioctl, probe_dri_process_pointer, write_dri_bytes,
+    dri_state_mut, probe_dri_process_pointer, write_dri_bytes,
     DriReleaseEffect,
 };
 
@@ -210,6 +210,13 @@ pub(crate) fn handle_dri_card_ioctl(
     ofd_idx: usize,
     request: u32,
     buf: &mut [u8],
+) -> Result<(), Errno> {
+    handle_dri_card_ioctl_target(proc,host,fd,ofd_idx,request,buf,None)
+}
+
+pub(crate) fn handle_dri_card_ioctl_target(
+    proc:&mut Process,host:&mut dyn HostIO,fd:i32,ofd_idx:usize,request:u32,buf:&mut[u8],
+    owned:Option<&crate::syscalls::OwnedDriOperands>,
 ) -> Result<(), Errno> {
     use wasm_posix_shared::dri::*;
     let pid = proc.pid as i32;
@@ -427,7 +434,7 @@ pub(crate) fn handle_dri_card_ioctl(
         }
         DRM_IOCTL_MODE_ADDFB2 => {
             let mut req: WpkDrmModeFbCmd2 = read_dri_struct(buf)?;
-            req.fb_id = kms_add_framebuffer(proc, host, ofd_idx, &req)?;
+            req.fb_id = kms_add_framebuffer_target(proc, host, ofd_idx, &req,owned)?;
             write_dri_struct(buf, req);
             Ok(())
         }
@@ -522,7 +529,13 @@ pub(crate) fn handle_dri_card_ioctl(
             };
             fb2.handles[0] = req.handle;
             fb2.pitches[0] = req.pitch;
-            req.fb_id = kms_add_framebuffer(proc, host, ofd_idx, &fb2)?;
+            let converted=owned.copied().map(|mut proof| {
+                // The legacy handle moves from byte24 to ADDFB2 plane0 byte20;
+                // move its exact storage proof with it, never a GEM alias.
+                for binding in proof.bindings.iter_mut().flatten() {binding.offset=20;}
+                proof
+            });
+            req.fb_id = kms_add_framebuffer_target(proc, host, ofd_idx, &fb2,converted.as_ref())?;
             write_dri_struct(buf, req);
             Ok(())
         }
@@ -1079,7 +1092,7 @@ pub(crate) fn handle_dri_card_ioctl(
         }
         DRM_IOCTL_MODE_CREATE_LEASE => Err(Errno::EOPNOTSUPP),
         DRM_IOCTL_MODE_ATOMIC => atomic::atomic_ioctl(proc, host, ofd_idx, buf),
-        _ => handle_dri_ioctl(proc, host, fd, ofd_idx, request, buf),
+        _ => crate::syscalls::handle_dri_ioctl_target(proc, host, fd, ofd_idx, request, buf,owned),
     }
 }
 
@@ -1132,6 +1145,12 @@ pub(crate) fn kms_add_framebuffer(
     ofd_idx: usize,
     req: &wasm_posix_shared::dri::WpkDrmModeFbCmd2,
 ) -> Result<u32, Errno> {
+    kms_add_framebuffer_target(proc,host,ofd_idx,req,None)
+}
+fn kms_add_framebuffer_target(
+    proc:&mut Process,host:&mut dyn HostIO,ofd_idx:usize,req:&wasm_posix_shared::dri::WpkDrmModeFbCmd2,
+    owned:Option<&crate::syscalls::OwnedDriOperands>,
+) -> Result<u32, Errno> {
     use wasm_posix_shared::dri::*;
     let pid = proc.pid as i32;
     if req.flags & !(DRM_MODE_FB_INTERLACED | DRM_MODE_FB_MODIFIERS) != 0
@@ -1170,10 +1189,7 @@ pub(crate) fn kms_add_framebuffer(
     let pitch = u64::from(req.pitches[0]);
     let offset = u64::from(req.offsets[0]);
     let min_pitch = info.min_pitch(req.width, 0);
-    let bo_id = *dri_state(proc, ofd_idx)?
-        .gem.borrow().handles
-        .get(&req.handles[0])
-        .ok_or(Errno::ENOENT)?;
+    let bo_id=crate::syscalls::owned_dri_bo(proc,ofd_idx,req.handles[0],20,owned)?;
     let (bo_stride, bo_size, bo_width, bo_height, tier) = crate::dri::with_registry(|r|
         r.get(bo_id).map(|b| (b.stride, b.size, b.width, b.height, b.tier)))
         .ok_or(Errno::ENOENT)?;

@@ -960,6 +960,10 @@ const SIGKILL = 9;
 
 /** Ioctl syscall number */
 const SYS_IOCTL = ABI_SYSCALLS.Ioctl;
+const DRM_IOCTL_WPK_OWNED_RESOURCE = 0xc14064e7;
+const OWNED_RESOURCE_BYTES = 320;
+const OWNED_RESOURCE_POLL = 11;
+const OWNED_RESOURCE_MMAP = 4;
 
 /** Syscall numbers for memory management */
 const SYS_MMAP = ABI_SYSCALLS.Mmap;
@@ -1383,6 +1387,76 @@ interface PlannedBlockingChannelDispatch {
    * the generated pointer descriptors.
    */
   readonly readinessTimeoutMs?: number;
+}
+
+function isOwnedResourceDispatch(plan: PlannedBlockingChannelDispatch): boolean {
+  return plan.syscallNr === SYS_IOCTL
+    && Number(plan.adjustedArgs[1]) === DRM_IOCTL_WPK_OWNED_RESOURCE;
+}
+
+function ownedResourceInput(plan: PlannedBlockingChannelDispatch): DataView {
+  const arg = plan.plannedChannelScratchArgs.find(
+    (arg) => arg.desc.argIndex === 2,
+  );
+  if (!arg?.inputBytes || arg.inputBytes.byteLength !== OWNED_RESOURCE_BYTES) {
+    throw new Error("owned-resource retry has no complete immutable input");
+  }
+  return new DataView(
+    arg.inputBytes.buffer,
+    arg.inputBytes.byteOffset,
+    arg.inputBytes.byteLength,
+  );
+}
+
+/** Read only detached receipt bytes; guest memory is mutable while parked. */
+function ownedPollRemainingMs(
+  plan: PlannedBlockingChannelDispatch,
+  output: readonly ChannelOutputWrite[],
+): number | undefined {
+  if (!isOwnedResourceDispatch(plan)) return undefined;
+  const input = ownedResourceInput(plan);
+  if (input.getUint32(4, true) !== OWNED_RESOURCE_POLL) return undefined;
+  const arg = plan.plannedChannelScratchArgs.find(
+    (arg) => arg.desc.argIndex === 2,
+  )!;
+  const bytes = output.find((write) => write.ptr === arg.processPointer)?.bytes;
+  if (bytes?.byteLength !== OWNED_RESOURCE_BYTES) {
+    throw new Error("owned-resource poll has no complete detached receipt");
+  }
+  const receipt = new DataView(
+    bytes.buffer,
+    bytes.byteOffset,
+    bytes.byteLength,
+  );
+  if (
+    receipt.getUint32(0, true) !== 1
+    || receipt.getUint32(4, true) !== OWNED_RESOURCE_POLL
+    || receipt.getBigUint64(8, true) !== input.getBigUint64(8, true)
+    || receipt.getBigUint64(16, true) !== input.getBigUint64(16, true)
+    || receipt.getUint32(24, true) !== input.getUint32(24, true)
+    || receipt.getUint32(28, true) !== 0
+    || receipt.getInt32(32, true) !== -1
+    || receipt.getUint32(36, true) !== 0
+    || receipt.getUint32(40, true) !== 16
+    || receipt.getUint32(44, true) !== 0
+    || receipt.getInt32(48, true) !== -EAGAIN
+    || receipt.getUint32(52, true) !== 3
+    || receipt.getUint32(56, true) !== 0x4f574e31
+    || receipt.getUint32(60, true) !== 0
+    || receipt.getUint32(64, true) !== input.getUint32(64, true)
+    || receipt.getUint32(68, true) !== 0
+    || receipt.getInt32(72, true) !== input.getInt32(72, true)
+    || bytes.subarray(80).some((byte) => byte !== 0)
+  ) throw new Error("owned-resource poll returned a mismatched pending receipt");
+  const timeout = input.getInt32(72, true);
+  const remaining = receipt.getInt32(76, true);
+  if (
+    timeout === 0
+    || (timeout < 0 ? remaining !== -1 : remaining <= 0 || remaining > timeout)
+  ) {
+    throw new Error("owned-resource poll returned an invalid remaining budget");
+  }
+  return remaining;
 }
 
 /**
@@ -6650,6 +6724,7 @@ export class CentralizedKernelWorker {
     plan: PlannedBlockingChannelDispatch,
     entry: KernelWorkerEntryContext,
     retryToken = 0n,
+    finishOwnedMappings = true,
   ): PlannedChannelDispatchResult {
     const dispatched = this.#executeCapacityOwnedChannel(
       channel,
@@ -6896,13 +6971,154 @@ export class CentralizedKernelWorker {
       },
       retryToken,
     );
-    return dispatched.value ?? {
+    const result = dispatched.value ?? {
       retVal: -1,
       publicationRetVal: -1,
       rawRetVal: -1n,
       errVal: dispatched.errno,
       outputWrites: [],
     };
+    if (isOwnedResourceDispatch(plan) && result.retVal === 0) {
+      return this.#finishOwnedResourceMapping(
+        channel,
+        plan,
+        result,
+        entry,
+        finishOwnedMappings,
+      );
+    }
+    return result;
+  }
+
+  /** Complete a Rust-reserved mapping before publishing any guest success. */
+  #finishOwnedResourceMapping(
+    channel: ChannelInfo,
+    plan: PlannedBlockingChannelDispatch,
+    result: PlannedChannelDispatchResult,
+    entry: KernelWorkerEntryContext,
+    allowed: boolean,
+  ): PlannedChannelDispatchResult {
+    const argument = plan.plannedChannelScratchArgs.find(
+      (arg) => arg.desc.argIndex === 2,
+    );
+    const output = result.outputWrites.find(
+      (write) => write.ptr === argument?.processPointer,
+    );
+    if (output?.bytes.byteLength !== OWNED_RESOURCE_BYTES) {
+      this.#failBlockingRetryProtocol("owned-resource result has no full receipt");
+    }
+    const packet = new DataView(
+      output.bytes.buffer, output.bytes.byteOffset, output.bytes.byteLength,
+    );
+    if (
+      packet.getUint32(4, true) !== OWNED_RESOURCE_MMAP
+      || packet.getUint32(52, true) !== 3
+    ) return result;
+    if (!allowed) {
+      this.#failBlockingRetryProtocol("owned mapping finish left a pending receipt");
+    }
+    try {
+      const input = ownedResourceInput(plan);
+      const token = packet.getUint32(24, true);
+      const transaction = packet.getBigUint64(8, true);
+      if (
+        packet.getUint32(0, true) !== 1
+        || packet.getUint32(40, true) !== 32
+        || packet.getInt32(48, true) !== 0
+        || packet.getUint32(56, true) !== 0x4f574e31
+        || token !== input.getUint32(24, true)
+        || transaction !== input.getBigUint64(8, true)
+      ) throw new Error("mismatched pending mapping receipt");
+      const ptrWidth = this.getPtrWidth(channel.pid);
+      const address = checkedWasmPointer(
+        packet.getBigUint64(64, true), ptrWidth, "owned mapping address",
+      );
+      const length = checkedWasmPointer(
+        packet.getBigUint64(72, true), ptrWidth, "owned mapping length",
+      );
+      const args = [address, length, packet.getUint32(88, true), packet.getUint32(92, true)];
+      // WHY: Rust has reserved the exact interval but has not replaced old
+      // mappings. Capacity and writeback failure can still roll back safely,
+      // including MAP_FIXED; zeroing here would destroy the old writer.
+      let errno = this.ensureFixedMmapProcessMemoryCapacity(channel, args, entry)
+        ? 0 : ENOMEM;
+      if (errno === 0 && (args[3]! & MAP_FIXED) !== 0) {
+        if (!this.flushSharedMappings(
+          channel, [address, alignWasmPageLength(length)], entry,
+        )) errno = EIO;
+      }
+      if (this.hostReaped.has(channel.pid)) return result;
+      const finish = this.#kernelInstanceForEntry(entry).exports
+        .kernel_owned_mapping_finish as
+        ((pid: number, tid: number, token: number, transaction: bigint, errno: number) => number)
+        | undefined;
+      if (!finish || finish(
+        channel.pid, this.guestTidForChannel(channel), token, transaction, errno,
+      ) !== 0) throw new Error("kernel rejected exact mapping construction finish");
+
+      // Recover the canonical sealed receipt instead of manufacturing success
+      // from the requested finish decision: native backing admission can fail.
+      const bytes = output.bytes.slice();
+      const recovery = new DataView(bytes.buffer);
+      recovery.setUint32(4, 6, true); // READ_LAST: never repeat the constructor.
+      recovery.setBigUint64(16, 0n, true);
+      recovery.setUint32(28, 0, true);
+      recovery.setInt32(32, -1, true);
+      bytes.fill(0, 36, 56);
+      bytes.fill(0, 64);
+      const recovered = this.#executePlannedBlockingChannelDispatch(
+        channel,
+        {
+          ...plan,
+          plannedScratchWrites: plan.plannedScratchWrites.map((write) =>
+            write.argIndex === 2 ? {...write, inputBytes: bytes} : write),
+          plannedChannelScratchArgs: plan.plannedChannelScratchArgs.map((arg) =>
+            arg.desc.argIndex === 2 ? {...arg, inputBytes: bytes} : arg),
+        },
+        entry,
+        0n,
+        false,
+      );
+      const sealedBytes = recovered.outputWrites.find(
+        (write) => write.ptr === argument!.processPointer,
+      )?.bytes;
+      if (recovered.retVal !== 0 || sealedBytes?.byteLength !== OWNED_RESOURCE_BYTES) {
+        throw new Error("mapping finish has no complete canonical receipt");
+      }
+      const sealed = new DataView(sealedBytes.buffer, sealedBytes.byteOffset, sealedBytes.byteLength);
+      if (
+        sealed.getUint32(0, true) !== 1
+        || sealed.getUint32(4, true) !== OWNED_RESOURCE_MMAP
+        || sealed.getUint32(40, true) !== 32
+        || sealed.getUint32(52, true) !== 1
+        || sealed.getUint32(24, true) !== token
+        || sealed.getBigUint64(8, true) !== transaction
+        || sealed.getUint32(56, true) !== 0x4f574e31
+        || sealed.getBigUint64(64, true) !== BigInt(address)
+        || sealed.getBigUint64(72, true) !== BigInt(length)
+        || sealed.getUint32(88, true) !== args[2]
+        || sealed.getUint32(92, true) !== args[3]
+      ) throw new Error("mapping finish returned a different transaction");
+      if (sealed.getInt32(48, true) < 0) return recovered;
+      if (errno !== 0 || sealed.getInt32(48, true) !== 0) {
+        throw new Error("mapping finish contradicted its admission result");
+      }
+      if ((args[3]! & MAP_FIXED) !== 0) {
+        this.cleanupSharedMappings(channel.pid, address, alignWasmPageLength(length), entry);
+      }
+      this.ensureProcessMemoryCovers(channel.pid, channel.memory, SYS_MMAP, address, args, entry);
+      const bo = this.#kernel.bos.findBindingByAddr(channel.pid, address);
+      if (bo !== undefined && !this.#kernel.bos.primeBindFromSab(channel.pid, bo, channel.memory, address)) {
+        throw new Error("owned mapping could not prime its exact backing");
+      }
+      // WHY: finishing, zeroing and priming stay in this one serialized entry.
+      // A lost guest reply can only recover a sealed receipt; it never repeats
+      // these memory effects over later writes or a replacement at this address.
+      return recovered;
+    } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
+      this.#failBlockingRetryProtocol("owned mapping construction failed", error);
+    }
   }
 
   private checkedAlignUp(
@@ -13849,7 +14065,10 @@ export class CentralizedKernelWorker {
         if (logging) {
           console.error(logEntry + " = -1 (EAGAIN, will retry)");
         }
-        if (GENERIC_BLOCKING_SNAPSHOT_SYSCALLS.has(syscallNr)) {
+        if (
+          GENERIC_BLOCKING_SNAPSHOT_SYSCALLS.has(syscallNr)
+          || isOwnedResourceDispatch(plannedDispatch)
+        ) {
           if (!retryDisposition) {
             this.#failBlockingRetryProtocol(
               `syscall ${syscallNr} EAGAIN has no frozen blocking disposition`,
@@ -14865,11 +15084,18 @@ export class CentralizedKernelWorker {
     syscallNr: number,
     entry: KernelWorkerEntryContext,
   ): boolean {
+    const snapshot = this.blockingRetrySnapshots.get(channel);
+    const ownedPoll = syscallNr === SYS_IOCTL
+      && snapshot?.kind === "generic-channel"
+      && isOwnedResourceDispatch(snapshot.dispatch)
+      && ownedResourceInput(snapshot.dispatch).getUint32(4, true)
+        === OWNED_RESOURCE_POLL;
     if (
       syscallNr !== SYS_OPEN
       && syscallNr !== SYS_OPENAT
       && syscallNr !== SYS_PPOLL
       && syscallNr !== SYS_PSELECT6
+      && !ownedPoll
     ) return true;
     return this.#cancelLiveTaskKernelWait(channel, entry);
   }
@@ -18027,6 +18253,16 @@ export class CentralizedKernelWorker {
     // retain their public EAGAIN result, while every blocking path reaches
     // completion here after its exact Rust retry binding has been captured.
     if (deliveredSignal > 0) {
+      // WHY: an owned poll has a kernel receipt even though the host owns
+      // its timer. Retire that exact task's wait before publishing EINTR,
+      // or later cleanup could mistake it for a still-running call.
+      if (
+        retainedGenericSnapshot
+        && isOwnedResourceDispatch(retainedGenericSnapshot.dispatch)
+        && !this.#cancelHostOwnedKernelWait(channel, syscallNr, entry)
+      ) {
+        this.#failBlockingRetryProtocol("owned-resource signal cleanup failed");
+      }
       // An interrupted ioctl publishes its in/out argument as the kernel left
       // it in this last attempt, as every other failed ioctl already does
       // and as Linux's drm_ioctl copies an _IOWR argument back on failure.
@@ -18243,6 +18479,32 @@ export class CentralizedKernelWorker {
       if (entry) entry.retries++;
     }
 
+    // WHY: Rust owns the poll deadline. Restarting the original timeout at
+    // every retry, or using an unrelated host clock to derive it, stretches
+    // short waits under load. Its detached receipt supplies only the current
+    // remaining budget; the normal timer is merely a readiness safety wake.
+    let retryDelayMs = 10;
+    if (
+      retainedGenericSnapshot
+      && isOwnedResourceDispatch(retainedGenericSnapshot.dispatch)
+    ) {
+      let remaining: number | undefined;
+      try {
+        remaining = ownedPollRemainingMs(
+          retainedGenericSnapshot.dispatch,
+          detachedOutput,
+        );
+      } catch (error) {
+        this.#failBlockingRetryProtocol(
+          "invalid owned-resource pending receipt",
+          error,
+        );
+      }
+      if (remaining !== undefined && remaining >= 0) {
+        retryDelayMs = Math.min(retryDelayMs, remaining);
+      }
+    }
+
     // Default: retry via setTimeout to avoid starving other processes.
     // Register in pendingPollRetries so wakeAllBlockedRetries can cancel
     // the timer and retry immediately when state changes.
@@ -18254,7 +18516,7 @@ export class CentralizedKernelWorker {
         this.retrySyscall(channel);
       }
     };
-    const timer = this.#registerTimeout(retryFn, 10);
+    const timer = this.#registerTimeout(retryFn, retryDelayMs);
     this.pendingPollRetries.set(channel, {
       ...this.#cancellationPointIdentity(channel),
       timer,

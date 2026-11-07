@@ -22,6 +22,7 @@
       "channel_status_codes",
       "clipboard_device_abi",
       "custom_sections",
+      "dri_owned_resource",
       "gl_buffer_snapshot_draw",
       "gl_compressed_upload",
       "gl_context_reset_scope",
@@ -1387,6 +1388,106 @@
       "host_kms_drop_master"
     ]
   },
+  "dri_owned_resource": {
+    "actions": {
+      "ack": 7,
+      "acquire": 2,
+      "bo_info": 10,
+      "bo_release": 9,
+      "cancel_poll": 12,
+      "dup_fd": 8,
+      "ioctl": 3,
+      "mmap": 4,
+      "open": 1,
+      "poll": 11,
+      "read_last": 6,
+      "release": 5
+    },
+    "bo_bindings": {
+      "location": "after-canonical-ioctl-bytes",
+      "maximum": 4,
+      "words": [
+        "count",
+        "canonical-byte-offset,bo-capability-token"
+      ]
+    },
+    "body_bytes": 256,
+    "cancel_poll": "creator-tid-only-pending-poll-terminal-eintr-no-mutation-replay",
+    "carrier_fd": -1,
+    "fields": [
+      "version:u32",
+      "action:u32",
+      "transaction:u64",
+      "acknowledge:u64",
+      "token:u32",
+      "source_token:u32",
+      "fd:i32",
+      "request:u32",
+      "length:u32",
+      "flags:u32",
+      "result:i32",
+      "state:u32",
+      "magic:u32",
+      "reserved:u32",
+      "body:u8[256]"
+    ],
+    "flags": {
+      "bo_bindings": 16,
+      "borrow_alias": 32,
+      "capture_bo": 4,
+      "capture_fd": 2,
+      "consume_fd": 1,
+      "expect_sync_file": 64,
+      "reuse_exact": 8
+    },
+    "fork_storage": "same-token-child-scope-independent-pins-and-copied-completed-receipts-seeded-counter-pending-child-eintr",
+    "header_bytes": 64,
+    "legacy_fd_semantics": "unchanged",
+    "magic": 1331121713,
+    "mmap_bo_source": "offset-zero-or-exact-encoded-boid-origin",
+    "mmap_constructor": {
+      "admission": "stage-allocator-before-native-bind",
+      "finish_args": [
+        "pid:u32",
+        "tid:u32",
+        "token:u32",
+        "transaction:u64",
+        "errno:u32"
+      ],
+      "finish_export": "kernel_owned_mapping_finish",
+      "finish_return": "zero-accepted-seal-negative-protocol-error",
+      "pending_outer_result": 0,
+      "precommit_errors": [
+        0,
+        12,
+        5
+      ],
+      "publication": "zero-prime-before-entry-release-no-replay",
+      "receipt": "read-last-actual-native-bind-result-after-finish"
+    },
+    "namespace_custody": "logical-caps-across-processes-only-temporary-work-retains-storage-not-name",
+    "ownership": "exact-process-exec-generation-ofdid-and-independent-boid-pins",
+    "packet_bytes": 320,
+    "poll_body": [
+      "events:u32",
+      "revents:u32",
+      "original_timeout_ms:i32",
+      "remaining_ms:i32"
+    ],
+    "recovery": "copied-once-only-receipt-never-replay-unknown-effects",
+    "release_source_token": {
+      "consumed": 1,
+      "live": 0
+    },
+    "remaining_ms": "complete-zero-pending-minus-one-infinite-or-positive-ceil-minimum-one",
+    "request": 3242222823,
+    "states": {
+      "absent": 2,
+      "complete": 1,
+      "pending": 3
+    },
+    "version": 1
+  },
   "export_deny": {
     "deny_exact": [
       "__data_end",
@@ -2386,6 +2487,7 @@
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
       "kernel_epoll_wait_retry_state",
+      "kernel_owned_mapping_finish",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
@@ -3567,6 +3669,12 @@
       "wasm32Size": 104,
       "wasm64Size": 104
     },
+    "3242222823": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 320,
+      "wasm64Size": 320
+    },
     "35077": {
       "argKind": "pointer",
       "direction": "out",
@@ -4434,6 +4542,11 @@
       "kind": "func",
       "name": "kernel_next_wait_deadline_ns",
       "signature": "() -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_owned_mapping_finish",
+      "signature": "(i32,i32,i32,i64,i32) -> (i32)"
     },
     {
       "kind": "func",

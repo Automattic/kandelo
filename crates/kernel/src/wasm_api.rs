@@ -8187,6 +8187,25 @@ pub extern "C" fn kernel_blocking_retry_token(pid: u32, tid: u32, syscall_nr: u3
     }
 }
 
+/// Optional for legacy hosts; required when using the additive e7 MMAP.
+/// The host still owns the original entry lease. Sealing success before
+/// growth/zero/initial prime would expose an unconstructed mapping to guests.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_owned_mapping_finish(
+    pid: u32,
+    tid: u32,
+    token: u32,
+    transaction: u64,
+    errno: u32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.finish_owned_mapping(&mut WasmHostIO, pid, tid, token, transaction, errno) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Consume one exact blocked-retry target and its kernel-owned references.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_blocking_retry_release(pid: u32, tid: u32, token: i64) -> i32 {

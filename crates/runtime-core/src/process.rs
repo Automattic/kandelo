@@ -1315,6 +1315,9 @@ pub struct Process {
     /// memory region with the bo currently bound there so `sys_munmap`
     /// can issue the matching [`HostIO::gbm_bo_unbind`].
     pub dri_bindings: Vec<DriBoBinding>,
+    /// Driver-owned exact resources belong to this image, not inherited fd
+    /// numbers. Exec/exit explicitly consume these real OFD/BO references.
+    pub(crate) owned_resources: crate::owned_resource::State,
     /// Renderer leases created by this image, including descriptions now held
     /// only by another process. Weak references do not keep resources alive.
     pub(crate) gl_resource_owners: Vec<crate::ofd::WeakGlResources>,
@@ -1596,6 +1599,7 @@ impl Process {
             has_exec: false,
             fb_binding: None,
             dri_bindings: Vec::new(),
+            owned_resources: crate::owned_resource::State::default(),
             gl_resource_owners: Vec::new(),
             shm_mappings: Vec::new(),
             fork_count: 0,
@@ -1934,6 +1938,7 @@ impl Process {
     pub fn remove_thread(&mut self, tid: u32) -> Option<ThreadState> {
         crate::epoll::finish_wait(self, tid);
         if let Some(idx) = self.identity.threads.iter().position(|t| t.tid == tid) {
+            crate::owned_resource::cancel_thread_polls(self,tid);
             // The thread may have been the target of a pending
             // process-directed signal, which now falls to another, possibly
             // parked, thread: treat the removal as a generation.

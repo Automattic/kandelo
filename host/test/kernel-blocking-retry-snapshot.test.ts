@@ -192,6 +192,7 @@ function createRetryHarness(
     ABI_SYSCALLS.Ppoll,
     ABI_SYSCALLS.Select,
     ABI_SYSCALLS.Pselect6,
+    ABI_SYSCALLS.Ioctl,
   ]);
   const kernelExports: Record<string, unknown> = {
     kernel_blocking_retry_release: vi.fn(() => 0),
@@ -212,6 +213,7 @@ function createRetryHarness(
     kernel_get_socket_timeout_ms: vi.fn(() => 0n),
     kernel_generate_host_signal: () => 0,
     kernel_handle_channel: () => 0,
+    kernel_owned_mapping_finish: vi.fn(() => 0),
     kernel_is_fd_nonblock: () => 0,
     kernel_pick_signal_target_tid: vi.fn(() => pid),
     kernel_set_current_tid: () => 0,
@@ -3355,7 +3357,7 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         ABI_SYSCALLS.Accept,
       );
       expect(
-        harness.kernelExports.kernel_handle_channel.mock.calls.map(
+        (harness.kernelExports.kernel_handle_channel as ReturnType<typeof vi.fn>).mock.calls.map(
           (call) => call[3],
         ),
       ).toEqual([0n]);
@@ -3423,7 +3425,7 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         ABI_SYSCALLS.Accept,
       );
       expect(
-        harness.kernelExports.kernel_handle_channel.mock.calls.map(
+        (harness.kernelExports.kernel_handle_channel as ReturnType<typeof vi.fn>).mock.calls.map(
           (call) => call[3],
         ),
       ).toEqual([0n]);
@@ -4595,4 +4597,218 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
       ).toBe(false);
     },
   );
+});
+
+
+// The real generated ioctl contract stages the complete fixed envelope. These
+// controls exercise the ordinary channel boundary and timer, not a parser mock.
+describe("owned graphics retry custody", () => {
+  const request = 0xc14064e7;
+  const pointer = 0x1000;
+
+  function prepare(harness: RetryHarness, action = 11): void {
+    const packet = new DataView(harness.processMemory.buffer, pointer, 320);
+    packet.setUint32(0, 1, true);
+    packet.setUint32(4, action, true);
+    packet.setBigUint64(8, 3n, true);
+    packet.setUint32(24, 7, true);
+    packet.setUint32(40, action === 11 ? 16 : 4, true);
+    packet.setInt32(32, -1, true);
+    packet.setUint32(64, 1, true);
+    packet.setInt32(72, 25, true);
+    writeRequest(harness, ABI_SYSCALLS.Ioctl, [-1n, BigInt(request), BigInt(pointer)],
+      harness.channel, action === 11);
+  }
+
+  it.each(WIDTHS)("%s preserves request identity and uses each remaining budget", async (_name, width) => {
+    vi.useFakeTimers();
+    const h = createRetryHarness(width);
+    prepare(h);
+    const attempts: number[] = [];
+    h.kernelExports.kernel_handle_channel = vi.fn((raw: number | bigint) => {
+      const channel = kernelView(h, raw);
+      expect(channel.getUint32(CH_SYSCALL, true)).toBe(ABI_SYSCALLS.Ioctl);
+      expect(Number(kernelArg(channel, 1))).toBe(request);
+      const packet = kernelView(h, kernelArg(channel, 2));
+      expect(packet.getUint32(4, true)).toBe(11);
+      expect(packet.getBigUint64(8, true)).toBe(3n);
+      expect(packet.getUint32(24, true)).toBe(7);
+      expect(packet.getInt32(72, true)).toBe(25);
+      attempts.push(attempts.length + 1);
+      packet.setUint32(56, 0x4f574e31, true);
+      packet.setInt32(48, attempts.length < 3 ? -EAGAIN : 0, true);
+      packet.setUint32(52, attempts.length < 3 ? 3 : 1, true);
+      packet.setInt32(76, attempts.length === 1 ? 2 : attempts.length === 2 ? 1 : 0, true);
+      publishKernelResult(channel, attempts.length < 3 ? -1 : 0, attempts.length < 3 ? EAGAIN : 0);
+      return 0;
+    });
+    h.worker.handleSyscall(h.channel);
+    expect(requestStatus(h)).toBe(CHANNEL_STATUS_PENDING);
+    // Neither mailbox replacement nor packet mutation can change the parked
+    // operation, its copy-back address, or its original 25ms deadline policy.
+    writeRequest(h, ABI_SYSCALLS.Read, [99n, 0x2000n, 1n]);
+    h.processBytes.fill(0xee, pointer, pointer + 320);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toEqual([1]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toEqual([1, 2]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toEqual([1, 2, 3]);
+    expect(requestResult(h)).toMatchObject({status: CHANNEL_STATUS_COMPLETE, returnValue: 0, errno: 0});
+    expect(new DataView(h.processMemory.buffer, pointer).getUint32(24, true)).toBe(7);
+    expect(h.worker.pendingPollRetries.size).toBe(0);
+    expect(h.worker.blockingRetrySnapshots.size).toBe(0);
+    expect(h.onKernelFatal).not.toHaveBeenCalled();
+  });
+
+  for (const corrupt of ["transaction", "magic", "remaining", "result", "fd", "source", "request", "flags", "reserved", "events", "timeout", "remaining-infinite", "remaining-increase", "zero-timeout"] as const) {
+    it.each(WIDTHS)(`%s fails loudly on an invalid pending ${corrupt}`, async (_name, width) => {
+      vi.useFakeTimers();
+      const h = createRetryHarness(width);
+      prepare(h);
+      if(corrupt === "zero-timeout")new DataView(h.processMemory.buffer,pointer,320).setInt32(72,0,true);
+      h.kernelExports.kernel_handle_channel = vi.fn((raw: number | bigint) => {
+        const channel = kernelView(h, raw);
+        const packet = kernelView(h, kernelArg(channel, 2));
+        packet.setUint32(56,0x4f574e31,true);packet.setInt32(48,-EAGAIN,true);
+        packet.setUint32(52, 3, true);
+        packet.setInt32(76, 2, true);
+        if (corrupt === "transaction") packet.setBigUint64(8, 4n, true);
+        if (corrupt === "magic") packet.setUint32(56, 0, true);
+        if (corrupt === "remaining") packet.setInt32(76, 0, true);
+        if (corrupt === "result") packet.setInt32(48, 0, true);
+        if (corrupt === "fd") packet.setInt32(32, 9, true);
+        if (corrupt === "source") packet.setUint32(28, 9, true);
+        if (corrupt === "request") packet.setUint32(36, 1, true);
+        if (corrupt === "flags") packet.setUint32(44, 1, true);
+        if (corrupt === "reserved") packet.setUint32(60, 1, true);
+        if (corrupt === "events") packet.setUint32(64, 2, true);
+        if (corrupt === "timeout") packet.setInt32(72, 999, true);
+        if (corrupt === "remaining-infinite") packet.setInt32(76, -1, true);
+        if (corrupt === "remaining-increase") packet.setInt32(76, 26, true);
+        publishKernelResult(channel, -1, EAGAIN);
+        return 0;
+      });
+      expect(() => h.worker.handleSyscall(h.channel)).toThrow("invalid owned-resource pending receipt");
+      await Promise.resolve();
+      expect(h.onKernelFatal).toHaveBeenCalledOnce();
+      expect(h.worker.pendingPollRetries.size).toBe(0);
+    });
+  }
+
+  it.each(WIDTHS)("%s cancels a parked owned poll before publishing signal interruption", (_name, width) => {
+    vi.useFakeTimers();
+    const h = createRetryHarness(width);
+    prepare(h);
+    const syscalls: number[] = [];
+    let caught = false;
+    h.kernelExports.kernel_dequeue_signal = (_pid: number, out: number | bigint) => {
+      if (caught) return 0;
+      caught = true;
+      return writeKernelCaughtSignal(h, out);
+    };
+    h.kernelExports.kernel_handle_channel = vi.fn((raw: number | bigint) => {
+      const channel = kernelView(h, raw);
+      const syscall = channel.getUint32(CH_SYSCALL, true);
+      syscalls.push(syscall);
+      if (syscall === ABI_SYSCALLS.Ioctl) {
+        const packet = kernelView(h, kernelArg(channel, 2));
+        packet.setUint32(56,0x4f574e31,true);packet.setInt32(48,-EAGAIN,true);
+        packet.setUint32(52, 3, true);
+        packet.setInt32(76, 2, true);
+        publishKernelResult(channel, -1, EAGAIN);
+      } else {
+        expect(syscall).toBe(ABI_SYSCALLS.ThreadCancel);
+        expect(Number(kernelArg(channel, 0))).toBe(h.channel.pid);
+        publishKernelResult(channel, 0, 0);
+      }
+      return 0;
+    });
+    h.worker.handleSyscall(h.channel);
+    expect(syscalls).toEqual([ABI_SYSCALLS.Ioctl, ABI_SYSCALLS.ThreadCancel]);
+    expect(requestResult(h)).toMatchObject({status: CHANNEL_STATUS_COMPLETE, returnValue: -1, errno: EINTR});
+    expect(h.worker.pendingPollRetries.size).toBe(0);
+    expect(h.worker.blockingRetrySnapshots.size).toBe(0);
+  });
+});
+
+
+describe("owned mapping construction", () => {
+  for (const kind of ["command", "buffer", "capacity-failure", "backing-failure", "fixed-capacity-failure", "fixed-backing-failure"] as const) {
+    it.each(WIDTHS)(`%s finishes ${kind} once before publishing its receipt`, (_name, width) => {
+      const h = createRetryHarness(width);
+      const capacityFailure=kind.includes("capacity-failure");
+      const pointer=0x1000, address=kind === "fixed-capacity-failure" ? 0x70000 : capacityFailure ? 0x90000 : 0x30000;
+      const length=kind === "fixed-capacity-failure" ? 0x20000 : 0x10000;
+      const originalBytes=h.processMemory.buffer.byteLength;
+      const oldProbe=address<originalBytes?address:0x30000;
+      h.processBytes.fill(0x5a,oldProbe,Math.min(oldProbe+length,originalBytes));
+      const input=new DataView(h.processMemory.buffer,pointer,320);
+      input.setUint32(0,1,true);input.setUint32(4,4,true);
+      input.setBigUint64(8,1n,true);input.setUint32(24,7,true);
+      input.setUint32(40,32,true);input.setInt32(32,-1,true);
+      input.setBigUint64(72,BigInt(length),true);input.setUint32(88,3,true);input.setUint32(92,kind.startsWith("fixed-")?0x11:1,true);
+      const request=0xc14064e7;
+      let receipt:Uint8Array|undefined;
+      let constructors=0,finishes=0;
+      if(kind === "buffer") {
+        h.worker.bos.create({pid:h.channel.pid,bo_id:71,size:16,w:2,h:2,stride:8});
+        expect(h.worker.bos.publishDevicePixels(71,new Uint8Array(16).fill(0x91))).toBe(true);
+      }
+      h.kernelExports.kernel_owned_mapping_finish=vi.fn((_pid:number,_tid:number,token:number,tx:bigint,errno:number)=>{
+        expect(token).toBe(7);expect(tx).toBe(1n);
+        expect(h.processBytes[oldProbe]).toBe(0x5a);
+        expect(errno).toBe(capacityFailure ? 12 : 0);
+        finishes++;
+        const packet=new DataView(receipt!.buffer);
+        packet.setUint32(52,1,true);
+        packet.setInt32(48,kind.includes("backing-failure") ? -12 : -errno,true);
+        if(kind === "buffer")expect(h.worker.bos.bind(h.channel.pid,71,address,length,0,length)).toBe(0);
+        return 0;
+      });
+      h.kernelExports.kernel_handle_channel=vi.fn((raw:number|bigint)=>{
+        const channel=kernelView(h,raw);
+        expect(channel.getUint32(CH_SYSCALL,true)).toBe(ABI_SYSCALLS.Ioctl);
+        const offset=Number(kernelArg(channel,2));
+        const packet=kernelView(h,offset);
+        const action=packet.getUint32(4,true);
+        if(action===4) {
+          constructors++;
+          packet.setUint32(56,0x4f574e31,true);
+          packet.setUint32(52,3,true);
+          packet.setBigUint64(64,BigInt(address),true);
+          receipt=h.kernelBytes.slice(offset,offset+320);
+        } else {
+          expect(action).toBe(6);
+          expect(receipt).toBeDefined();
+          h.kernelBytes.set(receipt!,offset);
+        }
+        publishKernelResult(channel,0,0);return 0;
+      });
+      writeRequest(h,ABI_SYSCALLS.Ioctl,[-1n,BigInt(request),BigInt(pointer)]);
+      h.worker.handleSyscall(h.channel);
+      expect(constructors).toBe(1);expect(finishes).toBe(1);
+      expect(requestResult(h)).toMatchObject({status:CHANNEL_STATUS_COMPLETE,returnValue:0,errno:0});
+      const returned=new DataView(h.processMemory.buffer,pointer,320);
+      expect(returned.getUint32(52,true)).toBe(1);
+      const failed=kind.includes("failure");
+      expect(returned.getInt32(48,true)).toBe(failed ? -12 : 0);
+      if(failed) {
+        expect(h.processBytes[oldProbe]).toBe(0x5a);
+        expect(h.processMemory.buffer.byteLength).toBe(originalBytes);
+      } else {
+        expect(h.processBytes[address]).toBe(kind === "buffer" ? 0x91 : 0);
+        expect(h.processBytes[address+16]).toBe(0);
+        // A recovered sealed receipt cannot initialize the address again,
+        // including after the caller has modified this mapping's contents.
+        h.processBytes[address]=0xa2;
+        returned.setUint32(4,6,true);returned.setUint32(40,0,true);
+        writeRequest(h,ABI_SYSCALLS.Ioctl,[-1n,BigInt(request),BigInt(pointer)]);
+        h.worker.handleSyscall(h.channel);
+        expect(h.processBytes[address]).toBe(0xa2);
+        expect(constructors).toBe(1);expect(finishes).toBe(1);
+      }
+      expect(h.onKernelFatal).not.toHaveBeenCalled();
+    });
+  }
 });

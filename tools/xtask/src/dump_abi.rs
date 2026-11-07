@@ -4424,6 +4424,46 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "dispositions": {"ordered": shared::gl::SERVER_WAIT_ORDERED,
             "client_signal": shared::gl::SERVER_WAIT_CLIENT_SIGNAL},
     }));
+    s.add(Program, "dri_owned_resource", json!({
+        "request": shared::dri_owned::REQUEST,
+        "version": shared::dri_owned::VERSION,
+        "packet_bytes": core::mem::size_of::<shared::dri_owned::Packet>(),
+        "header_bytes": core::mem::offset_of!(shared::dri_owned::Packet,body),
+        "body_bytes": shared::dri_owned::BODY_BYTES,
+        "fields": ["version:u32","action:u32","transaction:u64","acknowledge:u64",
+            "token:u32","source_token:u32","fd:i32","request:u32","length:u32","flags:u32",
+            "result:i32","state:u32","magic:u32","reserved:u32","body:u8[256]"],
+        "carrier_fd": -1,
+        "legacy_fd_semantics": "unchanged",
+        "ownership": "exact-process-exec-generation-ofdid-and-independent-boid-pins",
+        "actions": {"open":shared::dri_owned::OPEN,"acquire":shared::dri_owned::ACQUIRE,
+            "ioctl":shared::dri_owned::IOCTL,"mmap":shared::dri_owned::MMAP,
+            "release":shared::dri_owned::RELEASE,"read_last":shared::dri_owned::READ_LAST,
+            "ack":shared::dri_owned::ACK,"dup_fd":shared::dri_owned::DUP_FD,
+            "bo_release":shared::dri_owned::BO_RELEASE,"bo_info":shared::dri_owned::BO_INFO,
+            "poll":shared::dri_owned::POLL,"cancel_poll":shared::dri_owned::CANCEL_POLL},
+        "flags": {"consume_fd":shared::dri_owned::CONSUME_FD,"capture_fd":shared::dri_owned::CAPTURE_FD,
+            "capture_bo":shared::dri_owned::CAPTURE_BO,"reuse_exact":shared::dri_owned::REUSE_EXACT,
+            "bo_bindings":shared::dri_owned::BO_BINDINGS,"borrow_alias":shared::dri_owned::BORROW_ALIAS,
+            "expect_sync_file":shared::dri_owned::EXPECT_SYNC_FILE},
+        "states": {"complete":shared::dri_owned::COMPLETE,"absent":shared::dri_owned::ABSENT,
+            "pending":shared::dri_owned::PENDING},
+        "magic":shared::dri_owned::MAGIC,
+        "bo_bindings": {"maximum":4,"location":"after-canonical-ioctl-bytes",
+            "words":["count", "canonical-byte-offset,bo-capability-token"]},
+        "release_source_token": {"live":0,"consumed":1},
+        "poll_body": ["events:u32","revents:u32","original_timeout_ms:i32","remaining_ms:i32"],
+        "remaining_ms": "complete-zero-pending-minus-one-infinite-or-positive-ceil-minimum-one",
+        "cancel_poll": "creator-tid-only-pending-poll-terminal-eintr-no-mutation-replay",
+        "mmap_bo_source": "offset-zero-or-exact-encoded-boid-origin",
+        "mmap_constructor": {"admission":"stage-allocator-before-native-bind","pending_outer_result":0,
+            "finish_export":"kernel_owned_mapping_finish","finish_args":["pid:u32","tid:u32","token:u32","transaction:u64","errno:u32"],
+            "finish_return":"zero-accepted-seal-negative-protocol-error","precommit_errors":[0,shared::Errno::ENOMEM as u32,shared::Errno::EIO as u32],
+            "receipt":"read-last-actual-native-bind-result-after-finish","publication":"zero-prime-before-entry-release-no-replay"},
+        "fork_storage":"same-token-child-scope-independent-pins-and-copied-completed-receipts-seeded-counter-pending-child-eintr",
+        "namespace_custody":"logical-caps-across-processes-only-temporary-work-retains-storage-not-name",
+        "recovery": "copied-once-only-receipt-never-replay-unknown-effects"
+    }));
     s.add(Program, "gl_export_fence", json!({
         "ioctl": shared::dri_sync::DRM_IOCTL_WPK_EXPORT_FENCE,
         "ioctl_bytes": core::mem::size_of::<shared::dri_sync::WpkDrmExportFence>(),
@@ -8744,7 +8784,11 @@ fn additive_top_level_section(section: &str) -> bool {
         // A new query on an unused GL17 opcode/action cannot alter old requests.
         // Existing receipt fields remain exact-match and therefore breaking
         // if changed; only adding this section is compatible.
-        "gl_context_reset_scope"
+        // The unused e7 endpoint leaves all existing fd/ioctl semantics exact.
+        // Its one-time metadata introduction is additive; established field
+        // changes still use the ordinary exact-match breaking classifier.
+        "dri_owned_resource"
+            | "gl_context_reset_scope"
             | "gl_shader_program_creation"
             | "gl_program_mutation"
             | "gl_program_capture"
@@ -10309,6 +10353,22 @@ mod tests {
             },
             "vfs_metadata": vfs_metadata()
         })
+    }
+
+    #[test]
+    fn owned_resource_endpoint_is_additive_but_established_wire_cannot_change() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["dri_owned_resource"]=json!({"request":shared::dri_owned::REQUEST,"packet_bytes":320,
+            "carrier_fd":-1,"actions":{"open":1,"release":5,"poll":11}});
+        let report=classify_compat_change(&old,&new).unwrap();assert!(report.breaking.is_empty(),"{report:?}");
+        assert_eq!(report.additive,vec!["added top-level section \"dri_owned_resource\""]);
+        let established=new.clone();
+        for field in ["request","packet_bytes","carrier_fd"] {
+            let mut changed=established.clone();changed["dri_owned_resource"][field]=json!(99);
+            assert!(!classify_compat_change(&established,&changed).unwrap().breaking.is_empty());
+        }
+        let mut changed=established.clone();changed["dri_owned_resource"]["actions"]["poll"]=json!(99);
+        assert!(!classify_compat_change(&established,&changed).unwrap().breaking.is_empty());
     }
 
     #[test]

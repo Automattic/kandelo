@@ -1379,3 +1379,16 @@ and the complete739-source graph pass under the unchanged watchdog, with zero
 removed roots and two obsolete allowances removed. Full host-suite and final
 memory/desktop/conformance/benchmark acceptance remain required. The original
 baseline/candidate heap failures stay recorded; no acceptance criterion changes.
+
+
+B1's exact-resource kernel/host foundation replaces recyclable descriptor
+identity with retained file/buffer capabilities and once-only receipts.
+Complete the guest-library ownership/fork connection, coherent normal
+rebuild and all B1 gates before declaring the stage complete. Preserve the
+remaining B1–B6/C1–C3 order and the approved B2 synchronous-request gate.
+The extra same-file bridge traffic exposed by native ownership controls
+must remain in total-request accounting and application measurements.
+Freeciv display correctness, content latency and teardown failures remain
+part of this iteration; focused controls cannot waive native-feel or final
+three-engine acceptance. Remaining driver work, GLES3, IGT and multiple
+displays remain the proposed subsequent iteration.

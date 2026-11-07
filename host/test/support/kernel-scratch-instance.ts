@@ -176,10 +176,6 @@ function signatures(
       parameters: [i32],
       result: i32,
     },
-    kernel_get_process_exec_generation: {
-      parameters: [i32, pointer, i32],
-      result: i32,
-    },
     kernel_get_process_exit_status: {
       parameters: [i32],
       result: i32,
@@ -238,6 +234,10 @@ function signatures(
     },
     kernel_blocking_retry_release: {
       parameters: [i32, i32, i64],
+      result: i32,
+    },
+    kernel_owned_mapping_finish: {
+      parameters: [i32, i32, i32, i64, i32],
       result: i32,
     },
     kernel_inject_datagram: {

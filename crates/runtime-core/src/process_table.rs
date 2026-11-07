@@ -762,8 +762,10 @@ impl ProcessTable {
         let mut host_net_closes: Vec<i32> = Vec::new();
         // A trapped process or failed launch may never execute close().
         // Retire the same kernel references as close, before discarding OFDs.
+        crate::syscalls::rollback_owned_mapping_plans(&mut proc);
         let mut dri_effects = crate::syscalls::collect_dri_mapping_releases(core::mem::take(&mut proc.dri_bindings));
         dri_effects.extend(crate::syscalls::collect_process_gl_image_release_effects(&mut proc));
+        dri_effects.extend(crate::syscalls::collect_owned_resource_removal_effects(&mut proc));
         let dri_ofds: Vec<_> = proc.ofd_table.iter()
             .filter_map(|(idx, ofd)| ofd.dri_state.as_ref().map(|_| idx)).collect();
         for idx in dri_ofds {
@@ -1245,10 +1247,12 @@ impl ProcessTable {
     ) -> Result<(), Errno> {
         let mut effects = crate::syscalls::IoctlEffects::default();
         let result = {
-            let (proc, _) = self
+            let (proc, locks) = self
                 .current_process_and_advisory_locks()
                 .ok_or(Errno::ESRCH)?;
-            crate::syscalls::sys_ioctl_local(proc, host, fd, request, buf, &mut effects)
+            if request==wasm_posix_shared::dri_owned::REQUEST {
+                crate::owned_resource::ioctl(proc,locks,host,fd,buf)
+            } else {crate::syscalls::sys_ioctl_local(proc, host, fd, request, buf, &mut effects)}
         };
         if let Some(resize) = effects.terminal_resize {
             self.apply_terminal_resize(resize, host);
@@ -1258,6 +1262,14 @@ impl ProcessTable {
             .ok_or(Errno::ESRCH)?;
         crate::signal::deliver_pending_signals_with_locks(proc, locks, host);
         result
+    }
+
+    /// Complete only an exact host-owned mapping constructor for a live task.
+    pub fn finish_owned_mapping(&mut self,host:&mut dyn crate::process::HostIO,pid:u32,tid:u32,
+        token:u32,transaction:u64,errno:u32)->Result<(),Errno> {
+        self.validate_task(pid,tid)?;
+        let (proc,locks)=self.task_and_advisory_locks(pid,tid).ok_or(Errno::ESRCH)?;
+        crate::owned_resource::finish_mapping(proc,locks,host,tid,token,transaction,errno)
     }
 
     /// Host terminal resize uses the same storage and group routing as ioctl.
@@ -1466,6 +1478,7 @@ impl ProcessTable {
             if parent.prepared_exec_targets.has_retiring() {
                 return Err(Errno::EBUSY);
             }
+            if crate::owned_resource::has_pending_mapping(parent) {return Err(Errno::EBUSY);}
             if matches!(
                 parent.state,
                 crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
@@ -1530,10 +1543,17 @@ impl ProcessTable {
         child.signals.blocked = caller_blocked;
         child.vfork_child = mode == wasm_posix_shared::fork_contract::Mode::Vfork;
 
+        // Library storage capabilities are part of the forked process graph,
+        // including hidden OFDs with no public alias. Reconstruct from the
+        // live parent after ordinary wire relinking, without changing fork21.
+        // Staging rolls back independent BO/name pins if backing acquisition
+        // fails, and no parent's mutable/pending transaction is resumed.
+        let owned=crate::owned_resource::prepare_fork(self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?,&mut child)?;
         // Bump cross-process refcounts on inherited fd state (host handles,
         // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
         // factored out into a free helper.
         bump_inherited_resource_refcounts(parent_pid, &child)?;
+        child.owned_resources=owned.commit();
 
         // Build fork-only `fork_pipe_replay` (fork replay needs it to
         // return the same fds as the parent did when re-running

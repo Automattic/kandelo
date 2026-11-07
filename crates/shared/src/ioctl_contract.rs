@@ -490,6 +490,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_MODE_SETCRTC, In, 104),
     pointer!(crate::dri::DRM_IOCTL_MODE_ADDFB2, InOut, 104),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETFB2, InOut, 104),
+    pointer!(crate::dri_owned::REQUEST, InOut, 320),
 ];
 
 pub fn request_contract(request: u32) -> Option<IoctlRequestContract> {
