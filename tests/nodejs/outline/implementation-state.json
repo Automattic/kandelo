@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T18:12:13.770354+00:00",
+  "updatedAt": "2026-11-07T18:32:49.883004+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -46,7 +46,7 @@
   "deployAuthorized": false,
   "overallSuitesRun": 0,
   "productRebuildsRun": 0,
-  "packageOrEngineCompilationsRun": 298,
+  "packageOrEngineCompilationsRun": 299,
   "families": {
     "values": {
       "breadthState": "started",
@@ -2509,7 +2509,8 @@
     "third_party/node-core/tests/eval-builtin-bindings/preload.cjs": "4d2392d1e9454dbe9d46989959ba3b323612c298a1cb870334d1c62766d08c58",
     "third_party/node-core/tests/eval-builtin-bindings/control.cjs": "b771dd36d452420e9c0cb330615b142001aef16dd9e5949cc9c60db207cc809d",
     "third_party/node-core/tests/eval-builtin-bindings/README.md": "628affa0beca65b0432d8760580b6f1178e847e65a5e6e10978e0739f4769476",
-    "packages/registry/spidermonkey/patches/0168-node-eval-presence.patch": "20508e2cc171297fc9b063efc06e551a5168dcb9e7f4e33b1d36e3537b87218e"
+    "packages/registry/spidermonkey/patches/0168-node-eval-presence.patch": "20508e2cc171297fc9b063efc06e551a5168dcb9e7f4e33b1d36e3537b87218e",
+    "tests/nodejs/outline/engine230-build-result.json": "9f34685b04e6c2f3cae386d44c7c857f2bb57b1cf7c7160979df738912f4bc55"
   },
   "changes": [
     {
@@ -8994,14 +8995,14 @@
     }
   ],
   "nextSourceWork": [
-    "Push source230, reconcile229+230qualified finding ledger, then freeze normal selected engine230 compile with actual ::socket/shutdown/eval combined source; no full product/overall suite",
-    "Collect and record exact engine terminal/artifact/failure identity without conflating compilation with guest execution",
-    "Review and integrate private real stdio SIGWINCH/captured-owner publication after frozen compile terminal",
-    "Continue breadth-first audited loading/terminal and independent family gaps; nested guest Wasm backend stays in scope last"
+    "Reconcile advanced main safely after terminal record; preserve compiled230 provenance and unrelated source",
+    "Record qualified229shutdown/230eval finding links without API closure",
+    "Integrate independently reviewed main stdio resize and actual TLS write-callback/keygen foundations breadth first",
+    "Focused identified-artifact guest validation after prerequisites, overall suites/fullproduct remain deferred; nested guest Wasm last"
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated real queued retained shutdown ownership and actual close-phase correction with pinned frontend, fixed genuine datagram namespace compiler error, preserved original failures and verified current native/source controls."
+    "reason": "Integrated unchanged pinned builtin helper through real Module/cache/require and actual main eval path with separate parser-owned presence; fresh scoped controls preserve earlier nonpasses and current229ownership composition."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -51940,15 +51941,15 @@
     "state": "OS lookup source and raw c-ares channel plus owned record decoder; public Resolver/channel/request/loop/JSAPI/guest linking/transport/error/malformed and four-host obligations remain open"
   },
   "nativeCompilationAccountingThisTurn": {
-    "acceptedEngineBuilds": 0,
+    "acceptedEngineBuilds": 1,
+    "guestEngineBuildAttempts": 1,
     "guestEngineBuildFailures": 0,
-    "guestPackageAttempts": 0,
-    "guestDependencyCompilations": 0,
-    "kernelWasmCompilations": 0,
     "nativeHelperCompileAttempts": 0,
     "nativeHelperCompileFailures": 0,
+    "guestDependencyCompilations": 0,
+    "kernelWasmCompilations": 0,
     "productRebuilds": 0,
-    "scope": "No new compiler for producer or root eval slice. Actual229shutdown helper compiles and228native/guest failures remain separately counted; new230presence C++ is not compiled."
+    "scope": "Actual raw Cargo fresh:false completed targets plus failed compiler targets; one selected normal engine package attempt only when real recipe-entry evidence and terminal prove it. Internal engine TUs/Rust archive are raw-log detail, not separate package builds. Preflight failure adds zero guest attempts."
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -52740,7 +52741,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated unchanged pinned builtin helper through real Module/cache/require and actual main eval path with separate parser-owned presence; fresh scoped controls preserve earlier nonpasses and current229ownership composition."
+    "reason": "Normal frozen combined230 engine compilation/link/style/opcode/fork instrumentation and canonical cache acceptance succeeded, exact artifact retained. Runtime execution/four-host/API compatibility unestablished; main ref drift recorded separately."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -53874,10 +53875,11 @@
     "guestEngineCompiled": false
   },
   "targetedEngineBuild": {
-    "recipeRevision": 200,
-    "jobId": "node26-engine200-1107-035111-4754",
-    "report": "tests/nodejs/outline/engine200-build-result.json",
-    "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5",
+    "recipeRevision": 230,
+    "jobId": "node26-engine230-1107-131443-7cca",
+    "report": "tests/nodejs/outline/engine230-build-result.json",
+    "sha256": "9f34685b04e6c2f3cae386d44c7c857f2bb57b1cf7c7160979df738912f4bc55",
+    "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior228 failures and source229 correction remain unchanged.",
     "result": "normal-production-build-and-cache-acceptance-success",
     "productionCompilationSucceeded": true,
     "productionLinkSucceeded": true,
@@ -53885,7 +53887,11 @@
     "acceptedArtifact": true,
     "guestRuntimeValidated": false,
     "currentSourceRevision": 230,
-    "scope": "Normal selected200production engine compilation/link/style/opcode checks, optimization, fork instrumentation and canonical cache acceptance. Static ABI55/kernel-program contract inspection passes. No new product projection, instantiation, guest or four-host runtime evidence."
+    "artifact": {
+      "path": ".context/node26-engine230-terminal/artifacts/js.wasm",
+      "sha256": "cb4ef448465cd509fa2ec9fb2c6e184f84ce1f9a124ac85a43ed5fb8ea795c33",
+      "bytes": 52029906
+    }
   },
   "targetedEngineBuildHistory": [
     {
@@ -55974,16 +55980,31 @@
       "guestRuntimeValidated": false,
       "currentSourceRevision": 200,
       "scope": "Normal selected173production engine compilation/link/style/opcode checks, optimization, fork instrumentation and canonical cache acceptance. Static ABI55/kernel-program contract inspection passes. No new product projection, instantiation, guest or four-host runtime evidence."
+    },
+    {
+      "recipeRevision": 200,
+      "jobId": "node26-engine200-1107-035111-4754",
+      "report": "tests/nodejs/outline/engine200-build-result.json",
+      "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5",
+      "result": "normal-production-build-and-cache-acceptance-success",
+      "productionCompilationSucceeded": true,
+      "productionLinkSucceeded": true,
+      "normalChecksSucceeded": true,
+      "acceptedArtifact": true,
+      "guestRuntimeValidated": false,
+      "currentSourceRevision": 230,
+      "scope": "Normal selected200production engine compilation/link/style/opcode checks, optimization, fork instrumentation and canonical cache acceptance. Static ABI55/kernel-program contract inspection passes. No new product projection, instantiation, guest or four-host runtime evidence."
     }
   ],
   "nativeEmbeddingIntegration": {
-    "at": "2026-11-07T18:12:13.770354+00:00",
+    "at": "2026-11-07T18:32:49.883004+00:00",
     "recipeRevision": 230,
-    "lastAcceptedEngine": 200,
-    "sourceOnly": true,
-    "guestCompiled": false,
+    "lastAcceptedEngine": 230,
+    "sourceOnly": false,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
-    "scope": "Source230actual eval helper14native-dependent groups+4sourceguards+1upstream native/helper-selected subjects over explicit native deps; publicCLI/newC++/REPL/guest/fourhost unvalidated."
+    "scope": "Current230 normal C++/embedded bootstrap compiled/linked and canonical cache accepted; no guest JSAPI/lifecycle/API/four-host runtime conformance established. Exact artifact and source identities in engine230 terminal report.",
+    "fourHostConformance": false
   },
   "asyncAuditedFindingProgress": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -57613,6 +57634,15 @@
       "guestCompiled": false,
       "guestRuntimeValidated": false,
       "scope": "Source229real shutdown9frontend+7portable+7regression groups/native dependencies,1424existingownerassertions; newguest/fullSocket/TLS/fourhost unvalidated."
+    },
+    {
+      "at": "2026-11-07T18:12:13.770354+00:00",
+      "recipeRevision": 230,
+      "lastAcceptedEngine": 200,
+      "sourceOnly": true,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "scope": "Source230actual eval helper14native-dependent groups+4sourceguards+1upstream native/helper-selected subjects over explicit native deps; publicCLI/newC++/REPL/guest/fourhost unvalidated."
     }
   ],
   "bufferPoolImplementation": {
@@ -57921,13 +57951,13 @@
   },
   "sourceCandidateIntegration": {
     "recipeRevision": 230,
-    "sourceOnly": true,
-    "lastAcceptedEngine": 200,
-    "acceptedArtifactCurrentForCandidate": false,
-    "guestCompiled": false,
+    "sourceOnly": false,
+    "lastAcceptedEngine": 230,
+    "acceptedArtifactCurrentForCandidate": true,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
     "fourHostConformance": false,
-    "scope": "Current230combined guest source has no accepted build; accepted200and prior nonpasses retain their scopes. Pending private agent work excluded."
+    "scope": "Current230 normal build/cache artifact accepted; no guest execution/API/four-host compatibility established."
   },
   "vmPlainContextImplementation": {
     "at": "2026-11-05T00:10:14.839714+00:00",
@@ -63997,6 +64027,18 @@
       "nativeHelperCompileFailures": 0,
       "productRebuilds": 0,
       "scope": "Account producer3tiny native helper compiler attempts/0failures once; only2passing binaries reused by root. Root0newcompiler for these controls. Previously separate228buildfailure recorded1native+1guestattempt; no double counting. New229JSAPI uncompiled."
+    },
+    {
+      "at": "2026-11-07T18:32:49.883004+00:00",
+      "acceptedEngineBuilds": 0,
+      "guestEngineBuildFailures": 0,
+      "guestPackageAttempts": 0,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "nativeHelperCompileAttempts": 0,
+      "nativeHelperCompileFailures": 0,
+      "productRebuilds": 0,
+      "scope": "No new compiler for producer or root eval slice. Actual229shutdown helper compiles and228native/guest failures remain separately counted; new230presence C++ is not compiled."
     }
   ],
   "cryptoKdfImplementation": {
@@ -127126,6 +127168,11 @@
       "report": "tests/nodejs/outline/engine228-build-failure-r2.json",
       "sha256": "94731ba23888bd0100b1de5509f4380b8cc7ff361548ace4b152c4e2db956c48",
       "scope": "Actual frozen228 normal C++build failure; no accepted artifact or runtime compatibility."
+    },
+    {
+      "report": "tests/nodejs/outline/engine230-build-result.json",
+      "sha256": "9f34685b04e6c2f3cae386d44c7c857f2bb57b1cf7c7160979df738912f4bc55",
+      "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior228 failures and source229 correction remain unchanged."
     }
   ],
   "engine228PreflightR1": {
@@ -127338,5 +127385,14 @@
     "individualApiClosure": false,
     "implementationComplete": false,
     "acceptedPlatformLimits": []
+  },
+  "engine230TerminalResult": {
+    "report": "tests/nodejs/outline/engine230-build-result.json",
+    "sha256": "9f34685b04e6c2f3cae386d44c7c857f2bb57b1cf7c7160979df738912f4bc55",
+    "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Prior228 failures and source229 correction remain unchanged.",
+    "jobId": "node26-engine230-1107-131443-7cca",
+    "guestEngineAttempted": true,
+    "acceptedArtifact": true,
+    "evidenceDirectory": ".context/node26-engine230-terminal"
   }
 }
