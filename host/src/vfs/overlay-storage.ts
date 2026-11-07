@@ -1,3 +1,4 @@
+/// <reference path="./opfs-types.d.ts" />
 import { hostFilePositionToSafeNumber } from "../file-offset";
 import { browserPersistenceDirectory } from "../browser-computer-storage";
 import { OPEN_FLAGS } from "../generated/abi";

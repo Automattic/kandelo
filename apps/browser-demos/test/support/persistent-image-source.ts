@@ -1,6 +1,26 @@
 import { createServer } from "node:http";
-import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+
+// DOM and Node declare different BYOB overloads on ReadableStream. Bridge
+// their shared chunk protocol instead of casting the entire stream: pipeline
+// still pulls incrementally, and early termination cancels the exact reader.
+async function* responseChunks(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
+  const reader = body.getReader();
+  let complete = false;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) { complete = true; return; }
+      yield chunk.value;
+    }
+  } finally {
+    try {
+      if (!complete) await reader.cancel();
+    } finally {
+      reader.releaseLock();
+    }
+  }
+}
 
 export interface PersistentImageSource {
   readonly url: string;
@@ -60,7 +80,7 @@ export async function startPersistentImageSource(
         await result.body?.cancel();
         response.end();
       } else {
-        await pipeline(Readable.fromWeb(result.body), response);
+        await pipeline(responseChunks(result.body), response);
       }
     } catch (error) {
       if (!response.headersSent) response.writeHead(502).end(String(error));

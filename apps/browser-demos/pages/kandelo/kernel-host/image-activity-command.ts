@@ -40,8 +40,9 @@ export async function retryImageActivityCleanup(): Promise<void> {
   }));
   if (!retained.size && cleanupTimer !== null) { clearTimeout(cleanupTimer); cleanupTimer = null; }
   if (retained.size && cleanupTimer === null) {
+    // Cleanup remains live until the owner confirms retirement. Browser
+    // timer handles are numbers; only confirmed cleanup may cancel this timer.
     cleanupTimer = setTimeout(() => { cleanupTimer = null; void retryImageActivityCleanup(); }, 1000);
-    (cleanupTimer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
   }
 }
 
