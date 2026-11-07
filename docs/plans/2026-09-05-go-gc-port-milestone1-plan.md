@@ -10,6 +10,28 @@ Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
 Implementation/evaluation checkpoints are pushed to draft PR #1492.
 The full WordPress service goal remains unfinished.
 
+**Parallel validation preparation:** clean latest-main worktree
+`.context/go-benchmark-main-afeed` has its own npm installations and freshly
+built wasm32/wasm64 musl SDK cores. Its normal kernel/rootfs publication is
+running; no benchmark timings run alongside compilation. The preserved
+older baseline remains unchanged and is not used as latest-main evidence.
+The test-evidence inventory exposed three unclassified tests after the
+main merge and service-test additions. The retro-emulator and WordPress
+service cases are now prepared-product; the terminal-request parser is
+source-only. Registry and collected inventory agree for all 662 files.
+
+An isolated host experiment in `.context/go-mmap-fresh-pages` avoids
+explicitly clearing pages appended by its own `Memory.grow`, using that
+operation's actual previous page count. Reused pages, including another
+thread's growth, still need clearing. The supported helper retains its void
+return value. The experiment passes 239 source tests, six browser helper
+cases (memory32 and memory64 on all three engines), and four actual Node C
+mmap cases using freshly compiled primary-SDK fixtures and frozen kernel
+`a991e3cf`. The browser C gate is in progress after correcting a private
+harness's duplicate Playwright import. This host change is not adopted;
+real zeroing/reuse coverage, footprint measurements, final-image lifecycle
+and performance gates remain required. No memory benefit is claimed.
+
 **Cgo package reproducibility — stable archive prefixes:** the independent
 same-key classic 38 rebuild fails byte equivalence while preserving the
 canonical generation. Native Go 1.25.8 and Kandelo/wasm32 f605 controls both

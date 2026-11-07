@@ -388,6 +388,7 @@ host/test/remote-segment.test.ts	source-only
 host/test/remote-session-network.test.ts	source-only
 host/test/remote-tcp-guest.test.ts	prepared-product
 host/test/remote-tcp.test.ts	source-only
+host/test/retro-emulators-cli-smoke.test.ts	prepared-product
 host/test/reusable-kernel-export-stack.test.ts	prepared-product
 host/test/rlimit-as.test.ts	prepared-product
 host/test/rlimit-fsize.test.ts	prepared-product
@@ -545,6 +546,7 @@ host/test/wordpress-admin-rehash.test.ts	prepared-product
 host/test/wordpress-benchmark-state.test.ts	source-only
 host/test/wordpress-direct-network-config.test.ts	prepared-product
 host/test/wordpress-first-boot-secrets.test.ts	prepared-product
+host/test/wordpress-frankenphp-service-live.test.ts	prepared-product
 host/test/wordpress-source-layout.test.ts	prepared-product
 host/test/worker-adapter.test.ts	source-only
 host/test/worker-entry.test.ts	prepared-product
@@ -656,6 +658,7 @@ web-libs/kandelo-session/test/package-sessions.test.ts	source-only
 web-libs/kandelo-session/test/peer-connection.test.ts	source-only
 web-libs/kandelo-session/test/sized-download.test.ts	source-only
 web-libs/kandelo-session/test/terminal-links.test.ts	source-only
+web-libs/kandelo-session/test/terminal-request.test.ts	source-only
 web-libs/kandelo-session/test/tracked-demo-parity.test.ts	prepared-product
 web-libs/kandelo-session/test/vfs-asset-group.test.ts	source-only
 web-libs/kandelo-session/test/web-preview-address.test.ts	source-only
