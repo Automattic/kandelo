@@ -95,6 +95,12 @@ Task ledgers and linked local evidence live under the ignored
 `.context/agent-integrations/` directory. Validation command execution stays
 separate; this tool imports reviewed results rather than scheduling checks.
 
+[`scripts/agent-checkpoint`](agent-guidance/campaigns.md) stores immutable
+campaign handoff notes in `.context/agent-checkpoints/`. Its standalone
+implementation is `.claude/hooks/context-checkpoint.py`, which also supplies
+the optional Claude Code context reminder. Neither operation rotates workers
+or validates the claims written in a note.
+
 ## CI Path Categories
 
 The layout is designed so later CI path filters can make conservative, explainable decisions:
