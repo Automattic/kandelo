@@ -15,7 +15,7 @@ flags=();if [ "${KANDELO_EGL_QUEUE_BEFORE:-0}" = 1 ];then flags+=(-DWPK_EGL_QUEU
 clang -std=gnu11 -O1 -g -pthread -fsanitize=undefined -fno-sanitize-recover=all \
  -ffunction-sections -fdata-sections -Wno-ignored-attributes -Wno-pointer-bool-conversion ${flags[@]+"${flags[@]}"} \
  -I"$out/include" -I"$out/include/drm" -I"$queue_glue" -I"$root/tests/graphics/libc" \
- "$root/tests/graphics/libc/egl-release-queues.c" "$link_gc" -o "$out/queues"
+ "$root/tests/graphics/libc/egl-release-queues.c" "$root/tests/graphics/libc/native-graphics-optional.c" "$link_gc" -o "$out/queues"
 controls=("$@");if [ "${#controls[@]}" = 0 ];then controls=(gbm-plain gbm-pending gbm-nested gbm-nested-self gbm-self gbm-exit gbm-mixed-exit gbm-foreign-first gbm-foreign-second wayland-plain wayland-idle-fork wayland-prepare-fail wayland-nested wayland-nested-self wayland-self wayland-inherited wayland-exit wayland-foreign generation-plain generation-after-clear-foreign generation-idle-fork generation-prepare-fail generation-nested generation-nested-self generation-self generation-inherited generation-exit generation-foreign);fi
 python3 - "$out/queues" "${controls[@]}" <<'PYRUN'
 import json,os,pathlib,subprocess,sys

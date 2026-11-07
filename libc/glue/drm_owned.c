@@ -79,6 +79,31 @@ static uint64_t process_epoch(void) {
     return atomic_load_explicit(&resource_process_epoch,memory_order_relaxed);
 }
 uint64_t _wpk_drm_process_generation(void) {return process_epoch();}
+#if defined(__wasm__)
+extern uint64_t __wasm_posix_native_fork_epoch(void);
+#else
+/* Native source controls provide explicit copied-libc state when exercising
+ * D-59. This is a fixture hook, not a production missing-capability fallback. */
+extern uint64_t __wasm_posix_native_fork_epoch(void) __attribute__((weak));
+#endif
+uint64_t _wpk_drm_native_fork_epoch(void) {
+#if defined(__wasm__)
+    return __wasm_posix_native_fork_epoch();
+#else
+    return __wasm_posix_native_fork_epoch?__wasm_posix_native_fork_epoch():0;
+#endif
+}
+static struct wpk_wl_boundary_hold *wayland_boundary_roots;
+void _wpk_wl_boundary_transfer_locked(struct wpk_wl_boundary_hold *hold) {
+    if(!hold||!hold->owner)abort();
+    if(hold->transferred)return;
+    /* WHY: replaying cleanup could traverse a torn inherited native graph or
+     * close a recycled descriptor. Preserve its actual heap owner for the
+     * remaining image lifetime instead; this marker is not native completion
+     * or a Worker acknowledgement. Caller and root publish under one guard. */
+    hold->next=wayland_boundary_roots;
+    hold->transferred=1;wayland_boundary_roots=hold;
+}
 static struct wpk_drm_owner *reserve_owner(void) {
     uint64_t epoch=process_epoch();
     if(!epoch){errno=ENOMEM;return NULL;}
@@ -954,6 +979,12 @@ int _wpk_drm_actor_prepare(void) {
 }
 int _wpk_drm_actor_claim_live_locked(const struct wpk_drm_actor_claim *claim) {
     return claim&&claim->scope&&claim->scope->alive;
+}
+int _wpk_drm_actor_claim_current_locked(const struct wpk_drm_actor_claim *claim) {
+    /* Metadata only: callers already hold publication and retain the claim.
+     * Preparing an actor here could allocate or recurse under that guard. */
+    return claim&&claim->scope&&claim->scope==actor_current_scope&&
+        claim->scope->alive;
 }
 int _wpk_drm_actor_try_claim_locked(struct wpk_drm_actor_claim *claim) {
     if(!claim||!actor_current_scope||!actor_current_scope->alive)abort();

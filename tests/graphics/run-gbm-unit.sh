@@ -51,7 +51,7 @@ clang "${native_flags[@]}" \
     "$output_dir/gbm.o" "$output_dir/test.o" \
     "$repo_root/tests/graphics/libc/gbm-file-double.c" "$output_dir/owned.o" \
     "$repo_root/tests/graphics/libc/owned-resource-peer.c" \
-    -o "$output_dir/gbm-metadata"
+    "$repo_root/tests/graphics/libc/native-graphics-optional.c" -o "$output_dir/gbm-metadata"
 python3 - "$output_dir/gbm-metadata" <<'PY'
 import subprocess, sys
 try:
@@ -69,7 +69,7 @@ clang "${native_flags[@]}" \
     "$output_dir/gbm.o" "$output_dir/mesa.o" \
     "$repo_root/tests/graphics/libc/gbm-file-double.c" "$output_dir/owned.o" \
     "$repo_root/tests/graphics/libc/owned-resource-peer.c" \
-    -o "$output_dir/gbm-mesa"
+    "$repo_root/tests/graphics/libc/native-graphics-optional.c" -o "$output_dir/gbm-mesa"
 status=0
 for case_name in ${KANDELO_GBM_CASES:-user-data-replace import-fd-bounds import-fd-modifier import-gpu-tier import-usage legacy-formats usage-flags plane-accessors rgb565 widened-formats import-gpu-format import-egl-image yuv-buffers import-yuv}; do
     python3 - "$output_dir/gbm-mesa" "$case_name" <<'PY' || status=1

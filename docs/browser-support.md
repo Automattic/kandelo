@@ -212,6 +212,14 @@ Injected TCP pipes live in the kernel's global pipe table (`pid == 0` for
 connection in any nginx worker. The standalone nginx image runs with
 `master_process on` and `worker_processes 2`.
 
+The machine activation also owns its HTTP readiness probe. Retiring or
+halting that activation aborts its pending fetch and retry timer before its
+HTTP bridge is taken offline. A replacement activation has an independent
+signal, so late old results cannot change its preview state. Current HTTP
+failures still retry under the same 90-second readiness and five-second
+request budgets, then surface the real failure; cancellation does not turn
+an unavailable current application into a successful preview.
+
 AF_UNIX stream listeners use the same shared-queue ownership model. This is the
 path used by pre-fork PHP-FPM workers: a connection is queued once and whichever
 worker wins `accept()` materializes its own connected socket around the global

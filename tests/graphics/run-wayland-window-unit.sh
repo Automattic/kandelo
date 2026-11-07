@@ -30,7 +30,7 @@ clang -g -O1 -pthread -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" -fn
 clang -g -O1 -pthread -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" -fno-sanitize-recover=all -fno-omit-frame-pointer \
     -I"$output_dir/include" -I"$repo_root/libc/glue" \
     "$repo_root/tests/graphics/libc/wayland-window.c" "$output_dir/owned.o" \
-    "$repo_root/tests/graphics/libc/owned-resource-peer.c" -o "$output_dir/wayland-window"
+    "$repo_root/tests/graphics/libc/owned-resource-peer.c" "$repo_root/tests/graphics/libc/native-graphics-optional.c" -o "$output_dir/wayland-window"
 python3 - "$output_dir/wayland-window" <<'PYTHON'
 import subprocess,sys
 try:

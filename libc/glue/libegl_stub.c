@@ -215,6 +215,13 @@ static struct egl_surface_record *g_surface_releases;
 /* WHY: lifecycle calls and newly withdrawn nodes request a cold pass. Incomplete
  * native leaves must not turn swap/query unlocks into queue scans. */
 static atomic_int g_release_work;
+/* Native adapters call only after publishing actual ready work, outside the
+ * pure publication guard. Their user callbacks may end a thread, so they must
+ * wait for this existing post-context-unlock cold path instead of running
+ * while EGL owns metadata. Cached frames introduce no extra call or scan. */
+void _wpk_egl_request_native_drain(void) {
+    atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
+}
 static struct wpk_egl_image *g_images;
 static int g_image_retire_pending;
 /* WHY: caller holds both context metadata and the pure publication guard. Queue
@@ -276,6 +283,15 @@ static void drain_egl_releases(void) {
     if(!_wpk_drm_actor_prepare())return;
     uint64_t visit=_wpk_owned_resource_nonce();
     if(!visit){fprintf(stderr,"Kandelo EGL: retirement visit exhausted; queues retained\n");return;}
+    /* Keep synchronous diagnostics on their original live actor. A foreign
+     * unlock rearms the request; blocked native work returns zero and waits
+     * for a later cold lifecycle event. Never clear a concurrent enqueue. */
+    /* Persist each result before another callback: that later callback may
+     * end this thread, leaving earlier foreign-origin work still pending. */
+    if(_wpk_wlegl_drain_deferred&&_wpk_wlegl_drain_deferred())
+        atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
+    if(_wpk_wl_log_drain_deferred&&_wpk_wl_log_drain_deferred())
+        atomic_store_explicit(&g_release_work,1,memory_order_relaxed);
     size_t surface_budget=0,generation_budget=0;
     _wpk_drm_owned_publication_begin();
     for(struct egl_surface_record *p=g_surface_releases;p;p=p->next)surface_budget++;

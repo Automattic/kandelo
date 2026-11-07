@@ -7,7 +7,7 @@ common_source="${KANDELO_OWNED_COMPLETION_SOURCE:-$root/libc/glue/drm_owned.c}"
 clang -std=c11 -D_GNU_SOURCE -g -O1 -pthread -Wall -Wextra -Werror -Wno-unused-function \
  -fsanitize=undefined -fno-sanitize-recover=all -I"$root/libc/glue" -I"$root/tests/graphics/libc" \
  "-DWPK_OWNED_COMMON_SOURCE=\"$common_source\"" \
- "$root/tests/graphics/libc/drm-owned-completion.c" -o "$out/completion"
+ "$root/tests/graphics/libc/drm-owned-completion.c" "$root/tests/graphics/libc/native-graphics-optional.c" -o "$out/completion"
 status=0
 for name in ${KANDELO_OWNED_COMPLETION_CASES:-enter recover mid-progress release release-committed release-error nonentry cold-preentry cold-ack cold-ack-owned-error cold-ack-rejected cold-ack-lost cold-acquire-ack}; do
 python3 - "$out/completion" "$name" <<'PY' || status=1

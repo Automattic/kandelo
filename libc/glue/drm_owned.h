@@ -144,6 +144,20 @@ void _wpk_drm_mutex_unlock(struct wpk_drm_mutex *mutex);
 /* One process-wide cold nonce source, shared by every graphics archive. */
 uint64_t _wpk_owned_resource_nonce(void);
 uint64_t _wpk_drm_process_generation(void);
+/* D-59 compares this child-only epoch with a connection's creation epoch.
+ * Kept in libc so every linked Wayland archive observes the same authority. */
+uint64_t _wpk_drm_native_fork_epoch(void);
+/* An intrusive heap owner, independent of a caller's soon-freed EGL shell.
+ * Only an explicitly approved inherited-Wayland boundary may use this root.
+ * Transfer under the publication guard before clearing the caller's slot;
+ * no native graph traversal, numeric close, allocation or release is implied.
+ * Exec/exit discards C state; ordinary descriptors keep normal kernel policy. */
+struct wpk_wl_boundary_hold {
+    struct wpk_wl_boundary_hold *next;
+    void *owner;
+    unsigned transferred;
+};
+void _wpk_wl_boundary_transfer_locked(struct wpk_wl_boundary_hold *);
 /* A cleanup stack can survive fork on its own thread. An epoch-only claim
  * would let a reentrant child drain free that stack's node. These cold claims
  * retain heap thread identities, so only an ended/vanished actor is adoptable.
@@ -155,5 +169,8 @@ struct wpk_drm_actor_claim { struct wpk_drm_actor_scope *scope; };
 int _wpk_drm_actor_prepare(void);
 int _wpk_drm_actor_try_claim_locked(struct wpk_drm_actor_claim *claim);
 int _wpk_drm_actor_claim_live_locked(const struct wpk_drm_actor_claim *claim);
+/* Deferred diagnostics retain their original live actor: another thread must
+ * not deliver them merely because it reached an unrelated EGL unlock first. */
+int _wpk_drm_actor_claim_current_locked(const struct wpk_drm_actor_claim *claim);
 void _wpk_drm_actor_release_locked(struct wpk_drm_actor_claim *claim);
 #endif

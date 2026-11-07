@@ -1445,3 +1445,10 @@ browser outcomes are not attributed or waived. Complete native Wayland
 retirement and approved D-59 enforcement, then rebuild and execute the full
 Node/browser workloads before calling B1 complete. These remain work in this
 iteration, alongside every native-feel and final acceptance requirement.
+
+The native-ready EGL bridge and metadata-only inherited-Wayland custody root
+are now source foundations. Finish native continuations and D-59 raw entry/
+callback-return enforcement in this iteration, then prove ordinary and child
+lifetimes on rebuilt targets. Explicit retained custody remains distinct from
+completion; native test doubles and unresolved queue observations cannot close
+those requirements or establish performance.

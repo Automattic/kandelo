@@ -12,7 +12,7 @@ clang -std=gnu11 -O1 -g -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" \
  -fno-sanitize-recover=all -ffunction-sections -fdata-sections -pthread \
  -DWPK_BORROW_NEW -I"$out/include" -I"$root/libc/glue" \
  "$root/tests/graphics/libc/image-borrow-fork.c" "$root/libc/glue/drm_owned.c" \
- "$link_gc" -o "$out/image-borrow"
+ "$link_gc" "$root/tests/graphics/libc/native-graphics-optional.c" -o "$out/image-borrow"
 for control in fork storage nested exit cancel oom saturation;do
  python3 - "$out/image-borrow" "$control" <<'PY'
 import subprocess,sys

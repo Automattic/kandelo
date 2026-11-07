@@ -7667,3 +7667,16 @@ still being implemented. These source controls are not full B1 or normal
 target acceptance. Libc now preserves a child-only multithreaded-fork epoch
 before rebinding its copied thread list; this primitive alone does not
 implement the approved Wayland boundary.
+
+Native cleanup backends request EGL's existing cold post-context-unlock drain
+only after publishing actual ready work. The backend retains an exact heap
+actor claim; another live actor's work rearms that request, and completed or
+blocked work does not introduce a repeated frame scan. Each positive rearm
+is persisted before entering the next callback-capable backend, because that
+callback may end its thread. Cached unlocks add no new native hook.
+
+D-59's foundation classifies inherited Wayland custody using the private libc
+multithread-fork epoch and platform-owned metadata, without following an old
+native graph. A transferred heap owner is distinct from completed cleanup or
+a Worker acknowledgement. Full raw native-entry and callback-return rejection
+is still being integrated; these helpers alone do not enforce the boundary.

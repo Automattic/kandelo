@@ -11,7 +11,7 @@ flags=();if [ "${KANDELO_IMAGE_GENERATION_BEFORE:-0}" != 1 ];then flags+=(-DWPK_
 clang -DWPK_BORROW_NEW -std=gnu11 -O1 -g -pthread -ffunction-sections -fdata-sections \
  -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" -fno-sanitize-recover=all ${flags[@]+"${flags[@]}"} \
  -I"$out/include" -I"$root/libc/glue" -I"$root/tests/graphics/libc" \
- "$root/tests/graphics/libc/image-generation.c" "$link_gc" -o "$out/image-generation"
+ "$root/tests/graphics/libc/image-generation.c" "$link_gc" "$root/tests/graphics/libc/native-graphics-optional.c" -o "$out/image-generation"
 controls=("$@");if [ "${#controls[@]}" = 0 ];then controls=(lookup generation reuse source publication saturation);fi
 for control in "${controls[@]}";do
  ASAN_OPTIONS=detect_leaks=0 python3 - "$out/image-generation" "$control" <<'PY'

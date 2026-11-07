@@ -26113,3 +26113,49 @@ Kernel SHA256 is
 (2,070,720 bytes). This is foundations only, excludes the new fork/Wayland
 changes and does not rebuild application packages or provide a new preview.
 All failed build/launcher/disk attempts remain recorded in R616's run dirs.
+
+### Cold native handoff and D-59 metadata foundation, 2026-11-07
+
+EGL can now receive a native-ready notification after custody is rooted and
+invoke optional backends only in its existing post-context-unlock cold pass.
+Live foreign origins rearm the request. Rearm is stored before the next
+callback, preserving it even if that callback exits its thread. Ordinary
+cached unlocks add no backend hook or ActorScope preparation. An independent
+review found the original delayed-store defect; the combined foreign-window
+rearm plus exiting-log regression now passes.
+
+Private D-59 helpers compare libc's native-fork epoch with connection metadata
+and preserve the whole actual heap owner under publication before callers
+withdraw custody. They never traverse the possibly torn graph, decrement its
+native users, close a numeric descriptor, or label transfer COMPLETE/ACK.
+This is a foundation: raw public entry and callback-return rejection, ordinary
+native continuation integration and coherent target execution remain pending.
+
+Exact commands/results are in `.context/graphics-native-bridge-integration-r625/`:
+
+- R2 job `graphics-native-bridge-integration-r2-r6-1107-010706-dcf1`
+  PASS6s:5 actual EGL bridge modes, metadata boundary/current-actor controls
+  and75 unchanged inputs. Includes actual mutex reentry/thread exit,
+  concurrent enqueue, inaccessible native pointers, fresh/equal epochs,
+  idempotent heap transfer and parent/descriptor isolation. The epoch authority
+  is an explicit native test double; actual child-rebind source has its
+  separate control and target execution is not inferred.
+- R3 aggregate FAILED34s solely linking the old outer-queue fixture without
+  its optional native peer. The5 bridge modes, boundary controls, exact and
+  concurrent mapping/VM cases, and full native libc consumers pass; input
+  checks are unchanged. Native fixture defaults belong only to tests.
+- R4 `graphics-native-bridge-queues-r625-1107-011504-0852` PASS5s after linking
+  that same explicit peer into the one omitted runner. All28 queue modes
+  execute:20 sound behaviours and8 deliberately unresolved native leaves,
+  which still do not count as successful native acceptance. C input bytes
+  equal R3; only that runner changes.
+- `graphics-native-bridge-wasm-r629-1107-011603-b32c` PASS5s: actual common and
+  EGL object compilation on wasm32/wasm64 against normal R616 SDK headers.
+  This is component compilation, not SDK publication or guest execution.
+
+The portable native fixture peer defines weak zero-epoch/empty-drain defaults
+only for fixtures without those backends; real source controls override them
+from separate translation units. No product fallback, platform-specific linker
+flag or runtime-defect claim is introduced. Producer R625's full fixture run
+passes56s; its original wrong archive argument remains failed. Normal SDK,
+Node/browser, full B1 preview and all final acceptance gates remain required.

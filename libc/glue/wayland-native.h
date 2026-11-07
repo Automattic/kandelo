@@ -5,6 +5,10 @@
 #define WPK_WAYLAND_OPTIONAL
 #endif
 /* Private same-module capabilities. Never exported on the guest/kernel wire. */
+/* Cold work only: called by EGL after dropping context metadata. A return of
+ * one requests another pass for work reserved to a different live actor. */
+WPK_WAYLAND_OPTIONAL int _wpk_wlegl_drain_deferred(void);
+WPK_WAYLAND_OPTIONAL int _wpk_wl_log_drain_deferred(void);
 WPK_WAYLAND_OPTIONAL int _wpk_wl_display_metadata(const void *, uint64_t *);
 WPK_WAYLAND_OPTIONAL void *_wpk_wl_display_acquire(const void *, uint64_t);
 WPK_WAYLAND_OPTIONAL int _wpk_wl_display_alive(void *);

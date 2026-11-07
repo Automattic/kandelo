@@ -13,7 +13,7 @@ flags=();if [ "${KANDELO_GBM_RETIREMENT_BEFORE:-0}" = 1 ];then flags+=(-DWPK_GBM
 clang -std=gnu11 -O1 -g -pthread -fsanitize=undefined -fno-sanitize-recover=all \
  -ffunction-sections -fdata-sections ${flags[@]+"${flags[@]}"} \
  -I"$out/include" -I"$out/include/drm" -I"$root/libc/glue" -I"$root/tests/graphics/libc" \
- "$root/tests/graphics/libc/gbm-retirement-actor.c" "$link_gc" -o "$out/actor"
+ "$root/tests/graphics/libc/gbm-retirement-actor.c" "$link_gc" "$root/tests/graphics/libc/native-graphics-optional.c" -o "$out/actor"
 controls=("$@");if [ "${#controls[@]}" = 0 ];then controls=(plain public device first second surface-first surface-second callback-fork callback-exit public-callback-fork public-callback-exit public-callback-nested ordinary-destroy-first ordinary-destroy-second ordinary-last-first ordinary-last-second ordinary-callback-fork ordinary-callback-exit ordinary-last-callback-fork ordinary-last-callback-exit public-admission surface-admission public-preparation-failure surface-preparation-failure);fi
 for control in "${controls[@]}";do
  python3 - "$out/actor" "$control" <<'PY'

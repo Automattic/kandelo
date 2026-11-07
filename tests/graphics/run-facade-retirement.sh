@@ -21,7 +21,7 @@ for kind in egl gbm;do
  clang -std=gnu11 -O1 -g -pthread -ffunction-sections -fdata-sections \
   -fsanitize=undefined -fno-sanitize-recover=all ${flags[@]+"${flags[@]}"} \
   -I"$out/include" -I"$out/include/drm" -I"$root/libc/glue" -I"$root/tests/graphics/libc" \
-  "$root/tests/graphics/libc/facade-retirement.c" "$link_gc" -o "$out/$kind"
+  "$root/tests/graphics/libc/facade-retirement.c" "$link_gc" "$root/tests/graphics/libc/native-graphics-optional.c" -o "$out/$kind"
 done
 for name in image bo device surface;do
  binary=gbm;if [ "$name" = image ];then binary=egl;fi
