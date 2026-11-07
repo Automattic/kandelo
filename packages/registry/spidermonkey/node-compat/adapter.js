@@ -616,6 +616,7 @@
         ftruncate(fd, length, request) { return native.ftruncate(fd, length, request); },
         closeDescriptor(fd, request) { return native.closeDescriptor(fd, request); },
         adoptFileHandle(fd, path, makeError) { return native.adoptFileHandle(fd, path, makeError); },
+        configureFileHandles(makeError) { return native.configureFileHandles(makeError); },
         peekFsGcCloseError() { return native.peekFsGcCloseError(); },
         ackFsGcCloseError() { return native.ackFsGcCloseError(); },
         sqlite(...args) { return native.sqlite(...args); },

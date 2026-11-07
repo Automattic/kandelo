@@ -2536,7 +2536,7 @@ globalThis.__kandeloDispatchPorts = _nodePortsPlatform.dispatch;
 
 const _nodeCompressionConstants = _nodeNative.getCompressionConstants();
 const _nodeFileHandles = _createNodeFileHandlePlatform({
-    fs, process, Buffer, events, path, types: util.types, values: _nodeValues,
+    fs, process, Buffer, events, path, types: util.types, values: _nodeValues, clone: _nodeClonePlatform,
     native: _nodeNative, truncation: _nodeFsTruncation, utils: _nodeFsStats, fileJobs: _nodeFileJobs,
     getStringDecoder: string_decoder.StringDecoder,
     permissionEnabled: () => false,

@@ -6,7 +6,17 @@
 namespace {
 struct KandeloPortPacket;
 using KandeloPortTransfer = kandelo::ports::TransitTransfer<KandeloPortPacket>;
+struct KandeloFileHandleTransfer {
+  kandelo::nodefs::FileHandleLease descriptor;
+  ~KandeloFileHandleTransfer() { Abort(); }
+  void Abort() noexcept {
+    // Pinned FileHandle::TransferData checks a failed abandoned close as a
+    // native fatal invariant; never silently forget a still-owned descriptor.
+    const int status = descriptor.Close(); MOZ_RELEASE_ASSERT(status == 0);
+  }
+};
 struct KandeloHistogramCloneData {
+  std::vector<std::unique_ptr<KandeloFileHandleTransfer>> files;
   std::vector<std::shared_ptr<Histogram>> histograms;
   std::vector<std::shared_ptr<KandeloPortTransfer>> ports;
   // Logical registered-JS moves also forbid repeated/broadcast reads even
@@ -20,12 +30,15 @@ struct KandeloHistogramCloneData {
   kandelo::ports::transit::Node* graphOwner = nullptr;
   const void* sourcePort = nullptr;
   std::vector<const void*> validatedPorts;
+  std::vector<const void*> validatedFiles;
   void* readingPorts = nullptr;
   kandelo::memory::Allocation retained;
   void AccountMemory() noexcept {
-    retained.Resize(histograms.capacity() * sizeof(histograms[0]) +
+    retained.Resize(files.capacity() * sizeof(files[0]) + files.size() * sizeof(KandeloFileHandleTransfer) +
+        histograms.capacity() * sizeof(histograms[0]) +
         ports.capacity() * sizeof(ports[0]) + ports.size() * sizeof(KandeloPortTransfer) +
-        validatedPorts.capacity() * sizeof(validatedPorts[0]));
+        validatedPorts.capacity() * sizeof(validatedPorts[0]) +
+        validatedFiles.capacity() * sizeof(validatedFiles[0]));
   }
 };
 static bool KandeloPortMissingTransfer(JSContext*, HandleObject, bool*);
@@ -41,6 +54,9 @@ static bool KandeloHistogramWriteClone(JSContext* cx, JSStructuredCloneWriter* w
   bool port;
   if (!KandeloPortMissingTransfer(cx, object, &port)) return false;
   if (port) return false;
+  bool file;
+  if (!KandeloFileHandleMissingTransfer(cx, object, &file)) return false;
+  if (file) return false;
   std::shared_ptr<Histogram> material;
   if (JS::GetClass(object) == &KandeloHistogramClass) {
     const auto slot = JS::GetReservedSlot(object, 0);

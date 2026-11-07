@@ -19,7 +19,8 @@ function _createNodeFileHandlePlatform(platform) {
     const { AbortError, aggregateTwoErrors, codes: { ERR_ACCESS_DENIED, ERR_FS_FILE_TOO_LARGE,
         ERR_INVALID_ARG_VALUE, ERR_INVALID_STATE } } = platform.values.errors;
     const { isArrayBufferView } = platform.types;
-    const { kEmptyObject } = platform.values.util;
+    const { kEmptyObject, lazyDOMException } = platform.values.util;
+    const { kDeserialize, kTransfer, kTransferList, markTransferMode } = platform.clone.protocol;
     const { parseFileMode, validateAbortSignal, validateBoolean, validateBuffer,
         validateEncoding, validateInteger, validateObject, kValidateObjectAllowNullable } = platform.values.validators;
     const { getOptions, copyObject, getValidatedPath, getStatsFromBinding, getReadFileBuffer,
@@ -32,6 +33,7 @@ function _createNodeFileHandlePlatform(platform) {
     const vfsState = platform.truncation.vfsState;
     const kUsePromises = Symbol('fs_use_promises_symbol');
     const makeError = platform.truncation.makeError;
+    platform.native.configureFileHandles(makeError);
     // The guest CLI currently rejects Permission Model activation. This is
     // its actual default-disabled state; kernel permissions still govern I/O.
     // Adding activation requires the real permission owner before this bridge.

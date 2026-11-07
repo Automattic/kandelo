@@ -17,7 +17,7 @@ struct KandeloPortMessageData final : PortTransit::Node {
       &KandeloHistogramCloneCallbacks, &histogramData};
   KandeloPortMessageData() { histogramData.graphOwner = this; }
   void Retire() noexcept override {
-    data.clear(); histogramData.ports.clear(); histogramData.histograms.clear();
+    data.clear(); histogramData.ports.clear(); histogramData.files.clear(); histogramData.histograms.clear();
     histogramData.graphOwner = nullptr;
   }
   void AccountMemory() noexcept {
@@ -212,12 +212,12 @@ static bool KandeloNativeSerializeMessage(JSContext* cx, unsigned argc, Value* v
       if (!packet->content->histogramData.sourcePort) return false;
     }
     auto clearSource = mozilla::MakeScopeExit([&] {
-      packet->content->histogramData.sourcePort = nullptr; packet->content->histogramData.validatedPorts.clear();
+      packet->content->histogramData.sourcePort = nullptr; packet->content->histogramData.validatedPorts.clear(); packet->content->histogramData.validatedFiles.clear();
     });
     KandeloMessageWriteOutcome outcome(cx);
     const bool written = KandeloWriteMessageData(cx, packet.get(), args.get(0), args.get(1), outcome);
     packet->content->histogramData.sourcePort = nullptr;
-    packet->content->histogramData.validatedPorts.clear(); clearSource.release();
+    packet->content->histogramData.validatedPorts.clear(); packet->content->histogramData.validatedFiles.clear(); clearSource.release();
     packet->content->AccountMemory();
     if (!written) {
       if (!outcome.noResult || JS_IsExceptionPending(cx)) {
@@ -387,6 +387,7 @@ static void KandeloShutdownPorts(JSContext* cx) {
   PortTransit::Graph::Process().Collect(true);
 }
 static constexpr uint32_t KandeloPortTransferTag = JS_SCTAG_USER_MIN + 115;
+static constexpr uint32_t KandeloFileHandleTransferTag = JS_SCTAG_USER_MIN + 116;
 static bool KandeloPortMissingTransfer(JSContext* cx, HandleObject object, bool* isPort) {
   RootedObject unwrapped(cx, KandeloPortUnwrap(cx, object));
   if (!unwrapped) return false;
@@ -403,7 +404,8 @@ static bool KandeloPortMissingTransfer(JSContext* cx, HandleObject object, bool*
 // this brand; real adoption still validates/moves its native endpoint owner.
 static bool KandeloPortIsTransferHost(JSContext* cx, HandleObject object, bool* found) {
   RootedObject actual(cx, KandeloPortUnwrap(cx, object));if (!actual) return false;
-  *found = JS::GetClass(actual) == &KandeloPublicPortClass;return true;
+  if (JS::GetClass(actual) == &KandeloPublicPortClass) { *found = true; return true; }
+  return KandeloFileHandleIsTransferHost(cx, actual, found);
 }
 // Only the actual owned packet callback/closure pair can receive this scalar.
 // No sender JS object or context is retained by the published sidecar.
@@ -417,6 +419,20 @@ static bool KandeloPortObserveRegisteredTransfers(JSContext* cx,
   data->registeredTransfers = count;return true;
 }
 static bool KandeloPortCanTransfer(JSContext* cx, HandleObject object, bool* sameProcess, void* closure) {
+  bool file;
+  if (!KandeloFileHandleIsTransferHost(cx, object, &file)) return false;
+  if (file) {
+    KandeloFsRequestState* state;
+    if (!KandeloFileHandleAdmitTransfer(cx, object, &state)) return false;
+    auto* data = static_cast<KandeloHistogramCloneData*>(closure);
+    if (!data || !data->graphOwner)
+      return cx->reportKandeloCloneError("FileHandle transfer requires an owned packet");
+    if (std::find(data->validatedFiles.begin(), data->validatedFiles.end(), state) != data->validatedFiles.end())
+      return cx->reportKandeloCloneError("Transfer list contains duplicate FileHandle");
+    try { data->validatedFiles.push_back(state); }
+    catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
+    *sameProcess = true; return true;
+  }
   RootedObject unwrapped(cx, KandeloPortUnwrap(cx, object));
   if (!unwrapped || JS::GetClass(unwrapped) != &KandeloPublicPortClass) return false;
   auto* owner = KandeloPublicPortOwner(cx, object);
@@ -433,6 +449,27 @@ static bool KandeloPortCanTransfer(JSContext* cx, HandleObject object, bool* sam
 }
 static bool KandeloPortWriteTransfer(JSContext* cx, HandleObject object, void* closure,
     uint32_t* tag, JS::TransferableOwnership* ownership, void** content, uint64_t* extraData) {
+  bool file;
+  if (!KandeloFileHandleIsTransferHost(cx, object, &file)) return false;
+  if (file) {
+    KandeloFsRequestState* state;
+    if (!KandeloFileHandleAdmitTransfer(cx, object, &state)) return false;
+    auto* data = static_cast<KandeloHistogramCloneData*>(closure);
+    if (!data || !data->graphOwner)
+      return cx->reportKandeloCloneError("FileHandle transfer requires an owned packet");
+    try {
+      auto transfer = std::make_unique<KandeloFileHandleTransfer>();
+      const auto index = data->files.size();
+      // Both the sidecar and its table slot exist before irreversible move.
+      data->files.push_back(std::move(transfer)); data->AccountMemory();
+      if (!data->files.back()->descriptor.Adopt(state->descriptor))
+        return cx->reportKandeloCloneError("FileHandle transfer ownership was retired");
+      // The actual lease is now sidecar-owned. StreamBase's IsAlive fd gate
+      // yields EINVAL for this native source; the outer JS hook sets fd to -1.
+      *tag = KandeloFileHandleTransferTag; *ownership = JS::SCTAG_TMO_CUSTOM;
+      *content = nullptr; *extraData = index; return true;
+    } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
+  }
   auto* owner = KandeloPublicPortOwner(cx, object);
   auto* data = static_cast<KandeloHistogramCloneData*>(closure);
   if (!owner || !data) return false;
@@ -458,15 +495,42 @@ struct KandeloPortReadTransaction {
   JSContext* cx;
   JS::RootedObject ports;
   std::vector<KandeloPortBinding> adopted;
+  JS::RootedObjectVector files;
   bool committed = false;
-  explicit KandeloPortReadTransaction(JSContext* cx) : cx(cx), ports(cx) {}
+  explicit KandeloPortReadTransaction(JSContext* cx) : cx(cx), ports(cx), files(cx) {}
   ~KandeloPortReadTransaction() {
-    if (!committed) for (auto& owner : adopted) owner->AbortAdmission();
+    if (!committed) {
+      for (auto& owner : adopted) owner->AbortAdmission();
+      for (auto* object : files) KandeloAbortFileHandleAdmission(object);
+    }
   }
 };
 static bool KandeloPortReadTransfer(JSContext* cx, JSStructuredCloneReader*, const JS::CloneDataPolicy&,
     uint32_t tag, void* content, uint64_t index, void* closure, MutableHandleObject result) {
   auto* data = static_cast<KandeloHistogramCloneData*>(closure);
+  if (tag == KandeloFileHandleTransferTag) {
+    if (content || !data || index >= data->files.size() || !data->readingPorts)
+      return cx->reportKandeloCloneError("Invalid transferred FileHandle material");
+    auto& transfer = data->files[size_t(index)];
+    if (!transfer || transfer->descriptor.Fd() < 0)
+      return cx->reportKandeloCloneError("FileHandle transfer already consumed");
+    const auto environment = kandeloFileHandleEnvironments.find(cx);
+    if (environment == kandeloFileHandleEnvironments.end())
+      return cx->reportKandeloCloneError("FileHandle receiver is not initialized");
+    RootedValue makeError(cx, ObjectValue(*environment->second->makeError));
+    if (!JS_WrapValue(cx, &makeError)) return false;
+    RootedObject owner(cx);
+    if (!KandeloPrepareFileHandle(cx, makeError, &owner)) return false;
+    auto* transaction = static_cast<KandeloPortReadTransaction*>(data->readingPorts);
+    // Root and reserve rollback ownership before descriptor move or init JS.
+    if (!transaction->files.append(owner)) { JS_ReportOutOfMemory(cx); return false; }
+    auto* state = KandeloFsRequestStateOf(cx, owner); if (!state) return false;
+    if (!state->descriptor.Adopt(transfer->descriptor))
+      return cx->reportKandeloCloneError("FileHandle transfer already consumed");
+    state->fd = state->descriptor.Fd();
+    if (!KandeloInitializeFsResource(cx, owner)) return false;
+    result.set(owner); return true;
+  }
   if (tag != KandeloPortTransferTag || content || !data || index >= data->ports.size() || !data->readingPorts)
     return cx->reportKandeloCloneError("Invalid transferred MessagePort material");
   auto* transaction = static_cast<KandeloPortReadTransaction*>(data->readingPorts);
@@ -509,6 +573,8 @@ static void KandeloPortFreeTransfer(uint32_t tag, JS::TransferableOwnership,
   auto* data = static_cast<KandeloHistogramCloneData*>(closure);
   if (tag == KandeloPortTransferTag && !content && data && index < data->ports.size() && data->ports[size_t(index)])
     data->ports[size_t(index)]->Abort();
+  if (tag == KandeloFileHandleTransferTag && !content && data && index < data->files.size() && data->files[size_t(index)])
+    data->files[size_t(index)]->Abort();
 }
 static bool KandeloReadMessage(JSContext* cx, KandeloPortMessageData* data, MutableHandleValue result, bool includePorts) {
   // This actual native read scope retains clone data even if another owning
@@ -520,7 +586,7 @@ static bool KandeloReadMessage(JSContext* cx, KandeloPortMessageData* data, Muta
   if (!transaction.ports) return false;
   // Transfer-free broadcast buffers are immutable and may be read on several
   // workers at once. Never install a context pointer into that shared buffer.
-  const bool hasPorts = !data->histogramData.ports.empty();
+  const bool hasPorts = !data->histogramData.ports.empty() || !data->histogramData.files.empty();
   if (hasPorts) data->histogramData.readingPorts = &transaction;
   auto clear = mozilla::MakeScopeExit([&] { if (hasPorts) data->histogramData.readingPorts = nullptr; });
   RootedValue value(cx);

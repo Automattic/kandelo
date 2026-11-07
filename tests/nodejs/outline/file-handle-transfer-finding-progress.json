@@ -1,0 +1,112 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem.md",
+    "findingIds": [
+      "FS-010"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/filesystem.md",
+        "findingId": "FS-010",
+        "scope": "Stable ownership/lease/GC/failure prerequisite; no byte-path or complete finding closure"
+      },
+      {
+        "document": "tests/nodejs/audit/filesystem-contracts.md",
+        "section": "FileHandle native descriptor lifetime/close/GC/transfer requirements, lines92-100",
+        "kind": "section-requirement-not-invented-finding-id"
+      },
+      {
+        "document": "tests/nodejs/audit/worker-contracts.md",
+        "findingId": "R-013",
+        "proseReferences": [
+          "R-004"
+        ],
+        "scope": "Transfer prerequisite only; R-004 is prose reference, not a separately recovered definition"
+      }
+    ],
+    "relatedFamilies": [
+      "filesystem",
+      "workers",
+      "async",
+      "streams",
+      "engine"
+    ],
+    "scope": "Source-only descriptor ownership prerequisite, no finding/API/family closure."
+  },
+  "sourceImplemented": [
+    "Consume actual native FileHandle class/kind/checked-unwrapping/current environment and alias identity admission",
+    "Move one real lease through opaque native clone tag/index/sidecar with no JS pointer or numeric-fd ownership token crossing packet threads",
+    "Allocate receiver/root/rollback capacity before move; initialize genuine target-realm FILEHANDLE owner through local converter/error factory",
+    "Abort/discard consumes only actual remaining lease; reentrant queued close retains rooted owner authority through cancel/completion",
+    "Enable exact pinned registration/transfer/list/deserialize hooks and actual module registry after genuine native consumers exist",
+    "Materialize exact context-anchored0174 registration/shared teardown patch, preserve239variadic clone wrapper and240lease header staging; regenerate core from actual parent sources"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-filehandle241-source-r1/report.json",
+    "sha256": "a9674c2dedf4f2d977619b4c2a79d9c283b763c3f9c98cfa7b639fbb8e9a2fe6",
+    "guardedInputs": 898,
+    "scope": "Source241 real FileHandle transfer native tag/lease/receiver registry activation; normal source/input/staging and exact material5/native reference8 only. Candidate FS/SC/Worker/GC/realm/cancel/fatal uncompiled/unexecuted; no finding/API/four-host closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-filehandle241-affected-r1.json",
+    "sha256": "20cc46656d6dd2d344121f79d243d3285deaf4b11681cdce8c7d70646a27711c",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-filehandle241-source-r1/report.json",
+    "sha256": "a9674c2dedf4f2d977619b4c2a79d9c283b763c3f9c98cfa7b639fbb8e9a2fe6",
+    "normalSourceStages": 3,
+    "actualNativeUnityOwners": 3,
+    "materialGroups": 5,
+    "pinnedNativeReferenceGroups": 8,
+    "newRootCompilerAttempts": 0,
+    "historicalProducerHelperCompileAttempts": 1,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Exact extracted material+production lease over nativefd/OFD/thread with assertion dependency supplied; exact nativeNode public references only. New SC/nativeFS/JSAPI/Worker/fatal/GC/realm not executed. V1 cannot represent two plus-named SDK wrappers; external before/after byte guards retained, selected checks invoke no compiler.",
+    "globalBindingSelfContained": false,
+    "externalCppWrapperGuards": 2
+  },
+  "sealedEvidence": {
+    "report": ".context/filehandle-activation241-compose-r1/preparation.json",
+    "sha256": "a74bed4ae48e78b24da30a2c546eefad2d954e77c77d9d6118cfb5e1aa05bcec",
+    "reusedEvidence": true,
+    "scope": "Private parent-bound context/source/core composition over sealed activationf954/review68ac/lease87fe; exact source hashes only, portable/native evidence retains original narrow scope."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/filehandle-transfer-activation-agent/native-reference-r1.stderr",
+      "sha256": "88bc018d983caf2c6f3f2da199859463481a0cc9c8735fd7bfcc909226db9487",
+      "scope": "Original bad raw GetFD expectation failed; pinned exposed StreamBase IsAlive policy traced before source correction. Final native reference passes preserve this original failure."
+    },
+    {
+      "report": ".context/filehandle-transfer-activation-agent/adapter-prefix-parser-r2-failure.json",
+      "sha256": "ba7fc2a2118b30f1dffefdafbcc94216f24c1c8747d1633f6d57001d1ce113e6",
+      "scope": "Raw intentionally open adapter prefix parsed standalone and failed; later real combined bootstrap parse passes. No runtime workaround."
+    },
+    {
+      "report": ".context/filehandle-transfer-activation-agent/preparation-r1-failure.json",
+      "sha256": "5c5f5c8119a5624daa0462c1054dff69bf47f553e7292d703e1e8cfa89a2188a",
+      "scope": "Private source-composition anchor failure retained; no compiler/guest/test outcome."
+    }
+  ],
+  "remaining": [
+    "Compile actual native FileHandle clone tag/admission/read/abort/context teardown JSAPI and validate real packet material retirement on identified guest artifacts",
+    "Exercise actual sender hook reentry/whole-list ABfirst errors and receiver init/GC/OOM/realm/late-read failure/reentrant queuedclose/fatal channels",
+    "Validate actual Worker startup, closed ports, packet discard, same guest process fd table and Worker/context exit cancellation across four hosts",
+    "Complete public inherited FileHandle/StreamBase/activeIO/rawoutsidefdclose/mark-as-untransferable semantics and audited filesystem/worker gaps",
+    "Retain all19partial state,315/316lowerbound uncertainty history, accepted239 scopedNode3cases as historicalstale for240/241; no overall/fullproduct; nested guestWasm last"
+  ],
+  "at": "2026-11-07T23:56:20.446460+00:00",
+  "recipeRevision": 241,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

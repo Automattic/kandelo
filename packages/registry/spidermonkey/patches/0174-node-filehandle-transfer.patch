@@ -1,0 +1,18 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4691,6 +4691,7 @@
+       JS_FN("ftruncate", KandeloNativeFtruncate, 3, 0),
+       JS_FN("closeDescriptor", KandeloNativeCloseDescriptor, 2, 0),
+       JS_FN("adoptFileHandle", KandeloNativeAdoptFileHandle, 3, 0),
++      JS_FN("configureFileHandles", KandeloNativeConfigureFileHandles, 1, 0),
+       JS_FN("fsControlSync", (KandeloFsPromiseGuard<KandeloFsControlSync>), 4, 0),
+       JS_FN("fsControlPromise", (KandeloFsPromiseGuard<KandeloFsControlPromise>), 5, 0),
+       JS_FN("fsIoPromise", (KandeloFsPromiseGuard<KandeloFsIoPromise>), 7, 0),
+@@ -17722,6 +17723,7 @@
+   KandeloShutdownStatWatchers(sc);
+   KandeloShutdownChildWatches(sc->cx_);
+   KandeloShutdownPorts(sc->cx_);
++  KandeloShutdownFileHandles(sc->cx_);
+   KandeloELDShutdown(sc->cx_);
+   KandeloShutdownHistograms(sc->cx_);
+   KandeloShutdownTlsOwners(sc->cx_);

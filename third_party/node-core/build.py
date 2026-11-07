@@ -941,15 +941,13 @@ bundle += stats.replace(marker, '\n'.join([*shared.values(), *filesystem_section
 
 handle_sections = filesystem_sections(manifest['fsHandle'])
 handle = handle_sections['class']
-# Transfer stays unregistered until native fd movement/rollback exists. Retain
-# the public method/ref/close source, but do not expose destructive transfer
-# hooks that could invalidate a handle without transferring ownership.
-statement = '    markTransferMode(this, false, true);\n'
-if handle.count(statement) != 1:
+# The exact pinned destructive hooks now consume actual native descriptor
+# sidecars and receiver-local FileHandle adoption through the clone owner.
+# Keep their validation/ordering and the public native-handle data identity.
+if handle.count('    markTransferMode(this, false, true);\n') != 1:
     raise ValueError('Review FileHandle transfer registration')
-handle = handle.replace(statement, '')
-start, end = handle.index('  [kTransfer]() {'), handle.index('  [kRef]() {')
-handle = handle[:start] + handle[end:]
+if handle.count('  [kTransfer]() {') != 1 or handle.count('  [kDeserialize]({ handle }) {') != 1:
+    raise ValueError('Review FileHandle transfer hooks')
 handle_sections['class'] = handle
 old = '  ErrorCaptureStackTrace(error, handleErrorFromBinding);'
 if handle_sections['handleErrorFromBinding'].count(old) != 1:

@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "e740a0190eacdce9f80ba43d3ef9d63a50030366b8fc0f3f89ff76367d0bcc96",
+    "packages/registry/node-compat/bootstrap.js": "0f8ab784d93565645b2ab8febc3afbe29a412b030105a0e1bda6f3d158a4d497",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
@@ -48,7 +48,7 @@
     "third_party/node-core/file-sync-adapter.js": "a764abfd8bb8697006b467a4c32f9a6a7c2f4eb3f616b250cbfa6151996dd767",
     "third_party/node-core/formdata-platform-adapter.js": "c0406a4abc4606cef8297a04d6166402630884fbbed4f64ed1c1cfc67cc08cf7",
     "third_party/node-core/fs-callback-adapter.js": "c14f00872d51a8b3ec137b527800113fad55696ed43e342de5b0a43ead0e0112",
-    "third_party/node-core/fs-handle-adapter.js": "b3748d8178658dfe81d1b972dd53c044cac5ddffd194a1048d1d353f76a52809",
+    "third_party/node-core/fs-handle-adapter.js": "40fe9f3f8523032b1802c058989d95c6a44994cb037b76c9dbc5c71e73649a5f",
     "third_party/node-core/fs-stats-adapter.js": "41a86e7b35c8521aa874bb8ccc953da6c0574851e02afad80f0bbaff645d24b1",
     "third_party/node-core/fs-streams-adapter.js": "54daec890c1e2d6eae25711445abdf454cbd274317de3cbc830659b02e0e584e",
     "third_party/node-core/fs-system-errors-adapter.js": "d2541bb65fa772be497d54bdea11f4192fb1b6934ef48c6e0397328b04418ffa",

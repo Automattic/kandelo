@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source241 connects pinned FileHandle transfer hooks to actual native admission, descriptor sidecars and receiver initialization/rollback. Five portable material and eight pinned-native reference groups remain narrow evidence; current guestJSAPI is uncompiled and no transfer conformance is claimed.
+See [source scope](file-handle-transfer-integration.md).
+
 Source240 integrates a genuine FileHandle descriptor/queued-close lease prerequisite. Six portable native-owner groups and two pinned-native references are narrow evidence; public transfer remains disabled and current240 native JSAPI is uncompiled.
 See [source scope](file-handle-lease-integration.md).
 
