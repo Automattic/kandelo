@@ -625,8 +625,9 @@ Go 1.25 bootstrap is too old for this source tree.
 
 The new architecture uses four-byte Go pointers and integers, with
 upstream's eight-byte registers, stack alignment and continuation slots.
-The prototype currently validates plain Go. It does not yet provide a
-validated cgo runtime, FrankenPHP build or replacement production preview.
+The prototype passes focused plain-Go/cgo tests. Unadapted FrankenPHP
+Go/C source compiles as an archive; final linking, real request behavior
+and a replacement production preview remain separate gates.
 
 Run its separate fixture inventory without replacing `.context/go-browser`:
 
@@ -645,3 +646,22 @@ target. Its explicit `runtime.GC` calls test root retention, not physical
 memory reclamation. The second probe reuses the existing startup/VFS,
 nanosecond timestamp, randomness and clock checks. These bounded tests do
 not establish general Go conformance or application performance.
+
+Enable the cgo cases during both fixture construction and execution:
+
+```sh
+scripts/dev-shell.sh bash -c 'export GO_KANDELO_BIN=/absolute/path/to/prototype/bin/go; KANDELO_GO_WASM32_CGO_TESTS=1 bash tests/go/wasm32-prototype/build.sh'
+scripts/dev-shell.sh bash -c 'KANDELO_GO_WASM32_CGO_TESTS=1 node --import tsx tests/go/wasm32-prototype/run.ts'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_PLAYWRIGHT_PORT=5461 KANDELO_GO_WASM32_TESTS=1 KANDELO_GO_WASM32_CGO_TESTS=1 npx playwright test test/go-wasm32.spec.ts --project=chromium --project=firefox --project=webkit --workers=1'
+```
+
+This adds scalar/pointer calls and per-M C TLS, typed pointer-bearing C
+structs passed by value, escaping C-field addresses retaining Go roots,
+errno returns, C function pointers, callbacks from Go-owned and C-created
+threads, callback stack growth and repeated concurrent callback/GC churn.
+The typed fixture also requires an unused C function's unresolved call to
+stay out of the live link. It does not suppress unresolved live symbols.
+The resulting inventory contains seven Node cases and 21 browser cases.
+The fixture manifest records the compiler version, source revision/dirty
+status and six program hashes. Keep it with the raw results when claiming
+a particular prototype checkpoint passed.

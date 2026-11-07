@@ -8,12 +8,14 @@ import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 const repoRoot = resolve(import.meta.dirname, "../../..");
 test.skip(process.env.KANDELO_GO_WASM32_TESTS !== "1", "Build the isolated wasm32 fixtures and set KANDELO_GO_WASM32_TESTS=1");
 
-for (const fixture of ["runtime", "basic"]) {
+const fixtures = ["runtime", "basic", ...(process.env.KANDELO_GO_WASM32_CGO_TESTS === "1"
+  ? ["cgo-basic", "cgo-typed", "cgo-callback-same", "cgo-callback-pthread", "cgo-callback-stress"] : [])];
+for (const fixture of fixtures) {
   test(`Kandelo wasm32 ${fixture}`, async ({ page, baseURL }) => {
     const errors: string[] = [];
     page.on("pageerror", error => errors.push(error.message));
     page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
-    const program = readFileSync(resolve(repoRoot, `.context/go-wasm32-prototype/${fixture}.wasm`));
+    const program = readFileSync(resolve(repoRoot, `.context/go-wasm32-prototype/${fixture === "cgo-callback-stress" ? "cgo-callback-pthread" : fixture}.wasm`));
     const kernel = readFileSync(resolveBinary("kernel.wasm"));
     const digest = (bytes: Buffer) => readWasmCustomSectionPayload(Uint8Array.from(bytes).buffer, ABI_CONTRACT_SECTION);
     expect(digest(kernel)?.length).toBe(32);
@@ -45,7 +47,7 @@ for (const fixture of ["runtime", "basic"]) {
       });
       try {
         await kernel.initFromImage({ kernelWasm, vfsImage: new Uint8Array(vfsImage) });
-        const exitCode = await kernel.spawn(program, fixture === "basic" ? ["go-basic", "alpha", "beta"] : ["wasm32-runtime"], { env: ["KANDELO_GO_BROWSER=present"] });
+        const exitCode = await kernel.spawn(program, fixture === "basic" ? ["go-basic", "alpha", "beta"] : fixture === "cgo-callback-stress" ? ["callback", "stress"] : [fixture], { env: ["KANDELO_GO_BROWSER=present", "KANDELO_CGO_PROBE=cgo-startup"] });
         return { exitCode, stdout, stderr, diagnostics };
       } finally { await kernel.destroy(); }
     }, { hostUrl: new URL(`/@fs/${resolve(repoRoot, "host/src/browser-kernel-host.ts")}`, baseURL).href, fixture });
@@ -60,6 +62,9 @@ for (const fixture of ["runtime", "basic"]) {
       expect(probe.goarch).toBe("wasm32");
       expect(probe.checks).toHaveLength(9);
       expect(probe.layout).toEqual({ pointerBytes: 4, intBytes: 4, int64Align: 8, sampleBytes: 24, sampleAlign: 8, pointerOffset: 4, wideOffset: 8, chainOffset: 16, tailOffset: 20, alignedBytes: 24, alignedWideOffset: 8 });
-    } else { expect(result.stdout).toContain("GO BASIC PASS"); }
+    } else {
+      const markers: Record<string, string> = { basic: "GO BASIC PASS", "cgo-basic": "CGO ABS PASS", "cgo-typed": "WASM32 TYPED CGO PASS", "cgo-callback-same": "CGO CALLBACK PASS", "cgo-callback-pthread": "CGO CALLBACK PASS", "cgo-callback-stress": "CGO CALLBACK STRESS PASS" };
+      expect(result.stdout).toContain(markers[fixture]);
+    }
   });
 }

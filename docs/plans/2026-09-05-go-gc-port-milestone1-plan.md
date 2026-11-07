@@ -2,16 +2,18 @@
 
 ## Current checkpoint — 2026-11-06
 
-**Latest prototype:** the maintainer authorized implementing the isolated
-32-bit-pointer Go/Wasm target. Plain Go now runs as `kandelo/wasm32` in
-Kandelo's Node, Chromium, Firefox and WebKit hosts. Nine runtime checks and
-the existing VFS/startup probe pass; the full standard library builds for
-all four control targets. Source is pushed separately at
-[`2b16bffd237d`](https://github.com/kandelo-dev/go/commit/2b16bffd237d2949aab3763b5181325c0b775f7b).
-Cgo execution and application migration remain unfinished. Production Go
-source `5834adc`, recipe pins, ABI 55 and the revision-39 preview remain
-unchanged. This is a runtime prototype checkpoint, not completion of the
-original service goal.
+**Latest prototype:** the isolated `kandelo/wasm32` compiler now runs plain
+Go and cgo with matching four-byte Go/C pointers. Seven Node cases and
+21 browser cases pass, including typed C fields, escaping field addresses,
+errno, function pointers and callbacks on C-created pthreads. All five
+standard-library build configurations pass. The compiler checkpoint is
+[`7ae173a6576a`](https://github.com/kandelo-dev/go/commit/7ae173a6576a7e795eddab67009f9b0517b3b403).
+Unadapted FrankenPHP Go/C source also compiles as an archive, using the
+small x/sys architecture port at
+[`df34dffa75d5`](https://github.com/kandelo-dev/sys/commit/df34dffa75d5f738769c8a313524a97c2272ef77).
+That archive is not a linked or running service. Production Go `5834adc`,
+recipe pins, ABI 55 and the revision-39 preview remain unchanged. The
+original WordPress service goal is unfinished.
 
 **Maintainer priority clarification:** improve Kandelo rather than adapting
 applications around incomplete platform support. First audit and fix general
@@ -66,6 +68,100 @@ introduce a large new execution model just to clear this demo's gate.
 
 References: [LLVM tail-call elimination](https://llvm.org/docs/Passes.html#tailcallelim-tail-call-elimination)
 and the [WebAssembly tail-call semantics](https://github.com/WebAssembly/tail-call/blob/main/proposals/tail-call/Overview.md).
+
+### Homogeneous wasm32 cgo checkpoint — 2026-11-06
+
+Go fork `7ae173a6576a7e795eddab67009f9b0517b3b403` is pushed on the separate
+`kandelo-wasm32-prototype` branch. It adds a general C-call/callback bridge
+to the preceding runtime prototype and registers cgo for this new target.
+The production `kandelo-port` branch and every package pin stay unchanged.
+
+The bridge uses ordinary four-byte typed pointers and upstream cgo's
+argument/export layouts. It preserves both halves of the eight-byte Go
+continuation across callbacks from C-created threads. C function addresses
+are Wasm table handles; Go's internal logical program counters remain
+separate. The linker records the exact C argument-frame signature because
+ordinary wrappers return void while two-result errno wrappers return an
+integer. `asmcgocall` selects the matching Wasm call type and preserves
+errno. It does not change the cgo frontend's struct or callback layouts.
+
+The cgo import scan parses Wasm objects rather than expecting native object
+formats. It accepts only the supported host namespaces. Passive data is
+parsed without pretending it already has an address. The C object loader
+also stops treating calls inside unused functions as independent roots;
+normal linker reachability selects their callees. A regression object
+contains an unused reference to a missing function and a live function
+that must execute correctly. No unresolved live symbol is ignored.
+
+Unused legacy Kandelo/wasm cgo and startup assembly is removed from this
+new branch; upstream legacy WASI assembly is restored. Kandelo's thread
+state is separated from the empty WASI/js OS state. The existing VFS-backed
+account lookup remains selected in both cgo modes. Go's collector and
+upstream wasm32 code generation remain intact, and the prototype does not
+carry the old regexp algorithm change.
+
+The clean, pushed Go source was bootstrapped again, then all six Wasm
+fixtures were rebuilt, instrumented where required, and ABI stamped. Their
+compiler version, clean source revision and SHA-256 hashes are retained in
+`.context/go-wasm32-prototype/manifest.json`. The embedded compiler version
+identifies `7ae173a6`; source status is clean.
+
+Final checkpoint validation:
+
+- Seven Node cases pass: runtime/atomics, startup/VFS, cgo scalars and
+  per-M TLS, typed C structs/function pointers/errno, callbacks from
+  Go-owned Ms, callbacks from C-created pthreads, and repeated concurrent
+  callbacks with Go/C allocation and collections.
+- The same inventory passes 21/21 browser cases in Chromium, Firefox and
+  WebKit (44.5 seconds). The foreign-thread case includes pointer returns,
+  nested C calls, yields/sleeps, repeated callbacks and Go stack growth.
+- The typed-struct test passes pointer-bearing structs by value and reads
+  pointer fields directly. It passes an escaping field address to ordinary
+  Go `**C.int` callees, checks write-through and retains Go allocations
+  through those typed fields across functional collections. Pointer
+  atomics also preserve the adjacent four-byte word.
+- Full standard-library compilation passes for plain Go on
+  `kandelo/wasm32`, `wasip1/wasm32`, `wasip1/wasm` and `js/wasm`, plus
+  cgo on `kandelo/wasm32`. Host cgo/object-reader/generated-platform tests
+  and both eight-check WASI runtime controls pass.
+
+Commands and the opt-in cgo inventory are in `tests/go/README.md`.
+Final logs are `cgo-clean-checkpoint-{build,node,controls,browser}.log`
+under `.context/go-wasm32-study-7VN0Qm/`. These are focused tests, not full
+Go/cgo conformance, physical reclamation measurements or service proof.
+
+**FrankenPHP source audit:** verified upstream FrankenPHP 1.11.0 source
+archive `18ec919af5bfdd65a1224c7e8bbf46b00412c5357cd96663fcf73b61c002e1ff`
+now compiles as a Go archive with its original C access, header/version
+reads and bulk CGI registration. All 128 Go/C/header/assembly source files
+match the source archive byte-for-byte. Only module routing selects the
+direct target x/sys fork; `nomercure nowatcher` are the existing upstream
+feature tags. No FrankenPHP source patch is applied. This removes the
+previous eighteen pointer-field compile failures from the isolated audit.
+
+The audit initially stopped because external x/sys did not select any CPU
+implementation for the new architecture. The direct fork now extends the
+existing CPU and little-endian selections to `wasm32`, preserving the
+existing feature and padding behavior. Its three-line change plus file
+renames is pushed at `df34dffa75d5f738769c8a313524a97c2272ef77`. Host CPU
+tests, WASI CPU builds on both architectures, new Kandelo CPU/unix builds
+in both cgo modes, and the old pinned Go 1.25 Kandelo/wasm build pass.
+
+Audit evidence is `.context/frankenphp-wasm32-audit-aoS7MW/verification.json`
+and `upstream.a`; its archive SHA-256 is
+`b6059a91559206d7b25482394289f182c3eb150c516ba1129207cd79ad5c0d59`.
+PHP ZTS revision-9 headers are compile inputs only. No PHP execution,
+final executable link, restored Go-string lifetime in real requests,
+FrankenPHP recipe migration or new WordPress preview is claimed. The
+experimental PHP traversal candidate remains unpromoted.
+
+Next: finish archive/export/TLS and signal gates on the new compiler,
+link the unadapted FrankenPHP application, verify real PHP/WordPress
+requests and Go-backed bulk-string lifetimes, then replace the obsolete
+production adaptations and rebuild coherent package/image artifacts.
+Repeat the final lifecycle/memory and UI workflows, sustained traffic,
+fair FPM comparisons and Node/Chromium benchmarks. Native PHP recursion
+and WebKit memory costs remain independent release gates.
 
 ### Isolated Kandelo/wasm32 runtime prototype — 2026-11-06
 

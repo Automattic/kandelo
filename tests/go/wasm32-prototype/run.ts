@@ -45,3 +45,28 @@ assert.equal(basic.stderr, "");
 assert.deepEqual(basic.hostDiagnostics, []);
 assert.match(basic.stdout, /GO BASIC PASS/);
 console.log("Kandelo/wasm32 VFS, startup, clocks and randomness probe PASS");
+
+if (process.env.KANDELO_GO_WASM32_CGO_TESTS === "1") {
+  for (const [fixture, marker] of [
+    ["cgo-basic", "CGO ABS PASS"],
+    ["cgo-typed", "WASM32 TYPED CGO PASS"],
+    ["cgo-callback-same", "CGO CALLBACK PASS"],
+    ["cgo-callback-pthread", "CGO CALLBACK PASS"],
+    ["cgo-callback-stress", "CGO CALLBACK STRESS PASS"],
+  ]) {
+    const result = await runCentralizedProgram({
+      programPath: `.context/go-wasm32-prototype/${fixture === "cgo-callback-stress" ? "cgo-callback-pthread" : fixture}.wasm`,
+      argv: fixture === "cgo-callback-stress" ? ["callback", "stress"] : [fixture],
+      kernelWasmBytes: readFileSync(resolveBinary("kernel.wasm")),
+      useDefaultRootfs: false,
+      env: ["KANDELO_CGO_PROBE=cgo-startup"],
+      timeout: 30000,
+    });
+    writeFileSync(`.context/go-wasm32-prototype/${fixture}-node.json`, JSON.stringify(result, null, 2) + "\n");
+    assert.equal(result.exitCode, 0, JSON.stringify(result));
+    assert.equal(result.stderr, "");
+    assert.deepEqual(result.hostDiagnostics, []);
+    assert.ok(result.stdout.includes(marker), result.stdout);
+    console.log(`Kandelo/wasm32 ${fixture} PASS`);
+  }
+}
