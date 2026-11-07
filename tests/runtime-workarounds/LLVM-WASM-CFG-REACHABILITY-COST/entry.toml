@@ -1,0 +1,22 @@
+id = "LLVM-WASM-CFG-REACHABILITY-COST"
+kind = "bug"
+status = "confirmed"
+runtimes = ["clang"]
+summary = "LLVM's Wasm irreducibility analysis consumes excessive time and memory on large reducible state machines"
+reports = "human-only"
+
+[[repro]]
+kind = "script"
+entry = "run.sh"
+targets = ["clang"]
+self_judging = true
+timeout_seconds = 90
+
+[[observed]]
+runtime = "clang"
+version = "clang version 21.1.7"
+os = "macos"
+reproduced = true
+date = 2026-11-05
+source = "manual"
+released = true

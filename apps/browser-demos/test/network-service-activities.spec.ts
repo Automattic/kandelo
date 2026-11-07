@@ -81,7 +81,7 @@ for (const [profile, pkg, title, marker, joinTitle = "website"] of [
       await guest.screenshot({ path: `../../.context/activity-${pkg}-client.png` });
       await terminal(guest);
       await guest.getByRole("button", { name: "New terminal", exact: true }).click();
-      await expect.poll(() => terminal(guest)).toContain("kandelo$");
+      await expect.poll(() => terminal(guest)).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
       const processes = await runTerminalCommand(guest, "ps -A");
       expect(processes.exitCode).toBe(0);
       expect(processes.output).not.toMatch(/nginx|php-fpm|mariadbd|redis-server|server\.rb|elinks/);
@@ -166,7 +166,7 @@ test("Redis voting board shares real Redis data with a separate web client", asy
     expect(privateFiles).toEqual([404, 404, 404]);
     await terminal(guest);
     await guest.getByRole("button", { name: "New terminal", exact: true }).click();
-    await expect.poll(() => terminal(guest)).toContain("kandelo$");
+    await expect.poll(() => terminal(guest)).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
     const ideas = await runTerminalCommand(guest, "redis-cli -h host HGET board:ideas 4");
     expect(ideas.exitCode).toBe(0);
     expect(ideas.output).toContain("Ship a tiny shared website");

@@ -36,10 +36,10 @@ guest_path = "/usr/share/kandelo/sessions/tyrquake.json"
 
 [[runtime_files]]
 artifact = "quake-data"
-guest_path = "/usr/local/bin/quake-data"
+guest_path = "/usr/bin/quake-data"
 mode = 493
 
 [[runtime_files]]
 artifact = "quake-activity"
-guest_path = "/usr/local/bin/quake-activity"
+guest_path = "/usr/bin/quake-activity"
 mode = 493

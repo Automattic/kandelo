@@ -335,7 +335,7 @@ run_test() {
     if [ "$category/$test_name" = "functional/spawn" ]; then
         fixture_root="$RUNNER_FIXTURE_ROOT"
         fixture_cwd="work"
-        kernel_path="/run/kandelo-run/bin:$kernel_path"
+        kernel_path="/var/lib/kandelo-tests/runner/bin:$kernel_path"
     fi
 
     # Determine expected-failure list for this category

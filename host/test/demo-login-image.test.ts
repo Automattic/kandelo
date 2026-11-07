@@ -47,7 +47,7 @@ describe("canonical demo login image policy", () => {
   it("derives the maker account, wheel policy, and autologin message from one credential source", () => {
     const fs = KandeloImageFs.create();
     ensureDirRecursive(fs, "/etc");
-    ensureDirRecursive(fs, "/usr/bin");
+    ensureDirRecursive(fs, "/bin");
     fs.createFileWithOwner(
       DEMO_LOGIN_PROGRAM_PATH,
       0o4755,
@@ -160,7 +160,7 @@ describe("canonical demo login image policy", () => {
   it("rejects ambiguous account, password, and wheel records", () => {
     const fs = KandeloImageFs.create();
     ensureDirRecursive(fs, "/etc");
-    ensureDirRecursive(fs, "/usr/bin");
+    ensureDirRecursive(fs, "/bin");
     fs.createFileWithOwner(
       DEMO_LOGIN_PROGRAM_PATH,
       0o4755,
@@ -285,7 +285,7 @@ describe("canonical demo login image policy", () => {
     const stage = (deferLogin: boolean) => {
       const fs = KandeloImageFs.create();
       ensureDirRecursive(fs, "/etc");
-      ensureDirRecursive(fs, "/usr/bin");
+      ensureDirRecursive(fs, "/bin");
       if (deferLogin) {
         // A url-backed single file: the case `isPathDeferred` alone does not
         // see, which is why the predicate asks both questions.

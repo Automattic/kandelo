@@ -277,6 +277,9 @@ helper in `run.sh`.
 
 ## Image recipes outside the default build
 
+Image layout and installed guest paths follow
+[the image contract](images.md) and [FHS placement policy](../filesystem-layout.md).
+
 The default local-build set and browser deployment projection do not exercise
 every registered image recipe. When changing shared SDK, ABI, resolver or image
 builder contracts, identify affected recipes outside that set and validate them

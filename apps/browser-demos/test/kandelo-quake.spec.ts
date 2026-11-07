@@ -89,7 +89,7 @@ for (const [budgetLabel, memoryProfile] of BUDGETS) {
     try {
       await expect
         .poll(() => syslogText(page), { timeout: 120_000 })
-        .toMatch(/running \/usr\/local\/bin\/quake/);
+        .toMatch(/running \/usr\/bin\/quake/);
     } catch (e) {
       console.log("SYSLOG:\n" + (await syslogText(page)));
       console.log("CONSOLE ERRORS:\n" + consoleErrors.join("\n"));

@@ -15,16 +15,9 @@ type BrowserDiagnostics = {
 
 const diagnosticsByPage = new WeakMap<Page, BrowserDiagnostics>();
 const MAX_LOG_LINES = 160;
-// The plain shell demo's login boot env sets PS1 to the literal `kandelo$ `
-// (images/vfs/products/browser-main-shell.toml), but PR #1403 ("Ship bash as
-// the only shell") made bash the login shell for every dinit-service demo's
-// terminal drawer (nginx, nginx-php, nginx-python) without a PS1 override, so
-// those terminals fall back to bash's compiled-in default prompt, which
-// includes the running bash's version. Confirmed against a real chromium run
-// of the nginx demo terminal: the received prompt text is exactly
-// `kandelo-bash-5.2$ `. Match both forms with one shared pattern instead of
-// pinning to a specific bash version.
-const KANDELO_PROMPT = /kandelo(?:-bash-[0-9.]+)?\$ ?/;
+// The image-owned Bash prompt expands the current username, hostname, and
+// directory basename; it changes when the guest changes directories.
+const KANDELO_PROMPT = /maker@[^:\s]+:[^\r\n]*\$ ?/;
 
 test.beforeEach(({ page }) => {
   const diagnostics: BrowserDiagnostics = {
@@ -345,7 +338,7 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   await gotoMachineOrSkip(page, "node");
   await waitForReady(page);
   // The shell image ships one /etc/profile.d for every machine it carries
-  // (#1409), so the prompt is the shared `kandelo$` and no longer names the
+  // (#1409), so the prompt is the shared user/host/directory prompt and no longer names the
   // machine. The machine's identity is its image-declared title.
   await expect(
     page.getByRole("button", { name: /^Current computer: Node\.js,/ }),
@@ -411,7 +404,7 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   );
   await runTerminalCommand(
     page,
-    "set -eu; printf '%s\\n' '<!doctype html><title>Kandelo nginx</title><h1>KANDELO_EDIT_OK</h1>' > /var/www/html/index.html; " +
+    "set -eu; printf '%s\\n' '<!doctype html><title>Kandelo nginx</title><h1>KANDELO_EDIT_OK</h1>' > /srv/www/html/index.html; " +
       "printf 'KANDELO_NGINX_EDIT_OK\\n'",
     "KANDELO_NGINX_EDIT_OK",
   );
@@ -462,7 +455,7 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
 // .toml's [evidence.browser].
 test("nginx-python-vfs-browser-startup: Kandelo nginx + Python demo serves the Notes API through the web preview", async ({ page }) => {
   // PARTIALLY-CLOSED BROWSER PLATFORM GAP. notes-app's startup
-  // (`python3 /var/www/notes/app.py`) imports a large slice of the stdlib
+  // (`python3 /srv/www/notes/app.py`) imports a large slice of the stdlib
   // (wsgiref -> http.server -> ... -> email.quoprimime). On first import
   // CPython used to compile each of those modules from *source* — a deeply
   // recursive pass (tokenizer -> parser -> AST -> symtable -> code generator).

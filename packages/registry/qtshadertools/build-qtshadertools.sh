@@ -127,7 +127,7 @@ CMAKE_PREFIXES="$(IFS=';'; printf '%s' "${DEP_PREFIXES[*]}")"
 
 TARGET_DEFINES="-D__linux__=1 -DQT_LINUXBASE"
 
-GUEST_PREFIX="/usr/local/qt6"
+GUEST_PREFIX="/usr/lib/qt6"
 
 echo "==> Configuring qtshadertools for wasm32..."
 cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \

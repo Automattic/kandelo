@@ -109,13 +109,11 @@ describe("DEFAULT_MOUNT_SPEC", () => {
       [
         "/",
         "/tmp",
-        "/var/log",
-        "/var/run",
-        "/var/tmp",
+        "/run",
       ].sort(),
     );
-    expect(DEFAULT_MOUNT_SPEC).toHaveLength(5);
-    for (const path of ["/home/maker", "/root", "/srv"]) expect(KERNEL_TMPFS_OWNED_PREFIXES).not.toContain(path);
+    expect(DEFAULT_MOUNT_SPEC).toHaveLength(3);
+    for (const path of ["/home/maker", "/root", "/srv", "/var/tmp", "/var/log", "/var/run"]) expect(KERNEL_TMPFS_OWNED_PREFIXES).not.toContain(path);
   });
 
   it("declares / as a writable set-ID-capable image mount", () => {
@@ -138,14 +136,14 @@ describe("DEFAULT_MOUNT_SPEC", () => {
 
 // The in-kernel tmpfs is the unconditional authority for its scratch prefixes,
 // so `resolveForNode`/`resolveForBrowser` always drop the tmpfs-owned scratch
-// mounts (`/tmp`, `/var/tmp`, `/var/log`, `/var/run`,
+// mounts (`/tmp`, `/run`,
 // `/dev/shm`). Node still materialises host scratch backends for any
 // *non*-tmpfs scratch mount, so these suites exercise
 // that surviving machinery through a spec of non-tmpfs scratch paths that mirror
 // the canonical mode/uid/gid variety.
 const HOST_SCRATCH_MOUNT_SPEC: MountSpec[] = [
   { path: "/", source: "image", readonly: false },
-  { path: "/run", source: "scratch", mode: 0o1777, ephemeral: true, nosuid: true },
+  { path: "/mnt/session", source: "scratch", mode: 0o1777, ephemeral: true, nosuid: true },
   { path: "/var/spool", source: "scratch", mode: 0o1777, nosuid: true },
   { path: "/var/cache", source: "scratch", mode: 0o755, nosuid: true },
   { path: "/opt/run", source: "scratch", mode: 0o755, ephemeral: true, nosuid: true },
@@ -199,7 +197,7 @@ describe("resolveForNode", () => {
 
   it("a host-scratch mount is a HostFileSystem rooted under sessionDir", async () => {
     const mounts = await resolveForNode(HOST_SCRATCH_MOUNT_SPEC, image, sessionDir);
-    const run = mounts.find((m) => m.mountPoint === "/run");
+    const run = mounts.find((m) => m.mountPoint === "/mnt/session");
     expect(run).toBeDefined();
     expect(run!.backend).toBeInstanceOf(HostFileSystem);
 
@@ -208,7 +206,7 @@ describe("resolveForNode", () => {
     run!.backend.write(fd, data, null, data.length);
     run!.backend.close(fd);
 
-    const onDisk = readFileSync(join(sessionDir, "run", "note.txt"));
+    const onDisk = readFileSync(join(sessionDir, "mnt", "session", "note.txt"));
     expect(new TextDecoder().decode(onDisk)).toBe("hello via host fs");
   });
 
@@ -259,7 +257,7 @@ describe("resolveForNode", () => {
     const mounts = await withUmask(0, () =>
       resolveForNode(HOST_SCRATCH_MOUNT_SPEC, image, modeSessionDir)
     );
-    const sticky = mounts.find((m) => m.mountPoint === "/run")!;
+    const sticky = mounts.find((m) => m.mountPoint === "/mnt/session")!;
     const varSpool = mounts.find((m) => m.mountPoint === "/var/spool")!;
     const home = mounts.find((m) => m.mountPoint === "/home/dev")!;
     const admin = mounts.find((m) => m.mountPoint === "/opt/admin")!;
@@ -272,7 +270,7 @@ describe("resolveForNode", () => {
       expect(admin.backend.stat("/").mode & 0o7777).toBe(0o700);
       expect(admin.backend.stat("/").uid).toBe(0);
       expect(admin.backend.stat("/").gid).toBe(0);
-      expect(statSync(join(modeSessionDir, "run")).mode & PERMISSION_MASK).toBe(0o777);
+      expect(statSync(join(modeSessionDir, "mnt", "session")).mode & PERMISSION_MASK).toBe(0o777);
       expect(statSync(join(modeSessionDir, "var", "spool")).mode & PERMISSION_MASK).toBe(0o777);
       expect(statSync(join(modeSessionDir, "opt", "admin")).mode & 0o7777).toBe(0o700);
     } finally {
@@ -307,10 +305,10 @@ describe("resolveForNode", () => {
         sessionRoot,
         [{
           sourcePath: source,
-          destinationPath: "/run/kandelo-run",
+          destinationPath: "/mnt/session/kandelo-run",
         }],
       );
-      const mount = mounts.find((entry) => entry.mountPoint === "/run")!;
+      const mount = mounts.find((entry) => entry.mountPoint === "/mnt/session")!;
 
       // The source entry still aliases the external file. Mutating it after
       // initialization must not replace bytes inside the worker-owned copy.
@@ -367,7 +365,7 @@ describe("resolveForNode", () => {
           nestedSession,
           [{
             sourcePath: source,
-            destinationPath: "/run/kandelo-run",
+            destinationPath: "/mnt/session/kandelo-run",
           }],
         )
       ).rejects.toThrow(/contains the private session/i);
@@ -391,7 +389,7 @@ describe("resolveForNode", () => {
           sessionRoot,
           [{
             sourcePath: source,
-            destinationPath: "/run/kandelo-run",
+            destinationPath: "/mnt/session/kandelo-run",
           }],
         ),
       ).rejects.toThrow(/symlink or unsupported special entry/i);
@@ -418,13 +416,13 @@ describe("resolveForNode", () => {
           await buildFixtureImage(),
           sessionRoot,
           [
-            { sourcePath: valid, destinationPath: "/run/first" },
-            { sourcePath: invalid, destinationPath: "/run/second" },
+            { sourcePath: valid, destinationPath: "/mnt/session/first" },
+            { sourcePath: invalid, destinationPath: "/mnt/session/second" },
           ],
         ),
       ).rejects.toThrow(/symlink or unsupported special entry/i);
-      expect(existsSync(join(sessionRoot, "run", "first"))).toBe(false);
-      expect(existsSync(join(sessionRoot, "run", "second"))).toBe(false);
+      expect(existsSync(join(sessionRoot, "mnt", "session", "first"))).toBe(false);
+      expect(existsSync(join(sessionRoot, "mnt", "session", "second"))).toBe(false);
     } finally {
       rmSync(sessionRoot, { recursive: true, force: true });
       rmSync(fixtureRoot, { recursive: true, force: true });
@@ -479,8 +477,8 @@ describe("resolveForNode", () => {
           image,
           sessionRoot,
           [
-            { sourcePath: first, destinationPath: "/run/fixtures" },
-            { sourcePath: second, destinationPath: "/run/fixtures/nested" },
+            { sourcePath: first, destinationPath: "/mnt/session/fixtures" },
+            { sourcePath: second, destinationPath: "/mnt/session/fixtures/nested" },
           ],
         ),
       ).rejects.toThrow(/destinations overlap/i);
@@ -490,15 +488,15 @@ describe("resolveForNode", () => {
           HOST_SCRATCH_MOUNT_SPEC,
           image,
           sessionRoot,
-          [{ sourcePath: first, destinationPath: "/run/extra/fixtures" }],
-          ["/run/extra"],
+          [{ sourcePath: first, destinationPath: "/mnt/session/extra/fixtures" }],
+          ["/mnt/session/extra"],
         ),
       ).rejects.toThrow(/overlaps another mount/i);
 
       const nestedImageSpec: MountSpec[] = [
         { path: "/", source: "image", readonly: true },
-        { path: "/run", source: "scratch" },
-        { path: "/run/shadow", source: "image", readonly: true },
+        { path: "/mnt/session", source: "scratch" },
+        { path: "/mnt/session/shadow", source: "image", readonly: true },
       ];
       await expect(
         resolveForNodeKernelSession(
@@ -507,25 +505,25 @@ describe("resolveForNode", () => {
           sessionRoot,
           [{
             sourcePath: first,
-            destinationPath: "/run/shadow/fixtures",
+            destinationPath: "/mnt/session/shadow/fixtures",
           }],
         ),
         // A nested image mount is refused before any seed tree is considered:
         // the kernel builds only `/` from the image, so no seed can be
         // shadowed by one.
-      ).rejects.toThrow(/image mount at \/run\/shadow is not supported/i);
+      ).rejects.toThrow(/image mount at \/mnt\/session\/shadow is not supported/i);
 
       const nestedScratchSpec: MountSpec[] = [
         { path: "/", source: "image", readonly: true },
-        { path: "/run", source: "scratch" },
-        { path: "/run/fixtures/nested", source: "scratch" },
+        { path: "/mnt/session", source: "scratch" },
+        { path: "/mnt/session/fixtures/nested", source: "scratch" },
       ];
       await expect(
         resolveForNodeKernelSession(
           nestedScratchSpec,
           image,
           sessionRoot,
-          [{ sourcePath: first, destinationPath: "/run/fixtures" }],
+          [{ sourcePath: first, destinationPath: "/mnt/session/fixtures" }],
         ),
       ).rejects.toThrow(/overlaps another declared mount/i);
 
@@ -534,7 +532,7 @@ describe("resolveForNode", () => {
           HOST_SCRATCH_MOUNT_SPEC,
           image,
           sessionRoot,
-          [{ sourcePath: first, destinationPath: "/run" }],
+          [{ sourcePath: first, destinationPath: "/mnt/session" }],
         ),
       ).rejects.toThrow(/below a scratch mount/i);
 
@@ -544,8 +542,8 @@ describe("resolveForNode", () => {
           image,
           sessionRoot,
           [
-            { sourcePath: first, destinationPath: "/run/fixtures" },
-            { sourcePath: second, destinationPath: "/run//fixtures" },
+            { sourcePath: first, destinationPath: "/mnt/session/fixtures" },
+            { sourcePath: second, destinationPath: "/mnt/session//fixtures" },
           ],
         ),
       ).rejects.toThrow(/canonical POSIX path/i);
@@ -555,8 +553,8 @@ describe("resolveForNode", () => {
           HOST_SCRATCH_MOUNT_SPEC,
           image,
           sessionRoot,
-          [{ sourcePath: first, destinationPath: "/run/extra/fixtures" }],
-          ["/run//extra"],
+          [{ sourcePath: first, destinationPath: "/mnt/session/extra/fixtures" }],
+          ["/mnt/session//extra"],
         ),
       ).rejects.toThrow(/canonical POSIX path/i);
 
@@ -565,7 +563,7 @@ describe("resolveForNode", () => {
           HOST_SCRATCH_MOUNT_SPEC,
           image,
           sessionRoot,
-          [{ sourcePath: "relative", destinationPath: "/run/relative" }],
+          [{ sourcePath: "relative", destinationPath: "/mnt/session/relative" }],
         ),
       ).rejects.toThrow(/source path must be absolute/i);
     } finally {
@@ -598,11 +596,11 @@ describe("resolveForBrowser", () => {
       resolveForBrowser(
         [
           { path: "/", source: "image" },
-          { path: "/run", source: "scratch", mode: 0o755 },
+          { path: "/mnt/session", source: "scratch", mode: 0o755 },
         ],
         image,
       ),
-    ).rejects.toThrow(/browser scratch mount \/run has no backend/);
+    ).rejects.toThrow(/browser scratch mount \/mnt\/session has no backend/);
   });
 
   it("resolves the canonical spec to no mounts at all", async () => {
@@ -641,16 +639,16 @@ describe("filterMountSpecForKernelTmpfs", () => {
       path,
       source: "scratch" as const,
     })),
-    { path: "/run", source: "scratch" }, // host-owned; tmpfs never claims it
+    { path: "/mnt/session", source: "scratch" }, // host-owned; tmpfs never claims it
   ];
 
   it("unconditionally drops only the tmpfs-owned scratch mounts", () => {
     // The in-kernel tmpfs is the unconditional authority for its scratch
     // prefixes, so the resolver always drops them. The image root and the
-    // non-tmpfs `/run` scratch mount survive; every prefix the kernel serves is
+    // non-tmpfs `/mnt/session` scratch mount survive; every prefix the kernel serves is
     // gone so the host materialises no backend that could shadow it.
     const kept = filterMountSpecForKernelTmpfs(spec);
-    expect(kept.map((m) => m.path)).toEqual(["/", "/run"]);
+    expect(kept.map((m) => m.path)).toEqual(["/", "/mnt/session"]);
     for (const prefix of KERNEL_TMPFS_OWNED_PREFIXES) {
       expect(kept.some((m) => m.path === prefix)).toBe(false);
     }
@@ -659,7 +657,7 @@ describe("filterMountSpecForKernelTmpfs", () => {
   it("preserves an image mount and a non-tmpfs scratch mount", () => {
     const preserved: MountSpec[] = [
       { path: "/", source: "image" },
-      { path: "/run", source: "scratch" },
+      { path: "/mnt/session", source: "scratch" },
     ];
     expect(filterMountSpecForKernelTmpfs(preserved)).toEqual(preserved);
   });

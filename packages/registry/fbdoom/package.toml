@@ -36,5 +36,5 @@ guest_path = "/usr/share/kandelo/sessions/fbdoom.json"
 
 [[runtime_files]]
 artifact = "doom-activity"
-guest_path = "/usr/local/bin/doom-activity"
+guest_path = "/usr/bin/doom-activity"
 mode = 493

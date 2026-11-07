@@ -95,7 +95,7 @@ describe.skipIf(!available)("NetHack special levels (Node host, shell product)",
       await host.init(arrayBuffer(new Uint8Array(readFileSync(kernelPath!))));
       // Without a sysconf file, NetHack grants wizard mode to the login
       // named `wizard`.
-      const added = await host.spawnFromVfs("/usr/bin/bash", ["bash", "-c",
+      const added = await host.spawnFromVfs("/bin/bash", ["bash", "-c",
         "echo 'wizard:x:1002:1002:wizard:/home/wizard:/bin/bash' >> /etc/passwd && " +
           "echo 'wizard:x:1002:' >> /etc/group && " +
           "mkdir -p /home/wizard && chown 1002:1002 /home/wizard"],
@@ -104,7 +104,7 @@ describe.skipIf(!available)("NetHack special levels (Node host, shell product)",
 
       let pid = -1;
       const { exit } = await host.spawnFromVfs(
-        "/usr/bin/bash",
+        "/bin/bash",
         ["bash", "-c", `NETHACKOPTIONS='${OPTIONS}' exec nethack -D -u wizard`],
         {
           env: ["HOME=/home/wizard", "USER=wizard", "TERM=xterm-256color", "PATH=/usr/bin:/bin"],

@@ -1,21 +1,33 @@
 # Browser Support
 
-> **Contributor note — dual-host parity is load-bearing.** The browser host is a peer of the Node.js host, not a follower. Any change touching host-runtime behavior MUST land symmetrically on both hosts, **in the same PR**. See [`CLAUDE.md`](../CLAUDE.md#two-hosts-browser-and-nodejs--dual-host-parity-is-load-bearing) for the hard requirements. PR #388 (brk-base) and PR #410 (worker exit message) both shipped one-sided fixes that left browser behavior broken for users; those are the failure modes this rule exists to prevent.
+> **Contributor note — dual-host parity is load-bearing.** The browser host is a peer of the Node.js host, not a follower. Any change touching host-runtime behavior MUST land symmetrically on both hosts, **in the same PR**, unless a documented platform boundary explains the difference. See [`CLAUDE.md`](../CLAUDE.md#host-runtime-contract) for the requirements.
 
 ## Overview
 
-Kandelo runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). The shared-kernel architecture uses one kernel Wasm instance in a dedicated web worker, with each process running in a sub-worker.
+Kandelo uses SharedArrayBuffer, workers, `Atomics.waitAsync`, and WebAssembly
+features whose availability varies by browser engine and guest architecture.
+SharedArrayBuffer support alone does not establish support for a browser
+version. The engine-specific validation and limitations below distinguish
+wasm32, wasm64, and host capabilities. The shared-kernel architecture uses
+one kernel Wasm instance in a dedicated worker, with each process running in
+a sub-worker.
 
 ## Required HTTP Headers
 
-SharedArrayBuffer requires cross-origin isolation:
+SharedArrayBuffer requires a secure context (HTTPS, or a trustworthy local
+address such as `127.0.0.1`) and cross-origin isolation:
 
 ```
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-Without these headers, `SharedArrayBuffer` is undefined and the kernel cannot initialize.
+Without cross-origin isolation, `SharedArrayBuffer` is unavailable and the
+kernel cannot initialize. The Vite development server sends these headers.
+Production builds include an isolation service worker for hosts that cannot
+set them directly; its first activation may require a reload. An insecure
+remote HTTP origin cannot be repaired by that service worker. See
+[Directory-scoped production hosting](#directory-scoped-production-hosting).
 
 ## Architecture
 
@@ -259,8 +271,9 @@ pipe pair.
 - Shell images provide `/home/projects` and the normal `/home/maker` home as
   image-backed directories owned by `maker`. Homes, `/root`, and `/srv` use
   the rootfs journal on persistent computers, rather than being hidden by
-  RAM-only scratch mounts. `/tmp`, `/var/tmp`, `/var/log`, `/var/run`, and
-  `/dev/shm` remain volatile. Memory-only computers lose all changes on shutdown.
+  RAM-only scratch mounts. `/var/log` and `/var/tmp` also use the persistent
+  rootfs; `/tmp`, `/run`, and `/dev/shm` remain volatile. `/var/run` links to
+  `/run`. Memory-only computers lose all changes on shutdown.
 - The Kandelo page creates temporary, resizable, OPFS-backed computers by default.
   **Release compatibility warning:** saved computers from this release will not
   work in the next release. Export important files before updating Kandelo.
@@ -665,6 +678,7 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
   than `getProcessMemory()`.
 - `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
 - Keyboard input: the demo page maps focused browser `KeyboardEvent` values to Linux input keycodes, encodes them as MEDIUMRAW bytes, and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software decodes those bytes from the tty. Ctrl+Shift+Esc is reserved as the host escape from keyboard capture.
+- The same keys also reach the machine keyboard device `/dev/input/event0` as evdev key events while the framebuffer canvas holds focus, as every key reaches both the console and evdev on Linux. That lets a program bind `/dev/fb0` without a terminal: the retro ROM exchange handler starts the emulator with stdin on `/dev/null`, and the emulator then reads `/dev/input/event0`. A program reads one source, never both, or it sees every key twice; the retro emulators read their terminal when they have one. Images that declare `evdev-input` already feed evdev from their display surface; for other images the shell attaches the evdev source scoped to the KMS canvas and the focused framebuffer canvas (`apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`).
 - Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via
   `FBIOPAN_DISPLAY` is a no-op. Device/CRTC-owned surfaces, per-handle rights,
   serialized presentation, and multi-writer/compositor ownership remain
@@ -826,14 +840,14 @@ Located in `apps/browser-demos/pages/`:
 | mariadb-test | MariaDB + mysqltest | dinit + spawn | Playwright-driven mysql-test runner |
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
 | network | bash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
-| doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. The image's `/usr/local/bin/fbdoom` is a launch wrapper around the lazy `/usr/bin/fbdoom`: on first launch it writes `screenblocks 10` (the full-width view with the status bar, rather than Doom's default view inset in a tiled border) into a missing `~/.fdoom.tar/default.cfg`, Doom's own per-user config (fbDOOM reads it at startup and saves its settings there when it quits, as every Doom does; doomgeneric had compiled both out), because Doom has no system-wide config. The managed shareware WAD is installed at `/usr/share/doom/doom1.wad`; custom exchange WADs use `/usr/share/doom/user.wad`. Saves live in `$HOME/.fdoom.tar/savegame/doomsav0.dsg` through `doomsav5.dsg`, and persist on saved or temporary disk-backed computers. Doom does not autosave on quit: use Save Game (F2), then Load Game (F3) after restarting. Doom's Screen Size option still changes it. |
+| doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a commit-pinned CDN URL (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. The image's `/usr/bin/fbdoom` is a launch wrapper around the lazy `/usr/libexec/fbdoom`: on first launch it writes `screenblocks 10` (the full-width view with the status bar, rather than Doom's default view inset in a tiled border) into a missing `~/.fdoom.tar/default.cfg`, Doom's own per-user config (fbDOOM reads it at startup and saves its settings there when it quits, as every Doom does; doomgeneric had compiled both out), because Doom has no system-wide config. The managed shareware WAD is installed at `/usr/share/doom/doom1.wad`; custom exchange WADs use `/var/games/doom/user.wad`. Saves live in `$HOME/.fdoom.tar/savegame/doomsav0.dsg` through `doomsav5.dsg`, and persist on saved or temporary disk-backed computers. Doom does not autosave on quit: use Save Game (F2), then Load Game (F3) after restarting. Doom's Screen Size option still changes it. |
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package as a lazy file in the image, fetched when the profile first runs it; its shader presets are baked into the image. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
-| modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
-| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
+| modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
+| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
 | freeciv | Freeciv 3.2.6 SDL2 client + server | dinit | Lazy game/data archive, GLES2 presentation, and direct TCP multiplayer through network sessions. The Multiplayer dock menu hosts or joins the session host on port 5556. Audio and multicast discovery are disabled; see [Freeciv](freeciv.md). |
 | love | Native LÖVE 11.5 games | dinit | SDL2 KMSDRM/EGL/GLES port with Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX selectable through the Games dock menu. Starts Pong; switching restarts the process with the selected game directory. The executable and game tree download lazily. SDL2/OSS audio output is verified in Chromium. Steam integration is disabled. See `packages/registry/love/README.md` for the port's compatibility boundaries. |
-| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
-| omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The desktop data archive also fetches on first read; the terminal-only boot does not download it. |
+| wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
+| omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The desktop data archive also fetches on first read; the terminal-only boot does not download it. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -1076,7 +1090,7 @@ Hyprland launcher (`hyprdesktop`) and its config
 it. As packaged, the Hyprland tiling machine boots the same `wlcompositor`
 binary as a Hyprland-class tiling window manager (the floating Wayland desktop
 above is its default layout). The image declares one command,
-`/usr/local/bin/hyprdesktop`, which starts the compositor with
+`/usr/bin/hyprdesktop`, which starts the compositor with
 `WLC_LAYOUT=dwindle` and the image's hyprland.conf-shaped
 `/usr/share/kandelo/hyprland/wlcompositor.conf` (named by `WLC_CONFIG`),
 waits for its socket, then starts three real clients — one `wlclock` and
@@ -1109,7 +1123,7 @@ two `wlterm` terminals. The foreground terminal's exit ends the desktop.
   each app has its own `exec` bind rather than a launcher/`rofi` UI:
   `Return`→`wlterm`, `K`→`wlclock` (K as in clo**K** — see the caveat),
   `P`→`wlpaint` (again on both `SUPER` and `CTRL`). Pressing the combo makes
-  the compositor `posix_spawnp` the binary from `/usr/local/bin`, and the new
+  the compositor `posix_spawnp` the binary from `/usr/bin`, and the new
   client tiles into the layout. Unlike on the Wayland desktop, `wlpaint`
   is not started in the initial layout, so `Ctrl+P` is how you summon it.
   **Caveat:** the compositor grabs a bound combo before the focused client,
@@ -1145,7 +1159,7 @@ package builds it into `kandelo-desktop-data.zip`, which the shell image
 registers as a verified lazy archive under `/usr/share/kandelo`. Its first
 file read downloads the archive; later reads reuse it. The image declares
 one command,
-`/usr/local/bin/omarchydesktop`, which starts a `dbus-daemon` session bus
+`/usr/bin/omarchydesktop`, which starts a `dbus-daemon` session bus
 and the compositor, waits for both sockets and the compositor's Hyprland
 IPC socket, then starts **Quickshell 0.3.1** on the image's `shell.qml`.
 Nothing is staged by the page.
@@ -1565,7 +1579,7 @@ The ScummVM machine (`?vfs=<shell image>&profile=scummvm`) runs unmodified
 upstream ScummVM fullscreen on `/dev/dri/card0`: SDL2's
 KMSDRM backend takes DRM master and renders GLES2 straight to the display,
 and audio goes through OSS on `/dev/dsp`. The program
-(`/usr/bin/scummvm`) and the GUI data the package declares as runtime files
+(`/usr/libexec/scummvm`) and the GUI data the package declares as runtime files
 (themes, icons and fonts under `/usr/share/scummvm`) are lazy files in the
 shell image, fetched on first use.
 
@@ -1582,7 +1596,7 @@ downloads the program plus the one engine of the game it plays. SDL2's
 `--enable-loadso`), and the program links with `--export-all` so a plugin
 resolves every function it imports against it; the package build fails if
 any plugin import has no export to bind to. The machine's command is
-`/usr/local/bin/scummvm`, a small wrapper in the image that:
+`/usr/bin/scummvm`, a small wrapper in the image that:
 
 - names SDL's backends in the environment. Kandelo has no libudev, so
   SDL's evdev layer only finds the kernel's keyboard and pointer when
@@ -1615,11 +1629,11 @@ The catalog is image content.
 `packages/registry/shell/scummvm-freeware-games.json` lists each game's
 archive URL on `downloads.scummvm.org`, its size, and the SHA-256 the
 ScummVM project publishes beside it; the image builder writes it to
-`/usr/local/share/scummvm-play/games.tsv`, and fails if the ScummVM
+`/usr/share/scummvm-play/games.tsv`, and fails if the ScummVM
 profile's dock menu does not list exactly its games. Each button and menu
 entry is a `dockActions` command: it ends the running ScummVM (the
 framebuffer pane signals the `/dev/fb0` owner, described below), then runs
-`/usr/local/bin/scummvm-play <game>` in the machine's shell. That script
+`/usr/bin/scummvm-play <game>` in the machine's shell. That script
 downloads the archive with the machine's own `curl` — in the browser that
 goes through the CORS proxy described below, because the site grants no CORS
 — reporting a percentage against the catalog size (the guest receives
@@ -1629,7 +1643,7 @@ MiB response limit. If any request fails, it switches to 16 MiB ranges with
 up to three attempts per range. Completed ranges stay downloaded; an
 incomplete attempt is discarded before retrying. If the server ignores
 ranges on a smaller archive, it retries the full request. It then checks the
-SHA-256, unzips into `/usr/share/scummvm-games/<game>`, and deletes the
+SHA-256, unzips into `/var/games/scummvm/<game>`, and deletes the
 archive. ScummVM's own `--add --recursive` then finds the game and records
 it as a launcher target, and the script starts that target; a collection
 (the WAGE games) opens the launcher instead. A failed download or a digest
@@ -1641,7 +1655,7 @@ it again starts it without downloading; nothing persists across a reboot.
 No other game ships with the machine: no Kandelo package carries a commercial
 SCUMM title. Sending a `.zip` to the machine (**Load game data** in the
 display's dock, or a drop) hands it to the machine's scummvm rule (up to
-512 MiB), which extracts it into `/usr/share/scummvm-games` while ScummVM
+512 MiB), which extracts it into `/var/games/scummvm` while ScummVM
 keeps running; the batch's toast says when it is done. ScummVM's "Add Game"
 browser opens in that directory. The extracted game must fit the machine's
 filesystem, which lives in kernel memory beside everything else guests have
@@ -1707,6 +1721,134 @@ tile's size. Pointer input and the launcher's size on a HiDPI display are
 checked by hand (Chromium at a device scale factor of 2), because
 Playwright's emulated device scale does not change the size the pane
 reports.
+
+### Retro emulators
+
+Every shell machine carries three emulators from the `retro-emulators`
+package as lazy files, each a libretro core linked with one small frontend
+and named for the emulator it is:
+
+| Command | Shorter name | Systems |
+|---|---|---|
+| `/usr/bin/fceumm` | `retro-nes` | NES |
+| `/usr/bin/genesis-plus-gx` | `retro-genesis` | Mega Drive, Master System, Game Gear |
+| `/usr/bin/snes9x` | `retro-snes` | SNES |
+
+A 240p test suite ROM for each is under `/usr/share/retro-emulators/roms`.
+Nothing is fetched until an emulator runs. Each takes
+`ROM [--state FILE | --info | --keys]` and reads the system from the ROM's
+extension. The emulator draws on `/dev/fb0`, plays through `/dev/dsp` and
+reads the keyboard as a joypad: the arrows, Enter, Right Shift, Z, X, A,
+S, Q and W are the D-pad, Start, Select and the face and shoulder buttons.
+What each key is on a given system comes from the core itself: every
+libretro core names its buttons (`RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS`),
+so Genesis Plus GX calls Right Shift "Mode" and X "C". The emulator prints
+that list when a game starts, before it takes the keyboard, and `--keys`
+prints it and exits. F2 saves a state, F4 loads it, and Ctrl+C quits.
+
+Saves are kept per game in the user's data directory,
+`$XDG_DATA_HOME/retro-emulators` or `~/.local/share/retro-emulators`, named
+after the ROM's file name without its extension, so they last as long as
+the computer does (across reboots for a saved computer, until it closes for
+a temporary one):
+
+- `saves/GAME.srm` is the cartridge's own save memory, the battery-backed
+  RAM a game writes when the player saves inside it. It is loaded when the
+  game starts, and written back within a few seconds of the game changing it
+  and when the game quits (Ctrl+C, or SIGTERM or SIGHUP, which is how the
+  page and the drop handler stop a game). A file of the wrong size is left
+  alone and reported.
+- `states/GAME.state` is the snapshot F2 saves and F4 loads. It is not
+  loaded at start, so a game begins from its title screen or its own save;
+  `retro-run ROM --state FILE` starts from a snapshot.
+
+`retro-run ROM` (eager, `/usr/bin/retro-run`) chooses the emulator from
+the ROM's own bytes, not its name: the iNES magic, the Mega Drive `SEGA`
+header, the Master System and Game Gear `TMR SEGA` header, or a SNES
+header checksum. A file that matches none of them is refused with a
+message. It passes further options to the emulator. With no argument it
+runs the NES test suite. `retro-run --identify FILE` prints the system it
+detected (`nes`, `md`, `sms`, `gg` or `sfc`) and exits 0, or exits 1 when
+the file is not a ROM. `retro-run --keys [FILE]` prints the key list for
+that ROM's emulator.
+
+Dropping a ROM, or a folder holding ROMs, on a machine plays it. ROMs are
+recognised by their contents, because collections name them `.rom`, `.bin`
+or nothing at all: the image's exchange rule `90-retro-rom.handler` takes
+every drop that the game machines' rules do not, and
+`/usr/libexec/kandelo/retro-load-rom` asks `retro-run --identify` about
+each file whose name could be a ROM (a console extension, `.rom`, `.bin`,
+or none). A drop with no ROM in it goes to `exchange-save`, so it is saved
+to `~/Downloads` as before. Otherwise the handler copies the drop into
+`~/roms` as it arrived (a folder keeps its contents) and runs
+`kandelo-terminal --display "retro-run ~/roms/NAME"` for the first ROM in
+path order (see "Terminal requests" below). The page opens a new terminal
+with that command typed at its prompt, stops whatever holds the display,
+and shows the display, so the user sees what the drop ran; once the game
+exits, Up and Enter in that terminal run it again. The drop's status reads
+"opened a terminal: retro-run ~/roms/NAME". Files over 16 MiB are left to
+the catch-all.
+
+Where nothing outside the machine opens terminals (the Node host, or no
+listener for exchange outputs), `kandelo-terminal` fails and the handler
+starts the game in the background instead: it stops the emulator if one is
+playing, starts `retro-run`, and reports "playing NAME" once the emulator
+holds the display, or the emulator's own error. A display already held by
+another program is not taken there: the drop fails with a message saying
+so.
+
+An emulator started in the background has no terminal (kxchgd starts
+handlers with stdin on `/dev/null`), so it reads keys from
+`/dev/input/event0`, which the framebuffer canvas feeds while it has focus
+(see "Framebuffer (`/dev/fb0`)"). Started from a terminal, including one a
+drop opened, the emulator reads the terminal instead. Either way Ctrl+C
+quits it. The keyboard is read raw, so no terminal turns Ctrl+C into a
+signal; the emulator acts on the chord itself.
+Esc alone does nothing, so a stray press does not end a game. The emulator
+keeps its boot-lifetime files in the user's runtime directory,
+`$XDG_RUNTIME_DIR` or `/run/user/<uid>`: its pid in `retro.pid`. A
+background game's output goes to `retro.log` there.
+
+Gated in Node by `host/test/retro-emulators-cli-smoke.test.ts` (each
+emulator initialises its core and lists its keys by the core's button
+names, including F2 and F4; a European ROM's name sets PAL timing; with no
+terminal the emulator reads `/dev/input/event0`, ignores Esc, saves and
+loads a state on F2 and F4 and quits on Ctrl+C there; a battery-backed
+game's save file is loaded at start)
+and in the browser by `apps/browser-demos/test/retro-rom-drop.spec.ts` (a
+dropped ROM opens a terminal with its command and plays, takes keys, keeps
+running on Esc and quits on Ctrl+C, after which Up and Enter in that
+terminal run it again; a SNES ROM named `.rom` still starts Snes9x, a later
+drop replaces the game, a ROM with no extension plays, and a file that is
+not a ROM is saved to `~/Downloads`). The request format and its routing
+are covered by `web-libs/kandelo-session/test/terminal-request.test.ts` and
+`exchange-session.test.ts`.
+
+#### Terminal requests
+
+A program in the machine can ask the page for a terminal running a
+command: `kandelo-terminal [--display] [--title TITLE] COMMAND-LINE`
+(`/usr/bin/kandelo-terminal` in the shell image). It publishes a Kandelo
+exchange output of type `application/x-kandelo-terminal-command`, a small
+JSON object `{"version": 1, "command": …, "title": …, "display":
+"framebuffer"}` (`web-libs/kandelo-session/src/terminal-request.ts`).
+`ExchangeSession` hands such outputs to the app's handler instead of the
+output tray, and the app opens them as an activity: a new terminal tab
+labelled with the title, the command typed at its prompt, and for
+`--display` the display owner stopped and the display shown. The command
+runs as that terminal's login user, the same account a guest publisher
+already is, so a request grants nothing a program in the machine could not
+do itself.
+
+The request is untrusted input. A command must be one line of at most 2,048
+characters with no control characters, because it is typed into a shell;
+the title is shortened to 80 characters; unknown fields, other versions and
+requests over 4 KiB are refused, and a refusal or a failed launch is shown
+as a failed entry with its reason. Activities' limits apply (32 per
+computer, one starting at a time). A page without a handler keeps the
+request as an ordinary output in the tray, and with no output listener at
+all the publish fails with `ENXIO`, so `kandelo-terminal` exits 1 and its
+caller can fall back.
 
 ### Kandelo session UI
 
@@ -1877,7 +2019,7 @@ External hosts, URL credentials, non-HTTP schemes, invalid ports and invalid
 peer addresses are refused. This does not publish a public URL or isolate guest
 JavaScript from the app's browser origin.
 
-Newly built shell-family images install `/usr/local/bin/kandelo-preview`:
+Newly built shell-family images install `/usr/bin/kandelo-preview`:
 
 ```sh
 python3 -m http.server 3000 --bind 0.0.0.0 --directory /home/projects &
@@ -2004,7 +2146,7 @@ WordPress has one shared core, plugin and theme tree, one PHP-FPM pool, and
 both preinstalled database payloads. New computers have two independent sites:
 SQLite and MariaDB keep separate posts, settings, database files and uploads
 under `/var/lib/wordpress-sites/{sqlite,mariadb}/wp-content`. MariaDB's database
-remains under `/data`; SQLite's is inside its site's content directory.
+remains under `/var/lib/mysql`; SQLite's is inside its site's content directory.
 Per-service nginx configuration selects the site for each request. Switching
 services does not copy WordPress core, migrate a database, or merge the sites.
 Plugin and theme software is shared, not independently isolated. Uploads are
@@ -2629,6 +2771,11 @@ HTML, assets, requests and same-origin iframes still use the bridge.
 
 ## VFS Images
 
+Kandelo-provided images follow the [FHS layout](filesystem-layout.md).
+This governs guest command paths, service content and writable state, for
+both the browser and Node hosts. The app consumes those paths from image
+metadata rather than recreating a second layout after boot.
+
 ### Consumer-owned product selection
 
 VFS product definitions live under `images/vfs/products/` and describe what
@@ -2974,12 +3121,10 @@ inline input, 2 MiB inflated per input, aggregate input size, 32 KiB
 parameters JSON. Zero-byte inputs are accepted; the dialog simply skips
 empty scripts during authoring.
 
-Scripts currently run without a confirmation step because every machine the
-browser app boots is ephemeral. This is a load-bearing boundary: before any
-persistent or restored-machine feature ships, script links must gain an
-explicit show-the-script consent step (see the warning at the execution
-site in `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` and
-`docs/superpowers/specs/2026-09-21-script-bearing-links-design.md`).
+Scripts currently run without a confirmation step. A setup link describes
+starting inputs, not a saved computer's live filesystem. The earlier
+ephemeral-only rationale no longer describes the browser's disk-backed
+computers; it must not be used as a persistence or isolation guarantee.
 
 ### Kandelo demo metadata
 
@@ -3079,8 +3224,10 @@ Files reach a machine through Kandelo exchange (`docs/architecture.md`,
 the terminal, framebuffer, or display surface, or choosing them with the
 dock's "Send files" button, offers them to the machine as one batch. The
 machine's agent and its handler rules decide what happens: the game
-machines' rules load a WAD, a pak or zipped game data, and the catch-all
-saves anything else to `~/Downloads`. Each batch gets a toast with its
+machines' rules load a WAD, a pak or zipped game data; on every shell
+machine a NES, SNES, Mega Drive, Master System or Game Gear ROM is kept in
+`~/roms` and played (see "Retro emulators" below); and the catch-all saves
+anything else to `~/Downloads`. Each batch gets a toast with its
 status and outcome; outputs the machine publishes appear in a tray with
 Save and Dismiss (Save streams through `showSaveFilePicker` where the
 browser has it, and otherwise buffers the output and downloads it). A
@@ -3109,7 +3256,7 @@ before the exchange button:
       "id": "demo",
       "label": "Run the demo",
       "description": "Shown as the button's tooltip",
-      "restart": "/usr/local/bin/run-demo"
+      "restart": "/usr/bin/run-demo"
     },
     {
       "id": "freeware",
@@ -3119,7 +3266,7 @@ before the exchange button:
           "id": "lure",
           "label": "Lure of the Temptress",
           "detail": "6 MB",
-          "restart": "/usr/local/bin/scummvm-play lure"
+          "restart": "/usr/bin/scummvm-play lure"
         },
         {
           "id": "helga-deep-in-trouble",
@@ -3184,7 +3331,7 @@ shared memory at `/dev/shm`; image acceptance should exercise devices such as
 
 KMS demos use the same metadata path. A profile can set
 `runningPrimary` to include `"kms"` and declare an `init.shellCommand` such
-as `/usr/local/bin/modeset`; the VFS image must contain that executable. The
+as `/usr/bin/modeset`; the VFS image must contain that executable. The
 Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
 then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
@@ -3345,13 +3492,13 @@ An image selects its terminal program with the strict experimental file
   "kind": "kandelo-experimental-terminal-session",
   "version": 1,
   "initial": {
-    "path": "/usr/bin/login",
+    "path": "/bin/login",
     "argv": ["login", "-p", "-f", "maker"],
     "uid": 0,
     "gid": 0
   },
   "afterExit": {
-    "path": "/usr/bin/login",
+    "path": "/bin/login",
     "argv": ["login", "-p"],
     "uid": 0,
     "gid": 0
@@ -3408,6 +3555,17 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
+The shell recipe registers Harper 3.0.0 as two lazy archive members:
+`/usr/bin/harper-cli` and `/usr/bin/harper-ls`. For example, use
+`harper-cli lint --format json file.md` for batch checking, or let an LSP
+client launch `harper-ls --stdio`. First use of either command downloads the
+shared `harper-browser-bundle` ZIP (about 23 MiB for the current build);
+launching the other command reuses that archive in the same running machine.
+The ZIP compresses both complete executables; it does not deduplicate their
+uncompressed code or data. Building `harper` prepares the binaries, and
+`harper-browser-bundle` packages them without recompiling. An existing shell
+image gains these references when the shell image is next rebuilt.
+
 Node, WordPress, WordPress on FrankenPHP, and LAMP are optional demo profiles.
 The WordPress image offers three profiles using different dinit targets:
 `wordpress-sqlite` starts nginx/PHP-FPM, `wordpress-frankenphp` starts a
@@ -3450,14 +3608,16 @@ Malformed authored modules still fail the audit, with their file path in the
 parse error.
 
 The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
-`mysql` account (uid/gid 101). Their writable `/data` directories are
+`mysql` account (uid/gid 101). Their writable `/var/lib/mysql` directories are
 therefore serialized as `101:101` with mode `0775`; `/tmp` remains a
 root-owned `01777` sticky directory.
 
-Generated VFS images are `.gitignore`d rather than committed. Package-backed
-images can be materialized from a current public package archive; the normal
-resolver falls back to the package's source recipe when needed. The `run.sh`
-script handles this automatically before starting the browser.
+Generated VFS images are `.gitignore`d rather than committed. The normal local
+build uses the supported package recipes and content-addressed source cache,
+then publishes a validated projection into `local-binaries/source-only-v1`.
+It has no remote prebuilt-binary fallback. `./run.sh browser` prepares that
+projection before starting Vite. Serving an image's lazy assets over HTTP at
+runtime is a separate operation from resolving a package for a local build.
 
 ### Building VFS images
 
@@ -3579,6 +3739,14 @@ authenticated VFS group below belongs to production output and is generated
 only when building a deployable directory-scoped distribution.
 
 ### Directory-scoped production hosting
+
+The Vite preview server preserves the built service worker's authenticated
+VFS manifest cache version while applying its local CORS proxy configuration.
+Replacing a build at the same URL therefore updates the worker and retires
+its previous scoped lazy-asset cache. Saved computers and other deployment
+scopes are not cleared by this cache rotation.
+Browser startup waits for worker updates before resolving catalog manifests,
+so the new catalog cannot race the previous worker's cached group.
 
 The standalone [`apps/spacefast-cors-proxy`](../apps/spacefast-cors-proxy/README.md)
 implements the Playground proxy protocol for Spacefast Functions,

@@ -100,7 +100,7 @@ async function runMysqlTestCommand(
     "--host=127.0.0.1", "--port=3306",
     "--user=root", "--database=test",
     `--test-file=${testFile}`,
-    "--basedir=/mysql-test",
+    "--basedir=/var/lib/kandelo-tests/mariadb",
     "--tmpdir=/tmp",
     "--silent",
     "--protocol=tcp",
@@ -108,8 +108,8 @@ async function runMysqlTestCommand(
 
   const env = [
     "HOME=/tmp", "PATH=/usr/bin", "TMPDIR=/tmp",
-    "MYSQL_TEST_DIR=/mysql-test",
-    "MYSQLTEST_VARDIR=/data",
+    "MYSQL_TEST_DIR=/var/lib/kandelo-tests/mariadb",
+    "MYSQLTEST_VARDIR=/var/lib/mysql",
     "MYSQL_TMP_DIR=/tmp",
   ];
 
@@ -117,7 +117,7 @@ async function runMysqlTestCommand(
     const exitCode = await Promise.race([
       kernel.spawnFromVfs("/usr/bin/mysqltest", argv, {
         env,
-        cwd: "/mysql-test",
+        cwd: "/var/lib/kandelo-tests/mariadb",
       }).then(({ exit }) => exit),
       new Promise<number>((_, reject) =>
         setTimeout(() => reject(new Error("TIMEOUT")), timeoutMs),
@@ -214,7 +214,7 @@ async function init() {
   statusEl.textContent = "Running setup SQL...";
   let setupResult: TestResult | null = null;
   for (let attempt = 1; attempt <= 5; attempt++) {
-    setupResult = await runMysqlTestCommand("__setup", "/mysql-test/main/__setup.test", 30000);
+    setupResult = await runMysqlTestCommand("__setup", "/var/lib/kandelo-tests/mariadb/main/__setup.test", 30000);
     if (setupResult.exitCode === 0) break;
     appendLog(`Setup attempt ${attempt} failed (exit ${setupResult.exitCode}); retrying...\n`, "info");
     await new Promise((r) => setTimeout(r, 1000));
@@ -228,11 +228,11 @@ async function init() {
   }
 
   window.__runMariadbTest = async (testName: string, timeoutMs = 60000): Promise<TestResult> => {
-    const resetResult = await runMysqlTestCommand("__reset", "/mysql-test/main/__reset.test", 15000);
+    const resetResult = await runMysqlTestCommand("__reset", "/var/lib/kandelo-tests/mariadb/main/__reset.test", 15000);
     if (resetResult.exitCode !== 0) {
       throw new Error(`MariaDB reset failed: ${resetResult.stderr}`);
     }
-    const testFile = `/mysql-test/main/${testName}.test`;
+    const testFile = `/var/lib/kandelo-tests/mariadb/main/${testName}.test`;
     return runMysqlTestCommand(testName, testFile, timeoutMs);
   };
 

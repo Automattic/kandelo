@@ -40,7 +40,7 @@ async function leaveDetachedTmuxSession(page: Page, cycle: number): Promise<void
     await page.keyboard.type(text);
     await page.keyboard.press("Enter");
   };
-  await expect.poll(screen, { timeout: 120_000 }).toMatch(/kandelo\$/);
+  await expect.poll(screen, { timeout: 120_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$/);
   await command("tmux new-session -s memory");
   await expect.poll(screen, { timeout: 30_000 }).toContain("[memory]");
   await command(`printf 'TMUX_%s\\n' 'MEMORY_LEFT_${cycle}'`);

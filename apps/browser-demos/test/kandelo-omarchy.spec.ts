@@ -143,7 +143,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running \/usr\/local\/bin\/omarchydesktop/);
+    .toMatch(/running \/usr\/bin\/omarchydesktop/);
   expect(await syslogText(page), "omarchy setup reported failure")
     .not.toMatch(SETUP_FAILURE);
 
@@ -267,7 +267,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   // in with three tiled windows, so foot shows up as a fourth tile — the
   // connection count alone would not prove it.
   await pressKeys(page, ["Enter"]);
-  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot /, 60_000);
+  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/bin\/foot /, 60_000);
   await expectTerminal(page, /LAUNCHER_EXIT/, 60_000);
   await expectTerminal(page, /TILE n=4 i=3 /, 120_000);
   expect(await syslogText(page), "foot binary does not match the kernel ABI")
@@ -286,7 +286,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   await pressCtrl(page, "Space");
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyV", "KeyI", "Enter"]);
-  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot [^\n]*\/usr\/bin\/vim/, 60_000);
+  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/bin\/foot [^\n]*\/usr\/bin\/vim/, 60_000);
   await expectTerminal(page, /TILE n=5 i=4 /, 120_000);
   expect(await syslogText(page), "vim binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
@@ -300,7 +300,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   await pressCtrl(page, "Space");
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyG", "KeyA", "Enter"]);
-  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/local\/bin\/qtgallery/, 60_000);
+  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/bin\/qtgallery/, 60_000);
   await expectTerminal(page, /GALLERY_PLATFORM=wayland/, 120_000);
   await expectTerminal(page, /GALLERY_THEMES n=6/, 120_000);
   await expectTerminal(page, /TILE n=6 i=5 /, 120_000);
@@ -403,7 +403,7 @@ test("Kandelo omarchy survives a rapid 8-window launch storm without SCM_RIGHTS 
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running \/usr\/local\/bin\/omarchydesktop/);
+    .toMatch(/running \/usr\/bin\/omarchydesktop/);
   await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
 
   // An empty workspace, so the storm's window count is unambiguous.
@@ -461,7 +461,7 @@ test("Kandelo omarchy runs ScummVM as a GL window that takes its tile's size", a
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running \/usr\/local\/bin\/omarchydesktop/);
+    .toMatch(/running \/usr\/bin\/omarchydesktop/);
   await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
 
   // Launch it the way a user does: the launcher's entry runs the image's
@@ -469,7 +469,7 @@ test("Kandelo omarchy runs ScummVM as a GL window that takes its tile's size", a
   await pressCtrl(page, "Space");
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyS", "KeyC", "KeyU", "Enter"]);
-  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/local\/bin\/scummvm/, 60_000);
+  await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/bin\/scummvm/, 60_000);
 
   // It maps as the only window, is tiled, and the GPU path draws its buffer.
   await expectTerminal(page, /TILE n=1 i=0 x=\d+ y=\d+ w=\d+ h=\d+/, 180_000);
@@ -531,7 +531,7 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
     await pressKeys(page, []);
     await page.keyboard.type(game, { delay: 80 });
     await page.keyboard.press("Enter", { delay: 120 });
-    const launched = `LAUNCHER_EXEC cmd=/usr/local/bin/love /usr/share/love/examples/${game}`;
+    const launched = `LAUNCHER_EXEC cmd=/usr/bin/love /usr/share/love/examples/${game}`;
     await expectTerminal(page, new RegExp(launched), 60_000);
     await expectTerminal(page, new RegExp(`${launched}[\\s\\S]*love: using upstream LÖVE OpenGL renderer on Kandelo Wayland/EGL`), 180_000);
     await expectTerminal(page, new RegExp(`${launched}[\\s\\S]*GLDRAW app_id=SDL_App`), 60_000);
@@ -593,7 +593,7 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
     }
     await pressCtrl(page, "KeyW");
     const previousClockPid = [...(await terminalText(page)).matchAll(
-      /KWLCTL_EXEC "\/usr\/local\/bin\/wlclock" pid=(\d+)/g,
+      /KWLCTL_EXEC "\/usr\/bin\/wlclock" pid=(\d+)/g,
     )].at(-1)?.[1];
     await pressCtrl(page, "KeyK");
     await openSurface(page, "Terminal");
@@ -601,7 +601,7 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
     await expect.poll(async () => {
       const text = await terminalText(page);
       const clock = [...text.matchAll(
-        /KWLCTL_EXEC "\/usr\/local\/bin\/wlclock" pid=(\d+)/g,
+        /KWLCTL_EXEC "\/usr\/bin\/wlclock" pid=(\d+)/g,
       )].at(-1);
       // A previous clock's focus and one-window tile remain on screen.
       // Closing before the new clock owns focus leaves it beside the next game.
@@ -615,7 +615,7 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
     }, { timeout: 60_000 }).toBe(true);
     await pressCtrl(page, "KeyW");
     await expectTerminal(page, new RegExp(
-      `KWLCTL_EXEC "/usr/local/bin/wlclock" pid=${cleanupClockPid}\\s[\\s\\S]*WLCLOCK_EXIT`,
+      `KWLCTL_EXEC "/usr/bin/wlclock" pid=${cleanupClockPid}\\s[\\s\\S]*WLCLOCK_EXIT`,
     ), 60_000);
     expect(await terminalText(page), game).not.toMatch(CLIENT_FAILURE);
   }
@@ -642,7 +642,7 @@ test("Kandelo omarchy copies and pastes between foot windows through the Wayland
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running \/usr\/local\/bin\/omarchydesktop/);
+    .toMatch(/running \/usr\/bin\/omarchydesktop/);
   await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
 
   // An empty workspace, so the two terminals are the only windows.
@@ -706,7 +706,7 @@ test("Kandelo omarchy pastes text from the host clipboard into foot", async ({ p
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running \/usr\/local\/bin\/omarchydesktop/);
+    .toMatch(/running \/usr\/bin\/omarchydesktop/);
   await expectTerminal(page, /KCLIPD_READY/, 180_000);
   await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
 
@@ -776,7 +776,7 @@ test("Kandelo omarchy copies foot's selection to the host clipboard", async ({ p
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/running \/usr\/local\/bin\/omarchydesktop/);
+    .toMatch(/running \/usr\/bin\/omarchydesktop/);
   await expectTerminal(page, /KCLIPD_READY/, 180_000);
   await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
 

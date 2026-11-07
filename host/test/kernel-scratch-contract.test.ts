@@ -1255,6 +1255,12 @@ const auditAllowances: AuditAllowance[] = [
     why: "This standalone runtime-workaround reproduction contains no Kandelo code; it creates only the disposable memory its blocked test worker waits on.",
   },
   {
+    key: "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/repro/check.cjs::check::wasm-instance-authority::new WebAssembly.Instance(new WebAssembly.Module(wasm))",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This standalone compiler reproduction contains no Kandelo code; it instantiates only its generated state machine to check its results.",
+  },
+  {
     key: "tests/runtime-workarounds/JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN/repro/faithful-kernel.js::runProcess::wasm-memory-authority::new WebAssembly.Memory({ initial: INITIAL, maximum: MAXIMUM, shared: true })",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",

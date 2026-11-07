@@ -1,0 +1,62 @@
+# Kandelo is a Unix Wasm target with epoll, eventfd, pipe2, accept4, and
+# atomic socket flags. Select those existing implementations without
+# rejecting the target merely because it also belongs to the Wasm family.
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -40,7 +40,7 @@
+ //!
+ //! The available features are described in the [`features`] module.
+ 
+-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
++#[cfg(all(target_family = "wasm", not(unix), not(target_os = "wasi")))]
+ compile_error!("This wasm target is unsupported by mio. If using Tokio, disable the net feature.");
+ 
+ // macros used internally
+--- a/src/sys/unix/mod.rs
++++ b/src/sys/unix/mod.rs
+@@ -21,6 +21,7 @@
+             target_os = "android",
+             target_os = "illumos",
+             target_os = "linux",
++            target_os = "kandelo",
+             target_os = "redox",
+         )
+     ), path = "selector/epoll.rs")]
+@@ -70,6 +71,7 @@
+             target_os = "hermit",
+             target_os = "illumos",
+             target_os = "linux",
++            target_os = "kandelo",
+         )
+     ), path = "waker/eventfd.rs")]
+     #[cfg_attr(all(
+--- a/src/sys/unix/net.rs
++++ b/src/sys/unix/net.rs
+@@ -20,6 +20,7 @@
+         target_os = "hurd",
+         target_os = "illumos",
+         target_os = "linux",
++        target_os = "kandelo",
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "solaris",
+--- a/src/sys/unix/tcp.rs
++++ b/src/sys/unix/tcp.rs
+@@ -70,6 +70,7 @@
+         target_os = "hurd",
+         target_os = "illumos",
+         target_os = "linux",
++        target_os = "kandelo",
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "solaris",
+--- a/src/sys/unix/pipe.rs
++++ b/src/sys/unix/pipe.rs
+@@ -16,6 +16,7 @@
+         target_os = "fuchsia",
+         target_os = "hurd",
+         target_os = "linux",
++        target_os = "kandelo",
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "illumos",

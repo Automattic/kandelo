@@ -1,5 +1,7 @@
 script_path = "packages/registry/kandelo-sdk/build-kandelo-sdk.sh"
 inputs = [
+  "images/vfs/scripts/filesystem-layout.ts",
+
   "packages/registry/kandelo-sdk/build-kandelo-sdk.sh",
   "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh",
   "images/vfs/scripts/build-kandelo-sdk-vfs-image.ts",
@@ -40,4 +42,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 7
+revision    = 8

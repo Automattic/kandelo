@@ -3378,7 +3378,7 @@ pub fn open_prepared_exec_target(
     }
 
     if crate::tmpfs::claims_path(&resolved) {
-        // The kernel's tmpfs owns the scratch mounts (`/tmp`, `/var/tmp`,
+        // The kernel's tmpfs owns the scratch mounts (`/tmp`, `/run`,
         // ...): a program copied or compiled there is executed from the tmpfs
         // inode. There is no host file behind the path, so the host-mount
         // branch below could only answer ENOSYS.
@@ -21831,32 +21831,32 @@ mod tests {
         let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
         let mut host = MockHostIO::new();
 
-        // Root creates a 0600 file (in world-writable /var/tmp) owned by uid 1000.
+        // Root creates a 0600 file (in world-writable /dev/shm) owned by uid 1000.
         let mut root = Process::new(1);
         let fd =
-            sys_open(&mut root, &mut host, b"/var/tmp/secret", O_CREAT | O_RDWR, 0o600).unwrap();
+            sys_open(&mut root, &mut host, b"/dev/shm/secret", O_CREAT | O_RDWR, 0o600).unwrap();
         sys_close(&mut root, &mut host, fd).unwrap();
-        sys_chown(&mut root, &mut host, b"/var/tmp/secret", 1000, 1000).unwrap();
+        sys_chown(&mut root, &mut host, b"/dev/shm/secret", 1000, 1000).unwrap();
 
         // An unrelated unprivileged user is denied read and write.
         let mut other = Process::new(2);
         set_test_credentials(&mut other, 2000, 2000, 2000, 2000, &[]);
         assert_eq!(
-            sys_open(&mut other, &mut host, b"/var/tmp/secret", O_RDONLY, 0).unwrap_err(),
+            sys_open(&mut other, &mut host, b"/dev/shm/secret", O_RDONLY, 0).unwrap_err(),
             Errno::EACCES
         );
         assert_eq!(
-            sys_open(&mut other, &mut host, b"/var/tmp/secret", O_WRONLY, 0).unwrap_err(),
+            sys_open(&mut other, &mut host, b"/dev/shm/secret", O_WRONLY, 0).unwrap_err(),
             Errno::EACCES
         );
 
         // The owner can open it read/write.
         let mut owner = Process::new(3);
         set_test_credentials(&mut owner, 1000, 1000, 1000, 1000, &[]);
-        let ofd = sys_open(&mut owner, &mut host, b"/var/tmp/secret", O_RDWR, 0).unwrap();
+        let ofd = sys_open(&mut owner, &mut host, b"/dev/shm/secret", O_RDWR, 0).unwrap();
         sys_close(&mut owner, &mut host, ofd).unwrap();
 
-        sys_unlink(&mut root, &mut host, b"/var/tmp/secret").unwrap();
+        sys_unlink(&mut root, &mut host, b"/dev/shm/secret").unwrap();
     }
 
     /// Binding an AF_UNIX socket to a scratch-mount path creates the node in the
@@ -21871,33 +21871,33 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
 
-        let addr = test_unix_addr(b"/var/run/wire.sock");
+        let addr = test_unix_addr(b"/run/wire.sock");
         let s = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
         sys_bind(&mut proc, &mut host, s, &addr).unwrap();
 
         // The node is a tmpfs S_IFSOCK and the registry knows the path.
-        let st = sys_lstat(&mut proc, &mut host, b"/var/run/wire.sock").unwrap();
+        let st = sys_lstat(&mut proc, &mut host, b"/run/wire.sock").unwrap();
         assert_eq!(st.st_mode & S_IFMT, wasm_posix_shared::mode::S_IFSOCK);
         assert!(
             unsafe { crate::unix_socket::global_unix_socket_registry() }
-                .contains(b"/var/run/wire.sock")
+                .contains(b"/run/wire.sock")
         );
         // The host was never asked to create the socket file.
         assert!(
-            !host.handle_paths.values().any(|p| p.starts_with(b"/var/run")),
+            !host.handle_paths.values().any(|p| p.starts_with(b"/run")),
             "host was asked to create a scratch socket file: {:?}",
             host.handle_paths,
         );
 
         // Unlink removes both the tmpfs node and the registry entry.
-        sys_unlink(&mut proc, &mut host, b"/var/run/wire.sock").unwrap();
+        sys_unlink(&mut proc, &mut host, b"/run/wire.sock").unwrap();
         assert_eq!(
-            sys_lstat(&mut proc, &mut host, b"/var/run/wire.sock").unwrap_err(),
+            sys_lstat(&mut proc, &mut host, b"/run/wire.sock").unwrap_err(),
             Errno::ENOENT
         );
         assert!(
             !unsafe { crate::unix_socket::global_unix_socket_registry() }
-                .contains(b"/var/run/wire.sock")
+                .contains(b"/run/wire.sock")
         );
     }
 
@@ -21909,26 +21909,26 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
 
-        sys_mkfifo(&mut proc, &mut host, b"/var/run/wire.fifo", 0o644).unwrap();
-        let st = sys_lstat(&mut proc, &mut host, b"/var/run/wire.fifo").unwrap();
+        sys_mkfifo(&mut proc, &mut host, b"/run/wire.fifo", 0o644).unwrap();
+        let st = sys_lstat(&mut proc, &mut host, b"/run/wire.fifo").unwrap();
         assert_eq!(st.st_mode & S_IFMT, wasm_posix_shared::mode::S_IFIFO);
         assert_eq!(st.st_mode & 0o777, 0o644);
 
         // Re-create is EEXIST; the host was never asked to make a marker file.
         assert_eq!(
-            sys_mkfifo(&mut proc, &mut host, b"/var/run/wire.fifo", 0o644).unwrap_err(),
+            sys_mkfifo(&mut proc, &mut host, b"/run/wire.fifo", 0o644).unwrap_err(),
             Errno::EEXIST
         );
         assert!(
-            !host.handle_paths.values().any(|p| p.starts_with(b"/var/run")),
+            !host.handle_paths.values().any(|p| p.starts_with(b"/run")),
             "host was asked to create a scratch fifo marker: {:?}",
             host.handle_paths,
         );
 
         // Unlink removes the kernel fifo node.
-        sys_unlink(&mut proc, &mut host, b"/var/run/wire.fifo").unwrap();
+        sys_unlink(&mut proc, &mut host, b"/run/wire.fifo").unwrap();
         assert_eq!(
-            sys_lstat(&mut proc, &mut host, b"/var/run/wire.fifo").unwrap_err(),
+            sys_lstat(&mut proc, &mut host, b"/run/wire.fifo").unwrap_err(),
             Errno::ENOENT
         );
     }

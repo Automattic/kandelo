@@ -57,7 +57,7 @@ function populateExecBinaries(
     writeFileToFs(fs, "/bin/dash", binaries.dash);
     try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
     try { fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
-    try { fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
+    try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
   }
 
   if (binaries.coreutils) {
@@ -74,14 +74,14 @@ function populateExecBinaries(
     writeFileToFs(fs, "/bin/grep", binaries.grep);
     try { fs.symlink("/bin/grep", "/bin/egrep"); } catch { /* exists */ }
     try { fs.symlink("/bin/grep", "/bin/fgrep"); } catch { /* exists */ }
-    try { fs.symlink("/bin/grep", "/usr/bin/grep"); } catch { /* exists */ }
+    try { fs.symlink("/bin/grep", "/bin/grep"); } catch { /* exists */ }
     try { fs.symlink("/bin/grep", "/usr/bin/egrep"); } catch { /* exists */ }
     try { fs.symlink("/bin/grep", "/usr/bin/fgrep"); } catch { /* exists */ }
   }
 
   if (binaries.sed) {
     writeFileToFs(fs, "/bin/sed", binaries.sed);
-    try { fs.symlink("/bin/sed", "/usr/bin/sed"); } catch { /* exists */ }
+    try { fs.symlink("/bin/sed", "/bin/sed"); } catch { /* exists */ }
   }
 
   if (binaries.genCat) {

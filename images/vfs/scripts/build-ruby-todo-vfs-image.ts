@@ -13,7 +13,7 @@ import { installImageSessions } from "./image-session-files";
  * Layout:
  *   /usr/bin/ruby              — the Kandelo Ruby build (sqlite3 gem linked in)
  *   /usr/lib/ruby/4.0.0/**     — Ruby standard library + the sqlite3 gem lib
- *   /var/lib/todo/**           — the Roda app (app.rb, server.rb, views/, vendor/)
+ *   /usr/share/kandelo/ruby-todo/** — the Roda app (app.rb, server.rb, views/, vendor/)
  *
  * No dinit tree — the Ruby server is booted directly as pid 1 (see the
  * `init.program` boot in ruby-todo-demo.json / demo-config.ts). One
@@ -92,7 +92,7 @@ export async function buildRubyTodoVfsImage(
   for (const dir of ["/tmp", "/home", "/dev", "/etc", "/run", "/var", "/var/lib"]) {
     ensureDir(fs, dir);
   }
-  fs.chmod("/tmp", 0o777);
+  fs.chmod("/tmp", 0o1777);
 
   // The Ruby server boots as the unprivileged `maker` account (uid/gid 1000
   // in ruby-todo-demo.json and browser-ruby-todo.toml), and /etc/passwd
@@ -113,10 +113,11 @@ export async function buildRubyTodoVfsImage(
   ensureDirRecursive(fs, "/usr/bin");
   writeVfsBinary(fs, RUBY_VFS_PATH, inputs.ruby, 0o755);
 
-  // Application tree at /var/lib/todo.
+  // Static application tree and a separate writable database directory.
   console.log("Staging Roda todo app...");
   ensureDirRecursive(fs, "/var/lib/todo");
-  const appFiles = walkAndWrite(fs, inputs.appDir, "/var/lib/todo");
+  const appFiles = walkAndWrite(fs, inputs.appDir, "/usr/share/kandelo/ruby-todo");
+  fs.chown("/var/lib/todo", 1000, 1000);
   console.log(`  ${appFiles} app files`);
 
   // Base /etc system files (passwd/group/hosts/services). No init system: the

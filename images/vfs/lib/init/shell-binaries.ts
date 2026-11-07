@@ -1,8 +1,8 @@
 /**
  * GNU coreutils multicall binary command names.
  *
- * Shared by VFS image builders and browser runtime setup so both sides
- * create the same /bin and /usr/bin symlink set for coreutils.
+ * Shared by VFS image builders. Each command has one FHS location, even
+ * though the implementation is the same multicall executable.
  */
 export const COREUTILS_NAMES = [
   "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
@@ -20,6 +20,19 @@ export const COREUTILS_NAMES = [
   "tty", "uname", "unexpand", "uniq", "unlink", "vdir", "wc", "whoami",
   "yes",
 ] as const;
+
+// FHS 3.0 /bin essentials, plus small recovery/shell utilities. Everything
+// else belongs in /usr/bin; administrative chroot belongs in /usr/sbin.
+const ESSENTIAL_COREUTILS: ReadonlySet<string> = new Set([
+  "cat", "chgrp", "chmod", "chown", "cp", "date", "dd", "df", "echo",
+  "false", "ln", "ls", "mkdir", "mknod", "mv", "pwd", "rm", "rmdir",
+  "sleep", "stty", "sync", "true", "uname",
+]);
+
+export function coreutilsCommandPath(name: string): string {
+  if (name === "chroot") return "/usr/sbin/chroot";
+  return `${ESSENTIAL_COREUTILS.has(name) ? "/bin" : "/usr/bin"}/${name}`;
+}
 
 export interface VfsBinarySpec {
   id: string;
@@ -59,137 +72,120 @@ export function shellLazyPlaceholderUrl(spec: VfsBinarySpec): string {
  * EAGER_SHELL_PROGRAMS in build-source-rootfs-shell-image.ts).
  */
 export const SHELL_LAZY_BINARY_SPECS = [
-  { id: "redis-cli", dependency: "redis", resolverPath: "programs/redis/redis-cli.wasm", vfsPath: "/usr/local/bin/redis-cli", symlinks: ["/usr/bin/redis-cli"] },
+  { id: "redis-cli", dependency: "redis", resolverPath: "programs/redis/redis-cli.wasm", vfsPath: "/usr/bin/redis-cli", symlinks: [] },
   { id: "mariadb", dependency: "mariadb", resolverPath: "programs/mariadb/mariadb.wasm", vfsPath: "/usr/bin/mariadb", symlinks: ["/usr/bin/mysql"] },
   {
     id: "coreutils",
     resolverPath: "programs/coreutils.wasm",
     vfsPath: "/bin/coreutils",
-    symlinks: [...COREUTILS_NAMES, "["].flatMap((n) => [`/bin/${n}`, `/usr/bin/${n}`]),
+    symlinks: [...COREUTILS_NAMES, "["].map(coreutilsCommandPath),
   },
   {
     id: "grep",
     resolverPath: "programs/grep.wasm",
-    vfsPath: "/usr/bin/grep",
-    symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"],
+    vfsPath: "/bin/grep", symlinks: ["/bin/egrep", "/bin/fgrep"],
   },
   {
     id: "sed",
     resolverPath: "programs/sed.wasm",
-    vfsPath: "/usr/bin/sed",
-    symlinks: ["/bin/sed"],
+    vfsPath: "/bin/sed", symlinks: [],
   },
-  { id: "bc", resolverPath: "programs/bc.wasm", vfsPath: "/usr/bin/bc", symlinks: ["/bin/bc"] },
-  { id: "file", resolverPath: "programs/file/file.wasm", vfsPath: "/usr/bin/file", symlinks: ["/bin/file"] },
-  { id: "less", resolverPath: "programs/less.wasm", vfsPath: "/usr/bin/less", symlinks: ["/bin/less"] },
-  { id: "m4", resolverPath: "programs/m4.wasm", vfsPath: "/usr/bin/m4", symlinks: ["/bin/m4"] },
-  { id: "make", resolverPath: "programs/make.wasm", vfsPath: "/usr/bin/make", symlinks: ["/bin/make"] },
-  { id: "tar", resolverPath: "programs/tar.wasm", vfsPath: "/usr/bin/tar", symlinks: ["/bin/tar"] },
-  { id: "curl", resolverPath: "programs/curl.wasm", vfsPath: "/usr/bin/curl", symlinks: ["/bin/curl"] },
+  { id: "bc", resolverPath: "programs/bc.wasm", vfsPath: "/usr/bin/bc", symlinks: [] },
+  { id: "file", resolverPath: "programs/file/file.wasm", vfsPath: "/usr/bin/file", symlinks: [] },
+  { id: "less", resolverPath: "programs/less.wasm", vfsPath: "/usr/bin/less", symlinks: [] },
+  { id: "m4", resolverPath: "programs/m4.wasm", vfsPath: "/usr/bin/m4", symlinks: [] },
+  { id: "make", resolverPath: "programs/make.wasm", vfsPath: "/usr/bin/make", symlinks: [] },
+  { id: "tar", resolverPath: "programs/tar.wasm", vfsPath: "/bin/tar", symlinks: [] },
+  { id: "curl", resolverPath: "programs/curl.wasm", vfsPath: "/usr/bin/curl", symlinks: [] },
   {
     id: "netcat",
     resolverPath: "programs/netcat/nc.wasm",
-    vfsPath: "/usr/bin/nc",
-    symlinks: ["/bin/nc", "/usr/bin/netcat", "/bin/netcat"],
+    vfsPath: "/usr/bin/nc", symlinks: ["/usr/bin/netcat"],
   },
-  { id: "wget", resolverPath: "programs/wget.wasm", vfsPath: "/usr/bin/wget", symlinks: ["/bin/wget"] },
-  { id: "git", resolverPath: "programs/git/git.wasm", vfsPath: "/usr/bin/git", symlinks: ["/bin/git"] },
-  { id: "jq", resolverPath: "programs/jq.wasm", vfsPath: "/usr/bin/jq", symlinks: ["/bin/jq"] },
-  { id: "wasm-fork-instrument", resolverPath: "programs/wasm-fork-instrument.wasm", vfsPath: "/usr/bin/wasm-fork-instrument", symlinks: ["/bin/wasm-fork-instrument"] },
-  { id: "php", resolverPath: "programs/php/php.wasm", vfsPath: "/usr/bin/php", symlinks: ["/bin/php"] },
-  { id: "ffmpeg", resolverPath: "programs/ffmpeg/ffmpeg.wasm", vfsPath: "/usr/bin/ffmpeg", symlinks: ["/bin/ffmpeg"] },
-  { id: "ffprobe", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffprobe.wasm", vfsPath: "/usr/bin/ffprobe", symlinks: ["/bin/ffprobe"] },
-  { id: "ffplay", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffplay.wasm", vfsPath: "/usr/bin/ffplay", symlinks: ["/bin/ffplay"] },
+  { id: "wget", resolverPath: "programs/wget.wasm", vfsPath: "/usr/bin/wget", symlinks: [] },
+  { id: "git", resolverPath: "programs/git/git.wasm", vfsPath: "/usr/bin/git", symlinks: [] },
+  { id: "jq", resolverPath: "programs/jq.wasm", vfsPath: "/usr/bin/jq", symlinks: [] },
+  { id: "wasm-fork-instrument", resolverPath: "programs/wasm-fork-instrument.wasm", vfsPath: "/usr/bin/wasm-fork-instrument", symlinks: [] },
+  { id: "php", resolverPath: "programs/php/php.wasm", vfsPath: "/usr/bin/php", symlinks: [] },
+  { id: "ffmpeg", resolverPath: "programs/ffmpeg/ffmpeg.wasm", vfsPath: "/usr/bin/ffmpeg", symlinks: [] },
+  { id: "ffprobe", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffprobe.wasm", vfsPath: "/usr/bin/ffprobe", symlinks: [] },
+  { id: "ffplay", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffplay.wasm", vfsPath: "/usr/bin/ffplay", symlinks: [] },
   {
     id: "git-remote-http",
     resolverPath: "programs/git/git-remote-http.wasm",
-    vfsPath: "/usr/bin/git-remote-http",
-    symlinks: ["/usr/bin/git-remote-https", "/usr/bin/git-remote-ftp", "/usr/bin/git-remote-ftps"],
+    vfsPath: "/usr/bin/git-remote-http", symlinks: ["/usr/bin/git-remote-https", "/usr/bin/git-remote-ftp", "/usr/bin/git-remote-ftps"],
   },
   {
     id: "gzip",
     resolverPath: "programs/gzip.wasm",
-    vfsPath: "/usr/bin/gzip",
-    symlinks: ["/bin/gzip", "/usr/bin/gunzip", "/bin/gunzip", "/usr/bin/zcat", "/bin/zcat"],
+    vfsPath: "/bin/gzip", symlinks: ["/bin/gunzip", "/bin/zcat"],
   },
   {
     id: "bzip2",
     resolverPath: "programs/bzip2.wasm",
-    vfsPath: "/usr/bin/bzip2",
-    symlinks: ["/bin/bzip2", "/usr/bin/bunzip2", "/bin/bunzip2", "/usr/bin/bzcat", "/bin/bzcat"],
+    vfsPath: "/usr/bin/bzip2", symlinks: ["/usr/bin/bunzip2", "/usr/bin/bzcat"],
   },
   {
     id: "xz",
     resolverPath: "programs/xz.wasm",
-    vfsPath: "/usr/bin/xz",
-    symlinks: [
-      "/bin/xz", "/usr/bin/unxz", "/bin/unxz", "/usr/bin/xzcat", "/bin/xzcat",
-      "/usr/bin/lzma", "/bin/lzma", "/usr/bin/unlzma", "/bin/unlzma", "/usr/bin/lzcat", "/bin/lzcat",
-    ],
+    vfsPath: "/usr/bin/xz", symlinks: ["/usr/bin/unxz", "/usr/bin/xzcat", "/usr/bin/lzma", "/usr/bin/unlzma", "/usr/bin/lzcat"],
   },
   {
     id: "zstd",
     resolverPath: "programs/zstd.wasm",
-    vfsPath: "/usr/bin/zstd",
-    symlinks: ["/bin/zstd", "/usr/bin/unzstd", "/bin/unzstd", "/usr/bin/zstdcat", "/bin/zstdcat"],
+    vfsPath: "/usr/bin/zstd", symlinks: ["/usr/bin/unzstd", "/usr/bin/zstdcat"],
   },
-  { id: "zip", resolverPath: "programs/zip.wasm", vfsPath: "/usr/bin/zip", symlinks: ["/bin/zip"] },
+  { id: "zip", resolverPath: "programs/zip.wasm", vfsPath: "/usr/bin/zip", symlinks: [] },
   {
     id: "unzip",
     resolverPath: "programs/unzip.wasm",
-    vfsPath: "/usr/bin/unzip",
-    symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo", "/usr/bin/funzip", "/bin/funzip"],
+    vfsPath: "/usr/bin/unzip", symlinks: ["/usr/bin/zipinfo", "/usr/bin/funzip"],
   },
-  { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
-  { id: "nano", resolverPath: "programs/nano.wasm", vfsPath: "/usr/bin/nano", symlinks: ["/bin/nano"] },
-  { id: "tmux", resolverPath: "programs/tmux.wasm", vfsPath: "/usr/bin/tmux", symlinks: ["/bin/tmux"] },
-  { id: "termchat", resolverPath: "programs/termchat/termchat.wasm", vfsPath: "/usr/bin/termchat", symlinks: ["/bin/termchat"] },
+  { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: [] },
+  { id: "nano", resolverPath: "programs/nano.wasm", vfsPath: "/usr/bin/nano", symlinks: [] },
+  { id: "tmux", resolverPath: "programs/tmux.wasm", vfsPath: "/usr/bin/tmux", symlinks: [] },
+  { id: "termchat", resolverPath: "programs/termchat/termchat.wasm", vfsPath: "/usr/bin/termchat", symlinks: [] },
   // The Omarchy desktop's terminal. Large, so it stays lazy: no other
   // machine sharing this image pays to fetch it.
-  { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/local/bin/foot", symlinks: [] },
-  { id: "love", resolverPath: "programs/love/love.wasm", vfsPath: "/usr/local/bin/love", symlinks: [] },
+  { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/bin/foot", symlinks: [] },
+  { id: "love", resolverPath: "programs/love/love.wasm", vfsPath: "/usr/bin/love", symlinks: [] },
   // ScummVM: the engine and the GUI data it reads from /usr/share/scummvm
-  // (the package's declared runtime_files). /usr/local/bin/scummvm is the
+  // (the package's declared runtime_files). /usr/bin/scummvm is the
   // image's launch wrapper, which execs this engine.
-  { id: "scummvm", resolverPath: "programs/scummvm/scummvm.wasm", vfsPath: "/usr/bin/scummvm", symlinks: [] },
+  { id: "scummvm", resolverPath: "programs/scummvm/scummvm.wasm", vfsPath: "/usr/libexec/scummvm", symlinks: [] },
   {
     id: "scummvm-theme-remastered",
     dependency: "scummvm",
     resolverPath: "programs/scummvm/share/scummvm/scummremastered.zip",
-    vfsPath: "/usr/share/scummvm/scummremastered.zip",
-    symlinks: [],
+    vfsPath: "/usr/share/scummvm/scummremastered.zip", symlinks: [],
     mode: 0o644,
   },
   {
     id: "scummvm-theme-modern",
     dependency: "scummvm",
     resolverPath: "programs/scummvm/share/scummvm/scummmodern.zip",
-    vfsPath: "/usr/share/scummvm/scummmodern.zip",
-    symlinks: [],
+    vfsPath: "/usr/share/scummvm/scummmodern.zip", symlinks: [],
     mode: 0o644,
   },
   {
     id: "scummvm-theme-classic",
     dependency: "scummvm",
     resolverPath: "programs/scummvm/share/scummvm/scummclassic.zip",
-    vfsPath: "/usr/share/scummvm/scummclassic.zip",
-    symlinks: [],
+    vfsPath: "/usr/share/scummvm/scummclassic.zip", symlinks: [],
     mode: 0o644,
   },
   {
     id: "scummvm-gui-icons",
     dependency: "scummvm",
     resolverPath: "programs/scummvm/share/scummvm/gui-icons.dat",
-    vfsPath: "/usr/share/scummvm/gui-icons.dat",
-    symlinks: [],
+    vfsPath: "/usr/share/scummvm/gui-icons.dat", symlinks: [],
     mode: 0o644,
   },
   {
     id: "scummvm-fonts",
     dependency: "scummvm",
     resolverPath: "programs/scummvm/share/scummvm/fonts.dat",
-    vfsPath: "/usr/share/scummvm/fonts.dat",
-    symlinks: [],
+    vfsPath: "/usr/share/scummvm/fonts.dat", symlinks: [],
     mode: 0o644,
   },
   // ScummVM's engine plugins (the package's lib/scummvm runtime files).
@@ -206,15 +202,64 @@ export const SHELL_LAZY_BINARY_SPECS = [
     symlinks: [] as string[],
     mode: 0o644,
   })),
+  // retro-emulators: three emulators, each a libretro core named for itself
+  // and linked with one small frontend, plus a starter ROM for each (the
+  // package's declared runtime_files). retro-nes, retro-genesis and
+  // retro-snes are shorter names for them. /usr/bin/retro-run is the image's
+  // launcher; it picks the emulator from the ROM's contents.
+  {
+    id: "fceumm",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/fceumm.wasm",
+    vfsPath: "/usr/bin/fceumm",
+    symlinks: ["/usr/bin/retro-nes"],
+  },
+  {
+    id: "genesis-plus-gx",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/genesis-plus-gx.wasm",
+    vfsPath: "/usr/bin/genesis-plus-gx",
+    symlinks: ["/usr/bin/retro-genesis"],
+  },
+  {
+    id: "snes9x",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/snes9x.wasm",
+    vfsPath: "/usr/bin/snes9x",
+    symlinks: ["/usr/bin/retro-snes"],
+  },
+  {
+    id: "retro-emulators-rom-nes",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/share/retro-emulators/roms/240pee.nes",
+    vfsPath: "/usr/share/retro-emulators/roms/240pee.nes",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "retro-emulators-rom-md",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/share/retro-emulators/roms/240pSuite-md-1.21.bin",
+    vfsPath: "/usr/share/retro-emulators/roms/240pSuite-md-1.21.bin",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "retro-emulators-rom-snes",
+    dependency: "retro-emulators",
+    resolverPath: "programs/retro-emulators/share/retro-emulators/roms/240pSuite-snes-1.03.sfc",
+    vfsPath: "/usr/share/retro-emulators/roms/240pSuite-snes-1.03.sfc",
+    symlinks: [],
+    mode: 0o644,
+  },
   // The Omarchy shell (omarchydesktop starts it) and the Qt client the
   // launcher offers. quickshell.wasm alone is 82 MB.
-  { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/local/bin/quickshell", symlinks: [] },
-  { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/local/bin/qtgallery", symlinks: [] },
+  { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/bin/quickshell", symlinks: [] },
+  { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/bin/qtgallery", symlinks: [] },
   {
     id: "dbus",
     resolverPath: "programs/dbus/dbus-daemon.wasm",
-    vfsPath: "/usr/local/bin/dbus-daemon",
-    symlinks: [],
+    vfsPath: "/usr/bin/dbus-daemon", symlinks: [],
   },
   // The Wayland desktops' in-tree programs. The desktops' launchers exec them
   // by name from PATH; a lazy file is an ordinary executable there, so only a
@@ -224,50 +269,43 @@ export const SHELL_LAZY_BINARY_SPECS = [
     id: "wlcompositor",
     dependency: "wayland-demo",
     resolverPath: "programs/wayland-demo/wlcompositor.wasm",
-    vfsPath: "/usr/local/bin/wlcompositor",
-    symlinks: [],
+    vfsPath: "/usr/bin/wlcompositor", symlinks: [],
   },
   {
     id: "wlterm",
     dependency: "wayland-demo",
     resolverPath: "programs/wayland-demo/wlterm.wasm",
-    vfsPath: "/usr/local/bin/wlterm",
-    symlinks: [],
+    vfsPath: "/usr/bin/wlterm", symlinks: [],
   },
   {
     id: "wlclock",
     dependency: "wayland-demo",
     resolverPath: "programs/wayland-demo/wlclock.wasm",
-    vfsPath: "/usr/local/bin/wlclock",
-    symlinks: [],
+    vfsPath: "/usr/bin/wlclock", symlinks: [],
   },
   {
     id: "wlpaint",
     dependency: "wayland-demo",
     resolverPath: "programs/wayland-demo/wlpaint.wasm",
-    vfsPath: "/usr/local/bin/wlpaint",
-    symlinks: [],
+    vfsPath: "/usr/bin/wlpaint", symlinks: [],
   },
   {
     id: "klauncher",
     dependency: "wayland-demo",
     resolverPath: "programs/wayland-demo/klauncher.wasm",
-    vfsPath: "/usr/local/bin/klauncher",
-    symlinks: [],
+    vfsPath: "/usr/bin/klauncher", symlinks: [],
   },
   {
     id: "notify-send",
     dependency: "wayland-demo",
     resolverPath: "programs/wayland-demo/notify-send.wasm",
-    vfsPath: "/usr/local/bin/notify-send",
-    symlinks: [],
+    vfsPath: "/usr/bin/notify-send", symlinks: [],
   },
   {
     id: "kclipd",
     dependency: "wayland-demo",
     resolverPath: "programs/wayland-demo/kclipd.wasm",
-    vfsPath: "/usr/local/bin/kclipd",
-    symlinks: [],
+    vfsPath: "/usr/bin/kclipd", symlinks: [],
   },
   // The single-program machines' workloads. Each machine's profile command
   // execs its program, which is the first read of these bytes.
@@ -275,20 +313,18 @@ export const SHELL_LAZY_BINARY_SPECS = [
     id: "sdl2",
     dependency: "sdl2-demo",
     resolverPath: "programs/sdl2.wasm",
-    vfsPath: "/usr/local/bin/sdl2",
-    symlinks: [],
+    vfsPath: "/usr/bin/sdl2", symlinks: [],
   },
-  // /usr/local/bin/fbdoom is the image's launch wrapper (build-source-rootfs-shell-image.ts).
-  { id: "fbdoom", resolverPath: "programs/fbdoom/fbdoom.wasm", vfsPath: "/usr/bin/fbdoom", symlinks: [] },
-  { id: "modeset", resolverPath: "programs/modeset.wasm", vfsPath: "/usr/local/bin/modeset", symlinks: [] },
+  // /usr/bin/fbdoom is the image's launch wrapper (build-source-rootfs-shell-image.ts).
+  { id: "fbdoom", resolverPath: "programs/fbdoom/fbdoom.wasm", vfsPath: "/usr/libexec/fbdoom", symlinks: [] },
+  { id: "modeset", resolverPath: "programs/modeset.wasm", vfsPath: "/usr/bin/modeset", symlinks: [] },
   {
     id: "espeak-ng",
     resolverPath: "programs/espeak-ng/espeak-ng.wasm",
-    vfsPath: "/usr/bin/espeak-ng",
-    symlinks: [],
+    vfsPath: "/usr/bin/espeak-ng", symlinks: [],
   },
-  { id: "sqlite-cli", resolverPath: "programs/sqlite3.wasm", vfsPath: "/usr/bin/sqlite3", symlinks: ["/bin/sqlite3"] },
-  { id: "lhasa", resolverPath: "programs/lha.wasm", vfsPath: "/usr/bin/lha", symlinks: ["/bin/lha"] },
-  { id: "tyrquake", resolverPath: "programs/tyrquake/quake.wasm", vfsPath: "/usr/bin/quake", symlinks: ["/bin/quake"] },
-  { id: "elinks", resolverPath: "programs/elinks.wasm", vfsPath: "/usr/bin/elinks", symlinks: ["/bin/elinks"] },
+  { id: "sqlite-cli", resolverPath: "programs/sqlite3.wasm", vfsPath: "/usr/bin/sqlite3", symlinks: [] },
+  { id: "lhasa", resolverPath: "programs/lha.wasm", vfsPath: "/usr/bin/lha", symlinks: [] },
+  { id: "tyrquake", resolverPath: "programs/tyrquake/quake.wasm", vfsPath: "/usr/libexec/quake", symlinks: [] },
+  { id: "elinks", resolverPath: "programs/elinks.wasm", vfsPath: "/usr/bin/elinks", symlinks: [] },
 ] as const satisfies readonly VfsBinarySpec[];

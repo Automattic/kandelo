@@ -10,6 +10,7 @@ export * from "./lazy-download";
 export * from "./demo-config";
 export * from "./clipboard-paste";
 export * from "./exchange-session";
+export * from "./terminal-request";
 export * from "./gallery-roster";
 export * from "./demo-config-vfs";
 export * from "./dinit-boot-targets";

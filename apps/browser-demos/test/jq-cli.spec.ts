@@ -22,7 +22,7 @@ test("base shell boots and fetches packaged jq on first use", async ({ page }) =
   await expect.poll(
     () => page.locator(".xterm-rows").first().textContent(),
     { timeout: 120_000 },
-  ).toContain("kandelo$");
+  ).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
   expect(downloads).toEqual([]);
   const result = await runTerminalCommand(
     page,

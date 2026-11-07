@@ -4,14 +4,14 @@
  *
  * The overlay is the sole `/` authority. `rootfs::owns_path` once treated
  * *any* non-tmpfs absolute path as overlay-owned,
- * so it shadowed host-backed sibling mounts such as the `/run/kandelo-run`
+ * so it shadowed host-backed sibling mounts such as the `/var/lib/kandelo-tests/runner`
  * session-seed tree the isolated-fixture harness uses to stage test programs.
- * The concrete symptom was `spawnFromVfs("/run/kandelo-run/...") -> ENOENT`,
+ * The concrete symptom was `spawnFromVfs("/var/lib/kandelo-tests/runner/...") -> ENOENT`,
  * which broke the entire POSIX + sortix conformance runners (they exec every
  * test program from that seeded tree).
  *
  * This boots the real Node kernel worker (the path that wires the overlay) and
- * spawns a program that lives ONLY under the `/run/kandelo-run` host mount. It
+ * spawns a program that lives ONLY under the `/var/lib/kandelo-tests/runner` host mount. It
  * must run and exit 0 — the sibling mount stays visible even though the overlay
  * owns `/`. The kernel-side predicate itself is covered by
  * `rootfs::tests::owns_path_excludes_registered_foreign_mounts`.
@@ -51,10 +51,10 @@ describe.runIf(havePrereqs)(
   "rootfs overlay foreign sibling mounts",
   () => {
     it(
-      "spawns a program that lives only under the /run/kandelo-run host mount",
+      "spawns a program that lives only under the /var/lib/kandelo-tests/runner host mount",
       async () => {
         // Stage the guest program in a host directory and seed it under
-        // `/run/kandelo-run` — a host-backed scratch mount, exactly like the
+        // `/var/lib/kandelo-tests/runner` — a host-backed scratch mount, exactly like the
         // isolated conformance fixture harness (`resolveRunExampleFilesystem`).
         const seedRoot = mkdtempSync(join(tmpdir(), "kandelo-foreign-seed-"));
         cpSync(helloWasmPath, join(seedRoot, "prog.wasm"));
@@ -64,10 +64,10 @@ describe.runIf(havePrereqs)(
           rootfsImage: new Uint8Array(readFileSync(rootfsImagePath!)),
           rootfsMountSpec: [
             ...DEFAULT_MOUNT_SPEC,
-            { path: "/run", source: "scratch", mode: 0o755, nosuid: true },
+            { path: "/var/lib/kandelo-tests", source: "scratch", mode: 0o755, nosuid: true },
           ],
           sessionSeedTrees: [
-            { destinationPath: "/run/kandelo-run", sourcePath: seedRoot },
+            { destinationPath: "/var/lib/kandelo-tests/runner", sourcePath: seedRoot },
           ],
           onStdout: (_pid, bytes) => {
             stdout += new TextDecoder().decode(bytes);
@@ -79,7 +79,7 @@ describe.runIf(havePrereqs)(
             asArrayBuffer(new Uint8Array(readFileSync(kernelPath!))),
           );
           const { exit } = await host.spawnFromVfs(
-            "/run/kandelo-run/prog.wasm",
+            "/var/lib/kandelo-tests/runner/prog.wasm",
             ["prog"],
           );
           const exitCode = await exit;

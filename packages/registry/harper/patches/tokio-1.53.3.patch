@@ -1,0 +1,62 @@
+# Unix Wasm targets provide threads, files, stdio, and sockets through std
+# and Mio. Keep Tokio on those implementations instead of its browser-only
+# feature restriction, and include the ordinary socket2 dependency.
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -467,6 +467,7 @@
+ #[cfg(all(
+     not(tokio_unstable),
+     target_family = "wasm",
++    not(unix),
+     any(
+         feature = "fs",
+         feature = "io-std",
+--- a/src/macros/cfg.rs
++++ b/src/macros/cfg.rs
+@@ -715,7 +715,7 @@
+ macro_rules! cfg_is_wasm_not_wasi {
+     ($($item:item)*) => {
+         $(
+-            #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
++            #[cfg(all(target_family = "wasm", not(unix), not(target_os = "wasi")))]
+             $item
+         )*
+     }
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -910,7 +910,7 @@
+ [target.'cfg(all(tokio_unstable, target_os = "linux"))'.dev-dependencies.backtrace]
+ version = "0.3.58"
+ 
+-[target.'cfg(any(not(target_family = "wasm"), all(target_os = "wasi", not(target_env = "p1"))))'.dependencies.socket2]
++[target.'cfg(any(unix, not(target_family = "wasm"), all(target_os = "wasi", not(target_env = "p1"))))'.dependencies.socket2]
+ version = "0.6.3"
+ features = ["all"]
+ optional = true
+# Kandelo exposes the same SO_PEERCRED/ucred interface used by this backend.
+--- a/src/net/unix/ucred.rs
++++ b/src/net/unix/ucred.rs
+@@ -35,6 +35,7 @@
+ 
+ #[cfg(any(
+     target_os = "linux",
++    target_os = "kandelo",
+     target_os = "redox",
+     target_os = "android",
+     target_os = "openbsd",
+@@ -80,6 +81,7 @@
+ 
+ #[cfg(any(
+     target_os = "linux",
++    target_os = "kandelo",
+     target_os = "redox",
+     target_os = "android",
+     target_os = "openbsd",
+@@ -96,6 +98,7 @@
+     use libc::sockpeercred as ucred;
+     #[cfg(any(
+         target_os = "linux",
++        target_os = "kandelo",
+         target_os = "redox",
+         target_os = "android",
+         target_os = "haiku",

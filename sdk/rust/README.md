@@ -67,6 +67,11 @@ npx tsx examples/run-wasm.ts \
   target/wasm32-unknown-kandelo-std/release/<name>.wasm [args...]
 ```
 
+The installed standard-library rlibs retain LLVM bitcode, so consumers can
+use their upstream thin or fat LTO release profiles. The sysroot builder
+sets `embed-bitcode=yes` during its bootstrap build; consumers do not need
+to disable LTO or rebuild `std` themselves.
+
 `std::env::args`, `std::env::var`, `std::fs`, `std::time`, and `HashMap`
 all work. See `programs/rust/std-hello/`.
 
@@ -126,7 +131,7 @@ must use a private source tree, Cargo home, target directory, patched-crate
 directories, and Rust sysroot below the resolver work root. Do not patch the
 user's Cargo registry or write build products into the reviewed recipe.
 
-`scripts/package-rust-build-env.sh` supplies a reusable standalone-crate
+`scripts/package-rust-build-env.sh` supplies a reusable crate or workspace
 environment. Source it **inside a subshell** and call:
 
 ```bash
@@ -144,8 +149,13 @@ the upstream portability issue and retain the crate's runtime contract.
 Carry narrow changes suitable for upstream review; do not replace an event
 backend merely to avoid implementing an API Kandelo already exposes.
 
-The helper keeps patched path dependencies inside the staged application's
-workspace and the libc fork inside the private Rust sysroot. Cargo otherwise
+The helper keeps patched path dependencies below the staged application's
+workspace root and the libc fork inside the private Rust sysroot. It excludes
+the `.kandelo-rust`, `.kandelo-patched-crates`, and `.kandelo-vendor` directory
+roots from workspace membership while preserving upstream members, exclusions,
+and other settings. These crates remain dependencies; Cargo must not treat
+them as application workspace members. Excluding only their `/**` contents
+does not reliably exclude nested path dependencies. Cargo otherwise
 hashes absolute paths into crate identities even when compiler source paths
 are remapped. It also remaps emitted paths for both `std` and the application,
 and the sysroot builder includes compiler flags in its freshness stamp.

@@ -1,5 +1,8 @@
 script_path = "packages/registry/rootfs/build-rootfs-package.sh"
 inputs = [
+  "images/vfs/scripts/filesystem-layout.ts",
+  "scripts/check-image-layout.ts",
+
   "packages/registry/rootfs/build-rootfs-package.sh",
   "scripts/build-rootfs.sh",
   "scripts/generate-rootfs-package-manifest.mjs",
@@ -46,4 +49,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 15
+revision    = 16

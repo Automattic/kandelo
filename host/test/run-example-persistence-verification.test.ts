@@ -6,7 +6,7 @@ import {
 } from "../../examples/run-example-persistence-verification";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "../src/vfs/vfs";
 
-const root = "/run/kandelo-run";
+const root = "/var/lib/kandelo-tests/runner";
 const directory: VfsPathStat = { mode: 0o040755, size: 0, uid: 0, gid: 0 };
 
 function fixture() {

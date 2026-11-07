@@ -1,0 +1,20 @@
+# The generated lexer and scanner have structured, single-entry loops.
+# LLVM's optional irreducibility analysis materializes a huge reachability
+# graph even though there is no irreducibility to repair. Keep the SDK and
+# both complete parsers, but omit that analysis for this crate only.
+--- a/bindings/rust/build.rs
++++ b/bindings/rust/build.rs
+@@ -2,6 +2,13 @@
+     let src_dir = std::path::Path::new("src");
+ 
+     let mut c_config = cc::Build::new();
++    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("kandelo") {
++        // [RUNTIME-WORKAROUND: LLVM-WASM-CFG-REACHABILITY-COST] These generated
++        // state machines are reducible; LLVM's optional analysis consumes
++        // excessive time and memory without changing their control flow.
++        c_config.flag("-mllvm");
++        c_config.flag("-wasm-disable-fix-irreducible-control-flow-pass");
++    }
+     c_config.include(&src_dir);
+     c_config
+         .flag_if_supported("-Wno-unused-parameter")

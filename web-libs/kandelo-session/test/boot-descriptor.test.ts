@@ -23,7 +23,7 @@ const BASE: BootDescriptor = {
   },
   packages: [],
   mounts: [{ path: "/", source: "image", ref: "shell.vfs@local" }],
-  boot: { argv: ["/usr/bin/login"], cwd: "/root", env: {} },
+  boot: { argv: ["/bin/login"], cwd: "/root", env: {} },
 };
 
 /**

@@ -116,8 +116,17 @@ export function validateGuestBuildRequest(request: GuestBuildRequest): GuestBuil
     requireAbsolute("input hostPath", input.hostPath);
     // A mount under a tmpfs prefix would be shadowed by the kernel's tmpfs:
     // the guest would see an empty directory instead of the input.
+    // Kandelo build images link /var/run -> /run and /var/lock -> /run/lock.
+    // Foreign mounts are registered by canonical prefix, so a mount through
+    // either alias would be unreachable after guest symlink resolution too.
+    const alias = [["/var/run", "/run"], ["/var/lock", "/run/lock"]].find(
+      ([path]) => isUnder(input.guestPath, path),
+    );
+    const canonicalPath = alias === undefined
+      ? input.guestPath
+      : alias[1] + input.guestPath.slice(alias[0].length);
     const shadow = KERNEL_TMPFS_OWNED_PREFIXES.find((prefix) =>
-      isUnder(input.guestPath, prefix)
+      isUnder(canonicalPath, prefix)
     );
     if (shadow !== undefined) {
       throw new Error(`${input.guestPath} is under the in-kernel tmpfs at ${shadow}`);

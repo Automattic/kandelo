@@ -20,13 +20,11 @@ import type { MountConfig } from "./types";
  * mount whose path is one of these is served entirely by the kernel, so the
  * host must not also materialise a backend for it (that would be a second
  * authority the kernel never consults). A scratch mount at any other path (e.g.
- * `/run`) stays host-backed.
+ * `/mnt/session`) stays host-backed.
  */
 export const KERNEL_TMPFS_OWNED_PREFIXES: readonly string[] = [
   "/tmp",
-  "/var/tmp",
-  "/var/log",
-  "/var/run",
+  "/run",
 ];
 
 /** True when the in-kernel tmpfs owns `mountPath` exactly (a scratch prefix). */
@@ -60,9 +58,9 @@ export interface MountSpec {
 
 /**
  * Canonical mount layout. Mirrors the top-level system directories declared
- * in `MANIFEST`: `/` is the writable rootfs image; `/tmp`,
- * `/var/log`, `/var/run`, and `/var/tmp` are scratch mounts. Homes and `/srv`
- * belong to the root image and its persistent overlay when configured.
+ * in `MANIFEST`: `/` is the writable rootfs image; `/tmp` and `/run` are
+ * scratch mounts. Homes, `/srv`, `/var/log` and `/var/tmp` belong to the root
+ * image and its persistent overlay when configured. `/var/run` links to /run.
  */
 export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
   { path: "/", source: "image", readonly: false },
@@ -73,10 +71,8 @@ export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
     ephemeral: true,
     nosuid: true,
   },
-  { path: "/var/tmp", source: "scratch", mode: 0o1777, nosuid: true },
-  { path: "/var/log", source: "scratch", mode: 0o755, nosuid: true },
   {
-    path: "/var/run",
+    path: "/run",
     source: "scratch",
     mode: 0o755,
     ephemeral: true,
@@ -91,7 +87,7 @@ export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
  * `nosuid` come from `SCRATCH_MOUNTS` in `crates/runtime-core/src/tmpfs.rs`,
  * not from the spec), so this filtering is always applied.
  * Image mounts, and host-owned scratch mounts outside tmpfs's prefixes (e.g.
- * `/run`), are preserved.
+ * `/mnt/session`), are preserved.
  */
 export function filterMountSpecForKernelTmpfs(
   spec: readonly MountSpec[],

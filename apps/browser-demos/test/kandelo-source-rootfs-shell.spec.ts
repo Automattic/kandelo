@@ -54,7 +54,7 @@ test("the exact source-rootfs product shell runs Bash, Vim, and NetHack", async 
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 120_000,
   });
-  await expect(page.locator(".xterm-rows").first()).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 120_000 });
+  await expect(page.locator(".xterm-rows").first()).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, { timeout: 120_000 });
 
   await runShellScript(
     page,

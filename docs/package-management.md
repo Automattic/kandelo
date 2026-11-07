@@ -383,6 +383,10 @@ artifacts.
 
 ### Reproducible VFS image packages
 
+Installed guest paths follow [Kandelo's FHS layout](filesystem-layout.md),
+including lazy archive members and package runtime files. Shipped tools use
+one canonical command path and leave `/usr/local` to the administrator.
+
 A VFS image package (`nginx-php-vfs`, `wordpress`, `lamp`, …) is cached by
 its cache key like any other package, so two builds under the same key must
 produce the same bytes. When they do not, the resolver keeps whichever build
@@ -511,7 +515,7 @@ same image, database and prewarmed opcache included.
 `lamp` package under one cache key still produce different images, so the
 resolver keeps whichever build publishes first and records a
 rebuild-mismatch receipt for the other. Everything WordPress writes is
-identical between builds; the differences are all under `/data`, from
+identical between builds; the differences are all under `/var/lib/mysql`, from
 MariaDB's bootstrap, between 2 and about 76 files per pair of builds:
 
 - **InnoDB redo log and system tablespace (every pair).** After bootstrap
@@ -546,7 +550,7 @@ thread proceeds and advancing virtual time only when every thread is
 blocked. The order would then depend only on what the guests do, never on
 host timing, and MariaDB's bootstrap would be as reproducible as the
 WordPress install. It is the general fix: any threaded installer benefits,
-where the alternatives (a pinned pre-bootstrapped `/data`, or accepting
+where the alternatives (a pinned pre-bootstrapped `/var/lib/mysql`, or accepting
 `lamp` as non-reproducible) fix one package or none.
 
 **Why the scheduler waits for blocking waits to move into Rust.** To
@@ -570,7 +574,7 @@ bootstrap is not reproducible").
 
 What the build already does, so the remaining difference is only thread
 order: the bootstrap runs to completion instead of a fixed wait and a
-kill, the server shuts down slowly, and `/data` lives in the booted
+kill, the server shuts down slowly, and `/var/lib/mysql` lives in the booted
 kernel's own filesystem rather than a host directory, which removed the
 build host's case sensitivity (macOS made MariaDB set
 `lower_case_table_names=2`) from the image.
@@ -1042,12 +1046,12 @@ structured Rust lookup for the destination, exact declared artifact, and fork
 policy before instrumentation or filesystem mutation. It never guesses a path
 for an unregistered or malformed package. Package publication does not create
 a second `sh` resolver output; guest images own their explicit `/bin/sh`
-symlink. That symlink always targets bash: every Kandelo image binds
-`/bin/sh`, `/bin/bash` and `/usr/bin/sh` to `/usr/bin/bash`, and bash
+symlink. That symlink always targets bash: every Kandelo image installs
+`/bin/bash` and links `/bin/sh` to it, and bash
 honors POSIX mode when invoked as `sh`. The base rootfs declares the binding
 as bash's `aliases` in `images/rootfs/PACKAGES.toml`; images composed on it
-(the source-rootfs shell image) inherit it and assert that `/bin/bash`,
-`/usr/bin/bash`, `/bin/sh` and `/usr/bin/sh` all resolve to the image's
+(the source-rootfs shell image) inherit it and assert that `/bin/bash`
+and `/bin/sh` both resolve to the image's
 bash; images built from scratch (the MariaDB, MariaDB-test and SQLite-test
 builders, and the lazy shell image in `shell-vfs-build.ts`) bind it with
 `installBashAsPosixShell` in `images/vfs/scripts/vfs-image-helpers.ts`. An image may also ship dash (or any other shell) as an
@@ -1203,7 +1207,7 @@ fork descendant rather than accepting output as a proxy for process exit.
 The disabled legacy `erlang-vfs` compatibility recipe consumes `erlang`'s
 declared runtime archive through the resolver; it does not read a
 recipe-directory install tree or user cache. Its opt-in VFS image copies the
-complete archive under `/usr/local/lib/erlang`, preserves executable modes,
+complete archive under `/usr/lib/erlang`, preserves executable modes,
 and includes ABI metadata. Staging does not publish that image.
 
 ### `arches`
@@ -2571,8 +2575,28 @@ not Kandelo defects. They stay until the engine or the upstream code changes.
 
 **Target recognition and upstream defects.**
 
+Harper also exposed two shared Kandelo build gaps, fixed outside its recipe:
+the Rust helper now excludes its private dependency directory roots from
+existing Cargo workspaces, and the Rust sysroot retains LLVM bitcode so
+upstream LTO profiles can link against its prebuilt standard library. Harper
+does not carry application-manifest patches for either issue.
+
+Burn's no-std ndarray backend generates a tensor RNG seed at compile time.
+The Harper recipe sets its dependency's documented `CONST_RANDOM_SEED` build
+option to the verified upstream source hash, so independent builds retain
+the same compiled constants. Runtime OS entropy is unaffected.
+
+Its `tree-sitter-gitcommit-0.5.0.patch` skips LLVM's costly irreducibility
+analysis only for that grammar's reducible generated state machines. The
+complete grammar still compiles through the SDK and normal instrumentation.
+The standalone reproduction and retirement conditions are recorded in
+[the compiler reachability-cost entry](../tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.md).
+This compiler option is unsuitable as a general SDK default: other programs
+can have irreducible control flow and need the analysis.
+
 | Package | Patch | Reason | Follow-up |
 |---|---|---|---|
+| `harper` | `patches/chrono-0.4.45.patch`, `cubecl-common-0.8.1.patch`, `dirs-7.0.0.patch`, `getrandom-0.3.4.patch`, `getrandom-0.4.3.patch`, `mio-1.2.4.patch`, `tokio-1.53.3.patch`, `socket2-0.6.5.patch`, `parking_lot_core-0.9.12.patch`, `open-5.4.4.patch`. | Recognize Unix Wasm and Kandelo's existing libc interfaces: time, XDG directories, entropy, native future execution, threads, files, sockets, epoll/eventfd, peer credentials, and musl layouts. `open` selects guest Unix launcher commands; no opener is bundled, and an absent launcher remains an I/O failure. | Upstream target-recognition changes and the musl field-initialization fix; retain the actual Unix APIs rather than replacing them with browser stubs. |
 | `vim` | `patches/0001-clamp-expired-input-check.patch`: clamp an expired calculated input timeout to zero before the first availability check. | Upstream `inchar_loop()` subtracts elapsed time from a zero/finite timeout, then passes a negative result to a helper that means "wait indefinitely". Slow or preempted execution stalls startup and insert-mode redraw until another key arrives. Clock and POSIX select behavior are correct; this is an upstream timing defect. | Send upstream; drop the patch when the pinned release includes the correction. |
 | `sdl2` | `patches/0001-recognize-kandelo-as-unix.patch`: `configure` accepts `wasm32-*-none` as a Unix target. `patches/0002-kmsdrm-display-dpi-from-connector.patch`: the KMSDRM backend answers `SDL_GetDisplayDPI` from the connector's physical size. | SDL's `configure` has a fixed list of host triples. SDL2's KMSDRM backend has no DPI query, unlike its X11 and Wayland backends, so a fullscreen client that scales by DPI (ScummVM) stayed at 1x. | Both are upstreamable: generic-Unix detection, and a missing backend feature that is not Kandelo-specific. |
 | `scummvm` | `patches/0001-kandelo-host-triple.patch`: `configure` maps the `wasm32posix` host to its generic POSIX/SDL backend (every `wasm32-*` triple otherwise selects the Emscripten port). `patches/0002-kandelo-opengl-default-graphics-manager.patch`: default to the OpenGL graphics manager. | ScummVM's hand-written `configure` keys on the triple. Kandelo's SDL2 is built without `SDL_Render`, so the OpenGL manager is the only presentation path. | The first is upstreamable. The second goes away if SDL2 is built with a renderer. |

@@ -36,11 +36,11 @@ describe("image activities", () => {
   it("uses explicit service activity commands independently from machine init", () => {
     const declared: KandeloDemoConfig = { version: 1, image: { title: "Web Stack" }, profiles: { web: {
       init: { program: "/sbin/kandelo-init", args: ["web-php"], uid: 0, gid: 0 },
-      activity: { shellCommand: "/usr/local/bin/kandelo-service start web-php" },
+      activity: { shellCommand: "/usr/bin/kandelo-service start web-php" },
       web: { requiredPorts: [8080] },
     } } };
     validateKandeloDemoConfig(declared);
-    expect(imageActivity(declared, "web", "other")).toMatchObject({ command: "/usr/local/bin/kandelo-service start web-php", launch: { surface: "web", host: "localhost", port: 8080 } });
+    expect(imageActivity(declared, "web", "other")).toMatchObject({ command: "/usr/bin/kandelo-service start web-php", launch: { surface: "web", host: "localhost", port: 8080 } });
     expect(imageActivity(declared, "web", "other").unavailable).toBeUndefined();
   });
   it.each([{}, { shellCommand: "bad\0command" }, { shellCommand: "x".repeat(4097) }, { shellCommand: ":", uid: 0 }])("rejects malformed activity declarations %j", activity => {

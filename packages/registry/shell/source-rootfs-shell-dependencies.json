@@ -167,6 +167,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "harper-browser-bundle",
+      "version": "3.0.0",
+      "role": "lazy-archive"
+    },
+    {
       "name": "sqlite-cli",
       "version": "3.49.1",
       "role": "lazy-file"
@@ -209,6 +214,11 @@
     {
       "name": "ffmpeg",
       "version": "9.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "retro-emulators",
+      "version": "0.1.0",
       "role": "lazy-file"
     },
     {

@@ -24,7 +24,7 @@ const exitCodeEl = document.getElementById("exit-code")!;
 const statusEl = document.getElementById("status")!;
 const resultsEl = document.getElementById("results")!;
 
-const PHP_PATH = "/usr/local/bin/php";
+const PHP_PATH = "/usr/bin/php";
 const PHP_BROWSER_VFS_MAX_BYTES = 256 * 1024 * 1024;
 const O_RDONLY = 0;
 const VERIFY_CHUNK_BYTES = 64 * 1024;

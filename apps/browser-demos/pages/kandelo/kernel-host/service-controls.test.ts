@@ -23,7 +23,7 @@ test("service controls run as the normal account and read actual versioned repor
   const controller = createServiceControls(state.host, { uid: 1000, gid: 1000 }, () => {});
   assert.deepEqual(await controller.list(), [{ id: "web-php", title: "PHP", port: 8080, state: "running", enabled: false }]);
   await controller.change("stop", "web-php");
-  assert.deepEqual(state.commands, ["/usr/local/bin/kandelo-service inspect", "/usr/local/bin/kandelo-service stop web-php"]);
+  assert.deepEqual(state.commands, ["/usr/bin/kandelo-service inspect", "/usr/bin/kandelo-service stop web-php"]);
   assert.equal(state.released.length, 2);
 });
 

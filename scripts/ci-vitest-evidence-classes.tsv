@@ -57,6 +57,7 @@ host/test/compiled-worker-entry.test.ts	prepared-product
 host/test/composer-file.test.ts	source-only
 host/test/concurrent-launch.test.ts	prepared-product
 host/test/connect-pending-retry.test.ts	source-only
+host/test/core-image-identity.test.ts	prepared-product
 host/test/cors-proxy-session.test.ts	source-only
 host/test/cpp-throw-test.test.ts	prepared-product
 host/test/cxx-runtime-guest.test.ts	prepared-product
@@ -113,6 +114,7 @@ host/test/fetch-backend.test.ts	source-only
 host/test/fifo-lifecycle-guest.test.ts	prepared-product
 host/test/file-read-buffer.test.ts	source-only
 host/test/file-shared-memory.test.ts	source-only
+host/test/filesystem-layout.test.ts	prepared-product
 host/test/filesystem-memory.test.ts	source-only
 host/test/fixed-rootfs-persistence.test.ts	prepared-product
 host/test/fontstack-smoke.test.ts	prepared-product
@@ -178,6 +180,7 @@ host/test/guest-program-preparation.test.ts	prepared-product
 host/test/guest-sdk-equivalence.test.ts	prepared-product
 host/test/guest-spawn-overlay-program.test.ts	prepared-product
 host/test/guest-yacc-lex.test.ts	prepared-product
+host/test/harper-smoke.test.ts	prepared-product
 host/test/heap-safepoint.test.ts	prepared-product
 host/test/host-adapter-manifest.test.ts	source-only
 host/test/host-diagnostic-routing.test.ts	source-only
@@ -440,6 +443,7 @@ host/test/socket-timeout-options.test.ts	prepared-product
 host/test/spawn-credential-order.test.ts	source-only
 host/test/spawn-host-parity.test.ts	source-only
 host/test/spawn-pid-authority.test.ts	prepared-product
+host/test/sqlite-test-image.test.ts	prepared-product
 host/test/sqlite-testrunner-patch.test.ts	source-only
 host/test/staged-rootfs-image.test.ts	source-only
 host/test/startup-crt-contract.test.ts	source-only
@@ -624,6 +628,7 @@ tests/package-system/qtbase-package.test.ts	source-only
 tests/package-system/resolve-binary.test.ts	prepared-product
 tests/package-system/rootfs-package-manifest.test.ts	prepared-product
 tests/package-system/rootfs-verified-source-contract.test.ts	prepared-product
+tests/package-system/rust-package-workspace.test.ts	source-only
 tests/package-system/scummvm-play-download.test.ts	source-only
 tests/package-system/sdl-dsp-packages.test.ts	source-only
 tests/package-system/shell-lazy-url-resolution.test.ts	prepared-product

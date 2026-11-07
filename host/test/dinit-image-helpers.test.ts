@@ -89,6 +89,36 @@ function registerDeferredDinit(fs: KandeloImageFs, mountPrefix: string): void {
 }
 
 describe("dinit-derived image system databases", () => {
+  it("uses the rootfs account foundation for fresh images, including maker's wheel membership", () => {
+    const fs = createFs();
+    addDinitBaseSystemFiles(fs);
+    for (const name of ["passwd", "group"]) {
+      expect(readGuestFile(fs, `/etc/${name}`)).toBe(readFileSync(
+        join(findRepoRoot(), "images", "rootfs", "etc", name), "utf8",
+      ));
+    }
+    expect(readGuestFile(fs, "/etc/group")).toContain("wheel:x:10:maker\n");
+  });
+
+  it("preserves inherited accounts, supplementary groups, and sudo policy exactly", () => {
+    const fs = createFs();
+    ensureDirRecursive(fs, "/etc");
+    const files = {
+      passwd: "root:x:0:0:root:/root:/bin/bash\nmaker:x:1000:1000:maker:/home/maker:/bin/sh\noperator:x:1001:1001:Operator:/home/operator:/bin/bash\n",
+      group: "wheel:x:10:maker,operator\nexchange:x:120:maker\nmaker:x:1000:\n",
+      shadow: "maker:protected-password:0:0:99999:7:::\n",
+      sudoers: "%wheel ALL=(ALL:ALL) ALL\n",
+    };
+    for (const [name, bytes] of Object.entries(files)) {
+      writeVfsFile(fs, `/etc/${name}`, bytes, name === "sudoers" ? 0o440 : name === "shadow" ? 0o640 : 0o644);
+    }
+    const metadata = Object.keys(files).map(name => fs.stat(`/etc/${name}`));
+    addDinitBaseSystemFiles(fs);
+    addDinitBaseSystemFiles(fs);
+    for (const [name, bytes] of Object.entries(files)) expect(readGuestFile(fs, `/etc/${name}`)).toBe(bytes);
+    expect(Object.keys(files).map(name => fs.stat(`/etc/${name}`))).toEqual(metadata);
+  });
+
   it("gives every interactive account bash as its login shell", () => {
     // Every image that boots through dinit -- nginx, WordPress, LAMP, redis,
     // MariaDB, ruby-todo -- shares this account database. Pointing an
@@ -386,9 +416,10 @@ describe("dinit-derived image binary ownership", () => {
     ensureDirRecursive(shell, "/sbin");
     ensureDirRecursive(shell, "/etc/kandelo");
     ensureDirRecursive(shell, "/usr/bin");
+    ensureDirRecursive(shell, "/bin");
     writeVfsBinary(shell, "/sbin/dinit", encoder.encode("package dinit"));
     writeVfsBinary(shell, "/sbin/dinitctl", encoder.encode("package dinitctl"));
-    writeVfsBinary(shell, "/usr/bin/login", encoder.encode("package login"), 0o4755);
+    writeVfsBinary(shell, "/bin/login", encoder.encode("package login"), 0o4755);
     writeVfsFile(
       shell,
       EXPERIMENTAL_TERMINAL_SESSION_PATH,
@@ -396,7 +427,7 @@ describe("dinit-derived image binary ownership", () => {
         kind: "kandelo-experimental-terminal-session",
         version: 1,
         initial: {
-          path: "/usr/bin/login",
+          path: "/bin/login",
           argv: ["login", "-p", "-f", "maker"],
           uid: 0,
           gid: 0,

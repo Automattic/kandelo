@@ -85,19 +85,7 @@ export function populateSourceRootfsShellOverlay(
   installNethackGames(fs);
 
   for (const [target, alias] of [
-    ["/usr/bin/composer", "/bin/composer"],
-    ["/usr/bin/vim", "/bin/vim"],
     ["/usr/bin/vim", "/usr/bin/vi"],
-    ["/usr/bin/vim", "/bin/vi"],
-    ["/usr/bin/nethack", "/bin/nethack"],
-    ["/usr/bin/ruby", "/bin/ruby"],
-    ["/usr/bin/python3", "/bin/python3"],
-    ["/usr/bin/python3", "/bin/python"],
-    ["/usr/bin/node", "/bin/node"],
-    ["/usr/bin/npm", "/bin/npm"],
-    ["/usr/bin/npx", "/bin/npx"],
-    ["/usr/bin/perl", "/bin/perl"],
-    ["/usr/bin/man", "/bin/man"],
   ] as const) {
     symlink(fs, target, alias);
   }

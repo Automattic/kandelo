@@ -1,5 +1,9 @@
 script_path = "images/vfs/scripts/build-nginx-php-vfs-image.sh"
 inputs = [
+  "images/rootfs/etc/passwd",
+  "images/rootfs/etc/group",
+  "images/vfs/scripts/filesystem-layout.ts",
+
   "host/src/native-artifact-identity.ts",
   "web-libs/kandelo-session/src/session-dependencies.ts",
   "web-libs/kandelo-session/src/package-sessions.ts",
@@ -42,5 +46,5 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 16
+revision = 18
 publication_state = "pending"

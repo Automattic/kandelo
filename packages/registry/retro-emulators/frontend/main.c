@@ -1,0 +1,1080 @@
+/*
+ * A minimal libretro frontend. The package links it statically with one core
+ * per program: fceumm (NES), genesis-plus-gx (Mega Drive, Master System,
+ * Game Gear) and snes9x (SNES).
+ *
+ * Drives a statically-linked libretro core and maps its three outputs onto
+ * Kandelo's raw Linux device contracts, exactly as fbDOOM does:
+ *
+ *   video  -> /dev/fb0        (640x400 BGRA32 mmap; host RAF loop presents it)
+ *   audio  -> /dev/dsp        (OSS PCM sink, S16_LE stereo -> Web Audio)
+ *   input  -> stdin           (Linux MEDIUMRAW keycodes -> RETRO_DEVICE_JOYPAD)
+ *             or /dev/input/event0 (evdev key events) when stdin is no terminal
+ *
+ * The core is single-threaded: retro_run() emulates one whole frame on the
+ * calling thread. The frontend uses no threads, no SDL and no GL; pixel
+ * conversion and frame pacing happen here.
+ *
+ * Usage: <program> <rom-path> [--state <state-path> | --info | --keys]
+ *
+ * --keys prints which key is which of the core's buttons and exits; the same
+ * list is printed to stderr when a game starts.
+ *
+ * Saves, per game, under $XDG_DATA_HOME/retro-emulators (by default
+ * ~/.local/share/retro-emulators): the cartridge's own save memory in
+ * saves/GAME.srm, loaded when the game starts and written back while it runs
+ * and when it quits; and the state F2 saves and F4 loads in states/GAME.state.
+ * --state FILE starts from a saved state.
+ */
+
+#define _DEFAULT_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdarg.h>
+#include <ctype.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <errno.h>
+#include <signal.h>
+#include <time.h>
+#include <termios.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <linux/fb.h>
+#include <linux/input.h>
+
+#include "libretro.h"
+
+/* ---- Framebuffer (matches crates/kernel/src/syscalls.rs FB_* constants) ---- */
+#define FB_W        640
+#define FB_H        400
+#define FB_BPP      4
+#define FB_STRIDE   (FB_W * FB_BPP)      /* 2560 */
+#define FB_SMEM_LEN (FB_STRIDE * FB_H)   /* 1,024,000 */
+
+static uint8_t *g_fb = NULL;             /* mmap of /dev/fb0 (BGRA32) */
+static int      g_fb_fd = -1;
+
+/* ---- OSS /dev/dsp (hardcoded ioctl numbers; kernel audio.rs contract). ----
+ * We deliberately avoid <sys/soundcard.h> and use the same magic numbers the
+ * fbDOOM sound patch uses, which the Kandelo kernel recognizes. */
+#define SNDCTL_DSP_SPEED  0xc0045002u
+#define SNDCTL_DSP_STEREO 0xc0045003u
+#define SNDCTL_DSP_SETFMT 0xc0045005u
+#define SNDCTL_DSP_SETFRAGMENT 0xc004500au
+#define SNDCTL_DSP_GETODELAY   0x80045017u
+#define AFMT_S16_LE       0x10
+
+static int    g_dsp_fd = -1;
+static double g_dsp_bytes_per_sec = 0;
+
+/* ---- libretro state ---- */
+static enum retro_pixel_format g_pixfmt = RETRO_PIXEL_FORMAT_0RGB1555; /* default */
+static struct retro_system_av_info g_av;
+static bool g_have_av = false;
+
+/* Keyboard: held state indexed by 7-bit Linux keycode, plus a latch for
+ * each key pressed since the core last ran. The core samples input once per
+ * frame, so a press and its release that both arrive between two frames
+ * would otherwise cancel out before the core ever saw the key: a quick tap
+ * (and every tap on the touch controls) would do nothing. A latched key
+ * reads as pressed for the next frame, then the latch clears. */
+static uint8_t g_keystate[128];
+static uint8_t g_keylatch[128];
+
+/* The pid file lives in the user's runtime directory: boot-lifetime state
+ * belongs under /run (docs/filesystem-layout.md), and $XDG_RUNTIME_DIR is that
+ * directory when the session names it. The ROM exchange handler reads it to
+ * stop a game it started before starting another. */
+static char g_pid_path[512], g_pid_tmp[512];
+#define PID_PATH g_pid_path
+
+static void runtime_paths_init(void)
+{
+    char fallback[64];
+    const char *dir = getenv("XDG_RUNTIME_DIR");
+    if (!dir || dir[0] != '/') {
+        snprintf(fallback, sizeof fallback, "/run/user/%u", (unsigned)getuid());
+        dir = fallback;
+    }
+    snprintf(g_pid_path, sizeof g_pid_path, "%s/retro.pid", dir);
+    snprintf(g_pid_tmp, sizeof g_pid_tmp, "%s/retro.pid.tmp", dir);
+}
+
+/* Saves are the player's data, so they live in the user's data directory,
+ * which lasts as long as the computer does, named after the game: the ROM's
+ * file name without its extension (retro-run keeps the ROM's own name). */
+#define MAX_STATE_BYTES   (2u * 1024u * 1024u)
+static char g_sram_path[1024], g_sram_tmp[1024];
+static char g_state_path[1024], g_state_tmp[1024];
+
+static int make_dirs(char *path)
+{
+    for (char *p = path + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = '\0';
+        int rc = mkdir(path, 0755);
+        *p = '/';
+        if (rc != 0 && errno != EEXIST) return -1;
+    }
+    if (mkdir(path, 0755) != 0 && errno != EEXIST) return -1;
+    return 0;
+}
+
+/* Fills the save paths and creates their directories; false (with a message)
+ * when there is no home to keep saves in, in which case nothing is saved. */
+static bool save_paths_init(const char *rom_path)
+{
+    char base[256], data[512], dir[768];
+    const char *name = strrchr(rom_path, '/');
+    snprintf(base, sizeof base, "%s", name ? name + 1 : rom_path);
+    char *dot = strrchr(base, '.');
+    if (dot && dot != base) *dot = '\0';
+
+    const char *xdg = getenv("XDG_DATA_HOME");
+    const char *home = getenv("HOME");
+    if (xdg && xdg[0] == '/') snprintf(data, sizeof data, "%s/retro-emulators", xdg);
+    else if (home && home[0] == '/') snprintf(data, sizeof data, "%s/.local/share/retro-emulators", home);
+    else {
+        fprintf(stderr, "[retro] no HOME or XDG_DATA_HOME: this game's saves will not be kept\n");
+        return false;
+    }
+    snprintf(dir, sizeof dir, "%s/saves", data);
+    if (make_dirs(dir) != 0) { perror(dir); return false; }
+    snprintf(g_sram_path, sizeof g_sram_path, "%s/%s.srm", dir, base);
+    snprintf(g_sram_tmp, sizeof g_sram_tmp, "%s/.%s.srm.tmp", dir, base);
+    snprintf(dir, sizeof dir, "%s/states", data);
+    if (make_dirs(dir) != 0) { perror(dir); return false; }
+    snprintf(g_state_path, sizeof g_state_path, "%s/%s.state", dir, base);
+    snprintf(g_state_tmp, sizeof g_state_tmp, "%s/.%s.state.tmp", dir, base);
+    return true;
+}
+
+/* Requests from the keyboard and from signals, acted on between frames. */
+static volatile sig_atomic_t g_quit_requested = 0;
+static volatile sig_atomic_t g_state_save_requested = 0;
+static volatile sig_atomic_t g_state_load_requested = 0;
+
+/* SIGTERM (how the page and the drop handler stop a game) and SIGHUP end the
+ * game the way Ctrl+C does, so its save memory is written before it exits. */
+static void on_quit_signal(int signo)
+{
+    (void)signo;
+    g_quit_requested = 1;
+}
+
+/* Extended game info handed to the core via GET_GAME_INFO_EXT. Providing the
+ * ROM as an in-memory buffer lets the core skip its own file I/O (FCEUmm's
+ * default need_fullpath path), which is both the recommended libretro behavior
+ * and avoids driving the core's filestream through the guest VFS. */
+static struct retro_game_info_ext g_info_ext;
+static bool g_have_info_ext = false;
+static char g_ge_dir[1024], g_ge_name[256], g_ge_ext[64];
+
+static void setup_info_ext(const char *path, const void *data, size_t size)
+{
+    const char *slash = strrchr(path, '/');
+    if (slash == path) {
+        g_ge_dir[0] = '/'; g_ge_dir[1] = '\0';
+    } else if (slash) {
+        size_t dl = (size_t)(slash - path);
+        if (dl >= sizeof g_ge_dir) dl = sizeof g_ge_dir - 1;
+        memcpy(g_ge_dir, path, dl); g_ge_dir[dl] = '\0';
+    } else {
+        g_ge_dir[0] = '.'; g_ge_dir[1] = '\0';
+    }
+
+    const char *base = slash ? slash + 1 : path;
+    const char *dot  = strrchr(base, '.');
+    size_t nl = dot ? (size_t)(dot - base) : strlen(base);
+    if (nl >= sizeof g_ge_name) nl = sizeof g_ge_name - 1;
+    memcpy(g_ge_name, base, nl); g_ge_name[nl] = '\0';
+
+    g_ge_ext[0] = '\0';
+    if (dot && dot[1]) {
+        size_t i = 0;
+        for (; dot[1 + i] && i < sizeof g_ge_ext - 1; i++)
+            g_ge_ext[i] = (char)tolower((unsigned char)dot[1 + i]);
+        g_ge_ext[i] = '\0';
+    }
+
+    memset(&g_info_ext, 0, sizeof g_info_ext);
+    g_info_ext.full_path       = path;
+    g_info_ext.dir             = g_ge_dir;
+    g_info_ext.name            = g_ge_name;
+    g_info_ext.ext             = g_ge_ext;
+    g_info_ext.data            = data;
+    g_info_ext.size            = size;
+    g_info_ext.file_in_archive = false;
+    g_info_ext.persistent_data = true;   /* we never free the ROM buffer */
+    g_have_info_ext = true;
+}
+
+/* Last presented geometry, so we only clear borders on change. */
+/* Last presented output rectangle (post-scale), to clear borders only on change. */
+static unsigned g_last_w = 0, g_last_h = 0;
+
+/* ---------------------------------------------------------------------------
+ * Device setup
+ * ------------------------------------------------------------------------- */
+
+static int fb_open(void)
+{
+    g_fb_fd = open("/dev/fb0", O_RDWR);
+    if (g_fb_fd < 0) { perror("open /dev/fb0"); return -1; }
+
+    struct fb_var_screeninfo vinfo;
+    struct fb_fix_screeninfo finfo;
+    if (ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0) { perror("FBIOGET_VSCREENINFO"); return -1; }
+    if (ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0) { perror("FBIOGET_FSCREENINFO"); return -1; }
+
+    fprintf(stderr, "[retro] fb %ux%u %ubpp stride=%u smem=%u\n",
+            vinfo.xres, vinfo.yres, vinfo.bits_per_pixel, finfo.line_length, finfo.smem_len);
+
+    /* Kernel pins 640x400x32; mmap must request exactly smem_len. */
+    g_fb = mmap(NULL, FB_SMEM_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, g_fb_fd, 0);
+    if (g_fb == MAP_FAILED) { perror("mmap /dev/fb0"); g_fb = NULL; return -1; }
+    memset(g_fb, 0, FB_SMEM_LEN);
+    return 0;
+}
+
+static void dsp_open(double sample_rate)
+{
+    g_dsp_fd = open("/dev/dsp", O_WRONLY | O_NONBLOCK);
+    if (g_dsp_fd < 0) { perror("open /dev/dsp (continuing muted)"); return; }
+
+    int speed  = (int)(sample_rate + 0.5);
+    int stereo = 1;
+    int fmt    = AFMT_S16_LE;
+    if (ioctl(g_dsp_fd, SNDCTL_DSP_SETFMT, &fmt) < 0 ||
+        ioctl(g_dsp_fd, SNDCTL_DSP_STEREO, &stereo) < 0 ||
+        ioctl(g_dsp_fd, SNDCTL_DSP_SPEED, &speed) < 0) {
+        perror("dsp ioctl (continuing muted)");
+        close(g_dsp_fd);
+        g_dsp_fd = -1;
+        return;
+    }
+    /* The device's default queue is four 1 KiB fragments, about 21 ms at
+     * 48 kHz: barely one 60 Hz frame. Ask for 32 KiB of headroom so a late
+     * frame does not empty it; the frame loop below decides how much of it
+     * to keep filled. The kernel clamps the request and reports what it set. */
+    int fragments = (32 << 16) | 10;
+    if (ioctl(g_dsp_fd, SNDCTL_DSP_SETFRAGMENT, &fragments) < 0)
+        perror("dsp SETFRAGMENT (keeping the default queue)");
+    g_dsp_bytes_per_sec = (double)speed * 2 * (int)sizeof(int16_t);
+    fprintf(stderr, "[retro] dsp S16_LE stereo %d Hz, queue %d x %d bytes\n",
+            speed, fragments >> 16, 1 << (fragments & 0xffff));
+}
+
+/* Where keys come from. Started from a terminal, the emulator reads the
+ * terminal: Kandelo's framebuffer view writes each key to it as a Linux
+ * MEDIUMRAW byte, as a console in raw keyboard mode would deliver it.
+ * Started any other way (a Kandelo exchange handler runs it for a dropped
+ * ROM, with stdin on /dev/null), there is no terminal to read, so it reads
+ * the machine's keyboard device instead, as a Linux kiosk program would.
+ * Only one source is read: the view feeds both, and reading both would see
+ * every key twice. */
+#define KEYBOARD_DEVICE "/dev/input/event0"
+static int g_input_fd = STDIN_FILENO;
+static bool g_input_evdev = false;
+
+/* Ctrl+C quits, as it stops a program in a terminal. The emulator reads the
+ * keyboard raw (a terminal in raw mode, or the evdev device), so no terminal
+ * turns Ctrl+C into SIGINT for it: the frontend sees the two keys and acts on
+ * the chord itself. A lone Esc does nothing; it was too easy to press by
+ * accident in the middle of a game. F2 saves a state and F4 loads it
+ * (RetroArch's keys; F5 would reload the browser page). */
+
+static void key_event(unsigned kc, bool pressed)
+{
+    if (kc >= 128) return;
+    if (kc == KEY_C && pressed
+        && (g_keystate[KEY_LEFTCTRL] || g_keystate[KEY_RIGHTCTRL])) {
+        g_quit_requested = 1;
+        return;
+    }
+    if (kc == KEY_F2 || kc == KEY_F4) {
+        if (pressed && !g_keystate[kc]) {
+            if (kc == KEY_F2) g_state_save_requested = 1;
+            else g_state_load_requested = 1;
+        }
+        g_keystate[kc] = pressed ? 1 : 0;
+        return;
+    }
+    g_keystate[kc] = pressed ? 1 : 0;
+    if (pressed) g_keylatch[kc] = 1;
+}
+
+/* Raw, non-blocking input so keys arrive immediately and reads never block
+ * the emulation loop. */
+static struct termios g_saved_termios;
+static bool g_termios_saved = false;
+
+static void input_open(void)
+{
+    struct termios t;
+    if (tcgetattr(STDIN_FILENO, &t) == 0) {
+        g_saved_termios = t;
+        g_termios_saved = true;
+        t.c_lflag &= ~(ICANON | ECHO | ISIG);
+        t.c_iflag &= ~(IXON | ICRNL);
+        t.c_cc[VMIN]  = 0;
+        t.c_cc[VTIME] = 0;
+        tcsetattr(STDIN_FILENO, TCSANOW, &t);
+    } else {
+        int fd = open(KEYBOARD_DEVICE, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            fprintf(stderr, "[retro] no terminal and no keyboard: open %s: %s\n",
+                    KEYBOARD_DEVICE, strerror(errno));
+            g_input_fd = -1;
+            return;
+        }
+        g_input_fd = fd;
+        g_input_evdev = true;
+        fprintf(stderr, "[retro] keyboard: %s\n", KEYBOARD_DEVICE);
+        return;
+    }
+    int fl = fcntl(STDIN_FILENO, F_GETFL, 0);
+    if (fl >= 0) fcntl(STDIN_FILENO, F_SETFL, fl | O_NONBLOCK);
+}
+
+static void input_drain(void)
+{
+    if (g_input_fd < 0) return;
+    if (g_input_evdev) {
+        struct input_event ev[16];
+        ssize_t n;
+        while ((n = read(g_input_fd, ev, sizeof ev)) > 0) {
+            for (size_t i = 0; i < (size_t)n / sizeof ev[0]; i++) {
+                /* value 2 is autorepeat: the key is still held. */
+                if (ev[i].type == EV_KEY && ev[i].value != 2)
+                    key_event(ev[i].code, ev[i].value != 0);
+            }
+        }
+        return;
+    }
+    uint8_t buf[64];
+    ssize_t n;
+    while ((n = read(g_input_fd, buf, sizeof buf)) > 0) {
+        for (ssize_t i = 0; i < n; i++)              /* bit7 set => release */
+            key_event(buf[i] & 0x7f, !(buf[i] & 0x80));
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Video: convert core frame -> 640x400 BGRA32, integer-scaled and centered.
+ * ------------------------------------------------------------------------- */
+
+static inline uint32_t conv_pixel(const void *src, unsigned i)
+{
+    /* Returns a little-endian BGRA word: byte0=B,1=G,2=R,3=A. The host forces
+     * alpha to 0xff, so we leave A=0. */
+    switch (g_pixfmt) {
+    case RETRO_PIXEL_FORMAT_XRGB8888: {
+        /* src word is 0x00RRGGBB -> memory bytes B,G,R,00 == our dest layout. */
+        return ((const uint32_t *)src)[i];
+    }
+    case RETRO_PIXEL_FORMAT_RGB565: {
+        uint16_t p = ((const uint16_t *)src)[i];
+        uint32_t r = (p >> 11) & 0x1f, g = (p >> 5) & 0x3f, b = p & 0x1f;
+        r = (r << 3) | (r >> 2);
+        g = (g << 2) | (g >> 4);
+        b = (b << 3) | (b >> 2);
+        return b | (g << 8) | (r << 16);
+    }
+    case RETRO_PIXEL_FORMAT_0RGB1555:
+    default: {
+        uint16_t p = ((const uint16_t *)src)[i];
+        uint32_t r = (p >> 10) & 0x1f, g = (p >> 5) & 0x1f, b = p & 0x1f;
+        r = (r << 3) | (r >> 2);
+        g = (g << 3) | (g >> 2);
+        b = (b << 3) | (b >> 2);
+        return b | (g << 8) | (r << 16);
+    }
+    }
+}
+
+static void video_refresh(const void *data, unsigned width, unsigned height, size_t pitch)
+{
+    if (!g_fb || !data || width == 0 || height == 0) return;
+
+    /* Aspect-preserving scale-to-fit within the 640x400 framebuffer: fill the
+     * limiting dimension and center on the other (letterbox / pillarbox), so
+     * the game fills the pane like fbDOOM's 2x fill rather than sitting small
+     * and centered. Integer math only; nearest-neighbor sampling.
+     *
+     * Pick the limiting axis by comparing width/height against FB_W/FB_H
+     * without division: width*FB_H <= height*FB_W  =>  height is the limit. */
+    unsigned out_w, out_h;
+    if ((unsigned long long)width * FB_H <= (unsigned long long)height * FB_W) {
+        out_h = FB_H;
+        out_w = (unsigned)((unsigned long long)width * FB_H / height);
+    } else {
+        out_w = FB_W;
+        out_h = (unsigned)((unsigned long long)height * FB_W / width);
+    }
+    if (out_w == 0) out_w = 1;
+    if (out_h == 0) out_h = 1;
+    if (out_w > FB_W) out_w = FB_W;
+    if (out_h > FB_H) out_h = FB_H;
+    unsigned x0 = (FB_W - out_w) / 2, y0 = (FB_H - out_h) / 2;
+
+    /* Clear the borders once when the output rectangle changes (e.g. the core
+     * switches resolution), not every frame. */
+    if (out_w != g_last_w || out_h != g_last_h) {
+        memset(g_fb, 0, FB_SMEM_LEN);
+        g_last_w = out_w; g_last_h = out_h;
+    }
+
+    /* Precompute the source column for each destination column (nearest). */
+    unsigned xmap[FB_W];
+    for (unsigned dx = 0; dx < out_w; dx++)
+        xmap[dx] = dx * width / out_w;
+
+    const uint8_t *base = (const uint8_t *)data;
+    for (unsigned dy = 0; dy < out_h; dy++) {
+        unsigned sy = dy * height / out_h;
+        const uint8_t *srow = base + (size_t)sy * pitch;
+        uint32_t *drow = (uint32_t *)(g_fb + (y0 + dy) * FB_STRIDE) + x0;
+        for (unsigned dx = 0; dx < out_w; dx++)
+            drow[dx] = conv_pixel(srow, xmap[dx]);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Audio
+ * ------------------------------------------------------------------------- */
+
+/* Audio normally paces the emulator: a write waits for room in the device's
+ * short queue, which keeps the core in step with the sound card's clock.
+ *
+ * That only works while something is draining the queue. A device that is
+ * open but not playing (in a browser, audio stays suspended until the user
+ * interacts with the page) never makes room, and a blocking write would then
+ * freeze the emulator on its first frame. So the wait is bounded: if no room
+ * appears for DSP_STALL_MS the sink is treated as stalled, and samples are
+ * dropped instead of waited for until a write gets through again. Video and
+ * input keep running either way.
+ *
+ * Samples are S16 stereo, 4 bytes a frame, and the device's byte stream has
+ * no frame markers. Dropping must therefore never leave half a frame written:
+ * the unwritten tail of a split frame is carried over and sent first. */
+#define DSP_FRAME_BYTES 4u
+#define DSP_STALL_MS    100
+
+static bool    g_dsp_stalled = false;
+static uint8_t g_dsp_carry[DSP_FRAME_BYTES];
+static size_t  g_dsp_carry_len = 0;
+
+static void dsp_disable(const char *what)
+{
+    perror(what);
+    fprintf(stderr, "[retro] audio disabled\n");
+    close(g_dsp_fd);
+    g_dsp_fd = -1;
+}
+
+/* Write as much of [data, data+len) as the device takes. Returns the number
+ * of bytes written; stops early only when the sink is stalled. */
+static size_t dsp_write_some(const uint8_t *data, size_t len)
+{
+    size_t done = 0;
+    while (done < len && g_dsp_fd >= 0) {
+        ssize_t n = write(g_dsp_fd, data + done, len - done);
+        if (n > 0) {
+            done += (size_t)n;
+            if (g_dsp_stalled) {
+                g_dsp_stalled = false;
+                fprintf(stderr, "[retro] audio sink is playing again\n");
+            }
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && errno != EAGAIN) { dsp_disable("write /dev/dsp"); break; }
+        if (g_dsp_stalled) break;
+
+        struct pollfd pfd = { .fd = g_dsp_fd, .events = POLLOUT };
+        int ready = poll(&pfd, 1, DSP_STALL_MS);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready < 0) { dsp_disable("poll /dev/dsp"); break; }
+        if (ready == 0) {
+            g_dsp_stalled = true;
+            fprintf(stderr, "[retro] audio sink is not playing; "
+                            "dropping samples until it resumes\n");
+            break;
+        }
+    }
+    return done;
+}
+
+static void dsp_write_frames(const void *samples, size_t len)
+{
+    const uint8_t *data = samples;
+    if (g_dsp_fd < 0) return;
+
+    if (g_dsp_carry_len > 0) {
+        size_t sent = dsp_write_some(g_dsp_carry, g_dsp_carry_len);
+        memmove(g_dsp_carry, g_dsp_carry + sent, g_dsp_carry_len - sent);
+        g_dsp_carry_len -= sent;
+        if (g_dsp_carry_len > 0) return;  /* still stalled: drop this batch */
+    }
+
+    size_t done = dsp_write_some(data, len);
+    size_t split = done % DSP_FRAME_BYTES;
+    if (done < len && split != 0 && g_dsp_fd >= 0) {
+        g_dsp_carry_len = DSP_FRAME_BYTES - split;
+        memcpy(g_dsp_carry, data + done, g_dsp_carry_len);
+    }
+}
+
+static void audio_sample(int16_t left, int16_t right)
+{
+    int16_t frame[2] = { left, right };
+    dsp_write_frames(frame, sizeof frame);
+}
+
+static size_t audio_sample_batch(const int16_t *data, size_t frames)
+{
+    dsp_write_frames(data, frames * 2 * sizeof(int16_t));
+    return frames;
+}
+
+/* ---------------------------------------------------------------------------
+ * Input callbacks
+ * ------------------------------------------------------------------------- */
+
+static void input_poll(void) { input_drain(); }
+
+/* RETRO_DEVICE_ID_JOYPAD_* -> Linux keycode, and the key's printed name. */
+static const struct { uint8_t keycode; const char *key; } g_joypad_keys[16] = {
+    [RETRO_DEVICE_ID_JOYPAD_UP]     = { KEY_UP,         "Up" },
+    [RETRO_DEVICE_ID_JOYPAD_DOWN]   = { KEY_DOWN,       "Down" },
+    [RETRO_DEVICE_ID_JOYPAD_LEFT]   = { KEY_LEFT,       "Left" },
+    [RETRO_DEVICE_ID_JOYPAD_RIGHT]  = { KEY_RIGHT,      "Right" },
+    [RETRO_DEVICE_ID_JOYPAD_START]  = { KEY_ENTER,      "Enter" },
+    [RETRO_DEVICE_ID_JOYPAD_SELECT] = { KEY_RIGHTSHIFT, "Right Shift" },
+    [RETRO_DEVICE_ID_JOYPAD_B]      = { KEY_Z,          "Z" },
+    [RETRO_DEVICE_ID_JOYPAD_A]      = { KEY_X,          "X" },
+    [RETRO_DEVICE_ID_JOYPAD_Y]      = { KEY_A,          "A" },
+    [RETRO_DEVICE_ID_JOYPAD_X]      = { KEY_S,          "S" },
+    [RETRO_DEVICE_ID_JOYPAD_L]      = { KEY_Q,          "Q" },
+    [RETRO_DEVICE_ID_JOYPAD_R]      = { KEY_W,          "W" },
+};
+
+/* What the core calls each player-one joypad button, from its
+ * SET_INPUT_DESCRIPTORS (copied: the core's array need not outlive the call).
+ * The same key is a different button on each system, and some cores give a
+ * button a second job (FCEUmm's L and R change Famicom Disk System disks), so
+ * the core's own names are the only honest key list. */
+static char g_button_name[16][64];
+
+static void set_input_descriptors(const struct retro_input_descriptor *desc)
+{
+    memset(g_button_name, 0, sizeof g_button_name);
+    for (; desc && desc->description; desc++) {
+        if (desc->port != 0 || desc->device != RETRO_DEVICE_JOYPAD
+            || desc->index != 0 || desc->id >= 16) continue;
+        snprintf(g_button_name[desc->id], sizeof g_button_name[desc->id],
+                 "%s", desc->description);
+    }
+}
+
+/* The key list, in the order a player looks for it: the D-pad, Start and
+ * Select, then the other buttons. A button the core names nothing is one it
+ * does not use, so it is left out. */
+static void print_keys(FILE *out, const char *core)
+{
+    static const unsigned order[] = {
+        RETRO_DEVICE_ID_JOYPAD_UP, RETRO_DEVICE_ID_JOYPAD_DOWN,
+        RETRO_DEVICE_ID_JOYPAD_LEFT, RETRO_DEVICE_ID_JOYPAD_RIGHT,
+        RETRO_DEVICE_ID_JOYPAD_START, RETRO_DEVICE_ID_JOYPAD_SELECT,
+        RETRO_DEVICE_ID_JOYPAD_B, RETRO_DEVICE_ID_JOYPAD_A,
+        RETRO_DEVICE_ID_JOYPAD_Y, RETRO_DEVICE_ID_JOYPAD_X,
+        RETRO_DEVICE_ID_JOYPAD_L, RETRO_DEVICE_ID_JOYPAD_R,
+    };
+    fprintf(out, "Keys for %s:\n", core);
+    for (size_t i = 0; i < sizeof order / sizeof order[0]; i++) {
+        unsigned id = order[i];
+        if (!g_button_name[id][0]) continue;
+        fprintf(out, "  %-12s %s\n", g_joypad_keys[id].key, g_button_name[id]);
+    }
+    fprintf(out, "  %-12s %s\n", "F2", "save state");
+    fprintf(out, "  %-12s %s\n", "F4", "load state");
+    fprintf(out, "  %-12s %s\n", "Ctrl+C", "quit");
+}
+
+static int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id)
+{
+    (void)index;
+    if (port != 0 || device != RETRO_DEVICE_JOYPAD) return 0;
+    if (id >= 16) return 0;
+    uint8_t kc = g_joypad_keys[id].keycode;
+    if (kc == 0) return 0;
+    return (g_keystate[kc] || g_keylatch[kc]) ? 1 : 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Environment
+ * ------------------------------------------------------------------------- */
+
+static void core_log(enum retro_log_level level, const char *fmt, ...)
+{
+    (void)level;
+    va_list ap; va_start(ap, fmt);
+    fprintf(stderr, "[core] ");
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
+
+static bool environ_cb(unsigned cmd, void *data)
+{
+    switch (cmd) {
+    case RETRO_ENVIRONMENT_GET_CAN_DUPE:
+        if (data) *(bool *)data = true;
+        return true;
+
+    case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
+        enum retro_pixel_format fmt = *(const enum retro_pixel_format *)data;
+        if (fmt != RETRO_PIXEL_FORMAT_0RGB1555 &&
+            fmt != RETRO_PIXEL_FORMAT_XRGB8888 &&
+            fmt != RETRO_PIXEL_FORMAT_RGB565)
+            return false;
+        g_pixfmt = fmt;
+        fprintf(stderr, "[retro] pixel format = %d\n", (int)fmt);
+        return true;
+    }
+
+    case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
+        set_input_descriptors((const struct retro_input_descriptor *)data);
+        return true;
+
+    case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
+    case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
+        if (data) *(const char **)data = "/tmp";
+        return true;
+
+    case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
+        if (data) ((struct retro_log_callback *)data)->log = core_log;
+        return true;
+
+    case RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS: {
+        if (!data) return false;
+        uint64_t requested = *(uint64_t *)data;
+        const uint64_t supported =
+            RETRO_SERIALIZATION_QUIRK_INCOMPLETE |
+            RETRO_SERIALIZATION_QUIRK_CORE_VARIABLE_SIZE |
+            RETRO_SERIALIZATION_QUIRK_ENDIAN_DEPENDENT |
+            RETRO_SERIALIZATION_QUIRK_PLATFORM_DEPENDENT;
+        *(uint64_t *)data = (requested & supported) |
+            RETRO_SERIALIZATION_QUIRK_FRONT_VARIABLE_SIZE;
+        fprintf(stderr, "[retro] serialization quirks requested=0x%llx accepted=0x%llx\n",
+                (unsigned long long)requested, (unsigned long long)*(uint64_t *)data);
+        return true;
+    }
+
+    case RETRO_ENVIRONMENT_SET_VARIABLES:
+    case RETRO_ENVIRONMENT_SET_CORE_OPTIONS:
+    case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2:
+        return true;  /* acknowledged; core uses its own defaults */
+
+    case RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE:
+        /* We support handing content as an in-memory buffer via
+         * GET_GAME_INFO_EXT, so acknowledge overrides. */
+        return true;
+
+    case RETRO_ENVIRONMENT_GET_GAME_INFO_EXT:
+        if (!g_have_info_ext) return false;
+        *(const struct retro_game_info_ext **)data = &g_info_ext;
+        return true;
+
+    case RETRO_ENVIRONMENT_GET_VARIABLE:
+        if (data) ((struct retro_variable *)data)->value = NULL;
+        return false; /* not found -> core keeps default */
+
+    case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
+        if (data) *(bool *)data = false;
+        return true;
+
+    case RETRO_ENVIRONMENT_SET_GEOMETRY:
+        if (data) g_av.geometry = ((const struct retro_system_av_info *)data)->geometry;
+        return true;
+
+    case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:
+        if (data) { g_av = *(const struct retro_system_av_info *)data; g_have_av = true; }
+        return true;
+
+    default:
+        return false;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Frame pacing
+ * ------------------------------------------------------------------------- */
+
+static void now_ts(struct timespec *ts) { clock_gettime(CLOCK_MONOTONIC, ts); }
+
+static int64_t ns_since(const struct timespec *a, const struct timespec *b)
+{
+    return (int64_t)(b->tv_sec - a->tv_sec) * 1000000000LL + (b->tv_nsec - a->tv_nsec);
+}
+
+static void pace_to(const struct timespec *frame_start, int64_t target_ns)
+{
+    struct timespec now;
+    now_ts(&now);
+    int64_t elapsed = ns_since(frame_start, &now);
+    int64_t remain  = target_ns - elapsed;
+    if (remain <= 0) return;
+
+    struct timespec req = { remain / 1000000000LL, remain % 1000000000LL };
+    if (nanosleep(&req, NULL) == 0) return;
+
+    /* Fallback: nanosleep unsupported/interrupted -> spin on the clock. */
+    do { now_ts(&now); } while (ns_since(frame_start, &now) < target_ns);
+}
+
+/* Audio-clocked pacing. While the sound card is playing, its clock decides
+ * when the next frame runs: frames run back to back until AUDIO_LEAD_NS of
+ * sound is queued, then the loop sleeps only for the excess. Pacing by the
+ * wall clock instead never builds a lead, so the queue sits near empty and
+ * every late frame is a gap in the sound, heard as stutter and grain. It also
+ * keeps the emulator from drifting against the sound card.
+ *
+ * Returns false when audio cannot pace the loop (no device, or the sink is
+ * not playing yet), and the caller falls back to the wall clock. */
+#define AUDIO_LEAD_NS (60LL * 1000000LL)
+
+static bool    g_audio_lead_reached = false;
+static int64_t g_audio_dry_frames = 0;
+static struct timespec g_audio_dry_reported;
+
+static bool pace_by_audio(int64_t frame_ns)
+{
+    if (g_dsp_fd < 0 || g_dsp_stalled || g_dsp_bytes_per_sec <= 0) return false;
+    int queued = 0;
+    if (ioctl(g_dsp_fd, SNDCTL_DSP_GETODELAY, &queued) < 0) return false;
+    int64_t queued_ns = (int64_t)((double)queued * 1e9 / g_dsp_bytes_per_sec);
+
+    if (queued_ns >= AUDIO_LEAD_NS) {
+        g_audio_lead_reached = true;
+        int64_t excess = queued_ns - AUDIO_LEAD_NS;
+        if (excess > 2 * frame_ns) excess = 2 * frame_ns;
+        if (excess > 0) {
+            struct timespec req = { excess / 1000000000LL, excess % 1000000000LL };
+            nanosleep(&req, NULL);
+        }
+        return true;
+    }
+
+    /* Below the lead the next frame runs at once. A queue that empties after
+     * the lead was reached means the emulator is slower than real time; say
+     * so (at most every ten seconds) rather than leave the stutter a mystery. */
+    if (g_audio_lead_reached && queued == 0) {
+        g_audio_dry_frames++;
+        struct timespec now;
+        now_ts(&now);
+        if (ns_since(&g_audio_dry_reported, &now) >= 10LL * 1000000000LL) {
+            fprintf(stderr, "[retro] the sound queue ran dry %lld time(s): "
+                            "emulation is running slower than real time\n",
+                    (long long)g_audio_dry_frames);
+            g_audio_dry_frames = 0;
+            g_audio_dry_reported = now;
+        }
+    }
+    return true;
+}
+
+/* ---------------------------------------------------------------------------
+ * Main
+ * ------------------------------------------------------------------------- */
+
+static long load_file_limited(const char *path, void **out, size_t max_size)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) { perror(path); return -1; }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long sz = ftell(f);
+    if (sz <= 0 || (unsigned long)sz > max_size) { fclose(f); return -1; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
+    void *buf = malloc((size_t)sz);
+    if (!buf) { fclose(f); return -1; }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) { free(buf); fclose(f); return -1; }
+    fclose(f);
+    *out = buf;
+    return sz;
+}
+
+static long load_file(const char *path, void **out)
+{
+    return load_file_limited(path, out, SIZE_MAX);
+}
+
+static int write_atomic_file(const char *path, const char *tmp_path,
+                             const void *data, size_t size)
+{
+    FILE *file = fopen(tmp_path, "wb");
+    if (!file) {
+        perror(tmp_path);
+        return -1;
+    }
+    bool written = fwrite(data, 1, size, file) == size;
+    if (fclose(file) != 0) written = false;
+    if (!written) {
+        fprintf(stderr, "[retro] failed to write complete file: %s\n", tmp_path);
+        unlink(tmp_path);
+        return -1;
+    }
+    if (rename(tmp_path, path) != 0) {
+        perror(path);
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
+}
+
+/* F2: snapshot the whole machine into this game's state file. */
+static void save_state(void)
+{
+    if (!g_state_path[0]) return;
+    size_t size = retro_serialize_size();
+    if (size == 0 || size > MAX_STATE_BYTES) {
+        fprintf(stderr, "[retro] cannot save state: core requested %zu bytes (max %u)\n",
+                size, MAX_STATE_BYTES);
+        return;
+    }
+    /* Some cores intentionally leave unused tail bytes untouched. Zero the
+     * complete advertised buffer so a state never holds stale heap contents. */
+    void *state = calloc(1, size);
+    if (!state) {
+        fprintf(stderr, "[retro] cannot save state: allocation failed\n");
+        return;
+    }
+    if (!retro_serialize(state, size)) {
+        fprintf(stderr, "[retro] cannot save state: the core could not serialize\n");
+    } else if (write_atomic_file(g_state_path, g_state_tmp, state, size) == 0) {
+        fprintf(stderr, "[retro] saved state: %s\n", g_state_path);
+    }
+    free(state);
+}
+
+/* F4: return to this game's saved state, if there is one. */
+static void load_state(void)
+{
+    if (!g_state_path[0]) return;
+    if (access(g_state_path, F_OK) != 0) {
+        fprintf(stderr, "[retro] no saved state yet (F2 saves one): %s\n", g_state_path);
+        return;
+    }
+    void *state = NULL;
+    long size = load_file_limited(g_state_path, &state, MAX_STATE_BYTES);
+    if (size < 0) {
+        fprintf(stderr, "[retro] cannot load state: %s is unreadable or over %u bytes\n",
+                g_state_path, MAX_STATE_BYTES);
+    } else if (!retro_unserialize(state, (size_t)size)) {
+        fprintf(stderr, "[retro] cannot load state: the core rejected %s\n", g_state_path);
+    } else {
+        fprintf(stderr, "[retro] loaded state: %s\n", g_state_path);
+    }
+    free(state);
+}
+
+/* The cartridge's save memory (battery-backed SRAM): the core owns it, and
+ * the frontend keeps it in a file. g_sram_written is what the file holds, so
+ * a write happens only when the game changed something. */
+static uint8_t *g_sram_written = NULL;
+static size_t g_sram_size = 0;
+
+static void sram_load(void)
+{
+    size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    uint8_t *data = retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    if (!g_sram_path[0] || size == 0 || !data) return;
+    g_sram_written = malloc(size);
+    if (!g_sram_written) return;
+    g_sram_size = size;
+    if (access(g_sram_path, F_OK) == 0) {
+        void *saved = NULL;
+        long saved_size = load_file_limited(g_sram_path, &saved, size);
+        if (saved_size == (long)size) {
+            memcpy(data, saved, size);
+            fprintf(stderr, "[retro] loaded game save: %s\n", g_sram_path);
+        } else {
+            /* Not this game's size: keep the file, start without it. */
+            fprintf(stderr, "[retro] ignoring game save %s: expected %zu bytes\n",
+                    g_sram_path, size);
+        }
+        free(saved);
+    }
+    memcpy(g_sram_written, data, size);
+}
+
+static void sram_flush(void)
+{
+    uint8_t *data = retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    if (!g_sram_written || !data || memcmp(data, g_sram_written, g_sram_size) == 0) return;
+    if (write_atomic_file(g_sram_path, g_sram_tmp, data, g_sram_size) == 0) {
+        memcpy(g_sram_written, data, g_sram_size);
+        fprintf(stderr, "[retro] wrote game save: %s\n", g_sram_path);
+    }
+}
+
+int main(int argc, char **argv)
+{
+    const char *state_path = NULL;
+    bool info_only = false, keys_only = false;
+    if (argc == 4 && strcmp(argv[2], "--state") == 0) {
+        state_path = argv[3];
+    } else if (argc == 3 && strcmp(argv[2], "--info") == 0) {
+        /* Load the ROM, report the core's timing, and exit: what the core
+         * decided about the content, without needing a display. */
+        info_only = true;
+    } else if (argc == 3 && strcmp(argv[2], "--keys") == 0) {
+        /* Load the ROM, print the key list the core's button names give, and
+         * exit: what a player needs to know, without a display. */
+        keys_only = true;
+    } else if (argc != 2) {
+        fprintf(stderr, "usage: %s <rom> [--state <state-path> | --info | --keys]\n", argv[0]);
+        return 2;
+    }
+
+    setvbuf(stderr, NULL, _IONBF, 0);
+    const char *self = strrchr(argv[0], '/');
+    self = self ? self + 1 : argv[0];
+    fprintf(stderr, "[retro] %s starting, rom=%s\n", self, argv[1]);
+    runtime_paths_init();
+
+    retro_set_environment(environ_cb);
+    retro_set_video_refresh(video_refresh);
+    retro_set_audio_sample(audio_sample);
+    retro_set_audio_sample_batch(audio_sample_batch);
+    retro_set_input_poll(input_poll);
+    retro_set_input_state(input_state);
+
+    retro_init();
+
+    struct retro_system_info sysinfo;
+    memset(&sysinfo, 0, sizeof sysinfo);
+    retro_get_system_info(&sysinfo);
+    fprintf(stderr, "[retro] core: %s %s (need_fullpath=%d)\n",
+            sysinfo.library_name ? sysinfo.library_name : "?",
+            sysinfo.library_version ? sysinfo.library_version : "?",
+            sysinfo.need_fullpath);
+
+    void *rom = NULL;
+    long romsz = load_file(argv[1], &rom);
+    if (romsz < 0) return 1;
+
+    /* Offer the ROM both as an in-memory buffer (GET_GAME_INFO_EXT) and via
+     * path, so the core can load from memory and never touch the guest VFS. */
+    setup_info_ext(argv[1], rom, (size_t)romsz);
+
+    struct retro_game_info game;
+    memset(&game, 0, sizeof game);
+    game.path = argv[1];
+    game.data = rom;
+    game.size = (size_t)romsz;
+    if (!retro_load_game(&game)) {
+        fprintf(stderr, "[retro] retro_load_game failed\n");
+        return 1;
+    }
+
+    if (!info_only && !keys_only && save_paths_init(argv[1])) sram_load();
+
+    if (state_path) {
+        void *state = NULL;
+        long state_size = load_file_limited(state_path, &state, MAX_STATE_BYTES);
+        if (state_size < 0) {
+            fprintf(stderr, "[retro] invalid save state size for %s (max %u bytes)\n",
+                    state_path, MAX_STATE_BYTES);
+            free(state);
+            return 1;
+        }
+        if (!retro_unserialize(state, (size_t)state_size)) {
+            fprintf(stderr, "[retro] retro_unserialize failed for %s (%ld bytes)\n",
+                    state_path, state_size);
+            free(state);
+            return 1;
+        }
+        fprintf(stderr, "[retro] restored save state: %s (%ld bytes)\n",
+                state_path, state_size);
+        free(state);
+    }
+
+    memset(&g_av, 0, sizeof g_av);
+    retro_get_system_av_info(&g_av);
+    g_have_av = true;
+    double fps = g_av.timing.fps > 1.0 ? g_av.timing.fps : 60.0;
+    double srate = g_av.timing.sample_rate > 1.0 ? g_av.timing.sample_rate : 44100.0;
+    fprintf(stderr, "[retro] av: %ux%u fps=%.3f rate=%.0f\n",
+            g_av.geometry.base_width, g_av.geometry.base_height, fps, srate);
+    if (info_only) return 0;
+
+    const char *core_name = sysinfo.library_name ? sysinfo.library_name : self;
+    if (keys_only) {
+        print_keys(stdout, core_name);
+        return 0;
+    }
+    /* Before the keyboard is taken: started from a terminal, the player sees
+     * the keys there. */
+    print_keys(stderr, core_name);
+
+    if (fb_open() < 0) return 1;
+    dsp_open(srate);
+    input_open();
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_quit_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    if (sigaction(SIGTERM, &sa, NULL) != 0) perror("sigaction(SIGTERM)");
+    if (sigaction(SIGHUP, &sa, NULL) != 0) perror("sigaction(SIGHUP)");
+    /* Publish the pid once the game holds the display, sound and keyboard:
+     * the drop handler takes it as the sign the game started. */
+    char pid_text[32];
+    int pid_len = snprintf(pid_text, sizeof pid_text, "%ld\n", (long)getpid());
+    if (write_atomic_file(PID_PATH, g_pid_tmp, pid_text, (size_t)pid_len) != 0)
+        fprintf(stderr, "[retro] could not publish %s\n", PID_PATH);
+
+    int64_t target_ns = (int64_t)(1e9 / fps);
+    fprintf(stderr, "[retro] running (%.3f fps, %lld ns/frame)\n", fps, (long long)target_ns);
+
+    /* The game's own saves are written within a few seconds of the game
+     * changing them, so a closed tab loses little. */
+    const unsigned sram_flush_frames = (unsigned)(fps * 3.0);
+    unsigned frames = 0;
+    while (!g_quit_requested) {
+        struct timespec frame_start;
+        now_ts(&frame_start);
+        retro_run();
+        memset(g_keylatch, 0, sizeof g_keylatch);
+        if (g_state_save_requested) {
+            g_state_save_requested = 0;
+            save_state();
+        }
+        if (g_state_load_requested) {
+            g_state_load_requested = 0;
+            load_state();
+        }
+        if (++frames >= sram_flush_frames) {
+            frames = 0;
+            sram_flush();
+        }
+        if (!pace_by_audio(target_ns)) pace_to(&frame_start, target_ns);
+    }
+
+    sram_flush();
+    fprintf(stderr, "[retro] quit\n");
+    unlink(PID_PATH);
+    if (g_termios_saved) tcsetattr(STDIN_FILENO, TCSANOW, &g_saved_termios);
+    retro_unload_game();
+    retro_deinit();
+    free(rom);
+    return 0;
+}

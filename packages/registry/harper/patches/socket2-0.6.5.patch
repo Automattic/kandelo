@@ -1,0 +1,12 @@
+# Kandelo uses musl: msghdr.msg_iovlen is int in the SDK C headers
+# and c_int in its Rust libc bindings. Select that existing ABI branch.
+--- a/src/sys/unix.rs
++++ b/src/sys/unix.rs
+@@ -414,6 +414,7 @@
+             all(target_env = "uclibc", target_pointer_width = "32")
+         )
+     ),
++    target_os = "kandelo",
+     target_os = "aix",
+     target_os = "dragonfly",
+     target_os = "emscripten",

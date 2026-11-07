@@ -17,17 +17,14 @@ import {
   type MountSpec,
 } from "../host/src/vfs/default-mounts";
 
-// The isolated conformance fixture is seeded under `/run`, which the in-kernel
-// tmpfs deliberately does NOT claim, unlike `/tmp` and the other scratch
-// prefixes it owns (KERNEL_TMPFS_OWNED_PREFIXES). A host-seeded tree under an
-// owned prefix is invisible to the guest: the kernel serves that prefix from
-// its own tmpfs, so a spawned child's `chdir` into the fixture would ENOENT.
-// `/run` stays a host-backed scratch mount, so the fixture is visible.
-const ISOLATED_FIXTURE_DESTINATION = "/run/kandelo-run";
+// Writable conformance fixtures live below /var/lib/kandelo-tests. The
+// isolated mode mounts its private host scratch tree here; persistent mode
+// stores the same work tree in the root image. /run is kernel-owned tmpfs.
+const ISOLATED_FIXTURE_DESTINATION = "/var/lib/kandelo-tests/runner";
 
 /** Host-backed mount that carries the isolated fixture, outside tmpfs's reach. */
 const ISOLATED_FIXTURE_MOUNT: MountSpec = {
-  path: "/run",
+  path: "/var/lib/kandelo-tests",
   source: "scratch",
   mode: 0o755,
   nosuid: true,

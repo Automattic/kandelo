@@ -1,6 +1,9 @@
 # SDK Guide
 
-The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ programs that run on Kandelo. It wraps LLVM tools with the correct flags for the `wasm32-unknown-unknown` target and links against the musl libc sysroot.
+The Kandelo SDK provides a cross-compilation toolchain for C/C++ programs.
+It wraps LLVM tools for `wasm32-unknown-unknown` and `wasm64-unknown-unknown`
+and links against the corresponding musl sysroot. Rust guest support,
+including `std`, is documented separately in the [Rust SDK guide](../sdk/rust/README.md).
 
 The C/C++ compiler and binary tools share the SDK driver
 (`crates/kandelo-cc`), which decides from the name it runs as whether to be
@@ -26,17 +29,16 @@ not restart the original syscall.
 
 ### Prerequisites
 
-1. **LLVM 21+** with clang and wasm-ld:
-   - macOS: `brew install llvm`
-   - Ubuntu: `apt install llvm clang lld`
-   - Or use the Nix dev shell wrapper (`scripts/dev-shell.sh bash` from the
-     repo root) — provides LLVM 21 plus the rest of the toolchain, no per-tool
-     install needed.
-     See the README's "Using Nix" section.
-2. **musl sysroot**. Initialize the submodules and let `./run.sh setup`
-   (step 3) build the sysroot for you:
+1. **Git and Nix with flakes enabled** for the repository build workflow.
+   `./run.sh setup` requires Nix and enters the declared dev shell itself.
+   It supplies the pinned Rust nightly, LLVM 21 (including clang and wasm-ld),
+   Node.js 24, and the remaining build tools. See
+   [Quick start](../README.md#quick-start) and
+   [development environment](../CONTRIBUTING.md#development-environment).
+2. **musl sysroots and kernel artifacts**. From the repository root:
    ```bash
    git submodule update --init libc/musl sdk/rust/libc-upstream
+   ./run.sh setup
    ```
    The full setup also builds Rust packages, which need the pinned Rust
    libc source under `sdk/rust/libc-upstream`.
@@ -51,22 +53,19 @@ not restart the original syscall.
    ```
    `--arch wasm64posix` selects the other architecture. `--core-only`
    omits graphics refresh during dependency resolution to avoid recursion.
-   Without `--ensure`, the command always rebuilds musl.
-3. **Kernel built**:
-   ```bash
-   ./run.sh setup
-   ```
+   Without `--ensure`, the command always rebuilds musl. After libc changes,
+   also rebuild linked programs and fixtures before testing; `setup --all` refreshes
+   package programs, while `scripts/build-programs.sh` builds test fixtures.
    (`bash build.sh` still works as a deprecated delegator to the same
    command.)
 
-### Install the SDK
+### Use the checkout's SDK
 
 The SDK runs from a Kandelo checkout. The dev shell puts `sdk/bin` on `PATH`;
 outside it, source `sdk/activate.sh`, or link the tools globally:
 
 ```bash
-cd sdk
-npm link
+(cd sdk && npm link)
 ```
 
 The first SDK tool run builds the native SDK driver from `crates/kandelo-cc`
@@ -75,19 +74,18 @@ shell); later runs rebuild it only when its sources change
 (`scripts/build-kandelo-cc.sh`, run by `./run.sh setup`). The package is not
 published to a registry: the driver is built from the checkout it belongs to.
 
-The wasm32 C/C++ tool names are listed below; the npm package also exposes
-their wasm64 counterparts:
+The SDK provides eight LLVM wrappers for each architecture (16 commands):
 
-| Tool | Purpose |
-|------|---------|
-| `wasm32posix-cc` | C compiler (wraps clang) |
-| `wasm32posix-c++` | C++ compiler (wraps clang++) |
-| `wasm32posix-ar` | Static archive tool (wraps llvm-ar) |
-| `wasm32posix-ranlib` | Archive index generator (wraps llvm-ranlib) |
-| `wasm32posix-nm` | Symbol lister (wraps llvm-nm) |
-| `wasm32posix-strip` | Symbol stripper (no-op for Wasm) |
-| `wasm32posix-pkg-config` | pkg-config with sysroot awareness |
-| `wasm32posix-configure` | Autoconf `./configure` wrapper |
+| wasm32 tool | wasm64 tool | Purpose |
+|-------------|-------------|---------|
+| `wasm32posix-cc` | `wasm64posix-cc` | C compiler (clang) |
+| `wasm32posix-c++` | `wasm64posix-c++` | C++ compiler (clang++) |
+| `wasm32posix-ar` | `wasm64posix-ar` | Static archives (llvm-ar) |
+| `wasm32posix-ranlib` | `wasm64posix-ranlib` | Archive index (llvm-ranlib) |
+| `wasm32posix-nm` | `wasm64posix-nm` | Symbol listing (llvm-nm) |
+| `wasm32posix-strip` | `wasm64posix-strip` | No-op for Wasm |
+| `wasm32posix-pkg-config` | `wasm64posix-pkg-config` | Target pkg-config |
+| `wasm32posix-configure` | `wasm64posix-configure` | Autoconf wrapper |
 
 The checkout also provides `sdk/bin/wasm32posix-go` for a separately built
 Kandelo Go fork. It selects pure Go; cgo packages invoke the fork directly
@@ -100,14 +98,17 @@ SDK `PATH`; it is not registered by the npm package's C/C++ tool list.
 The SDK finds LLVM in this order:
 
 1. `$WASM_POSIX_LLVM_DIR` environment variable (path to LLVM bin directory)
-2. `$LLVM_BIN`, or `$LLVM_PREFIX/bin` (the Nix dev shell exports both)
-3. A `PATH` directory holding clang, clang++, llvm-ar, llvm-ranlib, llvm-nm
-   and wasm-ld whose clang compiles for wasm32
-4. `/usr/lib/llvm-*/bin` (Linux, highest version)
+2. `$LLVM_BIN`, then `$LLVM_PREFIX/bin` (set by the dev shell)
+3. A complete LLVM tool directory on `$PATH`, tested for wasm32 compilation
+4. `/usr/lib/llvm-*/bin` on Linux (reverse-sorted directory names)
+
+Each candidate must contain clang, clang++, wasm-ld, llvm-ar, llvm-ranlib,
+and llvm-nm; finding clang alone is insufficient.
 
 ### Glue and Sysroot Discovery
 
-The SDK locates `libc/glue/` and `sysroot/` in this order:
+For normal source-checkout use, the SDK locates `libc/glue/` and the selected
+architecture's `sysroot/` or `sysroot64/` in this order:
 
 1. `$WASM_POSIX_GLUE_DIR` / `$WASM_POSIX_SYSROOT` env vars (explicit overrides)
 2. Walk up from the working directory looking for `libc/glue/abi_constants.h` — anchors to the project root the user is building from
@@ -119,9 +120,11 @@ The cwd-walk-up step matters when the SDK is `npm link`-ed: the global `wasm32po
 
 ### Simple C program
 
+From the repository root, inside `scripts/dev-shell.sh bash`:
+
 ```bash
 # Compile and link in one step
-wasm32posix-cc hello.c -o hello.wasm
+wasm32posix-cc examples/hello.c -o hello.wasm
 
 # Run it
 npx tsx examples/run-example.ts hello.wasm

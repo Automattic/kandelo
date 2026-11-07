@@ -69,8 +69,8 @@ describe.skipIf(rootfsImage === undefined)("rootfs lazy assets resolve", () => {
     fs.loadImage(new Uint8Array(readFileSync(rootfsImage!)));
     const { files } = fs.lazyEntries() as { files: { path: string; uri: string }[] };
     for (const path of [
-      "/usr/bin/bash",
-      "/usr/bin/ps",
+      "/bin/bash",
+      "/bin/ps",
       "/usr/bin/pgrep",
       "/usr/bin/sudo-lite",
       "/usr/bin/sudo",

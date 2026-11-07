@@ -39,7 +39,7 @@ import type { DisplayHandle } from "../panes/Display";
 import { TerminalDockControls } from "./TerminalDockControls";
 import { useNetworkSession, type InitialSessionInvitation } from "./use-network-session";
 import { usePackageSessions } from "./use-package-sessions";
-import type { SessionLaunch } from "../../../../../web-libs/kandelo-session/src/package-sessions";
+import type { SessionProgramLaunch, SessionWebLaunch } from "../../../../../web-libs/kandelo-session/src/package-sessions";
 import { NetworkPanel } from "./NetworkPanel";
 import { ExchangeToasts, useExchangePicker } from "./ExchangeToasts";
 import { ActivitiesPanel } from "./ActivitiesPanel";
@@ -47,6 +47,8 @@ import { activityConflicts } from "./activity-launcher";
 import { stopDeviceOwner } from "../../../../../web-libs/kandelo-session/src/device-owner";
 import { useExchangeConsumer } from "../kernel-host/react";
 
+/** What an activity launch needs to know about where its command shows. */
+type ActivityProcedure = SessionWebLaunch | Pick<SessionProgramLaunch, "surface" | "display" | "displayScale">;
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 const THEME_FAMILIES: Array<{ family: ThemeFamily; label: string; description: string }> = [
   { family: "kandelo", label: "Kandelo", description: "Candlelit Kandelo surfaces with warm highlights and ink-dark contrast." },
@@ -404,7 +406,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
       activityTerminals.current.delete(activity.job);
       setOpenActivities([...activityTerminals.current.values()]);
   };
-  const launchActivity = async (command: string, title: string, assertCurrent: () => void, procedure: SessionLaunch, identity: string, ports: number[] = [], replaces?: string) => {
+  const launchActivity = async (command: string, title: string, assertCurrent: () => void, procedure: ActivityProcedure, identity: string, ports: number[] = [], replaces?: string) => {
     assertCurrent();
     if (activityTransition.current) throw new Error("Another activity is starting or stopping");
     activityTransition.current = true;
@@ -465,6 +467,26 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     } finally { activityTransition.current = false; }
   };
   const packageSessions = usePackageSessions(host, networkSession, launchActivity, activityClientImageUrl);
+
+  // A program in the machine asked for a terminal running a command (a
+  // dropped ROM's handler does, through kandelo-terminal). It opens as an
+  // activity: a fresh terminal with the command typed at its prompt, so the
+  // user sees what ran and can run it again once it exits.
+  const launchActivityRef = React.useRef(launchActivity);
+  launchActivityRef.current = launchActivity;
+  React.useEffect(() => {
+    const exchange = host.getExchange();
+    exchange.setTerminalRequestHandler((request) => {
+      const assertCurrent = () => {
+        if (host.getStatus() !== "running") throw new Error("The computer is no longer running");
+      };
+      const procedure: ActivityProcedure = request.display
+        ? { surface: "display", display: request.display }
+        : { surface: "terminal" };
+      return launchActivityRef.current(request.command, request.title, assertCurrent, procedure, `terminal-request/${request.command}`);
+    });
+    return () => exchange.setTerminalRequestHandler(null);
+  }, [host]);
 
   useWebMcp({
     host, terminals, activeTerminalId,

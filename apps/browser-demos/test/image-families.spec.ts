@@ -48,7 +48,7 @@ test("Web Stack changes all five service activities live and retains startup pre
     expect(await currentComputerMetadata(page)).toMatchObject(computer);
   }
   await terminal(page);
-  await runTerminalCommand(page, "ps -A | grep '[d]init' | awk '{print $1}' >/tmp/supervisor-after; cmp /tmp/service-supervisor-pid /tmp/supervisor-after && test \"$(cat /home/projects/family-note)\" = retained && /usr/local/bin/kandelo-service enable web-python && printf 'FAMILY_STARTUP_SAVED\\n'", "FAMILY_STARTUP_SAVED");
+  await runTerminalCommand(page, "ps -A | grep '[d]init' | awk '{print $1}' >/tmp/supervisor-after; cmp /tmp/service-supervisor-pid /tmp/supervisor-after && test \"$(cat /home/projects/family-note)\" = retained && /usr/bin/kandelo-service enable web-python && printf 'FAMILY_STARTUP_SAVED\\n'", "FAMILY_STARTUP_SAVED");
   await runTerminalCommand(page, "kandelo-service list >/tmp/service-list; grep -E 'web-php +running +disabled' /tmp/service-list && grep -E 'web-python +stopped +enabled' /tmp/service-list && printf 'SERVICE_LIST_PREFERENCES_READY\\n'", "SERVICE_LIST_PREFERENCES_READY");
   const kernelsBeforeReload = kernels.length;
   await page.evaluate(() => { window.setTimeout(() => window.location.reload(), 0); });
@@ -100,7 +100,7 @@ test("Web and Graphics switch independently without reloading the website or res
   await terminal(page);
   await runTerminalCommand(page, "ps -A | grep '[d]init' | awk '{print $1}' >/tmp/display-supervisor-pid; printf 'VIEW_TEST_READY\\n'", "VIEW_TEST_READY");
   await page.locator(".kshell-host:visible .xterm-helper-textarea").focus();
-  await page.keyboard.insertText("/usr/local/bin/modeset");
+  await page.keyboard.insertText("/usr/bin/modeset");
   await page.keyboard.press("Enter");
   const graphics = page.locator(".kmodeset-surface");
   await expect(graphics).toBeVisible({ timeout: 120000 });
@@ -125,7 +125,7 @@ test("Web and Graphics switch independently without reloading the website or res
   await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/separate-views-${testInfo.project.name}.png`) });
   await terminal(page);
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
-  await expect(page.locator(".kshell-host:visible .xterm-rows").first()).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 120000 });
+  await expect(page.locator(".kshell-host:visible .xterm-rows").first()).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, { timeout: 120000 });
   await runTerminalCommand(page, "ps -A | grep '[d]init' | awk '{print $1}' >/tmp/display-supervisor-after; cmp /tmp/display-supervisor-pid /tmp/display-supervisor-after && kandelo-service list | grep -E 'web-static +running +enabled' && printf 'VIEW_SERVICES_RETAINED\\n'", "VIEW_SERVICES_RETAINED");
   expect(kernels).toHaveLength(originalKernelCount);
   expect(await currentComputerMetadata(page)).toMatchObject(original);

@@ -12,7 +12,7 @@ Scope {
 
   required property Theme theme
   readonly property string user: Quickshell.env("USER")
-  readonly property string login: Quickshell.env("KANDELO_LOGIN") || "/usr/bin/login"
+  readonly property string login: Quickshell.env("KANDELO_LOGIN") || "/bin/login"
   property string password: ""
   property string message: ""
 
