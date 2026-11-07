@@ -119,6 +119,16 @@ changes, package artifacts, or performance claims.
 
 ## Validation Contract
 
+Main agents: at task start, fetch `origin main`, then run
+`python3 .claude/hooks/install-hooks.py --user --update-from-main`.
+Repeat after merging a hook change. This refreshes an existing user
+installation from fetched `origin/main`, preserves opt-in and never
+downgrades; do it without asking the user to run the installer. Do not run
+plain `--user` from a feature branch as an automatic update. If fetching
+or updating fails, report it and continue independent work. Subagents
+leave user hook maintenance to the parent. See the hook workflow in
+`docs/agent-guidance/validation.md`.
+
 Keep automated browser tests silent through the shared
 `apps/browser-demos/playwright-test.ts` fixture, including private diagnostic
 specs. Leave guest PCM and analysers running for audio checks. Do not mute the

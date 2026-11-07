@@ -584,27 +584,41 @@ waiting on another workspace's build, installed copies kept recommending
 `while kill -0 <pid>`.
 
 - **The rule:** every change to a rule or a denial message bumps
-  `HOOK_VERSION` in `wait-guard.py`, and its PR says to re-run
-  `python3 .claude/hooks/install-hooks.py --user`. Comment-only changes
-  do not bump it.
+  `HOOK_VERSION` in `wait-guard.py`. Comment-only changes do not bump it.
+  Main agents refresh existing user installations after merging; initial
+  installation remains opt-in.
 - **The notice:** when the checkout an agent works in has a higher
   `HOOK_VERSION` than the installed copy, the hook shows the user a
   one-line notice to reinstall, once per session. It goes to the user
   (`systemMessage`), not the model, and does not approve or deny the
   call. A checkout with a lower version, as on an older branch, is
   silent.
-- **Not automatic, on purpose:** the copy reads the checkout's version
+- **No self-update from a checkout:** the copy reads the checkout's version
   as text and never runs or copies the checkout's file. A user-level hook
   that updated itself from whatever repository is open would let any
   branch change what runs on every Bash call.
+- **Agent maintenance (2026-11-07):** `CLAUDE.md` cues main agents to
+  fetch `origin main` and run
+  `python3 .claude/hooks/install-hooks.py --user --update-from-main`
+  at task start and after merging hook changes. This mode updates only
+  existing opt-ins, takes both hook and installer from fetched
+  `origin/main`, and refuses a version downgrade. A lock serializes
+  concurrent automatic updates. It does not execute feature-branch code
+  as the global hook, or require a Conductor-specific setup script.
+  No additional model calls were made to validate this maintenance mode.
 - **Versioned log:** every `hook-log.jsonl` entry records `version`, and
   `wait-impact.py` reports decisions per version (`by_version`). Judge a
   changed rule or message only on entries from the version that has it.
   Entries without the field come from versions 1 (#1455) and 2 (#1464,
   2026-10-02), and are told apart by date.
-- **Limit:** copies installed before version 3 cannot give the notice.
-  Reinstalling version 3 is the last manual check needed.
-- **Tests:** `python3 evals/build-waiting/test_wait_guard.py`.
+- **Limit:** copies installed before version 3 cannot give the notice;
+  agents' task-start cue also updates existing unversioned copies.
+  Maintenance requires a main agent reading the new guidance; it is not
+  a service that runs immediately on a GitHub merge without an agent.
+- **Tests:** `python3 evals/build-waiting/test_wait_guard.py` and
+  `test_install_hooks.py`. The latter's six isolated-Git tests cover
+  merged-source provenance, opt-in, downgrade refusal, legacy updates,
+  idempotence, settings/backup preservation and failure without main.
 
 ### 8b. Subagent long-wait guard (same hook)
 
@@ -784,8 +798,9 @@ for CLI authentication, with dev-shell Python and fixture tools.
 `test_agent_job.py` (18), and `test_run.py` (3) passed, as did Python
 compilation and `git diff --check`. Runtime/browser/conformance suites
 were not run: this changes only local agent tooling. `HOOK_VERSION` is
-now 4. Re-run `python3 .claude/hooks/install-hooks.py --user` to update
-an installed copy; the change does not install itself.
+now 4. Main agents refresh an existing installation with
+`python3 .claude/hooks/install-hooks.py --user --update-from-main` after
+fetching main; a first installation still uses explicit `--user` opt-in.
 
 ### 9. `local-build plan --status` with time estimate
 

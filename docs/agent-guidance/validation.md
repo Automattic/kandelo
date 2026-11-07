@@ -499,9 +499,20 @@ run used the wrong config and toolchain, and its results are invalid.
     installed hook is out of date. `--uninstall` removes it. The installed
     hook also tells you itself, once per session, when the checkout you
     work in has a newer `HOOK_VERSION`.
+  - **Automatic maintenance after opting in:** main agents fetch
+    `origin main` and run
+    `python3 .claude/hooks/install-hooks.py --user --update-from-main`
+    at task start and after merging a hook change. Do this directly,
+    without handing the command back to the user. It skips absent
+    installations, never downgrades, serializes concurrent agent updates,
+    and takes both the hook and installer from fetched `origin/main`.
+    It never promotes feature-branch code into the user hook. Existing
+    unversioned copies predate v3 and are eligible for an update.
+    Project-local installations already follow their checkout.
   - **Changing the hook:** bump `HOOK_VERSION` in `wait-guard.py` with any
-    change to a rule or message, and say in the PR to re-run the
-    installer.
+    change to a rule or message. The merging agent refreshes an existing
+    user installation from main and verifies it with `--user --check`
+    from the merged revision. Initial installation remains opt-in.
   - **Scope:** the hook acts only in checkouts that contain
     `scripts/agent-job`.
 
