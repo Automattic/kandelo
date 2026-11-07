@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 154,
+    "sourceSliceRecords": 161,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 214
+    "findingsWithoutExplicitOrProposedSourceSlice": 212
   },
   "families": [
     {
@@ -367,7 +367,7 @@
         "S-013",
         "S-014"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 6,
+      "findingsWithExplicitOrProposedSourceSlices": 7,
       "sourceRouteAsRecorded": "TLS identity algorithms, actual live OpenSSL protocol/cipher/reuse/Finished/verification metadata source, shared IP/domain helpers and transports ; source142 eager trust capture, real SSL_CTX/SSL ownership, verification rejection and owning-realm handling",
       "remainingAsRecorded": "Complete socket/context/trust/key/certificate/handshake/session ownership, metadata/error/descriptor fidelity, secure pooling/servers and DTLS/QUIC",
       "remainingOwner": "Native SSL_CTX/SSL/certificate/socket/session owners and TLS/HTTPS/DTLS/QUIC wrappers",
@@ -650,7 +650,7 @@
         "O-022",
         "O-023"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 8,
+      "findingsWithExplicitOrProposedSourceSlices": 9,
       "sourceRouteAsRecorded": "Pinned Console/diagnostics/TCP/DNS producers,Performance timeline/entry/observer/resource/timerify and process-origin clock;124real loop-start/idle and ELU arithmetic;134real HDR/statistics/window owners,public histogram wrappers,queued QRDE,packet clone material and shared retained-memory ledger ; source139 real event-loop-delay sampling/ref/close owner and145shared cached clock",
       "remainingAsRecorded": "Combined117\u2013148engine uncompiled;actual JSAPI/GC/VM/clone/cancellation/pressure and realm retirement remain open;actual ELD producer and timer-phase/GC/ref behavior unvalidated;other milestones/counters/GC/network producers,inspector,tracing/reporting and four-host conformance incomplete",
       "remainingOwner": "Actual performance/GC/HTTP/trace/report/console/engine measurement producers",
@@ -4750,6 +4750,17 @@
           "auditDocument": "tests/nodejs/audit/http.md",
           "scope": "Request/parser/ServerResponse/method catalog source subset; full Server and complete finding obligations remain open",
           "closure": false
+        },
+        {
+          "slice": "http-connections",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/http-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual request-parser ConnectionsList/membership/deadline prerequisite. Full Server activation, persistent reuse, Body-before-Complete chronology, timeout/close ownership and full parser lifecycle remain incomplete.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4814,6 +4825,17 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/http.md",
           "scope": "Consumed request-header/original-allocation/numeric-decision source prerequisite, not complete parser/Server/lifecycle or finding closure",
+          "closure": false
+        },
+        {
+          "slice": "http-connections",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/http-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual request-parser ConnectionsList/membership/deadline prerequisite. Full Server activation, persistent reuse, Body-before-Complete chronology, timeout/close ownership and full parser lifecycle remain incomplete.",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -5192,6 +5214,17 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Partial genuine retained TCP/SSL/ref/request lifetime prerequisite; not public TLSSocket/AsyncWrap/StreamBase/HTTPS or guest closure",
           "closure": false
+        },
+        {
+          "slice": "tls-x509-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial real peer/local X509 ownership and public getter source. S-008 is a shared Socket/resource-shape prerequisite only; full handle/proxy/adoption/StreamBase semantics remain incomplete.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -5307,6 +5340,17 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Partial genuine retained TCP/SSL/ref/request lifetime prerequisite; not public TLSSocket/AsyncWrap/StreamBase/HTTPS or guest closure",
           "closure": false
+        },
+        {
+          "slice": "tls-async-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Real retained TLSWRAP identity, frame, init rollback and finalization prerequisite. S-008 inherited Socket shape and transport adoption remain separate; no full cancellation/shutdown closure.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -5412,7 +5456,19 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "TLSSocket net.Socket inheritance and wrapping constructor",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "tls-x509-owner",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/secure-network-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Shared certificate-material/native-handle prerequisite only; full Socket/TLSWrap constructor/inheritance/_handle/receiver/stream shape remains open. Partial real peer/local X509 ownership and public getter source. S-008 is a shared Socket/resource-shape prerequisite only; full handle/proxy/adoption/StreamBase semantics remain incomplete.",
+          "publicApiClosure": false,
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "tls-state"
       ],
@@ -5478,6 +5534,28 @@
           "originalProseRefs": [],
           "standaloneDefinitionRecovered": true,
           "scope": "Partial genuine retained TCP/SSL/ref/request lifetime prerequisite; not public TLSSocket/AsyncWrap/StreamBase/HTTPS or guest closure",
+          "closure": false
+        },
+        {
+          "slice": "tls-write-callback",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Consumed retained TLS write callback-ticket ownership prerequisite only; new C++ unvalidated and actual SSL shutdown/_final/provider/fullSocket semantics remain incomplete",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "tls-async-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Real retained TLSWRAP identity, frame, init rollback and finalization prerequisite. S-008 inherited Socket shape and transport adoption remain separate; no full cancellation/shutdown closure.",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -6300,6 +6378,28 @@
           ],
           "standaloneDefinitionRecovered": false,
           "scope": "Control-only native reference callback/frame evidence correction for existing one-shot source; not new production semantics, original-baseline reclassification or finding closure",
+          "closure": false
+        },
+        {
+          "slice": "symmetric-keygen",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial real symmetric generation/KEYGENREQUEST ownership; complete C-015, keypairs, WebCrypto and native/guest/four-host behavior remain open",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "key-operation-publication",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Actual preparing-request ownership through shared outer keyOperation packet; consumed by secret key generation, no blanket otherfactory/MarkPop/guest/fullcrypto closure",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -9220,7 +9320,19 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "performance clock/origin/entries",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "performance-milestone",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/observability.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual NodeTiming milestone owner only. O-009 Observer delivery/lifecycle is unchanged. Worker loopStart-before-bootstrapComplete remains a real ordering gap; v8Start is physically unset, not a fabricated V8 event.",
+          "publicApiClosure": false,
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [
         "performance-implementation-dependencies"
@@ -25137,6 +25249,732 @@
       "findingScope": "Partial direct stdio dimensions/resize owner for T-008. Producer label T-010 is preserved historically; public tty.WriteStream class remains absent, so T-010 receives a shared prerequisite only, not direct API activation/closure.",
       "terminalPublicApiClosure": false,
       "qualification": "T-008 direct stdio dimensions/SIGWINCH;T-010 shared prerequisite only. Historical producerT010 label preserved; public tty.WriteStream not activated."
+    },
+    "symmetric-keygen": {
+      "document": "tests/nodejs/outline/symmetric-keygen-finding-progress.json",
+      "sha256": "56781661a7a93a62067956cc0be1d5a22d5e65a9c80434e13eef450eab8c733b",
+      "recordedRevision": 232,
+      "explicitFindingIds": [
+        "C-015"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-keygen232-source-r1/report.json",
+          "sha256": "27275b261cc05f862dcfd3c1e77ba24b538a5ea86618601e4ef69567a7761fef",
+          "guardedInputs": 896,
+          "scope": "Actual current root key/secret generation factories and pinned public algorithms over exact frozen native component/V8/uv/private frame/KeyObject adoption; not guest bridge/GC/error-fault/full keygen/four-host acceptance. Historical3helperattempts/1fixturefailure accounted only by parent232metadata."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-keygen232-affected-r1.json",
+          "sha256": "b6bee4aff5f7bbe69d8c1f0e7a3b142e1ae9bdb63a3910561134cdbbef307b11",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-keygen232-source-r1/report.json",
+          "sha256": "27275b261cc05f862dcfd3c1e77ba24b538a5ea86618601e4ef69567a7761fef",
+          "nativeDependentGroups": 16,
+          "candidateGroups": 16,
+          "unchangedUpstreamFiles": 1,
+          "upstreamSubjectsPassed": 2,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Fresh actual ROOT key/frontend/Buffer factories and portable generation over exact frozen final r3binary/header. Native V8/uv/private frame and copied native KeyObject adoption remain explicit. Production moves storage, fixture copies it; no new guest JSAPI or guest entropy/configuration proof."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/symmetric-keygen-owner-agent/handoff/report.json",
+          "sha256": "c4d245d4e5b8243b089bcdfa13995f4968d94330c62e9c0e1ea6b701230c4497",
+          "reusedEvidence": true,
+          "scope": "Final16/16native/candidate comparisons and unchanged test-crypto-secret-keygen.js two subjects;3tiny helper compile attempts/1authored fixture compilefailure, finalr3artifact retained. Native exported OpenSSL3.5.9 configuration is distinct from guest backend. All original intermediate failures and missing historicalr2binary remain explicit."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/symmetric-keygen-owner-agent/handoff/REPORT.md",
+          "sha256": "c98435d8f28c5584c84dc8576a89ba76d245d18019a98e1316843fe9a62fb920",
+          "scope": "Private missing2oldrecipepatch coregen setup failure, authored Set/v8::Set compilefailure, initial candidate9/16+upstream prototype failure, upstream global-leak fixture failure and current231shared-preimage guard all retained; no upstream assertion edits."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/symmetric-keygen-owner-agent/handoff/report.json",
+          "sha256": "c4d245d4e5b8243b089bcdfa13995f4968d94330c62e9c0e1ea6b701230c4497",
+          "scope": "Historicalr2successful helperbinary overwritten before archive; exact executedSHA/source/rawresults retained, artifact unavailable/not reconstructed and not used for finalpassing claim. Actual3compilerattempts/1failure accounted once."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/symmetric-keygen-review-agent/REPORT.md",
+          "sha256": "195a3847c971a82a6065cf9208ddc94242bb441f66c91523d7a53156fcfad76e",
+          "scope": "Creator abandon guard must span final wrapping; actual source corrected. Separate shared outer packet-publication/MarkPop and complete AsyncWrap obligations remain open; no guest review execution."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/symmetric-keygen-review-agent/ERROR-QUEUE-ADDENDUM.md",
+          "sha256": "89e6b02cad17f6233e71b39ed3fa6bfce4939a7e078aa7aa93c63926afc5d0c5",
+          "scope": "Extra inner ClearErrorOnReturn absent from pinned KeyGenJob removed; immutable initialreview and later finalsource refresh preserve exact correction. Shared outerMarkPop remains separate."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/symmetric-keygen-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/symmetric-keygen-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Consume complete unchanged pinned isJwk/wrapKey and1580byte public symmetric generation functions through actual crypto export after real key-platform creation",
+        "Generate genuine ncrypto CSPRNG DataPointer on existing CPU queue and move original storage into immutable KeyMaterial/KeyObjectHandle/SecretKeyObject",
+        "Create actual KEYGENREQUEST/native resource with rooted completion/prototype/frame/default trigger and real cancellation/result/error/retirement paths; worker code touches no JS",
+        "Keep local creator abandonment through final cross-realm wrapping; remove non-target inner ClearErrorOnReturn and preserve actual failure/error capture",
+        "Compose normal0169resource-info class admission and7declaredinputs over preserved231stdio/230Meta/shutdown/eval; no new JS_FN or host production delegation"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/symmetric-keygen-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and execute actual guest JSAPI/entropy/configuration/realm/GC/error/OOM/fatal/ref/cancellation/context teardown and allfourhosts",
+        "Implement shared outer keyOperation packet-publication ownership and reconcile MarkPop/error-queue policy; independent publication slice is reviewed privately, not yet root integrated",
+        "Complete real inherited AsyncWrap/prototype/provider/permissions and backend entropy/allocator fault controls",
+        "Implement asymmetric keypair generation/encoding/options and WebCrypto; no C-015/API/family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/crypto.md",
+      "findingScope": "Partial real symmetric generation/KEYGENREQUEST ownership; complete C-015, keypairs, WebCrypto and native/guest/four-host behavior remain open",
+      "additionalAuditDocuments": {},
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingIds": [
+          "C-015"
+        ],
+        "relatedFamilies": [
+          "crypto",
+          "values",
+          "async",
+          "engine"
+        ],
+        "publicApiInventoryRefs": [
+          "crypto-requirements.json:generateKey@27",
+          "crypto-requirements.json:generateKeySync@28"
+        ],
+        "scope": "Partial real symmetric generation/KEYGENREQUEST ownership; complete C-015, keypairs, WebCrypto and native/guest/four-host behavior remain open"
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "tls-write-callback": {
+      "document": "tests/nodejs/outline/tls-write-callback-finding-progress.json",
+      "sha256": "b3112be120a0dc9bcc8e7a17d23fcad8e31e8ca87313e1f45aea12fffcff2e16",
+      "recordedRevision": 233,
+      "explicitFindingIds": [
+        "S-009"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tls233-source-r1/report.json",
+          "sha256": "6a2b8e1c7da385c8b8a1e41237bb5dae0c9392dd7d4c0c63241b1897473e6552",
+          "guardedInputs": 896,
+          "scope": "Partial S009 actual TLS write callback ticket prerequisite;5native-TLS JS-helper components with record-only ack seam, no new C++ or guest proof; close_notify/SSL_shutdown/_final/provider remain unactivated."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tls233-affected-r1.json",
+          "sha256": "4bd40a732fc4ffb69a83fbf2efed7a04f48f14e81bb68fbe19ed1a9f859b5cf6",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tls233-source-r1/report.json",
+          "sha256": "6a2b8e1c7da385c8b8a1e41237bb5dae0c9392dd7d4c0c63241b1897473e6552",
+          "componentGroups": 5,
+          "recordOnlyAckSeam": true,
+          "nativeCppExecuted": false,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "deterministicToolCompleted": true,
+          "declaredChecksImported": 2,
+          "toolEnvelopeRejections": 1,
+          "pendingPrivateCompileAccounting": {
+            "tls-async-owner-agent": 1,
+            "tls-shutdown-owner-agent": 1,
+            "scope": "Distinct unintegrated private helper attempts, not included in current integrated-source counter302 or source233support; shutdown proposal is blocked/not authorized for integration."
+          },
+          "scope": "Fresh actual root TLS helper over genuine native TLS writes/close/cancellation with record-onlyack seam; normal896input/bootstrap/staging plus14package tests. Toolactualsourcebinding/process/log receipts retained; no guest C++ or fourhost proof.",
+          "domainPreparationGuardFailures": 1
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tls-write-callback-owner-agent/report.json",
+          "sha256": "033496e94467322c5e40fbffdd9964ae918b55783b5adeedaa60aa8adf1a7492",
+          "reusedEvidence": true,
+          "scope": "Producer5actual-helper/nativeTLS groups,0helpercompiles; final3parserchecks/10sourcepredicates and original setup/fragment/packaging/coordinator failures retained. New native ticket/index/provider is not executed."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/tls-write-callback-owner-agent/report.json",
+          "sha256": "033496e94467322c5e40fbffdd9964ae918b55783b5adeedaa60aa8adf1a7492",
+          "scope": "Preserve missingenv harness attempt, intentionally open adapter standalone parse failure, misclassified no-index difference packaging assertion and concurrent root drift. An initial pre-write scoped-editor assertion has no separate durable raw log; producer report/transcript context only, not passing evidence."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/tls-write-callback-review-agent/REPORT.md",
+          "sha256": "d484f49252f6c30474f564a6b3c029e80789bb387688eae82a17f19285499e2b",
+          "scope": "Independent bounded source review, no newP1/P2. Five JS/nativeTLS groups use record-onlyack and do not prove native tickets; actual GC/realm/close/fatal/provider still open."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/node26-tls233-tool-job-id-correction.json",
+          "sha256": "751ad6540a691de23e925422012546f0f45dcb4ee51dd6ebb52c757e65c73ef6",
+          "scope": "First tool evidence import rejected slash in job_id before accepting check evidence. Only delimiter corrected while retaining exact original exec sessions/pids/binding/argv/cwd/exit/log; rejected report and import log retained, no test rerun."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/tls233-agent-integrate/preparation-commands.json",
+          "sha256": "a6a578d149a251b4688adeda150e161c9d99ca2ea7142e10798f46a86273917d",
+          "scope": "Initial private sparse-source devshell entry failed before generator because sparse checkout lacked flake.nix; corrected invocation ran absolute private generator from realroot declared shell, no tool/config/runtime edits."
+        },
+        {
+          "field": "$.preservedNonpasses[4]",
+          "report": ".context/node26-tls233-record-preparation-correction.json",
+          "sha256": "3f654ab78763abc58546f795cecc354d7f1405a4066e3c44e10ef6e8193875d3",
+          "scope": "Wrong human display-row label guard stopped before any tracked writer; selected actual row, canonical family unchanged. No runtime/source/test assertion change."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/tls-write-callback-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/tls-write-callback-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Retain actual TLS write Promise/capability/generation/material/request until consumer callback acknowledgment",
+        "Index actual write tickets independently of pending dispatch; active publication and detached close batches remain visible without deleting native-stack-owned tickets",
+        "Preserve pending callback ownership on ordinary close; context teardown retires without invoking new JS; admission failure abandons SSL before freeing WANT retry material",
+        "Consume actual acknowledgment in ordinary write and handshake-queue helpers with captured primordial then; preserve original callback throw over secondary cleanup failure",
+        "Compose normal0170engine patch over actual232keygen class admission and preserved stdio/Meta/shutdown/eval; generic tool journals reviewed source/check receipts/checkpoint"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/tls-write-callback-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile/execute actual native ticket/index/root/frame/admission/GC/realm/Worker/cancellation/close-batch/teardown owner with identified artifacts on allfourhosts",
+        "Complete actual TLSWRAP/WriteWrap/ShutdownWrap native provider/callback/fatal/after/destroy ownership; provider foundation is reviewed privately, not current source",
+        "Implement encrypted output/flush/handshake/error ownership and true close_notify/parent shutdown/public _final; blocked direct-BIO proposal must not be applied",
+        "Complete full Socket/TLSWrap constructor/inheritance/error/span semantics and S-009; no API/family closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/secure-network-contracts.md",
+      "findingScope": "Consumed retained TLS write callback-ticket ownership prerequisite only; new C++ unvalidated and actual SSL shutdown/_final/provider/fullSocket semantics remain incomplete",
+      "additionalAuditDocuments": {},
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/secure-network-contracts.md",
+        "findingIds": [
+          "S-009"
+        ],
+        "relatedFamilies": [
+          "secure-network",
+          "network",
+          "streams",
+          "async",
+          "engine"
+        ],
+        "scope": "Consumed retained TLS write callback-ticket ownership prerequisite only; new C++ unvalidated and actual SSL shutdown/_final/provider/fullSocket semantics remain incomplete"
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "key-operation-publication": {
+      "document": "tests/nodejs/outline/key-operation-publication-finding-progress.json",
+      "sha256": "46a33fe9b6712ab4df941c4f1b531482a0c1f4cd3e811db6cb2f710026c45559",
+      "recordedRevision": 234,
+      "explicitFindingIds": [
+        "C-015"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-publication234-source-r1/report.json",
+          "sha256": "4503d29dc09f6ec34c2b913639da756c88739f45e1ca7239ae143a41f8fad953",
+          "guardedInputs": 896,
+          "scope": "Source/input/native generation/bootstrap parsing only. No new runtime controls or compiled transaction evidence; prior16keygen groups retain original component scope."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-publication234-affected-r1.json",
+          "sha256": "46b035658bdb6af191f190000fb0859a93149598c8a0e31334ab153267d0775d",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-publication234-source-r1/report.json",
+          "sha256": "4503d29dc09f6ec34c2b913639da756c88739f45e1ca7239ae143a41f8fad953",
+          "normalSourceChecks": 6,
+          "newRuntimeControls": 0,
+          "newCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "deterministicToolCompleted": true,
+          "declaredChecksImported": 2,
+          "scope": "Actual native source hashes/input closure/staging/bootstrap parse plus14package declaration checks. Producer9mechanical source/roundtrip checks and independent review are source evidence only; prior16keygen controls do not validate publication or fault behavior."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/key-operation-publication-owner-agent/verification.json",
+          "sha256": "b75a68cf4a6c605720e3e1ad0c915f260ab2dd59039a19d2e612501d19546484",
+          "reusedEvidence": true,
+          "scope": "One declared-shell verification command completed9source/hash/order/roundtrip checks,0runtime/probes/compiles. Independent review3aa2... traces same-state/preparing/commit/realm behavior, no guest execution."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/node26-publication234-launch-preparation-failure.json",
+          "sha256": "25ed069a6520e130f05c1eee960bd7b4166c69537debdcd0970fbb55deb7606f",
+          "scope": "Two launcher Python snippets failed parsing before any declared check/subprocess began. Corrected keyword spacing; no check result replaced, tests/source/assertions unchanged."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/publication234-agent-integrate/preparation-commands.json",
+          "sha256": "a10ad6faefbdbf39c7cec96318173b66044f1105601ce74af5ecc3357bac10ba",
+          "scope": "Private packet authoring nested-literal syntax and guessed review filename failed before root mutation/declared checks; original command diagnostics retained, actual source/runtime unaffected."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/key-operation-publication-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/key-operation-publication-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Register and root the actual fresh request/native state before init; retain across creator realm wrapping and outer packet allocation/property definitions",
+        "Commit only after successful actual packet return, not merely converted native-error publication",
+        "On failure retire only same still-preparing owner/state in its real realm; preserve current pending exception and reentrant actual queued work",
+        "Replace unconditional inner abandonment with the spanning admission owner; do not infer ownership from operation names or returned shapes",
+        "Preserve shared MarkPop and other unregistered factories, TLS233/classguards/currentcore; no new inputs or engine patch"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/key-operation-publication-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile/execute real outer packet allocation/property failures, init retention/throw and reentrant queue submission with actual JSAPI/GC/realm/context teardown on allfourhosts",
+        "Verify pending exception preservation, success/converted-error paths, synchronous weak-job lifetime and actual callback ownership under fault injection",
+        "Reconcile shared outer MarkPop/error queue and complete inherited AsyncWrap/otherresourcefactory ownership separately",
+        "Complete C-015/keypair/WebCrypto and wholecrypto; prior16native-dependent groups are not new publication conformance"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/crypto.md",
+      "findingScope": "Actual preparing-request ownership through shared outer keyOperation packet; consumed by secret key generation, no blanket otherfactory/MarkPop/guest/fullcrypto closure",
+      "additionalAuditDocuments": {},
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingIds": [
+          "C-015"
+        ],
+        "relatedFamilies": [
+          "crypto",
+          "async",
+          "engine"
+        ],
+        "scope": "Actual preparing-request ownership through shared outer keyOperation packet; consumed by secret key generation, no blanket otherfactory/MarkPop/guest/fullcrypto closure"
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "tls-async-owner": {
+      "document": "tests/nodejs/outline/tls-async-owner-finding-progress.json",
+      "sha256": "daf232212c3785ff9d616552bf984d28dd1573f9436ab42aaaa3974403a65c93",
+      "recordedRevision": 235,
+      "explicitFindingIds": [
+        "S-004",
+        "S-009"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tlsasync235-source-r1/report.json",
+          "sha256": "70ffc533c1824df16973a0d7cdc12c22ac31610605f1620351fc4e5013cf6cea",
+          "guardedInputs": 896,
+          "scope": "PartialS009/S004/S008 actualTLSnativeasyncowner source;portableheader9assertions+3nativeNodeTLSWRAPreferences only;guestJSAPI/init/frame/GC/realm/Worker/shutdownremainopen"
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tlsasync235-affected-r1.json",
+          "sha256": "095b386b083d10725405a92e8083a6af79e4cebe384c5b886f7469ed91fb2e7b",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tlsasync235-source-r1/report.json",
+          "sha256": "70ffc533c1824df16973a0d7cdc12c22ac31610605f1620351fc4e5013cf6cea",
+          "normalSourceChecks": 6,
+          "actualPortableHeaderAssertions": 9,
+          "nativeReferenceGroups": 3,
+          "newRootCompilerAttempts": 0,
+          "historicalProducerHelperCompileAttempts": 1,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "deterministicToolCompleted": true,
+          "declaredChecksImported": 2,
+          "scope": "One actual portable TLS header component with nine assertions plus three separate native Node TLSWRAP lifecycle references. No execution of new Kandelo JSAPI/AsyncWrap/frame/GC/realm/Worker code."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tls-async-owner-agent/control-r1.stdout",
+          "sha256": "6daf106016ee7ce111172a10b28018eff447cbbdc0263190f39981eb1a9d1586",
+          "reusedEvidence": true,
+          "scope": "Historical actual OpenSSL header component nine assertions plus three native Node lifecycle reference groups; one successful helper compilation. Independently reviewed exact source; guest JSAPI remains uncompiled."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/tlsasync235-agent-integrate/authoring-attempts.json",
+          "sha256": "c53aa2a3c73b2502f8cf8c1b0482e602cba7fc68a05d68532f0f0730423cdf8a",
+          "scope": "Preserved private script authoring syntax and authorized-output path-guard failure. Neither launched a declared check, runtime test or compiler; exact private-source resume preserves original pre/postimages."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/tls-async-owner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/tls-async-owner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Assign actual TLSWRAP async id and trigger with retained environment and captured frame",
+        "Emit init before SSL_new and parent attachment; rollback cannot reopen an owner closed by reentrant init",
+        "Keep the same opaque native resource identity through read/write/close and resourceInfo inspection",
+        "Retain identity after Close/DestroySSL; actual foreground wrapper finalization queues destroy",
+        "Preserve source232 key-generation class admission,233 write-callback tickets and234 publication transaction"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/tls-async-owner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and execute actual new JSAPI init/frame/environment/GC/finalizer code against identified artifacts on all four hosts",
+        "Verify init throw/retention/reentry, Worker realm teardown, callback provider ownership and destroy timing through actual guest resources",
+        "Implement real SSL_shutdown/close_notify/_final encrypted-output ownership; blocked shutdown proposal remains unapplied",
+        "Complete S-008 Socket inheritance/adoption and full public TLS resource shape plus broader secure-network APIs"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/secure-network.md",
+      "findingScope": "Real retained TLSWRAP identity, frame, init rollback and finalization prerequisite. S-008 inherited Socket shape and transport adoption remain separate; no full cancellation/shutdown closure.",
+      "additionalAuditDocuments": {},
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/secure-network.md",
+        "findingIds": [
+          "S-004",
+          "S-009"
+        ],
+        "relatedFamilies": [
+          "secure-network",
+          "async",
+          "engine"
+        ],
+        "scope": "Real retained TLSWRAP identity, frame, init rollback and finalization prerequisite. S-008 inherited Socket shape and transport adoption remain separate; no full cancellation/shutdown closure."
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "http-connections": {
+      "document": "tests/nodejs/outline/http-connections-finding-progress.json",
+      "sha256": "42a6921bcdce48d8da9a02af90f6c20ce0b0ca98493ff57c5948e1fc91763fee",
+      "recordedRevision": 236,
+      "explicitFindingIds": [
+        "H-001",
+        "H-003"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-http236-source-r1/report.json",
+          "sha256": "9843ec3c632a14fd5b5cbc8e4093d39fffbde4d8b0d42eff23c25d5dfcbcdb74",
+          "guardedInputs": 897,
+          "scope": "Normal236source/input/stage/bootstrap +10portablelist/17explicitnative-dependentJSrequest/25unchangedresponsegroups;newguestJSAPIuncompiled;fullServer/reuse/deferredBodychronologyopen"
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-http236-affected-r1.json",
+          "sha256": "292d89b5912e4ff7b7f87c0346f113962063eb955756a6c9bf77fe14c97ed466",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-http236-source-r1/report.json",
+          "sha256": "9843ec3c632a14fd5b5cbc8e4093d39fffbde4d8b0d42eff23c25d5dfcbcdb74",
+          "normalSourceChecks": 6,
+          "portableListGroups": 10,
+          "requestHeaderGroups": 17,
+          "unchangedResponseCases": 25,
+          "newRootCompilerAttempts": 0,
+          "historicalProducerHelperCompileAttempts": 3,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "deterministicToolCompleted": false,
+          "scope": "Actual portable candidate C++ list/llhttp plus current-root adapter over explicit native Node HTTPParser/ConnectionsList/IncomingMessage/Socket dependencies. New Kandelo JSAPI/GC/realm/OOM not executed; V1 integration tool does not support this executable script patch."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/http-connections-owner-agent/report.json",
+          "sha256": "d26e4a95172541cb312de0b45965d6e8f3c090a065cc6ac7e260e270ab7f58f8",
+          "reusedEvidence": true,
+          "scope": "Sealed producer10portablelist+17request/header+25unchangedresponse cases,3successful helper compilations, source review/denied-unwrap correction. Four earlier fixture/source-check failures preserved. Not guest JSAPI or full ConnectionsList chronology proof."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/http-connections-owner-agent/report.json",
+          "sha256": "d26e4a95172541cb312de0b45965d6e8f3c090a065cc6ac7e260e270ab7f58f8",
+          "scope": "Four retained source/fixture setup failures: missing copied bootstrap, missing adapter, native dependency wrapper recursion, overwritten remove recursion. Original assertions unchanged. Independent denied-unwrap source defect corrected separately without runtime reproduction."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/http-connections-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/http-connections-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Use actual native intrusive all/active membership, shared list lifetime and CLOCK_MONOTONIC deadlines",
+        "Attach the same actual request parser to its private shared connections owner and return actual identities without property/id lookup",
+        "Trace moving parser self-identity without permanent list-to-parser rooting; foreground finalization detaches membership",
+        "Create temporary actual rooted identity snapshots before JS result allocations, preserving native list iterator lifetime",
+        "Report guarded real access denial for new checked-unwrap branches without bypassing security",
+        "Regenerate actual current core and stage declared HTTP header through normal package path while preserving all235owners"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/http-connections-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and execute actual guest request/list JSAPI, moving GC/weak ownership, denied wrappers, OOM and reentrant finalization on all four hosts",
+        "Implement faithful Body/Complete callback chronology: current native Complete transitions before deferred JS Body callback",
+        "Complete parser reuse/reset/free, persistent requests/pipelining, backpressure/consume, async resource/provider shape and actual timeout/close ownership",
+        "Activate complete public HTTP/HTTPS Server/ServerResponse/OutgoingMessage only after accepted transport, parser and lifecycle prerequisites"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/http-contracts.md",
+      "findingScope": "Partial actual request-parser ConnectionsList/membership/deadline prerequisite. Full Server activation, persistent reuse, Body-before-Complete chronology, timeout/close ownership and full parser lifecycle remain incomplete.",
+      "additionalAuditDocuments": {},
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/http-contracts.md",
+        "findingIds": [
+          "H-001",
+          "H-003"
+        ],
+        "relatedFamilies": [
+          "http",
+          "network",
+          "async",
+          "engine"
+        ],
+        "scope": "Partial actual request-parser ConnectionsList/membership/deadline prerequisite. Full Server activation, persistent reuse, Body-before-Complete chronology, timeout/close ownership and full parser lifecycle remain incomplete."
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "tls-x509-owner": {
+      "document": "tests/nodejs/outline/tls-x509-owner-finding-progress.json",
+      "sha256": "02da4b3bca01482382f223f820cae8ce7136626b9b24d506b530fe4bdc8e85fb",
+      "recordedRevision": 237,
+      "explicitFindingIds": [
+        "S-002",
+        "S-008"
+      ],
+      "prerequisiteFindingIds": [
+        "S-008"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tlsx509237-source-r1/report.json",
+          "sha256": "17a2ebe2996bd82d87eaf626f34a74329eda3b28f5afce35031336f813a9bc7a",
+          "guardedInputs": 897,
+          "scope": "Normal237 source/generation/staging plus8native-dependent X509 owner groups; new JSAPI/GC/realm/Worker and positive serverget1 remain unvalidated; full_handle/legacyTLS/shutdown open"
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tlsx509237-affected-r1.json",
+          "sha256": "862572d13e062bdad2cd1e06ebd7db31b046d92d234a1afb59640391c2b9f1d0",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tlsx509237-source-r1/report.json",
+          "sha256": "17a2ebe2996bd82d87eaf626f34a74329eda3b28f5afce35031336f813a9bc7a",
+          "normalSourceChecks": 5,
+          "nativeDependentGroups": 8,
+          "compiledNonSystemInputs": 6,
+          "newRootCompilerAttempts": 0,
+          "historicalProducerHelperCompileAttempts": 2,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "deterministicToolCompleted": true,
+          "declaredChecksImported": 2,
+          "scope": "Actual portable X509 material and current public TLSSocket method source over explicit genuine native SSL fixtures and pinned Node controls. No new guest JSAPI, GC, realm, Worker or positive serverget1 execution."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tls-x509-owner-agent/report.json",
+          "sha256": "3e950ef3a16e0d398e64cf24622da58c48106468e0c937c71f26018476e02ae4",
+          "reusedEvidence": true,
+          "scope": "Eight unique native-dependent groups, sixteen prior executions; two successful tiny helper compilations, first artifact never executed. Final exact addon and six recorded non-system inputs reused. Independent bounded source review is not guest proof."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/tls-x509-owner-agent/source-preparation-r1.json",
+          "sha256": "834e3753b80c58aecbc0e5ed3a577bd5ca83923fd878235a066d4d3f6147b22b",
+          "scope": "Historical private source-preparation anchor assertion failed before control/compiler execution; corrected actual source anchor and retained original receipt."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/node26-tlsx509237-launch-preparation-failure.json",
+          "sha256": "29c452afd63f95686a75001670b2d2c3d369002a1696c68053b04e00f5f925c7",
+          "scope": "Root seal-reader assumed members instead of actual files schema and stopped before tool start or source application. Corrected reader; reviewed seal/input bytes unchanged, no declared runtime test launched."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/tls-x509-owner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/tls-x509-owner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Snapshot actual local borrowed SSL_get_certificate through pinned X509_dup ownership",
+        "Use actual client peer leaf/issuerstart1 and server get1/issuerstart0 rules, retaining supplied issuer order in owned acyclic material",
+        "Publish genuine native X509 handles through existing branded InternalX509Certificate wrapper/cache and issuer getter",
+        "Expose actual getPeerX509Certificate/getX509Certificate methods with fresh call identities, configured local prehandshake access and absent/closed undefined behavior",
+        "Preserve current TLS async/callback/key-generation ownership by exact additive0172engine composition; normal generated core stays unchanged"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/tls-x509-owner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and execute actual new native JSAPI/class/prototype/wrapping/GC/OOM/realm/Worker paths on identified artifacts across all four hosts",
+        "Validate positive server client-certificate get1 branch and actual OpenSSL duplication/allocation failures",
+        "Complete S-008 full handle/proxy/override interception, Socket inheritance/adoption, public TLSWrap/provider and StreamBase shape",
+        "Complete legacy certificate dictionary, remaining credentials/trust/handshake APIs and actual encrypted-output/graceful TLS shutdown"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/secure-network-contracts.md",
+      "findingScope": "Partial real peer/local X509 ownership and public getter source. S-008 is a shared Socket/resource-shape prerequisite only; full handle/proxy/adoption/StreamBase semantics remain incomplete.",
+      "additionalAuditDocuments": {},
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/secure-network-contracts.md",
+        "findingIds": [
+          "S-002",
+          "S-008"
+        ],
+        "relatedFamilies": [
+          "secure-network",
+          "crypto",
+          "async",
+          "engine"
+        ],
+        "scope": "Partial real peer/local X509 ownership and public getter source. S-008 is a shared Socket/resource-shape prerequisite only; full handle/proxy/adoption/StreamBase semantics remain incomplete."
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "performance-milestone": {
+      "document": "tests/nodejs/outline/performance-milestone-finding-progress.json",
+      "sha256": "19f9b3c81d269e8c8cfaeea827fc7583a1dd43c424f2f0afe9f5399a9b61a234",
+      "recordedRevision": 238,
+      "explicitFindingIds": [
+        "O-008"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-milestone238-source-r1/report.json",
+          "sha256": "a213e90779c65e3a02a8b2d89714772b80febc91d1d8c7f2cca5573872f68029",
+          "guardedInputs": 897,
+          "scope": "Lifecycle source/input/staging/bootstrap checks and explicitly reused portable/native reference components only."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-milestone238-affected-r1.json",
+          "sha256": "87da3cd6bb70d38df42b305a9dbecedfb4de4101b3d2cb2a1e1221fa57b1417b",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-milestone238-source-r1/report.json",
+          "sha256": "a213e90779c65e3a02a8b2d89714772b80febc91d1d8c7f2cca5573872f68029",
+          "normalSourceChecks": 3,
+          "portableSubjects": 1,
+          "nativeReferenceSubjects": 4,
+          "newRootCompilerAttempts": 0,
+          "historicalProducerHelperCompileAttempts": 1,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "deterministicToolCompleted": true,
+          "declaredChecksImported": 2,
+          "scope": "One reused actual portable clock program plus four pinned-native lifecycle references. Thirteen static helper assertion annotations are not thirteen matched cases. Actual new guest lifecycle/JSAPI/Worker hooks unexecuted."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/performance-milestone-owner-agent/verification.json",
+          "sha256": "07cabed675bf60a8e3d836ba00c6f776022491af75032af2d7151e91e9f965e0",
+          "reusedEvidence": true,
+          "scope": "One portable clock helper compiled successfully and four pinned native lifecycle subjects passed. Normal composed bootstrap/core parsing succeeded; raw open adapter-prefix EOF parse failure retained. Independent source review is not guest proof."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/performance-milestone-owner-agent/generation-r0/generate.stderr",
+          "sha256": "788045da55fc3aec50c35b74a6ffa1e4e02d850fde8a41894b5ffe5838121253",
+          "scope": "Historical raw intentionally open adapter prefix parsed alone and failed EOF; normal actual bootstrap+suffix composition subsequently parsed. Original error remains, no production workaround or assertion weakening."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/milestone238-integration-plan/authoring-r0/failure.json",
+          "sha256": "ee6797ff643b7aee067e14a1c2763f0b196e5729f1c2386cd9addf36f46f287d",
+          "scope": "Author-only private preparation helper syntax error before execution; original script/failure retained and corrected helper sealed before root use. No check/compiler or root source mutation from failed authoring."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/performance-milestone-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/performance-milestone-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Extend the actual existing per-owner performance clock with real native-entry/environment/bootstrap/final-loop marks",
+        "Mark bootstrapComplete at actual final pre-user-entry/Worker LOAD seam rather than after user code returns",
+        "Mark loopExit only at real final natural-loop completion after beforeExit restarts; explicit/fatal quits retain unrecorded state",
+        "Preserve actual loopStart and idle accounting, native clock errors and independent thread ownership",
+        "Use existing pinned public NodeTiming getters/toJSON; v8Start stays physically unset(-1) with no invented SpiderMonkey-to-V8 event",
+        "Compose narrow0173engine additions over237certificate/235async/currentkeygen owners and regenerate the genuine core"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/performance-milestone-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and execute actual new guest native-entry/environment/bootstrap/final-loop marks, clock failure, context/realm/GC/Worker teardown across identified four-host artifacts",
+        "Implement genuine Worker bootstrap/LOAD dispatch and loop-entry ordering; current Worker loopStart precedes bootstrapComplete unlike native Node",
+        "Reconcile API-specific physically absent V8-init event without manufacturing values; no accepted platform exclusions established here",
+        "Complete broader O-008 timing entries and O-009 actual observer queues/delivery; resolve GC flags policy before activating observations"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "actual-owner-prerequisite",
+      "auditDocument": "tests/nodejs/audit/observability.md",
+      "findingScope": "Partial actual NodeTiming milestone owner only. O-009 Observer delivery/lifecycle is unchanged. Worker loopStart-before-bootstrapComplete remains a real ordering gap; v8Start is physically unset, not a fabricated V8 event.",
+      "additionalAuditDocuments": {},
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/observability.md",
+        "findingIds": [
+          "O-008"
+        ],
+        "relatedFamilies": [
+          "observability",
+          "processes",
+          "workers",
+          "engine"
+        ],
+        "scope": "Partial actual NodeTiming milestone owner only. O-009 Observer delivery/lifecycle is unchanged. Worker loopStart-before-bootstrapComplete remains a real ordering gap; v8Start is physically unset, not a fabricated V8 event."
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
     }
   },
   "dependencyNarratives": {
@@ -27593,6 +28431,88 @@
         "fourHostConformance": false,
         "individualApiClosure": false,
         "scope": "T-008 actual stdio source contribution;T-010 explicitly prerequisite-only. No public tty class activation or finding closure."
+      },
+      {
+        "at": "2026-11-07T20:40:43.086647+00:00",
+        "sourceCheckpoint": 238,
+        "sourceHead": "dfa38886feea1d05865f274682cbdec62ca4db93",
+        "addedSourceSlices": [
+          "symmetric-keygen",
+          "tls-write-callback",
+          "key-operation-publication",
+          "tls-async-owner",
+          "http-connections",
+          "tls-x509-owner",
+          "performance-milestone"
+        ],
+        "qualifiedLinks": [
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "finding": "C-015",
+            "slice": "symmetric-keygen",
+            "prerequisiteOnly": false
+          },
+          {
+            "document": "tests/nodejs/audit/secure-network-contracts.md",
+            "finding": "S-009",
+            "slice": "tls-write-callback",
+            "prerequisiteOnly": false
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "finding": "C-015",
+            "slice": "key-operation-publication",
+            "prerequisiteOnly": false
+          },
+          {
+            "document": "tests/nodejs/audit/secure-network.md",
+            "finding": "S-004",
+            "slice": "tls-async-owner",
+            "prerequisiteOnly": false
+          },
+          {
+            "document": "tests/nodejs/audit/secure-network.md",
+            "finding": "S-009",
+            "slice": "tls-async-owner",
+            "prerequisiteOnly": false
+          },
+          {
+            "document": "tests/nodejs/audit/http-contracts.md",
+            "finding": "H-001",
+            "slice": "http-connections",
+            "prerequisiteOnly": false
+          },
+          {
+            "document": "tests/nodejs/audit/http-contracts.md",
+            "finding": "H-003",
+            "slice": "http-connections",
+            "prerequisiteOnly": false
+          },
+          {
+            "document": "tests/nodejs/audit/secure-network-contracts.md",
+            "finding": "S-002",
+            "slice": "tls-x509-owner",
+            "prerequisiteOnly": false
+          },
+          {
+            "document": "tests/nodejs/audit/secure-network-contracts.md",
+            "finding": "S-008",
+            "slice": "tls-x509-owner",
+            "prerequisiteOnly": true
+          },
+          {
+            "document": "tests/nodejs/audit/observability.md",
+            "finding": "O-008",
+            "slice": "performance-milestone",
+            "prerequisiteOnly": false
+          }
+        ],
+        "latestAcceptedEngine": 230,
+        "currentCombinedEngineCompiled": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "scope": "Qualified232\u2013238owner-progress links only;237S008shared-prerequisite atmost,238O008directonly. Original definitions/ranges/evidence/nonpasses/engine limits preserved; no runtime/compiler/finding closure."
       }
     ]
   }

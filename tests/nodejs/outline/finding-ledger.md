@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 154 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 161 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 214 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 212 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -745,3 +745,24 @@ product rebuilding and overall suites remain deferred.
 ## Source231 stdio owner qualification
 
 T-008 now links actual main stdio dimensions/SIGWINCH source231. T-010 is an explicit shared prerequisite only; public tty.WriteStream is not activated or complete. Original producer T010 wording/evidence remains historical and unchanged. No finding closes. Source records154; findings without exact links214. Original357groups/417qualified definitions/52ranges/19families preserved. Current231 source is uncompiled; accepted230 artifact retained, no guest/four-host conformance. This metadata overlay runs0tests/compilers; counter299 preserved.
+
+
+## Source232–238 owner-progress overlay
+
+Qualified records now link symmetric generation232, TLS write callback233, shared
+key-operation publication234, TLS async identity235, HTTP connection tracking236,
+TLS certificate snapshots237 and performance lifecycle milestones238.
+Each exact progress record retains its source/evidence/nonpasses and remaining
+implementation/validation gaps. TLS S-008 is at most a shared certificate/shape
+prerequisite, never full Socket support. Milestones directly link O-008 only;
+O-009 observer lifecycle does not gain credit from the adapter filename.
+Worker loopStart-before-bootstrapComplete remains a concrete implementation gap,
+and absent guest V8 initialization is an API-specific physical event limit only.
+
+Source-progress records161; findings without exact links212.
+Original357groups/417qualifieddefinitions/52ranges/all19partialfamilies remain.
+No API/finding is closed. This overlay runs0runtime tests/compilers; existing
+accounting309, candidate compile statusFalse and
+accepted engine230 retain their exact scopes.
+Guest/four-host conformance is not established; overall suites/full product
+rebuilding remain deferred.

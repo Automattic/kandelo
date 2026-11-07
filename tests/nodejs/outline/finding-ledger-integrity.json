@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T18:50:42.400031+00:00",
-  "sourceHead": "715f6d89fb39a00247d0057ac88be9bb81d2ee90",
-  "recipeRevision": 231,
+  "at": "2026-11-07T20:40:43.086647+00:00",
+  "sourceHead": "dfa38886feea1d05865f274682cbdec62ca4db93",
+  "recipeRevision": 238,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 154,
+    "sourceSliceRecords": 161,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 214
+    "findingsWithoutExplicitOrProposedSourceSlice": 212
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,22 +26,28 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 154,
+  "sourceSliceIdentitiesVerified": 161,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "da774e6c0889c2430d3b5070076cdbfe008e7576767f6dc4ca027859aae49593"
+    "sha256": "e1b09b8eae984dfc5ab0bcca17732c3cc05cfce5a9ce954796b81256a8e227c1"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
-  "scope": "Qualified partial source link and explicit T010 prerequisite; original definitions/ranges/limits/nonpasses preserved.",
+  "scope": "Qualified partial source/evidence links only;237S008prerequisite/238O008direct, original definitions/ranges/limits/nonpasses preserved.",
   "previousIntegrityIdentity": {
-    "sha256": "69f8a1ef5a9b3e49aeeb9ee7dc4a7a1b6d4dd90582f4aedbe60ae8c8d866533f",
-    "sourceHead": "b92f49bda1c53d9a3b6c7c69b97b9fac1dbba6c0",
-    "scope": "Preserved in prior commit/source snapshot history"
+    "sha256": "f4ab2d22e1493946cf872291142cda7b60166348f21e7253d3ae5af67c1803b0",
+    "sourceHead": "715f6d89fb39a00247d0057ac88be9bb81d2ee90",
+    "scope": "Prior committed integrity remains in source history"
   },
   "sourceProgressOverlaysAdded": [
-    "stdio-resize"
+    "symmetric-keygen",
+    "tls-write-callback",
+    "key-operation-publication",
+    "tls-async-owner",
+    "http-connections",
+    "tls-x509-owner",
+    "performance-milestone"
   ],
   "qualifiedReferenceCorrections": [
     {
@@ -61,6 +67,68 @@
         ]
       },
       "reason": "Original shorthand workers.md references did not own the immutable R-001/R-013 standalone definitions; actual qualified source definitions verified."
+    }
+  ],
+  "qualifiedLinksAdded": [
+    {
+      "document": "tests/nodejs/audit/crypto.md",
+      "finding": "C-015",
+      "slice": "symmetric-keygen",
+      "prerequisiteOnly": false
+    },
+    {
+      "document": "tests/nodejs/audit/secure-network-contracts.md",
+      "finding": "S-009",
+      "slice": "tls-write-callback",
+      "prerequisiteOnly": false
+    },
+    {
+      "document": "tests/nodejs/audit/crypto.md",
+      "finding": "C-015",
+      "slice": "key-operation-publication",
+      "prerequisiteOnly": false
+    },
+    {
+      "document": "tests/nodejs/audit/secure-network.md",
+      "finding": "S-004",
+      "slice": "tls-async-owner",
+      "prerequisiteOnly": false
+    },
+    {
+      "document": "tests/nodejs/audit/secure-network.md",
+      "finding": "S-009",
+      "slice": "tls-async-owner",
+      "prerequisiteOnly": false
+    },
+    {
+      "document": "tests/nodejs/audit/http-contracts.md",
+      "finding": "H-001",
+      "slice": "http-connections",
+      "prerequisiteOnly": false
+    },
+    {
+      "document": "tests/nodejs/audit/http-contracts.md",
+      "finding": "H-003",
+      "slice": "http-connections",
+      "prerequisiteOnly": false
+    },
+    {
+      "document": "tests/nodejs/audit/secure-network-contracts.md",
+      "finding": "S-002",
+      "slice": "tls-x509-owner",
+      "prerequisiteOnly": false
+    },
+    {
+      "document": "tests/nodejs/audit/secure-network-contracts.md",
+      "finding": "S-008",
+      "slice": "tls-x509-owner",
+      "prerequisiteOnly": true
+    },
+    {
+      "document": "tests/nodejs/audit/observability.md",
+      "finding": "O-008",
+      "slice": "performance-milestone",
+      "prerequisiteOnly": false
     }
   ]
 }
