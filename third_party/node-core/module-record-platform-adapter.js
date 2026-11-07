@@ -6,12 +6,13 @@ function _createNodeModuleRecords(platform) {
     const { ArrayIsArray, ArrayPrototypeFilter, ArrayPrototypeIncludes, ArrayPrototypeIndexOf, ArrayPrototypeJoin,
         ArrayPrototypePush, ArrayPrototypePushApply, ArrayPrototypeMap, ArrayPrototypeSlice, ArrayPrototypeSplice, ArrayPrototypeUnshift,
         ArrayPrototypeUnshiftApply, Boolean, ObjectCreate, ObjectDefineProperty,
-        ObjectGetOwnPropertyDescriptor, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet, SafeSet, SafeMap,
+        ObjectGetOwnPropertyDescriptor, ObjectGetPrototypeOf, ObjectPrototype, ObjectSetPrototypeOf, ObjectPrototypeHasOwnProperty, String, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet, SafeSet, SafeMap,
         StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeEndsWith,
         StringPrototypeIndexOf, StringPrototypeSlice, StringPrototypeSplit,
         StringPrototypeStartsWith, JSONParse, ObjectKeys, RegExpPrototypeExec, Error } = primordials;
     const path = platform.path, process = platform.process;
     const { validateString } = platform.values.validators;
+    const { isProxy } = platform.values.require('internal/util/types');
     const { codes: { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_INVALID_MODULE_SPECIFIER, ERR_UNKNOWN_BUILTIN_MODULE, ERR_UNKNOWN_MODULE_FORMAT, ERR_METHOD_NOT_IMPLEMENTED } } = platform.values.errors;
     const { setOwnProperty, getDeprecationWarningEmitter, emitExperimentalWarning } = platform.values.util;
     const { URL, pathToFileURL, fileURLToPath, isURL } = platform.url;
@@ -107,11 +108,7 @@ function _createNodeModuleRecords(platform) {
     }
     function cached(parent, module) {
         updateChildren(parent, module, true);
-        // A pending CJS record cannot stand in for native ESM status. Until
-        // the engine exposes that status, fail this admission rather than
-        // returning the record's initial empty exports as a namespace.
-        if (!module.loaded && formats.get(module) === 'module')
-            throw new ERR_METHOD_NOT_IMPLEMENTED('require(esm) pending module status');
+        if (!module.loaded) return getExportsForCircularRequire(module);
         return module.exports;
     }
     function failed(parent, module) {
@@ -133,7 +130,7 @@ function _createNodeModuleRecords(platform) {
     // Activation of that VFS and its resolution roots remains a separate owner.
     Module.registerHooks = hooks.registerHooks;
     Module._initPaths();
-    return { Module, make, create, cached, failed, getRequireStack, notFound,
+    return { Module, make, create, cached, complete, failed, getRequireStack, notFound,
         getModuleResolver() {
             return moduleResolver ??= _createNodeModuleSyncResolver({
                 values: platform.values, policy: platform.policy, hooks,

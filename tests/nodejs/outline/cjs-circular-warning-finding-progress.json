@@ -1,0 +1,91 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/loading-public-contracts.md",
+    "findingIds": [
+      "L-020"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "loading",
+      "values",
+      "async",
+      "engine"
+    ],
+    "scope": "Partial real CommonJS circular-warning/cache/cleanup behavior and observable getter chronology; no ESM/whole loading/warning/CLI/REPL/guest closure."
+  },
+  "sourceImplemented": [
+    "Select complete pinned circular warning/prototype/emitter/admission and successful-load cleanup algorithms with exact source hashes",
+    "Consume actual shared isProxy and original __esModule/plain-object/class/custom-prototype/descriptor/Symbol rules at real cached() owner",
+    "Call successful-load-only complete(module) in actual loader, preserving failure/cache/children rollback and escaped partial-export warning behavior",
+    "Keep explicit unsupported pending-ESM status admission rather than inventing native status/cycle success",
+    "Remove independently verified redundant public loaded getter in private ESM adaptation; preserve original throw/exports/accessor order on warmed actual cache route",
+    "Regenerate actual current combined bundle and preserve217Blob/218abort/earlier VM and process owners"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-cjs219-source-r1/report.json",
+    "sha256": "0ce177e17dec246d3d9d349d02a1fbd28d44d46436ef751ca33f7aa2ea2c621c",
+    "guardedInputs": 885,
+    "scope": "Actual CJS circular warning/prototype/cache/cleanup plus reviewed single-getter admission owner. Explicit native VM/filesystem/URL/isProxy/warnings boundaries; pendingESM stays unsupported, guest/fourhost unvalidated."
+  },
+  "packageChecks": {
+    "report": ".context/node26-cjs219-affected-r1.json",
+    "sha256": "d4007df7fa31a75953c9c5382583a7ba0f0d9f452a0eaeb947d358314509736e",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-cjs219-source-r1/report.json",
+    "sha256": "0ce177e17dec246d3d9d349d02a1fbd28d44d46436ef751ca33f7aa2ea2c621c",
+    "circularNativeDependentGroups": 8,
+    "loadedGetterNativeDependentGroups": 5,
+    "pendingErrorOwnerCases": 1,
+    "unchangedUpstreamFiles": 1,
+    "upstreamSubjectsPassed": 2,
+    "upstreamSourceSha256": "e9f5ba20d095131c378fd4fc11a5c5fbeeaad70692cd84ba6292204574f77043",
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "engineCXXChanged": false,
+    "scope": "Actual current generated CJS cache/loader/warning owners over explicit native VM/filesystem/URL/isProxy/error/warning dependencies.13groups and one private-format error owner; unchanged upstream file native/candidate passes. No new guest JSAPI/ESM/realm/lifecycle or four-host evidence."
+  },
+  "sealedEvidence": {
+    "report": ".context/cjs-circular-warning-owner-agent/handoff/HANDOFF.json",
+    "sha256": "9d476480837b8f5499f546e8fd2dd3ae43765d33cce139a92c1d6355cc5f6be0",
+    "reusedEvidence": true,
+    "scope": "Original8native-dependent groups and unchanged upstream file per subject; independent getter correction5groups/two private-format error controls. Root fresh13groups/current unchanged file and normal package/source checks.0toolchain compiles; fixture/native boundaries explicit."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/cjs-circular-warning-owner-agent/handoff/REPORT.md",
+      "sha256": "66429224458f7037fca54837e0f747043e2c5e8530733f030c81c08146704b02",
+      "scope": "Helper-warning-contaminated initial control,5real baseline warning failures,2missing private patch source-generation failures and stale-bundle complete-not-function run preserved. No compiler invoked or assertion weakened."
+    },
+    {
+      "report": ".context/cjs-circular-review-agent/REPORT.md",
+      "sha256": "8abf2f101d157e9122a3758500057818c20b92deb14d39480a28876a2e1b3c73",
+      "scope": "Independent review verified new second module.loaded getter read on warmed actual cache route; proposed correction separately sealed, original owner stays immutable."
+    },
+    {
+      "report": ".context/cjs-circular-loaded-correction-agent/report.json",
+      "sha256": "325baa9db6c12299c4f3958859825f10a4336d2574094c05a414a4afc11930a3",
+      "scope": "Original owner4getter/coercion/error-order mismatch groups retained; corrected5groups match native and existing private pending-format ERR_METHOD_NOT_IMPLEMENTED remains unchanged. No ESM implementation/conformance credited."
+    }
+  ],
+  "remaining": [
+    "Actual guest proxy/primordials/VM/error/warning/loader/frame/realm/GC/Worker and identified-artifact four-host validation",
+    "Native required-ESM status/cycle/TLA and full ESM/CJS graphs/hooks/cache/source/CLI/preload behavior",
+    "Complete warning scheduling/stack/suppression/fatal/resource lifecycle and all other L-020 obligations",
+    "Source maps/compile cache/REPL/default loader and broader public-core findings; no API/family closure"
+  ],
+  "at": "2026-11-07T14:34:19.680513+00:00",
+  "recipeRevision": 219,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

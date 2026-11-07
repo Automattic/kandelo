@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source219 implements actual CommonJS circular-warning and successful-load cleanup ownership, including the independently verified loaded-getter correction.13focused native-dependent groups and an unchanged upstream file match. Pending ESM remains explicitly unsupported and guest/full-loader/four-host behavior stays open.
+See [source scope](cjs-circular-warning-integration.md).
+
 Source218 routes public main abort to genuine native/libc signal death and applies pinned Worker refusal. Native header/frontend evidence remains explicitly scoped; new guest binding/signal-wait/diagnostics behavior is uncompiled/unvalidated.
 See [source scope](public-abort-integration.md).
 

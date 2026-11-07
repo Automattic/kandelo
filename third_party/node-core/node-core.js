@@ -56396,12 +56396,13 @@ function _createNodeModuleRecords(platform) {
     const { ArrayIsArray, ArrayPrototypeFilter, ArrayPrototypeIncludes, ArrayPrototypeIndexOf, ArrayPrototypeJoin,
         ArrayPrototypePush, ArrayPrototypePushApply, ArrayPrototypeMap, ArrayPrototypeSlice, ArrayPrototypeSplice, ArrayPrototypeUnshift,
         ArrayPrototypeUnshiftApply, Boolean, ObjectCreate, ObjectDefineProperty,
-        ObjectGetOwnPropertyDescriptor, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet, SafeSet, SafeMap,
+        ObjectGetOwnPropertyDescriptor, ObjectGetPrototypeOf, ObjectPrototype, ObjectSetPrototypeOf, ObjectPrototypeHasOwnProperty, String, ReflectApply, ReflectSet, Proxy, SafeWeakMap, SafeWeakSet, SafeSet, SafeMap,
         StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeEndsWith,
         StringPrototypeIndexOf, StringPrototypeSlice, StringPrototypeSplit,
         StringPrototypeStartsWith, JSONParse, ObjectKeys, RegExpPrototypeExec, Error } = primordials;
     const path = platform.path, process = platform.process;
     const { validateString } = platform.values.validators;
+    const { isProxy } = platform.values.require('internal/util/types');
     const { codes: { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_INVALID_MODULE_SPECIFIER, ERR_UNKNOWN_BUILTIN_MODULE, ERR_UNKNOWN_MODULE_FORMAT, ERR_METHOD_NOT_IMPLEMENTED } } = platform.values.errors;
     const { setOwnProperty, getDeprecationWarningEmitter, emitExperimentalWarning } = platform.values.util;
     const { URL, pathToFileURL, fileURLToPath, isURL } = platform.url;
@@ -56703,6 +56704,70 @@ ObjectDefineProperty(Module.prototype, 'parent', {
   ),
 });
 
+function emitCircularRequireWarning(prop) {
+  process.emitWarning(
+    `Accessing non-existent property '${String(prop)}' of module exports ` +
+    'inside circular dependency',
+  );
+}
+
+// A Proxy that can be used as the prototype of a module.exports object and
+// warns when non-existent properties are accessed.
+const CircularRequirePrototypeWarningProxy = new Proxy({}, {
+  __proto__: null,
+
+  get(target, prop) {
+    // Allow __esModule access in any case because it is used in the output
+    // of transpiled code to determine whether something comes from an
+    // ES module, and is not used as a regular key of `module.exports`.
+    if (prop in target || prop === '__esModule') { return target[prop]; }
+    emitCircularRequireWarning(prop);
+    return undefined;
+  },
+
+  getOwnPropertyDescriptor(target, prop) {
+    if (ObjectPrototypeHasOwnProperty(target, prop) || prop === '__esModule') {
+      return ObjectGetOwnPropertyDescriptor(target, prop);
+    }
+    emitCircularRequireWarning(prop);
+    return undefined;
+  },
+});
+
+/**
+ * Returns the exports object for a module that has a circular `require`.
+ * If the exports object is a plain object, it is wrapped in a proxy that warns
+ * about circular dependencies.
+ * @param {Module} module The module instance
+ * @returns {object}
+ */
+function getExportsForCircularRequire(module) {
+  if (formats.get(module) === 'module')
+    throw new ERR_METHOD_NOT_IMPLEMENTED('require(esm) pending module status');
+
+  if (module.exports &&
+      !isProxy(module.exports) &&
+      ObjectGetPrototypeOf(module.exports) === ObjectPrototype &&
+      // Exclude transpiled ES6 modules / TypeScript code because those may
+      // employ unusual patterns for accessing 'module.exports'. That should
+      // be okay because ES6 modules have a different approach to circular
+      // dependencies anyway.
+      !module.exports.__esModule) {
+    // This is later unset once the module is done loading.
+    ObjectSetPrototypeOf(
+      module.exports, CircularRequirePrototypeWarningProxy);
+  }
+
+  return module.exports;
+}
+function complete(module) {
+  if (module.exports &&
+               !isProxy(module.exports) &&
+               ObjectGetPrototypeOf(module.exports) ===
+                 CircularRequirePrototypeWarningProxy) {
+      ObjectSetPrototypeOf(module.exports, ObjectPrototype);
+    }
+}
     Module.prototype.require = function(id) {
   validateString(id, 'id');
   if (id === '') {
@@ -57687,11 +57752,7 @@ function createEsmNotFoundErr(request, path) {
     }
     function cached(parent, module) {
         updateChildren(parent, module, true);
-        // A pending CJS record cannot stand in for native ESM status. Until
-        // the engine exposes that status, fail this admission rather than
-        // returning the record's initial empty exports as a namespace.
-        if (!module.loaded && formats.get(module) === 'module')
-            throw new ERR_METHOD_NOT_IMPLEMENTED('require(esm) pending module status');
+        if (!module.loaded) return getExportsForCircularRequire(module);
         return module.exports;
     }
     function failed(parent, module) {
@@ -57713,7 +57774,7 @@ function createEsmNotFoundErr(request, path) {
     // Activation of that VFS and its resolution roots remains a separate owner.
     Module.registerHooks = hooks.registerHooks;
     Module._initPaths();
-    return { Module, make, create, cached, failed, getRequireStack, notFound,
+    return { Module, make, create, cached, complete, failed, getRequireStack, notFound,
         getModuleResolver() {
             return moduleResolver ??= _createNodeModuleSyncResolver({
                 values: platform.values, policy: platform.policy, hooks,

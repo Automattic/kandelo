@@ -1264,6 +1264,22 @@ for section, replacements in adaptations.items():
         if record_sections[section].count(old) != expected:
             raise ValueError('Review private module field adaptation: ' + section)
         record_sections[section] = record_sections[section].replace(old, new)
+# The native ESM status owner remains an explicit pending-ESM admission gap.
+# Preserve that existing failure while embedding the complete pinned CJS
+# warning admission/proxy algorithms unchanged after this private-field branch.
+circular_esm_start = record_sections['circularExports'].index('  const requiredESM = module[kRequiredModuleSymbol];')
+circular_esm_end = record_sections['circularExports'].index('\n  if (module.exports &&', circular_esm_start)
+record_sections['circularExports'] = (
+    record_sections['circularExports'][:circular_esm_start] +
+    "  if (formats.get(module) === 'module')\n"
+    "    throw new ERR_METHOD_NOT_IMPLEMENTED('require(esm) pending module status');\n" +
+    record_sections['circularExports'][circular_esm_end:])
+# This is the target's successful-load-only cleanup, not failure/finally cleanup.
+if not record_sections['circularCleanup'].startswith('    } else if ('):
+    raise ValueError('Review circular export successful-load cleanup')
+record_sections['circularCleanup'] = (
+    'function complete(module) {\n' +
+    record_sections['circularCleanup'].replace('    } else if (', '  if (', 1) + '\n}')
 old = 'cursor[kFirstModuleParent]'
 if require_sections['requireStack'].count(old) != 1:
     raise ValueError('Review private require-stack field')
@@ -1408,7 +1424,7 @@ for marker, section in [('SELF','self'),('RESOLVE','resolveFilename'),('FINALIZE
 
 for marker, replacement in [
     ('/* NODE_MODULE_RECORDS */', '\n'.join([*pending_sections.values(),
-        *[record_sections[n] for n in ['updateChildren', 'constructor', 'preloading', 'parentAccessors', 'parentDescriptor']]])),
+        *[record_sections[n] for n in ['updateChildren', 'constructor', 'preloading', 'parentAccessors', 'parentDescriptor', 'circularExports', 'circularCleanup']]])),
     ('/* NODE_MODULE_WRAPPERS */', record_sections['wrappers']),
     ('/* NODE_MODULE_REQUIRE */', '\n'.join([record_sections['require'], record_sections['createRequire'],
         require_sections['requireFactory'], require_sections['requireStack']])),

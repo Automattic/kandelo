@@ -5786,6 +5786,7 @@ function _loadCommonJsModule(id, parent, entry = false) {
         _nodeModuleRecords.failed(isMain ? null : parent, mod);
         throw error;
     }
+    _nodeModuleRecords.complete(mod);
     return mod.exports;
 }
 

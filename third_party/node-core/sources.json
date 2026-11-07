@@ -2921,6 +2921,16 @@
         "start": "let patched = false;",
         "length": 1037,
         "sha256": "e8c21615c34e2c2c6510beaccb36524bf45ac983bdcef55728a1043270333214"
+      },
+      "circularExports": {
+        "start": "function emitCircularRequireWarning(prop) {",
+        "length": 2299,
+        "sha256": "be46208a44f024019df0cd39c9bf2812677d93dcb774cdc4391d2164e9c11a7b"
+      },
+      "circularCleanup": {
+        "start": "    } else if (module.exports &&",
+        "length": 255,
+        "sha256": "35c96b97b74578b6e4070511777b5bdb35d8857b3bd0e9e3204367634a4a3030"
       }
     }
   },

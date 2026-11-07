@@ -62,12 +62,12 @@ exports.create = function create(options = {}) {
       },
       moduleSyntax(operation, code, filename) {
         if (operation === 'detect') return require('internal/test/binding').internalBinding('contextify').containsModuleSyntax(code, filename);
-        if (operation === 'wrap') return vm.runInContext(code, context, { filename });
+        if (operation === 'wrap') return options.sameRealmCJS ? vm.runInThisContext(code, { filename }) : vm.runInContext(code, context, { filename });
         if (operation === 'compile') return vm.compileFunction(code,
-          ['exports', 'require', 'module', '__filename', '__dirname'], {filename, parsingContext:context});
+          ['exports', 'require', 'module', '__filename', '__dirname'], options.sameRealmCJS ? {filename} : {filename, parsingContext:context});
         throw Error('Unexpected parser boundary operation');
       },
-      evalScriptAsFunction(code, filename) { return vm.runInContext(code, context, { filename }); },
+      evalScriptAsFunction(code, filename) { return options.sameRealmCJS ? vm.runInThisContext(code, { filename }) : vm.runInContext(code, context, { filename }); },
       __kandeloRequireModule(name) { throw Error('Native ESM bridge is outside this CJS control: ' + name); },
     },
   });
