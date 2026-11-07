@@ -1414,3 +1414,11 @@ source-audit evidence. Finish combined host retirement/browser-memory and
 the remaining EGL/Wayland continuations in this iteration, then validate
 coherent normal products. These source checkpoints do not complete B1 or
 change its application, conformance or native-feel acceptance criteria.
+
+Host retirement now distinguishes sealed non-construction from actual
+Worker acknowledgements and Node native joins. Unknown outcomes retain
+ownership; independently proven retirements can settle together without
+changing the JavaScriptCore workaround. Combined browser-memory and normal
+guest checks remain current work. The older full six-leg CTS audit has
+finished with adverse results fully accounted; its completion does not
+admit current source or replace final per-case comparisons.

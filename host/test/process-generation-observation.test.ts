@@ -39,7 +39,7 @@ describe("real process generation observation", () => {
     await r.detach(commit => commit("quiescent"), () => {}, () => false);
     expect(retired(r.events)).toEqual([{ kind: "retired", pid: 41,
       executionId: r.token.id, mainFence: "acknowledged", threadFences: "acknowledged",
-      threads: 0, acknowledgedThreads: 0, leaseDisposition: "quiescent", registration: "superseded", postCommitFailed: false }]);
+      threads: 0, acknowledgedThreads: 0, absentThreads: 0, leaseDisposition: "quiescent", registration: "superseded", postCommitFailed: false }]);
     expect(replacementToken.id).not.toBe(r.token.id);
     expect(r.current.get(41)).toBe(replacement);
     // A late old-worker fence cannot acknowledge the successor sharing Memory.
@@ -438,3 +438,23 @@ for (const peer of ["node", "browser"] as const) {
     expect(host).toContain('observeProcessGenerations: typeof this.options.onProcessGenerationEvent === "function"');
   });
 }
+
+
+it("records sealed absence separately, without counting unknown, duplicate or late ACKs", async () => {
+  const r = setup(), absent = {}, acknowledged = {}, unknown = {};
+  r.observations.threadAdmitted(r.generation, absent);
+  r.observations.threadAdmitted(r.generation, acknowledged);
+  r.observations.threadAbsent({}, absent);
+  r.observations.threadAbsent(r.generation, unknown);
+  r.observations.threadAbsent(r.generation, absent);
+  r.observations.threadAbsent(r.generation, absent);
+  r.observations.threadQuiescent(r.generation, absent);
+  r.observations.threadQuiescent(r.generation, acknowledged);
+  r.observations.threadAbsent(r.generation, acknowledged);
+  r.observations.mainQuiescent(r.generation);
+  await r.detach(commit => commit("quiescent"));
+  expect(retired(r.events)[0]).toMatchObject({ threads: 2, acknowledgedThreads: 1, absentThreads: 1,
+    mainFence: "acknowledged", threadFences: "acknowledged-or-absent", leaseDisposition: "quiescent" });
+  r.observations.threadAbsent(r.generation, unknown);
+  expect(retired(r.events)).toHaveLength(1);
+});

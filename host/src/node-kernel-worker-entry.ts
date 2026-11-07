@@ -59,7 +59,11 @@ import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { OfflineEgressBackend } from "./networking/offline-egress-backend";
 import { NodeLazyAssetResolver } from "./node-lazy-asset-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
-import { DeferredWorkerHandle } from "./deferred-worker-handle";
+import {
+  createWorkerAbsence,
+  DeferredWorkerHandle,
+  type WorkerAbsence,
+} from "./deferred-worker-handle";
 import type {
   PreparedExecLaunchPlan,
   PreparedExecLaunchRequest,
@@ -92,6 +96,7 @@ import {
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import {
   createWorkerQuiescence,
+  retireWorkerBatch,
   type WorkerQuiescence,
   waitForExecRetirement,
   waitForWorkerQuiescence,
@@ -427,6 +432,7 @@ interface ThreadWorkerInfo {
   channelOffset: number;
   tid: number;
   basePage: number;
+  workerAbsence: WorkerAbsence;
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
   termination?: Promise<void>;
@@ -439,7 +445,9 @@ async function terminateTrackedWorker(
 ): Promise<void> {
   intentionallyTerminated.add(worker as object);
   forkHostImportsByWorker.get(worker as object)?.close();
-  await worker.terminate().catch(() => {});
+  await worker.terminate().catch((error) => {
+      console.warn(`[kernel-worker] Worker termination failed: ${String(error)}`);
+    });
 }
 
 async function terminateThreadWorkers(
@@ -449,9 +457,11 @@ async function terminateThreadWorkers(
   const threads = threadWorkers.get(pid);
   if (!threads) return true;
   threadWorkers.delete(pid);
-  const quiescence = await Promise.all(
+  await Promise.all(
     threads.map((thread) =>
-      requireExecRetirement
+      thread.workerAbsence.seal()
+        ? Promise.resolve(true)
+        : requireExecRetirement
         ? waitForExecRetirement(
             thread.execRetirement,
             thread.workerQuiescence,
@@ -465,11 +475,18 @@ async function terminateThreadWorkers(
   for (const thread of threads) {
     intentionallyTerminated.add(thread.worker as object);
   }
-  for (const t of threads) {
-    await (t.termination ?? terminateTrackedWorker(t.worker));
-    threadExits.release(pid, t.channelOffset);
-  }
-  return quiescence.every(Boolean);
+  const allQuiescent = await retireWorkerBatch({
+    workers: threads,
+    // The main guest can also grow this memory. Its terminal fence must be
+    // present before overlapping sibling-instance destruction.
+    mayRetireTogether: processes.get(pid)?.workerQuiescence.settled === true,
+    retirementProven: (thread) => thread.workerAbsence.proven
+      || (thread.workerQuiescence.settled
+        && (!requireExecRetirement || thread.execRetirement.settled)),
+    terminate: (thread) => thread.termination ?? terminateTrackedWorker(thread.worker),
+    release: (thread) => threadExits.release(pid, thread.channelOffset),
+  });
+  return allQuiescent;
 }
 
 function reportProcessExit(pid: number, status: number): void {
@@ -3047,6 +3064,8 @@ async function handleClone(
     channelOffset: alloc.channelOffset,
     tid,
     basePage: alloc.slotStartPage,
+    workerAbsence: createWorkerAbsence(threadWorker, () =>
+      generationObservations.threadAbsent(processInfo, threadEntry)),
     workerQuiescence: createWorkerQuiescence(),
     execRetirement: createWorkerQuiescence(),
   };
@@ -3065,21 +3084,35 @@ async function handleClone(
   const reclaimThread = async () => {
     if (reclaimed) return;
     reclaimed = true;
-    // The Worker is stopped at this point, so waking the retired host
-    // waitAsync listener cannot race the guest or a newly reused thread slot.
-    await kernelWorker.settleRetiredChannelListeners(
-      pid,
-      memory,
-      alloc.channelOffset,
-    );
-    processInfo.threadAllocator.free(alloc.basePage);
+    // WHY: only a returned backing's fulfilled terminate promise is Node's
+    // native join. A constructor that attempted then threw returns no handle
+    // to join; its resolved no-op terminate must not authorize slot reuse.
+    const safe = threadEntry.workerQuiescence.settled
+      || threadEntry.workerAbsence.proven
+      || DeferredWorkerHandle.hasCompletedBackingTermination(threadWorker);
+    if (safe) {
+      await kernelWorker.settleRetiredChannelListeners(
+        pid,
+        memory,
+        alloc.channelOffset,
+      );
+      processInfo.threadAllocator.free(alloc.basePage);
+    } else {
+      console.warn(`[kernel-worker] pid=${pid} tid=${tid}: retaining thread slot without an ACK, sealed absence, or joined backing`);
+    }
     if (belongsToCurrentProcessImage()) {
       threadExits.release(pid, alloc.channelOffset);
     }
-    removeThreadWorkerRegistryEntry(threadWorkers, pid, threadEntry);
+    // Keep an unproven owner in the roster even after its failed launch.
+    // Otherwise later process retirement would see no threads and release a
+    // backing whose construction outcome was never fenced.
+    if (safe) removeThreadWorkerRegistryEntry(threadWorkers, pid, threadEntry);
   };
   const terminateThreadEntry = (): Promise<void> => {
     if (!threadEntry.termination) {
+      // Seal before any await: a delayed SIGCONT must never start this slot
+      // after absence allowed its channel and allocator page to be reused.
+      threadEntry.workerAbsence.seal();
       threadEntry.termination = terminateTrackedWorker(threadWorker).then(
         reclaimThread,
       );
@@ -3150,7 +3183,7 @@ async function handleClone(
         () => { threadWorker.start(); },
         () => {
           forkHostImports.close();
-          void threadWorker.terminate();
+          void terminateThreadEntry();
         },
         () => {
           kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
@@ -3229,15 +3262,15 @@ async function finishProcessExit(
     } catch (error) {
       console.warn(`[kernel-worker] pid=${pid} retirement wake failed: ${String(error)}`);
     }
-    const [workerQuiescent, threadsQuiescent] = await Promise.all([
+    const [, threadsQuiescent] = await Promise.all([
       waitForWorkerQuiescence(
         info.workerQuiescence,
         PROCESS_WORKER_QUIESCENCE_WAIT_MS,
       ),
       terminateThreadWorkers(pid),
     ]);
-    const exactMemoryTeardown = workerQuiescent && threadsQuiescent;
     await terminateTrackedWorker(expectedWorker);
+    const exactMemoryTeardown = info.workerQuiescence.settled && threadsQuiescent;
 
     // Deactivate process (zombie until reaped or destroy) after worker
     // termination so no further guest syscalls can arrive on its channel.
@@ -3455,6 +3488,15 @@ async function performDestroy() {
     const stragglers = [...processes.entries()];
     destroyProgress.startTerminating(stragglers.length);
     for (const [pid, info] of stragglers) {
+      // WHY: exit already owns this exact generation's retirement. Stealing
+      // its ledger entry while worker settling is pending mislabels a proven
+      // cooperative exit as forced and can release its lease twice.
+      const exiting = processTeardowns.get(info.worker);
+      if (exiting) await exiting;
+      if (processes.get(pid) !== info) {
+        destroyProgress.terminatedOne();
+        continue;
+      }
       vmInterruptTimers.clear(pid, info);
       const [workerQuiescent, threadsQuiescent] = await Promise.all([
         waitForWorkerQuiescence(

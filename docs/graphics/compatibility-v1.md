@@ -25939,3 +25939,53 @@ Combined host retirement/browser-memory, detached EGL/Wayland continuation
 ownership, coherent normal products and all B1/final gates remain required
 in this iteration. Public6271 is preserved unchanged; this checkpoint is
 not a complete B1 preview or a performance result.
+
+### Distinct worker absence and retirement evidence, 2026-11-06
+
+A deferred pthread that never attempted construction can now be permanently
+sealed and reclaimed without fabricating a Worker acknowledgement. Its
+private absence proof is separate from `memory_quiescent`/`exec_retired`;
+constructor failure, null backing, timeout and termination are not absence.
+Node additionally recognizes only fulfilled termination of an actual
+returned backing as a native join. Unknown outcomes retain their exact slot
+and ownership row until whole-generation containment. Browser reuse still
+requires the actual acknowledgement or sealed absence. Optional diagnostics
+report acknowledged and absent threads separately.
+
+Independent retirement settle waits overlap only after the main Worker and
+every participating thread have exact terminal proof. Missing proof retains
+serial containment and truthful forced-retirement reporting. Destroy joins
+the existing exact-generation exit owner before attempting its own cleanup.
+The existing JavaScriptCore teardown workaround and deadlines are unchanged;
+no new runtime defect or performance result is claimed.
+
+Integration `graphics-worker-integration-r605-1106-234140-12c7` passes3m14s:
+206 focused controls, all10 ownership/source-audit controls, host source
+TypeScript,719-file evidence inventory and frozen-source hashes. All17
+runtime/test paths equal the separately frozen R584 composition. Exact
+commands are in `.context/graphics-worker-integration-r605/run.sh`.
+Matched before controls have8 causal failures and4 preserved real Worker-ACK
+passes, both widths. The prior overloaded source-audit timeout stays failed;
+the unchanged-source retry and integration repeat pass unchanged limits.
+
+The actual matched three-engine lifecycle comparison is still running on
+the older coherent R494 normal artifacts. It does not admit the new guest
+C/kernel combination; full browser-memory and normal-build gates remain
+required. The old missing eleventh ACK is not attributed to worker absence.
+
+### Final accounting of the older full audit, 2026-11-06
+
+`graphics-cts-full-audit-r406-1105-131623-15de` finishes FAILED after33h04m.
+Every expected19,825 GLES2 and4,117 EGL case has exactly one row per engine;
+Missing statuses remain adverse results. All1,127 original frozen inputs
+pass identical before/after checks. Hard adverse GLES2 totals are22/124/8
+and EGL totals67/78/61 on Chromium/Firefox/WebKit; each engine additionally
+has6 GLES2 and2 EGL warning results. Final WebKit EGL includes1 Fail,
+16 Timeout and44 Missing. No new waiver or expectation change is introduced.
+
+Exact per-case engine comparisons, adverse rows and result/audit hashes are
+in `.context/graphics-cts-final-accounting-r607/`. These are older source
+`a61a31c4d889` results, not current-tree or before/after-main acceptance.
+Observed audit records are context/NO_ERROR records; transport drop counters
+were not independently proved. Final A3 audit and current-tree conformance
+remain required.

@@ -2488,7 +2488,18 @@ scan elision. Production worker/host-writer admission and trusted completion
 waits still need a source-bound ownership protocol before any such activation.
 
 Normal exit and exec wait for an exact `memory_quiescent` message from every
-process Worker and pthread Worker before dropping host aliases. Forced
+process Worker and pthread Worker before dropping host aliases. A deferred
+pthread launch has a distinct absence proof: its exact handle is permanently
+sealed before any Worker construction attempt. Both hosts may then reclaim its
+slot without inventing either `memory_quiescent` or `exec_retired`. The attempt
+bit is monotonic and set before factory entry; a constructor exception, null
+backing handle, timeout or `terminate()` result never proves absence. Thread
+ownership records retain this proof separately from message fences; optional
+generation diagnostics count `absentThreads` separately from
+`acknowledgedThreads` and report `acknowledged-or-absent` when appropriate.
+Batch retirement accepts those exact proofs while a missing proof keeps serial
+containment and forced lease retirement. Main-Worker ACK requirements are
+unchanged. Forced
 termination drops the kernel realm's aliases but never makes the backing
 eligible for reuse. Whole-host destroy synchronously closes process/pthread
 Worker creation admission, waits for every already-admitted async creator to
@@ -2505,7 +2516,12 @@ termination or destroy). JavaScriptCore crashes when process memory grows
 while another thread destroys an instance of it
 ([`JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN`](../tests/runtime-workarounds/JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN/entry.md)).
 The thread's slot and channel are reclaimed at `memory_quiescent` on every
-host.
+host, or after sealing a never-attempted deferred launch. Node may also reclaim
+an individually joined thread slot after the returned backing handle's
+termination promise fulfills; that platform join is not reported as a Worker
+message ACK. A constructor that attempted then threw provides no returned
+handle to join. Node retains that exact ownership row and slot until whole
+process containment, rather than turning a resolved no-op into a join proof.
 
 The allocator applies a hard live-address-space count and samples a live-byte
 admission budget before each new allocation. Uninstrumented

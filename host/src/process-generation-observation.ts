@@ -14,9 +14,10 @@ export type ProcessGenerationEventData =
       readonly postCommitFailed: boolean;
       readonly registration: "removed-or-absent" | "superseded";
       readonly mainFence: "acknowledged" | "missing";
-      readonly threadFences: "acknowledged" | "missing";
+      readonly threadFences: "acknowledged" | "acknowledged-or-absent" | "missing";
       readonly threads: number;
       readonly acknowledgedThreads: number;
+      readonly absentThreads: number;
     };
 
 /** Public identity is scoped to this host instance AND its actual kernel
@@ -43,9 +44,10 @@ interface Observation {
   readonly pid: number;
   readonly executionId: number;
   mainFence: boolean;
-  readonly threads: WeakMap<object, { acknowledged: boolean }>;
+  readonly threads: WeakMap<object, { acknowledged: boolean; absent: boolean }>;
   threadCount: number;
   acknowledgedThreads: number;
+  absentThreads: number;
   exited: boolean;
   retired: boolean;
 }
@@ -71,7 +73,7 @@ export class ProcessGenerationObservations {
     const prior = this.records.get(generation);
     if (prior) return prior.pid === pid && prior.executionId === executionId;
     this.records.set(generation, { pid, executionId, mainFence: false,
-      threads: new WeakMap(), threadCount: 0, acknowledgedThreads: 0,
+      threads: new WeakMap(), threadCount: 0, acknowledgedThreads: 0, absentThreads: 0,
       exited: false, retired: false });
     deliverProcessGenerationEvent({ kind: "admitted", pid, executionId }, this.emit);
     return true;
@@ -85,16 +87,26 @@ export class ProcessGenerationObservations {
   threadAdmitted(generation: object, thread: object): void {
     const row = this.records.get(generation);
     if (!row || row.retired || row.threads.has(thread)) return;
-    row.threads.set(thread, { acknowledged: false });
+    row.threads.set(thread, { acknowledged: false, absent: false });
     row.threadCount++;
   }
 
   threadQuiescent(generation: object, thread: object): void {
     const row = this.records.get(generation);
     const state = row?.threads.get(thread);
-    if (!row || row.retired || !state || state.acknowledged) return;
+    if (!row || row.retired || !state || state.acknowledged || state.absent) return;
     state.acknowledged = true;
     row.acknowledgedThreads++;
+  }
+
+  /** Called only after the concrete DeferredWorkerHandle was sealed before
+   * any construction attempt. Absence is not a worker-main return ACK. */
+  threadAbsent(generation: object, thread: object): void {
+    const row = this.records.get(generation);
+    const state = row?.threads.get(thread);
+    if (!row || row.retired || !state || state.acknowledged || state.absent) return;
+    state.absent = true;
+    row.absentThreads++;
   }
 
   exited(generation: object, status: number): void {
@@ -116,7 +128,10 @@ export class ProcessGenerationObservations {
       postCommitFailed: result.postCommitFailed,
       registration: result.detachDisposition,
       mainFence: row.mainFence ? "acknowledged" : "missing",
-      threadFences: row.threadCount === row.acknowledgedThreads ? "acknowledged" : "missing",
-      threads: row.threadCount, acknowledgedThreads: row.acknowledgedThreads }, this.emit);
+      threadFences: row.threadCount === row.acknowledgedThreads ? "acknowledged"
+        : row.threadCount === row.acknowledgedThreads + row.absentThreads
+          ? "acknowledged-or-absent" : "missing",
+      threads: row.threadCount, acknowledgedThreads: row.acknowledgedThreads,
+      absentThreads: row.absentThreads }, this.emit);
   }
 }

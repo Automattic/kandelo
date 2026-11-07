@@ -107,3 +107,37 @@ export async function waitForExecRetirement(
   // memory_quiescent proves worker-main returned and no longer owns Memory.
   return retirement.settled && quiescence.settled;
 }
+
+/** Retire independent realms together only with exact ownership proof.
+ * Callers accept actual terminal fences or a sealed never-constructed realm;
+ * absence must never settle a memory_quiescent/exec_retired message fence. */
+export async function retireWorkerBatch<T>(options: {
+  workers: readonly T[];
+  mayRetireTogether: boolean;
+  retirementProven: (worker: T) => boolean;
+  terminate: (worker: T) => Promise<void>;
+  release: (worker: T) => void;
+}): Promise<boolean> {
+  const { workers, retirementProven, terminate, release } = options;
+  const retire = async (worker: T): Promise<void> => {
+    await terminate(worker);
+    // A sibling's acknowledgement never authorizes this realm's metadata.
+    release(worker);
+  };
+  if (options.mayRetireTogether && workers.every(retirementProven)) {
+    // WHY: browser termination has an independent settle interval per realm.
+    // Serial waits multiply that interval by thread count and can lose a
+    // cooperative exit to destroy's forced-retirement deadline. Exact terminal
+    // fences prove these guests cannot grow memory while siblings retire.
+    const results = await Promise.allSettled(workers.map(retire));
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+  } else {
+    // Missing fences retain the existing containment order; a timeout is not
+    // evidence that concurrent destruction of live instances is safe.
+    for (const worker of workers) await retire(worker);
+  }
+  // An acknowledgement may arrive while host termination settles. Read exact
+  // ownership proofs again rather than freezing a timed-out observation.
+  return workers.every(retirementProven);
+}
