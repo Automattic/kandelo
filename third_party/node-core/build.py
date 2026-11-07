@@ -734,7 +734,9 @@ if socket_adapter.count('/* NODE_SOCKET_STREAM_STATE_LAYOUT */') != 1:
     raise ValueError('Review socket stream-state layout marker')
 socket_adapter = socket_adapter.replace('/* NODE_SOCKET_STREAM_STATE_LAYOUT */', socket_state['javascript'])
 for name, marker in [('symbols', 'STREAM_SYMBOLS'), ('afterWrite', 'STREAM_AFTER_WRITE'), ('read', 'STREAM_READ'),
-                     ('netOptions', 'NET_OPTIONS'), ('netInit', 'NET_INIT'), ('netApply', 'NET_APPLY')]:
+                     ('netOptions', 'NET_OPTIONS'), ('netInit', 'NET_INIT'), ('netApply', 'NET_APPLY'),
+                     ('constructorValidate', 'CONSTRUCTOR_VALIDATE'), ('constructorNormalize', 'CONSTRUCTOR_NORMALIZE'),
+                     ('constructorFlow', 'CONSTRUCTOR_FLOW')]:
     item = socket_spec['sections'][name]
     source = socket_sources[item.get('source', 'stream')]
     begin = source.index(item['start'])

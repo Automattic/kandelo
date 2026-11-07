@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source212 integrates actual Socket receiver/native TCP-handle/ref/manualStart/encoding/failure/reinit owners.8 strict native/component groups match, getter traces equal and other compared traces show0 differences. Real native requests/bytes/close are component dependencies; new guest validator/TTY/four-host remain unvalidated.
+See [source scope](socket-receiver-adoption-integration.md).
+
 Source211 prepares SSL before lookup and retains actual TCP fd/ref/request-close ownership.3 portable native cases pass with34/34/35 required semantic names; actual extracted routing uses an explicit recording-only boundary. New guest JSAPI and complete public TLSWrap/HTTPS remain unvalidated/incomplete.
 See [source scope](retained-tls-parent-integration.md).
 

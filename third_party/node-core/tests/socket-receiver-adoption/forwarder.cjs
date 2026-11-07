@@ -1,0 +1,10 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const root=path.resolve(process.argv[2]),source=fs.readFileSync(path.join(root,'packages/registry/spidermonkey/node-compat/adapter.js'),'utf8');
+const selected=source.match(/        socketOwnerValidate\(owner\) \{ return native\.socketOwnerValidate\(owner\); \},/);assert(selected);
+const owner={},failure=Error('real boundary failure');let received;
+const api=Function('native','return {'+selected[0]+'};')({socketOwnerValidate(value){received=value;return false;}});
+assert.equal(api.socketOwnerValidate(owner),false);assert.equal(received,owner);
+const throwing=Function('native','return {'+selected[0]+'};')({socketOwnerValidate(){throw failure;}});
+assert.throws(()=>throwing.socketOwnerValidate(owner),error=>error===failure);
+console.log(JSON.stringify({passed:true,scope:'Exact curated admission forwarder over explicit recording boundary; not native-class/guest admission proof',actualOwnerIdentity:true,falseReferenceStatePreserved:true,originalErrorIdentity:true}));

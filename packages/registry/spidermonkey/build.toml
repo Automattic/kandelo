@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0158-node-socket-receiver-adoption.patch",
   "packages/registry/spidermonkey/patches/0157-node-retained-tls-parent.patch",
   "packages/registry/spidermonkey/patches/0156-node-retained-transfer-kind.patch",
   "packages/registry/spidermonkey/patches/0155-node-module-request-identity.patch",
@@ -727,4 +728,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 211
+revision = 212

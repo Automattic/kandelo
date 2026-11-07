@@ -702,6 +702,7 @@
         socketOwnerRefConnect(token, referenced) { return native.socketOwnerRefConnect(token, referenced); },
         socketOwnerOfConnect(token) { return native.socketOwnerOfConnect(token); },
         socketOwnerAbortAdoption(owner) { return native.socketOwnerAbortAdoption(owner); },
+        socketOwnerValidate(owner) { return native.socketOwnerValidate(owner); },
         socketOwnerCommitAdoption(owner) { return native.socketOwnerCommitAdoption(owner); },
         socketShutdown(fd) { return native.socketShutdown(fd); },
         socketRef(handle, referenced) { return native.socketRef(handle, referenced); },

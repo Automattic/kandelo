@@ -33746,6 +33746,83 @@ function onWriteComplete(status) {
     const kSetNoDelay = Symbol('kSetNoDelay'), kSetKeepAlive = Symbol('kSetKeepAlive');
     const kSetKeepAliveInitialDelay = Symbol('kSetKeepAliveInitialDelay');
     const kSetKeepAliveInterval = Symbol('kSetKeepAliveInterval'), kSetKeepAliveCount = Symbol('kSetKeepAliveCount');
+    // Generic callable Socket construction initializes the actual inheriting
+    // receiver. A temporary constructed Socket cannot carry this ownership.
+    function createConstructor(prototype, prepareOwner, initializeOwner, finishOwner) {
+        const stream = platform.stream;
+        const { ObjectDefineProperty, ObjectSetPrototypeOf } = primordials;
+        const { ERR_INVALID_ARG_VALUE } = platform.values.errors.codes;
+        const { validateNumber } = platform.values.validators;
+        function Socket(options) {
+            if (!(this instanceof Socket)) return new Socket(options);
+            // Transfer remains disabled until the actual native owner can move.
+            platform.markResource(this);
+              if (options?.objectMode) {
+    throw new ERR_INVALID_ARG_VALUE(
+      'options.objectMode',
+      options.objectMode,
+      'is not supported',
+    );
+  } else if (options?.readableObjectMode || options?.writableObjectMode) {
+    throw new ERR_INVALID_ARG_VALUE(
+      `options.${
+        options.readableObjectMode ? 'readableObjectMode' : 'writableObjectMode'
+      }`,
+      options.readableObjectMode || options.writableObjectMode,
+      'is not supported',
+    );
+  }
+  if (options?.keepAliveInitialDelay !== undefined) {
+    validateNumber(
+      options?.keepAliveInitialDelay, 'options.keepAliveInitialDelay',
+    );
+
+    if (options.keepAliveInitialDelay < 0) {
+      options.keepAliveInitialDelay = 0;
+    }
+  }
+
+
+            prepareOwner(this);
+              if (typeof options === 'number')
+    options = { fd: options }; // Legacy interface.
+  else
+    options = { ...options };
+
+  // Default to *not* allowing half open sockets.
+  options.allowHalfOpen = Boolean(options.allowHalfOpen);
+  // For backwards compat do not emit close on destroy.
+  options.emitClose = false;
+  options.autoDestroy = true;
+  // Handle strings directly.
+  options.decodeStrings = false;
+  stream.Duplex.call(this, options);
+            initializeOwner(this, options);
+            // The admitted kinds here are actual TCP resources, not BoundSocket
+            // wrappers. BoundSocket/TTY/Pipe admission remains separate work.
+            const boundNotConnected = false;
+              // If we have a handle, then start the flow of data into the
+  // buffer.  if not, then this will happen when we connect
+  if (this._handle && options.readable !== false && !boundNotConnected) {
+    if (options.pauseOnCreate) {
+      // Stop the handle from reading and pause the stream
+      this._handle.reading = false;
+      this._handle.readStop();
+      this.readableFlowing = false;
+    } else if (!options.manualStart) {
+      this.read(0);
+    }
+  }
+            finishOwner(this, options);
+        }
+        Socket.prototype = prototype;
+        ObjectDefineProperty(Socket.prototype, 'constructor', {
+            value: Socket, writable: true, configurable: true,
+        });
+        ObjectSetPrototypeOf(Socket.prototype, stream.Duplex.prototype);
+        ObjectSetPrototypeOf(Socket, stream.Duplex);
+        return Socket;
+    }
     function installSocket(Socket) {
         Socket.prototype.setNoDelay = function(enable) {
   // Backwards compatibility: assume true when `enable` is omitted
@@ -33853,7 +33930,7 @@ Socket.prototype.setKeepAlive = function(enable, initialDelayMsecs,
         stream[kAfterAsyncWrite] = function() { this._lastWriteQueueSize = 0; };
         return owner;
     }
-    return { bind, onStreamRead, afterWriteDispatched, installSocket, initOptions, applyOptions,
+    return { bind, onStreamRead, afterWriteDispatched, createConstructor, installSocket, initOptions, applyOptions,
         binding: { kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync, kLastWriteErr, streamBaseState },
         symbols: { kUpdateTimer, kAfterAsyncWrite, kHandle, kMaybeDestroy } };
 }

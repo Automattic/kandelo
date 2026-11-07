@@ -1,0 +1,95 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network-contracts.md",
+    "findingIds": [
+      "N-015"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/network.md": [
+        "N-013"
+      ]
+    },
+    "relatedFamilies": [
+      "network",
+      "streams",
+      "terminal",
+      "secure-network",
+      "async"
+    ],
+    "scope": "Partial actual Socket receiver/genuine TCP admission/ref/read/write lifecycle prerequisite; not complete Socket/Server/TTY/StreamBase or guest/four-host closure"
+  },
+  "sourceImplemented": [
+    "Consume pinned Socket constructor/normalization/flow sections over actual inheriting receiver and Duplex.call rather than constructing a different receiver",
+    "Reset receiver association/state before option spread; real reinit retains independently held old native handle",
+    "Read-only checked native TCP admission reports actual loop-reference state before fallible JS binding, not support/capability metadata",
+    "Caller-supplied real handle binding failure remains attached to actual partial receiver; newly acquired owner rolls back through its genuine lease",
+    "Existing handle ref/manualStart/pause/read/start/stop and encoding-aware writes use actual StreamBase/native owners and real request material",
+    "Preserve original retained TLS parent source and existing public TTY exports; incomplete handle kinds are not admitted by shape or fabricated native identity"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-socket212-source-r1/report.json",
+    "sha256": "6fdc1cdb15c3b038bb1677b7a1d389ba3197673d202eec2871c74fecabb0f790",
+    "guardedInputs": 879,
+    "scope": "Actual Socket receiver/native TCP-handle/ref/manualStart/read/write/reinit source plus unchanged retained TLS owner headers. Genuine native dependencies and explicit recording bridge; new guest C++/TTY/fullTLSWrap uncompiled/incomplete."
+  },
+  "packageChecks": {
+    "report": ".context/node26-socket212-affected-r1.json",
+    "sha256": "0951aa32e5d90e3f4e979530d9a4a940f195a9a696dc8c4480563e20c5b44f5f",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-socket212-source-r1/report.json",
+    "sha256": "6fdc1cdb15c3b038bb1677b7a1d389ba3197673d202eec2871c74fecabb0f790",
+    "requiredSemanticGroupsBothSubjects": 8,
+    "getterTracesEqual": true,
+    "observedTraceDifferences": [],
+    "observedTraceNonpassCount": 0,
+    "actualNativeWriteWrapObserved": true,
+    "exactForwarderGroups": 1,
+    "retainedTLSRecordingBridgeGroups": 1,
+    "portableTLSOwnerEvidenceReused": true,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "unchangedStyleCheckerPassed": true,
+    "scope": "Selected actual Socket/stream/constructor source over native Node TCP/StreamBase/state/WriteWrap/OS.8 strict cases per subject, same getter traces; only ports/real async IDs excluded from cross-process comparison and remain asserted/retained raw. New C++ validator/guest/TTY unexecuted. TLS portable evidence reused after exact header identity checks."
+  },
+  "sealedEvidence": {
+    "report": ".context/socket-receiver-adoption-agent/HANDOFF.json",
+    "sha256": "b54c97f15ed09285f8ff4b1082f5381a139db4516fc1f0b71221c4c3c8d17174",
+    "reusedEvidence": true,
+    "scope": "Original bounded actual Socket/receiver/native handle prerequisite and exact8-group artifacts; earlier7-group bundle identity not captured. All9 setup/control/source nonpasses retained.0 compiles."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/socket-receiver-adoption-agent/HANDOFF.json",
+      "sha256": "b54c97f15ed09285f8ff4b1082f5381a139db4516fc1f0b71221c4c3c8d17174",
+      "scope": "Original source-generation failure, native no-result exit0, wrong closed-fd expectation, pause/resume timeout and candidate missing-dependency/ref/debuglog setup failures remain. Earlier7-group artifact identity limitation is explicit."
+    },
+    {
+      "report": ".context/tls-socket-composition-review-agent/report.json",
+      "sha256": "3fa42d4260e583375f16eaf8cd4604ee2f3b0dba47ee35e5485624325ac10b49",
+      "scope": "Independent composition first skipped all source hunks due enclosing Git prefix; actual candidate check caught it. Raw false-positive replay and corrected changed-byte composition retained, not treated as runtime defect."
+    }
+  ],
+  "remaining": [
+    "Genuine public native TTY/StreamBase ctor/OFD/directional/init-error/AsyncWrap birth/read/write/shutdown/close contract before public tty frontend activation",
+    "Full kind-generic Socket final/shutdown/address/control/adoption; current native admission remains actual TCP-only",
+    "BoundSocket/Pipe/custom onread/transfer/signal/descriptor and pending old callback/reentry/close failure semantics",
+    "Complete Socket/Server public constructors/aliases/options/descriptors/error/resource lifecycle and unchanged upstream controls",
+    "Compile actual new JSAPI and validate realm/CCW/GC/OOM/fatal/Worker/context close and identified four-host artifacts; retain original terminal backpressure/raw-mode nonpasses"
+  ],
+  "at": "2026-11-07T11:55:27.818207+00:00",
+  "recipeRevision": 212,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

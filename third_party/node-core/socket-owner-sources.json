@@ -44,6 +44,24 @@
       "start": "    if (self[kSetNoDelay]",
       "length": 357,
       "sha256": "529d13dc1e47ef83661d32b09c629da82e732f1e13b2c933d16a748826aeb2a4"
+    },
+    "constructorValidate": {
+      "source": "net",
+      "start": "  if (options?.objectMode)",
+      "length": 725,
+      "sha256": "0e437767719d7557d468c39f1d805780dfd5d0a68999a4f0edf3612667a275cd"
+    },
+    "constructorNormalize": {
+      "source": "net",
+      "start": "  if (typeof options === 'number')",
+      "length": 447,
+      "sha256": "449cb090c28bdea9529e48a2c696911743d388fbb5cdadb6806183d2b82b3130"
+    },
+    "constructorFlow": {
+      "source": "net",
+      "start": "  // If we have a handle, then start the flow of data into the",
+      "length": 460,
+      "sha256": "e7cde662c8e965b211ecd94bd6462fe43112e701960a7987135b3fdeb22bfdcf"
     }
   },
   "tcpProvider": {

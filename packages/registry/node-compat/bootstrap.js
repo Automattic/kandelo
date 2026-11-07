@@ -3550,7 +3550,8 @@ const _nodeDatagram = _createNodeDatagramPlatform({
 let _nodeBeginSocketConnection;
 const _nodeSocketStream = _createNodeSocketStream({
     Buffer, FastBuffer: _FastBuffer, async: _nodeAsyncPlatform,
-    values: _nodeValues, types: util.types, native: _nodeNative,
+    values: _nodeValues, types: util.types, native: _nodeNative, stream,
+    markResource: receiver => _nodeClonePlatform.setMode(receiver, 0),
 });
 
 const net = (() => {
@@ -3836,50 +3837,61 @@ const net = (() => {
     };
     const socketTimeout = Symbol('socketTimeout');
     const socketNativeOwners = new WeakMap();
-    class SocketCore extends stream.Duplex {
-        constructor(options) {
-            super({ ...options, emitClose: false, autoDestroy: true });
-            assignBlockList(this, options);
-            this._fd = -1;
-            this._handle = null;
-            this._socketDestroyed = false;
-            this._reading = false;
-            this._writeQueue = [];
-            this.connecting = false;
-            this.remoteAddress = undefined;
-            this.remotePort = undefined;
-            this.localAddress = undefined;
-            this.localPort = undefined;
-            this._connectOperation = null;
-            this[socketTimeout] = null;
-            this._lastWriteQueueSize = 0;
-            this._referenced = true;
-            this.allowHalfOpen = !!options?.allowHalfOpen;
-            _nodeSocketStream.initOptions(this, options || {});
-            this.on('end', () => {
-                if (!this.allowHalfOpen) queueMicrotask(() => {
-                    if (!this._socketDestroyed && !this.writableEnded) this.end();
-                });
-                this._maybeCloseSocket();
-            });
-            this.on('finish', () => this._maybeCloseSocket());
-            this.once('close', () => {
-                this._onServerSocketClose?.(); this._onServerSocketClose = null;
-            });
-            if (options?.fd != null) {
-                if (typeof options.fd !== 'number') throw argumentError('ERR_INVALID_ARG_TYPE', 'The "fd" option must be of type number');
-                if (!Number.isInteger(options.fd) || options.fd < 0 || options.fd > 2147483647) throw argumentError('ERR_OUT_OF_RANGE', 'The "fd" option must be a non-negative int32', true);
-                fs.fstatSync(options.fd);
-                this._ownSocketFd(options.fd);
-                _nodeSocketStream.applyOptions(this);
-            }
-        }
+    function prepareSocketOwner() {
+        // Constructor reinitialization detaches the receiver association;
+        // like Node it does not close an independently retained old handle.
+        socketNativeOwners.delete(this);
+        this._fd = -1;
+        this._handle = null;
+        this._socketDestroyed = false;
+        this._reading = false;
+        this._writeQueue = [];
+        this.connecting = false;
+        this[_nodeAsyncPlatform.symbols.async_id_symbol] = -1;
+        this._parent = null;
+        this.remoteAddress = undefined;
+        this.remotePort = undefined;
+        this.localAddress = undefined;
+        this.localPort = undefined;
+        this._connectOperation = null;
+        this[socketTimeout] = null;
+        this._lastWriteQueueSize = 0;
+        this._referenced = true;
+    }
 
+    function initializeSocketOwner(options) {
+        this.allowHalfOpen = !!options?.allowHalfOpen;
+        _nodeSocketStream.initOptions(this, options || {});
+        this.on('end', () => {
+            if (!this.allowHalfOpen) queueMicrotask(() => {
+                if (!this._socketDestroyed && !this.writableEnded) this.end();
+            });
+            this._maybeCloseSocket();
+        });
+        this.on('finish', () => this._maybeCloseSocket());
+        this.once('close', () => {
+            this._onServerSocketClose?.(); this._onServerSocketClose = null;
+        });
+        if (options.handle) {
+            this._ownSocketOwner(options.handle, true);
+        } else if (options.fd !== undefined) {
+            if (typeof options.fd !== 'number') throw argumentError('ERR_INVALID_ARG_TYPE', 'The "fd" option must be of type number');
+            if (!Number.isInteger(options.fd) || options.fd < 0 || options.fd > 2147483647) throw argumentError('ERR_OUT_OF_RANGE', 'The "fd" option must be a non-negative int32', true);
+            fs.fstatSync(options.fd);
+            this._ownSocketFd(options.fd);
+            _nodeSocketStream.applyOptions(this);
+        }
+    }
+
+    class SocketCore extends stream.Duplex {
         _ownSocketFd(fd) {
             const owner = nat.socketOwnerAdopt(fd);
             this._ownSocketOwner(owner);
         }
-        _ownSocketOwner(owner) {
+        _ownSocketOwner(owner, preserveReference = false) {
+            // Check real native authority before any mutable JS getter/binding
+            // or replacement can affect the previous transport.
+            const referenced = nat.socketOwnerValidate(owner);
             const previous = socketNativeOwners.get(this);
             if (previous && previous !== owner) previous.close();
             // The private owner is installed before any fallible JS wrapper
@@ -3890,10 +3902,20 @@ const net = (() => {
                 this._fd = owner.fd;
                 this._handle = owner;
                 this[_nodeAsyncPlatform.symbols.async_id_symbol] = owner.getAsyncId();
-                owner.ref(this._referenced !== false);
+                // Adopting an existing handle preserves its actual native ref
+                // state. Fresh connect/fd owners consume the Socket's policy.
+                if (preserveReference) this._referenced = referenced;
+                else owner.ref(this._referenced !== false);
                 nat.socketOwnerCommitAdoption(owner);
             } catch (error) {
-                nat.socketOwnerAbortAdoption(owner); throw error;
+                // A caller-supplied handle remains that actual partial
+                // receiver's transport on failed binding, as in Node. A new
+                // internally acquired owner instead rolls back its lease.
+                if (!preserveReference) {
+                    if (socketNativeOwners.get(this) === owner) socketNativeOwners.delete(this);
+                    try { nat.socketOwnerAbortAdoption(owner); } catch (_) {}
+                }
+                throw error;
             }
         }
         _adoptAccepted(lease) {
@@ -3978,8 +4000,10 @@ const net = (() => {
 
         _read() { this._scheduleRead(); }
 
-        _write(chunk, _encoding, cb) {
-            const buf = toU8(chunk);
+        _write(chunk, encoding, cb) {
+            // The pinned Socket constructor preserves strings. Materialize the
+            // requested encoding before handing bytes to the real span owner.
+            const buf = typeof chunk === 'string' ? Buffer.from(chunk, encoding) : toU8(chunk);
             if (this.connecting || this._fd < 0) {
                 this._writeQueue.push({ buf, cb });
                 return;
@@ -4247,11 +4271,10 @@ const net = (() => {
     }
 
     // Node accepts both call and construct forms, including subclasses.
-    const construct = Reflect.construct;
-    function Socket(options) { return construct(SocketCore, [options], new.target || Socket); }
-    Socket.prototype = SocketCore.prototype;
-    Object.defineProperty(Socket.prototype, 'constructor', {value:Socket, writable:true, configurable:true});
-    Object.setPrototypeOf(Socket, stream.Duplex);
+    const Socket = _nodeSocketStream.createConstructor(SocketCore.prototype,
+        receiver => Reflect.apply(prepareSocketOwner, receiver, []),
+        (receiver, options) => Reflect.apply(initializeSocketOwner, receiver, [options]),
+        (receiver, options) => assignBlockList(receiver, options));
     _nodeSocketStream.installSocket(Socket);
     const Server = _createNodeServerConstructor({
         EventEmitter: events.EventEmitter, prototype: ServerCore.prototype, values: _nodeValues,

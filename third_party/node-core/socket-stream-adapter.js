@@ -21,6 +21,35 @@ function _createNodeSocketStream(platform) {
     const kSetNoDelay = Symbol('kSetNoDelay'), kSetKeepAlive = Symbol('kSetKeepAlive');
     const kSetKeepAliveInitialDelay = Symbol('kSetKeepAliveInitialDelay');
     const kSetKeepAliveInterval = Symbol('kSetKeepAliveInterval'), kSetKeepAliveCount = Symbol('kSetKeepAliveCount');
+    // Generic callable Socket construction initializes the actual inheriting
+    // receiver. A temporary constructed Socket cannot carry this ownership.
+    function createConstructor(prototype, prepareOwner, initializeOwner, finishOwner) {
+        const stream = platform.stream;
+        const { ObjectDefineProperty, ObjectSetPrototypeOf } = primordials;
+        const { ERR_INVALID_ARG_VALUE } = platform.values.errors.codes;
+        const { validateNumber } = platform.values.validators;
+        function Socket(options) {
+            if (!(this instanceof Socket)) return new Socket(options);
+            // Transfer remains disabled until the actual native owner can move.
+            platform.markResource(this);
+            /* NODE_SOCKET_CONSTRUCTOR_VALIDATE */
+            prepareOwner(this);
+            /* NODE_SOCKET_CONSTRUCTOR_NORMALIZE */
+            initializeOwner(this, options);
+            // The admitted kinds here are actual TCP resources, not BoundSocket
+            // wrappers. BoundSocket/TTY/Pipe admission remains separate work.
+            const boundNotConnected = false;
+            /* NODE_SOCKET_CONSTRUCTOR_FLOW */
+            finishOwner(this, options);
+        }
+        Socket.prototype = prototype;
+        ObjectDefineProperty(Socket.prototype, 'constructor', {
+            value: Socket, writable: true, configurable: true,
+        });
+        ObjectSetPrototypeOf(Socket.prototype, stream.Duplex.prototype);
+        ObjectSetPrototypeOf(Socket, stream.Duplex);
+        return Socket;
+    }
     function installSocket(Socket) {
         /* NODE_SOCKET_NET_OPTIONS */
     }
@@ -56,7 +85,7 @@ function _createNodeSocketStream(platform) {
         stream[kAfterAsyncWrite] = function() { this._lastWriteQueueSize = 0; };
         return owner;
     }
-    return { bind, onStreamRead, afterWriteDispatched, installSocket, initOptions, applyOptions,
+    return { bind, onStreamRead, afterWriteDispatched, createConstructor, installSocket, initOptions, applyOptions,
         binding: { kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync, kLastWriteErr, streamBaseState },
         symbols: { kUpdateTimer, kAfterAsyncWrite, kHandle, kMaybeDestroy } };
 }

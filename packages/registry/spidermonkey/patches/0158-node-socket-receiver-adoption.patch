@@ -1,0 +1,6 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4450,2 +4450,3 @@
+       JS_FN("socketOwnerAbortAdoption", KandeloNativeAbortSocketAdoption, 1, 0),
++      JS_FN("socketOwnerValidate", KandeloNativeValidateSocketOwner, 1, 0),
+       JS_FN("socketOwnerCommitAdoption", KandeloNativeCommitSocketAdoption, 1, 0),

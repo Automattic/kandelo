@@ -126,3 +126,26 @@ prototype/error shapes, failed-init and close completion ordering, public
 constructor hierarchy/options, writes' WriteWrap semantics, SIGWINCH activation,
 raw-mode nonpasses, generic borrowed fallback, fatal/GC/OOM/foreign-realm/Worker
 conformance and identified-artifact evidence on all four hosts remain open.
+
+
+## Shared callable Socket receiver/admission prerequisite
+
+A later source slice initializes the actual inheriting net.Socket receiver
+through the pinned Duplex/options/validation algorithms. The current transport
+association resets before option spreading, without closing an independently
+retained old handle; Duplex initializes on the actual receiver. Existing genuine TCP handles can now take
+options.handle/manualStart/pauseOnCreate; native admission precedes mutable
+wrapper binding, actual reference state is preserved, and partial supplied-
+handle binding failure retains the real owner for the receiver's later close.
+Fresh internally acquired owners retain their rollback path. Strings keep the
+pinned decodeStrings=false policy and are encoded into actual byte material
+before the native span writer consumes them.
+
+This does not admit this terminal lease as a StreamBase. Public TTY exports
+are still unchanged. The native TTY must first expose genuinely consumed
+configure/onread/write/request/state/control/queued-close owners, and Socket
+transport shutdown/address operations must support that real kind. Public
+TTY callable constructors and inherited options/descriptor/init/error order
+remain incomplete. The source slice adds no fake TTY handle or provider data.
+Native TCP component evidence does not compile or execute the guest admission
+or terminal owners and does not establish four-host conformance.

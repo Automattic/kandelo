@@ -351,6 +351,22 @@ static bool KandeloNativeAbortSocketAdoption(JSContext* cx, unsigned argc, Value
   // public JS handle methods before Socket wrapper publication could commit.
   state->BeginClose(); args.rval().setUndefined(); return true;
 }
+// Read-only admission precedes JS wrapper binding. Finding the right method
+// names is not authority to adopt another native handle kind or a fake object.
+static bool KandeloNativeValidateSocketOwner(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  RootedObject owner(cx, args.get(0).isObject()
+      ? js::CheckedUnwrapDynamic(&args[0].toObject(), cx) : nullptr);
+  if (args.get(0).isObject() && !owner) {
+    if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx); return false;
+  }
+  auto* state = KandeloSocketOwnerState(cx, owner); if (!state) return false;
+  if (!state->socket || state->socket->Closed() || !state->liveRoot || state->closing) {
+    JS_ReportErrorASCII(cx, "TCP owner is closed before Socket admission"); return false;
+  }
+  // This is actual loop-reference state, not a capability declaration.
+  args.rval().setBoolean(state->socket->Referenced()); return true;
+}
 static bool KandeloNativeCommitSocketAdoption(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   if (!args.get(0).isObject()) { JS_ReportErrorASCII(cx, "Invalid TCP adoption owner"); return false; }
