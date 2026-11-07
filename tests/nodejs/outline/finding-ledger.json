@@ -25,7 +25,7 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 124,
+    "sourceSliceRecords": 127,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 231
@@ -2412,6 +2412,24 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Partial actual ordered receiver/native map/constructor/phase prerequisite; no generic registered sender, WebStream transfer or Worker lifetime closure; combined original streams-contracts.md STR-003/STR-004 reference preserved as narrative",
           "closure": false
+        },
+        {
+          "slice": "registered-host-sender",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual generic registered sender/private identity/nested/graph/commit/sidecar prerequisite; no malformed-outcome, Worker LOAD/full lifecycle, WebStream or guest closure",
+          "closure": false
+        },
+        {
+          "slice": "host-transfer-outcome",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial generic clone outcome/publication and actual Worker startup ownership prerequisite; no full Worker/stream lifecycle or guest closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -2457,6 +2475,24 @@
           "originalProseRefs": [],
           "standaloneDefinitionRecovered": true,
           "scope": "Partial actual ordered receiver/native map/constructor/phase prerequisite; no generic registered sender, WebStream transfer or Worker lifetime closure; combined original streams-contracts.md STR-003/STR-004 reference preserved as narrative",
+          "closure": false
+        },
+        {
+          "slice": "registered-host-sender",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual generic registered sender/private identity/nested/graph/commit/sidecar prerequisite; no malformed-outcome, Worker LOAD/full lifecycle, WebStream or guest closure",
+          "closure": false
+        },
+        {
+          "slice": "host-transfer-outcome",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial generic clone outcome/publication and actual Worker startup ownership prerequisite; no full Worker/stream lifecycle or guest closure",
           "closure": false
         }
       ],
@@ -2755,6 +2791,15 @@
         {
           "slice": "native-root-and-backing",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "filesystem-readiness",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/filesystem.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Shared producer/readiness prerequisite only; not FSWatcher activation, API closure or an accepted platform exclusion",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -7795,6 +7840,24 @@
           "auditDocument": "tests/nodejs/audit/family-survey.md",
           "scope": "Actual native bridge compile prerequisites for owning transit/FFI classes, not new public semantics or finding closure",
           "closure": false
+        },
+        {
+          "slice": "registered-host-sender",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/family-survey.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual generic registered sender/private identity/nested/graph/commit/sidecar prerequisite; no malformed-outcome, Worker LOAD/full lifecycle, WebStream or guest closure",
+          "closure": false
+        },
+        {
+          "slice": "host-transfer-outcome",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/family-survey.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial generic clone outcome/publication and actual Worker startup ownership prerequisite; no full Worker/stream lifecycle or guest closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -8172,6 +8235,24 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/worker-contracts.md",
           "scope": "Actual native bridge compile prerequisites for owning transit/FFI classes, not new public semantics or finding closure",
+          "closure": false
+        },
+        {
+          "slice": "registered-host-sender",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/worker-contracts.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual generic registered sender/private identity/nested/graph/commit/sidecar prerequisite; no malformed-outcome, Worker LOAD/full lifecycle, WebStream or guest closure",
+          "closure": false
+        },
+        {
+          "slice": "host-transfer-outcome",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/worker-contracts.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial generic clone outcome/publication and actual Worker startup ownership prerequisite; no full Worker/stream lifecycle or guest closure",
           "closure": false
         }
       ],
@@ -22014,6 +22095,274 @@
       "findingScope": "Control-only native reference callback/frame evidence correction for existing one-shot source; not new production semantics, original-baseline reclassification or finding closure",
       "additionalAuditDocuments": {},
       "publicRequirementRecords": []
+    },
+    "registered-host-sender": {
+      "document": "tests/nodejs/outline/registered-host-sender-finding-progress.json",
+      "sha256": "3dae4fa2b5f18f3e3de3026a19d9e4ce2cbf58e57c46369c4b8e77731252c530",
+      "recordedRevision": 206,
+      "explicitFindingIds": [
+        "STR-003",
+        "STR-004"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-hostsender206-source-r1/report.json",
+          "sha256": "3e08f2deec19e6c42ad604f1b6895018149334304b0b1d0327b1ee273a43f11e",
+          "guardedInputs": 877,
+          "scope": "Normal registered sender/nested/native ordering/sidecar source; current JS callbacks have7matching observations and2explicit differential nonpasses. Not full transfer, guest or four-host conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-hostsender206-affected-r1.json",
+          "sha256": "a8ba56d12ef9f6b0098cffba093e9c4bdd55626e0f65ca682287a16787f72193",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-hostsender206-source-r1/report.json",
+          "sha256": "3e08f2deec19e6c42ad604f1b6895018149334304b0b1d0327b1ee273a43f11e",
+          "currentJSCallbackMatchingObservations": 7,
+          "currentJSCallbackDifferentialNonpasses": [
+            {
+              "case": "throwing deserializeInfo string conversion",
+              "native": "receiver TypeError Missing internal module empty-string",
+              "candidateHook": "preserves original throw; publication/deferred error outcome owner remains missing"
+            },
+            {
+              "case": "missing private transfer method on registered host",
+              "native": "returns undefined without a message",
+              "candidateHook": "throws TypeError; serializer API still needs honest no-result/drop outcome owner"
+            }
+          ],
+          "currentControlExit": 0,
+          "controlExitDoesNotMakeAllCasesPass": true,
+          "normalRegisteredSenderSource": true,
+          "outcomeOwnerImplemented": false,
+          "logicalTransferBroadcastGuardSource": true,
+          "newCompilerAttempts": 0,
+          "previousCompilerAttemptsIntegrated": 0,
+          "unchangedStyleCheckerPassed": true,
+          "productionJSAPICompiled": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Actual current generated JS callback protocol with explicit two native differential nonpasses; new sender/receiver C++ and host transport uncompiled/unexecuted."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/host-transfer-sender-agent/handoff/report.json",
+          "sha256": "502321d840ee01e08a73f3b1655f7f867d973bdddd532288d7b2e9137952b35e",
+          "reusedEvidence": true,
+          "scope": "Immutable normal sender source over receiver dependency, actual JS callbacks7matches/2explicit differential gaps. Three protocol attempts with2historical failures and source identity/output overwrite limits retained;0compiler/engine/guest runs."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/registered-host-sender-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/registered-host-sender-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Complete explicit-list validation precedes nested hooks/graph/AB detach; private engine marker required; registered explicit mode matches pinned transferable value",
+        "Actual nested kTransferList getter/call and growing array discovery uses native private marker or nonmutating checked native MessagePort JSClass identity, not public token/type-name or repeated canTransfer ledger mutation",
+        "Rooted local registry preassigns transferred-JS IDs including unreachable hosts; same writer memory map serializes main and deferred data",
+        "Actual AB ownership detaches all buffers after main graph before host hooks; indexed native map owner commits interleave with actual JS kTransfer in frozen explicit/nested order; clone suffix follows",
+        "Actual scheduled receiver from dependency owns constructor/read/finalize; packets retain existing consume-once sidecars/collector, no cross-thread JS root/object/exception",
+        "Logical JS-only transfer count is recorded through exact callback-identity/owned-sidecar observer before publication; Broadcast rejects sharing even without native transfer map entries; no public callback ABI expansion",
+        "Interrupt checks/roots around nested hooks, dynamic loops and commits; actual failed serializer owns existing sidecar cleanup without false rollback of detached AB/hook effects"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/registered-host-sender-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Real serialization outcome transaction for success, no-result/drop and prepared-packet+deferred-sender-exception; native string conversion/ExceptionStack ownership/publication/caller policy, no special-case catch",
+        "Actual Worker LOAD_SCRIPT/startThread/waiting-for-load/peer-retirement owner; native immediate termination is not startup conformance",
+        "Other native host transfer types including FileHandle and clone-native creation-order ownership",
+        "Exact public error/duplicate constructor-name diagnostics, foreign wrapper identity/admission, malformed hooks/results/UTF8, realm/GC/OOM/reentry/abort/fatal ownership",
+        "Compile actual JSAPI against coherent recipe, unchanged upstream/differential streams/signal/endpoint/Worker semantics, backpressure/cancel/abort/close/messageerror and identified artifacts across all four hosts"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "sender-implementation-prerequisite",
+      "auditDocument": "tests/nodejs/audit/streams.md",
+      "findingScope": "Partial actual generic registered sender/private identity/nested/graph/commit/sidecar prerequisite; no malformed-outcome, Worker LOAD/full lifecycle, WebStream or guest closure",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/family-survey.md": [
+          "R-001"
+        ],
+        "tests/nodejs/audit/worker-contracts.md": [
+          "R-013"
+        ]
+      },
+      "publicRequirementRecords": []
+    },
+    "host-transfer-outcome": {
+      "document": "tests/nodejs/outline/host-transfer-outcome-finding-progress.json",
+      "sha256": "7f53199b8f7f18e3e63af899f5eaa188196dbca7f201bd2abfa7b5b95d3df06d",
+      "recordedRevision": 207,
+      "explicitFindingIds": [
+        "STR-003",
+        "STR-004"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-hostoutcome207-source-r1/report.json",
+          "sha256": "7ce3fbaa1098b9484269edcc70c6ea5fcbd85a618900088b16962587cdec930c",
+          "guardedInputs": 878,
+          "scope": "Normal sender-local packet outcome/receiver precedence and Worker startup ownership source. Actual JS extraction only; separately identified frontend/native gate controls. No candidate JSAPI compile/guest/four-host conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-hostoutcome207-affected-r1.json",
+          "sha256": "a66ab9dd990ec148640468ed1687dd80931af5d7e02a2a6d01b132711e1847a5",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-hostoutcome207-source-r1/report.json",
+          "sha256": "7ce3fbaa1098b9484269edcc70c6ea5fcbd85a618900088b16962587cdec930c",
+          "actualJSExtractionCases": 15,
+          "actualWorkerFrontendNativeDependencyCases": 18,
+          "actualIsolatedStartupInitializerCases": 2,
+          "actualNativeStartupGateReused": true,
+          "previousGateHelperCompilesIntegrated": 2,
+          "currentControlExit": 0,
+          "newCompilerAttempts": 0,
+          "unchangedStyleCheckerPassed": true,
+          "productionJSAPICompiled": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "15 actual extraction cases;18 frontend comparisons over native MessagePort stopping before Kandelo create;2 isolated initializer cases;exact-byte native gate artifact reused. New guest JSAPI remains uncompiled; old transfer/publication nonpasses are not reclassified.",
+          "previousCompilerAttemptsIntegrated": 2,
+          "actualWorkerNativeCreateExecuted": false,
+          "workerCorrectionRootSeal": ".context/host-transfer-review-agent/worker-handoff/ROOT-SEAL.json",
+          "workerCorrectionRootSealSha256": "fe25daa49aaa95f75d8e0dda33c32fd45dff5462b62e40045fc61c5bf0ff0594",
+          "originalOutcomeCompilerAttempts": 0,
+          "arrayBufferReferenceCases": 8,
+          "arrayBufferCandidateGuestExecuted": false
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/host-transfer-outcome-agent/handoff/report.json",
+          "sha256": "bbe1d0215816ef58be6bba5d7d710c33dc399a7b941bc73e0133bfb99dd053b8",
+          "reusedEvidence": true,
+          "scope": "Original outcome implementation plus separately sealed adversarial Worker and ArrayBuffer corrections; old wrong two-store startup and proposed phase compensation remain preserved historical source, not current behavior."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/host-transfer-outcome-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/host-transfer-outcome-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Actual private extraction keeps missing/nonfunction/nonobject results absent; data and raw descriptor are read in target order without premature string coercion",
+        "Real C++ ToString/UTF8 and rooted sender-local ExceptionStack transaction preserve deferred sender error without putting roots in cross-thread packet bytes or native owners",
+        "Actual caller consumes prepared data/no-result and owns publication/retirement/receiver-error precedence; source-local opaque box is consumed once",
+        "One user LOAD graph and transfer registry contains argv, filename, doEval, workerData and environmentData in target-relative order; early metadata excludes user argv/entry/source",
+        "Child startup initializer consumes actual decoded array-like argv and real loader entry before ready/user execution; native gate owns once-only packet slots and interruptible absence/Stop",
+        "Actual empty fixed ArrayBuffer ownership fills an outer transfer slot after a reentrant inner detach; original moved bytes remain inner, without weakening admission or non-Node behavior"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/host-transfer-outcome-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile the actual new guest C++ JSAPI and run genuine clone/Worker publication, receiver, exception, interrupt, retirement and backing-store paths",
+        "Exact pinned private/public channel transfer and AsyncWrap/init ordering, complete eval/CJS/ESM loader/global metadata, stdio/options/CLI/ref/error/termination behavior",
+        "Retain admitted host kind through nested mode mutation without freezing later dynamic main-graph classification; source-reviewed generic sender finding remains open",
+        "Other native transferable classes, exact diagnostics/UTF8 edge cases, foreign wrappers/security/realm/GC/OOM/fatal/reentry/abort and partial commit cleanup",
+        "Complete WebStream/AbortSignal backpressure/cancellation/lifecycle and unchanged upstream validation on identified artifacts across Node/Chromium/Firefox/WebKit"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "publication-startup-implementation-prerequisite",
+      "auditDocument": "tests/nodejs/audit/streams.md",
+      "findingScope": "Partial generic clone outcome/publication and actual Worker startup ownership prerequisite; no full Worker/stream lifecycle or guest closure",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/family-survey.md": [
+          "R-001"
+        ],
+        "tests/nodejs/audit/worker-contracts.md": [
+          "R-013"
+        ]
+      },
+      "publicRequirementRecords": []
+    },
+    "filesystem-readiness": {
+      "document": "tests/nodejs/outline/filesystem-readiness-finding-progress.json",
+      "sha256": "74335c14a603a894f8e90ad6440924c1b82f1bc478004481a190bec22144a3b9",
+      "recordedRevision": 207,
+      "explicitFindingIds": [
+        "FS-005"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-epoll207-source-r1/report.json",
+          "sha256": "3e6e35eb57482dff5c8c156f31bde1d01352a173096d323557d1ff41e0a54db6",
+          "guardedInputs": 878,
+          "scope": "Actual shared epoll producer readiness source;698 frozen native input identities and26 actual focused native cases. No Wasm kernel/guest/public notification or four-host conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-hostoutcome207-affected-r1.json",
+          "sha256": "a66ab9dd990ec148640468ed1687dd80931af5d7e02a2a6d01b132711e1847a5",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": true
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-epoll207-source-r1/report.json",
+          "sha256": "3e6e35eb57482dff5c8c156f31bde1d01352a173096d323557d1ff41e0a54db6",
+          "currentNativeCases": 26,
+          "failed": 0,
+          "ignored": 0,
+          "filtered": 3138,
+          "exactFrozenInputMembers": 698,
+          "nativeArtifactSha256": "705496a6523af0f4dfeef76ceabd6e5155b249450fd3facbaa15911629f4da0e",
+          "originalCasesUnchanged": 23,
+          "addedCases": 3,
+          "newCompilerAttempts": 0,
+          "priorNativeTestCompilesIntegrated": 3,
+          "priorNativeProductionChecksIntegrated": 1,
+          "guestKernelCompiled": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "packageEvidenceReused": true,
+          "scope": "Actual native runtime-core epoll module only.698 source/input identities match frozen final build; original baseline failure and reconstructed intermediate source limitation remain. No public inotify or guest claim."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/fsnotify-readiness-agent/handoff/report.json",
+          "sha256": "2bae86e999322a2fcdd38b645d6b7997a46bacd2634a5c8efd361e9584ba0630",
+          "reusedEvidence": true,
+          "scope": "Actual private instance readiness correction with original allocation failure, three identified executed native binaries,26 final affected cases,3 native test compiles and1 production check; no guest/public notification activation."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/filesystem-readiness-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/filesystem-readiness-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Actual shared epoll notification uses per-instance scratch and serialized epoch rather than allocating temporary changed/parent vectors after a committed mutation",
+        "Complete direct/nested cascade uses existing backing-table ownership; four passes preserve legal nested paths in either slot order and distinct diamond interests",
+        "Zero sentinel and wrap reset only scratch, preserve pending events and reuse nonzero epoch without adding an exhaustion failure",
+        "Original exclusive/mask/disabled/error/level/edge/oneshot/fd-reuse/delivery behavior remains; original23 affected tests are byte unchanged",
+        "Native-only allocation observation checks real eventfd write across actual nested descriptors and wrap; no production allocator or platform identity is replaced"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/filesystem-readiness-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Integrate genuine dormant notification queue/tmpfs producer and managed descriptor owners in dependency order; public ENOSYS remains an implementation gap",
+        "Real producer-to-parked-host wake publication, actual opened-dentry/rootfs/persistent/provider mutation and permission/mask/quota ownership",
+        "Concrete notification fd metadata/SIGIO/fork encoding and coherent ABI admission/activation decision preserving frozen baseline artifacts",
+        "Compile an identified actual Wasm kernel and validate applicable guest epoll/watcher/POSIX behavior on all four hosts within build authorization",
+        "Native multithread stress, broader concurrent close/reuse/rollback/failure ownership and unchanged upstream filesystem/stream integration"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "shared-kernel-readiness-prerequisite",
+      "auditDocument": "tests/nodejs/audit/filesystem.md",
+      "findingScope": "Shared producer/readiness prerequisite only; not FSWatcher activation, API closure or an accepted platform exclusion",
+      "additionalAuditDocuments": {},
+      "publicRequirementRecords": []
     }
   },
   "dependencyNarratives": {
@@ -24235,6 +24584,32 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current205links real receiver-order prerequisite and control-only native signature-frame evidence. Prose-only C-009/C-015references remain unresolved as standalone definitions; no new definitions/API closure invented. Accepted200excludes newer source."
+      },
+      {
+        "at": "2026-11-07T11:02:37.257439+00:00",
+        "sourceCheckpoint": 207,
+        "sourceHead": "e4598c906955b727460f070ae5e9ac3b260aa8c8",
+        "addedSourceSlices": [
+          "registered-host-sender",
+          "host-transfer-outcome",
+          "filesystem-readiness"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "92053206c587a16047f674b20745050c2016e7546de43600f51a37b8fe5958d9"
+        },
+        "latestAcceptedEngine": 200,
+        "acceptedEngineEvidence": {
+          "path": "tests/nodejs/outline/engine200-build-result.json",
+          "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5"
+        },
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current206\u2013207links genuine sender/publication/Worker LOAD and shared kernel readiness prerequisites. Exact source/evidence scopes and all preserved nonpasses remain; no definition/API closure invented. Accepted200excludes newer engine source and current kernel source lacks guest acceptance."
       }
     ]
   }

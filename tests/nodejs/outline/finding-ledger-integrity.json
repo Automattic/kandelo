@@ -1,14 +1,14 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T10:00:52.422466+00:00",
-  "sourceHead": "480041701b2054536426883b4453139a4dfb9b75",
-  "recipeRevision": 205,
+  "at": "2026-11-07T11:02:37.257439+00:00",
+  "sourceHead": "e4598c906955b727460f070ae5e9ac3b260aa8c8",
+  "recipeRevision": 207,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 124,
+    "sourceSliceRecords": 127,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 231
@@ -26,23 +26,24 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 124,
+  "sourceSliceIdentitiesVerified": 127,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "fbe112c98b77797def80e75aa647488df48a484d2f52cb5e55fd49b35596815d"
+    "sha256": "758183eea1d7360dd12f502b3af7790e61dd80ab414413d7d0c59e82f6682776"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/qualified-link verification only; immutable audit unchanged, no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "67157a652b7deb107bc86020295a02449a40c7812f2e55d194b4df13f416778a",
-    "sourceHead": "e633099c39cf4e7b4cf77999f12e20c78a677116",
+    "sha256": "6a7621ea0b9cb7faa2d7ec7f3f5eecdca3d9e33cead45df7eacc92eb05e6a7c0",
+    "sourceHead": "480041701b2054536426883b4453139a4dfb9b75",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "host-receiver-order",
-    "signature-frame-control"
+    "registered-host-sender",
+    "host-transfer-outcome",
+    "filesystem-readiness"
   ],
   "qualifiedReferenceCorrections": [
     {

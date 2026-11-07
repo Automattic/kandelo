@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 124 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 127 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 231 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -436,3 +436,33 @@ All357lexical IDs,417qualified definitions,52ranges and19families remain. No fin
 or family closes. Accepted200engine excludes201–205new source; guest JSAPI and
 all-four-host conformance remain unvalidated. No overall/fullproduct rebuild ran,
 and nested guest Wasm stays in scope for the final phase.
+
+## Source206–207 sender, startup and shared readiness overlay
+
+Registered sender admission, nested discovery, graph IDs, ArrayBuffer-first
+detachment and combined native/JavaScript commit ownership are now source-linked
+separately from receiver order. The subsequent outcome slice owns absent results,
+sender-local deferred exception/stack material, actual caller publication and
+receiver precedence. Worker user inputs share one real LOAD graph and decoded
+argv/entry initializer; early native environment metadata is separate.
+
+Current extraction15, frontend18/native-dependency and isolated initializer2
+cases have distinct scopes. The native gate helper is byte identified; two
+successful prior helper compiles are counted once. Guest C++ is uncompiled.
+The old206 differential gaps, original207 two-store source findings, abandoned
+phase proposal and root setup/patch-format failures remain preserved. A separate
+retained admission-kind correction is sealed pending integration, not support.
+
+Shared kernel readiness owns allocation-free propagation scratch in actual
+EpollInstance records under the existing backing-table lock. Root matched698
+frozen inputs and reran26 affected native cases, including23 unchanged and3 new
+cases. The original5-allocation failure and intermediate reconstruction limit
+remain. Three native test compiles and one production check are counted once.
+No new Wasm kernel or public notification activation is established; inotify
+still returns ENOSYS and all descriptor/wake/dentry/rootfs/ABI/fork gaps remain.
+
+All357 lexical IDs,417 qualified definitions,52 ranges and19 families remain.
+No finding or family closes. Inventory/source progress/native components and
+actual guest conformance stay separate. Accepted engine200 excludes201–207.
+No overall suite, full rebuild, merge or deployment ran in this reconciliation.
+Nested guest Wasm execution remains in scope for the final phase.
