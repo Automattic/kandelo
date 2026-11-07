@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { devServerAssetUrl } from "./support/dev-server-assets";
 import {
   DEMO_LOGIN_PASSWORD,

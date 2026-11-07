@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 // A queued restart is written to the machine it was asked of. The pane can
 // unmount while the command waits (on /dev/fb0 it does, because the restart

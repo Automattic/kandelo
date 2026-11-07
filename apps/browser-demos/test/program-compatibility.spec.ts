@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { expect, test, type BrowserContext } from "@playwright/test";
+import { expect, test, type BrowserContext } from "../playwright-test";
 import { frozenPreparationSource, programCompatibilityManifest } from "../../../host/test/fixtures/program-compatibility";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import type { ProgramCompatibilityFixture } from "../pages/program-compatibility-test/main";

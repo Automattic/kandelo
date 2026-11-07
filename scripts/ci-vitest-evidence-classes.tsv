@@ -345,6 +345,8 @@ host/test/pixman-smoke.test.ts	prepared-product
 host/test/plain-catch-payload-lifetime.test.ts	source-only
 host/test/platform-node.test.ts	source-only
 host/test/platform/native-metadata.test.ts	source-only
+host/test/playwright-audio-output.test.ts	source-only
+host/test/playwright-audio-policy.test.ts	source-only
 host/test/poll-timeout-preserves-pollfds.test.ts	prepared-product
 host/test/popen-daemon-regression.test.ts	prepared-product
 host/test/positioned-image-targets.test.ts	source-only

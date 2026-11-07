@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Page } from "../playwright-test";
 import { gotoMachine } from "./support/kandelo-machine";
 import { test } from "./support/persistent-page";
 

@@ -15,6 +15,24 @@ Use precise language:
 - "This change is docs-only; I did not run runtime tests."
 - "This is not fully merge-validated because `Z` remains unrun."
 
+## Keep browser tests quiet
+
+Automated browser tests must leave the computer's speakers silent. Import
+`test` from `apps/browser-demos/playwright-test.ts`, including in private
+diagnostic specs. Its default worker policy silences the final Web Audio
+output in test-owned pages and contexts, while guest PCM, worklets, analysers
+and autoplay behavior remain available for testing. Do not mute the whole
+computer or disable guest audio: either can disrupt a call or invalidate an
+audio test. The policy also covers public HTML fixtures, persistent test
+profiles, reused development servers and production previews.
+
+Standalone package suites use `tests/playwright-test.ts`. Both entry points
+share the same policy while using their runner's own Playwright installation.
+
+Audible playback is an explicit opt-in with
+`KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO=1` inside the dev shell. Use it only when the
+user explicitly wants speaker playback; sampling audio does not require it.
+
 ## Test fixtures must observe the actual contract
 
 Wait for the operation's completion event or promise rather than a fixed

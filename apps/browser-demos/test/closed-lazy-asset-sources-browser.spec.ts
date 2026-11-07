@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { createHash } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";

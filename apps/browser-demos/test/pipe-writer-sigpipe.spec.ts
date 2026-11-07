@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 // A writer blocked on a full pipe whose reader exits must die by SIGPIPE

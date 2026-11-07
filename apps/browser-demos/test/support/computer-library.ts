@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "../../playwright-test";
 
 /** The dialog asking whether to keep a computer, with its warning already checked. */
 export async function keepComputerDialog(page: Page): Promise<Locator> {

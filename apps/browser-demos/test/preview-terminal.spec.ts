@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import type { mountPreviewFixture } from "./fixtures/preview-terminal-fixture";
 
 declare global { interface Window { previewFixture: ReturnType<typeof mountPreviewFixture>; } }

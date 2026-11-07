@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import { startPersistentImageSource, type PersistentImageSource } from "./support/persistent-image-source";
 import { loginToWordPress } from "./support/wordpress-login";

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { gotoMachine } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 test.use({ actionTimeout: 30_000 });

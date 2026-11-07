@@ -3,7 +3,7 @@ import {
   test,
   type BrowserContext,
   type Page,
-} from "@playwright/test";
+} from "../playwright-test";
 import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 

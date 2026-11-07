@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { gotoApp } from "./support/kandelo-machine";
 import { configureNewComputer } from "./support/computer-library";
 

@@ -1,5 +1,5 @@
 import { compactToolCatalog } from "../pages/kandelo/webmcp/discovery";
-import { chromium, expect, test, type Page } from "@playwright/test";
+import { chromium, expect, test, type Page } from "../playwright-test";
 
 type Result = { ok: boolean; [key: string]: any };
 

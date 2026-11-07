@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 test("Vim repaints a paused open-line command before the next key", async ({ page }) => {
   test.setTimeout(180_000);

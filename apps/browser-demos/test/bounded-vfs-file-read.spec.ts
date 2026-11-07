@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { expect } from "@playwright/test";
+import { expect } from "../playwright-test";
 import { hostFileReadImage } from "../../../host/test/fixtures/host-file-read-image";
 import { opfsTest as test } from "./support/opfs-page";
 

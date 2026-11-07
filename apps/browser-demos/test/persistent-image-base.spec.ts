@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { expect } from "@playwright/test";
+import { expect } from "../playwright-test";
 import { persistentBaseFixture, persistentNearlyFullBaseFixture, preparePersistentBaseFixtures,
   PERSISTENT_BOOTSTRAP_CERTIFICATE_URL } from "../../../host/test/fixtures/persistent-base-image";
 import { BROWSER_MITM_CA_BUNDLE_PATH } from "../../../host/src/networking/browser-mitm-ca-env";

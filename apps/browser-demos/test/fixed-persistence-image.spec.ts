@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { routeCurrentImageModules } from "./support/current-image-module";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";

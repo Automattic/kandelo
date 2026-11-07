@@ -704,6 +704,15 @@ capture, window blur, and input teardown, retaining the last absolute position.
 
 ### Audio output (`/dev/dsp`)
 
+Automated browser tests use the shared `playwright-test.ts` fixture to keep
+speaker output silent by default. It inserts a zero-gain final Web Audio
+output while guest PCM, worklets, analysers and autoplay policy remain active.
+The fixture applies before test-owned pages run, including public HTML,
+persistent profiles, reused servers and production previews. Chromium and
+Firefox also retain their native output-mute settings. Audible test playback
+requires `KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO=1` inside the dev shell. System
+speaker and microphone settings are never changed by the test policy.
+
 - The kernel exposes a playback-only OSS `/dev/dsp` frontend over its generic
   PCM stream core. Applications may write U8, signed 16-bit little-endian, or
   signed 16-bit big-endian mono/stereo PCM at 8–192 kHz. The worklet converts

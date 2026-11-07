@@ -6,6 +6,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const spidermonkeyBrowserTestPort = Number(
   process.env.SPIDERMONKEY_BROWSER_TEST_PORT ?? 5201,
 );
+const silentAudio = process.env.KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO !== "1";
 
 export default defineConfig({
   testDir: __dirname,
@@ -23,7 +24,13 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { browserName: "chromium" },
+      use: {
+        browserName: "chromium",
+        launchOptions: {
+          args: silentAudio ? ["--mute-audio"] : [],
+          ignoreDefaultArgs: silentAudio ? undefined : ["--mute-audio"],
+        },
+      },
     },
   ],
 });

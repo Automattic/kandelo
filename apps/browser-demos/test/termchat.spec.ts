@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { resolve } from "node:path";
 import { termchatImage, transferBytes } from "../../../packages/registry/termchat/test/image";
 

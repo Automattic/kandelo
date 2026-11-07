@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 const helperModuleUrl = "/pages/kandelo/kernel-host/boot-current-boundary.ts";
 
