@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source198 corrects actual native watch-registry thread ownership with a narrow declaration. Full consumer/Worker/shutdown source trace, exact engine replay, unchanged checker and14package checks pass; no new runtime test or compile ran.
+See [source scope](context-thread-watch-integration.md).
+
 Source197 integrates actual automatic native transit-cycle ownership and retirement over transfer194.9portable groups/100publication races, unchanged1000-packet queue and25affected checks pass; two deliberate mutants abort and are not compatibility passes. Production JSAPI remains uncompiled.
 See [source scope](port-transit-cycle-integration.md).
 

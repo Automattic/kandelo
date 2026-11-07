@@ -1,0 +1,79 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network.md",
+    "findingIds": [
+      "N-013"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/secure-network.md": [
+        "S-004",
+        "S-009"
+      ],
+      "tests/nodejs/audit/terminal.md": [
+        "T-002",
+        "T-009"
+      ]
+    },
+    "relatedFamilies": [
+      "engine",
+      "network",
+      "secure-network",
+      "terminal",
+      "processes",
+      "workers",
+      "async"
+    ],
+    "scope": "Actual runtime-thread ownership of native watch roots/list only; no full async resource/provider, cancellation/drain or public TTY/TLS closure"
+  },
+  "sourceImplemented": [
+    "Actual generic native watch registry is thread_local, matching JS root/context/callback ownership",
+    "All existing consumers and actual Worker per-thread initialization/shutdown paths preserved",
+    "No fake provider/_handle or cross-thread root forwarding; actual separate TLS owner remains pending"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-watch198-source-r1/report.json",
+    "sha256": "757ab0dbea9c4e234917a209eb466882754a24df4c651a757756c70dc3acd859",
+    "guardedInputs": 865,
+    "scope": "Actual context-thread watch registry source correction only; generic descriptor Promise drain/resource/provider/lifetime and guest/fourhost remain open."
+  },
+  "packageChecks": {
+    "report": ".context/node26-watch198-affected-r1.json",
+    "sha256": "91e466682e41d92eaca9b29d99dc5ec582fa4434587a8c0a60b9646691f70f7e",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-watch198-source-r1/report.json",
+    "sha256": "757ab0dbea9c4e234917a209eb466882754a24df4c651a757756c70dc3acd859",
+    "runtimeTests": 0,
+    "newCompilerAttempts": 0,
+    "actualThreadLocalRegistryDeclaration": true,
+    "unchangedStyleCheckerPassed": true,
+    "productionJSAPICompiled": false,
+    "scope": "Complete sealed source consumer/worker/shutdown trace and current exact composed engine patch, not concurrency or teardown conformance"
+  },
+  "sealedEvidence": {
+    "report": ".context/watch-registry-owner-agent/handoff/patch-roundtrip.json",
+    "sha256": "6d3964f7677071a61a8278780393a122f4d847079a35f0cf2a7f8254ee81b0e5",
+    "reusedEvidence": true,
+    "scope": "One exact additive engine declaration; full consumer/Worker/shutdown references and unchanged normal style; runtime/compiles0."
+  },
+  "preservedNonpasses": [],
+  "remaining": [
+    "Compile actual JSAPI/native shell and validate Worker/parent concurrency on identified four-host artifacts",
+    "Generic numeric fd Read/Write Promise watches still lack demonstrated comprehensive callback-free context-teardown drain",
+    "Actual native async resource/provider identity, captured descriptor lifetime and ref/error/cancellation remain incomplete",
+    "Separate TLS opaque owner and TTY callback/resource prerequisites pending; no full public API closure"
+  ],
+  "at": "2026-11-07T08:03:17.413253+00:00",
+  "recipeRevision": 198,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

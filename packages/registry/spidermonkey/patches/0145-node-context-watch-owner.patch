@@ -1,0 +1,11 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -645,5 +645,7 @@
+ };
+
+-static KandeloSocketWatch* gKandeloSocketWatches = nullptr;
++// Watch roots and callbacks belong to the calling context's runtime thread.
++// Worker loops must never publish/poll/unlink another thread's JS roots.
++static thread_local KandeloSocketWatch* gKandeloSocketWatches = nullptr;
+ static bool KandeloDispatchTlsWatch(KandeloSocketWatch* watch);
+ static void KandeloCleanupTlsWatch(KandeloSocketWatch* watch);
