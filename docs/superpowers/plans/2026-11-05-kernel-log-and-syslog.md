@@ -781,16 +781,22 @@ git commit -m "POSIX: Stop claiming success for sync_file_range and personality"
 
 **Files:**
 - Modify: `docs/posix-status.md` (the new facility; `dmesg`, `/dev/kmsg` and `klogctl` as non-POSIX by design; `klogctl` actions 6/7/8 unimplemented; userspace `/dev/kmsg` writes unimplemented)
-- Modify: `docs/abi-versioning.md` (the ABI 56 epoch and what it invalidates)
+- Modify: `docs/abi-versioning.md` (the withdrawn epoch: why this branch stays at program ABI 55 behind an affirmed-predecessor entry, and the `HOST_ADAPTER_VERSION` 4 → 5 bump it unmasked)
 - Modify: `docs/architecture.md` (the facility and its layering)
 
 - [ ] **Step 1: Write the documentation**
 
 State plainly that **Kandelo is not Linux and intends no Linux compatibility**, that `dmesg` is universal Unix originating in 4.xBSD, that neither it nor `/dev/kmsg` nor `klogctl` is POSIX, and that the POSIX parts of this facility are `syslog(3)` and `logger(1)`. Document the chosen read interfaces as a design decision with its stated engineering reason, never as a compatibility claim. Document each unimplemented piece as a gap, not a silence.
 
-- [ ] **Step 2: Rebuild everything, since ABI 56 invalidates every artifact**
+- [ ] **Step 2: Rebuild the kernel, the host, and the browser projection — NOT the world**
 
-Run: `scripts/agent-job start -- ./run.sh setup --all` then `scripts/agent-job wait <id>`
+**Corrected 2026-11-06.** This step used to read "Rebuild everything, since ABI 56 invalidates every artifact" and order `./run.sh setup --all`. That is now false and following it literally would spend the measured 2h45m full-world rebuild, including LLVM, that Task 17 exists to have eliminated. Program ABI stayed at **55**, so programs, packages and ABI-bound VFS images are untouched.
+
+What this change does require is narrower, and the last item is mandatory rather than optional:
+- the kernel and host, because `HOST_ADAPTER_VERSION` moved 4 → 5;
+- a republished browser projection. `host/src/host-adapter-manifest.ts:202-206` refuses an already-published projection kernel at boot once the adapter version moves, with "rebuild the kernel and host together". **That refusal is expected, not a regression** — but it means `prepare-browser` must run before any browser claim, and a kernel-only rebuild drops the projection.
+
+Run the targeted rebuild and then `prepare-browser`; reach for `./run.sh setup` only if the freshness gate names something broader.
 
 - [ ] **Step 3: Run the full suites**
 
