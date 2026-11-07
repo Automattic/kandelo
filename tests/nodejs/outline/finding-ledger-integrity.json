@@ -1,14 +1,14 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T07:51:25.435918+00:00",
-  "sourceHead": "932daec0c6f23badf7c6fa45493da27eb101eec3",
-  "recipeRevision": 196,
+  "at": "2026-11-07T08:19:46.366094+00:00",
+  "sourceHead": "c1f8e947e0a0ce83867db1119275775b49e57f12",
+  "recipeRevision": 199,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 114,
+    "sourceSliceRecords": 117,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 233
@@ -26,23 +26,23 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 114,
+  "sourceSliceIdentitiesVerified": 117,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "8b066c4ad140fbd42606de916d11d3f0083aabd675a2e4a73cf27f974c66572b"
+    "sha256": "2422a11b5d454304a5afa7e38ae6408d00f49de9a9686d3c39855fa89c1b0779"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "bd70edd7ae00b2f382f86779d37beb064a919a6a30d563eac2beeb52b3ee775b",
-    "sourceHead": "53993982acfa5e479e99537b8dfd84a5a56efce5",
+    "sha256": "ff751a3bc15155c94216a2730604fef2314cd3ac728c2cd5aa5d8c6f117abe93",
+    "sourceHead": "932daec0c6f23badf7c6fa45493da27eb101eec3",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "messageport-transfer",
-    "signature-jobs",
-    "tls-cipher-policy"
+    "port-transit-cycle",
+    "context-thread-watch",
+    "zstd-pledged-size"
   ]
 }

@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 114 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 117 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 233 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -323,3 +323,29 @@ All357lexical IDs,417qualified definitions,52original ranges and19families remai
 Missing exact source links are unknown dispositions, not a count of proven bugs.
 No findings/families close; current196has no accepted build and accepted173is
 stale. No new runtime controls/compilations run for this metadata overlay.
+
+## Source197–199 native ownership and Zstd overlay
+
+R-001/004/013 and STR-003/004 gain the actual native graph over real external
+owner slots/inbox/packet/data edges, retirement barriers and loop/context safe
+points. Nine portable groups and unchanged queue pass; two deliberate mutants
+abort and are rejection observations, not passing compatibility cases. Generic
+registered-host/stream transfer and full Worker lifetime remain incomplete.
+
+N-013 and related S/T dependencies gain genuine runtime-thread ownership of the
+native watch registry. This declaration has complete consumer/Worker/shutdown
+source trace, not runtime concurrency proof. Full numeric-watch context drain,
+async provider identity, separate TLS/TTY owners and guest behavior remain open.
+
+Zstd pledge admission links exact public requirement records from the immutable
+compression inventory (doc/api/zlib.md784–793 and2224–2273). No standalone original
+finding ID is invented. Old ZIP-008/009 absence prose is historical: current code
+already has converted-integer admission and optional init callbacks. Broader
+error/lifecycle/native guest reconciliation remains open.52policy groups and one
+unchanged upstream file per subject pass over explicit native dependencies; four
+fixture aborts remain nonpasses and no Node defect/workaround is inferred.
+
+All original357lexical IDs,417qualified definitions,52ranges and19families remain.
+No finding/family closes; accepted173is stale for199. Existing ALS/frame failure,
+skips and all old host outcomes stay unchanged. This overlay runs0runtime controls
+and0compiles; selected engine compilation is a separate prepared next operation.
