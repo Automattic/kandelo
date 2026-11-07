@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 94,
+    "sourceSliceRecords": 96,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 258
+    "findingsWithoutExplicitOrProposedSourceSlice": 257
   },
   "families": [
     {
@@ -124,7 +124,7 @@
         "A-029",
         "A-030"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 6,
+      "findingsWithExplicitOrProposedSourceSlices": 7,
       "sourceRouteAsRecorded": "Pinned public AsyncHook/createHook algorithms over real symbol/array/count registry,nested publication and native destroy tracking;133native per-context default-trigger override with public/tick/Promise fallback and existing FS/DNS/codec consumers;ordinary public metadata/root resource and callback owners ; source149 actual native execution stack/epoch/process recovery and explicit callback failure ownership",
       "remainingAsRecorded": "Promise activation/removal and ALS CLI path,remaining native providers/default-trigger consumers,GC/destroy/rejection/fatal/worker/realm/loop/cancellation/ref integration and actual117\u2013149guest/four-host conformance remain open",
       "remainingOwner": "Native async execution/job/Promise owners, compatibility EventEmitter/timers/domain/diagnostics owners",
@@ -1730,7 +1730,15 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Domain public APIs and cross-resource behavior",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "domain-owner",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/async.md",
+          "scope": "Complete public Domain algorithms plus bounded native invocation consumers, not all Domain/provider/Promise/GC/fatal obligations or finding closure",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "domain compatibility module plus real native async/process-fatal context owner",
@@ -3960,6 +3968,13 @@
         {
           "slice": "tcp-agent",
           "relation": "explicit"
+        },
+        {
+          "slice": "net-server-receiver",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network.md",
+          "scope": "Actual constructor receiver/options and captured listener source subset; no complete finding or public Server closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4038,6 +4053,13 @@
         {
           "slice": "tcp-agent",
           "relation": "explicit"
+        },
+        {
+          "slice": "net-server-receiver",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network.md",
+          "scope": "Actual constructor receiver/options and captured listener source subset; no complete finding or public Server closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4089,6 +4111,13 @@
         {
           "slice": "tcp-agent",
           "relation": "explicit"
+        },
+        {
+          "slice": "net-server-receiver",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network.md",
+          "scope": "Actual constructor receiver/options and captured listener source subset; no complete finding or public Server closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4225,6 +4254,13 @@
         {
           "slice": "tcp-agent",
           "relation": "explicit"
+        },
+        {
+          "slice": "net-server-receiver",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network.md",
+          "scope": "Actual constructor receiver/options and captured listener source subset; no complete finding or public Server closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -18644,6 +18680,138 @@
       "rootOverlay": true,
       "auditDocument": "tests/nodejs/audit/http.md",
       "findingScope": "Request/parser/ServerResponse/method catalog source subset; full Server and complete finding obligations remain open"
+    },
+    "net-server-receiver": {
+      "document": "tests/nodejs/outline/net-server-receiver-finding-progress.json",
+      "sha256": "ca88948c6c29400f093a0e0074d77936b3e08795719200fc73ec9a9418d40c97",
+      "recordedRevision": 177,
+      "explicitFindingIds": [
+        "N-008",
+        "N-011",
+        "N-013",
+        "N-018"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-net177-source-r1/report.json",
+          "sha256": "a5e61e802ac6cf4529b75cb9829c4dd6d3f33097d53f4bd7bbf0ff199e561bf6",
+          "guardedInputs": 797,
+          "scope": "Current generic Server supplied-receiver and captured-listener source, 10native/11candidate groups and original accepted-owner regression; guest/four-host unestablished."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-net177-affected-r1.json",
+          "sha256": "14ca5487eeff241689c32986f0989c67043e5eb04c9f3076db43d959ee5a03c2",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-net177-source-r1/report.json",
+          "sha256": "a5e61e802ac6cf4529b75cb9829c4dd6d3f33097d53f4bd7bbf0ff199e561bf6",
+          "nativeReferenceGroups": 10,
+          "candidateGroups": 11,
+          "candidateActualTCPAccepts": 7,
+          "acceptedRegressionScenarios": 4,
+          "acceptedRegressionActualTCPAccepts": 12,
+          "newNativeCompilerAttempts": 0,
+          "productionSMExecuted": false,
+          "scope": "Current extracted constructor/listener/accept/adoption source with actual native TCP handles and pinned EventEmitter/Duplex/DNS dependencies, not guest native listener/async/fatal/GC/four-host proof"
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/net-server-receiver-agent/HANDOFF.json",
+          "sha256": "208f1ec94d05e6b05b3482e3c0243b9384a615fcd95e724708df69c2085b48d8",
+          "reusedEvidence": true,
+          "scope": "34private source checks and10native/11candidate groups with7actual accepts; original4scenario/12accept regression; missing recipe input retained as private nonpass, now declared by parent"
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/net-server-receiver-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/net-server-receiver-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Initialize actual call/new/subclass/inheriting supplied Server receiver via pinned unchanged public option/validation/field sections and genuine EventEmitter chain",
+        "Private per-listener captured fd/generation/ref records prevent active old listeners and stale DNS results from being redirected by current receiver reinitialization",
+        "Actual existing accepted-owner/adoption/rollback, socket option/default high-water-mark and paused-read owners before connection publication",
+        "Preserve174VM/175SQLite/176HTTP, real clone denial rather than false Worker transfer, and native-fatal/guest gaps"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/net-server-receiver-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual native opaque listener/async-trigger/worker transfer/shutdown/context/fork/GC/ref ownership; current JS records do not close descriptor ABA across all layers",
+        "Full Server listen overloads/Unix paths/fd/BoundSocket/cluster/public symbols/descriptors and arbitrary borrowed method receivers, error/abort/close/relisten/reinit races",
+        "Existing accepted callback Promise rejection versus native fatal boundary, hidden old-listener lifecycle and reset global connection accounting remain unresolved",
+        "Full HTTP Server/admission/ConnectionsList/synchronous parser callback owners and currentguest/fourhost conformance"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/network.md",
+      "findingScope": "Actual constructor receiver/options and captured listener source subset; no complete finding or public Server closure"
+    },
+    "domain-owner": {
+      "document": "tests/nodejs/outline/domain-owner-finding-progress.json",
+      "sha256": "515cd6e3c458959755ec4b9c9b49343674c3d89e27e251a5771d87617c6ed68b",
+      "recordedRevision": 178,
+      "explicitFindingIds": [
+        "A-006"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-domain178-source-r1/report.json",
+          "sha256": "0790c20b0f00a9924659dae45b5625732727346a8fbe85deb018ee32fad57ef3",
+          "guardedInputs": 799,
+          "scope": "Current fullunchangedDomain/realMakeCallback source with targeted unchangedupstream and actualAsync/fatal component; production178JSAPI/guest/fourhost unestablished."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-domain178-affected-r1.json",
+          "sha256": "bb9ddb1c96067a2110325f4ff0606bfe4a5289ef9c7f19dec9d4661696b522e9",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-domain178-source-r1/report.json",
+          "sha256": "0790c20b0f00a9924659dae45b5625732727346a8fbe85deb018ee32fad57ef3",
+          "unchangedUpstreamProcesses": 24,
+          "actualAsyncFatalGroups": 4,
+          "newNativeCompilerAttempts": 0,
+          "productionSMExecuted": false,
+          "scope": "Complete candidateDomain over native26 dependencies plus current candidateAsync/fatal algorithms over exact reused portable execution owner; production native roots/zero-ID/Promise/GC/fatal-exit/guest unvalidated"
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/domain-owner-agent/HANDOFF.json",
+          "sha256": "236e6ca0c38a713665e8d01e7e49b897bc1f39c924a644c8e5e34fc193ca6848",
+          "reusedEvidence": true,
+          "scope": "33source checks,24unchanged upstream source-component processes and4actual Async/fatal portable-owner groups; private two-input closure failure retained, root declares actual sources"
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/domain-owner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/domain-owner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Lazy actual public Domain loading preserves full pinned class/factory/stack/membership/bind/intercept/error/nesting and process-domain algorithms over genuine shared owners",
+        "Reuse exact weak-reference helper with actual weak/refcounted callback lifetime rather than a permanent strong domain map",
+        "Actual native context-rooted trampoline/gate registration is explicitly forwarded/exported and reads real before/after counts/execution-resource usage",
+        "Shared native MakeCallback invocation seam preserves current actual execution ID, receiver/arguments/failure ownership; real FS/stat consumers route through it while histogram internal direct resolver stays distinct",
+        "Compose0132registration over174VM engine postimage and preserve175SQLite/176HTTP/177Net current sources and immutable URL helper"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/domain-owner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "ProductionJSAPI/trampoline/root/security/realm/OOM/GC/fatal/reentry/teardown and real legacy zero-ID MakeCallback validation",
+        "All native MakeCallback consumers/provider identities, native Promise-hook activation/registration, foreignVM/weakGC/Worker lifecycle and remaining unchanged publicDomain cases",
+        "Actual abort/report/auxiliary capture/REPL policy, incomplete resource providers and four-host identified-artifact conformance"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/async.md",
+      "findingScope": "Complete public Domain algorithms plus bounded native invocation consumers, not all Domain/provider/Promise/GC/fatal obligations or finding closure"
     }
   },
   "dependencyNarratives": {
@@ -20461,6 +20629,27 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current174VM/175SQLite/176HTTP source contributions and bounded evidence. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T04:05:13.278730+00:00",
+        "sourceCheckpoint": 178,
+        "sourceHead": "e9e3a7a21271677988043686651214e8775c151f",
+        "addedSourceSlices": [
+          "net-server-receiver",
+          "domain-owner"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "d043f4ca030aac5e0f3053a12350fc3b211128e205b87d19e85e9f357b97ea8e"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current177Server/178Domain source contributions and bounded evidence. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }

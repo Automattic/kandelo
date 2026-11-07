@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T03:26:41.971213+00:00",
-  "sourceHead": "6b359387563aced534a3c2bb97bb05609ca8d50c",
-  "recipeRevision": 176,
+  "at": "2026-11-07T04:05:13.278730+00:00",
+  "sourceHead": "e9e3a7a21271677988043686651214e8775c151f",
+  "recipeRevision": 178,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 94,
+    "sourceSliceRecords": 96,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 258
+    "findingsWithoutExplicitOrProposedSourceSlice": 257
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,23 +26,22 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 94,
+  "sourceSliceIdentitiesVerified": 96,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "4e7a114efb69a4897087ccf9e8a60baedec123329af67a6b709ea890ca1bb49b"
+    "sha256": "9e5f2e4a694c8f967e40769e73f3da43f2228cd41dc6924946344c9ef4562fcf"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/link verification only; original definition/range lines retain previously verified immutable audit identity; no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "739677fd52397fda11fb2f7f4e9fb0b65d9644988199aa001802504823b873ea",
-    "sourceHead": "7df5cbc20967d79aec2cd1177dbe73fabfd8e07b",
+    "sha256": "f6dd01453fad30b281f5306682925965b9ec421cae277d365cfb63d3dd37aa79",
+    "sourceHead": "6b359387563aced534a3c2bb97bb05609ca8d50c",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "vm-execution-deadline",
-    "sqlite-backup",
-    "http-request-server-response"
+    "net-server-receiver",
+    "domain-owner"
   ]
 }

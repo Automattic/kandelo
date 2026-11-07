@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 94 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 96 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 258 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 257 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -83,3 +83,21 @@ SQLite malformed-source reference crash remain unresolved.
 No finding/family is closed. Exact finding links remain navigation to scoped
 contributions, not completed semantic obligations. A missing exact link remains
 an unknown disposition, not proof of absent code.
+
+## Source178 progress overlay
+
+The current overlay adds actual Server receiver/captured-listener177 and
+complete public Domain/bounded native MakeCallback178 source records.
+Their exact original audit IDs, source/evidence identities and retained
+nonpasses are linked individually. Earlier captures retain their own
+source/artifact scope and are not retroactively current conformance.
+
+The accepted engine173predates these slices. Current178combined source
+is uncompiled; no new product projection or guest/four-host conformance
+is established. Native opaque listener/worker/fatal/lifecycle gaps and
+Domain native zero-ID/Promise/GC/realm/fatal-exit behavior remain open.
+The guest WebAssembly execution prerequisite is recorded separately as
+an implementation gap; no engine/platform exclusion has been approved.
+
+No finding/family is closed. Exact links describe scoped contributions;
+unknown dispositions and all retained failures remain visible.

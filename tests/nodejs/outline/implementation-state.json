@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T04:03:36.414206+00:00",
+  "updatedAt": "2026-11-07T04:05:13.278730+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "4e7a114efb69a4897087ccf9e8a60baedec123329af67a6b709ea890ca1bb49b",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "f6dd01453fad30b281f5306682925965b9ec421cae277d365cfb63d3dd37aa79",
-    "tests/nodejs/outline/finding-ledger.md": "9fe0e2084a3ebd8e9ee5ff339fa03cf30f69fbb2cf7fe9f216f3ba7bffa21768",
+    "tests/nodejs/outline/finding-ledger.json": "9e5f2e4a694c8f967e40769e73f3da43f2228cd41dc6924946344c9ef4562fcf",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "d62be6b0860176114034c17ced6a0a9e3b6b943de37d6ea9faecc70d1a86a230",
+    "tests/nodejs/outline/finding-ledger.md": "c48860fe0eae1012ae0aea7f375fe76f5f1c772c2fba317f2ca077381536d754",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -6411,7 +6411,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Composed actual Server receiver/captured-listener source with current176, declared authentic adapter input and verified fresh controls while retaining native listener/fatal/guest gaps."
+    "reason": "Integrated full unchanged publicDomain and real native invocation/activation ownership, composed engine registration with174VM and current177source, declared sources and verified focused controls without closing runtime gaps."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -42699,10 +42699,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/domain-owner-20261107T040341Z.tar.gz",
-    "sha256": "68dd93f17c1d798f163712af5e6e02f266f2317082b87b55bc3441633cb56da6",
-    "bytes": 32906490,
-    "scope": "178completepublicDomain/boundednativeMakeCallback and identified focused evidence; productionJSAPI/zero-ID/Promise/GC/fatal/guest/fourhost unproven",
+    "path": ".context/node26-implementation-snapshots/finding-overlay178-20261107T040514Z.tar.gz",
+    "sha256": "232d24a3b82220a4e2d98152a4c09db962e49f33c3323a37a6781b355a61e12b",
+    "bytes": 10189280,
+    "scope": "Current178source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -45996,7 +45996,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated full unchanged publicDomain and real native invocation/activation ownership, composed engine registration with174VM and current177source, declared sources and verified focused controls without closing runtime gaps."
+    "reason": "Reconciled canonical finding navigation with two integrated source slices, preserving document-qualified definitions, exact nonpasses and unknown dispositions without API closure."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -51661,6 +51661,13 @@
       "sha256": "71ca00526c69aecd44fbbe3e5fea024a35455854698868fbbc755d9e9469dfea",
       "bytes": 34978445,
       "scope": "177genericreceiver/capturedlistener source and identified focused evidence; newcombinedJSAPI/fullServer/guest/fourhost unproven",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/domain-owner-20261107T040341Z.tar.gz",
+      "sha256": "68dd93f17c1d798f163712af5e6e02f266f2317082b87b55bc3441633cb56da6",
+      "bytes": 32906490,
+      "scope": "178completepublicDomain/boundednativeMakeCallback and identified focused evidence; productionJSAPI/zero-ID/Promise/GC/fatal/guest/fourhost unproven",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -57464,7 +57471,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "4bd9e4fdc7220673f871b3bd482fa2f1a61b86cc",
+    "pushedThrough": "e9e3a7a21271677988043686651214e8775c151f",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -87333,6 +87340,15 @@
       "scope": "Real dormant kernel-private notification owner and tmpfs producers, publicENOSYS retained; ABI55activation/fd/readiness/fork/rootfs/dentry gaps remain",
       "status": "sealed-pending-root-integration",
       "currentGuestConformance": false
+    },
+    {
+      "path": ".context/wasi-owner-agent",
+      "sealSha256": "b01466dae679f2ccfb4bb33180afc4c637049d03726b3d0379715b8ee375742d",
+      "status": "sealed-pending-root-integration",
+      "scope": "25real imports and public lifecycle/portable owners;21missing imports and direct-Wasm errno28vs61 nonpass retained; guest executionbackend/JSAPI/fourhost gaps remain",
+      "nativeHelperAttemptsPendingIntegration": 15,
+      "nativeHelperFailuresPendingIntegration": 1,
+      "currentGuestConformance": false
     }
   ],
   "dnsScopedAddressImplementation": {
@@ -87871,22 +87887,22 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "4e7a114efb69a4897087ccf9e8a60baedec123329af67a6b709ea890ca1bb49b",
+    "sha256": "9e5f2e4a694c8f967e40769e73f3da43f2228cd41dc6924946344c9ef4562fcf",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "f6dd01453fad30b281f5306682925965b9ec421cae277d365cfb63d3dd37aa79"
+      "sha256": "d62be6b0860176114034c17ced6a0a9e3b6b943de37d6ea9faecc70d1a86a230"
     },
-    "sourceCheckpoint": 176,
+    "sourceCheckpoint": 178,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 94,
+      "sourceSliceRecords": 96,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
-      "findingsWithoutExplicitOrProposedSourceSlice": 258
+      "findingsWithoutExplicitOrProposedSourceSlice": 257
     },
     "individualApiClosure": false,
     "fourHostConformance": false
@@ -88281,6 +88297,28 @@
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 264
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "4e7a114efb69a4897087ccf9e8a60baedec123329af67a6b709ea890ca1bb49b",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "f6dd01453fad30b281f5306682925965b9ec421cae277d365cfb63d3dd37aa79"
+      },
+      "sourceCheckpoint": 176,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 94,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 258
       },
       "individualApiClosure": false,
       "fourHostConformance": false
