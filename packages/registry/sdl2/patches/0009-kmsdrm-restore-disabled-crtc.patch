@@ -1,0 +1,42 @@
+Subject: KMSDRM: Restore an originally disabled CRTC as disabled
+
+The saved CRTC may have no framebuffer or valid mode. SDL selects a
+preferred mode for its own window in that case, but that fallback is not
+the display state to restore. Passing it together with the saved zero
+framebuffer asks KMS to enable a nonexistent framebuffer; the retry repeats
+the same invalid request.
+
+Choose the restore request from the saved mode_valid flag. Keep the enabled
+restore path unchanged; for an originally disabled CRTC use no framebuffer,
+connectors or mode. Preserve SDL_LogError for genuine restore failures.
+
+This is a generic KMSDRM correction with no platform or application checks.
+Prepared against SDL 2.32.10; not submitted or accepted upstream. The source
+regression control is documented in ../test/README.md. Maintainer exception:
+docs/graphics/compatibility-v1.md, D-60.
+
+--- a/src/video/kmsdrm/SDL_kmsdrmvideo.c
++++ b/src/video/kmsdrm/SDL_kmsdrmvideo.c
+@@ -1097,15 +1097,16 @@
+     /* original video mode and make it point to the original TTY buffer.   */
+     /***********************************************************************/
+ 
+-    ret = KMSDRM_drmModeSetCrtc(viddata->drm_fd, dispdata->crtc->crtc_id,
+-                                dispdata->crtc->buffer_id, 0, 0, &dispdata->connector->connector_id, 1,
+-                                &dispdata->original_mode);
+-
+-    /* If we failed to set the original mode, try to set the connector prefered mode. */
+-    if (ret && (dispdata->crtc->mode_valid == 0)) {
++    /* original_mode may be the preferred mode selected for SDL when the
++       saved CRTC was disabled. Passing it with buffer_id 0 asks KMS to enable
++       a nonexistent framebuffer; restore the saved disabled state instead. */
++    if (dispdata->crtc->mode_valid) {
+         ret = KMSDRM_drmModeSetCrtc(viddata->drm_fd, dispdata->crtc->crtc_id,
+                                     dispdata->crtc->buffer_id, 0, 0, &dispdata->connector->connector_id, 1,
+                                     &dispdata->original_mode);
++    } else {
++        ret = KMSDRM_drmModeSetCrtc(viddata->drm_fd, dispdata->crtc->crtc_id,
++                                    0, 0, 0, NULL, 0, NULL);
+     }
+ 
+     if (ret) {

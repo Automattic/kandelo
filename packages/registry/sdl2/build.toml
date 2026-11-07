@@ -9,6 +9,7 @@ inputs = [
   "packages/registry/sdl2/patches/0006-kmsdrm-cursor-hotspots.patch",
   "packages/registry/sdl2/patches/0007-scale-inclusive-absolute-axes.patch",
   "packages/registry/sdl2/patches/0008-prepare-kms-drawable-before-rendering.patch",
+  "packages/registry/sdl2/patches/0009-kmsdrm-restore-disabled-crtc.patch",
   "libc/glue/libgbm_stub.c",
   "libc/glue/libegl_stub.c",
   "libc/glue/libglesv2_stub.c",
@@ -19,4 +20,4 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 12
+revision = 13

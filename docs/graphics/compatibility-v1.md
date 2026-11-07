@@ -42,6 +42,19 @@ fresh-child graphics, ABI compatibility, stage order or any final gate.
 The boundary detector, loud rejection and ownership regressions are still
 being implemented; this decision is not an implementation claim.
 
+On 2026-11-07 the maintainer approved D-60, a narrow exception to the
+no-ported-software-patches rule: ship a potentially upstreamable SDL2 KMSDRM
+correction that restores an originally disabled CRTC as disabled. The saved
+mode-valid flag is authoritative; SDL's preferred-mode fallback is for its
+own window, not the state to restore with framebuffer zero. The generic
+patch contains no Kandelo or Freeciv conditions and preserves genuine error
+logging. It is neither submitted nor accepted upstream. The original
+source fails the disabled-display regression; the corrected source also
+preserves enabled-display behavior and injected-error diagnostics. Normal
+builds and all application, cross-engine and performance acceptance remain
+required; source controls alone do not establish a working preview. Other
+ported-software patches still require the maintainer's permission.
+
 Retain the existing pointer, typing, ScummVM and idle-worker ship bar.
 Additional targets are pointer input to display within one refresh interval
 p50 and two refresh intervals p95; desktop motion, dragging, resizing and
@@ -26380,3 +26393,26 @@ is bypassed and no foreign process is stopped. Exact plans, removal ledgers,
 hashes and outcomes are in `.context/graphics-obsolete-intermediates-r660/`
 and `.context/graphics-legacy-gc-r666/`. Physical free-space deltas are confounded
 by APFS sharing and concurrent workspace activity.
+
+
+### Generic SDL2 disabled-display restore correction, 2026-11-07
+
+D-60 is implemented in the SDL2 recipe as declared patch0009, revision13.
+The code diff is exactly the tested R658 candidate; its patch header explains
+the generic cause and does not imply upstream submission or acceptance.
+`packages/registry/sdl2/test/check-kmsdrm-restore.py` verifies the manifest-pinned
+SDL2/libdrm archives, applies all nine recipe patches with zero fuzzy matching,
+and executes the actual extracted selection/restore/libdrm bodies against an
+explicit ioctl double. The original disabled-state cases fail41; all four
+patched cases pass, enabled observations are byte-equivalent, and both injected
+EACCES failures retain the original error diagnostic. This is source-level
+evidence, not native hardware or normal target execution.
+
+Job `graphics-sdl-package-r675-1107-033757-d73d` passes4s through
+`scripts/dev-shell.sh`: the maintained strict/UBSan native control, all10
+`tests/package-system/sdl-dsp-packages.test.ts` checks, shell syntax and
+`git diff --check`. Exact commands, source hashes and original/patched
+diagnostics are in `.context/graphics-sdl-package-r675/`. Normal SDL2 and
+affected consumer rebuilds, Freeciv's original error/rendering admission,
+Node/browser and three-engine application validation remain pending. No
+performance, complete-B1 or new-preview claim follows from these controls.
