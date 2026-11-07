@@ -556,10 +556,12 @@ part of the task. Build what is missing:
    scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only --arch wasm64posix
    ```
 
-**Iterating on a few packages first.** Steps 2, 4 and 5 build the whole
-supported graph. While iterating on one or two packages, a fresh worktree
-can instead compose a [partial image](../package-management.md#partial-images)
-carrying the rootfs base and only those packages:
+**Iterating on a few packages first (the default for package work).** Steps
+2, 4 and 5 build the whole supported graph. When the task is porting or
+iterating on one or a few packages, compose a
+[partial image](../package-management.md#partial-images) carrying the rootfs
+base and only those packages instead, and tell the user you are doing so
+(see [Partial images are development builds](packages-and-builds.md#partial-images-are-development-builds)):
 ```bash
 scripts/dev-shell.sh ./run.sh partial shell <pkg> [<pkg>...] [--with-tests]
 ./run.sh browser --partial
