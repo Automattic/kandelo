@@ -507,11 +507,11 @@
         histogramOperation(...args) { return native.histogramOperation(...args); },
         port(operation, owner, value) { return native.port(operation, owner, value); },
         locks(...args) { return native.locks(...args); },
-        serializeMessage(value, transfer) {
-            return native.serializeMessage(value, transfer);
+        serializeMessage(value, transfer, sourcePort) {
+            return native.serializeMessage(value, transfer, sourcePort);
         },
-        deserializeMessage(packet) {
-            return native.deserializeMessage(packet);
+        deserializeMessage(packet, includePorts) {
+            return native.deserializeMessage(packet, includePorts);
         },
         cloneValue(value, transfer) {
             // Keep the engine's structured-clone graph, cycles and byte views;

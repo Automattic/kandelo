@@ -1,0 +1,142 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/workers.md",
+    "findingIds": [
+      "R-001",
+      "R-004",
+      "R-013"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/streams.md": [
+        "STR-003",
+        "STR-004"
+      ]
+    },
+    "relatedFamilies": [
+      "workers",
+      "streams",
+      "web",
+      "engine",
+      "async",
+      "observability"
+    ],
+    "scope": "Actual endpoint transfer/source-close/receiver/abort and cloning prerequisites; automatic transit-cycle collection/generic streams/Worker lifecycle remain incomplete. R-010/011 remain unresolved original references."
+  },
+  "sourceImplemented": [
+    "Real public MessagePort native class/reserved-slot owner and shared public prototype, with checked native admission",
+    "Consume-once endpoint transfer sidecars; moved source authority and independent local pending-close root",
+    "Unentangled receiver initialization, real queue adoption, abort cleanup and exposed-wrapper notification ownership",
+    "Actual MessageEvent.ports and Worker startup read transaction, including unreachable payload transfers",
+    "ArrayBuffer-before-host transfer while preserving caller indices and normal shell order; exact pending native clone errors retained",
+    "Destination-self discard and allocation-free payload retirement outside channel locks; automatic cycles remain separate"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-transfer194-source-r1/report-r2.json",
+    "sha256": "e58584af572aba43331cfabcb55048fccdd9d1ea524de8c6efeb293305ea7df2",
+    "guardedInputs": 860,
+    "scope": "Actual MessagePort native transfer/receiver/abort and clone order source; explicit portable/native JS component boundaries, no native-cycle or generic transfer/JSAPI/guest closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-transfer194-affected-r2.json",
+    "sha256": "d493bf2e02cacfff00b50331809af8d4eebc7225d495f475a19f92a2eaea940d",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-transfer194-source-r1/report-r2.json",
+    "sha256": "e58584af572aba43331cfabcb55048fccdd9d1ea524de8c6efeb293305ea7df2",
+    "portableEndpointGroups": 8,
+    "unchangedQueueControlPassed": true,
+    "candidateProcesses": 13,
+    "newFrontendGroupsInOneProcess": 3,
+    "wholeUnchangedUpstreamFiles": 1,
+    "subjectsPerFile": 2,
+    "newCompilerAttempts": 0,
+    "productionJSAPICompiled": false,
+    "scope": "Portable endpoint core plus candidate JS over genuine native Node clone/queues/ref/close; manual dispatcher/envelope instrumentation explicit. No production sidecar/receiver/GC/realm/guest proof."
+  },
+  "sealedEvidence": {
+    "report": ".context/messageport-transfer-agent/handoff/report.json",
+    "sha256": "552d92bec123b5255fdeb9da8e3e0d27af1424043cfa222848e434330b1b6e10",
+    "reusedEvidence": true,
+    "scope": "Four successful tiny compiles,8final portable groups/unchanged queue,13candidate processes and unchanged file; original failures/abort/setup/selection retained, guest0."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/messageport-transfer-agent/handoff/report.json",
+      "sha256": "552d92bec123b5255fdeb9da8e3e0d27af1424043cfa222848e434330b1b6e10",
+      "kind": "original-private-nonpasses",
+      "details": [
+        {
+          "kind": "native-only-target-observation",
+          "source": "evidence/native-reference-r1.cjs",
+          "stderr": "evidence/native-reference-r1.stderr",
+          "exit": 134,
+          "meaning": "Graph getter re-transfers a listed port; no runtime-defect attribution, workaround or accepted boundary",
+          "sourceSha256": "c6a20c40904401355daf0a29537f22fc05485f425d9e1fda3a92d84f0f6adfef",
+          "stderrSha256": "2ff497a32a6135bc3479de178fe08d10c39a86f42665ab0f8c147dc46a3109c8"
+        },
+        {
+          "kind": "fixture-setup-and-peer-framing",
+          "report": "evidence/js-r1/runs.json",
+          "pass": 9,
+          "fail": 2,
+          "reason": "Missing Buffer fixture and old worker peer framing; all assertions retained",
+          "reportSha256": "be1e900a4c8190458c91caf37053b393a59a659384e00fee8bd3787b78b57192"
+        },
+        {
+          "kind": "double-dispatch-fixture",
+          "report": "evidence/transfer-js-r1/runs.json",
+          "componentFailures": 2,
+          "nativePasses": 1,
+          "reason": "Native constructor per-instance hooks started automatic envelope delivery before candidate dispatcher; real hooks retired",
+          "reportSha256": "be66fe8dc0c84513514ae7be6ea1f33df980f4d9b0281e9d6ef7afe02d795bc3"
+        },
+        {
+          "kind": "harness-selection",
+          "report": "evidence/js-final/runs.json",
+          "actualIntendedPassProcesses": 13,
+          "misclassifiedHelperHarnessErrors": 3,
+          "driverExit": 1,
+          "reason": "Collector included fixture nativeBoundary helper names outside cases; corrected selector, no assertion/source weakening",
+          "reportSha256": "a8ed8c651e069f0b212903ccb71dcdc4bd6ca58fa61083dc059b611f0d7ea519"
+        },
+        {
+          "kind": "metadata-only",
+          "reason": "One IndentationError before private source copies; no test/compile/build executed"
+        }
+      ]
+    },
+    {
+      "report": ".context/node26-transfer194-affected-r1.json",
+      "sha256": "5a04a98e7bac8c2c9e0fa2e773f1471f2e4bae0064e09a995639ccd87f65ce16",
+      "kind": "incorrect-root-affected-selection",
+      "reason": "Nonexistent port spec filename selected no port tests; only14package checks ran. Corrected actual filename in separate25-check r2 report; no assertion changed."
+    },
+    {
+      "report": ".context/node26-transfer194-checkpoint-r1.log",
+      "sha256": "8f9d320d75313d5023d0bd34528b9f7528f3a862124b72bed31e02fb12a3c094",
+      "kind": "new-patch-context-whitespace-check-failure",
+      "reason": "Newly staged patch had blank EOF context, missed by unstaged untracked-file diff check. Regenerated with2context lines; exact engine before/after replay unchanged."
+    }
+  ],
+  "remaining": [
+    "Automatic collection of unreachable transitive endpoint/packet ownership cycles; explicit retirement is implemented/tested, automatic collection is not",
+    "Generic registered-JS host/nested stream/AbortSignal/FileHandle/etc transfer callbacks still reject",
+    "moveMessagePortToContext, complete worker options/stdio/measurements/parentPort-after-exit and listener/error/exit disposal remain",
+    "Actual native AsyncResource/provider identity and full byte/memory/pressure/phase/realm/GC/OOM/cancellation/liveness conformance",
+    "Compile actual native JSAPI receiver/transfer/GC/realm/OOM/fatal/teardown/ref paths and validate identified artifact across all four hosts",
+    "Original native-only retransfer graph abort remains unresolved target observation, not an accepted boundary"
+  ],
+  "at": "2026-11-07T07:37:33.117542+00:00",
+  "recipeRevision": 194,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

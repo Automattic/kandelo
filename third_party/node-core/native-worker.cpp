@@ -117,7 +117,7 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
     input->AdoptMemory(KandeloNativeMemoryOwner(cx));
     auto clear = mozilla::MakeScopeExit([&] { input->ClearContent(); KandeloFlushNativeMemory(cx); });
     RootedValue config(cx);
-    if (!input->content->data.read(cx, &config, KandeloMessageClonePolicy()) || !config.isObject()) return false;
+    if (!KandeloReadMessage(cx, input->content.get(), &config) || !config.isObject()) return false;
     if (!bootstrap) { args.rval().set(config); return true; }
     RootedObject object(cx, &config.toObject());
     RootedValue port(cx);

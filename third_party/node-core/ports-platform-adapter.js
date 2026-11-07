@@ -49,8 +49,15 @@ function _createNodePortsPlatform(platform) {
             // Serialization and transfer validation still run for closed ports.
             // The engine owns graph identity/getters and byte detachment now;
             // deserialization remains deferred until receive/delivery.
-            const serialized = platform.native.serializeMessage(value, transferList(transfer));
-            return native('post', owner.handle, serialized);
+            const serialized = platform.native.serializeMessage(value, transferList(transfer), this);
+            const posted = native('post', owner.handle, serialized);
+            if (posted === 'target-self') {
+                const emitWarning = process.emitWarning;
+                if (typeof emitWarning === 'function') ReflectApply(emitWarning, process,
+                    ['The target port was posted to itself, and the communication channel was lost']);
+                return true;
+            }
+            return posted;
         },
         start() { native('start', state(this).handle, true); },
         ref() { const owner = state(this); if (!owner.closed && !owner.closing) { native('ref', owner.handle, true); roots.add(this); } return this; },
@@ -67,16 +74,17 @@ function _createNodePortsPlatform(platform) {
     for (const name of ['postMessage', 'start', 'ref', 'unref', 'hasRef', 'close'])
         ObjectDefineProperty(MessagePort.prototype, name, { value: methods[name], configurable: true, writable: true, enumerable: true });
     function wrap(handle) {
-        const port = ObjectCreate(MessagePort.prototype);
+        const port = native('wrap', handle, MessagePort.prototype);
         const weak = new WeakRef(port);
-        const resource = new platform.AsyncResource('MESSAGEPORT');
-        states.set(port, { handle, weak, resource, closed: false, closing: false });
-        registry.add(weak);
-        // Port host-handle transfer is not implemented. Do not advertise a
-        // successful transfer mode until movement owns the endpoint itself.
-        platform.markUncloneable(port);
-        ReflectApply(port[symbols.oninit], port, []);
-        return port;
+        try {
+            const resource = new platform.AsyncResource('MESSAGEPORT');
+            states.set(port, { handle, weak, resource, closed: false, closing: false });
+            registry.add(weak);
+            native('prepared', handle);
+            ReflectApply(port[symbols.oninit], port, []);
+            native('initialized', handle);
+            return port;
+        } catch (error) { native('abortWrap', handle); throw error; }
     }
     function MessageChannel() {
         if (!new.target) constructorError('ERR_CONSTRUCT_CALL_REQUIRED');
@@ -101,15 +109,18 @@ function _createNodePortsPlatform(platform) {
             finally { owner.resource.emitDestroy(); }
             return symbols.no_message_symbol;
         }
-        let value;
-        try { value = platform.native.deserializeMessage(packet); }
+        let value, ports;
+        try {
+            const decoded = platform.native.deserializeMessage(packet, true);
+            value = decoded[0]; ports = decoded[1];
+        }
         catch (error) {
             if (!dispatch) throw error;
             owner.resource.runInAsyncScope(emitMessage, port, error, undefined, 'messageerror');
             return true;
         }
         if (!dispatch) return value;
-        owner.resource.runInAsyncScope(emitMessage, port, value, [], 'message');
+        owner.resource.runInAsyncScope(emitMessage, port, value, ports, 'message');
         return true;
     }
     let emitMessage;
@@ -162,6 +173,7 @@ function _createNodePortsPlatform(platform) {
         }
         return count;
     }
+    native('configure', wrap);
     return { MessagePort, MessageChannel, initialize, dispatch, adopt: wrap,
         drain(port) { while (receive(port, true, true) !== symbols.no_message_symbol) {} } };
 }

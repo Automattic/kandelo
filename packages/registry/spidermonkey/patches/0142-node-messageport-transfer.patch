@@ -1,0 +1,335 @@
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -1392,4 +1392,7 @@
+       if (!out.buf.callbacks_->canTransfer(
+               cx, unwrappedObj, &sameProcessScopeRequired, out.buf.closure_)) {
++        // Node's native host owner can report a precise source/detached/duplicate
++        // error. Do not overwrite that already-pending exception.
++        if (cx->hasKandeloCloneErrors() && cx->isExceptionPending()) return false;
+         return reportDataCloneError(JS_SCERR_TRANSFERABLE);
+       }
+@@ -2456,166 +2459,177 @@
+   }
+
+-  // Walk along the transferables and the transfer map at the same time,
+-  // grabbing out pointers from the transferables and stuffing them into the
+-  // transfer map.
+-  auto point = out.iter();
+-  MOZ_RELEASE_ASSERT(point.canPeek());
+-  MOZ_ASSERT(uint32_t(NativeEndian::swapFromLittleEndian(point.peek()) >> 32) ==
+-             SCTAG_HEADER);
+-  point++;
+-  MOZ_RELEASE_ASSERT(point.canPeek());
+-  MOZ_ASSERT(uint32_t(NativeEndian::swapFromLittleEndian(point.peek()) >> 32) ==
+-             SCTAG_TRANSFER_MAP_HEADER);
+-  point++;
+-  MOZ_RELEASE_ASSERT(point.canPeek());
+-  MOZ_ASSERT(NativeEndian::swapFromLittleEndian(point.peek()) ==
+-             transferableObjects.length());
+-  point++;
+-
+-  JSContext* cx = context();
+-  RootedObject obj(cx);
+-  JS::StructuredCloneScope scope = output().scope();
+-  for (auto* o : transferableObjects) {
+-    obj = o;
+-
+-    uint32_t tag;
+-    JS::TransferableOwnership ownership;
+-    void* content;
+-    uint64_t extraData;
++  // Node finishes ArrayBuffer detachment before invoking native host transfer
++  // callbacks, even when a host appears first in the caller's transfer list.
++  // Keep table/backreference indices in list order and preserve shell ordering
++  // when the Node clone owner is not installed.
++  const bool nodeOrder = context()->hasKandeloCloneErrors();
++  for (unsigned pass = 0; pass < (nodeOrder ? 2u : 1u); ++pass) {
++    // Walk along the transferables and the transfer map at the same time,
++    // grabbing out pointers from the transferables and stuffing them into the
++    // transfer map.
++    auto point = out.iter();
++    MOZ_RELEASE_ASSERT(point.canPeek());
++    MOZ_ASSERT(uint32_t(NativeEndian::swapFromLittleEndian(point.peek()) >> 32) ==
++               SCTAG_HEADER);
++    point++;
++    MOZ_RELEASE_ASSERT(point.canPeek());
++    MOZ_ASSERT(uint32_t(NativeEndian::swapFromLittleEndian(point.peek()) >> 32) ==
++               SCTAG_TRANSFER_MAP_HEADER);
++    point++;
++    MOZ_RELEASE_ASSERT(point.canPeek());
++    MOZ_ASSERT(NativeEndian::swapFromLittleEndian(point.peek()) ==
++               transferableObjects.length());
++    point++;
++
++    JSContext* cx = context();
++    RootedObject obj(cx);
++    JS::StructuredCloneScope scope = output().scope();
++    for (auto* o : transferableObjects) {
++      obj = o;
++
++      ESClass cls;
++      if (!GetBuiltinClass(cx, obj, &cls)) return false;
++      if (nodeOrder && ((pass == 0) != (cls == ESClass::ArrayBuffer))) {
++        MOZ_ALWAYS_TRUE(point.advance());
++        MOZ_ALWAYS_TRUE(point.advance());
++        MOZ_ALWAYS_TRUE(point.advance());
++        continue;
++      }
++
++      uint32_t tag;
++      JS::TransferableOwnership ownership;
++      void* content;
++      uint64_t extraData;
+
+ #if DEBUG
+-    SCInput::getPair(point.peek(), &tag, (uint32_t*)&ownership);
+-    MOZ_ASSERT(tag == SCTAG_TRANSFER_MAP_PENDING_ENTRY);
+-    MOZ_ASSERT(ownership == JS::SCTAG_TMO_UNFILLED);
++      SCInput::getPair(point.peek(), &tag, (uint32_t*)&ownership);
++      MOZ_ASSERT(tag == SCTAG_TRANSFER_MAP_PENDING_ENTRY);
++      MOZ_ASSERT(ownership == JS::SCTAG_TMO_UNFILLED);
+ #endif
+
+-    ESClass cls;
+-    if (!GetBuiltinClass(cx, obj, &cls)) {
+-      return false;
+-    }
+-
+-    if (cls == ESClass::ArrayBuffer) {
+-      tag = SCTAG_TRANSFER_MAP_ARRAY_BUFFER;
+-
+-      // The current setup of the array buffer inheritance hierarchy doesn't
+-      // lend itself well to generic manipulation via proxies.
+-      Rooted<ArrayBufferObject*> arrayBuffer(
+-          cx, obj->maybeUnwrapAs<ArrayBufferObject>());
+-      JSAutoRealm ar(cx, arrayBuffer);
+-
+-      if (arrayBuffer->isDetached()) {
+-        reportDataCloneError(JS_SCERR_TYPED_ARRAY_DETACHED);
+-        return false;
+-      }
+-
+-      if (arrayBuffer->hasDefinedDetachKey()) {
+-        reportDataCloneError(JS_SCERR_WASM_NO_TRANSFER);
+-        return false;
+-      }
+-
+-      if (scope == JS::StructuredCloneScope::SameProcess && arrayBuffer->kandeloBackingOwner()) {
+-        // The table owns the actual allocation before source detachment. Raw
+-        // bytes contain only an index, never a forgeable native owner/JS slot.
+-        try {
+-          auto contents = arrayBuffer->contents();
+-          const size_t maximum = arrayBuffer->isResizable()
+-              ? arrayBuffer->as<ResizableArrayBufferObject>().maxByteLength()
+-              : arrayBuffer->byteLength();
+-          auto entry = std::make_shared<JS::KandeloBacking::TransferEntry>(
+-              contents.retained(), uint32_t(contents.kind()), arrayBuffer->byteLength(),
+-              maximum, arrayBuffer->isResizable(), contents.freeFunc(), contents.freeUserData());
+-          extraData = out.buf.holdKandeloBackingTransfer(std::move(entry));
+-        } catch (const std::bad_alloc&) { ReportOutOfMemory(cx); return false; }
+-        tag = SCTAG_TRANSFER_MAP_KANDELO_BACKING;
+-        ownership = JS::SCTAG_TMO_CUSTOM; content = nullptr;
+-        if (!JS::DetachArrayBuffer(cx, arrayBuffer)) return false;
+-      } else if (scope == JS::StructuredCloneScope::DifferentProcess ||
+-          scope == JS::StructuredCloneScope::DifferentProcessForIndexedDB ||
+-          arrayBuffer->isResizable()) {
+-        // Write Transferred ArrayBuffers in DifferentProcess scope at
+-        // the end of the clone buffer, and store the offset within the
+-        // buffer to where the ArrayBuffer was written. Note that this
+-        // will invalidate the current position iterator.
+-        //
+-        // Resizable ArrayBuffers need to store two extra data, the byte length
+-        // and the maximum byte length, but the current transferables format
+-        // supports only a single additional datum. Therefore resizable buffers
+-        // currently go through this slower code path.
+-
+-        size_t pointOffset = out.offset(point);
+-        tag = SCTAG_TRANSFER_MAP_STORED_ARRAY_BUFFER;
+-        ownership = JS::SCTAG_TMO_UNOWNED;
+-        content = nullptr;
+-        extraData = out.tell() -
+-                    pointOffset;  // Offset from tag to current end of buffer
+-        if (!writeArrayBuffer(arrayBuffer)) {
+-          ReportOutOfMemory(cx);
++      if (cls == ESClass::ArrayBuffer) {
++        tag = SCTAG_TRANSFER_MAP_ARRAY_BUFFER;
++
++        // The current setup of the array buffer inheritance hierarchy doesn't
++        // lend itself well to generic manipulation via proxies.
++        Rooted<ArrayBufferObject*> arrayBuffer(
++            cx, obj->maybeUnwrapAs<ArrayBufferObject>());
++        JSAutoRealm ar(cx, arrayBuffer);
++
++        if (arrayBuffer->isDetached()) {
++          reportDataCloneError(JS_SCERR_TYPED_ARRAY_DETACHED);
+           return false;
+         }
+
+-        // Must refresh the point iterator after its collection has
+-        // been modified.
+-        point = out.iter();
+-        point += pointOffset;
+-
+-        if (!JS::DetachArrayBuffer(cx, arrayBuffer)) {
++        if (arrayBuffer->hasDefinedDetachKey()) {
++          reportDataCloneError(JS_SCERR_WASM_NO_TRANSFER);
+           return false;
+         }
++
++        if (scope == JS::StructuredCloneScope::SameProcess && arrayBuffer->kandeloBackingOwner()) {
++          // The table owns the actual allocation before source detachment. Raw
++          // bytes contain only an index, never a forgeable native owner/JS slot.
++          try {
++            auto contents = arrayBuffer->contents();
++            const size_t maximum = arrayBuffer->isResizable()
++                ? arrayBuffer->as<ResizableArrayBufferObject>().maxByteLength()
++                : arrayBuffer->byteLength();
++            auto entry = std::make_shared<JS::KandeloBacking::TransferEntry>(
++                contents.retained(), uint32_t(contents.kind()), arrayBuffer->byteLength(),
++                maximum, arrayBuffer->isResizable(), contents.freeFunc(), contents.freeUserData());
++            extraData = out.buf.holdKandeloBackingTransfer(std::move(entry));
++          } catch (const std::bad_alloc&) { ReportOutOfMemory(cx); return false; }
++          tag = SCTAG_TRANSFER_MAP_KANDELO_BACKING;
++          ownership = JS::SCTAG_TMO_CUSTOM; content = nullptr;
++          if (!JS::DetachArrayBuffer(cx, arrayBuffer)) return false;
++        } else if (scope == JS::StructuredCloneScope::DifferentProcess ||
++            scope == JS::StructuredCloneScope::DifferentProcessForIndexedDB ||
++            arrayBuffer->isResizable()) {
++          // Write Transferred ArrayBuffers in DifferentProcess scope at
++          // the end of the clone buffer, and store the offset within the
++          // buffer to where the ArrayBuffer was written. Note that this
++          // will invalidate the current position iterator.
++          //
++          // Resizable ArrayBuffers need to store two extra data, the byte length
++          // and the maximum byte length, but the current transferables format
++          // supports only a single additional datum. Therefore resizable buffers
++          // currently go through this slower code path.
++
++          size_t pointOffset = out.offset(point);
++          tag = SCTAG_TRANSFER_MAP_STORED_ARRAY_BUFFER;
++          ownership = JS::SCTAG_TMO_UNOWNED;
++          content = nullptr;
++          extraData = out.tell() -
++                      pointOffset;  // Offset from tag to current end of buffer
++          if (!writeArrayBuffer(arrayBuffer)) {
++            ReportOutOfMemory(cx);
++            return false;
++          }
++
++          // Must refresh the point iterator after its collection has
++          // been modified.
++          point = out.iter();
++          point += pointOffset;
++
++          if (!JS::DetachArrayBuffer(cx, arrayBuffer)) {
++            return false;
++          }
++        } else {
++          size_t nbytes = arrayBuffer->byteLength();
++
++          using BufferContents = ArrayBufferObject::BufferContents;
++
++          BufferContents bufContents =
++              ArrayBufferObject::extractStructuredCloneContents(cx, arrayBuffer);
++          if (!bufContents) {
++            return false;  // out of memory
++          }
++
++          content = bufContents.data();
++          if (bufContents.kind() == ArrayBufferObject::MAPPED) {
++            ownership = JS::SCTAG_TMO_MAPPED_DATA;
++          } else {
++            MOZ_ASSERT(
++                bufContents.kind() ==
++                        ArrayBufferObject::MALLOCED_ARRAYBUFFER_CONTENTS_ARENA ||
++                    bufContents.kind() ==
++                        ArrayBufferObject::MALLOCED_UNKNOWN_ARENA,
++                "failing to handle new ArrayBuffer kind?");
++            ownership = JS::SCTAG_TMO_ALLOC_DATA;
++          }
++          extraData = nbytes;
++        }
+       } else {
+-        size_t nbytes = arrayBuffer->byteLength();
+-
+-        using BufferContents = ArrayBufferObject::BufferContents;
+-
+-        BufferContents bufContents =
+-            ArrayBufferObject::extractStructuredCloneContents(cx, arrayBuffer);
+-        if (!bufContents) {
+-          return false;  // out of memory
++        if (!out.buf.callbacks_ || !out.buf.callbacks_->writeTransfer) {
++          return reportDataCloneError(JS_SCERR_TRANSFERABLE);
+         }
+-
+-        content = bufContents.data();
+-        if (bufContents.kind() == ArrayBufferObject::MAPPED) {
+-          ownership = JS::SCTAG_TMO_MAPPED_DATA;
+-        } else {
+-          MOZ_ASSERT(
+-              bufContents.kind() ==
+-                      ArrayBufferObject::MALLOCED_ARRAYBUFFER_CONTENTS_ARENA ||
+-                  bufContents.kind() ==
+-                      ArrayBufferObject::MALLOCED_UNKNOWN_ARENA,
+-              "failing to handle new ArrayBuffer kind?");
+-          ownership = JS::SCTAG_TMO_ALLOC_DATA;
++        if (!out.buf.callbacks_->writeTransfer(cx, obj, out.buf.closure_, &tag,
++                                               &ownership, &content,
++                                               &extraData)) {
++          return false;
+         }
+-        extraData = nbytes;
+-      }
+-    } else {
+-      if (!out.buf.callbacks_ || !out.buf.callbacks_->writeTransfer) {
+-        return reportDataCloneError(JS_SCERR_TRANSFERABLE);
+-      }
+-      if (!out.buf.callbacks_->writeTransfer(cx, obj, out.buf.closure_, &tag,
+-                                             &ownership, &content,
+-                                             &extraData)) {
+-        return false;
+-      }
+-      MOZ_ASSERT(tag > SCTAG_TRANSFER_MAP_PENDING_ENTRY);
+-    }
+-
+-    point.write(NativeEndian::swapToLittleEndian(PairToUInt64(tag, ownership)));
+-    MOZ_ALWAYS_TRUE(point.advance());
+-    point.write(
+-        NativeEndian::swapToLittleEndian(reinterpret_cast<uint64_t>(content)));
+-    MOZ_ALWAYS_TRUE(point.advance());
+-    point.write(NativeEndian::swapToLittleEndian(extraData));
+-    MOZ_ALWAYS_TRUE(point.advance());
+-  }
++        MOZ_ASSERT(tag > SCTAG_TRANSFER_MAP_PENDING_ENTRY);
++      }
++
++      point.write(NativeEndian::swapToLittleEndian(PairToUInt64(tag, ownership)));
++      MOZ_ALWAYS_TRUE(point.advance());
++      point.write(
++          NativeEndian::swapToLittleEndian(reinterpret_cast<uint64_t>(content)));
++      MOZ_ALWAYS_TRUE(point.advance());
++      point.write(NativeEndian::swapToLittleEndian(extraData));
++      MOZ_ALWAYS_TRUE(point.advance());
++    }
+
+ #if DEBUG
+-  // Make sure there aren't any more transfer map entries after the expected
+-  // number we read out.
+-  if (!point.done()) {
+-    uint32_t tag, data;
+-    SCInput::getPair(point.peek(), &tag, &data);
+-    MOZ_ASSERT(tag < SCTAG_TRANSFER_MAP_HEADER ||
+-               tag >= SCTAG_TRANSFER_MAP_END_OF_BUILTIN_TYPES);
+-  }
++    // Make sure there aren't any more transfer map entries after the expected
++    // number we read out.
++    if (!point.done()) {
++      uint32_t tag, data;
++      SCInput::getPair(point.peek(), &tag, &data);
++      MOZ_ASSERT(tag < SCTAG_TRANSFER_MAP_HEADER ||
++                 tag >= SCTAG_TRANSFER_MAP_END_OF_BUILTIN_TYPES);
++    }
+ #endif
++  }
+   return true;
+ }

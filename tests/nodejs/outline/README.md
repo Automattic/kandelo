@@ -1,5 +1,11 @@
 # Node 26 core implementation outline
 
+Source194 integrates actual native MessagePort transfer/receiver/abort ownership and clone ordering. Eight portable groups, thirteen native-dependent candidate processes, one unchanged upstream file per subject and25affected checks pass. Automatic native transit-cycle collection, generic transfer and guest/four-host evidence remain incomplete.
+See [source scope](messageport-transfer-integration.md).
+
+Source194 integrates actual native MessagePort transfer/receiver/abort ownership and clone ordering. Eight portable groups, thirteen native-dependent candidate processes, one unchanged upstream file per subject and25affected checks pass. Automatic native transit-cycle collection, generic transfer and guest/four-host evidence remain incomplete.
+See [source scope](messageport-transfer-integration.md).
+
 Source193 integrates actual Sign/Verify/createSign/createVerify over pinned algorithms and native digest/key owners.52focused groups,2whole unchanged upstream files per subject and14package checks complete; the existing CLI interoperability block remains skipped and is not passing coverage. Current guest/four-host conformance is unestablished.
 See [source scope](streaming-signature-owner-integration.md).
 

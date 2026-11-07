@@ -5,7 +5,7 @@
 #define KANDELO_NODE_PORT_QUEUE_H
 #include <chrono>
 #include <condition_variable>
-#include <deque>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -16,7 +16,7 @@
 namespace kandelo::ports {
 template<class Message> class Endpoint {
   struct State {
-    std::deque<std::shared_ptr<Message>> messages;
+    std::list<std::shared_ptr<Message>> messages;
     bool started = false, referenced = true, closing = false, closed = false;
     bool remoteClosed = false, closeNotification = false;
   };
@@ -24,16 +24,19 @@ template<class Message> class Endpoint {
     std::mutex mutex;
     std::condition_variable changed;
     State sides[2];
+    bool entangled = true;
   };
   std::shared_ptr<Channel> channel_;
   unsigned side_;
   State& Self() const { return channel_->sides[side_]; }
   State& Peer() const { return channel_->sides[side_ ^ 1]; }
-  void CompleteClose() const noexcept {
+  void CompleteClose(std::list<std::shared_ptr<Message>>& retired) const noexcept {
     auto& state = Self();
     state.closed = true; state.closing = false; state.started = false;
     state.closeNotification = true;
-    state.messages.clear();
+    // Dropping a packet can close a transferred endpoint, including one in
+    // this channel. Retire payloads only after releasing the channel mutex.
+    retired.swap(state.messages);
     // This logical terminal marker follows every already-enqueued packet.
     // No allocation is allowed on finalization/close cleanup paths.
     Peer().remoteClosed = true;
@@ -54,22 +57,28 @@ template<class Message> class Endpoint {
     return std::pair<std::shared_ptr<Endpoint>, std::shared_ptr<Endpoint>>(
         new Endpoint(channel, 0), new Endpoint(channel, 1));
   }
+  static std::shared_ptr<Endpoint> Unentangled() {
+    auto channel = std::make_shared<Channel>();
+    channel->entangled = false;
+    return std::shared_ptr<Endpoint>(new Endpoint(std::move(channel), 0));
+  }
   ~Endpoint() { Abandon(); }
   Endpoint(const Endpoint&) = delete;
   Endpoint& operator=(const Endpoint&) = delete;
   bool Send(std::shared_ptr<Message> message) {
     std::lock_guard<std::mutex> lock(channel_->mutex);
-    if (Self().closed || Self().closing || Peer().closed) return false;
+    if (!channel_->entangled || Self().closed || Self().closing || Peer().closed) return false;
     Peer().messages.push_back(std::move(message));
     channel_->changed.notify_all(); return true;
   }
   Result Receive(bool force = false) {
+    std::list<std::shared_ptr<Message>> retired;
     std::lock_guard<std::mutex> lock(channel_->mutex);
     if (!Ready(force)) return {Kind::Empty, {}};
     auto& state = Self();
     if (state.closeNotification) return {Kind::Close, {}};
     if (state.closing || (state.messages.empty() && state.remoteClosed)) {
-      CompleteClose(); return {Kind::Close, {}};
+      CompleteClose(retired); return {Kind::Close, {}};
     }
     auto packet = std::move(state.messages.front()); state.messages.pop_front();
     return {Kind::MessageValue, std::move(packet)};
@@ -87,6 +96,13 @@ template<class Message> class Endpoint {
   bool HasRef() const {
     std::lock_guard<std::mutex> lock(channel_->mutex);
     return !Self().closed && !Self().closing && Self().referenced;
+  }
+  bool Started() const {
+    std::lock_guard<std::mutex> lock(channel_->mutex);
+    return Self().started;
+  }
+  bool IsPeerOf(const Endpoint& other) const noexcept {
+    return channel_ == other.channel_ && channel_->entangled && side_ != other.side_;
   }
   bool IsClosed() const {
     std::lock_guard<std::mutex> lock(channel_->mutex);
@@ -109,14 +125,60 @@ template<class Message> class Endpoint {
     Self().closeNotification = false;
   }
   void Abandon() noexcept {
+    std::list<std::shared_ptr<Message>> retired;
     std::lock_guard<std::mutex> lock(channel_->mutex);
-    if (!Self().closed) CompleteClose();
+    if (!Self().closed) CompleteClose(retired);
     Self().closeNotification = false;
   }
   template<class Rep, class Period>
   bool WaitForReady(const std::chrono::duration<Rep, Period>& timeout) {
     std::unique_lock<std::mutex> lock(channel_->mutex);
     return channel_->changed.wait_for(lock, timeout, [&] { return Ready(false); });
+  }
+};
+
+// A clone packet owns a detached endpoint until one receiver commits its
+// adoption. Discarding the packet closes that exact endpoint; destroying the
+// source wrapper must never close the endpoint after authority has moved.
+template<class Message> class EndpointTransfer {
+  std::mutex mutex_;
+  std::shared_ptr<Endpoint<Message>> endpoint_;
+  bool reading_ = false;
+ public:
+  EndpointTransfer() = default;
+  EndpointTransfer(const EndpointTransfer&) = delete;
+  EndpointTransfer& operator=(const EndpointTransfer&) = delete;
+  ~EndpointTransfer() { Abort(); }
+  void Install(std::shared_ptr<Endpoint<Message>> endpoint) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    endpoint_ = std::move(endpoint);
+  }
+  std::shared_ptr<Endpoint<Message>> BeginRead() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (reading_ || !endpoint_) return {};
+    reading_ = true;
+    return endpoint_;
+  }
+  bool CommitRead() noexcept {
+    std::shared_ptr<Endpoint<Message>> released;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!reading_ || !endpoint_) return false;
+      released = std::move(endpoint_); reading_ = false;
+    }
+    return true;
+  }
+  bool TargetsPeerOf(const Endpoint<Message>& source) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return endpoint_ && endpoint_->IsPeerOf(source);
+  }
+  void Abort() noexcept {
+    std::shared_ptr<Endpoint<Message>> endpoint;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      endpoint = std::move(endpoint_); reading_ = false;
+    }
+    if (endpoint) endpoint->Abandon();
   }
 };
 

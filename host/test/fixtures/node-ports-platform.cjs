@@ -14,8 +14,31 @@ const { AsyncResource } = require('node:async_hooks');
 const { createNativeAdapter } = require('./node-native-adapter.cjs');
 const bundle = fs.readFileSync(path.resolve(__dirname, '../../../third_party/node-core/node-core.js'), 'utf8');
 const factories = Function(bundle + '; return { ports: _createNodePortsPlatform, web: _createNodeFormDataPlatform, marks: _createNodeObjectMarks };')();
+// This component boundary uses genuine native Node MessagePort objects and
+// native clone/transfer/queue/close callbacks. It does not execute the new
+// SpiderMonkey wrapper/sidecar/read-admission/GC/realm owners.
 const handles = new Map();
+const originalPort = wt.MessagePort.prototype;
+const nativePost = Function.prototype.call.bind(originalPort.postMessage);
+const nativeClose = Function.prototype.call.bind(originalPort.close);
+const nativeRef = Function.prototype.call.bind(originalPort.ref);
+const nativeUnref = Function.prototype.call.bind(originalPort.unref);
+const nativeHasRef = Function.prototype.call.bind(originalPort.hasRef);
+const nativeSymbols = require('internal/test/binding').internalBinding('symbols');
+const nativeEventTarget = require('internal/event_target');
+let adopt;
 function info(port) { return handles.get(port); }
+function register(port) {
+  if (!handles.has(port)) handles.set(port, { started: false, closing: false, closeReady: false,
+    acknowledged: false, wrapped: false, prepared: false, initialized: false });
+  // The real native HandleWrap completion feeds the candidate's dispatch phase;
+  // do not let native Node IO also dispatch a duplicate public close event.
+  Object.defineProperty(port, nativeSymbols.handle_onclose, {
+    configurable: true, value() { info(port).closeReady = true; },
+  });
+  return port;
+}
+function isNativePort(port) { try { nativeHasRef(port); return true; } catch { return false; } }
 const native = {
   objectMark(operation, value) {
     if (operation === 'clone') return nativeMarks.clone(value);
@@ -24,29 +47,47 @@ const native = {
     throw Error('Unknown real native mark operation ' + operation);
   },
   markBufferUntransferable: wt.markAsUntransferable,
-  serializeMessage(value, transfer) { return v8.serialize(structuredClone(value, { transfer })); },
-  deserializeMessage: packet => v8.deserialize(packet),
+  serializeMessage(value, transfer, sourcePort) {
+    if (sourcePort !== undefined && transfer.includes(sourcePort))
+      throw new DOMException('Transfer list contains source port', 'DataCloneError');
+    // Actual native clone moves listed endpoints, including unreachable ones.
+    // Retain all of them in the native envelope so receive can adopt/list them.
+    return structuredClone({ value, ports: transfer.filter(isNativePort) }, { transfer });
+  },
+  deserializeMessage(packet, includePorts) {
+    assert.equal(typeof adopt, 'function');
+    for (const port of packet.ports) {
+      register(port); adopt(port);
+      assert.equal(info(port).initialized, true);
+    }
+    return includePorts ? [packet.value, packet.ports] : packet.value;
+  },
   port(op, handle, value) {
-    if (op === 'broadcast') {
-      const port = nativeMessaging.broadcastChannel(handle);
-      handles.set(port, { started: false, closing: false, closeReady: false, acknowledged: false });
-      port.on('close', () => { info(port).closeReady = true; });
-      return port;
+    if (op === 'configure') { assert.equal(adopt, undefined); adopt = handle; return; }
+    if (op === 'wrap') {
+      register(handle); assert.equal(info(handle).wrapped, false);
+      info(handle).wrapped = true;
+      // Node's initial constructor already installed per-instance listener
+      // hooks that start native automatic delivery. Retire those hooks before
+      // the candidate initializes its own dispatch owner; otherwise both
+      // native Node and candidate dispatch deliver the same envelope.
+      delete handle[nativeEventTarget.kNewListener];
+      delete handle[nativeEventTarget.kRemoveListener];
+      Object.setPrototypeOf(handle, value); return handle;
     }
+    if (op === 'broadcast') return register(nativeMessaging.broadcastChannel(handle));
     if (op === 'pair') {
-      const pair = new wt.MessageChannel();
-      for (const port of [pair.port1, pair.port2]) {
-        const state = { started: false, closing: false, closeReady: false, acknowledged: false };
-        handles.set(port, state); port.on('close', () => { state.closeReady = true; });
-      }
-      return [pair.port1, pair.port2];
+      const pair = new wt.MessageChannel(); return [register(pair.port1), register(pair.port2)];
     }
-    const state = info(handle);
-    if (op === 'post') return handle.postMessage(value);
+    const state = info(handle); assert(state);
+    if (op === 'prepared') { state.prepared = true; return; }
+    if (op === 'initialized') { assert(state.prepared); state.initialized = true; return; }
+    if (op === 'abortWrap') { state.closing = true; nativeClose(handle); return; }
+    if (op === 'post') return nativePost(handle, value, value.ports);
     if (op === 'start') { state.started = value; return; }
-    if (op === 'ref') { value ? handle.ref() : handle.unref(); return; }
-    if (op === 'hasRef') return state.closing ? undefined : handle.hasRef();
-    if (op === 'close') { state.closing = true; handle.close(); return; }
+    if (op === 'ref') { value ? nativeRef(handle) : nativeUnref(handle); return; }
+    if (op === 'hasRef') return state.closing ? undefined : nativeHasRef(handle);
+    if (op === 'close') { state.closing = true; nativeClose(handle); return; }
     if (op === 'ackClose') { state.acknowledged = true; return; }
     if (op === 'receive') {
       if (state.closeReady && !state.acknowledged) return null;
@@ -56,6 +97,7 @@ const native = {
     throw Error('Unknown native boundary op ' + op);
   },
 };
+
 let web;
 const ports = factories.ports({
   native: createNativeAdapter(native), process, AsyncResource,
@@ -145,8 +187,8 @@ const cases = {
       const v8 = require('node:v8');
       const port = require('internal/test/binding').internalBinding('messaging').broadcastChannel(workerData);
       port.on('message', packet => {
-        const value = v8.deserialize(packet);
-        port.postMessage(v8.serialize({ ack: value.payload }));
+        const value = packet.value;
+        port.postMessage({ value: { ack: value.payload }, ports: [] });
         port.close(); parentPort.postMessage('done');
       });
       parentPort.postMessage('ready');
@@ -290,9 +332,13 @@ const cases = {
     } finally { await close(pair); }
   },
 };
-module.exports = { ports, io, marks };
+module.exports = { ports, io, marks, nativeBoundary: {
+  referenced() { return [...handles.keys()].some(port => nativeHasRef(port)); },
+  pendingClose() { return [...handles.values()].some(state => state.closeReady && !state.acknowledged); },
+  closeAll() { for (const handle of handles.keys()) nativeClose(handle); },
+} };
 if (require.main === module) (async () => {
  const name = process.argv[2]; assert.equal(typeof cases[name], 'function'); await cases[name]();
- for (const handle of handles.keys()) handle.close();
+ for (const handle of handles.keys()) nativeClose(handle);
  console.log(JSON.stringify({ case: name, passed: true, scope: 'Candidate port/IO/event source over actual native Node queues, graph/byte serialization and engine dependencies; not guest/four-host or port transfer conformance' }));
-})().catch(error => { for (const handle of handles.keys()) handle.close(); console.error(error); process.exitCode = 1; });
+})().catch(error => { for (const handle of handles.keys()) nativeClose(handle); console.error(error); process.exitCode = 1; });
