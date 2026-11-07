@@ -5,6 +5,7 @@
 #include "js/GlobalObject.h"
 #include "js/MapAndSet.h"
 #include <map>
+#include "histogram-owner-inl.h"
 namespace {
 using kandelo::histogram::Histogram;
 using kandelo::histogram::HistogramBindingState;

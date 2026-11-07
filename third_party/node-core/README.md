@@ -1502,6 +1502,35 @@ channel configuration and canonical server reads are exercised by focused
 native components; this does not establish query/provider/guest conformance.
 See [DNS owner scope](../../tests/nodejs/outline/dns-channel-implementation-dependencies.md).
 
+### Native engine include and vendor staging
+
+The normal engine recipe stages the Node owners into shell/ with canonical
+Mozilla include paths. generate-native-embedding.py orders only those owned
+staged files using the exact source tree's unchanged include sorter; its
+command-line staging path requires config/check_spidermonkey_style.py from
+the pinned Mozilla source. Its standalone generate() function still assembles
+fragments without importing that checker. Fragment and final staged-owner
+identities are recorded separately in kandelo-node-native-sources.json.
+Synthetic source fixtures must supply the real pinned checker rather than
+substitute a checker stub or empty generated header.
+
+Directory-copy declaration and implementation excerpts are staged as .h and
+-inl.h with full paths. Histogram declarations remain in the normal owner
+header; implementation consumers explicitly include its inline header. The
+generated algorithm bodies and upstream assertions stay unchanged.
+
+Imported HDR Histogram and libuv stat-poll source bytes live under the actual
+Mozilla source-root third_party/kandelo-node boundary. The real moz.build
+source and include paths compile them there. The stat-poll private port
+resolves the original imported include names, without rewriting reference
+source or adding checker exclusions. Repeated staging removes the former
+shell vendor locations. The unchanged checker still checks all owned
+compatibility files and its intentional failing fixtures.
+
+The source-only checker and focused native component evidence establish
+staging/style and specific native owner behavior. They do not establish a
+successful normal engine package build or guest/four-host conformance.
+
 ### Accepted TCP owner initialization source followup
 
 Accepted capabilities now retain the real native TCP owner constructed before

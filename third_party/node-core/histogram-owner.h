@@ -193,5 +193,4 @@ class Histogram {
   RwLock mutex_;
 };
 }  // namespace kandelo::histogram
-#include "histogram-owner-inl.h"
 #endif

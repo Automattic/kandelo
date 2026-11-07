@@ -494,3 +494,13 @@ Rotate work,port,worker and lock providers after actual progress,preserving
 tick/job checkpoints,GC-close fences and existing bounded idle measurements.
 Only deliverable locks keep the loop alive;held/pending Promises do not. This
 source does not establish descriptor,JSAPI,guest or four-host conformance.
+
+### 0130: canonical native include and vendor boundaries
+
+Preserve the unchanged Mozilla include-style gate. Sort includes in five
+patched engine files and compile unchanged imported HDR code from its actual
+third-party source directory. Libuv reference bytes also retain a real
+third-party location; owned stat-poll glue remains under checked shell paths.
+Generated native owners use canonical include paths and explicit inline
+headers. No checker, expected failure, ignore list or algorithm is changed.
+Source/component checks do not establish normal package or runtime acceptance.

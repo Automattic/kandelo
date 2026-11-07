@@ -3,6 +3,7 @@
 // Regenerate with generate-histogram-owner.py; do not edit here.
 #ifndef KANDELO_NODE_HISTOGRAM_OWNER_INL_H_
 #define KANDELO_NODE_HISTOGRAM_OWNER_INL_H_
+#include "histogram-owner.h"
 namespace kandelo::histogram {
 void Histogram::UpdateEwma(double value) {
   // Called inside a write lock. No-op when EWMA is disabled.

@@ -1,3 +1,4 @@
+#include "histogram-owner-inl.h"
 #include "event-loop-delay.h"
 #include <iostream>
 using namespace kandelo::histogram;

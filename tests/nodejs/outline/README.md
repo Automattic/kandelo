@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source173 repairs native include/inline/vendor staging. Current unchanged Mozilla style,788input closure and14package checks pass; private5tiny compiles/histogram controls are reused separately. Normal engine acceptance and guest/fourhost remain open.
+See [source scope](native-include-staging-integration.md).
+
 The [finding ledger](finding-ledger.md) preserves document-qualified audit
 requirements and links scoped implementation progress. Unknown dispositions
 and runtime validation debt remain explicit; no finding is closed by metadata.

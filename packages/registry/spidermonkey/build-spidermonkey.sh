@@ -422,7 +422,9 @@ for histogram_source in histogram-binding.h histogram-portability.h histogram-ow
 done
 # Repeated staging must not nest the vendor tree or retain stale headers.
 rm -rf "$SRC_DIR/js/src/shell/histogram-vendor"
-cp -R "$REPO_ROOT/third_party/node-core/upstream/histogram-reference/deps/histogram" "$SRC_DIR/js/src/shell/histogram-vendor"
+mkdir -p "$SRC_DIR/third_party/kandelo-node"
+rm -rf "$SRC_DIR/third_party/kandelo-node/histogram"
+cp -R "$REPO_ROOT/third_party/node-core/upstream/histogram-reference/deps/histogram" "$SRC_DIR/third_party/kandelo-node/histogram"
 cp "$REPO_ROOT/third_party/node-core/event-loop-delay.h" "$SRC_DIR/js/src/shell/event-loop-delay.h"
 cp "$REPO_ROOT/third_party/node-core/event-loop-delay-lifetime.h" "$SRC_DIR/js/src/shell/event-loop-delay-lifetime.h"
 cp "$REPO_ROOT/third_party/node-core/vm-module-hooks.h" "$SRC_DIR/js/src/shell/kandelo-node-vm-module-hooks.h"

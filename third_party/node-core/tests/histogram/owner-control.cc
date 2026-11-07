@@ -1,3 +1,4 @@
+#include "histogram-owner-inl.h"
 #include "histogram-owner.h"
 #include "histogram-window.h"
 #include "histogram-work.h"

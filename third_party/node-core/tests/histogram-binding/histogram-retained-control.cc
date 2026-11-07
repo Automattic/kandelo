@@ -1,3 +1,4 @@
+#include "histogram-owner-inl.h"
 #include "histogram-binding.h"
 #include "port-queue.h"
 #include <cassert>

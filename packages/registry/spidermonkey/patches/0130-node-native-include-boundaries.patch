@@ -1,0 +1,98 @@
+--- a/js/src/jsapi-tests/testNativeLazyDataProperty.cpp
++++ b/js/src/jsapi-tests/testNativeLazyDataProperty.cpp
+@@ -2,10 +2,10 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ #include "js/CallAndConstruct.h"
++#include "js/Class.h"
+ #include "js/GCAPI.h"
+-#include "js/Class.h"
++#include "js/NativeLazyDataProperty.h"
+ #include "js/Object.h"
+-#include "js/NativeLazyDataProperty.h"
+ #include "js/PropertyAndElement.h"
+ #include "js/Realm.h"
+ #include "jsapi-tests/tests.h"
+--- a/js/src/shell/ModuleLoader.cpp
++++ b/js/src/shell/ModuleLoader.cpp
+@@ -5,7 +5,6 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+ #include "shell/ModuleLoader.h"
+-#include "shell/kandelo-node-vm-module-hooks.h"
+
+ #include "mozilla/DebugOnly.h"
+ #include "mozilla/TextUtils.h"
+@@ -26,6 +25,7 @@
+ #include "js/StableStringChars.h"
+ #include "js/ValueArray.h"  // JS::RootedValueArray
+ #include "shell/jsshell.h"
++#include "shell/kandelo-node-vm-module-hooks.h"
+ #include "shell/OSObject.h"
+ #include "shell/StringUtils.h"
+ #include "util/Text.h"
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -15,8 +15,8 @@
+ #include "js/CompileOptions.h"
+ #include "js/GCVector.h"
+ #include "js/Principals.h"
++#include "shell/kandelo-node-performance-clock.h"
+ #include "shell/ModuleLoader.h"
+-#include "shell/kandelo-node-performance-clock.h"
+ #include "threading/ConditionVariable.h"
+ #include "threading/LockGuard.h"
+ #include "threading/Mutex.h"
+--- a/js/src/vm/KandeloDefaultTrigger.h
++++ b/js/src/vm/KandeloDefaultTrigger.h
+@@ -1,7 +1,7 @@
+ #ifndef KANDELO_ASYNC_DEFAULT_TRIGGER_H
+ #define KANDELO_ASYNC_DEFAULT_TRIGGER_H
++#include <cassert>
+ #include <cmath>
+-#include <cassert>
+ namespace kandelo::async {
+ // One owning environment/context holds this value. Execution-ID push/pop,
+ // continuation frames and queued jobs must neither copy nor restore it.
+--- a/js/src/vm/NativeLazyDataProperty.cpp
++++ b/js/src/vm/NativeLazyDataProperty.cpp
+@@ -1,13 +1,13 @@
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#include "js/NativeLazyDataProperty.h"
+ #include "vm/NativeLazyDataProperty.h"
+
+ #include "jsapi.h"
+
+ #include "builtin/Array.h"
+ #include "js/Context.h"
+-#include "js/NativeLazyDataProperty.h"
+ #include "js/Realm.h"
+ #include "vm/PlainObject.h"
+ #include "vm/Watchtower.h"
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -70,15 +70,19 @@
+ SOURCES["js.cpp"].flags += ["-std=c++20"]
+
+ # The portable owner retains the unchanged Node-vendored HDR C library.
+-LOCAL_INCLUDES += ["histogram-vendor/include"]
++LOCAL_INCLUDES += [
++    "/js/src/shell/stat-poll-port",
++    "/third_party",
++    "/third_party/kandelo-node/histogram/include",
++]
+ SOURCES += [
++    "/third_party/kandelo-node/histogram/src/hdr_histogram.c",
+     "histogram-owner.cc",
+-    "histogram-vendor/src/hdr_histogram.c",
+     "histogram-window.cc",
+ ]
+ SOURCES["histogram-owner.cc"].flags += ["-std=c++20"]
+ SOURCES["histogram-window.cc"].flags += ["-std=c++20"]
+-SOURCES["histogram-vendor/src/hdr_histogram.c"].flags += ["-std=c11"]
++SOURCES["/third_party/kandelo-node/histogram/src/hdr_histogram.c"].flags += ["-std=c11"]
+
+ # Unchanged pinned fs-poll algorithms consume the real native allocation ledger.
+ SOURCES += ["kandelo-node-stat-poll.cc"]

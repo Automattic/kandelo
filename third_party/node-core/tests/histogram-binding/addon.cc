@@ -1,3 +1,4 @@
+#include "histogram-owner-inl.h"
 // Host-only N-API transport control. This exercises the same portable binding
 // dispatch and real native owners; it does not validate SpiderMonkey JSAPI.
 #include <node_api.h>

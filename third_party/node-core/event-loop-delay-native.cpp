@@ -2,6 +2,7 @@
 // native loop phases own sampling; no JS timer or callback produces samples.
 #include "event-loop-delay.h"
 #include <optional>
+#include "histogram-owner-inl.h"
 namespace {
 using kandelo::histogram::EventLoopDelayLoop;
 using kandelo::histogram::EventLoopDelayProducer;

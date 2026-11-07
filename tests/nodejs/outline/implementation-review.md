@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source173 repairs native include/inline/vendor staging. Current unchanged Mozilla style,788input closure and14package checks pass; private5tiny compiles/histogram controls are reused separately. Normal engine acceptance and guest/fourhost remain open.
+See [source scope](native-include-staging-integration.md).
+
 Source172 integrates real PKCS12 material ownership:47current native-dependent comparisons, unchanged upstream file eachsubject and14package checks pass.171native compilation/link succeeded but normalstyle failed;172newcode/guest/fourhost uncompiled/unvalidated.
 See [source scope](pkcs12-parser-integration.md).
 

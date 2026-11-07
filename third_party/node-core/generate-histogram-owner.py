@@ -87,12 +87,13 @@ header = (notice + '#ifndef KANDELO_NODE_HISTOGRAM_OWNER_H_\n'
           '#include "histogram-portability.h"\n'
           'namespace kandelo::histogram {\n' + adapt(header) +
           '}  // namespace kandelo::histogram\n'
-          '#include "histogram-owner-inl.h"\n#endif\n')
+          '#endif\n')
 
 inl = between((ref / 'src/histogram-inl.h').read_text(),
               'void Histogram::UpdateEwma', '}  // namespace node')
 inl = (notice + '#ifndef KANDELO_NODE_HISTOGRAM_OWNER_INL_H_\n'
        '#define KANDELO_NODE_HISTOGRAM_OWNER_INL_H_\n'
+       '#include "histogram-owner.h"\n'
        'namespace kandelo::histogram {\n' + adapt(inl) +
        '}  // namespace kandelo::histogram\n#endif\n')
 
@@ -139,6 +140,7 @@ core = (notice + '#include "histogram-owner.h"\n'
         '#include "histogram-work.h"\n'
         '#include <algorithm>\n#include <cmath>\n#include <cstring>\n'
         '#include <numbers>\n#include <vector>\n'
+        '#include "histogram-owner-inl.h"\n'
         'namespace kandelo::histogram {\n' + adapt(core) +
         'QrdeResult CalculateHistogramQrde(const Histogram::RecordedSnapshot& snapshot,\n'
         '    const std::vector<double>& probabilities, QrdeDequantization mode) {\n'
@@ -150,6 +152,7 @@ window = between(source, 'uint64_t SlidingWindowHistogram::CurrentTimeGeneration
 window = window.replace('    env()->external_memory_accounter()->Increase(env()->isolate(), size);\n', '')
 window = window.replace('Histogram::Create(options_)', 'Histogram::Create(options_, clock_)')
 window = (notice + '#include "histogram-window.h"\n#include <algorithm>\n'
+          '#include "histogram-owner-inl.h"\n'
           'namespace kandelo::histogram {\n' + adapt(window) +
           '}  // namespace kandelo::histogram\n')
 

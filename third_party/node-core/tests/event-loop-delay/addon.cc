@@ -1,3 +1,4 @@
+#include "histogram-owner-inl.h"
 // Host-only native libuv control, running the real portable producer on the
 // exact reference Node loop. Not an emulation of the Kandelo loop or JSAPI.
 #include "histogram-addon-control.inc"

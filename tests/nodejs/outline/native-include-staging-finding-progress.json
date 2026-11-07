@@ -1,0 +1,88 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/engine.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "engine",
+      "filesystem",
+      "observability",
+      "compression",
+      "crypto"
+    ],
+    "scope": "Shared production staging prerequisite; not individual API/finding closure"
+  },
+  "sourceImplemented": [
+    "Canonical full-path owned native includes and exact pinned Mozilla include sorting, without checker/expectation/ignore edits",
+    "Actual third-party placement of byte-identical imported HDR/libuv source, real moz.build source/include consumers, owned stat-poll glue remains checked",
+    "Truthful copy excerpt header names and explicit histogram inline dependencies with algorithm/assertion bodies preserved",
+    "Preserved current172PKCS12/key/X509 source and original75-diagnostic171normal failure"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-style173-source-r1/report.json",
+    "sha256": "13a8b260f501fdd373a2d03b7046c861396b4912d8e45a0b01e76406219fe3d6",
+    "guardedInputs": 788,
+    "scope": "Current normal staging, real unchanged Mozilla include checker, preserved imported/reference and raw172crypto bytes; private native histogram/component evidence reused separately, no production engine build or runtime conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-style173-affected-r1.json",
+    "sha256": "55bba19936eededbc9042de8d9bf1635ce340bf201a863f5dd4cb840755c87d0",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-style173-source-r1/report.json",
+    "sha256": "13a8b260f501fdd373a2d03b7046c861396b4912d8e45a0b01e76406219fe3d6",
+    "currentUnchangedStyleCheckerPassed": true,
+    "nativeRuntimeReexecuted": false,
+    "productionSMExecuted": false,
+    "scope": "Fresh actual normal source staging/style/788inputs; reused native component evidence identified separately"
+  },
+  "sealedEvidence": {
+    "report": ".context/node26-engine-style171-agent/report.json",
+    "sha256": "ea7816de855ce1c0012f0b0ef705c9e7386651a5d0ca56acb99b163df955913e",
+    "reusedEvidence": true,
+    "scope": "97private sourcechecks,5tiny successful compiles,403histogram rows+27imports and exact172composition; no production engine acceptance or guest runtime"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-engine171-failure-final/report.json",
+      "sha256": "be9df6fabfe923965a17ac13b44b0b4f5afb339b1d23d5b1a5791afbd9b524ea",
+      "kind": "normal-engine-style-check-failure",
+      "reason": "Actual171compile/link succeeded but normalstyle failed75diagnostics; no accepted artifact"
+    },
+    {
+      "report": ".context/node26-engine-style171-agent/preparation-notes.json",
+      "sha256": "f3449465c26a639aa93a132a468e84366fbd032de23aa07af3df4f3a4d80b05a",
+      "kind": "preserved-source-fixture-preparation-failures",
+      "reason": "Initial strict oldpatch replay, missing realbootstrap header, README overlap and wrong relative path are preserved separately from final normal staging"
+    },
+    {
+      "report": ".context/node26-style173-checkpoint.log",
+      "sha256": "4354ca8b7807f415c2485730c6455086287187213840117f2ced13da2b59e6d8",
+      "kind": "added-patch-context-whitespace-check",
+      "reason": "Initial added patch retained six blank context spaces; normal patch replay after formatting produces six byte-identical engine postimages. Original checker unchanged."
+    },
+    {
+      "report": ".context/node26-style173-checks-r2.log",
+      "sha256": "9968120c42342bca58d29c7417bf9850a425def35d30a5eaef363129da33195c",
+      "kind": "source-recheck-fixture-scope",
+      "reason": "Authored documentation had not yet been listed as changed inputs during final source recheck; final input identities record those exact documents."
+    }
+  ],
+  "remaining": [
+    "Normal selected current engine configure/compile/link/unchanged-check acceptance and identified artifact",
+    "Actual production JSAPI/GC/realm/thread ownership and all four hosts",
+    "All remaining audited public API implementations and upstream conformance; this is a staging prerequisite"
+  ],
+  "at": "2026-11-07T02:23:09.373405+00:00",
+  "recipeRevision": 173,
+  "lastAcceptedEngine": 116,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

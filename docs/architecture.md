@@ -6872,3 +6872,7 @@ The focused DNS fixture supplies genuine native histogram and event-loop-delay o
 ### Public PKCS12 material source ownership
 
 Source172 wires unchanged public PKCS12 validation/wrappers to actual OpenSSL parsing and native KeyMaterial/X509Material ownership, with cleansing-owned byte/password snapshots. Production transfers references directly, while component controls explicitly transport PEM/DER into real native Node owners. TLS PFX credential installation remains a separate unimplemented SSL_CTX consumer. Source171compiled/linked but its normal package check failed;172new native source is uncompiled. See [scope](../tests/nodejs/outline/pkcs12-parser-integration.md).
+
+### Native owner include and vendor staging
+
+Source173 canonicalizes owning native includes using the exact pinned Mozilla include sorter, gives directory-copy excerpts truthful header names and places unchanged imported HDR/libuv bytes under the real third-party boundary. Owned stat-poll glue stays in the checked shell tree. The unchanged Mozilla style checker passes current source staging. No algorithm, assertion, checker expectation or ignore list changes. Normal selected engine acceptance and guest/four-host behavior remain unestablished. See [scope](../tests/nodejs/outline/native-include-staging-integration.md).

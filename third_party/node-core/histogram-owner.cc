@@ -8,6 +8,7 @@
 #include <cstring>
 #include <numbers>
 #include <vector>
+#include "histogram-owner-inl.h"
 namespace kandelo::histogram {
 Histogram::Histogram(HistogramPointer histogram, const Options& options,
                      HistogramClock clock)

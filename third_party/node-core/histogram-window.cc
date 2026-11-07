@@ -3,6 +3,7 @@
 // Regenerate with generate-histogram-owner.py; do not edit here.
 #include "histogram-window.h"
 #include <algorithm>
+#include "histogram-owner-inl.h"
 namespace kandelo::histogram {
 uint64_t SlidingWindowHistogram::CurrentTimeGeneration() const {
   const uint64_t now = clock_();
