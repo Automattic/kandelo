@@ -126,6 +126,13 @@ impl Verdict {
         }
     }
 
+    /// Whether this verdict lets something run that digest equality alone
+    /// would refuse. Only an accepted contract does; a superseded one is the
+    /// strict state.
+    pub(crate) fn widens_admission(&self) -> bool {
+        matches!(self, Verdict::Accepted { .. })
+    }
+
     /// One line for `xtask check-program-baseline`, so neither outcome is
     /// something a reader has to infer from silence.
     pub(crate) fn describe(&self) -> String {
@@ -480,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn a_breaking_change_resets_the_accepted_set_to_the_current_digest_only() {
+    fn a_breaking_change_refuses_the_recorded_prior_contract() {
         let prior = snapshot(55, json!([{"number": 1, "name": "read"}]));
         // The same syscall number now means something else.
         let current = snapshot(55, json!([{"number": 1, "name": "readv"}]));
@@ -590,6 +597,10 @@ mod tests {
             }],
         );
         assert!(verdicts[0].describe().contains("is NOT accepted"));
+        assert!(
+            !verdicts[0].widens_admission(),
+            "a superseded contract admits nothing, so the build gate stays quiet"
+        );
     }
 
     /// An epoch bump is a declaration that every program is rebuilt, so the
@@ -706,6 +717,10 @@ mod tests {
                 digest:
                     "1358eca04a8d33fa5bcc27d1c672af2f6e7aaf466a398ad598d991347b1a4415".to_owned(),
             }],
+        );
+        assert!(
+            verdicts[0].widens_admission(),
+            "once live, the build gate must announce it"
         );
     }
 }

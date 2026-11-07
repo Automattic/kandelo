@@ -133,9 +133,30 @@ fn main() -> ExitCode {
             | "vfs"
             | "vfs-image"
     ) {
-        if let Err(error) = supported_program_baseline::check(&repo_root()) {
-            eprintln!("xtask: {error}");
-            return ExitCode::from(1);
+        match supported_program_baseline::check(&repo_root()) {
+            // WHY the gate says this out loud: admitting a prior program
+            // contract beside the current one is the kind of thing a build
+            // must never do silently, and until now only a direct
+            // `check-program-baseline` reported it.
+            //
+            // WHY only the ACCEPTED ones: a superseded entry admits nothing —
+            // it is the strict state, and announcing it on every gated command
+            // would be noise on a channel some of them must keep clean
+            // (`tools/xtask/tests/build_deps_cache_root.rs` requires
+            // `build-deps cache-root` to write no stderr at all). The gate
+            // speaks exactly when it is widening what may run.
+            // `check-program-baseline` still reports every verdict.
+            Ok(verdicts) => {
+                for verdict in &verdicts {
+                    if verdict.widens_admission() {
+                        eprintln!("{}", verdict.describe());
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("xtask: {error}");
+                return ExitCode::from(1);
+            }
         }
     }
     if sub == "vfs" {

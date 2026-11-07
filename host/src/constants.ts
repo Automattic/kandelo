@@ -2488,6 +2488,11 @@ function abiContractDigestsEqual(a: Uint8Array, b: Uint8Array): boolean {
  * An `ABI_VERSION` bump empties this set: a digest binds the epoch, and a
  * bump declares that every program is rebuilt. The epoch is checked
  * separately by `expectedAbi` below and is not relaxed here.
+ *
+ * Deliberately not a parameter of `describeWasmArtifactPolicyFailures`: what
+ * this epoch admits is decided by the record and the generator, so a test that
+ * needs a different set compiles against a different generated module rather
+ * than asking admission to accept one.
  */
 const AFFIRMED_PRIOR_ABI_CONTRACT_DIGESTS: readonly Uint8Array[] =
   ACCEPTED_PROGRAM_CONTRACT_DIGESTS.map((hex) => {
@@ -2550,13 +2555,6 @@ export function describeWasmArtifactPolicyFailures(
   options: {
     expectedAbi?: number | null;
     expectedAbiContractDigest?: Uint8Array | null;
-    /**
-     * Prior contracts admitted beside `expectedAbiContractDigest`. Defaults to
-     * the platform's affirmed set
-     * (`AFFIRMED_PRIOR_ABI_CONTRACT_DIGESTS`); a caller that passes its own
-     * list is asserting that each member carries an affirmation.
-     */
-    affirmedPriorAbiContractDigests?: readonly Uint8Array[];
     requiredExports?: readonly string[];
     forbiddenExports?: readonly string[];
     requireForkInstrumentation?: boolean;
@@ -2598,10 +2596,12 @@ export function describeWasmArtifactPolicyFailures(
         );
       }
     } else {
-      const affirmedPrior = options.affirmedPriorAbiContractDigests ??
-        AFFIRMED_PRIOR_ABI_CONTRACT_DIGESTS;
+      // The affirmed set is platform policy, not a per-call option: a caller
+      // cannot widen what this epoch admits.
       const admitted = abiContractDigestsEqual(guestDigest, options.expectedAbiContractDigest) ||
-        affirmedPrior.some((prior) => abiContractDigestsEqual(guestDigest, prior));
+        AFFIRMED_PRIOR_ABI_CONTRACT_DIGESTS.some((prior) =>
+          abiContractDigestsEqual(guestDigest, prior)
+        );
       if (!admitted) {
         failures.push(
           "ABI contract digest mismatch — guest built against a different ABI " +

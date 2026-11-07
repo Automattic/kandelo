@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ABI_CONTRACT_SECTION,
   describeWasmArtifactPolicyFailures,
@@ -155,70 +155,118 @@ describe("describeWasmArtifactPolicyFailures ABI-contract-digest gate", () => {
 // accepted_program_digests.rs.
 // ---------------------------------------------------------------------------
 
+const hexOf = (fill: number): string => fill.toString(16).padStart(2, "0").repeat(32);
+
+/**
+ * Admission compiled against a chosen generated accepted set.
+ *
+ * WHY a module mock rather than an argument: the set is platform policy
+ * decided by `abi/accepted-program-digests.json` and the generator, not
+ * something a caller supplies. Giving admission a parameter so tests could
+ * vary it would widen a security-adjacent signature for test convenience; a
+ * different generated module gives the same coverage and keeps admission's
+ * only input the one the platform controls.
+ */
+async function admissionWithAcceptedSet(
+  hexDigests: readonly string[],
+): Promise<typeof describeWasmArtifactPolicyFailures> {
+  vi.resetModules();
+  vi.doMock("../src/generated/abi", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../src/generated/abi")>()),
+    ACCEPTED_PROGRAM_CONTRACT_DIGESTS: hexDigests,
+  }));
+  return (await import("../src/constants")).describeWasmArtifactPolicyFailures;
+}
+
 describe("describeWasmArtifactPolicyFailures affirmed prior contracts", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("admits a stamped guest whose digest is in the accepted set", () => {
-    const kernelDigest = digestOf(0x11);
-    const priorDigest = digestOf(0x22);
-    const wasm = buildAbiModule({ abi: 44, contractDigest: priorDigest });
-    const failures = describeWasmArtifactPolicyFailures(wasm, {
-      expectedAbi: 44,
-      expectedAbiContractDigest: kernelDigest,
-      affirmedPriorAbiContractDigests: [priorDigest],
-    });
-    expect(failures).toEqual([]);
+  afterEach(() => {
+    vi.doUnmock("../src/generated/abi");
+    vi.resetModules();
   });
 
-  it("still fails hard for a stamped guest outside the accepted set", () => {
+  it("admits a stamped guest whose digest is in the accepted set", async () => {
+    const admit = await admissionWithAcceptedSet([hexOf(0x22)]);
     const wasm = buildAbiModule({ abi: 44, contractDigest: digestOf(0x22) });
-    const failures = describeWasmArtifactPolicyFailures(wasm, {
-      expectedAbi: 44,
-      expectedAbiContractDigest: digestOf(0x11),
-      // A non-empty set, so this is membership failing rather than an
-      // absent mechanism.
-      affirmedPriorAbiContractDigests: [digestOf(0x33), digestOf(0x44)],
-    });
-    expect(failures.some((f) => f.includes("ABI contract digest mismatch"))).toBe(true);
+    expect(
+      admit(wasm, {
+        expectedAbi: 44,
+        expectedAbiContractDigest: digestOf(0x11),
+      }),
+    ).toEqual([]);
   });
 
-  it("still warns once and passes for an unstamped legacy guest", () => {
+  it("still fails hard for a stamped guest outside the accepted set", async () => {
+    // A non-empty set, so this is membership failing rather than an absent
+    // mechanism.
+    const admit = await admissionWithAcceptedSet([hexOf(0x33), hexOf(0x44)]);
+    const wasm = buildAbiModule({ abi: 44, contractDigest: digestOf(0x22) });
+    expect(
+      admit(wasm, {
+        expectedAbi: 44,
+        expectedAbiContractDigest: digestOf(0x11),
+      }).some((f) => f.includes("ABI contract digest mismatch")),
+    ).toBe(true);
+  });
+
+  it("still warns once and passes for an unstamped legacy guest", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const admit = await admissionWithAcceptedSet([hexOf(0x22)]);
     const wasm = buildAbiModule({ abi: 44 }); // no contract section
-    const failures = describeWasmArtifactPolicyFailures(wasm, {
-      expectedAbi: 44,
-      expectedAbiContractDigest: digestOf(0x11),
-      affirmedPriorAbiContractDigests: [digestOf(0x22)],
-    });
-    expect(failures).toEqual([]);
-    // Warn-once is per worker process, so a later unstamped guest in this
-    // same process legitimately produces no second line.
-    if (warn.mock.calls.length > 0) {
-      expect(String(warn.mock.calls[0]?.[0])).toContain("kandelo.abi.contract");
-    }
+    expect(
+      admit(wasm, {
+        expectedAbi: 44,
+        expectedAbiContractDigest: digestOf(0x11),
+      }),
+    ).toEqual([]);
+    // Warn-once is per module instance, and this is a fresh one, so the line
+    // fires here.
+    expect(warn.mock.calls.length).toBe(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain("kandelo.abi.contract");
   });
 
-  it("does not accept a prior contract whose ABI epoch differs", () => {
+  it("does not accept a prior contract whose ABI epoch differs", async () => {
     // The accepted set relaxes digest equality within one epoch. The epoch
     // itself is checked separately and is not relaxed: a digest binds
-    // ABI_VERSION, and a bump declares every program must be rebuilt.
-    const priorDigest = digestOf(0x22);
-    const wasm = buildAbiModule({ abi: 43, contractDigest: priorDigest });
-    const failures = describeWasmArtifactPolicyFailures(wasm, {
-      expectedAbi: 44,
-      expectedAbiContractDigest: digestOf(0x11),
-      affirmedPriorAbiContractDigests: [priorDigest],
-    });
-    expect(failures).toEqual(["ABI 43, expected 44"]);
+    // ABI_VERSION, and a bump declares every program must be rebuilt. The
+    // digest mismatch is absent from the failures, so the set DID admit the
+    // digest and the epoch refused it on its own.
+    const admit = await admissionWithAcceptedSet([hexOf(0x22)]);
+    const wasm = buildAbiModule({ abi: 43, contractDigest: digestOf(0x22) });
+    expect(
+      admit(wasm, {
+        expectedAbi: 44,
+        expectedAbiContractDigest: digestOf(0x11),
+      }),
+    ).toEqual(["ABI 43, expected 44"]);
   });
 
-  it("admits every digest the generated accepted set carries", () => {
+  it("accepts nothing beyond the current digest when the set is empty", async () => {
+    const admit = await admissionWithAcceptedSet([]);
+    const wasm = buildAbiModule({ abi: 44, contractDigest: digestOf(0x22) });
+    expect(
+      admit(wasm, {
+        expectedAbi: 44,
+        expectedAbiContractDigest: digestOf(0x11),
+      }).some((f) => f.includes("ABI contract digest mismatch")),
+    ).toBe(true);
+  });
+
+  it("refuses a generated set entry that is not a 32-byte lowercase hex digest", async () => {
+    // The constant is generated, so a malformed entry is a generator bug.
+    // Failing loudly beats silently dropping an affirmed contract.
+    await expect(admissionWithAcceptedSet(["not-a-digest"])).rejects.toThrow(
+      /ACCEPTED_PROGRAM_CONTRACT_DIGESTS/,
+    );
+  });
+
+  it("admits every digest the real generated accepted set carries", () => {
     // Vacuous while this epoch accepts none, and load-bearing as soon as one
-    // is affirmed: these are exactly the digests admission must accept with
-    // no option passed, so the default comes from the generated constant
-    // rather than from a caller.
+    // is affirmed. Uses the statically imported admission, so this is the real
+    // generated constant rather than a mocked one.
     for (const hex of ACCEPTED_PROGRAM_CONTRACT_DIGESTS) {
       expect(hex).toMatch(/^[0-9a-f]{64}$/);
       const digest = new Uint8Array(
@@ -232,15 +280,5 @@ describe("describeWasmArtifactPolicyFailures affirmed prior contracts", () => {
         }),
       ).toEqual([]);
     }
-  });
-
-  it("accepts nothing beyond the current digest when the set is empty", () => {
-    const wasm = buildAbiModule({ abi: 44, contractDigest: digestOf(0x22) });
-    const failures = describeWasmArtifactPolicyFailures(wasm, {
-      expectedAbi: 44,
-      expectedAbiContractDigest: digestOf(0x11),
-      affirmedPriorAbiContractDigests: [],
-    });
-    expect(failures.some((f) => f.includes("ABI contract digest mismatch"))).toBe(true);
   });
 });
