@@ -15,6 +15,7 @@ keeps every other setting; the previous file is saved next to it as
   python3 .claude/hooks/install-hooks.py --user           # ~/.claude/settings.json
   python3 .claude/hooks/install-hooks.py --project-local  # this checkout's .claude/settings.local.json
   python3 .claude/hooks/install-hooks.py --user --check   # exit 1 if missing or out of date
+  python3 .claude/hooks/install-hooks.py --user --update-from-main  # existing opt-ins only; no downgrade
   python3 .claude/hooks/install-hooks.py --user --uninstall
   python3 .claude/hooks/install-hooks.py --user --hook context
   python3 .claude/hooks/install-hooks.py --user --hook context --client codex
@@ -22,9 +23,12 @@ keeps every other setting; the previous file is saved next to it as
 --user copies the hook to ~/.claude/hooks/kandelo-wait-guard.py and points
 user settings at that copy, rather than at a file inside whichever project is
 open: a user-level hook that ran a repository's own file would run whatever
-any repository put there. Re-run --user after pulling a newer hook; --check
-says when the copy is stale, and the installed hook itself shows a notice
-once per session when the checkout has a higher HOOK_VERSION. --project-local points this checkout's
+any repository put there. Main agents use --user --update-from-main after
+fetching origin main to maintain existing opt-ins from the merged branch,
+without downgrades. Plain --user remains the explicit install/update path;
+--check says when the copy differs, and the installed hook itself shows a
+notice once per session when the checkout has a higher HOOK_VERSION.
+--project-local points this checkout's
 untracked settings.local.json at the checked-in hook, so it follows the
 branch you are on.
 
@@ -43,12 +47,15 @@ requires reviewing the new definition in /hooks before it executes.
 """
 import argparse
 import filecmp
+import fcntl
 import json
 import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -60,6 +67,8 @@ PROFILES = {
 CODEX_BLOCK = re.compile(
     r"\n\n# BEGIN Kandelo context checkpoint hook\n.*?"
     r"# END Kandelo context checkpoint hook\n", re.S)
+USER_COPY = os.path.expanduser("~/.claude/hooks/kandelo-wait-guard.py")
+VERSION_LINE = re.compile(r"^HOOK_VERSION = (\d+)$", re.M)
 
 
 def target(args, filename, user_copy):
@@ -149,6 +158,59 @@ def write(path, settings):
     os.replace(tmp, path)
 
 
+def update_from_main(path):
+    """Refresh an existing opt-in using only the fetched origin/main files.
+
+    Never turn a feature branch into globally executed code, or let a
+    concurrent agent on an older revision downgrade a newer installed hook.
+    The hook itself still only reports staleness; the main agent initiates
+    this explicit update after fetching the trusted branch.
+    """
+    def installed():
+        return any(ours(h) for g in load(path).get("hooks", {}).get("PreToolUse", [])
+                   for h in g.get("hooks", []))
+
+    if not installed():
+        print("user wait guard is not installed; leaving opt-in unchanged")
+        return 0
+    os.makedirs(os.path.dirname(USER_COPY), exist_ok=True)
+    with open(USER_COPY + ".update.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not installed():  # another agent or the user may have uninstalled it
+            return 0
+        files = {}
+        for name in ("wait-guard.py", "install-hooks.py"):
+            result = subprocess.run(["git", "show", f"origin/main:.claude/hooks/{name}"], cwd=REPO,
+                                    capture_output=True, check=True)
+            files[name] = result.stdout
+        source = VERSION_LINE.search(files["wait-guard.py"].decode())
+        if not source:
+            raise ValueError("origin/main wait guard has no HOOK_VERSION; refusing automatic update")
+        versions = []
+        for name in ("kandelo-wait-guard.py", "wait-guard.py"):
+            candidate = os.path.join(os.path.dirname(USER_COPY), name)
+            if os.path.isfile(candidate):
+                with open(candidate) as f:
+                    version = VERSION_LINE.search(f.read())
+                if version:
+                    versions.append(int(version.group(1)))
+        # Unversioned copies predate v3. Equal versions need no reinstall;
+        # edits require a version bump, including changes to denial messages.
+        if int(source.group(1)) <= max(versions, default=0):
+            print(f"user wait guard is already at least origin/main v{source.group(1)}; no change")
+            return 0
+        with tempfile.TemporaryDirectory(prefix="kandelo-hook-update-") as tmp:
+            hooks = os.path.join(tmp, ".claude", "hooks")
+            os.makedirs(hooks)
+            for name, content in files.items():
+                with open(os.path.join(hooks, name), "wb") as f:
+                    f.write(content)
+            # The merged installer owns settings migration/backups. Never run
+            # the feature branch's installer to change the user-level entry.
+            return subprocess.run([sys.executable, os.path.join(hooks, "install-hooks.py"), "--user"],
+                                  check=True).returncode
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     scope = ap.add_mutually_exclusive_group(required=True)
@@ -157,10 +219,17 @@ def main():
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--uninstall", action="store_true")
+    mode.add_argument("--update-from-main", action="store_true",
+                      help="update an existing user wait guard from fetched origin/main, without downgrading")
     ap.add_argument("--hook", choices=PROFILES, default="wait",
                     help="independent hook to install/check/remove (default: wait)")
     ap.add_argument("--client", choices=("claude", "codex"), default="claude")
     args = ap.parse_args()
+    if args.update_from_main:
+        if not args.user:
+            ap.error("--update-from-main requires --user")
+        if args.hook != "wait" or args.client != "claude":
+            ap.error("--update-from-main supports only --hook wait --client claude")
     if args.client == "codex" and args.hook != "context":
         ap.error("the Codex adapter supports --hook context; wait-guard is Claude Code-only")
 
@@ -169,6 +238,8 @@ def main():
     client_dir = ".codex" if args.client == "codex" else ".claude"
     user_copy = os.path.expanduser("~/" + client_dir + "/hooks/" + installed_name)
     path, command = target(args, filename, user_copy)
+    if args.update_from_main:
+        return update_from_main(path)
     if args.client == "codex" and path.endswith(".toml"):
         try:
             with open(path) as stream:

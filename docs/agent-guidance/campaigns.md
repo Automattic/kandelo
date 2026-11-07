@@ -94,3 +94,6 @@ Remove only this hook with `install-hooks.py --user --hook context
 --uninstall`. Use `--project-local` instead of `--user` to configure one
 checkout. Add `--client codex` to check/update/remove only Codex's adapter.
 Neither mode enables the independent Claude Code wait guard.
+The merged-main maintenance command `--user --update-from-main` updates
+only existing Claude wait guards; use the explicit client commands above
+to install or update checkpoint adapters.

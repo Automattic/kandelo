@@ -47,6 +47,8 @@
 # `KANDELO_AGENT_JOB` and `KANDELO_AGENT_JOBS_DIR` name the scripts/agent-job
 # job a command runs under and its registry; dropped, the Vitest reporter's
 # load line counts the run's own job as other work on the machine.
+# `KANDELO_AGENT_SCRATCH_DIR` carries that job's private evidence directory;
+# nested dev-shell invocations must not lose it and fall back to shared logs.
 # PATH is intentionally NOT kept — Nix
 # rebuilds it from the flake so anything that needs to leak from
 # the host raises a "command not found" instead of building wrong.
@@ -143,6 +145,7 @@ nix_develop=(
     --keep WASM_POSIX_BINARY_CACHE_ROOT \
     --keep KANDELO_CACHE_GC_AUTO \
     --keep KANDELO_PLAYWRIGHT_PORT \
+    --keep KANDELO_AGENT_SCRATCH_DIR \
     --keep KANDELO_AGENT_JOB \
     --keep KANDELO_AGENT_JOBS_DIR \
     --keep WASM_POSIX_RESOLUTION_POLICY \
