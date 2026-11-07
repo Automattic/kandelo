@@ -66,7 +66,7 @@
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "8f49eb6e06af8e3d3c4dc55031699e6903cf358537470014b6030cf96c8770d8"
+        "packages/registry/spidermonkey/build.toml": "9ab7375454559cdf9c64be1d2d2d78f959f5c44cd39091daa19849bc9abdfade"
       },
       "sourceRoute": "pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source ; source140/146 actual retained-allocation capability and USER_OWNED commit source; source186 existing parseArgs/diff now consume genuine native lazy DATA owner; full pinned styleText/cache/hex over actual stream/TTY/color owners; actual fs.constants null-prototype allocator source corrected; guest dependencies/GC remain open; source189 complete unchanged sys source and pinned builtin initialization method retain actual util identity/cache/reentry/retry and real DEP0025 warning origin; ESM fixture/guest warning conformance remains open; source192 one real conditional SDK/OpenSSL OS/crypto bag, shared key/cipher consumers, exact lazy public crypto/constants load/cache/retry and distinct frozen legacy aggregate; actual TLS-cipher CLI state; guestJSAPI/TLSconsumer/fullcrypto open; source222 existing byte installer consumes complete unchanged pinned Buffer toJSON/adjustOffset/subarray/slice; actual FastBuffer aliases avoid species/public iteration, preserve target public accessor/coercion/dispatch order and schema;14native-dependent groups/2unchanged upstream files match, full Buffer/guest remain open",
       "remainingDependencies": "Original allocation foundation and selected FS/codec routing are source-only; actual engine/GC/realm/transfer and remaining Buffer/util/URL/IDNA/error/descriptor/CLI/loader/warning behavior and four-host conformance remain open",
@@ -91,7 +91,7 @@
       "selectedCurrentSourceIdentities": {
         "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
         "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
-        "third_party/node-core/native-fs.cpp": "30470c95d9b1ecba1de3b28621e38155cfb273410e46f10e7825034fbaf6f57b",
+        "third_party/node-core/native-fs.cpp": "ccf2314c9b3053f3939e0165f96d8629ba4a89d1ee5f1339d6e4adca73a71396",
         "third_party/node-core/native-random.cpp": "c7f6aae50716bfac569e50f921ed0641fe67cdaefa191907a92ac71ee780bba4",
         "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
         "third_party/node-core/event-platform-adapter.js": "83c398737e7a7fa0af9b86f10ee289057b10f2a210e7a31a0025301e2e1773ed",
@@ -176,7 +176,7 @@
         "third_party/node-core/dir-cursor.h": "28bdb5016f6d1163158b271dcbe6082f4a30699682c9bb38541e1e3318f6e074",
         "third_party/node-core/native-dir.cpp": "cacfe378a2de1143f6c11855a63b6f3696125d905bb9b0e1b1932522ff0161b7",
         "third_party/node-core/upstream/dir/lib/internal/fs/dir.js": "b0790f231855c30be329836456a1d85d6c1e082373a6fd6b74ea927b8e7fe0c2",
-        "third_party/node-core/native-fs.cpp": "30470c95d9b1ecba1de3b28621e38155cfb273410e46f10e7825034fbaf6f57b",
+        "third_party/node-core/native-fs.cpp": "ccf2314c9b3053f3939e0165f96d8629ba4a89d1ee5f1339d6e4adca73a71396",
         "third_party/node-core/native-async.cpp": "929098d8543310bb4f428fe0f94a8025c2616615c793a87b54cd3cc9c502a834",
         "third_party/node-core/readdir-platform-adapter.js": "8e2b2ee29161ef7d4182e501a03eae3631d457bbeae87a6f777cdedc468925cf",
         "third_party/node-core/native-readdir.cpp": "9afa67e93cf7c3599fd02837ee389d7c8af302ed14deadc458195f61f21b04e3",
@@ -204,12 +204,12 @@
         "host/src/vfs/opfs.ts": "eb4247b8b9ecee3057fc6718238941a0d8043d3fbc74793d4994b07641f60988",
         "packages/registry/spidermonkey/node-compat/adapter.js": "094fa9098d4fef3f9177d31ad65d5d85a14a2c8cb34e31965063f86b8367254b"
       },
-      "sourceRoute": "Real bounded descriptor/queued copyFile owners with atomic exclusive open and actual zero-size directory type handling;hard-link,temporary-directory,logical/native realpath/readlink and full glob owners join pinned file jobs/handles,Dir/readdir/Dirent,metadata,removal and sync/callback/promise byte algorithms ; source145 metadata polling/StatWatcher owner and source146 original scalar/vector/write-job allocation spans; source147 pinned recursive cp/native worker owner; source152 actual ReadFile allocation/capacity owner through USER_OWNED handoff; source166 reusable native root value clear preserves registration; source207 actual shared epoll readiness uses retained per-instance notification epochs under its existing table lock, avoiding allocation after producer commit; wrap preserves pending events;26 native affected cases pass over698 byte-matched inputs; public notification activation and guest kernel remain unvalidated; source214 dormant bounded notification queue, managed descriptor/OFD/dup/read/readiness/SCM/exec and retained tmpfs opened-dentry event producers; correct hardlink replacement link count;703 root inputs match identified125-case native artifact/rerun; public ENOSYS/host-wake/metadata/providers/fork/ABI activation/guest remain gaps; source214 actual tmpfs empty-write validation before quota/growth/timestamps/content generation; four before/after POSIX/control cases and45current affected native unit cases pass after fix; native artifact/receipt setup failures retained; Wasm/fourhost unvalidated; source216 actual typed FsNotify/eventfd backing read parks retain exact task/channel/OFD binding; real producers publish pre-admitted deduplicated dirties, existing retry performs actual read/completion; exact oversized backing requests retain prior host retry while corrupt snapshots remain errors; native production compiled,37scoped native cases pass, actual Wasm kernel typecheck only, no linked guest/public watcher/four-host closure",
+      "sourceRoute": "Real bounded descriptor/queued copyFile owners with atomic exclusive open and actual zero-size directory type handling;hard-link,temporary-directory,logical/native realpath/readlink and full glob owners join pinned file jobs/handles,Dir/readdir/Dirent,metadata,removal and sync/callback/promise byte algorithms ; source145 metadata polling/StatWatcher owner and source146 original scalar/vector/write-job allocation spans; source147 pinned recursive cp/native worker owner; source152 actual ReadFile allocation/capacity owner through USER_OWNED handoff; source166 reusable native root value clear preserves registration; source207 actual shared epoll readiness uses retained per-instance notification epochs under its existing table lock, avoiding allocation after producer commit; wrap preserves pending events;26 native affected cases pass over698 byte-matched inputs; public notification activation and guest kernel remain unvalidated; source214 dormant bounded notification queue, managed descriptor/OFD/dup/read/readiness/SCM/exec and retained tmpfs opened-dentry event producers; correct hardlink replacement link count;703 root inputs match identified125-case native artifact/rerun; public ENOSYS/host-wake/metadata/providers/fork/ABI activation/guest remain gaps; source214 actual tmpfs empty-write validation before quota/growth/timestamps/content generation; four before/after POSIX/control cases and45current affected native unit cases pass after fix; native artifact/receipt setup failures retained; Wasm/fourhost unvalidated; source216 actual typed FsNotify/eventfd backing read parks retain exact task/channel/OFD binding; real producers publish pre-admitted deduplicated dirties, existing retry performs actual read/completion; exact oversized backing requests retain prior host retry while corrupt snapshots remain errors; native production compiled,37scoped native cases pass, actual Wasm kernel typecheck only, no linked guest/public watcher/four-host closure; source240 actual move-only FileHandle descriptor lease consumed by adoption, sync close, GC and queued-close rollback; native JSAPI/guest ownership remains unvalidated; public transfer stays disabled",
       "remainingDependencies": "Current200engine compilation/link/normal checks and cache acceptance passed; current product/runtime acceptance remains unestablished. Source149 recovery routes the historical cp callback mismatch; actual guest after-hook recovery remains unvalidated, actual native class/GC/realm/VFS acceptance, copy/shrink differences, cursor/GC/ref/OOM/realm and fd/byte-path/backend integration; notification watchers/VFS/metadata/permissions/timestamp precision/statfs and FS-022 host-path gaps remain open",
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
-        "node": "Native runtime production build and37scoped native cases; actual Wasm kernel typecheck without linking/guest execution. Existing kernel/host drain, public watcher and all-four-host conformance unvalidated.",
+        "node": "Source240 consumed FileHandle native fd lease prerequisite only; new nativeJSAPI uncompiled/unexecuted, public transfer disabled, no four-host/API closure.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -370,7 +370,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "8f49eb6e06af8e3d3c4dc55031699e6903cf358537470014b6030cf96c8770d8",
+        "packages/registry/spidermonkey/build.toml": "9ab7375454559cdf9c64be1d2d2d78f959f5c44cd39091daa19849bc9abdfade",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e"
       },
@@ -450,7 +450,7 @@
         "packages/registry/php/package.toml": "3ae9d7bc075a1e187e0262e276f16d63b02aacd9e213f1f4f440ac52bee6cbba",
         "packages/registry/php/build.toml": "ad4e35904e40a9027b646dd25f342b0335a0afcd025edaee68354d656bc05ab4",
         "packages/registry/spidermonkey/package.toml": "f0a43459a487a007cc69bc0067be96ce04d7c3fa180a959fd1f2f3b823302bb2",
-        "packages/registry/spidermonkey/build.toml": "8f49eb6e06af8e3d3c4dc55031699e6903cf358537470014b6030cf96c8770d8",
+        "packages/registry/spidermonkey/build.toml": "9ab7375454559cdf9c64be1d2d2d78f959f5c44cd39091daa19849bc9abdfade",
         "packages/registry/wget/package.toml": "252e2ea144b723a24617f78911bf44ff9ec5ff61d2f0c12a6947c7c170e97b2e",
         "packages/registry/wget/build.toml": "ad538e1d004b0ab32732563826a33c6230ff627d855b0f14de3627d2d508569e",
         "packages/registry/node-ncrypto/package.toml": "aa361891e88e356114e223dd009c63de934a8d7a01986da92ea2f927c4d8716f",
@@ -464,7 +464,7 @@
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
-        "node": "234actual shared key publication C++ source verified/staged; no new native execution, allocatorfault, guest or fourhost runtime evidence.",
+        "node": "239 actual Node-host AES/HMAC sync generation/export/error and AES async generation subjects pass against pinned native controls; broader key generation/keypairs/WebCrypto/crypto/GC/realm/four-host gaps remain.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -614,7 +614,7 @@
         "third_party/node-core/upstream/environment/src/util.h": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
         "packages/registry/spidermonkey/patches/0100-kandelo-environment-object.patch": "1002a134b4146c0002e84f90532ef9d60129636d71084e75a63679dc486da615",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "8f49eb6e06af8e3d3c4dc55031699e6903cf358537470014b6030cf96c8770d8",
+        "packages/registry/spidermonkey/build.toml": "9ab7375454559cdf9c64be1d2d2d78f959f5c44cd39091daa19849bc9abdfade",
         "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
         "third_party/node-core/performance-clock.h": "d40eadfae84e493892c425ae9f3d2a1b5403a722c5a5fbd0f23e5909834a8ccc"
       },
@@ -623,7 +623,7 @@
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
-        "node": "Source239 shared clone configuration prerequisite only. Current guest startup/clone/streams/Worker and all-four-host conformance remain unestablished; historical238 bootstrap failures preserved.",
+        "node": "239 full clone-hook configuration executes through successful Node-host bootstrap. Clone/stream/Worker transfer and lifetime conformance remain open; reviewed FileHandle lease/activation still private.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -644,7 +644,7 @@
         "third_party/node-core/native-work.cpp": "25a2c44fbb5d12fb3b908c6448b8f582ee66e334e6d6784b35abcc7f24296dc0",
         "third_party/node-core/generate-codec-contexts.py": "6f61278030201514033f6fabd0aefc63a2d0e4c23294e2f6113242f98ce760e5",
         "packages/registry/node-compat/bootstrap.js": "e740a0190eacdce9f80ba43d3ef9d63a50030366b8fc0f3f89ff76367d0bcc96",
-        "packages/registry/spidermonkey/build.toml": "8f49eb6e06af8e3d3c4dc55031699e6903cf358537470014b6030cf96c8770d8"
+        "packages/registry/spidermonkey/build.toml": "9ab7375454559cdf9c64be1d2d2d78f959f5c44cd39091daa19849bc9abdfade"
       },
       "sourceRoute": "Pinned codec/archive/iterable JS and native contexts; historical112 limited shared/growable queue controls; source146 replaces queue pins with actual original allocation spans, native write-state ownership and retained params spans; source199 actual primitive-number/safe-integer/nonnegative Zstd pledged-size admission and genuine typed native checked-code errors; real portable policy52groups/full unchanged file per subject, productionJSAPI/chronology/fourhost incomplete",
       "remainingDependencies": "Current200native source compiled/linked and normal checks/cache acceptance passed; runtime acceptance unestablished. Actual JSAPI/GC/realm/detach/resize/shared-codec races and public modes/options/iterators/files/cleanup/cancellation/accounting remain open; historical gzip OS-byte mismatches retained; current four-host conformance unestablished",
@@ -709,14 +709,14 @@
         "third_party/node-core/native-vm-modules.cpp": "d3a740eb6800e0ec65ffdd2b5bedf89eab4889a803ab9d51cdc13803b3956658",
         "packages/registry/node-compat/bootstrap.js": "e740a0190eacdce9f80ba43d3ef9d63a50030366b8fc0f3f89ff76367d0bcc96",
         "packages/registry/spidermonkey/patches/0101-kandelo-error-location-policy.patch": "a5d2c2e4d315fff7fdf170a118305999271c8ea152c281d8cf952f21c3b531c8",
-        "packages/registry/spidermonkey/build.toml": "8f49eb6e06af8e3d3c4dc55031699e6903cf358537470014b6030cf96c8770d8"
+        "packages/registry/spidermonkey/build.toml": "9ab7375454559cdf9c64be1d2d2d78f959f5c44cd39091daa19849bc9abdfade"
       },
       "sourceRoute": "Generic Error location policy and actual VM/context/compiler owners; source 136 adds pinned public module classes over actual source/synthetic records, live environments, graph/link/evaluation/namespace hooks and native experimental CLI state; source151 actual realm/rooted-array/shared-buffer API compilation corrections; source158 actual shared-buffer header alignment correction retaining original assertion/ownership; source166 actual metadata visibility/retained transfer maximum access corrections; source173 canonical native includes/inline dependencies and genuine third-party vendor staging preserve unchanged normal Mozilla style checking; source174 real scoped synchronous VM watchdog/frame/interrupt ownership with target-realm termination;174native binding compiled in200; actual guest behavior unvalidated; source198 actual shared native socket/terminal/child watch registry belongs to its calling runtime thread; complete context drain/provider identity/lifetime and guest/fourhost remain open; source200 actual199selected engine failed native compilation;200corrects Root dereference, leaked port namespace and current FFI class/symbol API, preserving owner/access checks; full200engine compilation/check/cache acceptance passed; guest runtime acceptance pending; source215 actual compiled Script/function Stencil/ScriptPrivate callback owner and original public referrer/raw ModuleRequest attributes; rooted VMImport/promise reactions and one pinned shared ModuleWrap frontend;15groups/3unchanged upstream files over native dependencies; new guest JSAPI/default-loader/context-eval/REPL gaps remain",
       "remainingDependencies": "Current200engine compiled/linked and normal checks/canonical cache acceptance passed; product projection and guest/four-host validation remain open; actual graph/GC/realm/dynamic Promise execution and all four hosts unvalidated. Arbitrary attributes, source/defer phases, negative offsets, cache/deadline scopes, sandbox exotic properties, heap/inspector and broader context/worker gaps remain open",
       "implementationState": "started, partial; no family closure",
       "individualApiClosure": "not established by this routing crosswalk",
       "fourHostCurrentCandidateConformance": {
-        "node": "215 actual VM callback source over explicit native ContextifyScript/function/ModuleWrap/realm/Promise dependencies:15groups/3unchanged upstream files; new guest bridge/GC uncompiled.",
+        "node": "Normal239 build/cache accepted; Node-host bootstrap and sync/async symmetric generation3subjects pass. Full JSAPI/GC/realm/core/four-host conformance remains open; counter315lowerbound with4unattributed dependencies.",
         "chromium": "not established for new candidate",
         "firefox": "not established for new candidate",
         "webkit": "not established for new candidate"
@@ -790,7 +790,7 @@
         "equals": "documentation"
       },
       "selectedCurrentSourceIdentities": {
-        "tests/nodejs/outline/current-capability-reconciliation.md": "7a10ac18666bf3ef8682ba217af37c075f04f418ea87c12f556ed399cc174516"
+        "tests/nodejs/outline/current-capability-reconciliation.md": "b7669ffb837807ecf54e2692716d63b1d37e6b1817a9781ea113829adecd4322"
       },
       "sourceRoute": "This reconciliation and original requirements",
       "remainingDependencies": "Actual warning/origin/CLI/environment/activation behavior and unresolved target prose/source questions",

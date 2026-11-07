@@ -411,6 +411,7 @@ python3 "$REPO_ROOT/third_party/node-core/generate-sqlite-constants.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-sqlite-constants.h"
 cp "$REPO_ROOT/third_party/node-core/callback-scope.h" "$SRC_DIR/js/src/shell/kandelo-node-callback-scope.h"
 cp "$REPO_ROOT/third_party/node-core/callback-execution-stack.h" "$SRC_DIR/js/src/shell/kandelo-node-callback-execution-stack.h"
+cp "$REPO_ROOT/third_party/node-core/file-handle-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-file-handle-owner.h"
 cp "$REPO_ROOT/third_party/node-core/socket-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-socket-owner.h"
 sed 's|#include "socket-owner.h"|#include "kandelo-node-socket-owner.h"|' \
     "$REPO_ROOT/third_party/node-core/tls-owner.h" > "$SRC_DIR/js/src/shell/kandelo-node-tls-owner.h"

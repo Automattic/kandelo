@@ -2,6 +2,7 @@
  * Uses existing libc/kernel descriptors and the shared guest work pool.
  * Included after native-async.cpp and codec-handle.cpp. Source candidate only.
  */
+#include "kandelo-node-file-handle-owner.h"
 #include "kandelo-node-dir-cursor.h"
 #include "kandelo-node-kdf-operations.h"
 #include "kandelo-node-signature-job-operations.h"
@@ -10,17 +11,16 @@ enum FsRequestSlot { FsRequestState, FsRequestFrame, FsRequestCallback,
                      FsRequestParent, FsRequestPromise, FsRequestBuffers, FsRequestResult, FsRequestSlots };
 enum class FsResourceKind { Callback, Promise, FileHandle, FileHandleClose, FileRead, FileWrite, Random, Directory, Pbkdf2, Scrypt, Argon2, Hkdf, Sign, Keygen };
 static int KandeloFsDoClose(int fd) {
-  int result = close(fd);
-  // libuv treats EINTR/EINPROGRESS as an in-progress close and never retries
-  // a descriptor number that the OS may already have released for reuse.
-  return result == 0 || errno == EINTR || errno == EINPROGRESS ? 0 : -errno;
+  return kandelo::nodefs::FileHandleLease::CloseDescriptor(fd);
 }
 struct KandeloFsRequestState {
   js::shell::KandeloNativeAsyncState* lifetime = nullptr;
   double id = -1, trigger = -1;
   bool dispatched = false, retired = false, closing = false;
   FsResourceKind kind = FsResourceKind::Callback;
+  // Numeric observation only; the lease (or an admitted close job) owns fd.
   int fd = -1;
+  kandelo::nodefs::FileHandleLease descriptor;
   int flags = 0; uint32_t fileMode = 0; uint64_t limit = 0;
   js::shell::KandeloNativeWork* work = nullptr;
   JS::UniqueChars name;
@@ -46,11 +46,11 @@ struct KandeloFsRequestState {
       const int status = directory->Close();
       if (lifetime) lifetime->FsGcClosed(-1, status, nullptr, 0, true);
     }
-    if (kind == FsResourceKind::FileHandle && fd >= 0) {
+    if (kind == FsResourceKind::FileHandle && descriptor.Fd() >= 0) {
       // Node closes an abandoned handle synchronously during GC, then defers
       // its fatal diagnostic to an immediate; never call JS from a finalizer.
-      const int oldFd = fd; fd = -1;
-      const int status = KandeloFsDoClose(oldFd);
+      const int oldFd = descriptor.Fd(); fd = -1;
+      const int status = descriptor.Close();
       if (lifetime) lifetime->FsGcClosed(oldFd, status, std::move(name), nameLength);
     }
     Retire(); if (lifetime) lifetime->Release();
@@ -173,6 +173,8 @@ struct KandeloFsWork : js::shell::KandeloNativeWork {
   int fd; off_t length; int64_t result = 0;
   Operation operation;
   bool performed = false;
+  // A queued close owns the actual lease, not a retained numeric fd alone.
+  kandelo::nodefs::FileHandleLease handleClose;
   KandeloFsWork(JSContext* cx, JSObject* request, int fd, off_t length,
                 Operation operation = Operation::Truncate)
       : owner(cx, request), fd(fd), length(length), operation(operation) {
@@ -181,14 +183,28 @@ struct KandeloFsWork : js::shell::KandeloNativeWork {
     State()->work = this;
   }
   ~KandeloFsWork() override {
+    ReturnHandleLease();
     if (State()->work == this) State()->work = nullptr;
     JS::RemoveAssociatedMemory(owner, sizeof(KandeloFsWork), JS::MemoryUse::Embedding3);
   }
   KandeloFsRequestState* State() {
     return static_cast<KandeloFsRequestState*>(JS::GetReservedSlot(owner, FsRequestState).toPrivate());
   }
+  KandeloFsRequestState* ParentHandleState() {
+    JSObject* parent = &JS::GetReservedSlot(owner, FsRequestParent).toObject();
+    return static_cast<KandeloFsRequestState*>(JS::GetReservedSlot(parent, FsRequestState).toPrivate());
+  }
+  bool TakeHandleLease() {
+    return operation != Operation::CloseHandle || handleClose.Adopt(ParentHandleState()->descriptor);
+  }
+  void ReturnHandleLease() {
+    if (handleClose.Fd() < 0) return;
+    MOZ_RELEASE_ASSERT(!performed && operation == Operation::CloseHandle);
+    MOZ_RELEASE_ASSERT(ParentHandleState()->descriptor.Adopt(handleClose));
+  }
   void Run() override {
-    result = operation == Operation::Truncate ? KandeloFsDoTruncate(fd, length) : KandeloFsDoClose(fd);
+    result = operation == Operation::Truncate ? KandeloFsDoTruncate(fd, length) :
+        operation == Operation::CloseHandle ? handleClose.Close() : KandeloFsDoClose(fd);
     performed = true;
   }
   virtual void ReleaseIo() {}
@@ -211,11 +227,14 @@ struct KandeloFsWork : js::shell::KandeloNativeWork {
   }
   void FinishHandleClose() {
     if (operation != Operation::CloseHandle) return;
-    JSObject* parent = &JS::GetReservedSlot(owner, FsRequestParent).toObject();
-    auto* state = static_cast<KandeloFsRequestState*>(JS::GetReservedSlot(parent, FsRequestState).toPrivate());
+    auto* state = ParentHandleState();
     if (performed) state->fd = -1;
+    else ReturnHandleLease();
     state->closing = false;
-    if (!performed) JS::SetReservedSlot(parent, FsRequestPromise, UndefinedValue());
+    if (!performed) {
+      JSObject* parent = &JS::GetReservedSlot(owner, FsRequestParent).toObject();
+      JS::SetReservedSlot(parent, FsRequestPromise, UndefinedValue());
+    }
   }
   bool Complete(JSContext* cx) override {
     RootedObject resource(cx, owner);
@@ -322,6 +341,10 @@ static bool KandeloSubmitFsWork(JSContext* cx, HandleObject owner,
   if (!queue) return false;
   auto* work = js_new<KandeloFsWork>(cx, owner.get(), fd, length, operation);
   if (!work) { JS_ReportOutOfMemory(cx); return false; }
+  if (!work->TakeHandleLease()) {
+    js_delete(work);
+    JS_ReportErrorASCII(cx, "FileHandle close has no live descriptor owner"); return false;
+  }
   state->dispatched = true;
   if (!queue->Submit(work)) {
     js_delete(work);

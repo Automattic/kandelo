@@ -1,0 +1,105 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem.md",
+    "findingIds": [
+      "FS-010"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/filesystem.md",
+        "findingId": "FS-010",
+        "scope": "Stable ownership/lease/GC/failure prerequisite; no byte-path or complete finding closure"
+      },
+      {
+        "document": "tests/nodejs/audit/filesystem-contracts.md",
+        "section": "FileHandle native descriptor lifetime/close/GC/transfer requirements, lines92-100",
+        "kind": "section-requirement-not-invented-finding-id"
+      },
+      {
+        "document": "tests/nodejs/audit/worker-contracts.md",
+        "findingId": "R-013",
+        "proseReferences": [
+          "R-004"
+        ],
+        "scope": "Transfer prerequisite only; R-004 is prose reference, not a separately recovered definition"
+      }
+    ],
+    "relatedFamilies": [
+      "filesystem",
+      "workers",
+      "async",
+      "streams",
+      "engine"
+    ],
+    "scope": "Source-only descriptor ownership prerequisite, no finding/API/family closure."
+  },
+  "sourceImplemented": [
+    "Move-only actual fd lease implements consume-once close and preserves existing EINTR/EINPROGRESS no-retry policy",
+    "Existing FileHandle adoption/sync-close/GC consume lease; numeric fd remains observation only",
+    "Queued CloseHandle takes lease before publication and restores unperformed cancellation/admission failure before clearing the actual rooted parent",
+    "Performed close never restores or retries numeric fd; normal staging copies header and recipe declares source input",
+    "Preserve original pinned public FileHandle algorithms and keep transfer disabled until actual native sidecar/receiver owner is integrated"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-filehandle240-source-r2/report.json",
+    "sha256": "3ad1bc8657caf947864cf7faa848918b82b8c466c28a76ff6c85aa7f971be95b",
+    "guardedInputs": 898,
+    "scope": "Normal source generation/input closure/staging plus actual native-fs and native-file-handle unity identities; exact portable lease6/native reference2 groups. No new compiler, public transfer activation or guest/four-host conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-filehandle240-affected-r1.json",
+    "sha256": "2f8b2c1ae2919f3dc3422b3d465581c029a9b94dee2df3c582c122816eb47ee3",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": true
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-filehandle240-source-r2/report.json",
+    "sha256": "3ad1bc8657caf947864cf7faa848918b82b8c466c28a76ff6c85aa7f971be95b",
+    "normalSourceStages": 3,
+    "actualNativeUnityOwners": 2,
+    "portableHeaderGroups": 6,
+    "pinnedNativeReferenceGroups": 2,
+    "newRootCompilerAttempts": 0,
+    "historicalProducerHelperCompileAttempts": 1,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Actual production portable header over native fd/OFD/thread close; pinned native Node transfer/in-use references only. New candidate JSAPI/workqueue/lifecycle uncompiled and unexecuted.",
+    "packageEvidenceReusedAfterFixtureCorrection": true
+  },
+  "sealedEvidence": {
+    "report": ".context/filehandle-transfer-owner-agent/report.json",
+    "sha256": "dadc09427f2b1414b1b8dbaf4bc92eead2131f8944b47ff80fa383831c553f3b",
+    "reusedEvidence": true,
+    "scope": "Independent reviewed source lease/adoption/close/GC/workqueue prerequisite; original1successful tiny helper compilation,6portablegroups+2native references,10source predicates and known incomplete old input closure. Current normal source checks are separate."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/filehandle-transfer-owner-agent/handoff-preimage-r1-failure.json",
+      "sha256": "8cb432a27a168d7303b990d259e43244d82dbc4cd50e40ea7fb0ae99c1d8fbf0",
+      "scope": "Original private handoff recipe preimage mismatch after parent238 advanced; original237recipe retained and actual238header-input-only composition preserved. No failed compiler or guest result."
+    },
+    {
+      "report": ".context/node26-filehandle240-root-hnm9mwfs/source-result.json",
+      "sha256": "b6457320239cc72eccc646ad7f8e6b1e1e3f66db82460df82e824b8cd1dedf15",
+      "scope": "Original source checkexit1: sparse engine fixture omitted real upstream js/src/vm directory; production HostOrder.h staging failed before controls. Zero compiler/runtime attempts; full failed log retained."
+    }
+  ],
+  "remaining": [
+    "Native FileHandle transfer admission/tag/single-use lease sidecar and actual target-realm registry/errorfactory/init/rollback; keep public hooks disabled until real consumers exist",
+    "Actual packet abandonment/closed-port/Worker exit/queued cancellation and GC/OOM/realm/fatal lifecycle validation across identified hosts",
+    "Compile current240 native-FS/FileHandle unity owners and validate actual guest close/adoption/workqueue behavior; portable header is not JSAPI or guest libc proof",
+    "Preserve raw outside fd-close/reuse and public active-I/O/ref/stream lifetime obligations without inventing stronger OFD guarantees",
+    "Keep accepted239 three scoped Node-host passes and all earlier failed239/238 evidence in their exact scopes; complete all19family gaps and nested guestWasm last"
+  ],
+  "at": "2026-11-07T23:35:10.662627+00:00",
+  "recipeRevision": 240,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

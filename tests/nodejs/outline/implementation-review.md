@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source240 integrates a genuine FileHandle descriptor/queued-close lease prerequisite. Six portable native-owner groups and two pinned-native references are narrow evidence; public transfer remains disabled and current240 native JSAPI is uncompiled.
+See [source scope](file-handle-lease-integration.md).
+
 Source239 repairs the actual curated clone configuration boundary that blocked accepted238 guest startup. Three forwarding component groups pass; guest startup remains unvalidated for239.
 See [source scope](clone-configuration-forwarding-integration.md).
 

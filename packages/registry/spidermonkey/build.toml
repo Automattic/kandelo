@@ -381,6 +381,7 @@ inputs = [
   "third_party/node-core/native-fs.cpp",
   "third_party/node-core/fs-truncate-adapter.js",
   "third_party/node-core/native-file-handle.cpp",
+  "third_party/node-core/file-handle-owner.h",
   "third_party/node-core/native-fs-promise.cpp",
   "third_party/node-core/native-directory.cpp",
   "third_party/node-core/tempdir-platform-adapter.js",
@@ -765,4 +766,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 239
+revision = 240

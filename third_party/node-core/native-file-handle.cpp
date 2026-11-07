@@ -26,7 +26,8 @@ static bool KandeloFileHandleCloseSync(JSContext* cx, unsigned argc, Value* vp) 
   if (!state) return false;
   args.rval().setUndefined();
   if (state->closing || state->fd < 0) return true;
-  const int status = KandeloFsDoClose(state->fd); state->fd = -1;
+  MOZ_RELEASE_ASSERT(state->descriptor.Fd() == state->fd);
+  const int status = state->descriptor.Close(); state->fd = -1;
   if (status == 0) return true;
   RootedObject owner(cx, &args.thisv().toObject());
   RootedValue callback(cx, JS::GetReservedSlot(owner, FsRequestCallback)), error(cx);
@@ -70,7 +71,7 @@ static bool KandeloAdoptNamedFileHandle(JSContext* cx, int fd, JS::UniqueChars n
                                          size_t length, HandleValue makeError,
                                          MutableHandleObject result) {
   // Adoption consumes the fd and the already-copied original pathname bytes.
-  auto releaseFd = mozilla::MakeScopeExit([&] { KandeloFsDoClose(fd); });
+  kandelo::nodefs::FileHandleLease incoming(fd);
   if (!makeError.isObject() || !JS::IsCallable(&makeError.toObject())) {
     JS_ReportErrorASCII(cx, "FileHandle requires original path and error factory"); return false;
   }
@@ -86,13 +87,14 @@ static bool KandeloAdoptNamedFileHandle(JSContext* cx, int fd, JS::UniqueChars n
   auto* state = KandeloFsRequestStateOf(cx, owner); if (!state) return false;
   state->name = std::move(name); state->nameLength = length; state->nameBytes = length + 1;
   JS::AddAssociatedMemory(owner, state->nameBytes, JS::MemoryUse::Embedding3);
-  state->fd = fd; releaseFd.release();
+  MOZ_RELEASE_ASSERT(state->descriptor.Adopt(incoming));
+  state->fd = fd;
   if (!KandeloInitializeFsResource(cx, owner)) return false;
   result.set(owner); return true;
 }
 static bool KandeloAdoptFileHandle(JSContext* cx, int fd, HandleString path,
                                     HandleValue makeError, MutableHandleObject result) {
-  auto releaseFd = mozilla::MakeScopeExit([&] { KandeloFsDoClose(fd); });
+  kandelo::nodefs::FileHandleLease incoming(fd);
   JSLinearString* linear = JS_EnsureLinearString(cx, path); if (!linear) return false;
   const size_t length = JS::GetDeflatedUTF8StringLength(linear);
   if (length == SIZE_MAX) { JS_ReportOutOfMemory(cx); return false; }
@@ -100,7 +102,7 @@ static bool KandeloAdoptFileHandle(JSContext* cx, int fd, HandleString path,
   if (!name) { JS_ReportOutOfMemory(cx); return false; }
   JS::DeflateStringToUTF8Buffer(linear, mozilla::Span<char>(name.get(), length));
   name.get()[length] = 0;
-  releaseFd.release();
+  incoming.Release();
   return KandeloAdoptNamedFileHandle(cx, fd, std::move(name), length, makeError, result);
 }
 static bool KandeloNativeAdoptFileHandle(JSContext* cx, unsigned argc, Value* vp) {

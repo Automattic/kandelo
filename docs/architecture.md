@@ -7239,3 +7239,7 @@ Node timing now reads the actual per-owner monotonic clock and marks native entr
 ### Clone configuration preserves every native hook
 
 The curated SpiderMonkey adapter forwards every clone configuration argument to the existing native receiver. The previous five-argument wrapper dropped nested transfer discovery, so the six-argument native callable validation rejected guest bootstrap before user code. Native validation remains intact. A permanent forwarding component control checks hook identities, receiver, invocation and error propagation; it does not execute SpiderMonkey. Actual guest startup, clone/stream/Worker lifecycle and all four hosts still require identified-artifact validation.
+
+### FileHandle close owns a descriptor lease
+
+FileHandle adoption, synchronous close, foreground GC and queued close use one move-only native descriptor lease. Queue admission transfers authority before publication; unperformed cancellation restores the lease before clearing its rooted parent, while performed close consumes it exactly once. Numeric fd observations do not create a second owner. The normal engine recipe stages the real header. Public transfer remains disabled in this prerequisite; native clone sidecars, receiver init/rollback and Worker retirement are a later slice. Portable native fd/OFD/thread controls and pinned Node references are not guest workqueue or four-host proof.
