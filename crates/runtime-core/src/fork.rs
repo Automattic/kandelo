@@ -57,7 +57,10 @@ const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // signals; the exec-state fixture preserves them for replacement tests.
 // v19 retains the KMS cursor BO across exec; fork children own no cursor.
 // v20 carries the image's executable (`Process::exe`) as an inherited OFD.
-const FORK_VERSION: u32 = 20;
+// v21 carries the owner of an AF_UNIX datagram association, so a child
+// inherits a peer in another process as that foreign endpoint instead of
+// re-reading `peer_idx` as a slot in its own socket table.
+const FORK_VERSION: u32 = 21;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -503,6 +506,10 @@ fn write_durable_socket_state(
     }
     // A selected source is nonzero; zero encodes no UDP association source.
     w.write_u32(sock.udp_source_addr.map(u32::from_be_bytes).unwrap_or(0))?;
+    // The owner of an AF_UNIX datagram association. `u32::MAX` encodes "my own
+    // process", which keeps a same-process association pointing at the child's
+    // copied table rather than at the parent's socket.
+    w.write_u32(sock.peer_owner_pid.unwrap_or(u32::MAX))?;
     Ok(())
 }
 
@@ -565,6 +572,8 @@ fn read_durable_socket_state(
     };
     let source = r.read_u32()?;
     sock.udp_source_addr = if source == 0 { None } else { Some(source.to_be_bytes()) };
+    let peer_owner_pid = r.read_u32()?;
+    sock.peer_owner_pid = (peer_owner_pid != u32::MAX).then_some(peer_owner_pid);
     Ok(())
 }
 

@@ -769,6 +769,16 @@ pub struct SocketInfo {
     pub state: SocketState,
     /// Index of peer socket (for connected Unix domain pairs).
     pub peer_idx: Option<usize>,
+    /// PID owning `peer_idx` when an AF_UNIX datagram association names a
+    /// socket in another process.
+    ///
+    /// WHY `Option` rather than always recording the owner: `None` means
+    /// "`peer_idx` is a slot in my own table", which is what `peer_idx` has
+    /// always meant. A fork child inherits a same-process association as a
+    /// pointer into its own copied table, exactly as before machine-wide
+    /// datagram routing existed, while a foreign association is inherited as
+    /// the foreign endpoint it is.
+    pub peer_owner_pid: Option<u32>,
     /// Index into the global pipe table for the receive buffer.
     pub recv_buf_idx: Option<usize>,
     /// Index into the global pipe table for the send buffer.
@@ -860,6 +870,7 @@ impl SocketInfo {
             protocol,
             state: SocketState::Unbound,
             peer_idx: None,
+            peer_owner_pid: None,
             recv_buf_idx: None,
             send_buf_idx: None,
             shut_rd: false,
@@ -959,6 +970,7 @@ impl SocketInfo {
             protocol: self.protocol,
             state: self.state,
             peer_idx: self.peer_idx,
+            peer_owner_pid: self.peer_owner_pid,
             recv_buf_idx: self.recv_buf_idx,
             send_buf_idx: self.send_buf_idx,
             shut_rd: self.shut_rd,

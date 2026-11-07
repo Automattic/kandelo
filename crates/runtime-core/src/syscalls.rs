@@ -4762,14 +4762,15 @@ fn release_ofd_reference_impl(
                         }
                     }
                 }
-                // peer_idx is a process-local socket-table identity used by
-                // AF_UNIX datagrams and same-process stream OOB delivery.
-                // Clear references before freeing the slot so a later
-                // allocation cannot receive data intended for the closed
-                // endpoint.
+                // `peer_idx` names a slot in the owning process's socket
+                // table, so clear references before freeing the slot: a later
+                // allocation must not receive data intended for the closed
+                // endpoint. An AF_UNIX datagram association with a peer in
+                // another process records that owner, and the same slot number
+                // means nothing in this table, so it must survive untouched.
                 for peer_idx in 0..proc.sockets.len() {
                     if let Some(peer) = proc.sockets.get_mut(peer_idx) {
-                        if peer.peer_idx == Some(sock_idx) {
+                        if peer.peer_owner_pid.is_none() && peer.peer_idx == Some(sock_idx) {
                             peer.peer_idx = None;
                         }
                     }
@@ -12788,25 +12789,47 @@ fn udp_send_datagram(
     Ok(buf.len())
 }
 
-fn unix_dgram_send_to_sock(
-    proc: &mut Process,
-    src_sock_idx: usize,
-    dst_sock_idx: usize,
+/// The machine-wide identity and credentials of one AF_UNIX datagram sender.
+///
+/// Carried as plain scalars so delivery into another process's socket table
+/// never needs a reference back to the sending `Process`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UnixDgramSender {
+    pid: u32,
+    sock_idx: usize,
+    uid: u32,
+    gid: u32,
+}
+
+impl UnixDgramSender {
+    fn of(proc: &Process, sock_idx: usize) -> Self {
+        UnixDgramSender {
+            pid: proc.pid,
+            sock_idx,
+            uid: proc.real_uid(),
+            gid: proc.real_gid(),
+        }
+    }
+}
+
+/// Queue one AF_UNIX datagram into a bound target socket, wherever its process
+/// lives.
+///
+/// Every refusal an AF_UNIX datagram send can report about its destination is
+/// decided here from the target's own state: wrong type or unbound is
+/// `ECONNREFUSED`, a target that selected another peer is `EPERM`, a read-shut
+/// target is `EPIPE`, and a full reliable queue is `EAGAIN`. Keeping them in
+/// one place is what lets the cross-process path report the same errno the
+/// process-local path would.
+fn unix_dgram_deliver(
+    target: &mut crate::socket::SocketInfo,
+    target_owner_pid: u32,
+    sender: UnixDgramSender,
     buf: &[u8],
     ancillary_fds: AncillaryFds,
 ) -> Result<usize, Errno> {
     use crate::socket::Datagram;
 
-    let shut_wr = proc.sockets.get(src_sock_idx).ok_or(Errno::EBADF)?.shut_wr;
-    if shut_wr {
-        return Err(Errno::EPIPE);
-    }
-
-    let (src_pid, src_uid, src_gid) = (proc.pid, proc.real_uid(), proc.real_gid());
-    let target = proc
-        .sockets
-        .get_mut(dst_sock_idx)
-        .ok_or(Errno::ECONNREFUSED)?;
     if target.domain != crate::socket::SocketDomain::Unix
         || target.sock_type != crate::socket::SocketType::Dgram
         || !matches!(
@@ -12816,7 +12839,7 @@ fn unix_dgram_send_to_sock(
     {
         return Err(Errno::ECONNREFUSED);
     }
-    if !unix_dgram_target_accepts_sender(target, src_sock_idx) {
+    if !unix_dgram_target_accepts_sender(target, target_owner_pid, sender) {
         return Err(Errno::EPERM);
     }
     // A read-shut AF_UNIX datagram peer cannot accept another reliable
@@ -12837,15 +12860,36 @@ fn unix_dgram_send_to_sock(
             dst_addr: [0; 4],
             dst_addr6: [0; 16],
             src_port: 0,
-            src_sock_idx: Some(src_sock_idx),
+            src_sock_idx: Some(sender.sock_idx),
             ipv6_tclass: 0,
-            src_pid,
-            src_uid,
-            src_gid,
+            src_pid: sender.pid,
+            src_uid: sender.uid,
+            src_gid: sender.gid,
             ancillary_fds,
         })
     })?;
     Ok(buf.len())
+}
+
+fn unix_dgram_send_to_sock(
+    proc: &mut Process,
+    src_sock_idx: usize,
+    dst_sock_idx: usize,
+    buf: &[u8],
+    ancillary_fds: AncillaryFds,
+) -> Result<usize, Errno> {
+    let shut_wr = proc.sockets.get(src_sock_idx).ok_or(Errno::EBADF)?.shut_wr;
+    if shut_wr {
+        return Err(Errno::EPIPE);
+    }
+
+    let sender = UnixDgramSender::of(proc, src_sock_idx);
+    let owner_pid = proc.pid;
+    let target = proc
+        .sockets
+        .get_mut(dst_sock_idx)
+        .ok_or(Errno::ECONNREFUSED)?;
+    unix_dgram_deliver(target, owner_pid, sender, buf, ancillary_fds)
 }
 
 fn finish_datagram_send(
@@ -12935,13 +12979,25 @@ fn udp6_socket_accepts_datagram(
     true
 }
 
+/// Whether a bound AF_UNIX datagram socket accepts a message from this exact
+/// sending endpoint.
+///
+/// A socket index alone cannot name a sender machine-wide: two processes have
+/// independent socket tables and reuse the same slot numbers. The identity is
+/// the `(pid, slot)` pair, with a `None` owner on the target meaning its
+/// selected peer lives in its own process.
 fn unix_dgram_target_accepts_sender(
     target: &crate::socket::SocketInfo,
-    src_sock_idx: usize,
+    target_owner_pid: u32,
+    sender: UnixDgramSender,
 ) -> bool {
     use crate::socket::SocketState;
 
-    target.state != SocketState::Connected || target.peer_idx == Some(src_sock_idx)
+    target.state != SocketState::Connected
+        || (
+            target.peer_owner_pid.unwrap_or(target_owner_pid),
+            target.peer_idx,
+        ) == (sender.pid, Some(sender.sock_idx))
 }
 
 fn unix_dgram_matches_peer(
@@ -12950,6 +13006,43 @@ fn unix_dgram_matches_peer(
     datagram: &crate::socket::Datagram,
 ) -> bool {
     datagram.src_pid == owner_pid && datagram.src_sock_idx == Some(peer_idx)
+}
+
+/// Record an AF_UNIX datagram association and drop queued messages the new
+/// peer selection excludes.
+///
+/// `peer_owner_pid` is `None` for a peer in this process, so a fork child keeps
+/// pointing at its own copied table. Shared by the process-local `connect()`
+/// arm and the machine-wide retry so both leave identical socket state.
+fn unix_dgram_install_association(
+    proc: &mut Process,
+    sock_idx: usize,
+    peer_owner_pid: Option<u32>,
+    peer_idx: usize,
+) -> Result<(), Errno> {
+    use crate::socket::SocketState;
+
+    let selected_pid = peer_owner_pid.unwrap_or(proc.pid);
+    let send_state_changed = {
+        let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+        let association_changed = sock.state != SocketState::Connected
+            || sock.peer_idx != Some(peer_idx)
+            || sock.peer_owner_pid != peer_owner_pid;
+        sock.peer_idx = Some(peer_idx);
+        sock.peer_owner_pid = peer_owner_pid;
+        sock.state = SocketState::Connected;
+        let queued_before = sock.dgram_queue.len();
+        sock.dgram_queue
+            .retain(|datagram| unix_dgram_matches_peer(selected_pid, peer_idx, datagram));
+        association_changed || sock.dgram_queue.len() != queued_before
+    };
+    // Connecting changes both this socket's destination and which senders it
+    // accepts. Even if a selected peer's messages keep the queue full,
+    // rejected writers must wake to observe EPERM.
+    if send_state_changed {
+        crate::wakeup::push_datagram_writable();
+    }
+    Ok(())
 }
 
 /// Whether a queued datagram is visible through this socket's connected-peer
@@ -12972,9 +13065,9 @@ fn dgram_matches_connected_peer(
         SocketDomain::Inet6 => {
             datagram.src_addr6 == sock.peer_addr6 && datagram.src_port == sock.peer_port
         }
-        SocketDomain::Unix => sock
-            .peer_idx
-            .is_some_and(|peer| unix_dgram_matches_peer(owner_pid, peer, datagram)),
+        SocketDomain::Unix => sock.peer_idx.is_some_and(|peer| {
+            unix_dgram_matches_peer(sock.peer_owner_pid.unwrap_or(owner_pid), peer, datagram)
+        }),
     }
 }
 
@@ -13313,6 +13406,162 @@ pub fn deliver_cross_process_loopback_udp(
     delivered
 }
 
+// ── Cross-process AF_UNIX datagram routing ──────────────────────────────────
+//
+// An AF_UNIX datagram's received messages live in the owning process's
+// `SocketTable`, and a syscall holds `&mut Process` derived from
+// `GLOBAL_PROCESS_TABLE`'s `UnsafeCell`. Re-entering that table while such a
+// reference is live would alias the caller, so the process-local `connect()`
+// and send arms refuse an endpoint another process owns and the exported
+// wrappers retry here, with the whole table in hand, once every direct
+// `Process` reference has reached its last use. This is the same deferral
+// `cross_process_unix_connect` uses for AF_UNIX streams and
+// `deliver_cross_process_loopback_udp` uses for IPv4 loopback datagrams.
+
+/// The socket slot behind `fd`, when it is an AF_UNIX datagram socket.
+///
+/// Also the gate the exported wrappers use to decide whether an
+/// `ECONNREFUSED` from the process-local path is worth retrying machine-wide:
+/// no other socket family or type routes through these functions.
+pub fn unix_datagram_socket_index(proc: &Process, fd: i32) -> Option<usize> {
+    use crate::socket::{SocketDomain, SocketType};
+
+    let ofd_idx = resolve_io_ofd(proc, fd).ok()?;
+    let ofd = proc.ofd_table.get(ofd_idx)?;
+    if ofd.file_type != FileType::Socket {
+        return None;
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx)?;
+    (sock.domain == SocketDomain::Unix && sock.sock_type == SocketType::Dgram).then_some(sock_idx)
+}
+
+/// Resolve the machine-wide destination of one AF_UNIX datagram operation.
+///
+/// `addr` is a `sendto`/`connect` destination; `None` uses the socket's
+/// recorded association, as `send()` does. A destination in the caller's own
+/// process belongs to the process-local path, which has already decided this
+/// attempt, so it is reported as refused rather than routed twice.
+fn foreign_unix_datagram_target(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    sock_idx: usize,
+    addr: Option<&[u8]>,
+) -> Result<(u32, usize), Errno> {
+    use crate::socket::SocketState;
+
+    let target = match addr {
+        Some(addr) => resolve_unix_datagram_owner(proc, host, addr)?,
+        None => {
+            let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+            if sock.state != SocketState::Connected {
+                return Err(Errno::EDESTADDRREQ);
+            }
+            match (sock.peer_owner_pid, sock.peer_idx) {
+                (Some(pid), Some(idx)) => (pid, idx),
+                _ => return Err(Errno::ECONNREFUSED),
+            }
+        }
+    };
+    if target.0 == proc.pid {
+        return Err(Errno::ECONNREFUSED);
+    }
+    Ok(target)
+}
+
+/// Associate an AF_UNIX datagram socket with an endpoint another process owns.
+///
+/// Validates the foreign endpoint exactly as the process-local arm validates a
+/// local one — wrong type, unbound, or a target that selected a different peer
+/// keep their `ECONNREFUSED`/`EPERM` — and changes this socket's association
+/// only after that validation passes.
+pub fn cross_process_unix_dgram_connect(
+    table: &mut crate::process_table::ProcessTable,
+    my_pid: u32,
+    host: &mut dyn HostIO,
+    fd: i32,
+    addr: &[u8],
+) -> Result<(), Errno> {
+    let (sock_idx, sender, target) = {
+        let proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
+        let sock_idx = unix_datagram_socket_index(proc, fd).ok_or(Errno::ECONNREFUSED)?;
+        let target = foreign_unix_datagram_target(proc, host, sock_idx, Some(addr))?;
+        (sock_idx, UnixDgramSender::of(proc, sock_idx), target)
+    };
+
+    let (peer_pid, peer_idx) = target;
+    {
+        use crate::socket::{SocketDomain, SocketState, SocketType};
+        let peer_proc = table.get(peer_pid).ok_or(Errno::ECONNREFUSED)?;
+        let peer = peer_proc
+            .sockets
+            .get(peer_idx)
+            .ok_or(Errno::ECONNREFUSED)?;
+        if peer.domain != SocketDomain::Unix
+            || peer.sock_type != SocketType::Dgram
+            || !matches!(peer.state, SocketState::Bound | SocketState::Connected)
+        {
+            return Err(Errno::ECONNREFUSED);
+        }
+        if !unix_dgram_target_accepts_sender(peer, peer_pid, sender) {
+            return Err(Errno::EPERM);
+        }
+    }
+
+    let proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
+    unix_dgram_install_association(proc, sock_idx, Some(peer_pid), peer_idx)
+}
+
+/// Send one AF_UNIX datagram to an endpoint another process owns.
+///
+/// `addr` is a `sendto` destination; `None` uses the socket's recorded
+/// association, as `send()` does. The result is the same the process-local
+/// path would produce if the endpoint were in this process, including
+/// `EAGAIN` for a full reliable queue and `SIGPIPE` alongside `EPIPE` unless
+/// `MSG_NOSIGNAL` was requested.
+pub fn cross_process_unix_dgram_send(
+    table: &mut crate::process_table::ProcessTable,
+    my_pid: u32,
+    host: &mut dyn HostIO,
+    fd: i32,
+    buf: &[u8],
+    flags: u32,
+    addr: Option<&[u8]>,
+) -> Result<usize, Errno> {
+    let prepared = {
+        let proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
+        let result = unix_datagram_socket_index(proc, fd)
+            .ok_or(Errno::ECONNREFUSED)
+            .and_then(|sock_idx| {
+                // Same order as `unix_dgram_send_to_sock`: a write-shut sender
+                // is EPIPE before any destination is considered.
+                if proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?.shut_wr {
+                    return Err(Errno::EPIPE);
+                }
+                let target = foreign_unix_datagram_target(proc, host, sock_idx, addr)?;
+                Ok((UnixDgramSender::of(proc, sock_idx), target))
+            });
+        // Every failure, including a locally decided one, owes the caller the
+        // same SIGPIPE treatment the process-local path gives it.
+        match result {
+            Ok(prepared) => prepared,
+            Err(error) => return finish_datagram_send(proc, flags, Err(error)),
+        }
+    };
+
+    let (sender, (peer_pid, peer_idx)) = prepared;
+    let result = match table.get_mut(peer_pid) {
+        Some(peer_proc) => match peer_proc.sockets.get_mut(peer_idx) {
+            Some(peer) => unix_dgram_deliver(peer, peer_pid, sender, buf, AncillaryFds::new()),
+            None => Err(Errno::ECONNREFUSED),
+        },
+        None => Err(Errno::ECONNREFUSED),
+    };
+
+    let proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
+    finish_datagram_send(proc, flags, result)
+}
+
 /// getsockname -- get local socket address.
 ///
 /// For AF_INET sockets, writes a full 16-byte sockaddr_in:
@@ -13599,6 +13848,13 @@ pub fn sys_send(
                 return finish_datagram_send(proc, flags, result);
             }
             SocketDomain::Unix if sock.state == SocketState::Connected => {
+                // An association with a peer in another process is reached by
+                // `cross_process_unix_dgram_send`, which can borrow that
+                // process's socket table. `peer_idx` means nothing in this
+                // table, so refuse rather than index it.
+                if sock.peer_owner_pid.is_some_and(|pid| pid != proc.pid) {
+                    return Err(Errno::ECONNREFUSED);
+                }
                 let peer_idx = sock.peer_idx;
                 if let Some(peer_idx) = peer_idx {
                     let result = unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf, AncillaryFds::new());
@@ -15247,14 +15503,18 @@ fn sys_connect_impl(
                 };
                 let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
                 let peer = registry.lookup(&resolved).ok_or(Errno::ECONNREFUSED)?;
-                // Cross-process datagram routing needs ProcessTable ownership
-                // and is handled by a later machine-wide routing repair. Fail
-                // truthfully here instead of indexing this process's socket
-                // table with another process's slot number.
+                // This arm holds only the calling process's socket table, so
+                // it cannot validate or associate with an endpoint another
+                // process owns. `cross_process_unix_dgram_connect` retries
+                // machine-wide once this borrow has ended; refuse truthfully
+                // here instead of indexing this table with another process's
+                // slot number.
                 if peer.pid != proc.pid {
                     return Err(Errno::ECONNREFUSED);
                 }
                 let peer_idx = peer.sock_idx;
+                let sender = UnixDgramSender::of(proc, sock_idx);
+                let owner_pid = proc.pid;
                 let target = proc.sockets.get(peer_idx).ok_or(Errno::ECONNREFUSED)?;
                 if target.domain != SocketDomain::Unix
                     || target.sock_type != SocketType::Dgram
@@ -15262,28 +15522,11 @@ fn sys_connect_impl(
                 {
                     return Err(Errno::ECONNREFUSED);
                 }
-                if !unix_dgram_target_accepts_sender(target, sock_idx) {
+                if !unix_dgram_target_accepts_sender(target, owner_pid, sender) {
                     return Err(Errno::EPERM);
                 }
 
-                let owner_pid = proc.pid;
-                let send_state_changed = {
-                    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-                    let association_changed =
-                        sock.state != SocketState::Connected || sock.peer_idx != Some(peer_idx);
-                    sock.peer_idx = Some(peer_idx);
-                    sock.state = SocketState::Connected;
-                    let queued_before = sock.dgram_queue.len();
-                    sock.dgram_queue
-                        .retain(|datagram| unix_dgram_matches_peer(owner_pid, peer_idx, datagram));
-                    association_changed || sock.dgram_queue.len() != queued_before
-                };
-                // Connecting changes both this socket's destination and which
-                // senders it accepts. Even if a selected peer's messages keep
-                // the queue full, rejected writers must wake to observe EPERM.
-                if send_state_changed {
-                    crate::wakeup::push_datagram_writable();
-                }
+                unix_dgram_install_association(proc, sock_idx, None, peer_idx)?;
                 return Ok(());
             }
             if sock.state == SocketState::Connected {
@@ -15437,11 +15680,13 @@ pub fn sys_getaddrinfo(
 ///
 /// For AF_INET DGRAM sockets with a loopback destination, finds the target
 /// bound DGRAM socket and pushes the datagram to its queue.
-fn resolve_unix_datagram_destination(
+/// Resolve an AF_UNIX datagram destination address to the `(pid, slot)` pair
+/// that owns the bound endpoint, wherever on the machine it lives.
+fn resolve_unix_datagram_owner(
     proc: &mut Process,
     host: &mut dyn HostIO,
     addr: &[u8],
-) -> Result<usize, Errno> {
+) -> Result<(u32, usize), Errno> {
     let path_bytes = checked_sockaddr_un_path(addr)?;
     let resolved = if path_bytes.first().copied() == Some(0) {
         if path_bytes.len() < 2 {
@@ -15466,10 +15711,26 @@ fn resolve_unix_datagram_destination(
     };
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
     let peer = registry.lookup(&resolved).ok_or(Errno::ECONNREFUSED)?;
-    if peer.pid != proc.pid {
+    Ok((peer.pid, peer.sock_idx))
+}
+
+/// Resolve an AF_UNIX datagram destination that this process can reach on its
+/// own.
+///
+/// An endpoint owned by another process is refused here and retried by
+/// `cross_process_unix_dgram_send`, which can borrow that process's socket
+/// table. Returning its slot number would mean indexing the caller's table
+/// with an index that means nothing in it.
+fn resolve_unix_datagram_destination(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    addr: &[u8],
+) -> Result<usize, Errno> {
+    let (pid, sock_idx) = resolve_unix_datagram_owner(proc, host, addr)?;
+    if pid != proc.pid {
         return Err(Errno::ECONNREFUSED);
     }
-    Ok(peer.sock_idx)
+    Ok(sock_idx)
 }
 
 pub fn sys_sendto(
@@ -16105,12 +16366,28 @@ fn poll_check_depth(
                         {
                             revents |= POLLIN;
                         }
+                        // Writable readiness must agree with what the next
+                        // send would do, so a peer in another process is
+                        // looked up through the disjoint peer borrows this
+                        // check already receives. The epoll path passes an
+                        // empty slice (it has already borrowed the owner out
+                        // of `peers`), so an epoll interest in a socket whose
+                        // peer is foreign still reports POLLOUT optimistically
+                        // and the following send reports EAGAIN.
                         let unix_peer_queue_full = sock.domain == crate::socket::SocketDomain::Unix
                             && sock.state == SocketState::Connected
                             && sock
                                 .peer_idx
-                                .and_then(|peer_idx| proc.sockets.get(peer_idx))
-                                .is_some_and(|peer| {
+                                .and_then(|peer_idx| {
+                                    let peer_pid = sock.peer_owner_pid.unwrap_or(proc.pid);
+                                    let owner: &Process = if peer_pid == proc.pid {
+                                        proc
+                                    } else {
+                                        peers.iter().map(|peer| &**peer).find(|peer| peer.pid == peer_pid)?
+                                    };
+                                    Some((peer_pid, owner.sockets.get(peer_idx)?))
+                                })
+                                .is_some_and(|(peer_pid, peer)| {
                                     peer.domain == crate::socket::SocketDomain::Unix
                                         && peer.sock_type == SocketType::Dgram
                                         && matches!(
@@ -16118,7 +16395,11 @@ fn poll_check_depth(
                                             SocketState::Bound | SocketState::Connected
                                         )
                                         && !peer.shut_rd
-                                        && unix_dgram_target_accepts_sender(peer, sock_idx)
+                                        && unix_dgram_target_accepts_sender(
+                                            peer,
+                                            peer_pid,
+                                            UnixDgramSender::of(proc, sock_idx),
+                                        )
                                         && peer.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT
                                 });
                         if pollfd.events & POLLOUT != 0 && !socket_write_shutdown(sock)
@@ -21078,7 +21359,7 @@ pub fn sys_sendmsg(
         return Err(Errno::ENOTSOCK);
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
-    let (domain, socket_type, state, shut_wr, send_buf_idx, peer_idx) = {
+    let (domain, socket_type, state, shut_wr, send_buf_idx, peer_idx, peer_owner_pid) = {
         let socket = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
         (
             socket.domain,
@@ -21087,6 +21368,7 @@ pub fn sys_sendmsg(
             socket.shut_wr,
             socket.send_buf_idx,
             socket.peer_idx,
+            socket.peer_owner_pid,
         )
     };
 
@@ -21107,6 +21389,16 @@ pub fn sys_sendmsg(
             } else {
                 if state != SocketState::Connected {
                     return Err(Errno::EDESTADDRREQ);
+                }
+                // `sendmsg()` has no machine-wide retry: its blocking-retry
+                // binding must be decided inside this borrow of the sender,
+                // and the retry can only run after that borrow ends. Refuse
+                // rather than index this table with a foreign slot number.
+                // Callers that need a cross-process endpoint use
+                // `send()`/`sendto()`, as musl's `syslog(3)` does. See
+                // docs/posix-status.md, `sendmsg()` / `recvmsg()`.
+                if peer_owner_pid.is_some_and(|pid| pid != proc.pid) {
+                    return Err(Errno::ECONNREFUSED);
                 }
                 peer_idx.ok_or(Errno::ECONNREFUSED)?
             };
@@ -42774,6 +43066,950 @@ impl HostIO for NetMock {
         sys_close(sender, &mut host, send_fd).unwrap();
     }
 
+    /// Cross-process AF_UNIX datagram routing: a datagram socket bound in one
+    /// process must be reachable from another, which is what makes musl's
+    /// `syslog(3)` sequence work against a daemon bound to `/dev/log`.
+    mod cross_process_unix_datagram {
+        use super::*;
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM, SOCK_STREAM};
+
+        /// Leave the global registry free of these pids' sockets on entry and
+        /// on exit, including when an assertion fails, so one failing test
+        /// cannot cascade into the rest.
+        struct Release(Vec<u32>);
+
+        impl Release {
+            fn new(pids: &[u32]) -> Self {
+                let guard = Release(pids.to_vec());
+                guard.run();
+                guard
+            }
+
+            /// Also release this pid, without disturbing what is already
+            /// registered. Fork children get their pid after the guard that
+            /// must outlive them was built.
+            fn also(&mut self, pid: u32) {
+                self.0.push(pid);
+            }
+
+            fn run(&self) {
+                let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+                for pid in &self.0 {
+                    registry.cleanup_process(*pid);
+                }
+                registry.unregister(b"/dev/log");
+            }
+        }
+
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.run();
+            }
+        }
+
+        fn two_process_table() -> (crate::process_table::ProcessTable, u32, u32) {
+            let mut table = crate::process_table::ProcessTable::new();
+            let receiver_pid = table.create_process().unwrap();
+            let sender_pid = table.create_process().unwrap();
+            (table, receiver_pid, sender_pid)
+        }
+
+        fn bind_dgram_in(
+            table: &mut crate::process_table::ProcessTable,
+            host: &mut MockHostIO,
+            pid: u32,
+            path: &[u8],
+        ) -> (i32, Vec<u8>) {
+            let proc = table.get_mut(pid).unwrap();
+            bind_test_unix_dgram(proc, host, path)
+        }
+
+        fn unbound_dgram_in(
+            table: &mut crate::process_table::ProcessTable,
+            host: &mut MockHostIO,
+            pid: u32,
+        ) -> i32 {
+            let proc = table.get_mut(pid).unwrap();
+            sys_socket(proc, host, AF_UNIX, SOCK_DGRAM, 0).unwrap()
+        }
+
+        fn receive(
+            table: &mut crate::process_table::ProcessTable,
+            host: &mut MockHostIO,
+            pid: u32,
+            fd: i32,
+        ) -> Result<Vec<u8>, Errno> {
+            let proc = table.get_mut(pid).unwrap();
+            let mut buf = [0u8; 128];
+            let mut from = [0u8; 16];
+            let (len, _) = sys_recvfrom(proc, host, fd, &mut buf, 0, &mut from)?;
+            Ok(buf[..len].to_vec())
+        }
+
+        #[test]
+        fn only_an_af_unix_datagram_socket_enters_the_machine_wide_path() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut proc = Process::new(9130);
+            let mut host = MockHostIO::new();
+
+            let dgram = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            assert_eq!(
+                unix_datagram_socket_index(&proc, dgram),
+                Some(test_socket_idx(&proc, dgram)),
+            );
+
+            let stream = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+            assert_eq!(unix_datagram_socket_index(&proc, stream), None);
+            let inet = sys_socket(
+                &mut proc,
+                &mut host,
+                wasm_posix_shared::socket::AF_INET,
+                SOCK_DGRAM,
+                0,
+            )
+            .unwrap();
+            assert_eq!(unix_datagram_socket_index(&proc, inet), None);
+
+            let (read_end, _write_end) = sys_pipe(&mut proc).unwrap();
+            assert_eq!(unix_datagram_socket_index(&proc, read_end), None);
+            assert_eq!(unix_datagram_socket_index(&proc, 4242), None);
+        }
+
+        /// The hazard the process-local refusals exist for: socket slot
+        /// numbers are process-local, so a foreign peer's slot can name a
+        /// perfectly valid, completely unrelated socket in the caller's own
+        /// table. Each local arm must refuse rather than deliver there.
+        #[test]
+        fn the_process_local_arms_never_index_their_own_table_with_a_foreign_slot() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let _release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let (recv_fd, recv_addr) = bind_dgram_in(
+                &mut table,
+                &mut host,
+                receiver_pid,
+                b"/tmp/xp-dgram-slot-recv.sock",
+            );
+            // A bound datagram socket in the *sender's* table occupying the
+            // same slot number the receiver's endpoint occupies in its own.
+            let (decoy_fd, _decoy_addr) = bind_dgram_in(
+                &mut table,
+                &mut host,
+                sender_pid,
+                b"/tmp/xp-dgram-slot-decoy.sock",
+            );
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+            let decoy_idx = {
+                let receiver = table.get(receiver_pid).unwrap();
+                let sender = table.get(sender_pid).unwrap();
+                let recv_idx = test_socket_idx(receiver, recv_fd);
+                let decoy_idx = test_socket_idx(sender, decoy_fd);
+                assert_eq!(
+                    recv_idx, decoy_idx,
+                    "this test only bites when the slot numbers collide",
+                );
+                assert_ne!(decoy_idx, test_socket_idx(sender, send_fd));
+                decoy_idx
+            };
+
+            let decoy_queue_len = |table: &crate::process_table::ProcessTable| {
+                table
+                    .get(sender_pid)
+                    .unwrap()
+                    .sockets
+                    .get(decoy_idx)
+                    .unwrap()
+                    .dgram_queue
+                    .len()
+            };
+
+            // connect(): must not associate with the colliding local slot.
+            assert_eq!(
+                sys_connect(
+                    table.get_mut(sender_pid).unwrap(),
+                    &mut host,
+                    send_fd,
+                    &recv_addr,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+            assert_eq!(
+                table
+                    .get(sender_pid)
+                    .unwrap()
+                    .sockets
+                    .get(test_socket_idx(table.get(sender_pid).unwrap(), send_fd))
+                    .unwrap()
+                    .state,
+                crate::socket::SocketState::Unbound,
+            );
+
+            // sendto(): must not queue into the colliding local slot.
+            assert_eq!(
+                sys_sendto(
+                    table.get_mut(sender_pid).unwrap(),
+                    &mut host,
+                    send_fd,
+                    b"misrouted",
+                    0,
+                    &recv_addr,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+            assert_eq!(decoy_queue_len(&table), 0);
+
+            // send() on a socket already associated with the foreign peer:
+            // `peer_idx` means nothing in this table.
+            cross_process_unix_dgram_connect(&mut table, sender_pid, &mut host, send_fd, &recv_addr)
+                .unwrap();
+            assert_eq!(
+                sys_send(
+                    table.get_mut(sender_pid).unwrap(),
+                    &mut host,
+                    send_fd,
+                    b"misrouted",
+                    0,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+            assert_eq!(decoy_queue_len(&table), 0);
+
+            // The machine-wide path reaches the real endpoint.
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table, sender_pid, &mut host, send_fd, b"routed", 0, None,
+                )
+                .unwrap(),
+                6,
+            );
+            assert_eq!(decoy_queue_len(&table), 0);
+            assert_eq!(
+                receive(&mut table, &mut host, receiver_pid, recv_fd).unwrap(),
+                b"routed",
+            );
+        }
+
+        /// The mirror of the slot-collision hazard: `close()` clears
+        /// `peer_idx` references to the slot it frees, and that slot number
+        /// means nothing in another process's table.
+        #[test]
+        fn closing_a_local_socket_does_not_clear_a_foreign_association() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let _release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let (recv_fd, recv_addr) = bind_dgram_in(
+                &mut table,
+                &mut host,
+                receiver_pid,
+                b"/tmp/xp-dgram-close-recv.sock",
+            );
+            let (decoy_fd, _decoy_addr) = bind_dgram_in(
+                &mut table,
+                &mut host,
+                sender_pid,
+                b"/tmp/xp-dgram-close-decoy.sock",
+            );
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+            {
+                let receiver = table.get(receiver_pid).unwrap();
+                let sender = table.get(sender_pid).unwrap();
+                assert_eq!(
+                    test_socket_idx(receiver, recv_fd),
+                    test_socket_idx(sender, decoy_fd),
+                    "this test only bites when the slot numbers collide",
+                );
+            }
+            cross_process_unix_dgram_connect(&mut table, sender_pid, &mut host, send_fd, &recv_addr)
+                .unwrap();
+
+            sys_close(table.get_mut(sender_pid).unwrap(), &mut host, decoy_fd).unwrap();
+
+            let sender = table.get(sender_pid).unwrap();
+            let sock = sender.sockets.get(test_socket_idx(sender, send_fd)).unwrap();
+            assert_eq!(sock.peer_owner_pid, Some(receiver_pid));
+            assert!(sock.peer_idx.is_some());
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table, sender_pid, &mut host, send_fd, b"survived", 0, None,
+                )
+                .unwrap(),
+                8,
+            );
+            assert_eq!(
+                receive(&mut table, &mut host, receiver_pid, recv_fd).unwrap(),
+                b"survived",
+            );
+        }
+
+        #[test]
+        fn a_datagram_sent_from_another_process_reaches_the_bound_peer() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let _release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let (recv_fd, recv_addr) =
+                bind_dgram_in(&mut table, &mut host, receiver_pid, b"/tmp/xp-dgram-recv.sock");
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+
+            // The process-local path still refuses truthfully: it holds only
+            // the sender's socket table.
+            assert_eq!(
+                sys_sendto(
+                    table.get_mut(sender_pid).unwrap(),
+                    &mut host,
+                    send_fd,
+                    b"across",
+                    0,
+                    &recv_addr,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"across",
+                    0,
+                    Some(&recv_addr),
+                )
+                .unwrap(),
+                6,
+            );
+            assert_eq!(
+                receive(&mut table, &mut host, receiver_pid, recv_fd).unwrap(),
+                b"across",
+            );
+        }
+
+        #[test]
+        fn connect_to_a_cross_process_pathname_peer_succeeds() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let _release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let (recv_fd, recv_addr) = bind_dgram_in(
+                &mut table,
+                &mut host,
+                receiver_pid,
+                b"/tmp/xp-dgram-connect.sock",
+            );
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+
+            assert_eq!(
+                sys_connect(
+                    table.get_mut(sender_pid).unwrap(),
+                    &mut host,
+                    send_fd,
+                    &recv_addr,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+            cross_process_unix_dgram_connect(&mut table, sender_pid, &mut host, send_fd, &recv_addr)
+                .unwrap();
+
+            let sender = table.get(sender_pid).unwrap();
+            let sock = sender.sockets.get(test_socket_idx(sender, send_fd)).unwrap();
+            assert_eq!(sock.state, crate::socket::SocketState::Connected);
+            assert_eq!(sock.peer_owner_pid, Some(receiver_pid));
+
+            // `send()` with no address uses the recorded association.
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"connected",
+                    0,
+                    None,
+                )
+                .unwrap(),
+                9,
+            );
+            assert_eq!(
+                receive(&mut table, &mut host, receiver_pid, recv_fd).unwrap(),
+                b"connected",
+            );
+        }
+
+        #[test]
+        fn syslog_sequence_from_another_process_reaches_a_daemon_bound_to_dev_log() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, daemon_pid, client_pid) = two_process_table();
+            let _release = Release::new(&[daemon_pid, client_pid]);
+            let mut host = MockHostIO::new();
+
+            // The daemon half of musl's contract: bind the hardcoded name.
+            let (daemon_fd, log_addr) =
+                bind_dgram_in(&mut table, &mut host, daemon_pid, b"/dev/log");
+
+            // musl `_vsyslog`: socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC, 0),
+            // connect("/dev/log"), send(). No sendto, no stream fallback.
+            let client_fd = unbound_dgram_in(&mut table, &mut host, client_pid);
+            assert_eq!(
+                sys_connect(
+                    table.get_mut(client_pid).unwrap(),
+                    &mut host,
+                    client_fd,
+                    &log_addr,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+            cross_process_unix_dgram_connect(
+                &mut table,
+                client_pid,
+                &mut host,
+                client_fd,
+                &log_addr,
+            )
+            .unwrap();
+            let message = b"<13>Nov  7 00:00:00 test: hello";
+            assert_eq!(
+                sys_send(
+                    table.get_mut(client_pid).unwrap(),
+                    &mut host,
+                    client_fd,
+                    message,
+                    0,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    client_pid,
+                    &mut host,
+                    client_fd,
+                    message,
+                    0,
+                    None,
+                )
+                .unwrap(),
+                message.len(),
+            );
+            assert_eq!(
+                receive(&mut table, &mut host, daemon_pid, daemon_fd).unwrap(),
+                message,
+            );
+        }
+
+        #[test]
+        fn a_missing_or_wrong_type_peer_still_returns_econnrefused() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, other_pid, sender_pid) = two_process_table();
+            let _release = Release::new(&[other_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+            let missing = test_unix_addr(b"/tmp/xp-dgram-absent.sock");
+            assert_eq!(
+                cross_process_unix_dgram_connect(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    &missing,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"x",
+                    0,
+                    Some(&missing),
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+
+            // A cross-process AF_UNIX *stream* listener at the path is the
+            // wrong type for a datagram association, not an opportunity to
+            // reinterpret it as a stream.
+            let stream_path = b"/tmp/xp-dgram-wrong-type.sock";
+            let stream_addr = test_unix_addr(stream_path);
+            {
+                let other = table.get_mut(other_pid).unwrap();
+                let listener = sys_socket(other, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+                sys_bind(other, &mut host, listener, &stream_addr).unwrap();
+                sys_listen(other, &mut host, listener, 4).unwrap();
+            }
+            assert_eq!(
+                cross_process_unix_dgram_connect(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    &stream_addr,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"x",
+                    0,
+                    Some(&stream_addr),
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+
+            // A peer in the sender's own process belongs to the process-local
+            // path, which already decided this attempt.
+            let (_local_fd, local_addr) =
+                bind_dgram_in(&mut table, &mut host, sender_pid, b"/tmp/xp-dgram-local.sock");
+            assert_eq!(
+                cross_process_unix_dgram_connect(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    &local_addr,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"x",
+                    0,
+                    Some(&local_addr),
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+        }
+
+        #[test]
+        fn the_peer_exiting_makes_further_sends_fail_truthfully() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let _release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let (_recv_fd, recv_addr) =
+                bind_dgram_in(&mut table, &mut host, receiver_pid, b"/tmp/xp-dgram-exit.sock");
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+            cross_process_unix_dgram_connect(&mut table, sender_pid, &mut host, send_fd, &recv_addr)
+                .unwrap();
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table, sender_pid, &mut host, send_fd, b"one", 0, None,
+                )
+                .unwrap(),
+                3,
+            );
+
+            table.remove_process(receiver_pid).unwrap();
+
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table, sender_pid, &mut host, send_fd, b"two", 0, None,
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+            // The name is gone with its owner, so re-addressing it fails too.
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"two",
+                    0,
+                    Some(&recv_addr),
+                )
+                .unwrap_err(),
+                Errno::ECONNREFUSED,
+            );
+        }
+
+        #[test]
+        fn fork_inheritance_of_a_bound_datagram_socket_still_resolves() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let mut release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let (recv_fd, recv_addr) = bind_dgram_in(
+                &mut table,
+                &mut host,
+                receiver_pid,
+                b"/tmp/xp-dgram-forked.sock",
+            );
+            let child_pid = table
+                .fork_process_for_caller(receiver_pid, receiver_pid)
+                .unwrap();
+            release.also(child_pid);
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+
+            // The parent remains the registry's lookup target.
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"to-parent",
+                    0,
+                    Some(&recv_addr),
+                )
+                .unwrap(),
+                9,
+            );
+            assert_eq!(
+                receive(&mut table, &mut host, receiver_pid, recv_fd).unwrap(),
+                b"to-parent",
+            );
+
+            // After the parent closes its copy, ownership moves to the child
+            // and the same address keeps resolving.
+            sys_close(table.get_mut(receiver_pid).unwrap(), &mut host, recv_fd).unwrap();
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"to-child",
+                    0,
+                    Some(&recv_addr),
+                )
+                .unwrap(),
+                8,
+            );
+            assert_eq!(
+                receive(&mut table, &mut host, child_pid, recv_fd).unwrap(),
+                b"to-child",
+            );
+        }
+
+        #[test]
+        fn a_cross_process_peer_connected_elsewhere_returns_eperm() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let _release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let (recv_fd, recv_addr) =
+                bind_dgram_in(&mut table, &mut host, receiver_pid, b"/tmp/xp-dgram-eperm.sock");
+            // The receiver selects a peer inside its own process.
+            let (_chosen_fd, chosen_addr) = bind_dgram_in(
+                &mut table,
+                &mut host,
+                receiver_pid,
+                b"/tmp/xp-dgram-eperm-chosen.sock",
+            );
+            sys_connect(
+                table.get_mut(receiver_pid).unwrap(),
+                &mut host,
+                recv_fd,
+                &chosen_addr,
+            )
+            .unwrap();
+
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+            assert_eq!(
+                cross_process_unix_dgram_connect(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    &recv_addr,
+                )
+                .unwrap_err(),
+                Errno::EPERM,
+            );
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"x",
+                    0,
+                    Some(&recv_addr),
+                )
+                .unwrap_err(),
+                Errno::EPERM,
+            );
+        }
+
+        #[test]
+        fn a_read_shut_cross_process_peer_returns_epipe_and_raises_sigpipe() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let _release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let (recv_fd, recv_addr) =
+                bind_dgram_in(&mut table, &mut host, receiver_pid, b"/tmp/xp-dgram-epipe.sock");
+            sys_shutdown(
+                table.get_mut(receiver_pid).unwrap(),
+                &mut host,
+                recv_fd,
+                wasm_posix_shared::socket::SHUT_RD,
+            )
+            .unwrap();
+
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"x",
+                    0,
+                    Some(&recv_addr),
+                )
+                .unwrap_err(),
+                Errno::EPIPE,
+            );
+            assert!(table
+                .get(sender_pid)
+                .unwrap()
+                .signals
+                .is_pending(wasm_posix_shared::signal::SIGPIPE));
+
+            // MSG_NOSIGNAL keeps the errno and suppresses the signal.
+            table
+                .get_mut(sender_pid)
+                .unwrap()
+                .signals
+                .clear(wasm_posix_shared::signal::SIGPIPE);
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    sender_pid,
+                    &mut host,
+                    send_fd,
+                    b"x",
+                    wasm_posix_shared::socket::MSG_NOSIGNAL,
+                    Some(&recv_addr),
+                )
+                .unwrap_err(),
+                Errno::EPIPE,
+            );
+            assert!(!table
+                .get(sender_pid)
+                .unwrap()
+                .signals
+                .is_pending(wasm_posix_shared::signal::SIGPIPE));
+        }
+
+        #[test]
+        fn a_full_cross_process_peer_queue_reports_eagain_and_withholds_pollout() {
+            use wasm_posix_shared::poll::POLLOUT;
+
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let _release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let (recv_fd, recv_addr) =
+                bind_dgram_in(&mut table, &mut host, receiver_pid, b"/tmp/xp-dgram-full.sock");
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+            cross_process_unix_dgram_connect(&mut table, sender_pid, &mut host, send_fd, &recv_addr)
+                .unwrap();
+
+            for _ in 0..UDP_DATAGRAM_QUEUE_LIMIT {
+                cross_process_unix_dgram_send(
+                    &mut table, sender_pid, &mut host, send_fd, b"fill", 0, None,
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table, sender_pid, &mut host, send_fd, b"over", 0, None,
+                )
+                .unwrap_err(),
+                Errno::EAGAIN,
+            );
+
+            // Writable readiness must agree with the send: poll already
+            // receives the peer processes it needs to see a foreign queue.
+            let mut pollfd = WasmPollFd {
+                fd: send_fd,
+                events: POLLOUT,
+                revents: 0,
+            };
+            let (sender, mut peers) = table.process_and_peers(sender_pid).unwrap();
+            assert_eq!(
+                sys_poll_with_peers(
+                    sender,
+                    &mut host,
+                    core::slice::from_mut(&mut pollfd),
+                    0,
+                    &mut peers,
+                )
+                .unwrap(),
+                0,
+                "a full cross-process peer queue must withhold POLLOUT",
+            );
+            drop(peers);
+
+            // Draining one datagram restores both capacity and readiness.
+            receive(&mut table, &mut host, receiver_pid, recv_fd).unwrap();
+            let (sender, mut peers) = table.process_and_peers(sender_pid).unwrap();
+            assert_eq!(
+                sys_poll_with_peers(
+                    sender,
+                    &mut host,
+                    core::slice::from_mut(&mut pollfd),
+                    0,
+                    &mut peers,
+                )
+                .unwrap(),
+                1,
+            );
+            assert_ne!(pollfd.revents & POLLOUT, 0);
+            drop(peers);
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table, sender_pid, &mut host, send_fd, b"over", 0, None,
+                )
+                .unwrap(),
+                4,
+            );
+        }
+
+        #[test]
+        fn the_receivers_connected_peer_filter_accepts_a_foreign_sender() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let mut release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let (recv_fd, recv_addr) = bind_dgram_in(
+                &mut table,
+                &mut host,
+                receiver_pid,
+                b"/tmp/xp-dgram-filter-recv.sock",
+            );
+            let (send_fd, send_addr) = bind_dgram_in(
+                &mut table,
+                &mut host,
+                sender_pid,
+                b"/tmp/xp-dgram-filter-send.sock",
+            );
+            // The receiver connects back to the foreign sender, so its receive
+            // filter now names a socket in another process.
+            cross_process_unix_dgram_connect(
+                &mut table,
+                receiver_pid,
+                &mut host,
+                recv_fd,
+                &send_addr,
+            )
+            .unwrap();
+            cross_process_unix_dgram_connect(&mut table, sender_pid, &mut host, send_fd, &recv_addr)
+                .unwrap();
+
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table, sender_pid, &mut host, send_fd, b"selected", 0, None,
+                )
+                .unwrap(),
+                8,
+            );
+            assert_eq!(
+                receive(&mut table, &mut host, receiver_pid, recv_fd).unwrap(),
+                b"selected",
+            );
+
+            // A third socket in a third process is not the selected peer.
+            let third_pid = table.create_process().unwrap();
+            release.also(third_pid);
+            let third_fd = unbound_dgram_in(&mut table, &mut host, third_pid);
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table,
+                    third_pid,
+                    &mut host,
+                    third_fd,
+                    b"rejected",
+                    0,
+                    Some(&recv_addr),
+                )
+                .unwrap_err(),
+                Errno::EPERM,
+            );
+        }
+
+        #[test]
+        fn fork_preserves_a_cross_process_datagram_association() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut table, receiver_pid, sender_pid) = two_process_table();
+            let mut release = Release::new(&[receiver_pid, sender_pid]);
+            let mut host = MockHostIO::new();
+
+            let (recv_fd, recv_addr) = bind_dgram_in(
+                &mut table,
+                &mut host,
+                receiver_pid,
+                b"/tmp/xp-dgram-fork-assoc.sock",
+            );
+            let send_fd = unbound_dgram_in(&mut table, &mut host, sender_pid);
+            cross_process_unix_dgram_connect(&mut table, sender_pid, &mut host, send_fd, &recv_addr)
+                .unwrap();
+
+            let child_pid = table
+                .fork_process_for_caller(sender_pid, sender_pid)
+                .unwrap();
+            release.also(child_pid);
+            let child = table.get(child_pid).unwrap();
+            let child_sock = child.sockets.get(test_socket_idx(child, send_fd)).unwrap();
+            assert_eq!(
+                child_sock.peer_owner_pid,
+                Some(receiver_pid),
+                "a fork child must inherit the foreign owner of its association",
+            );
+
+            assert_eq!(
+                cross_process_unix_dgram_send(
+                    &mut table, child_pid, &mut host, send_fd, b"from-child", 0, None,
+                )
+                .unwrap(),
+                10,
+            );
+            assert_eq!(
+                receive(&mut table, &mut host, receiver_pid, recv_fd).unwrap(),
+                b"from-child",
+            );
+        }
+    }
+
     #[test]
     fn test_ipv4_limited_broadcast_requires_so_broadcast() {
         let mut proc = Process::new(9060);
@@ -57771,10 +59007,9 @@ impl HostIO for RelSymlinkMock {
             let server = bind_dgram(&mut proc, &mut host, b"/dev/log").unwrap();
 
             // What musl's syslog(3) does: a datagram socket connected to
-            // exactly this path.
-            // Single process only: a datagram connect from another process is
-            // ECONNREFUSED today (no machine-wide datagram routing), so this test
-            // cannot show that a separate syslog(3) client reaches the daemon.
+            // exactly this path. A client in a *different* process is covered
+            // by `cross_process_unix_datagram::
+            // syslog_sequence_from_another_process_reaches_a_daemon_bound_to_dev_log`.
             let client = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
             sys_connect(&mut proc, &mut host, client, &sockaddr(b"/dev/log")).unwrap();
             assert_eq!(sys_write(&mut proc, &mut host, client, b"<13>hello").unwrap(), 9);

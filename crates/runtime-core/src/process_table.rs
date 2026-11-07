@@ -1320,6 +1320,30 @@ impl ProcessTable {
         Some((caller?, peers, &mut self.advisory_locks))
     }
 
+    /// Split the live records into one addressed process and its peers.
+    ///
+    /// Same disjointness as `current_process_peers_and_locks`, addressed by
+    /// pid rather than by the channel dispatch binding, for readiness checks
+    /// that must see another process's socket state.
+    pub fn process_and_peers(
+        &mut self,
+        pid: u32,
+    ) -> Option<(&mut Process, Vec<&mut Process>)> {
+        if pid == SYNTHETIC_INIT_PID {
+            return None;
+        }
+        let mut addressed = None;
+        let mut peers = Vec::new();
+        self.processes.for_each_mut(|proc| {
+            if proc.pid == pid {
+                addressed = Some(proc);
+            } else {
+                peers.push(proc);
+            }
+        });
+        Some((addressed?, peers))
+    }
+
     /// Borrow an addressed process and the lock manager as disjoint fields.
     pub fn process_and_advisory_locks(
         &mut self,

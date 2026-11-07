@@ -9402,12 +9402,16 @@ fn channel_read(fd: i32, buf: &mut [u8]) -> i32 {
 fn channel_write(fd: i32, buf: &[u8]) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_write(proc, &mut host, fd, buf) {
-        Ok(n) => n as i32,
-        Err(e) => -(e as i32),
-    };
+    let result = syscalls::sys_write(proc, &mut host, fd, buf);
+    // `write()` on a connected datagram socket *is* `send()`, so it owes the
+    // same machine-wide retry rather than reporting a reachable peer refused.
+    let unix_dgram_retry =
+        needs_cross_process_unix_dgram_retry(proc, fd, result == Err(Errno::ECONNREFUSED));
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
+    errno_encoded(
+        complete_cross_process_unix_dgram_send(unix_dgram_retry, fd, buf, 0, None)
+            .unwrap_or(result),
+    )
 }
 
 /// Seek within a file. The 64-bit offset is passed as two 32-bit halves
@@ -9498,6 +9502,10 @@ fn execute_transfer_io_for_task(
     // ordinary channel dispatch. write_operation_budget, directed signals,
     // and SCM_RIGHTS cleanup must see the actual issuing TID, not ambient
     // state from the preceding mailbox.
+    // A large `write()` reaches the same `sys_write` as the channel-sized one,
+    // so a refused AF_UNIX datagram owes the same machine-wide retry here.
+    // Buffer size must not change which peers a socket can reach.
+    let mut unix_dgram_retry = false;
     let result = (|| {
         let (proc, advisory_locks) = table
             .current_process_and_advisory_locks()
@@ -9527,12 +9535,52 @@ fn execute_transfer_io_for_task(
                 result = Err(error);
             }
         }
+        unix_dgram_retry = matches!(
+            crate::transfer::io_operation_for_syscall(original_syscall),
+            Ok(TransferIoOperation::Write)
+        ) && needs_cross_process_unix_dgram_retry(
+            proc,
+            fd,
+            result == Err(Errno::ECONNREFUSED),
+        );
         proc.blocked_retries.clear_active();
         proc.blocked_retries.clear_dispatch();
         syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
         let _ = deliver_pending_signals_for_tid_with_locks(proc, advisory_locks, &mut host, tid);
         result
     })();
+    // This function already holds a live `&mut ProcessTable`, so it completes
+    // the retry through that borrow rather than re-deriving a second one from
+    // the global `UnsafeCell`. The closure's `Process` references above have
+    // reached their last use.
+    let result = if unix_dgram_retry {
+        let mut host = WasmHostIO;
+        let mut retried =
+            syscalls::cross_process_unix_dgram_send(table, pid, &mut host, fd, bytes, 0, None);
+        if let Some((proc, advisory_locks)) = table.process_and_advisory_locks(pid) {
+            // A full queue in the receiving process must park this caller
+            // exactly as a full local one does. The binding is keyed by tid
+            // and is independent of the active/dispatch state the closure
+            // above already cleared.
+            if retried == Err(Errno::EAGAIN) {
+                if let Err(error) = syscalls::ensure_blocking_retry_ofd_binding(
+                    proc,
+                    advisory_locks,
+                    &mut host,
+                    tid,
+                    original_syscall,
+                    fd,
+                    None,
+                ) {
+                    retried = Err(error);
+                }
+            }
+            let _ = deliver_pending_signals_for_tid_with_locks(proc, advisory_locks, &mut host, tid);
+        }
+        retried
+    } else {
+        result
+    };
 
     // All ordinary success and errno paths consume this one-shot task
     // authority. A host-import exception traps the Wasm call before cleanup;
@@ -12254,8 +12302,20 @@ pub fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
         Err(Errno::ECONNREFUSED) if addr_len >= 3 => {
             let family = u16::from_le_bytes([addr[0], addr[1]]);
             if family == 1 {
-                // AF_UNIX — try cross-process connect
-                match cross_process_unix_connect(table, pid, &mut host, fd, addr) {
+                // AF_UNIX — try cross-process connect. Datagram and stream
+                // associations are different mechanisms: a datagram records
+                // the foreign endpoint it will send to, while a stream builds
+                // a global pipe pair and queues an accept. Dispatch on the
+                // socket rather than reinterpreting one as the other.
+                let datagram = table
+                    .get(pid)
+                    .is_some_and(|proc| syscalls::unix_datagram_socket_index(proc, fd).is_some());
+                let outcome = if datagram {
+                    syscalls::cross_process_unix_dgram_connect(table, pid, &mut host, fd, addr)
+                } else {
+                    cross_process_unix_connect(table, pid, &mut host, fd, addr)
+                };
+                match outcome {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
                 }
@@ -12703,6 +12763,58 @@ fn cross_process_unix_connect(
     Ok(())
 }
 
+/// Whether a refused send should be retried machine-wide, decided while the
+/// sender is still borrowed.
+///
+/// Only an AF_UNIX datagram socket that was refused qualifies: the retry
+/// re-validates the destination and reports `ECONNREFUSED` again for a peer
+/// the process-local path had already decided, so this gate costs one
+/// descriptor lookup and never changes an accepted send.
+fn needs_cross_process_unix_dgram_retry(proc: &Process, fd: i32, refused: bool) -> bool {
+    refused && syscalls::unix_datagram_socket_index(proc, fd).is_some()
+}
+
+/// Finish a refused AF_UNIX datagram send machine-wide, or `None` when no
+/// retry was warranted and the caller keeps its own result.
+///
+/// WHY the two-phase shape: `get_process*()` returns mutable references backed
+/// by the global `UnsafeCell`, so re-entering `PROCESS_TABLE` while one is
+/// live could alias the sender. Callers therefore decide the retry from
+/// borrowed state and invoke this helper after that reference's last use.
+///
+/// A reliable datagram send can raise SIGPIPE for a read-shut peer, and the
+/// caller's own signal-delivery pass already ran before this point, so this
+/// function runs its own.
+fn complete_cross_process_unix_dgram_send(
+    retry: bool,
+    fd: i32,
+    buf: &[u8],
+    flags: u32,
+    addr: Option<&[u8]>,
+) -> Option<Result<usize, Errno>> {
+    if !retry {
+        return None;
+    }
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let pid = table.current_pid();
+    let mut host = WasmHostIO;
+    let result =
+        syscalls::cross_process_unix_dgram_send(table, pid, &mut host, fd, buf, flags, addr);
+    if let Some((proc, advisory_locks)) = table.process_and_advisory_locks(pid) {
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    }
+    Some(result)
+}
+
+/// Collapse a syscall result into the negative-errno convention the exported
+/// wrappers return.
+fn errno_encoded(result: Result<usize, Errno>) -> i32 {
+    match result {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
 /// Finish a machine-local IPv4 UDP send after all direct references into the
 /// process table have reached their last use.
 ///
@@ -12797,9 +12909,15 @@ pub extern "C" fn kernel_send(fd: i32, buf_ptr: *const u8, buf_len: u32, flags: 
     let cross_process_udp = (result >= 0)
         .then(|| syscalls::cross_process_loopback_udp_route(proc, &mut host, fd, None))
         .flatten();
+    let unix_dgram_retry = needs_cross_process_unix_dgram_retry(
+        proc,
+        fd,
+        result == -(Errno::ECONNREFUSED as i32),
+    );
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     complete_cross_process_loopback_udp(cross_process_udp, buf);
-    result
+    complete_cross_process_unix_dgram_send(unix_dgram_retry, fd, buf, flags, None)
+        .map_or(result, errno_encoded)
 }
 
 /// Receive data from a socket. Returns bytes received or negative errno.
@@ -13305,9 +13423,21 @@ pub fn kernel_sendto(
             )
         })
         .flatten();
+    let unix_dgram_retry = needs_cross_process_unix_dgram_retry(
+        proc,
+        fd,
+        result == -(Errno::ECONNREFUSED as i32),
+    );
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     complete_cross_process_loopback_udp(cross_process_udp, buf);
-    result
+    complete_cross_process_unix_dgram_send(
+        unix_dgram_retry,
+        fd,
+        buf,
+        flags,
+        (!addr.is_empty()).then_some(addr),
+    )
+    .map_or(result, errno_encoded)
 }
 
 /// Receive data with sender address. Returns bytes received or negative errno.
