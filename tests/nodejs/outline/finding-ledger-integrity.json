@@ -1,14 +1,14 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T11:20:52.755184+00:00",
-  "sourceHead": "ee296dcd11fb632e4048794d0e743bc046aa180f",
-  "recipeRevision": 209,
+  "at": "2026-11-07T12:01:45.740806+00:00",
+  "sourceHead": "a4dea36e9d12f6a77a9b51839fcdbf0a8c4ac43e",
+  "recipeRevision": 212,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 129,
+    "sourceSliceRecords": 132,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 230
@@ -26,23 +26,24 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 129,
+  "sourceSliceIdentitiesVerified": 132,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "db941bc93834b30c70873da41e399ddb075ccde7a3564e33b841abcf894f818d"
+    "sha256": "b3a1a23bb219828a118b84e83a4e7b6e78ebfd9f0cf5b44eec3191bd558a74ee"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
   "scope": "Documentation/identity/qualified-link verification only; immutable audit unchanged, no API/runtime closure",
   "previousIntegrityIdentity": {
-    "sha256": "b537e9f72919e7cb05493b404fe02213b0d4cffb4c1babbe8f2774bc3caaa13b",
-    "sourceHead": "e4598c906955b727460f070ae5e9ac3b260aa8c8",
+    "sha256": "b2d53784d6a608700a85eefe37f3349557d85233ba4f6f69fa5bb6b2103adf1b",
+    "sourceHead": "ee296dcd11fb632e4048794d0e743bc046aa180f",
     "scope": "Preserved in prior committed source and sourceSnapshotHistory"
   },
   "sourceProgressOverlaysAdded": [
-    "testing-runner",
-    "module-import"
+    "retained-transfer-kind",
+    "retained-tls-parent",
+    "socket-receiver-adoption"
   ],
   "qualifiedReferenceCorrections": [
     {

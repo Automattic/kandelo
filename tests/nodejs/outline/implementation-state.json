@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T11:55:27.818207+00:00",
+  "updatedAt": "2026-11-07T12:06:24.223606+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "18965173ae1d87498dc86fb963aca6ad52dc19d76c5e7124df71f823774c2d22",
+    "tests/nodejs/outline/status-by-family.md": "e932570052add138dd549f0e2cbb34887a473f6ee58acefe1058ae45fa84bdf7",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "db941bc93834b30c70873da41e399ddb075ccde7a3564e33b841abcf894f818d",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "b2d53784d6a608700a85eefe37f3349557d85233ba4f6f69fa5bb6b2103adf1b",
-    "tests/nodejs/outline/finding-ledger.md": "bd4445ddc2d1d0ed8e6d5a162d9aa0bfeeb96f51511461ba788d9add649209f3",
+    "tests/nodejs/outline/finding-ledger.json": "b3a1a23bb219828a118b84e83a4e7b6e78ebfd9f0cf5b44eec3191bd558a74ee",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "7fe5ed089bd7225e2273a7d73b40536ca1d727f593094cdcf5f96b8fecb37108",
+    "tests/nodejs/outline/finding-ledger.md": "5491ce579bf82c99591aa83dc67acfbbbbfe2e47c0835c3c3c5f3929f5511214",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -8162,15 +8162,17 @@
     }
   ],
   "nextSourceWork": [
-    "Integrate reviewed tracing with failed-open timeout nonpass, then dormant notification queue/descriptor/dentry ownership in dependency order",
-    "Freeze coherent selected engine/kernel source inputs and inspect actual compilation/API failures; fullproduct and overall-suite deferrals stay",
-    "Finish private actual TTY input StreamBase prerequisite without activating incomplete public classes",
-    "Resolve remaining wake/dentry/rootfs/providers/fork/metadata/ABI activation and other audited API gaps breadth first",
-    "Keep source/native components separate from guest conformance; nested guest Wasm remains in scope for final phase"
+    "Integrate bounded-reviewed process tracing/category/file sink with failed-open timeout nonpass and explicit public Node Worker scope",
+    "Integrate dormant notification queue, descriptor and dentry producer source in dependency order; public ENOSYS/host-wake/providers/metadata/fork/ABI activation remain gaps",
+    "Freeze coherent targeted engine/kernel inputs and inspect actual API/compilation errors without fullproduct/overall suites",
+    "Integrate sealed native TTY input StreamBase prerequisite; keep public ctor/write/shutdown/init-order gaps explicit",
+    "Continue independent audited public API gaps across all19families; source/portable native/components remain separate from four-host conformance",
+    "Use read-only shipping extraction plan to keep Node core and archived Claude/npm/Bun work focused; do not publish whole tail or apply evolved stash blindly",
+    "Keep nested guest Wasm backend in scope for final phase"
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Implemented actual SSL prelookup preparation and retained TCP descriptor/ref/request-close authority with fresh cancel/fallback; source/header/signature/staging coherent and native component evidence scoped honestly."
+    "reason": "Implemented real inheriting Socket receiver and genuine native TCP admission/lifetime with exact pinned constructor ownership and native-dependent semantic controls, preserving actual TTY/TLS boundaries and all failures."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -47243,10 +47245,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/socket-receiver-adoption-20261107T115528Z.tar.gz",
-    "sha256": "4a90730aea3497eac3daf041ce29e61975bdeb93b0636d801702c269379f23ca",
-    "bytes": 33594458,
-    "scope": "212 actual receiver/native TCP handle/manualStart/ref/encoding/failure/reinit source over211 TLS; scoped real native backend evidence, no guest C++/TTY/fourhost closure.",
+    "path": ".context/node26-implementation-snapshots/tty-pending212-20261107T120624Z.tar.gz",
+    "sha256": "f7b07de238fa19206b2ea5f1a05a717efe5709f030f1ea02ee2bfb989ece4546",
+    "bytes": 11174777,
+    "scope": "Current212 source/canonical links plus newly sealed TTY prerequisite pending metadata. No new runtime/compiler or source capability claim.",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -50540,7 +50542,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Implemented real inheriting Socket receiver and genuine native TCP admission/lifetime with exact pinned constructor ownership and native-dependent semantic controls, preserving actual TTY/TLS boundaries and all failures."
+    "reason": "Canonical qualified ledger links actual retained kind/TLS parent/Socket receiver source and scoped evidence; preserves partial status and records safe read-only shipping/remainder plan."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -57044,6 +57046,20 @@
       "sha256": "f2056d1df1391d21919a7d004dff9d350f5ab6084dce63a63fd22821e8709243",
       "bytes": 32532241,
       "scope": "211 actual prepared SSL and retained TCP/ref/native request/close authority; portable header and explicit recording JS evidence only. No guest/fullTLSWrap/HTTPS/four-host closure.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/socket-receiver-adoption-20261107T115528Z.tar.gz",
+      "sha256": "4a90730aea3497eac3daf041ce29e61975bdeb93b0636d801702c269379f23ca",
+      "bytes": 33594458,
+      "scope": "212 actual receiver/native TCP handle/manualStart/ref/encoding/failure/reinit source over211 TLS; scoped real native backend evidence, no guest C++/TTY/fourhost closure.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/finding-overlay212-20261107T120146Z.tar.gz",
+      "sha256": "5c56244151db9aebcbc2c50a02edd8d58bf1820fd706def17525437bfdf7a3d5",
+      "bytes": 11179483,
+      "scope": "Current212 canonical retained-kind/TCP-TLS/Socket qualified links and identified source plus read-only shipping plan; metadata only, no new runtime/compiler.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -63683,7 +63699,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "353797f1c7a644b09f9c8703ef1a442e01598934",
+    "pushedThrough": "a4dea36e9d12f6a77a9b51839fcdbf0a8c4ac43e",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -63798,7 +63814,8 @@
       ".context/node26-import209-push.log": "1911083d72c601e1eb61bc187964642f9d69901c50cbc145f4d001facac52f0c",
       ".context/node26-finding-ledger209-push.log": "c46dba5f6edd5e461d2d7030c0629cc256252ecb0e4fd1b1468f1694cbf7bd15",
       ".context/node26-kind210-push.log": "0319a0ebdb947947885e94dd6469f5e3f023460a6afcbd0b600e73fa61e0118c",
-      ".context/node26-tls211-push.log": "e09cf3741349130d391279f6d32076ac8f75747fb81c93948dd154d8778a81ec"
+      ".context/node26-tls211-push.log": "e09cf3741349130d391279f6d32076ac8f75747fb81c93948dd154d8778a81ec",
+      ".context/node26-socket212-push.log": "6f224e1773557b16ddd486b9d6a3d997c6d5c096cdb1deb5af337653d496f580"
     }
   },
   "sourceLedgerCoverageCorrection": {
@@ -107930,6 +107947,15 @@
       "scope": "Real shared-OFD retained tmpfs dentry/pins and actual namespace/read/write/CLOSE producers plus rename-over-hardlink nlink correction;125 focused native cases,3 unit compiles+2 production checks pending. Public notifications/ABI/fork/wake/providers/guest remain open; original zero-case harness identity limit retained.",
       "status": "sealed-pending-root-integration",
       "currentGuestConformance": false
+    },
+    {
+      "path": ".context/tty-stream-read-owner-agent/handoff",
+      "sealSha256": "9b1998d8b0f4595e1e03ff7f0523efc52600f51158fe6643b358b6a82779ad43",
+      "status": "sealed-pending-root-integration",
+      "scope": "Real captured TTY read-material/configure/onread/readStart/readStop/ref and request-counted queued close consumed by stdio input;27 named portable PTY checks+2 native-backed factory scenarios and retained negative/setup failures. Guest C++/public tty/kind admission/write/shutdown/init-order remain incomplete.",
+      "nativeHelperAttemptsPendingIntegration": 1,
+      "nativeHelperFailuresPendingIntegration": 0,
+      "currentGuestConformance": false
     }
   ],
   "dnsScopedAddressImplementation": {
@@ -108468,19 +108494,19 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "db941bc93834b30c70873da41e399ddb075ccde7a3564e33b841abcf894f818d",
+    "sha256": "b3a1a23bb219828a118b84e83a4e7b6e78ebfd9f0cf5b44eec3191bd558a74ee",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "b2d53784d6a608700a85eefe37f3349557d85233ba4f6f69fa5bb6b2103adf1b"
+      "sha256": "7fe5ed089bd7225e2273a7d73b40536ca1d727f593094cdcf5f96b8fecb37108"
     },
-    "sourceCheckpoint": 209,
+    "sourceCheckpoint": 212,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 129,
+      "sourceSliceRecords": 132,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
       "findingsWithoutExplicitOrProposedSourceSlice": 230
@@ -109318,6 +109344,28 @@
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 231
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "db941bc93834b30c70873da41e399ddb075ccde7a3564e33b841abcf894f818d",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "b2d53784d6a608700a85eefe37f3349557d85233ba4f6f69fa5bb6b2103adf1b"
+      },
+      "sourceCheckpoint": 209,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 129,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 230
       },
       "individualApiClosure": false,
       "fourHostConformance": false
@@ -113749,5 +113797,11 @@
     "individualApiClosure": false,
     "implementationComplete": false,
     "acceptedPlatformLimits": []
+  },
+  "focusedShippingReview": {
+    "path": ".context/node-core-shipping-review-agent/PLAN.md",
+    "sha256": "660aa9437480317eaf5167fbb942fa6ed3ad60cbc264f773a4072fec8f4b1cf8",
+    "sealSha256": "a051afc40a9cdfead91b24a21a21a07bdb8f9e7de632badd23991f2789159c79",
+    "scope": "Read-only snapshot: existing20draft PR chain and separately archived39-file Claude/npm/Bun remainder. Current later tail requires focused extraction; no branch/stash/PR/history changes or readiness claim. Three unrelated current tracked edits preserved separately."
   }
 }

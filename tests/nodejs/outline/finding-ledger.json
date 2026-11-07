@@ -25,7 +25,7 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 129,
+    "sourceSliceRecords": 132,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 230
@@ -2430,6 +2430,15 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Partial generic clone outcome/publication and actual Worker startup ownership prerequisite; no full Worker/stream lifecycle or guest closure",
           "closure": false
+        },
+        {
+          "slice": "retained-transfer-kind",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial retained admission-kind/identity/nested/partition source prerequisite; no full Worker/stream/guest closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -2493,6 +2502,15 @@
           "originalProseRefs": [],
           "standaloneDefinitionRecovered": true,
           "scope": "Partial generic clone outcome/publication and actual Worker startup ownership prerequisite; no full Worker/stream lifecycle or guest closure",
+          "closure": false
+        },
+        {
+          "slice": "retained-transfer-kind",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial retained admission-kind/identity/nested/partition source prerequisite; no full Worker/stream/guest closure",
           "closure": false
         }
       ],
@@ -4312,6 +4330,15 @@
           "auditDocument": "tests/nodejs/audit/network.md",
           "scope": "Partial actual native consumed plaintext/material/Promise acknowledgement ownership; not public TLSWrap/onread/AsyncWrap/idle/ref/parent/HTTPS closure",
           "closure": false
+        },
+        {
+          "slice": "socket-receiver-adoption",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual Socket receiver/genuine TCP admission/ref/read/write lifecycle prerequisite; not complete Socket/Server/TTY/StreamBase or guest/four-host closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4370,6 +4397,15 @@
         {
           "slice": "tcp-agent",
           "relation": "explicit"
+        },
+        {
+          "slice": "socket-receiver-adoption",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network-contracts.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial actual Socket receiver/genuine TCP admission/ref/read/write lifecycle prerequisite; not complete Socket/Server/TTY/StreamBase or guest/four-host closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -5031,6 +5067,15 @@
           "auditDocument": "tests/nodejs/audit/secure-network.md",
           "scope": "Real mutable public TLS/default/CLI/protocol/cipherlist context policy only; full SecureContext/lower TLS/HTTPS/guest remain incomplete",
           "closure": false
+        },
+        {
+          "slice": "retained-tls-parent",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial genuine retained TCP/SSL/ref/request lifetime prerequisite; not public TLSSocket/AsyncWrap/StreamBase/HTTPS or guest closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -5136,6 +5181,15 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/secure-network.md",
           "scope": "Partial actual native consumed plaintext/material/Promise acknowledgement ownership; not public TLSWrap/onread/AsyncWrap/idle/ref/parent/HTTPS closure",
+          "closure": false
+        },
+        {
+          "slice": "retained-tls-parent",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial genuine retained TCP/SSL/ref/request lifetime prerequisite; not public TLSSocket/AsyncWrap/StreamBase/HTTPS or guest closure",
           "closure": false
         }
       ],
@@ -5299,6 +5353,15 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/secure-network.md",
           "scope": "Partial actual native consumed plaintext/material/Promise acknowledgement ownership; not public TLSWrap/onread/AsyncWrap/idle/ref/parent/HTTPS closure",
+          "closure": false
+        },
+        {
+          "slice": "retained-tls-parent",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial genuine retained TCP/SSL/ref/request lifetime prerequisite; not public TLSSocket/AsyncWrap/StreamBase/HTTPS or guest closure",
           "closure": false
         }
       ],
@@ -7886,6 +7949,15 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Partial generic clone outcome/publication and actual Worker startup ownership prerequisite; no full Worker/stream lifecycle or guest closure",
           "closure": false
+        },
+        {
+          "slice": "retained-transfer-kind",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/family-survey.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial retained admission-kind/identity/nested/partition source prerequisite; no full Worker/stream/guest closure",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -8281,6 +8353,15 @@
           "originalProseRefs": [],
           "standaloneDefinitionRecovered": true,
           "scope": "Partial generic clone outcome/publication and actual Worker startup ownership prerequisite; no full Worker/stream lifecycle or guest closure",
+          "closure": false
+        },
+        {
+          "slice": "retained-transfer-kind",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/worker-contracts.md",
+          "originalProseRefs": [],
+          "standaloneDefinitionRecovered": true,
+          "scope": "Partial retained admission-kind/identity/nested/partition source prerequisite; no full Worker/stream/guest closure",
           "closure": false
         }
       ],
@@ -22568,6 +22649,256 @@
       "findingScope": "Partial actual original-request/import completion and hooks/source/namespace identity prerequisite, not complete resolver/loader/cache/CLI or guest/four-host closure",
       "additionalAuditDocuments": {},
       "publicRequirementRecords": []
+    },
+    "retained-transfer-kind": {
+      "document": "tests/nodejs/outline/retained-transfer-kind-finding-progress.json",
+      "sha256": "d8f6e28b39e361466ed1c710abbff446f0238c8d6dd4320b481ac8a01dc5ee14",
+      "recordedRevision": 210,
+      "explicitFindingIds": [
+        "STR-003",
+        "STR-004"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-kind210-source-r1/report.json",
+          "sha256": "fa429e8d003f04d637c6a4ca13ae9a33e72d8c019f1a57faa66a3ffdd545fb59",
+          "guardedInputs": 879,
+          "scope": "Retained actual JS/native/AB admission kind plus safe non-Node original append path. Exact source/patch/style checks only;6 frozen native reference observations reused, no candidate runtime/guest proof."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-kind210-affected-r1.json",
+          "sha256": "4a81339e69a619eec71d2747664b8c627478f529a549f0212c3ce9b6686f95b8",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-kind210-source-r1/report.json",
+          "sha256": "fa429e8d003f04d637c6a4ca13ae9a33e72d8c019f1a57faa66a3ffdd545fb59",
+          "actualCandidateRuntimeCases": 0,
+          "sourceGuardChecks": 4,
+          "nativeReferenceObservationsReused": 6,
+          "nativeReferencesAreNotCandidatePasses": true,
+          "newCompilerAttempts": 0,
+          "newRuntimeProcesses": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "unchangedStyleCheckerPassed": true,
+          "scope": "Exact staged source/invariants and unchanged checker only.6 frozen native private-protocol observations remain references, not candidate/public API passes. New C++ uncompiled."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/retained-transfer-kind-agent/report.json",
+          "sha256": "4a72d5182a734b9b3ee54988e3ef5dac487dde328fc3cbf1d085db204f558b0a",
+          "reusedEvidence": true,
+          "scope": "Immutable retained-kind candidate plus separately sealed minimal non-Node bypass review. Native6 observations reference-only; no ordinary-public deletion reachability or candidate execution established."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/retained-transfer-kind-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/retained-transfer-kind-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Retain genuine explicit/nested admitted JS/native/AB kind in a POD enum vector while existing GC-traced vector owns object identities",
+        "Consume retained kind for nested hook schedule and native/JS partition instead of rereading mutable private modes",
+        "New nested admission remains dynamic; entire main-graph startWrite and transferOwnership bodies, duplicate/security/interrupt policy remain byte unchanged",
+        "Pair metadata/object append with real metadata OOM reporting and rollback before graph/detach/commit",
+        "Preserve original non-Node append without new metadata allocation; track all Node-configured entries through UnknownDestination to SameProcess transition"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/retained-transfer-kind-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile actual C++/JSAPI and validate real private/native object classification, vector OOM, roots, foreign realms/security/interrupt and partial native commit",
+        "Full nested-list timing/duplicate/intrinsic classification and malformed/no-result/deferred-error protocol semantics",
+        "Genuine public Worker/MessagePort/WebStream/signal/backpressure/cancellation/lifecycle and identified all-four-host artifacts",
+        "Ordinary-public mode-deletion reachability was not established; no new public private-symbol/registration exposure introduced"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "retained-admission-prerequisite",
+      "auditDocument": "tests/nodejs/audit/streams.md",
+      "findingScope": "Partial retained admission-kind/identity/nested/partition source prerequisite; no full Worker/stream/guest closure",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/family-survey.md": [
+          "R-001"
+        ],
+        "tests/nodejs/audit/worker-contracts.md": [
+          "R-013"
+        ]
+      },
+      "publicRequirementRecords": []
+    },
+    "retained-tls-parent": {
+      "document": "tests/nodejs/outline/retained-tls-parent-finding-progress.json",
+      "sha256": "2947ed6780fe7bdc22e817f073fac75c64da0e6cd037b5caea2d817377793c4f",
+      "recordedRevision": 211,
+      "explicitFindingIds": [
+        "S-002",
+        "S-004",
+        "S-009"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tls211-source-r1/report.json",
+          "sha256": "a32a3b4ecfd5daa4fe46ed6fd39b7b2eb8359b261059014906dcaff6d5539cb0",
+          "guardedInputs": 879,
+          "scope": "Actual SSL preparation/retained real TCP parent descriptor/ref/request close source; portable native owners and actual JS recording-boundary controls only. New guest JSAPI/TLSWrap/HTTPS/four-host unproven."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tls211-affected-r1.json",
+          "sha256": "a5bc4f986bea8cdc70b58969fe1fa7e920b7b201e21c21eb9676c95d92376ab2",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tls211-source-r1/report.json",
+          "sha256": "a32a3b4ecfd5daa4fe46ed6fd39b7b2eb8359b261059014906dcaff6d5539cb0",
+          "portableCases": 3,
+          "requiredSemanticChecks": [
+            34,
+            34,
+            35
+          ],
+          "observedAssertions": [
+            106,
+            102,
+            107
+          ],
+          "recordingBridgeCases": 1,
+          "actualForwarders": 5,
+          "priorHelperCompilesIntegrated": 2,
+          "newCompilerAttempts": 0,
+          "compiledOwnerHeaderAndControlBytesMatch": true,
+          "unchangedStyleCheckerPassed": true,
+          "productionJSAPICompiled": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Actual archived portable component over byte-matching current owner headers/control code and native Node/OpenSSL loopback; system/header/compiler scope remains as original capsule. JS extracted routing has recording-only native boundary. Guest JSAPI/queued close loop/public TLSWrap/HTTPS/fourhost unexecuted.",
+          "previousCompilerAttemptsIntegrated": 2
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tls-retained-parent-owner-agent/HANDOFF.json",
+          "sha256": "f2c2b3a7256020e1a4b473d6f0a68df27aa25cd669430fd9af9e650a0cbe77a0",
+          "reusedEvidence": true,
+          "scope": "Real retained TCP/SSL source;2 successful prior tiny compiles,3 portable modes and actual JS recording bridge/native reference. Prior D01/D02 failures remain; copied retained-memory header is not copied to root."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/retained-tls-parent-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/retained-tls-parent-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Actual empty native TCP owner and SSL preparation precede lookup; actual later connect consumes that same retained parent",
+        "TCP keeps descriptor authority; SSL attaches exclusively and roots actual parent through queued close/native request retirement",
+        "Parent close invalidates SSL before fd reuse; real request tickets retain material and hold parent close barrier until retirement",
+        "TLS ref/unref delegates actual parent/watch liveness; attached transport blocks competing raw TCP reads/writes",
+        "Canceled lookup/attempt releases prepared owner; address-family fallback creates fresh parent/SSL authority",
+        "Matched native source/header/adapter/bootstrap/registration signatures and normal staging travel together; no public fake handle/provider or HTTPS activation"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/retained-tls-parent-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual public TLSSocket Socket inheritance/constructor overloads and supplied transport admission",
+        "True TLSWRAP AsyncWrap birth/lineage/destroy and StreamBase encrypted listener/memory BIO/onread/idle read ownership",
+        "Parent controls/timers/full original-allocation write/shutdown and pending callback/reentry lifecycle",
+        "Sessions/tickets/certificates/ALPN/complete verification/options.socket/CONNECT/server/SecureContext and HTTPS activation",
+        "Compile actual guest JSAPI, then current realm/CCW/GC/OOM/fatal/Worker/context-close/fd/fork/publication and identified four-host evidence"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "retained-native-transport-prerequisite",
+      "auditDocument": "tests/nodejs/audit/secure-network.md",
+      "findingScope": "Partial genuine retained TCP/SSL/ref/request lifetime prerequisite; not public TLSSocket/AsyncWrap/StreamBase/HTTPS or guest closure",
+      "additionalAuditDocuments": {},
+      "publicRequirementRecords": []
+    },
+    "socket-receiver-adoption": {
+      "document": "tests/nodejs/outline/socket-receiver-adoption-finding-progress.json",
+      "sha256": "153251b4fd2e24ac5f5657bf8e8a2fbbf78b4714d547beef75e14a28b64cfe52",
+      "recordedRevision": 212,
+      "explicitFindingIds": [
+        "N-015"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-socket212-source-r1/report.json",
+          "sha256": "6fdc1cdb15c3b038bb1677b7a1d389ba3197673d202eec2871c74fecabb0f790",
+          "guardedInputs": 879,
+          "scope": "Actual Socket receiver/native TCP-handle/ref/manualStart/read/write/reinit source plus unchanged retained TLS owner headers. Genuine native dependencies and explicit recording bridge; new guest C++/TTY/fullTLSWrap uncompiled/incomplete."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-socket212-affected-r1.json",
+          "sha256": "0951aa32e5d90e3f4e979530d9a4a940f195a9a696dc8c4480563e20c5b44f5f",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-socket212-source-r1/report.json",
+          "sha256": "6fdc1cdb15c3b038bb1677b7a1d389ba3197673d202eec2871c74fecabb0f790",
+          "requiredSemanticGroupsBothSubjects": 8,
+          "getterTracesEqual": true,
+          "observedTraceDifferences": [],
+          "observedTraceNonpassCount": 0,
+          "actualNativeWriteWrapObserved": true,
+          "exactForwarderGroups": 1,
+          "retainedTLSRecordingBridgeGroups": 1,
+          "portableTLSOwnerEvidenceReused": true,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "unchangedStyleCheckerPassed": true,
+          "scope": "Selected actual Socket/stream/constructor source over native Node TCP/StreamBase/state/WriteWrap/OS.8 strict cases per subject, same getter traces; only ports/real async IDs excluded from cross-process comparison and remain asserted/retained raw. New C++ validator/guest/TTY unexecuted. TLS portable evidence reused after exact header identity checks."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/socket-receiver-adoption-agent/HANDOFF.json",
+          "sha256": "b54c97f15ed09285f8ff4b1082f5381a139db4516fc1f0b71221c4c3c8d17174",
+          "reusedEvidence": true,
+          "scope": "Original bounded actual Socket/receiver/native handle prerequisite and exact8-group artifacts; earlier7-group bundle identity not captured. All9 setup/control/source nonpasses retained.0 compiles."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/socket-receiver-adoption-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/socket-receiver-adoption-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Consume pinned Socket constructor/normalization/flow sections over actual inheriting receiver and Duplex.call rather than constructing a different receiver",
+        "Reset receiver association/state before option spread; real reinit retains independently held old native handle",
+        "Read-only checked native TCP admission reports actual loop-reference state before fallible JS binding, not support/capability metadata",
+        "Caller-supplied real handle binding failure remains attached to actual partial receiver; newly acquired owner rolls back through its genuine lease",
+        "Existing handle ref/manualStart/pause/read/start/stop and encoding-aware writes use actual StreamBase/native owners and real request material",
+        "Preserve original retained TLS parent source and existing public TTY exports; incomplete handle kinds are not admitted by shape or fabricated native identity"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/socket-receiver-adoption-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Genuine public native TTY/StreamBase ctor/OFD/directional/init-error/AsyncWrap birth/read/write/shutdown/close contract before public tty frontend activation",
+        "Full kind-generic Socket final/shutdown/address/control/adoption; current native admission remains actual TCP-only",
+        "BoundSocket/Pipe/custom onread/transfer/signal/descriptor and pending old callback/reentry/close failure semantics",
+        "Complete Socket/Server public constructors/aliases/options/descriptors/error/resource lifecycle and unchanged upstream controls",
+        "Compile actual new JSAPI and validate realm/CCW/GC/OOM/fatal/Worker/context close and identified four-host artifacts; retain original terminal backpressure/raw-mode nonpasses"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "receiver-native-admission-prerequisite",
+      "auditDocument": "tests/nodejs/audit/network-contracts.md",
+      "findingScope": "Partial actual Socket receiver/genuine TCP admission/ref/read/write lifecycle prerequisite; not complete Socket/Server/TTY/StreamBase or guest/four-host closure",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/network.md": [
+          "N-013"
+        ]
+      },
+      "publicRequirementRecords": []
     }
   },
   "dependencyNarratives": {
@@ -24840,6 +25171,32 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current208\u2013209links actual none-isolated runner and original-request/module completion with verified attrs/empty-specifier transaction corrections. Explicit native dependencies and missing-owner nonpasses remain; no API/family/runtime closure. Accepted200excludes newer source."
+      },
+      {
+        "at": "2026-11-07T12:01:45.740806+00:00",
+        "sourceCheckpoint": 212,
+        "sourceHead": "a4dea36e9d12f6a77a9b51839fcdbf0a8c4ac43e",
+        "addedSourceSlices": [
+          "retained-transfer-kind",
+          "retained-tls-parent",
+          "socket-receiver-adoption"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "d438787ba3b415f68cbb148c13968c3260c1ea8dcb1e4dc00995d9ecc8271e8d"
+        },
+        "latestAcceptedEngine": 200,
+        "acceptedEngineEvidence": {
+          "path": "tests/nodejs/outline/engine200-build-result.json",
+          "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5"
+        },
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current210\u2013212links retained transfer admission, actual prelookup SSL/retained TCP lifetime and Socket receiver/native-handle ownership. Source-only versus native portable/component scopes remain distinct; full TLSWrap/TTY/guest/fourhost and all original failures stay open. Accepted200excludes newer source."
       }
     ]
   }

@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 129 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 132 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 230 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -493,3 +493,32 @@ remain separate from source slices and conformance. No finding/family closes.
 Accepted engine200 excludes201–209; current kernel and engine still need actual
 guest acceptance. No new compiler/runtime test ran in this documentation overlay.
 Full product/overall suites remain deferred; nested guest Wasm remains in scope.
+
+## Source210–212 retained admission and real transport ownership
+
+Transfer discovery retains actual admitted JS/native/ArrayBuffer kind beside
+existing rooted identities. Later main-graph classification/commits are unchanged.
+Non-Node append stays original; Node-configured UnknownDestination tracking stays
+aligned when canTransfer later requires SameProcess. Six frozen native observations
+are references only; source/replay/style checks do not execute new guest C++.
+
+SSL now prepares before lookup over an actual empty TCP owner. TCP retains fd/ref/
+request-close authority while a native parent root survives real request retirement.
+Cancellation/fallback creates fresh authority; raw TCP I/O cannot compete with SSL.
+Three portable native modes pass34/34/35 required semantic names with variable
+observed retry counts. Two prior successful helpers are counted once. Current owner/
+header/control bytes match archived inputs; native JSAPI/queued loop is unexecuted.
+
+Socket initializes the actual inheriting receiver and Duplex before real supplied-
+handle admission/ref/manualStart/read/write/failure/reinit behavior. Eight strict
+native/component groups per subject pass; getter and compared nondynamic traces
+match. Dynamic actual ports/async IDs remain raw and asserted within each process.
+Current TCP-only admission is not TTY/StreamBase support; public tty constructors,
+TLSWrap/AsyncWrap/onread/timer/session/HTTPS and broader Socket lifecycles stay open.
+
+All original failures and fixture/formatting/qualified-link corrections remain.
+The final Socket link is N-015 in network-contracts.md plus N-013 in network.md;
+N-001 fabricated DNS resolve is not this source slice. Immutable audit IDs and
+definitions are unchanged. No finding/family closes and all19 remain partial.
+Accepted200 excludes201–212; no current combined guest/four-host acceptance exists.
+Full product/overall suites remain deferred; nested guest Wasm stays in scope.
