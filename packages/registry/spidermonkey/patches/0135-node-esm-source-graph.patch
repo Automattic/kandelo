@@ -1,0 +1,589 @@
+--- a/js/src/builtin/ModuleObject.cpp
++++ b/js/src/builtin/ModuleObject.cpp
+@@ -21,6 +21,7 @@
+ #include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin, JS::LimitedColumnNumberOneOrigin
+ #include "js/friend/ErrorMessages.h"  // JSMSG_*
+ #include "js/Modules.h"  // JS::GetModulePrivate, JS::ModuleDynamicImportHook, JS::ModuleType
++#include "js/PropertyAndElement.h"
+ #include "vm/EqualityOperations.h"  // js::SameValue
+ #include "vm/Interpreter.h"    // Execute, Lambda, ReportRuntimeLexicalError
+ #include "vm/ModuleBuilder.h"  // js::ModuleBuilder
+@@ -213,6 +214,11 @@
+   return ValueToModuleType(getReservedSlot(ModuleTypeSlot));
+ }
+
++JSObject* ModuleRequestObject::importAttributes() const {
++  const Value& attributes = getReservedSlot(ImportAttributesSlot);
++  return attributes.isObject() ? &attributes.toObject() : nullptr;
++}
++
+ static bool GetModuleType(JSContext* cx,
+                           Handle<ImportAttributeVector> maybeAttributes,
+                           JS::ModuleType& moduleType) {
+@@ -252,7 +258,18 @@
+     return nullptr;
+   }
+
+-  return create(cx, specifier, moduleType);
++  Rooted<ModuleRequestObject*> self(cx, create(cx, specifier, moduleType));
++  if (!self) return nullptr;
++  RootedObject attributes(cx, NewObjectWithGivenProto<PlainObject>(cx, nullptr));
++  if (!attributes) return nullptr;
++  for (const ImportAttribute& attribute : maybeAttributes) {
++    RootedId key(cx, AtomToId(attribute.key()));
++    RootedValue value(cx, StringValue(attribute.value()));
++    if (!JS_DefinePropertyById(cx, attributes, key, value, JSPROP_ENUMERATE))
++      return nullptr;
++  }
++  self->setReservedSlot(ImportAttributesSlot, ObjectValue(*attributes));
++  return self;
+ }
+
+ /* static */
+--- a/js/src/builtin/ModuleObject.h
++++ b/js/src/builtin/ModuleObject.h
+@@ -70,6 +70,7 @@
+   enum {
+     SpecifierSlot = 0,
+     FirstUnsupportedAttributeKeySlot,
++    ImportAttributesSlot,
+     ModuleTypeSlot,
+     SlotCount
+   };
+@@ -85,6 +86,7 @@
+
+   JSAtom* specifier() const;
+   JS::ModuleType moduleType() const;
++  JSObject* importAttributes() const;
+
+   // We process import attributes earlier in the process, but according to the
+   // spec, we should error during module evaluation if we encounter an
+--- a/js/src/shell/ModuleLoader.cpp
++++ b/js/src/shell/ModuleLoader.cpp
+@@ -14,11 +14,14 @@
+
+ #include "builtin/ModuleObject.h"  // js::ModuleObject, js::ModuleStatus
+ #include "builtin/TestingUtility.h"  // js::CreateScriptPrivate
++#include "js/Array.h"
+ #include "js/CallAndConstruct.h"     // JS_CallFunctionValue, JS::IsCallable
+ #include "js/Conversions.h"
++#include "js/Exception.h"
+ #include "js/GlobalObject.h"  // JS::CurrentGlobalOrNull
+ #include "js/MapAndSet.h"
+ #include "js/Modules.h"
++#include "js/Object.h"
+ #include "js/Promise.h"  // JS::GetPromiseState, JS::GetPromiseResult
+ #include "js/PropertyAndElement.h"  // JS_DefineProperty, JS_GetProperty
+ #include "js/SourceText.h"
+@@ -64,7 +67,8 @@
+                                         Handle<JSLinearString*> specifier,
+                                         Handle<JSLinearString*> referrerPath,
+                                         JS::MutableHandleString out,
+-                                        bool resolveOnly = false) {
++                                        bool resolveOnly = false,
++                                       HandleObject request = nullptr) {
+   out.set(nullptr);
+
+   RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
+@@ -80,9 +84,14 @@
+     return true;
+   }
+
+-  JS::RootedValueArray<3> args(cx);
++  JS::RootedValueArray<4> args(cx);
+   args[0].setString(specifier);
+   args[2].setBoolean(resolveOnly);
++  if (request && request->as<ModuleRequestObject>().importAttributes()) {
++    args[3].setObject(*request->as<ModuleRequestObject>().importAttributes());
++  } else {
++    args[3].setUndefined();
++  }
+   if (referrerPath) {
+     args[1].setString(referrerPath);
+   } else {
+@@ -133,6 +142,124 @@
+     return srcVal.toString();
+   }
+   return nullptr;
++}
++
++// The full resolved URL remains graph/private/source identity. Filesystem
++// fetching belongs to the JS default loader and never rewrites this key.
++static bool KandeloModuleRecord(JSContext* cx, HandleString identifier,
++                                HandleObject request, MutableHandleObject record) {
++  record.set(nullptr);
++  RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
++  RootedValue hook(cx);
++  if (!global || !JS_GetProperty(cx, global, "__kandeloModuleRecord", &hook))
++    return !JS_IsExceptionPending(cx);
++  if (!hook.isObject() || !JS::IsCallable(&hook.toObject())) return true;
++  JS::RootedValueArray<2> args(cx);
++  args[0].setString(identifier);
++  if (request && request->as<ModuleRequestObject>().importAttributes())
++    args[1].setObject(*request->as<ModuleRequestObject>().importAttributes());
++  else
++    args[1].setUndefined();
++  RootedValue result(cx);
++  if (!JS_CallFunctionValue(cx, global, hook, args, &result)) return false;
++  if (!result.isObject()) {
++    JS_ReportErrorASCII(cx, "Node module record owner did not return a record");
++    return false;
++  }
++  record.set(&result.toObject());
++  return true;
++}
++
++static bool KandeloLoadNodeModule(JSContext* cx, HandleObject record,
++                                  MutableHandleObject loaded) {
++  RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
++  RootedValue hook(cx), result(cx);
++  if (!global || !JS_GetProperty(cx, global, "__kandeloLoadModule", &hook)) return false;
++  JS::RootedValueArray<1> args(cx);
++  args[0].setObject(*record);
++  if (!JS_CallFunctionValue(cx, global, hook, args, &result)) return false;
++  if (!result.isObject()) {
++    JS_ReportErrorASCII(cx, "Node module source owner did not return a load result");
++    return false;
++  }
++  loaded.set(&result.toObject());
++  return true;
++}
++
++static void KandeloRetireFailedModuleSource(JSContext* cx, HandleObject record) {
++  if (!record || !JS_IsExceptionPending(cx)) return;
++  JS::AutoSaveExceptionState original(cx);
++  RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
++  RootedValue hook(cx), result(cx);
++  JS::RootedValueArray<1> args(cx);
++  args[0].setObject(*record);
++  if (global && JS_GetProperty(cx, global, "__kandeloModuleFailed", &hook)) {
++    (void)JS_CallFunctionValue(cx, global, hook, args, &result);
++  }
++  // The destructor preserves a new pending error; restore explicitly so the
++  // actual compile failure wins even when cleanup fails. Cache retirement is
++  // still unproven if that private cleanup hook did not run successfully.
++  original.restore();
++}
++
++enum { KandeloSyntheticRecord, KandeloSyntheticDescriptor, KandeloSyntheticIdentity, KandeloSyntheticSlotCount };
++static const JSClass KandeloSyntheticOwnerClass = {
++    "NodeSyntheticExportsOwner", JSCLASS_HAS_RESERVED_SLOTS(KandeloSyntheticSlotCount)};
++
++static bool KandeloEvaluateSynthetic(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (!args.thisv().isObject() ||
++      JS::GetClass(&args.thisv().toObject()) != &KandeloSyntheticOwnerClass) {
++    JS_ReportErrorASCII(cx, "Invalid native synthetic export owner"); return false;
++  }
++  RootedObject owner(cx, &args.thisv().toObject());
++  Rooted<ModuleObject*> module(cx, &JS::GetReservedSlot(owner, KandeloSyntheticRecord).toObject().as<ModuleObject>());
++  RootedObject descriptor(cx, &JS::GetReservedSlot(owner, KandeloSyntheticDescriptor).toObject());
++  RootedValue callback(cx), values(cx);
++  if (!JS_GetProperty(cx, descriptor, "evaluate", &callback) ||
++      !JS_CallFunctionValue(cx, descriptor, callback, JS::HandleValueArray::empty(), &values)) return false;
++  if (!values.isObject()) {
++    JS_ReportErrorASCII(cx, "Synthetic evaluation did not return export values"); return false;
++  }
++  RootedObject array(cx, &values.toObject());
++  const auto& names = module->syntheticExportNames();
++  for (uint32_t i = 0; i < names.length(); i++) {
++    RootedValue value(cx);
++    Rooted<JSAtom*> name(cx, names[i]);
++    if (!JS_GetElement(cx, array, i, &value) ||
++        !ModuleObject::setSyntheticExport(cx, module, name, value)) return false;
++  }
++  args.rval().setUndefined(); return true;
++}
++
++static JSObject* KandeloCompileSynthetic(JSContext* cx, HandleObject descriptor, HandleString identity) {
++  RootedValue exportNames(cx);
++  if (!JS_GetProperty(cx, descriptor, "exportNames", &exportNames)) return nullptr;
++  if (!exportNames.isObject()) {
++    JS_ReportErrorASCII(cx, "Synthetic exports must be an array"); return nullptr;
++  }
++  RootedObject array(cx, &exportNames.toObject());
++  uint32_t count;
++  if (!JS::GetArrayLength(cx, array, &count)) return nullptr;
++  Rooted<ExportNameVector> names(cx);
++  RootedValueVector initial(cx);
++  for (uint32_t i = 0; i < count; i++) {
++    RootedValue value(cx);
++    if (!JS_GetElement(cx, array, i, &value)) return nullptr;
++    if (!value.isString()) { JS_ReportErrorASCII(cx, "Synthetic export name must be a string"); return nullptr; }
++    Rooted<JSAtom*> name(cx, AtomizeString(cx, value.toString()));
++    if (!name || !names.append(name) || !initial.append(UndefinedValue())) return nullptr;
++  }
++  RootedObject owner(cx, JS_NewObject(cx, &KandeloSyntheticOwnerClass));
++  RootedFunction function(cx, JS_NewFunction(cx, KandeloEvaluateSynthetic, 0, 0, "evaluateNodeSynthetic"));
++  if (!owner || !function) return nullptr;
++  RootedObject steps(cx, JS_GetFunctionObject(function));
++  Rooted<ModuleObject*> module(cx, ModuleObject::createEmbedderSynthetic(cx, &names, steps, owner));
++  if (!module || !ModuleObject::createSyntheticEnvironment(cx, module, initial)) return nullptr;
++  JS::SetReservedSlot(owner, KandeloSyntheticRecord, ObjectValue(*module));
++  JS::SetReservedSlot(owner, KandeloSyntheticDescriptor, ObjectValue(*descriptor));
++  JS::SetReservedSlot(owner, KandeloSyntheticIdentity, StringValue(identity));
++  return module;
+ }
+
+ bool ModuleLoader::init(JSContext* cx, HandleString loadPath) {
+@@ -242,15 +369,22 @@
+     return false;
+   }
+
+-  path = normalizePath(cx, path);
+-  if (!path) {
+-    return false;
+-  }
+-
+-  JS::ModuleType moduleType =
+-      moduleRequest->as<ModuleRequestObject>().moduleType();
+-
+-  return addModuleToRegistry(cx, moduleType, path, module);
++  RootedObject nodeRecord(cx);
++  if (!KandeloModuleRecord(cx, path, moduleRequest, &nodeRecord)) return false;
++  JS::ModuleType moduleType = moduleRequest->as<ModuleRequestObject>().moduleType();
++  RootedString key(cx);
++  if (nodeRecord) {
++    RootedValue value(cx);
++    if (!JS_GetProperty(cx, nodeRecord, "key", &value)) return false;
++    if (!value.isString()) { JS_ReportErrorASCII(cx, "Invalid Node module cache key"); return false; }
++    key = value.toString();
++    moduleType = JS::ModuleType::JavaScript;
++  } else {
++    path = normalizePath(cx, path);
++    if (!path) return false;
++    key = path;
++  }
++  return addModuleToRegistry(cx, moduleType, key, module);
+ }
+
+ void ModuleLoader::clearModules(JSContext* cx) {
+@@ -384,16 +518,43 @@
+   return JS::ModuleEvaluate(cx, module, rval);
+ }
+
++// HostResolveImportedModule is called again during export resolution. Resolve
++// each real (referring module, ModuleRequest) only once; a hook may return a
++// different URL on its next public invocation (for example cache:false mocks).
++// These maps share the registry's realm/lifetime and clearModules retirement.
++static ArrayObject* GetOrCreateRootRegistry(JSContext* cx);
++static constexpr uint32_t KandeloImportResolutionSlot = uint32_t(JS::ModuleType::Limit) + 1;
++static JSObject* KandeloImportResolutionRegistry(JSContext* cx,
++                                                HandleValue referencingPrivate) {
++  Rooted<ArrayObject*> root(cx, GetOrCreateRootRegistry(cx));
++  if (!root) return nullptr;
++  RootedObject outer(cx, &root->getDenseElement(KandeloImportResolutionSlot).toObject());
++  RootedValue prior(cx);
++  if (!JS::MapGet(cx, outer, referencingPrivate, &prior)) return nullptr;
++  if (!prior.isUndefined()) return &prior.toObject();
++  RootedObject registry(cx, JS::NewMapObject(cx));
++  if (!registry) return nullptr;
++  RootedValue value(cx, ObjectValue(*registry));
++  if (!JS::MapSet(cx, outer, referencingPrivate, value)) return nullptr;
++  return registry;
++}
++
+ JSObject* ModuleLoader::resolveImportedModule(
+     JSContext* cx, JS::HandleValue referencingPrivate,
+     JS::HandleObject moduleRequest) {
+-  Rooted<JSLinearString*> path(cx,
+-                               resolve(cx, moduleRequest, referencingPrivate));
+-  if (!path) {
+-    return nullptr;
+-  }
+-
+-  return loadAndParse(cx, path, moduleRequest);
++  RootedObject registry(cx, KandeloImportResolutionRegistry(cx, referencingPrivate));
++  if (!registry) return nullptr;
++  RootedValue key(cx, ObjectValue(*moduleRequest)), cached(cx);
++  if (!JS::MapGet(cx, registry, key, &cached)) return nullptr;
++  if (!cached.isUndefined()) return &cached.toObject();
++
++  Rooted<JSLinearString*> path(cx, resolve(cx, moduleRequest, referencingPrivate));
++  if (!path) return nullptr;
++  RootedObject module(cx, loadAndParse(cx, path, moduleRequest));
++  if (!module) return nullptr;
++  RootedValue value(cx, ObjectValue(*module));
++  if (!JS::MapSet(cx, registry, key, value)) return nullptr;
++  return module;
+ }
+
+ // Kandelo: populate import.meta.{url,dirname,require} for a native ES module by
+@@ -445,22 +606,13 @@
+     return false;
+   }
+
+-  RootedValue dirnameVal(cx);
+-  if (!JS_GetProperty(cx, meta, "dirname", &dirnameVal)) {
+-    return false;
+-  }
+-  if (!JS_DefineProperty(cx, metaObject, "dirname", dirnameVal,
+-                         JSPROP_ENUMERATE)) {
+-    return false;
+-  }
+-
+-  RootedValue requireVal(cx);
+-  if (!JS_GetProperty(cx, meta, "require", &requireVal)) {
+-    return false;
+-  }
+-  if (!JS_DefineProperty(cx, metaObject, "require", requireVal,
+-                         JSPROP_ENUMERATE)) {
+-    return false;
++  for (const char* name : {"dirname", "filename", "require"}) {
++    bool present;
++    if (!JS_HasOwnProperty(cx, meta, name, &present)) return false;
++    if (!present) continue;
++    RootedValue value(cx);
++    if (!JS_GetProperty(cx, meta, name, &value) ||
++        !JS_DefineProperty(cx, metaObject, name, value, JSPROP_ENUMERATE)) return false;
+   }
+
+   *applied = true;
+@@ -654,17 +806,16 @@
+     return nullptr;
+   }
+
+-  return resolve(cx, name, referencingInfo);
++  return resolve(cx, name, referencingInfo, moduleRequestArg);
+ }
+
+ JSLinearString* ModuleLoader::resolve(JSContext* cx, HandleString specifier,
+-                                      HandleValue referencingInfo) {
++                                      HandleValue referencingInfo, HandleObject request) {
+   Rooted<JSLinearString*> name(cx, JS_EnsureLinearString(cx, specifier));
+   if (!name) {
+     return nullptr;
+   }
+
+-  if (IsJavaScriptURL(name)) return name;
+
+   // Node format dispatch applies to relative and absolute file imports too:
+   // CommonJS must use its wrapper/cache, while ESM stays in this module graph.
+@@ -672,9 +823,9 @@
+   if (!referencingInfo.isUndefined() &&
+       !getScriptPath(cx, referencingInfo, &refPath)) return nullptr;
+   RootedString resolved(cx);
+-  if (!KandeloResolveBareSpecifier(cx, name, refPath, &resolved)) return nullptr;
++  if (!KandeloResolveBareSpecifier(cx, name, refPath, &resolved, false, request)) return nullptr;
+   if (resolved) return JS_EnsureLinearString(cx, resolved);
+-  if (IsAbsolutePath(name)) return name;
++  if (IsJavaScriptURL(name) || IsAbsolutePath(name)) return name;
+
+   // Treat |name| as a relative path if it starts with either "./" or "../".
+   bool isRelative =
+@@ -735,98 +886,86 @@
+
+ JSObject* ModuleLoader::loadAndParse(JSContext* cx, HandleString pathArg,
+                                      JS::HandleObject moduleRequestArg) {
++  RootedObject nodeRecord(cx);
++  if (!KandeloModuleRecord(cx, pathArg, moduleRequestArg, &nodeRecord)) return nullptr;
+   Rooted<JSLinearString*> path(cx, JS_EnsureLinearString(cx, pathArg));
+-  if (!path) {
+-    return nullptr;
+-  }
+-
+-  path = normalizePath(cx, path);
+-  if (!path) {
+-    return nullptr;
+-  }
+-
++  RootedString registryKey(cx);
++  if (!path) return nullptr;
+   JS::ModuleType moduleType = JS::ModuleType::JavaScript;
+-  if (moduleRequestArg) {
+-    moduleType = moduleRequestArg->as<ModuleRequestObject>().moduleType();
+-  }
+-
++  if (nodeRecord) {
++    RootedValue url(cx), key(cx);
++    if (!JS_GetProperty(cx, nodeRecord, "url", &url) ||
++        !JS_GetProperty(cx, nodeRecord, "key", &key)) return nullptr;
++    if (!url.isString() || !key.isString()) {
++      JS_ReportErrorASCII(cx, "Invalid native module URL/cache key"); return nullptr;
++    }
++    path = JS_EnsureLinearString(cx, url.toString());
++    registryKey = key.toString();
++  } else {
++    path = normalizePath(cx, path);
++    registryKey = path;
++    if (moduleRequestArg) moduleType = moduleRequestArg->as<ModuleRequestObject>().moduleType();
++  }
++  if (!path || !registryKey) return nullptr;
+   RootedObject module(cx);
+-  if (!lookupModuleInRegistry(cx, moduleType, path, &module)) {
+-    return nullptr;
+-  }
+-
+-  if (module) {
+-    return module;
+-  }
+-
+-  UniqueChars filename = JS_EncodeStringToUTF8(cx, path);
+-  if (!filename) {
+-    return nullptr;
+-  }
+-
+-  // Module identity remains a filesystem path internally; Node's public
+-  // source name is its module URL. Saved frames and errors use that name.
+-  RootedObject sourceMeta(cx, JS_NewPlainObject(cx));
+-  bool nodeMeta = false;
+-  if (!sourceMeta ||
+-      !KandeloPopulateImportMeta(cx, path, sourceMeta, &nodeMeta)) return nullptr;
+-  if (nodeMeta) {
+-    RootedValue sourceUrl(cx);
+-    if (!JS_GetProperty(cx, sourceMeta, "url", &sourceUrl)) return nullptr;
+-    if (sourceUrl.isString()) {
+-      RootedString sourceName(cx, sourceUrl.toString());
+-      filename = JS_EncodeStringToUTF8(cx, sourceName);
+-      if (!filename) return nullptr;
+-    }
+-  }
+-  JS::CompileOptions options(cx);
+-  options.setFileAndLine(filename.get(), 1);
+-
+-  RootedString source(cx, fetchSource(cx, path));
+-  if (!source) {
+-    return nullptr;
+-  }
+-
+-  JS::AutoStableStringChars linearChars(cx);
+-  if (!linearChars.initTwoByte(cx, source)) {
+-    return nullptr;
+-  }
+-
+-  JS::SourceText<char16_t> srcBuf;
+-  if (!srcBuf.initMaybeBorrowed(cx, linearChars)) {
+-    return nullptr;
+-  }
+-
+-  switch (moduleType) {
+-    case JS::ModuleType::Unknown:
+-      JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+-                                JSMSG_BAD_MODULE_TYPE);
+-      return nullptr;
+-    case JS::ModuleType::JavaScript: {
+-      module = JS::CompileModule(cx, options, srcBuf);
+-      if (!module) {
++  if (!lookupModuleInRegistry(cx, moduleType, registryKey, &module)) return nullptr;
++  if (module) return module;
++
++  RootedObject loaded(cx);
++  RootedString source(cx);
++  if (nodeRecord) {
++    if (!KandeloLoadNodeModule(cx, nodeRecord, &loaded)) return nullptr;
++    RootedValue format(cx);
++    if (!JS_GetProperty(cx, loaded, "format", &format)) return nullptr;
++    if (!format.isString()) { JS_ReportErrorASCII(cx, "Module format must be a string"); return nullptr; }
++    bool synthetic;
++    if (!JS_StringEqualsLiteral(cx, format.toString(), "synthetic", &synthetic)) return nullptr;
++    if (synthetic) {
++      module = KandeloCompileSynthetic(cx, loaded, path);
++      if (!module) { KandeloRetireFailedModuleSource(cx, nodeRecord); return nullptr; }
++    } else {
++      bool sourceModule;
++      if (!JS_StringEqualsLiteral(cx, format.toString(), "module", &sourceModule)) return nullptr;
++      if (!sourceModule) { JS_ReportErrorASCII(cx, "Unsupported native module descriptor format"); return nullptr; }
++      RootedValue text(cx);
++      if (!JS_GetProperty(cx, loaded, "source", &text)) return nullptr;
++      if (!text.isString()) { JS_ReportErrorASCII(cx, "Module source must be a string"); return nullptr; }
++      source = text.toString();
++    }
++  } else {
++    source = fetchSource(cx, path);
++    if (!source) return nullptr;
++  }
++  if (!module) {
++    UniqueChars filename = JS_EncodeStringToUTF8(cx, path);
++    if (!filename) return nullptr;
++    JS::CompileOptions options(cx);
++    options.setFileAndLine(filename.get(), 1);
++    JS::AutoStableStringChars linearChars(cx);
++    if (!linearChars.initTwoByte(cx, source)) return nullptr;
++    JS::SourceText<char16_t> srcBuf;
++    if (!srcBuf.initMaybeBorrowed(cx, linearChars)) return nullptr;
++    switch (moduleType) {
++      case JS::ModuleType::Unknown:
++        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_BAD_MODULE_TYPE);
+         return nullptr;
+-      }
+-
+-      RootedObject info(cx, js::CreateScriptPrivate(cx, path));
+-      if (!info) {
+-        return nullptr;
+-      }
+-
+-      JS::SetModulePrivate(module, ObjectValue(*info));
+-    } break;
+-    case JS::ModuleType::JSON:
+-      module = JS::CompileJsonModule(cx, options, srcBuf);
+-      if (!module) {
+-        return nullptr;
+-      }
+-      break;
+-  }
+-
+-  if (!addModuleToRegistry(cx, moduleType, path, module)) {
+-    return nullptr;
+-  }
+-
++      case JS::ModuleType::JavaScript:
++        module = JS::CompileModule(cx, options, srcBuf);
++        break;
++      case JS::ModuleType::JSON:
++        module = JS::CompileJsonModule(cx, options, srcBuf);
++        break;
++    }
++    if (!module) { KandeloRetireFailedModuleSource(cx, nodeRecord); return nullptr; }
++  }
++  // Synthetic records have no scriptSourceObject; their actual embedding
++  // owner holds the URL. JS::SetModulePrivate applies only to source records.
++  if (module->as<ModuleObject>().hasCyclicModuleFields()) {
++    RootedObject info(cx, js::CreateScriptPrivate(cx, path));
++    if (!info) return nullptr;
++    JS::SetModulePrivate(module, ObjectValue(*info));
++  }
++  if (!addModuleToRegistry(cx, moduleType, registryKey, module)) return nullptr;
+   return module;
+ }
+
+@@ -873,7 +1012,8 @@
+     return &value.toObject().as<ArrayObject>();
+   }
+
+-  uint32_t numberOfModuleTypes = uint32_t(JS::ModuleType::Limit) + 1;
++  // One additional actual map owns stable static import resolutions.
++  uint32_t numberOfModuleTypes = KandeloImportResolutionSlot + 1;
+
+   Rooted<ArrayObject*> registry(
+       cx, NewDenseFullyAllocatedArray(cx, numberOfModuleTypes, TenuredObject));
+--- a/js/src/shell/ModuleLoader.h
++++ b/js/src/shell/ModuleLoader.h
+@@ -26,7 +26,8 @@
+   void clearModules(JSContext* cx);
+
+   // Kandelo: synchronously load, link, and evaluate the ES module at |path|
+-  // through the shell module registry (so it dedups with import and dynamic
++  // through the same module registry (full URL/type identity in Node mode,
++  // filesystem paths in the ordinary shell), so it dedups with import and dynamic
+   // import()), then return its namespace in |rval|. Throws an Error whose
+   // .code is "ERR_REQUIRE_ASYNC_MODULE" if the module has a pending top-level
+   // await, or rethrows an evaluation rejection. Backs the node-compat
+@@ -77,7 +78,7 @@
+   JSLinearString* resolve(JSContext* cx, HandleObject moduleRequestArg,
+                           HandleValue referencingInfo);
+   JSLinearString* resolve(JSContext* cx, HandleString specifier,
+-                          HandleValue referencingInfo);
++                          HandleValue referencingInfo, HandleObject request = nullptr);
+   bool getScriptPath(JSContext* cx, HandleValue privateValue,
+                      MutableHandle<JSLinearString*> pathOut);
+   JSLinearString* normalizePath(JSContext* cx, Handle<JSLinearString*> path);
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -96,3 +96,7 @@
+ # Unchanged pinned uvwasi wire serialization used by the guest WASI owner.
+ SOURCES += ["/third_party/kandelo-node/wasi/wasi_serdes.c"]
+ SOURCES["/third_party/kandelo-node/wasi/wasi_serdes.c"].flags += ["-std=c11"]
++
++# Exact Node-vendored CJS export/reexport lexer; no evaluation during linking.
++SOURCES += ["/third_party/kandelo-node/merve/merve.cpp"]
++SOURCES["/third_party/kandelo-node/merve/merve.cpp"].flags += ["-std=c++20"]

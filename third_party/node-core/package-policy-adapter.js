@@ -88,5 +88,5 @@ function _createNodePackagePolicy(platform) {
     return { get format() { return require('internal/modules/esm/get_format'); },
         get resolver() { return require('internal/modules/esm/resolve'); },
         get maps() { return require('internal/modules/package_map'); },
-        getCjsConditions, getCjsConditionsArray, getConditionsSet, getLazy };
+        getCjsConditions, getCjsConditionsArray, getConditionsSet, getDefaultConditions, getLazy, getOptionValue };
 }

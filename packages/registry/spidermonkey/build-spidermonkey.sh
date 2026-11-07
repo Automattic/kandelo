@@ -331,6 +331,10 @@ python3 "$REPO_ROOT/third_party/node-core/generate-uv-error-table.py" \
     --output "$SRC_DIR/js/src/shell/kandelo-node-uv-error-table.h"
 cp "$REPO_ROOT/third_party/node-core/upstream/uv-errors/deps/uv/include/uv/errno.h" \
     "$SRC_DIR/js/src/shell/kandelo-node-uv-errno.h"
+mkdir -p "$SRC_DIR/third_party/kandelo-node/merve"
+cp "$REPO_ROOT/third_party/node-core/upstream/esm-source/deps/merve/merve.h" "$SRC_DIR/third_party/kandelo-node/merve/merve.h"
+cp "$REPO_ROOT/third_party/node-core/upstream/esm-source/deps/merve/merve.cpp" "$SRC_DIR/third_party/kandelo-node/merve/merve.cpp"
+cp "$REPO_ROOT/third_party/node-core/upstream/esm-source/deps/merve/LICENSE-MIT" "$SRC_DIR/third_party/kandelo-node/merve/LICENSE-MIT"
 cp "$REPO_ROOT/third_party/node-core/dns-errors.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-errors.h"
 cp "$REPO_ROOT/third_party/node-core/dns-lookup.h" "$SRC_DIR/js/src/shell/kandelo-node-dns-lookup.h"
 cp "$REPO_ROOT/third_party/node-core/datagram-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-datagram-operations.h"

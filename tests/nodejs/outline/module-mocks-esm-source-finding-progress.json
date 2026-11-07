@@ -1,0 +1,131 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/loading.md",
+    "findingIds": [
+      "L-009",
+      "L-011",
+      "L-029",
+      "L-033"
+    ],
+    "additionalDocuments": {
+      "tests/nodejs/audit/testing.md": [
+        "TEST-002"
+      ]
+    },
+    "relatedFamilies": [
+      "loading",
+      "testing",
+      "engine",
+      "processes",
+      "values",
+      "filesystem"
+    ],
+    "scope": "Bounded real syncresolve/load/fullURL/source/native synthetic/CJS-preparse/mock/CLI owners; no complete finding/family closure"
+  },
+  "sourceImplemented": [
+    "Actual sync import-goal resolve/load caches, hook chaining, source/format/attribute validation and generic consumer; no async-loader worker emulation",
+    "Pinned MockTracker.module uses real resolver/hooks/CJS cache/restore and actual structured SavedFrame caller source; genuine CLI-only activation rejects inherited NODE_OPTIONS variants",
+    "Native fullURL/type registry/source metadata, retained original import attributes, traced stable static ModuleRequest/reference resolution and native synthetic environment/evaluation owners",
+    "Unchanged Node-vendored Merve CJS name/reexport discovery, genuine private pending-source/cache transactions and evaluation through actual Module._load/_compile; no execution during preparse",
+    "Real supplied ESM/CJS/Buffer source, query/fragment/opaque URL identity and eligible JSON/CJS cache sharing; source-load/parse failures retire before job creation while evaluation error identity is retained",
+    "Root native cleanup correction explicitly restores actual original compile exception even when private cleanup fails; preserve unresolved cache-retirement failure owner",
+    "Compose0134/0135normal engine patches and source generation with174VM/175SQLite/177Net/178Domain/179WASI; correct genuine include order/vendor include form without checker changes"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-loading180-source-r1/report.json",
+    "sha256": "7c558517474832ce7ab8e9f592eac3e8463b9ce7d67b9fb92762ef9aeb890915",
+    "guardedInputs": 817,
+    "scope": "Current actual mock/resolver/fullURL-source/attributes/native graph source with real native-dependent controls; production newJSAPI/GC/guest/fourhost uncompiled."
+  },
+  "packageChecks": {
+    "report": ".context/node26-loading180-affected-r1.json",
+    "sha256": "7628c1cc8a19defa8dc1749aa6a770b18d555095f6adf94b6d14a7d951f9a5dc",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-loading180-source-r1/report.json",
+    "sha256": "7c558517474832ce7ab8e9f592eac3e8463b9ce7d67b9fb92762ef9aeb890915",
+    "unchangedWholeUpstreamExecutions": 8,
+    "unchangedMockSelectedTestsPerSubject": 21,
+    "selectedMockTopLevelGroups": 3,
+    "fullMockTopLevelGroups": 23,
+    "unrunMockTopLevelGroups": 20,
+    "loaderSemanticGroupsPerSubject": 6,
+    "mockSemanticGroupsPerSubject": 7,
+    "lifecycleResultsEqual": true,
+    "nativeCliComparisons": 14,
+    "nativeLexerComparisons": 25,
+    "newCompilerAttempts": 0,
+    "productionSMExecuted": false,
+    "scope": "Current combined production JS algorithms and source-extracted native CLI/unchanged Merve artifacts over identified native VM/fs/package/MIME/encoding/stack dependencies; no actual new SpiderMonkey registry/synthetic/GC/exception execution"
+  },
+  "sealedEvidence": {
+    "report": ".context/esm-url-loader-agent/handoff.json",
+    "sha256": "f4b93b4024bb06161c5130acbd8f7f03e94fba6e548b0266bdc5597bc82f91e5",
+    "reusedEvidence": true,
+    "scope": "Sealed dependency and loader source/evidence; both outer JSON file SHA and distinct embedded canonical-manifest digests verified, all member identities intact; private4compiler attempts total incl1SDKobject, no engine build"
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/module-mocks-agent/cli-controls-before-env.log",
+      "sha256": "01e5b1d85c1efc1b65289f3e0008ea7fe39f660a2ccb4b4810cce928f1aae075",
+      "kind": "initial-real-CLI-environment-admission-mismatch",
+      "reason": "Initial extracted CLI compiled successfully but admitted disallowed NODE_OPTIONS. Actual parser fixed,14final native comparisons pass;2successful CLI compile attempts total, no compiler failure."
+    },
+    {
+      "report": ".context/esm-url-loader-agent/first-source-forwarding-failure/probe.stderr",
+      "sha256": "7cf55622105a053333ce0ee5ca3f3873db45c24371751521875879a9fd2c36aa",
+      "kind": "missing-owning-option-forwarding",
+      "reason": "Actual option policy owner initially omitted required getOptionValue forwarding; source corrected and failed evidence retained."
+    },
+    {
+      "report": ".context/node26-loading180-seal-guard-failure.log",
+      "sha256": "132fcf1d3c4e1a253104fbdd948053e54b82520244a3a3dc1b4f2235b43fb92c",
+      "kind": "canonical-versus-file-seal-digest-labeling",
+      "reason": "Reported digests were canonical manifest digests, not SHA of JSON files. Root validates both kinds and all members; no evidence changed."
+    },
+    {
+      "report": ".context/node26-loading180-engine-compose-r1/failure.log",
+      "sha256": "2983538b6b9a7ca1093963be81596d2057abd63f8523c030a06bf8af58b2543d",
+      "kind": "old-EOF-engine-build-hunk-context",
+      "reason": "Private Merve moz.build hunk expected oldEOF. Root appends its exact new CXX20 inputs after current WASI C11 inputs and proves zero-fuzz generated patches."
+    },
+    {
+      "report": ".context/node26-loading180-style-r1/checker.stdout",
+      "sha256": "6d8bc7f24b460b0ec90a4f7b96c52c2a4015c77577cadd1c244d9ae013929897",
+      "kind": "normal-unchanged-Mozilla-checker-diagnostics",
+      "reason": "Actual patched ModuleObject include order and quoted vendor header path failed. Own source/order corrected and genuine external header consumes declared /third_party search path; checker/ignore/expectations unchanged."
+    },
+    {
+      "report": ".context/node26-loading180-control-modes-r2/source-check.log",
+      "sha256": "3521b677d63fbd4b5ec554a682012950c940944e013e64cc424348987c3518dc",
+      "kind": "copied-private-control-executable-mode",
+      "reason": "Fixture copy preserved bytes but not executable bits. Original assertion failed before comparisons; exact producer modes restored, executable hashes unchanged."
+    },
+    {
+      "report": ".context/esm-url-loader-agent/first-load-error-retirement-failure/semantic-candidate.stderr",
+      "sha256": "e57dee9d26f81e61d8a31d9f84c9e6ed74df6192f1e539f71931492b6b672e6d",
+      "kind": "native-load-error-cache-mismatch",
+      "reason": "Native retried failed loads twice but candidate cached first failure; actual source transaction now retires failed pre-job load/parse."
+    }
+  ],
+  "remaining": [
+    "Actual production newJSAPI/static memo/ModuleRequest slots/synthetic owner/source metadata/GC/realm/OOM/security/reentry/shutdown and allfourhosts",
+    "Failed private source-retirement hook may still leave cached source slot; original compile error is now preserved by source, actual native execution unvalidated",
+    "Early engine unsupported attribute keys and request/source/defer phases, async module.register worker, TS/wasm/addon translators, native require cycles/whole-async-graph/link-failure memoization",
+    "Complete builtin export synchronization/import.meta/entry/source-map/compiler-cache/CLI/permissions/diagnostic/test discovery/isolation/coverage/worker APIs and broader public findings",
+    "Native lexer UTF8/string/GC/allocation-error semantics: target can omit name allocation failure while current JSAPI propagates it; no parity or boundary established"
+  ],
+  "at": "2026-11-07T04:35:20.285099+00:00",
+  "recipeRevision": 180,
+  "lastAcceptedEngine": 173,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

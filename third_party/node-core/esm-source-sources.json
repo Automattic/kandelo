@@ -1,0 +1,51 @@
+{
+  "version": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "load": {
+      "path": "upstream/esm-source/lib/internal/modules/esm/load.js",
+      "upstreamPath": "lib/internal/modules/esm/load.js",
+      "sha256": "b90d5b4b399fe9276f3e3d35b7980bd1e3b70c64ef0abaa969caec7e1ce94e19"
+    },
+    "attributes": {
+      "path": "upstream/esm-source/lib/internal/modules/esm/assert.js",
+      "upstreamPath": "lib/internal/modules/esm/assert.js",
+      "sha256": "7382916badbf1f3c9d67f5a05dc9a8a7aa5ba88fc0f2565173010efce735fe3e"
+    },
+    "dataURL": {
+      "path": "upstream/esm-source/lib/internal/data_url.js",
+      "upstreamPath": "lib/internal/data_url.js",
+      "sha256": "7288520251c17c83220b453f85528b88fa39d8948db01d1ee9ca4be87948e487"
+    },
+    "translators": {
+      "path": "upstream/esm-source/lib/internal/modules/esm/translators.js",
+      "upstreamPath": "lib/internal/modules/esm/translators.js",
+      "sha256": "79de8ef5b1747eac5d3714b88c1d1093134fb504a7596c51b69815fd0a8b08b1"
+    },
+    "helpers": {
+      "path": "upstream/esm-source/lib/internal/modules/helpers.js",
+      "upstreamPath": "lib/internal/modules/helpers.js",
+      "sha256": "553da1691f5bae87b339d94322456d57078d6a8a0ad2721faf7bd7ccbf2c0039"
+    },
+    "nativeLexer": {
+      "path": "upstream/esm-source/src/node_cjs_lexer.cc",
+      "upstreamPath": "src/node_cjs_lexer.cc",
+      "sha256": "f13494d341b745a3155a6153f7287b4362dad61e8e7bf353e4c626566651d14a"
+    },
+    "merveHeader": {
+      "path": "upstream/esm-source/deps/merve/merve.h",
+      "upstreamPath": "deps/merve/merve.h",
+      "sha256": "572c2ac6d81aac760f659b945756e7b3d02d1010e38f9ee7425e0830f8ce19bb"
+    },
+    "merveSource": {
+      "path": "upstream/esm-source/deps/merve/merve.cpp",
+      "upstreamPath": "deps/merve/merve.cpp",
+      "sha256": "d6aa8a639c60824ea52c0e0fabc6c0f9633f8cc14a7cf1ff92f5e171590a760d"
+    },
+    "merveLicense": {
+      "path": "upstream/esm-source/deps/merve/LICENSE-MIT",
+      "upstreamPath": "deps/merve/LICENSE-MIT",
+      "sha256": "cd7b1dbf8003a68f06d4fc84afa797d6e7a5d5d64b2ccd381485f711620dd60a"
+    }
+  }
+}

@@ -6904,3 +6904,7 @@ Source178 loads the complete pinned Domain algorithms on actual public module de
 ### Guest-local WASI ownership and explicit execution prerequisites
 
 Source179 reuses the complete pinned public WASI lifecycle and implements25real imports over actual current guest memory and POSIX descriptor/rights/clock/random/exit owners. The curated production adapter explicitly forwards its actual constructor; unchanged uvwasi wire C source is normally staged/compiled. Twenty-one imports remain absent, direct-Wasm unsigned conversion retains a strict28versus61nonpass, and the configured guest engine has no execution backend. Host-native components do not supply it or justify an exclusion. See [source scope](../tests/nodejs/outline/wasi-owner-integration.md).
+
+### Actual ESM source, identity and mock ownership
+
+Source180 shares synchronous resolve/load hooks and CLI-gated MockTracker with actual native fullURL/type registry/source/synthetic evaluation owners. Exact Node-vendored Merve supplies CJS names without executing during preparse; evaluation consumes prepared source through the real CJS owner. Static native request memoization retains the actual resolved record. A saved native exception explicitly survives failed cleanup; unsuccessful source retirement remains open. Imported lexer inputs remain at the real vendor boundary and normal checker rules are unchanged. Native bindings/GC/realm/worker/guest behavior remain uncompiled/unvalidated. See [scope](../tests/nodejs/outline/module-mocks-esm-source-integration.md).

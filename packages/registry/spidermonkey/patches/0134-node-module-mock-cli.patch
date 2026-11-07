@@ -1,0 +1,46 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -11480,6 +11480,7 @@
+   std::string diagnosticDir;
+   std::vector<std::string> disableWarnings;
+   bool testUpdateSnapshots = false;
++  bool experimentalTestModuleMocks = false;
+   bool experimentalStreamIter = false;
+   bool experimentalVmModules = false;
+   // The declared recipe links the actual SQLite backend (target HAVE_SQLITE).
+@@ -11553,6 +11554,10 @@
+     kandeloNodeCLI.experimentalVmModules = value;
+     return true;
+   }
++  if (name == "--experimental-test-module-mocks") {
++    kandeloNodeCLI.experimentalTestModuleMocks = value;
++    return true;
++  }
+   if (name == "--test-update-snapshots") {
+     kandeloNodeCLI.testUpdateSnapshots = value;
+     return true;
+@@ -11601,11 +11606,12 @@
+     for (size_t i = 0; i < envArgs.size(); ++i) {
+       const std::string arg = envArgs[i];
+       const auto optionName = KandeloNodeOptionName(arg);
+-      // Pinned node_options.cc marks snapshot rewriting CLI-only. Applying
+-      // boolean options before this admission check would enable writes from
+-      // a disallowed inherited environment option.
++      // Pinned node_options.cc marks snapshot rewriting and module mocking
++      // CLI-only. Admission must precede applying boolean option state.
+       if (optionName == "--test-update-snapshots" ||
+-          optionName == "--no-test-update-snapshots") {
++          optionName == "--no-test-update-snapshots" ||
++          optionName == "--experimental-test-module-mocks" ||
++          optionName == "--no-experimental-test-module-mocks") {
+         // Keep original spelling and the '=' marker like pinned original_name.
+         const auto equals = arg.find('=');
+         const auto originalName = equals == std::string::npos
+@@ -16622,6 +16628,7 @@
+         !KandeloDefineBooleanProperty(cx, cli, "zeroFillBuffers", gKandeloZeroFillBuffers, 0) ||
+         !KandeloDefineBooleanProperty(cx, cli, "noWarnings", kandeloNodeCLI.noWarnings, 0) ||
+         !KandeloDefineBooleanProperty(cx, cli, "testUpdateSnapshots", kandeloNodeCLI.testUpdateSnapshots, 0) ||
++        !KandeloDefineBooleanProperty(cx, cli, "experimentalTestModuleMocks", kandeloNodeCLI.experimentalTestModuleMocks, 0) ||
+         !KandeloDefineBooleanProperty(cx, cli, "experimentalStreamIter", kandeloNodeCLI.experimentalStreamIter, 0) ||
+         !KandeloDefineBooleanProperty(cx, cli, "experimentalVmModules", kandeloNodeCLI.experimentalVmModules, 0) ||
+         !KandeloDefineBooleanProperty(cx, cli, "experimentalSqlite", kandeloNodeCLI.experimentalSqlite, 0) ||

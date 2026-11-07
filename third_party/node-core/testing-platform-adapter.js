@@ -18,7 +18,9 @@ function _createNodeTestingPlatform(platform) {
     const { getDeprecationWarningEmitter } = platform.values.util;
     /* NODE_TEST_DEPRECATE_PROPERTY */
     const helpers = { ...platform.values.util, deprecateProperty,
-        getStructuredStack: () => unavailable('structured caller stacks/module mocking') };
+        getStructuredStack: function getStructuredStack() {
+            return platform.getStructuredStack();
+        } };
     const bindings = new SafeMap([
         ['internal/errors', platform.values.errors],
         ['internal/util', helpers],
@@ -36,8 +38,8 @@ function _createNodeTestingPlatform(platform) {
         ['internal/options', { getOptionValue: platform.getOptionValue }],
         ['internal/url', platform.url],
         ['internal/modules/cjs/loader', { Module: platform.Module }],
-        ['internal/modules/esm/loader', { getOrInitializeCascadedLoader: () => unavailable('module mock ESM loader') }],
-        ['internal/modules/customization_hooks', { registerHooks: () => unavailable('module mock loader hooks') }],
+        ['internal/modules/esm/loader', { getOrInitializeCascadedLoader: platform.getModuleResolver }],
+        ['internal/modules/customization_hooks', { registerHooks: platform.Module.registerHooks }],
         ['internal/process/task_queues', { queueMicrotask: platform.queueMicrotask }],
         ['process', process], ['assert', platform.assert], ['path', platform.path], ['fs', platform.fs],
         ['os', platform.os], ['events', platform.events], ['async_hooks', platform.async],

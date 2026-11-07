@@ -4,6 +4,15 @@ inputs = [
   "packages/registry/spidermonkey/patches/0131-node-vm-execution-deadlines.patch",
   "packages/registry/spidermonkey/patches/0132-node-domain-callback-owner.patch",
   "packages/registry/spidermonkey/patches/0133-node-wasi-context-owner.patch",
+  "packages/registry/spidermonkey/patches/0134-node-module-mock-cli.patch",
+  "packages/registry/spidermonkey/patches/0135-node-esm-source-graph.patch",
+  "third_party/node-core/module-sync-resolver-adapter.js",
+  "third_party/node-core/module-sync-resolver-sources.json",
+  "third_party/node-core/upstream/sync-module-resolver",
+  "third_party/node-core/esm-load-platform-adapter.js",
+  "third_party/node-core/esm-source-sources.json",
+  "third_party/node-core/esm-graph-platform-adapter.js",
+  "third_party/node-core/upstream/esm-source",
   "third_party/node-core/wasi-sources.json",
   "third_party/node-core/wasi-owner.md",
   "third_party/node-core/wasi-platform-adapter.js",
@@ -638,4 +647,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 179
+revision = 180

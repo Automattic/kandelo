@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source180 integrates real mock/hook and generic fullURL/source/native synthetic/CJS-preparse ownership.8whole-upstream executions,21selected mock tests per subject,6loader/7mock semantic groups, lifecycle controls,14CLI and25lexer comparisons plus14package checks pass. ProductionSM/guest/fourhost remain uncompiled.
+See [source scope](module-mocks-esm-source-integration.md).
+
 Source179 integrates real bounded WASI ownership and actual production constructor forwarding.34public groups per native/component subject and4adapter groups pass; strict directWasm28vs61nonpass remains.21imports/guestbackend/JSAPI/fourhost remain open.
 See [source scope](wasi-owner-integration.md).
 

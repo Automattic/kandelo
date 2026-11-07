@@ -54193,7 +54193,1146 @@ module.exports = {
     return { get format() { return require('internal/modules/esm/get_format'); },
         get resolver() { return require('internal/modules/esm/resolve'); },
         get maps() { return require('internal/modules/package_map'); },
-        getCjsConditions, getCjsConditionsArray, getConditionsSet, getLazy };
+        getCjsConditions, getCjsConditionsArray, getConditionsSet, getDefaultConditions, getLazy, getOptionValue };
+}
+
+// Unchanged default source/format/import-attribute loading over actual fs,
+// URL, MIME, encoding and shared synchronous hook owners. No worker is emulated.
+function _createNodeESMLoadPlatform(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { SafeMap, ObjectPrototypeHasOwnProperty } = primordials;
+    const factories = { 'internal/modules/esm/load': function(module, exports, require, primordials) {
+'use strict';
+
+const {
+  RegExpPrototypeExec,
+} = primordials;
+const {
+  kEmptyObject,
+} = require('internal/util');
+
+const { defaultGetFormat } = require('internal/modules/esm/get_format');
+const { validateAttributes, emitImportAssertionWarning } = require('internal/modules/esm/assert');
+const { loaderMethods } = require('internal/modules/helpers');
+
+const { Buffer: { from: BufferFrom } } = require('buffer');
+
+const { URL } = require('internal/url');
+const {
+  ERR_INVALID_URL,
+  ERR_UNKNOWN_MODULE_FORMAT,
+  ERR_UNSUPPORTED_ESM_URL_SCHEME,
+} = require('internal/errors').codes;
+
+
+/**
+ * @param {URL} url URL to the module
+ * @param {LoadContext} context used to decorate error messages
+ * @returns {{ responseURL: string, source: string | BufferView }}
+ */
+function getSourceSync(url, context) {
+  const { protocol, href } = url;
+  const responseURL = href;
+  let source;
+  if (protocol === 'file:') {
+    // If you are reading this code to figure out how to patch Node.js module loading
+    // behavior - DO NOT depend on the patchability in new code: Node.js
+    // internals may stop going through the JavaScript fs module entirely.
+    // Prefer module.registerHooks() or other more formal fs hooks released in the future.
+    source = loaderMethods.readFileSync(url);
+  } else if (protocol === 'data:') {
+    const { dataURLProcessor } = require('internal/data_url');  // Only for data: URLs.
+    const result = dataURLProcessor(url);
+    if (result === 'failure') {
+      throw new ERR_INVALID_URL(responseURL);
+    }
+    source = BufferFrom(result.body);
+  } else {
+    const supportedSchemes = ['file', 'data'];
+    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(url, supportedSchemes);
+  }
+  return { __proto__: null, responseURL, source };
+}
+
+
+/**
+ * Node.js default load hook.
+ * @param {string} url
+ * @param {LoadContext} context
+ * @returns {LoadReturn}
+ */
+function defaultLoad(url, context = kEmptyObject) {
+  let responseURL = url;
+  let {
+    importAttributes,
+    format,
+    source,
+  } = context;
+
+  if (importAttributes == null && !('importAttributes' in context) && 'importAssertions' in context) {
+    emitImportAssertionWarning();
+    importAttributes = context.importAssertions;
+    // Alias `importAssertions` to `importAttributes`
+    context = {
+      ...context,
+      importAttributes,
+    };
+  }
+
+  const urlInstance = new URL(url);
+
+  throwIfUnsupportedURLScheme(urlInstance);
+
+  if (urlInstance.protocol === 'node:') {
+    source = null;
+    format ??= 'builtin';
+  } else if (format === 'addon') {
+    // Skip loading addon file content. It must be loaded with dlopen from file system.
+    source = null;
+  } else if (format !== 'commonjs') {
+    if (source == null) {
+      ({ responseURL, source } = getSourceSync(urlInstance, context));
+      context = { __proto__: context, source };
+    }
+
+    if (format == null) {
+      // Now that we have the source for the module, run `defaultGetFormat` to detect its format.
+      format = defaultGetFormat(urlInstance, context);
+
+      if (format === 'commonjs') {
+        // For backward compatibility reasons, we need to discard the source in
+        // order for the CJS loader to re-fetch it.
+        source = null;
+      }
+    }
+  }
+
+  validateAttributes(url, format, importAttributes);
+
+  return {
+    __proto__: null,
+    format,
+    responseURL,
+    source,
+  };
+}
+/**
+ * @typedef LoadContext
+ * @property {string} [format] A hint (possibly returned from `resolve`)
+ * @property {string | Buffer | ArrayBuffer} [source] source
+ * @property {Record<string, string>} [importAttributes] import attributes
+ */
+
+/**
+ * @typedef LoadReturn
+ * @property {string} format format
+ * @property {URL['href']} responseURL The module's fully resolved URL
+ * @property {Buffer} source source
+ */
+
+/**
+ * @param {URL['href']} url
+ * @param {LoadContext} [context]
+ * @returns {LoadReturn}
+ */
+function defaultLoadSync(url, context = kEmptyObject) {
+  let responseURL = url;
+  const { importAttributes } = context;
+  let {
+    format,
+    source,
+  } = context;
+
+  const urlInstance = new URL(url);
+
+  throwIfUnsupportedURLScheme(urlInstance, false);
+
+  if (urlInstance.protocol === 'node:') {
+    source = null;
+    format ??= 'builtin';
+  } else if (format === 'addon') {
+    // Skip loading addon file content. It must be loaded with dlopen from file system.
+    source = null;
+  } else {
+    if (source == null) {
+      ({ responseURL, source } = getSourceSync(urlInstance, context));
+      context = { __proto__: context, source };
+    }
+
+    // Now that we have the source for the module, run `defaultGetFormat` to detect its format.
+    format ??= defaultGetFormat(urlInstance, context);
+  }
+  validateAttributes(url, format, importAttributes);
+
+  return {
+    __proto__: null,
+    format,
+    responseURL,
+    source,
+  };
+}
+
+
+/**
+ * throws an error if the protocol is not one of the protocols
+ * that can be loaded in the default loader
+ * @param {URL} parsed
+ */
+function throwIfUnsupportedURLScheme(parsed) {
+  // Avoid accessing the `protocol` property due to the lazy getters.
+  const protocol = parsed?.protocol;
+  if (
+    protocol &&
+    protocol !== 'file:' &&
+    protocol !== 'data:' &&
+    protocol !== 'node:' &&
+    (
+      protocol !== 'https:' &&
+      protocol !== 'http:'
+    )
+  ) {
+    const schemes = ['file', 'data', 'node'];
+    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);
+  }
+}
+
+/**
+ * For a falsy `format` returned from `load`, throw an error.
+ * This could happen from either a custom user loader _or_ from the default loader, because the default loader tries to
+ * determine formats for data URLs.
+ * @param {string} url The resolved URL of the module
+ * @param {(null|undefined|false|0|'')} format Falsy format returned from `load`
+ */
+function throwUnknownModuleFormat(url, format) {
+  const dataUrl = RegExpPrototypeExec(
+    /^data:([^/]+\/[^;,]+)(?:;[^,]*)?,/,
+    url,
+  );
+
+  throw new ERR_UNKNOWN_MODULE_FORMAT(
+    dataUrl ? dataUrl[1] : format,
+    url);
+}
+
+
+module.exports = {
+  defaultLoad,
+  defaultLoadSync,
+  getSourceSync,
+  throwUnknownModuleFormat,
+};
+
+},
+'internal/modules/esm/assert': function(module, exports, require, primordials) {
+'use strict';
+
+const {
+  ArrayPrototypeFilter,
+  ArrayPrototypeIncludes,
+  ArrayPrototypePush,
+  ObjectKeys,
+  ObjectPrototypeHasOwnProperty,
+  ObjectValues,
+} = primordials;
+const { validateString } = require('internal/validators');
+const { getOptionValue } = require('internal/options');
+
+const {
+  ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE,
+  ERR_IMPORT_ATTRIBUTE_MISSING,
+  ERR_IMPORT_ATTRIBUTE_UNSUPPORTED,
+} = require('internal/errors').codes;
+
+// The HTML spec has an implied default type of `'javascript'`.
+const kImplicitTypeAttribute = 'javascript';
+
+/**
+ * Define a map of module formats to import attributes types (the value of
+ * `type` in `with { type: 'json' }`).
+ * @type {Map<string, string>}
+ */
+const formatTypeMap = {
+  '__proto__': null,
+  'builtin': kImplicitTypeAttribute,
+  'commonjs': kImplicitTypeAttribute,
+  'json': 'json',
+  'module': kImplicitTypeAttribute,
+  'wasm': kImplicitTypeAttribute, // It's unclear whether the HTML spec will require an type attribute or not for Wasm; see https://github.com/WebAssembly/esm-integration/issues/42
+};
+// NOTE: Don't add bytes support yet as it requires Uint8Arrays backed by immutable ArrayBuffers,
+// which V8 does not support yet.
+// see: https://github.com/nodejs/node/pull/62300#issuecomment-4079163816
+
+
+/**
+ * The HTML spec disallows the default type to be explicitly specified
+ * (for now); so `import './file.js'` is okay but
+ * `import './file.js' with { type: 'javascript' }` throws.
+ * @type {Array<string, string>}
+ */
+const supportedTypeAttributes = ArrayPrototypeFilter(
+  ObjectValues(formatTypeMap),
+  (type) => type !== kImplicitTypeAttribute);
+
+let importAttributesInitialized = false;
+
+function initializeImportAttributes() {
+  if (importAttributesInitialized) {
+    return;
+  }
+
+  importAttributesInitialized = true;
+
+  if (getOptionValue('--experimental-import-text')) {
+    formatTypeMap.text = 'text';
+    ArrayPrototypePush(supportedTypeAttributes, 'text');
+  }
+}
+
+/**
+ * Test a module's import attributes.
+ * @param {string} url The URL of the imported module, for error reporting.
+ * @param {string} format One of Node's supported translators
+ * @param {Record<string, string>} importAttributes Validations for the
+ *   module import.
+ * @returns {true}
+ * @throws {TypeError} If the format and type attribute are incompatible.
+ */
+function validateAttributes(url, format,
+                            importAttributes = { __proto__: null }) {
+  initializeImportAttributes();
+
+  const keys = ObjectKeys(importAttributes);
+  for (let i = 0; i < keys.length; i++) {
+    if (keys[i] !== 'type') {
+      throw new ERR_IMPORT_ATTRIBUTE_UNSUPPORTED(keys[i], importAttributes[keys[i]], url);
+    }
+  }
+  const validType = formatTypeMap[format];
+
+  switch (validType) {
+    case undefined:
+      // Ignore attributes for module formats we don't recognize, to allow new
+      // formats in the future.
+      return true;
+
+    case kImplicitTypeAttribute:
+      // This format doesn't allow an import type attribute, so the property
+      // must not be set on the import attributes object.
+      if (!ObjectPrototypeHasOwnProperty(importAttributes, 'type')) {
+        return true;
+      }
+      return handleInvalidType(url, importAttributes.type);
+
+    case importAttributes.type:
+      // The type attribute is the valid type for this format.
+      return true;
+
+    default:
+      // There is an expected type for this format, but the value of
+      // `importAttributes.type` might not have been it.
+      if (!ObjectPrototypeHasOwnProperty(importAttributes, 'type')) {
+        // `type` wasn't specified at all.
+        throw new ERR_IMPORT_ATTRIBUTE_MISSING(url, 'type', validType);
+      }
+      return handleInvalidType(url, importAttributes.type);
+  }
+}
+
+/**
+ * Throw the correct error depending on what's wrong with the type attribute.
+ * @param {string} url The resolved URL for the module to be imported
+ * @param {string} type The value of the import attributes' `type` property
+ */
+function handleInvalidType(url, type) {
+  // `type` might have not been a string.
+  validateString(type, 'type');
+
+  // `type` might not have been one of the types we understand.
+  if (!ArrayPrototypeIncludes(supportedTypeAttributes, type)) {
+    throw new ERR_IMPORT_ATTRIBUTE_UNSUPPORTED('type', type, url);
+  }
+
+  // `type` was the wrong value for this format.
+  throw new ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE(url, type);
+}
+
+
+module.exports = {
+  kImplicitTypeAttribute,
+  validateAttributes,
+};
+
+},
+'internal/data_url': function(module, exports, require, primordials) {
+'use strict';
+
+const {
+  RegExpPrototypeExec,
+  RegExpPrototypeSymbolReplace,
+  StringFromCharCodeApply,
+  StringPrototypeCharCodeAt,
+  StringPrototypeIndexOf,
+  StringPrototypeSlice,
+  TypedArrayPrototypeSubarray,
+  Uint8Array,
+} = primordials;
+
+const assert = require('internal/assert');
+const { Buffer } = require('buffer');
+const { MIMEType } = require('internal/mime');
+
+let encoder;
+function lazyEncoder() {
+  if (encoder === undefined) {
+    const { TextEncoder } = require('internal/encoding');
+    encoder = new TextEncoder();
+  }
+
+  return encoder;
+}
+
+const ASCII_WHITESPACE_REPLACE_REGEX = /[\u0009\u000A\u000C\u000D\u0020]/g // eslint-disable-line
+
+// https://fetch.spec.whatwg.org/#data-url-processor
+/**
+ * @param {URL} dataURL
+ * @returns {object|'failure'}
+ */
+function dataURLProcessor(dataURL) {
+  // 1. Assert: dataURL's scheme is "data".
+  assert(dataURL.protocol === 'data:');
+
+  // 2. Let input be the result of running the URL
+  // serializer on dataURL with exclude fragment
+  // set to true.
+  let input = URLSerializer(dataURL, true);
+
+  // 3. Remove the leading "data:" string from input.
+  input = StringPrototypeSlice(input, 5);
+
+  // 4. Let position point at the start of input.
+  const position = { position: 0 };
+
+  // 5. Let mimeType be the result of collecting a
+  // sequence of code points that are not equal
+  // to U+002C (,), given position.
+  let mimeType = collectASequenceOfCodePointsFast(
+    ',',
+    input,
+    position,
+  );
+
+  // 6. Strip leading and trailing ASCII whitespace
+  // from mimeType.
+  // Undici implementation note: we need to store the
+  // length because if the mimetype has spaces removed,
+  // the wrong amount will be sliced from the input in
+  // step #9
+  const mimeTypeLength = mimeType.length;
+  mimeType = removeASCIIWhitespace(mimeType, true, true);
+
+  // 7. If position is past the end of input, then
+  // return failure
+  if (position.position >= input.length) {
+    return 'failure';
+  }
+
+  // 8. Advance position by 1.
+  position.position++;
+
+  // 9. Let encodedBody be the remainder of input.
+  const encodedBody = StringPrototypeSlice(input, mimeTypeLength + 1);
+
+  // 10. Let body be the percent-decoding of encodedBody.
+  let body = stringPercentDecode(encodedBody);
+
+  // 11. If mimeType ends with U+003B (;), followed by
+  // zero or more U+0020 SPACE, followed by an ASCII
+  // case-insensitive match for "base64", then:
+  if (RegExpPrototypeExec(/;(\u0020){0,}base64$/i, mimeType) !== null) {
+    // 1. Let stringBody be the isomorphic decode of body.
+    const stringBody = isomorphicDecode(body);
+
+    // 2. Set body to the forgiving-base64 decode of
+    // stringBody.
+    body = forgivingBase64(stringBody);
+
+    // 3. If body is failure, then return failure.
+    if (body === 'failure') {
+      return 'failure';
+    }
+
+    // 4. Remove the last 6 code points from mimeType.
+    mimeType = StringPrototypeSlice(mimeType, 0, -6);
+
+    // 5. Remove trailing U+0020 SPACE code points from mimeType,
+    // if any.
+    mimeType = RegExpPrototypeSymbolReplace(/(\u0020)+$/, mimeType, '');
+
+    // 6. Remove the last U+003B (;) code point from mimeType.
+    mimeType = StringPrototypeSlice(mimeType, 0, -1);
+  }
+
+  // 12. If mimeType starts with U+003B (;), then prepend
+  // "text/plain" to mimeType.
+  if (mimeType[0] === ';') {
+    mimeType = 'text/plain' + mimeType;
+  }
+
+  // 13. Let mimeTypeRecord be the result of parsing
+  // mimeType.
+  // 14. If mimeTypeRecord is failure, then set
+  // mimeTypeRecord to text/plain;charset=US-ASCII.
+  const mimeTypeRecord = MIMEType.parse(mimeType) ||
+      new MIMEType('text/plain;charset=US-ASCII');
+
+  // 15. Return a new data: URL struct whose MIME
+  // type is mimeTypeRecord and body is body.
+  // https://fetch.spec.whatwg.org/#data-url-struct
+  return { mimeType: mimeTypeRecord, body };
+}
+
+// https://url.spec.whatwg.org/#concept-url-serializer
+/**
+ * @param {URL} url
+ * @param {boolean} excludeFragment
+ * @returns {string}
+ */
+function URLSerializer(url, excludeFragment = false) {
+  const { href } = url;
+
+  if (!excludeFragment) {
+    return href;
+  }
+
+  const hashLength = url.hash.length;
+  const serialized = hashLength === 0 ? href : StringPrototypeSlice(href, 0, href.length - hashLength);
+
+  if (!hashLength && href[href.length - 1] === '#') {
+    return StringPrototypeSlice(serialized, 0, -1);
+  }
+
+  return serialized;
+}
+
+/**
+ * A faster collectASequenceOfCodePoints that only works when comparing a single character.
+ * @param {string} char
+ * @param {string} input
+ * @param {{ position: number }} position
+ * @returns {string}
+ */
+function collectASequenceOfCodePointsFast(char, input, position) {
+  const idx = StringPrototypeIndexOf(input, char, position.position);
+  const start = position.position;
+
+  if (idx === -1) {
+    position.position = input.length;
+    return StringPrototypeSlice(input, start);
+  }
+
+  position.position = idx;
+  return StringPrototypeSlice(input, start, position.position);
+}
+
+// https://url.spec.whatwg.org/#string-percent-decode
+/**
+ * @param {string} input
+ * @returns {Uint8Array}
+ */
+function stringPercentDecode(input) {
+  // 1. Let bytes be the UTF-8 encoding of input.
+  const bytes = lazyEncoder().encode(input);
+
+  // 2. Return the percent-decoding of bytes.
+  return percentDecode(bytes);
+}
+
+/**
+ * @param {number} byte
+ * @returns {boolean}
+ */
+function isHexCharByte(byte) {
+  // 0-9 A-F a-f
+  return (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x46) || (byte >= 0x61 && byte <= 0x66);
+}
+
+/**
+ * @param {number} byte
+ * @returns {number}
+ */
+function hexByteToNumber(byte) {
+  return (
+    // 0-9
+    byte >= 0x30 && byte <= 0x39 ?
+      (byte - 48) :
+    // Convert to uppercase
+    // ((byte & 0xDF) - 65) + 10
+      ((byte & 0xDF) - 55)
+  );
+}
+
+// https://url.spec.whatwg.org/#percent-decode
+/**
+ * @param {Uint8Array} input
+ * @returns {Uint8Array}
+ */
+function percentDecode(input) {
+  const length = input.length;
+  // 1. Let output be an empty byte sequence.
+  /** @type {Uint8Array} */
+  const output = new Uint8Array(length);
+  let j = 0;
+  // 2. For each byte byte in input:
+  for (let i = 0; i < length; ++i) {
+    const byte = input[i];
+
+    // 1. If byte is not 0x25 (%), then append byte to output.
+    if (byte !== 0x25) {
+      output[j++] = byte;
+
+    // 2. Otherwise, if byte is 0x25 (%) and the next two bytes
+    // after byte in input are not in the ranges
+    // 0x30 (0) to 0x39 (9), 0x41 (A) to 0x46 (F),
+    // and 0x61 (a) to 0x66 (f), all inclusive, append byte
+    // to output.
+    } else if (
+      byte === 0x25 &&
+      !(isHexCharByte(input[i + 1]) && isHexCharByte(input[i + 2]))
+    ) {
+      output[j++] = 0x25;
+
+    // 3. Otherwise:
+    } else {
+      // 1. Let bytePoint be the two bytes after byte in input,
+      // decoded, and then interpreted as hexadecimal number.
+      // 2. Append a byte whose value is bytePoint to output.
+      output[j++] = (hexByteToNumber(input[i + 1]) << 4) | hexByteToNumber(input[i + 2]);
+
+      // 3. Skip the next two bytes in input.
+      i += 2;
+    }
+  }
+
+  // 3. Return output.
+  return length === j ? output : TypedArrayPrototypeSubarray(output, 0, j);
+}
+
+// https://infra.spec.whatwg.org/#forgiving-base64-decode
+/**
+ * @param {string} data
+ * @returns {object|'failure'}
+ */
+function forgivingBase64(data) {
+  // 1. Remove all ASCII whitespace from data.
+  data = RegExpPrototypeSymbolReplace(ASCII_WHITESPACE_REPLACE_REGEX, data, '');
+
+  let dataLength = data.length;
+  // 2. If data's code point length divides by 4 leaving
+  // no remainder, then:
+  if (dataLength % 4 === 0) {
+    // 1. If data ends with one or two U+003D (=) code points,
+    // then remove them from data.
+    if (data[dataLength - 1] === '=') {
+      --dataLength;
+      if (data[dataLength - 1] === '=') {
+        --dataLength;
+      }
+    }
+  }
+
+  // 3. If data's code point length divides by 4 leaving
+  // a remainder of 1, then return failure.
+  if (dataLength % 4 === 1) {
+    return 'failure';
+  }
+
+  // 4. If data contains a code point that is not one of
+  //  U+002B (+)
+  //  U+002F (/)
+  //  ASCII alphanumeric
+  // then return failure.
+  if (RegExpPrototypeExec(/[^+/0-9A-Za-z]/, data.length === dataLength ? data : StringPrototypeSlice(data, 0, dataLength)) !== null) {
+    return 'failure';
+  }
+
+  const buffer = Buffer.from(data, 'base64');
+  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+}
+
+/**
+ * @see https://infra.spec.whatwg.org/#ascii-whitespace
+ * @param {number} char
+ * @returns {boolean}
+ */
+function isASCIIWhitespace(char) {
+  // "\r\n\t\f "
+  return char === 0x00d || char === 0x00a || char === 0x009 || char === 0x00c || char === 0x020;
+}
+
+/**
+ * @see https://infra.spec.whatwg.org/#strip-leading-and-trailing-ascii-whitespace
+ * @param {string} str
+ * @param {boolean} [leading]
+ * @param {boolean} [trailing]
+ * @returns {string}
+ */
+function removeASCIIWhitespace(str, leading = true, trailing = true) {
+  return removeChars(str, leading, trailing, isASCIIWhitespace);
+}
+
+/**
+ * @param {string} str
+ * @param {boolean} leading
+ * @param {boolean} trailing
+ * @param {(charCode: number) => boolean} predicate
+ * @returns {string}
+ */
+function removeChars(str, leading, trailing, predicate) {
+  let lead = 0;
+  let trail = str.length - 1;
+
+  if (leading) {
+    while (lead < str.length && predicate(StringPrototypeCharCodeAt(str, lead))) lead++;
+  }
+
+  if (trailing) {
+    while (trail > 0 && predicate(StringPrototypeCharCodeAt(str, trail))) trail--;
+  }
+
+  return lead === 0 && trail === str.length - 1 ? str : StringPrototypeSlice(str, lead, trail + 1);
+}
+
+/**
+ * @see https://infra.spec.whatwg.org/#isomorphic-decode
+ * @param {Uint8Array} input
+ * @returns {string}
+ */
+function isomorphicDecode(input) {
+  // 1. To isomorphic decode a byte sequence input, return a string whose code point
+  //    length is equal to input's length and whose code points have the same values
+  //    as the values of input's bytes, in the same order.
+  const length = input.length;
+  if ((2 << 15) - 1 > length) {
+    return StringFromCharCodeApply(input);
+  }
+  let result = ''; let i = 0;
+  let addition = (2 << 15) - 1;
+  while (i < length) {
+    if (i + addition > length) {
+      addition = length - i;
+    }
+    result += StringFromCharCodeApply(TypedArrayPrototypeSubarray(input, i, i += addition));
+  }
+  return result;
+}
+
+module.exports = {
+  dataURLProcessor,
+  percentDecode,
+};
+
+} };
+    const modules = new SafeMap();
+    function require(name) {
+        if (modules.has(name)) return modules.get(name).exports;
+        if (name === 'internal/modules/esm/get_format') return platform.policy.format;
+        if (name === 'internal/modules/helpers') return { loaderMethods: { readFileSync: platform.readBuffer } };
+        if (name === 'internal/url') return platform.url;
+        if (name === 'internal/options') return { getOptionValue: platform.getOptionValue };
+        if (name === 'internal/mime') return platform.getMIME();
+        if (name === 'internal/encoding') return { TextEncoder: platform.TextEncoder };
+        if (name === 'buffer') return { Buffer: platform.Buffer };
+        if (ObjectPrototypeHasOwnProperty(factories, name)) {
+            const module = { exports: {} }; modules.set(name, module);
+            try { factories[name](module, module.exports, require, primordials); }
+            catch (error) { modules.delete(name); throw error; }
+            return module.exports;
+        }
+        return platform.values.require(name);
+    }
+    return require('internal/modules/esm/load');
+}
+
+// Real synchronous import-goal resolution/cache/hooks. Source execution and
+// asynchronous loader workers remain separate owners, not supplied by this API.
+function _createNodeModuleSyncResolver(platform) {
+    'use strict';
+    const { ArrayPrototypeJoin, ArrayPrototypeMap, ArrayPrototypeSort, JSONStringify,
+        ObjectKeys, SafeMap } = _createNodePrimordials();
+    const { kEmptyObject } = platform.values.util;
+    const { getDefaultConditions } = platform.policy;
+    const { defaultResolve } = platform.policy.resolver;
+    const { resolveHooks: syncResolveHooks, resolveWithHooks: resolveWithSyncHooks,
+        loadHooks: syncLoadHooks, loadWithHooks: loadWithSyncHooks, validateLoadSloppy } = platform.hooks;
+    const { defaultLoadSync, throwUnknownModuleFormat } = platform.load;
+    class ResolveCache extends SafeMap {
+  /**
+   * Generates the internal serialized cache key and returns it along the actual cache object.
+   *
+   * It is exposed to allow more efficient read and overwrite a cache entry.
+   * @param {string} specifier
+   * @param {Record<string,string>} importAttributes
+   * @returns {string}
+   */
+  serializeKey(specifier, importAttributes) {
+    // To serialize the ModuleRequest (specifier + list of import attributes),
+    // we need to sort the attributes by key, then stringifying,
+    // so that different import statements with the same attributes are always treated
+    // as identical.
+    const keys = ObjectKeys(importAttributes);
+
+    if (keys.length === 0) {
+      return specifier + '::';
+    }
+
+    return specifier + '::' + ArrayPrototypeJoin(
+      ArrayPrototypeMap(
+        ArrayPrototypeSort(keys),
+        (key) => JSONStringify(key) + JSONStringify(importAttributes[key])),
+      ',');
+  }
+
+  #getModuleCachedImports(parentURL) {
+    let internalCache = super.get(parentURL);
+    if (internalCache == null) {
+      super.set(parentURL, internalCache = { __proto__: null });
+    }
+    return internalCache;
+  }
+
+  /**
+   * @param {string} serializedKey
+   * @param {string} parentURL
+   * @returns {import('./loader').ModuleExports | Promise<import('./loader').ModuleExports>}
+   */
+  get(serializedKey, parentURL) {
+    return this.#getModuleCachedImports(parentURL)[serializedKey];
+  }
+
+  /**
+   * @param {string} serializedKey
+   * @param {string} parentURL
+   * @param {{ format: string, url: URL['href'] }} result
+   * @returns {ResolveCache}
+   */
+  set(serializedKey, parentURL, result) {
+    this.#getModuleCachedImports(parentURL)[serializedKey] = result;
+    return this;
+  }
+
+  /**
+   * @param {string} serializedKey
+   * @param {URL|string} parentURL
+   * @returns {boolean}
+   */
+  has(serializedKey, parentURL) {
+    return serializedKey in this.#getModuleCachedImports(parentURL);
+  }
+}
+
+    class ModuleSyncResolver {
+        #defaultConditions = getDefaultConditions();
+        #resolveCache = new ResolveCache();
+        // module.register() remains unavailable, so no async worker is created
+        // or impersonated. The unchanged synchronous algorithms still own all
+        // real default/cache/customization-hook resolution below.
+        #asyncLoaderHooks;
+          #cachedDefaultResolve(specifier, context) {
+    const { parentURL, importAttributes } = context;
+    const requestKey = this.#resolveCache.serializeKey(specifier, importAttributes);
+    const cachedResult = this.#resolveCache.get(requestKey, parentURL);
+    if (cachedResult != null) {
+      return cachedResult;
+    }
+
+    const result = defaultResolve(specifier, context);
+    this.#resolveCache.set(requestKey, parentURL, result);
+    return result;
+  }
+
+          #resolveAndMaybeBlockOnLoaderThread(out, specifier, context) {
+    if (this.#asyncLoaderHooks?.resolveSync) {
+      return this.#asyncLoaderHooks.resolveSync(specifier, context.parentURL, context.importAttributes);
+    }
+    out.isResolvedByDefaultResolve = true;
+    return this.#cachedDefaultResolve(specifier, context);
+  }
+
+          resolveSync(parentURL, request, shouldSkipSyncHooks = false) {
+    const specifier = `${request.specifier}`;
+    const importAttributes = request.attributes ?? kEmptyObject;
+    // Use an output parameter to track the state and avoid polluting the user-visible resolve results.
+    const out = { isResolvedByDefaultResolve: false, __proto__: null };
+
+    let result;
+    let isResolvedBySyncHooks = false;
+    if (!shouldSkipSyncHooks && syncResolveHooks.length) {
+      // Has module.registerHooks() hooks, chain the asynchronous hooks in the default step.
+      result = resolveWithSyncHooks(specifier, parentURL, importAttributes, this.#defaultConditions,
+                                    this.#resolveAndMaybeBlockOnLoaderThread.bind(this, out));
+      // If the default step ran, sync hooks did not short-circuit the resolution.
+      isResolvedBySyncHooks = !out.isResolvedByDefaultResolve;
+    } else {
+      const context = {
+        ...request,
+        conditions: this.#defaultConditions,
+        parentURL,
+        importAttributes,
+        __proto__: null,
+      };
+      result = this.#resolveAndMaybeBlockOnLoaderThread(out, specifier, context);
+    }
+    result.isResolvedBySyncHooks = isResolvedBySyncHooks;
+    return result;
+  }
+
+          load(url, context) {
+    if (this.isForAsyncLoaderHookWorker) {
+      // TODO(joyeecheung): invoke the synchronous hooks in the default step on loader thread.
+      return this.#asyncLoaderHooks.load(url, context);
+    }
+    return this.#loadSync(url, context);
+  }
+          #loadAndMaybeBlockOnLoaderThread(out, url, context) {
+    if (this.#asyncLoaderHooks?.loadSync) {
+      out.isSourceLoadedSynchronously = false;
+      return this.#asyncLoaderHooks.loadSync(url, context);
+    }
+    out.isSourceLoadedSynchronously = true;
+    return defaultLoadSync(url, context);
+  }
+          #loadSync(url, context) {
+    // Use an output parameter to track the state and avoid polluting the user-visible resolve results.
+    const out = {
+      isSourceLoadedSynchronously: true,
+      __proto__: null,
+    };
+    let result;
+    if (syncLoadHooks.length) {
+      // Has module.registerHooks() hooks, chain the asynchronous hooks in the default step.
+      // TODO(joyeecheung): construct the ModuleLoadContext in the loaders directly instead
+      // of converting them from plain objects in the hooks.
+      result = loadWithSyncHooks(
+        url,
+        context.format,
+        context.importAttributes,
+        this.#defaultConditions,
+        this.#loadAndMaybeBlockOnLoaderThread.bind(this, out),
+        validateLoadSloppy,
+      );
+    } else {
+      result = this.#loadAndMaybeBlockOnLoaderThread(out, url, context);
+    }
+    result.isSourceLoadedSynchronously = out.isSourceLoadedSynchronously;
+    return result;
+  }
+          validateLoadResult(url, format) {
+    if (format == null) {
+      throwUnknownModuleFormat(url, format);
+    }
+  }
+    }
+    return new ModuleSyncResolver();
+}
+
+// Real URL/type/source transactions consumed by the native module registry.
+// Source text, native synthetic exports and CJS records keep their own owners.
+function _createNodeESMGraphPlatform(platform) {
+    'use strict';
+    const P = _createNodePrimordials();
+    const { SafeMap, SafeSet, SafeWeakMap, ArrayPrototypePush, ArrayPrototypeIncludes, ObjectKeys,
+        ObjectPrototypeHasOwnProperty, JSONStringify, StringPrototypeStartsWith,
+        StringPrototypeIncludes, StringPrototypeSlice } = P;
+    const { validateString } = platform.values.validators;
+    const { ERR_INVALID_STATE, ERR_UNKNOWN_BUILTIN_MODULE, ERR_UNKNOWN_MODULE_FORMAT,
+        ERR_METHOD_NOT_IMPLEMENTED, ERR_INVALID_RETURN_PROPERTY_VALUE } = platform.values.errors.codes;
+    const { Module } = platform.records;
+    const resolutions = new SafeMap(), sources = new SafeMap();
+    const cjsNames = new SafeWeakMap();
+    const empty = platform.values.util.kEmptyObject;
+    const { URL, pathToFileURL, fileURLToPath } = platform.url;
+    const URLParse = P.FunctionPrototypeBind(URL.parse, URL);
+    function canonical(value) {
+        validateString(value, 'url');
+        // Paths enter from CJS require(esm)/file mains; resolved imports already
+        // have genuine absolute URLs. Never use a filesystem path as URL identity.
+        const parsed = URLParse(value);
+        return parsed === null ? pathToFileURL(value).href : value;
+    }
+    function key(url, attributes = empty) {
+        const type = attributes.type === undefined ? 'javascript' : attributes.type;
+        validateString(type, 'type');
+        return JSONStringify([url, type]);
+    }
+    function resolve(specifier, parent, attributes = empty, resolveOnly = false) {
+        const parentURL = typeof parent === 'string' && parent.length > 0 ? canonical(parent) : undefined;
+        const result = platform.records.getModuleResolver().resolveSync(parentURL,
+            { __proto__: null, specifier, attributes });
+        if (resolveOnly) return result.url;
+        resolutions.set(key(result.url, attributes), { __proto__: null,
+            result, parentURL, attributes: result.importAttributes ?? attributes });
+        return result.url;
+    }
+    function record(identifier, attributes = empty) {
+        const url = canonical(identifier);
+        const resolutionKey = key(url, attributes);
+        const resolution = resolutions.get(resolutionKey);
+        resolutions.delete(resolutionKey);
+        const actualAttributes = resolution?.attributes ?? attributes;
+        return { __proto__: null, url, key: key(url, actualAttributes),
+            resolution: resolution?.result ?? { __proto__: null, url },
+            format: resolution?.result.format, importAttributes: actualAttributes,
+            parentURL: resolution?.parentURL };
+    }
+    function stringify(source) {
+        if (typeof source === 'string') return source;
+        if (!platform.types.isArrayBufferView(source) && !platform.types.isAnyArrayBuffer(source))
+            throw new ERR_INVALID_RETURN_PROPERTY_VALUE('string, array buffer, or typed array', 'load', 'source', source);
+        return new platform.TextDecoder().decode(source);
+    }
+    function filename(url) {
+        if (!StringPrototypeStartsWith(url, 'file://')) return url;
+        const parsed = new URL(url);
+        try { return fileURLToPath(parsed); } catch { return parsed.pathname; }
+    }
+    function emplaceCJS(file) {
+        let module = Module._cache[file];
+        if (module !== undefined) return module;
+        module = platform.records.create(file, undefined, false);
+        Module._cache[file] = module;
+        return module;
+    }
+    // Same cache-before-recursion and export/reexport policy as pinned
+    // cjsPreparseModuleExports. Private per-record fields use WeakMaps.
+    function preparseCJS(file, source, format, url) {
+        const module = emplaceCJS(file);
+        let names = cjsNames.get(module);
+        if (names !== undefined) return { module, names };
+        if (source === undefined)
+            ({ source, format } = platform.records.loadSourceForESM(module, file, format));
+        source = stringify(source);
+        const parsed = platform.native.moduleSyntax('cjs-exports', source, url || file);
+        names = new SafeSet();
+        for (let i = 0; i < parsed[0].length; i++) names.add(parsed[0][i]);
+        cjsNames.set(module, names);
+        platform.records.prepareESM(module, { __proto__: null,
+            filename: file, url: url || pathToFileURL(file).href, format }, source);
+        for (let i = 0; i < parsed[1].length; i++) {
+            const reexport = parsed[1][i];
+            let target;
+            try { target = platform.records.resolve(reexport, module); } catch { continue; }
+            if (target.format === 'commonjs' ||
+                (!platform.normalizeBuiltin(target.filename) && platform.records.longestExtension(target.filename) === '.js')) {
+                const nested = preparseCJS(target.filename, undefined, target.format, target.url);
+                for (const name of nested.names) names.add(name);
+            }
+        }
+        return { module, names };
+    }
+    function valuesFor(names, read) {
+        const result = [];
+        for (let i = 0; i < names.length; i++)
+            P.ObjectDefineProperty(result, i, { __proto__: null, value: read(names[i]),
+                enumerable: true, writable: true, configurable: true });
+        return result;
+    }
+    function synthetic(names, evaluate) {
+        return { __proto__: null, format: 'synthetic', exportNames: names, evaluate };
+    }
+    function translate(rec, loaded) {
+        const { url, parentURL } = rec;
+        platform.records.getModuleResolver().validateLoadResult(url, loaded.format);
+        switch (loaded.translatorKey ?? loaded.format) {
+            case 'module':
+                return { __proto__: null, format: 'module', source: stringify(loaded.source) };
+            case 'builtin': {
+                const id = StringPrototypeSlice(url, 5);
+                const normalized = platform.normalizeBuiltin('node:' + id);
+                if (!StringPrototypeStartsWith(url, 'node:') || normalized === undefined)
+                    throw new ERR_UNKNOWN_BUILTIN_MODULE(url);
+                const exports = platform.loadBuiltin(normalized);
+                const names = ObjectKeys(exports);
+                if (!ArrayPrototypeIncludes(names, 'default')) ArrayPrototypePush(names, 'default');
+                return synthetic(names, () => valuesFor(names, name => name === 'default' ? exports : exports[name]));
+            }
+            case 'commonjs': case 'commonjs-sync': case 'require-commonjs': {
+                const file = filename(url), source = stringify(loaded.source);
+                const { module, names: discovered } = preparseCJS(file, source, loaded.format, url);
+                const names = [...discovered];
+                if (!discovered.has('default')) ArrayPrototypePush(names, 'default');
+                if (!discovered.has('module.exports')) ArrayPrototypePush(names, 'module.exports');
+                return synthetic(names, () => {
+                    if (!module.loaded) {
+                        const exports = Module._load(file, undefined, parentURL === undefined);
+                        // Actual Module._load monkey-patchers may return without
+                        // populating the ESM-created record, as in pinned Node.
+                        if (!module.loaded) { module.exports = exports; module.loaded = true; platform.records.takeESM(module); }
+                    }
+                    const exports = module.exports;
+                    return valuesFor(names, name => {
+                        if (name === 'default' || name === 'module.exports') return exports;
+                        if (!ObjectPrototypeHasOwnProperty(exports, name)) return undefined;
+                        try { return exports[name]; } catch { return undefined; }
+                    });
+                });
+            }
+            case 'json': {
+                const parsed = new URL(url);
+                const pathname = StringPrototypeStartsWith(url, 'file:') ? fileURLToPath(parsed) : undefined;
+                const file = pathname && !StringPrototypeIncludes(url, '?') && !StringPrototypeIncludes(url, '#') ? pathname : undefined;
+                let module = file === undefined ? undefined : Module._cache[file];
+                if (!module?.loaded) {
+                    const errorPath = parsed.protocol === 'file:' ? fileURLToPath(parsed) : url;
+                    const exports = platform.parseJSON(stringify(loaded.source), errorPath);
+                    module = { exports, loaded: true };
+                    if (file !== undefined) Module._cache[file] = module;
+                }
+                return synthetic(['default'], () => [module.exports]);
+            }
+            case 'wasm': case 'addon': case 'module-typescript': case 'commonjs-typescript':
+                throw new ERR_METHOD_NOT_IMPLEMENTED('ES module translator ' + loaded.format);
+            default:
+                throw new ERR_UNKNOWN_MODULE_FORMAT(loaded.format, url);
+        }
+    }
+    function load(rec) {
+        let slot = sources.get(rec.key);
+        if (slot !== undefined) {
+            if (slot.state === 0) throw new ERR_INVALID_STATE('Module source load is already in progress: ' + rec.url);
+            return slot.value;
+        }
+        slot = { __proto__: null, state: 0, value: undefined };
+        sources.set(rec.key, slot);
+        try {
+            const loaded = platform.records.getModuleResolver().load(rec.url,
+                { __proto__: null, format: rec.format, importAttributes: rec.importAttributes });
+            const context = { ...rec.resolution, ...loaded,
+                translatorKey: loaded.format, __proto__: null };
+            slot.value = translate(rec, context); slot.state = 1;
+            return slot.value;
+        } catch (error) {
+            // Node creates its synchronous ModuleJob only after load/translation
+            // succeeds. A thrown load/parse attempt is retried, not a cached job.
+            sources.delete(rec.key); throw error;
+        }
+    }
+    function failed(rec) {
+        // Native source compilation failed before registry publication. Retire
+        // that source transaction; retain the caller's actual exception.
+        sources.delete(rec.key);
+    }
+    function prepare(identifier, loaded) {
+        const rec = record(identifier);
+        if (sources.has(rec.key)) return;
+        const slot = { __proto__: null, state: 0, value: undefined };
+        sources.set(rec.key, slot);
+        try { slot.value = translate(rec, loaded); slot.state = 1; }
+        catch (error) { sources.delete(rec.key); throw error; }
+    }
+    return { canonical, resolve, record, load, failed, prepare };
 }
 
 // Unmodified synchronous customization-hook policy over actual loader owners.
@@ -54687,6 +55826,7 @@ function _createNodeModuleRecords(platform) {
     const sources = new SafeWeakMap();
     const relativeResolveCache = new SafeMap();
     const formats = new SafeWeakMap(), compiledExports = new SafeWeakMap();
+    const esmPrepared = new SafeWeakMap();
     let modulePaths = [];
     let isPreloading = false, requireDepth = 0;
     const pending = platform.pendingDeprecation;
@@ -54702,6 +55842,7 @@ function _createNodeModuleRecords(platform) {
     }
     function lazyModule() { return Module; }
     const hooks = _createNodeModuleHooks(platform);
+    let moduleResolver;
     const { resolveHooks, loadHooks, resolveWithHooks, loadWithHooks, validateLoadStrict,
         convertCJSFilenameToURL, convertURLToCJSFilename } = hooks;
     function lazyCJSLoader() { return { resolveForCJSWithHooks }; }
@@ -55971,6 +57112,12 @@ function createEsmNotFoundErr(request, path) {
     Module.registerHooks = hooks.registerHooks;
     Module._initPaths();
     return { Module, make, create, cached, failed, getRequireStack, notFound,
+        getModuleResolver() {
+            return moduleResolver ??= _createNodeModuleSyncResolver({
+                values: platform.values, policy: platform.policy, hooks,
+                load: _createNodeESMLoadPlatform({ ...platform,
+                    getOptionValue: platform.policy.getOptionValue }) });
+        },
         resolve: (request, parent, isMain = false, options = kEmptyObject) =>
             resolveForCJSWithHooks(request, parent, isMain, options),
         loadBuiltin: loadBuiltinWithHooks,
@@ -55996,6 +57143,15 @@ function createEsmNotFoundErr(request, path) {
             const directory = parent && relativeResolveCache.get(parent.path);
             if (directory !== undefined && directory !== null) delete directory[request];
         },
+        prepareESM(module, resolution, source) {
+            this.prepare(module, resolution, { format: resolution.format, source });
+            esmPrepared.set(module, resolution);
+        },
+        moduleURL: module => urls.get(module),
+        longestExtension: findLongestRegisteredExtension,
+        pendingESM(module) { return esmPrepared.get(module); },
+        takeESM(module) { const value = esmPrepared.get(module); esmPrepared.delete(module); return value; },
+        loadSourceForESM(module, filename, format) { return loadSource(module, filename, format); },
         prepare(module, result, loadResult) {
             urls.set(module, result.url); formats.set(module, loadResult?.format ?? result.format);
             if (loadResult !== undefined) sources.set(module, loadResult.source);
@@ -96682,7 +97838,9 @@ module.exports = {
   };
 }
     const helpers = { ...platform.values.util, deprecateProperty,
-        getStructuredStack: () => unavailable('structured caller stacks/module mocking') };
+        getStructuredStack: function getStructuredStack() {
+            return platform.getStructuredStack();
+        } };
     const bindings = new SafeMap([
         ['internal/errors', platform.values.errors],
         ['internal/util', helpers],
@@ -96700,8 +97858,8 @@ module.exports = {
         ['internal/options', { getOptionValue: platform.getOptionValue }],
         ['internal/url', platform.url],
         ['internal/modules/cjs/loader', { Module: platform.Module }],
-        ['internal/modules/esm/loader', { getOrInitializeCascadedLoader: () => unavailable('module mock ESM loader') }],
-        ['internal/modules/customization_hooks', { registerHooks: () => unavailable('module mock loader hooks') }],
+        ['internal/modules/esm/loader', { getOrInitializeCascadedLoader: platform.getModuleResolver }],
+        ['internal/modules/customization_hooks', { registerHooks: platform.Module.registerHooks }],
         ['internal/process/task_queues', { queueMicrotask: platform.queueMicrotask }],
         ['process', process], ['assert', platform.assert], ['path', platform.path], ['fs', platform.fs],
         ['os', platform.os], ['events', platform.events], ['async_hooks', platform.async],

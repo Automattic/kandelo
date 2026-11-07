@@ -1,6 +1,10 @@
 /* Real parser goals and explicit patched-CJS script execution. Detection never
  * evaluates source. Syntax errors, OOM and arbitrary thrown values propagate. */
 #include <iterator>
+#include <new>
+#include <kandelo-node/merve/merve.h>
+#include "js/Array.h"
+#include "js/CharacterEncoding.h"
 #include "js/CompilationAndEvaluation.h"
 #include "js/EnvironmentChain.h"
 #include "js/ErrorReport.h"
@@ -39,6 +43,46 @@ static bool KandeloNativeModuleSyntax(JSContext* cx, unsigned argc, Value* vp) {
   RootedString operation(cx, args[0].toString()), source(cx, args[1].toString()), file(cx, args[2].toString());
   JS::UniqueChars mode = JS_EncodeStringToUTF8(cx, operation), filename = JS_EncodeStringToUTF8(cx, file);
   if (!mode || !filename) return false;
+  if (strcmp(mode.get(), "cjs-exports") == 0) {
+    Rooted<JSLinearString*> linear(cx, JS_EnsureLinearString(cx, source));
+    if (!linear) return false;
+    UniqueChars utf8 = JS_EncodeStringToUTF8(cx, linear);
+    if (!utf8) return false;
+    std::optional<lexer::lexer_analysis> analysis;
+    try {
+      analysis = lexer::parse_commonjs(std::string_view(utf8.get(), JS::GetDeflatedUTF8StringLength(linear)));
+    } catch (const std::bad_alloc&) {
+      JS_ReportOutOfMemory(cx); return false;
+    }
+    RootedObject exports(cx, JS::NewArrayObject(cx, 0));
+    RootedObject reexports(cx, JS::NewArrayObject(cx, 0));
+    if (!exports || !reexports) return false;
+    if (analysis.has_value()) {
+      uint32_t index = 0;
+      for (const auto& value : analysis->exports) {
+        const auto text = lexer::get_string_view(value);
+        RootedString name(cx, JS_NewStringCopyUTF8N(cx, JS::UTF8Chars(text.data(), text.size())));
+        RootedValue element(cx);
+        if (!name) return false;
+        element.setString(name);
+        if (!JS_DefineElement(cx, exports, index++, element, JSPROP_ENUMERATE)) return false;
+      }
+      index = 0;
+      for (const auto& value : analysis->re_exports) {
+        const auto text = lexer::get_string_view(value);
+        RootedString name(cx, JS_NewStringCopyUTF8N(cx, JS::UTF8Chars(text.data(), text.size())));
+        RootedValue element(cx);
+        if (!name) return false;
+        element.setString(name);
+        if (!JS_DefineElement(cx, reexports, index++, element, JSPROP_ENUMERATE)) return false;
+      }
+    }
+    RootedObject result(cx, JS::NewArrayObject(cx, 0));
+    RootedValue a(cx, ObjectValue(*exports)), b(cx, ObjectValue(*reexports));
+    if (!result || !JS_DefineElement(cx, result, 0, a, JSPROP_ENUMERATE) ||
+        !JS_DefineElement(cx, result, 1, b, JSPROP_ENUMERATE)) return false;
+    args.rval().setObject(*result); return true;
+  }
   if (strcmp(mode.get(), "wrap") == 0) {
     // Module.wrap can supply an arbitrary script. Retain its complete UTF-16
     // source, evaluate only this explicitly patched route, and register the

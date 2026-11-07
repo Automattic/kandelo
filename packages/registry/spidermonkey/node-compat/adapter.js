@@ -404,6 +404,27 @@
             }
             return false;
         },
+        getStructuredStack() {
+            if (typeof captureSavedStack !== 'function') {
+                const error = new Error('This engine does not expose saved frames');
+                error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
+            }
+            // These are actual synchronous frames. Together with the testing
+            // util wrapper this is the same two-function capture chain used by
+            // pinned MockTracker.module; never pad or infer caller filenames.
+            let frame = captureSavedStack();
+            const sites = [];
+            while (frame) {
+                const filename = frame.source === '-e' ? '[eval]' : frame.source;
+                const site = callSiteCreate(null);
+                callSiteDefine(site, 'getFileName', { __proto__: null, value: function getFileName() { return filename; },
+                    writable: true, configurable: true });
+                callSiteDefine(sites, sites.length, { __proto__: null, value: site,
+                    enumerable: true, writable: true, configurable: true });
+                frame = frame.parent;
+            }
+            return sites;
+        },
         getCallerLocation() {
             if (typeof captureSavedStack !== 'function') {
                 const error = new Error('This engine does not expose saved frames');

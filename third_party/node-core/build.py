@@ -1305,6 +1305,55 @@ for name, marker in [('JAVASCRIPT','JS'),('WASM','WASM')]:
     if match is None: raise ValueError('Review extensionless protocol tag: ' + name)
     policy_adapter = policy_adapter.replace('/* NODE_PACKAGE_POLICY_FORMAT_' + marker + ' */', match[1])
 bundle += policy_adapter + '\n'
+esm_spec = json.loads((root / 'esm-source-sources.json').read_text())
+if esm_spec['version'] != manifest['version'] or esm_spec['sourceCommit'] != manifest['commit']:
+    raise ValueError('ESM source loading must use the exact target pin')
+esm_sources = {}
+for name, item in esm_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('ESM source identity mismatch: ' + name)
+    esm_sources[name] = raw.decode('utf-8')
+esm_factories = []
+for name, source_name in [('internal/modules/esm/load', 'load'),
+                          ('internal/modules/esm/assert', 'attributes'),
+                          ('internal/data_url', 'dataURL')]:
+    esm_factories.append(repr(name) + ': function(module, exports, require, primordials) {\n' + esm_sources[source_name] + '\n}')
+esm_adapter = (root / 'esm-load-platform-adapter.js').read_text()
+if esm_adapter.count('/* NODE_ESM_SOURCE_MODULES */') != 1:
+    raise ValueError('Review ESM source factory marker')
+bundle += esm_adapter.replace('/* NODE_ESM_SOURCE_MODULES */', ',\n'.join(esm_factories)) + '\n'
+
+sync_spec = json.loads((root / 'module-sync-resolver-sources.json').read_text())
+if sync_spec['version'] != manifest['version'] or sync_spec['sourceCommit'] != manifest['commit']:
+    raise ValueError('Sync module resolver must use the exact target pin')
+sync_sources = {}
+for name, item in sync_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Sync module resolver source mismatch: ' + name)
+    sync_sources[name] = raw.decode('utf-8')
+sync_adapter = (root / 'module-sync-resolver-adapter.js').read_text()
+for name, marker in [('cache', '/* NODE_MODULE_RESOLVE_CACHE */'),
+                     ('cached', '/* NODE_MODULE_CACHED_RESOLVE */'),
+                     ('default', '/* NODE_MODULE_RESOLVE_DEFAULT */'),
+                     ('sync', '/* NODE_MODULE_RESOLVE_SYNC */'),
+                     ('load', '/* NODE_MODULE_LOAD_PUBLIC */'),
+                     ('loadStep', '/* NODE_MODULE_LOAD_STEP */'),
+                     ('loadSync', '/* NODE_MODULE_LOAD_SYNC */'),
+                     ('validateLoad', '/* NODE_MODULE_LOAD_VALIDATE */')]:
+    selector = sync_spec['sections'][name]
+    source = sync_sources[selector['source']]
+    if source.count(selector['start']) != 1:
+        raise ValueError('Ambiguous sync resolver source: ' + name)
+    start = source.index(selector['start'])
+    section = source[start:start + selector['length']]
+    if hashlib.sha256(section.encode()).hexdigest() != selector['sha256'] or sync_adapter.count(marker) != 1:
+        raise ValueError('Sync module resolver section mismatch: ' + name)
+    sync_adapter = sync_adapter.replace(marker, section)
+bundle += sync_adapter + '\n'
+bundle += (root / 'esm-graph-platform-adapter.js').read_text() + '\n'
+
 hook_spec = manifest['moduleHooks']
 hook_raw = (root / hook_spec['source']['path']).read_bytes()
 if hashlib.sha256(hook_raw).hexdigest() != hook_spec['source']['sha256']:

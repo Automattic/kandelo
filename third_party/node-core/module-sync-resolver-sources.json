@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "version": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "loader": {
+      "path": "upstream/sync-module-resolver/lib/internal/modules/esm/loader.js",
+      "sha256": "70efdcb8bc3e7143aadd1473ff99f094b1e360effc49d8c4941e612cfdede53c"
+    },
+    "cache": {
+      "path": "upstream/sync-module-resolver/lib/internal/modules/esm/module_map.js",
+      "sha256": "916c981417ddaee7843b50c0ad802857c03cf6bf95b109188365e376dbce07ea"
+    }
+  },
+  "sections": {
+    "cache": {
+      "source": "cache",
+      "start": "class ResolveCache extends SafeMap {",
+      "length": 1959,
+      "sha256": "42fe6bffdaa06dc48777bf567149dcbc8b9157fce7be9b73ce4a07c29fbe4936"
+    },
+    "cached": {
+      "source": "loader",
+      "start": "  #cachedDefaultResolve(specifier, context) {",
+      "length": 459,
+      "sha256": "452dba895e7bb8f3a83ae85fe703afa1a50e5a86d558fd8bb06ee073c8792b43"
+    },
+    "default": {
+      "source": "loader",
+      "start": "  #resolveAndMaybeBlockOnLoaderThread(out, specifier, context) {",
+      "length": 329,
+      "sha256": "4ff2a196dd220025eefc9c982a7b9eae940f2389761b7663815571e2421fa671"
+    },
+    "sync": {
+      "source": "loader",
+      "start": "  resolveSync(parentURL, request, shouldSkipSyncHooks = false) {",
+      "length": 1252,
+      "sha256": "16ae2756371b2144d5f32e67de38f9c5b3c711ba5442ec1a4587c84711a36dc5"
+    },
+    "load": {
+      "source": "loader",
+      "start": "  load(url, context) {",
+      "length": 267,
+      "sha256": "11ec945198123eaf0036be2a85f559a82405d6f8d0d91d6df7f62e354bbd9aa4"
+    },
+    "loadStep": {
+      "source": "loader",
+      "start": "  #loadAndMaybeBlockOnLoaderThread(out, url, context) {",
+      "length": 302,
+      "sha256": "22569e1ff3ca59ac2ef5fd6d164fd9b7759e463b15c9eb143d998e1ce823f231"
+    },
+    "loadSync": {
+      "source": "loader",
+      "start": "  #loadSync(url, context) {",
+      "length": 941,
+      "sha256": "f8c242bcfe626b56d0acb8128880ed87db368715b72449082958b39b8be8984b"
+    },
+    "validateLoad": {
+      "source": "loader",
+      "start": "  validateLoadResult(url, format) {",
+      "length": 116,
+      "sha256": "6385bb609bb5239c0fb93513847baf7376849627cd0527cbce179775efbbbd88"
+    }
+  },
+  "scope": "Exact unchanged Node synchronous resolver/cache and synchronous load/hook policy methods; no async loader worker"
+}

@@ -5022,6 +5022,8 @@ function _getNodeTestingPlatform() {
         eventTarget: _nodeEventPlatform.eventTarget,
         assertUtils: _nodeCore.require('internal/assert/utils'),
         getCallerLocation: _nodeNative.getCallerLocation,
+        getStructuredStack: _nodeNative.getStructuredStack,
+        getModuleResolver: () => _nodeModuleRecords.getModuleResolver(),
         timers, timerPromises: timersPromises, path, fs, fsUtils: _nodeFsStats, os: nodeOs,
         url: { ...url, isURL: value => value instanceof _nodeWebPlatform.URL,
             URLParse: value => _nodeWebPlatform.URL.parse(value) },
@@ -5295,6 +5297,9 @@ const _nodePackagePolicy = _createNodePackagePolicy({
 const _nodeModuleRecords = _createNodeModuleRecords({
     path, process, values: _nodeValues, packages: _nodePackageReader, policy: _nodePackagePolicy,
     TextDecoder: globalThis.TextDecoder,
+    TextEncoder: globalThis.TextEncoder, Buffer,
+    getMIME: () => _nodeCore.require('internal/mime'),
+    readBuffer: filename => fs.readFileSync(filename),
     stat(filename) { const [stat, errno] = os.stat(filename); return errno === 0 ? ((stat.mode & 0o170000) === 0o40000 ? 1 : 0) : errno; },
     preserveSymlinks: _nodeNative.cliOptions?.preserveSymlinks === true,
     preserveSymlinksMain: _nodeNative.cliOptions?.preserveSymlinksMain === true,
@@ -5496,13 +5501,10 @@ function _compileCommonJsModule(mod, source, filename, format) {
 function _loadCommonJsJavaScript(mod, filename, source, loadedFormat, hookSource = false) {
     const format = loadedFormat ?? _nodeModuleSyntax.commonJsFormat(filename, source);
     if (format === 'module') {
-        // The native ESM entry accepts filenames, not supplied source. Never
-        // discard transformed source by silently rereading the original file.
-        if (hookSource) throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('synchronous module hook ESM source execution');
+        const identifier = _nodeModuleRecords.moduleURL(mod) || url.pathToFileURL(filename).href;
+        if (hookSource) _nodeESMGraph.prepare(identifier, { __proto__: null, format, source });
         _nodeModuleRecords.setFormat(mod, format);
-        // Keep the existing lexical native ESM registry key; its URL/static
-        // async-graph/cache admission policy remains a separate owning gap.
-        mod.exports = _nodeNative.__kandeloRequireModule(_nodeModuleRecords.originalPath(mod) || filename);
+        mod.exports = _nodeNative.__kandeloRequireModule(identifier);
         return;
     }
     return mod._compile(source, filename, format);
@@ -5511,11 +5513,18 @@ function _loadCommonJsJavaScript(mod, filename, source, loadedFormat, hookSource
 function _loadCommonJsModule(id, parent, entry = false) {
     _nodeValues.validators.validateString(id, 'id');
     if (id === '') throw new _nodeValues.errors.codes.ERR_INVALID_ARG_VALUE('id', id, 'must be a non-empty string');
-    const previous = _nodeModuleRecords.cachedResolution(parent, id);
-    if (previous !== undefined) return _nodeModuleRecords.cached(parent, previous.module);
-    const resolution = _nodeModuleRecords.resolve(id, parent, entry);
+    let prepared = Module._cache[id] !== undefined && !Module._cache[id].loaded
+        ? _nodeModuleRecords.pendingESM(Module._cache[id]) : undefined;
+    const previous = prepared === undefined ? _nodeModuleRecords.cachedResolution(parent, id) : undefined;
+    if (previous !== undefined) {
+        prepared = _nodeModuleRecords.pendingESM(previous.module);
+        if (prepared === undefined) return _nodeModuleRecords.cached(parent, previous.module);
+    }
+    const resolution = prepared ?? _nodeModuleRecords.resolve(id, parent, entry);
     const resolvedPath = resolution.filename;
     const resolved = resolvedPath;
+    if (prepared === undefined && Module._cache[resolved] !== undefined && !Module._cache[resolved].loaded)
+        prepared = _nodeModuleRecords.pendingESM(Module._cache[resolved]);
     let resultFromHook;
     const loadBuiltin = name => {
         const result = _nodeModuleRecords.loadBuiltin(name, resolution.url, resolution.format);
@@ -5529,7 +5538,7 @@ function _loadCommonJsModule(id, parent, entry = false) {
             if (resultFromHook === undefined) return result.builtinExports;
         }
     }
-    if (resultFromHook === undefined && Module._cache[resolved] !== undefined)
+    if (prepared === undefined && resultFromHook === undefined && Module._cache[resolved] !== undefined)
         return _nodeModuleRecords.cached(parent, Module._cache[resolved]);
     const name = _nodeBuiltinPolicy.normalizeRequirableId(resolved);
     if (resultFromHook === undefined && name !== undefined && !resolved.startsWith('node:')) {
@@ -5572,8 +5581,9 @@ function _loadCommonJsModule(id, parent, entry = false) {
 
     }
     const isMain = entry && (!parent || resolved === parent.filename || resolved === _moduleRealpath(parent.filename));
-    const mod = _nodeModuleRecords.create(resolved, parent, isMain, resolvedPath);
-    _nodeModuleRecords.prepare(mod, resolution, resultFromHook);
+    const mod = prepared === undefined ? _nodeModuleRecords.create(resolved, parent, isMain, resolvedPath) : Module._cache[resolved];
+    if (prepared === undefined) _nodeModuleRecords.prepare(mod, resolution, resultFromHook);
+    else { _nodeModuleRecords.takeESM(mod); _nodeModuleRecords.cached(parent, mod); }
     _nodeModuleRecords.rememberResolution(parent, id, resolved);
     Module._cache[resolved] = mod;
     if (isMain) {
@@ -5746,65 +5756,21 @@ function _makeBareEsmSource(token, obj) {
     return src;
 }
 
-globalThis.__kandeloResolveBare = function (specifier, referrerPath, resolveOnly = false) {
+const _nodeESMGraph = _createNodeESMGraphPlatform({
+    records: _nodeModuleRecords, values: _nodeValues, native: _nodeNative,
+    path, process, url: { URL: _nodeWebPlatform.URL, pathToFileURL: url.pathToFileURL,
+        fileURLToPath: url.fileURLToPath },
+    TextDecoder: globalThis.TextDecoder, types: util.types,
+    normalizeBuiltin: id => _nodeBuiltinPolicy.normalizeRequirableId(id),
+    loadBuiltin: id => _builtinModules[id], parseJSON: _parseCommonJsJSON,
+});
+globalThis.__kandeloResolveBare = function(specifier, referrerPath, resolveOnly = false, attributes) {
     if (typeof specifier !== 'string' || specifier.length === 0) return null;
-    if (resolveOnly) {
-        const parent = (typeof referrerPath === 'string' && referrerPath.length > 0) ?
-            referrerPath : process.cwd() + '/repl';
-        return _nodePackagePolicy.resolver.defaultResolve(specifier,
-            { parentURL: url.pathToFileURL(parent).href }).url;
-    }
-
-    const bareName = _nodeResolveBuiltinId(specifier);
-
-    let token;
-    let obj;
-    if (bareName !== undefined) {
-        if (resolveOnly) return 'node:' + bareName;
-        // Node builtin (with or without the `node:` prefix). Dedup `fs` and
-        // `node:fs` onto a single synthetic module.
-        token = '/__kandelo_bare__/builtin/' + bareName;
-        obj = _builtinModules[bareName];
-    } else {
-        // Package or file specifier. Resolve the concrete file so the token (and the
-        // native loader's module registry) dedups by real path, then load the
-        // object through the ordinary node-compat require so CJS interop and the
-        // process-global module cache apply.
-        const base = (typeof referrerPath === 'string' && referrerPath.length > 0)
-            ? referrerPath
-            : (process.cwd() + '/repl');
-        const resolved = _nodePackagePolicy.resolver.defaultResolve(specifier,
-            { parentURL: url.pathToFileURL(base).href });
-        if (resolved.url.startsWith('node:'))
-            return globalThis.__kandeloResolveBare(resolved.url, base, resolveOnly);
-        if (resolveOnly) return resolved.url;
-        const resolvedPath = url.fileURLToPath(resolved.url);
-
-        // ESM target: hand the real path back to the native loader so it
-        // CompileModules the file (dedup-safe via the native per-path module
-        // registry) instead of CJS-wrapping it as a classic script. A CJS
-        // wrapper (`_makeRequire`) evaluates the file body as a plain
-        // function, so a top-level `import` declaration inside it throws
-        // "import declarations may only appear at top level of a module".
-        // Returning an absolute path here is handled natively by
-        // ModuleLoader.cpp (confirmed: absolute paths bypass the bare-token
-        // synthesis below and are read + compiled as a module directly).
-        if (_nodeModuleSyntax.esmFormat(resolvedPath, std.loadFile(resolvedPath)) === 'module') {
-            return resolvedPath;
-        }
-
-        token = '/__kandelo_bare__/pkg' + resolvedPath;
-        // Propagate execution errors from CommonJS rather than reinterpreting
-        // a failed require as an ES module or a missing file.
-        obj = _makeRequire(base)(resolvedPath);
-    }
-
-    if (globalThis.__kandeloBareSources[token] === undefined) {
-        globalThis.__kandeloBareModules[token] = obj;
-        globalThis.__kandeloBareSources[token] = _makeBareEsmSource(token, obj);
-    }
-    return token;
+    return _nodeESMGraph.resolve(specifier, referrerPath, attributes, resolveOnly);
 };
+globalThis.__kandeloModuleRecord = _nodeESMGraph.record;
+globalThis.__kandeloLoadModule = _nodeESMGraph.load;
+globalThis.__kandeloModuleFailed = _nodeESMGraph.failed;
 
 // The native ES-module metadata hook (SpiderMonkey shell ModuleLoader.cpp,
 // patches/0016-kandelo-import-meta.patch) calls __kandeloModuleMeta with the
@@ -5814,21 +5780,13 @@ globalThis.__kandeloResolveBare = function (specifier, referrerPath, resolveOnly
 // populating them here lets those apps run without any source rewriting.
 // Returning null lets the C hook keep its default (url = raw path) behavior so
 // an unresolvable path stays a visible boundary rather than a silent success.
-globalThis.__kandeloModuleMeta = function (resolvedPath) {
-    if (typeof resolvedPath !== 'string' || resolvedPath.length === 0) {
-        return null;
-    }
-    let href;
-    try {
-        href = url.pathToFileURL(resolvedPath).href;
-    } catch (_e) {
-        return null;
-    }
-    return {
-        url: href,
-        dirname: path.dirname(resolvedPath),
-        require: _makeRequire(resolvedPath),
-    };
+globalThis.__kandeloModuleMeta = function(identifier) {
+    if (typeof identifier !== 'string' || identifier.length === 0) return null;
+    const href = _nodeESMGraph.canonical(identifier);
+    const parsed = new _nodeWebPlatform.URL(href);
+    if (parsed.protocol !== 'file:') return { url: href };
+    const filename = url.fileURLToPath(parsed);
+    return { url: href, filename, dirname: path.dirname(filename), require: _makeRequire(filename) };
 };
 
 // Node.js globals

@@ -531,3 +531,15 @@ actual POSIX context owners are shared source, not embedding-host Node
 WASI delegation. Twenty-one imports, direct-Wasm uint32 dispatch semantics
 and the guest WebAssembly execution backend remain implementation gaps.
 The new JSAPI path is uncompiled; no guest/four-host closure is claimed.
+
+### 0134–0135: actual mock activation and generic ESM source ownership
+
+0134projects real CLI-only module-mock state without admitting it through
+NODE_OPTIONS. 0135retains parsed import attributes and stable actual static
+resolution records, consumes real hook-supplied source/format, and uses
+existing native source/synthetic records and evaluation. Full URL/type
+identity remains distinct from filesystem loading. The unchanged Merve
+lexer is compiled at its vendor boundary with its actual C++20 requirement.
+New JSAPI/static memo/GC/realm paths remain uncompiled and unvalidated;
+async loaders, early attribute/phase admission, translators and remaining
+cache/link/CLI/public behavior stay implementation gaps.

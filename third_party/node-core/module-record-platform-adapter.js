@@ -38,6 +38,7 @@ function _createNodeModuleRecords(platform) {
     const sources = new SafeWeakMap();
     const relativeResolveCache = new SafeMap();
     const formats = new SafeWeakMap(), compiledExports = new SafeWeakMap();
+    const esmPrepared = new SafeWeakMap();
     let modulePaths = [];
     let isPreloading = false, requireDepth = 0;
     const pending = platform.pendingDeprecation;
@@ -53,6 +54,7 @@ function _createNodeModuleRecords(platform) {
     }
     function lazyModule() { return Module; }
     const hooks = _createNodeModuleHooks(platform);
+    let moduleResolver;
     const { resolveHooks, loadHooks, resolveWithHooks, loadWithHooks, validateLoadStrict,
         convertCJSFilenameToURL, convertURLToCJSFilename } = hooks;
     function lazyCJSLoader() { return { resolveForCJSWithHooks }; }
@@ -132,6 +134,12 @@ function _createNodeModuleRecords(platform) {
     Module.registerHooks = hooks.registerHooks;
     Module._initPaths();
     return { Module, make, create, cached, failed, getRequireStack, notFound,
+        getModuleResolver() {
+            return moduleResolver ??= _createNodeModuleSyncResolver({
+                values: platform.values, policy: platform.policy, hooks,
+                load: _createNodeESMLoadPlatform({ ...platform,
+                    getOptionValue: platform.policy.getOptionValue }) });
+        },
         resolve: (request, parent, isMain = false, options = kEmptyObject) =>
             resolveForCJSWithHooks(request, parent, isMain, options),
         loadBuiltin: loadBuiltinWithHooks,
@@ -157,6 +165,15 @@ function _createNodeModuleRecords(platform) {
             const directory = parent && relativeResolveCache.get(parent.path);
             if (directory !== undefined && directory !== null) delete directory[request];
         },
+        prepareESM(module, resolution, source) {
+            this.prepare(module, resolution, { format: resolution.format, source });
+            esmPrepared.set(module, resolution);
+        },
+        moduleURL: module => urls.get(module),
+        longestExtension: findLongestRegisteredExtension,
+        pendingESM(module) { return esmPrepared.get(module); },
+        takeESM(module) { const value = esmPrepared.get(module); esmPrepared.delete(module); return value; },
+        loadSourceForESM(module, filename, format) { return loadSource(module, filename, format); },
         prepare(module, result, loadResult) {
             urls.set(module, result.url); formats.set(module, loadResult?.format ?? result.format);
             if (loadResult !== undefined) sources.set(module, loadResult.source);
