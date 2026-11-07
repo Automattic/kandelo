@@ -7,6 +7,7 @@ guide for the contract your change touches.
 | Contract | Read when touching |
 |---|---|
 | `validation.md` | Test selection, evidence, completion claims |
+| `campaigns.md` | Long-campaign dispatch, phase checkpoints, context reminders and handoffs |
 | `debugging-and-posix.md` | Root-cause debugging, syscall/process/VFS/device behavior |
 | `abi.md` | ABI surface, snapshot policy, package/VFS ABI consequences |
 | `host-runtime.md` | Node/browser parity, worker protocols, host runtime failures |
