@@ -347,8 +347,9 @@ export type DeferredFetchSettled = () => Promise<void> | null;
  * from somewhere other than this pipe — so the wait is the plain `maxMs`
  * timer, which keeps the caller's retry loop yielding to the event loop
  * rather than spinning on microtasks. With a fetch in flight the timer still
- * bounds the wait, so a fetch that never settles cannot outlast the caller's
- * own deadline.
+ * bounds the wait, for a caller that polls at a fixed interval. Callers that
+ * time out a read should wait on a fetch in flight without a deadline: the
+ * transport already bounds it (`withLazyResponse` in `lazy-fetch-bytes.ts`).
  */
 export async function waitForDeferredFetch(
   settled: Promise<void> | null,

@@ -41,7 +41,7 @@
  * holds, rather than a browser-specific quirk the Node entry appears to be
  * missing.
  */
-import { fetchLazyResourceBytes, type DeferredByteProgress } from "./vfs/lazy-fetch-bytes";
+import { fetchLazyResourceBytes, type DeferredByteProgress, type LazyPrepare } from "./vfs/lazy-fetch-bytes";
 import type { DeferredByteSpool } from "./vfs/deferred-byte-spool";
 import { StorageMetadataMap } from "./vfs/storage-memory-budget";
 import type { PersistentImageReadBinding } from "./vfs/image-integrity";
@@ -400,6 +400,8 @@ export function configureRootfsOverlayFromImage(
     foreignPrefixes: string[];
     nosuid: boolean;
     lazyFetcher?: LazyFetch;
+    /** Local work before `lazyFetcher` can fetch an address; see `LazyPrepare`. */
+    lazyPrepare?: LazyPrepare;
     deferredByteSpool?: DeferredByteSpool;
     lazyUrlBase?: string;
     /** Where the deployment serves an address the image records; consulted
@@ -413,6 +415,7 @@ export function configureRootfsOverlayFromImage(
   let resourceLimits: Map<string, number> | undefined;
   const metadataBudget = options.deferredByteSpool?.metadataBudget ?? kernel.rootfsTransportMetadataBudget();
   const installedLazyFetcher = options.lazyFetcher;
+  const installedLazyPrepare = options.lazyPrepare;
   const onLazyProgress = options.onLazyProgress;
   const lazyUrlBase = options.lazyUrlBase;
   const lazyUrlMap = options.lazyUrlMap;
@@ -436,10 +439,13 @@ export function configureRootfsOverlayFromImage(
         const resolved = resolveAddress(url);
         const limit = resourceLimits?.get(url);
         if (limit === undefined) throw new Error(`No native lazy resource bound for ${url}`);
+        const prepare: LazyPrepare | undefined = installedLazyPrepare === undefined
+          ? undefined
+          : (_address, signal) => installedLazyPrepare(resolved, signal);
         return options.deferredByteSpool === undefined
-          ? fetchLazyResourceBytes(installedLazyFetcher, resolved, limit, onProgress)
+          ? fetchLazyResourceBytes(installedLazyFetcher, resolved, limit, onProgress, { prepare })
           : options.deferredByteSpool.fetch(
-            (_address, init) => installedLazyFetcher(resolved, init), url, limit, onProgress,
+            (_address, init) => installedLazyFetcher(resolved, init), url, limit, onProgress, prepare,
           );
       }
       : async () => {
@@ -474,7 +480,6 @@ export function configureRootfsOverlayFromImage(
     options.imageRead,
     whenFetchSettles,
     discardDeferred,
-    options.deferredByteSpool === undefined ? undefined : () => options.deferredByteSpool!.lastProgressAt(),
     close,
     options.persistentImageBinding,
   );
@@ -504,19 +509,21 @@ const ROOTFS_ETIMEDOUT_ERRNO = 110;
  */
 const ROOTFS_RETRY_DELAY_MS = 10;
 /**
- * Defensive backstop only: a fetch normally resolves to bytes or a terminal
- * errno well before this. It exists so a stuck fetch fails with a truthful
- * timeout instead of hanging a spawn forever.
+ * Budget for EAGAIN while no deferred fetch is in flight, which this pipe does
+ * not produce. It counts only that time: a fetch in flight is bounded by the
+ * transport's own preparation and idle deadlines (`withLazyResponse` in
+ * `vfs/lazy-fetch-bytes.ts`), so a second clock here could only misjudge a
+ * slow but healthy fetch as stuck.
  */
 const ROOTFS_RETRY_MAX_WAIT_MS = 30_000;
 
-/** A `/` read that waited past {@link ROOTFS_RETRY_MAX_WAIT_MS} for lazy bytes. */
+/** A `/` read that spent {@link ROOTFS_RETRY_MAX_WAIT_MS} retrying EAGAIN with no fetch in flight. */
 export class RootfsReadTimeoutError extends Error {
   readonly errno = ROOTFS_ETIMEDOUT_ERRNO;
   constructor(path: string, waitedMs: number) {
     super(
-      `rootfs read of ${path} timed out after ${waitedMs}ms waiting for a ` +
-        "lazy file fetch to complete",
+      `rootfs read of ${path} timed out after ${waitedMs}ms of EAGAIN ` +
+        "with no lazy file fetch in flight",
     );
     this.name = "RootfsReadTimeoutError";
   }
@@ -570,7 +577,7 @@ async function readKernelFileWithRetry(
   path: string,
   read: () => Uint8Array,
 ): Promise<Uint8Array | null> {
-  const start = performance.now();
+  let idleWaitedMs = 0;
   for (;;) {
     try {
       return await retryKernelEntryResult(read);
@@ -585,20 +592,20 @@ async function readKernelFileWithRetry(
       }
       if (errno !== ROOTFS_EAGAIN_ERRNO) throw error;
       const inFlight = kernel.deferredFetchSettled();
-      const progressAt = inFlight === null ? undefined : kernel.deferredFetchProgressAt?.();
-      const waited = performance.now() - Math.max(start, progressAt ?? start);
-      if (waited >= ROOTFS_RETRY_MAX_WAIT_MS) {
-        throw new RootfsReadTimeoutError(path, waited);
+      if (inFlight !== null) {
+        // WHY not a fixed timer: the bytes usually land well inside one timer
+        // period, and every first read of a lazy file (the spawn preflight of
+        // a lazy program) paid the rest of that period on top of the fetch.
+        // The transport bounds the fetch, so this wait needs no deadline.
+        await inFlight;
+        continue;
       }
-      // WHY not a fixed timer: the bytes usually land well inside one timer
-      // period, and every first read of a lazy file (the spawn preflight of a
-      // lazy program) paid the rest of that period on top of the fetch.
-      await waitForDeferredFetch(
-        inFlight,
-        inFlight === null
-          ? ROOTFS_RETRY_DELAY_MS
-          : ROOTFS_RETRY_MAX_WAIT_MS - waited,
-      );
+      if (idleWaitedMs >= ROOTFS_RETRY_MAX_WAIT_MS) {
+        throw new RootfsReadTimeoutError(path, idleWaitedMs);
+      }
+      const started = performance.now();
+      await waitForDeferredFetch(null, ROOTFS_RETRY_DELAY_MS);
+      idleWaitedMs += performance.now() - started;
     }
   }
 }
