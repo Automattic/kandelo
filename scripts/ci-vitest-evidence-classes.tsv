@@ -272,6 +272,7 @@ host/test/mkdir-existing-directory.test.ts	prepared-product
 host/test/mmap-file.test.ts	prepared-product
 host/test/mmap-shared.test.ts	prepared-product
 host/test/mmap-tracking.test.ts	source-only
+host/test/mmap-zeroing.test.ts	prepared-product
 host/test/module-base-image.test.ts	prepared-product
 host/test/mouse-integration.test.ts	prepared-product
 host/test/mqueue.test.ts	prepared-product
