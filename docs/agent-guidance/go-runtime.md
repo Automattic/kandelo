@@ -137,6 +137,17 @@ POSIX behavior. Consumer/image rebuilds and final WordPress gates remain.
 
 ## Memory, threads, and syscalls
 
+- Use ordinary upstream diagnostics before modifying an application to expose
+  memory counters. Real Caddy offers Go metrics at its guest-loopback admin
+  endpoint; FrankenPHP offers per-thread PHP allocator usage. The shared
+  [test helper](../../tests/go/frankenphp/memory-metrics.ts) enables those
+  through test configuration and records collection windows. Pair them with
+  Wasm backing sizes, kernel state and engine/native observations. They do
+  not add up to a complete allocation census: Go Sys excludes C/engine
+  storage, PHP's allocator counters exclude other native allocations, and
+  inspector categories need not equal RSS. Direct page-worker events also
+  omit nested pthreads. Keep missing accounting visible rather than treating
+  any one counter or GOMEMLIMIT as the service's total budget.
 - White-box wait probes use `runtime.notetsleepg` when called from a user
   goroutine: it releases the scheduler P while waiting. Calling a raw atomic
   wait there does not establish correct scheduler behavior. Cover zero,

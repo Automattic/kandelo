@@ -87,6 +87,28 @@ scripts/dev-shell.sh node --import tsx tests/go/memory-accounting/run.ts .contex
 
 The standard fixture builder and browser inventory include this probe too.
 
+The real Caddy fixture and WordPress host fixture also accept
+`KANDELO_FRANKENPHP_MEMORY_DIAGNOSTICS=1`. For the Caddy service, they enable
+its ordinary guest-loopback admin listener and metrics in the test-owned
+configuration. The shared `frankenphp/memory-metrics.ts` helper reads
+upstream `/metrics` and `/frankenphp/threads` alongside the kernel's process,
+linear-memory and module-cache counters. It records collection intervals
+and raw responses; these are not atomic snapshots. No application patch or
+forced collection is needed. See [Caddy metrics](https://caddyserver.com/docs/metrics)
+and [FrankenPHP thread diagnostics](https://frankenphp.dev/docs/metrics/).
+
+For WebKit inspector categories, additionally set `KANDELO_NATIVE_MEMORY_LOG`
+to a private JSONL path and load `benchmarks/observe-webkit-memory.mjs` with
+`NODE_OPTIONS=--import=/absolute/path/to/benchmarks/observe-webkit-memory.mjs`
+inside the dev shell. This diagnostic uses the pinned Playwright driver's
+private inspector connection. Its worker events count direct page workers;
+nested pthread workers are not included. Inspector category sizes are not
+process RSS. Align their UTC timestamps with the guest collection intervals,
+and keep these instrumented runs separate from performance comparisons.
+PHP's reported per-thread allocator usage excludes other C allocations;
+Go Sys excludes C and engine allocations. Neither value bounds total RSS,
+and Go's released-page count does not prove physical reclamation.
+
 The separate retirement fixture blocks a live Go guest in a pipe read,
 then destroys the machine. It observes the host's drain progress to require
 that the guest unwinds before forced worker termination. Both plain Go and

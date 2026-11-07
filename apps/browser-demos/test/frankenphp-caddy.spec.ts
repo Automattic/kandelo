@@ -1,6 +1,7 @@
 import { expect } from "@playwright/test";
 import { test } from "./support/streamed-artifacts";
 import { requestLifetimePhp } from "../../../tests/go/frankenphp/request-lifetime";
+import { caddyMemoryDiagnosticsConfig } from "../../../tests/go/frankenphp/memory-metrics";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +10,7 @@ import { ABI_CONTRACT_SECTION, readWasmCustomSectionPayload } from "../../../hos
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
 const programPath = process.env.KANDELO_FRANKENPHP_CADDY_WASM;
+const memoryDiagnostics = process.env.KANDELO_FRANKENPHP_MEMORY_DIAGNOSTICS === "1";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("FrankenPHP Caddy php_server serves PHP and static HTTP", async ({ page, baseURL, serveArtifacts }) => {
@@ -29,7 +31,7 @@ test("FrankenPHP Caddy php_server serves PHP and static HTTP", async ({ page, ba
   for (const directory of ["/etc", "/etc/caddy", "/tmp", "/var", "/srv", "/srv/www", "/srv/www/html"]) {
     image.mkdir(directory, 0o755);
   }
-  image.createFileWithOwner("/etc/caddy/Caddyfile", 0o644, 0, 0, new TextEncoder().encode(`{
+  const caddyfile = `{
   admin off
   auto_https off
   frankenphp {
@@ -40,7 +42,9 @@ test("FrankenPHP Caddy php_server serves PHP and static HTTP", async ({ page, ba
   root * /srv/www/html
   php_server
 }
-`));
+`;
+  image.createFileWithOwner("/etc/caddy/Caddyfile", 0o644, 0, 0,
+    new TextEncoder().encode(memoryDiagnostics ? caddyMemoryDiagnosticsConfig(caddyfile) : caddyfile));
   image.createFileWithOwner("/srv/www/html/index.php", 0o644, 0, 0,
     new TextEncoder().encode("<?php echo 'CADDY PHP ', $_SERVER['REQUEST_METHOD'], '|', $_SERVER['SCRIPT_NAME'];"));
   image.createFileWithOwner("/srv/www/html/robots.txt", 0o644, 0, 0,
@@ -54,9 +58,10 @@ test("FrankenPHP Caddy php_server serves PHP and static HTTP", async ({ page, ba
   });
   const browserKernelUrl = new URL(`/@fs/${resolve(repoRoot, "host/src/browser-kernel-host.ts")}`, baseURL!).href;
   const lifetimeModuleUrl = new URL(`/@fs/${resolve(repoRoot, "tests/go/frankenphp/request-lifetime.ts")}`, baseURL!).href;
+  const metricsModuleUrl = new URL(`/@fs/${resolve(repoRoot, "tests/go/frankenphp/memory-metrics.ts")}`, baseURL!).href;
   await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-  const result = await page.evaluate(async ({ programUrl, kernelUrl, browserKernelUrl, lifetimeModuleUrl, imageBytes }) => {
+  const result = await page.evaluate(async ({ programUrl, kernelUrl, browserKernelUrl, lifetimeModuleUrl, metricsModuleUrl, memoryDiagnostics, imageBytes }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
     const { countGoCollections, verifyRequestStringLifetimes, withDeadline } =
       await import(/* @vite-ignore */ lifetimeModuleUrl);
@@ -112,11 +117,21 @@ test("FrankenPHP Caddy php_server serves PHP and static HTTP", async ({ page, ba
       const lifetime = await verifyRequestStringLifetimes(kernel);
       const gcAfter = countGoCollections(stderr);
       if (gcAfter <= gcBefore) throw new Error(`No collection during requests: ${gcBefore} -> ${gcAfter}`);
+      let memory: unknown;
+      if (memoryDiagnostics) {
+        const { readCaddyMemoryMetrics } = await import(/* @vite-ignore */ metricsModuleUrl);
+        const startedAt = new Date().toISOString();
+        const [upstream, modules, processes, kernelPages] = await Promise.all([
+          readCaddyMemoryMetrics(kernel), kernel.getWasmModuleCacheStats(), kernel.enumProcs(),
+          kernel.getKernelMemoryPages(),
+        ]);
+        memory = { startedAt, finishedAt: new Date().toISOString(), upstream, modules, processes, kernelPages };
+      }
       await kernel.signalProcess(serverPid, 15);
       const exitCode = await withDeadline(exit, 30_000, "FrankenPHP shutdown timeout");
       stopped = true;
       return {
-        lifetime, gcBefore, gcAfter, exitCode,
+        lifetime, gcBefore, gcAfter, exitCode, memory,
         phpStatus: php.status,
         phpBody: decoder.decode(php.body),
         staticStatus: staticAsset.status,
@@ -134,7 +149,14 @@ test("FrankenPHP Caddy php_server serves PHP and static HTTP", async ({ page, ba
         }
       } finally { await kernel.destroy(); }
     }
-  }, { programUrl, kernelUrl, browserKernelUrl, lifetimeModuleUrl, imageBytes: Array.from(await image.saveImage()) });
+  }, { programUrl, kernelUrl, browserKernelUrl, lifetimeModuleUrl, metricsModuleUrl, memoryDiagnostics,
+    imageBytes: Array.from(await image.saveImage()) });
+
+  if (memoryDiagnostics) {
+    await test.info().attach("upstream-caddy-memory", {
+      body: JSON.stringify(result.memory), contentType: "application/json",
+    });
+  }
 
   expect(result.phpStatus, JSON.stringify(result)).toBe(200);
   expect(result.phpBody).toBe("CADDY PHP GET|/index.php");

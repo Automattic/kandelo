@@ -10,6 +10,37 @@ Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
 Implementation/evaluation checkpoints are pushed to draft PR #1492.
 The full WordPress service goal remains unfinished.
 
+**Upstream memory diagnostics:** the shared test helper now reads real
+Caddy Go metrics and FrankenPHP's per-thread PHP allocator endpoint through
+ordinary test-owned admin/metrics configuration. A fresh Node service run
+and all three browser service cases pass, zero skipped/flaky, on the
+unchanged normal Caddy artifact `606d5174c8a6` and isolated kernel
+`741aa821cccd`. The browser gate takes 35.1 seconds. The helper passes the
+declared native TypeScript check. WordPress host-stage integration is
+prepared but has not yet run on the pending replacement image.
+
+One Node collection interval reports Go heap 2,733,096 bytes, Go Sys
+42,859,644 bytes and Wasm backing 641,925,120 bytes, with process RSS
+5,938,085,888 bytes. An earlier exploratory interval reports 8,647,393,280
+bytes RSS. These are instrumented observations under concurrent build
+load, not a stable bound or controlled performance comparison. The gap
+requires engine/native attribution rather than treating GOMEMLIMIT as a
+total service budget. The raw procfs status also exposes a hard-coded zero
+VmSize; it is not usable as a backing or residency measurement.
+
+The maintained WebKit inspector adapter passes a separate real-service
+gate (18.5 seconds), producing 30 native category observations without a
+tracking error. Its direct-worker counts omit nested pthreads; category
+sizes are not RSS. The initial adapter resolved a different root Playwright
+copy and produced no native observations despite the passing service case;
+that invalid diagnostic is retained separately. The corrected adapter uses
+the browser app's actual connection. No application source, engine flags
+or forced collection are changed. Raw intervals/responses, program identity
+and native observations are under
+`.context/offline-egress-listeners/.context/upstream-memory-metrics/`.
+Full synchronized WordPress attribution, complete worker/instance counts
+and final memory/lifecycle/benchmark acceptance remain open.
+
 **Current-compiler thread retirement:** hash-verified f605 fixtures pass
 48 simultaneously locked worker Ms across five retirement waves under
 both 64-slot and 1,024-slot declarations. Two fresh Node parents exit zero

@@ -87,6 +87,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     expect(baseURL).toBeTruthy();
     const { imageUrl, kernelUrl } = artifactUrls;
     const browserKernelUrl = new URL(`/@fs/${resolve(repoRoot, "host/src/browser-kernel-host.ts")}`, baseURL!).href;
+    const metricsModuleUrl = new URL(`/@fs/${resolve(repoRoot, "tests/go/frankenphp/memory-metrics.ts")}`, baseURL!).href;
     const lifecycle: string[] = [];
     const record = (event: string) => lifecycle.push(`${new Date().toISOString()} ${event}`);
     page.on("crash", () => record("page crashed"));
@@ -101,14 +102,18 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     });
     // Retain phase evidence outside the page if its execution context is lost.
     const memoryEvidencePath = test.info().outputPath("browser-memory-samples.jsonl");
+    const memoryErrors: string[] = [];
     await page.exposeFunction("recordFrankenPhpStage", (stage: string, memory?: unknown) => {
       record(`stage: ${stage}`);
       if (memoryDiagnostics) appendFileSync(memoryEvidencePath,
         JSON.stringify({ recordedAt: new Date().toISOString(), stage, configuredPhpThreads: numThreads, memory }) + "\n");
+      if (memoryDiagnostics && memory !== null && typeof memory === "object" && "error" in memory) {
+        memoryErrors.push(`${stage}: ${String(memory.error)}`);
+      }
     });
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds, optimizerProbes }) => {
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, metricsModuleUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds, optimizerProbes }) => {
       let readMemory: (() => Promise<unknown>) | undefined;
       const stage = async (message: string) => {
         let snapshot: unknown;
@@ -123,6 +128,8 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
       };
       await stage("loading artifacts");
       const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
+      const { caddyMemoryDiagnosticsConfig, readCaddyMemoryMetrics } =
+        await import(/* @vite-ignore */ metricsModuleUrl);
       const { observeProcessExits, verifyFrankenPhpGracefulShutdown } = await import(/* @vite-ignore */ gracefulProbeUrl);
       const { imageOwnedLazyAssetDirectory } = await import(/* @vite-ignore */ runtimeUrlsModuleUrl);
       const processExits = observeProcessExits();
@@ -140,6 +147,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
       const serviceReadiness = new Promise<void>((resolveReady) => { serviceReady = resolveReady; });
       let dinitPid = 0;
       let dinitExit: Promise<number> | undefined;
+      let upstreamMetricsReady = false;
       const kernel = new BrowserKernel({
         kernelOwnedFs: true,
         maxWorkers: 12,
@@ -160,16 +168,27 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
           lazyAssetDirectory: imageOwnedLazyAssetDirectory(),
         });
         readMemory = async () => {
-          const [kernelPages, processes, modules] = await Promise.all([
+          const startedAt = new Date().toISOString();
+          const [kernelPages, processes, modules, upstream] = await Promise.all([
             kernel.getKernelMemoryPages(), kernel.enumProcs(), kernel.getWasmModuleCacheStats(),
+            upstreamMetricsReady ? readCaddyMemoryMetrics(kernel) : undefined,
           ]);
           const statuses = await Promise.all(processes.filter(process => process.pid !== 1).map(async process => {
             const status = await kernel.readFileFromVfs(`/proc/${process.pid}/status`);
             return { pid: process.pid, status: status ? decoder.decode(status) : null };
           }));
-          return { kernelBytes: kernelPages * 65536, processes, statuses, modules };
+          return { startedAt, finishedAt: new Date().toISOString(),
+            kernelBytes: kernelPages * 65536, processes, statuses, modules, upstream };
         };
         await stage("kernel initialized");
+        if (memoryDiagnostics && serviceName === "frankenphp-caddy") {
+          const path = "/etc/caddy/Caddyfile";
+          const config = await kernel.readFileFromVfs(path);
+          if (!config) throw new Error(`Missing diagnostic Caddyfile: ${path}`);
+          await kernel.writeFileToVfs(path, new TextEncoder().encode(
+            caddyMemoryDiagnosticsConfig(decoder.decode(config)),
+          ));
+        }
         if (numThreads !== 2) {
           // Both services consume the image's ordinary dinit environment.
           const path = "/etc/dinit.d/env-frankenphp";
@@ -235,6 +254,8 @@ echo json_encode([
           }
         }
         if (!homepage) throw new Error("FrankenPHP did not bind port 8080");
+        upstreamMetricsReady = memoryDiagnostics && serviceName === "frankenphp-caddy";
+        if (memoryDiagnostics) await stage("first HTTP request served");
         const opcacheResponse = await kernel.fetchInKernel(8080, {
           method: "GET", url: "/__kandelo_opcache_probe.php", headers: { Host: "localhost:8080" }, body: null,
         }, { timeoutMs: 30_000 });
@@ -381,6 +402,7 @@ echo json_encode([
           if (!restarted) throw new Error("FrankenPHP did not recover after SIGKILL");
           await stage("Caddy recovered after SIGKILL");
         }
+        upstreamMetricsReady = false;
         const graceful = await verifyFrankenPhpGracefulShutdown(
           kernel, 8080, processExits.waitForExit, serviceName,
         );
@@ -417,6 +439,7 @@ echo json_encode([
         ]);
         throw new Error(`${String(error)}\nstdout=${stdout.slice(-1000)}\nstderr=${stderr.slice(-1000)}\nlog=${log ? decoder.decode(log).slice(-3000) : "missing"}`);
       } finally {
+        upstreamMetricsReady = false;
         await stage("stopping init and destroying machine");
         if (dinitPid !== 0) await kernel.signalProcess(dinitPid, 15).catch(() => {});
         if (dinitExit) await Promise.race([
@@ -434,7 +457,7 @@ echo json_encode([
         }
       }
     }, {
-      imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName,
+      imageUrl, kernelUrl, browserKernelUrl, metricsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName,
       memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds,
       gracefulProbeUrl: new URL(`/@fs/${resolve(repoRoot, "host/test/support/frankenphp-graceful.ts")}`, baseURL!).href,
       runtimeUrlsModuleUrl: new URL("/lib/init/image-owned-runtime-urls.ts", baseURL!).href,
@@ -454,6 +477,12 @@ echo json_encode([
     const serviceLogPath = test.info().outputPath(`${serviceName}.log`);
     writeFileSync(serviceLogPath, result.serviceLog);
     await test.info().attach("guest-service-log", { path: serviceLogPath, contentType: "text/plain" });
+    if (memoryDiagnostics) {
+      await test.info().attach("browser-memory-samples", {
+        path: memoryEvidencePath, contentType: "application/x-ndjson",
+      });
+      expect(memoryErrors, "Every requested memory snapshot must succeed").toEqual([]);
+    }
 
     expect(result.opcacheStatus, `${result.opcacheBody}\n${result.serviceLog.slice(-3000)}`).toBe(200);
     expect(JSON.parse(result.opcacheBody)).toEqual({
