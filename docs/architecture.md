@@ -4040,8 +4040,12 @@ Unlike the rest of the root filesystem, `/var/log` is bounded: the rootfs
 refuses a write or growing `ftruncate` that would take the regular files under
 `/var/log` past `VAR_LOG_BYTE_LIMIT` (64 MiB of apparent size) with `ENOSPC`.
 The check is a walk of the live `/var/log` subtree at the two points where a
-file grows (`rootfs::write` and `truncate_handle`); it records nothing in the
-journal, and it is the kernel's rule on both hosts. See "Filesystem" in
+file grows (`rootfs::write` and `truncate_handle`), and only for a file that
+has had a name under `/var/log` (an inode hint set by `open`, `link` and
+`rename` through that path), so growing writes elsewhere never walk it. It
+records nothing in the journal, and it is the kernel's rule on both hosts. The
+directory itself comes from the image: the kernel does not create `/var/log`
+at boot, so an image without one has none. See "Filesystem" in
 `docs/browser-support.md` for what that means for the service logs.
 
 Homes (`/home/maker` and `/root`), `/srv`, `/var/log` and `/var/tmp` belong to the root filesystem,

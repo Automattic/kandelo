@@ -210,6 +210,24 @@ describe("dinit-derived image binary ownership", () => {
     );
   });
 
+  it("creates /var/log, which is durable and no longer supplied by a scratch mount", () => {
+    // /var/log used to be a tmpfs mount the kernel conjured whether or not the
+    // image had the directory. It is the image's own directory now, so a dinit
+    // service writing `logfile = /var/log/...` depends on this being created.
+    const fs = createFs();
+    addDinitInit(fs, [], {
+      binaries: {
+        dinit: encoder.encode("exact dinit"),
+        dinitctl: encoder.encode("exact dinitctl"),
+      },
+      services: encoder.encode("exact standalone services\n"),
+    });
+
+    const stat = fs.stat("/var/log");
+    expect(stat.mode & S_IFMT).toBe(FILE_MODES.S_IFDIR);
+    expect(stat.mode & 0o7777).toBe(0o755);
+  });
+
   it("installs exact staged Dinit bytes and preserves the base services database", () => {
     const fs = createFs();
     ensureDirRecursive(fs, "/etc");

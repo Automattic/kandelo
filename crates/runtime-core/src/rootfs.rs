@@ -175,6 +175,13 @@ struct Inode {
     kind: InodeKind,
     base_dense: bool,
     allocated_blocks: u64,
+    /// This inode has had a name under `/var/log`: it was opened, linked or
+    /// renamed in through one. Only the `/var/log` byte cap reads it, to keep
+    /// growing writes elsewhere from paying for a walk of that directory (see
+    /// [`RootfsState::var_log_admit`]). It is a hint, never proof: it is not
+    /// persisted, it is never cleared when the file leaves the directory, and
+    /// the walk it gates still decides membership.
+    in_var_log: bool,
     /// The opaque deferred description the loaded image carried for this file,
     /// or empty when it carried none.
     ///
@@ -250,6 +257,7 @@ impl Inode {
             kind,
             base_dense: true,
             allocated_blocks: 0,
+            in_var_log: false,
             deferred_payload: OwnedMetadata::empty(&ROOTFS_METADATA),
             deferred_uri: OwnedMetadata::empty(&ROOTFS_METADATA),
             deferred_digest: crate::sdef::DIGEST_NONE,
@@ -394,6 +402,9 @@ struct RootfsState {
     /// writing 64 MiB.
     #[cfg(test)]
     var_log_byte_limit: u64,
+    /// Walks of the `/var/log` subtree, so tests can see which writes pay one.
+    #[cfg(test)]
+    var_log_walks: core::cell::Cell<u32>,
     dirty_persistent_timestamps: BTreeSet<u32>,
     /// Root ("/") inode index, created on first use.
     root: Option<u32>,
@@ -502,6 +513,8 @@ impl RootfsState {
             fail_inode_reservation: None,
             #[cfg(test)]
             var_log_byte_limit: VAR_LOG_BYTE_LIMIT,
+            #[cfg(test)]
+            var_log_walks: core::cell::Cell::new(0),
             dirty_persistent_timestamps: BTreeSet::new(),
             root: None,
             dir_iters: Vec::new(),
@@ -4445,6 +4458,18 @@ pub fn is_dir(path: &[u8]) -> bool {
 /// converts a base file to an empty overlay file directly. Directories go
 /// through [`opendir`].
 pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
+    let handle = open_unmarked(path, flags, mode, uid, gid)?;
+    if path_is_under_var_log(path) {
+        if let Ok(index) = file_handle_to_inode(handle) {
+            ROOTFS.with(|state| {
+                if let Some(inode) = state.get_mut(index) { inode.in_var_log = true; }
+            });
+        }
+    }
+    Ok(handle)
+}
+
+fn open_unmarked(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
     if resizable_persistence_enabled() && flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
         let handle = open(path, flags & !O_TRUNC, mode, uid, gid)?;
         if let Err(error) = truncate_handle(handle, 0, |_, _| Err(Errno::EIO)) {
@@ -5062,6 +5087,8 @@ impl RootfsState {
     /// (it is no longer a log); one renamed in is counted from then on, and is
     /// not itself refused.
     fn var_log_usage(&self, target: u32) -> Result<Option<(u64, bool)>, Errno> {
+        #[cfg(test)]
+        self.var_log_walks.set(self.var_log_walks.get() + 1);
         let Some(root) = self.root else { return Ok(None) };
         let Ok(dir) = self.walk(root, &[b"var", b"log"]) else { return Ok(None) };
         if !self.get(dir).is_some_and(Inode::is_dir) {
@@ -5105,6 +5132,12 @@ impl RootfsState {
         if end <= old_size {
             return Ok(end);
         }
+        // Only a file that has had a name under `/var/log` can be governed by
+        // its cap. Everything else (homes, `/tmp`-like roots, `/srv`) returns
+        // here without touching the directory.
+        if !self.get(target).is_some_and(|inode| inode.in_var_log) {
+            return Ok(end);
+        }
         let Some((used, true)) = self.var_log_usage(target)? else { return Ok(end) };
         let allowed_end = old_size.saturating_add(self.var_log_byte_limit().saturating_sub(used));
         if offset >= allowed_end {
@@ -5112,6 +5145,43 @@ impl RootfsState {
         }
         Ok(end.min(allowed_end))
     }
+}
+
+/// Whether canonical absolute `path` names something beneath `/var/log`.
+fn path_is_under_var_log(path: &[u8]) -> bool {
+    let components = split_components(path);
+    components.len() > 2 && components[0] == b"var" && components[1] == b"log"
+}
+
+/// Note that what `path` now names gained a name under `/var/log`, so the cap
+/// governs its growth. Called after the namespace change that gave it one:
+/// an `open` through the directory, or a `link` or `rename` into it. A moved
+/// directory marks the files beneath it.
+fn mark_var_log_names(path: &[u8]) {
+    if !path_is_under_var_log(path) {
+        return;
+    }
+    let components = split_components(path);
+    ROOTFS.with(|state| {
+        let Some(root) = state.root else { return };
+        let Ok(start) = state.walk(root, &components) else { return };
+        let mut stack: Vec<u32> = Vec::new();
+        stack.push(start);
+        while let Some(index) = stack.pop() {
+            let Some(inode) = state.get_mut(index) else { continue };
+            if let InodeKind::Dir(entries) = &inode.kind {
+                // Best effort under allocation failure: a file left unmarked is
+                // simply not capped, which is how it stood before the move.
+                if stack.try_reserve(entries.len()).is_err() {
+                    return;
+                }
+                let children: Vec<u32> = entries.values().copied().collect();
+                stack.extend(children);
+            } else {
+                inode.in_var_log = true;
+            }
+        }
+    });
 }
 
 /// `buf`, cut short where `/var/log` is full; see [`RootfsState::var_log_admit`].
@@ -6793,6 +6863,12 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
 /// compatible type is atomically replaced; type mismatches yield ENOTDIR/EISDIR
 /// and a non-empty destination directory yields ENOTEMPTY.
 pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    rename_unmarked(old, new)?;
+    mark_var_log_names(new);
+    Ok(())
+}
+
+fn rename_unmarked(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let old_comps = split_components(old);
     let new_comps = split_components(new);
     if old_comps.is_empty() || new_comps.is_empty() {
@@ -6947,6 +7023,12 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
 /// links to directories are EPERM; an existing destination is EEXIST. `old` is
 /// not dereferenced (the kernel already applied the syscall's follow policy).
 pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    link_unmarked(old, new)?;
+    mark_var_log_names(new);
+    Ok(())
+}
+
+fn link_unmarked(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let old_comps = split_components(old);
     let new_comps = split_components(new);
     if new_comps.is_empty() {
@@ -13015,6 +13097,60 @@ mod tests {
         release_handle(elsewhere);
     }
 
+    fn var_log_walks() -> u32 {
+        ROOTFS.with(|state| state.var_log_walks.get())
+    }
+
+    #[test]
+    fn a_growing_write_outside_var_log_does_not_walk_var_log() {
+        let _guard = TestGuard::acquire();
+        memory_root_with_var_log();
+        set_var_log_byte_limit(1000);
+        let home = create(b"/home/notes");
+        let log = create(b"/var/log/messages");
+        // Populate the directory so a stray walk would have something to count.
+        mkdir(b"/var/log/nginx", 0o755, 0, 0).unwrap();
+        release_handle(create(b"/var/log/nginx/error.log"));
+
+        let before = var_log_walks();
+        assert_eq!(var_log_write(home, 0, &[1; 4096]), Ok(4096));
+        assert_eq!(var_log_write(home, 4096, &[1; 4096]), Ok(4096));
+        assert_eq!(truncate_handle(home, 1 << 20, |_, _| Err(Errno::EIO)), Ok(()));
+        assert_eq!(var_log_walks(), before, "a write outside /var/log paid for a /var/log walk");
+
+        // A write into the directory does pay, once per growing write ...
+        assert_eq!(var_log_write(log, 0, &[2; 10]), Ok(10));
+        assert_eq!(var_log_walks(), before + 1);
+        // ... and an overwrite that grows nothing does not.
+        assert_eq!(var_log_write(log, 0, &[3; 10]), Ok(10));
+        assert_eq!(var_log_walks(), before + 1);
+        release_handle(log);
+        release_handle(home);
+    }
+
+    #[test]
+    fn a_file_linked_or_renamed_into_var_log_is_capped_from_then_on() {
+        let _guard = TestGuard::acquire();
+        memory_root_with_var_log();
+        set_var_log_byte_limit(100);
+        let linked = create(b"/home/linked");
+        let moved = create(b"/home/moved");
+        assert_eq!(var_log_write(linked, 0, &[1; 50]), Ok(50));
+        link(b"/home/linked", b"/var/log/linked").unwrap();
+        rename(b"/home/moved", b"/var/log/moved").unwrap();
+        // Handles opened before the file had a name under /var/log are governed
+        // too: 50 bytes already count, 50 more fit, and no more after that.
+        assert_eq!(var_log_write(moved, 0, &[2; 60]), Ok(50));
+        assert_eq!(var_log_write(moved, 50, b"x"), Err(Errno::ENOSPC));
+        assert_eq!(var_log_write(linked, 50, b"x"), Err(Errno::ENOSPC));
+        // A whole directory moved in marks the files beneath it.
+        mkdir(b"/home/tree", 0o755, 0, 0).unwrap();
+        let inner = create(b"/home/tree/inner");
+        rename(b"/home/tree", b"/var/log/tree").unwrap();
+        assert_eq!(var_log_write(inner, 0, b"x"), Err(Errno::ENOSPC));
+        for handle in [linked, moved, inner] { release_handle(handle); }
+    }
+
     #[test]
     fn a_persistent_var_log_write_past_the_cap_returns_enospc() {
         let _guard = TestGuard::acquire();
@@ -13079,6 +13215,12 @@ mod tests {
         let journal = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
         enable_resizable_persistence(Box::new(journal), digest, &mut source).unwrap();
         assert_eq!(lstat(b"/var/log").unwrap_err(), Errno::ENOENT);
+        // The directory is not synthesized: the image is what provides it, so a
+        // daemon opening its log on such an image gets the truthful ENOENT.
+        assert_eq!(
+            open(b"/var/log/messages", O_CREAT | O_RDWR, 0o644, 0, 0),
+            Err(Errno::ENOENT),
+        );
         set_var_log_byte_limit(1);
         let handle = open(b"/anywhere", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
         assert_eq!(write(handle, 0, &[1; 4096], &mut source), Ok(4096));
