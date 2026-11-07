@@ -92,6 +92,37 @@ separate design assessment before invasive toolchain changes. The
 maintainer has been asked which boundary to adopt. The current explicit
 accessors remain in place, with no claim of unchanged-source cgo support.
 
+**Automatic field translation assessment:** a minimal source example takes
+the address of a C pointer field and passes it to ordinary Go code:
+
+```go
+func indirect(p **C.int) *C.int { return *p }
+func Read(s *C.slot) *C.int { return indirect(&s.pointer) }
+```
+
+Here C defines `slot` as a struct containing `int *pointer`. With the same
+pinned toolchain, its native Darwin/arm64 archive compiles, while Kandelo's
+archive correctly rejects `*uint32` as `**C.int`. The observed command and
+results are retained in `.context/cgo-field-address-assessment.log`, with
+the reproduction in `.context/cgo-field-address-model/`. This is a compile
+diagnostic, not runtime validation or a new production feature.
+
+A getter/setter rewrite does not preserve an escaping field address. A
+temporary changes identity, aliasing, concurrent observations and immediate
+write-through; casting it to `**C.int` leaves the four/eight-byte storage
+mismatch. Full transparent compatibility therefore needs more than local
+field rewrites. The current cgo pass rewrites C references/calls rather
+than performing such whole-package pointer analysis. Its runtime pointer
+checks also use Go field type metadata, so raw integer fields cannot stand
+in for GC-traced Go pointers. No automatic translation implementation,
+compiler/collector change or additional package adaptation is made.
+
+The decision remains between explicitly scoped mixed-ABI adapters and a
+larger common-ABI/translation design. Follow the maintainer's instruction
+to discuss before invasive work; do not conceal this boundary in a demo
+patch. Generic recursion instrumentation would address a different issue
+and cannot repair this source-level pointer representation mismatch.
+
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55 and main `21cfba152` (last fetched November 5). The Go consumer
 recipes pin `5834adc306dddf6784c20e402deeabf643ad9c37`. Go's collector and
