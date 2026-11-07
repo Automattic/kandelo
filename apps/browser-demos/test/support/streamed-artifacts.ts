@@ -1,7 +1,7 @@
 import { createReadStream, statSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { test as base } from "@playwright/test";
+import { test as base } from "../../playwright-test";
 
 type Artifact = { contentType: string } & ({ path: string } | { bytes: Uint8Array });
 export type ServeArtifacts = (artifacts: Record<string, Artifact>) => Promise<Record<string, string>>;

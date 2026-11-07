@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { sampleBrowserNativeMemory } from "./support/browser-native-memory";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import {

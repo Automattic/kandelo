@@ -6,18 +6,57 @@
 four-byte Go/C pointers and eight-byte scalar alignment. Latest selected Go
 source is
 [`f60530600f70`](https://github.com/kandelo-dev/go/commit/f60530600f70a5ea905a907ac311ec8bd2ae8ac4).
-Latest main `f762afc10308` is merged as `296c883bd`; ABI remains 55.
+Latest main `1b6f3783d3d5` is merged as `359e4c7f0`; ABI remains 55.
 Implementation/evaluation checkpoints are tracked in draft PR #1492.
 The full WordPress service goal remains unfinished.
 
-**Current full-image retry:** job
-`wordpress-wasm32-stable-1107-121249-d310` is running on `6fe140517`.
-It uses the normal full canonical graph and a fresh projection under
-`.context/frankenphp-wasm32-final-stable-source-only-v1`, preserving the
-failed attempt separately. All declared inputs are frozen, including the
-docs helper. Publication, exact image selection, layout audit and two
-Node service cases are the next acceptance points. There is no verified
-replacement preview yet.
+**Current priority: retry upstream PHP's unchanged optimizer.** The
+maintainer asks whether the homogeneous wasm32 build makes the iterative
+CFG candidate unnecessary. PHP already had four-byte pointers, so Go's
+pointer change alone does not establish that; the current build and call
+path need measurement. PHP revision 24 and ZTS revision 10 stop applying
+that patch. FrankenPHP classic 40 and combined Caddy 21 rebuild against
+that library. The experimental patch remains available for review and is
+not applied by the recipes. No other PHP adaptations or Go algorithms
+are changed for this comparison.
+
+Use the new normal partial-WordPress workflow for this experiment. It
+keeps the rootfs base and the image's own PHP/FPM/FrankenPHP dependencies,
+without building unrelated canonical-shell applications. Run focused
+optimizer probes and real editor workflows in all three browser engines;
+a synthetic-probe result must not substitute for the real WordPress path.
+Canonical images, lifecycle and full benchmark acceptance remain open.
+
+**Verified canonical checkpoint before the latest merges:** job
+`wordpress-wasm32-stable-1107-121249-d310` passes in 39m48s. All 165 nodes
+complete: 157 cached and eight built. WordPress revision 43 is 82,844,469
+bytes, SHA-256 `a868328785a6fe769279a2900cf7c369afa61c011ae424740f198ce69355be30`;
+the selected kernel is `6f5410ea67d0`. The FHS audit and two Node service
+cases pass with zero skips. Image inspection proves WordPress 7.0 and
+both embedded FrankenPHP binaries match the independently reproduced
+classic-39/Caddy-20 bytes. The first verifier assumed `/usr/bin`; it is
+corrected to the builder's real `/usr/sbin` daemon paths without changing
+the image. The compiled host build passes. This preserved checkpoint is
+not final browser acceptance or proof of the unchanged PHP optimizer.
+
+**Latest-main integration and cache comparison preparation:** main's lazy
+preparation/transfer deadlines and cache-key canonicalization are merged,
+then the PCM, quiet-browser-fixture and DOS changes through `1b6f3783d`.
+Conflicts retain Go secure-startup coverage, memory observations and the
+shared silent test fixture. The shell-selection test is classified as a
+prepared product because it reaches the image writer. Sixty-three focused
+source/layout/lazy-fetch/prepared-exec cases pass before that last merge;
+new-merge checks remain required. WP Super Cache 3.1.5 is now a pinned,
+unchanged, initially inactive source dependency for WordPress revision 44
+and family revision 10. Cache behavior and visitor timing are unvalidated.
+
+**Clean SDK and benchmark preparation:** all 492 declared installed core
+outputs (246 per architecture), including headers, are physically equal
+to independently built SDKs from clean pinned musl `0784374d`. Existing
+submodule edits remain untouched; this is not a full clean-release build.
+The separate main checkout passes normal complete SDK bootstrap and
+relocatable graphics configuration checks in 2m25s. Its next full product
+build remains deferred while the unchanged-optimizer experiment runs.
 
 **Platform corrections integrated for combined validation:** the guest TCP
 namespace correction, mmap fresh-page clearing and thread-private startup

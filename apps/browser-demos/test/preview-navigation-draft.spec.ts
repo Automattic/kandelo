@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 test("a late preview load preserves an address being edited", async ({ page }) => {
   await page.route("**/navigation-contract/*.html", route => route.fulfill({

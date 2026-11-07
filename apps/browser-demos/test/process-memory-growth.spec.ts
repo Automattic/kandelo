@@ -1,6 +1,6 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 

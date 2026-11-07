@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 test("a computer route without service-worker control never serves the app shell", async ({ request, baseURL }) => {
   expect(baseURL).toBeTruthy();
