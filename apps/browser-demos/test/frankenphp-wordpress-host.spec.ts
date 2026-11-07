@@ -482,14 +482,14 @@ echo json_encode([
       const startups = result.serviceLog.split("\n").flatMap((line: string) => {
         try {
           const event = JSON.parse(line);
-          return event.logger === "frankenphp" && typeof event.num_threads === "number" ? [event] : [];
+          return event.logger === "frankenphp" && typeof event.total_threads === "number" ? [event] : [];
         } catch { return []; }
       });
       expect(startups.length).toBeGreaterThan(0);
-      expect(startups.every(event => event.num_threads === numThreads)).toBe(true);
+      expect(startups.every(event => event.total_threads === numThreads)).toBe(true);
     }
     expect(result.graceful).toMatchObject({ listenerClosed: true, status: 200, serverExit: 0, stopExit: 0 });
-    expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? `"num_threads":${numThreads}` : `num_threads=${numThreads}`);
+    expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? `"total_threads":${numThreads}` : `total_threads=${numThreads}`);
     expect(result.serviceLog).not.toMatch(/^(?:panic:|fatal error:)/m);
     expect(result.diagnostics).toEqual([]);
     const drained = result.shutdown.filter(event => event.phase === "draining").at(-1);

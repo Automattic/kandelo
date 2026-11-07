@@ -13,12 +13,13 @@ The maintainer explicitly approved developing and evaluating a shared
 upstream improvement. The candidate is on
 [`kandelo-wasm32-regexp-candidate`](https://github.com/kandelo-dev/go/tree/kandelo-wasm32-regexp-candidate),
 currently [`f6053060`](https://github.com/kandelo-dev/go/commit/f60530600f70a5ea905a907ac311ec8bd2ae8ac4).
-Normal Kandelo package pins remain `a0b048e1`. No upstream issue or pull
-request has been submitted. The existing WordPress preview is preserved.
+After the expanded compiler gate passes, all four normal Kandelo Go pins
+and `kandelo-wasm32-prototype` select f605. Normal consumer/image rebuilds
+are pending. No upstream issue or pull request has been submitted. The existing WordPress preview is preserved.
 
-The candidate is **not adopted**. It demonstrates stack safety for the
-exercised cases, but deep-pattern compilation is slower on the tested Wasm
-hosts. Actual FrankenPHP+Caddy now passes the focused service gate on Node
+The candidate is **selected for normal package rebuilds** after its broad
+validation. It demonstrates stack safety for the exercised cases, but
+deep-pattern compilation is slower on the tested Wasm hosts. Actual FrankenPHP+Caddy now passes the focused service gate on Node
 and all three browsers, including WebKit. No request-rate or WordPress
 performance conclusion follows from these microbenchmarks.
 
@@ -70,8 +71,16 @@ skipped all three cases; it is retained separately and supports no passing
 claim. The direct fixture initially lacked its ABI-contract stamp; the
 corrected run stamps exactly the freshly built output through the normal
 fixture helper. Neither attempt is substituted for the executed gate.
-The broad compiler/POSIX suite, all optional cgo cases, final WordPress
-workflows and reproducibility gates have not been rerun on this candidate.
+A later clean f605 build also passes all five standard-library build modes,
+18 Node runtime/cgo cases and the expanded three-engine compiler suite:
+297 passed, zero skipped/flaky, 15m54s. This includes all 14 optional
+cgo-runtime/PHP probes per engine. All 61 selected program artifacts match
+the expected compiler or C SDK producer and kernel ABI; typed prototype
+receipts bind source/target/layout. The freshly rebuilt manual C-link
+fixture exposed legacy assembly assumptions on both A0 and f605; its
+wasm32 assembly now uses direct C handles and four-byte values. No compiler
+or app correction was needed. Final WordPress and reproducibility gates
+remain open.
 
 ## Compilation measurements
 
@@ -166,8 +175,8 @@ planned WordPress/FPM comparison. A first diagnostic setup used an
 incorrect binary-resolver path and accidentally captured shell banners;
 it executed no service samples and is retained as an invalid attempt.
 
-Normal recipe pins, application source and the preserved preview remain
-unchanged. Stack safety is established for these service cases; broad
+Application source and the preserved preview remain unchanged. The normal
+Go recipe pins now select f605; their rebuilds remain pending. Stack safety is established for these service cases; broad
 compiler, cgo, memory/lifecycle and production WordPress gates remain open.
 
 ## Reproduction and remaining decision
@@ -198,10 +207,26 @@ smoke-tested on native/Node and all three browsers under
 artifacts across Node/browser rows; a deliberately mixed cohort is rejected.
 Smoke results do not enter the full comparison above.
 
-Promotion remains pending broader coherent compiler validation, with the
-compilation tradeoff explicit. The candidate is a robustness improvement,
+Broad coherent compiler validation now passes and normal Go pins select
+f605, with the compilation tradeoff explicit. Normal package rebuilds,
+reproducibility and final image/application validation remain pending. The candidate is a robustness improvement,
 not an established speed improvement. If that cost is unacceptable, further
 profiling or a separate instrumentation design is needed; restoring the old
 hybrid fallback is not the recommendation. Final image, WordPress workflow,
 lifecycle/memory and fair PHP-FPM performance gates remain in the parent
 plan. PHP's optimizer-recursion candidate remains separate.
+
+## Expanded validation checkpoint
+
+Fresh source/build and Node logs are in `.context/go-regexp-broad-gates/`.
+`cohort-identity.json` records 61 artifact hashes and their Wasm producer/ABI
+checks. The completed browser report is
+`browser-reports/playwright.c7dLsh/{report.json,context.json,console.log}`.
+Builds and corrections retain separate failed observations; none is a test
+allowance. Native `go version -m` does not recognize this Wasm format, so
+the audit uses the linker's standard producer metadata, not guessed strings.
+
+The original A0 source/toolchain is preserved at
+`.context/go-regexp-baseline-a0` before fast-forwarding the prototype. Its
+compiler tools are relocated from the original A0 build, not freshly built.
+Timing artifacts and their recorded hashes remain unchanged.

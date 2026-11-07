@@ -8,11 +8,16 @@ regression and real Caddy service tests are separate gates.
 Run from the repository root through the declared dev shell. Both inputs
 must be compiler binaries from Git source checkouts that support
 `wasip1/wasm32`; install the repository's declared Playwright browsers first.
-For example, with the maintained prototype and experimental candidate:
+Use A0 (`a0b048e1`) as the baseline and f605 (`f6053060`) as the candidate.
+The prototype branch now includes f605, so comparing its current head with
+the candidate would compare the same implementation. The local A0 source
+worktree/toolchain was preserved before promotion; its compiler tools were
+relocated from the original clean A0 build, not independently rebuilt.
+For example, with those two recorded inputs:
 
 ```bash
 scripts/dev-shell.sh bash benchmarks/go-regexp/build.sh \
-  .context/go-wasm32-study-7VN0Qm/upstream/bin/go \
+  .context/go-regexp-baseline-a0/bin/go \
   .context/go-regexp-upstream-candidate/bin/go \
   .context/go-regexp-benchmark
 scripts/dev-shell.sh node benchmarks/go-regexp/run-native.mjs \

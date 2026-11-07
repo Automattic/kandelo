@@ -138,7 +138,7 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
     if (!serviceLogBytes) throw new Error(`Missing ${service} service log`);
     const serviceLog = new TextDecoder().decode(serviceLogBytes);
     expect(serviceLog).toContain(service === "frankenphp-caddy" ? "FrankenPHP started" : "FrankenPHP classic listening");
-    expect(serviceLog).toContain(service === "frankenphp-caddy" ? '"num_threads":2' : "num_threads=2");
+    expect(serviceLog).toContain(service === "frankenphp-caddy" ? '"total_threads":2' : "total_threads=2");
     if (process.env.KANDELO_TEST_REPORT_DIR) {
       writeFileSync(join(process.env.KANDELO_TEST_REPORT_DIR, `${service}-service.log`), serviceLogBytes);
     }

@@ -3,66 +3,72 @@
 ## Current checkpoint — 2026-11-07
 
 **Active migration:** Go 1.28 development `kandelo/wasm32`, with matching
-four-byte Go/C pointers and eight-byte scalar alignment. Latest pushed Go
+four-byte Go/C pointers and eight-byte scalar alignment. Latest selected Go
 source is
-[`a0b048e19e1b`](https://github.com/kandelo-dev/go/commit/a0b048e19e1b183db33f52d26c08d1c63b4f1c1d).
+[`f60530600f70`](https://github.com/kandelo-dev/go/commit/f60530600f70a5ea905a907ac311ec8bd2ae8ac4).
 Latest main `afeedd583ca5` is merged as `dedd2706b`; ABI remains 55.
-The implementation and evaluation checkpoints are pushed to draft PR #1492,
-including the unadapted FrankenPHP 1.13.5/Caddy 2.11.9 build and request
-proof. The full
-WordPress service goal remains unfinished.
+Implementation/evaluation checkpoints are pushed to draft PR #1492.
+The full WordPress service goal remains unfinished.
 
-**Approved upstream regexp candidate:**
-[`f6053060`](https://github.com/kandelo-dev/go/commit/f60530600f70a5ea905a907ac311ec8bd2ae8ac4)
-uses one shared iterative traversal with no collector/code-generator
-changes. A clean compiler build, native regexp suites, race-enabled syntax
-suite, 2,022 full-program comparisons and deep/concurrent tests pass.
-The exact regression passes Node, six WASI architecture/browser controls
-and Kandelo's three-browser gate (3/3, 9.6 seconds). Normal package pins
-remain A0. Final alternating timings retain shallow allocation counts but
-show URL compilation 50–58% slower on Node/WASI, Chromium and Firefox;
-WebKit's baseline overflows and the candidate completes. These are compile
-costs, not request throughput. The full measured table, failed/skipped
-attempts, source provenance and adoption gates are in the
-[regexp evaluation](2026-11-07-go-regexp-upstream-evaluation.md).
-The reusable harness is `benchmarks/go-regexp/`. A private normal-resolver
-FrankenPHP+Caddy build changes only the Go pin to evaluate actual service
-behavior; the existing preview and normal package recipes are preserved.
-The private build passes in 7m28s with a freshly bootstrapped f605 compiler.
-Its Node service gate passes PHP/static/OPcache, 32 concurrent CGI/body
-checks during collection (17 to 34), and normal exit 0 without diagnostics.
-Its Chromium/Firefox/WebKit service gate passes 3/3 (35.4 seconds), resolving
-the exercised real Caddy WebKit startup failure. A six-child alternating
-Node diagnostic has whole-test medians 5.414 seconds original and 5.452
-seconds candidate, with overlapping ranges; this small sample does not
-establish a performance difference or measure request throughput. Normal
-pins remain unchanged pending broad coherent compiler validation.
+**Approved shared regexp improvement is selected for normal rebuilds:**
+The prototype branch and all four Go recipes now select f605. It has one
+iterative traversal, no collector/code-generator changes, native regexp/race
+passes and 2,022 full-program comparisons. Its fresh compiler passes five
+standard-library modes and 18 Node runtime/cgo cases. The expanded browser
+inventory passes **297/297, zero skipped/flaky, 15m54s**, including all 14
+optional cgo-runtime/PHP probes per engine. Source/producer/ABI checks bind
+all 61 selected program artifacts to this build. The failed build/inspection
+attempts and initial fixture failures remain separate evidence.
 
-The next candidate gate rebuilds a fresh f605 compiler, all five standard
-library modes and every fixture in an expanded 297-case browser inventory.
-It enables the previously omitted 14 cgo-runtime/PHP probes per engine.
-Go-port fixtures now use the shared HTTP artifact streamer, preserving
-ABI/content checks. A smoke exposed Chromium's unrelated implicit favicon
-404 on the bare test page; that fixture now declares an empty icon, with
-console errors still asserted and their resource URLs included. The
-corrected regexp smoke passes all three engines (3/3, 9.7 seconds). Full
-candidate validation and promotion remain pending.
+The fresh manual C-link fixture initially traps on both A0 and f605 because
+its assembly retained legacy `PC >> 16` handles and eight-byte value slots.
+Its target-specific wasm32 assembly uses direct C handles and four-byte
+values/results while retaining the separate eight-byte continuation slot.
+The corrected direct controls, actual Node process and expanded browser
+cases pass. No compiler or application correction was needed. Earlier
+broad runs loaded a preexisting link-only artifact; their passing result
+does not prove its fresh-source provenance.
 
-The first broad build (`go-regexp-broad-gates-1107-020110-fdfb`) reaches all
-five standard-library passes, native regexp/race passes, seven focused
-runtime/cgo Node passes and a fresh PHP-embed build, then stops at the
-handwritten Go/C link-only process fixture. Fresh A0 and f605 source builds
-both fail its indirect call: the assembly still shifts C handles by 16 and
-uses legacy eight-byte value/result slots. The target-specific wasm32
-fixture now uses direct handles and four-byte values, preserving Go's
-separate eight-byte continuation slot. Direct C controls pass Node and
-Chromium, and the corrected actual Kandelo Node process exits 0 with its
-expected data marker and no diagnostics. Neither compiler nor app source
-changes. Earlier broad runs loaded a preexisting link-only artifact and do
-not establish its fresh-source provenance. The remaining Node/browser
-phases will resume from the completed f605 builds, retaining both failures.
+The exact regexp regression passes Node, six independent WASI architecture/
+browser controls and Kandelo's three-engine gate. A private normal-resolver
+unadapted FrankenPHP 1.13.5/Caddy 2.11.9 build passes in 7m28s using a newly
+bootstrapped f605 compiler. PHP/static/OPcache, 32 concurrent CGI/body checks
+during Go collection and normal exit pass Node and all three browsers,
+resolving the exercised Caddy WebKit startup failure. Compilation-only
+measurements show the cost explicitly: URL compilation is 50–58% slower
+on Node/WASI, Chromium and Firefox; WebKit's original overflows. A six-child
+Node whole-service diagnostic has medians 5.414 seconds original and 5.452
+seconds candidate, with overlapping ranges; it establishes no performance
+difference or request-throughput result. Full results and provenance are in
+the [evaluation](2026-11-07-go-regexp-upstream-evaluation.md).
 
+Selected normal revisions are GoHello 32, classic FrankenPHP 37,
+FrankenPHP+Caddy 18 and standalone Caddy 14. Their normal rebuilds and
+WordPress revision 43 rebuild remain pending, followed by final workflows,
+memory/lifecycle and performance gates. The saved preview is preserved.
+The original A0 source/toolchain is retained at
+`.context/go-regexp-baseline-a0` for comparisons; its existing compiler is
+relocated, not independently rebuilt. The prototype's local developer
+compiler will be rebuilt after its source fast-forward.
 
+The Go browser harness streams program/kernel/image bytes. Its corrected
+regexp smoke passes 3/3 and expected slot-exhaustion smoke passes 3/3.
+The bare fixture declares an empty icon after the first two runs expose an
+unrelated Chromium favicon 404; console errors remain asserted with URLs.
+Native `go version -m` cannot parse these Wasm files, so the cohort audit
+uses standard producer metadata and fresh-builder receipts. Historical
+`*-before` artifacts remain preserved outside the selected cohort.
+
+A private PHP optimization experiment adds a bounded 16-frame local buffer
+to the existing portable iterative CFG candidate. Native optimizer results
+match (135 passes, one expected failure), and 26 standalone Node graph
+cases pass. A six-round three-way native compilation comparison has
+WordPress medians 388.15 ms recursive, 388.63 ms heap-stack and 390.37 ms
+inline-stack, with overlapping ranges. This does not establish a WordPress
+speed improvement. No PHP recipe/artifact changed; native source/binary
+snapshots and results are `.context/php-cfg-inline-evaluation/`. All 78 cold-worker browser graph cases also pass. The inline variant is
+not adopted: this run establishes no WordPress compilation speed advantage.
+The normal PHP recipe and artifact remain unchanged.
 
 **Normal build integration:** the declared Nix Go 1.25.8 builds verified
 Go 1.26.10 source, which bootstraps the pinned Go 1.28 compiler. These are
@@ -246,13 +252,11 @@ Evidence: `.context/go32-clean-a0-*`,
 
 Remaining order:
 
-1. The approved regexp candidate passes real FrankenPHP+Caddy on Node and
-   three browsers. Decide promotion with the compilation cost explicit; finish
-   normal reproducibility and coherent Node/three-engine compiler/cgo/POSIX
-   gates. The upstream Caddy dependency upgrade and obsolete application
-   patch removal are complete; the full service goal is not.
-2. Complete remaining Go consumer builds and coherent WordPress images.
-   Preserve the existing preview until its replacement passes validation.
+1. Publish normal f605 Go consumer builds and verify independent package
+   reproducibility. The fresh compiler/Node/297-browser and real Caddy gates
+   pass; preserve the measured regexp compilation tradeoff.
+2. Rebuild coherent WordPress images and verify replacement previews before
+   switching the preserved preview.
 3. Finish login/editor/post/template saves/uploads and lifecycle/recovery,
    blocking waits, memory accounting, WebKit footprint and resource gates.
 4. Run sustained traffic, fair PHP-FPM and user-facing comparisons, and

@@ -11,8 +11,8 @@ migration is not complete.
 | Consumer | Selected compiler/target |
 | --- | --- |
 | `go-hello`, `wasm32posix-go` | Go 1.28 development, `kandelo/wasm32`; four-byte Go/C pointers |
-| Custom classic FrankenPHP recipe | Same wasm32 target; selected 1.13.5/revision 36 awaits rebuild. Historical 1.11.0/revision 35 passes Node and three-browser request/GC/exit checks |
-| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; unadapted FrankenPHP 1.13.5/Caddy 2.11.9 passes Node/Chromium/Firefox requests and shutdown; WebKit native-stack failure remains. Standalone Caddy build is pending |
+| Custom classic FrankenPHP recipe | Same wasm32 target; selected 1.13.5/revision 37 with Go f605 awaits normal rebuild |
+| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; selected Caddy revision 14 and combined revision 18 use Go f605. Private unadapted FrankenPHP 1.13.5/Caddy 2.11.9 passes Node and all three browsers; normal rebuilds are pending |
 
 The [implementation checkpoint](plans/2026-09-05-go-gc-port-milestone1-plan.md)
 records the exact source pins, validation and remaining release gates.
@@ -119,17 +119,18 @@ exit handlers; explicit C `exit` runs them and C `_exit` bypasses them.
 The [runtime and cgo guide](agent-guidance/go-runtime.md) describes the exact
 contracts and their tests.
 
-The current unmodified regexp compiler still exceeds WebKit's native Wasm
+The previous unmodified regexp compiler exceeded WebKit's native Wasm
 call depth on the bounded-repeat fixture. Both upstream WASI architectures
-reproduce it without Kandelo imports; Chromium and Firefox pass. The full
-wasm32 browser inventory is 254/255 passing, with that failure retained.
-The approved shared iterative regexp candidate passes the focused regression
-on Node and three browsers, with full-program equivalence tests. Its clean
-build and compilation benchmarks are recorded in the
-[upstream evaluation](plans/2026-11-07-go-regexp-upstream-evaluation.md).
-Deep-pattern compilation is slower on the tested Wasm hosts. The candidate
-also passes the real FrankenPHP+Caddy service gate on Node and all three
-browsers; normal package pins have not adopted it.
+reproduce it without Kandelo imports. The approved shared iterative
+improvement is now selected in all four normal Go recipes at `f6053060`.
+The fresh compiler passes all five standard-library build modes, 18 Node
+runtime/cgo checks and the expanded three-engine compiler gate (297/297,
+zero skipped/flaky), including PHP embed, archive exports and signals.
+The real FrankenPHP+Caddy service also passes Node and three browsers.
+Normal package/image rebuilds and final WordPress validation remain pending.
+Deep-pattern compilation is slower on tested Wasm hosts; the
+[upstream evaluation](plans/2026-11-07-go-regexp-upstream-evaluation.md)
+records that tradeoff without a request-throughput claim.
 
 Caddy 2.10.2 also rejects Go 1.28's default JSON type alias during module
 configuration. Upstream corrected this in
@@ -137,7 +138,8 @@ configuration. Upstream corrected this in
 The selected FrankenPHP 1.13.5 release already pins Caddy 2.11.9. Its
 normal source build applies no application patch or JSON experiment override.
 Real requests, OPcache and bulk CGI strings during observed collection pass
-on Node, Chromium and Firefox; WebKit still fails on native call depth.
+on Node, Chromium and Firefox with A0; the selected f605 compiler also
+passes the private real-service WebKit gate.
 
 ## FrankenPHP and WordPress
 

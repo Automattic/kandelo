@@ -14,15 +14,17 @@ The active migration uses branch `kandelo-wasm32-prototype`, based on Go
 replace another checkout's untracked artifacts. Inspect its branch/version
 and each package's `go_toolchain` pin first.
 
-All four Go recipes and the SDK wrapper now select `kandelo/wasm32`.
-Normal classic FrankenPHP revision 35 passes HTTP, bulk CGI/GC and normal
-shutdown on Node and three browsers. Unmodified FrankenPHP 1.13.5/Caddy 2.11.9 now also passes real
-request/GC/OPcache/shutdown checks on Node, Chromium and Firefox. Its WebKit
-native-stack failure remains; the approved upstream regexp candidate is
-being evaluated separately from normal package pins. The authoritative record
-is `docs/plans/2026-09-05-go-gc-port-milestone1-plan.md`; `docs/go.md` maps
-consumers to targets. Do not describe historical legacy service evidence as
-validation of the replacement compiler or image.
+All four Go recipes and the SDK wrapper select `kandelo/wasm32`; the
+prototype branch and normal pins now include approved regexp improvement
+`f6053060`. Its fresh compiler passes five standard-library modes, 18 Node
+runtime/cgo checks and all 297 expanded browser cases without skips/flakes.
+Private unmodified FrankenPHP 1.13.5/Caddy 2.11.9 passes real request/GC/
+shutdown on Node and three browsers. Normal consumer/image rebuilds and
+final WordPress validation remain pending. Deep regexp compilation is
+slower on tested Wasm hosts; retain that measured tradeoff. The authoritative
+record is `docs/plans/2026-09-05-go-gc-port-milestone1-plan.md`; `docs/go.md`
+maps consumers to targets. Historical legacy service evidence does not
+validate replacement artifacts.
 
 Normal builds declare `go-bootstrap-source@1.26.10` and use the shared
 `scripts/build-kandelo-go-toolchain.sh` helper. The declared host Go builds
@@ -54,7 +56,11 @@ never retain the old `PC >> 16` shortcut on wasm32. This also applies to
 handwritten assembly fixtures: use four-byte ABI0 value/result slots and
 direct C table handles. Rebuild every enabled fixture from the selected
 compiler; an ABI-contract stamp and an existing file do not prove compiler
-source/version provenance. C bindings use table
+source/version provenance. Use fresh builder receipts and Wasm `producers`
+metadata to bind compiler versions; this native Go tool's `version -m`
+cannot inspect the Wasm file format. The C spawn helper is a separate SDK
+artifact, not a Go module. Keep historical `*-before` files out of the
+selected test cohort without deleting their evidence. C bindings use table
 handles directly. Wasm indirect calls require exact types: ordinary cgo
 frame wrappers return void, while errno wrappers return i32. Record that
 distinction in linker metadata instead of rewriting frontend frame layouts.
@@ -99,20 +105,16 @@ targets and the selected Go experiments. Go 1.28 enables JSONv2 by default;
 Caddy fixed the comparison using `reflect.TypeFor`; consume a released fix
 rather than patching reflection, disabling JSONv2 or adapting the app.
 
-The clean wasm32 full browser inventory has one known WebKit native-stack
-failure in unchanged `regexp/syntax` compilation. The same source on both
-upstream WASI architectures reproduces it without Kandelo imports. Do not
-reintroduce the legacy iterative fallback described in historical evidence
-below without discussing that library-algorithm change with the maintainer.
-The legacy workaround is absent from the current prototype. The maintainer
-has since approved evaluating a single shared iterative upstream candidate.
-Its clean-build correctness and real Caddy service checks pass on Node and
-three browsers, but deep Wasm compilation is slower; normal pins remain
-unchanged. See the
-[measured evaluation](../plans/2026-11-07-go-regexp-upstream-evaluation.md)
-before promotion or further algorithm changes. Keep this
-finite native-depth boundary separate from collector, linear-memory,
-shadow-stack and POSIX correctness.
+The earlier A0 browser inventory retains a WebKit native-stack failure
+in unchanged `regexp/syntax` compilation. Both upstream WASI architectures
+reproduce it without Kandelo imports. The maintainer approved one shared
+iterative upstream improvement; f605 now passes all 297 expanded browser
+cases and is selected in normal pins. Deep Wasm compilation is slower;
+keep the [measured evaluation](../plans/2026-11-07-go-regexp-upstream-evaluation.md)
+explicit. Do not restore the legacy hybrid fallback or make further
+algorithm/code-generation changes without the required discussion. Keep
+finite native depth separate from GC, linear memory, shadow stacks and
+POSIX behavior. Consumer/image rebuilds and final WordPress gates remain.
 
 ## Memory, threads, and syscalls
 

@@ -194,7 +194,7 @@ function validateServiceLog(profile: Profile, log: string): number | undefined {
     // A supervisor can restore HTTP after a crash; that is not sustained uptime.
     if (starts !== 1) throw new Error(`${profile} expected one startup, found ${starts}:\n${log.slice(-4000)}`);
     const pool = profile === "wordpress-frankenphp-caddy"
-      ? /"num_threads":(\d+)/.exec(log) : /num_threads=(\d+)/.exec(log);
+      ? /"total_threads":(\d+)/.exec(log) : /total_threads=(\d+)/.exec(log);
     if (!pool) throw new Error(`${profile} did not report its PHP thread count`);
     return Number(pool[1]);
   }
