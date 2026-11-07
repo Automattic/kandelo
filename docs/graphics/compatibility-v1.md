@@ -26833,3 +26833,44 @@ no active or incoming references. This is retired copied storage, not a
 concurrent writes can dominate that observation. Replaying those old runs
 requires normally rematerializing their exact retired program products;
 no current preview or normal build product is replaced.
+
+
+Native compiler cleanup R758-r3 passes122s:13,960 exact generated files
+retired,5,553,510,013 logical bytes, with350 retained top-tool and48 SDK
+bin/stamp hashes unchanged. Two earlier private guard attempts fail before
+any deletion; both are retained. Actual free space changes from25,944,588,288
+to30,050,881,536 bytes while other workspaces run. This is an observed
+4,106,293,248-byte increase, not isolated physical attribution. Foreign
+compiler targets, all source, current SDK/release/Wasm/products and running
+servers remain protected. Cold native debug caches may regenerate through
+normal nested Cargo helpers; removing them is not a new build bypass.
+
+After this maintenance, sole producer
+`graphics-full-normal-r760-1107-105354-04cb` resumes the same clean8e65
+normal source with prehashed private runners, one graph node at a time and
+the unchanged16GiB floor. Reused results do not replace ABI/freshness or
+application admission. The preview remains the older frozen build until a
+coherent normal image passes its required checks.
+
+
+R763 retires only four inactive npm installations from historical main689bfc
+(the original root, host, browser app and image-tool dependency trees).
+Source, initialized submodules, SDK/sysroots, kernels/images, historical
+notes and11 source/lock/note hashes remain exact. The12,442 retired leaves
+represent541,472,449 regular file bytes; observed volume free increases
+494,735,360 bytes during this concurrent operation. No physical-isolation
+claim is made. Replaying that old source requires normal `npm ci` at its
+retained lockfiles; the current pinned main baseline remains distinct.
+
+The recovered headroom also permits private B5 R756 focused validation:
+43 actual runtime-core tests pass23s and one native layout control passes13s,
+with all5,790 frozen inputs unchanged. Native64 target/binding sizes remain
+80/96 bytes with8-byte alignment, equal to pre-B5; the causal inline holder
+would require152/168 bytes. This proves that compiler/target's unused-row
+footprint only. Actual Wasm32 layout compilation is still unsuccessful:
+its std test harness first requires panic-abort test support, then rejects
+the workspace's immediate-abort strategy against prebuilt core. Both
+failures remain recorded; neither supports a Wasm32 layout claim. Public
+creation remains ENOSYS before native work, and ingress/backend/parking,
+revocation wake and final receipt integration remain unactivated. No B5
+landing, kernel-Wasm, SDK, browser or performance acceptance is inferred.
