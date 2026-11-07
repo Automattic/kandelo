@@ -184,6 +184,7 @@ static bool KandeloVmCompileFunction(JSContext* cx, unsigned argc, Value* vp) {
     RootedFunction function(cx, JS::CompileFunction(cx, chain, opts, nullptr,
         count, pointers.data(), body));
     if (function) {
+      if (!KandeloVmFunctionImportOwner(cx, function)) return false;
       result.setObject(*JS_GetFunctionObject(function));
       return true;
     }

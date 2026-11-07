@@ -1,0 +1,65 @@
+--- a/js/src/shell/ModuleLoader.cpp
++++ b/js/src/shell/ModuleLoader.cpp
+@@ -350,2 +350,4 @@
+   bool handled = false;
++  if (!KandeloVmScriptDynamic(cx, referencingPrivate, moduleRequest, promise, &handled)) return false;
++  if (handled) return true;
+   if (!KandeloVmModuleDynamic(cx, referencingPrivate, moduleRequest, promise, &handled)) return false;
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3411,3 +3411,5 @@
+   }
+-  args.rval().setObject(*handle);
++  RootedObject owner(cx);
++  if (!KandeloVmNewCodeOwner(cx, handle, &owner)) return false;
++  args.rval().setObject(*owner);
+   return true;
+@@ -3429,3 +3431,4 @@
+   }
+-  RootedObject target(cx, UncheckedUnwrap(&args[1].toObject(), true));
++  RootedObject target(cx);
++  if (!KandeloVmImportChecked(cx, args[1], &target)) return false;
+   target = ToWindowIfWindowProxy(target);
+@@ -3438,2 +3441,3 @@
+   Rooted<js::StencilObject*> stencilObj(cx);
++  RootedObject codeOwner(cx);
+   if (args[0].isString()) {
+@@ -3441,3 +3445,10 @@
+   } else if (args[0].isObject()) {
+-    stencilObj = args[0].toObject().maybeUnwrapIf<js::StencilObject>();
++    if (!KandeloVmImportChecked(cx, args[0], &codeOwner)) return false;
++    if (!codeOwner || JS::GetClass(codeOwner) != &KandeloVmCodeClass) {
++      JS_ReportErrorASCII(cx, "invalid compiled VM code owner");return false;
++    }
++    RootedValue stencilValue(cx, JS::GetReservedSlot(codeOwner, VmCodeStencil));
++    RootedObject actualStencil(cx);
++    if (!KandeloVmImportChecked(cx, stencilValue, &actualStencil)) return false;
++    stencilObj = actualStencil && actualStencil->is<js::StencilObject>() ? &actualStencil->as<js::StencilObject>() : nullptr;
+     if (!stencilObj) {
+@@ -3522,8 +3533,16 @@
+     if (script) {
+-      ok = timeout ? KandeloVmExecuteWithDeadline(cx, script, timeout, &rval, &termination)
+-                   : JS_ExecuteScript(cx, script, &rval);
+-      // Pinned native Node creates the timeout Error in the target realm after
+-      // execution unwinds and the watchdog joins. Marshal it like other errors.
+-      if (termination != KandeloVmTermination::None)
+-        ok = KandeloVmReportTermination(cx, termination, timeout);
++      bool prepared = true;
++      if (codeOwner) {
++        RootedValue ownerValue(cx, ObjectValue(*codeOwner));
++        prepared = JS_WrapValue(cx, &ownerValue);
++        if (prepared) JS::SetScriptPrivate(script, ownerValue);
++      }
++      if (prepared) {
++        ok = timeout ? KandeloVmExecuteWithDeadline(cx, script, timeout, &rval, &termination)
++                     : JS_ExecuteScript(cx, script, &rval);
++        // Pinned native Node creates the timeout Error in the target realm after
++        // execution unwinds and the watchdog joins. Marshal it like other errors.
++        if (termination != KandeloVmTermination::None)
++          ok = KandeloVmReportTermination(cx, termination, timeout);
++      }
+     }
+@@ -4503,2 +4522,3 @@
+       JS_FN("__kandeloVmCompileFunction", KandeloVmCompileFunction, 5, 0),
++      JS_FN("__kandeloVmRegisterImport", KandeloVmRegisterImport, 2, 0),
+       JS_FN("__kandeloVmModuleOperation", KandeloVmModuleOperation, 1, 0),

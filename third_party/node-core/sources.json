@@ -2012,6 +2012,12 @@
       "start": "function getHostDefinedOptionId(",
       "length": 1326,
       "sha256": "772369d136a62ef464d05dddb5c036d0c46846bdc004041bcb723d753a6749f7"
+    },
+    "makeContextifyScript": {
+      "source": "internal",
+      "start": "function makeContextifyScript(",
+      "length": 1176,
+      "sha256": "a93ac431edd7fbcd14e9a7c4666583ac375ef94023e0f69da2c64048aa8395a9"
     }
   },
   "sqlitePlatform": {

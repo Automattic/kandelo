@@ -5217,7 +5217,7 @@ const _nodePublicConstants = _createNodePublicConstantModules({
     require: id => _builtinModules[id],
     compileSource: (source, filename) => _nodeNative.evalScriptAsFunction(source, filename, 1),
 });
-let _nodeDomain, _nodeFfi;
+let _nodeDomain, _nodeFfi, _nodeVmInternal;
 const _builtinModules = {
     'path': path,
     'events': events,
@@ -5281,6 +5281,7 @@ const _builtinModules = {
         getHeapSpaceStatistics() { throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('v8.getHeapSpaceStatistics measurements'); },
     },
     'vm': _createNodeVmPlatform({ native: _nodeNative, values: _nodeValues, process, global: globalThis,
+        installInternal: internal => { _nodeVmInternal = internal; },
         types: util.types, inspection: _nodeInspection, assert: _nodeCore.require('internal/assert'),
         getOptionValue: option => option === '--experimental-vm-modules' &&
             _nodeNative.cliOptions?.experimentalVmModules === true }),

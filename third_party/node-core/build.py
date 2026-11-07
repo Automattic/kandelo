@@ -835,8 +835,17 @@ start = source.index(selector['start'])
 section = source[start:start + selector['length']]
 if hashlib.sha256(section.encode()).hexdigest() != selector['sha256']:
     raise ValueError('VM option-ID section hash mismatch')
+helper = manifest['vmPlatform']['makeContextifyScript']
+helper_source = vm_sources[helper['source']]
+if helper_source.count(helper['start']) != 1:
+    raise ValueError('Ambiguous VM contextify helper source')
+helper_start = helper_source.index(helper['start'])
+contextify_helper = helper_source[helper_start:helper_start + helper['length']]
+if hashlib.sha256(contextify_helper.encode()).hexdigest() != helper['sha256']:
+    raise ValueError('VM contextify helper identity mismatch')
 vm_adapter = (root / 'vm-platform-adapter.js').read_text()
 for marker, replacement in [('/* NODE_VM_IMPORT_OPTION_ID */', section),
+                            ('/* NODE_VM_MAKE_CONTEXTIFY_SCRIPT */', contextify_helper),
                             ('/* NODE_PUBLIC_VM */', vm_sources['public'])]:
     if vm_adapter.count(marker) != 1:
         raise ValueError('Review VM marker: ' + marker)

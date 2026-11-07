@@ -1,0 +1,85 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/engine.md",
+    "findingIds": [
+      "E-005",
+      "E-007"
+    ],
+    "additionalDocuments": {},
+    "relatedFamilies": [
+      "engine",
+      "loading",
+      "terminal"
+    ],
+    "scope": "Partial real VM callback/compiled-function import ownership prerequisite, not complete VM options/compileFunction/default-loader/context/REPL or guest/four-host closure"
+  },
+  "sourceImplemented": [
+    "Real compiled-code owner retains Stencil/registry; actual script instantiations/functions carry source-private traced ownership shared by nested scripts",
+    "Actual original public Script/function referrer and original raw ModuleRequest attributes reach the pinned callback wrapper",
+    "Native VMImport transaction and promise reactions preserve actual namespace/Module/TLA/throw/reject and import-promise lifetime",
+    "One lazy existing VM ModuleWrap frontend/cache shares real module brands and pinned importModuleDynamicallyWrap",
+    "Consume complete unchanged makeContextifyScript and publish the actual shared private helper owner for later REPL",
+    "Use actual supplied host-defined option ID for internal callback eligibility without fabricating --experimental-vm-modules activation",
+    "Declare/stage new native-vm-import unity fragment and additive0161 engine patch preserving existing general-loader/native request owners"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-vm-import215-source-r1/report.json",
+    "sha256": "476c31cf92b2cca056476296bbcbeb0d87e21368570c161091ab7aa27a223b03",
+    "guardedInputs": 885,
+    "scope": "Actual VM Script/function import owner, real original referrer/request/attrs and rooted native promise transaction, one pinned module frontend;15native-dependent groups and3unchanged upstream files, not candidate guest JSAPI/GC/realm/REPL/fourhost conformance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-vm-import215-affected-r1.json",
+    "sha256": "aa3eefa434e9ad02b8cdd78637fbcd63bf72e03c4290549bc2874ae10077d0e0",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-vm-import215-source-r1/report.json",
+    "sha256": "476c31cf92b2cca056476296bbcbeb0d87e21368570c161091ab7aa27a223b03",
+    "differentialGroups": 15,
+    "flagGroups": 11,
+    "noFlagGroups": 4,
+    "unchangedUpstreamFiles": 3,
+    "upstreamSubjectProcesses": 6,
+    "upstreamFailures": 0,
+    "nativeModuleFrontendShared": true,
+    "newCompilerAttempts": 0,
+    "unchangedStyleCheckerPassed": true,
+    "productionJSAPICompiled": false,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Current VM JS source over explicit actual Node ContextifyScript/function/realm/ModuleWrap/Promise owners;3unchanged upstream files per native/candidate dependency subject. New guest ScriptPrivate/Stencils/GC/reactions/bridge uncompiled, default-loader/context-eval/REPL gaps remain."
+  },
+  "sealedEvidence": {
+    "report": ".context/vm-import-callback-owner-agent/handoff/HANDOFF.json",
+    "sha256": "b552000f251678a6a539ec4ba1213806caaadacc59d4577575eef0c41bd47313",
+    "reusedEvidence": true,
+    "scope": "Sealed11-leaf actual VM owner source and exact2-engine-file patch;15differential groups+3upstream files per subject over explicit native dependencies.3original candidate fixture global-leak failures retained; no C++/engine compile or guest runtime."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/vm-import-callback-owner-agent/handoff/HANDOFF.json",
+      "sha256": "b552000f251678a6a539ec4ba1213806caaadacc59d4577575eef0c41bd47313",
+      "scope": "Three original upstream candidate exit1 global-pollution failures are fixture-only; final fixture restores only internal/test/binding-installed original global descriptors. All upstream assertions/flags/fixtures stay unchanged. No guest inference."
+    }
+  ],
+  "remaining": [
+    "Compile actual new guest JSAPI/ScriptPrivate/Stencil/native reaction bridge and validate allowed/denied CCWs/realm/GC/OOM/fatal/Worker/context lifetimes",
+    "Real main/default-loader symbol and context-wide eval callbacks; source/defer phase and newFunction/context inheritance reconciliation",
+    "Remaining VM exotic contexts/cache/offset/SIGINT/microtasks/measurements and broader ModuleWrap graph/loader behavior",
+    "Real process capture/abort suppression and other loader/parser/readline dependencies before public REPL activation",
+    "Identified-artifact conformance across all four hosts; no native-dependent case closes a public API finding/family"
+  ],
+  "at": "2026-11-07T13:43:26.324336+00:00",
+  "recipeRevision": 215,
+  "lastAcceptedEngine": 200,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

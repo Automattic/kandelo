@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0161-node-vm-script-import-owner.patch",
   "packages/registry/spidermonkey/patches/0160-node-process-tracing-teardown.patch",
   "packages/registry/spidermonkey/patches/0159-node-terminal-read-material.patch",
   "packages/registry/spidermonkey/patches/0158-node-socket-receiver-adoption.patch",
@@ -247,6 +248,7 @@ inputs = [
   "third_party/node-core/buffer-constructor-adapter.js",
   "third_party/node-core/generate-native-embedding.py",
   "third_party/node-core/codec-handle.cpp",
+  "third_party/node-core/native-vm-import.cpp",
   "third_party/node-core/native-vm.cpp",
   "third_party/node-core/vm-execution-deadline.h",
   "third_party/node-core/native-vm-modules.cpp",
@@ -735,4 +737,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 214
+revision = 215

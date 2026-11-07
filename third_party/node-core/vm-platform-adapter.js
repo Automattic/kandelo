@@ -8,6 +8,7 @@ function _createNodeVmPlatform(platform) {
     const native = platform.native;
     const contexts = new SafeWeakMap();
     const scripts = new SafeWeakMap();
+    const codeOptions = new SafeWeakMap();
     const { ERR_INVALID_THIS } = platform.values.errors.codes;
     function unavailable(feature) {
         const error = new primordials.Error('Node VM feature is not implemented: ' + feature);
@@ -24,9 +25,43 @@ function _createNodeVmPlatform(platform) {
     const { validateFunction } = platform.values.validators;
     const getOptionValue = platform.getOptionValue;
     /* NODE_VM_IMPORT_OPTION_ID */
-    function registerImportModuleDynamically(_referrer, callback) {
-        if (callback !== undefined) unavailable('dynamic-import callback/loader ownership');
+    let vmModules;
+    function getVmModules() {
+        return vmModules ??= _createNodeVmModules({ native, values: platform.values,
+            types: platform.types, inspection: platform.inspection, assert: platform.assert,
+            contextGlobal, isContext: object => contexts.has(object) });
     }
+    const { ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING,
+        ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING_FLAG } = platform.values.errors.codes;
+    async function missingImportCallback() { throw new ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING(); }
+    async function missingImportFlag() { throw new ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING_FLAG(); }
+    async function defaultImportUnavailable() {
+        return unavailable('VM main-context-default-loader referrer/warning ownership');
+    }
+    function setImportRegistry(referrer, callback, retainReferrer) {
+        native.__kandeloVmRegisterImport(scripts.get(referrer) ?? referrer, {
+            __proto__: null,
+            importModuleDynamically: callback,
+            callbackReferrer: retainReferrer ? referrer : undefined,
+        });
+    }
+    function registerImportModuleDynamically(referrer, callback) {
+        if (callback === undefined) return;
+        if (!codeOptions.has(referrer)) unavailable('context-scope eval dynamic-import ownership');
+        const optionId = codeOptions.get(referrer);
+        if (callback === vm_dynamic_import_main_context_default ||
+            callback === vm_dynamic_import_default_internal) {
+            setImportRegistry(referrer, defaultImportUnavailable, false);
+        } else if (optionId === vm_dynamic_import_missing_flag) {
+            // getHostDefinedOptionId owns this decision. An internal caller
+            // such as REPL can supply its own real option id without the flag.
+            setImportRegistry(referrer, missingImportFlag, false);
+        } else {
+            const { importModuleDynamicallyWrap } = getVmModules();
+            setImportRegistry(referrer, importModuleDynamicallyWrap(callback), true);
+        }
+    }
+    /* NODE_VM_MAKE_CONTEXTIFY_SCRIPT */
     function compileOptions(filename, lineOffset, columnOffset, cachedData, produceCachedData) {
         if (cachedData !== undefined || produceCachedData) unavailable('persistent script/function cache');
         if (lineOffset < 0 || columnOffset < 0) unavailable('negative source offsets');
@@ -46,13 +81,18 @@ function _createNodeVmPlatform(platform) {
         // expression whose caller-controlled parameters can escape its body.
         const fn = native.__kandeloVmCompileFunction(code, params ?? [],
             contextGlobal(parsingContext), options, contextExtensions);
+        codeOptions.set(fn, _optionId);
+        setImportRegistry(fn, missingImportCallback, false);
         registerImportModuleDynamically(fn, callback);
         return { function: fn };
     }
     class ContextifyScript {
-        constructor(code, filename, lineOffset, columnOffset, cachedData, produceCachedData) {
+        constructor(code, filename, lineOffset, columnOffset, cachedData, produceCachedData,
+            _parsingContext, optionId) {
             const options = compileOptions(filename, lineOffset, columnOffset, cachedData, produceCachedData);
             scripts.set(this, native.__kandeloVmCompile(code, options));
+            codeOptions.set(this, optionId);
+            setImportRegistry(this, missingImportCallback, false);
         }
         runInContext(context, timeout, displayErrors, breakOnSigint, breakFirstLine) {
             const script = scripts.get(this);
@@ -80,12 +120,13 @@ function _createNodeVmPlatform(platform) {
             execution: { DEFAULT: Symbol('default'), EAGER: Symbol('eager') } } },
     };
     const util = { ...platform.values.util, kVmBreakFirstLineSymbol: Symbol('kVmBreakFirstLine') };
+    const internalVm = { getHostDefinedOptionId, registerImportModuleDynamically,
+        internalCompileFunction, makeContextifyScript, isContext: object => contexts.has(object) };
     function require(name) {
         if (name === 'internal/errors') return platform.values.errors;
         if (name === 'internal/validators') return platform.values.validators;
         if (name === 'internal/util') return util;
-        if (name === 'internal/vm') return { getHostDefinedOptionId, registerImportModuleDynamically,
-            internalCompileFunction, isContext: object => contexts.has(object) };
+        if (name === 'internal/vm') return internalVm;
         return unavailable(name);
     }
     function internalBinding(name) {
@@ -99,12 +140,11 @@ function _createNodeVmPlatform(platform) {
         /* NODE_PUBLIC_VM */
     })(module, module.exports, require, primordials, internalBinding, process);
     if (getOptionValue('--experimental-vm-modules')) {
-        const modules = _createNodeVmModules({ native, values: platform.values,
-            types: platform.types, inspection: platform.inspection, assert: platform.assert,
-            contextGlobal, isContext: object => contexts.has(object) });
+        const modules = getVmModules();
         module.exports.Module = modules.Module;
         module.exports.SourceTextModule = modules.SourceTextModule;
         module.exports.SyntheticModule = modules.SyntheticModule;
     }
+    if (platform.installInternal) platform.installInternal(internalVm);
     return module.exports;
 }

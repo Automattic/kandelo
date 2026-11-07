@@ -7099,3 +7099,7 @@ Current source214 composes dormant queue, descriptor and retained opened-dentry 
 ### Empty tmpfs writes preserve the actual file state
 
 An empty tmpfs positioned write validates its real handle, offset, inode type and mutable state before returning zero. It does not reserve quota, grow a sparse file, change timestamps/mode or advance content generation. Nonempty write and failure paths retain their existing owners. Four direct native POSIX/control cases and45 affected native cases validate this source fix; current Wasm kernel and four-host behavior remain unvalidated.
+
+### VM dynamic imports retain their actual compiled source owner
+
+Source215 associates real compiled Script/function code with its actual source-private owner and rooted import registry. Instantiations and nested functions retain original public referrer identity and callback through the real ScriptSource private slot. Dynamic imports preserve the original ModuleRequest/attributes and settle the actual import promise through a native transaction/reaction owner. One lazy pinned VM-module frontend shares brands and callback wrapping; actual explicitly supplied internal option IDs retain their eligibility without spoofing the public module flag. Complete pinned makeContextifyScript is consumed and privately published for future REPL use. Default-loader/context-wide eval callbacks and REPL activation remain incomplete. Native dependency controls do not execute the new guest Stencil/GC/realm/reaction bridge.

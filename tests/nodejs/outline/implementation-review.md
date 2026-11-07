@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source215 integrates actual VM Script/function import callback/referrer/source/promise ownership and one shared pinned module frontend.15native-dependent groups and3unchanged upstream files pass; new guest C++ remains uncompiled and default-loader/context-eval/REPL/four-host gaps stay open.
+See [source scope](vm-import-callback-integration.md).
+
 Current214 fixes empty positioned tmpfs writes that previously extended files and changed timestamps. Four native/control cases and45affected native cases pass after the real owner fix. Native build/control setup failures remain; no current Wasm/four-host acceptance follows.
 See [source scope](empty-tmpfs-write-integration.md).
 

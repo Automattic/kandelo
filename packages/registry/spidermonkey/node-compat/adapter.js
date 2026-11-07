@@ -640,6 +640,10 @@
             if (typeof native.__kandeloVmCompileFunction !== 'function') throw new Error('native __kandeloVmCompileFunction is unavailable');
             return native.__kandeloVmCompileFunction(code, params, context, opts, extensions);
         },
+        __kandeloVmRegisterImport(owner, registry) {
+            if (typeof native.__kandeloVmRegisterImport !== 'function') throw new Error('native __kandeloVmRegisterImport is unavailable');
+            return native.__kandeloVmRegisterImport(owner, registry);
+        },
         __kandeloVmCompile(code, opts) {
             if (typeof native.__kandeloVmCompile !== 'function') throw new Error('native __kandeloVmCompile is unavailable');
             return native.__kandeloVmCompile(code, opts);
