@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-07T07:50:02.129238+00:00",
+  "updatedAt": "2026-11-07T07:51:25.435918+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1981,9 +1981,9 @@
     "tests/nodejs/outline/pkcs12-parser-integration.md": "a9bacd75d6257ab927f39eda6cd3ae56ac80529245e1c3c0c8d19d128e24417d",
     "third_party/node-core/tests/pkcs12-owner/control.cjs": "ea66adbb338d4653b8ef229cd6d6c971bcbd943ea1a5c86f7c060a88a156182f",
     "third_party/node-core/tests/pkcs12-owner/README.md": "5b402af8eb8ff4bf9cc373fac950e5a5484e2ecc6e7f99c5b396ad20ad0b161e",
-    "tests/nodejs/outline/finding-ledger.json": "5ffbeb3bb1791cd6fe09c594aa8a465cacfb7497368977dc559a99c7112b40bc",
-    "tests/nodejs/outline/finding-ledger-integrity.json": "bd70edd7ae00b2f382f86779d37beb064a919a6a30d563eac2beeb52b3ee775b",
-    "tests/nodejs/outline/finding-ledger.md": "27d4a42f271122cc4c2118a974bed1f3713f4eacbb3dc7a2ba0c0190f12f8b21",
+    "tests/nodejs/outline/finding-ledger.json": "8b066c4ad140fbd42606de916d11d3f0083aabd675a2e4a73cf27f974c66572b",
+    "tests/nodejs/outline/finding-ledger-integrity.json": "ff751a3bc15155c94216a2730604fef2314cd3ac728c2cd5aa5d8c6f117abe93",
+    "tests/nodejs/outline/finding-ledger.md": "3abf41ced194084a742c5fb492e0b73d9b1715168312d52d6f30edf3d053b5a4",
     "tests/nodejs/outline/native-include-staging-integration.md": "8d786cf14979ab8b0fcf485313e97035bf76bfdcf7ff66ad718a784748fbf3e5",
     "tests/nodejs/outline/native-include-staging-finding-progress.json": "66a6e70f2d00254e8142aeb41e4c46a81f44a9ea063d2c568356cd8eb90b6952",
     "packages/registry/spidermonkey/patches/0130-node-native-include-boundaries.patch": "e1a89c9c279a846bb7554aed9b2ae32f251d26ea674c76b97d6a31b226d693c2",
@@ -7301,7 +7301,7 @@
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated actual one-shot signature ownership and native resource routing while preserving native ALS/frame nonpass and queue/fatal/guest obligations."
+    "reason": "Integrated actual TLS public defaults and SSL_CTX policy while preserving private inspector/setup failures and clear native/candidate/guest boundaries."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -44429,16 +44429,17 @@
     "Shared callback policy compiles with explicit hook/context/queue boundary adapters and matches real native Node-API/libuv behavior in eight scenarios, with expected termination codes 1/17 retained. SpiderMonkey rooted/context/checkpoint adapter, engine/root-entry patch and changed DNS/FS/codec owners remain uncompiled. Full rejection events/modes/uncaught recovery, weak-reference/zero-ID/VM/worker and complete loop phases remain missing or unvalidated. Native addon loading in the reference does not imply a guest addon implementation."
   ],
   "mainReconciliation": {
-    "at": "2026-11-07T07:03:51.890179+00:00",
+    "at": "2026-11-07T07:51:25.435918+00:00",
+    "head": "932daec0c6f23badf7c6fa45493da27eb101eec3",
     "originMain": "afeedd583ca5b9169e32a2d316e49d589c0476c4",
-    "headBeforeIntegration": "6173e76c474b788b512999ca2ceb7ae7481594c2",
-    "originMainIsAncestor": true,
-    "mergeNeeded": false,
-    "fetchLog": ".context/node26-main-fetch192.log",
-    "fetchLogSha256": "90350fb88a57c119cc78660ab07ca2eb3cbd1daaee9e4aa9a7d63b8860fd3fa8",
+    "relation": "ancestor",
+    "sourceRevision": 196,
+    "action": "already-contained-no-merge-required",
+    "unrelatedLocalWorkPreserved": true,
+    "fetchLog": ".context/node26-main-fetch196.log",
     "evidence": {
-      "report": ".context/node26-main-reconcile192.json",
-      "sha256": "edb55948cae89368fb7934a72066cf6e9621c9d4c811399cec40ab7ef82ba979"
+      "report": ".context/node26-main-reconcile196.json",
+      "sha256": "e02dde7a7bac860760e95a75723d70a62256981722c1a8502e2c8f843f84e12d"
     }
   },
   "storageMaintenance": {
@@ -44805,10 +44806,10 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/tls-cipher-policy-20261107T075003Z.tar.gz",
-    "sha256": "9e926889ba534c672dd6fab11085d8d589f66d24f55f98b5ed7c8eff80400172",
-    "bytes": 32085488,
-    "scope": "196actual lazy public TLS/default/version/SSL_CTX source with scoped native component and preserved initial inspector/setup nonpasses; native-only upstream, fullSecureContext/Agent/JSAPI/fourhost incomplete",
+    "path": ".context/node26-implementation-snapshots/finding-overlay196-20261107T075125Z.tar.gz",
+    "sha256": "cbd47907780b6527954bfabfe7b25defc67c0ad743b5dbf6b34a912817c60786",
+    "bytes": 10965450,
+    "scope": "Current196source and canonical finding overlay metadata; raw source/evidence preserved in prior integrated slice snapshots, no runtime test",
     "stateFileNote": "Archived state precedes snapshot reference injection"
   },
   "currentScopedStaticChecks": {
@@ -48102,7 +48103,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Integrated actual TLS public defaults and SSL_CTX policy while preserving private inspector/setup failures and clear native/candidate/guest boundaries."
+    "reason": "Reconciled194transfer,195one-shot and196TLS policy finding contributions with preserved ALS/frame nonpass, skips, source-check errors and guest obligations; verified separate watch-owner handoff and main ancestry without runtime closure."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -54183,6 +54184,13 @@
       "sha256": "f23f1b7d3d70376436ecf72892da449e90aa836ef54a56dae33a49e472be4728",
       "bytes": 60796815,
       "scope": "195actual SignJob native source and scoped provider/upstream controls;39of40component groups with ALS/frame nonpass, skipped CLI branches and fixture compiler/setup failures preserved; guest uncompiled",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/tls-cipher-policy-20261107T075003Z.tar.gz",
+      "sha256": "9e926889ba534c672dd6fab11085d8d589f66d24f55f98b5ed7c8eff80400172",
+      "bytes": 32085488,
+      "scope": "196actual lazy public TLS/default/version/SSL_CTX source with scoped native component and preserved initial inspector/setup nonpasses; native-only upstream, fullSecureContext/Agent/JSAPI/fourhost incomplete",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -60382,7 +60390,7 @@
       "sha256": "16da8a341b924b12dce83521d0c104a22b3224aeecfde667929e93d16e8d5824"
     },
     "scope": "Committed audit and selected implementation checkpoints;not a full immutable SDK/build closure. User authorized continuing commits and pushes.",
-    "pushedThrough": "0914b126ef6c303154f84442aaac040253ce3410",
+    "pushedThrough": "932daec0c6f23badf7c6fa45493da27eb101eec3",
     "pushScope": "User explicitly authorized commit/push along the way. Existing base ref creation then normal fast-forward succeeded;no force push,branch rename,merge or deployment.",
     "pushEvidence": {
       ".context/node26-push-114.log": "7d5776e26d4c7eec08d75e5bb341034f773bad40d83a5e87a8eb7aec83dc6266",
@@ -96055,6 +96063,19 @@
         "report": ".context/node26-module-hooks153-main.json",
         "sha256": "c92dedaf6ab70259d8b0a5c22ba68c57da4eeba83e1d7f35d8f45a9488883cb0"
       }
+    },
+    {
+      "at": "2026-11-07T07:03:51.890179+00:00",
+      "originMain": "afeedd583ca5b9169e32a2d316e49d589c0476c4",
+      "headBeforeIntegration": "6173e76c474b788b512999ca2ceb7ae7481594c2",
+      "originMainIsAncestor": true,
+      "mergeNeeded": false,
+      "fetchLog": ".context/node26-main-fetch192.log",
+      "fetchLogSha256": "90350fb88a57c119cc78660ab07ca2eb3cbd1daaee9e4aa9a7d63b8860fd3fa8",
+      "evidence": {
+        "report": ".context/node26-main-reconcile192.json",
+        "sha256": "edb55948cae89368fb7934a72066cf6e9621c9d4c811399cec40ab7ef82ba979"
+      }
     }
   ],
   "sqliteLifecycleImplementation": {
@@ -97243,6 +97264,15 @@
       "currentGuestConformance": false,
       "nativeHelperAttemptsPendingIntegration": 1,
       "nativeHelperFailuresPendingIntegration": 0
+    },
+    {
+      "path": ".context/watch-registry-owner-agent/handoff",
+      "sealSha256": "310ef8f62fec696d2b5959a5b512f3a400e9719a20ce2ea0281d2816102efc0c",
+      "status": "sealed-pending-root-integration",
+      "scope": "Actual context-thread native watch registry ownership correction and complete consumer trace;0compiles/runtime controls, generic fd watch teardown drain still open. No TTY or TLS lifetime closure.",
+      "nativeHelperAttemptsPendingIntegration": 0,
+      "nativeHelperFailuresPendingIntegration": 0,
+      "currentGuestConformance": false
     }
   ],
   "dnsScopedAddressImplementation": {
@@ -97781,22 +97811,22 @@
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "5ffbeb3bb1791cd6fe09c594aa8a465cacfb7497368977dc559a99c7112b40bc",
+    "sha256": "8b066c4ad140fbd42606de916d11d3f0083aabd675a2e4a73cf27f974c66572b",
     "documentation": "tests/nodejs/outline/finding-ledger.md",
     "integrity": {
       "path": "tests/nodejs/outline/finding-ledger-integrity.json",
-      "sha256": "bd70edd7ae00b2f382f86779d37beb064a919a6a30d563eac2beeb52b3ee775b"
+      "sha256": "ff751a3bc15155c94216a2730604fef2314cd3ac728c2cd5aa5d8c6f117abe93"
     },
-    "sourceCheckpoint": 193,
+    "sourceCheckpoint": 196,
     "counts": {
       "families": 19,
       "uniqueLexicalFindingIds": 357,
       "documentQualifiedDefinitionRecords": 417,
       "originalRangeRecords": 52,
-      "sourceSliceRecords": 111,
+      "sourceSliceRecords": 114,
       "dependencyNarrativeRecords": 66,
       "findingsWithoutRecoveredStandaloneDefinition": 34,
-      "findingsWithoutExplicitOrProposedSourceSlice": 236
+      "findingsWithoutExplicitOrProposedSourceSlice": 233
     },
     "individualApiClosure": false,
     "fourHostConformance": false
@@ -98477,6 +98507,28 @@
         "dependencyNarrativeRecords": 66,
         "findingsWithoutRecoveredStandaloneDefinition": 34,
         "findingsWithoutExplicitOrProposedSourceSlice": 238
+      },
+      "individualApiClosure": false,
+      "fourHostConformance": false
+    },
+    {
+      "path": "tests/nodejs/outline/finding-ledger.json",
+      "sha256": "5ffbeb3bb1791cd6fe09c594aa8a465cacfb7497368977dc559a99c7112b40bc",
+      "documentation": "tests/nodejs/outline/finding-ledger.md",
+      "integrity": {
+        "path": "tests/nodejs/outline/finding-ledger-integrity.json",
+        "sha256": "bd70edd7ae00b2f382f86779d37beb064a919a6a30d563eac2beeb52b3ee775b"
+      },
+      "sourceCheckpoint": 193,
+      "counts": {
+        "families": 19,
+        "uniqueLexicalFindingIds": 357,
+        "documentQualifiedDefinitionRecords": 417,
+        "originalRangeRecords": 52,
+        "sourceSliceRecords": 111,
+        "dependencyNarrativeRecords": 66,
+        "findingsWithoutRecoveredStandaloneDefinition": 34,
+        "findingsWithoutExplicitOrProposedSourceSlice": 236
       },
       "individualApiClosure": false,
       "fourHostConformance": false

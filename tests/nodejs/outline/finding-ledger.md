@@ -16,9 +16,9 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 111 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 114 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
-| Findings lacking an exact source-slice link | 236 | Unknown disposition, not a count of missing implementations |
+| Findings lacking an exact source-slice link | 233 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
 
 The original 13,292 API observations and 11,199 obligations remain in the
@@ -299,3 +299,27 @@ conformance remain unestablished; accepted173predates both contributions.
 All357lexical IDs,417qualified definitions,52original ranges and19families remain.
 Missing exact source links are unknown dispositions, not a proven bug count.
 No finding/family closes. Overall suites and full product rebuild remain deferred.
+
+## Source194–196 transfer, one-shot job and TLS policy overlay
+
+R-001/004/013 and STR-003/004 link to actual native MessagePort endpoint transfer,
+source-close/read/adoption/abort ownership and clone ordering. Automatic transit
+cycle collection remains separate pending implementation integration; generic
+host/stream transfers and complete Worker lifetime remain open.
+
+C-008/009/015 gain actual one-shot job key/input/snapshot/context/provider/queue/
+resource contributions. The focused control still exits1:39of40groups pass and
+one ALS/frame callback group fails. Metadata assertions behind that failure are
+uncredited. No runtime defect, exclusion or production callback conformance is
+inferred. Conditional upstream OpenSSL-CLI skips remain nonpassing branches.
+
+S-002/003/007 gain genuine lazy mutable public TLS/default/CLI/protocol policy and
+actual SSL_CTX cipher/suite/version setters before credentials. Twenty-seven
+policy/12constants groups pass; the unchanged upstream file is native-only.
+Full SecureContext, lower TLS lifetime/read/ref/timeout/session/verification and
+secure Agent activation remain implementation gaps. Source presence is not proof.
+
+All357lexical IDs,417qualified definitions,52original ranges and19families remain.
+Missing exact source links are unknown dispositions, not a count of proven bugs.
+No findings/families close; current196has no accepted build and accepted173is
+stale. No new runtime controls/compilations run for this metadata overlay.

@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 111,
+    "sourceSliceRecords": 114,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 236
+    "findingsWithoutExplicitOrProposedSourceSlice": 233
   },
   "families": [
     {
@@ -157,7 +157,7 @@
         "STR-010",
         "STR-011"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 0,
+      "findingsWithExplicitOrProposedSourceSlices": 2,
       "sourceRouteAsRecorded": "stream/fd-stream platform adapters and shared pinned StringDecoder public/byte-state owner",
       "remainingAsRecorded": "Socket/TTY/file subclasses, backing-store transfer, fd reuse/retirement, pipeline/adapter lifecycle/errors and guest decoder integration",
       "remainingOwner": "Pinned classic/Web/iterable algorithms with actual fd/socket/TTY/port consumers",
@@ -571,7 +571,7 @@
         "R-015",
         "R-016"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 7,
+      "findingsWithExplicitOrProposedSourceSlices": 8,
       "sourceRouteAsRecorded": "Real shared lock manager, transactional receiver delivery and dual-Promise lifetime with fair provider dispatch; native thread/context/input/error/join owners and connected packets; source 135 captures Worker argv/eval at the pinned constructor stage and constructs the real startup vector with array-like semantics ; source143/144 native lazy DATA property and actual Worker locks adapter routing; source155 real deferred Locks native zero-ID/default-frame delivery and guarded scope restoration",
       "remainingAsRecorded": "Native lazy-data source is uncompiled; special/global object cases and Navigator remain gaps; actual guest thread/clone/context/stdio/options/resource/ref/failure/termination behavior and combined 117\u2013148 engine remain unvalidated. Prior lock termination/query-order nonpasses and full four-host obligations remain open",
       "remainingOwner": "Actual Worker context/thread/packet/port/clone/locks lifetime owners",
@@ -2389,7 +2389,15 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "Web Stream transfer/cancellation across real ports",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "messageport-transfer",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams.md",
+          "scope": "Actual endpoint transfer/source-close/receiver/abort and cloning prerequisites; automatic transit-cycle collection/generic streams/Worker lifecycle remain incomplete. R-010/011 remain unresolved original references.",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Pinned classic/Web/iterable algorithms with actual fd/socket/TTY/port consumers",
@@ -2411,7 +2419,15 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "Classic/Web adapters, byte brands, BYOB, transferred/resized/detached storage",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "messageport-transfer",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams.md",
+          "scope": "Actual endpoint transfer/source-close/receiver/abort and cloning prerequisites; automatic transit-cycle collection/generic streams/Worker lifecycle remain incomplete. R-010/011 remain unresolved original references.",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Pinned classic/Web/iterable algorithms with actual fd/socket/TTY/port consumers",
@@ -4910,6 +4926,13 @@
         {
           "slice": "tls-context",
           "relation": "explicit"
+        },
+        {
+          "slice": "tls-cipher-policy",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "scope": "Real mutable public TLS/default/CLI/protocol/cipherlist context policy only; full SecureContext/lower TLS/HTTPS/guest remain incomplete",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -4954,6 +4977,13 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/secure-network.md",
           "scope": "Shared actual Error/queue/property/identity prerequisite for consumed crypto/TLS paths; not complete public API/per-callsite errors or finding closure",
+          "closure": false
+        },
+        {
+          "slice": "tls-cipher-policy",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "scope": "Real mutable public TLS/default/CLI/protocol/cipherlist context policy only; full SecureContext/lower TLS/HTTPS/guest remain incomplete",
           "closure": false
         }
       ],
@@ -5061,6 +5091,13 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/secure-network.md",
           "scope": "Actual shared prepared SSL_CTX credential/reference prerequisite; not full public SecureContext/TLS or finding closure",
+          "closure": false
+        },
+        {
+          "slice": "tls-cipher-policy",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network.md",
+          "scope": "Real mutable public TLS/default/CLI/protocol/cipherlist context policy only; full SecureContext/lower TLS/HTTPS/guest remain incomplete",
           "closure": false
         }
       ],
@@ -5588,6 +5625,13 @@
           "auditDocument": "tests/nodejs/audit/crypto.md",
           "scope": "Four actual public streaming signature APIs and genuine digest/key/byte/error/state prerequisites; no one-shot/STORE/keygen/provider/guest closure",
           "closure": false
+        },
+        {
+          "slice": "signature-jobs",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "scope": "Actual sync/async one-shot SignJob provider/input/resource/queue ownership; component ALS/frame nonpass and queue-OOM/provider/guest obligations remain",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -5638,6 +5682,13 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/crypto.md",
           "scope": "Four actual public streaming signature APIs and genuine digest/key/byte/error/state prerequisites; no one-shot/STORE/keygen/provider/guest closure",
+          "closure": false
+        },
+        {
+          "slice": "signature-jobs",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "scope": "Actual sync/async one-shot SignJob provider/input/resource/queue ownership; component ALS/frame nonpass and queue-OOM/provider/guest obligations remain",
           "closure": false
         }
       ],
@@ -5884,6 +5935,13 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/crypto.md",
           "scope": "Four actual public streaming signature APIs and genuine digest/key/byte/error/state prerequisites; no one-shot/STORE/keygen/provider/guest closure",
+          "closure": false
+        },
+        {
+          "slice": "signature-jobs",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "scope": "Actual sync/async one-shot SignJob provider/input/resource/queue ownership; component ALS/frame nonpass and queue-OOM/provider/guest obligations remain",
           "closure": false
         }
       ],
@@ -7547,6 +7605,13 @@
         {
           "slice": "broadcast",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "messageport-transfer",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/workers.md",
+          "scope": "Actual endpoint transfer/source-close/receiver/abort and cloning prerequisites; automatic transit-cycle collection/generic streams/Worker lifecycle remain incomplete. R-010/011 remain unresolved original references.",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7620,7 +7685,15 @@
       "definitionKeys": [],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Original labelled requirement referenced in audit; standalone definition not recovered by bounded reconciliation",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "messageport-transfer",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/workers.md",
+          "scope": "Actual endpoint transfer/source-close/receiver/abort and cloning prerequisites; automatic transit-cycle collection/generic streams/Worker lifecycle remain incomplete. R-010/011 remain unresolved original references.",
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [
         "worker-port-implementation-dependencies"
@@ -7889,6 +7962,13 @@
         {
           "slice": "broadcast",
           "relation": "proposed-named-owner"
+        },
+        {
+          "slice": "messageport-transfer",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/workers.md",
+          "scope": "Actual endpoint transfer/source-close/receiver/abort and cloning prerequisites; automatic transit-cycle collection/generic streams/Worker lifecycle remain incomplete. R-010/011 remain unresolved original references.",
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -20303,6 +20383,237 @@
       "auditDocument": "tests/nodejs/audit/crypto.md",
       "findingScope": "Four actual public streaming signature APIs and genuine digest/key/byte/error/state prerequisites; no one-shot/STORE/keygen/provider/guest closure",
       "additionalAuditDocuments": {}
+    },
+    "messageport-transfer": {
+      "document": "tests/nodejs/outline/messageport-transfer-finding-progress.json",
+      "sha256": "c74916affaa01518da225bcecb47aad2d4ac1ee4237cc8d4f5297a7741db06f3",
+      "recordedRevision": 194,
+      "explicitFindingIds": [
+        "R-001",
+        "R-004",
+        "R-013"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-transfer194-source-r1/report-r2.json",
+          "sha256": "e58584af572aba43331cfabcb55048fccdd9d1ea524de8c6efeb293305ea7df2",
+          "guardedInputs": 860,
+          "scope": "Actual MessagePort native transfer/receiver/abort and clone order source; explicit portable/native JS component boundaries, no native-cycle or generic transfer/JSAPI/guest closure."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-transfer194-affected-r2.json",
+          "sha256": "d493bf2e02cacfff00b50331809af8d4eebc7225d495f475a19f92a2eaea940d",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-transfer194-source-r1/report-r2.json",
+          "sha256": "e58584af572aba43331cfabcb55048fccdd9d1ea524de8c6efeb293305ea7df2",
+          "portableEndpointGroups": 8,
+          "unchangedQueueControlPassed": true,
+          "candidateProcesses": 13,
+          "newFrontendGroupsInOneProcess": 3,
+          "wholeUnchangedUpstreamFiles": 1,
+          "subjectsPerFile": 2,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "scope": "Portable endpoint core plus candidate JS over genuine native Node clone/queues/ref/close; manual dispatcher/envelope instrumentation explicit. No production sidecar/receiver/GC/realm/guest proof."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/messageport-transfer-agent/handoff/report.json",
+          "sha256": "552d92bec123b5255fdeb9da8e3e0d27af1424043cfa222848e434330b1b6e10",
+          "reusedEvidence": true,
+          "scope": "Four successful tiny compiles,8final portable groups/unchanged queue,13candidate processes and unchanged file; original failures/abort/setup/selection retained, guest0."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/messageport-transfer-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/messageport-transfer-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Real public MessagePort native class/reserved-slot owner and shared public prototype, with checked native admission",
+        "Consume-once endpoint transfer sidecars; moved source authority and independent local pending-close root",
+        "Unentangled receiver initialization, real queue adoption, abort cleanup and exposed-wrapper notification ownership",
+        "Actual MessageEvent.ports and Worker startup read transaction, including unreachable payload transfers",
+        "ArrayBuffer-before-host transfer while preserving caller indices and normal shell order; exact pending native clone errors retained",
+        "Destination-self discard and allocation-free payload retirement outside channel locks; automatic cycles remain separate"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/messageport-transfer-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Automatic collection of unreachable transitive endpoint/packet ownership cycles; explicit retirement is implemented/tested, automatic collection is not",
+        "Generic registered-JS host/nested stream/AbortSignal/FileHandle/etc transfer callbacks still reject",
+        "moveMessagePortToContext, complete worker options/stdio/measurements/parentPort-after-exit and listener/error/exit disposal remain",
+        "Actual native AsyncResource/provider identity and full byte/memory/pressure/phase/realm/GC/OOM/cancellation/liveness conformance",
+        "Compile actual native JSAPI receiver/transfer/GC/realm/OOM/fatal/teardown/ref paths and validate identified artifact across all four hosts",
+        "Original native-only retransfer graph abort remains unresolved target observation, not an accepted boundary"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/workers.md",
+      "findingScope": "Actual endpoint transfer/source-close/receiver/abort and cloning prerequisites; automatic transit-cycle collection/generic streams/Worker lifecycle remain incomplete. R-010/011 remain unresolved original references.",
+      "additionalAuditDocuments": {
+        "tests/nodejs/audit/streams.md": [
+          "STR-003",
+          "STR-004"
+        ]
+      }
+    },
+    "signature-jobs": {
+      "document": "tests/nodejs/outline/signature-jobs-finding-progress.json",
+      "sha256": "d9b18afa1f8e28eb5331f9ea3b78e0af5148ed62705d5468fb87f95cfebcea98",
+      "recordedRevision": 195,
+      "explicitFindingIds": [
+        "C-015",
+        "C-008",
+        "C-009"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-signjobs195-source-r2/report.json",
+          "sha256": "4eed79d21a8dffc8a6e3d52bd3951077a2fda2aa29b256ff2bb936f9524e54c6",
+          "guardedInputs": 862,
+          "scope": "Actual one-shot sync/async jobs, real queue/resource/bytes/error ownership;39of40component groups pass, native ALS/frame nonpass retained, no productionJSAPI/fatal/provider/guest closure."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-signjobs195-affected-r1.json",
+          "sha256": "a67e98aeb6291aff7690b0fe64f16df8882a1991f60bed2f674fea95437cc103",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-signjobs195-source-r2/report.json",
+          "sha256": "4eed79d21a8dffc8a6e3d52bd3951077a2fda2aa29b256ff2bb936f9524e54c6",
+          "oneShotGroups": 40,
+          "oneShotPass": 39,
+          "oneShotNonpass": 1,
+          "actualControlExit": 1,
+          "controlRunIsPassing": false,
+          "laterMetadataAssertionsUncredited": true,
+          "streamingSignatureGroups": 52,
+          "wholeUnchangedUpstreamFiles": 2,
+          "subjectsPerFile": 2,
+          "cliInteropSkipDiagnosticsPreserved": 2,
+          "compiledInputsVerified": 1268,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "scope": "Partial actual one-shot source. Native component ALS/frame nonpass is unresolved, not a platform boundary/Node defect/workaround. Metadata after failed assertion not credited; actual production captured-frame/queue behavior untested."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/signature-jobs-owner-agent/report.json",
+          "sha256": "2e63dc85a392c64b4004befd22adb28b20188ef6c84f054817e368a359882f92",
+          "reusedEvidence": true,
+          "scope": "39of40groups with unresolved native component ALS/frame nonpass, existing52stream groups,2unchanged files per subject/CLI skips;3tiny compiles2fixture failures, guest0."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/signature-jobs-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/signature-jobs-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Actual public one-shot sign/verify consume unchanged pinned wrappers, not incompatible streaming substitutes",
+        "Real key upref, sync original allocation spans and async pre-init owned input/context/signature snapshots",
+        "Actual EVP one-shot/prehashed/EdDSA/ML-DSA operations, P1363/error/context policy",
+        "Genuine SIGNREQUEST owner over existing CPU queue/captured frame/callback scope and catchable ToResult exception delivery",
+        "Actual resourceInfo class route includes existing HKDF and new signature request owners"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/signature-jobs-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "unresolved native component callback frame nonpass",
+        "shared queue OOM/native-exception mapping versus target crypto allocation/fatal policy unverified",
+        "actual guest JSAPI/queue/context/security/GC/fault/teardown validation",
+        "provider and opaque allocation accounting",
+        "existing STORE/keygen/permission gaps",
+        "four-host identified-artifact conformance",
+        "Skipped conditional OpenSSL-CLI interoperability branches remain unexecuted; no all-branch coverage claim"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/crypto.md",
+      "findingScope": "Actual sync/async one-shot SignJob provider/input/resource/queue ownership; component ALS/frame nonpass and queue-OOM/provider/guest obligations remain",
+      "additionalAuditDocuments": {}
+    },
+    "tls-cipher-policy": {
+      "document": "tests/nodejs/outline/tls-cipher-policy-finding-progress.json",
+      "sha256": "99e2e2e168d3098ea61222c97c67de28eb0f660a25f3b638d6757cf6450a3576",
+      "recordedRevision": 196,
+      "explicitFindingIds": [
+        "S-002",
+        "S-003",
+        "S-007"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tlspolicy196-source-r1/report.json",
+          "sha256": "4105e7882d9e7b856859ba7eb33b52235cba0e7f098d591052c0e8eaf3f2c77d",
+          "guardedInputs": 863,
+          "scope": "Actual lazy public TLS cipher/default/protocol and live SSL_CTX owner; scoped native component only. Full SecureContext/options/secure Agent/lower TLS/JSAPI/fourhost incomplete."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tlspolicy196-affected-r1.json",
+          "sha256": "74ff4f56e1782f42b5710b4a23c5d2846cc55186de116e39b2ab3155aa799563",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tlspolicy196-source-r1/report.json",
+          "sha256": "4105e7882d9e7b856859ba7eb33b52235cba0e7f098d591052c0e8eaf3f2c77d",
+          "tlsPolicyGroups": 27,
+          "publicConstantRegressionGroups": 12,
+          "upstreamNativeBaselineOnly": true,
+          "upstreamCandidateExecuted": false,
+          "newCompilerAttempts": 0,
+          "productionJSAPICompiled": false,
+          "scope": "Actual current SSL_CTX/default/public/CLI policy over explicit native dependency fixtures; direct internal connect expected pre-TCP fault, no guest or successful handshake proof."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tls-cipher-policy-owner-agent/HANDOFF.json",
+          "sha256": "5bbc85859e88eacf253c841fa60e7d4a7391735dbf032bfe4c5635dc6a6b364b",
+          "reusedEvidence": true,
+          "scope": "27final paired groups/137source checks, initial12pass15nonpass inspector setup preserved;3successful tiny compiles, native-only unchanged upstream, guest0."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/tls-cipher-policy-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/tls-cipher-policy-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Genuine lazy TLS public module load/cache/reentry/retry over the actual preconstructed public TLS object",
+        "Actual DEFAULT_CIPHERS from admitted CLI state independent from mutable crypto constants, with mutable real min/max defaults",
+        "Complete pinned protocol/cipher partition/getter-order source consumed by real SSL_CTX operations before credentials",
+        "Direct internal connect and public HTTPS getter initialize actual TLS dependency",
+        "Explicit two new upstream reference inputs declared; broader SecureContext remains honestly unavailable"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/tls-cipher-policy-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Public tls.createSecureContext remains _notImpl; broader SecureContext constructor/options/descriptor/overload ownership incomplete.",
+        "Secure protocol/options/honor order/singleUse/ECDH/DH/sigalgs/session/ticket/CRL/server context actions and full pre-init getter order remain gaps.",
+        "TLS min/max CLI flags still rejected; only actual normal-profile mutable defaults and explicit options are routed.",
+        "HTTPS ad hoc host:port pool and request projections omit explicit TLS policy; real secure Agent identity/ownership followup needed.",
+        "Existing guest default trust paths do not establish Node bundled/system/extra CA-store semantics.",
+        "No actual new handshake, guest, browser or four-host runtime evidence.",
+        "Actual SSL_CTX/JSAPI/CCW/GC/realm/OOM/error policy and identified-artifact four-host conformance",
+        "Unchanged upstream cipher-list file was executed only under native reference, not current candidate"
+      ],
+      "rootOverlay": true,
+      "auditDocument": "tests/nodejs/audit/secure-network.md",
+      "findingScope": "Real mutable public TLS/default/CLI/protocol/cipherlist context policy only; full SecureContext/lower TLS/HTTPS/guest remain incomplete",
+      "additionalAuditDocuments": {}
     }
   },
   "dependencyNarratives": {
@@ -22384,6 +22695,28 @@
         "individualApiClosure": false,
         "auditIdentitiesVerified": 136,
         "scope": "Current193 actual shared constants/public loading and streaming signature ownership contributions. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
+      },
+      {
+        "at": "2026-11-07T07:51:25.435918+00:00",
+        "sourceCheckpoint": 196,
+        "sourceHead": "932daec0c6f23badf7c6fa45493da27eb101eec3",
+        "addedSourceSlices": [
+          "messageport-transfer",
+          "signature-jobs",
+          "tls-cipher-policy"
+        ],
+        "currentFamilyContext": {
+          "path": "tests/nodejs/outline/current-capability-reconciliation.json",
+          "sha256": "3b5df7a6b16031c9d569e7f9fc61627f90ceb1c4457d07397c87564bbc47fe94"
+        },
+        "latestAcceptedEngine": 173,
+        "currentCombinedEngineCompiled": false,
+        "currentProductProjectionMaterialized": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "auditIdentitiesVerified": 136,
+        "scope": "Current196 actual transfer/receiver, one-shot job and TLS policy source contributions. Captured171/172 family narratives remain historical; source presence and metadata links do not close findings."
       }
     ]
   }
