@@ -435,7 +435,8 @@ struct egl_generation;
 struct wpk_drm_owner;
 struct wpk_egl_image_borrow;
 struct wpk_egl_image {
-    struct egl_generation *generation; /* owns the imported GEM handle */
+    struct egl_generation *generation; /* borrowed while this generation lives */
+    struct wpk_drm_owner *source_owner; /* image-owned exact source FILE edge */
     uintptr_t public_handle; /* never reuse an invalidated public identity */
     uint64_t storage_references; /* explicit process-owned private holds */
     uint64_t renderer_references; /* invalidated with inherited renderers */

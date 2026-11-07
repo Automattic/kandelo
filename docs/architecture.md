@@ -7554,9 +7554,18 @@ uses one fork guard for pointer/reference changes and transfers retiring
 capabilities into a globally rooted, epoch-claimed queue before native work.
 No native operation, receiver lock or driver futex wake runs under that guard.
 
-This is a source checkpoint, not complete B1 admission. The image-generation
-metadata lifetime and detached EGL deferred-lease queues still require their
-own repairs and regressions. New Node/browser fixtures are registered, but
+This is a source checkpoint, not complete B1 admission. The detached EGL deferred-lease queues still require their own repairs and
+regressions. New Node/browser fixtures are registered, but
 must be linked and executed with the coherent normally rebuilt SDK, kernel
 and programs before this ownership connection can be called validated on the
 platform. Full stage, memory, conformance and latency gates remain required.
+
+
+An image now retains an independent exact source-file edge as well as its BO
+storage. Final generation retirement revokes every matching image's borrowed
+generation pointer before freeing the generation; allocator address reuse
+cannot admit an old image to a replacement renderer. A cold retain/publish
+transaction couples the FILE reference increment with the global image root,
+and releases the publication guard before receiver unlock. Private transfers
+use the retained source file, while renderer/public admission requires a live
+matching generation. Only creation and final retirement perform this work.

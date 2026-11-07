@@ -25876,8 +25876,39 @@ These native protocol/ownership controls do not execute the new guest C with
 Kandelo's Rust kernel. Registered Node/browser fixtures cover descriptor
 replacement, fork reinitialization, surviving caller/storage/renderer holds,
 vanished peer holds, exact final BO release and fork-safe metadata locks;
-their normal SDK link and target execution remain pending. Image-generation
-lifetime and detached deferred EGL C-lease findings remain open in this
-iteration. Preserve the public old preview until coherent new normal
+their normal SDK link and target execution remain pending. At this source cut, image-generation lifetime and detached deferred EGL
+C-lease findings remain open in this iteration. Preserve the public old preview until coherent new normal
 products and admission checks pass. No stage completion, performance claim,
 new boundary, deferral or acceptance reduction follows from this checkpoint.
+
+
+### Independent image source lifetime, 2026-11-06
+
+The next supplement fixes the image-generation lifetime finding: private
+image storage retains its own exact source-file edge, and final generation
+retirement clears borrowed generation pointers before freeing metadata.
+A replacement allocation at the old address cannot revive renderer access.
+Source-file retention and image-list publication share the cold fork guard;
+resolution/locking precedes it, and native I/O and receiver unlock follow it.
+Public export admission rejects dead identities before generation access.
+
+The same native source fixture reports three causal failures on the prior
+cut (generation, reused-address admission and source lifetime); its public
+lookup control already passes and remains passing. Six candidate controls
+pass, adding foreign-thread fork publication and saturated-count unwind.
+The frozen final12-stage native closure passes489 libc, full GBM/window,
+34 transport,7 publication,14 peer,13 completion,7 borrowing invocations,
+4 facade and6 generation controls, plus both-width syntax. Source and result
+identities are in `.context/graphics-image-generation-r577-runs/manifest.json`
+and `final-r10/run.sh`; independent source review is in
+`.context/graphics-image-generation-review-r577/review.json`. The actual
+integration repeats all6 controls using
+`bash tests/graphics/run-image-generation.sh` in
+`graphics-image-generation-integrated-r58-1106-213053-3271` (58s including
+shell startup). No normal SDK/kernel execution or performance is claimed.
+
+Two actual deferred-EGL-lease fork controls still fail because release actors
+are detached from global queues before callbacks. Fixing those owning-layer
+continuations, the coherent normal build and all target/final gates remain
+required. Failed sanitizer startup attempts and one invalid mixed-input
+attempt remain recorded and excluded from passing evidence.

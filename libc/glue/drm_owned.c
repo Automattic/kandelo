@@ -491,6 +491,24 @@ int _wpk_drm_owned_fd(struct wpk_drm_owner *owner,int previous,uint32_t flags) {
     int entered=enter_request(owner),rc=complete_request(owner,entered);
     unlock_owner(owner,cancel_state);return rc;
 }
+/* Resolve before taking the fork guard. The caller may then publish the new
+ * C edge and its facade root without native I/O or another lock acquisition;
+ * splitting retain from publication would strand a copied reference at fork. */
+int _wpk_drm_owned_retain_begin(struct wpk_drm_owner *owner, int *cancel_state) {
+    if (!cancel_state) { errno = EINVAL; return -1; }
+    if (!lock_owner(owner, cancel_state)) return -1;
+    if (owner->references == UINT32_MAX || !resolve_owner(owner)) {
+        errno = owner->references == UINT32_MAX ? EOVERFLOW : EIO;
+        unlock_owner(owner, *cancel_state); return -1;
+    }
+    capture_publication_begin();
+    ++owner->references;
+    return 0;
+}
+void _wpk_drm_owned_retain_end(struct wpk_drm_owner *owner, int cancel_state) {
+    capture_publication_end();
+    unlock_owner(owner, cancel_state);
+}
 int _wpk_drm_owned_retain(struct wpk_drm_owner *owner) {
     int cancel_state;if(!lock_owner(owner,&cancel_state))return -1;
     if(owner->references==UINT32_MAX||!resolve_owner(owner)){

@@ -1403,7 +1403,7 @@ and latency gates in this iteration; those checks are not future deferrals.
 
 
 The guest exact-resource custody connection is now a source checkpoint with
-focused native regressions. Finish image-generation metadata and detached
-EGL C-lease ownership, then normally rebuild and execute its registered
+focused native regressions. Image-generation metadata now has independent source custody and revoked
+borrowed pointers. Finish detached EGL C-lease ownership, then normally rebuild and execute its registered
 Node/browser fixtures and all B1 gates. Those findings remain current work;
 they are not postponed to B2 or the subsequent driver iteration.

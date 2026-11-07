@@ -279,6 +279,7 @@ static _Atomic uintptr_t g_next_image_scope;
 static uint64_t g_image_epoch, g_fork_image_scope;
 
 static void image_release_locked(struct wpk_egl_image *image);
+static int publish_image(struct wpk_egl_image *image, struct egl_generation *generation);
 static void lock_images(void) {
     _wpk_drm_mutex_lock(&g_image_mutex);
     uint64_t epoch = _wpk_drm_process_generation();
@@ -2243,7 +2244,13 @@ static void retire_pending_resources_locked(struct egl_generation *g) {
         free(p);
         _wpk_drm_owned_drain();
     }
+    lock_images();
     _wpk_drm_owned_publication_begin();
+    /* Private image storage outlives public EGL initialization. Revoke the
+     * borrowed generation pointer before freeing it: malloc may reuse that
+     * address for a later generation, which must not revive an old image. */
+    for (struct wpk_egl_image *image = g_images; image; image = image->next)
+        if (image->generation == g) image->generation = NULL;
     g->owner=NULL;
     _wpk_drm_owned_defer_locked(&g->storage_owner);
     _wpk_drm_owned_defer_locked(&g->display_owner);
@@ -2254,6 +2261,7 @@ static void retire_pending_resources_locked(struct egl_generation *g) {
     if (*link)
         *link = g->next;
     _wpk_drm_owned_publication_end();
+    _wpk_drm_mutex_unlock(&g_image_mutex);
     free_generation_locked(g);
     _wpk_drm_owned_drain();
 }
@@ -3775,12 +3783,9 @@ static EGLImageKHR create_gl_image_locked(struct egl_generation *generation, EGL
     image->fourcc = gl_image_fourcc(request.internal_format);
     uint32_t cpp = image->fourcc ? dmabuf_format_cpp((EGLint)image->fourcc) : 4u;
     image->pitch = (request.width * cpp + 3u) & ~3u;
-    /* public_live is the public ownership slot. */
-    image->public_live = 1;
-    lock_images();
-    image->next = g_images;
-    g_images = image;
-    _wpk_drm_mutex_unlock(&g_image_mutex);
+    if (!publish_image(image, generation)) {
+        g_last_error = EGL_BAD_ALLOC; return EGL_NO_IMAGE_KHR;
+    }
     if (!_wpk_gl_link_image_source(context->encoder, kind, (uint32_t)name, image, request.source, request.revision)) {
         lock_images(); image->public_live = 0; image_release_locked(image);
         _wpk_drm_mutex_unlock(&g_image_mutex);
@@ -4064,12 +4069,9 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
         }
         image->handle = image->planes[0].handle;
         image->pixels = image->planes[0].map ? (const uint8_t *)image->planes[0].map + image->planes[0].offset : NULL;
-        /* public_live is the public ownership slot. */
-        image->public_live = 1;
-        lock_images();
-        image->next = g_images;
-        g_images = image;
-        _wpk_drm_mutex_unlock(&g_image_mutex);
+        if (!publish_image(image, generation)) {
+            g_last_error = EGL_BAD_ALLOC; return EGL_NO_IMAGE_KHR;
+        }
         g_next_object_handle++;
         return (EGLImageKHR)image->public_handle;
     }
@@ -4112,12 +4114,9 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
                      : offset != 0     ? EGL_BAD_ACCESS
                                        : EGL_SUCCESS;
         if (error == EGL_SUCCESS) {
-            /* public_live is the public ownership slot. */
-            image->public_live = 1;
-            lock_images();
-            image->next = g_images;
-            g_images = image;
-            _wpk_drm_mutex_unlock(&g_image_mutex);
+            if (!publish_image(image, generation)) {
+                g_last_error = EGL_BAD_ALLOC; return EGL_NO_IMAGE_KHR;
+            }
             g_next_object_handle++;
             return (EGLImageKHR)image->public_handle;
         }
@@ -4131,12 +4130,9 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
     image->map = map;
     image->map_len = size;
     image->pixels = (const uint8_t *)map + offset;
-    /* public_live is the public ownership slot. */
-    image->public_live = 1;
-    lock_images();
-    image->next = g_images;
-    g_images = image;
-    _wpk_drm_mutex_unlock(&g_image_mutex);
+    if (!publish_image(image, generation)) {
+        g_last_error = EGL_BAD_ALLOC; return EGL_NO_IMAGE_KHR;
+    }
     g_next_object_handle++;
     return (EGLImageKHR)image->public_handle;
 }
@@ -4184,6 +4180,7 @@ static void image_release_locked(struct wpk_egl_image *image) {
         for (unsigned p = 0; p < image->plane_count; p++)
             _wpk_drm_owned_defer_locked(&image->planes[p].owner);
     } else _wpk_drm_owned_defer_locked(&image->bo_owner);
+    _wpk_drm_owned_defer_locked(&image->source_owner);
     struct wpk_egl_image **slot = &g_images;
     while (*slot && *slot != image) slot = &(*slot)->next;
     if (*slot) *slot = image->next;
@@ -4194,6 +4191,25 @@ static void image_release_locked(struct wpk_egl_image *image) {
     } else if (image->map) munmap(image->map, image->map_len);
     free(image);
     _wpk_drm_owned_drain();
+}
+/* A BO capability retains storage, but callers also need the exact source
+ * file namespace for transfers. The generation owns only its own FILE edge;
+ * borrowing that edge would leave a private image dangling at eglTerminate. */
+static int publish_image(struct wpk_egl_image *image, struct egl_generation *generation) {
+    lock_images();
+    int cancel_state;
+    if (_wpk_drm_owned_retain_begin(generation->storage_owner, &cancel_state) != 0) {
+        image_release_locked(image);
+        _wpk_drm_mutex_unlock(&g_image_mutex);
+        return 0;
+    }
+    image->source_owner = generation->storage_owner;
+    image->public_live = 1;
+    image->next = g_images;
+    g_images = image;
+    _wpk_drm_owned_retain_end(image->source_owner, cancel_state);
+    _wpk_drm_mutex_unlock(&g_image_mutex);
+    return 1;
 }
 void _wpk_egl_image_release(struct wpk_egl_image *image) {
     int cancel_state;pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
@@ -4272,10 +4288,14 @@ int _wpk_egl_image_export_gbm(const void *public_image, const void *device, uint
     lock_images();
     int error = EINVAL;
     for (struct wpk_egl_image *image = g_images; image; image = image->next) {
+        /* Private holds survive termination, so validate public admission
+         * before touching metadata that only a live generation owns. */
+        if (image->public_handle != (uintptr_t)public_image || !image->public_live)
+            continue;
         struct egl_generation *generation = image->generation;
+        if (!generation) continue;
         struct egl_display_record *display = generation->display;
-        if (image->public_handle != (uintptr_t)public_image || !image->public_live
-            || !generation->initialized || display->active != generation
+        if (!generation->initialized || display->active != generation
             || display->native_kind != NATIVE_GBM || display->native_device != device
             || display->native_identity != identity)
             continue;
@@ -4288,7 +4308,7 @@ int _wpk_egl_image_export_gbm(const void *public_image, const void *device, uint
         for (unsigned p = 0; p < result.num_planes && !error; p++) {
             struct wpk_drm_prime_handle exported = {.flags = O_CLOEXEC | O_RDWR, .fd = -1,
                 .handle = image->external_only ? image->planes[p].handle : image->handle};
-            if (egl_bo_ioctl(generation->storage_owner,image->external_only?image->planes[p].owner:image->bo_owner,WPK_DRM_IOCTL_PRIME_HANDLE_TO_FD,&exported,0) != 0) { error = errno; break; }
+            if (egl_bo_ioctl(image->source_owner,image->external_only?image->planes[p].owner:image->bo_owner,WPK_DRM_IOCTL_PRIME_HANDLE_TO_FD,&exported,0) != 0) { error = errno; break; }
             result.fds[p] = exported.fd;
             result.strides[p] = image->external_only ? image->planes[p].pitch : image->pitch;
             result.offsets[p] = image->external_only ? image->planes[p].offset
@@ -4383,7 +4403,7 @@ static uint32_t planar_image_source(const struct wpk_egl_image *image) {
     struct wpk_drm_owner *local_bo[3]={0};struct wpk_drm_bo_binding proofs[3];
     int transferred = 1;
     for (unsigned p = 0; p < image->plane_count && transferred; p++) {
-        local[p]=transfer_bo_handle(image->generation->storage_owner,image->planes[p].owner,-1,
+        local[p]=transfer_bo_handle(image->source_owner,image->planes[p].owner,-1,
             context->session->owner,image->planes[p].handle,&local_bo[p]);
         proofs[p]=(struct wpk_drm_bo_binding){16+p*4,local_bo[p]};
         transferred = local[p] != 0;
@@ -4398,14 +4418,14 @@ static uint32_t planar_image_source(const struct wpk_egl_image *image) {
 }
 
 uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image) {
-    if (!image || image->generation != g_thread_binding.generation) return 0;
+    if (!image || !image->generation || image->generation != g_thread_binding.generation) return 0;
     if (image->external_only) return planar_image_source(image);
     if (!image->pixels)
         return bind_bo_texture(image->generation->display->handle,image->handle,WPK_GL_IMAGE_SOURCE_TARGET,0,image->bo_owner);
     struct egl_context_record *context = g_thread_binding.object;
     if (!context || !context->session->owner || _wpk_gl_flush_checked() != 0) return 0;
     struct wpk_drm_owner *local_bo=NULL;
-    uint32_t local=transfer_bo_handle(image->generation->storage_owner,image->bo_owner,-1,
+    uint32_t local=transfer_bo_handle(image->source_owner,image->bo_owner,-1,
         context->session->owner,image->handle,&local_bo);
     if (!local) return 0;
     /* A CPU image can select a subrectangle, row pitch and channel layout
@@ -4541,7 +4561,7 @@ EGLBoolean eglExportDMABUFImageMESA(EGLDisplay dpy, EGLImageKHR image, int *fds,
     for (unsigned p = 0; p < planes && fds; p++) {
         struct wpk_drm_prime_handle req = {.flags = O_CLOEXEC | O_RDWR, .fd = -1,
             .handle = img->external_only ? img->planes[p].handle : img->handle};
-        if (egl_bo_ioctl(img->generation->storage_owner,img->external_only?img->planes[p].owner:img->bo_owner,WPK_DRM_IOCTL_PRIME_HANDLE_TO_FD,&req,0) != 0) {
+        if (egl_bo_ioctl(img->source_owner,img->external_only?img->planes[p].owner:img->bo_owner,WPK_DRM_IOCTL_PRIME_HANDLE_TO_FD,&req,0) != 0) {
             g_last_error = errno == ENOMEM || errno == EMFILE ? EGL_BAD_ALLOC : EGL_BAD_ACCESS;
             result = EGL_FALSE;
             break;

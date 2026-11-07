@@ -100,6 +100,11 @@ struct wpk_drm_bo_info {
 _Static_assert(sizeof(struct wpk_drm_bo_info)==32,"Owned BO info size");
 int _wpk_drm_owned_bo_info(struct wpk_drm_owner *bo,struct wpk_drm_bo_info *info);
 int _wpk_drm_owned_retain(struct wpk_drm_owner *owner);
+/* Successful begin holds the cold publication guard: pair it with end on
+ * the same owner/state. Failure holds no guard and requires no end. Publish
+ * pure C metadata only; no I/O, callbacks, locks or futex wakes before end. */
+int _wpk_drm_owned_retain_begin(struct wpk_drm_owner *owner, int *cancel_state);
+void _wpk_drm_owned_retain_end(struct wpk_drm_owner *owner, int cancel_state);
 int _wpk_drm_owned_release(struct wpk_drm_owner **owner);
 /* These private metadata locks can be reconstructed after fork without
  * acquiring a vanished parent's pthread mutex or taking an atfork lock
