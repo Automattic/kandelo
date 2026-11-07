@@ -230,6 +230,7 @@ async function readBrowserVfsText(page: Page, path: string): Promise<string> {
 }
 
 async function measureNode(profile: Profile, round: number, options: Options, imagePath: string): Promise<RoundResult> {
+  KandeloImageFs.installModuleBytes(new Uint8Array(readFileSync(resolveBinary("kandelo_image_module32.wasm"))));
   const target = serviceName(profile);
   const port = options.port + round * 4 + (profile === "wordpress-sqlite" ? 0 : 2);
   const smtpPort = port + 1;
@@ -599,6 +600,7 @@ if (process.env.KANDELO_WORDPRESS_STACK_PREPARE) {
     sourceImagePath: string; inputDirectory: string; phpWorkers: number;
   };
   const source = readFileSync(sourceImagePath);
+  KandeloImageFs.installModuleBytes(new Uint8Array(readFileSync(resolveBinary("kandelo_image_module32.wasm"))));
   const fs = KandeloImageFs.create();
   fs.loadImage(source, { maxDecompressedBytes: 1024 * 1024 * 1024 });
   const pools = comparisonWorkerPools(readVfsText(fs, "/etc/php-fpm.conf"), readVfsText(fs, "/etc/dinit.d/env-frankenphp"), phpWorkers);
