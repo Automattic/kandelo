@@ -27010,3 +27010,36 @@ seconds. No production B5 code is integrated and this does not introduce
 a B1 dependency. Exact commands, raw logs and outcomes remain in private
 graphics-b5-ingress-causal-r767-runs. Further B5 expansion is subordinate to
 B1 preview delivery. No final gate or approved stage boundary is changed.
+
+
+### Portable Freeciv B1 admission coverage, 2026-11-07 (R775–R779)
+
+The existing Freeciv menu-render and main-menu Quit cases now run on all
+three engines; Quit retains both 1x and 2x density configurations. These
+paths use ordinary canvas input and real guest display/foreground lifecycle,
+not Chromium-specific APIs. Existing pixel, terminal-handoff, exit-status
+and client/server absence assertions and timeouts are unchanged. Active-game,
+pointer-lock, multiplayer and clipboard coverage is not inferred from these
+menu cases. The source extension is integrated; current normal application
+execution is pending the sole producer's finalization. A separate eight-case
+per-engine preview-admission selection retains the longer full suite as
+required acceptance rather than confusing skips with validation.
+
+R776 resolves the private fence-control execution-provenance issue: the
+first supposed candidate attempt actually reused the original-source test
+executable. Exact source/panic-line/artifact evidence identifies that fixture
+error without blaming the runtime. Seven pinned output files are preserved
+in same-volume quarantine; no source mtime or normal target changes. Genuine
+candidate recompilation then passes the closed-descriptor control, and the
+same verified artifact passes the replacement control (25 seconds each).
+Both pointer widths retain original ownership, reject a foreign retry and
+leave replacement references unchanged. All frozen sources remain exact;
+the retained quarantine bytes stay in the original 512 MiB storage budget.
+This is inactive B5 source evidence, not public activation or B1 acceptance.
+
+Private physical-tooling R772 R3 is independently reviewed and root's eight
+headless causal controls pass 13 seconds with sealed source unchanged.
+Late source tails and page errors through teardown refuse success; failed
+writes or close attempts cannot skip other owned cleanup. These tests are
+not physical display/application timing. Native execution still requires
+a separately scheduled visible session; no latency or native-feel claim.

@@ -241,7 +241,7 @@ test.afterEach(async ({ page }, info) => {
 });
 
 test("Freeciv's SDL2 client renders its main menu", async ({ page, browserName }) => {
-  test.skip(browserName !== "chromium", "initial graphical acceptance targets Chromium");
+  // Why: this portable canvas render gate must cover every supported engine.
   test.setTimeout(240_000);
   console.log("Resolving and booting the Freeciv machine");
   await gotoMachine(page, "freeciv");
@@ -1392,7 +1392,8 @@ for (const density of [1, 2]) {
     });
     for (const inGame of [false, true]) {
       test(`quit ${inGame ? "an active game" : "the main menu"} returns to the shell`, async ({ page, browserName }) => {
-        test.skip(browserName !== "chromium", "graphical lifecycle targets Chromium");
+        // Why: ordinary main-menu Quit is portable; retain the active-game scope.
+        test.skip(inGame && browserName !== "chromium", "graphical lifecycle targets Chromium");
         test.setTimeout(180_000);
         await gotoMachine(page, "freeciv");
         await running(page);
