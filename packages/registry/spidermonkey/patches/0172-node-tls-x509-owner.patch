@@ -1,0 +1,22 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3057,0 +3058,17 @@
++static bool KandeloNativeTlsX509(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  RootedObject capability(cx);
++  auto* state = KandeloTlsStateFor(cx, args.get(0), &capability); if (!state) return false;
++  if (!args.get(2).isObject()) {
++    JS_ReportErrorASCII(cx, "TLS certificate requires its actual native X509 prototype"); return false;
++  }
++  RootedObject prototype(cx, &args[2].toObject());
++  try {
++    // Capture the actual SSL-owned certificate/chain before JS allocation,
++    // wrapping or GC. No borrowed SSL/X509 pointer survives this capture.
++    auto material = kandelo::crypto::X509Material::FromTLS(
++        state->owner.Ssl(), args.get(1).isTrue(), KandeloNativeMemoryOwner(cx));
++    if (!material) { args.rval().setUndefined(); return true; }
++    return KandeloX509OwnMaterial(cx, std::move(material), prototype, args.rval());
++  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
++}
+@@ -4762,0 +4780 @@
++      JS_FN("tlsX509", KandeloNativeTlsX509, 3, 0),

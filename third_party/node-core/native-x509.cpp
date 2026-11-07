@@ -28,6 +28,15 @@ static KandeloX509Box* KandeloX509BoxOf(JSObject* object) {
   if(!object||JS::GetClass(object)!=&KandeloX509Class)return nullptr;
   const auto slot=JS::GetReservedSlot(object,0);return slot.isUndefined()?nullptr:static_cast<KandeloX509Box*>(slot.toPrivate());
 }
+static bool KandeloX509OwnMaterial(JSContext* cx,
+    std::shared_ptr<kandelo::crypto::X509Material> material,
+    HandleObject prototype, MutableHandleValue result) {
+  RootedObject object(cx, JS_NewObjectWithGivenProto(cx, &KandeloX509Class, prototype));
+  if (!object) return false;
+  auto box = std::make_unique<KandeloX509Box>(std::move(material), KandeloNativeMemoryOwner(cx));
+  JS::AddAssociatedMemory(object, sizeof(KandeloX509Box), JS::MemoryUse::Embedding3);
+  JS::SetReservedSlot(object, 0, PrivateValue(box.release())); result.setObject(*object); return true;
+}
 // This branch of the existing keyOperation bridge is defined after the real
 // key and X509 classes. It transfers native objects, never PEM/DER stand-ins.
 static bool KandeloKeyParsePKCS12(JSContext* cx, const CallArgs& args, MutableHandleValue output) {
@@ -150,6 +159,13 @@ static bool KandeloX509Dispatch(JSContext* cx,const CallArgs& args,MutableHandle
   auto* box=KandeloX509BoxOf(wrapper);
   if(!box)throw kandelo::crypto::X509Error("Value of this must be of type X509Certificate","ERR_INVALID_THIS");
   const auto&cert=*box->material;
+  if(name=="getIssuerCert") {
+    auto issuer=cert.Issuer();if(!issuer){result.setUndefined();return true;}
+    RootedObject prototype(cx);
+    { JSAutoRealm realm(cx,wrapper);if(!JS_GetPrototype(cx,wrapper,&prototype))return false; }
+    if(!JS_WrapObject(cx,&prototype))return false;
+    return KandeloX509OwnMaterial(cx,std::move(issuer),prototype,result);
+  }
   if(name=="checkCA"){result.setBoolean(cert.CA());return true;}
   if(name=="checkIssued") {
     RootedObject other(cx,KandeloX509Unwrap(cx,args.get(2)));if(cx->isExceptionPending())return false;

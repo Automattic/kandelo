@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0172-node-tls-x509-owner.patch",
   "packages/registry/spidermonkey/patches/0171-node-tls-async-owner.patch",
   "packages/registry/spidermonkey/patches/0170-node-tls-write-callback-owner.patch",
   "packages/registry/spidermonkey/patches/0169-node-secret-keygen.patch",
@@ -763,4 +764,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 236
+revision = 237

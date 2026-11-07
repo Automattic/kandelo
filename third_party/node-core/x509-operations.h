@@ -75,6 +75,7 @@ inline PKCS12Contents ParseCryptoPKCS12(const ncrypto::BIOPointer& bio, const ch
 // caller bytes, JS roots, context or guessed certificate metadata are retained.
 class X509Material {
   ncrypto::X509Pointer certificate_;
+  std::shared_ptr<X509Material> issuer_;
   kandelo::memory::Allocation material_{sizeof(X509Material)};
   kandelo::memory::Claim claim_;
   static std::optional<std::string> Text(ncrypto::BIOPointer bio) {
@@ -103,6 +104,38 @@ class X509Material {
     // control block and OpenSSL-internal allocations are not accounted here.
     return std::shared_ptr<X509Material>(new X509Material(std::move(parsed.value), account));
   }
+  static std::shared_ptr<X509Material> FromTLS(SSL* ssl, bool local,
+      const kandelo::memory::AccountHandle& account) {
+    ncrypto::ClearErrorOnReturn errors;
+    if (!ssl) return {};
+    ncrypto::X509Pointer certificate;
+    const STACK_OF(X509)* chain = nullptr;
+    int start = 0;
+    if (local) {
+      // SSL_get_certificate is borrowed. Pinned X509View::clone duplicates it,
+      // so the returned certificate is a snapshot independent of SSL lifetime.
+      certificate = ncrypto::X509View(SSL_get_certificate(ssl)).clone();
+    } else {
+      chain = SSL_get_peer_cert_chain(ssl);
+      if (SSL_is_server(ssl)) certificate = ncrypto::X509Pointer(SSL_get1_peer_certificate(ssl));
+      if (!certificate) {
+        if (!chain || sk_X509_num(chain) == 0) return {};
+        certificate = ncrypto::X509View(sk_X509_value(chain, 0)).clone();
+        start = 1;
+      }
+    }
+    if (!certificate) return {};
+    std::shared_ptr<X509Material> issuer;
+    for (int i = chain ? sk_X509_num(chain) - 1 : -1; i >= start; --i) {
+      auto owned = ncrypto::X509View(sk_X509_value(chain, i)).clone();
+      if (!owned) return {};
+      auto next = std::shared_ptr<X509Material>(new X509Material(std::move(owned), account));
+      next->issuer_ = std::move(issuer); issuer = std::move(next);
+    }
+    auto result = std::shared_ptr<X509Material>(new X509Material(std::move(certificate), account));
+    result->issuer_ = std::move(issuer); return result;
+  }
+  const std::shared_ptr<X509Material>& Issuer() const noexcept { return issuer_; }
   const kandelo::memory::RecordHandle& Record() const noexcept { return material_.Handle(); }
   ncrypto::X509View View() const { return certificate_.view(); }
   std::optional<std::string> String(std::string_view field) const {

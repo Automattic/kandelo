@@ -745,6 +745,7 @@
         tlsWrite(handle, bytes) { return native.tlsWrite(handle, bytes); },
         tlsWriteRelease(...args) { return native.tlsWriteRelease(...args); },
         tlsClose(handle) { return native.tlsClose(handle); },
+        tlsX509(...args) { return native.tlsX509(...args); },
     };
 
     const entryPath = workerEnvironment ? '' : (typeof scriptPath === 'string' && scriptPath ? scriptPath : '');

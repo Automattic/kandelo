@@ -1,0 +1,84 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/secure-network-contracts.md",
+    "findingIds": [
+      "S-002",
+      "S-008"
+    ],
+    "relatedFamilies": [
+      "secure-network",
+      "crypto",
+      "async",
+      "engine"
+    ],
+    "scope": "Partial real peer/local X509 ownership and public getter source. S-008 is a shared Socket/resource-shape prerequisite only; full handle/proxy/adoption/StreamBase semantics remain incomplete."
+  },
+  "sourceImplemented": [
+    "Snapshot actual local borrowed SSL_get_certificate through pinned X509_dup ownership",
+    "Use actual client peer leaf/issuerstart1 and server get1/issuerstart0 rules, retaining supplied issuer order in owned acyclic material",
+    "Publish genuine native X509 handles through existing branded InternalX509Certificate wrapper/cache and issuer getter",
+    "Expose actual getPeerX509Certificate/getX509Certificate methods with fresh call identities, configured local prehandshake access and absent/closed undefined behavior",
+    "Preserve current TLS async/callback/key-generation ownership by exact additive0172engine composition; normal generated core stays unchanged"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tlsx509237-source-r1/report.json",
+    "sha256": "17a2ebe2996bd82d87eaf626f34a74329eda3b28f5afce35031336f813a9bc7a",
+    "guardedInputs": 897,
+    "scope": "Normal237 source/generation/staging plus8native-dependent X509 owner groups; new JSAPI/GC/realm/Worker and positive serverget1 remain unvalidated; full_handle/legacyTLS/shutdown open"
+  },
+  "packageChecks": {
+    "report": ".context/node26-tlsx509237-affected-r1.json",
+    "sha256": "862572d13e062bdad2cd1e06ebd7db31b046d92d234a1afb59640391c2b9f1d0",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tlsx509237-source-r1/report.json",
+    "sha256": "17a2ebe2996bd82d87eaf626f34a74329eda3b28f5afce35031336f813a9bc7a",
+    "normalSourceChecks": 5,
+    "nativeDependentGroups": 8,
+    "compiledNonSystemInputs": 6,
+    "newRootCompilerAttempts": 0,
+    "historicalProducerHelperCompileAttempts": 2,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "deterministicToolCompleted": true,
+    "declaredChecksImported": 2,
+    "scope": "Actual portable X509 material and current public TLSSocket method source over explicit genuine native SSL fixtures and pinned Node controls. No new guest JSAPI, GC, realm, Worker or positive serverget1 execution."
+  },
+  "sealedEvidence": {
+    "report": ".context/tls-x509-owner-agent/report.json",
+    "sha256": "3e950ef3a16e0d398e64cf24622da58c48106468e0c937c71f26018476e02ae4",
+    "reusedEvidence": true,
+    "scope": "Eight unique native-dependent groups, sixteen prior executions; two successful tiny helper compilations, first artifact never executed. Final exact addon and six recorded non-system inputs reused. Independent bounded source review is not guest proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tls-x509-owner-agent/source-preparation-r1.json",
+      "sha256": "834e3753b80c58aecbc0e5ed3a577bd5ca83923fd878235a066d4d3f6147b22b",
+      "scope": "Historical private source-preparation anchor assertion failed before control/compiler execution; corrected actual source anchor and retained original receipt."
+    },
+    {
+      "report": ".context/node26-tlsx509237-launch-preparation-failure.json",
+      "sha256": "29c452afd63f95686a75001670b2d2c3d369002a1696c68053b04e00f5f925c7",
+      "scope": "Root seal-reader assumed members instead of actual files schema and stopped before tool start or source application. Corrected reader; reviewed seal/input bytes unchanged, no declared runtime test launched."
+    }
+  ],
+  "remaining": [
+    "Compile and execute actual new native JSAPI/class/prototype/wrapping/GC/OOM/realm/Worker paths on identified artifacts across all four hosts",
+    "Validate positive server client-certificate get1 branch and actual OpenSSL duplication/allocation failures",
+    "Complete S-008 full handle/proxy/override interception, Socket inheritance/adoption, public TLSWrap/provider and StreamBase shape",
+    "Complete legacy certificate dictionary, remaining credentials/trust/handshake APIs and actual encrypted-output/graceful TLS shutdown"
+  ],
+  "at": "2026-11-07T20:31:15.211397+00:00",
+  "recipeRevision": 237,
+  "lastAcceptedEngine": 230,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

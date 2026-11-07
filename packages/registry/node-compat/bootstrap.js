@@ -4391,6 +4391,21 @@ const tls = (() => {
         getPeerCertificate() { return {}; }
     }
 
+    TLSSocket.prototype.getPeerX509Certificate = function(detailed) {
+        'use strict';
+        const state = nativeTLS.get(this);
+        const cert = state ? (state.owner ? nat.tlsX509(state.owner, false, _nodeX509.nativeHandlePrototype) : undefined)
+            : this._handle?.getPeerX509Certificate();
+        return cert ? new _nodeX509.InternalX509Certificate(cert) : undefined;
+    };
+    TLSSocket.prototype.getX509Certificate = function() {
+        'use strict';
+        const state = nativeTLS.get(this);
+        const cert = state ? (state.owner ? nat.tlsX509(state.owner, true, _nodeX509.nativeHandlePrototype) : undefined)
+            : this._handle?.getX509Certificate();
+        return cert ? new _nodeX509.InternalX509Certificate(cert) : undefined;
+    };
+
     const attachTLS = TLSSocket.prototype._attach;
 
     function connect(options, cb) {

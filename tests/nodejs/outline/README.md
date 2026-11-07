@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source237 adds actual TLS certificate/issuer snapshot ownership and public X509 getters; eight native-dependent groups pass. Guest C++ and full TLS/handle/shutdown conformance remain open.
+See [source scope](tls-x509-owner-integration.md).
+
 Source236 adds actual native HTTP connection tracking and parser-identity ownership;10list+17request/header+25response component groups pass. Guest C++ and complete Server/list chronology remain open.
 See [source scope](http-connections-integration.md).
 
