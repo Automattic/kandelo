@@ -1,0 +1,80 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto.md",
+    "findingIds": [
+      "C-015"
+    ],
+    "relatedFamilies": [
+      "crypto",
+      "async",
+      "engine"
+    ],
+    "scope": "Actual preparing-request ownership through shared outer keyOperation packet; consumed by secret key generation, no blanket otherfactory/MarkPop/guest/fullcrypto closure"
+  },
+  "sourceImplemented": [
+    "Register and root the actual fresh request/native state before init; retain across creator realm wrapping and outer packet allocation/property definitions",
+    "Commit only after successful actual packet return, not merely converted native-error publication",
+    "On failure retire only same still-preparing owner/state in its real realm; preserve current pending exception and reentrant actual queued work",
+    "Replace unconditional inner abandonment with the spanning admission owner; do not infer ownership from operation names or returned shapes",
+    "Preserve shared MarkPop and other unregistered factories, TLS233/classguards/currentcore; no new inputs or engine patch"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-publication234-source-r1/report.json",
+    "sha256": "4503d29dc09f6ec34c2b913639da756c88739f45e1ca7239ae143a41f8fad953",
+    "guardedInputs": 896,
+    "scope": "Source/input/native generation/bootstrap parsing only. No new runtime controls or compiled transaction evidence; prior16keygen groups retain original component scope."
+  },
+  "packageChecks": {
+    "report": ".context/node26-publication234-affected-r1.json",
+    "sha256": "46b035658bdb6af191f190000fb0859a93149598c8a0e31334ab153267d0775d",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-publication234-source-r1/report.json",
+    "sha256": "4503d29dc09f6ec34c2b913639da756c88739f45e1ca7239ae143a41f8fad953",
+    "normalSourceChecks": 6,
+    "newRuntimeControls": 0,
+    "newCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "deterministicToolCompleted": true,
+    "declaredChecksImported": 2,
+    "scope": "Actual native source hashes/input closure/staging/bootstrap parse plus14package declaration checks. Producer9mechanical source/roundtrip checks and independent review are source evidence only; prior16keygen controls do not validate publication or fault behavior."
+  },
+  "sealedEvidence": {
+    "report": ".context/key-operation-publication-owner-agent/verification.json",
+    "sha256": "b75a68cf4a6c605720e3e1ad0c915f260ab2dd59039a19d2e612501d19546484",
+    "reusedEvidence": true,
+    "scope": "One declared-shell verification command completed9source/hash/order/roundtrip checks,0runtime/probes/compiles. Independent review3aa2... traces same-state/preparing/commit/realm behavior, no guest execution."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-publication234-launch-preparation-failure.json",
+      "sha256": "25ed069a6520e130f05c1eee960bd7b4166c69537debdcd0970fbb55deb7606f",
+      "scope": "Two launcher Python snippets failed parsing before any declared check/subprocess began. Corrected keyword spacing; no check result replaced, tests/source/assertions unchanged."
+    },
+    {
+      "report": ".context/publication234-agent-integrate/preparation-commands.json",
+      "sha256": "a10ad6faefbdbf39c7cec96318173b66044f1105601ce74af5ecc3357bac10ba",
+      "scope": "Private packet authoring nested-literal syntax and guessed review filename failed before root mutation/declared checks; original command diagnostics retained, actual source/runtime unaffected."
+    }
+  ],
+  "remaining": [
+    "Compile/execute real outer packet allocation/property failures, init retention/throw and reentrant queue submission with actual JSAPI/GC/realm/context teardown on allfourhosts",
+    "Verify pending exception preservation, success/converted-error paths, synchronous weak-job lifetime and actual callback ownership under fault injection",
+    "Reconcile shared outer MarkPop/error queue and complete inherited AsyncWrap/otherresourcefactory ownership separately",
+    "Complete C-015/keypair/WebCrypto and wholecrypto; prior16native-dependent groups are not new publication conformance"
+  ],
+  "at": "2026-11-07T20:12:05.971648+00:00",
+  "recipeRevision": 234,
+  "lastAcceptedEngine": 230,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

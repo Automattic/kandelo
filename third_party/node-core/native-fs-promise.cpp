@@ -85,6 +85,38 @@ static void KandeloFsAbandonRequest(JSObject* request) {
                         FsRequestPromise, FsRequestBuffers, FsRequestResult})
     JS::SetReservedSlot(request, slot, UndefinedValue());
 }
+// A native factory can expose its actual resource to init hooks before its
+// public return packet exists. Retain that exact preparing request until the
+// outer dispatcher publishes; never cancel work admitted by reentrant JS.
+class KandeloFsRequestPublication final {
+  JSContext* cx_;
+  JS::RootedObject owner_;
+  KandeloFsRequestState* state_ = nullptr;
+  bool published_ = false;
+ public:
+  explicit KandeloFsRequestPublication(JSContext* cx) : cx_(cx), owner_(cx) {}
+  KandeloFsRequestPublication(const KandeloFsRequestPublication&) = delete;
+  KandeloFsRequestPublication& operator=(const KandeloFsRequestPublication&) = delete;
+  void Register(HandleObject owner) {
+    MOZ_RELEASE_ASSERT(!owner_ && !published_);
+    state_ = static_cast<KandeloFsRequestState*>(
+        JS::GetReservedSlot(owner, FsRequestState).toPrivate());
+    MOZ_RELEASE_ASSERT(state_ && !state_->retired && !state_->dispatched && !state_->work);
+    owner_ = owner;
+  }
+  void Commit() { published_ = true; }
+  ~KandeloFsRequestPublication() {
+    if (published_ || !owner_) return;
+    JSAutoRealm realm(cx_, owner_);
+    const Value slot = JS::GetReservedSlot(owner_, FsRequestState);
+    if (slot.isUndefined() || slot.toPrivate() != state_) return;
+    // Init hooks may have submitted this very request. Its real work queue,
+    // not a failed outer packet, then owns callback/frame/result retirement.
+    if (state_->dispatched || state_->work || state_->retired) return;
+    // This path neither invokes JS nor replaces the pending publication error.
+    KandeloFsAbandonRequest(owner_);
+  }
+};
 static bool KandeloFsDispatchPrepared(JSContext* cx, HandleObject request,
                                       KandeloFsWork* work,
                                       js::shell::KandeloNativeWorkQueue* queue) {

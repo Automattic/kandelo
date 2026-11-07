@@ -375,12 +375,14 @@ static bool KandeloKeyExportJwk(JSContext* cx, const kandelo::crypto::KeyMateria
   throw kandelo::crypto::KeyError("Unsupported JWK Key Type.", "ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE");
 }
 static bool KandeloKeyParsePKCS12(JSContext* cx, const CallArgs& args, MutableHandleValue output);
-static bool KandeloCreateSecretKeyGen(JSContext*, const CallArgs&, MutableHandleValue);
+static bool KandeloCreateSecretKeyGen(JSContext*, const CallArgs&, MutableHandleValue,
+                                      KandeloFsRequestPublication&);
 static bool KandeloRunSecretKeyGen(JSContext*, const CallArgs&, MutableHandleValue);
-static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandleValue output) {
+static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandleValue output,
+                               KandeloFsRequestPublication& publication) {
   std::string name; if (!KandeloKeyString(cx, args.get(0), &name)) return false;
   if (name == "parsePKCS12") return KandeloKeyParsePKCS12(cx, args, output);
-  if (name == "createSecretGen") return KandeloCreateSecretKeyGen(cx, args, output);
+  if (name == "createSecretGen") return KandeloCreateSecretKeyGen(cx, args, output, publication);
   if (name == "runSecretGen") return KandeloRunSecretKeyGen(cx, args, output);
   if (name == "constants") {
     using Key = kandelo::crypto::KeyMaterial::Key;
@@ -592,12 +594,19 @@ static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandl
 static bool KandeloNativeKeyOperation(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp); RootedValue value(cx), error(cx);
   ncrypto::MarkPopErrorOnReturn mark;
-  try { if (!KandeloKeyDispatch(cx, args, &value)) return false; }
+  KandeloFsRequestPublication publication(cx);
+  bool succeeded = false;
+  try {
+    if (!KandeloKeyDispatch(cx, args, &value, publication)) return false;
+    succeeded = true;
+  }
   catch (const kandelo::crypto::Error& failure) { if (!KandeloDigestError(cx, failure, &error)) return false; }
   catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
   RootedObject packet(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
   if (!packet || !JS_DefineProperty(cx, packet, "value", value, JSPROP_ENUMERATE) ||
       !JS_DefineProperty(cx, packet, "error", error, JSPROP_ENUMERATE)) return false;
-  args.rval().setObject(*packet); return true;
+  args.rval().setObject(*packet);
+  if (succeeded) publication.Commit();
+  return true;
 }
 }  // namespace

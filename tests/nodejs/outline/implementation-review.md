@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source234 extends actual key-job ownership through outer return-packet publication and preserves reentrant admitted work.6source/staging checks+14package tests pass; new native C++/fault/guest behavior remains unvalidated.
+See [source scope](key-operation-publication-integration.md).
+
 Source233 retains genuine TLS write callback tickets and uses the merged deterministic integration workflow.5native-TLS JS-helper components and14package checks pass; newC++/SSLshutdown/publicfinalization/fourhost remain open.
 See [source scope](tls-write-callback-integration.md).
 

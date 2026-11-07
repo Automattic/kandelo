@@ -78,7 +78,8 @@ struct KandeloSecretKeyWork final : KandeloFsWork {
   }
 };
 static bool KandeloCreateSecretKeyGen(JSContext* cx, const CallArgs& args,
-                                      MutableHandleValue output) {
+                                      MutableHandleValue output,
+                                      KandeloFsRequestPublication& publication) {
   int64_t mode, bits;
   if (!args.get(1).isObject() || !args.get(2).isObject() || !JS::IsCallable(&args[2].toObject()) ||
       !args.get(5).isObject() || !KandeloFsInteger(cx, args.get(3), 0, 1, &mode) ||
@@ -91,24 +92,18 @@ static bool KandeloCreateSecretKeyGen(JSContext* cx, const CallArgs& args,
   if (!prototype || !keyPrototype) return false;
   RootedValue completion(cx, args.get(2)), retainedPrototype(cx, ObjectValue(*keyPrototype));
   RootedObject request(cx);
-  auto abandon = mozilla::MakeScopeExit([&] {
-    if (request) {
-      JSAutoRealm realm(cx, request);
-      KandeloFsAbandonRequest(request);
-    }
-  });
   {
     JSAutoRealm realm(cx, prototype);
     if (!JS_WrapValue(cx, &completion) || !JS_WrapValue(cx, &retainedPrototype)) return false;
     if (!KandeloCreateFsResource(cx, prototype, completion, FsResourceKind::Keygen, &request)) return false;
+    publication.Register(request);
     auto* state = KandeloFsRequestStateOf(cx, request); if (!state) return false;
     state->flags = int(mode); state->limit = uint32_t(bits);
     JS::SetReservedSlot(request, FsRequestBuffers, retainedPrototype);
     if (!KandeloInitializeFsResource(cx, request)) return false;
     output.setObject(*request);
   }
-  if (!JS_WrapValue(cx, output)) return false;
-  abandon.release(); return true;
+  return JS_WrapValue(cx, output);
 }
 static bool KandeloRunSecretKeyGen(JSContext* cx, const CallArgs& args,
                                    MutableHandleValue output) {
