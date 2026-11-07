@@ -2,6 +2,33 @@
 
 ## Current checkpoint — 2026-11-06
 
+**Maintainer priority clarification:** improve Kandelo rather than adapting
+applications around incomplete platform support. Further package adaptations
+and promotion of the candidate PHP image are on hold for discussion. The
+already-running build may finish; its output is evidence, not approval of
+the approach. No requested behavior is considered complete on that basis.
+
+The audit identifies three distinct cases:
+
+- General platform work: the syscall, libc, worker lifecycle, Go target and
+  cgo-linking implementations benefit other consumers and remain the
+  preferred approach.
+- FrankenPHP's approximately 250-line patch changes C-structure access,
+  replaces bulk CGI registration with scalar calls, and declares static
+  linkage. Some aggregate cgo shapes have since gained general support;
+  the continued necessity of each accessor and scalar-call adaptation has
+  not been revalidated. Remove obsolete adaptations, and prefer general
+  cgo fixes for remaining unsupported shapes. Do not present the package
+  patch as complete upstream-compatible cgo support.
+- The PHP CFG traversal candidate (`a3df84d29`) and the existing Go
+  `regexp/syntax` recursion fallback (`4c644a0` in the Go fork) alter
+  upstream library algorithms to accommodate finite native Wasm call
+  depth. They do not repair POSIX behavior. The Go fallback is roughly
+  100 added lines; the PHP change replaces one function. Their preservation
+  of behavior does not by itself settle whether these adaptations fit the
+  maintainer's intended portability policy. Go's code generator and
+  collector remain unchanged, but its standard library is modified.
+
 The active draft is [PR #1492](https://github.com/Automattic/kandelo/pull/1492),
 on ABI 55 and main `21cfba152` (last fetched November 5). The Go consumer
 recipes pin `5834adc306dddf6784c20e402deeabf643ad9c37`. Go's collector and
