@@ -274,6 +274,29 @@ pipe pair.
   RAM-only scratch mounts. `/var/log` and `/var/tmp` also use the persistent
   rootfs; `/tmp`, `/run`, and `/dev/shm` remain volatile. `/var/run` links to
   `/run`. Memory-only computers lose all changes on shutdown.
+- A durable `/var/log` includes the service logs images already write there:
+  the dinit logs for nginx, MariaDB, PHP-FPM, Redis and the Ruby to-do app
+  (for example `/var/log/nginx.log` and `/var/log/php-fpm.log`) survive a
+  reload, where they used to start empty on every boot. Those are the logs you
+  want after a crash, so this is intended, but it changes what those products
+  leave behind: a saved computer keeps its service logs until something
+  removes them, and they spend the computer's storage. Temporary and
+  memory-only computers still lose them on shutdown.
+- `/var/log` is bounded. The regular files under it (the whole subtree, by
+  apparent size, holes included) may total at most 64 MiB
+  (`VAR_LOG_BYTE_LIMIT` in `crates/runtime-core/src/rootfs.rs`). A write that
+  would pass the cap is cut short at it, and the next write that grows a file
+  fails with `ENOSPC`; so does an `ftruncate` that would grow past it. That is
+  deliberate: a daemon must be able to see the failure instead of believing it
+  logged. Overwriting bytes a file already holds spends nothing, and removing
+  or truncating a log frees room. The cap does not rotate anything: sysklogd
+  rotation bounds the files it owns, and unrotated service logs hit the cap
+  and stop growing until something frees space. Files outside `/var/log` are
+  not affected, a file renamed out of it stops counting, and a file renamed
+  into it is counted from then on but is not itself refused. It is a rule over
+  the live tree, with nothing recorded in the journal, and the same on Node.js
+  and in the browser. An image that ships no `/var/log` directory mounts
+  without one, and nothing is capped until the directory exists.
 - The Kandelo page creates temporary, resizable, OPFS-backed computers by default.
   **Release compatibility warning:** saved computers from this release will not
   work in the next release. Export important files before updating Kandelo.

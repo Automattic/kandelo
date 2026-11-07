@@ -116,6 +116,18 @@ describe("DEFAULT_MOUNT_SPEC", () => {
     for (const path of ["/home/maker", "/root", "/srv", "/var/tmp", "/var/log", "/var/run"]) expect(KERNEL_TMPFS_OWNED_PREFIXES).not.toContain(path);
   });
 
+  it("no longer declares /var/log as a scratch mount", () => {
+    // /var/log is durable: the root filesystem and its journal serve it, so it
+    // is neither a scratch mount nor a prefix the in-kernel tmpfs owns. The
+    // kernel's `SCRATCH_MOUNTS` table is the other half of this pair
+    // (`tmpfs::tests::var_log_is_not_a_scratch_mount`).
+    expect(DEFAULT_MOUNT_SPEC.find((mount) => mount.path === "/var/log")).toBeUndefined();
+    expect(KERNEL_TMPFS_OWNED_PREFIXES).not.toContain("/var/log");
+    const scratch = DEFAULT_MOUNT_SPEC.filter((mount) => mount.source === "scratch")
+      .map((mount) => mount.path).sort();
+    expect(scratch).toEqual([...KERNEL_TMPFS_OWNED_PREFIXES].sort());
+  });
+
   it("declares / as a writable set-ID-capable image mount", () => {
     const root = DEFAULT_MOUNT_SPEC.find((m) => m.path === "/");
     expect(root).toBeDefined();
@@ -601,6 +613,28 @@ describe("resolveForBrowser", () => {
         image,
       ),
     ).rejects.toThrow(/browser scratch mount \/mnt\/session has no backend/);
+  });
+
+  it("still refuses a scratch mount the kernel tmpfs does not serve, /var/log included", async () => {
+    // /var/log left the scratch set when it became durable. A spec that still
+    // declares it scratch is asking for a volatile directory nothing serves, and
+    // the browser says so instead of booting without it.
+    await expect(
+      resolveForBrowser(
+        [
+          { path: "/", source: "image" },
+          { path: "/var/log", source: "scratch", mode: 0o755 },
+        ],
+        image,
+      ),
+    ).rejects.toThrow(/browser scratch mount \/var\/log has no backend/);
+  });
+
+  it("boots the canonical spec without refusing /var/log", async () => {
+    // The browser boot path resolves DEFAULT_MOUNT_SPEC (`restoreBrowserKernelInitMounts`);
+    // it must neither throw nor mount anything for /var/log, which the kernel's
+    // root filesystem serves.
+    await expect(restoreBrowserKernelInitMounts(image)).resolves.toEqual([]);
   });
 
   it("resolves the canonical spec to no mounts at all", async () => {

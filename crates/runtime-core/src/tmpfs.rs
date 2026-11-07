@@ -116,6 +116,8 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
     ScratchMount { prefix: b"/tmp", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
     // /var/log and /var/tmp belong to the persistent root filesystem. /run
     // starts with directory metadata supplied by the image, never its files.
+    // The rootfs journal also bounds /var/log, so a machine cannot be filled
+    // by its own logs; see `rootfs::VAR_LOG_BYTE_LIMIT`.
     ScratchMount { prefix: b"/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
     // POSIX shared memory. Sticky and world-writable like `/tmp`, and served
     // here for the same reason: the kernel owns `/` and every other scratch

@@ -390,6 +390,10 @@ struct RootfsState {
     arena_metadata: MetadataReservation<'static>,
     #[cfg(test)]
     fail_inode_reservation: Option<InodeReservationFailure>,
+    /// Tests lower [`VAR_LOG_BYTE_LIMIT`] to exercise the cap without
+    /// writing 64 MiB.
+    #[cfg(test)]
+    var_log_byte_limit: u64,
     dirty_persistent_timestamps: BTreeSet<u32>,
     /// Root ("/") inode index, created on first use.
     root: Option<u32>,
@@ -496,6 +500,8 @@ impl RootfsState {
             arena_metadata: ROOTFS_METADATA.empty(),
             #[cfg(test)]
             fail_inode_reservation: None,
+            #[cfg(test)]
+            var_log_byte_limit: VAR_LOG_BYTE_LIMIT,
             dirty_persistent_timestamps: BTreeSet::new(),
             root: None,
             dir_iters: Vec::new(),
@@ -5018,6 +5024,109 @@ where
     }
 }
 
+/// The most regular-file content (apparent size) that may sit under `/var/log`.
+///
+/// `/var/log` is durable: it is served by the rootfs journal, so what it holds
+/// spends the saved computer's storage quota rather than RAM. Daemons that
+/// write there (the dinit service logs, the syslog daemon) rotate only what
+/// they own, so the directory needs a bound of its own, and a chatty service
+/// must not be able to quietly consume the user's disk. A write that would pass
+/// the bound fails with `ENOSPC` -- the error a daemon can react to -- instead
+/// of being dropped while the daemon believes it logged.
+///
+/// This is policy over the live tree, not journal state: nothing is recorded
+/// for it, so recovery, checkpoints and exports are unchanged, and the figure
+/// is always recomputed from what is actually under the directory.
+pub const VAR_LOG_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
+
+#[cfg(test)]
+fn set_var_log_byte_limit(limit: u64) {
+    ROOTFS.with(|state| state.var_log_byte_limit = limit);
+}
+
+impl RootfsState {
+    fn var_log_byte_limit(&self) -> u64 {
+        #[cfg(test)]
+        return self.var_log_byte_limit;
+        #[cfg(not(test))]
+        VAR_LOG_BYTE_LIMIT
+    }
+
+    /// Regular-file bytes under `/var/log`, and whether `target` is one of the
+    /// files counted. `None` when the image has no `/var/log` directory
+    /// (absent, or something other than a directory): there is nothing to bound.
+    ///
+    /// Sizes are the files' apparent sizes, so a hole counts as claimed room;
+    /// a file hard-linked twice beneath the directory counts twice, which only
+    /// errs toward the cap. A file renamed out of the directory stops counting
+    /// (it is no longer a log); one renamed in is counted from then on, and is
+    /// not itself refused.
+    fn var_log_usage(&self, target: u32) -> Result<Option<(u64, bool)>, Errno> {
+        let Some(root) = self.root else { return Ok(None) };
+        let Ok(dir) = self.walk(root, &[b"var", b"log"]) else { return Ok(None) };
+        if !self.get(dir).is_some_and(Inode::is_dir) {
+            return Ok(None);
+        }
+        let mut stack: Vec<u32> = Vec::new();
+        stack.try_reserve(8).map_err(|_| Errno::ENOMEM)?;
+        stack.push(dir);
+        let (mut used, mut member, mut directories) = (0u64, false, 0usize);
+        while let Some(index) = stack.pop() {
+            let inode = self.get(index).ok_or(Errno::EIO)?;
+            match &inode.kind {
+                InodeKind::Dir(entries) => {
+                    // A directory has one name, so the walk is a tree; the
+                    // bound only keeps a corrupt namespace from spinning here.
+                    directories += 1;
+                    if directories > self.inodes.len() {
+                        return Err(Errno::EIO);
+                    }
+                    stack.try_reserve(entries.len()).map_err(|_| Errno::ENOMEM)?;
+                    stack.extend(entries.values().copied());
+                }
+                InodeKind::Regular(_)
+                | InodeKind::BaseRegular { .. }
+                | InodeKind::PersistentRegular
+                | InodeKind::LazyMember { .. } => {
+                    used = used.saturating_add(inode.stat().st_size);
+                    member |= index == target;
+                }
+                InodeKind::Symlink(_) | InodeKind::Special(_) => {}
+            }
+        }
+        Ok(Some((used, member)))
+    }
+
+    /// How far file `target`, now `old_size` bytes, may grow toward `end`
+    /// under the `/var/log` cap. Returns `end` when the cap does not apply
+    /// (an overwrite, or a file outside `/var/log`), a smaller end when only
+    /// part of the growth fits, and `ENOSPC` when none of it does.
+    fn var_log_admit(&self, target: u32, old_size: u64, end: u64, offset: u64) -> Result<u64, Errno> {
+        if end <= old_size {
+            return Ok(end);
+        }
+        let Some((used, true)) = self.var_log_usage(target)? else { return Ok(end) };
+        let allowed_end = old_size.saturating_add(self.var_log_byte_limit().saturating_sub(used));
+        if offset >= allowed_end {
+            return Err(Errno::ENOSPC);
+        }
+        Ok(end.min(allowed_end))
+    }
+}
+
+/// `buf`, cut short where `/var/log` is full; see [`RootfsState::var_log_admit`].
+fn var_log_clamp_write<'a>(idx: u32, offset: u64, buf: &'a [u8]) -> Result<&'a [u8], Errno> {
+    let Some(end) = offset.checked_add(buf.len() as u64).filter(|_| !buf.is_empty()) else {
+        // Empty, or an overflowing range the writers below report as EFBIG.
+        return Ok(buf);
+    };
+    ROOTFS.with(|state| {
+        let old_size = state.get(idx).ok_or(Errno::EBADF)?.stat().st_size;
+        let admitted = state.var_log_admit(idx, old_size, end, offset)?;
+        Ok(&buf[..(admitted - offset) as usize])
+    })
+}
+
 /// Write `buf` at `offset`, copying a base file into the overlay first, then
 /// growing (zero-filling any gap) as needed.
 pub fn write<F>(handle: i64, offset: i64, buf: &[u8], mut byte_source: F) -> Result<usize, Errno>
@@ -5028,6 +5137,7 @@ where
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
+    let buf = var_log_clamp_write(idx, offset as u64, buf)?;
     if fixed_persistence_enabled() {
         if declares_digest(idx) {
             return Err(Errno::EROFS);
@@ -5421,6 +5531,17 @@ where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
     let idx = file_handle_to_inode(handle)?;
+    if let Ok(new_size) = u64::try_from(length) {
+        // Growing a file under `/var/log` spends the same cap a write does,
+        // but a truncate has no short form: all of it fits or none of it.
+        ROOTFS.with(|state| {
+            let old_size = state.get(idx).ok_or(Errno::EBADF)?.stat().st_size;
+            match state.var_log_admit(idx, old_size, new_size, old_size)? {
+                admitted if admitted < new_size => Err(Errno::ENOSPC),
+                _ => Ok(()),
+            }
+        })?;
+    }
     if fixed_persistence_enabled() {
         if !resizable_persistence_enabled() || declares_digest(idx) {
             return Err(Errno::EROFS);
@@ -12791,6 +12912,197 @@ mod tests {
         assert_eq!(statfs(b"/").unwrap().f_bfree, 0);
         assert_eq!(write(handle, 3 * 4096, b"x", &mut source), Err(Errno::ENOSPC));
         release_handle(handle);
+    }
+
+    // ---- /var/log: durable, and bounded on the journal-backed root ----------
+
+    fn var_log_write(handle: i64, offset: i64, bytes: &[u8]) -> Result<usize, Errno> {
+        write(handle, offset, bytes, |_, _| Err(Errno::EIO))
+    }
+
+    /// An in-memory root with `/var/log` present, as the shipped manifest has it.
+    fn memory_root_with_var_log() {
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_dir(b"/var", 0o755, 0, 0, 2).unwrap();
+        insert_base_dir(b"/var/log", 0o755, 0, 0, 3).unwrap();
+        insert_base_dir(b"/home", 0o755, 0, 0, 4).unwrap();
+    }
+
+    fn create(path: &[u8]) -> i64 {
+        open(path, O_CREAT | O_RDWR, 0o644, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn a_write_past_the_var_log_byte_cap_returns_enospc() {
+        let _guard = TestGuard::acquire();
+        memory_root_with_var_log();
+        set_var_log_byte_limit(100);
+        mkdir(b"/var/log/nginx", 0o755, 0, 0).unwrap();
+        let messages = create(b"/var/log/messages");
+        let nested = create(b"/var/log/nginx/error.log");
+
+        // The cap is shared by the whole subtree, nested files included.
+        assert_eq!(var_log_write(messages, 0, &[1; 60]), Ok(60));
+        assert_eq!(var_log_write(nested, 0, &[2; 40]), Ok(40));
+        assert_eq!(var_log_write(messages, 60, b"x"), Err(Errno::ENOSPC));
+        assert_eq!(var_log_write(nested, 40, b"x"), Err(Errno::ENOSPC));
+        assert_eq!(lstat(b"/var/log/messages").unwrap().st_size, 60);
+
+        // Rewriting bytes a file already holds spends nothing.
+        assert_eq!(var_log_write(messages, 0, &[3; 60]), Ok(60));
+        // Growing by ftruncate is growth too.
+        assert_eq!(truncate_handle(messages, 61, |_, _| Err(Errno::EIO)), Err(Errno::ENOSPC));
+        assert_eq!(lstat(b"/var/log/messages").unwrap().st_size, 60);
+        // A hole counts: it is how much of the cap the file claims.
+        assert_eq!(var_log_write(messages, 1000, b"x"), Err(Errno::ENOSPC));
+
+        // Freeing space (unlink) lets the daemon carry on.
+        release_handle(nested);
+        unlink(b"/var/log/nginx/error.log").unwrap();
+        assert_eq!(var_log_write(messages, 60, &[4; 40]), Ok(40));
+        assert_eq!(var_log_write(messages, 100, b"x"), Err(Errno::ENOSPC));
+        // Truncating down frees space too.
+        truncate_handle(messages, 10, |_, _| Err(Errno::EIO)).unwrap();
+        // A truncate has no short form: 90 bytes of room do not admit 140.
+        assert_eq!(truncate_handle(messages, 150, |_, _| Err(Errno::EIO)), Err(Errno::ENOSPC));
+        assert_eq!(lstat(b"/var/log/messages").unwrap().st_size, 10);
+        truncate_handle(messages, 100, |_, _| Err(Errno::EIO)).unwrap();
+        assert_eq!(lstat(b"/var/log/messages").unwrap().st_size, 100);
+        assert_eq!(var_log_write(messages, 10, &[5; 90]), Ok(90));
+        release_handle(messages);
+    }
+
+    #[test]
+    fn a_var_log_write_that_crosses_the_cap_is_a_short_write_then_enospc() {
+        let _guard = TestGuard::acquire();
+        memory_root_with_var_log();
+        set_var_log_byte_limit(100);
+        let messages = create(b"/var/log/messages");
+        assert_eq!(var_log_write(messages, 0, &[1; 70]), Ok(70));
+        // POSIX permits a short write; the caller learns the cap on the next one.
+        // A hole is claimed room too: a write 500 bytes in cannot fit.
+        assert_eq!(var_log_write(messages, 500, b"x"), Err(Errno::ENOSPC));
+        assert_eq!(lstat(b"/var/log/messages").unwrap().st_size, 70);
+        assert_eq!(var_log_write(messages, 70, &[2; 50]), Ok(30));
+        assert_eq!(var_log_write(messages, 100, &[2; 20]), Err(Errno::ENOSPC));
+        assert_eq!(lstat(b"/var/log/messages").unwrap().st_size, 100);
+        let mut back = [0u8; 100];
+        assert_eq!(read_file_at(b"/var/log/messages", 0, &mut back, |_, _| Err(Errno::EIO)), Ok(100));
+        assert_eq!(&back[70..], &[2; 30]);
+        release_handle(messages);
+    }
+
+    #[test]
+    fn the_var_log_cap_binds_only_files_under_var_log() {
+        let _guard = TestGuard::acquire();
+        memory_root_with_var_log();
+        set_var_log_byte_limit(10);
+        let elsewhere = create(b"/home/data");
+        assert_eq!(var_log_write(elsewhere, 0, &[9; 4096]), Ok(4096));
+        let log = create(b"/var/log/full");
+        assert_eq!(var_log_write(log, 0, &[1; 10]), Ok(10));
+        assert_eq!(var_log_write(log, 10, b"x"), Err(Errno::ENOSPC));
+        // Other files keep growing while the log directory is full.
+        assert_eq!(var_log_write(elsewhere, 4096, &[9; 4096]), Ok(4096));
+        // A file moved out of /var/log stops counting; it is no longer a log.
+        rename(b"/var/log/full", b"/home/was-a-log").unwrap();
+        assert_eq!(var_log_write(log, 10, &[1; 100]), Ok(100));
+        // And the directory has its room back.
+        let fresh = create(b"/var/log/fresh");
+        assert_eq!(var_log_write(fresh, 0, &[1; 10]), Ok(10));
+        release_handle(fresh);
+        release_handle(log);
+        release_handle(elsewhere);
+    }
+
+    #[test]
+    fn a_persistent_var_log_write_past_the_cap_returns_enospc() {
+        let _guard = TestGuard::acquire();
+        let image = empty_capacity_image(1024 * 1024, 64);
+        let mut source = image_host(&image);
+        load_image(image.len() as u64, &mut source).unwrap();
+        let digest: [u8; 32] = Sha256::digest(&image).into();
+        let journal = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        enable_resizable_persistence(Box::new(journal), digest, &mut source).unwrap();
+        mkdir(b"/var", 0o755, 0, 0).unwrap();
+        mkdir(b"/var/log", 0o755, 0, 0).unwrap();
+        set_var_log_byte_limit(10_000);
+        let handle = open(b"/var/log/messages", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        assert_eq!(write(handle, 0, &[1; 6000], &mut source), Ok(6000));
+        // 4000 bytes of room: a longer write is short, the next one fails.
+        assert_eq!(write(handle, 6000, &[2; 6000], &mut source), Ok(4000));
+        assert_eq!(write(handle, 10_000, b"x", &mut source), Err(Errno::ENOSPC));
+        assert_eq!(truncate_handle(handle, 10_001, &mut source), Err(Errno::ENOSPC));
+        assert_eq!(lstat(b"/var/log/messages").unwrap().st_size, 10_000);
+        // The rest of the journal is unaffected by the cap.
+        let home = open(b"/other", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        assert_eq!(write(home, 0, &[3; 20_000], &mut source), Ok(20_000));
+        release_handle(home);
+        release_handle(handle);
+    }
+
+    #[test]
+    fn var_log_writes_persist_through_the_rootfs_journal() {
+        let _guard = TestGuard::acquire();
+        let image = empty_capacity_image(1024 * 1024, 64);
+        let mut source = image_host(&image);
+        load_image(image.len() as u64, &mut source).unwrap();
+        let digest: [u8; 32] = Sha256::digest(&image).into();
+        let journal = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        enable_resizable_persistence(Box::new(journal.clone()), digest, &mut source).unwrap();
+        mkdir(b"/var", 0o755, 0, 0).unwrap();
+        mkdir(b"/var/log", 0o755, 0, 0).unwrap();
+        let handle = open(b"/var/log/messages", O_CREAT | O_RDWR, 0o640, 0, 0).unwrap();
+        assert_eq!(write(handle, 0, b"boot: ok\n", &mut source), Ok(9));
+        sync_persistence().unwrap();
+        release_handle(handle);
+
+        // A new boot from the same image and journal: the machine's log is there.
+        reset();
+        load_image(image.len() as u64, &mut source).unwrap();
+        enable_resizable_persistence(Box::new(journal), digest, &mut source).unwrap();
+        let mut back = [0u8; 9];
+        assert_eq!(read_file_at(b"/var/log/messages", 0, &mut back, &mut source), Ok(9));
+        assert_eq!(&back, b"boot: ok\n");
+        assert_eq!(lstat(b"/var/log/messages").unwrap().st_mode & 0o7777, 0o640);
+    }
+
+    #[test]
+    fn an_image_with_no_var_log_content_still_mounts() {
+        // Absent directory: persistence enables, the cap simply has nothing to
+        // bound, and writes elsewhere are not refused.
+        let _guard = TestGuard::acquire();
+        let image = empty_capacity_image(1024 * 1024, 64);
+        let mut source = image_host(&image);
+        load_image(image.len() as u64, &mut source).unwrap();
+        let digest: [u8; 32] = Sha256::digest(&image).into();
+        let journal = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        enable_resizable_persistence(Box::new(journal), digest, &mut source).unwrap();
+        assert_eq!(lstat(b"/var/log").unwrap_err(), Errno::ENOENT);
+        set_var_log_byte_limit(1);
+        let handle = open(b"/anywhere", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        assert_eq!(write(handle, 0, &[1; 4096], &mut source), Ok(4096));
+        release_handle(handle);
+        // It can be created later, and from then on it is bounded.
+        mkdir(b"/var", 0o755, 0, 0).unwrap();
+        mkdir(b"/var/log", 0o755, 0, 0).unwrap();
+        let log = open(b"/var/log/late", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        assert_eq!(write(log, 0, &[1; 8], &mut source), Ok(1));
+        assert_eq!(write(log, 1, b"x", &mut source), Err(Errno::ENOSPC));
+        release_handle(log);
+    }
+
+    #[test]
+    fn a_non_directory_var_log_is_not_capped_or_an_error() {
+        let _guard = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_dir(b"/var", 0o755, 0, 0, 2).unwrap();
+        // `/var/log` shipped as a plain file: nothing to bound beneath it.
+        insert_base_file(b"/var/log", 0, 0, 0o644, 0, 0, 3).unwrap();
+        set_var_log_byte_limit(1);
+        let other = create(b"/var/other");
+        assert_eq!(var_log_write(other, 0, &[1; 64]), Ok(64));
+        release_handle(other);
     }
 
     #[test]

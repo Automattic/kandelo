@@ -53,7 +53,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * Create a fresh host temp directory that the in-kernel tmpfs never claims.
  *
  * The in-kernel tmpfs is the unconditional authority for its scratch prefixes
- * (`/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`,
+ * (`/tmp`, `/var/tmp`, `/var/run`, `/home/maker`, `/root`, `/srv`,
  * `/dev/shm`). `os.tmpdir()` frequently resolves under `/tmp` (the nix dev
  * shell sets `TMPDIR=/tmp/nix-shell.*`, and Linux defaults to `/tmp`), so a
  * kernel-routed guest open of a path there is served by the empty in-kernel
