@@ -469,13 +469,12 @@ still required for broad platform performance claims.
 The comparison measures each complete HTTP stack, including its PHP
 execution mode. Both profiles use PHP 8.5 with file-cache-only OPcache;
 FrankenPHP embeds the thread-safe build and nginx uses PHP-FPM processes.
-Node configures six PHP-FPM children and six FrankenPHP threads. Browser
-runs use the image's shipped defaults: the current WordPress builder selects
-one PHP-FPM child and two FrankenPHP threads. Use the Node pair to compare
-equal maximum worker pools and the browser pair to compare those shipped
-stacks. Retain the actual image configuration when interpreting concurrency.
-The Node harness explicitly updates the shared FrankenPHP service environment
-to six threads; Caddy and the classic wrapper consume that same setting.
+Both Node and Chromium use the configured comparison pool, which defaults
+to two PHP-FPM children and two FrankenPHP threads. Caddy and the classic
+wrapper consume the same FrankenPHP service environment. The shipped
+one-child FPM and two-thread FrankenPHP defaults describe the unmodified
+demo, not these controlled comparison inputs. Retain the base and configured
+image identities and the effective pool checks when interpreting concurrency.
 The demo's two-thread default accounts for host Wasm-instance costs as well
 as PHP allocations. Six idle PHP threads already produce about 8.2 GiB in
 WebKit's native allocation bucket in the recorded revision-38 control,

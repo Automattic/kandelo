@@ -2,6 +2,43 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Optimized artifact checkpoint:** the normal revision-41 classic and
+revision-22 Caddy package builds complete at source 7d85f1674, with the
+upstream PHP CFG optimizer unchanged. The partial image passes FHS and
+embedded daemon/plugin identity audits; both actual Node service cases pass,
+including real requests and graceful shutdown. This is job
+`frankenphp-cgo-optimized-checkpoint-1107-195055-b446`; its three-engine
+33-case rendered UI/persistence gate remains active. All eleven Chromium
+cases pass, including both source-independent OPFS persistence backends.
+Firefox/WebKit completion is not yet claimed.
+
+| Artifact | Previous partial cohort | New optimized partial cohort |
+| --- | ---: | ---: |
+| Caddy Wasm | 185,037,671 bytes | 184,971,404 bytes |
+| Classic Wasm | 70,004,510 bytes | 69,939,352 bytes |
+| Compressed WordPress image | 83,524,699 bytes | 83,507,731 bytes |
+
+The new image is
+`969ec16b4d2bdf90edc45e294f1ff61b023594a11160be5fa6452b9ccc0ffca7`;
+kernel remains `6f5afada9ae3`. Caddy is `cfdba6545bd4`, classic
+`f1314f3e7675`. These historical/new observations are not an independent
+same-key reproduction or a speed result. Restoring C compilation's missing
+-O2 therefore does not explain most of the image size. The normal pipeline
+already applies post-instrumentation size optimization. Linked dependencies,
+instrumentation, three bundled server alternatives and PHP bytecode caches
+remain substantial contributors; none has been removed to mask the cost.
+
+**Combined configuration validation queued:** job
+`wordpress-mutable-config-1107-205359-b192` waits for the frozen 33-case run
+before its own normal revision-45 partial build. Its isolated checkout
+contains the tested Fetch-credentials correction and both INI changes. It
+will audit exact selected programs/plugin bytes, run the extended two-service
+Node configuration-replacement checks, then use the actual admin UI to enable
+the unchanged cache plugin and test anonymous hits, authenticated bypass and
+POST bypass. The old previews remain pinned. Canonical/family artifacts,
+full final-cohort browser/memory/lifecycle acceptance, cache expiry/edit
+invalidation and both kinds of performance comparisons remain open.
+
 **Mutable PHP configuration fix prepared:** WordPress revision 45 enables
 OPcache timestamp validation with revalidate_freq=0 for both PHP-FPM and
 FrankenPHP. The image prewarmer already normalizes source timestamps before
@@ -12,7 +49,7 @@ invokes ordinary invalidation and requires a subsequent request to read the
 new value. The fixture's PHP syntax and TypeScript loading pass; these
 extended Node cases have not yet run on a newly built revision-45 image.
 The successful manual INI/restart browser experiment and native control
-above justify this ordinary configuration change. No PHP/plugin algorithm
+recorded below justify this ordinary configuration change. No PHP/plugin algorithm
 is modified. Normal image construction and final browser/cache/lifecycle
 acceptance remain required after the ongoing cgo build completes.
 
@@ -35,7 +72,8 @@ Earlier attempts retain the normal maker permission error, wrong default
 control socket and premature navigation before the listener was ready.
 The native control is `.context/php-file-cache-invalidation-control-20261108/`
 and browser reports are in the kernel evaluation checkout's owned jobs.
-No image recipe has adopted the INI change yet. Cron remains disabled;
+Revision 45 now prepares this INI setting for both server stacks, but its
+new image has not yet built. Cron remains disabled;
 expiry/garbage collection and post/template invalidation are not validated.
 
 The anonymous cache probe exposes a general browser adapter defect: the
