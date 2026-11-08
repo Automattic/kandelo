@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-08T01:06:34.157744+00:00",
-  "sourceHead": "e224221bda4e0e23aaa073a4ce76648f8a60503b",
-  "recipeRevision": 244,
+  "at": "2026-11-08T03:00:27.322358+00:00",
+  "sourceHead": "81e50150e23cfc59e0292a29986f3e3284662f26",
+  "recipeRevision": 249,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 167,
+    "sourceSliceRecords": 172,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 212
+    "findingsWithoutExplicitOrProposedSourceSlice": 210
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,24 +26,26 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 167,
+  "sourceSliceIdentitiesVerified": 172,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "ac33e38bdf5db7fff8af730407842b718ace25a13c6589f66c1b468c1726f0d8"
+    "sha256": "ef31a81e4bb782a21f38fdfc35270006c9157bb6248d01972deab05b5166421f"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
-  "scope": "Metadata-only explicit SQLite242/TTY243/VM244 qualified progress overlay164\u2192167. NI-002 and E-008 retain only recorded partial source scope; T-002/T-010/T-006 are shared prerequisites. SQLite section-only obligations stay sections, not invented IDs. No API/family closure or new runtime/compiler evidence; preserve all337known lower-bound attempts,4unattributed dependency subjects, accepted239historical evidence and every existing source/failure/skip/unsupported/timeout/harness record.",
+  "scope": "Exact committed WASI245, TTY246, TLS247, EventEmitter248 and codec249 partial source-progress overlay. Preserve direct-partial/shared prerequisites and distinct qualified definitions/ranges. Codec capacity/report contribution does not establish heap-graph/whole-process/public memory metrics or guest/four-host compatibility. No new runtime or compilation evidence.",
   "previousIntegrityIdentity": {
-    "sha256": "93f6136119fd6402d0022f3231c6b3bdc192c69a0b131ed03d27340579562510",
-    "sourceHead": "3a7403a3edca3c0d4d7b57f18475e74107ee25fe",
+    "sha256": "9097e7716d320b341344524a8ea2369ff28967ce5be8b37f1e541b663caeb4b5",
+    "sourceHead": "e224221bda4e0e23aaa073a4ce76648f8a60503b",
     "scope": "Prior committed integrity remains in source history"
   },
   "sourceProgressOverlaysAdded": [
-    "sqlite-serialization",
-    "tty-write-owner",
-    "vm-script-cache"
+    "wasi-fd",
+    "tty-shared-io",
+    "tls-encrypted-output",
+    "event-unhandled-error",
+    "codec-owned-capacity"
   ],
   "qualifiedReferenceCorrections": [
     {
@@ -68,43 +70,83 @@
   "qualifiedLinksAdded": [
     {
       "document": "tests/nodejs/audit/native-integration.md",
-      "finding": "NI-002",
-      "slice": "sqlite-serialization",
+      "finding": "NI-003",
+      "slice": "wasi-fd",
       "relation": "explicit-progress-finding-id",
       "prerequisiteOnly": false,
-      "scope": "Partial actual SQLite image serialize/deserialize connection/statement/allocation ownership only; full SQLite surface remains open."
+      "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance."
+    },
+    {
+      "document": "tests/nodejs/audit/native-integration.md",
+      "finding": "NI-007",
+      "slice": "wasi-fd",
+      "relation": "explicit-progress-finding-id",
+      "prerequisiteOnly": false,
+      "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance."
     },
     {
       "document": "tests/nodejs/audit/terminal.md",
       "finding": "T-002",
-      "slice": "tty-write-owner",
+      "slice": "tty-shared-io",
       "relation": "explicit-shared-prerequisite",
       "prerequisiteOnly": true,
-      "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete"
+      "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+    },
+    {
+      "document": "tests/nodejs/audit/terminal.md",
+      "finding": "T-007",
+      "slice": "tty-shared-io",
+      "relation": "explicit-shared-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
     },
     {
       "document": "tests/nodejs/audit/terminal.md",
       "finding": "T-010",
-      "slice": "tty-write-owner",
+      "slice": "tty-shared-io",
       "relation": "explicit-shared-prerequisite",
       "prerequisiteOnly": true,
-      "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete"
+      "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
     },
     {
       "document": "tests/nodejs/audit/terminal.md",
-      "finding": "T-006",
-      "slice": "tty-write-owner",
+      "finding": "T-016",
+      "slice": "tty-shared-io",
       "relation": "explicit-shared-prerequisite",
       "prerequisiteOnly": true,
-      "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete"
+      "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
     },
     {
-      "document": "tests/nodejs/audit/engine.md",
-      "finding": "E-008",
-      "slice": "vm-script-cache",
+      "document": "tests/nodejs/audit/secure-network-contracts.md",
+      "finding": "S-009",
+      "slice": "tls-encrypted-output",
       "relation": "explicit-progress-finding-id",
       "prerequisiteOnly": false,
-      "scope": "Partial owning source/build-identity prerequisite only. Encoding does not implement safe cache input, metadata rebinding, compileFunction or whole VM/V8 compatibility; no accepted exclusion or closure."
+      "scope": "Actual retained encrypted transport and terminal publication ownership; shutdown/_final, full errors/lifetime and guest validation remain incomplete."
+    },
+    {
+      "document": "tests/nodejs/audit/event-emitter-contracts.md",
+      "finding": "A-018",
+      "slice": "event-unhandled-error",
+      "relation": "explicit-progress-finding-id",
+      "prerequisiteOnly": false,
+      "scope": "Non-Error coded constructor/private inspect/argument admission only; no stack/fatal closure."
+    },
+    {
+      "document": "tests/nodejs/audit/async.md",
+      "finding": "A-018",
+      "slice": "event-unhandled-error",
+      "relation": "explicit-shared-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Preserve distinct broader qualified definition; fatal-stack, namespace and emitter resource obligations are not closed."
+    },
+    {
+      "document": "tests/nodejs/audit/compression-contracts.md",
+      "finding": "ZIP-010",
+      "slice": "codec-owned-capacity",
+      "relation": "explicit-progress-finding-id",
+      "prerequisiteOnly": false,
+      "scope": "Actual retained native state/context/container capacity; no heap snapshot or full memory accounting closure."
     }
   ]
 }

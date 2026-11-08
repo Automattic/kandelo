@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 167,
+    "sourceSliceRecords": 172,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 212
+    "findingsWithoutExplicitOrProposedSourceSlice": 210
   },
   "families": [
     {
@@ -124,7 +124,7 @@
         "A-029",
         "A-030"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 8,
+      "findingsWithExplicitOrProposedSourceSlices": 9,
       "sourceRouteAsRecorded": "Pinned public AsyncHook/createHook algorithms over real symbol/array/count registry,nested publication and native destroy tracking;133native per-context default-trigger override with public/tick/Promise fallback and existing FS/DNS/codec consumers;ordinary public metadata/root resource and callback owners ; source149 actual native execution stack/epoch/process recovery and explicit callback failure ownership",
       "remainingAsRecorded": "Promise activation/removal and ALS CLI path,remaining native providers/default-trigger consumers,GC/destroy/rejection/fatal/worker/realm/loop/cancellation/ref integration and actual117\u2013149guest/four-host conformance remain open",
       "remainingOwner": "Native async execution/job/Promise owners, compatibility EventEmitter/timers/domain/diagnostics owners",
@@ -605,7 +605,7 @@
         "ZIP-011",
         "ZIP-012"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 0,
+      "findingsWithExplicitOrProposedSourceSlices": 1,
       "sourceRouteAsRecorded": "Pinned codec/archive/iterable JS and native contexts; historical112 limited shared/growable queue controls; source146 replaces queue pins with actual original allocation spans, native write-state ownership and retained params spans",
       "remainingAsRecorded": "Combined117\u2013146 engine uncompiled. Actual JSAPI/GC/realm/detach/resize/shared-codec races and public modes/options/iterators/files/cleanup/cancellation/accounting remain open; historical gzip OS-byte mismatches retained; current four-host conformance unestablished",
       "remainingOwner": "Native codec contexts/work/span/ZIP file/iterator ownership beneath pinned algorithms",
@@ -2047,7 +2047,30 @@
       ],
       "definitionAmbiguity": true,
       "titleForNavigationOnly": "Unhandled error constructor/fatal-stack enrichment and namespace order differ; emitter-resource default/destruction prose conflicts remain target questions",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "event-unhandled-error",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/event-emitter-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Non-Error coded constructor/private inspect/argument admission only; no stack/fatal closure.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "event-unhandled-error",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/async.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Preserve distinct broader qualified definition; fatal-stack, namespace and emitter resource obligations are not closed.",
+          "publicApiClosure": false,
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Native async execution/job/Promise owners, compatibility EventEmitter/timers/domain/diagnostics owners",
@@ -5579,6 +5602,17 @@
           "scope": "Real retained TLSWRAP identity, frame, init rollback and finalization prerequisite. S-008 inherited Socket shape and transport adoption remain separate; no full cancellation/shutdown closure.",
           "publicApiClosure": false,
           "closure": false
+        },
+        {
+          "slice": "tls-encrypted-output",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/secure-network-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Actual retained encrypted transport and terminal publication ownership; shutdown/_final, full errors/lifetime and guest validation remain incomplete.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -7814,6 +7848,17 @@
           "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete",
           "publicApiClosure": false,
           "closure": false
+        },
+        {
+          "slice": "tty-shared-io",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7958,6 +8003,17 @@
           "auditDocument": "tests/nodejs/audit/terminal.md",
           "standaloneDefinitionRecovered": true,
           "scope": "Partial native input/read/material/queued-close/stdin prerequisite; no complete public tty constructors, writes, StreamBase or guest/four-host closure",
+          "closure": false
+        },
+        {
+          "slice": "tty-shared-io",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility.",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -8120,6 +8176,17 @@
           "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete",
           "publicApiClosure": false,
           "closure": false
+        },
+        {
+          "slice": "tty-shared-io",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -8267,6 +8334,17 @@
           "contributionKind": "shared-prerequisite",
           "prerequisiteOnly": true,
           "scope": "Shared Module/require/lazy builtin and genuine parser-presence prerequisite only; public REPLServer/start/default evaluator/Inspector/session/history/standalone owners are not activated or complete. Partial actual eval builtin-binding/shared Module helper and parsed-presence source for L-031; terminal T-012/T-016/T-017 links are shared prerequisites only, public REPL remains absent",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "tty-shared-io",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility.",
           "publicApiClosure": false,
           "closure": false
         }
@@ -9229,7 +9307,19 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "ZIP-010 \u2014 shared lifecycle/accounting dependencies.** Actual native",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "codec-owned-capacity",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/compression-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Actual retained native state/context/container capacity; no heap snapshot or full memory accounting closure.",
+          "publicApiClosure": false,
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [
         "compression-storage-implementation-dependencies"
@@ -10623,6 +10713,17 @@
           "auditDocument": "tests/nodejs/audit/native-integration.md",
           "scope": "Unchanged public WASI lifecycle and25real POSIX/native import source owners only; no complete import set/guest execution/numeric dispatch/API closure",
           "closure": false
+        },
+        {
+          "slice": "wasi-fd",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -10743,6 +10844,17 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/native-integration.md",
           "scope": "Unchanged public WASI lifecycle and25real POSIX/native import source owners only; no complete import set/guest execution/numeric dispatch/API closure",
+          "closure": false
+        },
+        {
+          "slice": "wasi-fd",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance.",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -26982,6 +27094,872 @@
       },
       "acceptedPlatformLimitsAsRecorded": [],
       "publicApiClosure": false
+    },
+    "wasi-fd": {
+      "document": "tests/nodejs/outline/wasi-fd-finding-progress.json",
+      "sha256": "67071de443b389ad2ced5e2fd2c59381c08276963ddf0e50d0fb8ee644a58b55",
+      "recordedRevision": 245,
+      "explicitFindingIds": [
+        "NI-003",
+        "NI-007"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-wasi245-source-r1/report.json",
+          "sha256": "f9a0b5708dee363a37f1d511cbe877910905cdccdd74dcb1861345177a1baf92",
+          "guardedInputs": 902,
+          "scope": "Actual root generated WASI public owner over real portable Context/native V8/NAPI/memory/POSIX components and exact native Node reference; new guest JSAPI/realm/GC/OOM/fatal/Worker/backend/four-host behavior uncompiled/unexecuted."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-wasi245-affected-r1.json",
+          "sha256": "c822d21c99829fb5f390433fff6056e64bb229155d5c94d04aba7e602a1e00b6",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-wasi245-source-r1/report.json",
+          "sha256": "f9a0b5708dee363a37f1d511cbe877910905cdccdd74dcb1861345177a1baf92",
+          "publicNativeGroups": 16,
+          "publicCandidateGroups": 16,
+          "portableFdGroups": 6,
+          "allocatorFaultsCleaned": 26,
+          "successfulAdmissions": 54,
+          "actualSubjectProcessCount": 9,
+          "newRootCompilerAttempts": 0,
+          "historicalProducerHelperCompileAttempts": 2,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Source245actualWASI four-fd owner and current generated JS over explicit native V8/NAPI/memory/POSIX dependencies:16native/16candidate fixturegroups plus6portable fd groups/80allocation trials. New guest JSAPI/realm/GC/fatal/Worker/backend/fourhost behavior remains uncompiled/unexecuted; all other native-integration gaps stay open.",
+          "globalBindingSelfContained": false
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/wasi-fd-owner-agent/report.json",
+          "sha256": "b9022b76fc4c91deb8cba888d06017b9d83df597420f68a1709b98e781ab3b7c",
+          "reusedEvidence": true,
+          "scope": "Historical modified private WASI portable owner and native-dependent evidence based19d392ee, two successful tiny compilers. Current245JS/selected-source checks have separate actual reports; neither executes new guestJSAPI."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/wasi-fd-owner-agent/preserved-new-failures.json",
+          "sha256": "285880750e64eea2a6202ae163bfde0c4b0d7eef102d13e394e6ed438b066630",
+          "scope": "Eight original r2environment setup errors stopped before WASI constructor/import,zero compatibility credit; fresh r3success does not relabel those failures."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/wasi-fd-owner-agent/preserved-prior-evidence.json",
+          "sha256": "393f6dfbf42116bb2238db1b7c54746bbd49d716b675844d4cc723bf7c02a1d4",
+          "scope": "Historical directWasm unsigned-i32/native import provenance nonpass remains actual28(EINVAL) versus expected61(EOVERFLOW); directJSnegative still28. No caller guessing or assertion weakening."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/wasi-owner-agent/component-direct-negative.stderr",
+          "sha256": "309e76efa3e4e43d7bdaf9978d34d86de89f01441550a53b18e2ed561a58ef6d",
+          "scope": "Original assertion actual28 expected61 retained byte-for-byte, not rerun or fixed."
+        },
+        {
+          "field": "$.actualControlReport",
+          "report": ".context/node26-wasi245-source-r1/focused/report.json",
+          "sha256": "adbb22de732cd7f640c46fe3f87ac1ab64c0f6c69070a37d53bb7c9e004dc487",
+          "publicNativeGroups": 16,
+          "publicCandidateGroups": 16,
+          "portableFdGroups": 6,
+          "allocatorFaultsCleaned": 26,
+          "successfulAdmissions": 54,
+          "processSubjects": 9,
+          "newCompilerAttempts": 0,
+          "guestExecution": false,
+          "scope": "Current generated root JS with explicit native V8/NAPI/memory/POSIX dependencies, not candidate guest JSAPI"
+        },
+        {
+          "field": "$.integrationTool",
+          "report": ".context/node26-wasi245-tool-completion.json",
+          "sha256": "2942c389d919c7722ca24e1687b36fc9ff07a21e4c814ae3a6140f5d7fc7576d",
+          "sourceBinding": "466419d9106fd6f5ab82a7c0f5844fdf20465b341fe3467402fc52090d81d464",
+          "selectedInputBindingOnly": true,
+          "globalBindingSelfContained": false,
+          "sourceImportExit3Meaning": "Intermediate record-awaiting-other-check sequencing preserved in completion; both actual supervisor check receipts exit0 and final operation allstepsdone."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/wasi-fd-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/wasi-fd-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Actual fd_allocate rights/selectedPOSIX-fallocate-or-fstat/ftruncate behavior, real errors and unsigned target arithmetic",
+        "Actual fd_filestat_set_times u16flags/admission/realclock/stat/omission/whole-second policy through real descriptor",
+        "Actual fd_renumber same-before-lookup and real destination close/row-rights-preopen/path ownership transfer with single-close lease disarm",
+        "Actual fd_readdir stored-realpath/rawname/cookie/truncation/padding/directory cleanup/output-last and current memory owner",
+        "Exact current-source normal staging/policy29signature/native-wasi unity plus existing portable/native components; guest C++ uncompiled"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/wasi-fd-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and validate actual guest native-wasi/actual Memory brand/security/realm/GC/OOM/callback/fatal/Worker owners on identified artifacts across all four hosts",
+        "Implement17missing imports:fd_advise,path10,poll,signal,four sockets; no success veneer over kernel advice stub",
+        "Implement genuine nested guest WebAssembly execution backend in final phase; deferred last, required and not a platform exclusion",
+        "Implement remaining raw-name/preopen/path capability/permission/resource ownership and guest kernel/VFS/libc behavior; native portable fixture is not guest conformance",
+        "Resolve historical directWasm signed-i32/u32 native-import dispatch provenance actual28 versus61 without spoofable caller or assertion weakening",
+        "No full WASI API/module/family closure, overall suite or full product rebuild; prior25source owners are not reaudited by these four imports"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/native-integration.md",
+      "findingScope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/native-integration.md": [
+          "NI-003",
+          "NI-007"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/native-integration.md",
+        "findingIds": [
+          "NI-003",
+          "NI-007"
+        ],
+        "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/native-integration.md",
+            "findingId": "NI-003",
+            "relation": "partial-owning-source",
+            "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance.",
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/native-integration.md",
+            "findingId": "NI-007",
+            "relation": "partial-owning-source",
+            "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance.",
+            "closed": false
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "tty-shared-io": {
+      "document": "tests/nodejs/outline/tty-shared-io-finding-progress.json",
+      "sha256": "3503536902607a08f92aea0b6ab0de5cfaaf4999139bdddec78413b79fc8d48f",
+      "recordedRevision": 246,
+      "explicitFindingIds": [
+        "T-002",
+        "T-007",
+        "T-010",
+        "T-016"
+      ],
+      "prerequisiteFindingIds": [
+        "T-002",
+        "T-007",
+        "T-010",
+        "T-016"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tty246-source-r1/report.json",
+          "sha256": "fead0f53ec326946e0e0923057f2a65995f3180d19c083bb6b52407cd38dd349",
+          "guardedInputs": 902,
+          "scope": "Actual current-root source/native staging, existing corrected2group portable IOHandle binary and2actual current-generated JS/native stdio components. New C++/GC/realm/retirement/ToInt32 routing uncompiled/unexecuted; public constructors and four-host conformance remain open."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tty246-affected-r1.json",
+          "sha256": "71793667a205c8e99f3fff3e914cf17ffacb63bb6046ea3a335599b8828e2484",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tty246-source-r1/report.json",
+          "sha256": "fead0f53ec326946e0e0923057f2a65995f3180d19c083bb6b52407cd38dd349",
+          "currentGeneratedJsComponents": 2,
+          "portableHeaderGroups": 2,
+          "actualTtyBytesPerComponent": [
+            1026,
+            1026
+          ],
+          "normalCallbackCount": 1,
+          "publicationThrowOriginalCaught": true,
+          "publicationThrowCallbackCount": 0,
+          "sourceChecks": 8,
+          "sourceCommands": 9,
+          "normalReplayCommands": 4,
+          "newRootCompilerAttempts": 0,
+          "historicalOriginalTinyAttempts": 4,
+          "historicalPhaseCorrectionTinyAttempts": 3,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Source 246 has actual shared captured TTY IO and source-reviewed close/retirement phase corrections. Current root generated JS passed two real native Node TTY/WRITEWRAP component subjects, each matching 1026 PTY bytes; corrected portable IOHandle passed two groups. configureWrite remains validation-only. New guest native code, public constructors and four-host conformance remain uncompiled/unvalidated.",
+          "globalBindingSelfContained": false
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tty-shared-io-phase-correction-agent/report.json",
+          "sha256": "7ff8d09528562094eaf51b271cbac861e1c862422f428ac053545ffa8b039fd6",
+          "reusedEvidence": true,
+          "scope": "Historical source-reviewed phase correction and three successful tiny helper attempts, including preserved old-mode nonpass; not new guest JSAPI or source 246 compilation. Original four helper attempts remain separate."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/tty-shared-io-owner-agent/evidence/run-r1.3erSuP/owner.stderr",
+          "sha256": "dc5e936f2a9947922f6f66b0412478c7d8ea7fc58a87b3247e9e43ef2308cdcb",
+          "scope": "Original strict full-termios restoration assertion exited SIGABRT; retained raw evidence, not relabeled as a guest bug or platform exclusion."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/tty-shared-io-owner-agent/evidence/run-r2.5os9Sf/owner.stderr",
+          "sha256": "c033ab9a5888224f7bdb5d9fb341524bd5f705ade5ce40f517193cde4999df3e",
+          "scope": "Original strict restoration/PENDIN observation and SIGABRT retained; matching native sequence documented separately, no discarded assertion or fabricated exclusion."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/tty-shared-io-owner-agent/evidence/run-r3.2kIv4M/generation.stderr",
+          "sha256": "62a18194de932bb884cd3ade3082dad92183a7a5e58da5231f9fba36cf596679",
+          "scope": "Private generator setup omitted pinned codec patch; source setup failure, zero compatibility credit."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/tty-shared-io-phase-correction-agent/evidence/run-r1.6KChTx/before-owner.stderr",
+          "sha256": "8fe35fb282add05f0735a4437b56dbb09892ebd34af361beb6ce662e5fc8f010",
+          "scope": "Real old IOHandle same-mode-after-close returned EBADF and exited SIGABRT; corrected source and later evidence do not erase that nonpass."
+        },
+        {
+          "field": "$.preservedNonpasses[4]",
+          "report": ".context/tty246-finalizer-r1-failure.json",
+          "sha256": "01c86efe0719c130b462f3cc7cdc03e4f0b0edcee87db0e6604b728b97630115",
+          "scope": "Root bookkeeping expected eight commands but actual source report contains nine. Failed before receipt imports or index writes. Raw process log unavailable; do not reconstruct or count as runtime failure."
+        },
+        {
+          "field": "$.actualControlReport",
+          "report": ".context/node26-tty246-js-components-r1/report.json",
+          "sha256": "643270f7f59d16cb193b3a438d6d601f461520ac5bc31f3922a2e6745e9e7b06",
+          "components": 2,
+          "actualTtyBytesPerComponent": [
+            1026,
+            1026
+          ],
+          "normalCallbacks": 1,
+          "publicationThrowCallbacks": 0,
+          "portableHeaderGroups": 2,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "scope": "Current generated JS over native Node TTY/WRITEWRAP; configureWrite is validation-only. No new guest C++ proof."
+        },
+        {
+          "field": "$.integrationTool",
+          "report": ".context/node26-tty246-tool-completion.json",
+          "sha256": "c3415fbac41e9ff40b735d059a774ef3ec6204f35667e81e331743a86f5d7d3d",
+          "sourceBinding": "549824772a585a84214ee31f30ba874622865e8f95b8daa4475e0cf0c5d42b76",
+          "selectedInputBindingOnly": true,
+          "globalBindingSelfContained": false,
+          "sourceImportExit3Meaning": "First import awaited the second check; both actual checks exited zero and final operation completed."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/tty-shared-io-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/tty-shared-io-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "A genuine shared captured IOHandle replaces separate production input/output descriptor owners, retaining real access, OFD flags, raw-mode restoration and public-fd lifetime rules.",
+        "Existing native reads/write tickets, window and mode/blocking controls consume that actual captured descriptor; seven engine read routes use the same IO owner.",
+        "Successful normalized native mode belongs to live backing until retirement, so unchanged raw/normal mode can succeed after descriptor close as pinned; no successful unadmitted mode sentinel.",
+        "Retired raw/window/blocking gates preserve real receiver/security/context checks and pinned ToInt32/Array/error/default ordering; live closing and close-callback phases remain distinct.",
+        "Actual current generated JS stdio/native TTY normal and publication-throw components pass with immutable original controls, real PTYs and exact pinned Node. New C++ remains uncompiled."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/tty-shared-io-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and validate actual shared TTY native JSAPI, seven engine routes, actual GC/realm/coercion/callback/fatal/Worker/fork behavior on identified artifacts across all four hosts.",
+        "Implement genuine public callable tty.ReadStream/WriteStream and typed net.Socket admission, native init-before-fd-open and transactional adoption. Current real stdio owners do not complete public classes.",
+        "Implement mixed/string/input-kind writes, output-kind reads, genuine nonblocking write readiness, shutdown and complete StreamBase/AsyncWrap request ownership.",
+        "Support valid pipe/master/unreopenable fd admissions through real ownership; existing rejections remain implementation gaps, not engine/platform exclusions.",
+        "Reconcile unchanged restoration/comparator observations and every original nonpass without weakening assertions, hiding errors or claiming a Darwin/guest exclusion.",
+        "Current native Node backend controls and portable host PTYs do not establish new guest C++ or four-host conformance. Overall suites and full product rebuild remain deferred."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/terminal.md",
+      "findingScope": "Shared owning prerequisite only; public constructors/inherited behavior remain incomplete. No finding closure.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/terminal.md": [
+          "T-002",
+          "T-007",
+          "T-010",
+          "T-016"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingIds": [
+          "T-002",
+          "T-007",
+          "T-010",
+          "T-016"
+        ],
+        "relatedFamilies": [
+          "streams"
+        ],
+        "scope": "Shared owning prerequisite only; public constructors/inherited behavior remain incomplete. No finding closure.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "findingId": "T-002",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false,
+            "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "findingId": "T-007",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false,
+            "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "findingId": "T-010",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false,
+            "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "findingId": "T-016",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false,
+            "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "tls-encrypted-output": {
+      "document": "tests/nodejs/outline/tls-encrypted-output-finding-progress.json",
+      "sha256": "448b4ac87b914f50c2971a9a695f8eac6df51459968f4fe260252f670751afba",
+      "recordedRevision": 247,
+      "explicitFindingIds": [
+        "S-009"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tls247-source-r1/report.json",
+          "sha256": "6de9a6b3c907cb7248817a589fd217b6c5d047adf8ce79164b99f5cbea841774",
+          "guardedInputs": 903,
+          "scope": "Normal current-root source/native staging plus existing precompiled native portable/extracted-policy controls. No new guest JSAPI proof, no graceful shutdown/_final activation."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tls247-affected-r1.json",
+          "sha256": "0d7549ee5e2948acb9dc51f3ee35feb04d1ffb365a68261b181852557bd5ffa9",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tls247-source-r1/report.json",
+          "sha256": "6de9a6b3c907cb7248817a589fd217b6c5d047adf8ce79164b99f5cbea841774",
+          "portablePrimitiveSubjects": 1,
+          "primitiveConditionAnnotations": 7,
+          "portableProtocolSubjects": 2,
+          "protocolDecodedBytesMatch": true,
+          "extractedPolicySubjects": 3,
+          "policyConditionsPerSubject": 27,
+          "originalPolicyPassed": 15,
+          "originalPolicyNonpasses": 12,
+          "intermediatePolicyPassed": 19,
+          "intermediatePolicyNonpasses": 8,
+          "refinedPolicyPassed": 27,
+          "refinedPolicyNonpasses": 0,
+          "sourceChecks": 12,
+          "sourceCommands": 9,
+          "normalReplayCommands": 4,
+          "actualHeaderChecks": 5,
+          "newRootCompilerAttempts": 0,
+          "historicalHelperAttempts": 6,
+          "historicalHelperFailures": 1,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Source 247 adds a real retained memory-output BIO and captured TCP write/receipt owner, with source-reviewed per-watch output completion independent of Promise publication. Current checks re-executed one portable primitive with seven annotations and two TLS protocol subjects; both decoded-byte comparisons matched. Extracted original/intermediate/refined policy statuses are 15/27, 19/27 and 27/27. Supplied Result/Promise state is not actual guest Promise/OOM/pump execution. New guest C++ and four-host conformance remain uncompiled/unvalidated.",
+          "globalBindingSelfContained": false
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tls-output-completion-refinement-agent/report.json",
+          "sha256": "7f498cd6aea82c098a66f4eee317287f32e48d250e12f11ebe08a4b3208134ff",
+          "reusedEvidence": true,
+          "scope": "Historical exact source refinement and portable/extracted policy evidence with supplied terminal Result/Promise state; source 247 native pump/GC/JSAPI is not compiled or executed."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/node26-tls247-source-r1/report.json",
+          "sha256": "6de9a6b3c907cb7248817a589fd217b6c5d047adf8ce79164b99f5cbea841774",
+          "scope": "Re-executed extracted original policy retains 15/27 passing and 12 nonpassing conditions; first correction retains 19/27 passing and 8 nonpassing. Refined policy is 27/27. These are versioned fixture-supplied Result/Promise observations, not public API pass counts or current guest failures."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/tls-encrypted-output-publication-correction-agent/evidence/compile-r1.stderr",
+          "sha256": "62abb9d49026cedd29e02576e1e015e99ac968c3aa3f0a3abd3f69f975dcb7ba",
+          "scope": "Historical authored tiny fixture omitted the raw-header include path. One real compiler failure remains counted, not blamed on production source."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/tls-encrypted-output-publication-correction-agent/evidence/control-r1.stderr",
+          "sha256": "dab00087056295ed1a80435ac91a8973c165187274c719f9f2559d6e20ad0720",
+          "scope": "Historical control sampled EPIPE before actual receipt acknowledgement; failed setup remains preserved. Production gate was not changed to obtain that fixture pass."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/tls-encrypted-output-owner-agent/evidence/log-path-reuse-incident.json",
+          "sha256": "df375416268feae01c10f5f1a50d3580d30b267e60c5d09968777cdf29a0cfc0",
+          "scope": "Earlier missing-checker stderr was overwritten. Original session 25594 exited 2, raw text is unavailable and not reconstructed. Later retained staging stderr is a different failure; no raw completeness claim."
+        },
+        {
+          "field": "$.actualControlReport",
+          "report": ".context/node26-tls247-source-r1/report.json",
+          "sha256": "6de9a6b3c907cb7248817a589fd217b6c5d047adf8ce79164b99f5cbea841774",
+          "portablePrimitiveSubjects": 1,
+          "primitiveConditionAnnotations": 7,
+          "protocolSubjects": 2,
+          "protocolDecodedBytesMatch": true,
+          "extractedPolicySubjects": 3,
+          "originalPolicyPassed": 15,
+          "originalPolicyNonpasses": 12,
+          "intermediatePolicyPassed": 19,
+          "intermediatePolicyNonpasses": 8,
+          "refinedPolicyPassed": 27,
+          "refinedPolicyNonpasses": 0,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "scope": "Historical portable subjects re-executed, plus extracted policies with supplied Result/Promise state. Not public API, new guest C++ or actual Promise/OOM/pump/GC proof."
+        },
+        {
+          "field": "$.manualIntegration",
+          "report": ".context/node26-tls247-manual-apply-r1.json",
+          "sha256": "889d0ce2317872f79d788442d9fc9570b01a133dc03fd08fe7aca8e17d032631",
+          "manualExecutableBoundary": true,
+          "buildScriptMode": "0755",
+          "v1OperationClaimed": false,
+          "selectedInputBindingOnly": true,
+          "globalBindingSelfContained": false,
+          "actualReceiptPids": [
+            44708,
+            44709
+          ]
+        },
+        {
+          "field": "$.actualNormalHeaderReport",
+          "report": ".context/node26-tls247-source-r1/header-checks.json",
+          "sha256": "197fc599d2186dd14d93b09330c5ab1bf170dd5c242e5de6a0a1a38c37b57ec8",
+          "headers": 5,
+          "enginePostimage": "c7a35ca686875e822757715da02953b7480522d499ce598e7c70cbbb1d427cd4",
+          "newEngineCompiled": false
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/tls-encrypted-output-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/tls-encrypted-output-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Captured TCP owner admits, progresses, cancels and acknowledges genuine encrypted transport tickets by actual attachment, generation and sequence.",
+        "Memory output BIO retains both pair endpoints and its original ring region until the real parent receipt; head advancement follows exact acknowledgement. Input remains an exclusive captured socket BIO.",
+        "Native source roots the encrypted producer independently of a read Promise and serializes original plaintext WANT arguments. New root/watch/GC code remains uncompiled.",
+        "Central publication rejects failure before acknowledgement while per-watch actual terminal completion survives later close, owner error or pre-settlement publication retry. Native pump records matching deferred connect and indexed writes before root release.",
+        "Normal actual source/header staging preserves shared TTY/VM owners and canonical mappings; no public shutdown, fake provider or fabricated success is introduced."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/tls-encrypted-output-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and validate actual composed TLS owner/engine/roots/Promise pump on identified guest artifacts across all four hosts; portable and policy fixtures do not execute new JSAPI, GC, realm, OOM, fatal, Worker or fork paths.",
+        "Implement full ClearIn/read-generated-output, StreamBase/listener/input-BIO/provider and actual callback ownership parity; retained TCP parent and memory output BIO are only prerequisites.",
+        "Implement genuine graceful close_notify/shutdown, earlier-write callback barriers, deferred SSL library-call ownership and parent half-close before activating public _final or shutdown.",
+        "Replace the still-copied plaintext write bridge with real retained original allocation where required; encrypted BIO storage retention alone does not close that gap.",
+        "Preserve policy version nonpasses, failed fixture/compiler/source preparations and irrecoverable raw-log loss without weakening assertions or inventing accepted platform exclusions.",
+        "Complete remaining TLS/session/ticket/certificate/error schema/HTTPS Agent idle/ref/timer and server behavior independently; this slice does not activate complete HTTPS pooling or public TLS compatibility."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/secure-network-contracts.md",
+      "findingScope": "Partial owning encrypted transport/publication prerequisite. Graceful shutdown and full TLS/StreamBase behavior remain required; no finding closure.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/secure-network-contracts.md": [
+          "S-009"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/secure-network-contracts.md",
+        "findingIds": [
+          "S-009"
+        ],
+        "relatedFamilies": [
+          "network",
+          "streams",
+          "async"
+        ],
+        "scope": "Partial owning encrypted transport/publication prerequisite. Graceful shutdown and full TLS/StreamBase behavior remain required; no finding closure.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/secure-network-contracts.md",
+            "findingId": "S-009",
+            "relation": "partial-owning-source",
+            "closed": false,
+            "scope": "Actual retained encrypted transport and terminal publication ownership; shutdown/_final, full errors/lifetime and guest validation remain incomplete."
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "event-unhandled-error": {
+      "document": "tests/nodejs/outline/event-unhandled-error-finding-progress.json",
+      "sha256": "7b92dc32e893a6575fce09e9f1ad1ff6f339065ad928a987207f611395bb06b5",
+      "recordedRevision": 248,
+      "explicitFindingIds": [
+        "A-018"
+      ],
+      "prerequisiteFindingIds": [
+        "A-018"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-events248-source-r1/report.json",
+          "sha256": "2806977b2db24d89049e18392bea0976585a161d7885d6de1b2f40d422e104d7",
+          "guardedInputs": 903,
+          "scope": "Actual current bootstrap EventEmitter helper and Values over explicit native Error/inspection/VM/process dependencies. Baseline nonpasses and limited upstream assertions kept separate; candidate inspection/engine/stack/fatal/GC and four-host runtime remain open."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-events248-affected-r1.json",
+          "sha256": "2c1f8dc60ded93e44a76fa6ee88e6c9dee47289107188ffc05fa7aff5cdf89d4",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-events248-source-r1/report.json",
+          "sha256": "2806977b2db24d89049e18392bea0976585a161d7885d6de1b2f40d422e104d7",
+          "nativeGroups": 10,
+          "beforeMatched": 3,
+          "beforeDifferent": 7,
+          "beforePublicExit": 1,
+          "afterMatched": 10,
+          "afterDifferent": 0,
+          "unchangedUpstreamFiles": 1,
+          "upstreamAssertionsPerSubject": 3,
+          "upstreamSubjects": [
+            "native",
+            "before",
+            "after"
+          ],
+          "earlySubjects": 3,
+          "sourceChecks": 12,
+          "sourceCommands": 8,
+          "newRootCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Source 248 changes only the EventEmitter unhandled non-Error helper and recipe revision. Ten native groups compare against actual current Values/EventEmitter source: before matches three and differs on seven with one real exit-one assertion; after matches all ten. One unchanged upstream file has three assertions per subject, and early owner-independent construction/ordinary/same-Error controls are separate. Native Error/inspection/VM/process dependencies do not execute candidate inspection/engine/stack/fatal/GC or establish four-host conformance.",
+          "globalBindingSelfContained": false
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/events-unhandled-owner-agent/report.json",
+          "sha256": "81a05d78789e5cb07eae344d40e0ec4618f4c483ab32e6f6bcb9a1ea625bdf06",
+          "reusedEvidence": true,
+          "scope": "Historical actual Events/Values source over native dependencies, including retained original and final baseline mismatches. No guest or whole newer pending-core validation claim."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/events248-root-controls-r1/report.json",
+          "sha256": "1b7c182c91fbea00d5b632ae7e7c5913d43bb9b9bbabf669695cb0228c8a637f",
+          "scope": "Current before-source baseline matches three of ten native groups and differs on seven; its public process exits one on omitted-payload inherited-index admission. After-source matches ten. These are versioned fixture comparisons, not public API counts or erased failures."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/events248-root-controls-r1/results/before-public.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "scope": "Actual baseline public process exit one retained with original assertion; no assertion weakening or conversion into pass."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/events-unhandled-owner-agent/evidence/comparison.json",
+          "sha256": "dd6a3c1405d7eee7410d5b8ad76fc4171f3a2ea6b1dcfa5e18cbab002aae9116",
+          "scope": "Original nine-group control version preserves six before/native mismatches even though observer processes exited zero."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/events-unhandled-owner-agent/evidence/run-r2.4ZfRgu/results/comparison.json",
+          "sha256": "10357f46a747f9ec3bcd3fd12626dfd97523f497c68073a929859a04510a2e54",
+          "scope": "Historical final ten-group before3/after10 comparison and baseline exit one retained; not newly compiled guest or broad family evidence."
+        },
+        {
+          "field": "$.actualControlReport",
+          "report": ".context/events248-root-controls-r1/report.json",
+          "sha256": "1b7c182c91fbea00d5b632ae7e7c5913d43bb9b9bbabf669695cb0228c8a637f",
+          "nativeGroups": 10,
+          "beforeMatched": 3,
+          "beforeDifferent": 7,
+          "beforePublicExit": 1,
+          "afterMatched": 10,
+          "afterDifferent": 0,
+          "unchangedUpstreamFiles": 1,
+          "upstreamAssertionsPerSubject": 3,
+          "earlySubjects": 3,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "scope": "Current EventEmitter/Values over native Error/inspection/VM/process. Baseline nonpasses preserved; upstream three assertions separate from ten groups; no new guest stack/fatal/GC proof."
+        },
+        {
+          "field": "$.integrationTool",
+          "report": ".context/node26-events248-tool-completion.json",
+          "sha256": "26fbaa3a058978fd4244b17d76be8637832d9ecc793b3b835aa21515514a285d",
+          "sourceBinding": "c34a58a31cee4ac93210fe012b7ee35777f7a7489630c5da3ea93c1ecdb6d7e7",
+          "selectedInputBindingOnly": true,
+          "globalBindingSelfContained": false,
+          "sourceImportExit3Meaning": "First import awaited the second check; both actual checks exited zero and final operation completed."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/event-unhandled-error-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/event-unhandled-error-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "The public EventEmitter helper consumes the actual initialized Values ERR_UNHANDLED_ERROR class instead of a handwritten Error plus code field.",
+        "Unhandled payload rendering uses the actual private inspection owner, retaining target inspection fallback, coercion and ordinary context assignment order.",
+        "Omitted rest payload checks actual length before reading index zero, avoiding inherited-array getter execution while preserving explicit undefined and target captured Error instanceof semantics.",
+        "Actual current-parent bootstrap/native-reference controls and normal generated bootstrap checks preserve before-source nonpasses, unchanged core/engine and genuine early owner availability."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/event-unhandled-error-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Implement the remaining A-018 same-Error private stack enhancement, inspector/fatal rendering and related actual process exception ownership; unchanged branch is not an accepted platform exclusion.",
+        "Validate actual candidate inspection, Error/Values, realm/GC/startup/native async/provider behavior on identified guest artifacts across Node, Chromium, Firefox and WebKit.",
+        "Keep the unchanged upstream file's three assertions per native/before/after subject separate from the ten richer differential groups; before passing that limited file does not erase seven mismatches.",
+        "Continue the full EventEmitter/ASYNC module surface and inherited/namespace/lifecycle/resource obligations; this non-Error helper slice does not close the broad A-018 range.",
+        "Overall suites and full product rebuild remain deferred while independent audited breadth work continues; native Error/inspection/VM/process dependencies are not current guest conformance."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/event-emitter-contracts.md",
+      "findingScope": "Partial actual non-Error coded error, private inspection and omitted-argument owner. Same-Error stack/fatal and broader ASYNC obligations remain open.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/event-emitter-contracts.md": [
+          "A-018"
+        ],
+        "tests/nodejs/audit/async.md": [
+          "A-018"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/event-emitter-contracts.md",
+        "findingIds": [
+          "A-018"
+        ],
+        "relatedFamilies": [
+          "values"
+        ],
+        "scope": "Partial actual non-Error coded error, private inspection and omitted-argument owner. Same-Error stack/fatal and broader ASYNC obligations remain open.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/event-emitter-contracts.md",
+            "findingId": "A-018",
+            "relation": "partial-owning-source",
+            "closed": false,
+            "scope": "Non-Error coded constructor/private inspect/argument admission only; no stack/fatal closure."
+          },
+          {
+            "document": "tests/nodejs/audit/async.md",
+            "findingId": "A-018",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false,
+            "scope": "Preserve distinct broader qualified definition; fatal-stack, namespace and emitter resource obligations are not closed."
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "codec-owned-capacity": {
+      "document": "tests/nodejs/outline/codec-owned-capacity-finding-progress.json",
+      "sha256": "6d629a158640ba14943b4b89edbd3869abf5d3872cb12a5420281b328c0b4db8",
+      "recordedRevision": 249,
+      "explicitFindingIds": [
+        "ZIP-010"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-codec249-source-r1/report.json",
+          "sha256": "968cb6bd13abbf44c7a273f8245c25fc641c7852dc5dab33bae509ae01f0f23b",
+          "guardedInputs": 904,
+          "scope": "Actual current source/normal generated codec headers and existing7group native context component. No new compiler; libc++19/native component is distinct from declared21/guest Report/GC/heap graph."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-codec249-affected-r1.json",
+          "sha256": "ad72e0f9e359d5d31eb6a2603befe5f85b1eb23931c3f2c7d4cac8e1c8dec501",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-codec249-source-r1/report.json",
+          "sha256": "968cb6bd13abbf44c7a273f8245c25fc641c7852dc5dab33bae509ae01f0f23b",
+          "nativeGeneratedContextGroups": 7,
+          "nativeGeneratedContextFailures": 0,
+          "generatedHeaders": 2,
+          "concreteCapacityAccessors": 5,
+          "sourceChecks": 5,
+          "sourceCommands": 8,
+          "nativeLibcxxMajor": 19,
+          "declaredGuestLibcxxMajor": 21,
+          "productionReportGcExecuted": false,
+          "newRootCompilerAttempts": 0,
+          "historicalHelperAttempts": 1,
+          "historicalHelperFailures": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Source 249 adds actual retained native codec state/context/vector/string capacity and idle reporting boundaries. Normal source checks verify two generated headers and five concrete accessors. The reused real generated-context component passes seven groups over actual native codec APIs, worker threads/std mutex and libc++19. Declared guest libc++21, production JSAPI Report/GC, finalizers/error paths and four-host behavior remain uncompiled/unvalidated. Requested retained capacity is not RSS or Node heap graph parity.",
+          "globalBindingSelfContained": false
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/codec-capacity-owner-agent/report.json",
+          "sha256": "0caa8be908ff46a24b3d322baeea64be6a82e2c954339497468a73b3d1b59e1d",
+          "reusedEvidence": true,
+          "scope": "Historical actual generated-context native component with one successful tiny compile and native libc++19. Not production JSAPI Report/GC, declared guest libc++21 or heap snapshot evidence."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/codec-capacity-owner-agent/report.json",
+          "sha256": "0caa8be908ff46a24b3d322baeea64be6a82e2c954339497468a73b3d1b59e1d",
+          "scope": "Producer source-lookup ENOENT observations had no standalone raw logs; do not reconstruct them or claim full log completeness. One real helper compile succeeded with retained warnings. No runtime/compiler failure or guest conformance is manufactured."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/codec-capacity-owner-agent/evidence/compile-r1.stderr",
+          "sha256": "6332fc8d7746e7528250ef918604b30c4d5db2049b7e77fec267fdc58cde86bc",
+          "scope": "Actual native compiler warnings retained, including preexisting generated inherited-virtual override warnings. Zero compiler failures; no flags/checkers weakened."
+        },
+        {
+          "field": "$.actualControlReport",
+          "report": ".context/node26-codec249-source-r1/report.json",
+          "sha256": "968cb6bd13abbf44c7a273f8245c25fc641c7852dc5dab33bae509ae01f0f23b",
+          "nativeGeneratedContextGroups": 7,
+          "nativeGeneratedContextFailures": 0,
+          "nativeLibcxxMajor": 19,
+          "declaredGuestLibcxxMajor": 21,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "productionReportGcExecuted": false,
+          "scope": "Actual generated codec context algorithms over native Node codec APIs, worker/std mutex and libc++19. Not production JSAPI Report/GC, declared guest libc++21, heap graph or four-host proof."
+        },
+        {
+          "field": "$.manualIntegration",
+          "report": ".context/node26-codec249-manual-apply-r1.json",
+          "sha256": "0465d4cdc6609939672da113700092d6ce4406f4ea64ba43503e318f06fca7e0",
+          "manualExecutableBoundary": true,
+          "buildScriptMode": "0755",
+          "v1OperationClaimed": false,
+          "selectedInputBindingOnly": true,
+          "globalBindingSelfContained": false,
+          "actualReceiptPids": [
+            37551,
+            37550
+          ]
+        },
+        {
+          "field": "$.actualNormalHeaderReport",
+          "report": ".context/node26-codec249-source-r1/header-checks.json",
+          "sha256": "9841f917349fc776b71c463b29f8981e080dbbd7fcd2443bfe8c859b079678c3",
+          "headers": 2,
+          "concreteCapacityAccessors": 5,
+          "newEngineCompiled": false
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/codec-owned-capacity-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/codec-owned-capacity-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Each real generated concrete codec context reports its own sizeof plus actual retained vectors and external string capacity; short strings inside the object are not counted twice.",
+        "Native codec state reports real state/context/requested storage plus existing custom allocator blocks, with original JS backing spans retaining separate owners.",
+        "Reporting occurs at committed native-state ownership and quiet init/reset/params/error/completion/close boundaries; worker-mutable containers are sampled only while idle.",
+        "Close retains real vector/string capacity until actual context destruction; foreground finalization removes the last associated amount once. Production JSAPI/GC behavior still needs validation.",
+        "The actual current recipe adds only the declared header/copy and revision; newer TLS source and mode 0755, core and canonical engine remain unchanged."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/codec-owned-capacity-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and validate actual production JSAPI Report deltas, pending exceptions, rooted owner/finalizer/realm/CCW/fatal/Worker/process behavior on identified guest artifacts across all four hosts.",
+        "Validate declared guest libc++21 string/vector storage and full generated headers; native libc++19 component sizes and requested-storage observations are not guest metadata or linked target proof.",
+        "Implement Node heap-snapshot MemoryRetainer/MemoryTracker visitation and relevant whole-process metrics separately. Retained-capacity GC pressure is not heap graph, RSS or allocator overhead parity.",
+        "Reconcile temporary reset/error copies, native request/queue and async lifetime overhead, allocation/OOM error paths and remaining original ZIP-010 definitions/ranges; this bounded owner does not close them.",
+        "Continue public compression modes/options/stream/cancellation/cleanup and broader core breadth gaps, preserving original failures and keeping overall suites/full product rebuild deferred."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/compression-contracts.md",
+      "findingScope": "Partial actual retained storage/report prerequisite only. Heap visitation, whole-process metrics and other qualified ranges remain open.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/compression-contracts.md": [
+          "ZIP-010"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/compression-contracts.md",
+        "findingIds": [
+          "ZIP-010"
+        ],
+        "definitionKey": "tests/nodejs/audit/compression-contracts.md#ZIP-010:L124",
+        "relatedFamilies": [
+          "async",
+          "engine",
+          "observability"
+        ],
+        "scope": "Partial actual retained storage/report prerequisite only. Heap visitation, whole-process metrics and other qualified ranges remain open.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/compression-contracts.md",
+            "findingId": "ZIP-010",
+            "definitionKey": "tests/nodejs/audit/compression-contracts.md#ZIP-010:L124",
+            "relation": "partial-owning-source",
+            "closed": false,
+            "scope": "Actual retained native state/context/container capacity; no heap snapshot or full memory accounting closure."
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
     }
   },
   "dependencyNarratives": {
@@ -29668,6 +30646,110 @@
           "sha256": "92d1bef7ce8a49a45f395e8723d58cade98d4bc28e7a8ba0afe58b7c476448fb"
         },
         "scope": "Metadata-only explicit SQLite242/TTY243/VM244 qualified progress overlay164\u2192167. NI-002 and E-008 retain only recorded partial source scope; T-002/T-010/T-006 are shared prerequisites. SQLite section-only obligations stay sections, not invented IDs. No API/family closure or new runtime/compiler evidence; preserve all337known lower-bound attempts,4unattributed dependency subjects, accepted239historical evidence and every existing source/failure/skip/unsupported/timeout/harness record."
+      },
+      {
+        "at": "2026-11-08T03:00:27.322358+00:00",
+        "sourceCheckpoint": 249,
+        "sourceHead": "81e50150e23cfc59e0292a29986f3e3284662f26",
+        "addedSourceSlices": [
+          "wasi-fd",
+          "tty-shared-io",
+          "tls-encrypted-output",
+          "event-unhandled-error",
+          "codec-owned-capacity"
+        ],
+        "qualifiedLinks": [
+          {
+            "document": "tests/nodejs/audit/native-integration.md",
+            "finding": "NI-003",
+            "slice": "wasi-fd",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance."
+          },
+          {
+            "document": "tests/nodejs/audit/native-integration.md",
+            "finding": "NI-007",
+            "slice": "wasi-fd",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "finding": "T-002",
+            "slice": "tty-shared-io",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "finding": "T-007",
+            "slice": "tty-shared-io",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "finding": "T-010",
+            "slice": "tty-shared-io",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "finding": "T-016",
+            "slice": "tty-shared-io",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+          },
+          {
+            "document": "tests/nodejs/audit/secure-network-contracts.md",
+            "finding": "S-009",
+            "slice": "tls-encrypted-output",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Actual retained encrypted transport and terminal publication ownership; shutdown/_final, full errors/lifetime and guest validation remain incomplete."
+          },
+          {
+            "document": "tests/nodejs/audit/event-emitter-contracts.md",
+            "finding": "A-018",
+            "slice": "event-unhandled-error",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Non-Error coded constructor/private inspect/argument admission only; no stack/fatal closure."
+          },
+          {
+            "document": "tests/nodejs/audit/async.md",
+            "finding": "A-018",
+            "slice": "event-unhandled-error",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Preserve distinct broader qualified definition; fatal-stack, namespace and emitter resource obligations are not closed."
+          },
+          {
+            "document": "tests/nodejs/audit/compression-contracts.md",
+            "finding": "ZIP-010",
+            "slice": "codec-owned-capacity",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Actual retained native state/context/container capacity; no heap snapshot or full memory accounting closure."
+          }
+        ],
+        "latestAcceptedEngine": 239,
+        "currentCombinedEngineCompiled": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "spec": {
+          "path": ".context/finding-ledger-qualified245-249-prep/wasi245-tty246-tls247-events248-codec249.json",
+          "sha256": "80835a7c62dfb3293f8f46893a2151061f724ebc57a11650e72b7a76281a687e"
+        },
+        "scope": "Exact committed WASI245, TTY246, TLS247, EventEmitter248 and codec249 partial source-progress overlay. Preserve direct-partial/shared prerequisites and distinct qualified definitions/ranges. Codec capacity/report contribution does not establish heap-graph/whole-process/public memory metrics or guest/four-host compatibility. No new runtime or compilation evidence."
       }
     ]
   }
