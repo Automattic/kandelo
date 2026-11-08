@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source245 adds four actual POSIX-backed WASI descriptor imports, with scoped current native-dependent evidence.29source owners/17missing are inventory counts, not compatibility passes. New guest code/backend/fourhost remain incomplete.
+See [source scope](wasi-fd-integration.md).
+
 Source244 adds partial VM encoding/build-identity/publication ownership with native resolver evidence; public cachedData admission and current guest/four-host conformance remain open.
 See [source scope](vm-script-cache-integration.md).
 

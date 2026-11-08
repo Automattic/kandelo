@@ -1,0 +1,133 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-003",
+      "NI-007"
+    ],
+    "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/native-integration.md",
+        "findingId": "NI-003",
+        "relation": "partial-owning-source",
+        "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance.",
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/native-integration.md",
+        "findingId": "NI-007",
+        "relation": "partial-owning-source",
+        "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance.",
+        "closed": false
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Actual fd_allocate rights/selectedPOSIX-fallocate-or-fstat/ftruncate behavior, real errors and unsigned target arithmetic",
+    "Actual fd_filestat_set_times u16flags/admission/realclock/stat/omission/whole-second policy through real descriptor",
+    "Actual fd_renumber same-before-lookup and real destination close/row-rights-preopen/path ownership transfer with single-close lease disarm",
+    "Actual fd_readdir stored-realpath/rawname/cookie/truncation/padding/directory cleanup/output-last and current memory owner",
+    "Exact current-source normal staging/policy29signature/native-wasi unity plus existing portable/native components; guest C++ uncompiled"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-wasi245-source-r1/report.json",
+    "sha256": "f9a0b5708dee363a37f1d511cbe877910905cdccdd74dcb1861345177a1baf92",
+    "guardedInputs": 902,
+    "scope": "Actual root generated WASI public owner over real portable Context/native V8/NAPI/memory/POSIX components and exact native Node reference; new guest JSAPI/realm/GC/OOM/fatal/Worker/backend/four-host behavior uncompiled/unexecuted."
+  },
+  "packageChecks": {
+    "report": ".context/node26-wasi245-affected-r1.json",
+    "sha256": "c822d21c99829fb5f390433fff6056e64bb229155d5c94d04aba7e602a1e00b6",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-wasi245-source-r1/report.json",
+    "sha256": "f9a0b5708dee363a37f1d511cbe877910905cdccdd74dcb1861345177a1baf92",
+    "publicNativeGroups": 16,
+    "publicCandidateGroups": 16,
+    "portableFdGroups": 6,
+    "allocatorFaultsCleaned": 26,
+    "successfulAdmissions": 54,
+    "actualSubjectProcessCount": 9,
+    "newRootCompilerAttempts": 0,
+    "historicalProducerHelperCompileAttempts": 2,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Source245actualWASI four-fd owner and current generated JS over explicit native V8/NAPI/memory/POSIX dependencies:16native/16candidate fixturegroups plus6portable fd groups/80allocation trials. New guest JSAPI/realm/GC/fatal/Worker/backend/fourhost behavior remains uncompiled/unexecuted; all other native-integration gaps stay open.",
+    "globalBindingSelfContained": false
+  },
+  "sealedEvidence": {
+    "report": ".context/wasi-fd-owner-agent/report.json",
+    "sha256": "b9022b76fc4c91deb8cba888d06017b9d83df597420f68a1709b98e781ab3b7c",
+    "reusedEvidence": true,
+    "scope": "Historical modified private WASI portable owner and native-dependent evidence based19d392ee, two successful tiny compilers. Current245JS/selected-source checks have separate actual reports; neither executes new guestJSAPI."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/wasi-fd-owner-agent/preserved-new-failures.json",
+      "sha256": "285880750e64eea2a6202ae163bfde0c4b0d7eef102d13e394e6ed438b066630",
+      "scope": "Eight original r2environment setup errors stopped before WASI constructor/import,zero compatibility credit; fresh r3success does not relabel those failures."
+    },
+    {
+      "report": ".context/wasi-fd-owner-agent/preserved-prior-evidence.json",
+      "sha256": "393f6dfbf42116bb2238db1b7c54746bbd49d716b675844d4cc723bf7c02a1d4",
+      "scope": "Historical directWasm unsigned-i32/native import provenance nonpass remains actual28(EINVAL) versus expected61(EOVERFLOW); directJSnegative still28. No caller guessing or assertion weakening."
+    },
+    {
+      "report": ".context/wasi-owner-agent/component-direct-negative.stderr",
+      "sha256": "309e76efa3e4e43d7bdaf9978d34d86de89f01441550a53b18e2ed561a58ef6d",
+      "scope": "Original assertion actual28 expected61 retained byte-for-byte, not rerun or fixed."
+    }
+  ],
+  "remaining": [
+    "Compile and validate actual guest native-wasi/actual Memory brand/security/realm/GC/OOM/callback/fatal/Worker owners on identified artifacts across all four hosts",
+    "Implement17missing imports:fd_advise,path10,poll,signal,four sockets; no success veneer over kernel advice stub",
+    "Implement genuine nested guest WebAssembly execution backend in final phase; deferred last, required and not a platform exclusion",
+    "Implement remaining raw-name/preopen/path capability/permission/resource ownership and guest kernel/VFS/libc behavior; native portable fixture is not guest conformance",
+    "Resolve historical directWasm signed-i32/u32 native-import dispatch provenance actual28 versus61 without spoofable caller or assertion weakening",
+    "No full WASI API/module/family closure, overall suite or full product rebuild; prior25source owners are not reaudited by these four imports"
+  ],
+  "sourceImportCounts": {
+    "previousOwners": 25,
+    "currentSourceOwners": 29,
+    "newOwners": 4,
+    "missingImports": 17,
+    "countsAreNotConformance": true,
+    "nestedWasmBackendRequired": true,
+    "nestedWasmBackendDeferredLast": true
+  },
+  "actualControlReport": {
+    "report": ".context/node26-wasi245-source-r1/focused/report.json",
+    "sha256": "adbb22de732cd7f640c46fe3f87ac1ab64c0f6c69070a37d53bb7c9e004dc487",
+    "publicNativeGroups": 16,
+    "publicCandidateGroups": 16,
+    "portableFdGroups": 6,
+    "allocatorFaultsCleaned": 26,
+    "successfulAdmissions": 54,
+    "processSubjects": 9,
+    "newCompilerAttempts": 0,
+    "guestExecution": false,
+    "scope": "Current generated root JS with explicit native V8/NAPI/memory/POSIX dependencies, not candidate guest JSAPI"
+  },
+  "integrationTool": {
+    "report": ".context/node26-wasi245-tool-completion.json",
+    "sha256": "2942c389d919c7722ca24e1687b36fc9ff07a21e4c814ae3a6140f5d7fc7576d",
+    "sourceBinding": "466419d9106fd6f5ab82a7c0f5844fdf20465b341fe3467402fc52090d81d464",
+    "selectedInputBindingOnly": true,
+    "globalBindingSelfContained": false,
+    "sourceImportExit3Meaning": "Intermediate record-awaiting-other-check sequencing preserved in completion; both actual supervisor check receipts exit0 and final operation allstepsdone."
+  },
+  "at": "2026-11-08T01:49:05.808003+00:00",
+  "recipeRevision": 245,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

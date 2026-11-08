@@ -39,20 +39,64 @@ It does not call logical result lengths allocation capacity, claim allocator
 RSS/overhead, retain JS metadata as fake memory, or charge a shared Wasm memory
 allocation a second time.
 
-Implemented source imports (25): args_get, args_sizes_get, clock_res_get,
-clock_time_get, environ_get, environ_sizes_get, fd_close, fd_datasync,
+Implemented source imports (29): args_get, args_sizes_get, clock_res_get,
+clock_time_get, environ_get, environ_sizes_get, fd_allocate, fd_close, fd_datasync,
 fd_fdstat_get, fd_fdstat_set_flags, fd_fdstat_set_rights, fd_filestat_get,
-fd_filestat_set_size, fd_pread, fd_prestat_get, fd_prestat_dir_name, fd_pwrite,
-fd_read, fd_seek, fd_sync, fd_tell, fd_write, proc_exit, random_get, sched_yield.
+fd_filestat_set_size, fd_filestat_set_times, fd_pread, fd_prestat_get, fd_prestat_dir_name, fd_pwrite,
+fd_read, fd_readdir, fd_renumber, fd_seek, fd_sync, fd_tell, fd_write, proc_exit, random_get, sched_yield.
 
-Remaining imports (21): fd_advise, fd_allocate, fd_filestat_set_times,
-fd_readdir, fd_renumber, path_create_directory, path_filestat_get,
+Remaining imports (17): fd_advise, path_create_directory, path_filestat_get,
 path_filestat_set_times, path_link, path_open, path_readlink,
 path_remove_directory, path_rename, path_symlink, path_unlink_file,
 poll_oneoff, proc_raise, sock_accept, sock_recv, sock_send, sock_shutdown.
 Path operations need the exact preopen/path-resolution/rights and resource
 transaction owners; poll/socket imports need genuine guest polling/socket
 ownership. Those are implementation gaps, not inherent platform boundaries.
+
+The four added descriptor imports consume actual POSIX resources. fd_allocate
+follows the pinned uvwasi configuration branch: current Node26.13 native control
+observes its fstat/ftruncate fallback (including zero length and unsigned sum
+wrap), while __POSIX__ builds use actual posix_fallocate. This is not a claim
+that the kernel fallocate/reservation contract is complete. fd_filestat_set_times
+validates narrowed preview1 flags before fd/rights admission, chooses a single
+real-time snapshot for NOW, stats omitted values and reproduces the pinned
+whole-second conversion before actual futimens. It never substitutes fabricated
+timestamps or silently preserves fractions that the target discards.
+
+fd_renumber tests equal logical IDs before lookup, validates both rows, closes
+the actual destination and moves the source row only after success. The captured
+fd, rights, preopen metadata, real path and owned/borrowed policy move once;
+there is no POSIX dup or numeric destination-fd substitution. Failed close keeps
+both rows. Distinct logical rows aliasing the same actual numeric fd retain the
+target's real close effect rather than a precheck/workaround.
+
+fd_readdir retains each preopen's genuine canonical real_path and the pinned
+stdio labels. Each call opens the stored path afresh, skips dot entries and
+advances actual sequential cookies; it does not mutate the admitted fd's OFD
+position or manufacture a cached listing. It serializes real entry name/type,
+the pinned zero-inode contract, and exact partial-header/name/EOF/result-output
+chronology. Original padding survives, including atomic shared-memory stores.
+A RAII owner closes the real directory on every path, and explicit close errors
+have the target's precedence. Retained real_path storage is charged by actual
+string capacity; transient libc DIR allocations are not newly projected into
+the retained ledger or RSS. Path replacement/renaming is observed as the pinned
+stored-path implementation does, not claimed as stronger fd-relative isolation.
+
+fd_advise remains absent: guest syscall307 currently returns0 unconditionally.
+Its missing real kernel admission/advice/error behavior is an implementation
+gap, not an accepted platform/engine boundary or a passing import. The10path
+imports still require genuine preopen resolution/sandbox/rights and transactional
+fd publication. Polling, signal translation and four socket imports need their
+own real producers/ownership; none is renamed supported by these fd operations.
+
+Focused new controls compare16native/candidate public groups and exercise6actual
+portable fd-owner groups,80constructor allocation trials and original-memory IOV
+batching. They reuse the unchanged pinned serdes object; two small helpers were
+compiled. These observations are native POSIX/V8/NAPI component evidence only,
+not execution of the new guest JSAPI or any four-host conformance. The earlier
+strict direct-Wasm numeric ABI nonpass remains unchanged. Permanent focused
+controls are under tests/wasi-fd-ops; fresh root execution must bind current core,
+actual owner/header/artifact and native reference identities explicitly.
 
 **Current guest engine prerequisite:** the recipe disables JIT on wasm32,
 selecting JS_CODEGEN_NONE. HasJitBackend/wasm::HasPlatformSupport return false,

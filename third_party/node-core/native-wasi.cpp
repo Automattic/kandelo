@@ -121,7 +121,7 @@ static bool KandeloWasiConstruct(JSContext* cx, unsigned argc, Value* vp) {
 // Direct JS follows Node's slow binding contract. Direct Wasm u32 provenance
 // requires a genuine engine import-dispatch contract; a JS-call-stack guess or
 // spoofable marker must not silently reinterpret negative direct-JS Numbers.
-enum class KandeloWasiOperation { ArgsGet, ArgsSizesGet, ClockResGet, ClockTimeGet, EnvironGet, EnvironSizesGet, FdClose, FdDatasync, FdFdstatGet, FdFdstatSetFlags, FdFdstatSetRights, FdFilestatGet, FdFilestatSetSize, FdPread, FdPrestatGet, FdPrestatDirName, FdPwrite, FdRead, FdSeek, FdSync, FdTell, FdWrite, ProcExit, RandomGet, SchedYield };
+enum class KandeloWasiOperation { ArgsGet, ArgsSizesGet, ClockResGet, ClockTimeGet, EnvironGet, EnvironSizesGet, FdClose, FdDatasync, FdFdstatGet, FdFdstatSetFlags, FdFdstatSetRights, FdFilestatGet, FdFilestatSetSize, FdPread, FdPrestatGet, FdPrestatDirName, FdPwrite, FdRead, FdSeek, FdSync, FdTell, FdWrite, ProcExit, RandomGet, SchedYield, FdAllocate, FdFilestatSetTimes, FdRenumber, FdReaddir };
 template<KandeloWasiOperation Operation>
 static bool KandeloWasiImport(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args=CallArgsFromVp(argc,vp);
@@ -319,6 +319,46 @@ static bool KandeloWasiImport(JSContext* cx, unsigned argc, Value* vp) {
   else if constexpr (Operation == KandeloWasiOperation::SchedYield) {
     if (argc != 0) { args.rval().setInt32(UVWASI_EINVAL); return true; }
   }
+  else if constexpr (Operation == KandeloWasiOperation::FdAllocate) {
+    if (argc != 3) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    if (!args[0].isNumber() || !std::isfinite(args[0].toNumber()) || args[0].toNumber() < 0 || args[0].toNumber() > UINT32_MAX || std::trunc(args[0].toNumber()) != args[0].toNumber()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[0]=static_cast<uint32_t>(args[0].toNumber());
+    if (!args[1].isBigInt()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[1]=JS::ToBigUint64(args[1].toBigInt());
+    if (!args[2].isBigInt()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[2]=JS::ToBigUint64(args[2].toBigInt());
+  }
+  else if constexpr (Operation == KandeloWasiOperation::FdFilestatSetTimes) {
+    if (argc != 4) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    if (!args[0].isNumber() || !std::isfinite(args[0].toNumber()) || args[0].toNumber() < 0 || args[0].toNumber() > UINT32_MAX || std::trunc(args[0].toNumber()) != args[0].toNumber()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[0]=static_cast<uint32_t>(args[0].toNumber());
+    if (!args[1].isBigInt()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[1]=JS::ToBigUint64(args[1].toBigInt());
+    if (!args[2].isBigInt()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[2]=JS::ToBigUint64(args[2].toBigInt());
+    if (!args[3].isNumber() || !std::isfinite(args[3].toNumber()) || args[3].toNumber() < 0 || args[3].toNumber() > UINT32_MAX || std::trunc(args[3].toNumber()) != args[3].toNumber()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[3]=static_cast<uint32_t>(args[3].toNumber());
+  }
+  else if constexpr (Operation == KandeloWasiOperation::FdRenumber) {
+    if (argc != 2) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    if (!args[0].isNumber() || !std::isfinite(args[0].toNumber()) || args[0].toNumber() < 0 || args[0].toNumber() > UINT32_MAX || std::trunc(args[0].toNumber()) != args[0].toNumber()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[0]=static_cast<uint32_t>(args[0].toNumber());
+    if (!args[1].isNumber() || !std::isfinite(args[1].toNumber()) || args[1].toNumber() < 0 || args[1].toNumber() > UINT32_MAX || std::trunc(args[1].toNumber()) != args[1].toNumber()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[1]=static_cast<uint32_t>(args[1].toNumber());
+  }
+  else if constexpr (Operation == KandeloWasiOperation::FdReaddir) {
+    if (argc != 5) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    if (!args[0].isNumber() || !std::isfinite(args[0].toNumber()) || args[0].toNumber() < 0 || args[0].toNumber() > UINT32_MAX || std::trunc(args[0].toNumber()) != args[0].toNumber()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[0]=static_cast<uint32_t>(args[0].toNumber());
+    if (!args[1].isNumber() || !std::isfinite(args[1].toNumber()) || args[1].toNumber() < 0 || args[1].toNumber() > UINT32_MAX || std::trunc(args[1].toNumber()) != args[1].toNumber()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[1]=static_cast<uint32_t>(args[1].toNumber());
+    if (!args[2].isNumber() || !std::isfinite(args[2].toNumber()) || args[2].toNumber() < 0 || args[2].toNumber() > UINT32_MAX || std::trunc(args[2].toNumber()) != args[2].toNumber()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[2]=static_cast<uint32_t>(args[2].toNumber());
+    if (!args[3].isBigInt()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[3]=JS::ToBigUint64(args[3].toBigInt());
+    if (!args[4].isNumber() || !std::isfinite(args[4].toNumber()) || args[4].toNumber() < 0 || args[4].toNumber() > UINT32_MAX || std::trunc(args[4].toNumber()) != args[4].toNumber()) { args.rval().setInt32(UVWASI_EINVAL); return true; }
+    v[4]=static_cast<uint32_t>(args[4].toNumber());
+  }
   RootedObject owner(cx);
   if (!KandeloWasiReceiver(cx,args.thisv(),&owner)) return false;
   // The context is exclusively GC-owned by this rooted actual native instance.
@@ -369,6 +409,10 @@ static bool KandeloWasiImport(JSContext* cx, unsigned argc, Value* vp) {
     else if constexpr (Operation == KandeloWasiOperation::ProcExit) { context.Exit(v[0]); }
     else if constexpr (Operation == KandeloWasiOperation::RandomGet) result=context.Random(memory,v[0],v[1]);
     else if constexpr (Operation == KandeloWasiOperation::SchedYield) result=context.Yield();
+    else if constexpr (Operation == KandeloWasiOperation::FdAllocate) result=context.Allocate(v[0],v[1],v[2]);
+    else if constexpr (Operation == KandeloWasiOperation::FdFilestatSetTimes) result=context.SetTimes(v[0],v[1],v[2],v[3]);
+    else if constexpr (Operation == KandeloWasiOperation::FdRenumber) result=context.Renumber(v[0],v[1]);
+    else if constexpr (Operation == KandeloWasiOperation::FdReaddir) result=context.Readdir(memory,v[0],v[1],v[2],v[3],v[4]);
     args.rval().setNumber(result); return true;
   } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
     catch (const kandelo::wasi::Error& error) { args.rval().setInt32(error.code); return true; }
@@ -380,6 +424,7 @@ static const JSFunctionSpec KandeloWasiMethods[] = {
   JS_FN("clock_time_get",KandeloWasiImport<KandeloWasiOperation::ClockTimeGet>,3,JSPROP_ENUMERATE),
   JS_FN("environ_get",KandeloWasiImport<KandeloWasiOperation::EnvironGet>,2,JSPROP_ENUMERATE),
   JS_FN("environ_sizes_get",KandeloWasiImport<KandeloWasiOperation::EnvironSizesGet>,2,JSPROP_ENUMERATE),
+  JS_FN("fd_allocate",KandeloWasiImport<KandeloWasiOperation::FdAllocate>,3,JSPROP_ENUMERATE),
   JS_FN("fd_close",KandeloWasiImport<KandeloWasiOperation::FdClose>,1,JSPROP_ENUMERATE),
   JS_FN("fd_datasync",KandeloWasiImport<KandeloWasiOperation::FdDatasync>,1,JSPROP_ENUMERATE),
   JS_FN("fd_fdstat_get",KandeloWasiImport<KandeloWasiOperation::FdFdstatGet>,2,JSPROP_ENUMERATE),
@@ -387,11 +432,14 @@ static const JSFunctionSpec KandeloWasiMethods[] = {
   JS_FN("fd_fdstat_set_rights",KandeloWasiImport<KandeloWasiOperation::FdFdstatSetRights>,3,JSPROP_ENUMERATE),
   JS_FN("fd_filestat_get",KandeloWasiImport<KandeloWasiOperation::FdFilestatGet>,2,JSPROP_ENUMERATE),
   JS_FN("fd_filestat_set_size",KandeloWasiImport<KandeloWasiOperation::FdFilestatSetSize>,2,JSPROP_ENUMERATE),
+  JS_FN("fd_filestat_set_times",KandeloWasiImport<KandeloWasiOperation::FdFilestatSetTimes>,4,JSPROP_ENUMERATE),
   JS_FN("fd_pread",KandeloWasiImport<KandeloWasiOperation::FdPread>,5,JSPROP_ENUMERATE),
   JS_FN("fd_prestat_get",KandeloWasiImport<KandeloWasiOperation::FdPrestatGet>,2,JSPROP_ENUMERATE),
   JS_FN("fd_prestat_dir_name",KandeloWasiImport<KandeloWasiOperation::FdPrestatDirName>,3,JSPROP_ENUMERATE),
   JS_FN("fd_pwrite",KandeloWasiImport<KandeloWasiOperation::FdPwrite>,5,JSPROP_ENUMERATE),
   JS_FN("fd_read",KandeloWasiImport<KandeloWasiOperation::FdRead>,4,JSPROP_ENUMERATE),
+  JS_FN("fd_readdir",KandeloWasiImport<KandeloWasiOperation::FdReaddir>,5,JSPROP_ENUMERATE),
+  JS_FN("fd_renumber",KandeloWasiImport<KandeloWasiOperation::FdRenumber>,2,JSPROP_ENUMERATE),
   JS_FN("fd_seek",KandeloWasiImport<KandeloWasiOperation::FdSeek>,4,JSPROP_ENUMERATE),
   JS_FN("fd_sync",KandeloWasiImport<KandeloWasiOperation::FdSync>,1,JSPROP_ENUMERATE),
   JS_FN("fd_tell",KandeloWasiImport<KandeloWasiOperation::FdTell>,2,JSPROP_ENUMERATE),

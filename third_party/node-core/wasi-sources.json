@@ -125,6 +125,16 @@
       ]
     },
     {
+      "name": "FdAllocate",
+      "wire": "fd_allocate",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint64_t",
+        "uint64_t"
+      ]
+    },
+    {
       "name": "FdClose",
       "wire": "fd_close",
       "return": "uint32_t",
@@ -187,6 +197,17 @@
       ]
     },
     {
+      "name": "FdFilestatSetTimes",
+      "wire": "fd_filestat_set_times",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint64_t",
+        "uint64_t",
+        "uint32_t"
+      ]
+    },
+    {
       "name": "FdPread",
       "wire": "fd_pread",
       "return": "uint32_t",
@@ -236,6 +257,27 @@
       "args": [
         "uint32_t",
         "uint32_t",
+        "uint32_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdReaddir",
+      "wire": "fd_readdir",
+      "return": "uint32_t",
+      "args": [
+        "uint32_t",
+        "uint32_t",
+        "uint32_t",
+        "uint64_t",
+        "uint32_t"
+      ]
+    },
+    {
+      "name": "FdRenumber",
+      "wire": "fd_renumber",
+      "return": "uint32_t",
+      "args": [
         "uint32_t",
         "uint32_t"
       ]

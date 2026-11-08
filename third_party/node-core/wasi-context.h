@@ -9,6 +9,7 @@
 #include <atomic>
 #include <climits>
 #include <cstring>
+#include <dirent.h>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
@@ -73,7 +74,7 @@ struct Fd {
   bool preopen = false;
   uvwasi_filetype_t type = UVWASI_FILETYPE_UNKNOWN;
   uvwasi_rights_t base = 0, inheriting = 0;
-  std::string path, normalized;
+  std::string path, normalized, realPath;
   ~Fd() { if (owns && fd >= 0) ::close(fd); }
 };
 class UniqueFd {
@@ -123,11 +124,13 @@ class Context {
     if ((result->base & rights) != rights) { error = UVWASI_ENOTCAPABLE; return nullptr; }
     return result;
   }
-  void Admit(int fd, bool preopen, const std::string& mapped = {}) {
+  void Admit(int fd, bool preopen, const std::string& mapped = {},
+             const std::string& realPath = {}) {
     struct stat st;
     if (::fstat(fd, &st) < 0) throw Error(FromErrno(errno));
     auto row = std::make_unique<Fd>();
     row->type = Type(fd, st); row->preopen = preopen; row->path = mapped;
+    row->realPath = realPath;
     if (preopen) {
       if (row->type != UVWASI_FILETYPE_DIRECTORY) throw Error(UVWASI_ENOTDIR);
       row->normalized.resize(row->path.size() + 2);
@@ -151,7 +154,8 @@ class Context {
         args_(std::move(args)), env_(std::move(env)) {
     Truncate(args_); Truncate(env_); BufferSize(args_); BufferSize(env_);
     try {
-      for (int i = 0; i < 3; ++i) Admit(stdio[i], false);
+      const char* names[] = {"<stdin>", "<stdout>", "<stderr>"};
+      for (int i = 0; i < 3; ++i) Admit(stdio[i], false, names[i], names[i]);
       for (size_t i = 0; i < preopens.size(); i += 2) {
         const char* actual = preopens.at(i + 1).c_str();
         std::unique_ptr<char, decltype(&std::free)> resolved(::realpath(actual, nullptr), &std::free);
@@ -159,7 +163,7 @@ class Context {
         int fd = ::open(resolved.get(), O_RDONLY);
         if (fd < 0) throw Error(FromErrno(errno));
         UniqueFd pending(fd);
-        Admit(fd, true, preopens[i].substr(0, std::strlen(preopens[i].c_str())));
+        Admit(fd, true, preopens[i].substr(0, std::strlen(preopens[i].c_str())), resolved.get());
         fds_.back()->owns = true; pending.Release();
       }
       RefreshAccounting();
@@ -169,7 +173,7 @@ class Context {
   void RefreshAccounting() noexcept {
     size_t bytes = sizeof(*this) + StringVectorBytes(args_) + StringVectorBytes(env_) +
                    fds_.capacity() * sizeof(fds_[0]);
-    for (const auto& fd : fds_) if (fd) bytes += sizeof(Fd) + StringBytes(fd->path) + StringBytes(fd->normalized);
+    for (const auto& fd : fds_) if (fd) bytes += sizeof(Fd) + StringBytes(fd->path) + StringBytes(fd->normalized) + StringBytes(fd->realPath);
     allocation_.Resize(bytes);
   }
   uvwasi_errno_t Strings(Memory m, bool environment, bool sizes, uint32_t a, uint32_t b) {
@@ -266,6 +270,124 @@ class Context {
   uvwasi_errno_t SetSize(uint32_t fd, uint64_t length) {
     uvwasi_errno_t error = 0; auto* row = Get(fd, UVWASI_RIGHT_FD_FILESTAT_SET_SIZE, error); if (!row) return error;
     return ::ftruncate(row->fd, static_cast<int64_t>(length)) < 0 ? FromErrno(errno) : 0;
+  }
+  // Pinned uvwasi's current build uses its actual fstat/ftruncate fallback
+  // unless __POSIX__ selects posix_fallocate. Do not invent allocation success.
+  uvwasi_errno_t Allocate(uint32_t fd, uint64_t offset, uint64_t length) {
+    uvwasi_errno_t error = 0; auto* row = Get(fd, UVWASI_RIGHT_FD_ALLOCATE, error); if (!row) return error;
+#if defined(__POSIX__)
+    const int result = ::posix_fallocate(row->fd, offset, length);
+    return result ? FromErrno(result) : 0;
+#else
+    struct stat st; if (::fstat(row->fd, &st) < 0) return FromErrno(errno);
+    const uint64_t end = offset + length;
+    if (static_cast<uint64_t>(st.st_size) < end &&
+        ::ftruncate(row->fd, static_cast<int64_t>(end)) < 0) return FromErrno(errno);
+    return 0;
+#endif
+  }
+  uvwasi_errno_t SetTimes(uint32_t fd, uint64_t atime, uint64_t mtime, uint32_t rawFlags) {
+    // The C preview1 API narrows the binding's u32 to its actual u16 flags.
+    const uvwasi_fstflags_t flags = static_cast<uvwasi_fstflags_t>(rawFlags);
+    constexpr auto at = UVWASI_FILESTAT_SET_ATIM | UVWASI_FILESTAT_SET_ATIM_NOW;
+    constexpr auto mt = UVWASI_FILESTAT_SET_MTIM | UVWASI_FILESTAT_SET_MTIM_NOW;
+    if ((flags & ~(at | mt)) || (flags & at) == at || (flags & mt) == mt) return UVWASI_EINVAL;
+    uvwasi_errno_t error = 0; auto* row = Get(fd, UVWASI_RIGHT_FD_FILESTAT_SET_TIMES, error); if (!row) return error;
+    uint64_t now = 0;
+    if (flags & (UVWASI_FILESTAT_SET_ATIM_NOW | UVWASI_FILESTAT_SET_MTIM_NOW)) {
+      struct timespec current;
+      if (::clock_gettime(CLOCK_REALTIME, &current) < 0) return FromErrno(errno);
+      now = uint64_t(current.tv_sec) * 1000000000 + current.tv_nsec;
+    }
+    uint64_t previousAt = 0, previousMt = 0;
+    if (!(flags & at) || !(flags & mt)) {
+      struct stat st; if (::fstat(row->fd, &st) < 0) return FromErrno(errno);
+#if defined(__APPLE__)
+      previousAt = uint64_t(st.st_atimespec.tv_sec) * 1000000000 + st.st_atimespec.tv_nsec;
+      previousMt = uint64_t(st.st_mtimespec.tv_sec) * 1000000000 + st.st_mtimespec.tv_nsec;
+#else
+      previousAt = uint64_t(st.st_atim.tv_sec) * 1000000000 + st.st_atim.tv_nsec;
+      previousMt = uint64_t(st.st_mtim.tv_sec) * 1000000000 + st.st_mtim.tv_nsec;
+#endif
+    }
+    // Exact uvwasi helper chooses a value then divides to whole seconds,
+    // including omitted values; it does not preserve their fractional part.
+    struct timespec times[2] = {
+      {static_cast<time_t>(((flags & UVWASI_FILESTAT_SET_ATIM_NOW) ? now :
+          (flags & UVWASI_FILESTAT_SET_ATIM) ? atime : previousAt) / 1000000000), 0},
+      {static_cast<time_t>(((flags & UVWASI_FILESTAT_SET_MTIM_NOW) ? now :
+          (flags & UVWASI_FILESTAT_SET_MTIM) ? mtime : previousMt) / 1000000000), 0}
+    };
+    return ::futimens(row->fd, times) < 0 ? FromErrno(errno) : 0;
+  }
+  uvwasi_errno_t Renumber(uint32_t from, uint32_t to) {
+    // Pinned fd_table_renumber tests equality before either table lookup.
+    if (from == to) return 0;
+    uvwasi_errno_t error = 0; auto* destination = Get(to, 0, error); if (!destination) return error;
+    auto* source = Get(from, 0, error); if (!source) return error;
+    (void)source;
+    if (::close(destination->fd) < 0 && errno != EINTR && errno != EINPROGRESS) return FromErrno(errno);
+    // Only after the real close succeeds can its owner be disarmed and the
+    // source's fd/rights/preopen/path ownership move once. No POSIX dup occurs.
+    destination->fd = -1;
+    fds_[to] = std::move(fds_[from]);
+    RefreshAccounting(); return 0;
+  }
+  uvwasi_errno_t Readdir(Memory m, uint32_t fd, uint32_t buffer, uint32_t length,
+                        uint64_t cookie, uint32_t out) {
+    if (!m.Bounds(buffer, length) || !m.Bounds(out, 4)) return UVWASI_EOVERFLOW;
+    uvwasi_errno_t error = 0; auto* row = Get(fd, UVWASI_RIGHT_FD_READDIR, error); if (!row) return error;
+    // Like pinned uvwasi, each call opens the stored real_path afresh rather
+    // than moving the admitted descriptor's OFD offset or caching enumeration.
+    using Directory = std::unique_ptr<DIR, decltype(&::closedir)>;
+    Directory dir(::opendir(row->realPath.c_str()), &::closedir);
+    if (!dir) return FromErrno(errno);
+    auto finish = [&](uvwasi_errno_t status) {
+      const int result = ::closedir(dir.release());
+      return result < 0 ? FromErrno(errno) : status;
+    };
+    uvwasi_errno_t readError = 0;
+    auto next = [&]() -> struct dirent* {
+      struct dirent* entry;
+      do { errno = 0; entry = ::readdir(dir.get()); }
+      while (entry && (!std::strcmp(entry->d_name, ".") || !std::strcmp(entry->d_name, "..")));
+      if (!entry && errno) readError = FromErrno(errno);
+      return entry;
+    };
+    uint64_t current = 0;
+    while (current < cookie) {
+      if (!next()) {
+        if (readError) return finish(readError);
+        break;
+      }
+      ++current;
+    }
+    uint32_t used = 0;
+    while (auto* entry = next()) {
+      ++current;
+      uvwasi_dirent_t value{}; value.d_next = current;
+      // Exact uvwasi/libuv contract reports no inode; never claim real d_ino.
+      value.d_ino = 0; value.d_namlen = std::strlen(entry->d_name);
+      switch (entry->d_type) {
+        case DT_REG: value.d_type = UVWASI_FILETYPE_REGULAR_FILE; break;
+        case DT_DIR: value.d_type = UVWASI_FILETYPE_DIRECTORY; break;
+        case DT_SOCK: value.d_type = UVWASI_FILETYPE_SOCKET_STREAM; break;
+        case DT_LNK: value.d_type = UVWASI_FILETYPE_SYMBOLIC_LINK; break;
+        case DT_CHR: value.d_type = UVWASI_FILETYPE_CHARACTER_DEVICE; break;
+        case DT_BLK: value.d_type = UVWASI_FILETYPE_BLOCK_DEVICE; break;
+        default: value.d_type = UVWASI_FILETYPE_UNKNOWN; break;
+      }
+      if (uint64_t(used) + UVWASI_SERDES_SIZE_dirent_t > length) { used = length; break; }
+      uint8_t bytes[UVWASI_SERDES_SIZE_dirent_t]; uvwasi_serdes_write_dirent_t(bytes, 0, &value);
+      // Serializer leaves bytes21..23 unchanged. Preserve those original bytes
+      // even for shared memory, rather than publishing uninitialized padding.
+      m.Write(size_t(buffer) + used, bytes, 21); used += UVWASI_SERDES_SIZE_dirent_t;
+      const size_t part = std::min<size_t>(value.d_namlen, length - used);
+      m.Write(size_t(buffer) + used, entry->d_name, part); used += part;
+      if (used == length) break;
+    }
+    if (readError) return finish(readError);
+    error = finish(0); if (!error) m.Write32(out, used); return error;
   }
   uvwasi_errno_t Sync(uint32_t fd, bool data) {
     uvwasi_errno_t error = 0; auto* row = Get(fd, data ? UVWASI_RIGHT_FD_DATASYNC : UVWASI_RIGHT_FD_SYNC, error); if (!row) return error;
