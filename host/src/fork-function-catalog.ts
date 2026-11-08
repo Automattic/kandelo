@@ -9,6 +9,8 @@
  * instance's fresh function object.
  */
 
+import { snapshotFunctionCatalog } from "./fork-function-catalog-snapshot";
+
 export const FORK_FUNCTION_CATALOG_EXPORT = "__wpk_fork_function_catalog";
 
 export interface ForkFunctionRecipe {
@@ -17,8 +19,7 @@ export interface ForkFunctionRecipe {
 }
 
 interface RegisteredCatalog {
-  table: WebAssembly.Table;
-  entries: Array<CallableFunction>;
+  readonly snapshot: WebAssembly.Table;
 }
 
 function assertU32(value: number, label: string): void {
@@ -33,38 +34,19 @@ function recipeKey(moduleActivation: number, ordinal: number): string {
 
 export class ForkFunctionCatalog {
   private readonly catalogs = new Map<number, RegisteredCatalog>();
-  private recipesByFunction =
-    new WeakMap<CallableFunction, ForkFunctionRecipe[]>();
+  private recipesByFunction = new WeakMap<CallableFunction, ForkFunctionRecipe>();
+  private indexed = false;
 
   register(moduleActivation: number, table: WebAssembly.Table): void {
     assertU32(moduleActivation, "module activation");
     if (this.catalogs.has(moduleActivation)) {
       throw new Error(`function catalog ${moduleActivation} is already registered`);
     }
-    const entries: Array<CallableFunction> = [];
-    for (let ordinal = 0; ordinal < table.length; ordinal++) {
-      const value = table.get(ordinal);
-      if (typeof value !== "function") {
-        throw new Error(
-          `function catalog ${moduleActivation} has non-function entry ${ordinal}`,
-        );
-      }
-      entries.push(value);
-      const recipes = this.recipesByFunction.get(value) ?? [];
-      if (!recipes.some((recipe) =>
-        recipe.moduleActivation === moduleActivation
-        && recipe.ordinal === ordinal
-      )) {
-        recipes.push({ moduleActivation, ordinal });
-        recipes.sort(
-          (left, right) =>
-            left.moduleActivation - right.moduleActivation
-            || left.ordinal - right.ordinal,
-        );
-        this.recipesByFunction.set(value, recipes);
-      }
-    }
-    this.catalogs.set(moduleActivation, { table, entries });
+    // Copy and validate before publishing any module or recipe state. Keeping
+    // references in Wasm avoids exposing unused functions to JavaScript here.
+    const snapshot = snapshotFunctionCatalog(table, moduleActivation);
+    this.catalogs.set(moduleActivation, { snapshot });
+    this.invalidateIndex();
   }
 
   unregister(moduleActivation: number): void {
@@ -73,12 +55,8 @@ export class ForkFunctionCatalog {
     if (!catalog) {
       throw new Error(`function catalog ${moduleActivation} is not registered`);
     }
-    for (const value of new Set(catalog.entries)) {
-      const remaining = (this.recipesByFunction.get(value) ?? [])
-        .filter((recipe) => recipe.moduleActivation !== moduleActivation);
-      this.recipesByFunction.set(value, remaining);
-    }
     this.catalogs.delete(moduleActivation);
+    this.invalidateIndex();
   }
 
   encode(value: unknown): ForkFunctionRecipe | null {
@@ -86,7 +64,8 @@ export class ForkFunctionCatalog {
     if (typeof value !== "function") {
       throw new TypeError("funcref encoder received a non-function value");
     }
-    const recipe = this.recipesByFunction.get(value)?.[0];
+    this.ensureIndex();
+    const recipe = this.recipesByFunction.get(value);
     if (!recipe) {
       throw new Error("funcref is absent from the process module catalogs");
     }
@@ -101,20 +80,41 @@ export class ForkFunctionCatalog {
     if (!catalog) {
       throw new Error(`function catalog ${recipe.moduleActivation} is not registered`);
     }
-    const value = catalog.entries[recipe.ordinal];
-    if (!value) {
+    if (recipe.ordinal >= catalog.snapshot.length) {
       throw new Error(
         `function recipe ${recipeKey(recipe.moduleActivation, recipe.ordinal)} is out of bounds`,
       );
     }
-    return value;
+    return catalog.snapshot.get(recipe.ordinal) as CallableFunction;
+  }
+
+  private invalidateIndex(): void {
+    // A newly registered lower activation may be the canonical alias, and an
+    // unloaded module must never leave recipes referring to its old instance.
+    this.recipesByFunction = new WeakMap();
+    this.indexed = false;
+  }
+
+  private ensureIndex(): void {
+    if (this.indexed) return;
+    // Build at most once per module set, keeping encode O(1) afterward. Scan
+    // activations/ordinals in canonical order so shared imports keep the same
+    // recipe regardless of registration order. Decode needs no reverse index.
+    for (const activation of [...this.catalogs.keys()].sort((a, b) => a - b)) {
+      const snapshot = this.catalogs.get(activation)!.snapshot;
+      for (let ordinal = 0; ordinal < snapshot.length; ordinal++) {
+        const value = snapshot.get(ordinal) as CallableFunction;
+        if (!this.recipesByFunction.has(value)) {
+          this.recipesByFunction.set(value, { moduleActivation: activation, ordinal });
+        }
+      }
+    }
+    this.indexed = true;
   }
 
   clear(): void {
-    // WeakMap entries disappear with their function objects. Catalog entries
-    // are the only strong roots owned here and must not outlive replay/abort.
+    // The private Wasm tables are the strong reference snapshots owned here.
     this.catalogs.clear();
-    this.recipesByFunction =
-      new WeakMap<CallableFunction, ForkFunctionRecipe[]>();
+    this.invalidateIndex();
   }
 }

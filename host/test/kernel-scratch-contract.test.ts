@@ -1136,6 +1136,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 
 const auditAllowances: AuditAllowance[] = [
   {
+    key: "host/src/fork-function-catalog-snapshot.ts::snapshotFunctionCatalog::wasm-instance-authority::new WebAssembly.Instance(compileProviderModule(), { env: { source, snapshot }, })",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This table-only helper receives the process activation's funcref catalog and a private destination table. It has no functions, globals or memory imports and only copies/validates references; it receives no kernel instance, memory or exports.",
+  },
+  {
     key: "benchmarks/go-regexp/run-node-wasi.mjs::<module>::wasm-instance-authority::WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport })",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",

@@ -2,6 +2,39 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Isolated function-catalog memory candidate prepared, not adopted.** The
+new source uses a 122-byte standard Wasm `table.copy`/null-validation helper
+to freeze original function identities in a private table. JavaScript's
+reverse index is built only when encoding is needed, once per module set;
+decode reads its requested ordinal directly. Alias ordering, source-table
+mutation/growth, unload/replacement and wire recipes are preserved. No Go,
+PHP, compiler or guest ABI change is involved. Helper modules/instances and
+tables are engine allocations outside Go's heap limit and normal module-cache
+counters; avoiding JS enumeration does not establish a memory benefit.
+
+All 46 focused source/authority checks pass in `2e59`. Both real Go/PHP
+Node consumer probes pass in `2648`, including 32 concurrent string-lifetime
+requests across Go GC and normal exit zero. Three pure browser contracts
+pass on Chromium, Firefox and WebKit. These are neither real browser service
+acceptance nor final normal-artifact/conformance/performance validation.
+The initial unit attempt retains a test-file parse failure; the corrected
+selection passes all 37 cases before the broader authority audit.
+
+A separate standalone control proves a failed-registration bug in the
+parent: a null entry rejects module registration but leaves an encodable
+recipe for that unpublished module. The candidate publishes nothing until
+copy/validation succeeds and rejects that ghost recipe. This narrower
+correctness issue can be fixed independently if memory measurements do not
+justify the broader candidate. Native before/after measurements are next.
+
+Four inactive pinned fixture-producer worktrees are removed only after
+all seven regular generated fixtures in each checkout pass their manifest
+hash checks, under the producer's OS lock; checks pass again afterward.
+The compiled fixtures and test evidence remain intact. The measured free
+space rises from about 4.2 GB to 11.9 GB across the two cleanup operations,
+while the independent full build continues. No live SDK, package cache,
+preview or primary submodule is removed.
+
 **General fork-retirement admission now has cross-host evidence.** The host
 preflights temporary retirement debt before shared-mapping synchronization,
 continuation capture or Rust child creation. Host allocator callbacks run

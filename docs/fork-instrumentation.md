@@ -1956,6 +1956,20 @@ instance whose tables are empty. JavaScript cannot generically transfer
 `funcref`/`externref` across workers or Stores, and the Table API cannot copy
 `exnref`.
 
+The source function-catalog implementation copies original `funcref` values
+into a private fixed-length table with a closed standard Wasm helper. Its
+122-byte module imports only source/destination tables and exports one
+copy/validation function. It uses `table.copy` and rejects null entries
+before publishing any registration. Source-table mutation or growth cannot
+change the frozen catalog. The `(activation, ordinal)` wire format is
+unchanged. Decode reads only its ordinal; the first encode builds the
+reverse index once per module set in canonical activation/ordinal order.
+Registration and unloading invalidate that index so shared imported aliases
+keep their original priority. This defers JS enumeration when no encode is
+needed; it does not prove a native-memory or performance benefit. The extra
+helper module/instances and private tables are engine allocations outside
+Go's heap limit and the normal program-module-cache counters.
+
 Closure and liveness analysis runs before rewriting so functions wholly outside
 the fork closure remain untouched. Within a live activation, the generated
 representation is selected by value class:
