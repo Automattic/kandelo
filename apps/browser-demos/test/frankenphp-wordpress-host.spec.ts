@@ -197,16 +197,19 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
         });
         readMemory = async () => {
           const startedAt = new Date().toISOString();
-          const [kernelPages, processes, modules, upstream] = await Promise.all([
+          const [kernelPages, processes, modules, storageMetadata, upstream] = await Promise.all([
             kernel.getKernelMemoryPages(), kernel.enumProcs(), kernel.getWasmModuleCacheStats(),
+            kernel.getStorageMetadataMemoryUsage(),
             upstreamMetricsReady ? readCaddyMemoryMetrics(kernel) : undefined,
           ]);
           const statuses = await Promise.all(processes.filter(process => process.pid !== 1).map(async process => {
-            const status = await kernel.readFileFromVfs(`/proc/${process.pid}/status`);
-            return { pid: process.pid, status: status ? decoder.decode(status) : null };
+            const [status, maps] = await Promise.all([
+              kernel.readFileFromVfs(`/proc/${process.pid}/status`), kernel.readProcMaps(process.pid),
+            ]);
+            return { pid: process.pid, status: status ? decoder.decode(status) : null, maps };
           }));
           return { startedAt, finishedAt: new Date().toISOString(),
-            kernelBytes: kernelPages * 65536, processes, statuses, modules, upstream };
+            kernelBytes: kernelPages * 65536, processes, statuses, modules, storageMetadata, upstream };
         };
         await stage("kernel initialized");
         if (memoryDiagnostics && serviceName === "frankenphp-caddy") {
