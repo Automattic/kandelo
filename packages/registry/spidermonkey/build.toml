@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0177-node-tty-shared-io.patch",
   "packages/registry/spidermonkey/patches/0176-node-vm-cache.patch",
   "packages/registry/spidermonkey/patches/0175-node-tty-write-owner.patch",
   "third_party/node-core/stream-write-material.h",
@@ -773,4 +774,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 245
+revision = 246

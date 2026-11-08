@@ -50988,15 +50988,15 @@ function _createNodeTerminalPlatform(platform) {
     const { ErrnoException, codes: { ERR_INVALID_ARG_VALUE, ERR_TTY_INIT_FAILED } } = platform.values.errors;
     const entries = new SafeWeakMap();
     const outputOwners = new SafeWeakMap();
+    const inputIOOwners = new SafeWeakMap();
     const { getColorDepth, hasColors } = platform.values.require('internal/tty');
     // Reopened writes and size queries share the same captured native owner.
     // Unsupported borrowed transports retain their explicit raw-fd fallback.
     function getWindowSize(output, result) {
         const binding = outputOwners.get(output);
         if (binding === undefined) throw new platform.values.errors.codes.ERR_INVALID_THIS('TTY output');
-        const packet = binding.owner === undefined
-            ? platform.native.operatingSystem('tty-size', binding.fd)
-            : platform.native.operatingSystem('tty-output-size', binding.owner);
+        if (binding.owner !== undefined) return binding.owner.getWindowSize(result);
+        const packet = platform.native.operatingSystem('tty-size', binding.fd);
         if (packet.error) return packet.error;
         result[0] = packet.value[0];result[1] = packet.value[1];return 0;
     }
@@ -51137,7 +51137,7 @@ WriteStream.prototype.getWindowSize = function() {
             throw error;
         }
         return {
-            bind(input) { entries.set(input, owner); },
+            bind(input) { entries.set(input, owner);inputIOOwners.set(input, owner); },
             // Native readStart is continuous. The borrowed fd-readable consumer
             // requests one completion at a time, so stop real native demand
             // before invoking it; Readable alone decides whether to rearm.
@@ -51167,7 +51167,8 @@ WriteStream.prototype.getWindowSize = function() {
         const owner = entries.get(input);
         // Match the target optional-handle path after close or when borrowed.
         if (owner === undefined) return undefined;
-        return platform.native.operatingSystem('tty-mode', owner, mode).error;
+        return inputIOOwners.has(input) ? owner.setRawMode(mode) :
+            platform.native.operatingSystem('tty-mode', owner, mode).error;
     }
     function ReadStream() {}
     ReadStream.prototype.setRawMode = function(mode) {
@@ -51206,7 +51207,7 @@ WriteStream.prototype.getWindowSize = function() {
         input.isRaw = false;input.rawMode = false;
         input.setRawMode = ReadStream.prototype.setRawMode;
         return function retireInputMode() {
-            const owner = entries.get(input);entries.delete(input);
+            const owner = entries.get(input);entries.delete(input);inputIOOwners.delete(input);
             if (owner !== undefined) platform.native.operatingSystem('tty-close', owner);
         };
     }

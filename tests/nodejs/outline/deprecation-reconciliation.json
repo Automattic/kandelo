@@ -106,7 +106,7 @@
     "third_party/node-core/symmetric-keygen-platform-adapter.js": "33fcdeba5519f0431634c2f5e2b345800181ea1565373f6259bc15f098f5c201",
     "third_party/node-core/sys-platform-adapter.js": "795f104873cdfb340667f160d358f548984b3fe73b7f4db335624f4073774b44",
     "third_party/node-core/tempdir-platform-adapter.js": "5102bbeeeb0ca8ffe47dec42d4edad3a91e0e8c6842903b3d3fb904b237afa39",
-    "third_party/node-core/terminal-platform-adapter.js": "9a436045a9bcbea091ca8b749c01b32bfe6a940320a9209436269f28939d1f95",
+    "third_party/node-core/terminal-platform-adapter.js": "c070528403935d05d83f8d434ae79d4adde434328637bbf355d74e2b3efaf07e",
     "third_party/node-core/testing-platform-adapter.js": "9e8717598ae201818f3272c717ccc138196cacd92348e58e90531a7c2647567a",
     "third_party/node-core/testing-runner-adapter.js": "22eb03e53a82385215a23a6f382cf85101afcee1d86762a29b05e2812c02e7e6",
     "third_party/node-core/timers-promises-platform-adapter.js": "efb66d7b0d0f41f311d3bc05a0116b00800eb8780f3213ff6200244f96687e0c",

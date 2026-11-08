@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source 246 adds shared captured TTY IO ownership and reviewed method-phase corrections as prerequisites. It does not activate public TTY constructors or establish guest compatibility.
+See [source scope](tty-shared-io-integration.md).
+
 Source245 adds four actual POSIX-backed WASI descriptor imports, with scoped current native-dependent evidence.29source owners/17missing are inventory counts, not compatibility passes. New guest code/backend/fourhost remain incomplete.
 See [source scope](wasi-fd-integration.md).
 

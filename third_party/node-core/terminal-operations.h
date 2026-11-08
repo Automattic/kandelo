@@ -160,6 +160,7 @@ class OutputHandle {
 // Socket/TTY I/O handle. No O_NONBLOCK flags or caller descriptors are changed.
 class BorrowedInputMode {
   int fd_ = -1, mode_ = 0;
+  bool ownsDescriptor_ = true;
   termios original_{};
  public:
   BorrowedInputMode() = default;
@@ -173,7 +174,16 @@ class BorrowedInputMode {
     termios probe{};int status;
     do { status = tcgetattr(owned, &probe); } while (status < 0 && errno == EINTR);
     if (status < 0) { const int error = -errno;close(owned);return error; }
-    fd_ = owned;return 0;
+    fd_ = owned;ownsDescriptor_ = true;return 0;
+  }
+  // IOHandle owns this descriptor and outlives its nested mode state. Binding
+  // that actual retained capability avoids allocating another fd at setMode.
+  int BindRetainedDescriptor(int fd) {
+    if (fd_ >= 0) return -EBUSY;
+    termios probe{};int status;
+    do { status = tcgetattr(fd, &probe); } while (status < 0 && errno == EINTR);
+    if (status < 0) return -errno;
+    fd_ = fd;ownsDescriptor_ = false;return 0;
   }
   int SetMode(int mode) {
     if (fd_ < 0) return -EBADF;
@@ -210,39 +220,93 @@ class BorrowedInputMode {
     }
     pthread_mutex_unlock(&resetState.mutex);
     const int fd = fd_;fd_ = -1;mode_ = 0;
-    close(fd);  // Never retry a close against a potentially reused number.
+    if (ownsDescriptor_) close(fd);  // Never retry against a reused number.
+    ownsDescriptor_ = true;
   }
 };
-// Captured stdio input prerequisite, not a TTYWRAP/StreamBase constructor.
-// Reopen/identity/dup2 follows the same verified slave path as output. Only
-// that separate OFD becomes nonblocking; mode and reads share its terminal.
-class InputHandle {
-  OutputHandle input_;
+// A captured TTY has one actual descriptor/OFD for reads, writes, window
+// queries and mode changes. The two stdio policies differ only at admission:
+// input starts nonblocking and acquires mode restoration; output starts
+// blocking. This owner is not yet public TTY/Socket constructor admission.
+class IOHandle {
+  OutputHandle descriptor_;
   BorrowedInputMode mode_;
+  int access_ = -1;
+  // Like uv_tty_t::mode, successful mode state belongs to the retained
+  // native handle, not the descriptor's lifetime. Close restores the device
+  // but a live closing wrap still recognizes an unchanged requested mode.
+  int currentMode_ = -1;
+  bool modeOpen_ = false;
  public:
-  InputHandle() = default;
-  InputHandle(const InputHandle&) = delete;
-  InputHandle& operator=(const InputHandle&) = delete;
-  ~InputHandle() { Close(); }
-  int Descriptor() const noexcept { return input_.Descriptor(); }
-  int Open(int supplied) {
+  IOHandle() = default;
+  IOHandle(const IOHandle&) = delete;
+  IOHandle& operator=(const IOHandle&) = delete;
+  ~IOHandle() { Close(); }
+  int Descriptor() const noexcept { return descriptor_.Descriptor(); }
+  bool Readable() const noexcept { return Descriptor() >= 0 && access_ != O_WRONLY; }
+  bool Writable() const noexcept { return Descriptor() >= 0 && access_ != O_RDONLY; }
+  int Open(int supplied, bool input) {
     int saved;do { saved = fcntl(supplied, F_GETFL); } while (saved < 0 && errno == EINTR);
     if (saved < 0) return -errno;
-    int status = input_.Open(supplied);
+    int status = descriptor_.Open(supplied);
     if (status) return status;
-    status = mode_.Open(input_.Descriptor());
-    if (!status) status = input_.SetBlocking(false);
-    if (status) {
-      mode_.Close();input_.Close();
-      // Reopen already preserved the public descriptor. Restore its original
-      // status on post-publication failure; never close a borrowed stdio fd.
-      int restored;do { restored = fcntl(supplied, F_SETFL, saved); } while (restored < 0 && errno == EINTR);
-      return status;
+    currentMode_ = 0;
+    int flags;do { flags = fcntl(Descriptor(), F_GETFL); } while (flags < 0 && errno == EINTR);
+    if (flags < 0) status = -errno;
+    else access_ = flags & O_ACCMODE;
+    if (!status && input) {
+      status = mode_.BindRetainedDescriptor(Descriptor());
+      if (!status) { modeOpen_ = true;status = descriptor_.SetBlocking(false); }
     }
-    return 0;
+    if (status) {
+      Close();currentMode_ = -1;
+      // Reopen already preserved the supplied descriptor. Restore its original
+      // status on post-publication failure; never close that borrowed number.
+      int restored;do { restored = fcntl(supplied, F_SETFL, saved); } while (restored < 0 && errno == EINTR);
+    }
+    return status;
   }
-  int SetMode(int mode) { return mode_.SetMode(mode); }
-  void Close() { mode_.Close();input_.Close(); }
+  int SetMode(int mode) {
+    if (mode == 3) mode = 1; // UNIX maps the two raw variants before equality.
+    if (currentMode_ >= 0 && mode == currentMode_) return 0;
+    if (Descriptor() < 0) return -EBADF;
+    if (mode < 0 || mode > 2) return -EINVAL;
+    if (!modeOpen_) {
+      const int status = mode_.BindRetainedDescriptor(Descriptor());
+      if (status) return status;
+      modeOpen_ = true;
+    }
+    const int status = mode_.SetMode(mode);
+    if (!status) currentMode_ = mode;
+    return status;
+  }
+  int SetBlocking(bool blocking) { return descriptor_.SetBlocking(blocking); }
+  int GetWindowSize(std::array<unsigned, 2>* result) const {
+    return descriptor_.GetWindowSize(result);
+  }
+  template<class Material>
+  bool ProgressWrite(Material& material, bool blockingRemainder = false) {
+    if (material.complete) return true;
+    if (!Writable()) { material.error = EBADF;material.complete = true;return true; }
+    // Input captures share this same owner but remain nonblocking. Never
+    // apply the blocking-output retry loop to a nonblocking descriptor.
+    int flags;do { flags = fcntl(Descriptor(), F_GETFL); } while (flags < 0 && errno == EINTR);
+    if (flags < 0) { material.error = errno;material.complete = true;return true; }
+    return descriptor_.ProgressWrite(material, blockingRemainder && !(flags & O_NONBLOCK));
+  }
+  OutputHandle::WriteResult Write(const uint8_t* bytes, size_t length) {
+    if (!Writable()) return {-EBADF, 0};
+    return descriptor_.Write(bytes, length);
+  }
+  void Close() {
+    mode_.Close();modeOpen_ = false;descriptor_.Close();access_ = -1;
+  }
+};
+// Preserve the existing standalone captured-input helper contract. Production
+// native TTY leases below now consume IOHandle directly for both policies.
+class InputHandle : public IOHandle {
+ public:
+  int Open(int supplied) { return IOHandle::Open(supplied, true); }
 };
 }  // namespace kandelo::terminal
 #endif

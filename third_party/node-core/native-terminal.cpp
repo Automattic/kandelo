@@ -68,8 +68,7 @@ struct KandeloTerminalLease {
   KandeloTerminalLease* previous = nullptr;
   KandeloTerminalLease* next;
   kandelo::terminal::BorrowedInputMode mode;
-  kandelo::terminal::OutputHandle output;
-  kandelo::terminal::InputHandle input;
+  kandelo::terminal::IOHandle io;
   bool outputOwner = false, inputOwner = false, inputClosing = false;
   explicit KandeloTerminalLease(JSContext* cx, KandeloNativeAsyncState* state)
       : state(state), cx(cx), reads(++gKandeloTerminalGeneration), writes(reads.Generation()), next(state->terminalLeases) {
@@ -79,7 +78,7 @@ struct KandeloTerminalLease {
     bool cancelled;inputClosing = true;reads.Close();readRoot.reset();
     (void)KandeloTerminalCancelRead(nullptr, this, false, &cancelled);
     writes.Close();KandeloDiscardTerminalWrites(this);
-    input.Close();mode.Close();output.Close();Retire();closeRoot.reset();
+    io.Close();mode.Close();Retire();closeRoot.reset();
     if (previous) previous->next = next;else state->terminalLeases = next;
     if (next) next->previous = previous;
     state->Release();
@@ -119,7 +118,7 @@ static void KandeloShutdownTerminalLeases(KandeloNativeAsyncState* state) {
     lease->inputClosing = true;lease->reads.Close();lease->readRoot.reset();bool cancelled;
     (void)KandeloTerminalCancelRead(nullptr, lease, false, &cancelled);
     lease->writes.Close();KandeloDiscardTerminalWrites(lease);
-    lease->input.Close();lease->mode.Close();lease->output.Close();lease->Retire();lease->closed = true;lease->closing = false;lease->closeRoot.reset();
+    lease->io.Close();lease->mode.Close();lease->Retire();lease->closed = true;lease->closing = false;lease->closeRoot.reset();
   }
 }
 }  // namespace js::shell
@@ -214,10 +213,47 @@ static js::shell::KandeloTerminalLease* KandeloTerminalThis(
   }
   owner.set(actual);return lease;
 }
+// Real TTY operations retain the same captured descriptor as native reads
+// and write tickets. No caller-visible fd is reread after coercion/reentry.
+static bool KandeloTerminalGetWindowSize(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);RootedObject owner(cx);
+  auto* lease = KandeloTerminalThis(cx, args, &owner);if (!lease) return false;
+  if (lease->retired) { args.rval().setInt32(-EBADF);return true; }
+  RootedObject dimensions(cx, args.get(0).isObject() ? &args[0].toObject() : nullptr);
+  bool array = false;
+  if (!dimensions || !JS::IsArrayObject(cx, dimensions, &array) || !array) {
+    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "TTY window size requires an Array");return false;
+  }
+  std::array<unsigned, 2> size{};const int status = lease->io.GetWindowSize(&size);
+  if (!status) {
+    RootedValue width(cx, NumberValue(size[0])), height(cx, NumberValue(size[1]));
+    if (!JS_SetElement(cx, dimensions, 0, width) || !JS_SetElement(cx, dimensions, 1, height)) return false;
+  }
+  args.rval().setInt32(status);return true;
+}
+static bool KandeloTerminalSetRawMode(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);RootedObject owner(cx);
+  auto* lease = KandeloTerminalThis(cx, args, &owner);if (!lease) return false;
+  // Native wrap retirement is distinct from its already-closed descriptor.
+  // A live closing/close-callback wrap still performs Int32 conversion.
+  if (lease->retired) { args.rval().setInt32(-EBADF);return true; }
+  int32_t mode;if (!JS::ToInt32(cx, args.get(0), &mode)) return false;
+  // Conversion can close the actual owner. SetMode first checks the actual
+  // retained mode, then the live descriptor; no pre-conversion fd is reused.
+  args.rval().setInt32(lease->io.SetMode(mode));return true;
+}
+static bool KandeloTerminalSetBlocking(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);RootedObject owner(cx);
+  auto* lease = KandeloTerminalThis(cx, args, &owner);if (!lease) return false;
+  if (lease->retired) { args.rval().setUndefined();return true; }
+  // LibuvStreamWrap uses IsTrue, not ToBoolean or an arbitrary valueOf call.
+  const bool enabled = args.get(0).isBoolean() && args[0].toBoolean();
+  args.rval().setInt32(lease->closed ? -EINVAL : lease->io.SetBlocking(enabled));return true;
+}
 static bool KandeloTerminalConfigure(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);RootedObject owner(cx);
   auto* lease = KandeloTerminalThis(cx, args, &owner);if (!lease) return false;
-  if (!lease->inputOwner || lease->inputClosing || lease->input.Descriptor() < 0) {
+  if (!lease->inputOwner || lease->inputClosing || lease->io.Descriptor() < 0) {
     JS_ReportErrorASCII(cx, "TTY input is closed or unavailable");return false;
   }
   if (KandeloTerminalHasPendingRead(lease)) {
@@ -299,7 +335,7 @@ static bool KandeloTerminalFd(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);RootedObject owner(cx);
   auto* lease = KandeloTerminalThis(cx, args, &owner);if (!lease) return false;
   args.rval().setInt32(lease->closed ? -EINVAL :
-      lease->inputOwner ? lease->input.Descriptor() : lease->output.Descriptor());return true;
+      lease->io.Descriptor());return true;
 }
 static bool KandeloTerminalBeginClose(JSContext* cx, HandleObject owner,
     js::shell::KandeloTerminalLease* lease, HandleValue callback = UndefinedHandleValue) {
@@ -320,7 +356,7 @@ static bool KandeloTerminalBeginClose(JSContext* cx, HandleObject owner,
   // Release only the captured extra descriptors before any rejected-Promise
   // hook can reenter. The borrowed public fd remains untouched at teardown.
   lease->writes.Close();
-  lease->input.Close();lease->mode.Close();lease->output.Close();
+  lease->io.Close();lease->mode.Close();
   return KandeloTerminalCancelRead(cx, lease, true, &cancelled);
 }
 static bool KandeloTerminalClose(JSContext* cx, unsigned argc, Value* vp) {
@@ -423,7 +459,7 @@ static bool KandeloTerminalSubmitWrite(JSContext* cx, HandleObject parent,
   if (!lease->outputOwner) {
     JS_ReportErrorASCII(cx, "TTY write requires its actual output owner; input-kind writes remain unimplemented");return false;
   }
-  if (lease->closing || lease->closed || lease->output.Descriptor() < 0) {
+  if (lease->closing || lease->closed || lease->io.Descriptor() < 0) {
     result.setInt32(-EBADF);return true;
   }
   RootedValue streamState(cx, JS::GetReservedSlot(parent, TerminalStreamState));
@@ -436,7 +472,7 @@ static bool KandeloTerminalSubmitWrite(JSContext* cx, HandleObject parent,
   }
   // A full initial try-write never creates WRITEWRAP. Original spans were
   // captured first; any partial prefix remains progress over those same bytes.
-  if (!lease->writes.HasRemaining() && lease->output.ProgressWrite(material->material)) {
+  if (!lease->writes.HasRemaining() && lease->io.ProgressWrite(material->material)) {
     KandeloTerminalWriteResult(cx, view, bytes, material->material.error, false, none, result);return true;
   }
   RootedObject request(cx, JS_NewObject(cx, &KandeloTerminalWriteClass));if (!request) return false;
@@ -493,7 +529,7 @@ static bool KandeloTerminalSubmitWrite(JSContext* cx, HandleObject parent,
   if (lease->writeTail) lease->writeTail->next = state;else lease->writeHead = state;
   lease->writeTail = state;state->queued = true;++lease->requests;
   published = true;
-  if (emptyBefore) lease->writes.Progress(lease->output, state->ticket.get());
+  if (emptyBefore) lease->writes.Progress(lease->io, state->ticket.get());
   KandeloTerminalWriteResult(cx, view, bytes, 0, true, publicRequest, result);return true;
 }
 static bool KandeloTerminalWriteBuffer(JSContext* cx, unsigned argc, Value* vp) {
@@ -556,7 +592,7 @@ static bool KandeloTerminalWriteQueueSize(JSContext* cx, unsigned argc, Value* v
 static int KandeloDispatchTerminalWrite(JSContext* cx, js::shell::KandeloTerminalLease* lease) {
   auto* state = lease->writeHead;
   if (!state || !state->pending || state->callbackActive) return 0;
-  if (!lease->writes.Progress(lease->output, state->ticket.get())) return 0;
+  if (!lease->writes.Progress(lease->io, state->ticket.get())) return 0;
   RootedObject request(cx, *state->pending);JSAutoRealm realm(cx, request);
   RootedObject parent(cx, &JS::GetReservedSlot(request, TerminalWriteParent).toObject());
   state->callbackActive = true;state->ticket->phase = js::shell::KandeloTerminalWriteTicket::Phase::Delivering;
@@ -602,6 +638,9 @@ static bool KandeloTerminalPrototype(JSContext* cx, MutableHandleObject result) 
     RootedObject prototype(cx, JS_NewPlainObject(cx));
     if (!prototype || !JS_SetPrototype(cx, prototype, streamPrototype)) return false;
     static const JSFunctionSpec methods[] = {
+      JS_FN("getWindowSize", KandeloTerminalGetWindowSize, 1, 0),
+      JS_FN("setRawMode", KandeloTerminalSetRawMode, 1, 0),
+      JS_FN("setBlocking", KandeloTerminalSetBlocking, 1, 0),
       JS_FN("configureRead", KandeloTerminalConfigure, 2, 0),
       JS_FN("configureWrite", KandeloTerminalConfigureWrite, 1, 0),
       JS_FN("writeBuffer", KandeloTerminalWriteBuffer, 2, 0),
@@ -730,8 +769,7 @@ static bool KandeloTerminalDispatch(JSContext* cx, const CallArgs& args,
     if (!lease) { JS_ReportOutOfMemory(cx);return false; }
     lease->outputOwner = strcmp(name, "tty-output-open") == 0;
     lease->inputOwner = strcmp(name, "tty-input-open") == 0;
-    *error = lease->outputOwner ? lease->output.Open(int(fd)) :
-        lease->inputOwner ? lease->input.Open(int(fd)) : lease->mode.Open(int(fd));
+    *error = io ? lease->io.Open(int(fd), lease->inputOwner) : lease->mode.Open(int(fd));
     if (*error) { js_delete(lease);return true; }
     JS::AddAssociatedMemory(object, sizeof(*lease), JS::MemoryUse::Embedding3);
     JS::SetReservedSlot(object, 0, PrivateValue(lease));
@@ -794,7 +832,7 @@ static bool KandeloTerminalDispatch(JSContext* cx, const CallArgs& args,
   if (strcmp(name, "tty-output-size") == 0) {
     if (!lease->outputOwner) { JS_ReportErrorASCII(cx, "Terminal output requires an output owner");return false; }
     std::array<unsigned, 2> dimensions{};
-    *error = lease->output.GetWindowSize(&dimensions);
+    *error = lease->io.GetWindowSize(&dimensions);
     if (*error) return true;
     JS::RootedValueArray<2> fields(cx);fields[0].setNumber(dimensions[0]);fields[1].setNumber(dimensions[1]);
     RootedObject array(cx, JS::NewArrayObject(cx, fields));if (!array) return false;
@@ -821,7 +859,7 @@ static bool KandeloTerminalDispatch(JSContext* cx, const CallArgs& args,
       bool shared;
       const auto* bytes = static_cast<const uint8_t*>(JS_GetArrayBufferViewData(view, &shared, nogc));
       live = !length || bytes;
-      if (live) result = lease->output.Write(bytes, length);
+      if (live) result = lease->io.Write(bytes, length);
     }
     if (!live) { JS_ReportErrorASCII(cx, "Terminal view has no backing data");return false; }
     *error = result.error;value.setNumber(double(result.transferred));return true;
@@ -839,7 +877,7 @@ static bool KandeloTerminalDispatch(JSContext* cx, const CallArgs& args,
   }
   if (strcmp(name, "tty-mode") == 0) {
     int64_t mode;if (!KandeloFsInteger(cx, args.get(2), 0, 3, &mode)) return false;
-    *error = lease->inputOwner ? (lease->inputClosing ? -EBADF : lease->input.SetMode(int(mode))) : lease->mode.SetMode(int(mode));return true;
+    *error = lease->inputOwner ? (lease->inputClosing ? -EBADF : lease->io.SetMode(int(mode))) : lease->mode.SetMode(int(mode));return true;
   }
   JS_ReportErrorASCII(cx, "Unknown terminal operation");return false;
 }

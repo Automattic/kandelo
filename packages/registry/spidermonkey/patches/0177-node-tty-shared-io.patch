@@ -1,0 +1,37 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -1119,3 +1119,3 @@
+         auto* lease = watch->terminalLease;
+-        if (lease->reads.Progress(lease->input.Descriptor(), watch->terminalRead)) {
++        if (lease->reads.Progress(lease->io.Descriptor(), watch->terminalRead)) {
+           const int delivered = KandeloDispatchTerminalReady(cx);
+@@ -1443,3 +1443,3 @@
+     KandeloTerminalLease* lease, MutableHandleValue result) {
+-  if (lease->inputClosing || lease->input.Descriptor() < 0) { result.setInt32(-EBADF);return true; }
++  if (lease->inputClosing || lease->io.Descriptor() < 0) { result.setInt32(-EBADF);return true; }
+   if (JS::GetReservedSlot(owner, TerminalDispatch).isUndefined() ||
+@@ -1462,3 +1462,3 @@
+     RootedObject noPromise(cx);
+-    auto watch = mozilla::MakeUnique<KandeloSocketWatch>(cx, lease->input.Descriptor(), KandeloSocketWatchKind::Read, noPromise);
++    auto watch = mozilla::MakeUnique<KandeloSocketWatch>(cx, lease->io.Descriptor(), KandeloSocketWatchKind::Read, noPromise);
+     watch->terminalRead = ticket;
+@@ -1482,3 +1482,3 @@
+   RootedValue wrapped(cx, callback);if (!JS_WrapValue(cx, &wrapped)) return false;
+-  if (lease->inputClosing || lease->input.Descriptor() < 0) { result.setInt32(-EBADF);return true; }
++  if (lease->inputClosing || lease->io.Descriptor() < 0) { result.setInt32(-EBADF);return true; }
+   if (KandeloTerminalPendingRead(lease)) { result.setInt32(-EALREADY);return true; }
+@@ -1487,3 +1487,3 @@
+     RootedObject noPromise(cx);
+-    auto* watch = js_new<KandeloSocketWatch>(cx, lease->input.Descriptor(), KandeloSocketWatchKind::Read, noPromise);
++    auto* watch = js_new<KandeloSocketWatch>(cx, lease->io.Descriptor(), KandeloSocketWatchKind::Read, noPromise);
+     if (!watch) { JS_ReportOutOfMemory(cx);return false; }
+@@ -1521,3 +1521,3 @@
+     // allocation, never use a previously captured numeric fd after reentry.
+-    if (lease->inputClosing || lease->input.Descriptor() < 0)
++    if (lease->inputClosing || lease->io.Descriptor() < 0)
+       return KandeloResolvePromiseWithErrno(cx, promise, EBADF, nullptr);
+@@ -1526,3 +1526,3 @@
+     std::vector<uint8_t> bytes(size_t(length), uint8_t(0));
+-    const int fd = lease->input.Descriptor();
++    const int fd = lease->io.Descriptor();
+     ssize_t size;do { size = read(fd, bytes.data(), bytes.size()); } while (size < 0 && errno == EINTR);

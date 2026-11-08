@@ -1,0 +1,166 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/terminal.md",
+    "findingIds": [
+      "T-002",
+      "T-007",
+      "T-010",
+      "T-016"
+    ],
+    "relatedFamilies": [
+      "streams"
+    ],
+    "scope": "Shared owning prerequisite only; public constructors/inherited behavior remain incomplete. No finding closure.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-002",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false,
+        "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-007",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false,
+        "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-010",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false,
+        "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-016",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false,
+        "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "A genuine shared captured IOHandle replaces separate production input/output descriptor owners, retaining real access, OFD flags, raw-mode restoration and public-fd lifetime rules.",
+    "Existing native reads/write tickets, window and mode/blocking controls consume that actual captured descriptor; seven engine read routes use the same IO owner.",
+    "Successful normalized native mode belongs to live backing until retirement, so unchanged raw/normal mode can succeed after descriptor close as pinned; no successful unadmitted mode sentinel.",
+    "Retired raw/window/blocking gates preserve real receiver/security/context checks and pinned ToInt32/Array/error/default ordering; live closing and close-callback phases remain distinct.",
+    "Actual current generated JS stdio/native TTY normal and publication-throw components pass with immutable original controls, real PTYs and exact pinned Node. New C++ remains uncompiled."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tty246-source-r1/report.json",
+    "sha256": "fead0f53ec326946e0e0923057f2a65995f3180d19c083bb6b52407cd38dd349",
+    "guardedInputs": 902,
+    "scope": "Actual current-root source/native staging, existing corrected2group portable IOHandle binary and2actual current-generated JS/native stdio components. New C++/GC/realm/retirement/ToInt32 routing uncompiled/unexecuted; public constructors and four-host conformance remain open."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tty246-affected-r1.json",
+    "sha256": "71793667a205c8e99f3fff3e914cf17ffacb63bb6046ea3a335599b8828e2484",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tty246-source-r1/report.json",
+    "sha256": "fead0f53ec326946e0e0923057f2a65995f3180d19c083bb6b52407cd38dd349",
+    "currentGeneratedJsComponents": 2,
+    "portableHeaderGroups": 2,
+    "actualTtyBytesPerComponent": [
+      1026,
+      1026
+    ],
+    "normalCallbackCount": 1,
+    "publicationThrowOriginalCaught": true,
+    "publicationThrowCallbackCount": 0,
+    "sourceChecks": 8,
+    "sourceCommands": 9,
+    "normalReplayCommands": 4,
+    "newRootCompilerAttempts": 0,
+    "historicalOriginalTinyAttempts": 4,
+    "historicalPhaseCorrectionTinyAttempts": 3,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Source 246 has actual shared captured TTY IO and source-reviewed close/retirement phase corrections. Current root generated JS passed two real native Node TTY/WRITEWRAP component subjects, each matching 1026 PTY bytes; corrected portable IOHandle passed two groups. configureWrite remains validation-only. New guest native code, public constructors and four-host conformance remain uncompiled/unvalidated.",
+    "globalBindingSelfContained": false
+  },
+  "sealedEvidence": {
+    "report": ".context/tty-shared-io-phase-correction-agent/report.json",
+    "sha256": "7ff8d09528562094eaf51b271cbac861e1c862422f428ac053545ffa8b039fd6",
+    "reusedEvidence": true,
+    "scope": "Historical source-reviewed phase correction and three successful tiny helper attempts, including preserved old-mode nonpass; not new guest JSAPI or source 246 compilation. Original four helper attempts remain separate."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tty-shared-io-owner-agent/evidence/run-r1.3erSuP/owner.stderr",
+      "sha256": "dc5e936f2a9947922f6f66b0412478c7d8ea7fc58a87b3247e9e43ef2308cdcb",
+      "scope": "Original strict full-termios restoration assertion exited SIGABRT; retained raw evidence, not relabeled as a guest bug or platform exclusion."
+    },
+    {
+      "report": ".context/tty-shared-io-owner-agent/evidence/run-r2.5os9Sf/owner.stderr",
+      "sha256": "c033ab9a5888224f7bdb5d9fb341524bd5f705ade5ce40f517193cde4999df3e",
+      "scope": "Original strict restoration/PENDIN observation and SIGABRT retained; matching native sequence documented separately, no discarded assertion or fabricated exclusion."
+    },
+    {
+      "report": ".context/tty-shared-io-owner-agent/evidence/run-r3.2kIv4M/generation.stderr",
+      "sha256": "62a18194de932bb884cd3ade3082dad92183a7a5e58da5231f9fba36cf596679",
+      "scope": "Private generator setup omitted pinned codec patch; source setup failure, zero compatibility credit."
+    },
+    {
+      "report": ".context/tty-shared-io-phase-correction-agent/evidence/run-r1.6KChTx/before-owner.stderr",
+      "sha256": "8fe35fb282add05f0735a4437b56dbb09892ebd34af361beb6ce662e5fc8f010",
+      "scope": "Real old IOHandle same-mode-after-close returned EBADF and exited SIGABRT; corrected source and later evidence do not erase that nonpass."
+    },
+    {
+      "report": ".context/tty246-finalizer-r1-failure.json",
+      "sha256": "01c86efe0719c130b462f3cc7cdc03e4f0b0edcee87db0e6604b728b97630115",
+      "scope": "Root bookkeeping expected eight commands but actual source report contains nine. Failed before receipt imports or index writes. Raw process log unavailable; do not reconstruct or count as runtime failure."
+    }
+  ],
+  "remaining": [
+    "Compile and validate actual shared TTY native JSAPI, seven engine routes, actual GC/realm/coercion/callback/fatal/Worker/fork behavior on identified artifacts across all four hosts.",
+    "Implement genuine public callable tty.ReadStream/WriteStream and typed net.Socket admission, native init-before-fd-open and transactional adoption. Current real stdio owners do not complete public classes.",
+    "Implement mixed/string/input-kind writes, output-kind reads, genuine nonblocking write readiness, shutdown and complete StreamBase/AsyncWrap request ownership.",
+    "Support valid pipe/master/unreopenable fd admissions through real ownership; existing rejections remain implementation gaps, not engine/platform exclusions.",
+    "Reconcile unchanged restoration/comparator observations and every original nonpass without weakening assertions, hiding errors or claiming a Darwin/guest exclusion.",
+    "Current native Node backend controls and portable host PTYs do not establish new guest C++ or four-host conformance. Overall suites and full product rebuild remain deferred."
+  ],
+  "actualControlReport": {
+    "report": ".context/node26-tty246-js-components-r1/report.json",
+    "sha256": "643270f7f59d16cb193b3a438d6d601f461520ac5bc31f3922a2e6745e9e7b06",
+    "components": 2,
+    "actualTtyBytesPerComponent": [
+      1026,
+      1026
+    ],
+    "normalCallbacks": 1,
+    "publicationThrowCallbacks": 0,
+    "portableHeaderGroups": 2,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "scope": "Current generated JS over native Node TTY/WRITEWRAP; configureWrite is validation-only. No new guest C++ proof."
+  },
+  "integrationTool": {
+    "report": ".context/node26-tty246-tool-completion.json",
+    "sha256": "c3415fbac41e9ff40b735d059a774ef3ec6204f35667e81e331743a86f5d7d3d",
+    "sourceBinding": "549824772a585a84214ee31f30ba874622865e8f95b8daa4475e0cf0c5d42b76",
+    "selectedInputBindingOnly": true,
+    "globalBindingSelfContained": false,
+    "sourceImportExit3Meaning": "First import awaited the second check; both actual checks exited zero and final operation completed."
+  },
+  "at": "2026-11-08T02:07:09.072909+00:00",
+  "recipeRevision": 246,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
