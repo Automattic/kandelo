@@ -1,0 +1,201 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2526,2 +2526,15 @@
+   KandeloTlsWatch* writes = nullptr;
++  KandeloTlsWatch* activeWrite = nullptr;
++  std::unique_ptr<PersistentRootedObject> encryptedRoot;
++  int encryptedError = 0;
++  bool HoldEncrypted(JSObject* capability) {
++    if (encryptedRoot) return true;
++    try { encryptedRoot = std::make_unique<PersistentRootedObject>(cx, capability); }
++    catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
++    allocation.Resize(sizeof(KandeloTlsState) + sizeof(PersistentRootedObject));
++    return true;
++  }
++  void ReleaseEncrypted() noexcept {
++    encryptedRoot.reset(); allocation.Resize(sizeof(KandeloTlsState));
++  }
+   std::unique_ptr<kandelo::memory::Claim> readClaim;
+@@ -2541,2 +2554,3 @@
+     owner.Close(graceful);
++    ReleaseEncrypted();
+     if (owner.HasParent() && parentState) parentState->BeginClose();
+@@ -2637,2 +2651,5 @@
+   bool writeCallbackAcknowledged = false, dispatchLinked = false;
++  // Actual terminal SSL result plus successful output receipt, independently
++  // of fallible Promise publication. A later close cannot revoke that result.
++  bool encryptedComplete = false;
+   KandeloTlsWatch* nextWrite = nullptr;
+@@ -2662,2 +2679,3 @@
+   ~KandeloTlsWatch() {
++    if (state->activeWrite == this) state->activeWrite = nullptr;
+     if (kind == KandeloTlsOperation::Write) {
+@@ -2687,2 +2705,20 @@
+ }
++// No JS/allocation: capture only an actual matching terminal operation whose
++// output has been fully acknowledged (or which genuinely produced no output).
++static bool KandeloTlsCaptureEncryptedCompletion(KandeloTlsWatch* watch) {
++  using Result = KandeloTlsWatch::Result;
++  if (watch->encryptedComplete) return true;
++  if ((watch->result == Result::Connected || watch->result == Result::Count) &&
++      !watch->state->encryptedError && watch->state->owner.Matches(watch->generation) &&
++      !watch->state->owner.EncryptedPending()) watch->encryptedComplete = true;
++  return watch->encryptedComplete;
++}
++static void KandeloTlsCaptureOwnerCompletions(KandeloTlsState* state) {
++  // The ordinary pump runs no JS and mutates neither index. The write index
++  // also covers a request temporarily unlinked for publication/close batches.
++  for (auto* watch = gKandeloTlsWatches; watch; watch = watch->next)
++    if (watch->state == state) (void)KandeloTlsCaptureEncryptedCompletion(watch);
++  for (auto* watch = state->writes; watch; watch = watch->nextWrite)
++    (void)KandeloTlsCaptureEncryptedCompletion(watch);
++}
+ static bool KandeloTlsHasReferences(JSContext* cx) {
+@@ -2691,3 +2727,3 @@
+   for (auto* state = gKandeloTlsOwners; state; state = state->next)
+-    if (state->cx == cx && state->writes) return true;
++    if (state->cx == cx && (state->writes || state->encryptedRoot)) return true;
+   for (auto* watch = gKandeloTlsWatches; watch; watch = watch->next)
+@@ -2705,2 +2741,15 @@
+   using Result = KandeloTlsWatch::Result;
++  // SSL accepting cleartext/finishing its handshake is not wire completion.
++  // The deferred success remains unpublished until its actual output receipt.
++  // Preserve a Promise already settled before hook reentry/abrupt completion:
++  // its queued callback and terminal result cannot be rewritten by later close.
++  if ((watch->result == Result::Connected || watch->result == Result::Count) &&
++      JS::GetPromiseState(watch->promise) == JS::PromiseState::Pending &&
++      !KandeloTlsCaptureEncryptedCompletion(watch)) {
++    const int error = watch->state->encryptedError;
++    if (error || !watch->state->owner.Matches(watch->generation)) {
++      watch->result = Result::Error; watch->error = error ? error : ECANCELED;
++      watch->message = error ? "TLS encrypted transport write failed" : "TLS owner closed";
++    } else if (watch->state->owner.EncryptedPending()) return false;
++  }
+   const bool write = watch->kind == KandeloTlsOperation::Write;
+@@ -2752,6 +2801,2 @@
+   using Result = KandeloTlsWatch::Result;
+-  if (watch->result != Result::Waiting) return KandeloTlsPublish(watch);
+-  if (watch->read && watch->read->Complete()) {
+-    KandeloTlsCaptureReadResult(watch); return KandeloTlsPublish(watch);
+-  }
+   auto& owner = watch->state->owner;
+@@ -2761,3 +2806,19 @@
+   };
+-  if (!owner.Matches(watch->generation)) return fail(ECANCELED, "TLS owner closed");
++  if (watch->result != Result::Waiting) return KandeloTlsPublish(watch);
++  if (watch->read && watch->read->Complete()) {
++    KandeloTlsCaptureReadResult(watch); return KandeloTlsPublish(watch);
++  }
++  if (!owner.Matches(watch->generation))
++    return fail(watch->state->encryptedError ? watch->state->encryptedError : ECANCELED, "TLS owner closed");
++  // Writes retry the same original cleartext arguments after WANT. Another
++  // plaintext write cannot replace them while ciphertext/its callback remains.
++  if (watch->kind == KandeloTlsOperation::Write) {
++    if (watch->state->activeWrite && watch->state->activeWrite != watch) return false;
++    watch->state->activeWrite = watch;
++  }
++  if (watch->kind != KandeloTlsOperation::Read && owner.EncryptedPending()) return false;
++  if (!watch->state->HoldEncrypted(watch->capability)) return false;
++  auto releaseIfEmpty = mozilla::MakeScopeExit([&] {
++    if (!owner.EncryptedPending()) watch->state->ReleaseEncrypted();
++  });
+   SSL* ssl = owner.Ssl();
+@@ -2772,23 +2833,65 @@
+       } else watch->result = Result::Connected;
+-      return KandeloTlsPublish(watch);
+-    }
+-    if (KandeloTlsRetry(watch, result)) return false;
+-    watch->state->BeginClose(); return fail(0, "TLS handshake failed");
+-  }
+-  if (!owner.Open()) return fail(ECANCELED, "TLS handshake is not open");
+-  if (watch->kind == KandeloTlsOperation::Read) {
+-    if (!owner.ProgressRead(watch->read)) { watch->events = watch->read->events; return false; }
+-    KandeloTlsCaptureReadResult(watch); return KandeloTlsPublish(watch);
+-  }
+-  while (watch->offset < watch->buffer.size()) {
+-    const size_t remaining = watch->buffer.size() - watch->offset;
+-    const int count = int(remaining > size_t(INT_MAX) ? size_t(INT_MAX) : remaining);
+-    const int result = SSL_write(ssl, watch->buffer.data() + watch->offset, count);
+-    if (result > 0) { watch->offset += size_t(result); continue; }
+-    if (KandeloTlsRetry(watch, result)) return false;
+-    return fail(0, "TLS write failed");
+-  }
+-  watch->result = Result::Count; return KandeloTlsPublish(watch);
++    } else if (!KandeloTlsRetry(watch, result)) {
++      watch->state->BeginClose(); return fail(0, "TLS handshake failed");
++    }
++  } else {
++    if (!owner.Open()) return fail(ECANCELED, "TLS handshake is not open");
++    if (watch->kind == KandeloTlsOperation::Read) {
++      if (owner.ProgressRead(watch->read)) KandeloTlsCaptureReadResult(watch);
++      else watch->events = watch->read->events;
++    } else {
++      while (watch->offset < watch->buffer.size()) {
++        const size_t remaining = watch->buffer.size() - watch->offset;
++        const int count = int(remaining > size_t(INT_MAX) ? size_t(INT_MAX) : remaining);
++        const int result = SSL_write(ssl, watch->buffer.data() + watch->offset, count);
++        if (result > 0) { watch->offset += size_t(result); continue; }
++        // SSL_get_error runs before BIO progress or any other OpenSSL call.
++        if (KandeloTlsRetry(watch, result)) break;
++        return fail(0, "TLS write failed");
++      }
++      if (watch->offset == watch->buffer.size()) watch->result = Result::Count;
++    }
++  }
++  // This may physically send original ciphertext, but never acknowledges it
++  // inline. Ordinary native loop continuation owns the real parent receipt.
++  (void)owner.ProgressEncrypted(false);
++  if (const int error = owner.EncryptedError()) {
++    watch->state->encryptedError = error; watch->state->BeginClose(false);
++    return fail(error, "TLS encrypted transport write failed");
++  }
++  // Plaintext delivery can progress while encrypted output is backpressured;
++  // otherwise two peers writing before reading could deadlock. Its own root
++  // keeps the encrypted producer alive after this read Promise is published.
++  if (watch->result == Result::Waiting ||
++      (watch->kind != KandeloTlsOperation::Read && owner.EncryptedPending())) return false;
++  return KandeloTlsPublish(watch);
+ }
+ static int KandeloDispatchTlsOwners(JSContext* cx) {
++  // The actual TLS capability roots memory BIO and TCP state independently of
++  // a read Promise's lifetime. No callback, allocation or JS runs in this pump.
++  for (auto* state = gKandeloTlsOwners; state; state = state->next) {
++    if (state->cx != cx || !state->encryptedRoot) continue;
++    auto& owner = state->owner;
++    if (!owner.EncryptedPending()) {
++      KandeloTlsCaptureOwnerCompletions(state);
++      state->ReleaseEncrypted(); state->ReleaseClosedParent(); return 1;
++    }
++    const bool acknowledge = owner.EncryptedNeedsAcknowledgment();
++    if (!acknowledge) {
++      pollfd descriptor = {}; descriptor.fd = owner.Fd(); descriptor.events = POLLOUT;
++      const int ready = descriptor.fd < 0 ? 1 : poll(&descriptor, 1, 0);
++      if (ready == 0 || (ready < 0 && errno == EINTR)) continue;
++    }
++    const bool drained = owner.ProgressEncrypted(true);
++    if (const int error = owner.EncryptedError()) {
++      state->encryptedError = error; state->BeginClose(false); return 1;
++    }
++    if (drained) {
++      // Freeze each real terminal operation before any later JS/publication
++      // can fail or reenter close; the actual receipt has already succeeded.
++      KandeloTlsCaptureOwnerCompletions(state);
++      state->ReleaseEncrypted(); state->ReleaseClosedParent(); return 1;
++    }
++    if (acknowledge) return 1;
++  }
+   for (auto* watch = gKandeloTlsWatches; watch; watch = watch->next) {
+@@ -2799,2 +2902,6 @@
+     if (watch->awaitingWriteCallback) continue;
++    if (watch->kind == KandeloTlsOperation::Write && watch->state->activeWrite &&
++        watch->state->activeWrite != watch) continue;
++    if ((watch->result == KandeloTlsWatch::Result::Connected || watch->result == KandeloTlsWatch::Result::Count) &&
++        !watch->encryptedComplete && watch->state->owner.EncryptedPending()) continue;
+     pollfd descriptor = {};
+@@ -2951,2 +3058,6 @@
+       watch->message = "TLS parent is not connected";
++    }
++    if (auto record = state->owner.EncryptedRecord()) {
++      try { state->claims.Add(record, KandeloNativeMemoryOwner(cx)); }
++      catch (...) { state->BeginClose(false); throw; }
+     }

@@ -32,14 +32,18 @@ paths, not successful graceful shutdown.
 The source pin remains Node 26.13.0, commit
 `18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. Pinned `TLSWrap::DoShutdown` and
 `EncOut` use memory BIO output, retained request state and underlying-stream
-flush/callback ordering. Kandelo currently binds a direct socket BIO with
-BIO_NOCLOSE. Copying the pinned two-call `SSL_shutdown` sequence without that
-output owner would be incorrect.
+flush/callback ordering. The preceding callback slice used a direct socket BIO. The encrypted-output
+prerequisite now binds a retained memory output BIO and actual captured-parent
+transport receipts, keeping its input socket BIO exclusive to the same TCP
+lease. This is not yet Node's complete memory-BIO/StreamBase listener owner.
+Copying the pinned two-call `SSL_shutdown` sequence without the remaining
+shutdown/request/callback owner would still be incorrect.
 
 The matching OpenSSL 3.5.9 `ssl3_shutdown` sets SSL_SENT_SHUTDOWN before the
 alert is flushed. WANT_WRITE must be retried against the actual retained
-transport readiness. Return 0 establishes local alert flush, but another call
-may wait for peer close via WANT_READ. A future write-half-close owner must
+transport readiness. For the current memory output BIO, return 0 means the alert reached BIO
+storage; real TCP acknowledgment is still required for wire completion. Another
+call may wait for peer close via WANT_READ. A future write-half-close owner must
 preserve this distinction, earlier-write callback barriers, exact parent and
 generation, queued request/provider rooting, handshake/reentry deferral,
 error-queue policy and cancellation before invoking the genuine parent

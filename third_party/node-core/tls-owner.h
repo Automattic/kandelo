@@ -2,6 +2,7 @@
 #ifndef KANDELO_NODE_TLS_OWNER_H_
 #define KANDELO_NODE_TLS_OWNER_H_
 #include "socket-owner.h"
+#include "tls-encrypted-output.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <poll.h>
@@ -56,6 +57,7 @@ class Owner : public socket::TransportAttachment {
   size_t requests_ = 0;
   OwnedContext context_;
   OwnedSSL ssl_;
+  std::unique_ptr<EncryptedOutput> encrypted_;
   Phase phase_ = Phase::Preparing;
   uint64_t nextRead_ = 0;
   bool reading_ = false, eof_ = false;
@@ -88,24 +90,26 @@ class Owner : public socket::TransportAttachment {
         !context_ || !ssl_ || !parent.AttachTransport(this)) return false;
     parent_ = &parent; parentGeneration_ = parent.Generation(); return true;
   }
-  // All SSL configuration, JS hooks and roots precede this fd binding. TCP
-  // keeps its actual lease and async lifetime; SSL's BIO uses BIO_NOCLOSE.
-  bool BindParent() noexcept {
+  // TCP keeps the captured lease and exclusive socket input BIO. Output is a
+  // memory BIO with a real registered parent write/acknowledgment transaction.
+  bool BindParent() {
     if (phase_ != Phase::Preparing || !ParentLive() || parent_->Fd() < 0 || !ssl_)
       return false;
-    if (SSL_set_fd(ssl_.get(), parent_->Fd()) != 1) return false;
+    auto encrypted = std::make_unique<EncryptedOutput>(*parent_, *this);
+    if (!encrypted->Initialize(ssl_.get())) return false;
+    encrypted_ = std::move(encrypted);
     phase_ = Phase::Handshaking; return true;
   }
   void DetachParent() noexcept {
     if (!parent_) return;
     // The embedding releases its root only after every real request retires.
-    assert(requests_ == 0);
+    assert(requests_ == 0 && !EncryptedPending());
     parent_->DetachTransport(this); parent_ = nullptr;
   }
   bool HasParent() const noexcept { return parent_ != nullptr; }
   bool Referenced() const noexcept { return parent_ && parent_->Referenced(); }
   void Ref(bool value) noexcept { if (parent_) parent_->Ref(value); }
-  bool HasRequests() const noexcept override { return requests_ != 0; }
+  bool HasRequests() const noexcept override { return requests_ != 0 || EncryptedPending(); }
   class Request {
     Owner* owner_;
    public:
@@ -119,6 +123,17 @@ class Owner : public socket::TransportAttachment {
   };
   void ParentClosed() noexcept override { Close(false); }
   SSL* Ssl() const noexcept { return ssl_.get(); }
+  bool EncryptedPending() const noexcept { return encrypted_ && encrypted_->Pending(); }
+  bool EncryptedNeedsAcknowledgment() const noexcept { return encrypted_ && encrypted_->NeedsAcknowledgment(); }
+  int EncryptedError() const noexcept { return encrypted_ ? encrypted_->Error() : 0; }
+  size_t EncryptedPendingBytes() const noexcept { return encrypted_ ? encrypted_->PendingBytes() : 0; }
+  bool ProgressEncrypted(bool acknowledge = false) noexcept {
+    return !encrypted_ || encrypted_->Progress(acknowledge);
+  }
+  std::shared_ptr<memory::Record> EncryptedRecord() const noexcept {
+    return encrypted_ ? encrypted_->allocation.Handle() : std::shared_ptr<memory::Record>{};
+  }
+
   bool Matches(uint64_t generation) const noexcept {
     return generation == generation_ && phase_ != Phase::Closed && (!parent_ || ParentLive());
   }
@@ -196,8 +211,16 @@ class Owner : public socket::TransportAttachment {
     // One nonblocking shutdown attempt, followed by actual deterministic release.
     // BIO_NOCLOSE leaves descriptor retirement with the retained TCP parent.
     // The embedding queues that parent close and clears roots after requests retire.
-    if (shutdown && established && ssl_ && (!parent_ || ParentLive())) SSL_shutdown(ssl_.get());
-    ssl_.reset(); context_.reset(); descriptor_.Close();
+    if (shutdown && established && ssl_ && (!parent_ || ParentLive())) {
+      SSL_shutdown(ssl_.get());
+      // Destruction remains best effort, NOT graceful write shutdown. A real
+      // native send may make progress; any remainder is canceled, not credited
+      // as a flushed alert or a successful public _final operation.
+      if (encrypted_) (void)encrypted_->Progress(false);
+    }
+    ssl_.reset(); // No OpenSSL retry may retain application bytes past this.
+    if (encrypted_) encrypted_->Cancel();
+    encrypted_.reset(); context_.reset(); descriptor_.Close();
   }
 };
 }  // namespace kandelo::tls

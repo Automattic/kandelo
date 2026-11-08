@@ -1,0 +1,154 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/secure-network-contracts.md",
+    "findingIds": [
+      "S-009"
+    ],
+    "relatedFamilies": [
+      "network",
+      "streams",
+      "async"
+    ],
+    "scope": "Partial owning encrypted transport/publication prerequisite. Graceful shutdown and full TLS/StreamBase behavior remain required; no finding closure.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/secure-network-contracts.md",
+        "findingId": "S-009",
+        "relation": "partial-owning-source",
+        "closed": false,
+        "scope": "Actual retained encrypted transport and terminal publication ownership; shutdown/_final, full errors/lifetime and guest validation remain incomplete."
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Captured TCP owner admits, progresses, cancels and acknowledges genuine encrypted transport tickets by actual attachment, generation and sequence.",
+    "Memory output BIO retains both pair endpoints and its original ring region until the real parent receipt; head advancement follows exact acknowledgement. Input remains an exclusive captured socket BIO.",
+    "Native source roots the encrypted producer independently of a read Promise and serializes original plaintext WANT arguments. New root/watch/GC code remains uncompiled.",
+    "Central publication rejects failure before acknowledgement while per-watch actual terminal completion survives later close, owner error or pre-settlement publication retry. Native pump records matching deferred connect and indexed writes before root release.",
+    "Normal actual source/header staging preserves shared TTY/VM owners and canonical mappings; no public shutdown, fake provider or fabricated success is introduced."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tls247-source-r1/report.json",
+    "sha256": "6de9a6b3c907cb7248817a589fd217b6c5d047adf8ce79164b99f5cbea841774",
+    "guardedInputs": 903,
+    "scope": "Normal current-root source/native staging plus existing precompiled native portable/extracted-policy controls. No new guest JSAPI proof, no graceful shutdown/_final activation."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tls247-affected-r1.json",
+    "sha256": "0d7549ee5e2948acb9dc51f3ee35feb04d1ffb365a68261b181852557bd5ffa9",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tls247-source-r1/report.json",
+    "sha256": "6de9a6b3c907cb7248817a589fd217b6c5d047adf8ce79164b99f5cbea841774",
+    "portablePrimitiveSubjects": 1,
+    "primitiveConditionAnnotations": 7,
+    "portableProtocolSubjects": 2,
+    "protocolDecodedBytesMatch": true,
+    "extractedPolicySubjects": 3,
+    "policyConditionsPerSubject": 27,
+    "originalPolicyPassed": 15,
+    "originalPolicyNonpasses": 12,
+    "intermediatePolicyPassed": 19,
+    "intermediatePolicyNonpasses": 8,
+    "refinedPolicyPassed": 27,
+    "refinedPolicyNonpasses": 0,
+    "sourceChecks": 12,
+    "sourceCommands": 9,
+    "normalReplayCommands": 4,
+    "actualHeaderChecks": 5,
+    "newRootCompilerAttempts": 0,
+    "historicalHelperAttempts": 6,
+    "historicalHelperFailures": 1,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Source 247 adds a real retained memory-output BIO and captured TCP write/receipt owner, with source-reviewed per-watch output completion independent of Promise publication. Current checks re-executed one portable primitive with seven annotations and two TLS protocol subjects; both decoded-byte comparisons matched. Extracted original/intermediate/refined policy statuses are 15/27, 19/27 and 27/27. Supplied Result/Promise state is not actual guest Promise/OOM/pump execution. New guest C++ and four-host conformance remain uncompiled/unvalidated.",
+    "globalBindingSelfContained": false
+  },
+  "sealedEvidence": {
+    "report": ".context/tls-output-completion-refinement-agent/report.json",
+    "sha256": "7f498cd6aea82c098a66f4eee317287f32e48d250e12f11ebe08a4b3208134ff",
+    "reusedEvidence": true,
+    "scope": "Historical exact source refinement and portable/extracted policy evidence with supplied terminal Result/Promise state; source 247 native pump/GC/JSAPI is not compiled or executed."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-tls247-source-r1/report.json",
+      "sha256": "6de9a6b3c907cb7248817a589fd217b6c5d047adf8ce79164b99f5cbea841774",
+      "scope": "Re-executed extracted original policy retains 15/27 passing and 12 nonpassing conditions; first correction retains 19/27 passing and 8 nonpassing. Refined policy is 27/27. These are versioned fixture-supplied Result/Promise observations, not public API pass counts or current guest failures."
+    },
+    {
+      "report": ".context/tls-encrypted-output-publication-correction-agent/evidence/compile-r1.stderr",
+      "sha256": "62abb9d49026cedd29e02576e1e015e99ac968c3aa3f0a3abd3f69f975dcb7ba",
+      "scope": "Historical authored tiny fixture omitted the raw-header include path. One real compiler failure remains counted, not blamed on production source."
+    },
+    {
+      "report": ".context/tls-encrypted-output-publication-correction-agent/evidence/control-r1.stderr",
+      "sha256": "dab00087056295ed1a80435ac91a8973c165187274c719f9f2559d6e20ad0720",
+      "scope": "Historical control sampled EPIPE before actual receipt acknowledgement; failed setup remains preserved. Production gate was not changed to obtain that fixture pass."
+    },
+    {
+      "report": ".context/tls-encrypted-output-owner-agent/evidence/log-path-reuse-incident.json",
+      "sha256": "df375416268feae01c10f5f1a50d3580d30b267e60c5d09968777cdf29a0cfc0",
+      "scope": "Earlier missing-checker stderr was overwritten. Original session 25594 exited 2, raw text is unavailable and not reconstructed. Later retained staging stderr is a different failure; no raw completeness claim."
+    }
+  ],
+  "remaining": [
+    "Compile and validate actual composed TLS owner/engine/roots/Promise pump on identified guest artifacts across all four hosts; portable and policy fixtures do not execute new JSAPI, GC, realm, OOM, fatal, Worker or fork paths.",
+    "Implement full ClearIn/read-generated-output, StreamBase/listener/input-BIO/provider and actual callback ownership parity; retained TCP parent and memory output BIO are only prerequisites.",
+    "Implement genuine graceful close_notify/shutdown, earlier-write callback barriers, deferred SSL library-call ownership and parent half-close before activating public _final or shutdown.",
+    "Replace the still-copied plaintext write bridge with real retained original allocation where required; encrypted BIO storage retention alone does not close that gap.",
+    "Preserve policy version nonpasses, failed fixture/compiler/source preparations and irrecoverable raw-log loss without weakening assertions or inventing accepted platform exclusions.",
+    "Complete remaining TLS/session/ticket/certificate/error schema/HTTPS Agent idle/ref/timer and server behavior independently; this slice does not activate complete HTTPS pooling or public TLS compatibility."
+  ],
+  "actualControlReport": {
+    "report": ".context/node26-tls247-source-r1/report.json",
+    "sha256": "6de9a6b3c907cb7248817a589fd217b6c5d047adf8ce79164b99f5cbea841774",
+    "portablePrimitiveSubjects": 1,
+    "primitiveConditionAnnotations": 7,
+    "protocolSubjects": 2,
+    "protocolDecodedBytesMatch": true,
+    "extractedPolicySubjects": 3,
+    "originalPolicyPassed": 15,
+    "originalPolicyNonpasses": 12,
+    "intermediatePolicyPassed": 19,
+    "intermediatePolicyNonpasses": 8,
+    "refinedPolicyPassed": 27,
+    "refinedPolicyNonpasses": 0,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "scope": "Historical portable subjects re-executed, plus extracted policies with supplied Result/Promise state. Not public API, new guest C++ or actual Promise/OOM/pump/GC proof."
+  },
+  "manualIntegration": {
+    "report": ".context/node26-tls247-manual-apply-r1.json",
+    "sha256": "889d0ce2317872f79d788442d9fc9570b01a133dc03fd08fe7aca8e17d032631",
+    "manualExecutableBoundary": true,
+    "buildScriptMode": "0755",
+    "v1OperationClaimed": false,
+    "selectedInputBindingOnly": true,
+    "globalBindingSelfContained": false,
+    "actualReceiptPids": [
+      44708,
+      44709
+    ]
+  },
+  "actualNormalHeaderReport": {
+    "report": ".context/node26-tls247-source-r1/header-checks.json",
+    "sha256": "197fc599d2186dd14d93b09330c5ab1bf170dd5c242e5de6a0a1a38c37b57ec8",
+    "headers": 5,
+    "enginePostimage": "c7a35ca686875e822757715da02953b7480522d499ce598e7c70cbbb1d427cd4",
+    "newEngineCompiled": false
+  },
+  "at": "2026-11-08T02:22:17.679026+00:00",
+  "recipeRevision": 247,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

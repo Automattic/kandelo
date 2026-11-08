@@ -72,9 +72,33 @@ class TransportAttachment {
   virtual bool HasRequests() const noexcept = 0;
 };
 
+// One real native transport write, registered with its captured TCP owner.
+// The transport retains the original byte allocation until acknowledgment.
+class TransportWrite {
+  friend class Owner;
+  enum class Phase { Idle, Writing, Ready, Retired };
+  Phase phase_ = Phase::Idle;
+  uint64_t generation_ = 0, sequence_ = 0;
+  const uint8_t* bytes_ = nullptr;
+  size_t length_ = 0, offset_ = 0;
+  int error_ = 0;
+ public:
+  TransportWrite() = default;
+  TransportWrite(const TransportWrite&) = delete;
+  TransportWrite& operator=(const TransportWrite&) = delete;
+  bool Pending() const noexcept { return phase_ == Phase::Writing || phase_ == Phase::Ready; }
+  bool Ready() const noexcept { return phase_ == Phase::Ready; }
+  uint64_t Sequence() const noexcept { return sequence_; }
+  size_t Length() const noexcept { return length_; }
+  size_t Transferred() const noexcept { return offset_; }
+  int Error() const noexcept { return error_; }
+};
+
 class Owner {
   Lease descriptor_;
   TransportAttachment* transport_ = nullptr;
+  TransportWrite* transportWrite_ = nullptr;
+  uint64_t nextTransportWrite_ = 0;
   const uint64_t generation_;
   uint64_t nextRead_ = 0;
   bool reading_ = false;
@@ -96,10 +120,51 @@ class Owner {
     transport_ = transport; return true;
   }
   void DetachTransport(TransportAttachment* transport) noexcept {
-    if (transport_ == transport) transport_ = nullptr;
+    if (transport_ == transport) { assert(!transportWrite_); transport_ = nullptr; }
   }
   bool HasTransport() const noexcept { return transport_ != nullptr; }
-  bool HasTransportRequests() const noexcept { return transport_ && transport_->HasRequests(); }
+  int QueueTransportWrite(TransportAttachment& authority, TransportWrite& request,
+                          const void* bytes, size_t length) noexcept {
+    if (transport_ != &authority || transportWrite_ || request.Pending()) return EBUSY;
+    if (closed_ || Fd() < 0) return EBADF;
+    if (writeShutdown_) return EPIPE;
+    if (!bytes || !length) return EINVAL;
+    if (nextTransportWrite_ == UINT64_MAX) return EOVERFLOW;
+    request.generation_ = generation_; request.sequence_ = ++nextTransportWrite_;
+    request.bytes_ = static_cast<const uint8_t*>(bytes); request.length_ = length;
+    request.offset_ = 0; request.error_ = 0; request.phase_ = TransportWrite::Phase::Writing;
+    transportWrite_ = &request; return 0;
+  }
+  bool ProgressTransportWrite(TransportAttachment& authority, TransportWrite& request) noexcept {
+    if (transport_ != &authority || transportWrite_ != &request || request.generation_ != generation_)
+      return false;
+    if (request.Ready()) return true;
+    if (closed_ || Fd() < 0) request.error_ = ECANCELED;
+    else {
+      iovec vector = {const_cast<uint8_t*>(request.bytes_ + request.offset_), request.length_ - request.offset_};
+      msghdr message = {}; message.msg_iov = &vector; message.msg_iovlen = 1;
+      ssize_t count;
+      do { count = ::sendmsg(Fd(), &message, SendFlags()); } while (count < 0 && errno == EINTR);
+      if (count >= 0) request.offset_ += size_t(count);
+      else if (errno != EAGAIN && errno != EWOULDBLOCK) request.error_ = errno;
+    }
+    if (request.error_ || request.offset_ == request.length_) request.phase_ = TransportWrite::Phase::Ready;
+    return request.Ready();
+  }
+  void CancelTransportWrite(TransportAttachment& authority, TransportWrite& request) noexcept {
+    if (transport_ == &authority && transportWrite_ == &request && request.generation_ == generation_) {
+      request.error_ = ECANCELED; request.phase_ = TransportWrite::Phase::Ready;
+    }
+  }
+  bool AcknowledgeTransportWrite(TransportAttachment& authority, TransportWrite& request,
+                                  uint64_t sequence) noexcept {
+    if (transport_ != &authority || transportWrite_ != &request || !request.Ready() ||
+        request.generation_ != generation_ || request.sequence_ != sequence) return false;
+    transportWrite_ = nullptr; request.phase_ = TransportWrite::Phase::Retired;
+    request.bytes_ = nullptr; return true;
+  }
+
+  bool HasTransportRequests() const noexcept { return transportWrite_ || (transport_ && transport_->HasRequests()); }
   void Ref(bool value) noexcept { referenced_ = value; }
   // All caller coercions must finish before entering this owner operation.
   // No borrowed numeric fd may cross arbitrary JavaScript execution.
@@ -160,6 +225,7 @@ class Owner {
   }
   void Close() noexcept {
     closed_ = true; reading_ = false;
+    if (transportWrite_) { transportWrite_->error_ = ECANCELED; transportWrite_->phase_ = TransportWrite::Phase::Ready; }
     descriptor_.Close();
     // This is a no-JS invalidation. SSL must never use a later reuse of the fd.
     if (transport_) transport_->ParentClosed();

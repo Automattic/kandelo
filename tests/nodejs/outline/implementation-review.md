@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source 247 adds the actual encrypted-output transport prerequisite and reviewed publication corrections. It does not activate public graceful shutdown or establish guest conformance.
+See [source scope](tls-encrypted-output-integration.md).
+
 Source 246 adds shared captured TTY IO ownership and reviewed method-phase corrections as prerequisites. It does not activate public TTY constructors or establish guest compatibility.
 See [source scope](tty-shared-io-integration.md).
 
