@@ -5,7 +5,7 @@ import { runTerminalCommand } from "./support/terminal-command";
 import { readFileSync } from "node:fs";
 
 type WordPressApiWindow = Window & {
-  wp?: { apiFetch?: (request: { path: string; method: string; data?: unknown }) =>
+  wp?: { apiFetch?: (request: { path: string; method: string; data?: unknown; signal?: AbortSignal }) =>
     Promise<{ id: number | string; content: { raw: string }; title?: { raw?: string } }> };
 };
 
@@ -62,6 +62,8 @@ test(`${demo.title} stock visitor cache preserves privacy, edits and expiry`, as
     await frame.getByRole("button", { name: "Update Status", exact: true }).click();
     expect((await submitted).status()).toBe(200);
     await gotoInPreviewViaDock(page, "/wp-admin/options-general.php?page=wpsupercache&verify=1");
+    await expect.poll(() => frame.locator("body").evaluate(() => location.search), { timeout: 30_000 })
+      .toContain("verify=1");
     await expect(frame.locator('input[name="wp_cache_easy_on"][value="1"]')).toBeChecked({ timeout: 30_000 });
 
     // The stock plugin leaves its hit header disabled and allows stale
@@ -98,20 +100,23 @@ test(`${demo.title} stock visitor cache preserves privacy, edits and expiry`, as
     expect(posted.hit).toBeNull();
     observations.privacy = { anonymousHit: hit.hit, authenticatedHit: loggedIn.hit, postHit: posted.hit };
 
-    await gotoInPreviewViaDock(page, "/wp-admin/post-new.php");
-    // Use WordPress's configured REST client, including its nonce middleware,
-    // rather than depending on a particular inline-script nonce format.
+    // The settings document already supplies WordPress's configured REST
+    // client. Keep it stable while testing cache invalidation; rendered editor
+    // navigation and saves have their own separate acceptance gate.
     await expect(frame.locator("#wp-api-fetch-js-after")).toBeAttached({ timeout: 60_000 });
     await expect.poll(() => frame.locator("body").evaluate(() =>
       typeof (window as WordPressApiWindow).wp?.apiFetch), { timeout: 30_000 }).toBe("function");
-    // The editor's blank draft is not either test entity. All edits below
-    // target a separately created post or template through the stock client.
-    const rest = async (route: string, value?: unknown) => frame.locator("body").evaluate(async (_body, { route, value }) => {
+    const rest = async (route: string, value?: unknown) => test.step(`WordPress REST ${route}`, () => frame.locator("body").evaluate(async (_body, { route, value }) => {
       const api = (window as WordPressApiWindow).wp?.apiFetch;
       if (!api) throw new Error("WordPress REST client is unavailable");
-      return api({ path: `/wp/v2/${route}?context=edit`,
-        method: value === undefined ? "GET" : "POST", ...(value === undefined ? {} : { data: value }) });
-    }, { route, value });
+      try {
+        return await api({ path: `/wp/v2/${route}?context=edit`, signal: AbortSignal.timeout(30_000),
+          method: value === undefined ? "GET" : "POST", ...(value === undefined ? {} : { data: value }) });
+      } catch (error) {
+        const detail = error instanceof Error ? { name: error.name, message: error.message } : error;
+        throw new Error(`WordPress REST ${route}: ${JSON.stringify(detail)}`);
+      }
+    }, { route, value }));
     const id = crypto.randomUUID();
     const title = `Cache original ${id}`;
     const changedTitle = `Cache updated ${id}`;

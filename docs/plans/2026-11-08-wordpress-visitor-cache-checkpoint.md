@@ -35,7 +35,33 @@ GC timestamp and a future rescheduled hook. The observation endpoint is
 not shipped in product images and does not implement garbage collection.
 **Automatic cron remains disabled and is not validated by this test.**
 
-## Chromium result
+## Latest three-engine result
+
+Job `wordpress-cache-settings-client-all-engi-1108-031213-7a70` passes
+all six Go-service cases in 10m54s: classic and real Caddy on Chromium,
+Firefox and WebKit, with zero skips, retries or unexpected results. Each
+case completes the privacy, post/template freshness, real expiry and
+explicit stock-cron checks above. The test keeps WordPress's configured
+REST client in its already-loaded settings document, bounds each API
+request to 30 seconds and retains readable error details. This cache test
+does not navigate or validate the rendered editor; that separate gate
+remains open.
+
+Raw results are in the review checkout under
+`.context/agent-jobs/wordpress-cache-settings-client-all-engi-1108-031213-7a70/scratch/visitor-cache-engines/`.
+The selected image/kernel/program identities remain the revision-45
+partial cohort listed below. This is not final rebuilt-image acceptance.
+
+The separate FPM control `9ef2` passes its complete cache selection in
+1m22s after the test-owned machine receives the ordinary nginx metadata
+and ownership corrections. Actual metadata changes from null to
+`nginx/1.24.0`, and all three PHP write checks change from false to true.
+It then passes privacy, post/template invalidation, expiry, deletion of
+expired files and the stock hook's 600-second rescheduling. This confirms
+the controlled deployment configuration, not acceptance of rebuilt
+revision-46/family-12 images. Earlier failures remain recorded below.
+
+## Earlier Chromium result
 
 Job `wordpress-stock-cache-policy-and-gc-v6-1108-021151-5f37` ends with
 two passes and one failure in 3m44s, with zero skips or retries. Classic
@@ -62,7 +88,8 @@ three relevant PHP `is_writable` checks false, changes ordinary ownership
 of the document root, content directory and configuration file to UID/GID
 65534, and observes them true. Plugin activation, anonymous hits and
 authenticated/POST bypass then pass; the later REST operation fails with
-an unexpanded object error. Neither control is a full PHP-FPM cache pass.
+an unexpanded object error. Neither of those two controls is a full PHP-FPM cache pass; the later
+`9ef2` result is recorded separately above.
 
 The image recipes now prepare the standard server metadata and ownership
 required for atomic configuration replacement: WordPress revision 46 and
@@ -109,15 +136,17 @@ and reports; no unexecuted selection is counted as a pass.
 The first private control `f8da` and cross-engine attempt `6684` select no
 tests because their grep expressions incorrectly anchor the full Playwright
 test title. Corrected controls remove the anchor; those discovery failures
-are not runtime results. The executed cross-engine selection `87cc` remains
-in progress at this checkpoint; its first Firefox classic case reaches the
-360-second test timeout with the real post editor rendered. No cause or
-Firefox cache pass is established. Later private controls retain readable
-REST error objects rather than treating `locator.evaluate: Object` as a
-diagnosis.
+are not runtime results. The executed cross-engine selection `87cc` fails all four cases: Firefox
+reaches the 360-second timeout and WebKit reports opaque REST objects.
+The later `7bea` selection also fails; Chromium passes both cases but
+Firefox editor-document checks fail. A direct Firefox document observation
+in `293f` times out as well. None establishes an engine defect or a cause
+for the separate rendered-editor failures. The maintained cache test now
+avoids an unnecessary editor navigation and retains readable REST errors;
+its six-case result is recorded separately above.
 
-Final coherent artifacts, automatic cron/lifecycle behavior, all browser
-engines and the PHP-FPM control remain required. The separate native WebKit
+Final coherent artifacts, automatic cron/lifecycle behavior and PHP-FPM
+validation on rebuilt images remain required. The separate native WebKit
 memory investigation is unresolved. Fair uncached runtime comparisons and
 cache-enabled visitor comparisons must report their different policies and
 measured results rather than attributing cache hits to Go/PHP server speed.

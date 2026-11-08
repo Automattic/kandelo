@@ -2,6 +2,27 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Latest cache gate: six passes across three engines.** Job `7a70` ends
+10m54s with classic and real Caddy passing on Chromium, Firefox and WebKit,
+zero skips/retries. It covers privacy, post/template invalidation, real
+expiry and explicitly requested stock cron cleanup. WordPress's configured
+REST client stays in its loaded settings page; this does not close the
+separate rendered-editor gate. FPM control `9ef2` separately passes after
+ordinary metadata/ownership corrections inside its test-owned machine.
+Normal revision-46/family-12 artifacts, automatic cron and final lifecycle
+acceptance remain pending. Earlier failures are retained in the linked
+visitor-cache report.
+
+The full frozen build now captures two canonical images and three normal
+Go programs and has entered Node validation. It is still an older-source
+build, not final SDK/latest-main acceptance. A separate general host
+candidate `0f7e14b77` reuses module-lifetime function identities instead of
+rebuilding their index on every fork transaction. It passes 32 source
+checks and both real Go/PHP Node consumer checks; a paired native-memory
+pilot is running. Its memory/performance benefit is not established, and
+it remains on a separate branch rather than in this PR. No PHP, plugin,
+Go-library or compiler algorithm is changed by this candidate.
+
 **Normal PHP-FPM image configuration correction prepared:** the controlled
 CGI check observes missing server metadata, then `nginx/1.24.0` after adding
 nginx's standard FastCGI parameter; WordPress's expected permalink option
