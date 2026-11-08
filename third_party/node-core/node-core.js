@@ -38426,9 +38426,8 @@ function _createNodeSqlitePlatform(platform) {
                     limits[i] = value === undefined ? undefined : limitValue(value, true, name);
                 }
             }
-            if (extensions) unavailable('extension permission and library owner');
             platform.markUncloneable(this);
-            const handle = native('create', location, { open, readOnly, foreignKeys, doubleQuotedStrings, defensive, timeout, limits });
+            const handle = native('create', location, { open, readOnly, foreignKeys, doubleQuotedStrings, defensive, timeout, limits, allowExtension: extensions });
             try { databases.set(this, { handle, defaults }); }
             catch (error) {
                 try { if (native('isOpen', handle)) native('close', handle); } catch {}
@@ -38561,8 +38560,19 @@ function _createNodeSqlitePlatform(platform) {
             // inherited rest-array element. Receiver/open/reentry wins first.
             native('setAuthorizer', db.handle, arguments.length ? arguments[0] : undefined);
         }
-        enableLoadExtension() { native('checkAuthorizer', database(this).handle); return unavailable('extension permission/library owner'); }
-        loadExtension() { return unavailable('extension permission/library owner'); }
+        enableLoadExtension() {
+            const db = serializationDatabase(this);
+            // Native open/authorizer admission precedes Boolean validation.
+            native('enableLoadExtension', db.handle, arguments.length ? arguments[0] : undefined);
+        }
+        loadExtension() {
+            const db = serializationDatabase(this);
+            // The actual connection's immutable permission and current enable
+            // state win over authorizer/path validation. Entry is native
+            // BufferValue string/view admission, never user coercion.
+            native('loadExtension', db.handle, arguments.length ? arguments[0] : undefined,
+                arguments.length > 1 ? arguments[1] : undefined);
+        }
         enableDefensive(active) {
             const db = database(this); native('checkAuthorizer', db.handle);
             native('defensive', db.handle, boolean(active, 'active'));
@@ -38572,6 +38582,8 @@ function _createNodeSqlitePlatform(platform) {
     ObjectDefineProperty(Database.prototype, 'setAuthorizer', { enumerable: true });
     ObjectDefineProperty(Database.prototype, 'serialize', { enumerable: true });
     ObjectDefineProperty(Database.prototype, 'deserialize', { enumerable: true });
+    ObjectDefineProperty(Database.prototype, 'enableLoadExtension', { enumerable: true });
+    ObjectDefineProperty(Database.prototype, 'loadExtension', { enumerable: true });
     ObjectDefineProperty(Database.prototype, SymbolDispose, { configurable: true, writable: true,
         value() { const value = database(this); if (native('isOpen', value.handle)) native('close', value.handle); } });
     function callbackArity(fn, name) {
@@ -103409,7 +103421,14 @@ function _createNodeProcessState(platform) {
             },
             define(key, descriptor) {
                 if (ObjectPrototypeHasOwnProperty(descriptor, 'value')) {
-                    if (!descriptor.writable || !descriptor.enumerable || !descriptor.configurable)
+                    // The native descriptor carrier has an ordinary prototype,
+                    // but only its own fields represent native has_* flags.
+                    // Do not let inherited properties invent omitted flags or
+                    // run user getters before target descriptor rejection.
+                    if (!ObjectPrototypeHasOwnProperty(descriptor, 'writable') ||
+                        !ObjectPrototypeHasOwnProperty(descriptor, 'enumerable') ||
+                        !ObjectPrototypeHasOwnProperty(descriptor, 'configurable') ||
+                        !descriptor.configurable || !descriptor.enumerable || !descriptor.writable)
                         descriptorError(false);
                     return set(key, descriptor.value);
                 }

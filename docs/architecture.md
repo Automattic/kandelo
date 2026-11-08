@@ -7367,3 +7367,7 @@ Source 270 restores the consumed native listener accept provider and required ex
 ### Promise parent ownership, release snapshot guard, Fetch entry and TCP completion
 
 Source 271 consumes the actual Promise parent, corrects the release-only snapshot admission call, gives Fetch a real strict ordinary wrapper over captured WebIDL, and incorporates reviewed TCP registration and completion ownership. Source checks are not runtime conformance. The actual failed source270 engine attempt and two historical TCP helper compiles are attributed separately.
+
+### SQLite extension, codec initialization, legacy poll and environment descriptor owners
+
+Source 272 consumes real SQLite extension policy/loading and existing native codec initialization errors, routes legacy poll interest and terminal publication ownership, and preserves native environment descriptor presence. One shared source/package batch does not establish runtime conformance. No new compiler, helper or API pass is credited; accepted engine271 is historical for these new bytes.

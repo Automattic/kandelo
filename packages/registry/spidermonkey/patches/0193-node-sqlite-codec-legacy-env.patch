@@ -1,0 +1,137 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index c4d74039861f60ea458a820e59583b765420dfce..19bd8c5917e0c0372a3ce848ff0f8fe470b0f002 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -680,9 +680,38 @@ static void KandeloSocketWatchUnlink(KandeloSocketWatch* target) {
+ }
+
++// This is the actual descriptor/event pair consumed by the legacy poll
++// collector, not retained fd/ref/material ownership. Membership in the real
++// watch list is the queued admission; terminal publication unlinks it first.
++struct KandeloSocketPollInterest { int fd = -1; short events = 0; };
++static KandeloSocketPollInterest KandeloSocketWatchPollInterest(
++    JSContext* cx, const KandeloSocketWatch* watch) {
++  if (watch->cx != cx || watch->kind == KandeloSocketWatchKind::Child) return {};
++  int fd = watch->fd;
++  if (watch->listenerState) {
++    if (!KandeloListenerReadRegistered(cx, watch->listenerState)) return {};
++    fd = watch->listenerState->listener.Fd();
++  } else if (watch->terminalLease) {
++    if (watch->terminalRead && !watch->terminalLease->reads.Reading()) return {};
++    fd = watch->terminalLease->io.Descriptor();
++  }
++  return fd < 0 ? KandeloSocketPollInterest{} : KandeloSocketPollInterest{fd, watch->events};
++}
++// A no-JS native admission seam for the held supplied-fd composition. It is
++// intentionally not exported or used to activate that path before TLS and
++// legacy descriptor-lifetime prerequisites are complete.
++[[maybe_unused]] static short KandeloLegacySocketRegisteredEvents(JSContext* cx, int fd) {
++  if (fd < 0) return 0;
++  short events = 0;
++  for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
++    const auto interest = KandeloSocketWatchPollInterest(cx, watch);
++    if (interest.fd == fd) events |= interest.events;
++  }
++  return events;
++}
++
+ static bool KandeloSocketHasWatches(JSContext* cx) {
+   if (KandeloListenerOwnersHaveReferences(cx) || KandeloSocketOwnersHaveReferences(cx) || KandeloTlsHasReferences(cx) || KandeloTerminalHasReferences(cx)) return true;
+   for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
+-    if ((watch->kind == KandeloSocketWatchKind::Child) && watch->cx != cx) continue;
+-    if (watch->listenerState && watch->cx != cx) continue;
++    if (watch->cx != cx) continue;
+     if (watch->terminalRead && !watch->terminalLease->reads.Reading()) continue;
+     // Closed listener requests must reach real cancellation retirement even
+@@ -1155,7 +1184,7 @@ static int KandeloSocketDispatch(JSContext* cx) {
+        watch = watch->next) {
+     pollfd pfd = {};
+-    pfd.fd = watch->listenerState ? watch->listenerState->listener.Fd() :
+-        watch->terminalRead && !watch->terminalLease->reads.Reading() ? -1 : watch->fd;
+-    pfd.events = watch->events;
++    const auto interest = KandeloSocketWatchPollInterest(cx, watch);
++    pfd.fd = interest.fd;
++    pfd.events = interest.events;
+     pollfds.push_back(pfd);
+   }
+@@ -1174,16 +1203,22 @@ static int KandeloSocketDispatch(JSContext* cx) {
+     }
+
+-    bool done = false;
+     if (watch->kind == KandeloSocketWatchKind::Connect) {
+       int err = 0;
+       socklen_t len = sizeof(err);
+       if (getsockopt(watch->fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0) err = errno;
++      // The actual one-shot connect no longer polls before any Promise hooks.
++      // Keep its roots/material local and never cross publication with next.
++      KandeloSocketWatchUnlink(watch);
++      auto retire = mozilla::MakeScopeExit([&] { js_delete(watch); });
++      RootedObject promise(cx, watch->promise);JSAutoRealm realm(cx, promise);
++      bool ok;
+       if (err == 0) {
+-        if (!KandeloResolvePromiseWithInt(cx, watch->promise, watch->fd)) close(watch->fd);
++        ok = KandeloResolvePromiseWithInt(cx, watch->promise, watch->fd);
++        if (!ok) close(watch->fd);
+       } else {
+-        KandeloRejectSocketOperation(cx, watch->promise, err, "connect");
+         close(watch->fd);
++        ok = KandeloRejectSocketOperation(cx, watch->promise, err, "connect");
+       }
+-      done = true;
++      return ok ? processed + 1 : -1;
+     } else if (watch->kind == KandeloSocketWatchKind::Accept) {
+       if (watch->cx != cx) { watch = next; continue; }
+@@ -1257,11 +1292,13 @@ static int KandeloSocketDispatch(JSContext* cx) {
+     } else if (watch->kind == KandeloSocketWatchKind::Read) {
+       ssize_t n = read(watch->fd, watch->buffer.data(), watch->buffer.size());
+-      if (n >= 0) {
+-        KandeloResolvePromiseWithBytes(cx, watch->promise, watch->buffer.data(),
+-                                       size_t(n));
+-        done = true;
+-      } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+-        KandeloResolvePromiseWithErrno(cx, watch->promise, errno, nullptr);
+-        done = true;
++      if (n >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
++        const int error = n < 0 ? errno : 0;
++        KandeloSocketWatchUnlink(watch);
++        auto retire = mozilla::MakeScopeExit([&] { js_delete(watch); });
++        RootedObject promise(cx, watch->promise);JSAutoRealm realm(cx, promise);
++        const bool ok = n >= 0
++            ? KandeloResolvePromiseWithBytes(cx, watch->promise, watch->buffer.data(), size_t(n))
++            : KandeloResolvePromiseWithErrno(cx, watch->promise, error, nullptr);
++        return ok ? processed + 1 : -1;
+       }
+     } else {
+@@ -1271,20 +1308,20 @@ static int KandeloSocketDispatch(JSContext* cx) {
+         watch->offset += size_t(n);
+         if (watch->offset >= watch->buffer.size()) {
+-          KandeloResolvePromiseWithInt(cx, watch->promise,
+-                                       int32_t(watch->buffer.size()));
+-          done = true;
++          KandeloSocketWatchUnlink(watch);
++          auto retire = mozilla::MakeScopeExit([&] { js_delete(watch); });
++          RootedObject promise(cx, watch->promise);JSAutoRealm realm(cx, promise);
++          return KandeloResolvePromiseWithInt(cx, watch->promise, int32_t(watch->buffer.size()))
++              ? processed + 1 : -1;
+         }
+       } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+-        KandeloResolvePromiseWithErrno(cx, watch->promise, errno, nullptr);
+-        done = true;
++        const int error = errno;
++        KandeloSocketWatchUnlink(watch);
++        auto retire = mozilla::MakeScopeExit([&] { js_delete(watch); });
++        RootedObject promise(cx, watch->promise);JSAutoRealm realm(cx, promise);
++        return KandeloResolvePromiseWithErrno(cx, watch->promise, error, nullptr)
++            ? processed + 1 : -1;
+       }
+     }
+-
+-    if (done) {
+-      KandeloSocketWatchUnlink(watch);
+-
+-      js_delete(watch);
+-      processed++;
+-    }
++    // Only native no-JS/incomplete paths retain the current list-next pointer.
+     watch = next;
+   }

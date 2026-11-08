@@ -258,7 +258,8 @@ static bool KandeloCodecCall(JSContext* cx, HandleObject owner,
   return scope.Close();
 }
 
-static bool KandeloCodecError(JSContext* cx, HandleObject owner, const codec::CompressionError& error) {
+static bool KandeloCodecError(JSContext* cx, HandleObject owner, const codec::CompressionError& error,
+                              MutableHandleString capturedMessage) {
   if (!error.IsError()) return true;
   // Copy strings before invoking JS: onerror may close/reset the context that
   // owns the original string storage. The callback receives Node's three args.
@@ -266,6 +267,9 @@ static bool KandeloCodecError(JSContext* cx, HandleObject owner, const codec::Co
   RootedString message(cx, JS_NewStringCopyZ(cx, error.message));
   RootedString code(cx, JS_NewStringCopyZ(cx, error.code));
   if (!message || !code) return false;
+  // The same actual error message copied for onerror remains rooted across
+  // callback close/reset/reentry. Zstd Init throws this value after delivery.
+  capturedMessage.set(message);
   arguments[0].setString(message);
   arguments[1].setInt32(error.err);
   arguments[2].setString(code);
@@ -280,30 +284,41 @@ static bool KandeloCodecError(JSContext* cx, HandleObject owner, const codec::Co
   return KandeloCodecCall(cx, owner, callback, arguments, &ignored);
 }
 
-static bool KandeloCodecPledgedSizeError(JSContext* cx, const codec::PledgedSizeError& failure) {
+static bool KandeloCodecError(JSContext* cx, HandleObject owner, const codec::CompressionError& error) {
+  RootedString capturedMessage(cx);
+  return KandeloCodecError(cx, owner, error, &capturedMessage);
+}
+
+static bool KandeloCodecCodedError(JSContext* cx, JSExnType type,
+                                  HandleString message, const char* errorCode) {
   if (JS_IsExceptionPending(cx)) return false;
-  RootedString message(cx, JS_NewStringCopyZ(cx, failure.message));
   RootedString file(cx, JS_GetEmptyString(cx));
   RootedObject stack(cx);
   RootedValue error(cx);
-  const JSExnType type = failure.kind == codec::PledgedSizeError::Kind::TypeError ? JSEXN_TYPEERR : JSEXN_RANGEERR;
   if (!message || !JS::CaptureCurrentStack(cx, &stack) ||
       !JS::CreateError(cx, type, stack, file, 0, JS::ColumnNumberOneOrigin(1), nullptr,
                       message, JS::NothingHandleValue, &error)) return false;
   RootedObject object(cx, &error.toObject());
-  RootedString code(cx, JS_NewStringCopyZ(cx, failure.code));
+  RootedString code(cx, JS_NewStringCopyZ(cx, errorCode));
   if (!code) return false;
   RootedValue value(cx, StringValue(code)), receiver(cx, ObjectValue(*object));
   RootedString name(cx, JS_NewStringCopyZ(cx, "code"));
   RootedId id(cx);
   if (!name || !JS_StringToId(cx, name, &id)) return false;
   JS::ObjectOpResult result;
-  // Node's checked native error Set invokes inherited setters and ignores a
-  // nonthrowing false result. A genuine setter exception is a fatal CHECK
-  // path, not permission to replace the public error with generic metadata.
+  // Pinned node_errors.h checked native Set invokes inherited setters and
+  // ignores a nonthrowing false result. A throwing setter is a fatal CHECK.
   const bool applied = JS_ForwardSetPropertyTo(cx, object, id, value, receiver, result);
   if (!applied) MOZ_CRASH("Checked native codec error code assignment failed");
   JS_SetPendingException(cx, error); return false;
+}
+
+static bool KandeloCodecPledgedSizeError(JSContext* cx, const codec::PledgedSizeError& failure) {
+  if (JS_IsExceptionPending(cx)) return false;
+  RootedString message(cx, JS_NewStringCopyZ(cx, failure.message));
+  if (!message) return false;
+  const JSExnType type = failure.kind == codec::PledgedSizeError::Kind::TypeError ? JSEXN_TYPEERR : JSEXN_RANGEERR;
+  return KandeloCodecCodedError(cx, type, message, failure.code);
 }
 
 static bool KandeloCodecInit(JSContext* cx, unsigned argc, Value* vp) {
@@ -400,8 +415,13 @@ static bool KandeloCodecInit(JSContext* cx, unsigned argc, Value* vp) {
   }
   state->Report(owner);
   if (error.IsError()) {
-    if (!KandeloCodecError(cx, owner, error)) return false;
-    return KandeloCodecFail(cx, "ERR_ZLIB_INITIALIZATION_FAILED", "Initialization failed");
+    RootedString message(cx);
+    if (!KandeloCodecError(cx, owner, error, &message)) return false;
+    // Brotli deliberately uses a generic initialization message; Zstd throws
+    // the actual Init/SetParameter error copied before optional onerror JS.
+    if (brotli) message = JS_NewStringCopyZ(cx, "Initialization failed");
+    if (!message) return false;
+    return KandeloCodecCodedError(cx, JSEXN_ERR, message, "ERR_ZLIB_INITIALIZATION_FAILED");
   }
   state->initialized = true;
   args.rval().setUndefined();

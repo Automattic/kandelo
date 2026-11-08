@@ -1,0 +1,282 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-002"
+    ],
+    "relatedFamilies": [
+      "native-integration",
+      "compression",
+      "network",
+      "processes"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/native-integration.md",
+        "findingId": "NI-002",
+        "relation": "direct-partial",
+        "scope": "Actual immutable/current extension permission and enable/load native ownership"
+      },
+      {
+        "document": "tests/nodejs/audit/compression-contracts.md",
+        "findingId": "ZIP-009",
+        "relation": "direct-partial",
+        "scope": "Actual Zstd initialization text and checked ordinary native code publication; not full constructor/lifecycle conformance"
+      },
+      {
+        "document": "tests/nodejs/audit/network.md",
+        "findingId": "N-013",
+        "relation": "shared-owning-prerequisite",
+        "scope": "Actual context-local legacy I/O watch registration and terminal publication retirement"
+      },
+      {
+        "document": "tests/nodejs/audit/processes.md",
+        "findingId": "PROC-001",
+        "relation": "direct-partial",
+        "scope": "Actual live environment DefineProperty descriptor own-flag admission"
+      },
+      {
+        "document": "tests/nodejs/audit/process-contracts.md",
+        "findingId": "PROC-013",
+        "relation": "direct-partial",
+        "scope": "Preserve missing flags/error/getter precedence before native env mutation"
+      }
+    ],
+    "scope": "Actual SQLite extension, codec initialization, legacy poll/publication and native environment descriptor owners; partial source only, no finding closure."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "sqlite-extension-policy-native-owner",
+      "scope": "Actual sqlite3_db_config/sqlite3_load_extension connection ownership and validation/error/borrowed input snapshot order; no side-module runtime proof."
+    },
+    {
+      "feature": "codec-native-initialization-error-publication",
+      "scope": "Retain real message across optional onerror; Brotli generic and Zstd actual text, shared genuine native coded-error owner."
+    },
+    {
+      "feature": "legacy-poll-interest-publication-owner",
+      "scope": "Shared real descriptor/event poll collector and held query, unlink terminal connect/read/write before Promise publication and retain material/roots locally. No supplied-fd/TLS activation."
+    },
+    {
+      "feature": "environment-descriptor-own-flag-admission",
+      "scope": "Captured own-presence checks for all flags before values/key/native environment mutation; original actual env owner retained."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core272-sqlite-codec-legacy-env-source-r1/report.json",
+    "sha256": "1e2386d7a6dce98710c8e67b5c13134e7958e6a91a690e361ab03d8221898956",
+    "guardedInputs": 934,
+    "scope": "One normal source272 source/staging/input check plus four owning contributions and retained271 guards; no native/component reruns, compiler or guest proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core272-sqlite-codec-legacy-env-affected-r1.json",
+    "sha256": "866b28ddad7c9a4ce6489d179bf79f39abd4f5eb27cdaff161d37b8d88392a4e",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core272-sqlite-codec-legacy-env-source-r1/report.json",
+    "sha256": "1e2386d7a6dce98710c8e67b5c13134e7958e6a91a690e361ab03d8221898956",
+    "reportScope": "One normal source272 source/staging/input check plus four owning contributions and retained271 guards; no native/component reruns, compiler or guest proof.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true,
+    "freshComponentGroups": 0,
+    "freshAPIConformancePasses": 0,
+    "sourceAddressingRequiresActualGuards": true
+  },
+  "sealedEvidence": {
+    "report": ".context/core272-sqlite-codec-legacy-env-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "660f81c932f09b55ff1cd0f9f73385ecd9a253fd154eb0f312032101e130ba8e",
+    "reusedEvidence": true,
+    "scope": "Four reviewed partial source owners with exact producer/reviewer references. Zero fresh runtime/API/native groups, helpers or compilers."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-environment-evidence/report.json",
+      "sha256": "9641c78d5164dd0c4a17f4641cd9167431f43ee7ff5b0eccf248a3305b1c101f",
+      "classification": "Preserved original107 frontend15/16/snapshot native fixture nonpass and actual setup/compiler history; not rerun or newly closed.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/node26-selected-engine-270-r1/terminal.json",
+      "sha256": "760189a1b98dc7d26b2b25933dcb8bcf058cf08f6290cedc07d5f595908be4b0",
+      "classification": "Previously counted actual failed source270 engine compilation. Historical only, no new credit in source272.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/node26-selected-engine-271-r1/terminal.json",
+      "sha256": "ff44d7fb1d0acb9224c1553e3159e3638c5c21a7d62ad5d0617c9ae6c6ba809b",
+      "classification": "Actual normal resolver0 but wrapper retention harness1; corrected independent verifier0 and accepted271 artifact retained. Historical only, not an engine failure and no new credit in272.",
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "Guest SQLite extension format/C API table/function-pointer/init/worker/fork/unload validation, permission-model active mode and GC/realm/OOM/fatal diagnostics.",
+    "Guest JSAPI/error/stack/setter/fatal/reentry/GC/OOM/realm/Worker and all codecs/ZIP/iterator/Web/four-host conformance.",
+    "TLS WANT/read/receipt/ack interests, legacy retained OFD/generation/raw close and success-publication rollback, FIFO/EINTR/fatal/GC/realm/Worker/four-host; supplied-fd held.",
+    "Actual guest descriptor object/prototype/native creation, property/worker/SHARE_ENV/permission/TZ/GC/OOM/realm and four-host behavior.",
+    "HTTP parser and TLS source proposals are excluded; supplied-fd activation remains held."
+  ],
+  "featureContributions": [
+    {
+      "id": "sqlite-extension-policy-native-owner",
+      "family": "native-integration",
+      "scope": "Actual sqlite3_db_config/sqlite3_load_extension connection ownership and validation/error/borrowed input snapshot order; no side-module runtime proof.",
+      "remaining": "Guest SQLite extension format/C API table/function-pointer/init/worker/fork/unload validation, permission-model active mode and GC/realm/OOM/fatal diagnostics.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/native-integration.md",
+          "findingId": "NI-002",
+          "relation": "direct-partial",
+          "scope": "Actual immutable/current extension permission and enable/load native ownership"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "d0aa0dc4b95fc0bbb27312ac5beb7a9582cc9bcb10a13d771ad51630bfcace9f",
+      "producerSeal": {
+        "path": ".context/sqlite-extension-policy-owner-agent/SEAL.json",
+        "sha256": "70fe5744db27b3476930b8a856c59554f27477dc72e2117630ff9be5659c5f77"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core272-sqlite-codec-legacy-env-source-r1/report.json",
+        "sha256": "1e2386d7a6dce98710c8e67b5c13134e7958e6a91a690e361ab03d8221898956",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "codec-native-initialization-error-publication",
+      "family": "compression",
+      "scope": "Retain real message across optional onerror; Brotli generic and Zstd actual text, shared genuine native coded-error owner.",
+      "remaining": "Guest JSAPI/error/stack/setter/fatal/reentry/GC/OOM/realm/Worker and all codecs/ZIP/iterator/Web/four-host conformance.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/compression-contracts.md",
+          "findingId": "ZIP-009",
+          "relation": "direct-partial",
+          "scope": "Actual Zstd initialization text and checked ordinary native code publication; not full constructor/lifecycle conformance"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "d0aa0dc4b95fc0bbb27312ac5beb7a9582cc9bcb10a13d771ad51630bfcace9f",
+      "producerSeal": {
+        "path": ".context/codec-initialization-error-owner-agent/SEAL.json",
+        "sha256": "e79ecb8479497f2b46eb7ab8f7ea539713a6190901ed38312da9c427b50b59b4"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core272-sqlite-codec-legacy-env-source-r1/report.json",
+        "sha256": "1e2386d7a6dce98710c8e67b5c13134e7958e6a91a690e361ab03d8221898956",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "legacy-poll-interest-publication-owner",
+      "family": "network",
+      "scope": "Shared real descriptor/event poll collector and held query, unlink terminal connect/read/write before Promise publication and retain material/roots locally. No supplied-fd/TLS activation.",
+      "remaining": "TLS WANT/read/receipt/ack interests, legacy retained OFD/generation/raw close and success-publication rollback, FIFO/EINTR/fatal/GC/realm/Worker/four-host; supplied-fd held.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/network.md",
+          "findingId": "N-013",
+          "relation": "shared-owning-prerequisite",
+          "scope": "Actual context-local legacy I/O watch registration and terminal publication retirement"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "d0aa0dc4b95fc0bbb27312ac5beb7a9582cc9bcb10a13d771ad51630bfcace9f",
+      "producerSeal": {
+        "path": ".context/legacy-poll-interest-owner-agent/SEAL.json",
+        "sha256": "49737e1fb4cb337097e6fe72ee355b3c465d4e4116c799fbe2ce6d4775283760"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core272-sqlite-codec-legacy-env-source-r1/report.json",
+        "sha256": "1e2386d7a6dce98710c8e67b5c13134e7958e6a91a690e361ab03d8221898956",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "environment-descriptor-own-flag-admission",
+      "family": "processes",
+      "scope": "Captured own-presence checks for all flags before values/key/native environment mutation; original actual env owner retained.",
+      "remaining": "Actual guest descriptor object/prototype/native creation, property/worker/SHARE_ENV/permission/TZ/GC/OOM/realm and four-host behavior.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/processes.md",
+          "findingId": "PROC-001",
+          "relation": "direct-partial",
+          "scope": "Actual live environment DefineProperty descriptor own-flag admission"
+        },
+        {
+          "document": "tests/nodejs/audit/process-contracts.md",
+          "findingId": "PROC-013",
+          "relation": "direct-partial",
+          "scope": "Preserve missing flags/error/getter precedence before native env mutation"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "d0aa0dc4b95fc0bbb27312ac5beb7a9582cc9bcb10a13d771ad51630bfcace9f",
+      "producerSeal": {
+        "path": ".context/environment-descriptor-presence-owner-agent/SEAL.json",
+        "sha256": "642e22984fcca214ef9a49cecc88b66a0d27378c7ca1e534dcd4429fc0ed5965"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core272-sqlite-codec-legacy-env-source-r1/report.json",
+        "sha256": "1e2386d7a6dce98710c8e67b5c13134e7958e6a91a690e361ab03d8221898956",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    }
+  ],
+  "batchReceiptIndex": {
+    "report": ".context/core272-sqlite-codec-legacy-env-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "f59e9c2c1bc7061f3fa45ccd3c36c33fc13a7135159ec70810eb62e4f1f1106a",
+    "scope": "Actual completed source/check/import receipts. Zero new component/native/API passes; no historical recount or new compiler/guest run."
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "documentationGate": "Historical native observations and negative outcomes retain their original scope. Current source/package predicates do not establish API passes.",
+  "sourceAddressing": {
+    "report": ".context/core272-sqlite-codec-legacy-env-batch-metadata-bound-r1/source-addressed-gaps.json",
+    "sha256": "3dc754babffddacd659ec732adc2bb63584fd91c0417b7fb9a1ee88cb137abb8",
+    "scope": "Actual combined partial source ownership only; original findings/nonpasses remain immutable, no runtime or API closure."
+  },
+  "at": "2026-11-08T13:49:49.550742+00:00",
+  "recipeRevision": 272,
+  "lastAcceptedEngine": 271,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

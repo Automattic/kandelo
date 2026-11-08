@@ -691,7 +691,8 @@ static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
         !KandeloSqliteBoolean(cx, options, "readOnly", &config.readOnly) ||
         !KandeloSqliteBoolean(cx, options, "foreignKeys", &config.foreignKeys) ||
         !KandeloSqliteBoolean(cx, options, "doubleQuotedStrings", &config.doubleQuotedStrings) ||
-        !KandeloSqliteBoolean(cx, options, "defensive", &config.defensive)) return false;
+        !KandeloSqliteBoolean(cx, options, "defensive", &config.defensive) ||
+        !KandeloSqliteBoolean(cx, options, "allowExtension", &config.allowExtension)) return false;
     RootedValue timeout(cx);
     if (!JS_GetProperty(cx, options, "timeout", &timeout)) return false;
     if (!timeout.isInt32()) throw SqliteError("ERR_OUT_OF_RANGE", "Invalid SQLite timeout");
@@ -749,6 +750,48 @@ static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
     };
     registry->authorizer = callback;
     connection->SetAuthorizer(std::move(authorize));
+  }
+  else if (operation == "enableLoadExtension") {
+    auto connection = owner->connection;
+    connection->Require(); connection->CheckAuthorizer();
+    if (!args.get(2).isBoolean()) throw SqliteError("ERR_INVALID_ARG_TYPE", "The \"allow\" argument must be a boolean.");
+    connection->EnableLoadExtension(args[2].toBoolean());
+  }
+  else if (operation == "loadExtension") {
+    // Retain the real connection, then perform Node's open/immutable/current
+    // policy/authorizer ordering before inspecting path or entry bytes.
+    auto connection = owner->connection;
+    connection->CheckLoadExtension();
+    if (!args.get(2).isString()) throw SqliteError("ERR_INVALID_ARG_TYPE", "The \"path\" argument must be a string.");
+    std::string path;
+    if (!KandeloSqliteString(cx, args[2], &path)) return false;
+    std::optional<std::string> entry;
+    if (args.get(3).isString()) {
+      entry.emplace();
+      if (!KandeloSqliteString(cx, args[3], &*entry)) return false;
+    } else if (args.get(3).isObject()) {
+      RootedObject actual(cx, js::CheckedUnwrapDynamic(&args[3].toObject(), cx));
+      if (!actual) { if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx); return false; }
+      if (JS_IsArrayBufferViewObject(actual)) {
+        KandeloCryptoByteSource source(cx);
+        if (!source.Init(args[3])) return false;
+        entry.emplace();
+        // Take one current intrinsic length/backing snapshot. A growable
+        // shared view must not be asserted equal to an earlier metadata read.
+        // Native allocation may throw; the checked borrow unwinds before any
+        // JS error publication. No pointer escapes into loader/initializers.
+        if (!source.WithBytes([&](SharedMem<uint8_t*> data, size_t length) {
+          entry->resize(length);
+          for (size_t i = 0; i < length; ++i)
+            (*entry)[i] = char(__atomic_load_n(data.unwrap() + i, __ATOMIC_RELAXED));
+          return true;
+        })) return false;
+      }
+    }
+    // Other entry values are absent exactly like pinned native BufferValue:
+    // no ToString, public property lookup or arbitrary callback.
+    connection->LoadExtension(path, entry);
+    if (JS_IsExceptionPending(cx)) return false;
   }
   else if (operation == "open") owner->connection->Open();
   else if (operation == "close") {

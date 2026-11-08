@@ -56,7 +56,14 @@ function _createNodeProcessState(platform) {
             },
             define(key, descriptor) {
                 if (ObjectPrototypeHasOwnProperty(descriptor, 'value')) {
-                    if (!descriptor.writable || !descriptor.enumerable || !descriptor.configurable)
+                    // The native descriptor carrier has an ordinary prototype,
+                    // but only its own fields represent native has_* flags.
+                    // Do not let inherited properties invent omitted flags or
+                    // run user getters before target descriptor rejection.
+                    if (!ObjectPrototypeHasOwnProperty(descriptor, 'writable') ||
+                        !ObjectPrototypeHasOwnProperty(descriptor, 'enumerable') ||
+                        !ObjectPrototypeHasOwnProperty(descriptor, 'configurable') ||
+                        !descriptor.configurable || !descriptor.enumerable || !descriptor.writable)
                         descriptorError(false);
                     return set(key, descriptor.value);
                 }

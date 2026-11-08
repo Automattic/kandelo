@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Four reviewed partial source contributions are batched once. Current source 272 is uncompiled and runtime unvalidated; engine 271 build acceptance remains historical and all 19 families remain partial.
+See [source scope](core-sqlite-codec-legacy-env-batch272-implementation.md).
+
 Four reviewed partial source contributions are batched once. The current guest remains uncompiled, accepted source263 remains historical, and all 19 families remain partial.
 See [source scope](core-promise-memory-fetch-tcp-batch271-implementation.md).
 

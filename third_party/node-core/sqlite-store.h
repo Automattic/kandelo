@@ -32,6 +32,7 @@ inline Error DatabaseError(sqlite3* db, int result) {
 }
 struct Options {
   bool readOnly = false, foreignKeys = true, doubleQuotedStrings = false, defensive = true;
+  bool allowExtension = false;
   int timeout = 0;
   std::array<std::optional<int>, 11> limits{};
 };
@@ -67,6 +68,8 @@ class Connection : public std::enable_shared_from_this<Connection> {
   sqlite3* db_ = nullptr;
   std::string path_;
   Options options_;
+  const bool allowLoadExtension_;
+  bool enableLoadExtension_;
   std::vector<std::weak_ptr<Statement>> statements_;
 #if defined(SQLITE_ENABLE_SESSION)
   std::vector<std::weak_ptr<Session>> sessions_;
@@ -86,7 +89,8 @@ class Connection : public std::enable_shared_from_this<Connection> {
     catch (...) { owner.authorizerFailure_ = std::current_exception(); return SQLITE_DENY; }
   }
  public:
-  Connection(std::string path, Options options) : path_(std::move(path)), options_(options) {
+  Connection(std::string path, Options options) : path_(std::move(path)), options_(options),
+      allowLoadExtension_(options.allowExtension), enableLoadExtension_(options.allowExtension) {
     if (path_.find('\0') != std::string::npos) throw Error("ERR_INVALID_ARG_VALUE", "Database path must not contain null bytes");
   }
   ~Connection();
@@ -115,7 +119,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
         {SQLITE_DBCONFIG_DQS_DDL, options_.doubleQuotedStrings},
         {SQLITE_DBCONFIG_ENABLE_FKEY, options_.foreignKeys},
         {SQLITE_DBCONFIG_DEFENSIVE, options_.defensive},
-        {SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 0}}) {
+        {SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, enableLoadExtension_}}) {
       result = sqlite3_db_config(candidate, setting.first, setting.second, nullptr);
       if (result != SQLITE_OK) throw DatabaseError(candidate, result);
     }
@@ -131,6 +135,35 @@ class Connection : public std::enable_shared_from_this<Connection> {
     db_ = guard.release();
   }
   void Close();
+  void EnableLoadExtension(bool enable) {
+    auto* db = Require(); CheckAuthorizer();
+    if (!allowLoadExtension_ && enable)
+      StateError("Cannot enable extension loading because it was disabled at database creation.");
+    // Pinned Node stores the requested enable state before db_config, and
+    // preserves it across close/open. Only the constructor permission is immutable.
+    enableLoadExtension_ = enable;
+    const int result = sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, int(enable), nullptr);
+    if (result != SQLITE_OK) throw DatabaseError(db, result);
+  }
+  void CheckLoadExtension() const {
+    Require();
+    if (!allowLoadExtension_ || !enableLoadExtension_) StateError("extension loading is not allowed");
+    CheckAuthorizer();
+  }
+  void LoadExtension(const std::string& path, const std::optional<std::string>& entry) {
+    CheckLoadExtension();
+    char* message = nullptr;
+    const int result = sqlite3_load_extension(Require(), path.c_str(), entry ? entry->c_str() : nullptr, &message);
+    // Own SQLite's diagnostic even when a callback left an original JS error
+    // or copying its bytes throws. SQLite owns successful library handles on
+    // this exact connection and closes them during real connection teardown.
+    std::unique_ptr<char, decltype(&sqlite3_free)> diagnostic(message, sqlite3_free);
+    RethrowAuthorizer();
+    if (result != SQLITE_OK) {
+      if (!message && result == SQLITE_NOMEM) throw std::bad_alloc();
+      throw Error("ERR_LOAD_SQLITE_EXTENSION", message ? message : "Failed to load SQLite extension");
+    }
+  }
   void FinalizeStatements();
   void CheckDeserialize() const {
     Require();
