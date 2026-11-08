@@ -2,6 +2,59 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Shared-browser delivery investigation and normal build recovery:** the
+PHP-FPM Firefox control `wordpress-media-fpm-control-v2-1107-222731-c782`
+ends with two failures in 7m10s, both at reopened editor-canvas readiness.
+Its screenshot renders the post title and uploaded image; this is not
+proof that the expected iframe structure is present. Stronger diagnostics
+retain redirect chains, request method/type/frame, service-worker response
+and controller information, and failed-frame DOM/editable inventories.
+The subsequent diagnostic selection passes once in 1m46s and twice more
+in 3m18s (`207a`, `b846`). These mixed outcomes remain intermittent; no
+editor fix or final all-33 acceptance is claimed.
+
+The diagnostic captures a separate, reduced delivery defect: WordPress's
+unchanged preferences-persistence library uses keepalive Fetch for user
+preferences. The POST has no redirect and originates in a controlled
+WordPress document, yet Firefox sends it to Vite, which returns the
+truthful unhandled-computer-route HTTP503. A complete persistence run
+also passes with these failed preference requests, so this does not
+establish the cause of the editor observation failures.
+
+A native-API-only GET/POST/PUT control reproduces keepalive bypass on
+Playwright Firefox155.0 and an isolated headless profile of installed
+Firefox159.0.1. Chromium153.0.8010.12 and WebKit26.6 intercept both ordinary
+and keepalive requests. The maintained self-judging reproduction and
+explicit delivery limitation are recorded as
+`FIREFOX-KEEPALIVE-SW-BYPASS`; registry consistency (12 entries) and its
+selected Firefox run pass. No application adaptation or keepalive-disabling
+shim is adopted. No upstream report is filed. Native profile cleanup
+leaves a macOS-protected temporary Downloads directory, separately from
+its successful HTTP observations; no user browser or other agent is closed.
+
+The normal full canonical/family job `60a4` continues independent work
+after Harper and kandelo-cc fail because this fresh worktree lacked its
+pinned Rust libc submodule. The reviewed submodule is now initialized at
+`71d5bfcc1bda`; no recipe/source patch is required. A normal cache-preserving
+retry `wordpress-canonical-family-resume-1107-223346-4770` waits for the
+first graph to terminate and admits only those exact two failures before
+retrying the same projection. Both attempts remain separate evidence.
+The canonical images and family runtime tests are still unvalidated.
+
+Latest main is fetched again at `faf9b31720e8`, already included; ABI55
+is unchanged. The verified revision-45 preview remains pinned on5492.
+The first current-image persistence admission correctly refuses the old
+comparison checkout's service-worker source: it lacked the already-tested
+Fetch-credentials correction. No browser executes in that three-second
+failed admission. That correction is now integrated into the comparison
+checkout, so its next browser run must verify the actual served revision-45
+image, identical normal kernel/Go programs and identical service-worker
+source before testing. This remains partial-image evidence, not canonical
+acceptance. A separate latest-main benchmark-product job `63d2` is queued
+behind successful canonical/family validation; it performs no timings.
+The full original memory, lifecycle, sustained-traffic, cache-policy and
+Node/Chromium comparison requirements remain open.
+
 **Revision-45 runtime/configuration and verified replacement preview:** the
 normal own-SDK partial refresh completes its image, FHS and exact embedded
 program/plugin audits. Both extended Node service cases pass (2/2, no skips),
