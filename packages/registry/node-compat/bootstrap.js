@@ -2056,42 +2056,41 @@ const util = (() => {
         return log;
     }
 
-    const _callSiteIntrinsics = {
-        TypeError, RangeError, Error, isInteger: Number.isInteger, isArray: Array.isArray,
-    };
     function getCallSites(frameCount = 10, options) {
-        function invalid(name, expected) {
-            const error = new _callSiteIntrinsics.TypeError(`The "${name}" argument must be ${expected}`);
-            error.code = 'ERR_INVALID_ARG_TYPE';
-            throw error;
+      const { validateObject, validateBoolean, validateInteger } = _nodeValues.validators;
+      // If options is not provided check if frameCount is an object
+      if (options === undefined) {
+        if (typeof frameCount === 'object') {
+          // If frameCount is an object, it is the options object
+          options = frameCount;
+          validateObject(options, 'options');
+          if (options.sourceMap !== undefined) {
+            validateBoolean(options.sourceMap, 'options.sourceMap');
+          }
+          frameCount = 10;
+        } else {
+          // If options is not provided, set it to an empty object
+          options = {};
+        };
+      } else {
+        // If options is provided, validate it
+        validateObject(options, 'options');
+        if (options.sourceMap !== undefined) {
+          validateBoolean(options.sourceMap, 'options.sourceMap');
         }
-        function validateOptions(value) {
-            if (value === null || typeof value !== 'object' || _callSiteIntrinsics.isArray(value)) {
-                invalid('options', 'an object');
-            }
-            if (value.sourceMap !== undefined && typeof value.sourceMap !== 'boolean') {
-                invalid('options.sourceMap', 'a boolean');
-            }
-        }
-        if (options === undefined) {
-            if (typeof frameCount === 'object') {
-                options = frameCount;
-                validateOptions(options);
-                frameCount = 10;
-            } else options = {};
-        } else validateOptions(options);
-        if (typeof frameCount !== 'number') invalid('frameCount', 'a number');
-        if (!_callSiteIntrinsics.isInteger(frameCount) || frameCount < 1 || frameCount > 200) {
-            const error = new _callSiteIntrinsics.RangeError('The "frameCount" argument must be an integer between 1 and 200');
-            error.code = 'ERR_OUT_OF_RANGE';
-            throw error;
-        }
-        if (options.sourceMap === true) {
-            const error = new _callSiteIntrinsics.Error('Source-map call sites are not implemented');
-            error.code = 'ERR_NOT_IMPLEMENTED';
-            throw error;
-        }
+      }
+
+      // Using kDefaultMaxCallStackSizeToCapture as reference
+      validateInteger(frameCount, 'frameCount', 1, 200);
+      // The real loader currently publishes no source-map cache entries. The
+      // pinned reconstruction path preserves each original native frame when
+      // no entry exists. Mapping and global source-map activation remain owning
+      // compile/cache/stack prerequisites, not an always-undefined public cache.
+      // Keep the final observable option read in its target position.
+      if (options.sourceMap === true) {
         return _nodeNative.captureCallSites(frameCount);
+      }
+      return _nodeNative.captureCallSites(frameCount);
     }
 
     return {

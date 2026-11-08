@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "b046f8165a31de5f11698335d2d93a87c3809a8026e7ef6321c747b66c198504",
+    "packages/registry/node-compat/bootstrap.js": "c801efde9da82125a3c4ecab9cefc016114e52e048fe46a80d33aad3c3718286",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/asymmetric-keygen-platform-adapter.js": "94b3dc26b1f783b97cb38eaa91baff3be883c66f8d80a6c76568a72ebf0207b0",
@@ -2397,7 +2397,7 @@
       "selectedAdapterLiteralOccurrences": [
         {
           "path": "packages/registry/node-compat/bootstrap.js",
-          "line": 2876
+          "line": 2875
         }
       ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",

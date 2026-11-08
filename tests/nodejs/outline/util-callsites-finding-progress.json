@@ -1,0 +1,134 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/values-contracts.md",
+    "findingIds": [
+      "V-034"
+    ],
+    "relatedFamilies": [
+      "loading",
+      "engine",
+      "observability"
+    ],
+    "scope": "Partial real getCallSites validation and raw no-cache-entry fallback only; mapping-required public cases and other inspection/native-stack obligations remain incomplete.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/values-contracts.md",
+        "findingId": "V-034",
+        "definitionKey": "tests/nodejs/audit/values-contracts.md#V-034:L209",
+        "relation": "partial-owning-source",
+        "closed": false
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Use pinned Values validateObject/validateBoolean/validateInteger algorithms and exact overload/repeated sourceMap getter/count-error order.",
+    "Invoke unchanged actual curated SavedFrame capture directly, preserving existing two-private-frame trim; no Error.stack parsing or invented frame/source identity.",
+    "Return real raw call sites when no actual cached source-map entry exists; no fake cache/export/activation metadata and no assertion of valid mapped-case support."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-callsites257-source-r1/report.json",
+    "sha256": "a01e963f397db9473af0b80c90ef083840a834dfa2d4e0567c5186a7cf7ebb22",
+    "guardedInputs": 908,
+    "scope": "Current actual bootstrap27selected projections over genuine native CallSites capture/Values dependencies; not numeric SavedFrame/ScriptID/guest proof. Two unchanged files have4top-level native/candidate subjects, but candidate preload is not forwarded to spawned children: those assertions remain native-only, mapped child assertions are NOT candidate coverage. No real map/cache/defaultCLI/nativeformatter activation; all mapped valid cases remain implementation gaps.0new/historical compilers."
+  },
+  "packageChecks": {
+    "report": ".context/node26-callsites257-affected-r1.json",
+    "sha256": "4a6d892e8c1cce7dbb6db0cc2f3c351ff6d8e599abb5faf313e03fb1cc7160eb",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-callsites257-source-r1/report.json",
+    "sha256": "a01e963f397db9473af0b80c90ef083840a834dfa2d4e0567c5186a7cf7ebb22",
+    "nativeGroups": 27,
+    "candidateNativeDependentGroups": 27,
+    "sameSelectedObservations": 27,
+    "unchangedFileTopLevelSubjects": 4,
+    "candidateFileSubjectsHaveNativeChildren": true,
+    "candidateMappedChildCoverage": false,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "sourceMapSupportImplemented": false,
+    "scope": "Actual current public getCallSites validation/raw-no-entry frontend over genuine pinned native CallSites/Values dependencies. Selected projections do not compare numeric positions or script-ID identity. Two unchanged files run four top-level subjects; candidate subjects can include native children because preload is not forwarded. Mapped child assertions NOT candidate coverage. No candidate SavedFrame/GC/realm/Worker/four-host, mapping/cache/defaultCLI/nativeformatter proof or complete-file claim.",
+    "guardedInputs": 908,
+    "sourceChecks": 13,
+    "sourceCommands": 8,
+    "packagePassed": 14,
+    "newRootCompilerAttempts": 0,
+    "historicalHelpers": 0
+  },
+  "sealedEvidence": {
+    "report": ".context/util-callsites-owner-agent/report.json",
+    "sha256": "b312703aeac98237cc847cf24169a6c2232bd72e3b8b1aeb2b430140dd0ed5c5",
+    "reusedEvidence": true,
+    "scope": "Native27/candidate27 selected projections with genuine native CallSites/Values dependencies. Mixed candidate-top-level/native-child unchanged-file evidence only; no guest SavedFrame or mapped-child proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/util-callsites-owner-agent/evidence-r1/before.stdout",
+      "sha256": "2ddf1700020116fe99e39446361989aa5b72f5bdad39b010120765a0378736d2",
+      "classification": "preserved-baseline-mismatches",
+      "scope": "Before source21/27 predicate groups but only8 selected exact reports;6 categorical sourceMap:true errors and simplified diagnostics retained, no passing full-frame equivalence."
+    }
+  ],
+  "remaining": [
+    "compiler accepted sourceURL/sourceMapURL metadata on actual CJS/ESM/VM compiled identity",
+    "weak module lifetime/private data and cache-key URL/sourceURL ownership",
+    "native error stack/source formatter callbacks and real global support activation/default",
+    "actual cache lookup/remap consumer in getCallSites, generated code and node_modules policies",
+    "identified-artifact four-host conformance for mapping, error/callback/GC/realm/Worker ownership",
+    "Identified guest SavedFrame source IDs/positions/two-frame trim, realm/GC/OOM/fatal/Worker and four-host validation remain unexecuted.",
+    "Candidate child mapped/eval assertions remain unvalidated; preload is not forwarded to the two spawned children in test-util-getcallsites.js. Do not call top-level substitution full unchanged-file conformance."
+  ],
+  "actualCallSitesControlReport": {
+    "report": ".context/callsites257-root-controls-r1/report.json",
+    "sha256": "b75fb58b6ca360ac21fc7947413dd82e0b6cc30b1b81ea4940b4ab6474e46251",
+    "nativeGroups": 27,
+    "candidateNativeDependentGroups": 27,
+    "sameSelectedObservations": 27,
+    "unchangedFileTopLevelSubjects": 4,
+    "candidateFileSubjectsHaveNativeChildren": true,
+    "candidateMappedChildCoverage": false,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "sourceMapSupportImplemented": false,
+    "scope": "Actual current public getCallSites validation/raw-no-entry frontend over genuine pinned native CallSites/Values dependencies. Selected projections do not compare numeric positions or script-ID identity. Two unchanged files run four top-level subjects; candidate subjects can include native children because preload is not forwarded. Mapped child assertions NOT candidate coverage. No candidate SavedFrame/GC/realm/Worker/four-host, mapping/cache/defaultCLI/nativeformatter proof or complete-file claim."
+  },
+  "integrationTool": {
+    "ledger": ".context/agent-integrations/node26-callsites257/ledger.json",
+    "sha256": "e13d418340fd93bd2bd285d75dd4e0cc49d2aea9b25f04bc79d36249d891e2e7",
+    "sourceBinding": "dc133d7982bb795b85ac8d6aa940ac399e9209a07787ec8ea7f8afc08aedf3c4",
+    "allStepsDone": true,
+    "imports": [
+      3,
+      0
+    ],
+    "actualPids": [
+      59280,
+      59293
+    ],
+    "selectedBindingOnly": true,
+    "globalCacheKeyBindingClaimed": false,
+    "actualImporter": {
+      "path": ".context/import-successful-integration-receipts.py",
+      "sha256": "dba2ff1ccc5631a9ac164a4fbac8be1723bf9a64520f02faeda930f59bccd847"
+    },
+    "importPlan": {
+      "path": ".context/callsites257-import-plan.json",
+      "sha256": "f5d6deca2ac7970d8a9e3dd7a0663a68ebaf2cc94113e0cebbf925684a98d558"
+    }
+  },
+  "mappedCandidateChildCoverage": false,
+  "mappedPublicCasesImplemented": false,
+  "at": "2026-11-08T05:54:31.566272+00:00",
+  "recipeRevision": 257,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

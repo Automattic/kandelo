@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source257 implements pinned getCallSites overload/validator/getter/error order and real raw no-entry fallback through unchanged SavedFrame capture. Normal908inputs/13sourcechecks/8commands pass; native27/candidate27 selected reported projections match27, without numeric position/script-ID or guest SavedFrame equality. Two unchanged files run four top-level subjects; candidate children still execute native util, not candidate mapped/eval/child coverage or complete-file acceptance. Package14 passes independently; zero historical/new compilers. Actual mapping/cache/defaultCLI/native formatter owners remain missing.
+See [source scope](util-callsites-integration.md).
+
 Source256 implements actual async spawn AbortSignal/killSignal validation and cancellation over existing genuine launch/kill/reap/pipe-close owners. Normal908inputs/14sourcechecks/8commands and paired native18/candidate18 reported observations match18; two unchanged upstream parent-controller subjects pass with native process/stream/EventTarget/signal dependencies, not complete file or guest coverage. Package14 passes independently. One historical helper counts once361 to362; zero root compilers. Full normalization/timeout/argv0/executable authority/shell/IPC and guest/four-host gaps remain open.
 See [source scope](child-spawn-abort-integration.md).
 
