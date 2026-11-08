@@ -82,6 +82,9 @@ upstream checkout is provisioning work, never a successful zero-test run.
 Browser exec fixtures must use Bash for `/bin/sh`, matching the normal Node
 rootfs. Required-tool HTTP or body failures must stop fixture readiness;
 missing tools are not a partially working conformance environment.
+Retain host diagnostics separately from guest stdout/stderr in runner output.
+Probe failing development modules on an isolated server: Vite can broadcast
+an import-error overlay into every connected preview page.
 
 A spec must not skip because a binary or image the supported build produces
 is missing. Missing supported output is a build defect: fail with the reason,

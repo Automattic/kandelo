@@ -27822,3 +27822,38 @@ The current canonical source-only graphics gate separately passes all
 2,353 checks across 93 files with its image-write audit and zero skips.
 That source result does not replace actual browser rendering, the full
 GLES2/EGL audit, lifecycle, measurements or any remaining B1/final gate.
+
+
+### B1 browser libc recovery and diagnostic custody, 2026-11-08
+
+R937 reruns the full normal browser libc wrapper after the Bash/required-tool
+repair. All 324 cases are accounted for: 307 Pass, 17 existing XFAIL, zero
+FAIL, XPASS, build, runner error or unexpected timeout. Its 7,300 authored
+inputs match before and after. Compared by name with the completed Node
+run, there are no missing or added cases. The sole classification difference
+is pthread_cond-smasher: Node records a known flaky pass, browser a pass.
+Both observed outcomes are successful. Raw XFAIL-reason verification remains
+separate from the wrapper's reported expectation classes.
+
+The canonical browser CLI now retains the hostDiagnostics already returned
+by the page, separately from guest fd 2. Dropping that field concealed
+worker/lifecycle evidence from callers inspecting a named expected failure.
+It does not fabricate an empty diagnostic array on exceptions, alter guest
+outcomes or change the CLI's existing completed-JSON status convention.
+Partial output on an exceptional timeout remains unavailable through that
+API; do not present its absence as a clean diagnostic record.
+
+The single larger-display Sway diagnostic is invalid for launch diagnosis:
+a Vite error overlay intercepts its first More click, before any key input
+or IPC observer. The overlay is the unowned-Dash import error triggered by
+a diagnostic HTTP request on the live preview development server. This is
+an investigation mistake, not evidence of duplicate launch or slow fork.
+Future failure probes must use their own server. After the original test
+times out, its blocked evidence hook is ended by terminating only its
+verified owned headless Firefox process. Original failure, controlled close,
+ledger, HTML, screenshot and exact overlay records are retained. Final trace
+contains only the test-side trace; the raw browser protocol trace is lost.
+Sixteen retained shared-memory synchronization errors remain separately
+uninvestigated and must not be attributed to that overlay without evidence.
+No source or preview-product bytes change during the diagnostic. Its outcome
+closes no desktop, lifecycle or performance gate.
