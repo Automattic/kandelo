@@ -58,7 +58,8 @@ export GOCACHE="$WORK_DIR/gocache" GOPATH="$WORK_DIR/gopath"
 export GOMODCACHE="$WORK_DIR/gomodcache" GOTMPDIR="$WORK_DIR/tmp"
 export GOROOT="$GO_ROOT" GOOS=kandelo GOARCH=wasm32 CGO_ENABLED=1 CC=wasm32posix-cc
 php_include="$WASM_POSIX_DEP_PHP_ZTS_DIR/include/php"
-export CGO_CFLAGS="-I$php_include -I$php_include/main -I$php_include/Zend -I$php_include/TSRM -I$php_include/sapi/embed -I$php_include/ext"
+# CGO_CFLAGS replaces Go's defaults; retain optimization when adding PHP headers.
+export CGO_CFLAGS="-O2 -I$php_include -I$php_include/main -I$php_include/Zend -I$php_include/TSRM -I$php_include/sapi/embed -I$php_include/ext"
 # Upstream documents CGO_LDFLAGS for PHP linkage. Supply the declared static
 # closure here; keep its Go/C sources and bulk CGI registration unchanged.
 export CGO_LDFLAGS="${KANDELO_GO_STATIC_LIBRARY_FLAGS[*]} -lphp -licui18n -licuio -licuuc -licudata -lc++ -lc++abi -lcurl -lzip -lxml2 -lssl -lcrypto -lsqlite3 -liconv -lz -lkandelo-ucontext-unsupported -ldl"
@@ -70,8 +71,10 @@ chmod -R u+w "$MODULE_DIR"
 (cd "$SOURCE_DIR" && "$GO_ROOT/bin/go" build -tags 'nomercure nowatcher' \
     -o "$WORK_DIR/frankenphp-classic.wasm" ./cmd/kandelo-classic)
 unset CC CXX AR RANLIB CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+echo "frankenphp-classic linked bytes before instrumentation: $(wc -c < "$WORK_DIR/frankenphp-classic.wasm")"
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$WORK_DIR/frankenphp-classic.wasm" \
     -o "$WORK_DIR/frankenphp-classic-instrumented.wasm"
+echo "frankenphp-classic bytes after instrumentation and post-optimization: $(wc -c < "$WORK_DIR/frankenphp-classic-instrumented.wasm")"
 if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" != source-only-v1 ]; then
     source "$REPO_ROOT/scripts/build-programs-abi-stamp.sh"
     record_built_program_output "$WORK_DIR/frankenphp-classic-instrumented.wasm"

@@ -43,6 +43,19 @@ are corrected. Firefox's test-owned storage cleanup still reports EACCES;
 this does not turn the successful assertions into a cleanup guarantee.
 The current 33-case rendered WordPress/persistence run must be restarted.
 
+**Cgo optimization evaluation prepared:** a separate checkout restores
+explicit O2 for the C portions of both FrankenPHP builds and records linked
+and post-instrumentation byte counts. Classic revision 41 and combined
+Caddy revision 22 invalidate the appropriate normal package cache entries.
+Only build flags/logging change; PHP, Caddy, FrankenPHP and Go algorithms
+remain unchanged. Shell syntax and whitespace checks pass; the new recipes
+have not yet built or run. Preserve the existing verified preview and
+current browser run until the replacement is demonstrated. The evaluation
+uses the normal partial WordPress build, with its own SDK and image outputs,
+shared content-addressed dependency cache and one package job. Begin only
+after the current browser run finishes to avoid overlapping the large
+instrumentation and WebKit footprints.
+
 **Image-size investigation:** the current image is 83,524,699 compressed
 bytes and embeds 434,019,464 unique file bytes: combined Caddy 185,037,671,
 standalone classic 70,004,510, PHP-FPM 36,999,507, WordPress 89,895,580 and

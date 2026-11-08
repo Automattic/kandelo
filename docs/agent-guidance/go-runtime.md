@@ -43,6 +43,14 @@ Development tool content IDs affect target build IDs, so independently
 built compilers must also be reproducible. Preserve those IDs and verify
 an independent same-key resolver rebuild; do not suppress them to mask
 divergence. Target builds separately use `-trimpath`.
+When supplying cgo include paths through `CGO_CFLAGS`, retain an explicit
+optimization level: this variable replaces Go's default `-O2 -g`, rather
+than appending to it. `CGO_CPPFLAGS` can carry include paths independently
+when the recipe should preserve all upstream C compiler defaults. PHP's
+own archive flags and the instrumenter's later Wasm post-optimization are
+separate stages; a small final file does not prove initial C optimization.
+Record linked and instrumented sizes before attributing expansion to a
+compiler flag, library or platform transformation.
 For byte-equivalence diagnostics, map changed function bodies before
 attributing them to compiler semantics. Fork instrumentation derives its
 table-state fingerprints from the exact original bytes: differing Go build
