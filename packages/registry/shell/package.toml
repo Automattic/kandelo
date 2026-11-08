@@ -6,6 +6,7 @@ kernel_abi = 52
 # outputs. Keep this list synchronized with the package-owned dependency
 # contract used by the wrapper and composer.
 depends_on = [
+  "sysklogd@2.8.0",
   "toybox@0.8.15",
   "rootfs@0.1.0",
   "ca-certificates@0.1.0",

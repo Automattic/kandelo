@@ -81,6 +81,7 @@
 /etc/nsswitch.conf f  0644  0  0
 /etc/os-release    f  0644  0  0
 /etc/profile       f  0644  0  0
+/etc/syslog.conf   f  0644  0  0
 /etc/motd          f  0644  0  0
 /etc/motd.autologin f 0644  0  0
 /etc/sudoers       f  0440  0  0

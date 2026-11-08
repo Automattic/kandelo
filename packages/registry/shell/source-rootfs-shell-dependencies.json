@@ -285,6 +285,11 @@
       "name": "toybox",
       "version": "0.8.15",
       "role": "lazy-file"
+    },
+    {
+      "name": "sysklogd",
+      "version": "2.8.0",
+      "role": "lazy-file"
     }
   ]
 }

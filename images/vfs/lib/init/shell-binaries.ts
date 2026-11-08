@@ -342,4 +342,9 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // should not carry them in the eager image every visitor downloads.
   { id: "dmesg", dependency: "toybox", resolverPath: "programs/toybox/dmesg.wasm", vfsPath: "/usr/bin/dmesg", symlinks: [] },
   { id: "logger", dependency: "toybox", resolverPath: "programs/toybox/logger.wasm", vfsPath: "/usr/bin/logger", symlinks: [] },
+  // The syslog daemon. The shell image has no init, so nothing starts it:
+  // it is here so a machine can run one by hand (`sudo syslogd` -- binding
+  // /dev/log needs root) and have `logger` reach /var/log/messages. Images
+  // that do run an init supervise it through `addSyslogService` instead.
+  { id: "syslogd", dependency: "sysklogd", resolverPath: "programs/syslogd.wasm", vfsPath: "/sbin/syslogd", symlinks: [] },
 ] as const satisfies readonly VfsBinarySpec[];
