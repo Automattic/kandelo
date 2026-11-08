@@ -27635,3 +27635,26 @@ These are correctness and host-parity results. Durations of failed versus
 passing runs are not performance comparisons. The complete B1 consumer,
 ownership, graphical, scoped conformance/libc, lifecycle and measurement
 checks still require the combined candidate; B1 is not yet merge-ready.
+
+The actual exported-kernel second-BO-bind refusal regression now passes
+on wasm32 and wasm64. The first child alias is genuinely admitted and only
+the second bind is refused. Exact unbind ranges retire the failed child
+before its memory is published, while parent canonical storage/mappings
+remain unchanged. The guest reuses the old descriptor and mapping address
+for different resources, retains an independent PRIME alias, forks again,
+observes all child bytes through the repaired wait boundary and cleans up.
+No old-child cleanup runs after replacement. The ordinary C guest and all
+original rollback/replacement assertions remain. Its internal write witness
+reads actual parent mapped bytes; raw canonical bytes retain their separate
+lazy-publication baseline for rollback isolation.
+
+R892/R898's original two-case failures remain recorded. R909 first refuses
+missing private Node types, then exposes an existing constructor/callback
+inference cycle; canonical-path R911 confirms that same source diagnostic.
+The normal test helper now explicitly types its worker variable, preserving
+callbacks and runtime behavior. Strict types and both real SDK/fork/ABI
+fixture executions pass in the final R911 run (two cases, zero skips).
+Private-import adaptation is not committed. The new tracked test is
+classified prepared-product. This proves Node exported-kernel/host-import
+rollback, not a dedicated-kernel-worker or browser fault-injection result;
+the separate three-engine ordinary GBM wait cases remain distinct evidence.

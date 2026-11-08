@@ -530,7 +530,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     }
   };
 
-  const kernelWorker = new CentralizedKernelWorker(
+  // Callbacks close over this worker during construction. Fix its type so
+  // callback result inference cannot recursively define the worker itself.
+  const kernelWorker: CentralizedKernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {

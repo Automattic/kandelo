@@ -86,6 +86,7 @@ host/test/dri-cleanup-status.test.ts	source-only
 host/test/dri-cube-pyramid.test.ts	prepared-product
 host/test/dri-dumb-roundtrip.test.ts	prepared-product
 host/test/dri-egl-native-window.test.ts	prepared-product
+host/test/dri-fork-bind-rollback.test.ts	prepared-product
 host/test/dri-import-lifetime.test.ts	prepared-product
 host/test/dri-ioctl-interrupt.test.ts	source-only
 host/test/dri-kms-cursor.test.ts	prepared-product
