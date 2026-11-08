@@ -19,6 +19,7 @@ import { builtinModules } from "node:module";
 import {
   browserRepositoryAliases,
   browserVirtualModuleCapabilities,
+  browserOptionalDataModules,
 } from "./browser-module-contract.mjs";
 
 const modulePath = fileURLToPath(import.meta.url);
@@ -538,6 +539,14 @@ export function browserRequiredInputs(
           );
         }
         capabilities.add(capability);
+        continue;
+      }
+      if (browserOptionalDataModules.includes(pathPart)) {
+        if (kind === "glob") {
+          throw new Error(
+            `required browser source uses a virtual-module glob: ${file}`,
+          );
+        }
         continue;
       }
 

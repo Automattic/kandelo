@@ -87,8 +87,9 @@ ninja -C "$BUILD_DIR" swaybg
 # reviewed checkout read-only and suppress the developer-only local mirror.
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
-    # swaybg never forks.
-    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
+    # Match the manifest's auto policy: linked dependencies, not just swaybg's
+    # own source, determine whether the executable needs fork continuation hooks.
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 cp "$BUILD_DIR/swaybg" "$BUILD_DIR/swaybg.wasm"

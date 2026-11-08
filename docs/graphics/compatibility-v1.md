@@ -27229,3 +27229,32 @@ typechecking covers the full app roots plus the desktop specs. The initial
 curated-roster expectation and two preexisting helper type errors are
 recorded and corrected. Actual new normal config/browser/Windows delivery
 checks remain required; no universal shortcut or complete-B1 claim follows.
+
+### Focused current-main graphical preview integration (2026-11-07)
+
+The maintainer narrowed the first current-main preview to Sway/Foot,
+ScummVM, Freeciv, fluid simulation and the GLSL/audio playground. The
+partial selection is exactly the union of those profiles' declared
+requirements; it does not change final campaign acceptance.
+
+The first focused normal build exposed swaybg's recipe requesting disabled
+fork instrumentation despite its manifest declaring auto. The recipe now
+honors auto so the complete linked executable determines whether hooks are
+needed, including imports from dependencies. Its build revision is 2. The
+existing registry regression reproduced the mismatch before this correction.
+
+The browser input scanner also rejected the partial-image virtual module
+added on main. Its exact identifier now shares a contract with the Vite
+plugin. It is optional development metadata: the plugin emits null for
+production and validates the worktree image when serving development. It
+does not create a required production artifact capability. Required kernel,
+rootfs and product capabilities retain their bindings; unknown virtual
+identifiers and virtual-module globs remain errors.
+
+Validation: the actual browser dependency registry file reports 31 passed,
+zero failed and two existing explicitly skipped exact-shell proof cases.
+The original mismatch and unknown-module failures are retained separately.
+The declared app typecheck also passes across all 142 browser roots and
+45 Node unit-test roots. This is source/build integration evidence; the
+focused normal image retry, current-main browser rendering and desktop
+checks remain pending.

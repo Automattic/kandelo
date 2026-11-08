@@ -581,7 +581,7 @@ describe("browser binary dependencies", () => {
     }
   });
 
-  it("reports virtual artifact modules as separately bound capabilities", () => {
+  it("distinguishes virtual artifact capabilities from optional dev metadata", () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-capability-"));
     try {
       const browserRoot = join(fixtureRoot, "apps", "browser-demos");
@@ -592,7 +592,8 @@ describe("browser binary dependencies", () => {
           'import kernel from "@kernel-wasm?url";',
           'import products from "virtual:kandelo-pages-vfs-products";',
           'import rootfs from "@rootfs-vfs?url";',
-          "void kernel; void products; void rootfs;",
+          'import partial from "virtual:kandelo-partial-image";',
+          "void kernel; void products; void rootfs; void partial;",
         ].join("\n"),
       );
 
@@ -602,6 +603,16 @@ describe("browser binary dependencies", () => {
         imports: [],
         capabilities: ["kernel-wasm", "pages-vfs-products", "rootfs-vfs"],
       });
+      writeFileSync(join(browserRoot, "entry.ts"),
+        'import partial from "virtual:kandelo-partial-image-unknown";\n');
+      expect(() => browserRequiredInputs(fixtureRoot, {
+        entryFiles: ["entry.ts"],
+      })).toThrow(/unknown package or repository alias/);
+      writeFileSync(join(browserRoot, "entry.ts"),
+        'const partial = import.meta.glob("virtual:kandelo-partial-image");\n');
+      expect(() => browserRequiredInputs(fixtureRoot, {
+        entryFiles: ["entry.ts"],
+      })).toThrow(/virtual-module glob/);
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
