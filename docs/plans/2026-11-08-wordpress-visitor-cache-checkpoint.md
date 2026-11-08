@@ -61,6 +61,41 @@ expired files and the stock hook's 600-second rescheduling. This confirms
 the controlled deployment configuration, not acceptance of rebuilt
 revision-46/family-12 images. Earlier failures remain recorded below.
 
+## Guest minute-scheduler control
+
+Private control `e5bb` passes one real Caddy/WordPress Chromium case in
+2m23s, zero skips/retries, on the normal full revision-45 WordPress image
+`1993e1bc29ef` with the same kernel and Go daemon hashes listed below.
+A test-owned ordinary Dinit process service runs the existing guest curl
+against `http://127.0.0.1:8080/wp-cron.php`. Its restart interval is 60 real
+seconds, with smooth recovery and a bounded 25-second HTTP operation.
+The [Dinit service manual](https://raw.githubusercontent.com/davmac314/dinit/v0.19.4/doc/manpages/dinit-service.5.m4)
+describes the restart and dependency semantics; no host timer invokes cron.
+
+The test observes the first successful curl invocation, then schedules the
+stock hook in the past. Without a browser request to `wp-cron.php`, the
+next minute tick executes it: expired home and post entries disappear,
+`lastGc` advances and the stock hook is rescheduled 600 seconds later.
+The service log changes from one to two successful HTTP markers. Explicit
+service stop succeeds and the subsequent Dinit listing reports it stopped.
+The test retains privacy and saved-content freshness checks. Its additional
+PHP helper only observes the authenticated scheduler log and cache state.
+It is not shipped in the product and does not implement cron or cache GC.
+
+Raw source, identities, observations and the browser report are in the
+review checkout under
+`.context/agent-jobs/wordpress-guest-minute-cron-normal-v3-1108-035419-e5bb/scratch/guest-auto-cron-control/`.
+Original `9ed1` fails because the partial development image omits curl;
+`c9bb` fails during discovery because copied evidence is collected as an
+extra spec. Both are retained separately. The successful control selects
+the normal full image and a dedicated fixture directory.
+
+**Automatic cron is still not integrated into shipped image services.**
+This control does not prove automatic start/stop with profile switches,
+crash recovery, a full stopped interval, Node parity, the other two engines
+or final refreshed artifacts. Integration must preserve Dinit dependency
+and shutdown semantics, rather than leave an orphan polling process.
+
 ## Earlier Chromium result
 
 Job `wordpress-stock-cache-policy-and-gc-v6-1108-021151-5f37` ends with

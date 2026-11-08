@@ -2,6 +2,29 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Normal final refresh is publishing on the corrected source.** Job
+`f2f6` finishes both own-SDK bootstraps and normal package-index generation,
+then starts the complete 198-node validation union at source `c51ee03b5`,
+including main `5f484a853eec` and family revision 13. Its historical
+summed duration is about 254 minutes, not a promised completion time.
+The output projection is new and immutable; existing preview/artifacts
+remain pinned. Matching main provisioning `adf8` is queued behind the
+refresh, with its own SDK and recorded main guard; no benchmark timings
+have run. Prior refresh attempts retain their prerequisite, host-SSH and
+stale-generated-index failures separately.
+
+**Guest minute scheduling works in a controlled browser machine.** `e5bb`
+passes the full cache/privacy/freshness sequence plus actual Dinit/curl
+60-second scheduling of stock `wp-cron.php`. The second real tick removes
+expired files and reschedules the stock hook; explicit service stop is
+observed. This uses normal full WordPress revision 45, not the partial
+preview or final refreshed images. Shipped automatic cron integration,
+backend-switch/shutdown/restart behavior and Node/all-engine validation
+remain open. See the visitor-cache checkpoint for exact evidence and the
+two retained failed attempts. During the gap between normal builds, the
+previously authorized one-day/ABI-below-50 cache GC safely collects
+595.1 MiB; protected roots and active artifacts remain intact.
+
 **Canonical build finished; family acceptance failed.** `4770` publishes
 two normal images and three Go programs, passes layout and both standalone
 WordPress Node cases, then fails all three selected family cases. One
