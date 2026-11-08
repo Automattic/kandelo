@@ -526,14 +526,14 @@ describe("optional syslog daemon", () => {
     const fs = createFs();
     const service = addSyslogService(fs, { binary: syslogdBytes });
 
-    const staged = fs.readFile("/sbin/syslogd");
+    const staged = fs.readFile("/usr/sbin/syslogd");
     expect(new TextDecoder().decode(staged)).toBe("exact syslogd bytes");
-    expect(fs.stat("/sbin/syslogd").mode & 0o7777).toBe(0o755);
+    expect(fs.stat("/usr/sbin/syslogd").mode & 0o7777).toBe(0o755);
 
     // -F keeps syslogd in the foreground. Without it the daemon forks and
     // exits, and dinit would treat a supervised service as having died.
     expect(service.name).toBe("syslogd");
-    expect(service.command).toContain("/sbin/syslogd");
+    expect(service.command).toContain("/usr/sbin/syslogd");
     expect(service.command).toContain("-F");
     expect(service.restart).toBe(true);
 
@@ -591,7 +591,7 @@ describe("optional syslog daemon", () => {
     });
 
     expect(() => fs.stat("/etc/dinit.d/syslogd")).toThrow();
-    expect(() => fs.stat("/sbin/syslogd")).toThrow();
+    expect(() => fs.stat("/usr/sbin/syslogd")).toThrow();
     expect(() => fs.stat("/etc/syslog.conf")).toThrow();
   });
 });

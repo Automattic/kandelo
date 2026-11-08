@@ -488,8 +488,10 @@ export function addSyslogService(
   // Create every directory this writes into. addDinitInit happens to make
   // /etc and /var/log too, but a helper that only worked when called after it
   // would be a trap for the next product.
-  ensureDirRecursive(fs, "/sbin");
-  writeVfsBinary(fs, "/sbin/syslogd", opts.binary, 0o755);
+  // /usr/sbin: a service daemon, not boot or recovery administration. dinit
+  // itself is the /sbin case; see docs/filesystem-layout.md.
+  ensureDirRecursive(fs, "/usr/sbin");
+  writeVfsBinary(fs, "/usr/sbin/syslogd", opts.binary, 0o755);
   ensureDirRecursive(fs, "/etc");
   ensureDirRecursive(fs, "/var/log");
   fs.chmod("/var/log", 0o755);
@@ -517,7 +519,7 @@ export function addSyslogService(
 
   return {
     name: "syslogd",
-    command: "/sbin/syslogd -F -s",
+    command: "/usr/sbin/syslogd -F -s",
     restart: true,
   };
 }
