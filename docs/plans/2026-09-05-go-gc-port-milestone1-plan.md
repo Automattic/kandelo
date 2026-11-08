@@ -2,6 +2,41 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Current cache, uploads and archive/signal browser gates pass.**
+Corrected cache run `349e` passes nine cases, zero skips/retries/flakes,
+in 18m23s of browser execution (1h30m including its prerequisite queue).
+Each of FPM, classic and Caddy passes on Chromium, Firefox and WebKit:
+stock plugin activation/hits, authenticated privacy, post/template
+invalidation, real-clock expiry, and automatic expired-file removal and
+rescheduling by the image-owned Dinit/curl cron service. The browser makes
+no `wp-cron.php` request. The copied fixture matches the committed exact-file
+assertion fix; the original nine failed assertions remain separate evidence.
+
+Media run `bf0e` passes all six upload/refresh cases in 6m44s of browser
+execution. Fresh archive/export/signal/retirement run `e151` passes all 63
+cases in 2m21s. Both have zero skips/retries/flakes. These use the same
+normal49 image/kernel/Go program cohort and current own-SDK fixture builds
+described below. They do not complete canonical or full Go acceptance.
+
+Firefox diagnostic `ca3a` repeats the unchanged experimental-persistence
+scenario twice with additional request flags and dialog DOM observations.
+It preserves native Fetch arguments and returned promises; no keepalive
+shim or application change is applied. Its result is pending. The separately
+confirmed Firefox keepalive-delivery limitation remains distinct from the
+unresolved welcome-dialog failure in `7f59`.
+
+Queued current gates now include the five-mode standard-library/full Go
+browser selection `9557`, full maintained browser-memory gate `3e9d`, and
+Node/Chromium libc/Open POSIX/Sortix conformance `df5e`, serialized after
+existing producers. Source/SDK/kernel guards retain the tested identities.
+The Go fixture's required Sortix source is initialized at the exact gitlink
+with a clean sparse checkout, avoiding case-colliding unrelated files on
+this Mac. Full Sortix conformance uses an independent checkout on the
+existing task-owned case-sensitive volume. Baseline source installer
+`417d` awaits successful latest-main publication and verifies archive and
+output hashes before preparing the ordinary Node benchmark inputs. None of
+these queued gates or fair performance comparisons is claimed complete.
+
 **Current WordPress UI/persistence selection finishes 32 passes / one failure.**
 `7f59` completes all 33 cases with no skips or retries. All ordinary
 login/editor/post/template cases pass across Chromium, Firefox and WebKit.
