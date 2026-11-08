@@ -3962,6 +3962,41 @@ fn render_input_ts_bindings(out: &mut String) {
         out.push_str(&format!("  {}: {},\n", name, value));
     }
     out.push_str("} as const;\n\n");
+
+    // Identity and the kernel-host device descriptor. These live outside
+    // `INPUT_CODES`, which mirrors `<linux/input-event-codes.h>` exactly.
+    use core::mem::{offset_of, size_of};
+    use shared::input::{self as input, WpkInputAbsinfo, WpkInputDeviceDesc};
+    out.push_str(&format!(
+        "export const INPUT_BUS_VIRTUAL = {} as const;\n",
+        input::BUS_VIRTUAL
+    ));
+    out.push_str(&format!(
+        "export const KANDELO_INPUT_VENDOR = {} as const;\n",
+        input::KANDELO_INPUT_VENDOR
+    ));
+    out.push_str(&format!(
+        "export const INPUT_MAX_DEVICES = {} as const;\n\n",
+        input::INPUT_MAX_DEVICES
+    ));
+    out.push_str("/** Byte layout of `shared::input::WpkInputDeviceDesc`. */\n");
+    out.push_str("export const INPUT_DEVICE_DESC_LAYOUT = {\n");
+    for (name, value) in [
+        ("size", size_of::<WpkInputDeviceDesc>()),
+        ("idOffset", offset_of!(WpkInputDeviceDesc, id)),
+        ("nameOffset", offset_of!(WpkInputDeviceDesc, name)),
+        ("nameBytes", input::INPUT_DEVICE_NAME_BYTES),
+        ("keyBitsOffset", offset_of!(WpkInputDeviceDesc, key_bits)),
+        ("keyBitsBytes", (input::KEY_CNT as usize) / 8),
+        ("absBitsOffset", offset_of!(WpkInputDeviceDesc, abs_bits)),
+        ("absBitsBytes", (input::ABS_CNT as usize) / 8),
+        ("absinfoOffset", offset_of!(WpkInputDeviceDesc, absinfo)),
+        ("absinfoBytes", size_of::<WpkInputAbsinfo>()),
+        ("absCount", input::ABS_CNT as usize),
+    ] {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
 }
 
 fn render_pcm_ts_bindings(out: &mut String) {

@@ -22,6 +22,10 @@
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import type { RemoteSegmentPeer } from "./networking/remote-segment-port";
+import type {
+  InputDeviceDescription,
+  InputDeviceRecord,
+} from "./input/input-device";
 
 export type { HttpRequest, HttpResponse };
 
@@ -345,4 +349,28 @@ export interface RemoteNetworkJoinMessage {
 export interface RemoteNetworkLeaveMessage {
   type: "remote_network_leave";
   requestId: number;
+}
+
+/**
+ * Plug in a host-described evdev device (`/dev/input/event2` and up) under a
+ * host-chosen `key`. Answered with an `InputDeviceConnectResult`.
+ */
+export interface InputDeviceConnectMessage {
+  type: "input_device_connect";
+  requestId: number;
+  key: string;
+  description: InputDeviceDescription;
+}
+
+/** Unplug the device connected under `key`. */
+export interface InputDeviceDisconnectMessage {
+  type: "input_device_disconnect";
+  key: string;
+}
+
+/** `SYN_REPORT` frames for the device connected under `key`. */
+export interface InputDeviceEventsMessage {
+  type: "input_device_events";
+  key: string;
+  records: InputDeviceRecord[];
 }

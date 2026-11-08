@@ -17587,9 +17587,11 @@ pub extern "C" fn kernel_clipboard_ack(seq: u32) -> i32 {
     crate::clipboard::ack_status(seq)
 }
 
-/// Fan one translated DOM input event out to every open OFD bound to
-/// `/dev/input/event{0,1}`. Stamped with CLOCK_MONOTONIC so libinput /
-/// SDL2 see a single monotonic timeline across vblank + input streams.
+/// Fan one translated input record out to every open OFD bound to
+/// `/dev/input/event<device>`: the keyboard (0), the pointer (1), or a
+/// connected host-described device. Stamped with CLOCK_MONOTONIC so
+/// libinput / SDL2 see a single monotonic timeline across vblank + input
+/// streams.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_input_event(
     device: u32,
@@ -17597,6 +17599,13 @@ pub extern "C" fn kernel_input_event(
     code: u32,
     value: i32,
 ) {
+    // A device number that does not fit an evdev minor names no device;
+    // truncating it would alias a real one.
+    let (Ok(device), Ok(ev_type), Ok(code)) =
+        (u8::try_from(device), u16::try_from(ev_type), u16::try_from(code))
+    else {
+        return;
+    };
     let mut host = WasmHostIO;
     let (tv_sec, tv_usec) = match host.host_clock_gettime(
         wasm_posix_shared::clock::CLOCK_MONOTONIC,
@@ -17605,13 +17614,57 @@ pub extern "C" fn kernel_input_event(
         Err(_) => (0i64, 0i32),
     };
     crate::input::dispatch::push_event(
-        device as u8,
-        ev_type as u16,
-        code as u16,
+        device,
+        ev_type,
+        code,
         value,
         tv_sec,
         tv_usec,
     );
+}
+
+fn input_hotplug_now() -> (i64, u32) {
+    let mut host = WasmHostIO;
+    host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)
+        .map(|(sec, nsec)| (sec, nsec as u32))
+        .unwrap_or((0, 0))
+}
+
+/// Plug in the host-described evdev device at `desc_ptr` (a
+/// `WpkInputDeviceDesc` in a kernel scratch lease). Returns its number `N`
+/// (`/dev/input/eventN`), or `-EINVAL` for a malformed description,
+/// `-ENOSPC` when every evdev number is taken, `-ENOMEM` when the kernel
+/// cannot admit the device.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_input_device_connect(desc_ptr: *const u8, desc_len: u32) -> i32 {
+    use wasm_posix_shared::input::WpkInputDeviceDesc;
+    if desc_len as usize != core::mem::size_of::<WpkInputDeviceDesc>() {
+        return -(Errno::EINVAL as i32);
+    }
+    if desc_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    // SAFETY: the host passes a range inside a kernel scratch allocation it
+    // leased and filled for this call; the struct is plain bytes.
+    let desc = unsafe { core::ptr::read_unaligned(desc_ptr as *const WpkInputDeviceDesc) };
+    match crate::input::hotplug::connect(&desc, input_hotplug_now()) {
+        Ok(device) => device as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Unplug host-described evdev device `device`. Its node disappears;
+/// descriptions still open on it fail with `ENODEV` and poll as hung up.
+/// The host wakes blocked waiters afterwards. Returns 0 or `-ENODEV`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_input_device_disconnect(device: u32) -> i32 {
+    let Ok(device) = u8::try_from(device) else {
+        return -(Errno::ENODEV as i32);
+    };
+    match crate::input::disconnect_device(device, input_hotplug_now()) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
 }
 
 /// Cache the canvas pixel dimensions advertised by

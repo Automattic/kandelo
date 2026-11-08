@@ -55,6 +55,9 @@ export type {
   RemoteNetworkHostMessage,
   RemoteNetworkJoinMessage,
   RemoteNetworkLeaveMessage,
+  InputDeviceConnectMessage,
+  InputDeviceDisconnectMessage,
+  InputDeviceEventsMessage,
 } from "./kernel-protocol-shared";
 import type {
   SignalProcessMessage,
@@ -100,6 +103,9 @@ import type {
   RemoteNetworkHostMessage,
   RemoteNetworkJoinMessage,
   RemoteNetworkLeaveMessage,
+  InputDeviceConnectMessage,
+  InputDeviceDisconnectMessage,
+  InputDeviceEventsMessage,
 } from "./kernel-protocol-shared";
 
 /**
@@ -498,6 +504,9 @@ export type MainToKernelMessage =
   | MouseInjectMessage
   | InputEventInjectMessage
   | InputEventBatchInjectMessage
+  | InputDeviceConnectMessage
+  | InputDeviceDisconnectMessage
+  | InputDeviceEventsMessage
   | SetInputCanvasDimsMessage
   | AudioDrainMessage
   | { type: "pcm_output_failed" }

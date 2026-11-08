@@ -166,6 +166,7 @@ host/test/fstatat-empty-path.test.ts	prepared-product
 host/test/futex-deadlines.test.ts	prepared-product
 host/test/futex-kernel-wait.test.ts	prepared-product
 host/test/gallery-descriptor.test.ts	source-only
+host/test/gamepad-input.test.ts	source-only
 host/test/gbm-surface-ring.test.ts	prepared-product
 host/test/gc-reference-state-fresh-worker.test.ts	prepared-product
 host/test/generated-abi.test.ts	source-only
@@ -204,6 +205,7 @@ host/test/inotify-enosys.test.ts	prepared-product
 host/test/input-attach-source.test.ts	prepared-product
 host/test/input-batch.test.ts	source-only
 host/test/input-evdev.test.ts	prepared-product
+host/test/input-hotplug-evdev.test.ts	prepared-product
 host/test/input-source.test.ts	source-only
 host/test/int128-division-guest.test.ts	prepared-product
 host/test/interactive-stdin.test.ts	prepared-product

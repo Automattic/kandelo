@@ -57,7 +57,10 @@ const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // signals; the exec-state fixture preserves them for replacement tests.
 // v19 retains the KMS cursor BO across exec; fork children own no cursor.
 // v20 carries the image's executable (`Process::exe`) as an inherited OFD.
-const FORK_VERSION: u32 = 20;
+// v21 binds each evdev OFD to the device connection it opened
+// (`InputFdState::serial`), so an inherited descriptor of a disconnected
+// host-described device stays dead in the child.
+const FORK_VERSION: u32 = 21;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -773,6 +776,7 @@ fn write_input_state(
     let ring = input.ring.borrow();
     w.write_u8(INPUT_TAG_SOME)?;
     w.write_u8(input.device)?;
+    w.write_u64(input.serial)?;
     w.write_u8(ring.dropped as u8)?;
     w.write_u32(ring.event_ring.len() as u32)?;
     for &b in ring.event_ring.iter() {
@@ -866,6 +870,12 @@ fn read_input_state(
         INPUT_TAG_NONE => Ok(None),
         INPUT_TAG_SOME => {
             let device = r.read_u8()?;
+            let serial = r.read_u64()?;
+            if device >= wasm_posix_shared::input::INPUT_MAX_DEVICES
+                || (device < wasm_posix_shared::input::INPUT_FIXED_DEVICES && serial != 0)
+            {
+                return Err(Errno::EINVAL);
+            }
             let dropped = r.read_u8()? != 0;
             let ring_len = r.read_u32()? as usize;
             // The ring is always whole 24-byte records and bounded at
@@ -885,6 +895,7 @@ fn read_input_state(
             }
             Ok(Some(crate::IoBox::try_new(crate::ofd::InputFdState {
                 device,
+                serial,
                 ring: crate::ofd::SharedInputRing::try_from_ring(ring)?,
             })?))
         }
@@ -2247,6 +2258,31 @@ mod tests {
     use super::*;
     use crate::process::Process;
     use crate::signal::SignalHandler;
+
+    #[test]
+    fn input_state_keeps_its_connection_serial_and_refuses_impossible_ones() {
+        let state = crate::ofd::InputFdState {
+            device: 5,
+            serial: 0x1234_5678_9abc,
+            ring: crate::ofd::SharedInputRing::try_new().unwrap(),
+        };
+        let mut wire = [0u8; 64];
+        write_input_state(&mut Writer::new(&mut wire), Some(&state)).unwrap();
+        let decoded = read_input_state(&mut Reader::new(&wire)).unwrap().unwrap();
+        assert_eq!((decoded.device, decoded.serial), (5, 0x1234_5678_9abc));
+
+        // The fixed devices have serial 0, and no device is numbered 32+.
+        for (device, serial) in [(0u8, 1u64), (1, 7), (wasm_posix_shared::input::INPUT_MAX_DEVICES, 1)] {
+            let mut wire = [0u8; 64];
+            let mut w = Writer::new(&mut wire);
+            w.write_u8(INPUT_TAG_SOME).unwrap();
+            w.write_u8(device).unwrap();
+            w.write_u64(serial).unwrap();
+            w.write_u8(0).unwrap();
+            w.write_u32(0).unwrap();
+            assert!(matches!(read_input_state(&mut Reader::new(&wire)), Err(Errno::EINVAL)));
+        }
+    }
 
     #[test]
     fn graphics_decode_refuses_bad_handles_and_admits_pending_completion() {

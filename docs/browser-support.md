@@ -702,6 +702,46 @@ the keyboard state before the display forwards its button press. The Modeset
 pane releases both PS/2 and evdev buttons on pointer cancellation, lost pointer
 capture, window blur, and input teardown, retaining the last absolute position.
 
+### Gamepads (`/dev/input/event2` and up)
+
+A gamepad the page can see is plugged into the machine as a new evdev
+device, the way a USB pad appears on Linux. Wherever the shell attaches the
+machine's evdev keyboard source (above), it also attaches
+`BrowserGamepadSource` (`host/src/input/browser-gamepad-source.ts`). That
+source polls `navigator.getGamepads()` on the main thread once per animation
+frame while a pad is known, because the Gamepad API is not available in
+workers. Each pad becomes `/dev/input/eventN` with N from 2, and the machine's
+dmesg logs the connection.
+
+- **The browser decides when a pad exists.** Browsers reveal a pad only after
+  the user presses one of its buttons on the page, so the node appears then,
+  not when the pad is physically plugged in. When the pad disconnects, its
+  node disappears; a program that still has it open gets `ENODEV` from
+  `read()` and `ioctl()` and `POLLHUP | POLLERR` from `poll()`.
+- **Layout.** Only pads the browser reports with the `"standard"` mapping are
+  connected. They use the Linux `xpad` (Xbox 360) layout that the standard
+  mapping is modeled on: `BTN_A`/`BTN_B`/`BTN_X`/`BTN_Y` for the bottom,
+  right, left and top face buttons; `BTN_TL`/`BTN_TR`, `BTN_SELECT`,
+  `BTN_START`, `BTN_MODE`, and `BTN_THUMBL`/`BTN_THUMBR`; the sticks on
+  `ABS_X`/`ABS_Y`/`ABS_RX`/`ABS_RY` (-32768..32767, up and left negative);
+  analog triggers on `ABS_Z`/`ABS_RZ` (0..1023); and the d-pad as the
+  `ABS_HAT0X`/`ABS_HAT0Y` hat. Another mapping has no known layout, so the
+  pad is not connected and dmesg says so.
+- **Identity.** The device reports what it is: `BUS_VIRTUAL`, vendor
+  `0x1209`, product `0x0003`, named after the browser's `Gamepad.id`. It does
+  not claim the physical pad's USB vendor and product, because its layout is
+  the browser's mapping, not that pad's own report.
+- **Not yet.** No rumble (`EV_FF`), no `/dev/input/js*` joystick interface,
+  and no `inotify` on `/dev/input`. Without `inotify`, a scanner such as SDL's
+  Linux joystick backend notices a new node only when `/dev/input`'s
+  `st_mtime` changes, at one-second granularity. The SDL packages are still
+  built without joystick support, and the DOSBox Pure and retro-emulator
+  frontends do not read gamepads yet.
+
+The Node host has no Gamepad API, so no pad is ever connected there; tests
+connect devices through the same `connectInputDevice` API the browser source
+uses. See [POSIX status](posix-status.md) for the kernel's evdev surface.
+
 ### Audio output (`/dev/dsp`)
 
 Automated browser tests use the shared `playwright-test.ts` fixture to keep

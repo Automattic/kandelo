@@ -1,4 +1,4 @@
-//! Event producer for `/dev/input/event{0,1}`. Mirrors Linux
+//! Event producer for `/dev/input/event*`. Mirrors Linux
 //! `drivers/input/evdev.c::evdev_pass_values`: a full ring drops the
 //! oldest record to make room for the newest and latches `dropped`; the
 //! next read prepends a synthetic `SYN_DROPPED` so userspace can resync
@@ -12,8 +12,10 @@ use crate::ofd::INPUT_RING_MAX_BYTES;
 const RECORD_SIZE: usize = core::mem::size_of::<WpkInputEvent>();
 static LAST_DELIVERY_EPOCH: AtomicU64 = AtomicU64::new(0);
 
-/// Push one `WpkInputEvent` onto every open OFD bound to `device`
-/// (0 = keyboard, 1 = pointer). Other device numbers are dropped.
+/// Push one `WpkInputEvent` onto every open OFD bound to `device`: 0 =
+/// keyboard, 1 = pointer, 2.. = a connected host-described device
+/// (`input::hotplug`). Records for a device that is not connected, or that
+/// the input core would drop (see `hotplug`), reach no OFD.
 ///
 /// Returns the count of OFDs that accepted the record (drops do not
 /// count). `tv_sec` / `tv_usec` are supplied by the caller so this
@@ -26,18 +28,23 @@ pub fn push_event(
     tv_sec: i64,
     tv_usec: i32,
 ) -> usize {
-    if device > 1 {
-        return 0;
-    }
-    // Update the device-global keystate first — before the per-OFD ring
-    // fan-out — so a key/button transition is recorded even when a ring
-    // is full and drops a record. That is what lets a client recover the
-    // true key state via EVIOCGKEY after a SYN_DROPPED.
-    if ev_type == wasm_posix_shared::input::EV_KEY {
-        crate::input::note_key_event(device, code, value);
-    } else if ev_type == wasm_posix_shared::input::EV_ABS {
-        crate::input::note_absolute_event(device, code, value);
-    }
+    // Update device state first — before the per-OFD ring fan-out — so a
+    // key/button transition is recorded even when a ring is full and drops
+    // a record. That is what lets a client recover the true key state via
+    // EVIOCGKEY after a SYN_DROPPED.
+    let (serial, value) = if device < wasm_posix_shared::input::INPUT_FIXED_DEVICES {
+        if ev_type == wasm_posix_shared::input::EV_KEY {
+            crate::input::note_key_event(device, code, value);
+        } else if ev_type == wasm_posix_shared::input::EV_ABS {
+            crate::input::note_absolute_event(device, code, value);
+        }
+        (0, value)
+    } else {
+        match crate::input::hotplug::accept_event(device, ev_type, code, value) {
+            Some(accepted) => accepted,
+            None => return 0,
+        }
+    };
     let ev = WpkInputEvent {
         tv_sec,
         tv_usec,
@@ -57,7 +64,7 @@ pub fn push_event(
     crate::process_table::with_processes(|proc| {
         for (_idx, ofd) in proc.ofd_table.iter_mut() {
             let Some(input) = ofd.input() else { continue };
-            if input.device != device {
+            if input.device != device || input.serial != serial {
                 continue;
             }
             let mut ring = input.ring.borrow_mut();
@@ -82,6 +89,25 @@ pub fn push_event(
         }
     });
     delivered
+}
+
+/// Wake every description still bound to a connection that just ended, so
+/// a `poll`/`epoll` waiter sees `POLLHUP | POLLERR` and a reader `ENODEV`.
+pub fn hang_up(device: u8, serial: u64) {
+    use wasm_posix_shared::epoll::{EPOLLERR, EPOLLHUP};
+    crate::process_table::with_processes(|proc| {
+        for (_idx, ofd) in proc.ofd_table.iter() {
+            if ofd
+                .input()
+                .is_some_and(|input| input.device == device && input.serial == serial)
+            {
+                crate::epoll::notify(
+                    crate::epoll::Source::Description(ofd.ofd_id),
+                    EPOLLERR | EPOLLHUP,
+                );
+            }
+        }
+    });
 }
 
 fn push_record(ring: &mut crate::ofd::InputEventRing, ev: &WpkInputEvent) {
@@ -171,6 +197,7 @@ mod tests {
 
     #[test]
     fn push_event_with_unknown_device_is_a_noop() {
+        let _guard = crate::input::hotplug::test_guard();
         let _ = install_process(7001);
         let delivered = push_event(2, EV_KEY, KEY_A, 1, 0, 0);
         assert_eq!(delivered, 0);

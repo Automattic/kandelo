@@ -82,7 +82,14 @@ pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
 
 /// Match a resolved path to any devfs entry (directory or file) for stat purposes.
 pub fn match_devfs_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
-    if let Some(_entry) = match_devfs_dir(path) {
+    if let Some(entry) = match_devfs_dir(path) {
+        // `/dev/input` changes as devices connect and disconnect, and
+        // scanners without inotify watch its mtime for that.
+        let (sec, nsec) = if entry == DevfsEntry::InputDir {
+            crate::input::hotplug::input_dir_time()
+        } else {
+            (0, 0)
+        };
         return Some(WasmStat {
             st_dev: 5,
             st_ino: devfs_ino(path),
@@ -93,10 +100,10 @@ pub fn match_devfs_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
             st_size: 0,
             st_atime_sec: 0,
             st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
+            st_mtime_sec: sec as u64,
+            st_mtime_nsec: nsec,
+            st_ctime_sec: sec as u64,
+            st_ctime_nsec: nsec,
             _pad: 0,
             st_rdev: 0,
         });
@@ -210,6 +217,12 @@ pub(crate) fn dir_entries(
             // /dev/input/event1 — pointer evdev.
             entries.try_push((crate::IoBuffer::copy_from(b"event0")?, DT_CHR, devfs_ino(b"/dev/input/event0")))?;
             entries.try_push((crate::IoBuffer::copy_from(b"event1")?, DT_CHR, devfs_ino(b"/dev/input/event1")))?;
+            // /dev/input/event2.. — host-described devices while connected.
+            for device in crate::input::hotplug::connected() {
+                let name = crate::IoBuffer::formatted(format_args!("event{}", device))?;
+                let path = crate::IoBuffer::formatted(format_args!("/dev/input/event{}", device))?;
+                entries.try_push((name, DT_CHR, devfs_ino(&path)))?;
+            }
         }
         DevfsEntry::DriDir => {
             // /dev/dri/card0 — KMS / display side.
@@ -600,17 +613,47 @@ mod tests {
 
     #[test]
     fn event0_and_event1_listed_in_dev_input_dir() {
+        let _guard = crate::input::hotplug::test_guard();
         let proc = crate::process::Process::new(1);
         let entries = dir_entries(&proc, &DevfsEntry::InputDir).unwrap();
         let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
         assert!(names.iter().any(|n| *n == b"event0"), "event0 missing: {:?}", names);
         assert!(names.iter().any(|n| *n == b"event1"), "event1 missing: {:?}", names);
-        // event2 deliberately NOT synthesised.
+        // event2+ appear only while a host-described device is connected.
         assert!(!names.iter().any(|n| *n == b"event2"));
         for (name, dtype, _) in entries.iter() {
             if name.as_slice() == b"event0" || name.as_slice() == b"event1" {
                 assert_eq!(*dtype, DT_CHR);
             }
         }
+    }
+
+    #[test]
+    fn connected_devices_are_listed_and_stamp_dev_input() {
+        let _guard = crate::input::hotplug::test_guard();
+        let proc = crate::process::Process::new(1);
+        let pad = crate::input::hotplug::test_desc("pad", &[0x130], &[]);
+        assert_eq!(crate::input::hotplug::connect(&pad, (500, 1)), Ok(2));
+        assert_eq!(crate::input::hotplug::connect(&pad, (600, 2)), Ok(3));
+        let names = |proc: &crate::process::Process| -> Vec<Vec<u8>> {
+            dir_entries(proc, &DevfsEntry::InputDir)
+                .unwrap()
+                .iter()
+                .map(|(n, _, _)| n.as_slice().to_vec())
+                .collect()
+        };
+        let listed = names(&proc);
+        assert!(listed.contains(&b"event2".to_vec()) && listed.contains(&b"event3".to_vec()));
+        let st = match_devfs_stat(b"/dev/input", 0, 0).unwrap();
+        assert_eq!((st.st_mtime_sec, st.st_mtime_nsec), (600, 2));
+        assert_eq!((st.st_ctime_sec, st.st_ctime_nsec), (600, 2));
+
+        crate::input::disconnect_device(2, (700, 3)).unwrap();
+        let listed = names(&proc);
+        assert!(!listed.contains(&b"event2".to_vec()) && listed.contains(&b"event3".to_vec()));
+        let st = match_devfs_stat(b"/dev/input", 0, 0).unwrap();
+        assert_eq!(st.st_mtime_sec, 700);
+        // Other devfs directories do not move.
+        assert_eq!(match_devfs_stat(b"/dev", 0, 0).unwrap().st_mtime_sec, 0);
     }
 }

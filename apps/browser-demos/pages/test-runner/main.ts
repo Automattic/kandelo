@@ -6,6 +6,7 @@
  * and returns { exitCode, stdout, stderr, hostDiagnostics }.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { BrowserGamepadSource } from "@host/input/browser-gamepad-source";
 import { writeVfsBinary } from "@host/vfs/image-helpers";
 import type { HostDiagnostic } from "@host/host-diagnostic";
 import type { WasmModuleCacheStats } from "@host/wasm-module-cache";
@@ -89,6 +90,8 @@ declare global {
         dnsAliases?: Record<string, string>;
         /** Read the kernel worker's module cache counters before teardown. */
         wasmModuleCacheStats?: boolean;
+        /** Plug the page's gamepads into the machine, as the shell does. */
+        gamepads?: boolean;
       },
     ) => Promise<{
       exitCode: number;
@@ -99,6 +102,8 @@ declare global {
       wasmModuleCacheStats?: WasmModuleCacheStats;
     }>;
     __testCount: number;
+    /** Stdout of the `__runTest` in progress, for tests that act on markers. */
+    __runningTestStdout: () => string;
     /**
      * Start one real-browser `/dev/dsp` run with the AudioContext deliberately
      * suspended. The guest is allowed to fill the bounded PCM ring and block
@@ -247,6 +252,7 @@ async function init() {
   }
 
   window.__testCount = 0;
+  window.__runningTestStdout = () => "";
 
   installAudioResumeButton();
 
@@ -361,9 +367,11 @@ async function init() {
       corsProxy?: BrowserCorsProxyConfig | null;
       dnsAliases?: Record<string, string>;
       wasmModuleCacheStats?: boolean;
+      gamepads?: boolean;
     },
   ) => {
     let stdout = "";
+    window.__runningTestStdout = () => stdout;
     let stderr = "";
     let combined = "";
     const hostDiagnostics: HostDiagnostic[] = [];
@@ -421,6 +429,9 @@ async function init() {
 
     try {
       await kernel.initFromImage({ kernelWasm: kernelWasmBytes!, vfsImage });
+      if (options?.gamepads) {
+        kernel.attachInputDeviceSource(new BrowserGamepadSource(window));
+      }
 
       // Run the test with a timeout
       const cwd = options?.cwd;
