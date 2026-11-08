@@ -73,9 +73,25 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
         failure: request.failure(),
       })));
       context.on("response", response => {
-        if (response.status() >= 400) recordLifecycle("HTTP error", JSON.stringify({
-          url: response.url(), status: response.status(),
-        }));
+        if (response.status() >= 400) {
+          const failure = { url: response.url(), status: response.status() };
+          recordLifecycle("HTTP error", JSON.stringify(failure));
+          void response.text().then(body => recordLifecycle("HTTP error body", JSON.stringify({
+            ...failure, contentType: response.headers()["content-type"], body: body.slice(0, 2048),
+          }))).catch(error => recordLifecycle("HTTP error body unavailable", String(error)));
+        }
+      });
+      await context.exposeBinding("__kandeloObserveWordPressError", ({ frame }, detail) =>
+        recordLifecycle("original browser error", JSON.stringify({ frame: frame.url(), detail })));
+      await context.addInitScript(() => {
+        const record = (kind: string, value: unknown) => {
+          const detail = value as { message?: unknown; code?: unknown; stack?: unknown } | null;
+          void (window as unknown as { __kandeloObserveWordPressError(detail: unknown): Promise<void> })
+            .__kandeloObserveWordPressError({ kind, message: String(detail?.message ?? value),
+              code: detail?.code, stack: String(detail?.stack ?? "").slice(0, 4096) }).catch(() => {});
+        };
+        window.addEventListener("error", event => record("error", event.error ?? event.message));
+        window.addEventListener("unhandledrejection", event => record("rejection", event.reason));
       });
       context.on("console", message => {
         if (message.type() !== "error" && message.type() !== "warning") return;
