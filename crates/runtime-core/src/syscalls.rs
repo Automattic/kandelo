@@ -3185,6 +3185,38 @@ fn refuse_open_of_devfs_socket(resolved: &[u8], oflags: u32) -> Result<(), Errno
     Err(Errno::ENXIO)
 }
 
+/// `chmod(2)` of a devfs-owned socket name (`/dev/log`), or `None` when
+/// `resolved` is not one.
+///
+/// Devfs stores no attributes for this node, so a change it cannot remember is
+/// `EROFS` like every other devfs mutation. A request for the mode the node
+/// already reports is different: there is nothing to remember, because nothing
+/// changes. POSIX asks only that the mode afterwards be the mode requested,
+/// and it already is.
+///
+/// WHY it matters rather than being a nicety: `sysklogd` calls
+/// `chmod(sun->sun_path, 0666)` immediately after binding its socket and
+/// treats a failure as fatal (`socket.c`, `socket_create`). Refusing a mode
+/// the node already has made the canonical syslog daemon fail with "cannot
+/// create /dev/log: Read-only file system" after a bind that had succeeded --
+/// an honest refusal that reported a problem Kandelo did not have. The stub
+/// contract in CLAUDE.md names this case: honest failure, "unless the API's
+/// correct compatibility behavior is a no-op".
+fn chmod_devfs_socket_name(
+    proc: &Process,
+    resolved: &[u8],
+    mode: u32,
+) -> Option<Result<(), Errno>> {
+    if !crate::devfs::bindable_socket_exists(resolved) {
+        return None;
+    }
+    let reported = crate::devfs::match_devfs_stat(resolved, proc.effective_uid(), proc.effective_gid())?;
+    if mode & 0o7777 == reported.st_mode & 0o7777 {
+        return Some(Ok(()));
+    }
+    Some(Err(Errno::EROFS))
+}
+
 /// `unlink(2)` of a devfs-owned socket name (`/dev/log`), or `None` when
 /// `resolved` is not one. The name is released by dropping its registry entry,
 /// which is also what a datagram sender parked on the old endpoint must
@@ -9320,6 +9352,9 @@ pub fn sys_chmod(
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
     if chmod_pty_path(proc, host, &resolved, mode)?.is_some() {
         return Ok(());
+    }
+    if let Some(result) = chmod_devfs_socket_name(proc, &resolved, mode) {
+        return result;
     }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
@@ -59184,6 +59219,50 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(sys_stat(&mut proc, &mut host, b"/dev/log").unwrap().st_mode & S_IFMT, S_IFSOCK);
             _release.run();
             assert_eq!(sys_stat(&mut proc, &mut host, b"/dev/log").map(|_| ()), Err(Errno::ENOENT));
+        }
+
+        #[test]
+        /// sysklogd chmods its socket to 0666 right after binding and treats a
+        /// failure as fatal, so refusing the mode the node already reports made
+        /// the canonical daemon fail with "cannot create /dev/log: Read-only
+        /// file system" after a bind that had succeeded. A change devfs cannot
+        /// remember is still EROFS, because nothing would.
+        fn chmod_of_dev_log_accepts_the_mode_it_already_has_and_refuses_a_change() {
+            let _lock = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _release = Release::new(9113);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            proc.set_pid_for_test(9113);
+
+            // Nothing is bound yet, so the name does not exist to chmod.
+            assert_eq!(sys_chmod(&mut proc, &mut host, b"/dev/log", 0o666), Err(Errno::ENOENT));
+
+            let fd = bind_dgram(&mut proc, &mut host, b"/dev/log").unwrap();
+            assert_eq!(
+                sys_stat(&mut proc, &mut host, b"/dev/log").unwrap().st_mode & 0o7777,
+                0o666,
+            );
+
+            // The no-op sysklogd performs.
+            assert_eq!(sys_chmod(&mut proc, &mut host, b"/dev/log", 0o666), Ok(()));
+            // Still 0666: accepting the request stored nothing, because there
+            // was nothing to store.
+            assert_eq!(
+                sys_stat(&mut proc, &mut host, b"/dev/log").unwrap().st_mode & 0o7777,
+                0o666,
+            );
+
+            // A real change has nowhere to live and must still say so, rather
+            // than be accepted and forgotten.
+            for mode in [0o600, 0o644, 0o777] {
+                assert_eq!(
+                    sys_chmod(&mut proc, &mut host, b"/dev/log", mode),
+                    Err(Errno::EROFS),
+                    "chmod 0{mode:o} must not be silently dropped",
+                );
+            }
+
+            sys_close(&mut proc, &mut host, fd).unwrap();
         }
 
         #[test]

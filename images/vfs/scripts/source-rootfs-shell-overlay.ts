@@ -75,8 +75,14 @@ export function populateSourceRootfsShellOverlay(
     [
       "#!/bin/sh",
       "set -eu",
-      `if [ -x ${SHELL_SYSLOGD_PATH} ]; then`,
-      `  ${SHELL_SYSLOGD_PATH} || echo 'kandelo: the system log daemon failed to start' >&2`,
+      // The pidfile makes this safe to run more than once: sysklogd unlinks
+      // /dev/log before binding, so a second daemon would steal the socket
+      // and orphan the first. /run is a fresh tmpfs every boot, so a stale
+      // pidfile cannot survive a restart and lock logging out.
+      `if [ -x ${SHELL_SYSLOGD_PATH} ] && [ ! -e /run/syslogd.pid ]; then`,
+      // -s: no remote senders. Without it syslogd opens *:514 for peers a
+      // browser machine does not have.
+      `  ${SHELL_SYSLOGD_PATH} -s || echo 'kandelo: the system log daemon failed to start' >&2`,
       "fi",
       "exec /bin/login -p -f maker",
       "",
