@@ -1,0 +1,266 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-002"
+    ],
+    "relatedFamilies": [
+      "native-integration",
+      "crypto",
+      "terminal"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/native-integration.md",
+        "findingId": "NI-002",
+        "relation": "direct-selected-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-015",
+        "relation": "shared-prerequisite-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-002",
+        "relation": "shared-prerequisite-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-010",
+        "relation": "shared-prerequisite-partial"
+      }
+    ],
+    "scope": "Three qualified partial source contributions, no whole finding/family closure."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "sqlite-tag-store",
+      "scope": "Genuine native LRU/prepared-statement/public tag-store ownership source. Historical portable8groups andnative targetonly observations notrerun/notnewguest orpublicfrontend proof. Twohistorical helper attempts/oneauthored compilefailure creditedonce atactualmetadata, notnewcompiler."
+    },
+    {
+      "feature": "internal-fips-state",
+      "scope": "Read-only actual linked ncrypto FIPS default-property state plusatomic uint64generation/unchanged pinnedcache consumed by realWebIDL. One necessary currentcore8frontend composition overgenuine native internalFIPSfixture; newcandidateCPP/mutex/BigInt/guest remainunexecuted. No publicgetter/setter/forcedCLI/providercertification claim."
+    },
+    {
+      "feature": "tty-native-birth",
+      "scope": "Strictnative-terminal leaf creates actual nativeTTY constructor/prototype/init-admission transaction. Existing stdio tty-stream-open consumes shared prototype/inittransaction, DOESNOTinvoke constructorfunction itself. No publicTTYconstructor activation or invalidfd/descriptors/guest pass."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core263-batch-source-r2/report.json",
+    "sha256": "d7a96d60525009b2c029756d36ab810af3bfa6749e0c8302cd5779a0b59198af",
+    "guardedInputs": 915,
+    "scope": "One normal source/staging/input/package batch; actual coreWebIDL8frontend groups over genuine native internalFIPS component dependency. No SQLportable rerun/new native getters/guestCPP execution. Source/shutdown/realm/GC/FIPSprovider/publicsetter/normalizer/fullcrypto/SQLite gaps remain."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core263-batch-affected-r2.json",
+    "sha256": "c417646c9fa494a838677f8422ae08916f668b827da5195a670eb33d1cce2575",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core263-batch-source-r2/report.json",
+    "sha256": "d7a96d60525009b2c029756d36ab810af3bfa6749e0c8302cd5779a0b59198af",
+    "guardedInputs": 915,
+    "sourcePredicates": 38,
+    "sourceCommands": 8,
+    "currentWebIDLCandidateGroups": 8,
+    "nativeReferenceExecutions": 0,
+    "nativeFipsDelegateComponentOnly": true,
+    "newRootCompilerAttempts": 0,
+    "newGuestCppExecuted": false,
+    "sqlPortableGroupsRerun": 0,
+    "ttyRuntimeGroups": 0,
+    "manualExecutableBoundary": true,
+    "v1OperationClaimed": false
+  },
+  "sealedEvidence": {
+    "report": ".context/core263-batch-metadata-bound-r2/feature-evidence-index.json",
+    "sha256": "db62d241ad7022a040043fb049c36060bab6206254b6474e6a7c4563578bfb87",
+    "reusedEvidence": true,
+    "scope": "Immutable SQL/FIPS/TTY producer source/evidence and independent reviews, reused component/native histories, not a current guest support claim."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/sqlite-tag-store-owner-agent/report.json",
+      "sha256": "d44b632a4584eedfdfe5f0bb504a057aca58f4b29ab7620ea6905b0b75078ad4",
+      "classification": "Historical2actual helpercompileattempts/1authored missing-main failure and late metadataartifact-path harness failure; actual portable8/target3 stay historical, no rerun.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/crypto-webidl-owner-agent/report.json",
+      "sha256": "25851330314a6a190d64c135a8c332a825a14b4a93434ad02e80a757000749ac",
+      "classification": "Original2actual validimport/FIPSvalidator nonpasses and initial setup/generator/converter/namespace authored failures remain immutable; current later FIPScomponent scoped separately.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/tty-native-constructor-owner-agent/report.json",
+      "sha256": "50575b6cbc54abff737a0001bbfaacc3f670afca3e5d833348d66d5dfe3c4771",
+      "classification": "Sourceonly native birth/prototype transaction; original metadata-reference lookup failure retained, no public constructor/guest pass.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/core263-batch-checks-r1/source-receipt.json",
+      "sha256": "39363152deb4c682311576fabfca2df42e807baf4de899f611bb6191039f26a0",
+      "classification": "Actual263R1sourceexec7206/PID63270exit1/log36aa: malformedSQLheadercopy staging command. Failedsource attempt,0newcompiler/guest; originalR1 source/seal/manualapply unchanged.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/core263-batch-checks-r1/package-receipt.json",
+      "sha256": "ebfb7bcacfed6d8047f5122e198aaab0ad05e21e9bfc5f1f6e3b10b27818b01e",
+      "classification": "OriginalR1package14pass remains historical, distinctfromactualR2source/package success. No retroactive sourcepass.",
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "SQL full statement/iteration/reset/binding/bytes/publication/fatal/realm/GC/OOM/Worker/native-callback ownership remains unvalidated.",
+    "Internal FIPS new native getter/mutex/uint64-to-BigInt/error/realm/Worker path uncompiled/unexecuted; source backend existence and native fixture do not establish guest behavior.",
+    "Public crypto.getFips/setFips/forcedCLI/process-state mutation/Worker admission/provider install/certification and full WebCrypto/jobs remain missing.",
+    "Old source262 FIPS/import frontiers stay immutable historical nonpasses. Current actual FIPS validator component observation must be separately scoped; public normalizer/import remains missing.",
+    "TTY stdio consumes shared native constructorPROTOTYPE/inittransaction; it does NOT invoke constructorfunction. Public fd-basedTTYconstructors/shutdown/encodedwrites remain missing.",
+    "No public invalid-fd/descriptor/constructor or fourhost acceptance from source. New SQL/FIPS/TTY JSAPI/GC/OOM/realm/fatal/Worker behavior uncompiled/unexecuted."
+  ],
+  "featureContributions": [
+    {
+      "id": "sqlite-tag-store",
+      "family": "native-integration",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/native-integration.md",
+          "findingId": "NI-002",
+          "relation": "direct-selected-partial"
+        }
+      ],
+      "scope": "Genuine native LRU/prepared-statement/public tag-store ownership source. Historical portable8groups andnative targetonly observations notrerun/notnewguest orpublicfrontend proof. Twohistorical helper attempts/oneauthored compilefailure creditedonce atactualmetadata, notnewcompiler.",
+      "remaining": [
+        "Existing statement/binding/iteration/reset/fatal/publication/GC/realm/Worker shared-backend obligations remain.",
+        "No fullSQLite/sourcefinding/fourhost closure."
+      ],
+      "implementationComplete": false,
+      "freshEvidence": {
+        "report": ".context/core263-batch-root-controls-r2/report.json",
+        "sha256": "7a9646e19498a8b39d63930e1d8f24dceeb6849d670f2d4a087bea1f5969c9d0",
+        "candidateFrontendGroups": 0,
+        "scope": "One candidate-currentcore WebIDL8 composition versus oldnative8 plus actual internal nativeFIPS delegates. RSA validator observation now matches under this native dependency; this is not candidate C++ getter/mutex/uint64/GC/realm/Worker execution. Old source262 FIPS/import nonpasses remain immutable history; current publicnormalizer remains an actual gap. SQLportable8 not rerun; TTY birth source only, publicconstructors inactive.",
+        "nativeReferenceExecutions": 0,
+        "newGuestCppExecuted": false
+      },
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "producerSeal": {
+        "path": ".context/sqlite-tag-store-owner-agent/SEAL.json",
+        "sha256": "5574e5b2717f6b512680f0914868a3a2d8e8b9e6d19b910d771f92ca96bb36b0"
+      },
+      "currentManualSourceCommit": "b1c1b943284c0c3b42b84fec8f9ca3aa092d61d7",
+      "freshCandidateCompositionGroups": 0
+    },
+    {
+      "id": "internal-fips-state",
+      "family": "crypto",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/crypto.md",
+          "findingId": "C-015",
+          "relation": "shared-prerequisite-partial"
+        }
+      ],
+      "scope": "Read-only actual linked ncrypto FIPS default-property state plusatomic uint64generation/unchanged pinnedcache consumed by realWebIDL. One necessary currentcore8frontend composition overgenuine native internalFIPSfixture; newcandidateCPP/mutex/BigInt/guest remainunexecuted. No publicgetter/setter/forcedCLI/providercertification claim.",
+      "remaining": [
+        "Oldsource262twofrontiers remainhistoricalnonpasses. CurrentFIPSvalidatorcomponent observation separately scoped, publicnormalizer/import remainsmissing.",
+        "Public getFips/setFips/forcedCLI/Worker setter processadmission/provider/fullWebCrypto remainopen."
+      ],
+      "implementationComplete": false,
+      "freshEvidence": {
+        "report": ".context/core263-batch-root-controls-r2/report.json",
+        "sha256": "7a9646e19498a8b39d63930e1d8f24dceeb6849d670f2d4a087bea1f5969c9d0",
+        "candidateFrontendGroups": 8,
+        "scope": "One candidate-currentcore WebIDL8 composition versus oldnative8 plus actual internal nativeFIPS delegates. RSA validator observation now matches under this native dependency; this is not candidate C++ getter/mutex/uint64/GC/realm/Worker execution. Old source262 FIPS/import nonpasses remain immutable history; current publicnormalizer remains an actual gap. SQLportable8 not rerun; TTY birth source only, publicconstructors inactive.",
+        "nativeReferenceExecutions": 0,
+        "newGuestCppExecuted": false
+      },
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "producerSeal": {
+        "path": ".context/crypto-fips-state-owner-agent/SEAL.json",
+        "sha256": "b819eace1ecfcbc7e2c3ecedc4e7fa1765b2bc4bfae00f853b4f062bd86f9e8c"
+      },
+      "currentManualSourceCommit": "b1c1b943284c0c3b42b84fec8f9ca3aa092d61d7",
+      "freshCandidateCompositionGroups": 8
+    },
+    {
+      "id": "tty-native-birth",
+      "family": "terminal",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-002",
+          "relation": "shared-prerequisite-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-010",
+          "relation": "shared-prerequisite-partial"
+        }
+      ],
+      "scope": "Strictnative-terminal leaf creates actual nativeTTY constructor/prototype/init-admission transaction. Existing stdio tty-stream-open consumes shared prototype/inittransaction, DOESNOTinvoke constructorfunction itself. No publicTTYconstructor activation or invalidfd/descriptors/guest pass.",
+      "remaining": [
+        "PublicReadStream/WriteStream fdSocketconstructor integration/shutdown/encodedwrites and actualnewJSAPI/lifecycle/fourhost remainmissing."
+      ],
+      "implementationComplete": false,
+      "freshEvidence": {
+        "report": ".context/core263-batch-root-controls-r2/report.json",
+        "sha256": "7a9646e19498a8b39d63930e1d8f24dceeb6849d670f2d4a087bea1f5969c9d0",
+        "candidateFrontendGroups": 0,
+        "scope": "One candidate-currentcore WebIDL8 composition versus oldnative8 plus actual internal nativeFIPS delegates. RSA validator observation now matches under this native dependency; this is not candidate C++ getter/mutex/uint64/GC/realm/Worker execution. Old source262 FIPS/import nonpasses remain immutable history; current publicnormalizer remains an actual gap. SQLportable8 not rerun; TTY birth source only, publicconstructors inactive.",
+        "nativeReferenceExecutions": 0,
+        "newGuestCppExecuted": false
+      },
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "producerSeal": {
+        "path": ".context/tty-native-constructor-owner-agent/SEAL.json",
+        "sha256": "7adb164890bd5e542136fcc55dbac09d90a79c5563ce70f3ac27f6f1759bb907"
+      },
+      "currentManualSourceCommit": "b1c1b943284c0c3b42b84fec8f9ca3aa092d61d7",
+      "freshCandidateCompositionGroups": 0
+    }
+  ],
+  "batchFocusedControlReport": {
+    "report": ".context/core263-batch-root-controls-r2/report.json",
+    "sha256": "7a9646e19498a8b39d63930e1d8f24dceeb6849d670f2d4a087bea1f5969c9d0",
+    "scope": "One candidate-currentcore WebIDL8 composition versus oldnative8 plus actual internal nativeFIPS delegates. RSA validator observation now matches under this native dependency; this is not candidate C++ getter/mutex/uint64/GC/realm/Worker execution. Old source262 FIPS/import nonpasses remain immutable history; current publicnormalizer remains an actual gap. SQLportable8 not rerun; TTY birth source only, publicconstructors inactive."
+  },
+  "batchReceiptIndex": {
+    "report": ".context/core263-batch-metadata-bound-r2/receipt-index.json",
+    "sha256": "5f598a2eaf651c6757d1acd0b494e5bf74d1d14b135bf56bba92e1bf9087b3f7",
+    "scope": "Actual completed source binding/check/import receipts plus preserved failed-preparation/successor provenance, parent-reviewed; no global build-cache or guest proof."
+  },
+  "historicalOnlyEvidence": {
+    "path": ".context/crypto-webidl-owner-agent/controls-r3/native.stdout",
+    "sha256": "9447622309462f4cddd4e95c64aaf2738f9d54bd703761d4417291af88d9c172"
+  },
+  "currentFipsValidatorComponentMatchesNative": true,
+  "actualRemainingPublicImport": {
+    "name": "Error",
+    "code": "ERR_METHOD_NOT_IMPLEMENTED",
+    "message": "The WebCrypto algorithm/import owner method is not implemented"
+  },
+  "priorTwoNonpassesRemainHistorical": ".context/crypto-webidl-owner-agent/report.json",
+  "manualExecutableBoundary": true,
+  "v1OperationClaimed": false,
+  "at": "2026-11-08T08:28:53.309020+00:00",
+  "recipeRevision": 263,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

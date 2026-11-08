@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source263 combines SQLTagStore, internal FIPS state and native TTY birth foundations. Manual source application preserves the executable build boundary. Source presence and scoped native-dependent frontend observations do not establish guest or public module conformance.
+See [source scope](core-batch263-implementation.md).
+
 Source262 adds listener async ownership, Crypto WebIDL prerequisites and statfs shared-binding ownership in one source batch. Existing native evidence is reused with exact identity; new candidate frontend observations do not execute the new listener/cache JSAPI or kernel backend.
 See [source scope](core-batch262-implementation.md).
 

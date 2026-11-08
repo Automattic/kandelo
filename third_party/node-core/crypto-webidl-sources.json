@@ -50,7 +50,13 @@
       "start": "function bigIntArrayToUnsignedInt(",
       "length": 441,
       "sha256": "7f2085fd672ab39adf383ed4758b2aaf29f9b90d0daa8d6e921f996b43db7f91"
+    },
+    "fipsState": {
+      "source": "lib/internal/crypto/util.js",
+      "start": "let fips;\nlet fipsGeneration;\nfunction isFips()",
+      "length": 224,
+      "sha256": "8e482860e7060d3ae230dc995efdd3f4ea849f100ff1d069fb1aa51567732d5f"
     }
   },
-  "scope": "Complete unchanged crypto WebIDL module and actual selected pure util helpers consumed by keys; no algorithm normalization/import/Subtle/provider/FIPS capability claim. FIPS-dependent validators require a missing real native state owner."
+  "scope": "Complete unchanged crypto WebIDL module and selected util helpers consumed by keys, including actual generation-cached FIPS state over linked ncrypto. Not provider installation/certification, public get/set, full normalization/import/Subtle, CLI or Worker setter support."
 }

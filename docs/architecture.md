@@ -7331,3 +7331,7 @@ Source261 combines returned timer/selected primitive-ID ownership, builtin ESM s
 ### Batched listener, crypto WebIDL and statfs ownership
 
 Source262 combines real listener async lifetime, complete pinned crypto WebIDL prerequisite and native statfs binding-cache correction. One actual shared source/package checkpoint preserves three feature scopes, reused native references, original failures and unresolved guest/backend obligations. Source implementation is not conformance.
+
+### Batched SQLTagStore, internal FIPS and TTY birth
+
+Source263 combines real SQLTagStore cache/prepared-statement ownership, linked ncrypto internal FIPS state/generation and shared native TTY birth/prototype/init ownership. One manual source application preserves executable0755, followed by one actual source/package checkpoint. Historical component evidence and current native-dependent frontend observations remain separate from uncompiled guest behavior.

@@ -1,0 +1,11 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index e357cca7182dee734c6c720f74f0dea79489442b..c89b2601aacd6cf7c66ca514b28f868f7d46212e 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -5048,4 +5048,6 @@ static bool DefineKandeloNodeNative(JSContext* cx) {
+       JS_FN("hashDigest", (KandeloCryptoGuard<KandeloNativeOneShotDigest>), 4, 0),
+       JS_FN("digestNames", (KandeloCryptoGuard<KandeloNativeDigestNames>), 0, 0),
++      JS_FN("getFipsCrypto", (KandeloCryptoGuard<KandeloNativeGetFipsCrypto>), 0, 0),
++      JS_FN("getFipsCryptoGeneration", (KandeloCryptoGuard<KandeloNativeGetFipsCryptoGeneration>), 0, 0),
+       JS_FN("getOpenSSLVersion", KandeloNativeOpenSSLVersion, 0, 0),
+       JS_FN("timingSafeEqual", (KandeloCryptoGuard<KandeloNativeTimingSafeEqual>), 2, 0),

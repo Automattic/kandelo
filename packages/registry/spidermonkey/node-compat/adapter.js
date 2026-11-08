@@ -505,6 +505,8 @@
         runKdfJob(owner) { return native.runKdfJob(owner); },
         hashDigest(algorithm, input, outputLength, digestOptions) { return native.hashDigest(algorithm, input, outputLength, digestOptions); },
         digestNames() { return native.digestNames(); },
+        getFipsCrypto() { return native.getFipsCrypto(); },
+        getFipsCryptoGeneration() { return native.getFipsCryptoGeneration(); },
         getOpenSSLVersion() { return native.getOpenSSLVersion(); },
         timingSafeEqual(a, b) { return native.timingSafeEqual(a, b); },
         eventLoopDelayOperation(...args) { return native.eventLoopDelayOperation(...args); },

@@ -14,12 +14,9 @@ function _createNodeCryptoWebIDL(platform) {
         try { new Uint8Array(buffer); return false; } catch { return true; }
     });
     const { getBufferSourceBytes, getHashes } = platform.digestHelpers;
-    // Real provider FIPS state/generation is not yet exposed by the engine.
-    // Preserve this prerequisite at invocation, not a fabricated false value
-    // or selective validator omission. Module initialization does not query it.
-    function isFips() {
-        throw new ERR_METHOD_NOT_IMPLEMENTED('Crypto FIPS state owner');
-    }
+    // Private engine delegates are captured at factory admission; this never
+    // consults mutable public crypto.getFips or invents a provider capability.
+    const { getFipsCrypto, getFipsCryptoGeneration } = platform.native;
     /* NODE_CRYPTO_WEBIDL_HELPERS */
     function require(name) {
         if (name === 'internal/webidl') return platform.webidl;

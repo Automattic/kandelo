@@ -9,6 +9,8 @@
 #define SQLITE_ENABLE_SESSION 1
 #endif
 #include "kandelo-node-sqlite-store.h"
+#include "kandelo-node-sqlite-tag-cache.h"
+#include "js/Proxy.h"
 #include "kandelo-node-sqlite-constants.h"
 #include "js/Wrapper.h"
 #include "js/Stack.h"
@@ -471,8 +473,18 @@ static void KandeloSqliteAggregateValue(sqlite3_context* context) {
 }
 static void KandeloSqliteFunctionDestroy(void* data) { delete static_cast<KandeloSqliteFunction*>(data); }
 
+// Records own GC edges to genuine prepared-statement wrappers, never native
+// shared_ptrs whose cache eviction would synchronously finalize SQLite state.
+struct KandeloSqliteTagRecord {
+  JS::Heap<JSObject*> publicStatement, nativeStatement;
+  KandeloSqliteTagRecord(JSObject* visible, JSObject* actual)
+      : publicStatement(visible),nativeStatement(actual) {}
+};
+using KandeloSqliteTagCache=kandelo::sqlite::TagCache<std::unique_ptr<KandeloSqliteTagRecord>>;
 struct KandeloSqliteHandle {
   std::shared_ptr<SqliteConnection> connection;
+  std::weak_ptr<SqliteConnection> tagConnection;
+  std::unique_ptr<KandeloSqliteTagCache> tags;
   std::shared_ptr<SqliteStatement> statement;
   std::shared_ptr<SqliteSession> session;
   std::shared_ptr<KandeloSqliteCallbacks> callbacks;
@@ -493,6 +505,10 @@ static void KandeloSqliteTrace(JSTracer* tracer, JSObject* object) {
   // Only the database owns callback edges. Child handles retain it in slot1,
   // so cycles through a user closure stay ordinary collectible JS GC graphs.
   if (owner->connection && owner->callbacks) owner->callbacks->Trace(tracer);
+  if (owner->tags) owner->tags->ForEach([&](auto& entry) {
+    JS::TraceEdge(tracer,&entry->publicStatement,"SQLite cached public statement");
+    JS::TraceEdge(tracer,&entry->nativeStatement,"SQLite cached native statement");
+  });
 }
 static const JSClassOps KandeloSqliteClassOps = {
   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, KandeloSqliteFinalize,
@@ -506,7 +522,7 @@ static KandeloSqliteHandle* KandeloSqliteOwner(HandleValue value, int kind) {
   const auto slot = JS::GetReservedSlot(&value.toObject(), 0);
   if (slot.isUndefined()) throw SqliteError("ERR_INVALID_STATE", "SQLite owner is not initialized");
   auto* owner = static_cast<KandeloSqliteHandle*>(slot.toPrivate());
-  if (kind == 2 ? !owner->session : kind == 1 ? !owner->statement : !owner->connection) throw SqliteError("ERR_INVALID_THIS", "Wrong SQLite owner kind");
+  if (kind == 3 ? !owner->tags : kind == 2 ? !owner->session : kind == 1 ? !owner->statement : !owner->connection) throw SqliteError("ERR_INVALID_THIS", "Wrong SQLite owner kind");
   return owner;
 }
 static bool KandeloSqliteNewOwner(JSContext* cx, std::unique_ptr<KandeloSqliteHandle> owner, MutableHandleValue result,
@@ -577,6 +593,82 @@ static bool KandeloSqliteImageSource(JSContext* cx, HandleValue value, KandeloCr
   }
   throw SqliteError("ERR_INVALID_ARG_TYPE", "The \"buffer\" argument must be a Uint8Array.");
 }
+static std::shared_ptr<SqliteConnection> KandeloSqliteTagConnection(KandeloSqliteHandle* owner) {
+  auto connection=owner->tagConnection.lock();
+  if (!connection) throw SqliteError("ERR_INVALID_STATE","database is not open");
+  return connection;
+}
+static bool KandeloSqliteTagOperation(JSContext* cx, const CallArgs& args,
+    const std::string& operation, KandeloSqliteHandle* owner) {
+  if (operation=="tagCheck") {
+    auto connection=KandeloSqliteTagConnection(owner);connection->Require();connection->CheckAuthorizer();
+  } else if (operation=="tagCapacity") { args.rval().setNumber(owner->tags->Capacity());return true;
+  } else if (operation=="tagSize") { args.rval().setNumber(owner->tags->Size());return true;
+  } else if (operation=="tagClear") {
+    // This only drops traced JS edges. It never sqlite3_finalize's a cached
+    // statement and is therefore safe even from the actual authorizer.
+    owner->tags->Clear();
+  } else if (operation=="tagSql") {
+    if (!args.get(2).isObject()) throw SqliteError("ERR_INVALID_ARG_TYPE","First argument must be an array of strings (template literal).");
+    RootedObject parts(cx,js::CheckedUnwrapDynamic(&args[2].toObject(),cx));
+    if (!parts) { if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);return false; }
+    bool isArray;
+    if (js::IsProxy(parts)) throw SqliteError("ERR_INVALID_ARG_TYPE","First argument must be an array of strings (template literal).");
+    if (!JS::IsArrayObject(cx,parts,&isArray)) return false;
+    if (!isArray) throw SqliteError("ERR_INVALID_ARG_TYPE","First argument must be an array of strings (template literal).");
+    if (!args.get(3).isInt32() || args[3].toInt32()<0) throw SqliteError("ERR_INVALID_ARG_TYPE","Invalid tag parameter count");
+    const uint32_t params=uint32_t(args[3].toInt32());std::string sql;
+    {
+      JSAutoRealm realm(cx,parts);uint32_t length;
+      if (!JS::GetArrayLength(cx,parts,&length)) return false;
+      for (uint32_t i=0;i<length;++i) {
+        RootedValue part(cx);
+        if (!JS_GetElement(cx,parts,i,&part)) {
+          // Pinned PrepareStatement explicitly replaces a catchable fragment
+          // getter exception with this type error. An uncatchable failed call
+          // still returns false without manufacturing a catchable value.
+          if (!JS_IsExceptionPending(cx)) return false;
+          JS_ClearPendingException(cx);
+          throw SqliteError("ERR_INVALID_ARG_TYPE","Template literal parts must be strings.");
+        }
+        if (!part.isString()) throw SqliteError("ERR_INVALID_ARG_TYPE","Template literal parts must be strings.");
+        std::string text;if (!KandeloSqliteString(cx,part,&text)) return false;
+        sql+=text;if (i<params) sql+='?';
+      }
+    }
+    return KandeloSqliteText(cx,sql,args.rval());
+  } else if (operation=="tagGet") {
+    std::string sql;if (!KandeloSqliteString(cx,args.get(2),&sql)) return false;
+    auto* found=owner->tags->Get(sql);
+    if (!found) { args.rval().setUndefined();return true; }
+    RootedObject actual(cx,(*found)->nativeStatement);
+    RootedValue actualValue(cx,ObjectValue(*actual));
+    if (KandeloSqliteOwner(actualValue,1)->statement->IsFinalized()) {
+      owner->tags->Erase(sql);args.rval().setUndefined();return true;
+    }
+    // Root before wrapping/allocation. No raw list node is read after that.
+    RootedValue result(cx,ObjectValue(*(*found)->publicStatement));
+    if (!JS_WrapValue(cx,&result)) return false;
+    args.rval().set(result);return true;
+  } else if (operation=="tagPrepare") {
+    std::string sql;if (!KandeloSqliteString(cx,args.get(2),&sql)) return false;
+    auto connection=KandeloSqliteTagConnection(owner);
+    auto prepared=connection->PrepareTag(sql);
+    auto result=std::make_unique<KandeloSqliteHandle>();
+    result->statement=std::move(prepared);result->callbacks=owner->callbacks;
+    RootedObject database(cx,&JS::GetReservedSlot(&args[1].toObject(),1).toObject());
+    return KandeloSqliteNewOwner(cx,std::move(result),args.rval(),database);
+  } else if (operation=="tagPut") {
+    std::string sql;if (!KandeloSqliteString(cx,args.get(2),&sql)) return false;
+    if (!args.get(3).isObject()) throw SqliteError("ERR_INVALID_ARG_TYPE","Tag statement wrapper is required");
+    auto* statement=KandeloSqliteOwner(args.get(4),1);
+    if (statement->statement->Owner()!=KandeloSqliteTagConnection(owner))
+      throw SqliteError("ERR_INVALID_STATE","Cached statement belongs to a different database");
+    owner->tags->Put(sql,std::make_unique<KandeloSqliteTagRecord>(&args[3].toObject(),&args[4].toObject()));
+  } else throw SqliteError("ERR_NOT_IMPLEMENTED","Unknown SQLite tag-store operation");
+  args.rval().setUndefined();return true;
+}
+
 static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   std::string operation;
@@ -622,9 +714,23 @@ static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
     if (open) owner->connection->Open();
     return KandeloSqliteNewOwner(cx, std::move(owner), args.rval());
   }
-  const bool statementOperation = operation == "checkStatementExecution" || operation == "checkStatement" || operation == "isStatementFinalized" || operation == "closeStatement" || operation == "columns" || operation == "finalize" || operation == "reset" || operation == "bind" || operation == "step" || operation == "stepDiscard" || operation == "names" || operation == "parameters" || operation == "sourceSQL" || operation == "expandedSQL" || operation == "stat" || operation == "resetStats";
+  const bool statementOperation = operation == "parameterCount" || operation == "checkStatementExecution" || operation == "checkStatement" || operation == "isStatementFinalized" || operation == "closeStatement" || operation == "columns" || operation == "finalize" || operation == "reset" || operation == "bind" || operation == "step" || operation == "stepDiscard" || operation == "names" || operation == "parameters" || operation == "sourceSQL" || operation == "expandedSQL" || operation == "stat" || operation == "resetStats";
   const bool sessionOperation = operation == "sessionChangeset" || operation == "closeSession";
-  auto* owner = KandeloSqliteOwner(args.get(1), sessionOperation ? 2 : statementOperation ? 1 : 0);
+  const bool tagOperation=operation=="tagCheck" || operation=="tagCapacity" || operation=="tagSize" ||
+      operation=="tagClear" || operation=="tagSql" || operation=="tagGet" || operation=="tagPrepare" || operation=="tagPut";
+  auto* owner=KandeloSqliteOwner(args.get(1),tagOperation?3:sessionOperation?2:statementOperation?1:0);
+  if (tagOperation) return KandeloSqliteTagOperation(cx,args,operation,owner);
+  if (operation=="createTagStore") {
+    owner->connection->Require();owner->connection->CheckAuthorizer();
+    if (!args.get(2).isNumber()) throw SqliteError("ERR_INVALID_ARG_TYPE","The \"maxSize\" argument must be a positive integer.");
+    const double capacity=args[2].toNumber();
+    if (!std::isfinite(capacity) || std::floor(capacity)!=capacity || capacity<=0 || capacity>INT_MAX)
+      throw SqliteError("ERR_OUT_OF_RANGE","The \"maxSize\" argument must be a positive integer.");
+    auto store=std::make_unique<KandeloSqliteHandle>();store->tagConnection=owner->connection;
+    store->callbacks=owner->callbacks;store->tags=std::make_unique<KandeloSqliteTagCache>(size_t(capacity));
+    return KandeloSqliteNewOwner(cx,std::move(store),args.rval(),&args[1].toObject());
+  }
+  if (operation=="parameterCount") { args.rval().setInt32(owner->statement->ParameterCount());return true; }
   if (operation == "checkAuthorizer") { owner->connection->Require(); owner->connection->CheckAuthorizer(); }
   else if (operation == "checkStatementExecution") { owner->statement->Require(); owner->statement->Owner()->CheckAuthorizer(); }
   else if (operation == "setAuthorizer") {

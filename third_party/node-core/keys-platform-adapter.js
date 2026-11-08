@@ -81,6 +81,7 @@ function _createNodeCryptoKeys(platform) {
         if (name === 'internal/crypto/webidl') return cryptoWebIDL ??= _createNodeCryptoWebIDL({
             values: platform.values, types: platform.types, webidl: platform.webidl,
             keys: require('internal/crypto/keys'), digestHelpers: platform.digestHelpers,
+            native: platform.native,
         });
         if (name === 'internal/crypto/x509') return platform.getX509();
         if (name === 'buffer') return { Buffer: platform.Buffer };

@@ -2,6 +2,7 @@
 #include "kandelo-node-digest-operations.h"
 #include "kandelo-node-string-bytes.h"
 #include "js/ArrayBuffer.h"
+#include "js/BigInt.h"
 #include "js/Realm.h"
 #include "js/Exception.h"
 #include "js/Stack.h"
@@ -11,8 +12,28 @@
 #include "js/Wrapper.h"
 #include "js/experimental/TypedData.h"
 #include "js/experimental/KandeloBackingStore.h"
+#include <ncrypto.h>
+#include <mutex>
 #include <utility>
 namespace {
+// The real linked ncrypto/OpenSSL default-property state, not a boolean
+// capability or certification claim. No mutable FIPS setter is exposed here.
+// Any later setter must use this same owning state lock and real CLI/Worker
+// admission before changing provider properties; generation alone is no lock.
+static std::mutex gKandeloFipsStateMutex;
+static bool KandeloNativeGetFipsCrypto(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  std::lock_guard<std::mutex> lock(gKandeloFipsStateMutex);
+  args.rval().setInt32(ncrypto::isFipsEnabled() ? 1 : 0);return true;
+}
+static bool KandeloNativeGetFipsCryptoGeneration(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  // ncrypto owns this atomic uint64 generation. Keep all bits; the pinned JS
+  // cache uses BigInt equality and must not receive a rounded Number/counter.
+  JS::BigInt* generation = JS::NumberToBigInt(cx, ncrypto::getFipsStateGeneration());
+  if (!generation) return false;
+  args.rval().setBigInt(generation);return true;
+}
 static bool KandeloNativeOpenSSLVersion(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   RootedString version(cx, JS_NewStringCopyZ(cx, kandelo::crypto::OpenSSLVersion()));

@@ -157,6 +157,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
     if (result != SQLITE_OK) throw DatabaseError(db, result);
   }
   std::shared_ptr<Statement> Prepare(const std::string& sql, bool persistent = false);
+  std::shared_ptr<Statement> PrepareTag(const std::string& sql);
   int64_t Changes() const { return sqlite3_changes64(Require()); }
   int64_t LastInsertRowid() const { return sqlite3_last_insert_rowid(Require()); }
   int Limit(int id) const {
@@ -508,6 +509,32 @@ inline std::shared_ptr<Statement> Connection::Prepare(const std::string& sql, bo
   std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> guard(raw, sqlite3_finalize);
   RethrowAuthorizer();
   if (result != SQLITE_OK) throw DatabaseError(db, result);
+  if (!raw) throw Error("ERR_INVALID_ARG_VALUE", "The SQL query contains no statements.");
+  auto statement = std::make_shared<Statement>(shared_from_this(), raw);
+  guard.release();
+  // Keep only live observers; the statement owns the connection, never the
+  // reverse. This prevents both a reference cycle and unbounded dead entries.
+  for (auto i = statements_.begin(); i != statements_.end();) {
+    if (i->expired()) i = statements_.erase(i); else ++i;
+  }
+  statements_.push_back(statement);
+  return statement;
+}
+
+inline std::shared_ptr<Statement> Connection::PrepareTag(const std::string& sql) {
+  // A fragment getter may close/reopen this connection. Resolve its actual
+  // current pointer now, never a pre-getter sqlite3*. SQLite accepts nullptr
+  // as an invalid connection and reports its genuine error state.
+  auto* db = db_; CheckAuthorizer();
+  if (sql.size() > size_t(std::numeric_limits<int>::max())) throw Error("ERR_OUT_OF_RANGE", "SQL text exceeds SQLite length range");
+  sqlite3_stmt* raw = nullptr;
+  const int result = sqlite3_prepare_v3(db, sql.data(), int(sql.size()), SQLITE_PREPARE_PERSISTENT, &raw, nullptr);
+  std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> guard(raw, sqlite3_finalize);
+  RethrowAuthorizer();
+  if (result != SQLITE_OK) {
+    const int number=sqlite3_extended_errcode(db);
+    throw Error("ERR_SQLITE_ERROR",sqlite3_errmsg(db),number,sqlite3_errstr(number));
+  }
   if (!raw) throw Error("ERR_INVALID_ARG_VALUE", "The SQL query contains no statements.");
   auto statement = std::make_shared<Statement>(shared_from_this(), raw);
   guard.release();

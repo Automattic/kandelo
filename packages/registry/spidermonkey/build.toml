@@ -1,5 +1,7 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0184-node-fips-state.patch",
+  "third_party/node-core/sqlite-tag-cache.h",
   "packages/registry/spidermonkey/patches/0183-node-listener-statfs.patch",
   "third_party/node-core/crypto-webidl-platform-adapter.js",
   "third_party/node-core/crypto-webidl-sources.json",
@@ -808,4 +810,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 262
+revision = 263

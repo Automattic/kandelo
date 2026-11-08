@@ -2,6 +2,8 @@
 #include "kandelo-node-terminal-read-owner.h"
 #include "kandelo-node-terminal-write-owner.h"
 #include "kandelo-node-socket-stream-state.h"
+#include "kandelo-node-uv-error-table.h"
+#include "js/Conversions.h"
 #include "js/WeakMap.h"
 #include "js/Realm.h"
 #include "js/Wrapper.h"
@@ -125,7 +127,7 @@ static void KandeloShutdownTerminalLeases(KandeloNativeAsyncState* state) {
 namespace {
 namespace TerminalStreamStateFields = kandelo::socket::state;
 enum TerminalSlots : uint32_t { TerminalState, TerminalFrame, TerminalDispatch,
-  TerminalStreamState, TerminalOnRead, TerminalCloseCallback, TerminalSlotCount };
+  TerminalStreamState, TerminalOnRead, TerminalCloseCallback, TerminalConstructor, TerminalSlotCount };
 static void KandeloTerminalFinalize(JS::GCContext*, JSObject* object) {
   const auto slot = JS::GetReservedSlot(object, 0);if (slot.isUndefined()) return;
   JS::RemoveAssociatedMemory(object, sizeof(js::shell::KandeloTerminalLease), JS::MemoryUse::Embedding3);
@@ -193,6 +195,7 @@ static bool KandeloTerminalCheckedObject(JSContext* cx, HandleValue input,
   return false;
 }
 static bool KandeloTerminalPrototype(JSContext*, MutableHandleObject);
+static bool KandeloTerminalConstruct(JSContext*, unsigned, Value*);
 static bool KandeloTerminalConfigureWrite(JSContext*, unsigned, Value*);
 static bool KandeloTerminalWriteBuffer(JSContext*, unsigned, Value*);
 static bool KandeloTerminalWriteVector(JSContext*, unsigned, Value*);
@@ -632,8 +635,6 @@ static bool KandeloTerminalPrototype(JSContext* cx, MutableHandleObject result) 
     if (!getter || !setter) return false;
     RootedObject getObject(cx, JS_GetFunctionObject(getter)), setObject(cx, JS_GetFunctionObject(setter));
     if (!JS_DefineProperty(cx, streamPrototype, "onread", getObject, setObject, JSPROP_PERMANENT)) return false;
-    RootedObject prototype(cx, JS_NewPlainObject(cx));
-    if (!prototype || !JS_SetPrototype(cx, prototype, streamPrototype)) return false;
     static const JSFunctionSpec methods[] = {
       JS_FN("getWindowSize", KandeloTerminalGetWindowSize, 1, 0),
       JS_FN("setRawMode", KandeloTerminalSetRawMode, 1, 0),
@@ -649,7 +650,18 @@ static bool KandeloTerminalPrototype(JSContext* cx, MutableHandleObject result) 
     };
     static const JSPropertySpec properties[] = {JS_PSG("fd", KandeloTerminalFd, 0),
       JS_PSG("writeQueueSize", KandeloTerminalWriteQueueSize, 0),JS_PS_END};
-    if (!JS_DefineFunctions(cx, prototype, methods) || !JS_DefineProperties(cx, prototype, properties)) return false;
+    // JS_InitClass creates the real constructible native TTY and links its
+    // prototype before any owner can emit init. No post-init prototype swap.
+    RootedObject holder(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
+    if (!holder) return false;
+    RootedObject prototype(cx, JS_InitClass(cx, holder, &KandeloTerminalIOClass,
+        streamPrototype, "TTY", (KandeloFsPromiseGuard<KandeloTerminalConstruct>),
+        0, properties, methods, nullptr, nullptr));
+    RootedValue constructor(cx);
+    if (!prototype || !JS_GetProperty(cx, holder, "TTY", &constructor)) return false;
+    // A mutable public prototype.constructor property is not authority for
+    // the binding's constructor cache. This native slot is private/traced.
+    JS::SetReservedSlot(prototype, TerminalConstructor, constructor);
     value.setObject(*prototype);
     {
       JSAutoRealm realm(cx, process);
@@ -743,19 +755,12 @@ static bool KandeloTerminalDeliverStream(JSContext* cx, HandleObject owner,
   const bool called = scope.Call(callback, arguments, &ignored);
   return called ? scope.Close() : scope.Fail();
 }
-// Prepare the whole returned packet and resource before init can enter JS;
-// successful descriptor admission has no later wrapper allocation boundary.
-static bool KandeloTerminalOpenStream(JSContext* cx, const CallArgs& args,
-                                      MutableHandleValue result) {
-  int64_t fd;if (!KandeloFsInteger(cx, args.get(1), INT32_MIN, INT32_MAX, &fd)) return false;
+// Both the native constructor and existing captured-stdio publication own
+// exactly this init/admission transaction. Init observes the final native
+// prototype and precedes uv_tty_init-style descriptor acquisition.
+static bool KandeloTerminalInitializeStream(JSContext* cx, HandleObject object,
+                                             int fd, int* error) {
   auto* state = js::shell::KandeloGetNativeAsyncState(cx);if (!state) return false;
-  RootedObject prototype(cx);
-  if (!KandeloTerminalPrototype(cx, &prototype)) return false;
-  RootedObject object(cx, JS_NewObjectWithGivenProto(cx, &KandeloTerminalIOClass, prototype));
-  RootedObject packet(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
-  RootedValue zero(cx, Int32Value(0));
-  if (!object || !packet || !JS_DefineProperty(cx, packet, "value", object, JSPROP_ENUMERATE) ||
-      !JS_DefineProperty(cx, packet, "error", zero, JSPROP_ENUMERATE)) return false;
   if (js::shell::gKandeloTerminalGeneration == UINT64_MAX) {
     JS_ReportErrorASCII(cx, "TTY owner generation exhausted");return false;
   }
@@ -763,16 +768,71 @@ static bool KandeloTerminalOpenStream(JSContext* cx, const CallArgs& args,
   if (!lease) { JS_ReportOutOfMemory(cx);return false; }
   JS::AddAssociatedMemory(object, sizeof(*lease), JS::MemoryUse::Embedding3);
   JS::SetReservedSlot(object, TerminalState, PrivateValue(lease));
-  // Real AsyncWrap init precedes descriptor/OFD publication, as TTYWrap's
-  // LibuvStreamWrap base constructor precedes uv_tty_init.
   if (!KandeloTerminalInitializeIO(cx, object, lease)) return false;
-  int error = lease->io.OpenStream(int(fd));
+  *error = lease->io.OpenStream(fd);
   lease->inputOwner = lease->io.Readable();lease->outputOwner = lease->io.Writable();
-  // A reentrant queued close remains authoritative. Never leave a newly
-  // acquired descriptor under an owner whose close was already published.
-  // Public constructor init-close parity still requires its native phase
-  // controls; these captured owners do not activate public tty classes.
+  // Retain the existing reentrant-close rollback. Exact init-close phase
+  // parity is still an explicit validation gap, never an invented errno.
   if (lease->closing || lease->closed || lease->retired) lease->io.Close();
+  return true;
+}
+static bool KandeloTerminalSetInitError(JSContext* cx, HandleValue context, int error) {
+  // Pinned CollectUVExceptionInfo ignores non-object contexts and success.
+  if (!context.isObject() || !error) return true;
+  RootedObject object(cx, &context.toObject());
+  const kandelo::errors::Entry* entry = nullptr;
+  for (const auto& candidate : kandelo::errors::entries) {
+    if (candidate.number == error) { entry = &candidate;break; }
+  }
+  char unknown[64];
+  snprintf(unknown, sizeof(unknown), "Unknown system error %d", error);
+  const char* code = entry ? entry->name : unknown;
+  const char* message = entry ? entry->message : unknown;
+  RootedValue number(cx, Int32Value(error));
+  // Each allocation/setter happens in target order. Preserve the first
+  // abrupt setter completion; do not preallocate later strings before it.
+  if (!JS_SetProperty(cx, object, "errno", number)) return false;
+  auto text = [&](const char* name, const char* contents) {
+    RootedString string(cx, JS_NewStringCopyZ(cx, contents));
+    if (!string) return false;
+    RootedValue value(cx, StringValue(string));
+    return JS_SetProperty(cx, object, name, value);
+  };
+  return text("code", code) && text("message", message) && text("syscall", "uv_tty_init");
+}
+static bool KandeloTerminalConstruct(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  if (!args.isConstructing()) {
+    JS_ReportErrorASCII(cx, "Native TTY requires construction");return false;
+  }
+  // Actual constructor allocation consumes newTarget.prototype before native
+  // initialization. Public tty.js validates fd before entering this binding.
+  RootedObject object(cx, JS_NewObjectForConstructor(cx, &KandeloTerminalIOClass, args));
+  if (!object) return false;
+  int32_t fd;if (!JS::ToInt32(cx, args.get(0), &fd)) return false;
+  // The upstream binding CHECKs nonnegative fd. Keep an honest private
+  // admission error; this is not public invalid-fd conformance evidence.
+  if (fd < 0) { JS_ReportErrorASCII(cx, "Native TTY requires a nonnegative descriptor");return false; }
+  int error = 0;
+  if (!KandeloTerminalInitializeStream(cx, object, fd, &error) ||
+      !KandeloTerminalSetInitError(cx, args.get(1), error)) return false;
+  args.rval().setObject(*object);return true;
+}
+// Prepare the whole returned packet/resource before init can enter JS, as in
+// the previous captured-stdio owner. No new wrapper allocation follows fd
+// admission; the shared native constructor prototype is already installed.
+static bool KandeloTerminalOpenStream(JSContext* cx, const CallArgs& args,
+                                      MutableHandleValue result) {
+  int64_t fd;if (!KandeloFsInteger(cx, args.get(1), INT32_MIN, INT32_MAX, &fd)) return false;
+  RootedObject prototype(cx);
+  if (!KandeloTerminalPrototype(cx, &prototype)) return false;
+  RootedObject object(cx, JS_NewObjectWithGivenProto(cx, &KandeloTerminalIOClass, prototype));
+  RootedObject packet(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
+  RootedValue zero(cx, Int32Value(0));
+  if (!object || !packet || !JS_DefineProperty(cx, packet, "value", object, JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx, packet, "error", zero, JSPROP_ENUMERATE)) return false;
+  int error = 0;
+  if (!KandeloTerminalInitializeStream(cx, object, int(fd), &error)) return false;
   RootedValue status(cx, Int32Value(error));
   if (!JS_SetProperty(cx, packet, "error", status)) return false;
   result.setObject(*packet);return true;
@@ -780,6 +840,10 @@ static bool KandeloTerminalOpenStream(JSContext* cx, const CallArgs& args,
 static bool KandeloTerminalDispatch(JSContext* cx, const CallArgs& args,
                                     const char* name, MutableHandleValue value, int* error) {
   if (strcmp(name, "tty-stream-open") == 0) return KandeloTerminalOpenStream(cx, args, value);
+  if (strcmp(name, "tty-constructor") == 0) {
+    RootedObject prototype(cx);if (!KandeloTerminalPrototype(cx, &prototype)) return false;
+    value.set(JS::GetReservedSlot(prototype, TerminalConstructor));return true;
+  }
   if (strcmp(name, "tty-stream-state") == 0) {
     RootedObject owner(cx);
     if (!KandeloTerminalCheckedObject(cx, args.get(1), &owner)) return false;

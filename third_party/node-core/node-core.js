@@ -38190,14 +38190,14 @@ module.exports = {
 }
 
 // Public Database/Statement owners over real native SQLite handles. Incomplete
-// callback/tag-store features remain explicit;
+// remaining native integration features remain explicit;
 // namespace presence is not complete SQLite conformance.
 function _createNodeSqlitePlatform(platform) {
     'use strict';
     const P = _createNodePrimordials();
     const { SafeWeakMap, SafeMap, ObjectCreate, ObjectGetOwnPropertyNames, ObjectDefineProperty,
         ObjectSetPrototypeOf, Number, NumberIsInteger, ReflectApply, SymbolDispose, Uint8Array } = P;
-    const databases = new SafeWeakMap(), statements = new SafeWeakMap(), sessions = new SafeWeakMap(), iterators = new SafeWeakMap();
+    const databases = new SafeWeakMap(), statements = new SafeWeakMap(), sessions = new SafeWeakMap(), iterators = new SafeWeakMap(), tagStores = new SafeWeakMap();
     const limitNames = ["length", "sqlLength", "column", "exprDepth", "compoundSelect", "vdbeOp", "functionArg", "attach", "likePatternLength", "variableNumber", "triggerDepth"];
     const decoder = new platform.TextDecoder();
     const decode = Function.call.bind(platform.TextDecoder.prototype.decode);
@@ -38409,7 +38409,7 @@ function _createNodeSqlitePlatform(platform) {
             }
             return native('applyChangeset', db.handle, changeset, filter, conflict);
         }
-        createTagStore() { native('checkAuthorizer', database(this).handle); return unavailable('tag-store cache owner'); }
+        createTagStore(...args) { return createTagStore(this, args.length === 0 ? undefined : args[0]); }
         setAuthorizer() {
             const db = serializationDatabase(this);
             native('checkAuthorizer', db.handle);
@@ -38496,14 +38496,14 @@ function _createNodeSqlitePlatform(platform) {
         }
         return result;
     }
-    function execute(object, mode, args) {
+    function execute(object, mode, args, tag = false) {
         const owner = statement(object);
         native('checkStatementExecution', owner.handle);
-        if (owner.active) fail('ERR_INVALID_STATE', 'statement is already executing');
+        if (owner.active) fail('ERR_INVALID_STATE', tag ? 'statement is already being executed' : 'statement is already executing');
         owner.active = true;
         let failed = false;
         try {
-            bind(owner, args);
+            if (tag) bindTag(owner, args); else bind(owner, args);
             if (mode === 'run') {
                 native('stepDiscard', owner.handle);
                 native('reset', owner.handle);
@@ -38529,6 +38529,100 @@ function _createNodeSqlitePlatform(platform) {
             finally { owner.active = false; }
         }
     }
+    function tagStore(object) {
+        const record = tagStores.get(object);
+        if (!record) throw new P.TypeError('Illegal invocation');
+        return record;
+    }
+    function createTagStore(object, capacity) {
+        const db = database(object); native('checkAuthorizer', db.handle);
+        if (capacity === undefined) capacity = 1000;
+        if (typeof capacity !== 'number') fail('ERR_INVALID_ARG_TYPE', 'The "maxSize" argument must be a positive integer.', P.TypeError);
+        if (!NumberIsInteger(capacity) || capacity <= 0 || capacity > 2147483647)
+            fail('ERR_OUT_OF_RANGE', 'The "maxSize" argument must be a positive integer.', P.RangeError);
+        function SQLTagStore() { fail('ERR_ILLEGAL_CONSTRUCTOR', 'Illegal constructor', P.TypeError); }
+        // Native constructor installs methods first and constructor last. Capture
+        // that genuine public order without a synthetic public native _handle.
+        delete SQLTagStore.prototype.constructor;
+        const tagMethods = {
+            get(...args) { checkTagReceiver(this); return execute(cachedTagStatement(this, args), 'get', args, true); },
+            all(...args) { checkTagReceiver(this); return execute(cachedTagStatement(this, args), 'all', args, true); },
+            iterate(...args) { checkTagReceiver(this); return iterateTag(this, args); },
+            run(...args) { checkTagReceiver(this); return execute(cachedTagStatement(this, args), 'run', args, true); },
+            clear() { native('tagClear', checkTagReceiver(this).handle); },
+        };
+        const methodNames = ['get', 'all', 'iterate', 'run', 'clear'];
+        for (let i = 0; i < methodNames.length; i++) {
+            const name = methodNames[i];
+            ObjectDefineProperty(SQLTagStore.prototype, name, { value: tagMethods[name], writable: true, enumerable: true, configurable: true });
+        }
+        ObjectDefineProperty(SQLTagStore.prototype, 'constructor', { value: SQLTagStore, writable: true, configurable: true });
+        const template = SQLTagStore.prototype;
+        function checkTagReceiver(object) {
+            const record = tagStore(object);
+            if (record.template !== template) throw new P.TypeError('Illegal invocation');
+            return record;
+        }
+        const result = ObjectCreate(template);
+        platform.markUncloneable(result);
+        const record = { database: object, template, handle: native('createTagStore', db.handle, capacity) };
+        tagStores.set(result, record);
+        const getters = {
+            capacity() { return native('tagCapacity', checkTagReceiver(this).handle); },
+            db() { return checkTagReceiver(this).database; },
+            size() { return native('tagSize', checkTagReceiver(this).handle); },
+        };
+        const getterNames = ['capacity', 'db', 'size'];
+        for (let i = 0; i < getterNames.length; i++) {
+            const name = getterNames[i], getter = getters[name];
+            ObjectDefineProperty(getter, 'name', { value: '' });
+            ObjectDefineProperty(result, name, { get: getter, enumerable: true, configurable: false });
+        }
+        return result;
+    }
+    function cachedTagStatement(object, args) {
+        const record = tagStore(object);
+        native('tagCheck', record.handle);
+        // Native array admission excludes user Proxy arrays, then performs
+        // indexed fragment Gets/UTF8 assembly in the target order. This can
+        // close/reopen the DB or clear the cache before its actual lookup.
+        const sql = native('tagSql', record.handle, args.length === 0 ? undefined : args[0], args.length === 0 ? 0 : args.length - 1);
+        let result = native('tagGet', record.handle, sql);
+        if (result !== undefined) return result;
+        const handle = native('tagPrepare', record.handle, sql);
+        try {
+            result = ObjectCreate(Statement.prototype);
+            platform.markUncloneable(result);
+            statements.set(result, { handle, database: record.database,
+                settings: { ...database(record.database).defaults }, active: false, generation: 0 });
+            native('tagPut', record.handle, sql, result, handle);
+            return result;
+        } catch (error) {
+            try { native('finalize', handle); } catch {}
+            throw error;
+        }
+    }
+    function bindTag(owner, args) {
+        owner.generation++;
+        native('reset', owner.handle, true);
+        const count = native('parameterCount', owner.handle);
+        if (count !== args.length - 1)
+            fail('ERR_INVALID_ARG_VALUE', 'SQLite parameters must be bound using template literal placeholders.', P.TypeError);
+        for (let i = 1; i < args.length; i++) bindValue(owner, i, args[i]);
+    }
+    function iterateTag(object, args) {
+        const actual = cachedTagStatement(object, args), owner = statement(actual);
+        native('checkStatementExecution', owner.handle);
+        if (owner.active) fail('ERR_INVALID_STATE', 'statement is already being executed');
+        owner.active = true;
+        try {
+            bindTag(owner, args);
+            const result = ObjectCreate(StatementIterator.prototype);
+            iterators.set(result, { statement: actual, generation: owner.generation, done: false });
+            return result;
+        } finally { owner.active = false; }
+    }
+
     function closeStatement(object, dispose) {
         const owner = statements.get(object);
         if (!owner) throw new P.TypeError('Illegal invocation');
@@ -100870,12 +100964,9 @@ function _createNodeCryptoWebIDL(platform) {
         try { new Uint8Array(buffer); return false; } catch { return true; }
     });
     const { getBufferSourceBytes, getHashes } = platform.digestHelpers;
-    // Real provider FIPS state/generation is not yet exposed by the engine.
-    // Preserve this prerequisite at invocation, not a fabricated false value
-    // or selective validator omission. Module initialization does not query it.
-    function isFips() {
-        throw new ERR_METHOD_NOT_IMPLEMENTED('Crypto FIPS state owner');
-    }
+    // Private engine delegates are captured at factory admission; this never
+    // consults mutable public crypto.getFips or invents a provider capability.
+    const { getFipsCrypto, getFipsCryptoGeneration } = platform.native;
     const kMaxBufferLength = (2 ** 31) - 1;
 
 const kNamedCurveAliases = {
@@ -100926,6 +101017,16 @@ function bigIntArrayToUnsignedInt(input) {
   return result >>> 0;
 }
 
+let fips;
+let fipsGeneration;
+function isFips() {
+  const generation = getFipsCryptoGeneration();
+  if (fipsGeneration !== generation) {
+    fips = getFipsCrypto() === 1;
+    fipsGeneration = generation;
+  }
+  return fips;
+}
     function require(name) {
         if (name === 'internal/webidl') return platform.webidl;
         if (name === 'internal/util') return platform.values.util;
@@ -103595,6 +103696,7 @@ module.exports = {
         if (name === 'internal/crypto/webidl') return cryptoWebIDL ??= _createNodeCryptoWebIDL({
             values: platform.values, types: platform.types, webidl: platform.webidl,
             keys: require('internal/crypto/keys'), digestHelpers: platform.digestHelpers,
+            native: platform.native,
         });
         if (name === 'internal/crypto/x509') return platform.getX509();
         if (name === 'buffer') return { Buffer: platform.Buffer };

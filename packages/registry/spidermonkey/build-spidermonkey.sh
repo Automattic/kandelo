@@ -409,6 +409,8 @@ cp "$REPO_ROOT/third_party/node-core/lock-manager.h" "$SRC_DIR/js/src/shell/kand
 cp "$REPO_ROOT/third_party/node-core/provider-rotation.h" "$SRC_DIR/js/src/shell/kandelo-node-provider-rotation.h"
 cp "$REPO_ROOT/third_party/node-core/sqlite-store.h" \
     "$SRC_DIR/js/src/shell/kandelo-node-sqlite-store.h"
+cp "$REPO_ROOT/third_party/node-core/sqlite-tag-cache.h" \
+    "$SRC_DIR/js/src/shell/kandelo-node-sqlite-tag-cache.h"
 sed 's|#include "sqlite-store.h"|#include "kandelo-node-sqlite-store.h"|' \
     "$REPO_ROOT/third_party/node-core/sqlite-backup.h" > "$SRC_DIR/js/src/shell/kandelo-node-sqlite-backup.h"
 cp "$REPO_ROOT/third_party/node-core/sqlite-limit-names.h" "$SRC_DIR/js/src/shell/kandelo-node-sqlite-limits.h"
