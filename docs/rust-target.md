@@ -229,6 +229,101 @@ they must report failure, rather than turn an empty test run green.
 Acceptance uses one test thread; parallel harness execution still needs
 dedicated coverage.
 
+### Native build scripts and compatibility coverage
+
+The shared workload in `host/test/fixtures/rust-compatibility.ts` uses
+Cargo inside the guest to compile and execute C/C++ dependencies. Its
+`build.rs` invokes the installed C and C++ SDK drivers and archiver,
+produces a static archive and generated Rust, and links an executable that
+calls both languages. A C++ global vector checks startup initialization.
+The workload changes a C source and checks the new runtime result, checks
+reuse of unchanged output, rejects a deliberately missing native symbol at
+final link, and rebuilds successfully after restoring the source.
+
+Its unit and integration tests exercise Mutex, Condvar, Barrier, channels
+and thread joins; child working directories, a cleared environment, piped
+standard streams, and nonzero exit status; and a child panic observed as
+SIGABRT. The panic child attempts `catch_unwind`, but neither recovers nor
+runs its destructor. This confirms the documented abort boundary, not
+unwinding support. Harness execution still uses `--test-threads=1`; guest
+threads within a test are separate from parallel libtest scheduling.
+
+Documentation cases cover an example that executes native code, a
+`compile_fail` example with an expected diagnostic code, `no_run`, `ignore`
+and `should_panic`. A deliberately failing assertion must make Cargo fail;
+restoring the example must pass. A filesystem marker distinguishes the
+executed example from the compiled-only example.
+
+The embedding's owned-job deadline is tested separately from libtest:
+a running parent and child exceed the deadline, the result reports
+`timed_out` after family retirement, and a subsequent guest process checks
+that both PIDs return ESRCH from `kill(pid, 0)`. Another command must then
+execute successfully. This is a host-controlled command-family deadline,
+not a new per-test timeout option in Cargo or libtest.
+
+External procedural-macro crates currently fail before expansion: Cargo
+reports that `wasm32-unknown-kandelo-std` does not support the `proc-macro`
+crate type. A minimal local macro/consumer pair checks this known boundary.
+Built-in derives and declarative macros do not use that loading path.
+Supporting them needs further target/compiler work and loader validation;
+installing rustdoc, rustfmt and Clippy does not provide that support.
+
+Node, Chromium, Firefox and WebKit acceptance run this same workload.
+The fixtures are `host/test/rust-compatibility-in-guest.test.ts` and
+`apps/browser-demos/test/rust-compatibility-in-guest.spec.ts`. This does not
+establish compatibility with arbitrary configure scripts, C++ exception unwinding across Rust, registry `libc`
+versions, or arbitrary native-build helper crates.
+
+Native linking currently warns about `UnwindRegistersSave.S.o` and
+`UnwindRegistersRestore.S.o` in the libc++ archives. These unused members
+are ARM64 Mach-O objects, which wasm-ld ignores. The libc++ recipe lacks an
+explicit assembly target; correcting it and validating rebuilt archives
+remains follow-up work.
+
+### Native dependency helpers
+
+The optional `rust-native-fixtures` package prepares unmodified, locked
+`cc` 1.2.61, `find-msvc-tools` and `shlex` sources with Cargo's checksum
+verification. The guest compiles those Rust crates and uses `cc` to build
+C/C++ archives, then executes a program calling both languages. Source
+preparation produces a verified ZIP; no build-machine executables enter
+the fixture.
+
+Node, Chromium and Firefox pass this configured case. The SDK exposes its
+public tools as `cc`, `c++` and `wasm32posix-*`; default `cc` discovery looks
+for `clang` on PATH and fails. Configure the real SDK drivers and its C++
+runtime explicitly:
+
+```sh
+export CC=wasm32posix-cc CXX=wasm32posix-c++ AR=wasm32posix-ar
+export CXXSTDLIB=c++
+cargo run --offline --locked -j1
+```
+
+WebKit currently fails earlier: guest rustc exhausts its native Wasm call
+stack compiling the `cc` crate and exits 139; Cargo returns 101. The browser
+acceptance requires both that compiler failure and the actual worker's
+`Maximum call stack size exceeded` diagnostic. It records an unsupported
+capability, not successful native compilation. Explicitly using 16
+code-generation units for build dependencies also failed. Cargo applies
+[separate profile settings to build dependencies](https://doc.rust-lang.org/cargo/reference/profiles.html#build-dependencies).
+Compiler symbols and the failing recursion path need further investigation.
+
+From the declared dev shell, prepare both optional artifacts:
+
+```sh
+cargo xtask build-deps resolve kandelo-rust-sdk --arch wasm32
+cargo xtask build-deps resolve rust-native-fixtures --arch wasm32
+```
+
+Set `KANDELO_GUEST_RUST_SDK_BUNDLE` to the first output root's
+`kandelo-rust-sdk.zip` and `KANDELO_GUEST_RUST_NATIVE_FIXTURES` to the second
+root's `share/kandelo/rust-native-fixtures.zip`. With
+`KANDELO_REQUIRE_GUEST_CARGO=1`, the Node and browser
+`rust-native-dependencies-in-guest` acceptance files fail when either input
+is missing. The `cc` parallel feature, unmodified registry `libc` versions
+and arbitrary configure scripts remain unvalidated.
+
 ### Formatting, linting and documentation
 
 The tools come from the compiler's pinned Rust source revision. The guest
@@ -255,12 +350,12 @@ digest through guest linking remains follow-up work.
 | Expected workflow | Guest SDK status |
 |---|---|
 | Editor analysis and standard-library source navigation | Guest `rust-analyzer` and `rust-src` are not shipped |
-| Procedural macros, such as derive plugins | Loading and panic recovery remain unvalidated |
-| Cargo dependencies that compile C/C++ or run configure tools | Basic cross-language linking is covered; general guest native-dependency builds remain unvalidated |
+| External procedural macros, such as derive plugins | Target rejects the `proc-macro` crate type; expansion is unsupported |
+| Cargo dependencies that compile C/C++ or run configure tools | Direct guest SDK builds pass on all four hosts; configured cc-rs builds pass on Node/Chromium/Firefox and hit a compiler stack limit on WebKit; other helpers/configure scripts remain unvalidated |
 | `catch_unwind`, panic unwinding and backtraces | Unsupported; abort-mode libtest isolates tests instead |
 | Online registries, Git authentication and proxies | Transport defaults configured; end-to-end workflow unvalidated |
 | Incremental compilation on WebKit | Disabled in the tested profile because of native process memory limits |
-| Broader merged/negative doctests, parallel test harnesses, release/LTO builds, benchmarks, coverage and test time limits | Need dedicated guest-toolchain validation |
+| Parallel test harnesses, release/LTO builds, benchmarks and coverage | Need dedicated guest-toolchain validation; the tested command deadline belongs to the embedding owned-job API |
 
 On the build machine, the cross-compilation wrapper can build test targets
 with `--no-run`, but its `test` subcommand still needs a Cargo runner that

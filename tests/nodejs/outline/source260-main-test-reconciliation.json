@@ -1,0 +1,50 @@
+{
+  "at": "2026-11-08T07:08:07.169693+00:00",
+  "fetchedMain": "5f484a853eec0b81e31a82ab6da6d5cfb30852a6",
+  "previousMain": "c3703ba28d6efaff3a4cd1e3e6f53573cb58b064",
+  "sourceHeadBefore": "9bfbdb2249f65e5da3227b5215a24bec7ae15ee2",
+  "reconciliationCommit": "The merge commit containing this record; parents bound below, not a guessed future SHA.",
+  "expectedParents": [
+    "9bfbdb2249f65e5da3227b5215a24bec7ae15ee2",
+    "5f484a853eec0b81e31a82ab6da6d5cfb30852a6"
+  ],
+  "mainChangedPaths": [
+    "apps/browser-demos/test/rust-compatibility-in-guest.spec.ts",
+    "apps/browser-demos/test/rust-native-dependencies-in-guest.spec.ts",
+    "docs/rust-target.md",
+    "host/test/fixtures/rust-compatibility-project.ts",
+    "host/test/fixtures/rust-compatibility.ts",
+    "host/test/fixtures/rust-native-dependencies.ts",
+    "host/test/fixtures/rust-native-dependency-source.ts",
+    "host/test/rust-compatibility-in-guest.test.ts",
+    "host/test/rust-native-dependencies-in-guest.test.ts",
+    "packages/registry/rust-native-fixtures/README.md",
+    "packages/registry/rust-native-fixtures/build.sh",
+    "packages/registry/rust-native-fixtures/build.toml",
+    "packages/registry/rust-native-fixtures/fixture/Cargo.lock",
+    "packages/registry/rust-native-fixtures/fixture/Cargo.toml",
+    "packages/registry/rust-native-fixtures/fixture/build.rs",
+    "packages/registry/rust-native-fixtures/fixture/native.c",
+    "packages/registry/rust-native-fixtures/fixture/native.cpp",
+    "packages/registry/rust-native-fixtures/fixture/src/main.rs",
+    "packages/registry/rust-native-fixtures/package.toml",
+    "packages/sets/local-supported.toml",
+    "scripts/ci-vitest-evidence-classes.tsv"
+  ],
+  "sourceIdentityChanges": {
+    "scripts/ci-vitest-evidence-classes.tsv": {
+      "before": "b6abb4f52d3b0cc4c01ffdff750f81ea1cf0639e26809871afb7c2cc68c4fd6b",
+      "after": "48aa8c757bbd8291a33adc6acd0b78686d9d3db1d7e8e0509a52f2ac63517543"
+    },
+    "packages/sets/local-supported.toml": {
+      "before": "19ebf8bf3623bca3027cde76b1246c671d709c0562fd3ee0ea37b6c14a92aec7",
+      "after": "2d20c07ec510e53ccdc6f07148a58253d5258886fec23f6b1afea5f5b50aac84"
+    }
+  },
+  "foreignRegularFilesPreserved": 52,
+  "nodeCoreEngineAndTargetPinsChanged": false,
+  "programAbiChanged": false,
+  "newRuntimeTests": 0,
+  "newCompilations": 0,
+  "scope": "Import main Rust native-build/test fixtures and registry/test inventory once at this source-batch boundary. Node260 implementation and audited pins unchanged. Prior test results keep their original exact source/input bindings; no main Rust or current combined runtime validation is claimed. Full product and successor ABI artifact rebuilds stay deferred."
+}
