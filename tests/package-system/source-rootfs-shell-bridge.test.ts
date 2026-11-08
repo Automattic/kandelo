@@ -59,7 +59,7 @@ import {
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
   parseExperimentalTerminalSession,
 } from "../../web-libs/kandelo-session/src/experimental-terminal-session";
-import { shouldReuseExistingPlaywrightServer } from "../../apps/browser-demos/playwright-server-policy";
+import { partialShellSelection } from "../../images/vfs/scripts/shell-selection";
 import {
   readSourceRootfsShellDependencyContract,
   validateSourceRootfsShellPackageManifest,
@@ -438,13 +438,23 @@ describe("canonical source-rootfs shell", () => {
   });
 
   it("owns its browser server for every exact-artifact proof", () => {
-    expect(shouldReuseExistingPlaywrightServer({})).toBe(true);
-    expect(shouldReuseExistingPlaywrightServer({ CI: "1" })).toBe(false);
-    expect(
-      shouldReuseExistingPlaywrightServer({
-        KANDELO_SOURCE_ROOTFS_SHELL_STRICT: "1",
-      }),
-    ).toBe(false);
+    // Main now forbids reuse in every mode. Load its actual configuration
+    // rather than restoring the removed helper and its permissive default.
+    for (const mode of [{}, { CI: "1" }, { KANDELO_SOURCE_ROOTFS_SHELL_STRICT: "1" }]) {
+      const env = { ...process.env };
+      for (const key of ["CI", "KANDELO_SOURCE_ROOTFS_SHELL_STRICT", "KANDELO_PLAYWRIGHT_PORT",
+        "KANDELO_ABI_STAGING_BROWSER_BASE_URL", "KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT",
+        "KANDELO_SCOPED_DEPLOYMENT_SOURCE_ONLY_ROOT"]) delete env[key];
+      Object.assign(env, mode);
+      const output = execFileSync(process.execPath, [
+        "--import", "tsx/esm", "--input-type=module", "-e",
+        'const {default: config} = await import("./playwright.config.ts");' +
+        'if (!config.webServer || config.webServer.reuseExistingServer !== false)' +
+        ' throw new Error("proof must own its server");' +
+        'console.log("OWNED_SERVER_PASS");',
+      ], { cwd: join(repoRoot, "apps/browser-demos"), env, encoding: "utf8" });
+      expect(output, JSON.stringify(mode)).toContain("OWNED_SERVER_PASS");
+    }
   });
 
   it("declares a closed source-package build graph with no bottle or network input", () => {
@@ -606,6 +616,38 @@ describe("canonical source-rootfs shell", () => {
     expect(
       text(readVfsFile(fs, "/etc/profile.d/00-kandelo-shell.sh")),
     ).toContain("export PS1='\\u@\\h:\\W\\$ '");
+  });
+
+  it("builds graphical partials without installing SFWBar's terminal helper", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    const image = await buildSourceRootfsShellImage({
+      ...paths,
+      selection: partialShellSelection([
+        "rootfs", "bash", "ncurses", "ca-certificates", ...ROOTFS_LAZY_IDS,
+        "sdl2-demo", "wayland-demo", "sway", "swaybg", "foot",
+        "bibata-cursor-theme", "freeciv-browser-bundle", "modeset",
+        "scummvm", "curl", "unzip", "python-browser-bundle",
+      ]),
+      outFile: join(root, "graphical-partial.vfs.zst"),
+      sourceDateEpoch: "0",
+    });
+    const fs = KandeloImageFs.create();
+    fs.loadImage(image);
+    expect(() => fs.lstat("/usr/bin/sfwbar")).toThrow(/ENOENT/);
+    expect(() => fs.lstat("/usr/bin/kandelo-terminal")).toThrow(/ENOENT/);
+    const pageTerminal = "/usr/bin/kandelo-page-terminal";
+    expect(fs.stat(pageTerminal).mode & 0o777).toBe(0o755);
+    expect(fs.isPathDeferred(pageTerminal)).toBe(false);
+    expect(text(readVfsFile(fs, pageTerminal)))
+      .toContain("application/x-kandelo-terminal-command");
+    const config = parseKandeloDemoConfig(text(readVfsFile(fs, KANDELO_DEMO_CONFIG_PATH)))!;
+    expect(Object.keys(config.profiles!)).toEqual(expect.arrayContaining([
+      "sway", "freeciv", "scummvm", "modeset", "sdl2",
+    ]));
+    expect(config.profiles!.labwc).toBeUndefined();
+    expect(config.profiles!["sway-sfwbar"]).toBeUndefined();
   });
 
   it("adds the selected original even when its executable already exists in the base", async () => {
@@ -858,6 +900,12 @@ describe("canonical source-rootfs shell", () => {
         .toMatchObject({ uri: `kandelo-lazy:programs/sfwbar/${artifact}` });
       expect(fs.stat(guest).mode & 0o777, guest).toBe(mode);
     }
+    // The page publisher must not overwrite SFWBar's deferred Foot launcher.
+    const pageTerminal = "/usr/bin/kandelo-page-terminal";
+    expect(fs.stat(pageTerminal).mode & 0o777).toBe(0o755);
+    expect(fs.isPathDeferred(pageTerminal)).toBe(false);
+    expect(text(readVfsFile(fs, pageTerminal)))
+      .toContain("application/x-kandelo-terminal-command");
     // Start-menu entries must name programs actually installed in this image,
     // including a native Wayland client rather than a nonexistent package name.
     for (const desktop of ["kandelo-terminal", "scummvm", "wayland-demo"]) {

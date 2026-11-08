@@ -469,7 +469,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
   const packageSessions = usePackageSessions(host, networkSession, launchActivity, CANONICAL_SHELL_IMAGE_URL ?? undefined);
 
   // A program in the machine asked for a terminal running a command (a
-  // dropped ROM's handler does, through kandelo-terminal). It opens as an
+  // dropped ROM's handler does, through kandelo-page-terminal). It opens as an
   // activity: a fresh terminal with the command typed at its prompt, so the
   // user sees what ran and can run it again once it exits.
   const launchActivityRef = React.useRef(launchActivity);

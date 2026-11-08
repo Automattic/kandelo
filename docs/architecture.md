@@ -5483,8 +5483,8 @@ to do with. It is independent of drag and drop; the design is
   once. A stored output may be read any number of times, by range; a
   streamed one once. Nothing in the platform turns an output into a file or
   a download. The browser app opens an output of type
-  `application/x-kandelo-terminal-command` as a terminal running the
-  command it carries instead of offering it in its tray (see "Terminal
+  `application/x-kandelo-terminal-command`, emitted by the shell
+  `kandelo-page-terminal` helper, as a terminal running the command it carries instead of offering it in its tray (see "Terminal
   requests" in `docs/browser-support.md`); that is the app's use of an
   output, not a platform behavior.
 - **Quotas.** `work/` and `outbox/` together hold at most min(256 MiB, a

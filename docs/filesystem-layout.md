@@ -76,6 +76,11 @@ Public game launchers live in `/usr/bin`; their private engines live in
 `/usr/libexec`. This avoids two different programs named `scummvm`, `fbdoom`
 or `quake` relying on PATH precedence between `/usr/local/bin` and `/usr/bin`.
 
+The shell's `/usr/bin/kandelo-page-terminal` publishes a terminal request to
+the machine's page. SFWBar's `/usr/bin/kandelo-terminal` launches native Foot
+in its Wayland session. Their distinct names preserve package ownership:
+the base page publisher must not overwrite an optional desktop helper.
+
 `dos-play` keeps downloaded games, their license files and mutable DOS files
 in the invoking user's `$XDG_DATA_HOME/dos-play`, defaulting to
 `$HOME/.local/share/dos-play`. These are per-user game installations rather

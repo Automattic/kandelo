@@ -537,13 +537,13 @@ exec "$CORE" "$LINK" "\${@:2}"
 `;
 
 /**
- * kandelo-terminal, written eagerly to /usr/bin/kandelo-terminal: asks the
+ * kandelo-page-terminal, written eagerly to /usr/bin/kandelo-page-terminal: asks the
  * page showing the machine to open a terminal with a command typed at its
  * prompt (web-libs/kandelo-session/src/terminal-request.ts). The ROM exchange
  * handler uses it so a dropped game is a visible, repeatable command.
  */
-const KANDELO_TERMINAL_SCRIPT = `#!/bin/sh
-# kandelo-terminal [--display] [--title TITLE] COMMAND-LINE
+const KANDELO_PAGE_TERMINAL_SCRIPT = `#!/bin/sh
+# kandelo-page-terminal [--display] [--title TITLE] COMMAND-LINE
 #
 # Ask the page showing this machine to open a terminal and type COMMAND-LINE
 # at its prompt, as the user would, so the command is visible and can be run
@@ -556,7 +556,7 @@ const KANDELO_TERMINAL_SCRIPT = `#!/bin/sh
 # this command (exit 1), when nothing outside the machine takes outputs; a
 # page that does not open terminals keeps it as an ordinary output.
 usage() {
-    echo "usage: kandelo-terminal [--display] [--title TITLE] COMMAND-LINE" >&2
+    echo "usage: kandelo-page-terminal [--display] [--title TITLE] COMMAND-LINE" >&2
     exit 2
 }
 display=""
@@ -654,11 +654,11 @@ name=\${rom##*/}
 
 # The game runs as a command in a terminal of its own, typed at the prompt:
 # the user sees what the drop ran, and once the game exits, Up and Enter run
-# it again. kandelo-terminal asks the page for that terminal. Where nothing
+# it again. kandelo-page-terminal asks the page for that terminal. Where nothing
 # outside the machine opens one (the Node host, or no page taking outputs),
 # the game starts in the background instead, as below.
 quoted=$(printf '%s' "$path" | sed "s/'/'\\\\\\\\''/g")
-if /usr/bin/kandelo-terminal --display --title "$name" "retro-run ~/roms/'$quoted'" 2>/dev/null; then
+if /usr/bin/kandelo-page-terminal --display --title "$name" "retro-run ~/roms/'$quoted'" 2>/dev/null; then
     status "opened a terminal: retro-run ~/roms/$path"
     exit 0
 fi
@@ -2197,7 +2197,10 @@ export async function buildSourceRootfsShellImage(
     ensureDirRecursive(fs, "/usr/libexec/kandelo");
     writeVfsBinary(fs, "/usr/libexec/kandelo/game-import.py", readFileSync(GAME_IMPORT_SOURCE), 0o644);
   }
-  writeVfsBinary(fs, "/usr/bin/kandelo-terminal", new TextEncoder().encode(KANDELO_TERMINAL_SCRIPT), 0o755);
+  // The page publisher belongs to the base shell, while kandelo-terminal is
+  // SFWBar's native Foot launcher. Sharing a path overwrites that lazy file
+  // canonically and makes independent partial images claim an unselected app.
+  writeVfsBinary(fs, "/usr/bin/kandelo-page-terminal", new TextEncoder().encode(KANDELO_PAGE_TERMINAL_SCRIPT), 0o755);
   // The image's Kandelo exchange handlers and their rules. The rules
   // go in the image's rule directory, which the base rootfs declares
   // (images/rootfs/MANIFEST) with the ownership kxchgd checks; creating it

@@ -350,7 +350,9 @@ def command_for(candidate):
 
 
 def request_terminal(command, display):
-    argv = ['/usr/bin/kandelo-terminal', '--title', 'Imported games']
+    # This requests the page's terminal; the optional desktop helper launches
+    # Foot and interprets different arguments, so it cannot share this command.
+    argv = ['/usr/bin/kandelo-page-terminal', '--title', 'Imported games']
     if display:
         argv.append('--display')
     return subprocess.run([*argv, command]).returncode == 0

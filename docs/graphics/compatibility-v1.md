@@ -27258,3 +27258,22 @@ The declared app typecheck also passes across all 142 browser roots and
 45 Node unit-test roots. This is source/build integration evidence; the
 focused normal image retry, current-main browser rendering and desktop
 checks remain pending.
+
+The focused composition then exposed a command-path collision: the base
+shell's page-terminal publisher wrote `/usr/bin/kandelo-terminal`, the same
+path SFWBar owns for its native Foot launcher. The publisher now uses
+`/usr/bin/kandelo-page-terminal`; the ROM launcher and game importer call
+that command. The exchange MIME contract is unchanged. The native helper
+retains its package-owned path and lazy identity. The partial completeness
+check remains strict; SFWBar is not added to an independent Sway selection.
+Shell build revision 84 records the changed image bytes.
+
+A new regression reproduced the unselected-SFWBar failure through actual
+image composition before the fix. The final bridge, selection and importer
+run reports 32 passed, zero failed and zero skipped. It covers the five
+focused activities, absence of unselected SFWBar files, the distinct eager
+page publisher and deferred native helper, and importer failure propagation.
+An older fixture for main's removed server-reuse helper also failed; it now
+loads the real Playwright configuration and requires server ownership in
+default, CI and exact-artifact modes. Normal-image and browser runtime
+validation remain pending the focused retry.

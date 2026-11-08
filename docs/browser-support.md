@@ -1942,7 +1942,7 @@ each file whose name could be a ROM (a console extension, `.rom`, `.bin`,
 or none). A drop with no ROM in it goes to `exchange-save`, so it is saved
 to `~/Downloads` as before. Otherwise the handler copies the drop into
 `~/roms` as it arrived (a folder keeps its contents) and runs
-`kandelo-terminal --display "retro-run ~/roms/NAME"` for the first ROM in
+`kandelo-page-terminal --display "retro-run ~/roms/NAME"` for the first ROM in
 path order (see "Terminal requests" below). The page opens a new terminal
 with that command typed at its prompt, stops whatever holds the display,
 and shows the display, so the user sees what the drop ran; once the game
@@ -1951,7 +1951,7 @@ exits, Up and Enter in that terminal run it again. The drop's status reads
 the catch-all.
 
 Where nothing outside the machine opens terminals (the Node host, or no
-listener for exchange outputs), `kandelo-terminal` fails and the handler
+listener for exchange outputs), `kandelo-page-terminal` fails and the handler
 starts the game in the background instead: it stops the emulator if one is
 playing, starts `retro-run`, and reports "playing NAME" once the emulator
 holds the display, or the emulator's own error. A display already held by
@@ -1988,8 +1988,8 @@ are covered by `web-libs/kandelo-session/test/terminal-request.test.ts` and
 #### Terminal requests
 
 A program in the machine can ask the page for a terminal running a
-command: `kandelo-terminal [--display] [--title TITLE] COMMAND-LINE`
-(`/usr/bin/kandelo-terminal` in the shell image). It publishes a Kandelo
+command: `kandelo-page-terminal [--display] [--title TITLE] COMMAND-LINE`
+(`/usr/bin/kandelo-page-terminal` in the shell image). It publishes a Kandelo
 exchange output of type `application/x-kandelo-terminal-command`, a small
 JSON object `{"version": 1, "command": …, "title": …, "display":
 "framebuffer"}` (`web-libs/kandelo-session/src/terminal-request.ts`).
@@ -2008,7 +2008,7 @@ requests over 4 KiB are refused, and a refusal or a failed launch is shown
 as a failed entry with its reason. Activities' limits apply (32 per
 computer, one starting at a time). A page without a handler keeps the
 request as an ordinary output in the tray, and with no output listener at
-all the publish fails with `ENXIO`, so `kandelo-terminal` exits 1 and its
+all the publish fails with `ENXIO`, so `kandelo-page-terminal` exits 1 and its
 caller can fall back.
 
 ### Kandelo session UI
