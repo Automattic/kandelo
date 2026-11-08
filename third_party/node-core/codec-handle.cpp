@@ -64,10 +64,15 @@ struct KandeloCodecState : codec::CompressionStreamMemoryOwner {
   }
 
   void Report(JSObject* owner) {
-    // Codec callbacks account actual live allocated blocks, including their
-    // aligned size prefix. Handle/context sizeof and vector/string capacity
-    // accounting and heap snapshot visitation remain separate review work.
-    const size_t bytes = LiveCodecBytes();
+    // Context containers may change on native workers. Every report boundary
+    // is idle: completion has joined its work publication, or this is a
+    // synchronous mutation/close. Never read string/vector capacity mid-work.
+    MOZ_RELEASE_ASSERT(!writing);
+    const size_t bytes = codec::capacity::Add(
+        codec::capacity::Add(sizeof(*this), context->RetainedNativeBytes()),
+        LiveCodecBytes());
+    // Actual requested native capacity only. Backing spans are accounted by
+    // their separate owner; this is not RSS or heap-snapshot visitation.
     if (bytes > reportedBytes) {
       JS::AddAssociatedMemory(owner, bytes - reportedBytes, JS::MemoryUse::Embedding2);
     } else if (bytes < reportedBytes) {
@@ -307,6 +312,9 @@ static bool KandeloCodecInit(JSContext* cx, unsigned argc, Value* vp) {
   if (!state) return false;
   if (state->closed || state->initStarted) return KandeloCodecFail(cx, "ERR_INVALID_STATE", "Compression handle cannot be initialized twice");
   RootedObject owner(cx, &args.thisv().toObject());
+  auto reportAtQuietExit = mozilla::MakeScopeExit([&] {
+    if (!state->writing) state->Report(owner);
+  });
   const bool zlib = state->mode <= codec::UNZIP;
   const bool brotli = state->mode == codec::BROTLI_ENCODE || state->mode == codec::BROTLI_DECODE;
   const unsigned stateIndex = zlib ? 4 : brotli ? 1 : 2;
@@ -627,6 +635,9 @@ static bool KandeloCodecReset(JSContext* cx, unsigned argc, Value* vp) {
     return KandeloCodecFail(cx, "ERR_INVALID_STATE", "Compression handle is not idle and initialized");
   }
   RootedObject owner(cx, &args.thisv().toObject());
+  auto reportAtQuietExit = mozilla::MakeScopeExit([&] {
+    if (!state->writing) state->Report(owner);
+  });
   const codec::CompressionError error = state->context->ResetStream();
   if (!error.IsError()) {
     state->inputOffset = state->inputRemaining = 0;
@@ -650,6 +661,9 @@ static bool KandeloCodecParams(JSContext* cx, unsigned argc, Value* vp) {
   if (!KandeloCodecConvertedInteger<true>(cx, args[0], -1, 9, &level) ||
       !KandeloCodecConvertedInteger<true>(cx, args[1], Z_DEFAULT_STRATEGY, Z_FIXED, &strategy)) return false;
   RootedObject owner(cx, &args.thisv().toObject());
+  auto reportAtQuietExit = mozilla::MakeScopeExit([&] {
+    if (!state->writing) state->Report(owner);
+  });
   // Params continues the original native pointers, not whatever storage the
   // old JS views currently name after a transfer, resize, replacement or GC.
   const auto& input = state->inputBacking;
@@ -764,7 +778,9 @@ static bool KandeloCreateCompressionHandle(JSContext* cx, unsigned argc, Value* 
   }
   if (!state->context) { JS_ReportOutOfMemory(cx); return false; }
   state->context->SetAllocator(state.get());
+  auto* nativeState = state.get();
   JS::SetReservedSlot(owner, CodecNativeState, PrivateValue(state.release()));
+  nativeState->Report(owner);
   static const JSFunctionSpec methods[] = {
       JS_FN("init", KandeloCodecGuard<KandeloCodecInit>, 7, 0),
       JS_FN("writeSync", KandeloCodecGuard<KandeloCodecWriteCommon<false>>, 7, 0),
@@ -781,7 +797,6 @@ static bool KandeloCreateCompressionHandle(JSContext* cx, unsigned argc, Value* 
   if (!cx->kandeloAsyncProperty("frame", &frame) || !cx->getKandeloDefaultTriggerAsyncId(&trigger)) return false;
   auto* lifetime = js::shell::KandeloGetNativeAsyncState(cx);
   if (!lifetime) return false;
-  auto* nativeState = static_cast<KandeloCodecState*>(JS::GetReservedSlot(owner, CodecNativeState).toPrivate());
   lifetime->Retain();
   nativeState->asyncLifetime = lifetime;
   nativeState->asyncId = cx->allocateKandeloAsyncId();

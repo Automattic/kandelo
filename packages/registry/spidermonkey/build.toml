@@ -43,6 +43,7 @@ inputs = [
   "third_party/node-core/tls-owner.h",
   "third_party/node-core/tls-encrypted-output.h",
   "packages/registry/spidermonkey/patches/0146-node-terminal-callback-owner.patch",
+  "third_party/node-core/codec-owned-capacity.h",
   "third_party/node-core/codec-pledge.h",
   "third_party/node-core/codec-pledge.md",
   "packages/registry/spidermonkey/patches/0145-node-context-watch-owner.patch",
@@ -776,4 +777,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 248
+revision = 249

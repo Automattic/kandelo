@@ -79,6 +79,24 @@ def generate(root):
     if types.count(old) != 1:
         raise ValueError('Review dictionary inspection adapter')
     types = types.replace(old, '')
+    # Preserve actual retained container storage in the owning context. Do not
+    # replace the upstream algorithms or count logical vector/string lengths.
+    retained = {
+        'ZlibContext': 'capacity::VectorBytes(dictionary_)',
+        'BrotliEncoderContext': 'capacity::Add(capacity::VectorBytes(dictionary_), capacity::VectorBytes(params_))',
+        'BrotliDecoderContext': 'capacity::Add(capacity::Add(capacity::VectorBytes(dictionary_), capacity::VectorBytes(params_)), capacity::StringBytes(error_string_))',
+        'ZstdCompressContext': 'capacity::Add(capacity::StringBytes(error_string_), capacity::StringBytes(error_code_string_))',
+        'ZstdDecompressContext': 'capacity::Add(capacity::StringBytes(error_string_), capacity::StringBytes(error_code_string_))',
+    }
+    for name, expression in retained.items():
+        declaration = ('class ' + name + ' final : public ' +
+                       ('CodecContext' if name == 'ZlibContext' else
+                        'BrotliContext' if name.startswith('Brotli') else 'ZstdContext') +
+                       ' {\n public:\n')
+        body = ('  size_t RetainedNativeBytes() const noexcept override {\n'
+                '    return capacity::Add(sizeof(*this), ' + expression + ');\n'
+                '  }\n')
+        types = replace_count(types, declaration, declaration + body, 1)
     types = replace_count(types, '  Mutex mutex_;  // Protects zlib_init_done_.',
                           '  js::Mutex mutex_{js::mutexid::ShellOffThreadState};  // Protects zlib_init_done_.', 1)
     # The V8 wrapper initializes before any private method can observe strm_.
@@ -106,6 +124,7 @@ def generate(root):
 LICENSE
 #ifndef shell_kandelo_node_codec_contexts_h
 #define shell_kandelo_node_codec_contexts_h
+#include "kandelo-node-codec-owned-capacity.h"
 #include "mozilla/Assertions.h"
 
 #include <algorithm>
@@ -152,6 +171,7 @@ enum class AsyncProvider : int {
 class CodecContext {
  public:
   virtual ~CodecContext() = default;
+  virtual size_t RetainedNativeBytes() const noexcept = 0;
   virtual void Close() = 0;
   virtual void DoThreadPoolWork() = 0;
   virtual void SetBuffers(const char*, uint32_t, char*, uint32_t) = 0;

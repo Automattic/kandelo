@@ -1,0 +1,132 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/compression-contracts.md",
+    "findingIds": [
+      "ZIP-010"
+    ],
+    "definitionKey": "tests/nodejs/audit/compression-contracts.md#ZIP-010:L124",
+    "relatedFamilies": [
+      "async",
+      "engine",
+      "observability"
+    ],
+    "scope": "Partial actual retained storage/report prerequisite only. Heap visitation, whole-process metrics and other qualified ranges remain open.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/compression-contracts.md",
+        "findingId": "ZIP-010",
+        "definitionKey": "tests/nodejs/audit/compression-contracts.md#ZIP-010:L124",
+        "relation": "partial-owning-source",
+        "closed": false,
+        "scope": "Actual retained native state/context/container capacity; no heap snapshot or full memory accounting closure."
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Each real generated concrete codec context reports its own sizeof plus actual retained vectors and external string capacity; short strings inside the object are not counted twice.",
+    "Native codec state reports real state/context/requested storage plus existing custom allocator blocks, with original JS backing spans retaining separate owners.",
+    "Reporting occurs at committed native-state ownership and quiet init/reset/params/error/completion/close boundaries; worker-mutable containers are sampled only while idle.",
+    "Close retains real vector/string capacity until actual context destruction; foreground finalization removes the last associated amount once. Production JSAPI/GC behavior still needs validation.",
+    "The actual current recipe adds only the declared header/copy and revision; newer TLS source and mode 0755, core and canonical engine remain unchanged."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-codec249-source-r1/report.json",
+    "sha256": "968cb6bd13abbf44c7a273f8245c25fc641c7852dc5dab33bae509ae01f0f23b",
+    "guardedInputs": 904,
+    "scope": "Actual current source/normal generated codec headers and existing7group native context component. No new compiler; libc++19/native component is distinct from declared21/guest Report/GC/heap graph."
+  },
+  "packageChecks": {
+    "report": ".context/node26-codec249-affected-r1.json",
+    "sha256": "ad72e0f9e359d5d31eb6a2603befe5f85b1eb23931c3f2c7d4cac8e1c8dec501",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-codec249-source-r1/report.json",
+    "sha256": "968cb6bd13abbf44c7a273f8245c25fc641c7852dc5dab33bae509ae01f0f23b",
+    "nativeGeneratedContextGroups": 7,
+    "nativeGeneratedContextFailures": 0,
+    "generatedHeaders": 2,
+    "concreteCapacityAccessors": 5,
+    "sourceChecks": 5,
+    "sourceCommands": 8,
+    "nativeLibcxxMajor": 19,
+    "declaredGuestLibcxxMajor": 21,
+    "productionReportGcExecuted": false,
+    "newRootCompilerAttempts": 0,
+    "historicalHelperAttempts": 1,
+    "historicalHelperFailures": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Source 249 adds actual retained native codec state/context/vector/string capacity and idle reporting boundaries. Normal source checks verify two generated headers and five concrete accessors. The reused real generated-context component passes seven groups over actual native codec APIs, worker threads/std mutex and libc++19. Declared guest libc++21, production JSAPI Report/GC, finalizers/error paths and four-host behavior remain uncompiled/unvalidated. Requested retained capacity is not RSS or Node heap graph parity.",
+    "globalBindingSelfContained": false
+  },
+  "sealedEvidence": {
+    "report": ".context/codec-capacity-owner-agent/report.json",
+    "sha256": "0caa8be908ff46a24b3d322baeea64be6a82e2c954339497468a73b3d1b59e1d",
+    "reusedEvidence": true,
+    "scope": "Historical actual generated-context native component with one successful tiny compile and native libc++19. Not production JSAPI Report/GC, declared guest libc++21 or heap snapshot evidence."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/codec-capacity-owner-agent/report.json",
+      "sha256": "0caa8be908ff46a24b3d322baeea64be6a82e2c954339497468a73b3d1b59e1d",
+      "scope": "Producer source-lookup ENOENT observations had no standalone raw logs; do not reconstruct them or claim full log completeness. One real helper compile succeeded with retained warnings. No runtime/compiler failure or guest conformance is manufactured."
+    },
+    {
+      "report": ".context/codec-capacity-owner-agent/evidence/compile-r1.stderr",
+      "sha256": "6332fc8d7746e7528250ef918604b30c4d5db2049b7e77fec267fdc58cde86bc",
+      "scope": "Actual native compiler warnings retained, including preexisting generated inherited-virtual override warnings. Zero compiler failures; no flags/checkers weakened."
+    }
+  ],
+  "remaining": [
+    "Compile and validate actual production JSAPI Report deltas, pending exceptions, rooted owner/finalizer/realm/CCW/fatal/Worker/process behavior on identified guest artifacts across all four hosts.",
+    "Validate declared guest libc++21 string/vector storage and full generated headers; native libc++19 component sizes and requested-storage observations are not guest metadata or linked target proof.",
+    "Implement Node heap-snapshot MemoryRetainer/MemoryTracker visitation and relevant whole-process metrics separately. Retained-capacity GC pressure is not heap graph, RSS or allocator overhead parity.",
+    "Reconcile temporary reset/error copies, native request/queue and async lifetime overhead, allocation/OOM error paths and remaining original ZIP-010 definitions/ranges; this bounded owner does not close them.",
+    "Continue public compression modes/options/stream/cancellation/cleanup and broader core breadth gaps, preserving original failures and keeping overall suites/full product rebuild deferred."
+  ],
+  "actualControlReport": {
+    "report": ".context/node26-codec249-source-r1/report.json",
+    "sha256": "968cb6bd13abbf44c7a273f8245c25fc641c7852dc5dab33bae509ae01f0f23b",
+    "nativeGeneratedContextGroups": 7,
+    "nativeGeneratedContextFailures": 0,
+    "nativeLibcxxMajor": 19,
+    "declaredGuestLibcxxMajor": 21,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "productionReportGcExecuted": false,
+    "scope": "Actual generated codec context algorithms over native Node codec APIs, worker/std mutex and libc++19. Not production JSAPI Report/GC, declared guest libc++21, heap graph or four-host proof."
+  },
+  "manualIntegration": {
+    "report": ".context/node26-codec249-manual-apply-r1.json",
+    "sha256": "0465d4cdc6609939672da113700092d6ce4406f4ea64ba43503e318f06fca7e0",
+    "manualExecutableBoundary": true,
+    "buildScriptMode": "0755",
+    "v1OperationClaimed": false,
+    "selectedInputBindingOnly": true,
+    "globalBindingSelfContained": false,
+    "actualReceiptPids": [
+      37551,
+      37550
+    ]
+  },
+  "actualNormalHeaderReport": {
+    "report": ".context/node26-codec249-source-r1/header-checks.json",
+    "sha256": "9841f917349fc776b71c463b29f8981e080dbbd7fcd2443bfe8c859b079678c3",
+    "headers": 2,
+    "concreteCapacityAccessors": 5,
+    "newEngineCompiled": false
+  },
+  "at": "2026-11-08T02:55:42.232024+00:00",
+  "recipeRevision": 249,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

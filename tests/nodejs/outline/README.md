@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source 249 adds a real retained codec-capacity reporting prerequisite. It is partial ZIP-010 ownership, not heap graph, whole-process memory or compression-family compatibility.
+See [source scope](codec-owned-capacity-integration.md).
+
 Source 248 repairs the actual non-Error EventEmitter unhandled-error owner. This is a partial A-018 source contribution, not full stack/fatal or ASYNC compatibility.
 See [source scope](event-unhandled-error-integration.md).
 

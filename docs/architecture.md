@@ -7275,3 +7275,7 @@ Source 247 adds a real retained memory-output BIO and captured TCP write/receipt
 ### EventEmitter unhandled-error ownership
 
 Source 248 changes only the EventEmitter unhandled non-Error helper and recipe revision. Ten native groups compare against actual current Values/EventEmitter source: before matches three and differs on seven with one real exit-one assertion; after matches all ten. One unchanged upstream file has three assertions per subject, and early owner-independent construction/ordinary/same-Error controls are separate. Native Error/inspection/VM/process dependencies do not execute candidate inspection/engine/stack/fatal/GC or establish four-host conformance. Core, canonical engine and executable build script are unchanged. No new compiler or engine patch is introduced.
+
+### Retained native codec capacity ownership
+
+Source 249 adds actual retained native codec state/context/vector/string capacity and idle reporting boundaries. Normal source checks verify two generated headers and five concrete accessors. The reused real generated-context component passes seven groups over actual native codec APIs, worker threads/std mutex and libc++19. Declared guest libc++21, production JSAPI Report/GC, finalizers/error paths and four-host behavior remain uncompiled/unvalidated. Requested retained capacity is not RSS or Node heap graph parity. Shared recipe/build-script edits preserve newer TLS input/staging and mode 0755. Core and canonical engine are unchanged; the executable script required an explicit manual boundary, not a V1 operation.
