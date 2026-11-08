@@ -12,10 +12,11 @@ test("function catalogs preserve identities, aliases and failed-registration ato
   let bytes: number[];
   try {
     writeFileSync(join(dir, "functions.wat"), `(module
-      (table (export "functions") 2 2 funcref)
+      (import "env" "callback" (func $callback (param i32) (result i32)))
+      (table (export "functions") 3 3 funcref)
       (func $first (result i32) i32.const 17)
       (func $second (result i32) i32.const 29)
-      (elem (i32.const 0) func $first $second))`);
+      (elem (i32.const 0) func $first $second $callback))`);
     execFileSync("wat2wasm", [join(dir, "functions.wat"), "-o", join(dir, "functions.wasm")]);
     bytes = [...readFileSync(join(dir, "functions.wasm"))];
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -29,7 +30,7 @@ test("function catalogs preserve identities, aliases and failed-registration ato
   const result = await page.evaluate(async ({ bytes, catalogUrl }) => {
     const { ForkFunctionCatalog } = await import(catalogUrl);
     const module = new WebAssembly.Module(Uint8Array.from(bytes));
-    const source = new WebAssembly.Instance(module).exports.functions as WebAssembly.Table;
+    const source = new WebAssembly.Instance(module, { env: { callback: (value: number) => value + 100 } }).exports.functions as WebAssembly.Table;
     const first = source.get(0), second = source.get(1);
     const table = new WebAssembly.Table({ element: "anyfunc", initial: 2, maximum: 3 });
     table.set(0, first); table.set(1, second);
@@ -38,10 +39,16 @@ test("function catalogs preserve identities, aliases and failed-registration ato
     table.set(0, second); table.set(1, null); table.grow(1, first);
     const recipe = parent.encode(first);
     const decoded = parent.decode({ moduleActivation: 0, ordinal: 0 });
-    const fresh = new WebAssembly.Instance(module).exports.functions as WebAssembly.Table;
+    const fresh = new WebAssembly.Instance(module, { env: { callback: (value: number) => value + 200 } }).exports.functions as WebAssembly.Table;
     const child = new ForkFunctionCatalog();
     child.register(0, fresh);
     const reconstructed = child.decode(recipe);
+    const importedParent = new ForkFunctionCatalog();
+    const importedChild = new ForkFunctionCatalog();
+    importedParent.register(4, source);
+    importedChild.register(4, fresh);
+    const importedRecipe = importedParent.encode(source.get(2));
+    const callbackValues = [importedParent.decode(importedRecipe)(5), importedChild.decode(importedRecipe)(5)];
 
     const aliases = new WebAssembly.Table({ element: "anyfunc", initial: 2 });
     aliases.set(0, first); aliases.set(1, first);
@@ -63,11 +70,11 @@ test("function catalogs preserve identities, aliases and failed-registration ato
     return {
       recipe, frozen: decoded === first && decoded() === 17,
       fresh: reconstructed === fresh.get(0) && reconstructed !== first && reconstructed() === 17,
-      before, afterRegister, afterUnload, registrationError, encodeError, boundsError,
+      before, afterRegister, afterUnload, registrationError, encodeError, boundsError, callbackValues,
     };
   }, { bytes, catalogUrl });
   expect(result).toMatchObject({
-    recipe: { moduleActivation: 0, ordinal: 0 }, frozen: true, fresh: true,
+    recipe: { moduleActivation: 0, ordinal: 0 }, frozen: true, fresh: true, callbackValues: [105, 205],
     before: { moduleActivation: 7, ordinal: 0 },
     afterRegister: { moduleActivation: 2, ordinal: 0 },
     afterUnload: { moduleActivation: 7, ordinal: 0 },

@@ -150,6 +150,32 @@ describe("ForkFunctionCatalog", () => {
 });
 
 describe("bulk function-catalog snapshot", () => {
+  it("preserves imported host-function references and rebinds them in a fresh instance", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-imported-function-"));
+    try {
+      writeFileSync(join(dir, "imports.wat"), `(module
+        (import "env" "callback" (func $callback (param i32) (result i32)))
+        (table (export "functions") 1 1 funcref)
+        (elem (i32.const 0) func $callback))`);
+      execFileSync("wat2wasm", [join(dir, "imports.wat"), "-o", join(dir, "imports.wasm")]);
+      const module = new WebAssembly.Module(readFileSync(join(dir, "imports.wasm")));
+      const parent = new WebAssembly.Instance(module, { env: { callback: (value: number) => value + 100 } });
+      const child = new WebAssembly.Instance(module, { env: { callback: (value: number) => value + 200 } });
+      const parentTable = parent.exports.functions as WebAssembly.Table;
+      const childTable = child.exports.functions as WebAssembly.Table;
+      const parentCatalog = new ForkFunctionCatalog();
+      const childCatalog = new ForkFunctionCatalog();
+      parentCatalog.register(0, parentTable);
+      childCatalog.register(0, childTable);
+      const recipe = parentCatalog.encode(parentTable.get(0));
+      expect(parentCatalog.decode(recipe)).toBe(parentTable.get(0));
+      expect((parentCatalog.decode(recipe) as (value: number) => number)(5)).toBe(105);
+      expect(childCatalog.decode(recipe)).toBe(childTable.get(0));
+      expect(childCatalog.decode(recipe)).not.toBe(parentTable.get(0));
+      expect((childCatalog.decode(recipe) as (value: number) => number)(5)).toBe(205);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("matches the readable table-only Wasm provider and exposes no mutable bytes", () => {
     const source = readFileSync(new URL("../src/fork-function-catalog-snapshot.ts", import.meta.url), "utf8");
     const start = source.indexOf(" * (module");
