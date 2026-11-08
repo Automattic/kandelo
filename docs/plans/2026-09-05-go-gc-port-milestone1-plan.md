@@ -2,6 +2,66 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Measured WebKit lifecycle and SDK reproducibility checkpoint:** job
+`wordpress-current-native-attribution-1107-230923-1640` passes in 5m50s
+(browser 4.7m) on the exact revision-45 partial image, current kernel and
+Go daemons. Real Caddy/PHP handles WordPress login/editor HTTP requests,
+parallel editor bursts, request churn and a 120-second instrumented traffic
+phase, then four SIGKILL recoveries and a held-request graceful shutdown.
+The unchanged upstream PHP optimizer passes both 96- and 768-condition
+probes twice. This is not a rendered-UI or fair throughput comparison.
+
+The content process reaches a rounded OS peak of 10.6 GiB while Go reports
+about 40-42 MiB Sys and the Caddy linear memory stays at 685.9 MiB through
+the traffic growth. Kernel linear memory is 187.5 MiB. After destruction,
+the same page falls from 2.4 GiB to 647.1 MiB over 60 seconds, with the
+direct kernel-worker count dropping to zero. Inspector `page` is the large
+bucket; two paused-producer native stack samples do not identify allocation
+sites. Counters overlap and must not be added. This demonstrates partial
+reclamation, not a leak fix or acceptable service budgets. The
+[detailed memory checkpoint](2026-11-08-wordpress-webkit-memory-checkpoint.md)
+retains versions, source/artifact provenance, measurement boundaries and
+next experiments. Module-cache weights are clarified in profiling guidance.
+
+The main-world-versus-locator diagnostic `c558` ends two Firefox passes in
+5m11s on the same current image. Earlier one-pass/one-fail attempts remain
+recorded; instrumentation and passing repetitions do not establish a UI fix.
+The final all-33 gate and broader browser-memory/lifecycle inventory remain
+open. The running preview on5492 stays pinned and returns HTTP200.
+
+The normal forced classic revision-41 recipe reproduces all 69,939,352
+bytes (`f1314f3e7675`), retaining original Go build IDs, and passes Node PHP,
+static-file, OPcache and 32-request/concurrency-four string-lifetime checks
+across Go GC cycles, with normal exit0. The aggregate `065a` job is
+intentionally stopped143 before its remaining Caddy proof while differing
+SDK input stamps are investigated; its completed classic proof is retained.
+A Caddy-only continuation `go-caddy-o2-reproduction-1107-233634-d047` is
+active. This compares normal target output bytes, not full fresh-SDK or
+cross-machine reproducibility; its reference/input distinctions stay explicit.
+
+The SDK investigation finds two native compiler plugins with the same source
+key but different Mach-O library IDs containing their temporary paths/PIDs.
+Their different hashes enter musl input fingerprints even though the target
+libc archives compare byte-identical. A general SDK fix sets the normal
+macOS library ID to `@rpath/KandeloCallTypes.dylib` and normalizes the plugin's
+own source paths. No Go/PHP/Caddy algorithm changes. A maintained test builds
+the plugin under two different source/staging roots, compares full library
+bytes, loads both through the declared raw LLVM compiler and checks equal
+Wasm objects containing compiler facts: PASS23.5s on macOS. The initial
+object-load probe incorrectly used Nix's native-target wrapper; switching
+the test to the declared unwrapped LLVM_BIN resolves that test setup error.
+Integrated evidence-class validation agrees on all677 files. Linux and the
+normal SDK/package/image refresh after this metadata fix are not yet run.
+
+The SDK patch is isolated from the still-running family checkout, whose
+source remains04d6418cc. That old-source canonical graph keeps independent
+work after its already-recorded missing-submodule failures; its guarded4770
+retry and63d2 baseline preparation remain queued. Do not edit those live
+inputs or restamp their results as the newer SDK source. Latest main is
+fetched again and remainsfaf9b31720e8; ABI55 is unchanged. The original full
+goal, final coherent artifact refresh, native allocation attribution,
+resource budgets, visitor-cache policy and all performance gates stay open.
+
 **Exact-preview editor observations:** the current revision-45 image
 `9cbbb185ced4`, kernel `6f5afada9ae3`, both normal Go daemons and identical
 service-worker source pass admission before the Firefox repetitions. Job

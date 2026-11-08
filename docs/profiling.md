@@ -484,9 +484,9 @@ measurement or a claim that other engines have that cost. See the
 The image prewarms the FPM file cache at build time. FrankenPHP builds its
 own compatible cache during requests, so cold-start and warm-request
 results must remain separate. Verify actual OPcache activation and warm
-both workloads before interpreting warm timings. Neither profile includes
-a full-page cache: these results cannot establish the performance of a
-cache-enabled visitor experience. The Node Caddy profile requests a 1 GiB
+both workloads before interpreting warm timings. The comparison leaves the
+optional full-page cache inactive; these results cannot establish the
+performance of a cache-enabled visitor experience. The Node Caddy profile requests a 1 GiB
 Wasm memory ceiling, versus 256 MiB for the nginx/PHP-FPM profile; this is
 an address-space ceiling, not a measurement of host physical memory.
 
@@ -505,6 +505,18 @@ That sum can count shared native pages more than once;
 it is not unique physical footprint or guest linear-memory usage. Each
 Chromium round already uses a fresh browser. A bounded run and an RSS trend
 do not by themselves prove a leak fix or long-term production stability.
+
+Module-cache counters are not engine allocation measurements.
+`compiledBytes` is cumulative Wasm input size, while `retainedBytes` weights
+strongly retained cache entries by their original Wasm byte lengths.
+Neither reports native compilation/instance costs. Zero retained bytes
+does not mean that running workers, instances or the engine released their
+modules. Compare these counters with separate guest and native observations;
+do not add overlapping memory views. The
+[wasm32 WordPress/WebKit checkpoint](plans/2026-11-08-wordpress-webkit-memory-checkpoint.md)
+records a 10.6 GiB OS peak with tens of MiB of Go Sys, a large engine `page`
+category, and partial post-destroy reclamation; the allocation source and
+final budgets remain unresolved.
 
 For the focused `frankenphp-wordpress-host.spec.ts` diagnostic, set
 `KANDELO_WORDPRESS_FRANKENPHP_VFS` to the retained image. If its deferred
