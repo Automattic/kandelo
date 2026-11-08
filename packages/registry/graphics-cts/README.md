@@ -55,6 +55,9 @@ The ZIP contains the original GLES2 data/shader tree rooted at `gles2/`.
 Consumers must unpack/mount it through the normal VFS and pass its root as
 `--deqp-archive-dir`, not serve it through a special graphics implementation.
 Both executables use normal SDK linking, ABI stamping and fork instrumentation.
+The data archive uses its declared disabled fork policy at installation;
+the executable policy must not leak into that non-program output. Resolver
+metadata remains authoritative and mismatched policy requests fail loudly.
 
 After normal package provisioning, inventory the real registered tests with
 each executable's unchanged `--deqp-runmode=stdout-caselist` mode. Execution

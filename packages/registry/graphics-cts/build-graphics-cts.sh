@@ -62,4 +62,8 @@ with zipfile.ZipFile(sys.argv[2], "x", compression=zipfile.ZIP_DEFLATED) as arch
             info.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(info, path.read_bytes())
 PY
-install_local_binary graphics-cts "$work/deqp-data.zip" deqp-data.zip
+# WHY: the executables need fork preparation, but this declared data output
+# is not a program. Keep the per-call policy aligned with its manifest instead
+# of letting the executable-wide auto setting reject the archive install.
+WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled \
+    install_local_binary graphics-cts "$work/deqp-data.zip" deqp-data.zip
