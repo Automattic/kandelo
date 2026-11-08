@@ -27857,3 +27857,62 @@ Sixteen retained shared-memory synchronization errors remain separately
 uninvestigated and must not be attributed to that overlay without evidence.
 No source or preview-product bytes change during the diagnostic. Its outcome
 closes no desktop, lifecycle or performance gate.
+
+### B1 normal-preview checks and captured publication failure, 2026-11-08
+
+R944 completes the normal focused graphical build with the same twelve
+package roots recorded above. A fresh owned server on port 59239 serves
+its verified 822,588-byte image; its kernel and three compiled workers
+match the normal build. The older 59237 server has the diagnostic import
+error overlay and is no longer the advertised checkpoint. Protected port
+6271 is untouched.
+
+R946 executes the selected Sway, ScummVM, Freeciv, fluid and GLSL rendering
+checks: all 21 cases pass across Chromium, Firefox and WebKit, without
+skips, retries or flakes. Source and all 24 normal-product proof entries
+remain unchanged. Exact invocation:
+
+```sh
+scripts/dev-shell.sh bash .context/graphics-clean-preview-checks-r946/run.sh
+```
+
+R947 separately passes the canonical `bash scripts/check-abi-version.sh`
+inside the dev shell. Program 56 / host 4 / GL 17 / fork 21 are unchanged.
+The approved ABI-55 rejection fixtures remain preserved. These selected
+passes do not establish complete desktop, lifecycle, timing or B1 acceptance.
+
+A separate larger-viewport Firefox run R950 fails its first-Foot check and
+records sixteen completion ENOMEM diagnostics. R954 later passes that
+first-render prefix with no recorded mapping failures, but its diagnostic
+read incorrectly requests `/proc/kandelo/memory`. The actual endpoint is
+`/proc/kandelo/fs_memory`; that unsuccessful read is retained as a diagnostic
+error, not memory evidence or resolution of the intermittent failure.
+
+R956 changes only that endpoint in the original-prefix diagnostic. It fails
+earlier, waiting for the painted bar, and never reaches the first-Foot
+predicate. Both real procfs reads nevertheless succeed. The failure ring
+accounts for 78 failures, retaining eight and explicitly reporting 70 dropped.
+All eight retained records identify `pull_merge`, pid 107, mapping address
+`0x1ba0000`, length 14,824,800, and a 4,096-byte attempted source chunk.
+Seven records have 132,113,336 live I/O credits against a 132,120,576 limit;
+the last has 132,120,378 against that same limit. The mapping-publication
+path, rather than refresh replacement, is therefore the captured failing
+operation. Its owning cache/dirty-write lifetime needs repair; no limit is
+raised and the private cold-refresh candidate is not claimed as that repair.
+
+After teardown, `fs_memory` reports I/O live 14,856,384, peak live 132,120,548,
+peak temporary 655,536 and peak total 132,120,796 admission credits. These
+are admission credits, not browser RSS, and the later current count must not
+replace failure-time values. The full trace is retained; the bounded console
+extract explicitly records overflow. Sixteen frozen source inputs and all
+24 normal-product proof entries match before and after. Exact invocation:
+
+```sh
+scripts/dev-shell.sh bash ../graphics-sway-prefix-proc-r956/run.sh
+```
+
+This new failure remains separate from the earlier extra-Foot launch after
+one Alt+Enter action. Neither subsequent unchanged passes nor this memory
+finding proves the origin of that duplicate launch. B1 remains the next
+shipment after its own correctness, desktop/lifecycle and stage-measurement
+checks; B2–B6 and C1–C3 remain explicit ordered follow-ups.
