@@ -8,11 +8,11 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "c5990bf66ea440cc53bb89e1cf1f031fceb34c041fd2f22e887ff9774aaf9038",
+    "packages/registry/node-compat/bootstrap.js": "594f40328a3ca05d2558785a4895918bedbb92314d67081d487195e357a50ebe",
     "third_party/node-core/adapter.js": "62d08d0de6ea1b8aef5f0dc54c46e53b175e5cbbc481475cbfb2059ad912e292",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/asymmetric-keygen-platform-adapter.js": "94b3dc26b1f783b97cb38eaa91baff3be883c66f8d80a6c76568a72ebf0207b0",
-    "third_party/node-core/async-platform-adapter.js": "b04c8db09f5d76ce3e85a0e3ecdbcad8c8e2f8962d09a771fdc6246531ff56a8",
+    "third_party/node-core/async-platform-adapter.js": "11af21d12bee0a59089b4a89f4b1f08c941c620079a5f655938a7ed3f90ba01b",
     "third_party/node-core/buffer-bytes-adapter.js": "f7336c50f3fa23bd889ca2bf0225ade34798f651a092d097dda4669f4898ff47",
     "third_party/node-core/buffer-codecs-adapter.js": "de9373d9f1ab96f82dc3f9087a7d4e5a66db9cf997f83986ac14076f0ae9a552",
     "third_party/node-core/buffer-constructor-adapter.js": "2074bd8ba330ce3450d65bc6b09a965c85679adc6a33c79bfd409d5149375da1",
@@ -64,7 +64,7 @@
     "third_party/node-core/http-headers-adapter.js": "ea0571356e14c94e8679037759502368aa9d5e680cfe07832c4ea76a82f4e8be",
     "third_party/node-core/http-incoming-adapter.js": "6dedb3fe1773cfd0c6a804db0482d131533be15f8babf934287da3638edbd44a",
     "third_party/node-core/http-outgoing-adapter.js": "35ca48ff3efb87d5236c378c6429aa56af5c28babfa839fc03be7dd4e36fe1ed",
-    "third_party/node-core/http-parser-platform-adapter.js": "31bbe787f9c403d3dd6bf0a56c6c69778f22067f76fd9c811002fec4b0f56807",
+    "third_party/node-core/http-parser-platform-adapter.js": "708b08490a76731d6f80a9e4d4f83bed4c805f1f2f009748b333eb878f8eae53",
     "third_party/node-core/http-server-response-adapter.js": "195151e495fb710376347ef00b618719568c8ebf09a020e8edfa3a42d680e65a",
     "third_party/node-core/http2-settings-adapter.js": "b837ecce6701f40c7ca7ebe9f3129cae83a074a99dd1818a0147d35aeab9bbb3",
     "third_party/node-core/import-meta-platform-adapter.js": "d3650d9d241e492d8173ecace06287cb11b51fd5d562c66247de36d003426202",
@@ -2411,7 +2411,7 @@
       "selectedAdapterLiteralOccurrences": [
         {
           "path": "packages/registry/node-compat/bootstrap.js",
-          "line": 2906
+          "line": 2920
         }
       ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",

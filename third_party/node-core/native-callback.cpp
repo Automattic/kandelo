@@ -22,13 +22,14 @@ class KandeloCallbackHost {
   RootedValue frame_, prior_;
   js::shell::KandeloNativeAsyncState* lifetime_;
   bool zeroIds_;
+  bool skipTaskQueues_;
   uint64_t epoch_;
   size_t executionDepth_;
  public:
-  KandeloCallbackHost(JSContext* cx, HandleObject resource, HandleValue frame, bool zeroIds = false)
+  KandeloCallbackHost(JSContext* cx, HandleObject resource, HandleValue frame, bool zeroIds = false, bool skipTaskQueues = false)
       : cx_(cx), resource_(cx, resource), realm_(cx, resource),
         frame_(cx, frame), prior_(cx, cx->kandeloAsyncContext()),
-        lifetime_(js::shell::KandeloGetNativeAsyncState(cx)), zeroIds_(zeroIds),
+        lifetime_(js::shell::KandeloGetNativeAsyncState(cx)), zeroIds_(zeroIds), skipTaskQueues_(skipTaskQueues),
         epoch_(js::shell::KandeloReadExecutionEpoch(cx)),
         executionDepth_(lifetime_ ? lifetime_->execution.Depth() : 0) {
     if (lifetime_) lifetime_->Retain();
@@ -75,14 +76,14 @@ class KandeloCallbackHost {
       if (!values.append(arguments[i])) { JS_ReportOutOfMemory(cx_);return false; }
     return JS::Call(cx_, resource_, trampoline, values, result);
   }
-  bool Checkpoint() { return KandeloPerformCallbackCheckpoint(cx_); }
+  bool Checkpoint() { return skipTaskQueues_ || KandeloPerformCallbackCheckpoint(cx_); }
 };
 class KandeloNativeCallbackScope {
   KandeloCallbackHost host_;
   kandelo::async::CallbackScope<KandeloCallbackHost> scope_;
  public:
-  KandeloNativeCallbackScope(JSContext* cx, HandleObject resource, HandleValue frame)
-      : host_(cx, resource, frame), scope_(host_) {}
+  KandeloNativeCallbackScope(JSContext* cx, HandleObject resource, HandleValue frame, bool skipTaskQueues = false)
+      : host_(cx, resource, frame, false, skipTaskQueues), scope_(host_) {}
   bool Enter() { return scope_.Enter(); }
   bool Stopped() const { return scope_.Stopped(); }
   bool Call(JS::HandleValue callback, const JS::HandleValueArray& arguments,

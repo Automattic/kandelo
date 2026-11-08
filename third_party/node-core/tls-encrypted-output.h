@@ -37,6 +37,15 @@ class EncryptedOutput {
     // sides through transport completion/cancellation and then acknowledgment.
     SSL_set_bio(ssl, input.release(), writer_.get()); return true;
   }
+  short RegisteredEvents() const noexcept {
+    if (parent_.Generation() != parentGeneration_) return 0;
+    return parent_.TransportWriteRegisteredEvents(authority_, write_);
+  }
+  bool CanWrite() const noexcept {
+    // Exact paired BIO ring space, not socket writability. OpenSSL returns
+    // WANT_WRITE when this memory BIO is full even if no socket write waits.
+    return writer_ && BIO_ctrl_get_write_guarantee(writer_.get()) != 0;
+  }
   bool Pending() const noexcept { return write_.Pending() || (reader_ && BIO_ctrl_pending(reader_.get()) != 0); }
   bool NeedsAcknowledgment() const noexcept { return write_.Ready(); }
   int Error() const noexcept { return error_; }

@@ -1581,6 +1581,13 @@ const _startTime = Date.now();
 let _stdin;
 let _nodeStdioOutputPlatform;
 let _nodeReadlinePlatform;
+let _nodePublicTTY;
+function _getNodePublicTTY() {
+    return _nodePublicTTY ??= _createNodePublicTerminalPlatform({
+        native: _nodeNative, values: _nodeValues, net,
+        isTTY: fd => os.isatty(fd), getReadline: () => _nodeReadlinePlatform.api,
+    });
+}
 function _cursorTo(...args) { return _nodeReadlinePlatform.callbacks.cursorTo(...args); }
 function _moveCursor(...args) { return _nodeReadlinePlatform.callbacks.moveCursor(...args); }
 function _clearLine(...args) { return _nodeReadlinePlatform.callbacks.clearLine(...args); }
@@ -2607,6 +2614,13 @@ const _nodeFdStreamPlatform = _createNodeFdStreamPlatform({
     openTerminalOutput: _nodeTerminalPlatform.openOutput,
     openTerminalInput: _nodeTerminalPlatform.openInput,
 });
+// Real Socket construction must exist before diagnostics first requests
+// process stdio. Use the same module/constructor once, not a provisional class
+// later relabeled as public TTY. DNS/address-rule consumers remain lazy below.
+const _nodeNetworkIP = _createNodeNetworkIP();
+let _nodeBeginSocketConnection;
+const net = _createNodeNetModule();
+
 // Signal hooks, captured terminal output and shared streams are initialized
 // before diagnostics first requests stderr. Worker stdio remains separate.
 _nodeStdioOutputPlatform = _createNodeStdioOutputPlatform({
@@ -3507,7 +3521,8 @@ crypto.X509Certificate = _nodeX509.X509Certificate;
 
 // Public lookup uses the real libc resolver. The current libc transport still
 // returns one IPv4 answer for external hostnames; it is not a full DNS client.
-const _nodeNetworkIP = _createNodeNetworkIP();
+// The actual IP representation and Socket module were initialized before
+// stdio's first demand. Real resolver/address-rule owners are installed here.
 const _nodeAddressRules = _createNodeAddressRules({
     native: _nodeNative, values: _nodeValues, inspection: _nodeInspection,
     clone: _nodeClonePlatform, URLParse: _nodeWebPlatform.URL.parse.bind(_nodeWebPlatform.URL),
@@ -3539,11 +3554,10 @@ const _nodeDatagram = _createNodeDatagramPlatform({
     dns: _nodeDnsPlatform.api, cluster: () => _builtinModules.cluster,
 });
 
-// Shared TCP dialing policy. Defaults are consumed by actual connection
-// attempts, including callers such as TLS; they are not harness overrides.
-let _nodeBeginSocketConnection;
-
-const net = (() => {
+// The same real Socket/Server implementation is constructed once before
+// early stdio demand. Dialing methods close over the later real DNS owners;
+// initialization itself creates no descriptor or network attempt.
+function _createNodeNetModule() {
     const nat = _nodeNative;
     const clientSocketChannel = _nodeDiagnostics.registerProducer('net.client.socket');
     const serverSocketChannel = _nodeDiagnostics.registerProducer('net.server.socket');
@@ -4323,7 +4337,7 @@ const net = (() => {
         getDefaultAutoSelectFamilyAttemptTimeout() { return attemptTimeoutDefault; },
         setDefaultAutoSelectFamilyAttemptTimeout(value) { attemptTimeoutDefault = timeout(value, 'value'); },
     };
-})();
+}
 
 // net.BlockList and SocketAddress retain the pinned getter-only exports.
 Object.defineProperties(net, _nodeAddressRules.netDescriptors);
@@ -4869,7 +4883,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol, agentOwner }) {
             this._headersReceived = false;
 
             const parser = makeResponseParser({
-                socket: sock,
+                socket: sock, outgoing: this,
                 joinDuplicateHeaders: this._joinDuplicateHeaders,
                 method: this.method, maxHeaderSize: this.maxHeaderSize,
                 insecureHTTPParser: this.insecureHTTPParser ?? _nodeNative.cliOptions?.insecureHttpParser === true,
@@ -5305,7 +5319,7 @@ const _nodePublicConstants = _createNodePublicConstantModules({
     require: id => _builtinModules[id],
     compileSource: (source, filename) => _nodeNative.evalScriptAsFunction(source, filename, 1),
 });
-let _nodeDomain, _nodeFfi, _nodeVmInternal, _nodePublicTTY;
+let _nodeDomain, _nodeFfi, _nodeVmInternal;
 const _builtinModules = {
     'path': path,
     'events': events,
@@ -5336,10 +5350,7 @@ const _builtinModules = {
     '_http_agent': _nodeHttpAgent.module,
     get https() { _nodePublicConstants.load('tls'); return https; },
     get zlib() { return _nodeStreamPlatform.require('zlib'); },
-    get tty() { return _nodePublicTTY ??= _createNodePublicTerminalPlatform({
-        native: _nodeNative, values: _nodeValues, net,
-        isTTY: fd => os.isatty(fd), getReadline: () => _nodeReadlinePlatform.api,
-    }); },
+    get tty() { return _getNodePublicTTY(); },
     'module': null, // set below
     get constants() { return _nodePublicConstants.load('constants'); },
     get punycode() { return _nodeQueryCodecs.require('punycode'); },

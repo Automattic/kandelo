@@ -1,0 +1,229 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/http.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "http",
+      "secure-network",
+      "terminal"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/http.md",
+        "findingId": "H-001",
+        "relation": "shared-owning-prerequisite",
+        "scope": "Existing actual parser resource/epoch/reset/destroy and callback-scope consumers; not full HTTP Server"
+      },
+      {
+        "document": "tests/nodejs/audit/secure-network.md",
+        "findingId": "S-004",
+        "relation": "shared-owning-prerequisite",
+        "scope": "Actual TLS/TCP retained receipt/event-interest/protocol retry ownership; not full TLS cancellation/liveness parity"
+      },
+      {
+        "document": "tests/nodejs/audit/secure-network.md",
+        "findingId": "S-009",
+        "relation": "shared-owning-prerequisite",
+        "scope": "Existing real TLS I/O poll/request/close owners; not graceful shutdown activation"
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-009",
+        "relation": "shared-owning-prerequisite",
+        "scope": "One existing real net construction and lazy publicTTY cache before diagnostic stdio demand; captured publicTTY stdio conversion held"
+      }
+    ],
+    "scope": "Shared owning prerequisites only: parser resource/reset/callback consumers, TLS interest/transport retries and early stdio constructor order; no full API or finding closure."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "http-parser-resource-epoch-callback-owner",
+      "scope": "Actual native AsyncReset identity/frame/default trigger/resource alias, deferred retirement on init/active parse, explicit callback skip-task flags and existing real HTTP1 consumers. Response packets remain deferred replay."
+    },
+    {
+      "feature": "tls-registered-event-interest-owner",
+      "scope": "Real per-owner cause union consumed by physical TLS poll collection, captured parent/receipt phase, original BIO progress identity and local continuation vs fd interest."
+    },
+    {
+      "feature": "stdio-early-real-constructor-order",
+      "scope": "Byte-identical actual net factory body constructed once after real dependencies. IP/dialer available, one lazy TTY cache, unchanged captured stdio getters and native ownership."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core273-http-parser-tls-interest-stdio-source-r1/report.json",
+    "sha256": "fa29ac29024fcbea5620886ee60da5c5cd59c61941e5daed52413144b3b0c338",
+    "guardedInputs": 934,
+    "scope": "One normal source273 source/staging/input check plus three owning contributions and retained272/271 guards; no native/component reruns, compiler or guest proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core273-http-parser-tls-interest-stdio-affected-r1.json",
+    "sha256": "2bd4ce4b47adf6bc75d9ac640555a1e44c876c6301f0ccb1a39ea50a8f393c09",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core273-http-parser-tls-interest-stdio-source-r1/report.json",
+    "sha256": "fa29ac29024fcbea5620886ee60da5c5cd59c61941e5daed52413144b3b0c338",
+    "reportScope": "One normal source273 source/staging/input check plus three owning contributions and retained272/271 guards; no native/component reruns, compiler or guest proof.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true,
+    "freshComponentGroups": 0,
+    "freshAPIConformancePasses": 0,
+    "sourceAddressingRequiresActualGuards": true
+  },
+  "sealedEvidence": {
+    "report": ".context/core273-http-parser-tls-interest-stdio-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "2fa65a1573ad9402010b364e6ef2e1dfd00db668ce3a1cd4567d3085e830c787",
+    "reusedEvidence": true,
+    "scope": "Three reviewed partial source owners with exact producer/reviewer identities. Zero fresh runtime/API/native groups, helpers or compilers."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-selected-engine-270-r1/terminal.json",
+      "sha256": "760189a1b98dc7d26b2b25933dcb8bcf058cf08f6290cedc07d5f595908be4b0",
+      "classification": "Previously counted actual failed source270 engine compilation; historical only, no new273 credit.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/node26-selected-engine-271-r1/terminal.json",
+      "sha256": "ff44d7fb1d0acb9224c1553e3159e3638c5c21a7d62ad5d0617c9ae6c6ba809b",
+      "classification": "Actual resolver0 with original wrapper retention harness1; corrected verifier0/accepted271 retained. Historical, not engine failure or273 execution.",
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "Full public HTTPParser/StreamListener/consume/type switching/cache callback API and HTTPServer remain held Actual init-hook close/free/reinitialize/fatal/throw/default-trigger/after/checkpoint/reentry and normal queue retirement execution Native GC/OOM/realm/principals/Worker/environment teardown and actual destroy ordering Response synchronous parse callback chronology, original remainder/error publication and shared-input atomic consumption Generic StreamBase/JSStreamSocket/nghttp2 session backend and full HTTP2 remain separate implementation gaps Current identified artifact across Node/Chromium/Firefox/WebKit not validated",
+    "Full managed input BIO/ClearIn/ClearOut/StreamBase listener owner; existing non-read encrypted-output barrier can retain handshake/full-duplex backpressure gaps Public ReadStop bridge/active-handle and exact full TLS ref/loop semantics, not manufactured by private owner StopRead Current inline native admission/fatal/stopping publication and precise SSL/error-queue/GC/OOM/realm/Worker/fork behavior require owning validation Legacy raw close/OFD/generation/reuse/success-publication failure authority; supplied-fd remains held Early end-before-secure/full public graceful finalization, protocol/session/certificate/provider/error/callback conformance Node/Chromium/Firefox/WebKit identified current candidate runtime conformance; no accepted boundary/closure",
+    "Actual guest startup/Worker/GC/OOM/fatal execution remains unvalidated. Captured stdio publication/rollback and file/pipe/IPC selectors needed before publicTTY stdio conversion. Full constructor/prototype/stream modes and four-host conformance not established."
+  ],
+  "featureContributions": [
+    {
+      "id": "http-parser-resource-epoch-callback-owner",
+      "family": "http",
+      "scope": "Actual native AsyncReset identity/frame/default trigger/resource alias, deferred retirement on init/active parse, explicit callback skip-task flags and existing real HTTP1 consumers. Response packets remain deferred replay.",
+      "remaining": "Full public HTTPParser/StreamListener/consume/type switching/cache callback API and HTTPServer remain held Actual init-hook close/free/reinitialize/fatal/throw/default-trigger/after/checkpoint/reentry and normal queue retirement execution Native GC/OOM/realm/principals/Worker/environment teardown and actual destroy ordering Response synchronous parse callback chronology, original remainder/error publication and shared-input atomic consumption Generic StreamBase/JSStreamSocket/nghttp2 session backend and full HTTP2 remain separate implementation gaps Current identified artifact across Node/Chromium/Firefox/WebKit not validated",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/http.md",
+          "findingId": "H-001",
+          "relation": "shared-owning-prerequisite",
+          "scope": "Existing actual parser resource/epoch/reset/destroy and callback-scope consumers; not full HTTP Server"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "5869799059c57ec54afa575875e51efe07922292b4786a94a812f36f6a028846",
+      "producerSeal": {
+        "path": ".context/http-parser-resource-owner-agent/SEAL.json",
+        "sha256": "4ead73dd0cc3484c26c1d8440c3df5a001e31c6dbacbc6b661c136e3b6440dc2"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core273-http-parser-tls-interest-stdio-source-r1/report.json",
+        "sha256": "fa29ac29024fcbea5620886ee60da5c5cd59c61941e5daed52413144b3b0c338",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "tls-registered-event-interest-owner",
+      "family": "secure-network",
+      "scope": "Real per-owner cause union consumed by physical TLS poll collection, captured parent/receipt phase, original BIO progress identity and local continuation vs fd interest.",
+      "remaining": "Full managed input BIO/ClearIn/ClearOut/StreamBase listener owner; existing non-read encrypted-output barrier can retain handshake/full-duplex backpressure gaps Public ReadStop bridge/active-handle and exact full TLS ref/loop semantics, not manufactured by private owner StopRead Current inline native admission/fatal/stopping publication and precise SSL/error-queue/GC/OOM/realm/Worker/fork behavior require owning validation Legacy raw close/OFD/generation/reuse/success-publication failure authority; supplied-fd remains held Early end-before-secure/full public graceful finalization, protocol/session/certificate/provider/error/callback conformance Node/Chromium/Firefox/WebKit identified current candidate runtime conformance; no accepted boundary/closure",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/secure-network.md",
+          "findingId": "S-004",
+          "relation": "shared-owning-prerequisite",
+          "scope": "Actual TLS/TCP retained receipt/event-interest/protocol retry ownership; not full TLS cancellation/liveness parity"
+        },
+        {
+          "document": "tests/nodejs/audit/secure-network.md",
+          "findingId": "S-009",
+          "relation": "shared-owning-prerequisite",
+          "scope": "Existing real TLS I/O poll/request/close owners; not graceful shutdown activation"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "5869799059c57ec54afa575875e51efe07922292b4786a94a812f36f6a028846",
+      "producerSeal": {
+        "path": ".context/tls-registered-interest-owner-agent/SEAL.json",
+        "sha256": "e235c121f845e15977c99aaa62df041b8a2200a10164106f45163b7544ddc155"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core273-http-parser-tls-interest-stdio-source-r1/report.json",
+        "sha256": "fa29ac29024fcbea5620886ee60da5c5cd59c61941e5daed52413144b3b0c338",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "stdio-early-real-constructor-order",
+      "family": "terminal",
+      "scope": "Byte-identical actual net factory body constructed once after real dependencies. IP/dialer available, one lazy TTY cache, unchanged captured stdio getters and native ownership.",
+      "remaining": "Actual guest startup/Worker/GC/OOM/fatal execution remains unvalidated. Captured stdio publication/rollback and file/pipe/IPC selectors needed before publicTTY stdio conversion. Full constructor/prototype/stream modes and four-host conformance not established.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-009",
+          "relation": "shared-owning-prerequisite",
+          "scope": "One existing real net construction and lazy publicTTY cache before diagnostic stdio demand; captured publicTTY stdio conversion held"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "5869799059c57ec54afa575875e51efe07922292b4786a94a812f36f6a028846",
+      "producerSeal": {
+        "path": ".context/stdio-constructor-order-owner-agent/SEAL.json",
+        "sha256": "8412843b5dd39987bf7850cafdb143a67803b596fc220339c33c204b9ad20e69"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core273-http-parser-tls-interest-stdio-source-r1/report.json",
+        "sha256": "fa29ac29024fcbea5620886ee60da5c5cd59c61941e5daed52413144b3b0c338",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    }
+  ],
+  "batchReceiptIndex": {
+    "report": ".context/core273-http-parser-tls-interest-stdio-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "caa74b26746e7a8791bcf4ae637f42cf6c98800c38bc1975ad2d429e8b6e9839",
+    "scope": "Actual completed source/check/import receipts. Zero new component/native/API passes; no historical recount or new compiler/guest run."
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "documentationGate": "Historical native observations and negative outcomes retain their original scope. Current source/package predicates do not establish API passes.",
+  "sourceAddressing": {
+    "report": ".context/core273-http-parser-tls-interest-stdio-batch-metadata-bound-r1/source-addressed-gaps.json",
+    "sha256": "3c59c0811e04d874153c9a580f69a27af89ea8c1aca06df2618534d8c01f46bc",
+    "scope": "Actual combined partial source ownership only; original findings/nonpasses remain immutable, no runtime or API closure."
+  },
+  "at": "2026-11-08T14:12:56.949504+00:00",
+  "recipeRevision": 273,
+  "lastAcceptedEngine": 271,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

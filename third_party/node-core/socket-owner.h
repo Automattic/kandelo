@@ -176,6 +176,16 @@ class Owner {
     request.offset_ = 0; request.error_ = 0; request.phase_ = TransportWrite::Phase::Writing;
     transportWrite_ = &request; return 0;
   }
+  // Readiness belongs to the admitted captured receipt while a real native
+  // write remains. Ready/acknowledgment and caller callbacks are local work,
+  // never POLLOUT. Plain queued-write callbacks cannot clear this owner phase.
+  short TransportWriteRegisteredEvents(const TransportAttachment& authority,
+                                        const TransportWrite& request) const noexcept {
+    if (transport_ != &authority || transportWrite_ != &request || closed_ ||
+        Fd() < 0 || request.generation_ != generation_ ||
+        request.phase_ != TransportWrite::Phase::Writing) return 0;
+    return POLLOUT;
+  }
   bool ProgressTransportWrite(TransportAttachment& authority, TransportWrite& request) noexcept {
     if (transport_ != &authority || transportWrite_ != &request || request.generation_ != generation_)
       return false;

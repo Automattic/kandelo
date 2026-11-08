@@ -282,6 +282,18 @@ function _createNodeAsyncPlatform(platform) {
         if (kind === 'callback:zero:after') {
             setState(platform.native.popAsyncExecution(0)); return;
         }
+        if (kind === 'native:retire') {
+            // Explicit native Free/Close restored the actual raw resource.
+            // Invalidate the old alias without allocating an ID or emitting hooks.
+            nativeResources.delete(resource);return;
+        }
+        if (kind === 'after') {
+            // The actual entering stack owns this ID even when native backing
+            // was freed/reset during the callback; never unwrap a retired owner.
+            const enteringId = platform.native.executionAsyncId();
+            emit('after', [enteringId], false);
+            setState(platform.native.popAsyncExecution(enteringId));return;
+        }
         // A real handle's AsyncReset publishes a new native ID/frame/public
         // resource before init. Replace only that raw handle's cached epoch;
         // active callbacks keep the numeric IDs owned by the native stack.
@@ -311,10 +323,6 @@ function _createNodeAsyncPlatform(platform) {
             // It must not pop a different actual native execution scope.
             if (record.id === platform.native.executionAsyncId())
                 setState(platform.native.popAsyncExecution(record.id));
-        } else if (kind === 'after') {
-            const enteringId = platform.native.executionAsyncId();
-            emit('after', [enteringId], record.isPromise);
-            setState(platform.native.popAsyncExecution(enteringId));
         } else incomplete('Unknown native async lifecycle event: ' + kind);
     }
     // The override belongs to the native environment, never a captured frame.

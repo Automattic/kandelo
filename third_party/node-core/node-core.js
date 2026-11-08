@@ -8786,6 +8786,18 @@ class AsyncResource {
         if (kind === 'callback:zero:after') {
             setState(platform.native.popAsyncExecution(0)); return;
         }
+        if (kind === 'native:retire') {
+            // Explicit native Free/Close restored the actual raw resource.
+            // Invalidate the old alias without allocating an ID or emitting hooks.
+            nativeResources.delete(resource);return;
+        }
+        if (kind === 'after') {
+            // The actual entering stack owns this ID even when native backing
+            // was freed/reset during the callback; never unwrap a retired owner.
+            const enteringId = platform.native.executionAsyncId();
+            emit('after', [enteringId], false);
+            setState(platform.native.popAsyncExecution(enteringId));return;
+        }
         // A real handle's AsyncReset publishes a new native ID/frame/public
         // resource before init. Replace only that raw handle's cached epoch;
         // active callbacks keep the numeric IDs owned by the native stack.
@@ -8815,10 +8827,6 @@ class AsyncResource {
             // It must not pop a different actual native execution scope.
             if (record.id === platform.native.executionAsyncId())
                 setState(platform.native.popAsyncExecution(record.id));
-        } else if (kind === 'after') {
-            const enteringId = platform.native.executionAsyncId();
-            emit('after', [enteringId], record.isPromise);
-            setState(platform.native.popAsyncExecution(enteringId));
         } else incomplete('Unknown native async lifecycle event: ' + kind);
     }
     // The override belongs to the native environment, never a captured frame.
@@ -117507,6 +117515,19 @@ function parserOnMessageComplete() {
         active() { return platform.native.httpParser('connectionsActive', this); }
         expired() { return platform.native.httpParser('connectionsExpired', this, arguments[0], arguments[1]); }
     }
+    class HTTPClientAsyncResource {
+      constructor(type, req) {
+        this.type = type;
+        this.req = req;
+      }
+    }
+
+    class HTTPServerAsyncResource {
+      constructor(type, socket) {
+        this.type = type;
+        this.socket = socket;
+      }
+    }
     const freeListModule = { exports: {} };
     (function(module, exports, primordials) {
         'use strict';
@@ -117556,7 +117577,12 @@ module.exports = FreeList;
             : responseOwners.alloc(method, limit, insecure, relaxed);
         let published = false;
         try {
-        if (!request) platform.native.httpParser('initialize', owner, method, limit, insecure, relaxed);
+        const resource = request ? new HTTPServerAsyncResource('HTTPINCOMINGMESSAGE', options.socket)
+            : new HTTPClientAsyncResource('HTTPINCOMINGMESSAGE', options.outgoing);
+        if (!platform.native.httpParser('initialize', owner, method, limit, insecure, relaxed,
+            request ? options.connections : undefined, resource)) {
+            throw new Error('HTTP parser initialization was retired');
+        }
         let message = null, completed = false, failed = false, remainder = null, closed = false;
         let keepAlive = false, upgraded = false;
         const state = {
@@ -117589,19 +117615,26 @@ module.exports = FreeList;
         // different object with copied socket/header metadata.
         const parser = request ? ObjectAssign(owner, state) : state;
         function requestHeaders(event) {
-            return ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
+            return dispatch(() => ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
                 event.headers, event.method, event.url, event.status, event.statusMessage,
-                event.upgrade, event.keepAlive]);
+                event.upgrade, event.keepAlive]), true);
         }
         function requestBody(event) {
-            ReflectApply(parserOnBody, parser, [bodyBuffer(event.body)]);
+            const body = bodyBuffer(event.body);
+            dispatch(() => ReflectApply(parserOnBody, parser, [body]), false);
         }
         function requestComplete(event) {
-            ReflectApply(parserOnHeaders, parser, [event.headers, '']);
+            // Native Flush uses MakeCallback for actual trailing headers, then
+            // MessageComplete owns its separate skip-task-queues scope.
+            if (event.headers.length)
+                dispatch(() => ReflectApply(parserOnHeaders, parser, [event.headers, '']), false);
             if (closed) return;
-            ReflectApply(parserOnMessageComplete, parser, []);
-            if (!closed && options.onComplete) options.onComplete();
+            dispatch(() => {
+                ReflectApply(parserOnMessageComplete, parser, []);
+                if (!closed && options.onComplete) options.onComplete();
+            }, true);
         }
+        const dispatch = (callback, skipTasks) => platform.native.httpParser('dispatch', owner, callback, skipTasks);
         function consume(packet, input) {
             if (closed) return;
             if (packet.remainder.length) remainder = Buffer.from(packet.remainder);
@@ -117609,17 +117642,21 @@ module.exports = FreeList;
                 if (closed) return;
                 const event = packet.events[i];
                 if (event.type === 0) {
-                    ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
+                    dispatch(() => ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
                         event.headers, event.request ? event.method : undefined, event.request ? event.url : undefined, event.status, event.statusMessage,
-                        event.upgrade, event.keepAlive]);
+                        event.upgrade, event.keepAlive]), true);
                 } else if (event.type === 1) {
-                    ReflectApply(parserOnBody, parser, [bodyBuffer(event.body)]);
+                    const body = bodyBuffer(event.body);
+                    dispatch(() => ReflectApply(parserOnBody, parser, [body]), false);
                 } else if (event.type === 2) {
                     // Use the same trailing-header cap and lifecycle algorithm.
-                    ReflectApply(parserOnHeaders, parser, [event.headers, '']);
+                    if (event.headers.length)
+                        dispatch(() => ReflectApply(parserOnHeaders, parser, [event.headers, '']), false);
                     if (closed) return;
-                    ReflectApply(parserOnMessageComplete, parser, []);
-                    if (!closed && !event.informational && options.onComplete) options.onComplete();
+                    dispatch(() => {
+                        ReflectApply(parserOnMessageComplete, parser, []);
+                        if (!closed && !event.informational && options.onComplete) options.onComplete();
+                    }, true);
                 }
             }
             if (closed) return;

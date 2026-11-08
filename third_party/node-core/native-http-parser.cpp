@@ -12,12 +12,23 @@ struct KandeloHttpOwner {
   kandelo::http::ResponseParser parser;
   size_t accounted = 0;
   bool executing = false, released = false;
+  JSContext* const cx;
+  js::shell::KandeloNativeAsyncState* lifetime = nullptr;
+  double asyncId = -1, triggerId = -1;
+  void DestroyAsync() {
+    if (lifetime && asyncId >= 0) lifetime->Finalized(asyncId);
+    asyncId = -1;
+  }
+  ~KandeloHttpOwner() {
+    DestroyAsync();
+    if (lifetime) lifetime->Release();
+  }
   enum class Retirement { None, Free, Close };
   Retirement retirement = Retirement::None;
   const bool request;
   JS::Heap<JSObject*> identity;
-  KandeloHttpOwner(std::string method, uint64_t limit, bool insecure, bool relaxed, bool request)
-      : parser(std::move(method), limit, insecure, relaxed, request), request(request) {}
+  KandeloHttpOwner(JSContext* cx, std::string method, uint64_t limit, bool insecure, bool relaxed, bool request)
+      : parser(std::move(method), limit, insecure, relaxed, request), cx(cx), request(request) {}
   size_t Bytes() const { return sizeof(*this) - sizeof(parser) + parser.AllocationBytes(); }
 };
 static void KandeloHttpAccount(JSObject* object, KandeloHttpOwner* owner) {
@@ -35,6 +46,8 @@ static void KandeloHttpRetire(JSObject* object, KandeloHttpOwner* owner) {
   if (owner->retirement == KandeloHttpOwner::Retirement::Close) {
     JS::SetReservedSlot(object, 0, UndefinedValue());
     JS::SetReservedSlot(object, 1, UndefinedValue());
+    JS::SetReservedSlot(object, 2, UndefinedValue());
+    JS::SetReservedSlot(object, 3, UndefinedValue());
     JS::RemoveAssociatedMemory(object, owner->accounted, JS::MemoryUse::Embedding3);
     delete owner;
     return;
@@ -44,6 +57,8 @@ static void KandeloHttpRetire(JSObject* object, KandeloHttpOwner* owner) {
     owner->released = true;
     owner->retirement = KandeloHttpOwner::Retirement::None;
     JS::SetReservedSlot(object, 1, UndefinedValue());
+    JS::SetReservedSlot(object, 2, UndefinedValue());
+    JS::SetReservedSlot(object, 3, UndefinedValue());
   }
   KandeloHttpAccount(object, owner);
 }
@@ -66,7 +81,52 @@ static void KandeloHttpTrace(JSTracer* tracer, JSObject* object) {
 static const JSClassOps KandeloHttpOps = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     KandeloHttpFinalize, nullptr, nullptr, KandeloHttpTrace };
 static const JSClass KandeloHttpClass = { "KandeloHttpParser",
-    JSCLASS_HAS_RESERVED_SLOTS(2) | JSCLASS_FOREGROUND_FINALIZE, &KandeloHttpOps };
+    JSCLASS_HAS_RESERVED_SLOTS(4) | JSCLASS_FOREGROUND_FINALIZE, &KandeloHttpOps };
+// Slots 0/1 remain native storage/list; 2/3 own the current AsyncReset
+// public resource and captured frame. Constructor storage has PROVIDER_NONE.
+static bool KandeloHttpResourceInfo(JSContext* cx, HandleObject object,
+                                   MutableHandleValue result) {
+  const Value value = JS::GetReservedSlot(object, 0);
+  if (value.isUndefined()) {
+    JS_ReportErrorASCII(cx, "HTTP parser resource backing is closed"); return false;
+  }
+  auto* owner = static_cast<KandeloHttpOwner*>(value.toPrivate());
+  if (owner->cx != cx) {
+    JS_ReportErrorASCII(cx, "HTTP parser belongs to another native environment"); return false;
+  }
+  JS::RootedValueArray<5> entries(cx);
+  entries[0].setNumber(owner->asyncId); entries[1].setNumber(owner->triggerId);
+  entries[2].set(JS::GetReservedSlot(object, 3));
+  const char* type = owner->asyncId < 0 ? "NONE" :
+      owner->request ? "HTTPINCOMINGMESSAGE" : "HTTPCLIENTREQUEST";
+  RootedString provider(cx, JS_NewStringCopyZ(cx, type));
+  if (!provider) return false;
+  entries[3].setString(provider);
+  entries[4].set(JS::GetReservedSlot(object, 2));
+  for (size_t i = 0; i < 5; ++i) if (!JS_WrapValue(cx, entries[i])) return false;
+  RootedObject array(cx, JS::NewArrayObject(cx, entries));
+  if (!array) return false;
+  result.setObject(*array); return true;
+}
+static bool KandeloHttpResetAsync(JSContext* cx, HandleObject object,
+                                 KandeloHttpOwner* owner, HandleValue resource) {
+  RootedValue frame(cx), alias(cx, resource);
+  double trigger;
+  if (!alias.isObject() || !cx->kandeloAsyncProperty("frame", &frame) ||
+      !cx->getKandeloDefaultTriggerAsyncId(&trigger) ||
+      !JS_WrapValue(cx, &frame) || !JS_WrapValue(cx, &alias)) return false;
+  if (!owner->lifetime) {
+    owner->lifetime = js::shell::KandeloGetNativeAsyncState(cx);
+    if (!owner->lifetime) return false;
+    owner->lifetime->Retain();
+  }
+  owner->DestroyAsync();
+  owner->asyncId = cx->allocateKandeloAsyncId(); owner->triggerId = trigger;
+  JS::SetReservedSlot(object, 2, alias); JS::SetReservedSlot(object, 3, frame);
+  // The existing native:init consumer replaces this exact raw handle epoch;
+  // execution stacks already entered with an older ID keep their authority.
+  return cx->notifyKandeloAsyncLifecycle("native:init", object, frame);
+}
 struct KandeloHttpConnectionsOwner {
   std::shared_ptr<kandelo::http::ConnectionsList> list = std::make_shared<kandelo::http::ConnectionsList>();
   static constexpr size_t Accounted = sizeof(std::shared_ptr<kandelo::http::ConnectionsList>) +
@@ -270,7 +330,7 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
       list = owner->list;
       if (!JS_WrapValue(cx, &retainedList)) return false;
     }
-    auto owner = std::make_unique<KandeloHttpOwner>(text.get(), uint64_t(args[2].toNumber()), args[3].toBoolean(), args[4].toBoolean(), request);
+    auto owner = std::make_unique<KandeloHttpOwner>(cx, text.get(), uint64_t(args[2].toNumber()), args[3].toBoolean(), args[4].toBoolean(), request);
     RootedObject object(cx, JS_NewObjectWithGivenProto(cx, &KandeloHttpClass, nullptr));
     if (!object) return false;
     owner->identity = object;
@@ -278,7 +338,8 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
     JS::SetReservedSlot(object, 0, PrivateValue(admitted));
     JS::SetReservedSlot(object, 1, retainedList);
     KandeloHttpAccount(object, admitted);
-    if (list) admitted->parser.AttachConnections(std::move(list), admitted);
+    // Initialize owns AsyncReset before Init/list membership. Creation alone
+    // must not expose a connection before its actual init hook executes.
     args.rval().setObject(*object); return true;
   }
   RootedObject object(cx, args.get(1).isObject() ? js::CheckedUnwrapDynamic(&args[1].toObject(), cx) : nullptr);
@@ -290,22 +351,30 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
     // Actual native close completed. Only real supported methods inherit
     // absent-backing return semantics; an unknown operation is not support.
     const char* known[] = { "remove", "free", "close", "initialize", "feed", "finish",
-        "feedRequest", "finishRequest", "feedRequestHeaders" };
+        "feedRequest", "finishRequest", "feedRequestHeaders", "dispatch" };
     for (const char* method : known) {
       if (strcmp(operation.get(), method) == 0) { args.rval().setUndefined();return true; }
     }
     JS_ReportErrorASCII(cx, "Unknown HTTP parser operation");return false;
   }
   auto* owner = static_cast<KandeloHttpOwner*>(JS::GetReservedSlot(object, 0).toPrivate());
+  if (owner->cx != cx) {
+    JS_ReportErrorASCII(cx, "HTTP parser belongs to another native environment");return false;
+  }
   const bool close = strcmp(operation.get(), "close") == 0;
   const bool free = strcmp(operation.get(), "free") == 0;
   if (close || free) {
+    owner->DestroyAsync();
+    // Old active callback frames retain their own resource/frame/ID roots.
+    JS::SetReservedSlot(object, 2, ObjectValue(*object));
+    JS::SetReservedSlot(object, 3, UndefinedValue());
+    const bool retired = cx->notifyKandeloAsyncLifecycle("native:retire", object, UndefinedHandleValue);
     if (close || owner->retirement == KandeloHttpOwner::Retirement::None)
       owner->retirement = close ? KandeloHttpOwner::Retirement::Close : KandeloHttpOwner::Retirement::Free;
     owner->parser.RemoveConnections();
     JS::SetReservedSlot(object, 1, UndefinedValue());
     if (!owner->executing) KandeloHttpRetire(object, owner);
-    args.rval().setUndefined(); return true;
+    args.rval().setUndefined(); return retired;
   }
   if (strcmp(operation.get(), "initialize") == 0) {
     if (owner->executing) { JS_ReportErrorASCII(cx, "HTTP parser is already executing");return false; }
@@ -331,19 +400,50 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
       }
       list = target->list;
     }
-    auto account = mozilla::MakeScopeExit([&] { KandeloHttpAccount(object, owner); });
+    if (!args.get(7).isObject()) {
+      JS_ReportErrorASCII(cx, "HTTP parser initialization requires its real async resource");return false;
+    }
+    // Initialization can run an actual init hook. Its native frame prevents
+    // callback close/free from deleting/resetting the owner underneath it.
+    owner->executing = true;
+    auto endInitialization = mozilla::MakeScopeExit([&] {
+      owner->executing = false; KandeloHttpRetire(object, owner);
+    });
     JSAutoRealm realm(cx, object);
     if (!JS_WrapValue(cx, &retainedList)) return false;
+    owner->released = true;
+    owner->parser.RemoveConnections();
+    if (!KandeloHttpResetAsync(cx, object, owner, args[7])) return false;
+    if (owner->retirement != KandeloHttpOwner::Retirement::None || GetShellContext(cx)->quitting) {
+      args.rval().setBoolean(false);return true;
+    }
     owner->parser.Reset(text.get(), uint64_t(args[3].toNumber()), args[4].toBoolean(), args[5].toBoolean(), std::move(list), owner);
     owner->released = false;
     owner->retirement = KandeloHttpOwner::Retirement::None;
     JS::SetReservedSlot(object, 1, retainedList);
-    args.rval().setUndefined();return true;
+    args.rval().setBoolean(true);return true;
   }
   if (strcmp(operation.get(), "remove") == 0) {
     owner->parser.RemoveConnections();
     JS::SetReservedSlot(object, 1, UndefinedValue());
     args.rval().setUndefined(); return true;
+  }
+  if (strcmp(operation.get(), "dispatch") == 0) {
+    if (owner->released || owner->asyncId < 0 || !args.get(2).isObject() ||
+        !JS::IsCallable(&args[2].toObject()) || !args.get(3).isBoolean()) {
+      JS_ReportErrorASCII(cx, "HTTP callback requires its live parser epoch and actual callback");return false;
+    }
+    RootedValue callback(cx, args[2]), frame(cx, JS::GetReservedSlot(object, 3));
+    JSAutoRealm realm(cx, object);
+    if (!JS_WrapValue(cx, &callback)) return false;
+    // Actual response callbacks remain deferred packet replay; the resource
+    // scope is real but does not claim synchronous llhttp callback chronology.
+    KandeloNativeCallbackScope scope(cx, object, frame, args[3].toBoolean());
+    if (!scope.Enter()) return scope.Stopped();
+    const bool called = args[3].toBoolean()
+        ? JS::Call(cx, UndefinedHandleValue, callback, JS::HandleValueArray::empty(), args.rval())
+        : scope.Call(callback, JS::HandleValueArray::empty(), args.rval());
+    return called ? scope.Close() : scope.Fail();
   }
   const bool fullCallbacks = strcmp(operation.get(), "feedRequest") == 0 ||
       strcmp(operation.get(), "finishRequest") == 0;
@@ -367,6 +467,9 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
     }
     if (!callback.isObject() || !JS::IsCallable(&callback.toObject())) {
       JS_ReportErrorASCII(cx, "HTTP request parsing requires its actual headers callback");return false;
+    }
+    if (owner->asyncId < 0) {
+      JS_ReportErrorASCII(cx, "HTTP request callbacks require initialized parser resource");return false;
     }
     KandeloHttpHeadersCall call{cx, callback, body, complete};
     const kandelo::http::HeadersHandler handlers{&call, KandeloHttpHeadersCall::Invoke,

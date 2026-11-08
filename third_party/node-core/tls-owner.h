@@ -16,6 +16,15 @@ struct OwnedContextDelete { void operator()(SSL_CTX* p) const noexcept { SSL_CTX
 struct OwnedSSLDelete { void operator()(SSL* p) const noexcept { SSL_free(p); } };
 using OwnedContext = std::unique_ptr<SSL_CTX, OwnedContextDelete>;
 using OwnedSSL = std::unique_ptr<SSL, OwnedSSLDelete>;
+// Passive identity plus cumulative actual socket-BIO consumption. This is a
+// local retry observation, never an allocated ID, fd event or owned BIO ref.
+struct InputProgress {
+  const BIO* identity = nullptr;
+  uint64_t consumed = 0;
+  bool operator!=(const InputProgress& prior) const noexcept {
+    return identity != prior.identity || consumed != prior.consumed;
+  }
+};
 // Actual consumed plaintext/EOF/error stays owned through JS publication and
 // caller acknowledgement. No encrypted socket readiness is a plaintext result.
 struct PlaintextRead {
@@ -28,7 +37,11 @@ struct PlaintextRead {
   size_t count = 0;
   int sslError = 0, systemError = 0;
   unsigned long opensslError = 0;
-  short events = POLLIN;
+  enum class Retry { Initial, Input, Output, None };
+  Retry retry = Retry::Initial;
+  InputProgress inputAtAttempt;
+  bool attempted = false;
+  short events = POLLIN; // Historical SSL direction; fd admission uses Retry.
   memory::Allocation allocation;
   PlaintextRead(uint64_t generation, uint64_t sequence, size_t length)
       : generation(generation), sequence(sequence), bytes(length),
@@ -137,6 +150,17 @@ class Owner : public socket::TransportAttachment {
   SSL* Ssl() const noexcept { return ssl_.get(); }
   bool EncryptedPending() const noexcept { return encrypted_ && encrypted_->Pending(); }
   bool EncryptedNeedsAcknowledgment() const noexcept { return encrypted_ && encrypted_->NeedsAcknowledgment(); }
+  short EncryptedRegisteredEvents() const noexcept {
+    return phase_ != Phase::Closed && encrypted_ ? encrypted_->RegisteredEvents() : 0;
+  }
+  bool MemoryOutputBound() const noexcept { return encrypted_ != nullptr; }
+  InputProgress CurrentInputProgress() const noexcept {
+    BIO* input = ssl_ ? SSL_get_rbio(ssl_.get()) : nullptr;
+    return {input, input ? uint64_t(BIO_number_read(input)) : 0};
+  }
+  bool EncryptedCanWrite() const noexcept {
+    return phase_ != Phase::Closed && encrypted_ && encrypted_->CanWrite();
+  }
   int EncryptedError() const noexcept { return encrypted_ ? encrypted_->Error() : 0; }
   size_t EncryptedPendingBytes() const noexcept { return encrypted_ ? encrypted_->PendingBytes() : 0; }
   bool ProgressEncrypted(bool acknowledge = false) noexcept {
@@ -172,11 +196,15 @@ class Owner : public socket::TransportAttachment {
     if (read_) { reading_ = true; return read_; } // Never replace unacknowledged material.
     if (nextRead_ == UINT64_MAX) throw std::length_error("TLS read sequence exhausted");
     auto read = std::make_shared<PlaintextRead>(generation_, nextRead_ + 1, length);
-    if (eof_) read->outcome = PlaintextRead::Outcome::Eof;
+    if (eof_) {
+      read->outcome = PlaintextRead::Outcome::Eof;
+      read->retry = PlaintextRead::Retry::None; read->events = 0;
+    }
     read_ = read; ++nextRead_; reading_ = true; return read;
   }
   bool AbortRead(const std::shared_ptr<PlaintextRead>& read) noexcept {
     if (read_ != read || read->Complete()) return false;
+    read->retry = PlaintextRead::Retry::None; read->events = 0;
     reading_ = false; read_.reset(); return true;
   }
   bool AcknowledgeRead(const std::shared_ptr<PlaintextRead>& read) noexcept {
@@ -185,11 +213,24 @@ class Owner : public socket::TransportAttachment {
     reading_ = false; read_.reset(); return true;
   }
   void StopRead() noexcept { reading_ = false; } // Queued plaintext is retained.
+  short ReadRegisteredEvents(const std::shared_ptr<PlaintextRead>& read) const noexcept {
+    if (!read || read_ != read || read->generation != generation_ ||
+        read->Complete() || !reading_ || !Open()) return 0;
+    // The input BIO consumes the retained real socket. Output WANT instead
+    // waits for paired BIO space owned by actual encrypted-write receipts.
+    if (read->retry == PlaintextRead::Retry::Input) return POLLIN;
+    // A legacy transferred lease can use direct socket BIO output. Its real
+    // WANT_WRITE is fd readiness, not the retained pair's free ring space.
+    return read->retry == PlaintextRead::Retry::Output && !MemoryOutputBound() ? POLLOUT : 0;
+  }
   bool ReadMayProgress(const std::shared_ptr<PlaintextRead>& read) const noexcept {
     if (!read || read->generation != generation_) return false;
     if (read->Complete()) return true;
-    return Open() && reading_ &&
-        (SSL_pending(ssl_.get()) > 0 || (SSL_get_shutdown(ssl_.get()) & SSL_RECEIVED_SHUTDOWN));
+    if (read_ != read || !Open() || !reading_) return false;
+    if (read->retry == PlaintextRead::Retry::Output) return EncryptedCanWrite();
+    return read->retry == PlaintextRead::Retry::Initial ||
+        (read->attempted && CurrentInputProgress() != read->inputAtAttempt) ||
+        SSL_pending(ssl_.get()) > 0 || (SSL_get_shutdown(ssl_.get()) & SSL_RECEIVED_SHUTDOWN);
   }
   bool ProgressRead(const std::shared_ptr<PlaintextRead>& read) noexcept {
     using Outcome = PlaintextRead::Outcome;
@@ -203,16 +244,22 @@ class Owner : public socket::TransportAttachment {
     const int count = SSL_read(ssl_.get(), read->bytes.data(), int(read->bytes.size()));
     const int systemError = errno;
     const int error = count > 0 ? SSL_ERROR_NONE : SSL_get_error(ssl_.get(), count);
+    // Another real SSL operation can consume the input that satisfied this
+    // pending retry. Observe actual BIO progress once, not a synthetic wake.
+    read->inputAtAttempt = CurrentInputProgress(); read->attempted = true;
     if (count > 0) { read->outcome = Outcome::Data; read->count = size_t(count); }
-    else if (error == SSL_ERROR_WANT_READ) read->events = POLLIN;
-    else if (error == SSL_ERROR_WANT_WRITE) read->events = POLLOUT;
-    else if (error == SSL_ERROR_ZERO_RETURN) { eof_ = true; read->outcome = Outcome::Eof; }
+    else if (error == SSL_ERROR_WANT_READ) {
+      read->retry = PlaintextRead::Retry::Input; read->events = POLLIN;
+    } else if (error == SSL_ERROR_WANT_WRITE) {
+      read->retry = PlaintextRead::Retry::Output; read->events = POLLOUT;
+    } else if (error == SSL_ERROR_ZERO_RETURN) { eof_ = true; read->outcome = Outcome::Eof; }
     else {
       read->outcome = Outcome::Error; read->sslError = error;
       read->systemError = error == SSL_ERROR_SYSCALL ? systemError : 0;
       NoteSslError(error, systemError);
       read->opensslError = ERR_peek_error();
     }
+    if (read->Complete()) { read->retry = PlaintextRead::Retry::None; read->events = 0; }
     ERR_pop_to_mark();
     return read->Complete();
   }
@@ -231,10 +278,13 @@ class Owner : public socket::TransportAttachment {
     if (EncryptedPending()) {
       const bool acknowledge = EncryptedNeedsAcknowledgment();
       if (!acknowledge) {
-        pollfd descriptor{Fd(), POLLOUT, 0};
-        const int ready = poll(&descriptor, 1, 0);
-        if (ready == 0 || (ready < 0 && errno == EINTR)) return false;
-        if (ready < 0) { shutdown.failed = true;shutdown.systemError = errno;return true; }
+        const short events = EncryptedRegisteredEvents();
+        if (events) {
+          pollfd descriptor{Fd(), events, 0};
+          const int ready = poll(&descriptor, 1, 0);
+          if (ready == 0 || (ready < 0 && errno == EINTR)) return false;
+          if (ready < 0) { shutdown.failed = true;shutdown.systemError = errno;return true; }
+        }
       }
       (void)ProgressEncrypted(acknowledge);
       if (const int error = EncryptedError()) {
@@ -270,6 +320,7 @@ class Owner : public socket::TransportAttachment {
     reading_ = false;
     if (read_ && !read_->Complete()) {
       read_->outcome = PlaintextRead::Outcome::Error;
+      read_->retry = PlaintextRead::Retry::None; read_->events = 0;
       read_->systemError = ECANCELED;
     }
     // Actual dispatch tickets still retain consumed/canceled material while

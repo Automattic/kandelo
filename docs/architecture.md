@@ -7371,3 +7371,7 @@ Source 271 consumes the actual Promise parent, corrects the release-only snapsho
 ### SQLite extension, codec initialization, legacy poll and environment descriptor owners
 
 Source 272 consumes real SQLite extension policy/loading and existing native codec initialization errors, routes legacy poll interest and terminal publication ownership, and preserves native environment descriptor presence. One shared source/package batch does not establish runtime conformance. No new compiler, helper or API pass is credited; accepted engine271 is historical for these new bytes.
+
+### HTTP parser resource epochs, TLS registered interest and early stdio constructors
+
+Source273 consumes actual parser reset/resource aliases and callback scopes, TLS registered event-interest/receipt/BIO retry causes, and one earlier actual net module construction with a shared lazy TTY cache. The normal shared source/package batch is not runtime/API conformance. Zero compiler/helper credit; accepted271 remains historical for current272/273 bytes.

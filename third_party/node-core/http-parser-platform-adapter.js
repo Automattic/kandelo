@@ -23,6 +23,19 @@ function _createNodeHttpParser(platform) {
         active() { return platform.native.httpParser('connectionsActive', this); }
         expired() { return platform.native.httpParser('connectionsExpired', this, arguments[0], arguments[1]); }
     }
+    class HTTPClientAsyncResource {
+      constructor(type, req) {
+        this.type = type;
+        this.req = req;
+      }
+    }
+
+    class HTTPServerAsyncResource {
+      constructor(type, socket) {
+        this.type = type;
+        this.socket = socket;
+      }
+    }
     const freeListModule = { exports: {} };
     (function(module, exports, primordials) {
         /* NODE_HTTP_FREE_LIST */
@@ -42,7 +55,12 @@ function _createNodeHttpParser(platform) {
             : responseOwners.alloc(method, limit, insecure, relaxed);
         let published = false;
         try {
-        if (!request) platform.native.httpParser('initialize', owner, method, limit, insecure, relaxed);
+        const resource = request ? new HTTPServerAsyncResource('HTTPINCOMINGMESSAGE', options.socket)
+            : new HTTPClientAsyncResource('HTTPINCOMINGMESSAGE', options.outgoing);
+        if (!platform.native.httpParser('initialize', owner, method, limit, insecure, relaxed,
+            request ? options.connections : undefined, resource)) {
+            throw new Error('HTTP parser initialization was retired');
+        }
         let message = null, completed = false, failed = false, remainder = null, closed = false;
         let keepAlive = false, upgraded = false;
         const state = {
@@ -75,19 +93,26 @@ function _createNodeHttpParser(platform) {
         // different object with copied socket/header metadata.
         const parser = request ? ObjectAssign(owner, state) : state;
         function requestHeaders(event) {
-            return ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
+            return dispatch(() => ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
                 event.headers, event.method, event.url, event.status, event.statusMessage,
-                event.upgrade, event.keepAlive]);
+                event.upgrade, event.keepAlive]), true);
         }
         function requestBody(event) {
-            ReflectApply(parserOnBody, parser, [bodyBuffer(event.body)]);
+            const body = bodyBuffer(event.body);
+            dispatch(() => ReflectApply(parserOnBody, parser, [body]), false);
         }
         function requestComplete(event) {
-            ReflectApply(parserOnHeaders, parser, [event.headers, '']);
+            // Native Flush uses MakeCallback for actual trailing headers, then
+            // MessageComplete owns its separate skip-task-queues scope.
+            if (event.headers.length)
+                dispatch(() => ReflectApply(parserOnHeaders, parser, [event.headers, '']), false);
             if (closed) return;
-            ReflectApply(parserOnMessageComplete, parser, []);
-            if (!closed && options.onComplete) options.onComplete();
+            dispatch(() => {
+                ReflectApply(parserOnMessageComplete, parser, []);
+                if (!closed && options.onComplete) options.onComplete();
+            }, true);
         }
+        const dispatch = (callback, skipTasks) => platform.native.httpParser('dispatch', owner, callback, skipTasks);
         function consume(packet, input) {
             if (closed) return;
             if (packet.remainder.length) remainder = Buffer.from(packet.remainder);
@@ -95,17 +120,21 @@ function _createNodeHttpParser(platform) {
                 if (closed) return;
                 const event = packet.events[i];
                 if (event.type === 0) {
-                    ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
+                    dispatch(() => ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
                         event.headers, event.request ? event.method : undefined, event.request ? event.url : undefined, event.status, event.statusMessage,
-                        event.upgrade, event.keepAlive]);
+                        event.upgrade, event.keepAlive]), true);
                 } else if (event.type === 1) {
-                    ReflectApply(parserOnBody, parser, [bodyBuffer(event.body)]);
+                    const body = bodyBuffer(event.body);
+                    dispatch(() => ReflectApply(parserOnBody, parser, [body]), false);
                 } else if (event.type === 2) {
                     // Use the same trailing-header cap and lifecycle algorithm.
-                    ReflectApply(parserOnHeaders, parser, [event.headers, '']);
+                    if (event.headers.length)
+                        dispatch(() => ReflectApply(parserOnHeaders, parser, [event.headers, '']), false);
                     if (closed) return;
-                    ReflectApply(parserOnMessageComplete, parser, []);
-                    if (!closed && !event.informational && options.onComplete) options.onComplete();
+                    dispatch(() => {
+                        ReflectApply(parserOnMessageComplete, parser, []);
+                        if (!closed && !event.informational && options.onComplete) options.onComplete();
+                    }, true);
                 }
             }
             if (closed) return;

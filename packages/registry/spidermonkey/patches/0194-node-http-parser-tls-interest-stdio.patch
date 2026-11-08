@@ -1,0 +1,176 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index 19bd8c5917e0c0372a3ce848ff0f8fe470b0f002..e6374c4c9ddc722e98f63bf9f6bd7ad53e2c6f47 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2846,5 +2846,8 @@ struct KandeloTlsWatch {
+   bool encryptedComplete = false;
+   KandeloTlsWatch* nextWrite = nullptr;
+-  short events = POLLOUT;
++  enum class SslWait { Initial, Input, Output, None };
++  SslWait sslWait = SslWait::Initial;
++  kandelo::tls::InputProgress inputAtAttempt;
++  bool attemptedSsl = false;
+   bool rejectUnauthorized = true;
+   enum class Result { Waiting, Connected, Bytes, Count, Error, Verification };
+@@ -2924,14 +2927,80 @@ static bool KandeloTlsHasReferences(JSContext* cx) {
+   return false;
+ }
++static void KandeloTlsCaptureInputProgress(KandeloTlsWatch* watch) {
++  watch->inputAtAttempt = watch->state->owner.CurrentInputProgress();
++  watch->attemptedSsl = true;
++}
+ static bool KandeloTlsRetry(KandeloTlsWatch* watch, int result) {
+   const int systemError = errno;
+   const int error = SSL_get_error(watch->state->owner.Ssl(), result);
+   watch->state->owner.NoteSslError(error, systemError);
+-  if (error == SSL_ERROR_WANT_READ) { watch->events = POLLIN; return true; }
+-  if (error == SSL_ERROR_WANT_WRITE) { watch->events = POLLOUT; return true; }
++  // SSL_get_error must precede any further OpenSSL call, including this
++  // passive input progress observation.
++  KandeloTlsCaptureInputProgress(watch);
++  if (error == SSL_ERROR_WANT_READ) { watch->sslWait = KandeloTlsWatch::SslWait::Input; return true; }
++  if (error == SSL_ERROR_WANT_WRITE) { watch->sslWait = KandeloTlsWatch::SslWait::Output; return true; }
++  watch->sslWait = KandeloTlsWatch::SslWait::None;
+   return false;
+ }
++// These exact descriptor/event pairs feed the real TLS poll consumers and
++// the held union query. Liveness roots and completed callbacks are not events.
++struct KandeloTlsPollInterest { int fd = -1; short events = 0; };
++static KandeloTlsPollInterest KandeloTlsOutputPollInterest(JSContext* cx,
++                                                           KandeloTlsState* state) {
++  if (GetShellContext(cx)->quitting || state->cx != cx || state->detached ||
++      !state->owner.Matches(state->owner.Generation())) return {};
++  const short events = state->owner.EncryptedRegisteredEvents();
++  return events ? KandeloTlsPollInterest{state->owner.Fd(), events} : KandeloTlsPollInterest{};
++}
++static KandeloTlsPollInterest KandeloTlsWatchPollInterest(JSContext* cx,
++                                                          const KandeloTlsWatch* watch) {
++  using Operation = KandeloTlsOperation;
++  auto& owner = watch->state->owner;
++  if (GetShellContext(cx)->quitting || watch->cx != cx || watch->state->cx != cx || watch->state->detached ||
++      !owner.Matches(watch->generation) || watch->result != KandeloTlsWatch::Result::Waiting ||
++      watch->awaitingWriteCallback || watch->writeCallbackAcknowledged) return {};
++  short events = 0;
++  if (watch->kind == Operation::Read) events = owner.ReadRegisteredEvents(watch->read);
++  else {
++    if (watch->kind == Operation::Write && watch->state->activeWrite &&
++        watch->state->activeWrite != watch) return {};
++    // The actual dispatcher suspends non-read SSL retry until its preceding
++    // ciphertext receipts retire. This barrier supplies no fabricated events.
++    if (owner.EncryptedPending()) return {};
++    if (watch->sslWait == KandeloTlsWatch::SslWait::Input) events = POLLIN;
++    else if (watch->sslWait == KandeloTlsWatch::SslWait::Output && !owner.MemoryOutputBound()) events = POLLOUT;
++    // WANT_WRITE addresses the memory BIO ring. Its captured TCP write has
++    // independent POLLOUT, and BIO space resumes SSL as local continuation.
++  }
++  return events ? KandeloTlsPollInterest{owner.Fd(), events} : KandeloTlsPollInterest{};
++}
++static bool KandeloTlsWatchMayProgress(const KandeloTlsWatch* watch) {
++  auto& owner = watch->state->owner;
++  if (watch->result != KandeloTlsWatch::Result::Waiting || !owner.Matches(watch->generation)) return true;
++  if (watch->kind == KandeloTlsOperation::Read) return owner.ReadMayProgress(watch->read);
++  if (owner.EncryptedPending()) return false;
++  return watch->sslWait == KandeloTlsWatch::SslWait::Initial ||
++      (watch->sslWait == KandeloTlsWatch::SslWait::Output && owner.EncryptedCanWrite()) ||
++      (watch->sslWait == KandeloTlsWatch::SslWait::Input && watch->attemptedSsl &&
++       owner.CurrentInputProgress() != watch->inputAtAttempt);
++}
++// Native-only, held for the later complete supplied-fd admission composition.
++// Real poll collectors below already consume both underlying interest owners.
++[[maybe_unused]] static short KandeloTlsRegisteredEvents(JSContext* cx, int fd) {
++  if (fd < 0) return 0;
++  short events = 0;
++  for (auto* state = gKandeloTlsOwners; state; state = state->next) {
++    const auto interest = KandeloTlsOutputPollInterest(cx, state);
++    if (interest.fd == fd) events |= interest.events;
++  }
++  for (auto* watch = gKandeloTlsWatches; watch; watch = watch->next) {
++    const auto interest = KandeloTlsWatchPollInterest(cx, watch);
++    if (interest.fd == fd) events |= interest.events;
++  }
++  return events;
++}
+ static bool KandeloTlsPublish(KandeloTlsWatch* watch) {
+   using Result = KandeloTlsWatch::Result;
++  if (watch->result != Result::Waiting) watch->sslWait = KandeloTlsWatch::SslWait::None;
+   // SSL accepting cleartext/finishing its handshake is not wire completion.
+   // The deferred success remains unpublished until its actual output receipt.
+@@ -3017,7 +3086,9 @@ static bool KandeloTlsDispatchWatch(KandeloTlsWatch* watch) {
+   });
+   SSL* ssl = owner.Ssl();
++  if (watch->kind != KandeloTlsOperation::Read) watch->sslWait = KandeloTlsWatch::SslWait::None;
+   if (watch->kind == KandeloTlsOperation::Connect) {
+     const int result = SSL_connect(ssl);
+     if (result == 1) {
++      KandeloTlsCaptureInputProgress(watch);
+       const long verify = kandelo::tls::VerifyPeer(ssl);
+       if (watch->rejectUnauthorized && verify != X509_V_OK) {
+@@ -3033,5 +3104,6 @@ static bool KandeloTlsDispatchWatch(KandeloTlsWatch* watch) {
+     if (watch->kind == KandeloTlsOperation::Read) {
+       if (owner.ProgressRead(watch->read)) KandeloTlsCaptureReadResult(watch);
+-      else watch->events = watch->read->events;
++      // Retry/stop/terminal admission belongs to the actual read ticket;
++      // no independent watch mask can leave stale POLLIN/POLLOUT behind.
+     } else {
+       while (watch->offset < watch->buffer.size()) {
+@@ -3039,5 +3111,8 @@ static bool KandeloTlsDispatchWatch(KandeloTlsWatch* watch) {
+         const int count = int(remaining > size_t(INT_MAX) ? size_t(INT_MAX) : remaining);
+         const int result = SSL_write(ssl, watch->buffer.data() + watch->offset, count);
+-        if (result > 0) { watch->offset += size_t(result); continue; }
++        if (result > 0) {
++          KandeloTlsCaptureInputProgress(watch);
++          watch->offset += size_t(result); continue;
++        }
+         // SSL_get_error runs before BIO progress or any other OpenSSL call.
+         if (KandeloTlsRetry(watch, result)) break;
+@@ -3062,4 +3137,5 @@ static bool KandeloTlsDispatchWatch(KandeloTlsWatch* watch) {
+ }
+ static int KandeloDispatchTlsOwners(JSContext* cx) {
++  if (GetShellContext(cx)->quitting) return 0;
+   // The actual TLS capability roots memory BIO and TCP state independently of
+   // a read Promise's lifetime. No callback, allocation or JS runs in this pump.
+@@ -3073,7 +3149,12 @@ static int KandeloDispatchTlsOwners(JSContext* cx) {
+     const bool acknowledge = owner.EncryptedNeedsAcknowledgment();
+     if (!acknowledge) {
+-      pollfd descriptor = {}; descriptor.fd = owner.Fd(); descriptor.events = POLLOUT;
+-      const int ready = descriptor.fd < 0 ? 1 : poll(&descriptor, 1, 0);
+-      if (ready == 0 || (ready < 0 && errno == EINTR)) continue;
++      const auto interest = KandeloTlsOutputPollInterest(cx, state);
++      if (interest.events) {
++        pollfd descriptor = {}; descriptor.fd = interest.fd; descriptor.events = interest.events;
++        const int ready = poll(&descriptor, 1, 0);
++        if (ready == 0 || (ready < 0 && errno == EINTR)) continue;
++      }
++      // No captured Writing receipt means queued BIO/local admission work,
++      // not socket readiness. Ready receipts are acknowledged above/below.
+     }
+     const bool drained = owner.ProgressEncrypted(true);
+@@ -3099,9 +3180,8 @@ static int KandeloDispatchTlsOwners(JSContext* cx) {
+     if ((watch->result == KandeloTlsWatch::Result::Connected || watch->result == KandeloTlsWatch::Result::Count) &&
+         !watch->encryptedComplete && watch->state->owner.EncryptedPending()) continue;
+-    pollfd descriptor = {};
+-    descriptor.fd = watch->state->owner.Fd(); descriptor.events = watch->events;
+-    const int ready = watch->result != KandeloTlsWatch::Result::Waiting ||
+-        (watch->read && watch->state->owner.ReadMayProgress(watch->read)) || descriptor.fd < 0
+-        ? 1 : poll(&descriptor, 1, 0);
++    const auto interest = KandeloTlsWatchPollInterest(cx, watch);
++    pollfd descriptor = {}; descriptor.fd = interest.fd; descriptor.events = interest.events;
++    const int ready = KandeloTlsWatchMayProgress(watch) ? 1 :
++        interest.events ? poll(&descriptor, 1, 0) : 0;
+     if (ready == 0 || (ready < 0 && errno == EINTR)) continue;
+     // Detach before ANY Promise hook/error/allocation can reenter close/GC.
+@@ -3312,5 +3392,5 @@ static bool KandeloNativeTlsRead(JSContext* cx, unsigned argc, Value* vp) {
+     if (closedDuringAdmission)
+       return KandeloResolvePromiseWithErrno(cx, promise, ECANCELED, "TLS owner closed during read admission");
+-    watch->events = POLLIN; submitted = true;
++    submitted = true;
+     // Publication may fail after actual SSL consumption. Both the exact ticket
+     // and actual Promise identity stay owned until accepted/acknowledged/closed.
+@@ -4553,4 +4633,7 @@ static bool KandeloNativeAsyncResourceInfo(JSContext* cx, unsigned argc, Value*
+     return KandeloSocketResourceInfo(cx, unwrapped, args.rval());
+   }
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloHttpClass) {
++    return KandeloHttpResourceInfo(cx, unwrapped, args.rval());
++  }
+   if (unwrapped && JS::GetClass(unwrapped) == &KandeloListenerClass) {
+     return KandeloListenerResourceInfo(cx,unwrapped,args.rval());
