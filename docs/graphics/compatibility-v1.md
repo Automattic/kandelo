@@ -27364,3 +27364,21 @@ The final runtime-core library run passes all 3,582 tests, zero failures
 or skips (123.79 seconds). This supersedes the native failures recorded
 above. The focused normal rebuild and browser recovery still need to run;
 these native results do not establish complete B1 or merge readiness.
+
+The normal focused rebuild R861 succeeds on pushed c5c0aa32e1. Its image
+bytes remain unchanged, while the rebuilt kernel SHA-256 is
+`cd058274793e6afb3bcdef3d0cc9f9523a88086e42851545020a4c9bb81b681a`.
+The new port-59227 checkpoint passes 50 prepared Node checks. Its browser
+run reports 14 passed and four failed: Sway fails on all three engines;
+Firefox's Freeciv case times out before persistent-context launch finishes.
+The other Firefox application checks pass. That launch cause is unverified.
+Sway still reports shared-mapping ENOMEM followed by guest I/O and Wayland
+errors; the initial bounded-publication repair does not establish recovery.
+
+A fixed-size kernel diagnostic now records the failed shared-mapping phase,
+range, backing identity and I/O credit, readable through
+`/proc/kandelo/shared_mapping_failures`. It allocates nothing while recording
+and preserves the original failure and snapshot state. The full native
+runtime-core run passes 3,584 tests, zero failures or skips (128.09 seconds).
+The actual Sway report remains pending its normal diagnostic rebuild.
+No memory limit or acceptance requirement is changed.

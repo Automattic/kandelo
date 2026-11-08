@@ -76,6 +76,7 @@ pub enum ProcfsEntry {
     KandeloDir,             // /proc/kandelo
     KandeloWritebackLosses, // /proc/kandelo/writeback_losses
     KandeloFilesystemMemory,
+    KandeloSharedMappingFailures, // /proc/kandelo/shared_mapping_failures
 }
 
 impl ProcfsEntry {
@@ -145,7 +146,8 @@ pub fn entry_pid(entry: &ProcfsEntry) -> Option<u32> {
         | ProcfsEntry::ThreadSelfLink
         | ProcfsEntry::KandeloDir
         | ProcfsEntry::KandeloWritebackLosses
-        | ProcfsEntry::KandeloFilesystemMemory => None,
+        | ProcfsEntry::KandeloFilesystemMemory
+        | ProcfsEntry::KandeloSharedMappingFailures => None,
     }
 }
 
@@ -203,6 +205,9 @@ pub fn match_procfs(path: &[u8], current_pid: u32) -> Option<ProcfsEntry> {
     }
     if rest == b"kandelo/fs_memory" {
         return Some(ProcfsEntry::KandeloFilesystemMemory);
+    }
+    if rest == b"kandelo/shared_mapping_failures" {
+        return Some(ProcfsEntry::KandeloSharedMappingFailures);
     }
     if rest.starts_with(b"kandelo/") {
         // A named directory whose contents are a closed set: an unknown name
@@ -731,6 +736,7 @@ fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
         ProcfsEntry::KandeloDir => (0, 22),
         ProcfsEntry::KandeloWritebackLosses => (0, 23),
         ProcfsEntry::KandeloFilesystemMemory => (0, 24),
+        ProcfsEntry::KandeloSharedMappingFailures => (0, 25),
     }
 }
 
@@ -871,6 +877,11 @@ pub(crate) fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<cr
             crate::writeback_loss::render_writeback_losses()
         }
         ProcfsEntry::KandeloFilesystemMemory => crate::metadata_budget::render_filesystem_memory(),
+        ProcfsEntry::KandeloSharedMappingFailures => {
+            // Ordinary procfs read allocates the rendered text; recording a
+            // failure itself used only fixed kernel-owned numerical state.
+            unsafe { crate::memory::global_shared_mapping_table() }.render_failures()
+        }
         ProcfsEntry::PidMounts(pid) => {
             validate_pid(proc, *pid)?;
             crate::IoBuffer::copy_from(MOUNTS_CONTENT)
@@ -1185,6 +1196,7 @@ pub(crate) fn dir_entries(
         ProcfsEntry::KandeloDir => {
             entries.try_push((crate::IoBuffer::copy_from(b"writeback_losses")?, DT_REG, procfs_ino(0, 23)))?;
             entries.try_push((crate::IoBuffer::copy_from(b"fs_memory")?, DT_REG, procfs_ino(0, 24)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"shared_mapping_failures")?, DT_REG, procfs_ino(0, 25)))?;
         }
         ProcfsEntry::PidDir(pid) => {
             // /proc/<pid>/: fd, fdinfo (dirs), status files, mount tables, cwd/exe/root symlinks
@@ -2001,6 +2013,21 @@ mod tests {
     #[test]
     fn an_unknown_name_under_kandelo_is_enoent_not_a_pid() {
         assert_eq!(match_procfs(b"/proc/kandelo/nope", 1), None);
+    }
+
+    #[test]
+    fn shared_mapping_failures_are_kernel_owned_and_have_distinct_proc_identity() {
+        let entry = match_procfs(b"/proc/kandelo/shared_mapping_failures", 1).unwrap();
+        assert_eq!(entry, ProcfsEntry::KandeloSharedMappingFailures);
+        assert_eq!(entry_pid(&entry), None);
+        assert!(!entry.is_dir());
+        assert!(!entry.is_symlink());
+        assert_ne!(regular_file_object_id(&entry), regular_file_object_id(&ProcfsEntry::KandeloFilesystemMemory));
+        let process = crate::process::Process::new(1);
+        let report = generate_content(&process, &entry).unwrap();
+        assert!(report.starts_with(b"version 1\ntotal "));
+        let entries = dir_entries(&process, b"/proc/kandelo", &[]).unwrap();
+        assert!(entries.iter().any(|(name, _, _)| name.as_slice() == b"shared_mapping_failures"));
     }
 
     #[test]

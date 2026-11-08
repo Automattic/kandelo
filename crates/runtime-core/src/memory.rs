@@ -3225,6 +3225,64 @@ enum PullOutcome {
     WritebackFailed(Errno),
 }
 
+/// Fixed-size numerical evidence, not resource custody. Keep the earliest
+/// failures: later completion errors are often cascades of the first refusal.
+#[derive(Debug, Clone, Copy)]
+struct SharedMappingFailure {
+    phase: &'static str,
+    pid: u32,
+    addr: u64,
+    len: usize,
+    file_offset: u64,
+    handle: i64,
+    offset: usize,
+    attempted_bytes: usize,
+    status: i32,
+    io_live: usize,
+    io_limit: usize,
+}
+
+#[derive(Debug, Default)]
+struct SharedMappingFailures {
+    records: [Option<SharedMappingFailure>; 8],
+    total: u64,
+}
+
+impl SharedMappingFailures {
+    const fn new() -> Self { Self { records: [None; 8], total: 0 } }
+
+    fn record(&mut self, phase: &'static str, pid: u32, addr: u64, len: usize,
+        file_offset: u64, handle: i64, offset: usize, attempted_bytes: usize, error: Errno,
+    ) {
+        // WHY: logging must still work when allocation was just refused.
+        // Copy only numbers into fixed storage, retaining no backing/FD owner
+        // and introducing no allocation, host call, or altered error outcome.
+        let index = self.total;
+        self.total = self.total.saturating_add(1);
+        if index >= self.records.len() as u64 { return; }
+        let (io_live, io_limit) = crate::io_buffer::IO_MEMORY.usage();
+        self.records[index as usize] = Some(SharedMappingFailure {
+            phase, pid, addr, len, file_offset, handle, offset, attempted_bytes,
+            status: -(error as i32), io_live, io_limit,
+        });
+    }
+
+    fn render(&self) -> Result<IoBuffer<u8>, Errno> {
+        let mut out = IoBuffer::new();
+        let recorded = self.records.iter().flatten().count();
+        out.try_write_fmt(format_args!("version 1\ntotal {}\nrecorded {}\ndropped {}\n",
+            self.total, recorded, self.total.saturating_sub(recorded as u64)))?;
+        for record in self.records.iter().flatten() {
+            out.try_write_fmt(format_args!(
+                "failure phase={} pid={} addr={:#x} len={} file_offset={} handle={} offset={} attempted_bytes={} status={} io_live={} io_limit={}\n",
+                record.phase, record.pid, record.addr, record.len, record.file_offset,
+                record.handle, record.offset, record.attempted_bytes, record.status,
+                record.io_live, record.io_limit))?;
+        }
+        Ok(out)
+    }
+}
+
 /// Every process's kernel-owned shared mappings, the authoritative backings
 /// behind them, and the coherence protocol that keeps the two in step.
 ///
@@ -3297,6 +3355,7 @@ enum PullOutcome {
 /// target a peer's memory. See the module comment above.
 #[derive(Debug, Default)]
 pub struct SharedMappingTable {
+    failures: SharedMappingFailures,
     /// pid → (mapping start address → mapping).
     mappings: PreparedMap<u32, ProcessMappings<SharedMapping>>,
     pending_cleanup: Option<MappingCleanup>,
@@ -3325,6 +3384,7 @@ impl SharedMappingTable {
     pub const fn new() -> Self {
         Self {
             mappings: PreparedMap::new(),
+            failures: SharedMappingFailures::new(),
             pending_cleanup: None,
             pending_remap: None,
             pending_file_mapping: None,
@@ -3341,6 +3401,10 @@ impl SharedMappingTable {
 
     pub fn is_empty(&self) -> bool {
         self.mappings.is_empty() && self.sysv.is_empty()
+    }
+
+    pub(crate) fn render_failures(&self) -> Result<IoBuffer<u8>, Errno> {
+        self.failures.render()
     }
 
     pub fn has_file_backings(&self) -> bool {
@@ -3864,6 +3928,7 @@ impl SharedMappingTable {
             let Self {
                 mappings,
                 file_backings,
+                failures,
                 ..
             } = self;
             let Some(mapping) = mappings.get(&pid).and_then(|m| m.get(map_addr)) else {
@@ -3879,7 +3944,14 @@ impl SharedMappingTable {
             if mapping.seen_version == backing.version {
                 continue;
             }
-            let latest = backing.read_range(mapping.file_offset, mapping.len, io)?;
+            let latest = match backing.read_range(mapping.file_offset, mapping.len, io) {
+                Ok(latest) => latest,
+                Err(error) => {
+                    failures.record("refresh_read", pid, *map_addr, mapping.len,
+                        mapping.file_offset, backing.handle, 0, mapping.len, error);
+                    return Err(error);
+                }
+            };
             refreshes.push((*map_addr, latest, backing.version));
         }
 
@@ -4223,6 +4295,7 @@ impl SharedMappingTable {
         let Self {
             mappings,
             file_backings,
+            failures,
             ..
         } = self;
         let Some(mapping) = mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr)) else {
@@ -4264,6 +4337,8 @@ impl SharedMappingTable {
         let comparison = match io.process_differs_from_snapshot(pid, map_addr, mapping.len, &snapshot) {
             Ok(comparison) => comparison,
             Err(err) => {
+                failures.record("pull_compare", pid, map_addr, mapping.len,
+                    mapping.file_offset, backing.handle, 0, mapping.len, err);
                 mapping.snapshot = Some(snapshot);
                 mapping.clean = None;
                 return Err(err);
@@ -4286,6 +4361,8 @@ impl SharedMappingTable {
         for offset in (0..mapping.len).step_by(FILE_PAGE_SIZE) {
             let chunk = FILE_PAGE_SIZE.min(mapping.len - offset);
             if let Err(err) = io.read_process(pid, map_addr + offset as u64, &mut current[..chunk]) {
+                failures.record("pull_page_read", pid, map_addr, mapping.len,
+                    mapping.file_offset, backing.handle, offset, chunk, err);
                 failure = Some(err);
                 break;
             }
@@ -4300,7 +4377,11 @@ impl SharedMappingTable {
             match backing.merge_changed_runs(src, snap, mapping.file_offset + offset as u64, io) {
                 Ok(true) => changed = true,
                 Ok(false) => {}
-                Err(err) => { failure = Some(err); break; }
+                Err(err) => {
+                    failures.record("pull_merge", pid, map_addr, mapping.len,
+                        mapping.file_offset, backing.handle, offset, chunk, err);
+                    failure = Some(err); break;
+                }
             }
         }
         // Only completed run merges advance the baseline. Storing a whole
@@ -6011,6 +6092,38 @@ mod shared_mapping_tests {
         table.sync_anonymous_from_process(1, false, &mut io).unwrap();
         table.sync_anonymous_from_process(2, false, &mut io).unwrap();
         assert_eq!(io.peek(2, 0, 8), b"AAAA\0\0\0\0".to_vec());
+    }
+
+    #[test]
+    fn failed_publication_keeps_original_state_and_bounded_numerical_evidence() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64)
+            .with_kernel_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        let snapshot = table.mapping(1, 0).unwrap().snapshot.clone();
+        let version = table.file_backing(&key).unwrap().version;
+        io.poke(1, 0, b"AAAA....");
+        io.fail_read_process_at = Some((1, 0));
+        let usage = crate::io_buffer::IO_MEMORY.usage();
+        {
+            let _limit = crate::io_buffer::test_budget(usage.0);
+            assert_eq!(table.pull_mapping(1, 0, &mut io), Err(Errno::EFAULT));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, usage.0);
+        }
+        assert_eq!(table.mapping(1, 0).unwrap().snapshot, snapshot);
+        assert_eq!(table.file_backing(&key).unwrap().version, version);
+        assert_eq!(io.files[&10].as_slice(), b"........");
+        let report = table.render_failures().unwrap();
+        let report = core::str::from_utf8(&report).unwrap();
+        assert!(report.starts_with("version 1\ntotal 1\nrecorded 1\ndropped 0\n"));
+        assert!(report.contains("phase=pull_page_read pid=1 addr=0x0 len=8 file_offset=0 handle=10 offset=0 attempted_bytes=8 status=-14"));
+        assert!(report.contains(&alloc::format!("io_live={} io_limit={}", usage.0, usage.0)));
+        // Repeated refusals retain the first eight without growing storage;
+        // their total/dropped counts still make every missing record explicit.
+        for _ in 0..9 { assert_eq!(table.pull_mapping(1, 0, &mut io), Err(Errno::EFAULT)); }
+        let report = table.render_failures().unwrap();
+        let report = core::str::from_utf8(&report).unwrap();
+        assert!(report.starts_with("version 1\ntotal 10\nrecorded 8\ndropped 2\n"));
     }
 
     /// Retained mappings and an already-owned dirty page fit the limit;

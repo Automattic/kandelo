@@ -2368,6 +2368,15 @@ Processes may export `__wasm_posix_thread_slots` to declare their maximum concur
 
 ### Shared mapping coherence
 
+`/proc/kandelo/shared_mapping_failures` retains the first eight failed
+publication or refresh operations, plus total and dropped counts. Records
+identify the phase, process, mapping range, retained backing handle, signed
+errno and I/O credit at refusal. Recording uses fixed numerical state and
+never retains a resource, allocates memory or changes the original result.
+The ordinary procfs read renders the report only when requested. These
+failures are distinct from acknowledged writeback loss; a refused snapshot
+allocation alone does not establish that file data was lost.
+
 Different processes have different WebAssembly memories, so a pointer store in
 one process cannot immediately mutate another process's linear memory. Kandelo
 coordinates anonymous `MAP_SHARED`, SysV SHM attachments, and regular-file
