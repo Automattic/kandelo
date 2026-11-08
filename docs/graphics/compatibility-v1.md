@@ -27705,3 +27705,59 @@ manual checks remain. There is no complete B1, merge-ready or performance
 claim. B2 asynchronous bindings/request budget, B3 local queries, B4 program
 interfaces, B5 native fences, B6 inline arrays, C1 Rust scheduling,
 C2 executor separation and C3 GPU execution remain ordered follow-ups.
+
+
+### B1 scoped fatal audit and terminal-launch diagnostic, 2026-11-08
+
+The current conformance package's normal build first fails after linking
+both executables: its data ZIP inherits the executable-wide `auto` fork
+policy, conflicting with the manifest's correct `disabled` declaration.
+The recipe now scopes `disabled` to that archive install and preserves
+normal executable instrumentation and fail-closed metadata checks. No
+upstream test or platform interface changes. Fresh normal build R924 on
+`860b7bdcc330` succeeds in 3m14s through `xtask local-build run`, with
+`graphics-cts` and `kernel` selected into a private output projection and
+the normal shared cache. The failed R920 report remains retained.
+
+All 6,372 authored inputs and 534 preserved preview products match before
+and after both builds. The 24 exact R914 preview product identities,
+including the kernel and Node image writer, remain unchanged. This avoids
+replacing published authority for lazy assets in the running preview.
+
+R925 executes `scripts/run-graphics-cts.sh gles2 <engine>
+negative-api,functional.state_query --strict` with `KANDELO_GL_AUDIT=fatal`
+on Chromium, Firefox and WebKit, serially on ports 6751–6753. Each engine
+executes seven chunks and accounts for every selected case:
+
+| Engine | Pass | NotSupported | Other outcomes | Changes against historical R536 |
+| --- | --- | --- | --- | --- |
+| Chromium | 633 | 9 | 0 | None across all 642 cases |
+| Firefox | 633 | 9 | 0 | None across all 642 cases |
+| WebKit | 633 | 9 | 0 | None across all 642 cases |
+
+Every case also has the same status across engines. NotSupported remains
+an unsupported outcome, not a pass or a new exemption. Source, preview
+and all nine normal CTS projection files remain unchanged. Exact launcher,
+QPA logs, per-case TSVs and comparison are retained in integration's
+`.context/graphics-b1-cts-audit-r925/`. The canonical runner reports seven
+passing chunk tests per engine. Its default reporter does not emit the
+requested separate Playwright JSON files; the canonical chunk results and
+QPA accounting are the conformance evidence. Firefox profile cleanup emits
+an EACCES warning, retained in its log; no runtime case is reclassified.
+This is the bounded B1 audit selection, not full GLES2/EGL acceptance.
+
+The original Firefox graphical failure is now better characterized. Its
+actual workspace IPC says workspace two has `H[foot foot]` after one
+Playwright Alt+Enter action, while workspace one retains its original
+Foot. The trace shows the extra client before the command's Enter key.
+After Alt+Shift+Q, one full-width bare-prompt Foot remains. Thus failed
+blue-background detection does not establish lost close delivery: there
+were two clients before closing one. Three unchanged R921 attempts pass,
+all with one client on workspace two; original failure remains unresolved.
+The pinned Sway source arms binding repeat before command execution, but
+repeat during slow launch/release draining is only a hypothesis. No focus
+wait, configuration change or software patch is substituted for a cause.
+
+B1 still requires libc, remaining desktop/lifecycle, measurements and
+manual-browser checks and resolution of that intermittent launch behavior.
+All ordered B2–B6/C1–C3 and final campaign requirements remain unwaived.

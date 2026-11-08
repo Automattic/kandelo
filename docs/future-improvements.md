@@ -2400,12 +2400,15 @@ included. Inventories and source/product guards pass; no cases are skipped
 or retried. These current results supersede the earlier pending rerun,
 while its original failures remain recorded in the compatibility ledger.
 
-The focused graphical selection passes 20 of 21 cases. Firefox's direct
-Sway close failure remains intermittent and unresolved after an unchanged
-one-case diagnostic passes. Complete the B1 scoped conformance/libc,
-lifecycle, measurement and manual checks and resolve that failure before
-announcing complete B1 readiness. Passing consumer counts do not establish
-native desktop feel.
+The focused graphical selection passes 20 of 21 cases. Firefox's original
+Sway failure has two terminals after one launch action; closing one leaves
+the extra client. Three unchanged diagnostic attempts pass with only one
+client, so the launch difference remains unresolved. The current scoped
+fatal audit now accounts for 642 cases per engine: 633 Pass and nine
+NotSupported, identical per case to the recorded baseline and across
+engines. This is not the full GLES2/EGL audit. Complete libc, remaining
+lifecycle, measurement and manual checks and resolve the launch difference
+before announcing B1 readiness. Consumer counts do not establish native feel.
 
 Ship B1 as the next concrete increment once its own checks pass. Follow
 with B2 asynchronous bindings and its ScummVM request gate, B3 local
