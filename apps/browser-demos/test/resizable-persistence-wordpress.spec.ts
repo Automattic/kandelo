@@ -124,6 +124,10 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
         if (!nonce) throw new Error(`WordPress REST nonce unavailable: ${inline.slice(0, 500)}`);
         return nonce;
       });
+      // Leave the editor before an external REST update, so its own save or
+      // autosave cannot race the replacement of the published post content.
+      await gotoInPreviewViaDock(page, "/wp-admin/edit.php");
+      await expect(frame.locator(`#post-${postId}`)).toContainText(title, { timeout: 30_000 });
       const uploaded = await page.evaluate(async ({ appPrefix, nonce }) => {
         const canvas = document.createElement("canvas");
         canvas.width = 2;
@@ -168,6 +172,10 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
           }),
         });
         if (!response.ok) throw new Error(`Embedding uploaded media failed: ${response.status} ${await response.text()}`);
+        const post = await response.json();
+        if (!post.content?.raw?.includes(sourceUrl)) {
+          throw new Error(`WordPress did not retain the uploaded image block: ${JSON.stringify(post.content)}`);
+        }
       }, { appPrefix, nonce, postId, sourceUrl: uploaded.sourceUrl, mediaId: uploaded.mediaId });
 
       // Reopen the saved block, as a user does, and require the uploaded PNG
