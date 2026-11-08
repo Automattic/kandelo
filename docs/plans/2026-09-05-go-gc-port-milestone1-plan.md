@@ -2,6 +2,38 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Optimized 33-case result and editor fixture correction:** job b446 ends
+exit1 after 1h33m including build; browser execution takes 40 minutes with
+32 passes and one WebKit experimental-persistence failure. All 27 ordinary
+three-engine WordPress UI cases pass, along with all Chromium/Firefox
+persistence cases and WebKit library persistence. The failed experimental
+case stops at Publish before persistence restart: the welcome dialog is
+dismissed only during that click, Publish stays disabled, and the diagnostic
+screenshot shows an empty title. Caddy and its PHP threads remain running;
+its retained service log has normal startup. Page lifecycle evidence also
+records compression-test XHR access-control errors and an unhandled promise;
+those are retained, not dismissed as proven unrelated.
+
+The editor helper now clicks the real title field before filling it,
+allowing normal pointer actionability checks to dismiss the welcome overlay,
+and observes the WordPress editor store receiving the title before Publish.
+No forced click, timeout increase, store mutation or application patch. This
+matches the already-used template helper's focus behavior and Playwright's
+[documented actionability checks](https://playwright.dev/docs/actionability).
+The original failed case remains evidence; the correction still needs its
+three-engine targeted rerun, queued as
+`wordpress-publish-recheck-1107-212850-1f1a` after the configuration preview.
+The original artifacts are in comparison checkout test-results run
+`509f7e4b-3317-40a0-a5f4-1389eba4d7a3`; page-lifecycle.jsonl and the failed
+screenshot retain the exact observations. The global 33-case gate is not
+claimed green.
+
+The separate revision-45 build b192 is now active after b446's terminal
+result, with the prior failure recorded explicitly. The new configuration
+preview/proof jobs 4386/1dc9 remain queued. The canonical/family phase a37c
+waits for that actual preview and the corrected persistence rerun before its
+own SDK/full normal graph; no independent worktree SDK is borrowed.
+
 **Canonical WordPress family integration prepared:** the family currently
 starts from LAMP and copies only SQLite-specific files from the WordPress
 image, so it lacks the new Caddy daemon, PHP configuration and service offer.
