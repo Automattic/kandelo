@@ -71,9 +71,10 @@ for tool in rustc rustdoc rustfmt cargo-fmt cargo-clippy clippy-driver; do
     rustc) binary=rustc-main ;;
     rustdoc) binary=rustdoc_tool_binary ;;
   esac
+  # Retain real function names so compiler failures can be diagnosed.
   "$repo/scripts/run-wasm-fork-instrument.sh" \
     "$work/target/wasm32-unknown-kandelo-std/release/$binary.wasm" \
-    --no-sinks -o "$work/$tool.wasm"
+    --no-sinks --keep-names -o "$work/$tool.wasm"
   install_local_binary rustc "$work/$tool.wasm" "$tool.wasm"
 done
 # Ship the matching prebuilt std separately; projects do not need rust-src.
