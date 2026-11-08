@@ -2,6 +2,20 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Mutable PHP configuration fix prepared:** WordPress revision 45 enables
+OPcache timestamp validation with revalidate_freq=0 for both PHP-FPM and
+FrankenPHP. The image prewarmer already normalizes source timestamps before
+compiling, preserving usable bytecode while allowing real plugin edits.
+The existing two-service Node gate now includes a PHP fixture that primes
+an actual disk opcode entry, atomically replaces its configuration file,
+invokes ordinary invalidation and requires a subsequent request to read the
+new value. The fixture's PHP syntax and TypeScript loading pass; these
+extended Node cases have not yet run on a newly built revision-45 image.
+The successful manual INI/restart browser experiment and native control
+above justify this ordinary configuration change. No PHP/plugin algorithm
+is modified. Normal image construction and final browser/cache/lifecycle
+acceptance remain required after the ongoing cgo build completes.
+
 **Visitor-cache investigation and browser credential correction:** the stock
 WP Super Cache 3.1.5 plugin activates through the real WordPress admin UI.
 Its settings require pretty permalinks; ordinary admin setup satisfies that

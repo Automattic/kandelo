@@ -10,6 +10,7 @@ import { writeVfsFile } from "../src/vfs/image-helpers";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import type { DestroyProgressEvent } from "../src/browser-kernel-protocol";
 import { observeProcessExits, verifyFrankenPhpGracefulShutdown } from "./support/frankenphp-graceful";
+import { PHP_MUTABLE_CONFIG_PROBE } from "./support/php-mutable-config";
 import {
   phpOptimizerCfgProbe,
   PHP_OPTIMIZER_CFG_CONDITIONS,
@@ -41,6 +42,7 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
   for (const conditions of PHP_OPTIMIZER_CFG_CONDITIONS) {
     writeVfsFile(fs, `/srv/www/html/__kandelo_cfg_${conditions}.php`, phpOptimizerCfgProbe(conditions));
   }
+  writeVfsFile(fs, "/srv/www/html/__kandelo_mutable_config.php", PHP_MUTABLE_CONFIG_PROBE);
   // The demo helper routes logs to stdio; this test needs the image's log file.
   writeVfsFile(fs, serviceConfigPath, serviceConfig);
   const image = await fs.saveImage();
@@ -119,6 +121,20 @@ serviceTest("boots WordPress through the %s image service controller in Node", a
         expect(await optimized.json()).toEqual({ answer: conditions, miss: 0, opcache: true,
           optimizationLevel: PHP_OPTIMIZER_DEFAULT_LEVEL, cacheFilePresent: true });
       }
+    }
+    for (const step of [
+      { phase: "prime", method: "GET", value: "before", cacheFilePresent: true },
+      { phase: "replace", method: "POST", value: "written" },
+      { phase: "read", method: "GET", value: "after", cacheFilePresent: true },
+    ]) {
+      const response = await fetch(`http://127.0.0.1:${port}/__kandelo_mutable_config.php?phase=${step.phase}`, {
+        method: step.method, signal: AbortSignal.timeout(30_000),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        value: step.value, fileCacheOnly: true, validateTimestamps: true,
+        ...(step.cacheFilePresent === undefined ? {} : { cacheFilePresent: step.cacheFilePresent }),
+      });
     }
     let graceful: unknown;
     try {
