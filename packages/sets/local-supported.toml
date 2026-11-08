@@ -884,3 +884,7 @@ class = "user-software"
 [[exclusions]]
 name = "kandelo-rust-sdk"
 reason = "experimental guest Rust SDK bundle"
+
+[[exclusions]]
+name = "rust-native-fixtures"
+reason = "optional guest Rust native-dependency acceptance inputs"
