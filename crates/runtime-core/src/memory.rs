@@ -5508,14 +5508,17 @@ impl SharedMappingTable {
 
         // Snapshot the child bytes each publication overwrites, so a failed
         // commit can put the child's address space back as it was.
+        // WHY: these originals live only until this transaction commits or
+        // rolls back. Temporary custody must not compete with the retained
+        // child's LIVE snapshots/nodes admitted above and below.
         let original_count = staged.len().checked_add(staged_sysv.len()).ok_or(Errno::ENOMEM)
             .inspect_err(|&error| failures.record("fork_rollback_metadata", child_pid,
                 0, 0, 0, -1, 0, usize::MAX, error))?;
-        let mut originals = IoBuffer::try_with_capacity(original_count).inspect_err(|&error|
+        let mut originals = crate::io_buffer::StagedIoBuffer::try_with_capacity(original_count).inspect_err(|&error|
             failures.record("fork_rollback_metadata", child_pid, 0, 0, 0, -1, 0,
-                original_count.saturating_mul(core::mem::size_of::<(u64, IoBuffer<u8>)>()), error))?;
+                original_count.saturating_mul(core::mem::size_of::<(u64, crate::io_buffer::StagedIoBuffer<u8>)>()), error))?;
         for (map_addr, mapping) in &staged {
-            let mut bytes = IoBuffer::try_filled(mapping.len, 0).inspect_err(|&error| {
+            let mut bytes = crate::io_buffer::StagedIoBuffer::try_filled(mapping.len, 0).inspect_err(|&error| {
                 let handle = mapping.backing_key.as_deref().and_then(|key| self.file_backings.get(key))
                     .map_or(-1, |backing| backing.handle);
                 failures.record("fork_rollback_alloc", child_pid, *map_addr, mapping.len,
@@ -5530,7 +5533,7 @@ impl SharedMappingTable {
             originals.push((*map_addr, bytes));
         }
         for (map_addr, mapping) in &staged_sysv {
-            let mut bytes = IoBuffer::try_filled(mapping.size, 0).inspect_err(|&error|
+            let mut bytes = crate::io_buffer::StagedIoBuffer::try_filled(mapping.size, 0).inspect_err(|&error|
                 failures.record("fork_sysv_rollback_alloc", child_pid, *map_addr, mapping.size,
                     0, -1, 0, mapping.size, error))?;
             io.read_process(child_pid, *map_addr, &mut bytes).inspect_err(|&error|
@@ -7762,6 +7765,182 @@ mod shared_mapping_tests {
         assert!(table.mapping(1, 0).is_none());
         assert_eq!(table.mapping(1, 32).unwrap().len, 16);
         assert_eq!(io.peek(1, 32, 16), b"0123456789ABCDEF");
+    }
+
+
+    fn fork_rollback_credit_fixture(kind: u8, ranges: usize) -> (SharedMappingTable, MockIo) {
+        let mut io = MockIo::new().with_process(1, 128).with_process(2, 128)
+            .with_file(10, 1, 2, b"PARENTAL".to_vec());
+        let mut table = SharedMappingTable::new();
+        let key = io.key_of(10);
+        for index in 0..ranges {
+            let addr = (16 * index) as u64;
+            match kind {
+                0 => table.track_kernel_file_mapping(1, addr, 3 + index as i32,
+                    &key, 10, 0, 8, true, true, &mut io).unwrap(),
+                1 => {
+                    io.poke(1, addr, b"PARENTAL");
+                    table.track_anonymous_mapping(1, addr, 8, true, &mut io).unwrap();
+                }
+                _ => {
+                    let segment = 7 + index as i32;
+                    io.shm.insert(segment, b"PARENTAL".to_vec());
+                    table.track_sysv_mapping(1, addr, segment, 8, false, &mut io).unwrap();
+                }
+            }
+            io.poke(2, addr, b"ORIGINAL");
+        }
+        (table, io)
+    }
+
+    fn assert_fork_rollback_parent_custody(table: &SharedMappingTable, io: &MockIo,
+        kind: u8, ranges: usize) {
+        for index in 0..ranges {
+            let addr = (16 * index) as u64;
+            assert_eq!(io.peek(1, addr, 8).as_slice(), b"PARENTAL");
+            if kind == 2 {
+                let mapping = table.sysv_mapping(1, addr).unwrap();
+                assert_eq!(&mapping.snapshot[..], b"PARENTAL");
+                assert_eq!(table.sysv_segment_version(mapping.seg_id), mapping.seen_version);
+            } else {
+                let mapping = table.mapping(1, addr).unwrap();
+                assert_eq!(mapping.snapshot.as_deref(), Some(&b"PARENTAL"[..]));
+                let key = mapping.backing_key.as_deref().unwrap();
+                if kind == 0 {
+                    assert_eq!(table.file_backing(key).unwrap().ref_count as usize, ranges);
+                    assert_eq!(io.retained_count(10), 1);
+                } else {
+                    assert_eq!(table.anon_backing(key).unwrap().ref_count, 1);
+                }
+            }
+        }
+    }
+
+    // Measure the real retained child ledger, never a guessed node/payload size.
+    // The file fixture is host-backed: its already resident cache stays resident,
+    // so release restores the same parent/cached-page baseline for the tight run.
+    fn fork_rollback_retained_delta(table: &mut SharedMappingTable, io: &mut MockIo,
+        ranges: usize) -> usize {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+        table.inherit_process_mappings(1, 2, io).unwrap();
+        let delta = crate::io_buffer::IO_MEMORY.usage().0.checked_sub(baseline).unwrap();
+        assert!(delta > 0);
+        assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+        table.release_all_for_process(2, false, io);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+        assert!(!table.mappings.contains_key(&2));
+        assert!(!table.sysv.contains_key(&2));
+        for index in 0..ranges { io.poke(2, (16 * index) as u64, b"ORIGINAL"); }
+        delta
+    }
+
+    #[test]
+    fn fork_rollback_temporary_allows_the_exact_measured_retained_child_limit() {
+        let original_live = crate::io_buffer::IO_MEMORY.usage().0;
+        let original_temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+        for kind in 0..3 {
+            let (mut table, mut io) = fork_rollback_credit_fixture(kind, 1);
+            let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+            let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+            let delta = fork_rollback_retained_delta(&mut table, &mut io, 1);
+            assert_fork_rollback_parent_custody(&table, &io, kind, 1);
+            {
+                // Retained child state fits exactly. Originals are rollback-only,
+                // so charging them LIVE must not refuse an otherwise admitted fork.
+                let _limit = crate::io_buffer::test_budget(baseline.checked_add(delta).unwrap());
+                let result = table.inherit_process_mappings(1, 2, &mut io);
+                assert_eq!(result, Ok(()), "kind={kind}, last phase={:?}",
+                    table.failures.records.iter().flatten().last().map(|record| record.phase));
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline + delta);
+                assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+                assert_eq!(io.peek(2, 0, 8).as_slice(), b"PARENTAL");
+                if kind == 2 {
+                    assert_eq!(&table.sysv_mapping(2, 0).unwrap().snapshot[..], b"PARENTAL");
+                } else {
+                    assert_eq!(table.mapping(2, 0).unwrap().snapshot.as_deref(), Some(&b"PARENTAL"[..]));
+                }
+                table.release_all_for_process(2, false, &mut io);
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+                assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+                assert_fork_rollback_parent_custody(&table, &io, kind, 1);
+            }
+            drop((table, io));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, original_live);
+            assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), original_temporary);
+        }
+    }
+
+
+    #[test]
+    fn fork_rollback_late_child_read_refusal_releases_both_classes_before_any_write() {
+        let original_live = crate::io_buffer::IO_MEMORY.usage().0;
+        let original_temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+        for kind in 0..3 {
+            let (mut table, mut io) = fork_rollback_credit_fixture(kind, 2);
+            let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+            let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+            let delta = fork_rollback_retained_delta(&mut table, &mut io, 2);
+            let original_child = io.procs[&2].clone();
+            let child_epoch = io.epochs[&2];
+            let parent_epoch = io.epochs.get(&1).copied();
+            io.fail_read_process_at = Some((2, 16)); // Actual second originals read.
+            {
+                let _limit = crate::io_buffer::test_budget(baseline.checked_add(delta).unwrap());
+                assert_eq!(table.inherit_process_mappings(1, 2, &mut io), Err(Errno::EFAULT));
+                assert_eq!(io.procs[&2], original_child);
+                assert_eq!(io.epochs[&2], child_epoch);
+                assert_eq!(io.epochs.get(&1).copied(), parent_epoch);
+                assert!(!table.mappings.contains_key(&2));
+                assert!(!table.sysv.contains_key(&2));
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+                assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+                assert_fork_rollback_parent_custody(&table, &io, kind, 2);
+            }
+            drop((table, io));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, original_live);
+            assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), original_temporary);
+        }
+    }
+
+    #[test]
+    fn fork_rollback_late_commit_refusal_restores_earlier_range_and_exact_credits() {
+        let original_live = crate::io_buffer::IO_MEMORY.usage().0;
+        let original_temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+        for kind in 0..3 {
+            let (mut table, mut io) = fork_rollback_credit_fixture(kind, 2);
+            let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+            let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+            let delta = fork_rollback_retained_delta(&mut table, &mut io, 2);
+            let original_child = io.procs[&2].clone();
+            let child_epoch = io.epochs[&2];
+            let parent_epoch = io.epochs.get(&1).copied();
+            // Inheritance writes whole ranges at their map addresses: the
+            // first commit changes addr0, the second fails exactly at addr16.
+            io.fail_write_process_at = Some(16);
+            {
+                let _limit = crate::io_buffer::test_budget(baseline.checked_add(delta).unwrap());
+                assert_eq!(table.inherit_process_mappings(1, 2, &mut io), Err(Errno::EFAULT));
+                assert_eq!(io.procs[&2], original_child);
+                // Successful first commit and its exact rollback are real
+                // child writes; the refused second write changes no bytes.
+                assert_eq!(io.epochs[&2], child_epoch + 2);
+                assert_eq!(io.epochs.get(&1).copied(), parent_epoch);
+                assert!(!table.mappings.contains_key(&2));
+                assert!(!table.sysv.contains_key(&2));
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+                assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+                assert_fork_rollback_parent_custody(&table, &io, kind, 2);
+                assert_eq!(table.failures.total, 2); // Commit refusal plus second rollback refusal.
+                assert_eq!(table.failures.records[0].unwrap().phase,
+                    if kind == 2 { "fork_sysv_commit_write" } else { "fork_commit_write" });
+                assert_eq!(table.failures.records[1].unwrap().phase, "fork_rollback_write");
+            }
+            drop((table, io));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, original_live);
+            assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), original_temporary);
+        }
     }
 
     #[test]
