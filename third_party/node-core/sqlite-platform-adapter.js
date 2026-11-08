@@ -27,6 +27,11 @@ function _createNodeSqlitePlatform(platform) {
         return value;
     }
     function database(object) { const value = databases.get(object); if (!value) fail('ERR_INVALID_THIS', 'Invalid Database receiver', P.TypeError); return value; }
+    function serializationDatabase(object) {
+        const value = databases.get(object);
+        if (!value) throw new P.TypeError('Illegal invocation');
+        return value;
+    }
     function statement(object) { const value = statements.get(object); if (!value) fail('ERR_INVALID_THIS', 'Invalid Statement receiver', P.TypeError); return value; }
     function session(object) { const value = sessions.get(object); if (!value) fail('ERR_INVALID_THIS', 'Invalid Session receiver', P.TypeError); return value; }
     function limitValue(value, constructor, name) {
@@ -100,6 +105,27 @@ function _createNodeSqlitePlatform(platform) {
         get isOpen() { return native('isOpen', database(this).handle); }
         get isTransaction() { return native('isTransaction', database(this).handle); }
         exec(sql) { native('exec', database(this).handle, string(sql, 'sql')); }
+        serialize() {
+            const db = serializationDatabase(this);
+            native('checkDatabase', db.handle);
+            const name = arguments.length === 0 ? undefined : arguments[0];
+            return native('serialize', db.handle, name === undefined ? 'main' : string(name, 'dbName'));
+        }
+        deserialize() {
+            const db = serializationDatabase(this);
+            const buffer = arguments.length === 0 ? undefined : arguments[0];
+            // Capture intrinsic byte length before options getters. No public
+            // typed-array properties or a premature byte snapshot are read.
+            const length = native('deserializeLength', db.handle, buffer);
+            let schema = 'main';
+            const options = arguments.length < 2 ? undefined : arguments[1];
+            if (options !== undefined) {
+                optionsObject(options);
+                const name = options.dbName;
+                if (name !== undefined) schema = string(name, 'options.dbName');
+            }
+            native('deserialize', db.handle, buffer, length, schema);
+        }
         location(dbName = 'main') { return native('location', database(this).handle, string(dbName, 'dbName')); }
         prepare(sql, options) {
             const db = database(this);
@@ -202,6 +228,8 @@ function _createNodeSqlitePlatform(platform) {
         }
         get limits() { const db = database(this); return db.limits ??= native('limits', db.handle); }
     }
+    ObjectDefineProperty(Database.prototype, 'serialize', { enumerable: true });
+    ObjectDefineProperty(Database.prototype, 'deserialize', { enumerable: true });
     ObjectDefineProperty(Database.prototype, SymbolDispose, { configurable: true, writable: true,
         value() { const value = database(this); if (native('isOpen', value.handle)) native('close', value.handle); } });
     function callbackArity(fn, name) {

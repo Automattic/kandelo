@@ -42,6 +42,23 @@ struct Cell {
   std::string text;
   std::vector<uint8_t> bytes;
 };
+// A real SQLite-owned allocation. size is its image length, not an RSS or
+// allocator-capacity claim. FREEONCLOSE consumes this allocation on every
+// sqlite3_deserialize result (with a valid connection and nonnegative sizes).
+struct Image {
+  struct Free { void operator()(unsigned char* p) const { sqlite3_free(p); } };
+  std::unique_ptr<unsigned char, Free> data;
+  sqlite3_int64 size = 0;
+  static Image Allocate(size_t length) {
+    if (length > size_t(std::numeric_limits<sqlite3_int64>::max()))
+      throw Error("ERR_MEMORY_ALLOCATION_FAILED", "Failed to allocate memory");
+    Image image;
+    image.size = sqlite3_int64(length);
+    image.data.reset(static_cast<unsigned char*>(sqlite3_malloc64(length)));
+    if (!image.data) throw Error("ERR_MEMORY_ALLOCATION_FAILED", "Failed to allocate memory");
+    return image;
+  }
+};
 class Statement;
 #if defined(SQLITE_ENABLE_SESSION)
 class Session;
@@ -97,6 +114,19 @@ class Connection : public std::enable_shared_from_this<Connection> {
     db_ = guard.release();
   }
   void Close();
+  void FinalizeStatements();
+  void CheckDeserialize() const {
+    Require();
+    if (InCallback()) StateError("database cannot be deserialized while in a callback");
+  }
+  Image Serialize(const std::string& schema = "main") const {
+    auto* db = Require();
+    Image image;
+    image.data.reset(sqlite3_serialize(db, schema.c_str(), &image.size, 0));
+    if (!image.data && image.size != 0) throw DatabaseError(db, SQLITE_ERROR);
+    return image;
+  }
+  void Deserialize(Image image, const std::string& schema = "main");
   void Exec(const std::string& sql) {
     sqlite3* db = Require();
 #if defined(SQLITE_ENABLE_SESSION)
@@ -398,9 +428,7 @@ inline std::shared_ptr<Session> Connection::CreateSession(const std::string& sch
 }
 #endif
 inline Connection::~Connection() { if (db_) sqlite3_close_v2(db_); }
-inline void Connection::Close() {
-  auto* db = Require();
-  if (callbackDepth_) StateError("database cannot be closed while in a callback");
+inline void Connection::FinalizeStatements() {
   // Finalizers may prepare/close statements. Never retain an iterator into the
   // observer vector across callbacks; also retire statements created by them.
   while (!statements_.empty()) {
@@ -408,6 +436,21 @@ inline void Connection::Close() {
     statements_.clear();
     for (auto& reference : statements) if (auto statement = reference.lock()) statement->Finalize();
   }
+}
+inline void Connection::Deserialize(Image image, const std::string& schema) {
+  CheckDeserialize();
+  auto* db = Require();
+  FinalizeStatements();
+  // Actual SQLite takes ownership on success AND on failure. Release before
+  // entering it; retaining a second deleter would double-free failed imports.
+  const int result = sqlite3_deserialize(db, schema.c_str(), image.data.release(),
+      image.size, image.size, SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE);
+  if (result != SQLITE_OK) throw DatabaseError(db, result);
+}
+inline void Connection::Close() {
+  auto* db = Require();
+  if (callbackDepth_) StateError("database cannot be closed while in a callback");
+  FinalizeStatements();
 #if defined(SQLITE_ENABLE_SESSION)
   // SQLite requires sessions to retire before their database connection.
   for (auto& reference : sessions_) if (auto session = reference.lock()) session->Delete();

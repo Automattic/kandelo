@@ -28,7 +28,7 @@ static bool KandeloSqliteRaise(JSContext* cx, const SqliteError& error) {
   if (JS_IsExceptionPending(cx)) return false;
   const JSExnType type = (error.code == "ERR_INVALID_ARG_TYPE" ||
                          error.code == "ERR_INVALID_ARG_VALUE") ? JSEXN_TYPEERR
-      : error.code == "ERR_OUT_OF_RANGE" ? JSEXN_RANGEERR : JSEXN_ERR;
+      : (error.code == "ERR_OUT_OF_RANGE" || error.code == "ERR_MEMORY_ALLOCATION_FAILED") ? JSEXN_RANGEERR : JSEXN_ERR;
   RootedString message(cx, JS_NewStringCopyUTF8Z(cx, JS::ConstUTF8CharsZ(error.what(), strlen(error.what()))));
   RootedString file(cx, JS_GetEmptyString(cx));
   RootedObject stack(cx);
@@ -507,6 +507,18 @@ static bool KandeloSqliteBoolean(JSContext* cx, HandleObject object, const char*
   *result = value.toBoolean(); return true;
 }
 static bool KandeloSqliteBackup(JSContext* cx, const CallArgs& args);
+// Brand admission uses actual checked engine storage, never caller properties.
+static bool KandeloSqliteImageSource(JSContext* cx, HandleValue value, KandeloCryptoByteSource* source) {
+  if (value.isObject()) {
+    RootedObject object(cx, js::CheckedUnwrapDynamic(&value.toObject(), cx));
+    if (!object) {
+      if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);
+      return false;
+    }
+    if (JS_IsUint8Array(object)) return source->Init(value);
+  }
+  throw SqliteError("ERR_INVALID_ARG_TYPE", "The \"buffer\" argument must be a Uint8Array.");
+}
 static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   std::string operation;
@@ -557,6 +569,47 @@ static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
   if (operation == "open") owner->connection->Open();
   else if (operation == "close") {
     owner->connection->Close();
+    if (JS_IsExceptionPending(cx)) return false;
+  }
+  else if (operation == "serialize") {
+    std::string schema;
+    if (!KandeloSqliteString(cx, args.get(2), &schema)) return false;
+    auto image = owner->connection->Serialize(schema);
+    if (image.size < 0 || uint64_t(image.size) > uint64_t(SIZE_MAX)) { JS_ReportOutOfMemory(cx); return false; }
+    RootedObject bytes(cx, KandeloNewUint8ArrayCopy(cx, image.data.get(), size_t(image.size)));
+    if (!bytes) return false;
+    args.rval().setObject(*bytes); return true;
+  } else if (operation == "deserializeLength") {
+    owner->connection->CheckDeserialize();
+    KandeloCryptoByteSource source(cx);
+    if (!KandeloSqliteImageSource(cx, args.get(2), &source)) return false;
+    const size_t length = source.Length();
+    if (!length) throw SqliteError("ERR_INVALID_ARG_VALUE", "The \"buffer\" argument must not be empty.");
+    args.rval().setNumber(double(length)); return true;
+  } else if (operation == "deserialize") {
+    // Options getters may have closed/reopened the DB or resized/detached the
+    // original view. Recheck openness before allocation/copy as pinned Node.
+    owner->connection->Require();
+    std::string schema;
+    if (!KandeloSqliteString(cx, args.get(4), &schema)) return false;
+    const double number = args.get(3).isNumber() ? args[3].toNumber() : 0;
+    if (!(number > 0) || std::trunc(number) != number || number > 9007199254740991.0 ||
+        number > double(SIZE_MAX)) throw SqliteError("ERR_INVALID_ARG_VALUE", "Invalid SQLite image length");
+    const size_t length = size_t(number);
+    auto image = kandelo::sqlite::Image::Allocate(length);
+    KandeloCryptoByteSource source(cx);
+    if (!KandeloSqliteImageSource(cx, args.get(2), &source)) return false;
+    bool resized = false;
+    if (!source.WithBytes([&](SharedMem<uint8_t*> data, size_t available) {
+      if (available < length) { resized = true; return true; }
+      // Shared backing can mutate concurrently; real relaxed atomic loads
+      // copy precisely the initial length, after all options getters ran.
+      for (size_t i = 0; i < length; i++)
+        image.data.get()[i] = __atomic_load_n(data.unwrap() + i, __ATOMIC_RELAXED);
+      return true;
+    })) return false;
+    if (resized) throw SqliteError("ERR_INVALID_STATE", "The \"buffer\" argument was resized while reading \"options\"");
+    owner->connection->Deserialize(std::move(image), schema);
     if (JS_IsExceptionPending(cx)) return false;
   }
   else if (operation == "isOpen") { args.rval().setBoolean(owner->connection->IsOpen()); return true; }

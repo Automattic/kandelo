@@ -7247,3 +7247,7 @@ FileHandle adoption, synchronous close, foreground GC and queued close use one m
 ### FileHandle clone packets move the descriptor owner
 
 The registered FileHandle transfer path now consumes actual native class/environment admission and a single-use move-only descriptor sidecar in the existing same-process clone transaction. Receiver-local allocation/root capacity precedes the lease move and actual FILEHANDLE init; rollback closes only a still-state-owned lease, leaving a reentrant queued close authoritative. Packet discard and Worker/context retirement release material without crossing JS roots between threads. Pinned public hooks consume the real owner and preserve whole-list/AB-first semantics. Guest process sharing is traced through musl/kernel CLONE_FILES and actual shared fd/OFD tables, not embedding host PID. New native JSAPI and guest lifecycle remain uncompiled/unvalidated.
+
+### Owned SQLite database images
+
+Source242 connects the existing SQLite connection/statement owners to real sqlite3_serialize and sqlite3_deserialize. A temporary image owns allocator memory through export/copy; deserialize captures actual byte length before options, copies current storage afterward, finalizes existing statements before replacement and relinquishes the FREEONCLOSE allocation at actual SQLite entry. Fresh generated-root JavaScript/native-dependent controls, unchanged upstream cases and portable allocator controls are scoped evidence; new guest JSAPI and all-host behavior remain uncompiled/unexecuted.

@@ -1,0 +1,122 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-002"
+    ],
+    "additionalRequirement": {
+      "document": "tests/nodejs/audit/native-public-contracts.md",
+      "section": "SQLite table: serialize/deserialize"
+    },
+    "relatedIdentity": [
+      "NI-006 in native-integration.md; original standalone reference differs from actual current node-sqlite",
+      "NI-009/NI-010 in native-public-contracts.md are qualified historical standalone-backend findings, not closed by this slice"
+    ],
+    "individualApiClosure": false,
+    "all19FamiliesRemainPartial": true,
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/native-integration.md",
+        "findingId": "NI-002",
+        "scope": "Partial actual SQLite image serialize/deserialize connection/statement/allocation ownership only; full SQLite surface remains open."
+      },
+      {
+        "document": "tests/nodejs/audit/native-public-contracts.md",
+        "section": "SQLite table serialize/deserialize row: Uint8Array/dbName, statement retirement before attempted replacement and callback/reentry restrictions",
+        "kind": "section-requirement-not-invented-finding-id"
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Consume real existing Connection/Image/Statement owners and actualSQLite3.54 sqlite3_serialize/deserialize APIs",
+    "Return genuine Uint8Array image bytes with independent storage and actual allocator cleanup",
+    "Capture genuine Uint8Array length before dbName getter; late checked/copy snapshot preserves original length, rejects detach/shrink and atomically loads shared storage",
+    "Finalize existing statements before replacement even on actual backend failure, preserve real callback/reentry/close guards and exactly-once FREEONCLOSE ownership",
+    "Preserve unchanged descriptors/aliases/public receiver/error route and regenerate actual parent241core without overwriting FileHandle bootstrap/0174 owners"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-sqlite242-source-r1/report.json",
+    "sha256": "686aedd7358eaa802b990abebf1c1bf80cae8854273d64ced7b91381371d58e0",
+    "guardedInputs": 898,
+    "scope": "Source242 real SQLite image serialize/replace owner and current-root generated consumer, existing nativeV8/NAPI/component dependencies; new guest nativeJSAPI uncompiled/unexecuted, no API/finding/fourhost closure"
+  },
+  "packageChecks": {
+    "report": ".context/node26-sqlite242-affected-r1.json",
+    "sha256": "7c954c464bf15dcf851b55bda16ebc2f13d57fc0a950202e1d10d043a31fca87",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-sqlite242-source-r1/report.json",
+    "sha256": "686aedd7358eaa802b990abebf1c1bf80cae8854273d64ced7b91381371d58e0",
+    "nativeGroups": 14,
+    "candidateGroups": 14,
+    "unchangedUpstreamCasesPerSubject": 21,
+    "portableOwnerGroups": 8,
+    "newRootCompilerAttempts": 0,
+    "historicalProducerHelperCompileAttempts": 3,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Current generated root JS over actual portableSQLite/NAPI, exact nativeNode reference and existing owner binary. Explicit nativeV8/privatebindings/common/test/encoding/VM dependencies; new nativeSQLite/JSAPI/realm/GC/OOM/VFS uncompiled/unexecuted.",
+    "globalBindingSelfContained": false,
+    "externalExcludedWrappers": 2,
+    "externalHistoricalGitMembers": 36
+  },
+  "sealedEvidence": {
+    "report": ".context/sqlite-serialization-owner-agent/report.json",
+    "sha256": "d433f6fd0593c7bd4da31648fe29e8e94fa96382b04949901b55a68410b36808",
+    "reusedEvidence": true,
+    "scope": "Historical source19135-based modified private SQLite3.54 image/connection owner and native-dependent controls, three successful helpers; not an execution of current242sourcecommit. Exact postimage/header/component equivalence is separately guarded."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/sqlite-serialization-owner-agent/owner-control-r1-run-result.json",
+      "sha256": "195a804411f012f9ae51e15a07996fc60f70d886f9d6b8b9598736f6bfeed829",
+      "scope": "Original actual portable allocator tracker assertion child-6/shell250 preserved; tracker erroneously followed old address across real successful realloc. Corrected tracker follows actual moved pointer with same once-only/free/empty-ledger assertions."
+    },
+    {
+      "report": ".context/sqlite-serialization-owner-agent/sourcegen-result.json",
+      "sha256": "f01bbc5a3256705453a97566f0aa37a73c58cec2d918ac02a1bfc087152d32cc",
+      "scope": "Original sparse normal-generator fixture missing unchanged0044(and required0043/bootstrap) failed; corrected full declared input fixture remains separate, no generator/assertion weakening."
+    },
+    {
+      "report": ".context/node26-sqlite242-compose-smfyz1vk/compose.log",
+      "sha256": "94eead977b8f5a87f6b4e78ac3f518bc2b5a6351e27574750c4ff1639f0c2d70",
+      "scope": "Actual sealed preparation helper blanket-symlink guard rejected legitimate tracked skill links before source.patch/gen. Parent subsequent narrow-ancestor composition is separate."
+    },
+    {
+      "report": ".context/sqlite-serialization-integration-prep/composition.json",
+      "sha256": "ac307ea2941e8af9bb1172acaa8b7c1170e16e1419198e811c69408f52199981",
+      "scope": "Actual parent composition report retains failed raw-SHA bundle selection and same-commit successful HEAD bundle; success is not relabeling the original failed preparation."
+    },
+    {
+      "report": ".context/sqlite-serialization242-prep/author-preparation-failures.json",
+      "sha256": "93ea32889ec3b65292df78b2c67df82090082d2bfbae777d8acd11ba4e2ca417",
+      "scope": "Authored helper-text NameError and unexecuted superseded clone draft retained; no test/compiler/runtime from failed author command."
+    },
+    {
+      "report": ".context/node26-sqlite242-record-r2.log",
+      "sha256": "0acdca1bb8cc4047db310d4ff9a3101152c381dff90b6bc63786f575dd6cf294",
+      "scope": "Metadata preparation R2 raw-versus-canonical manifest identity guard failed before spec or tracked metadata writes. Corrected source uses exact engine.encoded digest plus frozen dict equality and separately pinned raw file SHA; original failure retained, no source/runtime/compiler execution."
+    }
+  ],
+  "remaining": [
+    "New guest native-sqlite.cpp compilation and realm/CCW/access-denied/GC/OOM/pending-exception runtime validation",
+    "Guest SQLite allocator/VFS/transaction/thread/finalizer behavior and identified-artifact four-host conformance",
+    "SQLite internal allocations remain outside process retained-memory ledger integration",
+    "Future actual authorizer owner must add serialize admission prohibition; current public setAuthorizer remains a real implementation gap",
+    "Extensions/permission/loading, virtual-table module callbacks, tag stores and remaining full SQLite public semantics stay open",
+    "No overall conformance suite or product rebuild; no accepted engine artifact includes this private slice"
+  ],
+  "at": "2026-11-08T00:22:11.502590+00:00",
+  "recipeRevision": 242,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source242 adds real SQLite database image serialization/replacement over existing SQLite3.54owners. Normal source/input/staging and focused native-dependent evidence remain separate from new guestJSAPI/fourhost conformance. All19families partial; overall/fullproduct work deferred.
+See [source scope](sqlite-serialization-integration.md).
+
 Source241 connects pinned FileHandle transfer hooks to actual native admission, descriptor sidecars and receiver initialization/rollback. Five portable material and eight pinned-native reference groups remain narrow evidence; current guestJSAPI is uncompiled and no transfer conformance is claimed.
 See [source scope](file-handle-transfer-integration.md).
 
