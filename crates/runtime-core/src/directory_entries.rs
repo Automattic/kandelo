@@ -14,12 +14,13 @@ type Link = Option<Box<DirectoryNode>>;
 struct DirectoryNode {
     name: Vec<u8>,
     inode: u32,
+    cookie: u64,
     left: Link,
     right: Link,
     height: u8,
 }
 
-const _: () = assert!(core::mem::size_of::<DirectoryNode>() * 2 <= DIRENT_MODEL_BYTES);
+const _: () = assert!(core::mem::size_of::<DirectoryNode>() * 4 <= DIRENT_MODEL_BYTES);
 
 #[cfg(test)]
 static FAIL_NEXT_NODE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -79,16 +80,17 @@ fn balance(mut root: Box<DirectoryNode>) -> Box<DirectoryNode> {
     } else { root }
 }
 
-fn insert(root: Link, node: Box<DirectoryNode>) -> (Box<DirectoryNode>, Option<u32>) {
+fn insert(root: Link, node: Box<DirectoryNode>, by_cookie: bool) -> (Box<DirectoryNode>, Option<u32>) {
     let Some(mut root) = root else { return (node, None) };
-    let prior = match node.name.cmp(&root.name) {
+    let order = if by_cookie { node.cookie.cmp(&root.cookie) } else { node.name.cmp(&root.name) };
+    let prior = match order {
         Ordering::Less => {
-            let (child, prior) = insert(root.left.take(), node);
+            let (child, prior) = insert(root.left.take(), node, by_cookie);
             root.left = Some(child);
             prior
         }
         Ordering::Greater => {
-            let (child, prior) = insert(root.right.take(), node);
+            let (child, prior) = insert(root.right.take(), node, by_cookie);
             root.right = Some(child);
             prior
         }
@@ -107,16 +109,17 @@ fn take_min(mut root: Box<DirectoryNode>) -> (Link, Box<DirectoryNode>) {
     (Some(balance(root)), minimum)
 }
 
-fn remove(root: Link, name: &[u8]) -> (Link, Option<Box<DirectoryNode>>) {
+fn remove(root: Link, name: &[u8], cookie: Option<u64>) -> (Link, Option<Box<DirectoryNode>>) {
     let Some(mut root) = root else { return (None, None) };
-    let removed = match name.cmp(&root.name) {
+    let order = cookie.map_or_else(|| name.cmp(&root.name), |cookie| cookie.cmp(&root.cookie));
+    let removed = match order {
         Ordering::Less => {
-            let (child, removed) = remove(root.left.take(), name);
+            let (child, removed) = remove(root.left.take(), name, cookie);
             root.left = child;
             removed
         }
         Ordering::Greater => {
-            let (child, removed) = remove(root.right.take(), name);
+            let (child, removed) = remove(root.right.take(), name, cookie);
             root.right = child;
             removed
         }
@@ -134,6 +137,7 @@ fn remove(root: Link, name: &[u8]) -> (Link, Option<Box<DirectoryNode>>) {
 
 pub(crate) struct PreparedDirectoryName<'a> {
     node: Box<DirectoryNode>,
+    cookie_node: Box<DirectoryNode>,
     reservation: MetadataReservation<'a>,
 }
 
@@ -160,10 +164,16 @@ impl<'a> PreparedDirectoryName<'a> {
         owned.extend_from_slice(name);
         reservation.resize(owned.capacity().checked_mul(2)
             .and_then(|bytes| bytes.checked_add(DIRENT_MODEL_BYTES)).ok_or(Errno::ENOMEM)?)?;
+        let mut cookie_name = Vec::new();
+        cookie_name.try_reserve_exact(owned.capacity()).map_err(|_| Errno::ENOMEM)?;
+        cookie_name.extend_from_slice(name);
         let node = allocate_node(DirectoryNode {
-            name: owned, inode: 0, left: None, right: None, height: 1,
+            name: owned, inode: 0, cookie: 0, left: None, right: None, height: 1,
         }, allocator)?;
-        Ok(Self { node, reservation })
+        let cookie_node = allocate_node(DirectoryNode {
+            name: cookie_name, inode: 0, cookie: 0, left: None, right: None, height: 1,
+        }, allocator)?;
+        Ok(Self { node, cookie_node, reservation })
     }
 
     pub(crate) fn name(&self) -> &[u8] { &self.node.name }
@@ -173,6 +183,8 @@ impl<'a> PreparedDirectoryName<'a> {
 
 pub(crate) struct DirectoryEntries<'a> {
     root: Link,
+    cookie_root: Link,
+    next_cookie: u64,
     length: usize,
     reservation: MetadataReservation<'a>,
 }
@@ -183,7 +195,7 @@ impl DirectoryEntries<'static> {
 
 impl<'a> DirectoryEntries<'a> {
     fn with_budget(budget: &'a MetadataBudget) -> Self {
-        Self { root: None, length: 0, reservation: budget.empty() }
+        Self { root: None, cookie_root: None, next_cookie: 0, length: 0, reservation: budget.empty() }
     }
 
     pub(crate) fn len(&self) -> usize { self.length }
@@ -217,6 +229,21 @@ impl<'a> DirectoryEntries<'a> {
         successor
     }
 
+    /// Creation cookies remain fixed when earlier names disappear. Both AVL
+    /// nodes and both names are admitted by PreparedDirectoryName before a
+    /// namespace transaction commits; getdents needs no directory snapshot.
+    pub(crate) fn next_from_cookie(&self, first: u64) -> Option<(u64, &Vec<u8>, u32)> {
+        let mut current = self.cookie_root.as_deref();
+        let mut result = None;
+        while let Some(node) = current {
+            if node.cookie >= first {
+                result = Some((node.cookie, &node.name, node.inode));
+                current = node.left.as_deref();
+            } else { current = node.right.as_deref(); }
+        }
+        result
+    }
+
     pub(crate) fn iter(&self) -> DirectoryIter<'_> {
         let mut iterator = DirectoryIter {
             front: [None; ITERATOR_DEPTH], back: [None; ITERATOR_DEPTH],
@@ -242,8 +269,21 @@ impl<'a> DirectoryEntries<'a> {
 
     pub(crate) fn insert_prepared(&mut self, mut prepared: PreparedDirectoryName<'a>, inode: u32) -> Option<u32> {
         assert!(core::ptr::eq(self.reservation.budget(), prepared.reservation.budget()));
+        let cookie = match self.find(&prepared.node.name) {
+            Some(existing) => existing.cookie,
+            None => {
+                let cookie = self.next_cookie;
+                self.next_cookie = self.next_cookie.checked_add(1).expect("directory cookie space exhausted");
+                cookie
+            }
+        };
         prepared.node.inode = inode;
-        let (root, prior) = insert(self.root.take(), prepared.node);
+        prepared.node.cookie = cookie;
+        prepared.cookie_node.inode = inode;
+        prepared.cookie_node.cookie = cookie;
+        let (cookies, _) = insert(self.cookie_root.take(), prepared.cookie_node, true);
+        self.cookie_root = Some(cookies);
+        let (root, prior) = insert(self.root.take(), prepared.node, false);
         self.root = Some(root);
         if prior.is_none() {
             self.length += 1;
@@ -254,7 +294,11 @@ impl<'a> DirectoryEntries<'a> {
 
     pub(crate) fn remove(&mut self, name: &[u8]) -> Option<u32> {
         let bytes = DIRENT_MODEL_BYTES + self.find(name)?.name.capacity() * 2;
-        let (root, removed) = remove(self.root.take(), name);
+        let cookie = self.find(name).expect("directory removal missing key").cookie;
+        let (cookies, removed_cookie) = remove(self.cookie_root.take(), name, Some(cookie));
+        self.cookie_root = cookies;
+        assert!(removed_cookie.is_some());
+        let (root, removed) = remove(self.root.take(), name, None);
         self.root = root;
         let prior = removed.expect("directory removal lost existing key").inode;
         self.length -= 1;
@@ -269,7 +313,19 @@ impl<'a> DirectoryEntries<'a> {
             match name.cmp(&node.name) {
                 Ordering::Less => current = node.left.as_deref_mut(),
                 Ordering::Greater => current = node.right.as_deref_mut(),
-                Ordering::Equal => { node.inode = inode; return; }
+                Ordering::Equal => {
+                    node.inode = inode;
+                    let cookie = node.cookie;
+                    let mut current = self.cookie_root.as_deref_mut();
+                    while let Some(node) = current {
+                        match cookie.cmp(&node.cookie) {
+                            Ordering::Less => current = node.left.as_deref_mut(),
+                            Ordering::Greater => current = node.right.as_deref_mut(),
+                            Ordering::Equal => { node.inode = inode; return; }
+                        }
+                    }
+                    panic!("prepared directory cookie missing");
+                }
             }
         }
         panic!("prepared directory key missing");
@@ -287,7 +343,11 @@ impl<'a> DirectoryEntries<'a> {
     pub(crate) fn remove_prepared(&mut self, name: &[u8], reservation: MetadataReservation<'a>) {
         let stored = &self.find(name).expect("prepared directory key missing").name;
         assert_eq!(reservation.bytes(), DIRENT_MODEL_BYTES + stored.capacity() * 2);
-        let (root, removed) = remove(self.root.take(), name);
+        let cookie = self.find(name).expect("directory removal missing key").cookie;
+        let (cookies, removed_cookie) = remove(self.cookie_root.take(), name, Some(cookie));
+        self.cookie_root = cookies;
+        assert!(removed_cookie.is_some());
+        let (root, removed) = remove(self.root.take(), name, None);
         self.root = root;
         assert!(removed.is_some());
         self.length -= 1;
@@ -434,6 +494,13 @@ mod tests {
         assert_eq!(entries.len(), expected.len());
         assert_eq!(entries.iter().collect::<Vec<_>>(), expected.iter().collect::<Vec<_>>());
         assert_eq!(entries.iter().rev().collect::<Vec<_>>(), expected.iter().rev().collect::<Vec<_>>());
+        let mut by_cookie = BTreeMap::new();
+        let mut first = 0;
+        while let Some((cookie, name, inode)) = entries.next_from_cookie(first) {
+            assert!(by_cookie.insert(name.clone(), inode).is_none());
+            first = cookie + 1;
+        }
+        assert_eq!(&by_cookie, expected);
         let mut actual = entries.iter();
         let mut reference = expected.iter();
         for index in 0..expected.len() {
@@ -449,6 +516,20 @@ mod tests {
         assert_eq!(actual.peek_next(), None);
         assert_eq!(actual.len(), 0);
         assert_eq!(actual.bookmark().resume().next(), None);
+    }
+
+    #[test]
+    fn cookie_index_allocation_failure_releases_the_entire_prepared_name() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        unsafe fn allocate(layout: Layout) -> *mut u8 {
+            if CALLS.fetch_add(1, Ordering::SeqCst) == 1 { core::ptr::null_mut() }
+            else { unsafe { alloc(layout) } }
+        }
+        CALLS.store(0, Ordering::SeqCst);
+        let budget = MetadataBudget::new(4096);
+        assert!(matches!(PreparedDirectoryName::prepare_with_allocator(&budget, b"entry", false, allocate), Err(Errno::ENOMEM)));
+        assert_eq!(budget.usage().0, 0);
     }
 
     #[test]

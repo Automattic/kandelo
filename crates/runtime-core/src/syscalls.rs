@@ -7696,7 +7696,7 @@ pub fn sys_lseek(
         return Err(Errno::ESPIPE);
     }
 
-    // Directory cookies count guest-visible records: 0 is before `.`, 1 is
+    // Directory positions are opaque next-record cookies: 0 is before `.`, 1 is
     // before `..`, 2 is before the first real entry, and N is after N records.
     // musl's seekdir calls lseek(fd, telldir_cookie, SEEK_SET). Reconstruct a
     // new host iterator completely before replacing the live cursor so a

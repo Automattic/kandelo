@@ -6357,7 +6357,7 @@ pub fn readdir(handle: i64, name_buf: &mut [u8]) -> Result<Option<(u64, u32, usi
 }
 
 /// getdents64 for a rootfs directory. `extra` entries `(name, d_type, ino)` are
-/// appended after the tree's own children (deduplicated by name) so the caller
+/// emitted before the tree's own children (deduplicated by name) so the caller
 /// can inject synthetic mount points into the root listing. The directory is
 /// traversed without copying all its names for each buffer-sized page.
 pub fn getdents64(
@@ -6386,18 +6386,6 @@ pub fn getdents64(
                     .iter()
                     .any(|(earlier, _, _)| earlier == name)
         });
-        let entry_count = map
-            .len()
-            .checked_add(injected.clone().count())
-            .ok_or(Errno::EOVERFLOW)?;
-        let end_cookie = i64::try_from(entry_count)
-            .map_err(|_| Errno::EOVERFLOW)?
-            .checked_add(2)
-            .ok_or(Errno::EOVERFLOW)?;
-        if offset >= end_cookie {
-            return Ok((0, offset, true));
-        }
-
         let mut written = 0;
         let mut cookie = offset;
         while cookie < 2 {
@@ -6420,28 +6408,36 @@ pub fn getdents64(
             cookie = next_cookie;
         }
 
-        let start = usize::try_from(cookie - 2).map_err(|_| Errno::EOVERFLOW)?;
-        let entries = map
-            .iter()
-            .map(|(name, &child_idx)| {
-                let child = state.get(child_idx).ok_or(Errno::ENOENT)?;
-                Ok((name.as_slice(), child.ino, dirent_type(child)))
-            })
-            .chain(injected.map(|(_, &(name, d_type, ino))| Ok((name, ino, d_type))));
-        for entry in entries.skip(start) {
-            let (name, ino, d_type) = entry?;
-            let next_cookie = cookie + 1;
-            let bytes =
-                crate::procfs::write_dirent64(buf, written, ino, next_cookie, d_type, name);
+        // Reserve fixed prefix cookies for synthetic mount points. They must
+        // not move when real names are inserted/deleted. Keep ordinary small
+        // cookies usable by 32-bit seekdir/telldir, rather than tagging high bits.
+        let real_base = i64::try_from(extra.len()).map_err(|_| Errno::EOVERFLOW)?
+            .checked_add(2).ok_or(Errno::EOVERFLOW)?;
+        for (index, &(name, d_type, ino)) in injected {
+            let position = i64::try_from(index).map_err(|_| Errno::EOVERFLOW)?
+                .checked_add(2).ok_or(Errno::EOVERFLOW)?;
+            if position < cookie { continue; }
+            let next_cookie = position.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+            let bytes = crate::procfs::write_dirent64(buf, written, ino, next_cookie, d_type, name);
             if bytes == 0 {
-                return if written == 0 {
-                    Err(Errno::EINVAL)
-                } else {
-                    Ok((written, cookie, false))
-                };
+                return if written == 0 { Err(Errno::EINVAL) } else { Ok((written, position, false)) };
             }
             written += bytes;
             cookie = next_cookie;
+        }
+        let mut first = u64::try_from(cookie.saturating_sub(real_base).max(0)).map_err(|_| Errno::EINVAL)?;
+        while let Some((entry_cookie, name, child_idx)) = map.next_from_cookie(first) {
+            let position = i64::try_from(entry_cookie).map_err(|_| Errno::EOVERFLOW)?
+                .checked_add(real_base).ok_or(Errno::EOVERFLOW)?;
+            let next_cookie = position.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+            let child = state.get(child_idx).ok_or(Errno::ENOENT)?;
+            let bytes = crate::procfs::write_dirent64(buf, written, child.ino, next_cookie, dirent_type(child), name);
+            if bytes == 0 {
+                return if written == 0 { Err(Errno::EINVAL) } else { Ok((written, position, false)) };
+            }
+            written += bytes;
+            cookie = next_cookie;
+            first = entry_cookie + 1;
         }
         Ok((written, cookie, true))
     })
@@ -13777,6 +13773,41 @@ mod tests {
     }
 
     #[test]
+    fn getdents64_removing_returned_entries_does_not_skip_survivors() {
+        let _guard = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_dir(b"/removing", 0o755, 0, 0, 2).unwrap();
+        for entry in 0..128 {
+            let path = alloc::format!("/removing/file-{entry:04}");
+            insert_host_file(path.as_bytes(), entry, 0, 0o644, 0, 0, entry + 3).unwrap();
+        }
+        let mut cookie = 0;
+        let mut removed = Vec::new();
+        loop {
+            let mut buffer = [0; 80];
+            let (length, next, done) = getdents64(b"/removing", &mut buffer, cookie, &[]).unwrap();
+            let mut position = 0;
+            while position < length {
+                let record = &buffer[position..length];
+                let size = u16::from_le_bytes(record[16..18].try_into().unwrap()) as usize;
+                let name = &record[19..size];
+                let name = &name[..name.iter().position(|&byte| byte == 0).unwrap()];
+                if name != b"." && name != b".." {
+                    let mut path = b"/removing/".to_vec();
+                    path.extend_from_slice(name);
+                    unlink(&path).unwrap();
+                    removed.push(name.to_vec());
+                }
+                position += size;
+            }
+            cookie = next;
+            if done { break; }
+        }
+        assert_eq!(removed.len(), 128, "every unchanged survivor must be returned");
+        rmdir(b"/removing").unwrap();
+    }
+
+    #[test]
     fn getdents64_pages_a_wide_directory_without_losing_cookies() {
         let _guard = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
@@ -13836,30 +13867,63 @@ mod tests {
     }
 
     #[test]
-    fn getdents64_matches_shared_formatter_with_injected_entries() {
+    fn getdents64_virtual_cookies_survive_real_root_mutation() {
         let _guard = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
         insert_base_file(b"/alpha", 0, 0, 0o644, 0, 0, 2).unwrap();
         insert_base_file(b"/dev", 0, 0, 0o644, 0, 0, 3).unwrap();
-        insert_base_file(b"/omega", 0, 0, 0o644, 0, 0, 4).unwrap();
         let extra: &[(&[u8], u8, u64)] = &[
             (b"dev", DT_DIR as u8, 50),
             (b"proc", DT_DIR as u8, 51),
             (b"proc", DT_DIR as u8, 52),
             (b"tmp", DT_DIR as u8, 53),
         ];
+        let mut buffer = [0; 256];
+        let mut cookie = 0;
+        let mut records = Vec::new();
+        loop {
+            let (length, next, done) = getdents64(b"/", &mut buffer, cookie, extra).unwrap();
+            let mut position = 0;
+            while position < length {
+                let record = &buffer[position..length];
+                let size = u16::from_le_bytes(record[16..18].try_into().unwrap()) as usize;
+                let name = &record[19..size];
+                let name = &name[..name.iter().position(|&byte| byte == 0).unwrap()];
+                records.push((name.to_vec(), i64::from_le_bytes(record[8..16].try_into().unwrap()), u64::from_le_bytes(record[..8].try_into().unwrap())));
+                position += size;
+            }
+            cookie = next;
+            if done { break; }
+        }
+        assert_eq!(records.iter().map(|entry| entry.0.as_slice()).collect::<Vec<_>>(), [b".".as_slice(), b"..", b"proc", b"tmp", b"alpha", b"dev"]);
+        assert_eq!(records[2].2, 51);
+        assert_eq!(records[3].2, 53);
+        assert_eq!(records[5].2, 3, "real entry wins over a synthetic mount name");
+        let resume = records[2].1;
+        unlink(b"/alpha").unwrap();
+        insert_base_file(b"/new", 0, 0, 0o644, 0, 0, 4).unwrap();
+        let (length, _, _) = getdents64(b"/", &mut buffer, resume, extra).unwrap();
+        assert!(length >= 24);
+        assert_eq!(&buffer[19..23], b"tmp\0");
+    }
+
+    #[test]
+    fn getdents64_matches_shared_formatter_for_real_entries() {
+        let _guard = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_file(b"/alpha", 0, 0, 0o644, 0, 0, 2).unwrap();
+        insert_base_file(b"/dev", 0, 0, 0o644, 0, 0, 3).unwrap();
+        insert_base_file(b"/omega", 0, 0, 0o644, 0, 0, 4).unwrap();
         let entries = alloc::vec![
             (b"alpha".to_vec(), DT_REG as u8, 2),
             (b"dev".to_vec(), DT_REG as u8, 3),
             (b"omega".to_vec(), DT_REG as u8, 4),
-            (b"proc".to_vec(), DT_DIR as u8, 51),
-            (b"tmp".to_vec(), DT_DIR as u8, 53),
         ];
         for offset in 0..9 {
             for capacity in [0, 16, 24, 48, 72, 128, 256] {
                 let mut actual = alloc::vec![0u8; capacity];
                 let mut expected = alloc::vec![0u8; capacity];
-                let actual_result = getdents64(b"/", &mut actual, offset, extra);
+                let actual_result = getdents64(b"/", &mut actual, offset, &[]);
                 let expected_result = crate::procfs::write_virtual_dirents64(
                     &mut expected,
                     offset,
