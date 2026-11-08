@@ -38,6 +38,23 @@ export function installServiceActivities(fs: KandeloImageFs, activities: readonl
   const syslogService = syslogd === undefined ? undefined : addSyslogService(fs, { binary: syslogd });
   if (syslogService !== undefined) {
     writeVfsFile(fs, `/etc/dinit.d/${syslogService.name}`, renderService(syslogService));
+    // Each activity waits for the daemon too, not just `machine`. kandelo-init
+    // passes both `machine` and the enabled activity as dinit targets, so they
+    // start in parallel: without this, nginx or PHP-FPM can log before the
+    // daemon has bound /dev/log, and those messages are dropped silently --
+    // syslog(3) cannot report a missing receiver. The earliest messages are
+    // the ones worth having when a service fails to come up.
+    for (const activity of activities) {
+      const path = `/etc/dinit.d/${activity.target}`;
+      const current = new TextDecoder().decode(fs.readFile(path));
+      if (!/^waits-for = syslogd$/m.test(current)) {
+        writeVfsFile(
+          fs,
+          path,
+          `${current.endsWith("\n") ? current : `${current}\n`}waits-for = ${syslogService.name}\n`,
+        );
+      }
+    }
   }
   writeVfsFile(
     fs,

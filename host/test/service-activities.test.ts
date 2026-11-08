@@ -37,6 +37,12 @@ describe("image-owned service activities", () => {
     expect(machine).toContain("waits-for = syslogd");
     expect(machine).not.toContain("depends-on = syslogd");
 
+    // Each activity waits for it too, not just `machine`. kandelo-init passes
+    // both as dinit targets, so they start in parallel; without this an
+    // activity can log before the daemon has bound /dev/log and lose exactly
+    // the early messages that explain a failed start.
+    expect(decode(fs, "/etc/dinit.d/web-php")).toContain("waits-for = syslogd");
+
     // It is not offered as something a user can switch between.
     expect(JSON.parse(decode(fs, "/etc/kandelo/services.json")).services.map((s: {id: string}) => s.id))
       .toEqual(["web-php"]);

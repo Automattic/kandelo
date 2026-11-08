@@ -183,7 +183,9 @@ export interface DinitService {
   restartDelay?: number;
   /** Seconds before dinit cancels startup; 0 disables dinit's start timeout. */
   startTimeout?: number;
-  /** Where to log stdout/stderr (default: /var/log/<name>.log). */
+  /** Where to log stdout/stderr. Omitted by default, which is dinit's NONE
+   *  log type: service output goes to /dev/null. Set it explicitly to keep
+   *  a service's output (typically a path under /var/log). */
   logfile?: string;
   /** Working directory for the command. */
   workingDir?: string;
