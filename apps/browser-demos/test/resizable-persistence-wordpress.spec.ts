@@ -112,6 +112,25 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
         };
         window.addEventListener("error", event => record("error", event.error ?? event.message));
         window.addEventListener("unhandledrejection", event => record("rejection", event.reason));
+        document.addEventListener("click", event => {
+          const modal = document.querySelector('[role="dialog"][aria-label="Welcome to the editor"]');
+          if (!modal) return;
+          const target = event.target instanceof Element ? event.target : null;
+          const describe = () => {
+            const runtime = window as unknown as { wp?: { data?: { select(store: string): {
+              get(scope: string, name: string): unknown;
+            } } } };
+            return { modalPresent: !!document.querySelector('[role="dialog"][aria-label="Welcome to the editor"]'),
+              postWelcome: runtime.wp?.data?.select("core/preferences").get("core/edit-post", "welcomeGuide"),
+              editorWelcome: runtime.wp?.data?.select("core/preferences").get("core/editor", "welcomeGuide"),
+            };
+          };
+          record("welcome click", { message: JSON.stringify({ trusted: event.isTrusted,
+            target: target?.outerHTML.slice(0, 2048), button: target?.closest("button")?.outerHTML.slice(0, 2048),
+            x: event.clientX, y: event.clientY, state: describe() }) });
+          queueMicrotask(() => record("welcome click microtask", { message: JSON.stringify(describe()) }));
+          setTimeout(() => record("welcome click next task", { message: JSON.stringify(describe()) }), 0);
+        }, { capture: true, passive: true });
       });
       context.on("console", message => {
         if (message.type() !== "error" && message.type() !== "warning") return;
