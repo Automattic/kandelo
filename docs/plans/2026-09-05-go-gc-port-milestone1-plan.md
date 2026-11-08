@@ -2,6 +2,53 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Revision-45 runtime/configuration and verified replacement preview:** the
+normal own-SDK partial refresh completes its image, FHS and exact embedded
+program/plugin audits. Both extended Node service cases pass (2/2, no skips),
+including disk opcode priming and atomic configuration replacement. Image
+`9cbbb185ced4efb4449ad66f58537b42fa51c1d97b44ea54dea809cb22e92e39`
+is 83,506,932 bytes; kernel remains `6f5afada9ae3`, classic `f1314f3e7675`,
+Caddy `cfdba6545bd4`. The aggregate b192 job exits1 after 43m55s because its
+last browser probe assumed an optional upstream cache-hit header was on.
+It is false in the stock generated wp-cache-config.php. The retained probe
+already shows anonymous cache-marked bodies, logged-in bypass and POST
+bypass; this was not another cookie leak or build failure.
+
+A new browser-only run enables the ordinary generated setting
+`$wpsc_served_header = true` through maker/sudo, leaving all 92 upstream
+plugin files unchanged. Job `wordpress-cache-header-1107-214022-60b2` passes
+in 1m05s: the second anonymous response has
+`X-WP-Super-Cache: Served supercache file from PHP`, a generated-cache footer
+and no admin bar; authenticated GET and anonymous POST have no cache marker
+or hit header, with the admin bar only on authenticated GET. All four return
+HTTP200. No compiler, image, kernel or PHP-source rebuild is needed for this
+fixture configuration correction. Expiry/GC/edit invalidation remain open.
+
+The new ordinary partial app is live on port5492. Proof job
+`wordpress-config-preview-proof-v3-1107-214417-67fe` passes in 57 seconds:
+actual image/kernel SHA-256, demo Login, Appearance Editor and a real template
+save. Its verified-preview.json and screenshot are under configuration
+checkout `.context/candidate-partial-preview-proof-v3/`. URL:
+<http://127.0.0.1:5492/?vfs=http%3A%2F%2F127.0.0.1%3A5492%2F%40kandelo-partial%2Fimage.vfs.zst&profile=wordpress-frankenphp-caddy>.
+Server `wordpress-config-preview-v2-1107-214200-d6c1` remains live, with its
+source/artifacts pinned. Older5457/5464/5486 previews remain available. The
+first queued proof/build jobs correctly refuse the aggregate failed b192;
+the second proof races run.sh's own app dependency installation and fails
+module import before browser execution. Once that owned installation and
+HTTP readiness finish, v3 passes. These attempts remain separate evidence.
+
+**Persistence follow-up:** title-focus/store-observation rerun 1f1a passes
+Chromium and WebKit but fails Firefox before restart: the saved uploaded
+block does not render as the required 2x2 PNG in the reopened editor. The
+strong assertion remains. The fixture now leaves the active editor before
+its external REST content replacement and checks the returned saved content,
+so WordPress save/autosave cannot race that external edit. Its Firefox-only
+rerun `wordpress-media-recheck-1107-214653-32dc` is active; no pass is claimed
+yet. Canonical artifact construction can proceed from the verified new
+configuration; final UI acceptance remains a separate required gate.
+Main is re-fetched and still faf9b31720e8. No upstream application algorithm
+or Go collector/code generator changes are made in these steps.
+
 **Optimized 33-case result and editor fixture correction:** job b446 ends
 exit1 after 1h33m including build; browser execution takes 40 minutes with
 32 passes and one WebKit experimental-persistence failure. All 27 ordinary
