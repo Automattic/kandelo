@@ -374,6 +374,7 @@ export interface WordPressVfsImageBuildInputs {
   wordpressDirectory: string;
   sqliteDirectory: string;
   superCacheDirectory: string;
+  curl: Uint8Array;
   nginx: Uint8Array;
   phpFpm: Uint8Array;
   frankenphpClassic: Uint8Array;
@@ -412,6 +413,9 @@ export async function buildWordPressVfsImage(
   writeVfsBinary(fs, "/usr/sbin/frankenphp-classic", inputs.frankenphpClassic);
   writeVfsBinary(fs, "/usr/sbin/frankenphp-caddy", inputs.frankenphpCaddy);
   writeVfsBinary(fs, "/usr/sbin/msmtpd", inputs.msmtpd);
+  // The image owns its scheduler and service-readiness client. A partial
+  // shell may omit curl even when the resolver built our direct dependency.
+  writeVfsBinary(fs, "/usr/bin/curl", inputs.curl);
   ensureDirRecursive(fs, "/etc/frankenphp");
   writeVfsFile(fs, "/etc/frankenphp/php.ini", `curl.cainfo=/etc/ssl/certs/ca-certificates.crt
 openssl.cafile=/etc/ssl/certs/ca-certificates.crt
@@ -543,6 +547,7 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
 async function main(): Promise<void> {
   const shellRoot = process.env.WASM_POSIX_DEP_SHELL_DIR;
   const nginxRoot = process.env.WASM_POSIX_DEP_NGINX_DIR;
+  const curlRoot = process.env.WASM_POSIX_DEP_CURL_DIR;
   const phpRoot = process.env.WASM_POSIX_DEP_PHP_DIR;
   const frankenphpRoot = process.env.WASM_POSIX_DEP_FRANKENPHP_CLASSIC_DIR;
   const frankenphpCaddyRoot = process.env.WASM_POSIX_DEP_FRANKENPHP_CADDY_DIR;
@@ -557,6 +562,9 @@ async function main(): Promise<void> {
     wordpressDirectory: resolveWordPressCoreSource(REPO_ROOT),
     sqliteDirectory: resolveWordPressSqlitePluginSource(REPO_ROOT),
     superCacheDirectory: resolveWordPressSuperCacheSource(REPO_ROOT),
+    curl: new Uint8Array(readFileSync(curlRoot === undefined
+      ? resolveBinary("programs/curl.wasm")
+      : join(curlRoot, "curl.wasm"))),
     nginx: new Uint8Array(readFileSync(nginxRoot === undefined
       ? resolveBinary("programs/nginx.wasm")
       : join(nginxRoot, "nginx.wasm"))),
