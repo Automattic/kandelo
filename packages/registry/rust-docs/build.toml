@@ -1,0 +1,14 @@
+script_path = "packages/registry/rust-docs/build.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = [
+  "packages/registry/rust-docs/build.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "sdk/guest-rust/licenses",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "flake.nix",
+  "flake.lock",
+  "rust-toolchain.toml",
+]

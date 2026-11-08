@@ -520,6 +520,11 @@
       "name": "rust-coverage-tools",
       "version": "22.1.2",
       "role": "lazy-file"
+    },
+    {
+      "name": "rust-docs",
+      "version": "1.97.0-nightly-2026-04-27",
+      "role": "lazy-archive"
     }
   ]
 }

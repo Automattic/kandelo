@@ -1048,6 +1048,22 @@ class = "user-software"
 name = "rust-llvm"
 class = "platform"
 
+[[packages]]
+name = "rust-profiler-runtime"
+class = "platform"
+
+[[packages]]
+name = "rust-profiler-runtime-bundle"
+class = "browser-product"
+
+[[packages]]
+name = "rust-coverage-tools"
+class = "user-software"
+
+[[packages]]
+name = "rust-docs"
+class = "browser-product"
+
 [[exclusions]]
 name = "erlang"
 reason = "deferred software"
