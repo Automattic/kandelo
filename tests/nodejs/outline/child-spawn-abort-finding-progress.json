@@ -1,0 +1,137 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/processes.md",
+    "findingIds": [
+      "CP-004"
+    ],
+    "relatedFamilies": [
+      "async",
+      "streams",
+      "values"
+    ],
+    "scope": "Partial actual async spawn AbortSignal/killSignal JS ownership over existing launch/kill/reap/pipe-close paths. No full normalization, lifecycle or public API closure.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/processes.md",
+        "findingId": "CP-004",
+        "definitionKey": "tests/nodejs/audit/processes.md#CP-004:L40",
+        "relation": "partial-owning-source",
+        "closed": false
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "signal/killSignal validation before real stdio descriptors",
+    "actual native child kill and existing reap/pipe-close owner, no synthetic cancellation result",
+    "real pinned addAbortListener and actual-exit disposal",
+    "exact target failed-spawn subscription behavior and original AbortError reason",
+    "platform actual signal table; killSignal0 rejection distinct from actual kill(0) probe"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-spawn256-source-r1/report.json",
+    "sha256": "012c6b2cb317029c73b5a075c0efae7a45e6b372e7b760adef069fb87fd57070",
+    "guardedInputs": 908,
+    "scope": "Normal current bootstrap/header/unity staging plus current-source18-group paired native POSIX kill/reap/EventTarget dependency observations and unchanged upstream parent-controller file, not complete file coverage. No guest provider/signal/scheduler/GC/realm/fatal/four-host proof. No new compiler; one sealed historical helper attempt pending once."
+  },
+  "packageChecks": {
+    "report": ".context/node26-spawn256-affected-r1.json",
+    "sha256": "d357b29eff85377cfdbcb6997d0f8960b0a45637ab1d2841232ee7ef73d3f8fe",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-spawn256-source-r1/report.json",
+    "sha256": "012c6b2cb317029c73b5a075c0efae7a45e6b372e7b760adef069fb87fd57070",
+    "nativeGroups": 18,
+    "candidateNativeDependentGroups": 18,
+    "sameObservedGroups": 18,
+    "unchangedUpstreamSubjects": 2,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "scope": "Actual current async spawn JS over retained native POSIX spawn/kill/WNOHANG wait and native streams/EventTarget/Values/loop dependencies. Native signal tables apply only to these controls. Two subjects of one unchanged upstream file are not complete child-process file coverage or guest/four-host conformance. Historical pre-fix/nonpass reports remain separate.",
+    "guardedInputs": 908,
+    "sourceChecks": 14,
+    "sourceCommands": 8,
+    "packagePassed": 14,
+    "newRootCompilerAttempts": 0,
+    "historicalHelpers": 1
+  },
+  "sealedEvidence": {
+    "report": ".context/child-spawn-abort-owner-agent/report.json",
+    "sha256": "318a31491013d538d2af3224698499a18e6160b72701a9329baf6e84c00040e6",
+    "reusedEvidence": true,
+    "scope": "Historical one successful native POSIX/WNOHANG helper and exact native/candidate frontend controls; native streams/loop/EventTarget/host signal dependencies, no guest proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/child-spawn-abort-owner-agent/preparation-r1-failure.json",
+      "sha256": "ec766855a15983d25521b0f0f62dd9f45d8ce016e8d1c24f51a53169e7cad3b7",
+      "classification": "author-preparation-ambiguous-anchor",
+      "scope": "Ambiguous sync/async anchor assertion stopped before source edits or compilers."
+    },
+    {
+      "report": ".context/child-spawn-abort-owner-agent/evidence-r1/commands.json",
+      "sha256": "12ea256ee4d279c0fe013854392b6f41dac00cac769df43bc2312055aa22d92c",
+      "classification": "authored-zero-killsignal-expectation-nonpass",
+      "scope": "Native and candidate15/16 contradicted authored killSignal0 option expectation identically; source unchanged, exact sanitizer rejection plus separate real kill(0) probe retained."
+    },
+    {
+      "report": ".context/child-spawn-abort-owner-agent/evidence-r2/commands.json",
+      "sha256": "352273d449b608f9785a079fa08bbf9014f318835c02f83327d7418efbbd8b26",
+      "classification": "preserved-baseline-nonpasses",
+      "scope": "Before source1/18, actual old missing cancellation/validation/disposal; cleanup fallback kill is never passing cancellation."
+    }
+  ],
+  "remaining": [
+    "guest native kill/wait/scheduler/reaction/ref/GC/realm/Worker and all-four-host identified-artifact evidence",
+    "reason-getter abrupt/fatal channels and deeper cancellation reentry remain unvalidated beyond matching reason/kill/error order",
+    "full normalizeSpawnArguments/error precedence, positive async timeout enforcement, uid/gid",
+    "argv0/immutable executed-image and entry-role authority, shell-string path, IPC/extra stdio"
+  ],
+  "actualSpawnControlReport": {
+    "report": ".context/spawn256-root-controls-r1/report.json",
+    "sha256": "771d0bdd84da75d57c93aa0744477142c16031943edd35f44c831892289bda28",
+    "nativeGroups": 18,
+    "candidateNativeDependentGroups": 18,
+    "sameObservedGroups": 18,
+    "unchangedUpstreamSubjects": 2,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "scope": "Actual current async spawn JS over retained native POSIX spawn/kill/WNOHANG wait and native streams/EventTarget/Values/loop dependencies. Native signal tables apply only to these controls. Two subjects of one unchanged upstream file are not complete child-process file coverage or guest/four-host conformance. Historical pre-fix/nonpass reports remain separate."
+  },
+  "integrationTool": {
+    "ledger": ".context/agent-integrations/node26-spawn256/ledger.json",
+    "sha256": "221fbc87aa4d953486de42ff467327e6075cd7911bb0f0f345fd6cd757b71937",
+    "sourceBinding": "7a99e498203010068b52f90a278bfaaad65db34e30d6776120bab62521cb432b",
+    "allStepsDone": true,
+    "imports": [
+      3,
+      0
+    ],
+    "actualPids": [
+      86371,
+      86359
+    ],
+    "selectedBindingOnly": true,
+    "globalCacheKeyBindingClaimed": false,
+    "actualImporter": {
+      "path": ".context/import-successful-integration-receipts.py",
+      "sha256": "dba2ff1ccc5631a9ac164a4fbac8be1723bf9a64520f02faeda930f59bccd847"
+    },
+    "importPlan": {
+      "path": ".context/spawn256-import-plan.json",
+      "sha256": "b370d4bcd88aa96f180f2ff2a8e7ae36757b63185b33b17081e7ff6fe713745d"
+    }
+  },
+  "at": "2026-11-08T05:41:44.396639+00:00",
+  "recipeRevision": 256,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

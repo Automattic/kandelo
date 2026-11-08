@@ -3028,6 +3028,44 @@ const child_process = (() => {
             ? Object.keys(options.env).map(k => k + '=' + options.env[k])
             : Object.keys(process.env).map(k => k + '=' + process.env[k]);
 
+        // Pinned public-spawn validation precedes ChildProcess native stdio
+        // preparation. Positive timeout enforcement remains a separate owner.
+        if (options.timeout != null)
+            _nodeValues.validators.validateInteger(options.timeout, 'timeout', 0);
+        _nodeValues.validators.validateAbortSignal(options.signal, 'options.signal');
+        const killSignal = sanitizeKillSignal(options.killSignal);
+        function sanitizeKillSignal(signal) {
+            if (typeof signal === 'string' || typeof signal === 'number')
+                return _nodeValues.util.convertToValidSignal(signal);
+            if (signal != null)
+                throw new _nodeValues.errors.codes.ERR_INVALID_ARG_TYPE('options.killSignal', ['string', 'number'], signal);
+        }
+        function abortChildProcess(child, signal, reason) {
+            if (!child) return;
+            try {
+                if (child.kill(signal))
+                    child.emit('error', new _nodeValues.errors.AbortError(undefined, { cause: reason }));
+            } catch (error) {
+                child.emit('error', error);
+            }
+        }
+        function publishAbortOwner(child) {
+            if (options.signal) {
+                const signal = options.signal;
+                if (signal.aborted) process.nextTick(onAbortListener);
+                else {
+                    const disposable = _nodeEventPlatform.addAbortListener(signal, onAbortListener);
+                    // Keep the target's exact actual-exit disposal policy;
+                    // failed launch/wait does not fabricate an exit event.
+                    child.once('exit', disposable[_nodeDispose]);
+                }
+                function onAbortListener() {
+                    abortChildProcess(child, killSignal, options.signal.reason);
+                }
+            }
+            return child;
+        }
+
         let stdio = options.stdio || 'pipe';
         if (typeof stdio === 'string') {
             if (!['pipe', 'overlapped', 'ignore', 'inherit'].includes(stdio))
@@ -3153,12 +3191,12 @@ const child_process = (() => {
             if (cwd) _childPrimordials.ArrayPrototypePush(actions, { op: 'chdir', path: _childPrimordials.String(cwd) });
         } catch (error) {
             rollbackPipes();
-            if (pipeFailure) return failedLaunch(error);
+            if (pipeFailure) return publishAbortOwner(failedLaunch(error));
             throw error;
         }
         let pid;
         try { pid = _spawnWithPath(file, argv, env, actions, cwd && _childPrimordials.String(cwd), { detached: !!options.detached }); }
-        catch (error) { rollbackPipes(); return failedLaunch(error); }
+        catch (error) { rollbackPipes(); return publishAbortOwner(failedLaunch(error)); }
         child.pid = pid;
         child.stdin = null;
         for (let i = 0; i < 3; i++) {
@@ -3290,7 +3328,7 @@ const child_process = (() => {
         };
         child.ref = function() { if (!exited) _nn.socketRef(waitRequest, true); return this; };
         child.unref = function() { if (!exited) _nn.socketRef(waitRequest, false); return this; };
-        return child;
+        return publishAbortOwner(child);
     }
 
     const api = _createNodeChildExecPlatform({

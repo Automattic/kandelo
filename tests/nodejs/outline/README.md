@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source256 implements actual async spawn AbortSignal/killSignal validation and cancellation over existing genuine launch/kill/reap/pipe-close owners. Normal908inputs/14sourcechecks/8commands and paired native18/candidate18 reported observations match18; two unchanged upstream parent-controller subjects pass with native process/stream/EventTarget/signal dependencies, not complete file or guest coverage. Package14 passes independently. One historical helper counts once361 to362; zero root compilers. Full normalization/timeout/argv0/executable authority/shell/IPC and guest/four-host gaps remain open.
+See [source scope](child-spawn-abort-integration.md).
+
 Source255 consumes real dedicated EC private PKCS8 KeyMaterial/ncrypto/BIO/private byte owners, preserving source251 private-role admission. Normal source908inputs/5checks/8commands and fifteen native-dependent owner groups pass; package14 passes independently. Two historical helper compiles count once359 to361, zero new root compilers/core/engine changes. Full public WebCrypto and guest/four-host validation remain incomplete.
 See [source scope](ec-private-pkcs8-integration.md).
 
