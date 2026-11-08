@@ -3,6 +3,66 @@
 ## Current checkpoint — 2026-11-08
 
 
+**Current-artifact browser runtime and WordPress traffic gates pass.**
+`7dba` completes the fresh wait/netpoll/memory selection: 15 cases across
+Chromium, Firefox and WebKit, no skips or retries, 51.1 seconds of browser
+execution. The queue-inclusive job duration is 23m29s. `4f80` rebuilds
+maintained archive/export/signal/retirement fixtures with the selected clean
+f605 compiler and this checkout's own current SDK, then passes 19 Node
+checks in 1m09s. Its compilation cache is cleaned after success; executable
+fixtures, provenance and raw logs remain. The 63-case browser counterpart
+`e151` is queued. Neither result completes the full Go/POSIX/cgo inventory.
+
+`d6b0` passes all six current WordPress HTTP/traffic/memory cases in 17
+minutes of browser execution (36m30s including queue): classic and real
+Caddy on each engine, two configured PHP threads, 120 validated WordPress
+requests at a minimum 500 ms cadence, editor bursts/parallel requests,
+four Caddy SIGKILL recoveries, held-PHP draining and cooperative teardown.
+Both unchanged optimizer probes (96/768 conditions) pass twice per case.
+Maps and storage-admission metadata are now captured alongside the existing
+linear-memory, upstream and native observations. This is instrumented
+functional evidence under concurrent canonical-build load, not throughput.
+
+WebKit's OS whole-run peak is 7.4 GiB for classic and 5.2 GiB for Caddy;
+sixty seconds after destruction, the same pages retain 827.2 and 584.3 MiB
+respectively. Caddy's traffic backing stays at 719,257,600 bytes while
+Go Sys ranges from 42,663,936 to 43,712,512 bytes. This single run on new
+artifacts and expanded diagnostics establishes no improvement over older
+runs and no acceptable resource budget. Cumulative module compilations
+increase from seven to eight in some cases; this does not count live
+instances or identify engine allocations. See the
+[memory checkpoint](2026-11-08-wordpress-webkit-memory-checkpoint.md#current-normal49-artifacts-and-tooling-limits)
+for ownership and measurement limits.
+
+The ordinary native heap tool cannot enumerate the WebKit Malloc zone;
+its successful exit therefore does not establish an allocation inventory.
+The referenced JavaScriptCore framework exists as a regular file. A separate
+five-second Xcode allocation-profiler control stops before recording in
+macOS authorization; its stack/logs and incomplete trace are retained.
+Only that owned profiler is terminated after graceful termination fails.
+No authorization is granted or bypassed, and no user app is closed.
+This diagnostic boundary does not stop independent validation. The guest
+procfs VmSize placeholder is also recorded explicitly, not used as memory
+measurement. No Go/PHP/compiler/runtime algorithm change is made.
+
+All nine cases of the original cache run `4568` fail at the same flattened
+terminal assertion, after their privacy/edit/expiry checks; stock automatic
+GC is not reached. The original report and imported nonpass record remain.
+The exact guest-file checks in `f1bb447d6` are pushed; corrected `349e`
+awaits the existing serial selections. The rendered UI33 run `7f59` passes
+all eleven Chromium cases, including both source-free persistence modes,
+and is progressing through Firefox. Media6 `bf0e` follows it. No aggregate
+UI33, media6 or corrected automatic-cache pass is claimed yet.
+
+Canonical `f2f6` completes and normally publishes guest Clang, then advances
+to CPython. Its attempted stack sample races that actual completion and
+finds the old process absent; it is not a stuck-build diagnosis. Current
+warm canonical `ca1f` and baseline `adf8` still await the producer's terminal
+result. Preview5495 remains pinned. Final canonical/conformance/memory-gate,
+sustained and fair benchmark acceptance remain open; the goal stays active.
+
+
+
 **WordPress49 cron passes all three engines; fresh runtime probes pass Node.**
 `wordpress49-strict-cron-three-engines-1108-073243-217a` passes in 14m36s:
 Chromium, Firefox and WebKit, no retries or skips. Each case exercises real

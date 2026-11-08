@@ -392,3 +392,72 @@ catalog machinery. No engine defect, leak fix, resource-budget pass or
 physical reclamation guarantee is claimed. Raw reports and phase summaries
 remain in the candidate checkout's job directory above and
 `.context/table-snapshot-{native-summary,allocation-region-observation}.json`.
+
+
+## Current normal49 artifacts and tooling limits
+
+Job `wordpress49-current-host-memory-three-en-1108-074107-d6b0` passes six
+maintained HTTP/traffic/memory cases with frozen source `95cd1dd17092` and
+normal WordPress49 partial image `107912d3f8b8`, kernel `7e2593cdb90a`,
+classic `380ff5931ad3` and Caddy `b0f2985aef0c`. Browser execution takes
+17 minutes; the 36m30s job includes queueing. Both services pass on Chromium,
+Firefox and WebKit without retries or skips, with 120 validated requests
+per case, a minimum 500 ms cadence, editor churn/bursts/parallel requests,
+four Caddy crash recoveries, held-PHP draining and cooperative teardown.
+The unchanged 96/768-condition optimizer checks pass twice in every case.
+The same page stays alive for sixty seconds after each machine is destroyed.
+
+The new diagnostic also records `/proc/<pid>/maps` and host storage-admission
+metadata. Canonical compilation runs concurrently; this is not an
+uninstrumented throughput comparison or a repeatable memory improvement.
+Native heap inspection adds further pauses to the classic selection.
+
+| Current WebKit observation | Classic | Caddy |
+| --- | ---: | ---: |
+| Largest selected OS footprint | 6.0 GiB | 5.0 GiB |
+| OS whole-run peak footprint | 7.4 GiB | 5.2 GiB |
+| Footprint sixty seconds after destroy | 827.2 MiB | 584.3 MiB |
+| Linear backing during traffic | 687,865,856 bytes | 719,257,600 bytes |
+| Go Sys during captured Caddy phases | unavailable | 42,663,936–43,712,512 bytes |
+| Host storage-admission metadata peak | 99,326 bytes | 99,326 bytes |
+
+Each selection has its own verified WebContent PID (31417 and 50571).
+OS values are rounded `vmmap` output. These counters overlap and must not
+be added. Seven or eight cumulative module compilations occur during
+traffic. The image also includes the new minute-based cron client as a
+normal guest consumer. This counter is not a count of live instances or all engine
+allocations. The kernel's mapped-byte sum and host-recorded linear backing
+also describe different things.
+
+The new maps capture exposes a guest accounting limit: procfs `VmSize` is
+hard-coded to zero, while `kernel_enum_procs.vsize_bytes` is explicitly the
+sum of mmap-region sizes. Neither is whole-process physical memory. This
+report uses the separately labelled host `memoryBytes` for linear backing;
+it does not fix guest procfs accounting or infer native residency from maps.
+
+Three read-only `/usr/bin/heap` inventories exit zero but warn that they
+cannot examine the WebKit Malloc zone because canonical-path resolution
+for its JavaScriptCore image fails. That framework exists as a regular
+42,552,576-byte file. The inventories cover only ordinary malloc zones,
+not the allocations responsible for the multi-GiB WebKit region. All three
+belong to classic PID31417; the observer's per-runner three-snapshot limit
+was exhausted before Caddy. No Caddy heap-inventory coverage is claimed.
+A missing framework, custom shared-cache image, or engine defect is not
+established by the tool's warning.
+
+A separate test-owned five-second Xcode Allocations control never reaches
+recording. The initial dev-shell attempt cannot locate `xctrace`; the
+explicit installed-Xcode successor waits in `XRAuthorizationCreateWithPrivileges`
+and `AuthorizationCopyRights`, as shown by its retained native sample.
+Only that exact owned profiler is terminated after its graceful stop does
+not finish. No macOS authorization is granted or bypassed. The incomplete
+trace and logs remain evidence of the diagnostic boundary, not allocations.
+Other validation continues; allocation ownership and budgets remain open.
+
+Raw current results, artifact identities, native observations and the
+selected-field summary are in `wordpress-cron-normal` under the job's
+`scratch/`: `artifacts.json`, `native-memory.jsonl`,
+`current-memory-summary.json`, `heap-*.txt`, `heap-inventory-limitations.json`
+and `reports/`. The original per-case observations are in browser run
+`3652519d-d613-46a8-86a1-da02efd318f9`. Primary `.context/` retains the
+`allocation-profiler-*20261108*` control source, logs, stack and partial trace.
