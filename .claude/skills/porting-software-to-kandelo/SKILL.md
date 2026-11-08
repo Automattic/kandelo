@@ -23,6 +23,7 @@ Many registry scripts predate the resolver contract (e.g. `bzip2` writes into it
 | cmake program | `packages/registry/espeak-ng/` |
 | multi-output program | `packages/registry/diffutils/` |
 | runtime files as a lazy archive | vim, per `docs/porting-guide.md` "Reference implementation" |
+| man pages as a separate lazy docs archive | `packages/registry/coreutils-docs/`, `packages/registry/lsof-docs/`; content sourcing differs, see "Shipping man pages" in `docs/porting-guide.md` |
 
 The current shape: `source scripts/package-build-roots.sh`, `kandelo_package_prepare_build_roots`, `kandelo_package_stage_verified_source`, `source sdk/activate.sh`, configure/make under the work dir, then `install_local_binary` (usage in the header of `scripts/install-local-binary.sh`; it applies the manifest's fork policy).
 
@@ -45,6 +46,17 @@ The current shape: `source scripts/package-build-roots.sh`, `kandelo_package_pre
 
 Read those sections by heading (`rg -n '^#'` then read the relevant
 lines), not whole files.
+
+## Include upstream man pages
+
+Check upstream's source and install rules for man pages, including its
+normally generated pages. Where possible, include lazy references for
+upstream man pages, using the existing `<program>-docs` ZIP pattern or an
+existing lazy runtime bundle. Software without man pages needs none
+invented for now. Read
+`docs/porting-guide.md` "Shipping man pages" for source selection, archive
+paths, image registration and validation. Select a separate docs package
+explicitly in partial-image builds alongside the program and man viewer.
 
 ## Build loop
 
