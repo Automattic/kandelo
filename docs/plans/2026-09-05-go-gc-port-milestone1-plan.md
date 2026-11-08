@@ -2,6 +2,45 @@
 
 ## Current checkpoint — 2026-11-08
 
+**General fork-retirement admission now has cross-host evidence.** The host
+preflights temporary retirement debt before shared-mapping synchronization,
+continuation capture or Rust child creation. Host allocator callbacks run
+outside kernel authority, and ready or delayed results re-enter through the
+normal queue. Exact request, channel and memory-generation checks reject
+obsolete continuations; stopped callers remain parked. Snapshot capture
+still stays uninterrupted after child commit. There is no app retry, sleep,
+forced GC, resource-limit increase, compiler change or guest ABI change.
+
+Eight focused source files pass all 145 checks, including whole-runtime
+scratch/authority audits, in 136 seconds. Both host declaration builds pass.
+Node control `ea56` passes all three real family-switch cases in 1m54s:
+Caddy/FPM sharing, both database backends, saved values and upload isolation.
+It uses the immutable older normal family image with only the previously
+proved ordinary MariaDB socket configuration restored; this is not a rebuilt
+revision-13 acceptance. Browser `75a3` passes classic and Caddy on Chromium,
+Firefox and WebKit: six cases, zero skips/retries, in 5m28s. Those exercise
+PHP, OPcache, churn, parallel requests, Caddy crash recovery, held-request
+drain and destruction on normal older WordPress image `1993e1bc29ef`.
+They do not close rendered-editor, sustained, full conformance or final
+coherent-artifact memory/lifecycle gates.
+
+Earlier candidate checks retain their failures: one callback initially ran
+inside kernel authority; it was moved into the detached host phase. A
+ready-path test incorrectly assumed synchronous re-entry; actual queue
+behavior is now asserted and documented. The callback-root inventory also
+omitted the pre-existing child-rollback hook, and the authority inventory
+omitted the upstream WASI regexp benchmark. Both omissions reproduce on
+the parent source and are corrected with explicit reviewed entries, without
+weakening assertions. All final focused checks pass. The normal full build
+remains frozen at `c51ee03b5`; this later host fix still needs a normal warm
+image refresh and final conformance/performance validation.
+
+Evidence lives in the `fork-retirement-admission` checkout: private guarded
+source config/log `fork-retirement-unit-v4`, `fork-retirement-typecheck`,
+Node job `wordpress-family-fork-admission-gated-1108-041655-ea56`, and browser
+job `wordpress-fork-admission-three-engines-1108-042633-75a3`. Each controlled
+job retains inputs, selected artifact hashes, source diff and raw reports.
+
 **Normal final refresh is publishing on the corrected source.** Job
 `f2f6` finishes both own-SDK bootstraps and normal package-index generation,
 then starts the complete 198-node validation union at source `c51ee03b5`,

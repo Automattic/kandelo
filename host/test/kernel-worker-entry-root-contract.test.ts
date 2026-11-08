@@ -9,6 +9,7 @@ const ENTRY_SOURCES = [
 ] as const;
 
 const REQUIRED_KERNEL_CALLBACKS = [
+  "onChildLaunchRolledBack",
   "onClone",
   "onExec",
   "onExit",
@@ -17,6 +18,7 @@ const REQUIRED_KERNEL_CALLBACKS = [
   "onProcessMemoryTarget",
   "onSpawn",
   "onThreadExit",
+  "waitForForkMemoryAdmission",
 ] as const;
 
 // These names denote raw Wasm authority or mutable queues whose invariants

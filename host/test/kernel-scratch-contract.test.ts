@@ -1136,6 +1136,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 
 const auditAllowances: AuditAllowance[] = [
   {
+    key: "benchmarks/go-regexp/run-node-wasi.mjs::<module>::wasm-instance-authority::WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "The upstream-Go regexp control instantiates only a WASI preview1 program with Node's WASI imports. It creates no Kandelo kernel and receives no kernel instance, memory or exports.",
+  },
+  {
     key: "tests/go/cgo/link-only/test-run.mjs::<module>::wasm-memory-authority::new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true })",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",

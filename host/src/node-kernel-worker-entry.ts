@@ -1070,6 +1070,8 @@ async function handleInit(msg: InitMessage) {
         processMemoryAllocator.observeTarget(memory, target);
       },
       onKernelFatal: terminatePoisonedKernelWorker,
+      waitForForkMemoryAdmission: (parentBytes) =>
+        processMemoryAllocator.deferForRetirementBacklog(parentBytes),
       onFork: ({
         parentPid,
         childPid,

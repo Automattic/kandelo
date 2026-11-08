@@ -12,6 +12,9 @@ import {
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
 import {
   ABI_SYSCALLS,
+  HOST_INTERCEPTED_SYSCALLS,
+  PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE,
+  WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_PENDING,
   CH_ARGS,
@@ -27,12 +30,14 @@ import {
   PROCESS_STATE_EXITED,
 } from "../src/generated/abi";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
+import { ProcessMemoryRetirementBacklogError } from "../src/process-memory";
 import { emptyProcessTimerCleanup } from "./kernel-worker-test-scratch";
 
 const CLONE_PARENT_SETTID = 0x0010_0000;
 const ENOMEM = 12;
 const KERNEL_EXPORT_NAMES = [
   "kernel_commit_process_exit",
+  "kernel_fork_process",
   "kernel_dequeue_signal",
   "kernel_drain_wakeup_events",
   "kernel_get_memory_pages",
@@ -100,6 +105,7 @@ function makeHarness(
   });
   const mutableImplementations: Record<string, unknown> = {
     kernel_commit_process_exit: (status: number) => status & 0xff,
+    kernel_fork_process: () => -ENOMEM,
     kernel_dequeue_signal: () => 0,
     kernel_drain_wakeup_events: () => 0,
     kernel_get_memory_pages: () => 256,
@@ -589,5 +595,111 @@ describe("clone and exit entry authority", () => {
       CHANNEL_STATUS_PENDING,
     );
     consoleError.mockRestore();
+  });
+});
+
+function prepareOrdinaryFork(harness: LifecycleHarness): void {
+  const offset=65536;
+  Object.assign(harness.channel,{channelOffset:offset,i32View:new Int32Array(harness.channel.memory.buffer,offset)});
+  harness.worker.channelTids.set(`${harness.channel.pid}:${offset}`,harness.channel.pid);
+  new DataView(harness.channel.memory.buffer).setUint32(
+    offset-PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE,
+    2*65536+WPK_FORK_LINKED_FRAME_POINTER_WIDTHS[0].chunkHeaderSize,true,
+  );
+  writeSyscall(harness.channel,HOST_INTERCEPTED_SYSCALLS.SYS_FORK,[]);
+  harness.worker.testAuthority.configureScratchBoundaryHooksForTest({relistenChannel:vi.fn()});
+}
+
+describe('fork precommit retirement admission',()=>{
+  it("resumes a ready fork through a fresh kernel entry", async () => {
+    const steps: string[] = [];
+    const harness = makeHarness(4, {
+      onFork: vi.fn(),
+      waitForForkMemoryAdmission: () => { steps.push("admit"); return undefined; },
+    }, {
+      kernel_fork_process: () => { steps.push("commit"); return -ENOMEM; },
+    });
+    prepareOrdinaryFork(harness);
+    harness.worker.handleSyscall(harness.channel);
+    expect(steps).toEqual(["admit"]);
+    await flushLifecycleContinuations();
+    expect(steps).toEqual(["admit", "commit"]);
+    expect(channelResult(harness.channel).errno).toBe(ENOMEM);
+  });
+
+  it("does not apply fresh-memory admission to borrowed-address-space vfork", () => {
+    const admission = vi.fn();
+    const fork = vi.fn(() => -ENOMEM);
+    const harness = makeHarness(4, {
+      onFork: vi.fn(), waitForForkMemoryAdmission: admission,
+    }, { kernel_fork_process: fork });
+    prepareOrdinaryFork(harness);
+    writeSyscall(harness.channel, HOST_INTERCEPTED_SYSCALLS.SYS_VFORK, [1n, 0n]);
+    harness.worker.handleSyscall(harness.channel);
+    expect(admission).not.toHaveBeenCalled();
+    expect(fork).toHaveBeenCalledOnce();
+  });
+
+  it('waits once before child creation and resumes ordinary dispatch',async()=>{
+    let resolve!:()=>void;
+    const wait=new Promise<void>(r=>{resolve=r;});
+    const admission=vi.fn().mockReturnValueOnce(wait).mockReturnValue(undefined);
+    const fork=vi.fn(()=>-ENOMEM);
+    const harness=makeHarness(4,{onFork:vi.fn(),waitForForkMemoryAdmission:admission},{kernel_fork_process:fork});
+    prepareOrdinaryFork(harness);
+    harness.worker.handleSyscall(harness.channel);
+    harness.worker.handleSyscall(harness.channel);
+    expect(admission).toHaveBeenCalledExactlyOnceWith(4*65536);
+    expect(fork).not.toHaveBeenCalled();
+    expect(channelResult(harness.channel).status).toBe(CHANNEL_STATUS_PENDING);
+    resolve();await flushLifecycleContinuations();
+    expect(fork).toHaveBeenCalledExactlyOnceWith(41,41,0);
+    expect(channelResult(harness.channel)).toEqual({status:CHANNEL_STATUS_COMPLETE,result:-1,errno:ENOMEM});
+  });
+
+  it('returns EAGAIN without committing a child if bounded admission expires',async()=>{
+    const failure=new ProcessMemoryRetirementBacklogError('busy',65536,1,65536,1,65536);
+    const fork=vi.fn(()=>-ENOMEM);
+    const harness=makeHarness(4,{onFork:vi.fn(),waitForForkMemoryAdmission:()=>Promise.reject(failure)},{kernel_fork_process:fork});
+    prepareOrdinaryFork(harness);
+    harness.worker.handleSyscall(harness.channel);
+    await flushLifecycleContinuations();
+    expect(fork).not.toHaveBeenCalled();
+    expect(channelResult(harness.channel)).toEqual({status:CHANNEL_STATUS_COMPLETE,result:-1,errno:11});
+  });
+
+  it.each(['unregistered','memory replaced','request replaced','already completed'])('does not resume an obsolete fork: %s',async reason=>{
+    let resolve!:()=>void;
+    const wait=new Promise<void>(r=>{resolve=r;});
+    const admission=vi.fn().mockReturnValueOnce(wait).mockReturnValue(undefined);
+    const fork=vi.fn(()=>-ENOMEM);
+    const harness=makeHarness(4,{onFork:vi.fn(),waitForForkMemoryAdmission:admission},{kernel_fork_process:fork});
+    prepareOrdinaryFork(harness);
+    harness.worker.handleSyscall(harness.channel);
+    if(reason==='unregistered')harness.worker.processes.delete(41);
+    if(reason==='memory replaced')harness.worker.processes.get(41).memory=new WebAssembly.Memory({initial:4,maximum:4,shared:true});
+    if(reason==='request replaced')harness.worker.activeChannelRequests.set(harness.channel,{});
+    if(reason==='already completed')new DataView(harness.channel.memory.buffer,harness.channel.channelOffset).setUint32(CH_STATUS,CHANNEL_STATUS_COMPLETE,true);
+    const before=channelResult(harness.channel);
+    resolve();await flushLifecycleContinuations();
+    expect(fork).not.toHaveBeenCalled();
+    expect(channelResult(harness.channel)).toEqual(before);
+  });
+
+  it('keeps an admitted but stopped caller parked until normal resume dispatch',async()=>{
+    let resolve!:()=>void;
+    const wait=new Promise<void>(r=>{resolve=r;});
+    const admission=vi.fn().mockReturnValueOnce(wait).mockReturnValue(undefined);
+    const fork=vi.fn(()=>-ENOMEM);
+    const harness=makeHarness(4,{onFork:vi.fn(),waitForForkMemoryAdmission:admission},{kernel_fork_process:fork});
+    prepareOrdinaryFork(harness);
+    harness.worker.handleSyscall(harness.channel);
+    harness.worker.stoppedPids.add(41);
+    resolve();await flushLifecycleContinuations();
+    expect(fork).not.toHaveBeenCalled();
+    expect(channelResult(harness.channel).status).toBe(CHANNEL_STATUS_PENDING);
+    harness.worker.stoppedPids.delete(41);
+    harness.worker.handleSyscall(harness.channel);
+    expect(fork).toHaveBeenCalledOnce();
   });
 });

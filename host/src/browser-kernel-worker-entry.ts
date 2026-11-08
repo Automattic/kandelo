@@ -1027,6 +1027,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         processMemoryAllocator.observeTarget(memory, target);
       },
       onKernelFatal: terminatePoisonedKernelWorker,
+      waitForForkMemoryAdmission: (parentBytes) =>
+        processMemoryAllocator.deferForRetirementBacklog(parentBytes),
       onFork: ({
         parentPid,
         childPid,

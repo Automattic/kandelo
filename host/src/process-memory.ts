@@ -837,6 +837,20 @@ export class ProcessMemoryAllocator {
     }
   }
 
+  /**
+   * Preflight a snapshot transaction before it commits any child state.
+   * No lease is reserved: callers must still perform normal synchronous
+   * admission when they capture the snapshot. Avoid a yield on the fast path.
+   */
+  deferForRetirementBacklog(requestedBytes: number): Promise<void> | undefined {
+    if (!Number.isSafeInteger(requestedBytes) || requestedBytes <= 0) {
+      throw new Error(`invalid retirement admission size: ${requestedBytes}`);
+    }
+    return this.retirementBacklogSaturated()
+      ? this.waitForRetirementBacklogCapacity(requestedBytes)
+      : undefined;
+  }
+
   async waitForRetirementBacklogCapacity(
     requestedBytes: number,
     timeoutMs = Math.max(250, this.retirementBackpressureMs * 4),

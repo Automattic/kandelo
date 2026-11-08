@@ -2323,12 +2323,24 @@ dated Node, Chromium, Firefox, and WebKit measurements and their limitations
 are recorded in
 [`docs/measurements/2026-07-28-process-memory-retirement-rss.md`](measurements/2026-07-28-process-memory-retirement-rss.md).
 
-Fork first checks live-memory capacity and the retired-generation count and
-byte thresholds synchronously. If retired debt is already saturated, fork
-returns `EAGAIN` before constructing or copying another address space. It
-cannot wait asynchronously at that point: a sibling thread could mutate the
-parent memory while the caller yielded, changing the purported syscall-time
-snapshot.
+Ordinary fork preflights retired-generation pressure before synchronizing
+shared mappings, capturing its continuation or creating a Rust child. The
+host allocator is consulted after kernel entry authority is revoked; even
+the ready result resumes through a fresh entry. Under pressure, a bounded
+allocator wait parks
+the exact captured request without reserving a snapshot. Its continuation
+must still own the same pending request, registered channel and parent
+memory generation. It resumes ordinary syscall dispatch, preserving stopped
+processes and terminal teardown. An expired admission wait returns `EAGAIN`
+without creating a child. Borrowed-address-space vfork skips this check.
+
+Once that precommit wait ends, fork still checks live capacity and retirement
+thresholds synchronously before constructing and copying another address
+space. Admission can still fail if competing work consumes capacity. There
+is no yield between Rust child creation and snapshot capture: a sibling
+thread must not change the purported snapshot during an asynchronous wait.
+The preflight is neither a memory reservation nor proof of physical
+reclamation.
 
 Once admitted, the host captures the parent's current memory length before the
 first asynchronous host operation. The current source candidate acquires and

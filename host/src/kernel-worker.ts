@@ -2162,6 +2162,14 @@ export interface CentralizedKernelCallbacks {
    * Main-thread and pthread forks both carry the authoritative linked
    * continuation address in `request.continuation.forkBufAddr`.
    */
+  /**
+   * Consult only the host memory allocator. Return a bounded wait when retired
+   * address spaces temporarily block another snapshot, or undefined when ready.
+   * This runs before child creation; it must not enter the kernel or allocate
+   * a snapshot. Normal snapshot admission remains authoritative afterward.
+   */
+  waitForForkMemoryAdmission?: (parentBytes: number) => Promise<void> | undefined;
+
   onFork?: (request: ForkLaunchRequest) => Promise<number[]>;
 
   /**
@@ -3125,6 +3133,10 @@ export class CentralizedKernelWorker {
   private activeChannelRequests = new Map<
     ChannelInfo,
     FrozenChannelRequest
+  >();
+  /** One retirement wait for each exact in-flight ordinary fork request. */
+  private pendingForkMemoryAdmissions = new WeakMap<
+    ChannelInfo, { request: FrozenChannelRequest; ready: boolean }
   >();
   /** Pids whose authoritative kernel state is Stopped. Updated only from the
    * kernel wake-event stream, so ordinary syscall completion does not need an
@@ -21128,6 +21140,80 @@ export class CentralizedKernelWorker {
    * Handle SYS_FORK/SYS_VFORK: clone the Process in the kernel's ProcessTable,
    * then call the onFork callback to spawn the child Worker.
    */
+  #deferForkForMemoryAdmission(
+    channel: ChannelInfo,
+    origArgs: number[],
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    const wait = this.callbacks.waitForForkMemoryAdmission;
+    if (!wait) return false;
+    const request = this.activeChannelRequests.get(channel);
+    const pending = this.pendingForkMemoryAdmissions.get(channel);
+    if (request && pending?.request === request) {
+      if (!pending.ready) return true;
+      this.pendingForkMemoryAdmissions.delete(channel);
+      return false;
+    }
+    if (!request) throw new Error("fork admission has no captured request");
+    const parentMemory = channel.memory;
+    this.pendingForkMemoryAdmissions.set(channel, { request, ready: false });
+    // No child, shared-mapping snapshot or continuation has been committed.
+    // Consult the host allocator only after revoking kernel entry authority.
+    // Even the ready path resumes through the ordinary kernel entry queue;
+    // only the later committed fork transaction must avoid yielding.
+    entry.deferProtocolEffect(() => {
+      const resume = () => {
+        this.#runOrDeferKernelEntry("fork memory admission", (resumeEntry) => {
+          if (this.#claimForkAdmissionResume(channel, request, parentMemory, resumeEntry)) {
+            this.pendingForkMemoryAdmissions.set(channel, { request, ready: true });
+            // Ordinary dispatch preserves SIGSTOP and terminal teardown. The
+            // subsequent committed fork still captures bytes before yielding.
+            this.#handleSyscallWithinKernelEntry(channel, resumeEntry);
+          }
+          return undefined;
+        });
+      };
+      const refuse = (error: unknown) => {
+        this.#runOrDeferKernelEntry("fork memory admission rejection", (resumeEntry) => {
+          if (!this.#claimForkAdmissionResume(channel, request, parentMemory, resumeEntry)) {
+            return undefined;
+          }
+          if (error instanceof ProcessMemoryRetirementBacklogError) {
+            this.#completeForkWithinKernelEntry(channel, origArgs, -1, EAGAIN, resumeEntry);
+          } else {
+            this.#terminateForKernelProtocolFailureWithinKernelEntry(
+              channel, `fork memory admission failed: ${String(error)}`, resumeEntry,
+            );
+          }
+          return undefined;
+        });
+      };
+      try {
+        const admission = wait(parentMemory.buffer.byteLength);
+        if (admission) void admission.then(resume, refuse);
+        else resume();
+      } catch (error) {
+        refuse(error);
+      }
+      return undefined;
+    });
+    return true;
+  }
+
+  #claimForkAdmissionResume(
+    channel: ChannelInfo,
+    request: FrozenChannelRequest,
+    parentMemory: WebAssembly.Memory,
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    if (this.pendingForkMemoryAdmissions.get(channel)?.request !== request) return false;
+    this.pendingForkMemoryAdmissions.delete(channel);
+    return this.activeChannelRequests.get(channel) === request
+      && this.processes.get(channel.pid)?.memory === parentMemory
+      && Atomics.load(new Int32Array(channel.memory.buffer, channel.channelOffset, CH_TOTAL_SIZE / 4), CH_STATUS / 4) === CH_PENDING
+      && this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry);
+  }
+
   private handleFork(
     channel: ChannelInfo,
     _origArgs: number[],
@@ -21139,6 +21225,13 @@ export class CentralizedKernelWorker {
       this.#completeForkWithinKernelEntry(
         channel, _origArgs, -1, 38, entry,
       );
+      return;
+    }
+
+    if (
+      mode !== PROCESS_FORK_MODE_VFORK
+      && this.#deferForkForMemoryAdmission(channel, _origArgs, entry)
+    ) {
       return;
     }
 
