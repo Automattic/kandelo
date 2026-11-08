@@ -466,6 +466,9 @@ rm -rf "$SRC_DIR/third_party/kandelo-node/histogram"
 cp -R "$REPO_ROOT/third_party/node-core/upstream/histogram-reference/deps/histogram" "$SRC_DIR/third_party/kandelo-node/histogram"
 cp "$REPO_ROOT/third_party/node-core/event-loop-delay.h" "$SRC_DIR/js/src/shell/event-loop-delay.h"
 cp "$REPO_ROOT/third_party/node-core/event-loop-delay-lifetime.h" "$SRC_DIR/js/src/shell/event-loop-delay-lifetime.h"
+python3 "$REPO_ROOT/third_party/node-core/generate-engine-build-id.py" \
+    --output "$SRC_DIR/js/src/shell/kandelo-node-engine-build-id.h"
+cp "$REPO_ROOT/third_party/node-core/vm-script-cache.h" "$SRC_DIR/js/src/shell/kandelo-node-vm-script-cache.h"
 cp "$REPO_ROOT/third_party/node-core/vm-module-hooks.h" "$SRC_DIR/js/src/shell/kandelo-node-vm-module-hooks.h"
 cp "$REPO_ROOT/third_party/node-core/vm-execution-deadline.h" "$SRC_DIR/js/src/shell/kandelo-node-vm-execution-deadline.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-native-embedding.py" \

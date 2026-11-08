@@ -1,0 +1,118 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/engine.md",
+    "findingIds": [
+      "E-008"
+    ],
+    "relatedFamilies": [
+      "engine",
+      "loading",
+      "values"
+    ],
+    "scope": "Partial owning source/build-identity prerequisite only. Encoding does not implement safe cache input, metadata rebinding, compileFunction or whole VM/V8 compatibility; no accepted exclusion or closure."
+  },
+  "sourceImplemented": [
+    "Real compiled Stencil/source/metadata ownership and lazy-delazification sharing; trusted createCachedData/produceCachedData encoding into native storage",
+    "Actual private FastBuffer publication bypasses mutable public byte/constructor/coercion hooks; errors remain outside ordered metadata assignment swallowing",
+    "Generic resolver exports its actual immutable content key after policy scrubbing and overrides inherited values; exact build-key generator replaces shell constant",
+    "Real child-recipe/cache invalidation tests for Default and SourceOnlyV1 plus stale-generator barrier and reserved-collision control; matching native xtask built",
+    "Strict actual-parent additive composition preserves FileHandle/SQLite/TTY owners, normal input declarations and executable mode; fresh context patch has exact forward/reverse source identity"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-vm244-source-r2/report.json",
+    "sha256": "78b2c326e9e4cfb3623ce0068fdfc1ddd16f46abfb2d4dd2cdf986a913a1c9ad",
+    "guardedInputs": 902,
+    "scope": "VM244encoding/buildidentity/publication source foundation. NativeContextify/FastBuffer fixture and actualgenerator/portable envelope only; no new SM decoder/encoder/GC/realm execution. Actual Rust handoff evidence recorded separately."
+  },
+  "packageChecks": {
+    "report": ".context/node26-vm244-affected-r1.json",
+    "sha256": "7be80642329bfeb70a7d5c9b95115394924367fba96189d77b06dc57be4db58c",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": true
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-vm244-source-r2/report.json",
+    "sha256": "78b2c326e9e4cfb3623ce0068fdfc1ddd16f46abfb2d4dd2cdf986a913a1c9ad",
+    "nativePublicationSubjects": 8,
+    "currentJsPublicationSubjects": 8,
+    "currentEncodingFrontendGroups": 5,
+    "generatorPolicyGroups": 6,
+    "portableEnvelopeArtifactSubjects": 1,
+    "portableConditionAnnotations": 11,
+    "nativeRustNewTests": 2,
+    "nativeRustExistingCompanion": 1,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Native ContextifyScript/FastBuffer dependencies do not execute new SM Stencil/JSAPI. Generator fixture uses explicit test keys/manual nonces, not a production engine artifact key. Rust evidence and exact native binary are linked separately."
+  },
+  "sealedEvidence": {
+    "report": ".context/vm-script-cache-owner-agent/report.json",
+    "sha256": "69d8e3a7c07340cc4b41e840197503af03efbc5980e6df120d2dc0d134c8e5e2",
+    "reusedEvidence": true,
+    "scope": "Historical source foundation and one portable header compile; original uncompiled Rust status is historical. Current actual Rust results are separate, never projected backward."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/vm-script-cache-owner-agent/report.json",
+      "sha256": "69d8e3a7c07340cc4b41e840197503af03efbc5980e6df120d2dc0d134c8e5e2",
+      "scope": "Original missing-input/stale-bundle/warm-cache/metadata/upstream-harness/zero-context-composition nonpasses and blocked decoder proposal retained; old proposal results are not current decoder passes."
+    },
+    {
+      "report": ".context/vm-cache-buffer-publication-correction-agent/report.json",
+      "sha256": "a29ab1e730bd1a3fa2fcc4b60e5ebaa48ec4d5672dea18bac137f80acdb46203",
+      "scope": "Original before publication3pass/5nonpass and explicit correction8pass, no guest proof."
+    },
+    {
+      "report": ".context/node26-vm244-manual-apply.log",
+      "sha256": "062f77ab33bf22c5b9d630b45c5adaabaa6b1622ab0d8eaa97d591a5dbfd4dbd",
+      "scope": "Root first git apply --check stopped before mutation on nested patch blank-context whitespace; exact contextual normalization and reverse/forward proof are separate."
+    },
+    {
+      "report": ".context/node26-vm244-normalization-r2/REPORT.json",
+      "sha256": "3e571eb60f9d71cc90b6b7657c7316a212ced98b811ff78e49ca8001f9d8108e",
+      "scope": "Same engine postimage; narrower nonblank context retained strict whitespace checks. No zero-context/fuzzy old-coordinate selection."
+    },
+    {
+      "report": ".context/node26-vm244-checks-r1/rustfmt-edition2024.json",
+      "sha256": "eb539bd15f3b998068dbdb7eddbb0b634ae62631a6e579ae14d3fa059c2bf560",
+      "scope": "Read-only layout mismatch after first successful Rust run; corrected new test layout for actual edition2024 and reran only targeted native/source checks. All successful earlier receipts retained."
+    }
+  ],
+  "remaining": [
+    "Implement safe arbitrary XDR validation/admission, source/warm-cache policy and current filename/line/column rebinding; current cachedData input still throws ERR_NOT_IMPLEMENTED and is nonpassing compatibility",
+    "CompileFunction caches, negative offsets, parsing-context/per-context job ownership and remaining VM/module/heap/inspector APIs",
+    "Compile actual new C++ encoder/Stencil/private Buffer/GC/realm/Worker/lifetime paths; native fixture is not guest conformance",
+    "Normal production engine header/cache-key/artifact proof and identified-artifact conformance across all four hosts",
+    "Original runtime source document describes its producer-capsule evidence; this current integration record supersedes the historical uncompiled-Rust statement only. No engine/platform exclusion or finding closure"
+  ],
+  "nativeResolverEvidence": {
+    "earlier": {
+      "report": ".context/node26-vm244-checks-r1/rust-result.json",
+      "sha256": "2f60277fde24fbbb0b126e21a424fca36ed06b18a668b930a68bf267dedba4ff"
+    },
+    "current": {
+      "report": ".context/node26-vm244-checks-r2/rust-result.json",
+      "sha256": "c16006adcd8c30d408ebbcea9ae319aa92b32f0815dfdc98c540fd97a6194ee5"
+    },
+    "preservedBinary": {
+      "path": ".context/node26-vm244-record-r1/xtask",
+      "sha256": "6ffb3f17bb0911f6500514cdcb7f7d0c55cc322cdebb6a890ae4c8fd8ad02e2b",
+      "bytes": 8285248
+    },
+    "actualFreshFalseNativeCargoUnits": 11,
+    "newFocusedTestFunctions": 2,
+    "existingCompanion": 1,
+    "notGuestConformance": true
+  },
+  "at": "2026-11-08T00:59:21.003214+00:00",
+  "recipeRevision": 244,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

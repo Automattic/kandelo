@@ -7255,3 +7255,7 @@ Source242 connects the existing SQLite connection/statement owners to real sqlit
 ### Captured TTY writes retain original material through real request ownership
 
 Captured output leases consume real writev progress over original backing capabilities. Actual queued WRITEWRAP identity, frame/default trigger, completion/cancel and close barriers remain source work until compiled and validated. Closed/retired input gates and indexed all-buffer preparation preserve pinned native phase and species contracts. This does not activate public tty constructors or full StreamBase.
+
+### VM script encoding uses actual compiled owners and resolver build identity
+
+The compiled Script owner retains the real Stencil, source and debug metadata for trusted encoding. Its generated engine identity consumes the exact resolver content key; real child-recipe tests cover both resolver policies and invalidation. Publication uses genuine private FastBuffer storage and preserves native metadata-setter failure ordering. Arbitrary public cache decoding remains unimplemented pending a safe validator; native Rust proof is separate from the uncompiled guest JSAPI.

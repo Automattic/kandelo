@@ -5221,7 +5221,7 @@ const _builtinModules = {
         getHeapStatistics() { return { heap_size_limit: _nodeNative.engineGcHeapLimit() }; },
         getHeapSpaceStatistics() { throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('v8.getHeapSpaceStatistics measurements'); },
     },
-    'vm': _createNodeVmPlatform({ native: _nodeNative, values: _nodeValues, process, global: globalThis,
+    'vm': _createNodeVmPlatform({ native: _nodeNative, values: _nodeValues, Buffer, FastBuffer: _FastBuffer, process, global: globalThis,
         installInternal: internal => { _nodeVmInternal = internal; },
         types: util.types, inspection: _nodeInspection, assert: _nodeCore.require('internal/assert'),
         getOptionValue: option => option === '--experimental-vm-modules' &&

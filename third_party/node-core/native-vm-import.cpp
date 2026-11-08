@@ -1,8 +1,12 @@
 // Actual VM compiled-code/import owner. ScriptSource's traced private value
 // retains this real Stencil/registry through nested scripts and async imports.
 #include "kandelo-node-vm-module-hooks.h"
+#include "kandelo-node-engine-build-id.h"
 #include "builtin/ModuleObject.h"
 #include "frontend/Stencil.h"
+#include "frontend/CompilationStencil.h"
+#include "kandelo-node-vm-script-cache.h"
+#include "js/Transcoding.h"
 #include "js/CallAndConstruct.h"
 #include "js/Modules.h"
 #include "js/Promise.h"
@@ -11,7 +15,10 @@
 #include "vm/JSFunction.h"
 #include "jsfriendapi.h"
 namespace {
-enum KandeloVmCodeSlot { VmCodeStencil, VmCodeRegistry, VmCodeSlotCount };
+enum KandeloVmCodeSlot {
+  VmCodeStencil, VmCodeRegistry, VmCodeSource, VmCodeFilename,
+  VmCodeLineOffset, VmCodeColumnOffset, VmCodeSlotCount
+};
 static const JSClass KandeloVmCodeClass = {"VMCompiledCode",
   JSCLASS_HAS_RESERVED_SLOTS(VmCodeSlotCount)};
 enum KandeloVmImportSlot { VmImportPromise, VmImportOwner, VmImportRequest, VmImportSlotCount };
@@ -29,6 +36,92 @@ static bool KandeloVmNewCodeOwner(JSContext* cx, HandleObject stencil,
   RootedObject owner(cx, JS_NewObject(cx, &KandeloVmCodeClass));if (!owner) return false;
   if (stencil) JS::SetReservedSlot(owner, VmCodeStencil, ObjectValue(*stencil));
   output.set(owner);return true;
+}
+static bool KandeloVmCacheIdentity(JSContext* cx, HandleString code,
+                                   const char* filename, uint32_t lineOffset,
+                                   uint32_t columnOffset,
+                                   std::vector<uint8_t>* identity) {
+  AutoStableStringChars chars(cx);
+  if (!chars.initTwoByte(cx, code)) return false;
+  const auto units = chars.twoByteRange();
+  const bool ok = kandelo::vm::CacheIdentity(
+      std::span<const char16_t>(units.begin().get(), units.length()), filename,
+      lineOffset, columnOffset, JS::BytecodeOffsetAlignment, identity);
+  if (!ok) JS_ReportOutOfMemory(cx);
+  return ok;
+}
+static bool KandeloVmReadCodeOwner(JSContext* cx, HandleValue input,
+                                    MutableHandleObject owner,
+                                    MutableHandleObject holder) {
+  if (!KandeloVmImportChecked(cx, input, owner)) return false;
+  if (!owner || JS::GetClass(owner) != &KandeloVmCodeClass) {
+    JS_ReportErrorASCII(cx, "VM cache requires its actual compiled Script owner");
+    return false;
+  }
+  RootedValue value(cx, JS::GetReservedSlot(owner, VmCodeStencil));
+  if (!KandeloVmImportChecked(cx, value, holder)) return false;
+  if (!holder || !holder->is<js::StencilObject>() ||
+      !holder->as<js::StencilObject>().hasStencil()) {
+    JS_ReportErrorASCII(cx, "VM cache requires a compiled Script stencil");
+    return false;
+  }
+  return true;
+}
+static bool KandeloVmCreateCachedData(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  try {
+    RootedObject owner(cx), holder(cx);
+    if (!KandeloVmReadCodeOwner(cx, args.get(0), &owner, &holder)) return false;
+    RootedValue result(cx);
+    {
+      JSAutoRealm realm(cx, owner);
+      RootedString code(cx, JS::GetReservedSlot(owner, VmCodeSource).toString());
+      RootedString filename(cx, JS::GetReservedSlot(owner, VmCodeFilename).toString());
+      UniqueChars bytes = JS_EncodeStringToUTF8(cx, filename);
+      if (!bytes) return false;
+      const uint32_t line = JS::GetReservedSlot(owner, VmCodeLineOffset).toInt32();
+      const uint32_t column = JS::GetReservedSlot(owner, VmCodeColumnOffset).toInt32();
+      std::vector<uint8_t> identity;
+      if (!KandeloVmCacheIdentity(cx, code, bytes.get(), line, column, &identity)) return false;
+      // EncodeStencil merges actual collected delazifications. It neither
+      // executes source nor retains any instantiated context/global.
+      JS::TranscodeBuffer payload;
+      const auto status = JS::EncodeStencil(cx, holder->as<js::StencilObject>().stencil(), payload);
+      if (status == JS::TranscodeResult::Throw || JS_IsExceptionPending(cx)) return false;
+      RootedObject data(cx);
+      if (status != JS::TranscodeResult::Ok) {
+        // Like native CreateCodeCache's absent result, an unencodable script
+        // yields no cache bytes; do not turn OOM/Throw into ordinary rejection.
+        data = KandeloNewUint8ArrayCopy(cx, nullptr, 0);
+      } else {
+        identity.insert(identity.end(), payload.begin(), payload.end());
+        data = KandeloNewUint8ArrayCopy(cx, identity.data(), identity.size());
+      }
+      if (!data) return false;
+      result.setObject(*data);
+    }
+    if (!JS_WrapValue(cx, &result)) return false;
+    args.rval().set(result);return true;
+  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx);return false; }
+}
+static bool KandeloVmCacheInfo(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  RootedObject owner(cx), holder(cx);
+  if (!KandeloVmReadCodeOwner(cx, args.get(0), &owner, &holder)) return false;
+  RootedValue sourceURL(cx), sourceMapURL(cx);
+  auto* source = holder->as<js::StencilObject>().stencil()->getInitial()->source.get();
+  if (source->hasDisplayURL()) {
+    RootedString text(cx, JS_NewUCStringCopyZ(cx, source->displayURL()));
+    if (!text) return false;sourceURL.setString(text);
+  }
+  if (source->hasSourceMapURL()) {
+    RootedString text(cx, JS_NewUCStringCopyZ(cx, source->sourceMapURL()));
+    if (!text) return false;sourceMapURL.setString(text);
+  }
+  RootedObject info(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
+  if (!info || !JS_DefineProperty(cx, info, "sourceURL", sourceURL, JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx, info, "sourceMapURL", sourceMapURL, JSPROP_ENUMERATE)) return false;
+  args.rval().setObject(*info);return true;
 }
 static bool KandeloVmFunctionImportOwner(JSContext* cx, HandleFunction function) {
   RootedScript script(cx, JS_GetFunctionScript(cx, function));

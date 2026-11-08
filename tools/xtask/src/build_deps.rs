@@ -12509,6 +12509,7 @@ fn direct_dependency_variable_names(
     policy: ResolvePolicy,
 ) -> Result<BTreeMap<String, String>, String> {
     const RESERVED_RESOLVER_VARIABLES: &[&str] = &[
+        "WASM_POSIX_DEP_BUILD_KEY_SHA256",
         "WASM_POSIX_DEP_NAME",
         "WASM_POSIX_DEP_OUT_DIR",
         "WASM_POSIX_DEP_PKG_CONFIG_PATH",
@@ -14461,6 +14462,8 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_WORK_DIR", &work.recipe_work);
         cmd.env("WASM_POSIX_DEP_NAME", &target.name);
         cmd.env("WASM_POSIX_DEP_VERSION", &target.version);
+        // Exact resolver content key, not a package-version-derived identity.
+        cmd.env("WASM_POSIX_DEP_BUILD_KEY_SHA256", cache_key_sha);
         cmd.env("WASM_POSIX_DEP_REVISION", target.revision.to_string());
         cmd.env("WASM_POSIX_DEP_TARGET_ARCH", arch.as_str());
         cmd.env("WASM_POSIX_DEP_PKG_CONFIG_PATH", pkgconfig_path);
@@ -36719,6 +36722,217 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             "spawn-failure child failed:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    // Exercise the real ensure_built -> build_into_cache -> bash recipe path.
+    // Subprocesses isolate hostile ambient state and the fixture repo override;
+    // no process-global environment mutation races another libtest subject.
+    #[cfg(unix)]
+    #[test]
+    fn resolver_build_key_reaches_actual_recipe_for_both_policies() {
+        const CHILD_ENV: &str = "KANDELO_TEST_VM_RESOLVER_KEY_POLICY";
+        const HOSTILE_KEY: &str =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        if let Ok(mode) = std::env::var(CHILD_ENV) {
+            let policy = match mode.as_str() {
+                "default" => ResolvePolicy::Default,
+                "source-only" => ResolvePolicy::SourceOnlyV1,
+                other => panic!("unexpected resolver-key child policy {other:?}"),
+            };
+            let repo =
+                PathBuf::from(std::env::var_os("KANDELO_TEST_VM_RESOLVER_KEY_REPO").unwrap());
+            prepare_local_rebuild_fixture_repo(&repo);
+            let _root = crate::install_repo_root_override(repo.clone()).unwrap();
+            let body = r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf 'structural library fixture\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+printf '%s\n' "$WASM_POSIX_DEP_BUILD_KEY_SHA256" > "$WASM_POSIX_DEP_OUT_DIR/captured-key"
+printf '%s\n' "${WASM_POSIX_DEP_KEYDEP_DIR-}" > "$WASM_POSIX_DEP_OUT_DIR/dependency-path"
+printf '%s %s\n' "$WASM_POSIX_DEP_NAME" "$WASM_POSIX_DEP_BUILD_KEY_SHA256" >> "$KANDELO_TEST_VM_RESOLVER_KEY_LOG"
+"#;
+            let outputs = "[outputs]\nlibs = [\"lib/out.a\"]\nfiles = [\"captured-key\", \"dependency-path\"]\n";
+            write_lib(&repo, "keydep", "1.0.0", &[], body, outputs);
+            write_lib(
+                &repo,
+                "keyconsumer",
+                "1.0.0",
+                &["keydep@1.0.0"],
+                body,
+                outputs,
+            );
+            write_source_only_repository_inputs(&repo, "keydep");
+            write_source_only_repository_inputs(&repo, "keyconsumer");
+            let registry = Registry {
+                roots: vec![repo.clone()],
+            };
+            let (base, compiled) = source_only_test_roots("vm-resolver-key-cache");
+            let opts = match policy {
+                ResolvePolicy::Default => resolve_opts(&compiled, None),
+                ResolvePolicy::SourceOnlyV1 => source_only_test_opts(&base, &compiled),
+            };
+            let capture = |name: &str| -> (String, PathBuf) {
+                // Reload after real declared inputs change. Both the expected
+                // value and the production resolver use their owning key API;
+                // the assertion reads what the launched child actually saw.
+                let manifest = registry.load(name).unwrap();
+                let expected = manifest_cache_key_sha_for_policy(
+                    &manifest, &registry, TEST_ARCH, TEST_ABI, policy,
+                )
+                .unwrap();
+                let resolved =
+                    ensure_built(&manifest, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
+                assert_eq!(
+                    fs::read_to_string(resolved.join("captured-key"))
+                        .unwrap()
+                        .trim(),
+                    expected,
+                    "{mode}/{name}: child received a key other than the actual resolver key",
+                );
+                assert_eq!(expected.len(), 64);
+                assert_ne!(expected, HOSTILE_KEY);
+                assert!(
+                    resolved
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .ends_with(&format!("-{expected}")),
+                    "child key differs from the canonical cache generation",
+                );
+                (expected, resolved)
+            };
+            let log = repo.join("recipe-calls");
+            let first = capture("keyconsumer");
+            let dependency = capture("keydep");
+            assert_eq!(
+                fs::read_to_string(first.1.join("dependency-path"))
+                    .unwrap()
+                    .trim(),
+                dependency.1.to_str().unwrap(),
+            );
+            assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 2);
+            let repeated = capture("keyconsumer");
+            assert_eq!(first, repeated);
+            assert_eq!(
+                fs::read_to_string(&log).unwrap().lines().count(),
+                2,
+                "unchanged inputs should use the real cache hit, not launch another recipe",
+            );
+
+            fs::write(
+                repo.join("keyconsumer/source-only-input.txt"),
+                b"changed consumer input\n",
+            )
+            .unwrap();
+            let own_change = capture("keyconsumer");
+            assert_ne!(first.0, own_change.0);
+            assert_eq!(dependency, capture("keydep"));
+            assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 3);
+
+            fs::write(
+                repo.join("keydep/source-only-input.txt"),
+                b"changed dependency input\n",
+            )
+            .unwrap();
+            let changed_dependency = capture("keydep");
+            let dependency_change = capture("keyconsumer");
+            assert_ne!(dependency.0, changed_dependency.0);
+            assert_ne!(own_change.0, dependency_change.0);
+            assert_eq!(
+                fs::read_to_string(dependency_change.1.join("dependency-path"))
+                    .unwrap()
+                    .trim(),
+                changed_dependency.1.to_str().unwrap(),
+            );
+            assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 5);
+            return;
+        }
+
+        for policy in ["default", "source-only"] {
+            let repo = tempdir(&format!("vm-resolver-key-{policy}"));
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "build_deps::tests::resolver_build_key_reaches_actual_recipe_for_both_policies",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, policy)
+                .env("KANDELO_TEST_VM_RESOLVER_KEY_REPO", &repo)
+                .env(
+                    "KANDELO_TEST_VM_RESOLVER_KEY_LOG",
+                    repo.join("recipe-calls"),
+                )
+                .env("WASM_POSIX_DEP_BUILD_KEY_SHA256", HOSTILE_KEY)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{policy} child failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolver_build_key_stale_generator_stops_before_compile_phase() {
+        // Compile-time source location avoids another test's thread-local repo
+        // override. This is the real production generator, not copied logic.
+        let generator = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../third_party/node-core/generate-engine-build-id.py")
+            .canonicalize()
+            .unwrap();
+        let work = tempdir("vm-resolver-key-stale-generator");
+        let header = work.join("build-id.h");
+        let compile_phase = work.join("compiler-phase-reached");
+        let invoke = |key: Option<&str>| {
+            let mut command = Command::new("bash");
+            command
+                .args([
+                    "-eu",
+                    "-c",
+                    "python3 \"$KANDELO_TEST_VM_KEY_GENERATOR\" --output \"$KANDELO_TEST_VM_KEY_HEADER\"; printf reached > \"$KANDELO_TEST_VM_KEY_COMPILE_PHASE\"",
+                ])
+                .env("KANDELO_TEST_VM_KEY_GENERATOR", &generator)
+                .env("KANDELO_TEST_VM_KEY_HEADER", &header)
+                .env("KANDELO_TEST_VM_KEY_COMPILE_PHASE", &compile_phase)
+                .env("WASM_POSIX_DEP_NAME", "spidermonkey")
+                .env_remove("WASM_POSIX_DEP_BUILD_KEY_SHA256");
+            if let Some(key) = key {
+                command.env("WASM_POSIX_DEP_BUILD_KEY_SHA256", key);
+            }
+            command.output().unwrap()
+        };
+        let stale = invoke(None);
+        assert_eq!(stale.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&stale.stderr)
+                .contains("resolver recipe environment has no WASM_POSIX_DEP_BUILD_KEY_SHA256"),
+            "unexpected generator failure: {}",
+            String::from_utf8_lossy(&stale.stderr),
+        );
+        assert!(!header.exists());
+        assert!(
+            !compile_phase.exists(),
+            "the stale resolver environment must fail before the next compiler phase",
+        );
+        // A real generator success makes the next phase reachable. The marker
+        // is not a compiler invocation or an engine build/conformance result.
+        let key = "a".repeat(64);
+        let accepted = invoke(Some(&key));
+        assert!(
+            accepted.status.success(),
+            "{}",
+            String::from_utf8_lossy(&accepted.stderr)
+        );
+        assert!(header.is_file());
+        assert_eq!(fs::read_to_string(&compile_phase).unwrap(), "reached");
+        assert!(
+            fs::read_to_string(&header)
+                .unwrap()
+                .contains(&format!("kandelo-sm-resolver:{key}")),
         );
     }
 

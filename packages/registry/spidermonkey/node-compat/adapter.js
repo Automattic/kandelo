@@ -648,6 +648,14 @@
             if (typeof native.__kandeloVmRegisterImport !== 'function') throw new Error('native __kandeloVmRegisterImport is unavailable');
             return native.__kandeloVmRegisterImport(owner, registry);
         },
+        __kandeloVmCreateCachedData(owner) {
+            if (typeof native.__kandeloVmCreateCachedData !== 'function') throw new Error('native VM cache encoding is unavailable');
+            return native.__kandeloVmCreateCachedData(owner);
+        },
+        __kandeloVmCacheInfo(owner) {
+            if (typeof native.__kandeloVmCacheInfo !== 'function') throw new Error('native VM cache metadata is unavailable');
+            return native.__kandeloVmCacheInfo(owner);
+        },
         __kandeloVmCompile(code, opts) {
             if (typeof native.__kandeloVmCompile !== 'function') throw new Error('native __kandeloVmCompile is unavailable');
             return native.__kandeloVmCompile(code, opts);

@@ -4,8 +4,24 @@
 function _createNodeVmPlatform(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
-    const { SafeWeakMap, Symbol, ObjectCreate } = primordials;
+    const { SafeWeakMap, Symbol, ObjectCreate, ReflectConstruct, Uint8Array,
+        TypedArrayPrototypeGetBuffer, TypedArrayPrototypeGetByteOffset,
+        TypedArrayPrototypeGetByteLength } = primordials;
     const native = platform.native;
+    const FastBuffer = platform.FastBuffer;
+    function cacheBytes(owner) {
+        // The native encoder owns a fresh, otherwise private byte allocation.
+        // Read its actual view slots through captured intrinsics, never public
+        // Buffer.from/valueOf/length. Construct a genuine internal FastBuffer
+        // view with the intrinsic allocator; mutable FastBuffer super state is
+        // not consulted. Its class prototype is an own immutable property.
+        const bytes = native.__kandeloVmCreateCachedData(owner);
+        const length = TypedArrayPrototypeGetByteLength(bytes);
+        return { __proto__: null, length, data: ReflectConstruct(Uint8Array, [
+            TypedArrayPrototypeGetBuffer(bytes),
+            TypedArrayPrototypeGetByteOffset(bytes), length,
+        ], FastBuffer) };
+    }
     const contexts = new SafeWeakMap();
     const scripts = new SafeWeakMap();
     const codeOptions = new SafeWeakMap();
@@ -63,9 +79,9 @@ function _createNodeVmPlatform(platform) {
     }
     /* NODE_VM_MAKE_CONTEXTIFY_SCRIPT */
     function compileOptions(filename, lineOffset, columnOffset, cachedData, produceCachedData) {
-        if (cachedData !== undefined || produceCachedData) unavailable('persistent script/function cache');
+        if (cachedData !== undefined || produceCachedData) unavailable('persistent compileFunction cache');
         if (lineOffset < 0 || columnOffset < 0) unavailable('negative source offsets');
-        return { filename, lineOffset, columnOffset };
+        return { __proto__: null, filename, lineOffset, columnOffset };
     }
     function contextGlobal(context) {
         if (context === undefined || context === null) return platform.global;
@@ -89,10 +105,29 @@ function _createNodeVmPlatform(platform) {
     class ContextifyScript {
         constructor(code, filename, lineOffset, columnOffset, cachedData, produceCachedData,
             _parsingContext, optionId) {
-            const options = compileOptions(filename, lineOffset, columnOffset, cachedData, produceCachedData);
-            scripts.set(this, native.__kandeloVmCompile(code, options));
+            // Public lib/vm.js already owns validation/getter order. Retain
+            // actual compiled identity before any observable metadata setter.
+            if (cachedData !== undefined)
+                unavailable('persistent Script cache admission requires a safe stencil validator');
+            const options = compileOptions(filename, lineOffset, columnOffset);
+            const owner = native.__kandeloVmCompile(code, options);
+            scripts.set(this, owner);
             codeOptions.set(this, optionId);
             setImportRegistry(this, missingImportCallback, false);
+            const cache = produceCachedData ? cacheBytes(owner) : undefined;
+            const info = native.__kandeloVmCacheInfo(owner);
+            // Pinned native New's TryCatchScope covers these ordinary Set
+            // operations: a thrown setter stops later publication but leaves
+            // the actual compiled Script usable. Cache creation/native errors
+            // occur above this block and retain their real failure channel.
+            try {
+                if (cache !== undefined && cache.length !== 0) {
+                    this.cachedData = cache.data;
+                    this.cachedDataProduced = true;
+                }
+                this.sourceURL = info.sourceURL;
+                this.sourceMapURL = info.sourceMapURL;
+            } catch { return; }
         }
         runInContext(context, timeout, displayErrors, breakOnSigint, breakFirstLine) {
             const script = scripts.get(this);
@@ -101,7 +136,11 @@ function _createNodeVmPlatform(platform) {
             return native.__kandeloVmRunInContext(script, contextGlobal(context),
                 { displayErrors, timeout: timeout === -1 ? undefined : timeout });
         }
-        createCachedData() { return unavailable('persistent script cache'); }
+        createCachedData() {
+            const owner = scripts.get(this);
+            if (owner === undefined) throw new primordials.TypeError('Illegal invocation');
+            return cacheBytes(owner).data;
+        }
     }
     function makeContext(sandbox, name, origin, strings, wasm, microtaskQueue) {
         if (microtaskQueue) unavailable('per-context microtask queue');

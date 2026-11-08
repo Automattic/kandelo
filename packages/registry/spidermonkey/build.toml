@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0176-node-vm-cache.patch",
   "packages/registry/spidermonkey/patches/0175-node-tty-write-owner.patch",
   "third_party/node-core/stream-write-material.h",
   "third_party/node-core/terminal-write-owner.h",
@@ -278,6 +279,8 @@ inputs = [
   "third_party/node-core/vm-execution-deadline.h",
   "third_party/node-core/native-vm-modules.cpp",
   "third_party/node-core/vm-module-hooks.h",
+  "third_party/node-core/vm-script-cache.h",
+  "third_party/node-core/generate-engine-build-id.py",
   "third_party/node-core/vm-modules-adapter.js",
   "third_party/node-core/vm-modules-sources.json",
   "third_party/node-core/stage-vm-modules.py",
@@ -770,4 +773,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 243
+revision = 244

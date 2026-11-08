@@ -1,0 +1,66 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3568,2 +3568,3 @@
+   int32_t lineOffset = 0, columnOffset = 0;
++  RootedValue cacheInput(cx);
+   if (args.length() >= 2 && args[1].isObject()) {
+@@ -3585,2 +3586,9 @@
+     if (v.isInt32()) columnOffset = v.toInt32();
++    if (!JS_GetProperty(cx, o, "cachedData", &cacheInput)) return false;
++    if (!cacheInput.isUndefined()) {
++      // XDR is a trusted compiled-data format, not a public Buffer boundary.
++      // Reject raw dispatcher input too until a genuine safe validator exists.
++      JS_ReportErrorASCII(cx, "VM cachedData decoding requires a safe stencil validator");
++      return false;
++    }
+   }
+@@ -3624,2 +3632,10 @@
+   if (!KandeloVmNewCodeOwner(cx, handle, &owner)) return false;
++  if (!filenameStr) {
++    filenameStr = JS_NewStringCopyZ(cx, filename);
++    if (!filenameStr) return false;
++  }
++  JS::SetReservedSlot(owner, VmCodeSource, StringValue(code));
++  JS::SetReservedSlot(owner, VmCodeFilename, StringValue(filenameStr));
++  JS::SetReservedSlot(owner, VmCodeLineOffset, Int32Value(lineOffset));
++  JS::SetReservedSlot(owner, VmCodeColumnOffset, Int32Value(columnOffset));
+   args.rval().setObject(*owner);
+@@ -3748,3 +3764,18 @@
+         prepared = JS_WrapValue(cx, &ownerValue);
+-        if (prepared) JS::SetScriptPrivate(script, ownerValue);
++        if (prepared) {
++          JS::SetScriptPrivate(script, ownerValue);
++          // The actual ScriptSource owns a shared native stencil reference,
++          // not its realm/global. Subsequent lazy-function compilation is
++          // recorded by CompileLazyFunctionToStencilMaybeInstantiate, so a
++          // later createCachedData serializes actual delazifications too.
++          auto* stencils = stencilObj->stencil();
++          if (!stencils->hasAsmJS()) {
++            auto* sourceObject = script->sourceObject();
++            if (!sourceObject->maybeGetStencils()) {
++              RefPtr<JS::Stencil> retained = stencils;
++              sourceObject->setStencils(retained.forget());
++              sourceObject->setSharingDelazifications();
++            } else MOZ_ASSERT(sourceObject->maybeGetStencils() == stencils);
++          }
++        }
+       }
+@@ -4742,2 +4773,4 @@
+       JS_FN("__kandeloVmCompile", KandeloVmCompile, 2, 0),
++      JS_FN("__kandeloVmCreateCachedData", KandeloVmCreateCachedData, 1, 0),
++      JS_FN("__kandeloVmCacheInfo", KandeloVmCacheInfo, 1, 0),
+       JS_FN("__kandeloVmCompileFunction", KandeloVmCompileFunction, 5, 0),
+@@ -17044,10 +17077,5 @@
+ static bool ShellBuildId(JS::BuildIdCharVector* buildId) {
+-  // The browser embeds the date into the buildid and the buildid is embedded
+-  // in the binary, so every 'make' necessarily builds a new firefox binary.
+-  // Fortunately, the actual firefox executable is tiny -- all the code is in
+-  // libxul.so and other shared modules -- so this isn't a big deal. Not so
+-  // for the statically-linked JS shell. To avoid recompiling js.cpp and
+-  // re-linking 'js' on every 'make', we use a constant buildid and rely on
+-  // the shell user to manually clear any caches between cache-breaking updates.
+-  const char buildid[] = "JS-shell";
++  // The resolver supplies its exact immutable recipe key. Independent manual
++  // builds receive unique build-instance IDs, never the unsafe shell constant.
++  const char buildid[] = KANDELO_ENGINE_BUILD_ID;
+   return buildId->append(buildid, sizeof(buildid));

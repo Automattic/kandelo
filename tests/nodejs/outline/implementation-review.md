@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source244 adds partial VM encoding/build-identity/publication ownership with native resolver evidence; public cachedData admission and current guest/four-host conformance remain open.
+See [source scope](vm-script-cache-integration.md).
+
 Partial native TTY write-request owner with independent source corrections, preserving existing stdio/read/resize owners and all unfinished public TTY/guest obligations.
 See [source scope](tty-write-owner-integration.md).
 
