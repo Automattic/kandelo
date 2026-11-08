@@ -1,0 +1,321 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/process-contracts.md",
+    "findingIds": [
+      "CP-010"
+    ],
+    "relatedFamilies": [
+      "processes",
+      "web",
+      "workers",
+      "testing",
+      "documentation"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/process-contracts.md",
+        "findingId": "CP-010",
+        "relation": "partial-spawn-owner-contribution"
+      },
+      {
+        "document": "tests/nodejs/audit/web.md",
+        "findingId": "WEB-005",
+        "relation": "partial-data-scheme-owner"
+      },
+      {
+        "document": "tests/nodejs/audit/worker-contracts.md",
+        "findingId": "R-003",
+        "relation": "partial-constructor-environment-owner"
+      },
+      {
+        "document": "tests/nodejs/audit/worker-contracts.md",
+        "findingId": "R-009",
+        "relation": "partial-constructor-environment-owner"
+      },
+      {
+        "document": "tests/nodejs/audit/worker-contracts.md",
+        "findingId": "R-012",
+        "relation": "partial-constructor-environment-owner"
+      },
+      {
+        "document": "tests/nodejs/audit/testing.md",
+        "findingId": "TEST-004",
+        "relation": "partial-internal-execution-prerequisite"
+      },
+      {
+        "document": "tests/nodejs/audit/testing.md",
+        "findingId": "TEST-005",
+        "relation": "public-activation-isolation-transport-unmet"
+      }
+    ],
+    "documentationGate": {
+      "document": "tests/nodejs/audit/documentation.md",
+      "relation": "governing-evidence-and-partial-support-gate; no invented finding ID/closure"
+    },
+    "scope": "Partial owning source; CP010 timeout is underlying spawn prerequisite, not execFile/collector closure; benchmark TEST005 activation remains missing."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "spawn-positive-timeout",
+      "scope": "Complete selected pinned positive timeout block over real child/timer owners;8historical native-dependent productionclosure groups retained, no new rerun or guest proof."
+    },
+    {
+      "feature": "fetch-data-scheme",
+      "scope": "Real dataURL response/body path and captured immutable stream owners; historical7/source-r2 plus finalcapture1 retained separately."
+    },
+    {
+      "feature": "worker-warning-exec-argv",
+      "scope": "Actual selected warning CLI parser/startup state over genuine worker graph; includes same unnamed namespace linkage correction; native10observations targetonly."
+    },
+    {
+      "feature": "internal-benchmark-owner",
+      "scope": "Five unchanged algorithms consumed internally through real testing factory; publicnode:bench inactive, positive nativeV8serializer dependency explicit."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core265-batch-source-r1/report.json",
+    "sha256": "5794cc1ace334e5343c22ae77053d8fb8e1ecdb37fdfbf39cfa8fa446072a266",
+    "guardedInputs": 921,
+    "scope": "One normal265generation/staging/syntax/input check. No repeated historical component/native controls; timeout/Fetch/Worker/benchmark public/guest behavior not freshly validated. Zero newcompilers/reference replay/overall/guest."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core265-batch-affected-r1.json",
+    "sha256": "dba3a4df686b87f18b0cfb458470e8cfc065e15376e5f6fe0cd0c419aa54e454",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core265-batch-source-r1/report.json",
+    "sha256": "5794cc1ace334e5343c22ae77053d8fb8e1ecdb37fdfbf39cfa8fa446072a266",
+    "reportScope": "One normal265generation/staging/syntax/input check. No repeated historical component/native controls; timeout/Fetch/Worker/benchmark public/guest behavior not freshly validated. Zero newcompilers/reference replay/overall/guest.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true,
+    "freshComponentGroups": 0,
+    "freshAPIConformancePasses": 0
+  },
+  "sealedEvidence": {
+    "report": ".context/core265-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "823cb3b4178fe67c255b7d7e28a7206bf9adc4197e16e3aa19e3aeae4b564de3",
+    "reusedEvidence": true,
+    "scope": "Exact sealed source versions/reviews and original failures, reused histories only. No fresh native or component observations."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/child-spawn-timeout-owner-agent/report.json",
+      "sha256": "774bb08576c1e062f12290098246518c4f3d0d71e62f6aa9210d295a01004403",
+      "classification": "Original R1native0/8 and candidate6/8 failures plus final historical8/8native-dependent groups; no current guest proof.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/fetch-data-scheme-owner-root/report.json",
+      "sha256": "b2c44e7536e7880ef8b44c48b029547be91918ca8701dce367638b5adc0e7ce8",
+      "classification": "Seven/source-r2historical groups are not whole current-source passes; finalcapture1 narrower. Native cancellation crashes and fixture failures retained; SRI differs/global function shape remains missing.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/worker-exec-argv-owner-agent/report.json",
+      "sha256": "3b495e618da1bc1fdc01d7879096265396764814cbe041ec707149c6ac1ea9b1",
+      "classification": "Native10target observations only, no candidate. Original P1linkage defect corrected source-only by independent additive capsule.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/worker-exec-argv-linkage-correction-agent/report.json",
+      "sha256": "21a2fd643ffa5f2dddb8f96cc93ca3b97588ee2a969d17a98ca01ffd8d9fbd21",
+      "classification": "Namespace linkage source correction, no compiler/guest proof; originallimits remain.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/benchmark-owner-agent/report.json",
+      "sha256": "daa84fa0ec97f70a6f215a22dc3bbca5d09bbe54b646f3e23fd439f30924b297",
+      "classification": "Positive named-error uses nativeV8serializer; current missingV8named-error remains a real failure. Publicnode:bench inactive.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/fetch-private-dispatch-root-finding.json",
+      "sha256": "396608acae9942229be232944e6a40683ab028f1572e25401b01d7d13d180474",
+      "classification": "Root source-confirmed current265routing gap; sourceImplementedfalse/findingClosedfalse; no runtimeexecution/failure claim. Future266privatefix excluded.",
+      "sourceImplemented": false,
+      "findingClosed": false,
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "Full spawn/getters/IPC/credentials and guest lifecycle/fourhost remain open.",
+    "Native cancellation crash/nonpasses retained, SRI differs/missing and global fetch shape remains failure; fullFetch/guest/fourhost remain open.",
+    "Other valid Nodeflags remain implementation gaps; candidateCPP/frontend unexecuted, no fullWorker/guest/fourhost claim.",
+    "Currentcandidate missingV8named-error failure unresolved; namespace/gate/reporters/CLI/isolation/IPC/guest/fourhost open.",
+    "Current source265 bootstrap still reads public Request.url/headers/method and constructs global new URL before data-scheme dispatch, while pinned Fetch uses private request urlList/currentURL/state. Public getter/globalURL mutation can intercept this path. Root source-confirmed unresolved routing gap only; no fresh runtime proof or sourcefix credited. Future266 capsule is excluded from265 implementation."
+  ],
+  "featureContributions": [
+    {
+      "id": "spawn-positive-timeout",
+      "family": "processes",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/process-contracts.md",
+          "findingId": "CP-010",
+          "relation": "partial-spawn-owner-contribution"
+        }
+      ],
+      "scope": "Complete selected pinned positive timeout block over real child/timer owners;8historical native-dependent productionclosure groups retained, no new rerun or guest proof.",
+      "remaining": "Full spawn/getters/IPC/credentials and guest lifecycle/fourhost remain open.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "6a148ebbe992ce64931ba8da43395c53f68dfd4f772df235a2389811f574b3c8",
+      "producerSeal": {
+        "path": ".context/child-spawn-timeout-owner-agent/SEAL.json",
+        "sha256": "9c643084ca30c1f67969eb28d4fb50b9cab217a1753832d59efd7ef49a11599c"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core265-batch-source-r1/report.json",
+        "sha256": "5794cc1ace334e5343c22ae77053d8fb8e1ecdb37fdfbf39cfa8fa446072a266",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    },
+    {
+      "id": "fetch-data-scheme",
+      "family": "web",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/web.md",
+          "findingId": "WEB-005",
+          "relation": "partial-data-scheme-owner"
+        }
+      ],
+      "scope": "Real dataURL response/body path and captured immutable stream owners; historical7/source-r2 plus finalcapture1 retained separately.",
+      "remaining": "Native cancellation crash/nonpasses retained, SRI differs/missing and global fetch shape remains failure; fullFetch/guest/fourhost remain open. Current source265 bootstrap still reads public Request.url/headers/method and constructs global new URL before data-scheme dispatch, while pinned Fetch uses private request urlList/currentURL/state. Public getter/globalURL mutation can intercept this path. Root source-confirmed unresolved routing gap only; no fresh runtime proof or sourcefix credited. Future266 capsule is excluded from265 implementation.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "openSourceRoutingFinding": {
+        "report": ".context/fetch-private-dispatch-root-finding.json",
+        "sha256": "396608acae9942229be232944e6a40683ab028f1572e25401b01d7d13d180474",
+        "sourceImplemented": false,
+        "findingClosed": false
+      },
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "6a148ebbe992ce64931ba8da43395c53f68dfd4f772df235a2389811f574b3c8",
+      "producerSeal": {
+        "path": ".context/fetch-data-scheme-owner-root/SEAL.json",
+        "sha256": "f9f45f6de47b63aef0db61d196403d0fa9ad4dbfeab380ecf5c5764f0b35eda4"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core265-batch-source-r1/report.json",
+        "sha256": "5794cc1ace334e5343c22ae77053d8fb8e1ecdb37fdfbf39cfa8fa446072a266",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    },
+    {
+      "id": "worker-warning-exec-argv",
+      "family": "workers",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/worker-contracts.md",
+          "findingId": "R-003",
+          "relation": "partial-constructor-environment-owner"
+        },
+        {
+          "document": "tests/nodejs/audit/worker-contracts.md",
+          "findingId": "R-009",
+          "relation": "partial-constructor-environment-owner"
+        },
+        {
+          "document": "tests/nodejs/audit/worker-contracts.md",
+          "findingId": "R-012",
+          "relation": "partial-constructor-environment-owner"
+        }
+      ],
+      "scope": "Actual selected warning CLI parser/startup state over genuine worker graph; includes same unnamed namespace linkage correction; native10observations targetonly.",
+      "remaining": "Other valid Nodeflags remain implementation gaps; candidateCPP/frontend unexecuted, no fullWorker/guest/fourhost claim.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "6a148ebbe992ce64931ba8da43395c53f68dfd4f772df235a2389811f574b3c8",
+      "producerSeal": {
+        "path": ".context/worker-exec-argv-owner-agent/SEAL.json",
+        "sha256": "8466a1c67714f537d33b236ebffe6fe302d56d07d37354e0b5b082484133be75"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core265-batch-source-r1/report.json",
+        "sha256": "5794cc1ace334e5343c22ae77053d8fb8e1ecdb37fdfbf39cfa8fa446072a266",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    },
+    {
+      "id": "internal-benchmark-owner",
+      "family": "testing",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/testing.md",
+          "findingId": "TEST-004",
+          "relation": "partial-internal-execution-prerequisite"
+        },
+        {
+          "document": "tests/nodejs/audit/testing.md",
+          "findingId": "TEST-005",
+          "relation": "public-activation-isolation-transport-unmet"
+        }
+      ],
+      "scope": "Five unchanged algorithms consumed internally through real testing factory; publicnode:bench inactive, positive nativeV8serializer dependency explicit.",
+      "remaining": "Currentcandidate missingV8named-error failure unresolved; namespace/gate/reporters/CLI/isolation/IPC/guest/fourhost open.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "6a148ebbe992ce64931ba8da43395c53f68dfd4f772df235a2389811f574b3c8",
+      "producerSeal": {
+        "path": ".context/benchmark-owner-agent/SEAL.json",
+        "sha256": "0692ec2893d99c999904e730df142cc68088b115db73f78014f11604a582d642"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core265-batch-source-r1/report.json",
+        "sha256": "5794cc1ace334e5343c22ae77053d8fb8e1ecdb37fdfbf39cfa8fa446072a266",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    }
+  ],
+  "batchReceiptIndex": {
+    "report": ".context/core265-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "1e199eb9dbb4b841337eb2c4f958b513f258b49e45869554840fb0e58e235502",
+    "scope": "Actual completed source/check/import receipts. Zero newcomponent/native/APIpasses; no newguest or compiler."
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "documentationGate": "Historical/native dependencies and failures retain originalscope; current source and package predicates do not establish APIpasses.",
+  "at": "2026-11-08T09:59:18.308949+00:00",
+  "recipeRevision": 265,
+  "lastAcceptedEngine": 263,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

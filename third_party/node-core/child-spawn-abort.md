@@ -17,8 +17,9 @@ is recorded target behavior, not a manufactured exit-based cleanup policy.
 killSignal names/numbers use the real platform signal table. A killSignal
 option of zero is rejected by the pinned sanitizer; this differs from the
 actual child.kill(0) probe, which must not terminate a process. Timeout input
-validation retains target precedence, but positive async timeout enforcement
-remains a separate implementation gap.
+validation retains target precedence. Positive async timeout enforcement has a
+separate actual close-owned timer described in child-spawn-timeout.md; its
+source does not change the AbortSignal exit-owned subscription policy.
 
 This source slice does not resolve argv0/executable-role authority, custom
 shell paths, IPC/extra stdio, uid/gid or complete spawn normalization. Native

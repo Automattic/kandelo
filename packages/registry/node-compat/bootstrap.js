@@ -2834,6 +2834,8 @@ const querystring = _nodeQueryCodecs.require('querystring');
 
 const child_process = (() => {
     const _childPrimordials = _createNodePrimordials();
+    // Pinned child_process captures actual module timer methods at birth.
+    const { clearTimeout, setTimeout } = timers;
     function syncError(code, message, range = false) {
         const error = range ? new RangeError(message) : new TypeError(message);
         error.code = code; return error;
@@ -3056,7 +3058,7 @@ const child_process = (() => {
             : Object.keys(process.env).map(k => k + '=' + process.env[k]);
 
         // Pinned public-spawn validation precedes ChildProcess native stdio
-        // preparation. Positive timeout enforcement remains a separate owner.
+        // preparation; timeout publication follows actual child admission.
         if (options.timeout != null)
             _nodeValues.validators.validateInteger(options.timeout, 'timeout', 0);
         _nodeValues.validators.validateAbortSignal(options.signal, 'options.signal');
@@ -3076,7 +3078,28 @@ const child_process = (() => {
                 child.emit('error', error);
             }
         }
-        function publishAbortOwner(child) {
+        function publishSpawnOwners(child) {
+            if (options.timeout > 0) {
+              let timeoutId = setTimeout(() => {
+                if (timeoutId) {
+                  try {
+                    child.kill(killSignal);
+                  } catch (err) {
+                    child.emit('error', err);
+                  }
+                  timeoutId = null;
+                }
+              }, options.timeout);
+
+              // 'close' always fires after 'exit', or after 'error' on a spawn failure.
+              child.once('close', () => {
+                if (timeoutId) {
+                  clearTimeout(timeoutId);
+                  timeoutId = null;
+                }
+              });
+            }
+
             if (options.signal) {
                 const signal = options.signal;
                 if (signal.aborted) process.nextTick(onAbortListener);
@@ -3218,12 +3241,12 @@ const child_process = (() => {
             if (cwd) _childPrimordials.ArrayPrototypePush(actions, { op: 'chdir', path: _childPrimordials.String(cwd) });
         } catch (error) {
             rollbackPipes();
-            if (pipeFailure) return publishAbortOwner(failedLaunch(error));
+            if (pipeFailure) return publishSpawnOwners(failedLaunch(error));
             throw error;
         }
         let pid;
         try { pid = _spawnWithPath(file, argv, env, actions, cwd && _childPrimordials.String(cwd), { detached: !!options.detached }); }
-        catch (error) { rollbackPipes(); return publishAbortOwner(failedLaunch(error)); }
+        catch (error) { rollbackPipes(); return publishSpawnOwners(failedLaunch(error)); }
         child.pid = pid;
         child.stdin = null;
         for (let i = 0; i < 3; i++) {
@@ -3355,7 +3378,7 @@ const child_process = (() => {
         };
         child.ref = function() { if (!exited) _nn.socketRef(waitRequest, true); return this; };
         child.unref = function() { if (!exited) _nn.socketRef(waitRequest, false); return this; };
-        return publishAbortOwner(child);
+        return publishSpawnOwners(child);
     }
 
     const api = _createNodeChildExecPlatform({
@@ -5222,6 +5245,8 @@ function _getNodeTestingPlatform() {
             URLParse: value => _nodeWebPlatform.URL.parse(value) },
         vm: _builtinModules.vm, Module, diagnostics: _nodeDiagnostics.api, queueMicrotask,
         stream, streamRequire: name => _nodeStreamPlatform.require(name),
+        histogram: _nodeHistogram, cloneProtocol: _nodeClonePlatform.protocol, Buffer,
+        getV8: () => _builtinModules.v8,
         getOptionValue: _createNodeTestOptionReader({ cliOptions: _nodeNative.cliOptions, values: _nodeValues }),
     });
 }
@@ -6357,6 +6382,7 @@ globalThis.exports = globalThis.module.exports;
         const requestBody = requestState.body;
 
         const parsed = new URL(urlStr);
+        if (parsed.protocol === 'data:') return bodyPlatform.fetchDataURL(request);
         const client = parsed.protocol === 'https:' ? https : http;
         const port = parsed.port ? parseInt(parsed.port, 10)
             : (parsed.protocol === 'https:' ? 443 : 80);

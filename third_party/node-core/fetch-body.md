@@ -79,3 +79,50 @@ error/json/redirect, descriptors and private brands, original byte/view ownershi
 stream cloning/cancellation, shared Request/FormData owners and immutable HTTP
 response publication. Their native dependencies and artifact identities must be
 reported separately from guest and four-host conformance.
+
+## Data scheme source owner
+
+The Fetch scheme dispatcher routes `data:` Requests through the unchanged
+pinned Undici data URL decoder, MIME serializer, Body extraction, basic
+response filter and immutable Response owner. Percent decoding and forgiving
+base64 produce actual owned bytes; no HTTP request or host Fetch supplies
+the response. HEAD publishes a genuine null body. Other allowed methods
+use the data URL body without consuming an unused upload.
+
+The scheme owner cancels a readable request body on abort, rejects before
+response publication with the original reason, and reaches the real pinned
+stream controller when a response reader or clone owns its lock. The real
+stream completion/cancellation path retires both the scheme subscription
+and Request follower. Source is shared by all four Kandelo hosts, but the
+combined guest and host behavior has not been validated.
+
+Subresource integrity still requires its real hash-policy implementation.
+A nonempty integrity option rejects with `ERR_NOT_IMPLEMENTED`; unchecked
+bytes are never published as verified. Full Fetch controller/timing,
+redirect, HTTP filtering/decompression/cache policy and other schemes remain
+implementation gaps. The existing async global function shape also remains
+unchanged and fails the previously retained upstream shape assertion.
+
+Seven focused groups use the actual private adapter and current source263
+bundle with an explicit component insertion, over native stream, codec,
+clone, event and HTTP dependencies. They match seven pinned native26 groups;
+the integrity row proves refusal of unchecked bytes, not equivalent SRI
+implementation. No normal bundle generation, compiler, guest or browser
+execution was used for these component results.
+
+Two cancellation controls after response publication or reader acquisition
+pass for the candidate component. The same standalone native26.13.0 controls
+exit1 in Undici abortFetch while reading an undefined controller's error
+method. These native nonpasses and the initial candidate fixture dependency
+failure are retained in `.context/fetch-data-scheme-owner-root/`. They are
+not compatibility passes or accepted platform exclusions. This source
+implements actual stream ownership rather than copying that failure.
+
+A bounded source review found mutable public stream export lookups in the
+first draft. The final factory captures the actual isReadable/finished and
+internal require imports before user code, while keeping private stream
+module activation lazy. One new candidate-only control replaces both public
+exports after factory initialization and proves real completion plus locked
+abort still use the original owners. The earlier seven-group source image
+and bundle are retained separately; those observations are not relabeled
+as a fresh run of the capture correction. No native controls were rerun.

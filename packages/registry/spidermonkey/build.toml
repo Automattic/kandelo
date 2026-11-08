@@ -1,5 +1,11 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0186-node-worker-exec-argv.patch",
+  "third_party/node-core/upstream/testing/lib/internal/bench_runner/benchmark.js",
+  "third_party/node-core/upstream/testing/lib/internal/bench_runner/harness.js",
+  "third_party/node-core/upstream/testing/lib/internal/bench_runner/benchmarks_stream.js",
+  "third_party/node-core/upstream/testing/lib/internal/bench_runner/runner.js",
+  "third_party/node-core/upstream/testing/lib/internal/error_serdes.js",
   "third_party/node-core/upstream/digests/src/crypto/crypto_mac.cc",
   "packages/registry/spidermonkey/patches/0185-node-promise-listener-mac.patch",
   "third_party/node-core/crypto-mac-inventory-owner.md",
@@ -814,4 +820,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 264
+revision = 265

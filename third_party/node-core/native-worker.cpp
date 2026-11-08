@@ -9,8 +9,11 @@
 #include <mutex>
 #include <system_error>
 #include <vector>
+#include "vm/ArrayObject.h"
 
 namespace {
+static bool KandeloPrepareWorkerExecArgv(JSContext*,HandleValue,HandleObject,
+                                        bool,HandleValue,MutableHandleValue);
 struct KandeloWorkerControl {
   JSRuntime* parentRuntime;
   uint64_t id;
@@ -130,6 +133,11 @@ static bool KandeloWorkerDispatch(JSContext* cx, unsigned argc, Value* vp) {
   UniqueChars operation;
   RootedValue operationValue(cx, args.get(0));
   if (!KandeloGetString(cx, operationValue, &operation)) return false;
+  if (!strcmp(operation.get(), "execArgv")) {
+    if (!args.get(2).isObject()) { JS_ReportErrorASCII(cx,"Worker CLI environment is unavailable");return false; }
+    RootedObject environment(cx,&args[2].toObject());
+    return KandeloPrepareWorkerExecArgv(cx,args.get(1),environment,args.get(3).isTrue(),args.get(4),args.rval());
+  }
   if (!strcmp(operation.get(), "environment") || !strcmp(operation.get(), "data")) {
     if (!kandeloCurrentWorker) { args.rval().setNull(); return true; }
     const bool bootstrap = !strcmp(operation.get(), "environment");

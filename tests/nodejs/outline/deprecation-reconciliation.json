@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "cf98828dbec191690aa3675a2a03b842ac854dce79b6bf1abac07bd2a363cf00",
+    "packages/registry/node-compat/bootstrap.js": "d8fb068eddd092bc17aa5c4a809c2b3c49ec5cfbfd1819bd3719fbdfae3127b0",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/asymmetric-keygen-platform-adapter.js": "94b3dc26b1f783b97cb38eaa91baff3be883c66f8d80a6c76568a72ebf0207b0",
@@ -45,7 +45,7 @@
     "third_party/node-core/event-loop-delay-platform-adapter.js": "37ed94c3eb86ecda79c69f3ac563d5878bf2e965741ca3f45b1ef15c8510728f",
     "third_party/node-core/event-platform-adapter.js": "83c398737e7a7fa0af9b86f10ee289057b10f2a210e7a31a0025301e2e1773ed",
     "third_party/node-core/fd-stream-platform-adapter.js": "3f6ecfb2c0878175781f3605e9b0ccceba998d78bb8298424837892d32cff3d9",
-    "third_party/node-core/fetch-body-platform-adapter.js": "0abcc065ed2ace6dcfdf13391b3b565beecc183063936a6662e40cdebfa0b3af",
+    "third_party/node-core/fetch-body-platform-adapter.js": "49020446db3f829bd88d576094b3e8897fa4b0e91a163bf43917e786210f2d99",
     "third_party/node-core/ffi-library-platform-adapter.js": "cd542f7a1f97a3d512a6377b3739ea9d085b1ebfbf76e8f4254b6dc859bea995",
     "third_party/node-core/file-jobs-adapter.js": "421c39f5139be3c48861f6e881eba2520118d621d757c1cfa40351aa41168a60",
     "third_party/node-core/file-platform-adapter.js": "14f6702bde786ab09e9e05cd86c743a548c9cc33074716ee616ac995c11e348c",
@@ -111,7 +111,7 @@
     "third_party/node-core/sys-platform-adapter.js": "795f104873cdfb340667f160d358f548984b3fe73b7f4db335624f4073774b44",
     "third_party/node-core/tempdir-platform-adapter.js": "5102bbeeeb0ca8ffe47dec42d4edad3a91e0e8c6842903b3d3fb904b237afa39",
     "third_party/node-core/terminal-platform-adapter.js": "dd3a8dc58b0744515a60b41c80e49798190a030cf60d8728bcfd07667fd535c7",
-    "third_party/node-core/testing-platform-adapter.js": "9e8717598ae201818f3272c717ccc138196cacd92348e58e90531a7c2647567a",
+    "third_party/node-core/testing-platform-adapter.js": "a7d5783b4eae759fe32051fd5ea9cef637233a5d37ced7db0958f69da545c3cf",
     "third_party/node-core/testing-runner-adapter.js": "22eb03e53a82385215a23a6f382cf85101afcee1d86762a29b05e2812c02e7e6",
     "third_party/node-core/timers-promises-platform-adapter.js": "efb66d7b0d0f41f311d3bc05a0116b00800eb8780f3213ff6200244f96687e0c",
     "third_party/node-core/tls-context-adapter.js": "345706068e55beb99e0fe3fc747ad675b2bbc3091166766fb80970bafec3f767",
@@ -127,7 +127,7 @@
     "third_party/node-core/vm-platform-adapter.js": "49e93d5e37d8ed40d2d6a4aa1a28a7449f5e1ec8bffeec50b41d8460f801190b",
     "third_party/node-core/warning-platform-adapter.js": "63e20e6db2e5dfc77e1499b08956158a4a74f1d77295bce7cd6509f200f068df",
     "third_party/node-core/wasi-platform-adapter.js": "e8589d5fba307272d8fc21bb8113dbb1d5a31b70d39f571a0bf3fe4461803169",
-    "third_party/node-core/worker-platform-adapter.js": "cc4fea70fadd0858b75e30019410c9525d16320f1df68acc6bd3f620507b664a",
+    "third_party/node-core/worker-platform-adapter.js": "01245cdc2f25c1f33c8caddf25f5d6e8e9245a6e89d63fe5397f586f31a13b1f",
     "third_party/node-core/x509-platform-adapter.js": "41b250f14534f65b0c165999f4ad2325541219924a1c695b4d71e9a559a1c06a",
     "third_party/node-core/upstream/query-codecs/lib/punycode.js": "c5c75d5f31323affefa3595e63b3c50bca8bf7a2766936699e20460398e61717"
   },
@@ -2400,7 +2400,7 @@
       "selectedAdapterLiteralOccurrences": [
         {
           "path": "packages/registry/node-compat/bootstrap.js",
-          "line": 2903
+          "line": 2905
         }
       ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",

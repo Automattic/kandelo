@@ -7339,3 +7339,7 @@ Source263 combines real SQLTagStore cache/prepared-statement ownership, linked n
 ### Batched Promise, DNS, Server callback and MAC owners
 
 Source264 adds four scoped owner contributions in one ordinary-file source/generation/checkpoint batch. CurrentMAC6component observations use native backend dependencies and historicalnative reference; othernewnative/VMpaths remain sourceonly. Accepted263compilation/cache evidence stays historical, notcurrent264runtime proof.
+
+### Batched timeout, data Fetch, Worker CLI and internal benchmark owners
+
+Source265 combines four scoped owners in one normal generation/check batch. Only source/input/package checks are fresh; native-component histories retain their original source/dependency/nonpass scopes. No fresh API/host conformance or public benchmark activation is established.

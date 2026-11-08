@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source265 adds selected async-spawn timeout, dataURL Fetch, Worker warning execArgv and internal benchmark prerequisites. Documentation gates retain failures, explicit missing owners and all19partial; no source or package predicates count as API passes.
+See [source scope](core-batch265-implementation.md).
+
 Source264 combines Promise mode, actualDNS default recovery, nativeServer callbacks andMACinventory foundations. Onebatch preserves separatefeature/evidence scopes, all19partial and unvalidated currentguest behavior.
 See [source scope](core-batch264-implementation.md).
 

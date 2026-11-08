@@ -9,6 +9,8 @@ function _createNodeFetchBodyPlatform(platform) {
         PromiseResolve, PromiseReject, PromisePrototypeThen } = primordials;
     const { Buffer, Blob, File, URL, URLSearchParams, AbortController, TextEncoder, TextDecoder, TextDecoderStream, process } = platform;
     const { ReadableStream, TransformStream } = platform.stream.web;
+    const { isReadable: isReadableStream, finished: streamFinished } = platform.stream.api;
+    const requireStream = platform.stream.require;
     const factories = {
         __proto__: null,
         /* NODE_FETCH_BODY_MODULES */
@@ -46,6 +48,79 @@ function _createNodeFetchBodyPlatform(platform) {
     }
     const body = require('body');
     const response = require('response');
+    // Data URLs own decoded bytes, not a network connection. Share the pinned
+    // decoder, MIME, Body and Response records; cancellation must reach their
+    // actual stream controller even while a reader or tee owns its lock.
+    async function fetchDataURL(requestObject) {
+        const request = require('request').getRequestState(requestObject);
+        const signal = requestObject.signal;
+        const { dataURLProcessor, serializeAMimeType } = require('dataURL');
+        const { addAbortListener } = require('corePrimitive');
+        const { kState } = requireStream('internal/webstreams/util');
+        const { readableStreamDefaultControllerError } =
+            requireStream('internal/webstreams/readablestream');
+        let removeAbortListener, responseBody, aborted = false, reason;
+        function cleanup() {
+            removeAbortListener?.();
+            removeAbortListener = undefined;
+            require('request').removeRequestAbortListener(requestObject);
+        }
+        function abort() {
+            aborted = true;
+            reason = signal.reason;
+            try {
+                if (request.body?.stream != null && isReadableStream(request.body.stream)) {
+                    PromisePrototypeThen(request.body.stream.cancel(reason), undefined, error => {
+                        if (error.code !== 'ERR_INVALID_STATE') throw error;
+                    });
+                }
+                if (responseBody !== null && responseBody !== undefined &&
+                    isReadableStream(responseBody.stream)) {
+                    readableStreamDefaultControllerError(
+                        responseBody.stream[kState].controller, reason);
+                }
+            } finally { cleanup(); }
+        }
+        if (signal.aborted) { abort(); throw reason; }
+        removeAbortListener = addAbortListener(signal, abort);
+        try {
+            const url = request.urlList[request.urlList.length - 1];
+            const decoded = dataURLProcessor(url);
+            let error;
+            if (decoded === 'failure') {
+                error = new TypeError('fetch failed', {
+                    cause: response.makeNetworkError('failed to fetch the data URL').error,
+                });
+            } else if (request.integrity) {
+                // Integrity requires the genuine SRI/hash-policy owner. Do not
+                // publish unchecked bytes as an integrity-verified response.
+                error = new Error('Fetch subresource integrity is not implemented');
+                error.code = 'ERR_NOT_IMPLEMENTED';
+            } else {
+                responseBody = request.method === 'HEAD' ? null : body.extractBody(decoded.body)[0];
+            }
+            // Scheme fetch and response publication cross a job boundary in
+            // Undici. A same-stack abort must still win before publication.
+            await PromiseResolve();
+            if (aborted) throw reason;
+            if (error !== undefined) throw error;
+            const inner = response.makeResponse({
+                statusText: 'OK',
+                headersList: [['content-type', {
+                    name: 'Content-Type', value: serializeAMimeType(decoded.mimeType),
+                }]],
+                body: responseBody,
+                urlList: request.urlList,
+            });
+            const result = response.fromInnerResponse(response.filterResponse(inner, 'basic'), 'immutable');
+            if (responseBody === null) { request.done = true; cleanup(); }
+            else streamFinished(responseBody.stream, () => {
+                request.done = true;
+                cleanup();
+            });
+            return result;
+        } catch (error) { cleanup(); throw error; }
+    }
     // Pinned Undici HTTP-network body demand/termination contract over the
     // actual IncomingMessage owner; full dispatcher/fetch policy is separate.
     const readablePrototype = platform.stream.api.Readable.prototype;
@@ -151,6 +226,6 @@ function _createNodeFetchBodyPlatform(platform) {
         };
     }
 
-    return { ...body, ...response, ...require('request'), responseBodyFromIncoming,
+    return { ...body, ...response, ...require('request'), responseBodyFromIncoming, fetchDataURL,
         isFormData: platform.formData.webidl.is.FormData };
 }

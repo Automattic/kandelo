@@ -2230,6 +2230,31 @@
         "path": "upstream/testing/src/node_exit_code.h",
         "upstreamPath": "src/node_exit_code.h",
         "sha256": "7f1429f80db6bf171f1b17133268a141b4dcef7cc4dcb33483fa9e3f24f7957d"
+      },
+      "internal/bench_runner/benchmark": {
+        "path": "upstream/testing/lib/internal/bench_runner/benchmark.js",
+        "upstreamPath": "lib/internal/bench_runner/benchmark.js",
+        "sha256": "d1f4aaa72acf329db852e5fb1bbcb76181ed691d2e2e3c7700bbc6ea3ea9dc62"
+      },
+      "internal/bench_runner/harness": {
+        "path": "upstream/testing/lib/internal/bench_runner/harness.js",
+        "upstreamPath": "lib/internal/bench_runner/harness.js",
+        "sha256": "5ac15f984980de109c4f86825a7ea8b19c2b1c4dc28185eb4f6fc71390756c61"
+      },
+      "internal/bench_runner/benchmarks_stream": {
+        "path": "upstream/testing/lib/internal/bench_runner/benchmarks_stream.js",
+        "upstreamPath": "lib/internal/bench_runner/benchmarks_stream.js",
+        "sha256": "b88e77e32e2f9b73805a0236b1b838c6ee5af306bcb20f5c5e7826504e93fbc7"
+      },
+      "internal/bench_runner/runner": {
+        "path": "upstream/testing/lib/internal/bench_runner/runner.js",
+        "upstreamPath": "lib/internal/bench_runner/runner.js",
+        "sha256": "bc95f5c73847f223f96675a9bf9c71fed233f65035177299bd4421e20f351868"
+      },
+      "internal/error_serdes": {
+        "path": "upstream/testing/lib/internal/error_serdes.js",
+        "upstreamPath": "lib/internal/error_serdes.js",
+        "sha256": "a5dd5c2259cf8f3a4431901329329eebf742ada048f4b67bfadee082a470a4bd"
       }
     },
     "sections": {
@@ -2274,7 +2299,8 @@
       "--test-coverage-branches": "test_coverage_branches",
       "--test-coverage-lines": "test_coverage_lines",
       "--test-coverage-functions": "test_coverage_functions",
-      "--import": "preload_esm_modules"
+      "--import": "preload_esm_modules",
+      "--bench": "bench_runner"
     },
     "runnerSections": {
       "runnerPrimordials": {

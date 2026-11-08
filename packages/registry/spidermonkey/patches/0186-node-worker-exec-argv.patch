@@ -1,0 +1,223 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index 333ebfc0ec7fb8ac7a15207f2a1bc395a360cde1..24a3e40a3e644762636b3cf1ab8858d9a69334f0 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -12473,35 +12473,44 @@ static std::string KandeloNodeOptionName(const std::string& arg) {
+ }
+
+-static bool ApplyKandeloNodeBooleanOption(const std::string& arg) {
++static bool ApplyKandeloNodeWarningBooleanOption(const std::string& arg,
++                                                  KandeloNodeCLIState& options) {
+   std::string name = KandeloNodeOptionName(arg);
+   bool value = true;
+-  if (name.find("--no-") == 0) {
+-    name.erase(2, 3);
+-    value = false;
+-  }
+-  // Node's boolean parser uses presence/negation; an '=...' suffix does not
+-  // supply the boolean value (see pinned node_options-inl.h, kBoolean).
+-  if (name == "--abort-on-uncaught-exception") {
+-    gKandeloAbortOnUncaughtException = value;
+-    return true;
+-  }
++  if (name.find("--no-") == 0) { name.erase(2, 3);value = false; }
+   if (name == "--warnings") {
+-    kandeloNodeCLI.noWarnings = !value;
++    options.noWarnings = !value;
+     return true;
+   }
+   if (name == "--deprecation") {
+-    kandeloNodeCLI.noDeprecation = !value;
++    options.noDeprecation = !value;
+     return true;
+   }
+   if (name == "--throw-deprecation") {
+-    kandeloNodeCLI.throwDeprecation = value;
++    options.throwDeprecation = value;
+     return true;
+   }
+   if (name == "--trace-deprecation") {
+-    kandeloNodeCLI.traceDeprecation = value;
++    options.traceDeprecation = value;
+     return true;
+   }
+   if (name == "--trace-warnings") {
+-    kandeloNodeCLI.traceWarnings = value;
++    options.traceWarnings = value;
++    return true;
++  }
++  return false;
++}
++
++static bool ApplyKandeloNodeBooleanOption(const std::string& arg) {
++  if (ApplyKandeloNodeWarningBooleanOption(arg, kandeloNodeCLI)) return true;
++  std::string name = KandeloNodeOptionName(arg);
++  bool value = true;
++  if (name.find("--no-") == 0) {
++    name.erase(2, 3);
++    value = false;
++  }
++  // Node's boolean parser uses presence/negation; an '=...' suffix does not
++  // supply the boolean value (see pinned node_options-inl.h, kBoolean).
++  if (name == "--abort-on-uncaught-exception") {
++    gKandeloAbortOnUncaughtException = value;
+     return true;
+   }
+@@ -12558,4 +12567,20 @@ static bool KandeloValidateAbortBooleanOption(const std::string& arg) {
+ }
+
++static bool KandeloNodeWarningStringOption(const std::string& arg) {
++  const auto name = KandeloNodeOptionName(arg);
++  return name == "--redirect-warnings" || name == "--diagnostic-dir" ||
++         name == "--disable-warning";
++}
++static bool ApplyKandeloNodeWarningStringOption(const std::string& arg,
++                                                const std::string& value,
++                                                KandeloNodeCLIState& options) {
++  const auto name = KandeloNodeOptionName(arg);
++  if (name == "--redirect-warnings") options.redirectWarnings = value;
++  else if (name == "--diagnostic-dir") options.diagnosticDir = value;
++  else if (name == "--disable-warning") options.disableWarnings.push_back(value);
++  else return false;
++  return true;
++}
++
+ static bool KandeloNodeStringOption(const std::string& arg) {
+   const auto name = KandeloNodeOptionName(arg);
+@@ -12574,13 +12599,8 @@ static bool KandeloNodeTestPatternOption(const std::string& arg) {
+ static void ApplyKandeloNodeStringOption(const std::string& arg,
+                                          const std::string& value) {
++  if (ApplyKandeloNodeWarningStringOption(arg, value, kandeloNodeCLI)) return;
+   const auto name = KandeloNodeOptionName(arg);
+   if (name == "--conditions" || name == "-C") {
+     kandeloNodeCLI.conditions.push_back(value);
+-  } else if (name == "--redirect-warnings") {
+-    kandeloNodeCLI.redirectWarnings = value;
+-  } else if (name == "--diagnostic-dir") {
+-    kandeloNodeCLI.diagnosticDir = value;
+-  } else if (name == "--disable-warning") {
+-    kandeloNodeCLI.disableWarnings.push_back(value);
+   } else if (name == "--tls-cipher-list") {
+     kandeloNodeCLI.tlsCipherList = value;
+@@ -17572,15 +17592,112 @@ static bool KandeloDefineTestPatternOptions(JSContext* cx, HandleObject cli) {
+ }
+
+-static bool KandeloDefineWarningOptions(JSContext* cx, HandleObject cli) {
+-  if (!KandeloDefineBooleanProperty(cx, cli, "noDeprecation", kandeloNodeCLI.noDeprecation, 0) ||
+-      !KandeloDefineBooleanProperty(cx, cli, "throwDeprecation", kandeloNodeCLI.throwDeprecation, 0) ||
+-      !KandeloDefineBooleanProperty(cx, cli, "traceDeprecation", kandeloNodeCLI.traceDeprecation, 0) ||
+-      !KandeloDefineBooleanProperty(cx, cli, "traceWarnings", kandeloNodeCLI.traceWarnings, 0)) return false;
+-  return KandeloDefineNodeCLIString(cx, cli, "redirectWarnings", kandeloNodeCLI.redirectWarnings) &&
+-         KandeloDefineNodeCLIString(cx, cli, "diagnosticDir", kandeloNodeCLI.diagnosticDir) &&
+-         KandeloDefineNodeCLIString(cx, cli, "tlsCipherList", kandeloNodeCLI.tlsCipherList) &&
+-         KandeloDefineNodeCLIStringList(cx, cli, "disableWarnings", kandeloNodeCLI.disableWarnings);
++static bool KandeloDefineWarningOptions(JSContext* cx, HandleObject cli,
++                                        const KandeloNodeCLIState& options = kandeloNodeCLI,
++                                        bool includeTls = true) {
++  if (!KandeloDefineBooleanProperty(cx, cli, "noDeprecation", options.noDeprecation, 0) ||
++      !KandeloDefineBooleanProperty(cx, cli, "throwDeprecation", options.throwDeprecation, 0) ||
++      !KandeloDefineBooleanProperty(cx, cli, "traceDeprecation", options.traceDeprecation, 0) ||
++      !KandeloDefineBooleanProperty(cx, cli, "traceWarnings", options.traceWarnings, 0)) return false;
++  return KandeloDefineNodeCLIString(cx, cli, "redirectWarnings", options.redirectWarnings) &&
++         KandeloDefineNodeCLIString(cx, cli, "diagnosticDir", options.diagnosticDir) &&
++         (!includeTls || KandeloDefineNodeCLIString(cx, cli, "tlsCipherList", options.tlsCipherList)) &&
++         KandeloDefineNodeCLIStringList(cx, cli, "disableWarnings", options.disableWarnings);
++}
++
++namespace {
++// Parent-thread admission owns only real supported per-environment warning
++// options. The resulting immutable packet is consumed before child bootstrap
++// installs warning handlers; no global/main CLI state is changed by a Worker.
++static bool KandeloPrepareWorkerExecArgv(JSContext* cx, HandleValue input,
++    HandleObject environment, bool explicitEnvironment, HandleValue inherited,
++    MutableHandleValue result) {
++  try {
++    RootedObject array(cx),actual(cx);
++    if (input.isObject()) {
++      array=&input.toObject();actual=js::CheckedUnwrapDynamic(array,cx);
++      if (!actual) { if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);return false; }
++    }
++    // V8 IsArray admits real cross-realm arrays but not Proxy arrays. Keep
++    // the original caller-realm wrapper for every later Get/ToString operation.
++    const bool explicitArguments=actual && actual->is<js::ArrayObject>();
++    if (!explicitArguments) {
++      if (!inherited.isObject()) { JS_ReportErrorASCII(cx,"Worker inherited CLI arguments are unavailable");return false; }
++      array=&inherited.toObject();
++    }
++    std::vector<std::string> arguments;
++    auto collect=[&]() {
++      uint32_t length;if (!JS::GetArrayLength(cx,array,&length)) return false;
++      for (uint32_t i=0;i<length;++i) {
++        RootedValue value(cx);if (!JS_GetElement(cx,array,i,&value)) return false;
++        RootedString text(cx,JS::ToString(cx,value));if (!text) return false;
++        std::string bytes;if (!KandeloDotenvEncode(cx,text,&bytes)) return false;
++        arguments.push_back(std::move(bytes));
++      }
++      return true;
++    };
++    RootedObject output(cx,JS_NewPlainObject(cx));if (!output) return false;
++    auto errors=[&](const char* name,const std::vector<std::string>& messages) {
++      return KandeloDefineNodeCLIStringList(cx,output,name,messages);
++    };
++    if (explicitArguments || explicitEnvironment) {
++      KandeloNodeCLIState options;
++      RootedValue value(cx);
++      if (!JS_GetProperty(cx,environment,"NODE_REDIRECT_WARNINGS",&value)) return false;
++      if (value.isString()) {
++        RootedString text(cx,value.toString());
++        if (!KandeloDotenvEncode(cx,text,&options.redirectWarnings)) return false;
++      }
++      auto parse=[&](const std::vector<std::string>& values,bool fromEnvironment,
++                     bool rejectUnknown,std::vector<std::string>& failures) {
++        for (size_t i=0;i<values.size();++i) {
++          const auto& arg=values[i];
++          if (ApplyKandeloNodeWarningBooleanOption(arg,options)) continue;
++          if (KandeloNodeWarningStringOption(arg)) {
++            const auto equals=arg.find('=');std::string text;
++            if (equals!=std::string::npos) text=arg.substr(equals+1);
++            else if (i+1<values.size() && !values[i+1].empty() && values[i+1][0]!='-') text=values[++i];
++            if (text.empty()) { failures.push_back(arg+" requires an argument");return; }
++            ApplyKandeloNodeWarningStringOption(arg,text,options);continue;
++          }
++          // Inherited native arguments may contain real non-warning string
++          // options. Do not reinterpret their consumed values as flags.
++          const auto name=KandeloNodeOptionName(arg);
++          if (!rejectUnknown && arg.find('=')==std::string::npos &&
++              (KandeloNodeStringOption(arg) || name=="-e" || name=="--eval" || name=="--execute") &&
++              i+1<values.size()) { ++i;continue; }
++          if (rejectUnknown) failures.push_back(fromEnvironment ? arg+" is not allowed in NODE_OPTIONS" : arg);
++        }
++      };
++      if (!JS_GetProperty(cx,environment,"NODE_OPTIONS",&value)) return false;
++      if (value.isString()) {
++        RootedString source(cx,value.toString());std::string text;
++        if (!KandeloDotenvEncode(cx,source,&text)) return false;
++        std::vector<std::string> failures;
++        auto values=ParseNodeOptionsEnvVar(text,&failures);
++        parse(values,true,explicitEnvironment,failures);
++        if (!failures.empty() && explicitEnvironment) {
++          if (!errors("invalidNodeOptions",failures)) return false;
++          result.setObject(*output);return true;
++        }
++      }
++      // node_worker.cc parses explicit environment options before reading or
++      // coercing any execArgv element. Preserve its abrupt completion order.
++      if (!collect()) return false;
++      std::vector<std::string> failures;
++      parse(arguments,false,explicitArguments,failures);
++      if (!failures.empty()) {
++        if (!errors("invalidExecArgv",failures)) return false;
++        result.setObject(*output);return true;
++      }
++      if (!KandeloDefineWarningOptions(cx,output,options,false) ||
++          !KandeloDefineBooleanProperty(cx,output,"noWarnings",options.noWarnings,0)) return false;
++    } else if (!collect()) return false;
++    if (!KandeloDefineNodeCLIStringList(cx,output,"execArgv",arguments)) return false;
++    result.setObject(*output);return true;
++  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx);return false; }
+ }
+
++}  // namespace
++
+ static bool BindScriptArgs(JSContext* cx, OptionParser* op) {
+   AutoReportException are(cx);

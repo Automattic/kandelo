@@ -99665,6 +99665,2274 @@ module.exports = {
   reportReruns,
 };
 
+},
+"internal/bench_runner/benchmark": function(module, exports, require, primordials, internalBinding, process) {
+'use strict';
+
+const {
+  ArrayIsArray,
+  ArrayPrototypeJoin,
+  ArrayPrototypePush,
+  ArrayPrototypeReverse,
+  ArrayPrototypeSlice,
+  ArrayPrototypeSort,
+  JSONStringify,
+  MathFloor,
+  MathMax,
+  MathMin,
+  MathRound,
+  MathSqrt,
+  Number,
+  NumberIsFinite,
+  NumberMAX_SAFE_INTEGER,
+  ObjectFreeze,
+  ObjectKeys,
+  PromiseWithResolvers,
+  SafeSet,
+  StringPrototypeToLowerCase,
+} = primordials;
+const { AsyncResource } = require('async_hooks');
+const {
+  codes: {
+    ERR_INVALID_ARG_TYPE,
+    ERR_INVALID_ARG_VALUE,
+    ERR_INVALID_STATE,
+    ERR_OUT_OF_RANGE,
+  },
+} = require('internal/errors');
+const { createHistogram } = require('internal/histogram');
+const { TIMEOUT_MAX } = require('internal/timers');
+const { kEmptyObject } = require('internal/util');
+const {
+  validateAbortSignal,
+  validateFunction,
+  validateInteger,
+  validateNumber,
+  validateObject,
+  validateString,
+  validateUint32,
+} = require('internal/validators');
+const { structuredClone } = require('internal/worker/js_transferable');
+
+const { bigint: hrtime } = process.hrtime;
+const kDefaultSamples = 30;
+const kDefaultWarmup = 10;
+const kEmptyDiagnosticChannels = ObjectFreeze([]);
+const kEmptyNamePath = ObjectFreeze([]);
+const kEmptyParams = ObjectFreeze({ __proto__: null });
+const kEmptyTags = ObjectFreeze([]);
+
+function validateSkip(skip) {
+  if (skip !== undefined && typeof skip !== 'boolean' &&
+      typeof skip !== 'string') {
+    throw new ERR_INVALID_ARG_TYPE('options.skip', ['boolean', 'string'], skip);
+  }
+}
+
+function canonicalizeTags(tags, parentTags = kEmptyTags) {
+  if (tags === undefined) return parentTags;
+  if (!ArrayIsArray(tags)) {
+    throw new ERR_INVALID_ARG_TYPE('options.tags', 'Array', tags);
+  }
+
+  const result = ArrayPrototypeSlice(parentTags);
+  const seen = new SafeSet(parentTags);
+  for (let i = 0; i < tags.length; i++) {
+    validateString(tags[i], `options.tags[${i}]`);
+    if (tags[i].length === 0) {
+      throw new ERR_INVALID_ARG_VALUE(
+        `options.tags[${i}]`, tags[i], 'must not be empty');
+    }
+    const tag = StringPrototypeToLowerCase(tags[i]);
+    if (!seen.has(tag)) {
+      seen.add(tag);
+      ArrayPrototypePush(result, tag);
+    }
+  }
+  return ObjectFreeze(result);
+}
+
+function canonicalizeDiagnosticChannels(
+  diagnosticChannels,
+  parentDiagnosticChannels = kEmptyDiagnosticChannels,
+) {
+  if (diagnosticChannels === undefined) return parentDiagnosticChannels;
+  if (!ArrayIsArray(diagnosticChannels)) {
+    throw new ERR_INVALID_ARG_TYPE(
+      'options.diagnosticChannels', 'Array', diagnosticChannels);
+  }
+
+  const result = ArrayPrototypeSlice(parentDiagnosticChannels);
+  const seen = new SafeSet(parentDiagnosticChannels);
+  for (let i = 0; i < diagnosticChannels.length; i++) {
+    const name = diagnosticChannels[i];
+    if (typeof name === 'symbol') continue;
+    if (typeof name !== 'string') {
+      throw new ERR_INVALID_ARG_TYPE(
+        `options.diagnosticChannels[${i}]`, ['string', 'symbol'], name);
+    }
+    if (!seen.has(name)) {
+      seen.add(name);
+      ArrayPrototypePush(result, name);
+    }
+  }
+  return ObjectFreeze(result);
+}
+
+function canonicalizeParams(params) {
+  if (params === undefined) return kEmptyParams;
+  validateObject(params, 'options.params');
+
+  const result = { __proto__: null };
+  const keys = ObjectKeys(params);
+  ArrayPrototypeSort(keys);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const value = params[key];
+    if (typeof value !== 'string' && typeof value !== 'boolean' &&
+        (typeof value !== 'number' || !NumberIsFinite(value))) {
+      if (typeof value === 'number') {
+        throw new ERR_OUT_OF_RANGE(
+          `options.params.${key}`, 'a finite number', value);
+      }
+      throw new ERR_INVALID_ARG_TYPE(
+        `options.params.${key}`, ['string', 'number', 'boolean'], value);
+    }
+    result[key] = value;
+  }
+  return ObjectFreeze(result);
+}
+
+function validateNodeOptions(options, parentTags, parentDiagnosticChannels) {
+  validateObject(options, 'options');
+  const { diagnosticChannels, only = false, skip, tags } = options;
+  if (typeof only !== 'boolean') {
+    throw new ERR_INVALID_ARG_TYPE('options.only', 'boolean', only);
+  }
+  validateSkip(skip);
+  return {
+    __proto__: null,
+    diagnosticChannels: canonicalizeDiagnosticChannels(
+      diagnosticChannels, parentDiagnosticChannels),
+    only,
+    skip,
+    tags: canonicalizeTags(tags, parentTags),
+  };
+}
+
+function createLocation(loc, fallbackFile) {
+  return {
+    __proto__: null,
+    file: loc?.[2] ?? fallbackFile,
+    line: loc?.[0],
+    column: loc?.[1],
+  };
+}
+
+function getNamePath(parent, name) {
+  const path = [];
+  for (let current = parent; current?.parent !== null; current = current.parent) {
+    ArrayPrototypePush(path, current.name);
+  }
+  ArrayPrototypeReverse(path);
+  ArrayPrototypePush(path, name);
+  return path;
+}
+
+function cloneSample(sample) {
+  const result = {
+    __proto__: null,
+    operations: sample.operations,
+    duration_ns: sample.duration_ns,
+    rate: sample.rate,
+  };
+  if (sample.detail !== undefined) {
+    result.detail = structuredClone(sample.detail);
+  }
+  return result;
+}
+
+class Suite extends AsyncResource {
+  constructor(harness, parent, name, options, fn, loc, isRoot = false) {
+    super('BenchSuite');
+    const validated = validateNodeOptions(
+      options,
+      parent?.tags ?? kEmptyTags,
+      parent?.diagnosticChannels ?? kEmptyDiagnosticChannels,
+    );
+
+    this.harness = harness;
+    this.parent = parent;
+    this.name = name;
+    this.fn = fn;
+    this.loc = createLocation(loc, harness.entryFile);
+    this.isRoot = isRoot;
+    this.fileScope = isRoot ? null :
+      (parent.isRoot ? harness.getFileScope() : parent.fileScope);
+    this.namePath = isRoot ? kEmptyNamePath :
+      ObjectFreeze(getNamePath(parent, name));
+    this.suiteId = isRoot ? null : JSONStringify([
+      this.loc.file,
+      this.namePath,
+    ]);
+    this.parentId = isRoot || parent.isRoot ? null : parent.suiteId;
+    this.diagnosticChannels = validated.diagnosticChannels;
+    this.only = validated.only;
+    this.skip = validated.skip;
+    this.tags = validated.tags;
+    this.children = [];
+    this.hooks = {
+      __proto__: null,
+      after: [],
+      afterEach: [],
+      before: [],
+      beforeEach: [],
+    };
+    this.buildError = null;
+    this.buildPromise = null;
+    this.finished = false;
+    this.completion = PromiseWithResolvers();
+  }
+}
+
+class Bench extends AsyncResource {
+  constructor(harness, parent, name, options, fn, loc) {
+    super('Benchmark');
+    const validated = validateNodeOptions(
+      options, parent.tags, parent.diagnosticChannels);
+    const {
+      params,
+      samples = kDefaultSamples,
+      signal,
+      timeout = Infinity,
+      warmup = kDefaultWarmup,
+    } = options;
+
+    validateUint32(samples, 'options.samples', true);
+    validateUint32(warmup, 'options.warmup');
+    validateAbortSignal(signal, 'options.signal');
+    if (timeout !== Infinity) {
+      validateNumber(timeout, 'options.timeout', 0, TIMEOUT_MAX);
+    }
+
+    this.harness = harness;
+    this.parent = parent;
+    this.name = name;
+    this.fn = fn;
+    this.loc = createLocation(loc, harness.entryFile);
+    this.diagnosticChannels = validated.diagnosticChannels;
+    this.only = validated.only;
+    this.skip = validated.skip;
+    this.tags = validated.tags;
+    this.params = canonicalizeParams(params);
+    this.samples = samples;
+    this.warmup = warmup;
+    this.timeout = timeout;
+    this.outerSignal = signal;
+    this.fileScope = parent.isRoot ? harness.getFileScope() : parent.fileScope;
+    this.namePath = ObjectFreeze(getNamePath(parent, name));
+    this.fullName = ArrayPrototypeJoin(this.namePath, ' ');
+    this.benchId = JSONStringify([
+      this.loc.file,
+      this.namePath,
+      this.params,
+    ]);
+    this.parentId = parent.suiteId;
+    this.finished = false;
+    this.result = null;
+    this.completion = PromiseWithResolvers();
+  }
+}
+
+class BenchContext {
+  #closed = false;
+  #done = false;
+  #endCalled = false;
+  #index;
+  #invalid = false;
+  #onDiagnostic;
+  #phase;
+  #recordCalled = false;
+  #sample = null;
+  #startCalled = false;
+  #startTime;
+
+  constructor(bench, signal, phase, index, onDiagnostic) {
+    this.name = bench.name;
+    this.params = bench.params;
+    this.signal = signal;
+    this.#phase = phase;
+    this.#index = index;
+    this.#onDiagnostic = onDiagnostic;
+  }
+
+  get index() {
+    return this.#index;
+  }
+
+  get phase() {
+    return this.#phase;
+  }
+
+  diagnostic(message, options = kEmptyObject) {
+    if (this.#closed) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE('benchmark sample is no longer active');
+    }
+    try {
+      const clonedMessage = structuredClone(message);
+      validateObject(options, 'options');
+      const { detail, level = 'info' } = options;
+      validateString(level, 'options.level');
+      if (level !== 'info' && level !== 'warning') {
+        throw new ERR_INVALID_ARG_VALUE(
+          'options.level', level, "must be 'info' or 'warning'");
+      }
+      const diagnostic = { __proto__: null, level, message: clonedMessage };
+      if (detail !== undefined) diagnostic.detail = structuredClone(detail);
+      this.#onDiagnostic(diagnostic);
+    } catch (error) {
+      this.#invalid = true;
+      throw error;
+    }
+  }
+
+  start() {
+    if (this.#closed) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE('benchmark sample is no longer active');
+    }
+    if (this.#recordCalled) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE(
+        'start() cannot be combined with record()');
+    }
+    if (this.#startCalled) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE(
+        'start() must be called exactly once per benchmark sample');
+    }
+    this.#startCalled = true;
+    this.#startTime = hrtime();
+  }
+
+  end(operations, options = kEmptyObject) {
+    const endTime = hrtime();
+    if (this.#closed) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE('benchmark sample is no longer active');
+    }
+    if (this.#recordCalled) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE(
+        'end() cannot be combined with record()');
+    }
+    if (this.#endCalled) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE(
+        'end() must be called exactly once per benchmark sample');
+    }
+    this.#endCalled = true;
+    if (!this.#startCalled) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE('end() cannot be called before start()');
+    }
+
+    try {
+      validateObject(options, 'options');
+      const { detail } = options;
+      validateInteger(operations, 'operations', 1, NumberMAX_SAFE_INTEGER);
+      const duration = endTime - this.#startTime;
+      if (duration === 0n) {
+        throw new ERR_INVALID_STATE(
+          'insufficient clock precision for benchmark sample');
+      }
+      this.#sample = {
+        __proto__: null,
+        operations,
+        duration_ns: duration,
+        rate: operations / (Number(duration) / 1e9),
+      };
+      if (detail !== undefined) {
+        this.#sample.detail = structuredClone(detail);
+      }
+    } catch (error) {
+      this.#invalid = true;
+      throw error;
+    }
+    return cloneSample(this.#sample);
+  }
+
+  record(sample) {
+    if (this.#closed) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE('benchmark sample is no longer active');
+    }
+    if (this.#recordCalled) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE(
+        'record() must be called exactly once per benchmark sample');
+    }
+    if (this.#startCalled || this.#endCalled) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE(
+        'record() cannot be combined with start() or end()');
+    }
+    this.#recordCalled = true;
+
+    try {
+      validateObject(sample, 'sample');
+      const { detail, duration_ns, operations } = sample;
+      validateInteger(
+        operations, 'sample.operations', 1, NumberMAX_SAFE_INTEGER);
+      if (typeof duration_ns !== 'bigint') {
+        throw new ERR_INVALID_ARG_TYPE(
+          'sample.duration_ns', 'bigint', duration_ns);
+      }
+      if (duration_ns <= 0n) {
+        throw new ERR_OUT_OF_RANGE(
+          'sample.duration_ns', 'a positive bigint', duration_ns);
+      }
+      if (duration_ns > 9_007_199_254_740_991n) {
+        throw new ERR_OUT_OF_RANGE(
+          'sample.duration_ns',
+          'less than or equal to Number.MAX_SAFE_INTEGER',
+          duration_ns);
+      }
+      this.#sample = {
+        __proto__: null,
+        operations,
+        duration_ns,
+        rate: operations / (Number(duration_ns) / 1e9),
+      };
+      if (detail !== undefined) {
+        this.#sample.detail = structuredClone(detail);
+      }
+    } catch (error) {
+      this.#invalid = true;
+      throw error;
+    }
+    return cloneSample(this.#sample);
+  }
+
+  done() {
+    if (this.#closed) {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE('benchmark sample is no longer active');
+    }
+    if (this.#phase !== 'measurement') {
+      this.#invalid = true;
+      throw new ERR_INVALID_STATE(
+        'done() can only be called during a measured sample');
+    }
+    this.#done = true;
+  }
+
+  finish() {
+    this.#closed = true;
+    if (this.#invalid) {
+      throw new ERR_INVALID_STATE(
+        'benchmark sample violated the context method contract');
+    }
+    if (!this.#recordCalled && !this.#startCalled) {
+      throw new ERR_INVALID_STATE(
+        'benchmark callback did not call start() or record()');
+    }
+    if (!this.#recordCalled && (!this.#endCalled || this.#sample === null)) {
+      throw new ERR_INVALID_STATE(
+        'benchmark callback did not call end()');
+    }
+    return {
+      __proto__: null,
+      done: this.#done,
+      sample: this.#sample,
+    };
+  }
+
+  close() {
+    this.#closed = true;
+  }
+}
+
+function arithmeticMean(values) {
+  let sum = 0;
+  let compensation = 0;
+  for (let i = 0; i < values.length; i++) {
+    const adjusted = values[i] - compensation;
+    const next = sum + adjusted;
+    compensation = (next - sum) - adjusted;
+    sum = next;
+  }
+  return sum / values.length;
+}
+
+function summarizeSamples(samples) {
+  const rates = [];
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = 0; i < samples.length; i++) {
+    const rate = samples[i].rate;
+    ArrayPrototypePush(rates, rate);
+    min = MathMin(min, rate);
+    max = MathMax(max, rate);
+  }
+
+  const mean = arithmeticMean(rates);
+  let variance = 0;
+  for (let i = 0; i < rates.length; i++) {
+    const difference = rates[i] - mean;
+    variance += difference * difference;
+  }
+  variance /= rates.length;
+  const stddev = MathSqrt(variance);
+
+  const sorted = ArrayPrototypeSlice(rates);
+  ArrayPrototypeSort(sorted, (a, b) => a - b);
+  const middle = MathFloor(sorted.length / 2);
+  const median = sorted.length % 2 === 0 ?
+    (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+
+  const scale = MathMin(1_000_000, NumberMAX_SAFE_INTEGER / max);
+  const histogram = createHistogram({ __proto__: null, figures: 5 });
+  for (let i = 0; i < rates.length; i++) {
+    const value = MathMin(NumberMAX_SAFE_INTEGER, MathRound(rates[i] * scale));
+    histogram.record(value);
+  }
+
+  const meanCI = histogram.meanCI();
+  const histogramMean = meanCI.mean / scale;
+  const medianCI = histogram.percentileCI(50);
+
+  return {
+    __proto__: null,
+    mean,
+    median,
+    min,
+    max,
+    stddev,
+    coefficientOfVariation: stddev / mean,
+    confidenceInterval: {
+      __proto__: null,
+      lower: mean + meanCI.lower / scale - histogramMean,
+      upper: mean + meanCI.upper / scale - histogramMean,
+    },
+    medianConfidenceInterval: {
+      __proto__: null,
+      lower: medianCI.lower / scale,
+      upper: medianCI.upper / scale,
+    },
+    skewness: histogram.skewness,
+  };
+}
+
+function normalizeArgs(type, name, options, fn) {
+  if (typeof name === 'function') {
+    fn = name;
+    name = fn.name || '<anonymous>';
+    options = kEmptyObject;
+  } else if (name !== null && typeof name === 'object') {
+    fn = options;
+    options = name;
+    name = fn?.name || '<anonymous>';
+  } else if (typeof options === 'function') {
+    fn = options;
+    options = kEmptyObject;
+  }
+
+  validateFunction(fn, `${type} function`);
+  validateString(name, `${type} name`);
+  if (name.length === 0) {
+    throw new ERR_INVALID_ARG_VALUE(`${type} name`, name, 'must not be empty');
+  }
+  validateObject(options, 'options');
+  return { __proto__: null, fn, name, options };
+}
+
+module.exports = {
+  Bench,
+  BenchContext,
+  Suite,
+  normalizeArgs,
+  summarizeSamples,
+};
+
+},
+"internal/bench_runner/harness": function(module, exports, require, primordials, internalBinding, process) {
+'use strict';
+
+const {
+  ArrayPrototypePush,
+  ArrayPrototypeReverse,
+  ArrayPrototypeSlice,
+  BigInt,
+  FunctionPrototypeCall,
+  JSONStringify,
+  MathCeil,
+  Number,
+  Promise,
+  PromisePrototypeThen,
+  PromiseResolve,
+  PromiseWithResolvers,
+  ReflectApply,
+  RegExp,
+  RegExpPrototypeExec,
+  SafeMap,
+  SafePromiseRace,
+  String,
+  SymbolDispose,
+} = primordials;
+const { getCallerLocation } = internalBinding('util');
+const { exitCodes: { kGenericUserError } } = internalBinding('errors');
+const { AsyncLocalStorage } = require('async_hooks');
+const {
+  subscribe: subscribeToChannel,
+  unsubscribe: unsubscribeFromChannel,
+} = require('diagnostics_channel');
+const { AbortController } = require('internal/abort_controller');
+const {
+  AbortError,
+  codes: {
+    ERR_INVALID_ARG_TYPE,
+    ERR_INVALID_STATE,
+    ERR_OPERATION_FAILED,
+  },
+} = require('internal/errors');
+const { addAbortListener } = require('internal/events/abort_listener');
+const {
+  kEmptyObject,
+} = require('internal/util');
+const { isRegExp } = require('internal/util/types');
+const {
+  validateAbortSignal,
+  validateBoolean,
+  validateFunction,
+  validateObject,
+  validateUint32,
+} = require('internal/validators');
+const { queueMicrotask } = require('internal/process/task_queues');
+const { getOptionValue } = require('internal/options');
+const { clearTimeout, setImmediate, setTimeout } = require('timers');
+const {
+  Bench,
+  BenchContext,
+  Suite,
+  normalizeArgs,
+  summarizeSamples,
+} = require('internal/bench_runner/benchmark');
+const {
+  BenchmarksStream,
+} = require('internal/bench_runner/benchmarks_stream');
+
+const { bigint: hrtime } = process.hrtime;
+const kCancellationGracePeriod = 100;
+const kHookNames = ['after', 'afterEach', 'before', 'beforeEach'];
+const kIsCliRunner = getOptionValue('--bench');
+let nextRunId = 0;
+
+function createRunId() {
+  return `${process.pid}:${String(hrtime())}:${nextRunId++}`;
+}
+
+function eventLoopTurn() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function settlesPromptly(work) {
+  const timeout = PromiseWithResolvers();
+  const timer = setTimeout(
+    () => timeout.resolve(false), kCancellationGracePeriod);
+  try {
+    return await SafePromiseRace([
+      PromisePrototypeThen(work, () => true, () => true),
+      timeout.promise,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function createAbortError(signal) {
+  return new AbortError(undefined, { __proto__: null, cause: signal.reason });
+}
+
+function createTimeoutError(benchmark) {
+  return new ERR_OPERATION_FAILED(
+    `Benchmark timed out after ${benchmark.timeout}ms`);
+}
+
+class Harness {
+  #abortReason = null;
+  #autoRun;
+  #buildPromises = [];
+  #cliRun = false;
+  #duplicateErrors = new SafeMap();
+  #explicitRun = false;
+  #fileScopeStorage = new AsyncLocalStorage();
+  #hasOnly = false;
+  #runPromise = null;
+  #scheduled = false;
+  #starting = false;
+  #storage = new AsyncLocalStorage();
+  #yieldBetweenSamples;
+
+  constructor(options = kEmptyObject) {
+    validateObject(options, 'options');
+    const {
+      autoRun = true,
+      yieldBetweenSamples = true,
+    } = options;
+    validateBoolean(autoRun, 'options.autoRun');
+    validateBoolean(
+      yieldBetweenSamples, 'options.yieldBetweenSamples');
+    this.#autoRun = autoRun;
+    this.#yieldBetweenSamples = yieldBetweenSamples;
+    this.runId = createRunId();
+    this.fileRunId = this.runId;
+    this.entryFile = process.argv?.[1] ?? null;
+    this.stream = new BenchmarksStream();
+    this.state = 'collecting';
+    this.namePattern = null;
+    this.outerSignal = undefined;
+    this.samples = undefined;
+    this.success = true;
+    this.warmup = undefined;
+    this.counts = {
+      __proto__: null,
+      completed: 0,
+      failed: 0,
+      skipped: 0,
+      total: 0,
+    };
+    this.root = new Suite(
+      this,
+      null,
+      '<root>',
+      kEmptyObject,
+      undefined,
+      undefined,
+      true,
+    );
+  }
+
+  getFileScope() {
+    return this.#fileScopeStorage.getStore() ?? null;
+  }
+
+  runInFileScope(scope, fn) {
+    return this.#fileScopeStorage.run(scope, fn);
+  }
+
+  setRunScope({ entryFile, fileRunId, runId }) {
+    if (this.state !== 'collecting') {
+      throw new ERR_INVALID_STATE(
+        'benchmark execution scope cannot change after execution has started');
+    }
+    this.entryFile = entryFile;
+    this.fileRunId = fileRunId;
+    this.runId = runId;
+  }
+
+  #ensureCollecting() {
+    if (this.state === 'building' &&
+        this.#storage.getStore() instanceof Suite) return;
+    if (!this.#explicitRun && !this.#starting &&
+        this.state === 'collecting') return;
+    throw new ERR_INVALID_STATE(
+      'benchmarks cannot be declared after execution has started');
+  }
+
+  #getParent() {
+    const current = this.#storage.getStore();
+    return current instanceof Suite ? current : this.root;
+  }
+
+  createBench(name, options, fn, overrides = kEmptyObject) {
+    this.#ensureCollecting();
+    const normalized = normalizeArgs('benchmark', name, options, fn);
+    const parent = this.#getParent();
+    const benchmark = new Bench(
+      this,
+      parent,
+      normalized.name,
+      { __proto__: null, ...normalized.options, ...overrides },
+      normalized.fn,
+      overrides.loc,
+    );
+    ArrayPrototypePush(parent.children, benchmark);
+    this.#schedule();
+    return parent.isRoot ? benchmark.completion.promise : PromiseResolve();
+  }
+
+  createSuite(name, options, fn, overrides = kEmptyObject) {
+    this.#ensureCollecting();
+    const normalized = normalizeArgs('suite', name, options, fn);
+    const parent = this.#getParent();
+    const suite = new Suite(
+      this,
+      parent,
+      normalized.name,
+      { __proto__: null, ...normalized.options, ...overrides },
+      normalized.fn,
+      overrides.loc,
+    );
+    ArrayPrototypePush(parent.children, suite);
+    this.#buildSuite(suite);
+    this.#schedule();
+    return parent.isRoot ? suite.completion.promise : PromiseResolve();
+  }
+
+  createHook(name, fn, options = kEmptyObject) {
+    this.#ensureCollecting();
+    validateFunction(fn, 'hook function');
+    validateObject(options, 'options');
+    const parent = this.#getParent();
+    ArrayPrototypePush(parent.hooks[name], {
+      __proto__: null,
+      fileScope: parent.isRoot ? this.getFileScope() : parent.fileScope,
+      fn,
+      loc: getCallerLocation(),
+    });
+    this.#schedule();
+  }
+
+  #buildSuite(suite) {
+    let result;
+    try {
+      result = suite.runInAsyncScope(() => this.#storage.run(
+        suite,
+        () => FunctionPrototypeCall(suite.fn),
+      ));
+    } catch (error) {
+      suite.buildError = error;
+      result = undefined;
+    }
+
+    suite.buildPromise = PromisePrototypeThen(
+      PromiseResolve(result),
+      undefined,
+      (error) => {
+        suite.buildError = error;
+      },
+    );
+    ArrayPrototypePush(this.#buildPromises, suite.buildPromise);
+  }
+
+  configure(options = kEmptyObject) {
+    validateObject(options, 'options');
+
+    const {
+      namePattern,
+      samples,
+      signal,
+      warmup,
+      yieldBetweenSamples,
+    } = options;
+    let nextNamePattern = this.namePattern;
+    let nextSamples = this.samples;
+    let nextWarmup = this.warmup;
+    let nextYieldBetweenSamples = this.#yieldBetweenSamples;
+    if (namePattern !== undefined) {
+      if (typeof namePattern === 'string') {
+        nextNamePattern = new RegExp(namePattern);
+      } else if (isRegExp(namePattern)) {
+        nextNamePattern = new RegExp(namePattern);
+      } else {
+        throw new ERR_INVALID_ARG_TYPE(
+          'options.namePattern', ['string', 'RegExp'], namePattern);
+      }
+    }
+    if (samples !== undefined) {
+      validateUint32(samples, 'options.samples', true);
+      nextSamples = samples;
+    }
+    validateAbortSignal(signal, 'options.signal');
+    if (warmup !== undefined) {
+      validateUint32(warmup, 'options.warmup');
+      nextWarmup = warmup;
+    }
+    if (yieldBetweenSamples !== undefined) {
+      validateBoolean(
+        yieldBetweenSamples, 'options.yieldBetweenSamples');
+      nextYieldBetweenSamples = yieldBetweenSamples;
+    }
+
+    this.namePattern = nextNamePattern;
+    this.samples = nextSamples;
+    this.outerSignal = signal;
+    this.warmup = nextWarmup;
+    this.#yieldBetweenSamples = nextYieldBetweenSamples;
+  }
+
+  #ensureCanRun() {
+    if (this.#explicitRun || this.#starting || this.state !== 'collecting') {
+      throw new ERR_INVALID_STATE('benchmark execution has already started');
+    }
+  }
+
+  run(options = kEmptyObject, force = false) {
+    if (kIsCliRunner && !force) {
+      throw new ERR_INVALID_STATE(
+        'run() cannot be called from a file run with --bench');
+    }
+    this.#ensureCanRun();
+    this.#starting = true;
+    try {
+      this.configure(options);
+      this.#explicitRun = true;
+      this.#cliRun = force;
+    } finally {
+      this.#starting = false;
+    }
+    this.#schedule(force, true);
+    return this.stream;
+  }
+
+  #schedule(force = false, explicit = false) {
+    if (!force && kIsCliRunner) return;
+    if (!explicit && !this.#autoRun) return;
+    if (this.#scheduled) return;
+    this.#scheduled = true;
+    queueMicrotask(() => {
+      if (this.#runPromise === null) {
+        if (!this.#explicitRun) this.stream.resume();
+        this.#runPromise = PromisePrototypeThen(
+          this.#execute(), undefined, (error) => this.#recover(error));
+      }
+    });
+  }
+
+  async #recover(error) {
+    this.#settleSubtree(this.root, error);
+    if (this.state !== 'finished') {
+      try {
+        await this.#diagnostic(error, undefined, 'error');
+      } catch {
+        // The stream can fail while reporting the original error.
+      }
+    }
+    try {
+      await this.#finish();
+    } catch {
+      // Stream failure has already been reported to its consumer.
+    }
+  }
+
+  #settleSubtree(node, error) {
+    for (let i = 0; i < node.children.length; i++) {
+      const child = node.children[i];
+      if (child.finished) continue;
+      if (child instanceof Suite) {
+        this.#settleSubtree(child, error);
+        child.finished = true;
+        child.completion.resolve();
+      } else {
+        this.success = false;
+        this.counts.failed++;
+        const result = this.#createResult(
+          child, [], { __proto__: null, error });
+        child.finished = true;
+        child.result = result;
+        child.completion.resolve(result);
+      }
+      child.emitDestroy();
+    }
+  }
+
+  async #waitForBuild() {
+    for (let i = 0; i < this.#buildPromises.length; i++) {
+      await this.#buildPromises[i];
+    }
+  }
+
+  #walk(node, callback) {
+    for (let i = 0; i < node.children.length; i++) {
+      const child = node.children[i];
+      callback(child);
+      if (child instanceof Suite) this.#walk(child, callback);
+    }
+  }
+
+  #prepare() {
+    const identities = new SafeMap();
+    this.#walk(this.root, (node) => {
+      if (node.only) this.#hasOnly = true;
+      if (!(node instanceof Bench)) return;
+
+      this.counts.total++;
+      const identity = JSONStringify([
+        this.#getRecordScope(node).fileRunId,
+        node.benchId,
+      ]);
+      const existing = identities.get(identity);
+      if (existing === undefined) {
+        identities.set(identity, node);
+      } else {
+        this.#duplicateErrors.set(node, new ERR_INVALID_STATE(
+          `duplicate benchmark identity for "${node.fullName}"`));
+      }
+    });
+  }
+
+  async #emitPlans() {
+    const benchmarks = [];
+    this.#walk(this.root, (node) => {
+      if (node instanceof Bench) ArrayPrototypePush(benchmarks, node);
+    });
+    for (let i = 0; i < benchmarks.length; i++) {
+      const benchmark = benchmarks[i];
+      const skip = this.#getSkip(benchmark);
+      const data = {
+        __proto__: null,
+        ...this.#getRecordScope(benchmark),
+        benchId: benchmark.benchId,
+        parentId: benchmark.parentId,
+        name: benchmark.name,
+        namePath: ArrayPrototypeSlice(benchmark.namePath),
+        diagnosticChannels: ArrayPrototypeSlice(benchmark.diagnosticChannels),
+        file: benchmark.loc.file,
+        line: benchmark.loc.line,
+        column: benchmark.loc.column,
+        tags: ArrayPrototypeSlice(benchmark.tags),
+        params: benchmark.params,
+        samples: this.samples ?? benchmark.samples,
+        warmup: this.warmup ?? benchmark.warmup,
+        timeout: benchmark.timeout === Infinity ? null : benchmark.timeout,
+        yieldBetweenSamples: this.#yieldBetweenSamples,
+        selected: skip === null,
+      };
+      if (skip !== null) data.skip = skip;
+      await this.#waitForStream(this.stream.plan(data));
+    }
+  }
+
+  #hasSelectedAncestor(benchmark) {
+    for (let current = benchmark; current !== null; current = current.parent) {
+      if (current.only) return true;
+    }
+    return false;
+  }
+
+  #getSkip(benchmark) {
+    for (let current = benchmark; current !== null; current = current.parent) {
+      if (current.skip !== undefined && current.skip !== false) {
+        return current.skip;
+      }
+    }
+    if (this.#hasOnly && !this.#hasSelectedAncestor(benchmark)) return 'only';
+    if (this.namePattern !== null) {
+      this.namePattern.lastIndex = 0;
+      if (RegExpPrototypeExec(this.namePattern, benchmark.fullName) === null) {
+        return 'name pattern';
+      }
+    }
+    return null;
+  }
+
+  #suiteHasActiveBench(suite) {
+    for (let i = 0; i < suite.children.length; i++) {
+      const child = suite.children[i];
+      if (child instanceof Suite) {
+        if (this.#suiteHasActiveBench(child)) return true;
+      } else if (this.#getSkip(child) === null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async #invoke(resource, store, fn, args) {
+    const result = resource.runInAsyncScope(() => this.#storage.run(
+      store,
+      () => ReflectApply(fn, undefined, args),
+    ));
+    return PromiseResolve(result);
+  }
+
+  async #runHooks(suite, name, resource, store, context) {
+    const hooks = suite.hooks[name];
+    for (let i = 0; i < hooks.length; i++) {
+      await this.#invoke(resource, store, hooks[i].fn, [context]);
+    }
+  }
+
+  async #runSuiteHooks(suite, name) {
+    const context = {
+      __proto__: null,
+      name: suite.name,
+      signal: this.outerSignal,
+    };
+    const hooks = suite.hooks[name];
+    for (let i = 0; i < hooks.length; i++) {
+      try {
+        await this.#invoke(suite, suite, hooks[i].fn, [context]);
+      } catch (error) {
+        return { __proto__: null, error, hook: hooks[i] };
+      }
+    }
+    return null;
+  }
+
+  #getRecordScope(node = undefined) {
+    const scope = node?.fileScope;
+    if (scope !== null && scope !== undefined) {
+      return {
+        __proto__: null,
+        runId: this.runId,
+        fileRunId: scope.fileRunId,
+        entryFile: scope.entryFile,
+      };
+    }
+    if (node !== undefined && kIsCliRunner) {
+      return {
+        __proto__: null,
+        runId: this.runId,
+        fileRunId: this.fileRunId,
+        entryFile: null,
+      };
+    }
+    return {
+      __proto__: null,
+      runId: this.runId,
+      fileRunId: this.fileRunId,
+      entryFile: this.entryFile,
+    };
+  }
+
+  async #waitForStream(canContinue) {
+    if (canContinue) return;
+    try {
+      await this.stream.waitForDrain();
+    } catch (error) {
+      if (!this.stream.destroyed) throw error;
+    }
+  }
+
+  async #diagnostic(error, loc, level = 'info', node = undefined) {
+    this.success = false;
+    await this.#waitForStream(this.stream.diagnostic({
+      __proto__: null,
+      ...this.#getRecordScope(node),
+      message: error?.message ?? `${error}`,
+      error,
+      level,
+      file: loc?.file ?? loc?.[2],
+      line: loc?.line ?? loc?.[0],
+      column: loc?.column ?? loc?.[1],
+    }));
+  }
+
+  async #emitSampleDiagnostics(benchmark, phase, index, diagnostics) {
+    for (let i = 0; i < diagnostics.length; i++) {
+      const diagnostic = diagnostics[i];
+      const data = {
+        __proto__: null,
+        ...this.#getRecordScope(benchmark),
+        benchId: benchmark.benchId,
+        parentId: benchmark.parentId,
+        name: benchmark.name,
+        namePath: ArrayPrototypeSlice(benchmark.namePath),
+        phase,
+        index,
+        message: diagnostic.message,
+        level: diagnostic.level,
+        file: benchmark.loc.file,
+        line: benchmark.loc.line,
+        column: benchmark.loc.column,
+      };
+      if (diagnostic.detail !== undefined) data.detail = diagnostic.detail;
+      await this.#waitForStream(this.stream.diagnostic(data));
+    }
+  }
+
+  async #completeSubtree(node, error) {
+    for (let i = 0; i < node.children.length; i++) {
+      const child = node.children[i];
+      if (child instanceof Suite) {
+        await this.#completeSubtree(child, error);
+        child.finished = true;
+        child.completion.resolve();
+        child.emitDestroy();
+      } else {
+        await this.#executeBench(child, error);
+      }
+    }
+  }
+
+  async #executeSuite(suite) {
+    if (this.#abortReason !== null) {
+      await this.#completeSubtree(suite, this.#abortReason);
+      suite.finished = true;
+      suite.completion.resolve();
+      if (!suite.isRoot) suite.emitDestroy();
+      return;
+    }
+
+    if (suite.buildError !== null) {
+      await this.#diagnostic(suite.buildError, suite.loc, 'error', suite);
+      await this.#completeSubtree(suite, suite.buildError);
+      suite.finished = true;
+      suite.completion.resolve();
+      suite.emitDestroy();
+      return;
+    }
+
+    const active = this.#suiteHasActiveBench(suite);
+    let beforeError;
+    if (active) {
+      const failure = await this.#runSuiteHooks(suite, 'before');
+      if (failure !== null) {
+        beforeError = failure.error;
+        await this.#diagnostic(
+          failure.error, failure.hook.loc, 'error', failure.hook);
+      }
+    }
+
+    if (beforeError !== undefined) {
+      await this.#completeSubtree(suite, beforeError);
+    } else {
+      for (let i = 0; i < suite.children.length; i++) {
+        const child = suite.children[i];
+        if (child instanceof Suite) {
+          await this.#executeSuite(child);
+        } else {
+          await this.#executeBench(child);
+        }
+      }
+    }
+
+    if (active && this.#abortReason === null) {
+      const failure = await this.#runSuiteHooks(suite, 'after');
+      if (failure !== null) {
+        await this.#diagnostic(
+          failure.error, failure.hook.loc, 'error', failure.hook);
+      }
+    }
+    suite.finished = true;
+    suite.completion.resolve();
+    if (!suite.isRoot) suite.emitDestroy();
+  }
+
+  #getHookSuites(benchmark) {
+    const suites = [];
+    for (let current = benchmark.parent; current !== null; current = current.parent) {
+      ArrayPrototypePush(suites, current);
+    }
+    ArrayPrototypeReverse(suites);
+    return suites;
+  }
+
+  async #runBenchHooks(benchmark, name, context) {
+    const suites = this.#getHookSuites(benchmark);
+    if (name === 'afterEach') ArrayPrototypeReverse(suites);
+    for (let i = 0; i < suites.length; i++) {
+      await this.#runHooks(
+        suites[i], name, benchmark, benchmark, context);
+    }
+  }
+
+  async #runWithStop(benchmark, controller, callback, deadline) {
+    const signals = [];
+    if (this.outerSignal !== undefined) {
+      ArrayPrototypePush(signals, this.outerSignal);
+    }
+    if (benchmark.outerSignal !== undefined &&
+        benchmark.outerSignal !== this.outerSignal) {
+      ArrayPrototypePush(signals, benchmark.outerSignal);
+    }
+
+    for (let i = 0; i < signals.length; i++) {
+      if (signals[i].aborted) {
+        const error = createAbortError(signals[i]);
+        controller.abort(error);
+        throw error;
+      }
+    }
+
+    const stop = PromiseWithResolvers();
+    const listeners = [];
+    let pausedWork;
+    let timer;
+    for (let i = 0; i < signals.length; i++) {
+      const signal = signals[i];
+      ArrayPrototypePush(listeners, addAbortListener(signal, () => {
+        const error = createAbortError(signal);
+        controller.abort(error);
+        stop.reject(error);
+      }));
+    }
+    const armTimer = () => {
+      let remaining = deadline.value - hrtime();
+      if (remaining < 0n) remaining = 0n;
+      timer = setTimeout(() => {
+        const error = createTimeoutError(benchmark);
+        controller.abort(error);
+        stop.reject(error);
+      }, Number(remaining) / 1e6);
+    };
+    if (deadline !== null) armTimer();
+
+    const pause = (work) => {
+      pausedWork = (async () => {
+        if (deadline === null) return work();
+        clearTimeout(timer);
+        timer = undefined;
+        const start = hrtime();
+        try {
+          return await work();
+        } finally {
+          deadline.value += hrtime() - start;
+          if (!controller.signal.aborted) armTimer();
+        }
+      })();
+      return pausedWork;
+    };
+
+    const work = callback(pause);
+    try {
+      if (signals.length === 0 && timer === undefined) return await work;
+      return await SafePromiseRace([work, stop.promise]);
+    } catch (error) {
+      try {
+        await pausedWork;
+      } catch {
+        // Preserve the error that stopped benchmark execution.
+      }
+      if (!await settlesPromptly(work) && this.#abortReason === null) {
+        this.#abortReason = new AbortError(
+          'The benchmark run was aborted because asynchronous work did not ' +
+          'settle after cancellation',
+          { __proto__: null, cause: error },
+        );
+      }
+      throw error;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      for (let i = 0; i < listeners.length; i++) {
+        listeners[i][SymbolDispose]();
+      }
+    }
+  }
+
+  async #runSample(benchmark, signal, phase, index) {
+    const diagnostics = [];
+    const context = new BenchContext(
+      benchmark, signal, phase, index,
+      (diagnostic) => ArrayPrototypePush(diagnostics, diagnostic));
+    const channels = benchmark.diagnosticChannels;
+    let abortSubscription;
+    let diagnosticError;
+    let diagnosticFailed = false;
+    let subscribed = 0;
+    const onMessage = (message, name) => {
+      if (signal.aborted || diagnosticFailed) return;
+      try {
+        context.diagnostic({ __proto__: null, name, message });
+      } catch (error) {
+        diagnosticError = error;
+        diagnosticFailed = true;
+      }
+    };
+    const unsubscribe = () => {
+      while (subscribed > 0) {
+        subscribed--;
+        unsubscribeFromChannel(channels[subscribed], onMessage);
+      }
+    };
+    try {
+      for (let i = 0; i < channels.length; i++) {
+        subscribeToChannel(channels[i], onMessage);
+        subscribed++;
+      }
+      if (subscribed > 0) {
+        abortSubscription = addAbortListener(signal, unsubscribe);
+      }
+      await this.#invoke(
+        benchmark, benchmark, benchmark.fn, [context]);
+      if (diagnosticFailed) throw diagnosticError;
+      const { done, sample } = context.finish();
+      return {
+        __proto__: null,
+        diagnostics,
+        done,
+        failed: false,
+        sample,
+      };
+    } catch (error) {
+      context.close();
+      return {
+        __proto__: null,
+        diagnostics,
+        error,
+        failed: true,
+      };
+    } finally {
+      abortSubscription?.[SymbolDispose]();
+      unsubscribe();
+    }
+  }
+
+  #createResult(benchmark, samples, extra = kEmptyObject) {
+    return {
+      __proto__: null,
+      ...this.#getRecordScope(benchmark),
+      benchId: benchmark.benchId,
+      parentId: benchmark.parentId,
+      name: benchmark.name,
+      namePath: ArrayPrototypeSlice(benchmark.namePath),
+      file: benchmark.loc.file,
+      line: benchmark.loc.line,
+      column: benchmark.loc.column,
+      tags: ArrayPrototypeSlice(benchmark.tags),
+      params: benchmark.params,
+      samples,
+      ...extra,
+    };
+  }
+
+  async #recordResult(benchmark, result) {
+    benchmark.finished = true;
+    benchmark.result = result;
+    let canContinue;
+    try {
+      canContinue = this.stream.complete(result);
+    } finally {
+      benchmark.completion.resolve(result);
+      benchmark.emitDestroy();
+    }
+    await this.#waitForStream(canContinue);
+  }
+
+  async #executeBench(benchmark, forcedError = undefined) {
+    const duplicateError = this.#duplicateErrors.get(benchmark);
+    if (duplicateError !== undefined) {
+      this.success = false;
+      this.counts.failed++;
+      await this.#recordResult(benchmark, this.#createResult(
+        benchmark,
+        [],
+        { __proto__: null, error: duplicateError },
+      ));
+      return;
+    }
+
+    const skip = this.#getSkip(benchmark);
+    if (skip !== null) {
+      this.counts.skipped++;
+      await this.#recordResult(benchmark, this.#createResult(
+        benchmark,
+        [],
+        { __proto__: null, skip },
+      ));
+      return;
+    }
+
+    if (this.#abortReason !== null) forcedError = this.#abortReason;
+    if (forcedError !== undefined) {
+      this.success = false;
+      this.counts.failed++;
+      await this.#recordResult(benchmark, this.#createResult(
+        benchmark,
+        [],
+        { __proto__: null, error: forcedError },
+      ));
+      return;
+    }
+
+    await this.#waitForStream(this.stream.start({
+      __proto__: null,
+      ...this.#getRecordScope(benchmark),
+      benchId: benchmark.benchId,
+      parentId: benchmark.parentId,
+      name: benchmark.name,
+      namePath: ArrayPrototypeSlice(benchmark.namePath),
+      file: benchmark.loc.file,
+      line: benchmark.loc.line,
+      column: benchmark.loc.column,
+      tags: ArrayPrototypeSlice(benchmark.tags),
+      params: benchmark.params,
+    }));
+
+    const controller = new AbortController();
+    const deadline = benchmark.timeout === Infinity ? null : {
+      __proto__: null,
+      value: hrtime() + BigInt(MathCeil(benchmark.timeout * 1e6)),
+    };
+    const checkDeadline = () => {
+      if (deadline !== null && hrtime() >= deadline.value) {
+        const timeoutError = createTimeoutError(benchmark);
+        controller.abort(timeoutError);
+        throw timeoutError;
+      }
+    };
+    const samples = [];
+    const hookContext = {
+      __proto__: null,
+      name: benchmark.name,
+      params: benchmark.params,
+      signal: controller.signal,
+    };
+    let error;
+    let failed = false;
+    const runAfterEach = async () => {
+      await this.#runBenchHooks(
+        benchmark, 'afterEach', hookContext);
+      checkDeadline();
+    };
+
+    try {
+      await this.#runWithStop(benchmark, controller, async (pause) => {
+        try {
+          await this.#runBenchHooks(
+            benchmark, 'beforeEach', hookContext);
+          checkDeadline();
+          const warmup = this.warmup ?? benchmark.warmup;
+          const total = warmup + (this.samples ?? benchmark.samples);
+          for (let i = 0; i < total; i++) {
+            if (controller.signal.aborted) {
+              throw controller.signal.reason;
+            }
+            const phase = i < warmup ? 'warmup' : 'measurement';
+            const index = phase === 'warmup' ? i : i - warmup;
+            const outcome = await this.#runSample(
+              benchmark, controller.signal, phase, index);
+            if (!outcome.failed) {
+              checkDeadline();
+              if (controller.signal.aborted) {
+                throw controller.signal.reason;
+              }
+              if (i >= warmup) {
+                ArrayPrototypePush(samples, outcome.sample);
+              }
+            }
+
+            let diagnosticError;
+            let diagnosticFailed = false;
+            if (outcome.diagnostics.length > 0 &&
+                !controller.signal.aborted) {
+              try {
+                await pause(() => this.#emitSampleDiagnostics(
+                  benchmark, phase, index, outcome.diagnostics));
+              } catch (cause) {
+                diagnosticFailed = true;
+                diagnosticError = cause;
+              }
+            }
+            if (outcome.failed) throw outcome.error;
+            if (diagnosticFailed) throw diagnosticError;
+            if (controller.signal.aborted) {
+              throw controller.signal.reason;
+            }
+            if (i >= warmup) {
+              await pause(() => this.#waitForStream(this.stream.sample({
+                __proto__: null,
+                ...this.#getRecordScope(benchmark),
+                benchId: benchmark.benchId,
+                parentId: benchmark.parentId,
+                name: benchmark.name,
+                namePath: ArrayPrototypeSlice(benchmark.namePath),
+                index: i - warmup,
+                ...outcome.sample,
+              })));
+              if (controller.signal.aborted) {
+                throw controller.signal.reason;
+              }
+            }
+            if (outcome.done) break;
+            if (i + 1 < total && this.#yieldBetweenSamples) {
+              await eventLoopTurn();
+            }
+          }
+        } finally {
+          await runAfterEach();
+        }
+      }, deadline);
+    } catch (cause) {
+      failed = true;
+      error = cause;
+    } finally {
+      controller.abort();
+    }
+
+    if (failed) {
+      this.success = false;
+      this.counts.failed++;
+      await this.#recordResult(benchmark, this.#createResult(
+        benchmark,
+        samples,
+        { __proto__: null, error },
+      ));
+      return;
+    }
+
+    this.counts.completed++;
+    await this.#recordResult(benchmark, this.#createResult(
+      benchmark,
+      samples,
+      { __proto__: null, summary: summarizeSamples(samples) },
+    ));
+  }
+
+  async #finish(startTime) {
+    if (this.state === 'finished') return;
+    this.state = 'finished';
+    const duration = startTime === undefined ? 0n : hrtime() - startTime;
+    try {
+      await this.#waitForStream(this.stream.summary({
+        __proto__: null,
+        ...this.#getRecordScope(),
+        success: this.success,
+        counts: this.counts,
+        duration_ns: duration,
+        file: this.entryFile,
+      }));
+    } catch (error) {
+      try {
+        await this.#diagnostic(error, undefined, 'error');
+      } catch {
+        // The stream can fail while reporting the summary listener error.
+      }
+    } finally {
+      this.stream.end();
+      this.root.finished = true;
+      this.root.completion.resolve();
+      this.root.emitDestroy();
+      this.#storage.disable();
+      // Runners created with createRunner() leave the exit code to their
+      // caller, and the CLI runner derives it from the aggregated summary.
+      if (this.#autoRun && !this.#cliRun && !this.success) {
+        process.exitCode ??= kGenericUserError;
+      }
+    }
+  }
+
+  async #execute() {
+    this.state = 'building';
+    const startTime = hrtime();
+    await this.#waitForBuild();
+    this.#fileScopeStorage.disable();
+    this.#prepare();
+    this.state = 'running';
+    await this.#emitPlans();
+    await this.#executeSuite(this.root);
+    await this.#finish(startTime);
+  }
+}
+
+let globalHarness;
+
+function lazyHarness() {
+  globalHarness ??= new Harness();
+  return globalHarness;
+}
+
+function createDeclaration(type, getHarness) {
+  const declare = (name, options, fn, overrides = kEmptyObject) => {
+    const harness = getHarness();
+    const loc = getCallerLocation();
+    const declarationOptions = { __proto__: null, ...overrides, loc };
+    return type === 'benchmark' ?
+      harness.createBench(name, options, fn, declarationOptions) :
+      harness.createSuite(name, options, fn, declarationOptions);
+  };
+
+  if (type === 'benchmark') {
+    declare.skip = (name, options, fn) => declare(
+      name, options, fn, { __proto__: null, skip: true });
+    declare.only = (name, options, fn) => declare(
+      name, options, fn, { __proto__: null, only: true });
+  }
+  return declare;
+}
+
+function createHook(name, getHarness) {
+  return (fn, options) => getHarness().createHook(name, fn, options);
+}
+
+const bench = createDeclaration('benchmark', lazyHarness);
+const suite = createDeclaration('suite', lazyHarness);
+
+function createRunner(options = kEmptyObject) {
+  validateObject(options, 'options');
+  const harness = new Harness({
+    __proto__: null,
+    autoRun: false,
+    yieldBetweenSamples: options.yieldBetweenSamples === undefined ?
+      true : options.yieldBetweenSamples,
+  });
+  const getHarness = () => harness;
+  const runnerBench = createDeclaration('benchmark', getHarness);
+  const runnerSuite = createDeclaration('suite', getHarness);
+  return {
+    __proto__: null,
+    after: createHook(kHookNames[0], getHarness),
+    afterEach: createHook(kHookNames[1], getHarness),
+    before: createHook(kHookNames[2], getHarness),
+    beforeEach: createHook(kHookNames[3], getHarness),
+    bench: runnerBench,
+    describe: runnerSuite,
+    run: (runOptions = kEmptyObject) => harness.run(runOptions),
+    suite: runnerSuite,
+  };
+}
+
+function configureRunScope(scope) {
+  lazyHarness().setRunScope(scope);
+}
+
+function runInFileScope(scope, fn) {
+  return lazyHarness().runInFileScope(scope, fn);
+}
+
+function runBenchmarks(options, force) {
+  return lazyHarness().run(options, force);
+}
+
+module.exports = {
+  Harness,
+  after: createHook(kHookNames[0], lazyHarness),
+  afterEach: createHook(kHookNames[1], lazyHarness),
+  before: createHook(kHookNames[2], lazyHarness),
+  beforeEach: createHook(kHookNames[3], lazyHarness),
+  bench,
+  configureRunScope,
+  createRunId,
+  createRunner,
+  runInFileScope,
+  runBenchmarks,
+  suite,
+};
+
+},
+"internal/bench_runner/benchmarks_stream": function(module, exports, require, primordials, internalBinding, process) {
+'use strict';
+
+const {
+  ArrayFrom,
+  ArrayIsArray,
+  ArrayPrototypePush,
+  MapPrototypeClear,
+  MapPrototypeEntries,
+  MapPrototypeSet,
+  ObjectDefineProperty,
+  ObjectGetOwnPropertyDescriptor,
+  ObjectGetOwnPropertyNames,
+  ObjectGetPrototypeOf,
+  ObjectKeys,
+  ObjectPrototype,
+  ObjectPrototypeHasOwnProperty,
+  ObjectSetPrototypeOf,
+  PromiseReject,
+  PromiseResolve,
+  PromiseWithResolvers,
+  SafeMap,
+  SetPrototypeAdd,
+  SetPrototypeClear,
+  SetPrototypeValues,
+  Symbol,
+} = primordials;
+const { Readable } = require('stream');
+const { deserializeError, serializeError } = require('internal/error_serdes');
+const {
+  codes: {
+    ERR_INVALID_STATE,
+  },
+} = require('internal/errors');
+const { isError } = require('internal/util');
+const { isMap, isSet } = require('internal/util/types');
+const { structuredClone } = require('internal/worker/js_transferable');
+
+const kEmitMessage = Symbol('kEmitMessage');
+
+function repairError(source, clone, seen) {
+  const serialized = deserializeError(serializeError(source));
+  let sourceName;
+  try {
+    sourceName = source.name;
+  } catch {
+    // The serialized form already omits properties whose getters throw.
+  }
+  let repaired = clone;
+  if (!isError(repaired) ||
+      (sourceName !== undefined && repaired.name !== sourceName)) {
+    repaired = serialized;
+  }
+  if (repaired === null || typeof repaired !== 'object') return repaired;
+  seen.set(source, repaired);
+
+  if (serialized !== null && typeof serialized === 'object') {
+    const serializedKeys = ObjectGetOwnPropertyNames(serialized);
+    for (let i = 0; i < serializedKeys.length; i++) {
+      const key = serializedKeys[i];
+      if (ObjectPrototypeHasOwnProperty(repaired, key)) continue;
+      const descriptor = ObjectGetOwnPropertyDescriptor(serialized, key);
+      ObjectSetPrototypeOf(descriptor, null);
+      ObjectDefineProperty(repaired, key, descriptor);
+    }
+  }
+
+  const keys = ObjectGetOwnPropertyNames(source);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const descriptor = ObjectGetOwnPropertyDescriptor(source, key);
+    if (!ObjectPrototypeHasOwnProperty(descriptor, 'value') ||
+        typeof descriptor.value === 'function' ||
+        typeof descriptor.value === 'symbol') {
+      continue;
+    }
+    const existing = ObjectGetOwnPropertyDescriptor(repaired, key);
+    const value = descriptor.value !== null &&
+      typeof descriptor.value === 'object' ?
+      repairClone(descriptor.value, existing?.value, seen) : descriptor.value;
+    if ((existing !== undefined && existing.value === value) ||
+        existing?.configurable === false) {
+      continue;
+    }
+    ObjectDefineProperty(repaired, key, {
+      __proto__: null,
+      configurable: descriptor.configurable,
+      enumerable: descriptor.enumerable,
+      value,
+      writable: descriptor.writable,
+    });
+  }
+  return repaired;
+}
+
+function repairClone(source, clone, seen) {
+  if (source === null || (typeof source !== 'object' &&
+                          typeof source !== 'function')) {
+    return clone === undefined ? source : clone;
+  }
+  if (typeof source === 'function') return clone;
+  if (seen.has(source)) return seen.get(source);
+  if (isError(source)) return repairError(source, clone, seen);
+  if (clone === null || typeof clone !== 'object') {
+    try {
+      clone = structuredClone(source);
+    } catch {
+      const prototype = ObjectGetPrototypeOf(source);
+      if (!ArrayIsArray(source) && prototype !== null &&
+          prototype !== ObjectPrototype) {
+        return clone;
+      }
+      clone = ArrayIsArray(source) ? [] : { __proto__: prototype };
+    }
+  }
+  seen.set(source, clone);
+  if (isMap(source) && isMap(clone)) {
+    const sourceEntries = ArrayFrom(MapPrototypeEntries(source));
+    const cloneEntries = ArrayFrom(MapPrototypeEntries(clone));
+    const repairedEntries = [];
+    for (let i = 0; i < sourceEntries.length; i++) {
+      ArrayPrototypePush(repairedEntries, [
+        repairClone(sourceEntries[i][0], cloneEntries[i][0], seen),
+        repairClone(sourceEntries[i][1], cloneEntries[i][1], seen),
+      ]);
+    }
+    MapPrototypeClear(clone);
+    for (let i = 0; i < repairedEntries.length; i++) {
+      MapPrototypeSet(clone, repairedEntries[i][0], repairedEntries[i][1]);
+    }
+    return clone;
+  }
+  if (isSet(source) && isSet(clone)) {
+    const sourceValues = ArrayFrom(SetPrototypeValues(source));
+    const cloneValues = ArrayFrom(SetPrototypeValues(clone));
+    const repairedValues = [];
+    for (let i = 0; i < sourceValues.length; i++) {
+      ArrayPrototypePush(
+        repairedValues, repairClone(sourceValues[i], cloneValues[i], seen));
+    }
+    SetPrototypeClear(clone);
+    for (let i = 0; i < repairedValues.length; i++) {
+      SetPrototypeAdd(clone, repairedValues[i]);
+    }
+    return clone;
+  }
+  const prototype = ObjectGetPrototypeOf(source);
+  if (prototype === null) ObjectSetPrototypeOf(clone, null);
+  if (prototype !== null && prototype !== ObjectPrototype &&
+      !ArrayIsArray(source)) {
+    return clone;
+  }
+  const keys = ObjectKeys(source);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const descriptor = ObjectGetOwnPropertyDescriptor(source, key);
+    if (!ObjectPrototypeHasOwnProperty(descriptor, 'value')) continue;
+    const existing = ObjectGetOwnPropertyDescriptor(clone, key);
+    const value = repairClone(descriptor.value, existing?.value, seen);
+    if ((existing !== undefined && existing.value === value) ||
+        existing?.configurable === false) {
+      continue;
+    }
+    ObjectDefineProperty(clone, key, {
+      __proto__: null,
+      configurable: descriptor.configurable,
+      enumerable: descriptor.enumerable,
+      value,
+      writable: descriptor.writable,
+    });
+  }
+  if (ArrayIsArray(source)) {
+    const descriptor = ObjectGetOwnPropertyDescriptor(source, 'length');
+    ObjectSetPrototypeOf(descriptor, null);
+    ObjectDefineProperty(clone, 'length', descriptor);
+  }
+  return clone;
+}
+
+function cloneRecordData(data) {
+  let clone;
+  try {
+    clone = structuredClone(data);
+  } catch (error) {
+    if (data.error === undefined) throw error;
+    clone = structuredClone({ __proto__: null, ...data, error: undefined });
+    clone.error = deserializeError(serializeError(data.error));
+  }
+  try {
+    return repairClone(data, clone, new SafeMap());
+  } catch {
+    return clone;
+  }
+}
+
+class BenchmarksStream extends Readable {
+  #blocked = false;
+  #drainWaiters = [];
+  #hasReader = false;
+
+  constructor() {
+    super({
+      __proto__: null,
+      objectMode: true,
+    });
+  }
+
+  _read() {
+    if (this.#blocked) {
+      this.#blocked = false;
+      const waiters = this.#drainWaiters;
+      this.#drainWaiters = [];
+      for (let i = 0; i < waiters.length; i++) waiters[i].resolve();
+    }
+  }
+
+  read(size) {
+    if (size !== 0) this.#hasReader = true;
+    return super.read(size);
+  }
+
+  _destroy(error, callback) {
+    const failure = error ??
+      new ERR_INVALID_STATE('benchmark stream is closed');
+    const waiters = this.#drainWaiters;
+    this.#drainWaiters = [];
+    for (let i = 0; i < waiters.length; i++) waiters[i].reject(failure);
+    callback(error);
+  }
+
+  waitForDrain() {
+    if (this.destroyed) {
+      return PromiseReject(this.errored ??
+        new ERR_INVALID_STATE('benchmark stream is closed'));
+    }
+    if (!this.#blocked) return PromiseResolve();
+    const waiter = PromiseWithResolvers();
+    ArrayPrototypePush(this.#drainWaiters, waiter);
+    return waiter.promise;
+  }
+
+  plan(data) {
+    return this[kEmitMessage]('bench:plan', data);
+  }
+
+  start(data) {
+    return this[kEmitMessage]('bench:start', data);
+  }
+
+  sample(data) {
+    return this[kEmitMessage]('bench:sample', data);
+  }
+
+  complete(data) {
+    return this[kEmitMessage]('bench:complete', data);
+  }
+
+  diagnostic(data) {
+    return this[kEmitMessage]('bench:diagnostic', data);
+  }
+
+  summary(data) {
+    return this[kEmitMessage]('bench:summary', data);
+  }
+
+  end() {
+    return this.#tryPush(null);
+  }
+
+  [kEmitMessage](type, data) {
+    const recordData = cloneRecordData(data);
+    const record = { __proto__: null, type, data: recordData };
+    if (this.listenerCount(type) > 0) {
+      this.emit(type, cloneRecordData(recordData));
+    }
+    return this.#tryPush(record);
+  }
+
+  #tryPush(record) {
+    if (this.destroyed) return false;
+    const canPush = this.push(record);
+    if (record !== null && !canPush && this.#hasReader) {
+      this.#blocked = true;
+      return false;
+    }
+    return true;
+  }
+}
+
+module.exports = {
+  BenchmarksStream,
+};
+
+},
+"internal/bench_runner/runner": function(module, exports, require, primordials, internalBinding, process) {
+'use strict';
+
+const { kEmptyObject } = require('internal/util');
+const {
+  createRunner,
+  runBenchmarks,
+} = require('internal/bench_runner/harness');
+
+function run(options = kEmptyObject) {
+  return runBenchmarks(options);
+}
+
+function runFile(path, options = kEmptyObject) {
+  return require('internal/bench_runner/cli').runFile(path, options);
+}
+
+module.exports = {
+  createRunner,
+  run,
+  runFile,
+};
+
+},
+"internal/error_serdes": function(module, exports, require, primordials, internalBinding, process) {
+'use strict';
+
+const {
+  AggregateError,
+  ArrayPrototypeForEach,
+  Error,
+  EvalError,
+  FunctionPrototypeCall,
+  ObjectAssign,
+  ObjectCreate,
+  ObjectDefineProperty,
+  ObjectGetOwnPropertyDescriptor,
+  ObjectGetOwnPropertyNames,
+  ObjectGetPrototypeOf,
+  ObjectKeys,
+  ObjectPrototypeToString,
+  RangeError,
+  ReferenceError,
+  SafeSet,
+  StringFromCharCode,
+  StringPrototypeSubstring,
+  SymbolFor,
+  SymbolToStringTag,
+  SyntaxError,
+  TypeError,
+  TypedArrayPrototypeGetBuffer,
+  TypedArrayPrototypeGetByteLength,
+  TypedArrayPrototypeGetByteOffset,
+  URIError,
+} = primordials;
+
+const { Buffer } = require('buffer');
+const { inspect: { custom: customInspectSymbol } } = require('util');
+
+const kSerializedError = 0;
+const kSerializedObject = 1;
+const kInspectedError = 2;
+const kInspectedSymbol = 3;
+const kCustomInspectedObject = 4;
+const kCircularReference = 5;
+
+const kSymbolStringLength = 'Symbol('.length;
+
+const errors = {
+  AggregateError,
+  Error,
+  EvalError,
+  RangeError,
+  ReferenceError,
+  SyntaxError,
+  TypeError,
+  URIError,
+};
+const errorConstructorNames = new SafeSet(ObjectKeys(errors));
+
+function TryGetAllProperties(object, target = object, rememberSet) {
+  const all = { __proto__: null };
+  if (object === null)
+    return all;
+  ObjectAssign(all,
+               TryGetAllProperties(ObjectGetPrototypeOf(object), target, rememberSet));
+  const keys = ObjectGetOwnPropertyNames(object);
+  ArrayPrototypeForEach(keys, (key) => {
+    let descriptor;
+    try {
+      // TODO: create a null-prototype descriptor with needed properties only
+      descriptor = ObjectGetOwnPropertyDescriptor(object, key);
+    } catch { return; }
+    const getter = descriptor.get;
+    if (getter && key !== '__proto__') {
+      try {
+        descriptor.value = FunctionPrototypeCall(getter, target);
+        delete descriptor.get;
+        delete descriptor.set;
+      } catch {
+        // Continue regardless of error.
+      }
+    }
+    if (key === 'cause') {
+      descriptor.value = serializeError(descriptor.value, rememberSet);
+      all[key] = descriptor;
+    } else if ('value' in descriptor &&
+            typeof descriptor.value !== 'function' && typeof descriptor.value !== 'symbol') {
+      all[key] = descriptor;
+    }
+  });
+  return all;
+}
+
+function GetConstructors(object) {
+  const constructors = [];
+
+  for (let current = object;
+    current !== null;
+    current = ObjectGetPrototypeOf(current)) {
+    const desc = ObjectGetOwnPropertyDescriptor(current, 'constructor');
+    if (desc?.value) {
+      ObjectDefineProperty(constructors, constructors.length, {
+        __proto__: null,
+        value: desc.value, enumerable: true,
+      });
+    }
+  }
+
+  return constructors;
+}
+
+function GetName(object) {
+  const desc = ObjectGetOwnPropertyDescriptor(object, 'name');
+  return desc?.value;
+}
+
+let internalUtilInspect;
+function inspect(...args) {
+  internalUtilInspect ??= require('internal/util/inspect');
+  return internalUtilInspect.inspect(...args);
+}
+
+let serialize;
+function serializeError(error, rememberSet = new SafeSet()) {
+  serialize ??= require('v8').serialize;
+  if (typeof error === 'symbol') {
+    return Buffer.from(StringFromCharCode(kInspectedSymbol) + inspect(error), 'utf8');
+  }
+
+  try {
+    if (typeof error === 'object' &&
+        ObjectPrototypeToString(error) === '[object Error]') {
+      if (rememberSet.has(error)) {
+        return Buffer.from([kCircularReference]);
+      }
+      rememberSet.add(error);
+
+      const constructors = GetConstructors(error);
+      for (let i = 0; i < constructors.length; i++) {
+        const name = GetName(constructors[i]);
+        if (errorConstructorNames.has(name)) {
+          const serialized = serialize({
+            constructor: name,
+            properties: TryGetAllProperties(error, error, rememberSet),
+          });
+          return Buffer.concat([Buffer.from([kSerializedError]), serialized]);
+        }
+      }
+    }
+  } catch {
+    // Continue regardless of error.
+  }
+  try {
+    if (error != null && customInspectSymbol in error) {
+      return Buffer.from(StringFromCharCode(kCustomInspectedObject) + inspect(error), 'utf8');
+    }
+  } catch {
+    // Continue regardless of error.
+  }
+  try {
+    const serialized = serialize(error);
+    return Buffer.concat([Buffer.from([kSerializedObject]), serialized]);
+  } catch {
+    // Continue regardless of error.
+  }
+  return Buffer.from(StringFromCharCode(kInspectedError) + inspect(error), 'utf8');
+}
+
+function fromBuffer(error) {
+  return Buffer.from(TypedArrayPrototypeGetBuffer(error),
+                     TypedArrayPrototypeGetByteOffset(error) + 1,
+                     TypedArrayPrototypeGetByteLength(error) - 1);
+}
+
+let deserialize;
+function deserializeError(error) {
+  deserialize ??= require('v8').deserialize;
+  switch (error[0]) {
+    case kSerializedError: {
+      const { constructor, properties } = deserialize(error.subarray(1));
+      const ctor = errors[constructor];
+      ObjectDefineProperty(properties, SymbolToStringTag, {
+        __proto__: null,
+        value: { __proto__: null, value: 'Error', configurable: true },
+        enumerable: true,
+      });
+      if ('cause' in properties && 'value' in properties.cause) {
+        properties.cause.value = deserializeError(properties.cause.value);
+      }
+      return ObjectCreate(ctor.prototype, properties);
+    }
+    case kSerializedObject:
+      return deserialize(error.subarray(1));
+    case kInspectedError:
+      return fromBuffer(error).toString('utf8');
+    case kInspectedSymbol: {
+      const buf = fromBuffer(error);
+      return SymbolFor(StringPrototypeSubstring(buf.toString('utf8'), kSymbolStringLength, buf.length - 1));
+    }
+    case kCustomInspectedObject:
+      return {
+        __proto__: null,
+        [customInspectSymbol]: () => fromBuffer(error).toString('utf8'),
+      };
+    case kCircularReference:
+      return {
+        __proto__: null,
+        [customInspectSymbol]: () => '[Circular object]',
+      };
+  }
+  require('assert').fail('This should not happen');
+}
+
+module.exports = { serializeError, deserializeError };
+
 } };
     const modules = new SafeMap();
     function unavailable(name) {
@@ -99692,6 +101960,11 @@ module.exports = {
         ['internal/util/types', platform.types],
         ['internal/util/comparisons', platform.comparisons],
         ['internal/util/inspect', platform.inspection],
+        ['util', { inspect: platform.inspection.inspect }],
+        // Benchmark samples use the genuine existing histogram and native graph owners.
+        ['internal/histogram', platform.histogram],
+        ['internal/worker/js_transferable', platform.cloneProtocol],
+        ['buffer', { Buffer: platform.Buffer }],
         ['internal/util/debuglog', platform.values.require('internal/util/debuglog')],
         ['internal/validators', platform.values.validators],
         ['internal/events/abort_listener', { addAbortListener: platform.events.addAbortListener }],
@@ -99725,6 +101998,9 @@ module.exports = {
             const exports = _createNodeTestingRunner({ require, primordials, internalBinding, process });
             modules.set(name, { exports }); return exports;
         }
+        // Error record repair retains the actual V8 owner's missing serializer;
+        // no private byte format or native-host fallback is supplied here.
+        if (name === 'v8') return platform.getV8();
         if (name === 'test') name = 'test-public';
         if (name === 'test/reporters') name = 'test-reporters-public';
         if (modules.has(name)) return modules.get(name).exports;
@@ -99756,7 +102032,7 @@ module.exports = {
 // or watching; those still require their real owning implementations.
 function _createNodeTestOptionReader(platform) {
     const { Error, SafeMap } = _createNodePrimordials();
-    const defaults = new SafeMap([["--test", false], ["--experimental-test-coverage", false], ["--test-coverage-include-all", false], ["--test-force-exit", false], ["--enable-source-maps", false], ["--test-update-snapshots", false], ["--watch", false], ["--test-timeout", 0], ["--test-randomize", false], ["[has_test_random_seed]", false], ["--test-random-seed", 0], ["--test-rerun-failures", ""], ["--test-only", false], ["--test-reporter-destination", []], ["--test-reporter", []], ["--test-global-setup", ""], ["--test-isolation", "process"], ["--experimental-test-tag-filter", []], ["--test-concurrency", 0], ["--test-shard", ""], ["--test-name-pattern", []], ["--test-skip-pattern", []], ["--test-coverage-exclude", []], ["--test-coverage-include", []], ["--test-coverage-branches", 0], ["--test-coverage-lines", 0], ["--test-coverage-functions", 0], ["--import", []]]);
+    const defaults = new SafeMap([["--test", false], ["--experimental-test-coverage", false], ["--test-coverage-include-all", false], ["--test-force-exit", false], ["--enable-source-maps", false], ["--test-update-snapshots", false], ["--watch", false], ["--test-timeout", 0], ["--test-randomize", false], ["[has_test_random_seed]", false], ["--test-random-seed", 0], ["--test-rerun-failures", ""], ["--test-only", false], ["--test-reporter-destination", []], ["--test-reporter", []], ["--test-global-setup", ""], ["--test-isolation", "process"], ["--experimental-test-tag-filter", []], ["--test-concurrency", 0], ["--test-shard", ""], ["--test-name-pattern", []], ["--test-skip-pattern", []], ["--test-coverage-exclude", []], ["--test-coverage-include", []], ["--test-coverage-branches", 0], ["--test-coverage-lines", 0], ["--test-coverage-functions", 0], ["--import", []], ["--bench", false]]);
     const options = platform.cliOptions;
     return function getOptionValue(name) {
         if (name === '--experimental-test-module-mocks') return options.experimentalTestModuleMocks === true;
@@ -114760,9 +117036,9 @@ module.exports = {
 function _createNodeWorkerPlatform(platform) {
     'use strict';
     const P = _createNodePrimordials();
-    const { SafeMap, SafeSet, SafeWeakMap, ObjectAssign, ObjectEntries, ObjectCreate, ArrayPrototypeMap,
+    const { SafeMap, SafeSet, SafeWeakMap, ObjectAssign, ObjectEntries, ObjectCreate, ArrayPrototypeMap, ArrayPrototypeForEach,
         ObjectKeys, ObjectDefineProperty, ObjectGetOwnPropertyNames, ObjectFreeze, ArrayIsArray, ArrayPrototypeSlice, Promise, ReflectApply, String, SymbolFor } = P;
-    const { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_WORKER_PATH } = platform.values.errors.codes;
+    const { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_WORKER_PATH, ERR_WORKER_INVALID_EXEC_ARGV } = platform.values.errors.codes;
     const { validateArray, validateString } = platform.values.validators;
     const environment = platform.environment;
     // Factory initialization precedes user LOAD/main execution. Capture only
@@ -114827,15 +117103,38 @@ function _createNodeWorkerPlatform(platform) {
                     path = platform.path.resolve(filename);
                 }
             }
-            for (const name of ['stdin', 'stdout', 'stderr', 'resourceLimits', 'execArgv', 'name', 'trackUnmanagedFds']) {
-                if (options[name] !== undefined) unavailable(name + ' ownership');
-            }
-            if (options.env === SHARE_ENV) unavailable('shared environment store');
-            if (options.env != null && typeof options.env !== 'object')
-                throw new ERR_INVALID_ARG_TYPE('options.env', ['object', 'undefined', 'null', 'worker_threads.SHARE_ENV'], options.env);
+            let sourceEnv, explicitEnvironment = false;
+            // Match the pinned constructor's repeated env getter ordering.
+            if (typeof options.env === 'object' && options.env !== null) {
+                sourceEnv = options.env; explicitEnvironment = true;
+            } else if (options.env == null) sourceEnv = platform.process.env;
+            else if (options.env === SHARE_ENV) unavailable('shared environment store');
+            else throw new ERR_INVALID_ARG_TYPE('options.env',
+                ['object', 'undefined', 'null', 'worker_threads.SHARE_ENV'], options.env);
             const env = ObjectCreate(null);
-            for (const [key, value] of ObjectEntries(options.env == null ? platform.process.env : options.env)) env[key] = `${value}`;
-            const cliOptions = startupCLI;
+            ArrayPrototypeForEach(ObjectEntries(sourceEnv), ({ 0: key, 1: value }) => {
+                env[key] = `${value}`;
+            });
+            if (options.name !== undefined) unavailable('name ownership');
+            // Native WorkerImpl receives this last getter value after env,
+            // then resource limits/descriptor policy, before element coercion.
+            const execArgv = options.execArgv;
+            if (options.resourceLimits !== undefined) unavailable('resourceLimits ownership');
+            if (options.trackUnmanagedFds !== undefined) unavailable('trackUnmanagedFds ownership');
+            const parsed = operation('execArgv', execArgv, env, explicitEnvironment, startupCLI.execArgv);
+            if (parsed.invalidExecArgv) throw new ERR_WORKER_INVALID_EXEC_ARGV(parsed.invalidExecArgv);
+            if (parsed.invalidNodeOptions) throw new ERR_WORKER_INVALID_EXEC_ARGV(
+                parsed.invalidNodeOptions, 'invalid NODE_OPTIONS env variable');
+            // Parsed warning state/arguments are consumed by the actual child
+            // warning/bootstrap owner, independently of public process.execArgv.
+            const cliOptions = ObjectAssign(ObjectCreate(null), startupCLI);
+            // Native CLI fields intentionally retain nonenumerable DATA
+            // descriptors; enumerate their own names, not Object.assign keys.
+            const parsedNames = ObjectGetOwnPropertyNames(parsed);
+            for (let i = 0; i < parsedNames.length; i++) cliOptions[parsedNames[i]] = parsed[parsedNames[i]];
+            if (options.stdin !== undefined) unavailable('stdin ownership');
+            if (options.stdout !== undefined) unavailable('stdout ownership');
+            if (options.stderr !== undefined) unavailable('stderr ownership');
             // The engine's bootstrap consumes an array-like startup value;
             // undefined means no user suffix, represented by an empty list.
             const bootstrap = platform.native.serializeMessage({ env, cliOptions }, []);
@@ -118671,6 +120970,8 @@ function _createNodeFetchBodyPlatform(platform) {
         PromiseResolve, PromiseReject, PromisePrototypeThen } = primordials;
     const { Buffer, Blob, File, URL, URLSearchParams, AbortController, TextEncoder, TextDecoder, TextDecoderStream, process } = platform;
     const { ReadableStream, TransformStream } = platform.stream.web;
+    const { isReadable: isReadableStream, finished: streamFinished } = platform.stream.api;
+    const requireStream = platform.stream.require;
     const factories = {
         __proto__: null,
         "multipart": function(module, exports, require) {
@@ -123405,6 +125706,79 @@ module.exports = {
     }
     const body = require('body');
     const response = require('response');
+    // Data URLs own decoded bytes, not a network connection. Share the pinned
+    // decoder, MIME, Body and Response records; cancellation must reach their
+    // actual stream controller even while a reader or tee owns its lock.
+    async function fetchDataURL(requestObject) {
+        const request = require('request').getRequestState(requestObject);
+        const signal = requestObject.signal;
+        const { dataURLProcessor, serializeAMimeType } = require('dataURL');
+        const { addAbortListener } = require('corePrimitive');
+        const { kState } = requireStream('internal/webstreams/util');
+        const { readableStreamDefaultControllerError } =
+            requireStream('internal/webstreams/readablestream');
+        let removeAbortListener, responseBody, aborted = false, reason;
+        function cleanup() {
+            removeAbortListener?.();
+            removeAbortListener = undefined;
+            require('request').removeRequestAbortListener(requestObject);
+        }
+        function abort() {
+            aborted = true;
+            reason = signal.reason;
+            try {
+                if (request.body?.stream != null && isReadableStream(request.body.stream)) {
+                    PromisePrototypeThen(request.body.stream.cancel(reason), undefined, error => {
+                        if (error.code !== 'ERR_INVALID_STATE') throw error;
+                    });
+                }
+                if (responseBody !== null && responseBody !== undefined &&
+                    isReadableStream(responseBody.stream)) {
+                    readableStreamDefaultControllerError(
+                        responseBody.stream[kState].controller, reason);
+                }
+            } finally { cleanup(); }
+        }
+        if (signal.aborted) { abort(); throw reason; }
+        removeAbortListener = addAbortListener(signal, abort);
+        try {
+            const url = request.urlList[request.urlList.length - 1];
+            const decoded = dataURLProcessor(url);
+            let error;
+            if (decoded === 'failure') {
+                error = new TypeError('fetch failed', {
+                    cause: response.makeNetworkError('failed to fetch the data URL').error,
+                });
+            } else if (request.integrity) {
+                // Integrity requires the genuine SRI/hash-policy owner. Do not
+                // publish unchecked bytes as an integrity-verified response.
+                error = new Error('Fetch subresource integrity is not implemented');
+                error.code = 'ERR_NOT_IMPLEMENTED';
+            } else {
+                responseBody = request.method === 'HEAD' ? null : body.extractBody(decoded.body)[0];
+            }
+            // Scheme fetch and response publication cross a job boundary in
+            // Undici. A same-stack abort must still win before publication.
+            await PromiseResolve();
+            if (aborted) throw reason;
+            if (error !== undefined) throw error;
+            const inner = response.makeResponse({
+                statusText: 'OK',
+                headersList: [['content-type', {
+                    name: 'Content-Type', value: serializeAMimeType(decoded.mimeType),
+                }]],
+                body: responseBody,
+                urlList: request.urlList,
+            });
+            const result = response.fromInnerResponse(response.filterResponse(inner, 'basic'), 'immutable');
+            if (responseBody === null) { request.done = true; cleanup(); }
+            else streamFinished(responseBody.stream, () => {
+                request.done = true;
+                cleanup();
+            });
+            return result;
+        } catch (error) { cleanup(); throw error; }
+    }
     // Pinned Undici HTTP-network body demand/termination contract over the
     // actual IncomingMessage owner; full dispatcher/fetch policy is separate.
     const readablePrototype = platform.stream.api.Readable.prototype;
@@ -123510,7 +125884,7 @@ module.exports = {
         };
     }
 
-    return { ...body, ...response, ...require('request'), responseBodyFromIncoming,
+    return { ...body, ...response, ...require('request'), responseBodyFromIncoming, fetchDataURL,
         isFormData: platform.formData.webidl.is.FormData };
 }
 // Unchanged pinned X509 wrapper/cache/validation over real native certificates.

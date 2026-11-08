@@ -24,6 +24,11 @@ function _createNodeTestingPlatform(platform) {
         ['internal/util/types', platform.types],
         ['internal/util/comparisons', platform.comparisons],
         ['internal/util/inspect', platform.inspection],
+        ['util', { inspect: platform.inspection.inspect }],
+        // Benchmark samples use the genuine existing histogram and native graph owners.
+        ['internal/histogram', platform.histogram],
+        ['internal/worker/js_transferable', platform.cloneProtocol],
+        ['buffer', { Buffer: platform.Buffer }],
         ['internal/util/debuglog', platform.values.require('internal/util/debuglog')],
         ['internal/validators', platform.values.validators],
         ['internal/events/abort_listener', { addAbortListener: platform.events.addAbortListener }],
@@ -57,6 +62,9 @@ function _createNodeTestingPlatform(platform) {
             const exports = _createNodeTestingRunner({ require, primordials, internalBinding, process });
             modules.set(name, { exports }); return exports;
         }
+        // Error record repair retains the actual V8 owner's missing serializer;
+        // no private byte format or native-host fallback is supplied here.
+        if (name === 'v8') return platform.getV8();
         if (name === 'test') name = 'test-public';
         if (name === 'test/reporters') name = 'test-reporters-public';
         if (modules.has(name)) return modules.get(name).exports;

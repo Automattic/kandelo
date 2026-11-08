@@ -3,9 +3,9 @@
 function _createNodeWorkerPlatform(platform) {
     'use strict';
     const P = _createNodePrimordials();
-    const { SafeMap, SafeSet, SafeWeakMap, ObjectAssign, ObjectEntries, ObjectCreate, ArrayPrototypeMap,
+    const { SafeMap, SafeSet, SafeWeakMap, ObjectAssign, ObjectEntries, ObjectCreate, ArrayPrototypeMap, ArrayPrototypeForEach,
         ObjectKeys, ObjectDefineProperty, ObjectGetOwnPropertyNames, ObjectFreeze, ArrayIsArray, ArrayPrototypeSlice, Promise, ReflectApply, String, SymbolFor } = P;
-    const { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_WORKER_PATH } = platform.values.errors.codes;
+    const { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_WORKER_PATH, ERR_WORKER_INVALID_EXEC_ARGV } = platform.values.errors.codes;
     const { validateArray, validateString } = platform.values.validators;
     const environment = platform.environment;
     // Factory initialization precedes user LOAD/main execution. Capture only
@@ -70,15 +70,38 @@ function _createNodeWorkerPlatform(platform) {
                     path = platform.path.resolve(filename);
                 }
             }
-            for (const name of ['stdin', 'stdout', 'stderr', 'resourceLimits', 'execArgv', 'name', 'trackUnmanagedFds']) {
-                if (options[name] !== undefined) unavailable(name + ' ownership');
-            }
-            if (options.env === SHARE_ENV) unavailable('shared environment store');
-            if (options.env != null && typeof options.env !== 'object')
-                throw new ERR_INVALID_ARG_TYPE('options.env', ['object', 'undefined', 'null', 'worker_threads.SHARE_ENV'], options.env);
+            let sourceEnv, explicitEnvironment = false;
+            // Match the pinned constructor's repeated env getter ordering.
+            if (typeof options.env === 'object' && options.env !== null) {
+                sourceEnv = options.env; explicitEnvironment = true;
+            } else if (options.env == null) sourceEnv = platform.process.env;
+            else if (options.env === SHARE_ENV) unavailable('shared environment store');
+            else throw new ERR_INVALID_ARG_TYPE('options.env',
+                ['object', 'undefined', 'null', 'worker_threads.SHARE_ENV'], options.env);
             const env = ObjectCreate(null);
-            for (const [key, value] of ObjectEntries(options.env == null ? platform.process.env : options.env)) env[key] = `${value}`;
-            const cliOptions = startupCLI;
+            ArrayPrototypeForEach(ObjectEntries(sourceEnv), ({ 0: key, 1: value }) => {
+                env[key] = `${value}`;
+            });
+            if (options.name !== undefined) unavailable('name ownership');
+            // Native WorkerImpl receives this last getter value after env,
+            // then resource limits/descriptor policy, before element coercion.
+            const execArgv = options.execArgv;
+            if (options.resourceLimits !== undefined) unavailable('resourceLimits ownership');
+            if (options.trackUnmanagedFds !== undefined) unavailable('trackUnmanagedFds ownership');
+            const parsed = operation('execArgv', execArgv, env, explicitEnvironment, startupCLI.execArgv);
+            if (parsed.invalidExecArgv) throw new ERR_WORKER_INVALID_EXEC_ARGV(parsed.invalidExecArgv);
+            if (parsed.invalidNodeOptions) throw new ERR_WORKER_INVALID_EXEC_ARGV(
+                parsed.invalidNodeOptions, 'invalid NODE_OPTIONS env variable');
+            // Parsed warning state/arguments are consumed by the actual child
+            // warning/bootstrap owner, independently of public process.execArgv.
+            const cliOptions = ObjectAssign(ObjectCreate(null), startupCLI);
+            // Native CLI fields intentionally retain nonenumerable DATA
+            // descriptors; enumerate their own names, not Object.assign keys.
+            const parsedNames = ObjectGetOwnPropertyNames(parsed);
+            for (let i = 0; i < parsedNames.length; i++) cliOptions[parsedNames[i]] = parsed[parsedNames[i]];
+            if (options.stdin !== undefined) unavailable('stdin ownership');
+            if (options.stdout !== undefined) unavailable('stdout ownership');
+            if (options.stderr !== undefined) unavailable('stderr ownership');
             // The engine's bootstrap consumes an array-like startup value;
             // undefined means no user suffix, represented by an empty list.
             const bootstrap = platform.native.serializeMessage({ env, cliOptions }, []);
