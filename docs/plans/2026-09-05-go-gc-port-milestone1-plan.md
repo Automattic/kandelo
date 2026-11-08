@@ -2,6 +2,29 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Live native sampling and browser identity close:** `8b6f` passes in
+12m28s including prerequisites (4.7 minutes in the browser). The same
+normal partial image handles two-thread WordPress traffic, unchanged PHP
+optimizer probes, four crash recoveries and graceful drain. OS peak is
+10.5 GiB, Caddy linear memory stays 685.9 MiB through traffic, Go Sys is
+40.2–42.4 MiB and sixty-second post-destroy footprint is 624.9 MiB.
+Two native CPU samples show active JSCWarmUp allocation stacks and some
+Wasm compilation; they do not identify allocation ownership or prove an
+engine defect. Interval matching finds the first has no measurement pause,
+but the second overlaps a soak measurement even though its finish-time
+phase flag is false. Both original samples and the limitation are retained.
+
+The fresh isolated browser installation `7405` exactly matches the tested
+JavaScriptCore/WebCore/WebKit framework bytes for declared Playwright
+1.63.0/revision2359. No shared browser cache is changed. The first identity
+check `d43a` fails on a package-export restriction before downloading; a
+resolved metadata-file path fixes that check. The detailed memory report
+now includes all three module/source-buffer controls, both server/thread
+controls, live sample intervals and browser identity verification. No
+engine workaround, Go collector change or application algorithm patch is
+adopted. Allocation ownership, final normal artifact refresh and release
+acceptance remain open.
+
 **Real file-picker uploads pass both services in all three engines:** job
 `wordpress-media-uploader-ready-1108-003452-b8e1` ends PASS in 12m26s;
 its six browser cases take 11.0 minutes, with zero skips or retries.

@@ -178,8 +178,8 @@ treat the intentionally retained copies as a description of that steady
 state, or remove bytes needed by reflection, ABI validation and fork
 identity. These results validate that cleanup policy rather than introduce
 a new production fix. Instantiation and live request costs remain separate
-investigations. Native stack sampling during active request production is
-running; the earlier phase-bound samples paused the producer.
+investigations. The live request sampling results below remain separate
+from the earlier phase-bound samples that paused the producer.
 
 The first private attempt `af44` fails at discovery because its `expect`
 import resolves a second Playwright installation from the repository root.
@@ -191,3 +191,52 @@ This is a test setup correction, not an engine defect. Raw evidence and
 the job rather than inferred from a later edited probe.
 The detachment control's independent source, reports and derived phase
 summary are retained under its own job directory.
+
+## Live request stack samples and browser identity
+
+Job `wordpress-live-native-stack-attribution-1108-004045-8b6f` passes the
+same two-PHP-thread HTTP/lifecycle selection. Its 12m28s total includes
+waiting for the preceding browser controls; the browser selection takes
+4.7 minutes. WordPress requests, unchanged optimizer probes, four crash
+recoveries and held-request draining pass. The OS historical peak reaches
+10.5 GiB, with 10.0 GiB at the largest selected traffic sample. Caddy's
+linear memory stays 685.9 MiB through the traffic samples, Go Sys ranges
+from 40.2 to 42.4 MiB and the endpoint consistently reports two PHP threads.
+After destruction, the same page reaches 624.9 MiB at sixty seconds.
+
+Two two-second native CPU samples start from inspector memory events,
+rather than from an awaited phase callback. The request producer does not
+await the observer's PID resolution or stack sampling. Their
+sample headers report 6.2 and 8.4 GiB of physical footprint. Both include
+active `JSCWarmUp` allocation stacks through `bmalloc`; some Wasm compiler
+activity is also present. These stack names and CPU observations do not
+identify the sizes or lifetimes of allocations responsible for the peak,
+or establish an engine defect.
+
+Full timestamp alignment matters: the first sample overlaps no recorded
+guest/native measurement interval, while the second overlaps the
+`soak requests: 14` phase. The observer's boolean says no phase is active
+at that second sample's finish, which does not prove no phase occurred
+during it. Preserve the start/finish records and compare complete intervals;
+do not treat both samples as uninterrupted producer observations.
+
+Raw phases, native observations, stack files and source identities are in
+the comparison checkout's job `scratch/live-native-memory/`. The private
+driver and observer are retained there with their hashes and modification
+times after completion; they had not changed since execution.
+
+Job `webkit-declared-bundle-identity-v2-1108-010211-7405` installs WebKit
+into an isolated browser cache using the browser app's declared Playwright
+1.63.0. JavaScriptCore, WebCore and WebKit framework bytes exactly match
+the tested shared revision-2359 installation. This verifies the installed
+artifact identities, not upstream source mapping or an engine diagnosis.
+The first check `d43a` fails before downloading because package exports
+exclude direct `playwright-core/browsers.json` imports; resolving its
+filesystem path corrects that private metadata check. The original
+failure and successful framework hash report remain separate evidence.
+
+The next allocation investigation must locate live allocation owners and
+separate instantiation, engine compilation and host reference lifetimes.
+Any proposed outside-runtime defect still needs a standalone self-judging
+reproduction without Kandelo before it can be treated as confirmed. No
+browser flags, Go collector changes or PHP/Caddy adaptations are adopted.
