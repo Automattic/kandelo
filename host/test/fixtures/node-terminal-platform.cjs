@@ -20,7 +20,7 @@ exports.create=function(fd){
   throw Error('Unexpected terminal boundary '+operation);
  }};
  const terminal=factory.terminal({values,native,uv:{getSystemErrorName:util.getSystemErrorName,getSystemErrorMessage:util.getSystemErrorMessage}});
- let retire;const transport=factory.fd({stream,Buffer,process,native:{}});
+ let retire;const transport=factory.fd({stream,Buffer,FastBuffer:require('internal/buffer').FastBuffer,process,native:{}});
  const input=transport.readable(fd,undefined,()=>retire?.());input.isTTY=true;retire=terminal.bindInput(input,fd);
  return {input,get actual(){return actual;},async settle(){await Promise.all(closing);},async destroy(){if(!input.destroyed){const closed=new Promise(resolve=>input.once('close',resolve));input.destroy();await closed;}await Promise.all(closing);}};
 };

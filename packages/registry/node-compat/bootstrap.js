@@ -2575,7 +2575,7 @@ const _nodeTerminalPlatform = _createNodeTerminalPlatform({
     isTTY: fd => os.isatty(fd), getReadline: () => _nodeReadlinePlatform.api,
 });
 const _nodeFdStreamPlatform = _createNodeFdStreamPlatform({
-    stream, Buffer, process, native: _nodeNative,
+    stream, Buffer, FastBuffer: _FastBuffer, process, native: _nodeNative,
     openTerminalOutput: _nodeTerminalPlatform.openOutput,
     openTerminalInput: _nodeTerminalPlatform.openInput,
 });

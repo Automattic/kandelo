@@ -7287,3 +7287,7 @@ Source 250 integrates real request Body/Complete synchronous llhttp callbacks an
 ### Asymmetric key generation and native private-role admission
 
 Source251 adds actual public asymmetric generation over complete pinned wrappers, five real ncrypto/OpenSSL traits, KEYPAIRGENREQUEST/native CPU work and GC-owned immutable key roles. Fresh current-root source checks guard908inputs/8checks/8commands;16paired native/candidate differential groups and4unchanged upstream files per subject use identified native dependencies. Newly integrated guest JSAPI/work/publication/GC/realm/fatal/private-role guard and all4hosts remain uncompiled/unexecuted; valid-private ecPkcs8 remains missing. No crypto/API/finding closure.
+
+### Private FD input byte publication ownership
+
+Source252adds private FastBuffer publication of actual native input Uint8Array spans on generic Promise, terminal Promise and terminal callback paths, with captured intrinsic buffer/offset/length getters. Bootstrap supplies the real private constructor; fixtures correct their actual native producer shape. Actual normal source check908inputs/6checks/8commands and manually reviewed real pipe/PTY controls pass: native9/candidate9, short offsets2/prior4. Baseline3valueOf fatal exits and6correct-byte extra-copy observations remain distinct. Original V1 source check failed only from harness variable shadowing after publication commands succeeded; it remains a terminal harness-error operation, never completed. No package/Vitest cases, compilers or guest runs occurred.

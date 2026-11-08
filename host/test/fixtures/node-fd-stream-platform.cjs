@@ -48,10 +48,10 @@ function readFrom(source, limit) {
     const length = source.readableLength;
     if (length) {
       const bytes = source.read(Math.min(length, limit));
-      if (bytes !== null) { cleanup(); resolve(Uint8Array.from(bytes).buffer); return; }
+      if (bytes !== null) { cleanup(); resolve(Uint8Array.from(bytes)); return; }
     }
     source.read(0);
-    if (source.readableEnded) { cleanup(); resolve(new ArrayBuffer(0)); }
+    if (source.readableEnded) { cleanup(); resolve(new Uint8Array(0)); }
   }
   controls.set(promise, record);
   source.on('readable', ready); source.on('end', ready); source.on('error', failed);
@@ -59,7 +59,7 @@ function readFrom(source, limit) {
   return promise;
 }
 function fdPlatform(input, output, calls = []) {
-  return factories.fd({ stream: platform.api, Buffer, process,
+  return factories.fd({ stream: platform.api, Buffer, FastBuffer: require('internal/buffer').FastBuffer, process,
     native: {
       __kandeloFdWrite(fd, bytes) {
         calls.push(['write', fd, bytes.length]);

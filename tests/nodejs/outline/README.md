@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source252adds bounded private native FD input byte-span publication. Actual manually reviewed follow-up passes; original V1 harness failure and baseline ownership/error differences remain explicit. No package/Vitest or guest compatibility claim.
+See [source scope](fd-input-byte-publication-integration.md).
+
 Source251 adds actual public asymmetric generation over complete pinned wrappers, five real ncrypto/OpenSSL traits, KEYPAIRGENREQUEST/native CPU work and GC-owned immutable key roles. Fresh current-root source checks guard908inputs/8checks/8commands;16paired native/candidate differential groups and4unchanged upstream files per subject use identified native dependencies. Newly integrated guest JSAPI/work/publication/GC/realm/fatal/private-role guard and all4hosts remain uncompiled/unexecuted; valid-private ecPkcs8 remains missing. No crypto/API/finding closure.
 See [source scope](asymmetric-keygen-integration.md).
 

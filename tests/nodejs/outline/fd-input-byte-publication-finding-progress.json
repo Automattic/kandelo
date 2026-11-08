@@ -1,0 +1,164 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/streams-contracts.md",
+    "findingIds": [
+      "STR-007",
+      "STR-011"
+    ],
+    "relatedFamilies": [
+      "terminal",
+      "async",
+      "engine"
+    ],
+    "scope": "Partial native input publication owner only, no definition/range/family closure.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/streams-contracts.md",
+        "findingId": "STR-007",
+        "definitionKey": "tests/nodejs/audit/streams-contracts.md#STR-007:L109",
+        "relation": "partial-owning-source",
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/streams-contracts.md",
+        "findingId": "STR-011",
+        "definitionKey": "tests/nodejs/audit/streams-contracts.md#STR-011:L114",
+        "relation": "partial-owning-source",
+        "closed": false
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Capture actual private FastBuffer plus primordial typed-array buffer/byteOffset/byteLength getters at FD factory initialization, publishing views over the producer allocation instead of an extra public/coercing Buffer copy.",
+    "Generic Promise, captured terminal Promise and actual callback input paths consume that real owner with nonzero windows preserved; no provider/ref/cancel/close completion metadata is fabricated.",
+    "Actual bootstrap supplies the private constructor. Native component fixtures return the genuine current Uint8Array producer shape and provide real existing private FastBuffer; original assertions remain.",
+    "Compose exact eight original source leaves over251keypair plus recipe252/normal-generated production core; C++48447before=after, existing0755script/keygen/fixture evidence preserved."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-fd252-source-r2/report.json",
+    "sha256": "07e0d5f7d92c90d6788f9190721fdfc7c9045f8dd3158be97fc353b1836d839e",
+    "guardedInputs": 908,
+    "scope": "Actual normal source252generated FD owner and bootstrap/native staging, unchanged251C++/keygen/script. Real OS pipes/PTYS and native stream dependencies; baseline fatal3 plus correct bytes/extra copies6 retained separately. No package tests/new compiler/guest/provider/GC/realm/fatal/Worker/fork/cancel/four-host closure."
+  },
+  "packageChecks": {
+    "report": ".context/fd252-metadata-prep/native-control-test-report.json",
+    "sha256": "4065aa476501cf738b4975ed83b228e3d6924e10a2dd1c6e39154f584d2ffb5c",
+    "passed": 0,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false,
+    "scope": "Zero package or Vitest cases executed. Consumer report is explicitly a custom native-component bookkeeping adapter; actual native counts are separate."
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-fd252-source-r2/report.json",
+    "sha256": "07e0d5f7d92c90d6788f9190721fdfc7c9045f8dd3158be97fc353b1836d839e",
+    "nativeSubjects": 9,
+    "nativePassed": 9,
+    "candidateSubjects": 9,
+    "candidatePassed": 9,
+    "baselineFatalValueOfNonpasses": 3,
+    "baselineCorrectByteExtraCopyObservations": 6,
+    "baselineMatchesPrivateSpanOwner": 0,
+    "shortReadOffsetSubjects": 2,
+    "shortReadOffsetPassed": 2,
+    "priorSubjects": 4,
+    "priorPassed": 4,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "scope": "Source252adds private FastBuffer publication of actual native input Uint8Array spans on generic Promise, terminal Promise and terminal callback paths, with captured intrinsic buffer/offset/length getters. Bootstrap supplies the real private constructor; fixtures correct their actual native producer shape. Actual normal source check908inputs/6checks/8commands and manually reviewed real pipe/PTY controls pass: native9/candidate9, short offsets2/prior4. Baseline3valueOf fatal exits and6correct-byte extra-copy observations remain distinct. Original V1 source check failed only from harness variable shadowing after publication commands succeeded; it remains a terminal harness-error operation, never completed. No package/Vitest cases, compilers or guest runs occurred.",
+    "guardedInputs": 908,
+    "sourceChecks": 6,
+    "sourceCommands": 8,
+    "actualManualPid": 791,
+    "actualManualExit": 0,
+    "originalV1CheckExit": 1,
+    "originalV1Classification": "harness-error",
+    "originalV1Completed": false,
+    "manualReviewedSourceBinding": "748a03f11f0b391949b2ea23ca4df891f0dc070259be0018d244f3ff5640c26c",
+    "packageCasesRun": 0,
+    "vitestCasesRun": 0,
+    "compilerAttempts": 0,
+    "fourHostConformance": false
+  },
+  "sealedEvidence": {
+    "report": ".context/fd-input-byte-publication-owner-agent/handoff/report.json",
+    "sha256": "f8af850825b85c03ba7e3004df4d020445971450586c50b0cf823759b0061122",
+    "reusedEvidence": true,
+    "scope": "Historical original real pipe/PTY/private native byte-span controls with zero compilers; native dependencies/registration bridges not guest provider/GC/realm/fatal proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/fd252-tool-run-r1/source-receipt.json",
+      "sha256": "73ce07255bfce1686e1cdef07f791be96b6b3336c035bbe123e5bd0daf2b8002",
+      "classification": "harness-error",
+      "pid": 43689,
+      "exit": 1,
+      "scope": "Original V1 check failed after real publication27subjects completed0 because Python loop overwrote CompletedProcess p; no runtime fault or V1 completion claim."
+    },
+    {
+      "report": ".context/fd252-tool-run-r1/harness-error-import.json",
+      "sha256": "19959e4330998e942edbd08c5c55932f396d5a487e5967324e1f66f21847ec8b",
+      "classification": "imported-V1-harness-error",
+      "scope": "Actual original failure imported with exit_code1; applydone/checkfailed, evidence/checkpoint not completed."
+    },
+    {
+      "report": ".context/fd252-root-controls-r2/controls-r1/report.json",
+      "sha256": "164f31bac5fbb68c00da4486da7840b1c149015db7f6abb3660e720548205c3e",
+      "classification": "preserved-negative-controls",
+      "baselineFatalValueOfNonpasses": 3,
+      "baselineCorrectByteExtraCopyObservations": 6,
+      "scope": "Three original valueOf exit1/null-output subjects are fatal nonpasses. Six correct-byte subjects have extra private copy/span mismatch, not wrong-byte failure. Full27subject/rawstdoutstderr preserved."
+    }
+  ],
+  "remaining": [
+    "Compile and validate actual guest FD/TTY producer/publication roots, moving GC/realm/OOM/fatal/Worker/fork/cancellation/ref/read-stop and lifecycle on identified artifacts; native component dependencies are not guest proof.",
+    "Complete public TTY typed Socket/StreamBase constructors and remaining inherited/symbol/descriptor/error/lifecycle obligations independently; this byte publisher is not their support closure.",
+    "Keep primitive native copies inside actual producer bridge separate from removed extra JavaScript Buffer copy; descriptor/OFD reuse and backing-store transfer remain actual owning dependencies.",
+    "Preserve all original audit ranges/questions and run applicable four-host/overall validation only within authorized breadth/build constraints."
+  ],
+  "actualNativeControlReport": {
+    "report": ".context/fd252-root-controls-r2/report.json",
+    "sha256": "91c0dd8deb722fc0f9314e8f9ad6077fc704ed9c90beea009320660c2e0bdbd8",
+    "nativeSubjects": 9,
+    "nativePassed": 9,
+    "candidateSubjects": 9,
+    "candidatePassed": 9,
+    "baselineFatalValueOfNonpasses": 3,
+    "baselineCorrectByteExtraCopyObservations": 6,
+    "baselineMatchesPrivateSpanOwner": 0,
+    "shortReadOffsetSubjects": 2,
+    "shortReadOffsetPassed": 2,
+    "priorSubjects": 4,
+    "priorPassed": 4,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "scope": "Actual current generated FD byte owner over real OS pipe/PTY reads and explicit native Node stream/TTY/async dependencies. Baseline six correct-byte observations differ in ownership/extra copy, not byte failure. Three fatal baseline valueOf exits remain nonpasses. No guest provider/GC/realm/fatal/cancel/fork/Worker/four-host closure."
+  },
+  "integrationHistory": {
+    "sourceAppliedViaOriginalV1": true,
+    "originalV1Completed": false,
+    "originalV1SourceBinding": "7603670d328505e4c7defb2db0fe1e4fcbcc493e9dd97a08a7deeb80e41bcbd1",
+    "originalTerminalFailureLedger": {
+      "path": ".context/agent-integrations/node26-fd252/ledger.json",
+      "sha256": "678aa410d3c4c6662c7f63c655d3bd21cc16ad94c870c4d8c4b64282e53fc164"
+    },
+    "originalFailureClassification": "harness-error",
+    "manualReviewedPositiveFollowup": {
+      "receipt": ".context/fd252-manual-followup-r2/receipt.json",
+      "sha256": "bac471ce3c7a6777478b1bdf54e59cc666c83664eaaf55b08784b01e5b332e26",
+      "sourceBinding": "748a03f11f0b391949b2ea23ca4df891f0dc070259be0018d244f3ff5640c26c",
+      "pid": 791,
+      "exit": 0
+    },
+    "scope": "Original apply completed; original check remains terminal harness error. Positive check is a separately reviewed manual follow-up. No V1 completion or global cache-key claim."
+  },
+  "at": "2026-11-08T04:32:44.165574+00:00",
+  "recipeRevision": 252,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

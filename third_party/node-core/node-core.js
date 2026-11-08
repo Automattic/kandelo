@@ -90241,8 +90241,15 @@ ObjectDefineProperties(LazyTransform.prototype, {
 function _createNodeFdStreamPlatform(platform) {
     'use strict';
     const P = _createNodePrimordials();
-    const { PromisePrototypeThen, ReflectApply, TypedArrayPrototypeGetLength, Uint8Array } = P;
-    const Buffer = platform.Buffer, bufferFrom = Buffer.from;
+    const { PromisePrototypeThen, ReflectApply, TypedArrayPrototypeGetLength,
+        TypedArrayPrototypeGetBuffer, TypedArrayPrototypeGetByteOffset,
+        TypedArrayPrototypeGetByteLength } = P;
+    const FastBuffer = platform.FastBuffer;
+    // Native producers publish independently owned Uint8Array byte spans.
+    // Like pinned onStreamRead, retain exactly that allocation/offset/count
+    // without public Buffer.from, valueOf, iterator or view-property lookup.
+    const publishBytes = bytes => new FastBuffer(TypedArrayPrototypeGetBuffer(bytes),
+        TypedArrayPrototypeGetByteOffset(bytes), TypedArrayPrototypeGetByteLength(bytes));
     const { Readable, Writable } = platform.stream;
     const process = platform.process;
     function dummyDestroy(err, cb) {
@@ -90341,10 +90348,10 @@ function _createNodeFdStreamPlatform(platform) {
                             result.destroy(terminalInput.error(status));
                             return;
                         }
-                        const bytes = new Uint8Array(data);
+                        const bytes = data;
                         if (TypedArrayPrototypeGetLength(bytes) === 0) {
                             ended = true;result.push(null);
-                        } else result.push(ReflectApply(bufferFrom, Buffer, [bytes]));
+                        } else result.push(publishBytes(bytes));
                         start();
                     });
                 } catch (failure) { error = failure; }
@@ -90360,14 +90367,14 @@ function _createNodeFdStreamPlatform(platform) {
             PromisePrototypeThen(request.promise, data => {
                 if (pending === request) pending = null;
                 if (retired) return;
-                const bytes = new Uint8Array(data);
+                const bytes = data;
                 if (TypedArrayPrototypeGetLength(bytes) === 0) {
                     ended = true;
                     result.push(null);
                 } else {
                     // Completed input is real data, even if pause won the race.
                     // Readable retains it until a reader consumes/resumes it.
-                    result.push(ReflectApply(bufferFrom, Buffer, [bytes]));
+                    result.push(publishBytes(bytes));
                 }
                 start();
             }, error => {
