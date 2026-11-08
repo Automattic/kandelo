@@ -2,6 +2,35 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Exact-preview editor observations:** the current revision-45 image
+`9cbbb185ced4`, kernel `6f5afada9ae3`, both normal Go daemons and identical
+service-worker source pass admission before the Firefox repetitions. Job
+`wordpress-current-preview-persistence-v2-1107-224727-d112` ends 1 pass /
+1 fail in 5m53s. The failed initial editor has a complete controlled srcdoc
+canvas with the actual Add title textbox, while its welcome dialog remains
+open after the test's Close action. Caddy and PHP remain running.
+
+A separate read-only click observation ends 1 pass / 1 fail in 6m13s
+(`wordpress-welcome-click-observation-1107-225617-175c`). Both cases deliver
+a trusted click to the actual welcome Close button. The second failure
+occurs later, on reopening the saved post: the canvas contains the correct
+editable title, but the outer document's HTML locator times out. This is
+not evidence that the title is missing. Immediate preference observations
+also look unchanged in the passing case, so they do not establish a lost
+click or a preferences-hydration cause. New failure diagnostics compare a
+direct main-world document read with the locator observation; the next
+selection is still active. No runtime fix is claimed and no checks are
+removed or retried inside the test.
+
+Native WebKit attribution job `0cfe` is queued behind the normal canonical
+retry and baseline product preparation. It will use the canonical image
+and kernel, compare production source identity, retain separate guest,
+engine and native counters, sample at most two owned high-footprint
+processes, exercise four Caddy crash recoveries and held-request shutdown,
+and observe 60 seconds after destruction. It admits host memory separately
+from guest budgets and uses no forced collection. The queued job is not a
+memory result or a final lifecycle pass.
+
 **Shared-browser delivery investigation and normal build recovery:** the
 PHP-FPM Firefox control `wordpress-media-fpm-control-v2-1107-222731-c782`
 ends with two failures in 7m10s, both at reopened editor-canvas readiness.
