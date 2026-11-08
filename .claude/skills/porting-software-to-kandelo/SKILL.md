@@ -50,9 +50,10 @@ lines), not whole files.
 ## Include upstream man pages
 
 Check upstream's source and install rules for man pages, including its
-normally generated pages. If present, include lazy references for them;
-use the existing `<program>-docs` ZIP pattern or an existing lazy runtime
-bundle. Software without man pages needs none invented for now. Read
+normally generated pages. Where possible, include lazy references for
+upstream man pages, using the existing `<program>-docs` ZIP pattern or an
+existing lazy runtime bundle. Software without man pages needs none
+invented for now. Read
 `docs/porting-guide.md` "Shipping man pages" for source selection, archive
 paths, image registration and validation. Select a separate docs package
 explicitly in partial-image builds alongside the program and man viewer.

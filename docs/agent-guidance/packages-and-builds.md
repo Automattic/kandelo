@@ -107,8 +107,8 @@ test it against a scratch `KANDELO_SOURCE_CACHE_ROOT`, and set
 
 ## Man pages for ports
 
-If upstream provides man pages (including its normally generated pages),
-include lazy references for them when shipping the port. The shell's existing
+When upstream provides man pages (including its normally generated pages),
+aim to include lazy references for them where possible. The shell's existing
 pattern is a separate `<program>-docs` ZIP package mounted at `/usr/`, with
 pages under `/usr/share/man`; an existing lazy runtime bundle can also carry
 them. Software without man pages needs none invented for now. Follow
