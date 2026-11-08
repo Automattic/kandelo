@@ -25465,9 +25465,12 @@ export class CentralizedKernelWorker {
         : KERNEL_SHARED_MAPPING_SYNC_COMPLETION,
       entry,
     );
-    if (this.#kernelSharedMappingResult("sync", result) !== 0) {
+    const status = this.#kernelSharedMappingResult("sync", result);
+    if (status !== 0) {
+      // Completion reports generic EIO to the guest; retain the original
+      // signed kernel cause and boundary here so that conversion cannot hide it.
       throw new Error(
-        `Cannot synchronize kernel shared mappings for pid=${process.pid}`,
+        `Cannot synchronize kernel shared mappings for pid=${process.pid}: boundary=${boundary}, status=${status}`,
       );
     }
   }

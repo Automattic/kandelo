@@ -470,7 +470,7 @@ describe("kernel-owned shared-mapping boundary failures", () => {
     return channel;
   }
 
-  it.each([-5, 1])("rejects boundary export result %i before dispatch and completes EIO once", (result) => {
+  it.each([-5, -12, 1])("rejects boundary export result %i before dispatch and completes EIO once", (result) => {
     const h = sysvHarness({
       fail: { kernel_shared_mapping_sync_process: result },
     });
@@ -490,6 +490,14 @@ describe("kernel-owned shared-mapping boundary failures", () => {
       ]);
       expect(view.getBigInt64(CH_RETURN, true)).toBe(-5n);
       expect(view.getUint32(CH_ERRNO, true)).toBe(5);
+      if (result < 0) {
+        expect(error).toHaveBeenCalledWith(
+          `[completeChannel] shared-memory synchronization failed for pid=${channel.pid}:`,
+          expect.objectContaining({
+            message: `Cannot synchronize kernel shared mappings for pid=${channel.pid}: boundary=completion, status=${result}`,
+          }),
+        );
+      }
       expect(Atomics.load(channel.i32View, CH_STATUS / 4)).toBe(CHANNEL_STATUS_COMPLETE);
       expect(relisten).toHaveBeenCalledExactlyOnceWith(channel);
     } finally { error.mockRestore(); }

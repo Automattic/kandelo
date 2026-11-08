@@ -27277,3 +27277,23 @@ An older fixture for main's removed server-reuse helper also failed; it now
 loads the real Playwright configuration and requires server ownership in
 default, CI and exact-artifact modes. Normal-image and browser runtime
 validation remain pending the focused retry.
+
+The focused normal partial image now builds successfully with those twelve
+declared package roots. Its SHA-256 is
+`20de7c90869886ca9078558cc6787018f5c5f7f1744e9c9c3783ea17069382df`.
+The fluid, SDL editor and opaque scanout checks pass on Chromium and
+Firefox (six cases). All three corresponding WebKit cases fail before
+kernel startup; a standalone native storage control reproduces an
+UnknownError from `navigator.storage.getDirectory()`. Shortening the
+private temporary directory does not correct it. Attribution remains open.
+
+Sway's native bar starts, but the Foot-window check fails alongside shared
+mapping synchronization errors. The shared host diagnostic now retains
+the original signed kernel status and completion boundary, without
+changing guest EIO behavior or the number of synchronization calls.
+The actual Foot failure still requires diagnosis using that information.
+The SDL Node boundary fixture now reads its owned command's retained
+output after retirement, rather than expecting interactive callbacks.
+It continues to require the explicit no-GLES error on Node. The actual
+two-file run passes 39 cases, including the new diagnostic regression.
+These are scoped preview results, not complete B1 or merge acceptance.
