@@ -7379,3 +7379,7 @@ Source273 consumes actual parser reset/resource aliases and callback scopes, TLS
 ### Explicit call-site mapping, curve inventory, Promise producer admission and Fetch Request authority
 
 Source274 connects explicit util sourceMap mapping to the actual CJS map cache, real linked curve inventory and FIPS generation cache, separate Promise observation/identity producer admission consumed by existing async_hooks, and Fetch transport over the admitted private Request state. Public Promise hooks and full mapped stacks/normalizer/Fetch remain held or incomplete. Combined source/input and package checks are not runtime/API conformance; no new compiler credit.
+
+### Filesystem existence, actual HTTPtiming and process supplementary groups
+
+Source275 consumes complete pinned fs.exists/existsSync/custom-promisify over actual access/FSReq owners; ordinary HTTPClient timing over actual _finish/final headers/performance observer; real process.getgroups over guest libc/kernel credentials with owned errors. All engine images stay unchanged, no0196/empty patch. One shared normal generation/source/package batch, no runtime/API/compiler credit.

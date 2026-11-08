@@ -804,7 +804,8 @@ agent_adapter = (root / 'http-agent-adapter.js').read_text()
 for name, marker in [('proxy', 'PROXY'), ('selection', 'SELECTION'), ('keepAlive', 'KEEP_ALIVE'),
                      ('admission', 'ADMISSION'), ('protocol', 'PROTOCOL'), ('protocolCheck', 'PROTOCOL_CHECK'), ('onSocket', 'ON_SOCKET'), ('destroy', 'DESTROY'), ('free', 'FREE'), ('socketTimeout', 'SOCKET_TIMEOUT'), ('setSocketMethods', 'SET_SOCKET_METHODS'),
                      ('timerDuration', 'TIMER_DURATION'), ('globalAgent', 'GLOBAL_AGENT'), ('requestProxy', 'REQUEST_PROXY'),
-                     ('requestHeaders', 'REQUEST_HEADERS'), ('validateHost', 'VALIDATE_HOST')]:
+                     ('requestHeaders', 'REQUEST_HEADERS'), ('validateHost', 'VALIDATE_HOST'),
+                     ('performanceStart', 'PERFORMANCE_START'), ('performanceStop', 'PERFORMANCE_STOP')]:
     item = agent_spec['sections'][name]
     source = agent_sources[item['source']]
     begin = source.index(item['start'])

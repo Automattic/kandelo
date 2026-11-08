@@ -15,6 +15,8 @@ function _createNodeHttpAgent(platform) {
         kProxyConfig: Symbol('kProxyConfig'), kWaitForProxyTunnel: Symbol('kWaitForProxyTunnel') };
     const module = { exports: {} };
     const kError = Symbol('kError');
+    const kClientRequestStatistics = Symbol('ClientRequestStatistics');
+    const observation = platform.observation;
     const kAuthority = Symbol('kAuthority'), kProxyRewrittenToAbsolute = Symbol('kProxyRewrittenToAbsolute');
     const kOutHeaders = platform.outgoing.kOutHeaders;
     const kProxyConfig = internalHttp.kProxyConfig;
@@ -84,9 +86,21 @@ function _createNodeHttpAgent(platform) {
             /* NODE_HTTP_AGENT_ADMISSION */
         }, req, []);
     }
+    function observeResponseHeaders(req, res) {
+        const { hasObserver, stopPerf } = observation;
+        /* NODE_HTTP_AGENT_PERFORMANCE_STOP */
+    }
     function installRequestPrototype(ClientRequest) {
         for (const name of ['abort', 'destroy', 'setTimeout', 'setNoDelay', 'setSocketKeepAlive'])
             delete ClientRequest.prototype[name];
+        const OutgoingMessage = platform.outgoing.module.OutgoingMessage;
+        ClientRequest.prototype._finish = function _finish() {
+            // Preserve target prefinish/user-code ordering before the native
+            // clock snapshot; only actual flushed output starts this entry.
+            OutgoingMessage.prototype._finish.call(this);
+            const { hasObserver, startPerf } = observation;
+            /* NODE_HTTP_AGENT_PERFORMANCE_START */
+        };
         const { ConnResetException } = platform.values.errors;
         const finished = platform.stream.finished;
         const ReflectApply = primordials.ReflectApply;
@@ -120,5 +134,5 @@ function _createNodeHttpAgent(platform) {
     const moduleOwner = module.exports;
     /* NODE_HTTP_AGENT_FREE */
     return { module: module.exports, select, keepAlive, admit, internalHttp,
-        installRequestPrototype, emitFreeNT, kError, decorateNamespace, getTimerDuration, prepareHeaders, host };
+        installRequestPrototype, emitFreeNT, kError, decorateNamespace, getTimerDuration, prepareHeaders, host, observeResponseHeaders };
 }

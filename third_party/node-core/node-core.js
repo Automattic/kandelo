@@ -34637,6 +34637,8 @@ function getGlobalAgent(proxyEnv, Agent) {
         kProxyConfig: Symbol('kProxyConfig'), kWaitForProxyTunnel: Symbol('kWaitForProxyTunnel') };
     const module = { exports: {} };
     const kError = Symbol('kError');
+    const kClientRequestStatistics = Symbol('ClientRequestStatistics');
+    const observation = platform.observation;
     const kAuthority = Symbol('kAuthority'), kProxyRewrittenToAbsolute = Symbol('kProxyRewrittenToAbsolute');
     const kOutHeaders = platform.outgoing.kOutHeaders;
     const kProxyConfig = internalHttp.kProxyConfig;
@@ -35766,9 +35768,49 @@ module.exports = {
   }
         }, req, []);
     }
+    function observeResponseHeaders(req, res) {
+        const { hasObserver, stopPerf } = observation;
+          if (req[kClientRequestStatistics] && hasObserver('http')) {
+    stopPerf(req, kClientRequestStatistics, {
+      detail: {
+        res: {
+          statusCode: res.statusCode,
+          statusMessage: res.statusMessage,
+          headers: res.headers,
+        },
+      },
+    });
+  }
+
+    }
     function installRequestPrototype(ClientRequest) {
         for (const name of ['abort', 'destroy', 'setTimeout', 'setNoDelay', 'setSocketKeepAlive'])
             delete ClientRequest.prototype[name];
+        const OutgoingMessage = platform.outgoing.module.OutgoingMessage;
+        ClientRequest.prototype._finish = function _finish() {
+            // Preserve target prefinish/user-code ordering before the native
+            // clock snapshot; only actual flushed output starts this entry.
+            OutgoingMessage.prototype._finish.call(this);
+            const { hasObserver, startPerf } = observation;
+              if (hasObserver('http')) {
+    startPerf(this, kClientRequestStatistics, {
+      type: 'http',
+      name: 'HttpClient',
+      detail: {
+        req: {
+          method: this.method,
+          // If the path has been rewritten to absolute-form for proxying,
+          // it is already a full URL.
+          url: this[kProxyRewrittenToAbsolute] ?
+            this.path :
+            `${this.protocol}//${this[kAuthority]}${this.path}`,
+          headers: typeof this.getHeaders === 'function' ? this.getHeaders() : {},
+        },
+      },
+    });
+  }
+
+        };
         const { ConnResetException } = platform.values.errors;
         const finished = platform.stream.finished;
         const ReflectApply = primordials.ReflectApply;
@@ -35998,7 +36040,7 @@ function emitAbortNT(req) {
 }
 
     return { module: module.exports, select, keepAlive, admit, internalHttp,
-        installRequestPrototype, emitFreeNT, kError, decorateNamespace, getTimerDuration, prepareHeaders, host };
+        installRequestPrototype, emitFreeNT, kError, decorateNamespace, getTimerDuration, prepareHeaders, host, observeResponseHeaders };
 }
 
 // The actual pinned IncomingMessage owns its Readable/header/abort state.
@@ -45972,11 +46014,13 @@ function _createNodeFsSystemErrors(platform) {
 // Full pinned public wrappers; metadata comes from actual POSIX operations.
 function _createNodePathMetadata(platform) {
     'use strict';
-    const { ErrorCaptureStackTrace, ReflectApply, PromisePrototypeThen, PromiseReject, Symbol,
+    const { ErrorCaptureStackTrace, ReflectApply, Promise, PromisePrototypeThen, PromiseReject, Symbol,
         MathTrunc, NumberIsFinite, TypeError, RangeError, ObjectDefineProperty } = _createNodePrimordials();
     const { parseFileMode, validateFunction, validateInteger } = platform.values.validators;
     const { getValidatedPath, toUnixTimestamp, constants: { kMaxUserId } } = platform.utils;
-    const { kEmptyObject } = platform.values.util;
+    const { kEmptyObject, promisify: { custom: kCustomPromisifiedSymbol } } = platform.values.util;
+    const fs = platform.fs;
+    const process = platform.process;
     const { FSReqCallback, vfsState, makeError } = platform.truncation;
     const { F_OK, R_OK, W_OK, X_OK } = platform.constants;
     const maximumAccessMode = F_OK | R_OK | W_OK | X_OK;
@@ -46017,6 +46061,9 @@ function _createNodePathMetadata(platform) {
         return result;
     }
     const binding = {
+        // Target POSIX ExistsSync returns the actual access(F_OK) status as a
+        // Boolean; validation/deprecation lives in the unchanged public body.
+        existsSync(path) { return platform.native.fsMetadataSync('access', path, F_OK, undefined) === 0; },
         statfs: statfsBinding,
         access: (path, mode, req) => operation('access', path, mode, undefined, req),
         chmod: (path, mode, req) => operation('chmod', path, mode, undefined, req),
@@ -46076,6 +46123,63 @@ function handleErrorFromBinding(error) {
   req.oncomplete = callback;
   binding.access(path, mode, req);
 }
+function exists(path, callback) {
+  validateFunction(callback, 'cb');
+
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const result = h.existsSync(path);
+    if (result !== undefined) {
+      process.nextTick(callback, result);
+      return;
+    }
+  }
+
+  function suppressedCallback(err) {
+    callback(!err);
+  }
+
+  try {
+    fs.access(path, F_OK, suppressedCallback);
+  } catch {
+    return callback(false);
+  }
+}
+
+ObjectDefineProperty(exists, kCustomPromisifiedSymbol, {
+  __proto__: null,
+  value: function exists(path) {
+    return new Promise((resolve) => fs.exists(path, resolve));
+  },
+});
+
+let showExistsDeprecation = true;
+/**
+ * Synchronously tests whether or not the given path exists.
+ * @param {string | Buffer | URL} path
+ * @returns {boolean}
+ */
+function existsSync(path) {
+  const h = vfsState.handlers;
+  if (h !== null) {
+    const result = h.existsSync(path);
+    if (result !== undefined) return result;
+  }
+  try {
+    path = getValidatedPath(path);
+  } catch (err) {
+    if (showExistsDeprecation && err?.code === 'ERR_INVALID_ARG_TYPE') {
+      process.emitWarning(
+        'Passing invalid argument types to fs.existsSync is deprecated', 'DeprecationWarning', 'DEP0187',
+      );
+      showExistsDeprecation = false;
+    }
+    return false;
+  }
+
+  return binding.existsSync(path);
+}
+
 function chmod(path, mode, callback) {
   path = getValidatedPath(path);
   mode = parseFileMode(mode, 'mode');
@@ -46286,7 +46390,7 @@ function statfsSync(path, options = { __proto__: null, bigint: false }) {
   return getStatFsFromBinding(stats);
 }
 
-        return { access, accessSync, chmod, chmodSync, chown, chownSync,
+        return { access, accessSync, exists, existsSync, chmod, chmodSync, chown, chownSync,
             lchown, lchownSync, utimes, utimesSync, lutimes, lutimesSync, link, linkSync, statfs, statfsSync };
     }
     function promiseAPIs() {
@@ -103494,7 +103598,13 @@ function _createNodeProcessState(platform) {
 }
         return wrappedUmask;
     }
+    // Native completion throws the actual credential errno before publishing
+    // the ordinary OS result packet; this synchronous getter has no async ID.
+    const credentials = {
+        getgroups() { return native.operatingSystem('process-getgroups').value; },
+    };
     return { createEnvironment, createAbort, createUmask, installVersions,
+        getgroups: credentials.getgroups,
         parentPid: () => native.processParentPid() };
 }
 
@@ -112296,7 +112406,7 @@ const kMaybeBuffer = Symbol('kMaybeBuffer');
 const kTypeSingle = 0;
 const kTypeMultiple = 1;
 
-const kSupportedEntryTypes = ObjectFreeze(['dns', 'function', 'mark', 'measure', 'resource']);
+const kSupportedEntryTypes = ObjectFreeze(['dns', 'function', 'http', 'mark', 'measure', 'resource']);
 
 // Performance timeline entry Buffers
 let markEntryBuffer = [];

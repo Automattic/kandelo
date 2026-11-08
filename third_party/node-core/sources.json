@@ -2624,8 +2624,8 @@
       "start": "const kSupportedEntryTypes = ObjectFreeze([",
       "length": 155,
       "sha256": "eea07692274a68dd9ca2b9011b0b36b4629b5963fa231ee37c9b645d783e19c8",
-      "replacement": "const kSupportedEntryTypes = ObjectFreeze(['dns', 'function', 'mark', 'measure', 'resource']);",
-      "scope": "Installed DNS, user/function and explicit resource-timing JS producers only; native GC/HTTP/HTTP2/net/QUIC producers remain missing and no unsupported/skip counts as a pass"
+      "replacement": "const kSupportedEntryTypes = ObjectFreeze(['dns', 'function', 'http', 'mark', 'measure', 'resource']);",
+      "scope": "Installed DNS, user/function, explicit resource-timing and actual ordinary HTTP ClientRequest/ServerResponse JS producers only. HTTPS client timing and full HTTP Server lifecycle remain partial; native GC/HTTP2/net/QUIC producers remain missing. No unavailable measurement or skipped test counts as conformance."
     }
   },
   "dnsLookupPlatform": {
@@ -4519,6 +4519,12 @@
         "length": 391,
         "sha256": "174515155e0b1f8ff87e0bea7806dcfa03cdeb4033b16253c27f9a6e8eb02f88"
       },
+      "public-exists": {
+        "source": "public",
+        "start": "function exists(path, callback) {",
+        "length": 1316,
+        "sha256": "1a15d98b5884503fcb7c1f3526c9a8a9085f4153724c0d181a3305c476adbfcd"
+      },
       "public-chmod": {
         "source": "public",
         "start": "function chmod(",
@@ -4688,7 +4694,7 @@
         "sha256": "6f481704e69ba3e043c216cfe8581deaff1b62ae015cfcf273496ec2ef5e1173"
       }
     },
-    "scope": "Exact public sync/callback/promise pathname access/mode/owner/time wrappers with native POSIX metadata and shared native system-error construction. Not complete permission/backend/four-host conformance."
+    "scope": "Exact public sync/callback/promise pathname access/mode/owner/time wrappers with native POSIX metadata and shared native system-error construction. Not complete permission/backend/four-host conformance. Complete unchanged exists/existsSync/custom-promisify algorithms consume actual access requests; no fs.promises.exists export or full filesystem conformance."
   },
   "sourceMapPlatform": {
     "sources": {

@@ -1,11 +1,13 @@
 // Full pinned public wrappers; metadata comes from actual POSIX operations.
 function _createNodePathMetadata(platform) {
     'use strict';
-    const { ErrorCaptureStackTrace, ReflectApply, PromisePrototypeThen, PromiseReject, Symbol,
+    const { ErrorCaptureStackTrace, ReflectApply, Promise, PromisePrototypeThen, PromiseReject, Symbol,
         MathTrunc, NumberIsFinite, TypeError, RangeError, ObjectDefineProperty } = _createNodePrimordials();
     const { parseFileMode, validateFunction, validateInteger } = platform.values.validators;
     const { getValidatedPath, toUnixTimestamp, constants: { kMaxUserId } } = platform.utils;
-    const { kEmptyObject } = platform.values.util;
+    const { kEmptyObject, promisify: { custom: kCustomPromisifiedSymbol } } = platform.values.util;
+    const fs = platform.fs;
+    const process = platform.process;
     const { FSReqCallback, vfsState, makeError } = platform.truncation;
     const { F_OK, R_OK, W_OK, X_OK } = platform.constants;
     const maximumAccessMode = F_OK | R_OK | W_OK | X_OK;
@@ -46,6 +48,9 @@ function _createNodePathMetadata(platform) {
         return result;
     }
     const binding = {
+        // Target POSIX ExistsSync returns the actual access(F_OK) status as a
+        // Boolean; validation/deprecation lives in the unchanged public body.
+        existsSync(path) { return platform.native.fsMetadataSync('access', path, F_OK, undefined) === 0; },
         statfs: statfsBinding,
         access: (path, mode, req) => operation('access', path, mode, undefined, req),
         chmod: (path, mode, req) => operation('chmod', path, mode, undefined, req),
@@ -58,7 +63,7 @@ function _createNodePathMetadata(platform) {
     /* NODE_METADATA_SHARED */
     function publicAPIs() {
         /* NODE_METADATA_PUBLIC */
-        return { access, accessSync, chmod, chmodSync, chown, chownSync,
+        return { access, accessSync, exists, existsSync, chmod, chmodSync, chown, chownSync,
             lchown, lchownSync, utimes, utimesSync, lutimes, lutimesSync, link, linkSync, statfs, statfsSync };
     }
     function promiseAPIs() {

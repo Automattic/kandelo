@@ -103,6 +103,12 @@ function _createNodeProcessState(platform) {
         /* NODE_UMASK_WORKER */
         return wrappedUmask;
     }
+    // Native completion throws the actual credential errno before publishing
+    // the ordinary OS result packet; this synchronous getter has no async ID.
+    const credentials = {
+        getgroups() { return native.operatingSystem('process-getgroups').value; },
+    };
     return { createEnvironment, createAbort, createUmask, installVersions,
+        getgroups: credentials.getgroups,
         parentPid: () => native.processParentPid() };
 }

@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "7f3a3e868420ea3e8f28fd53a40acc64c4a4beec587beece9758ae00e9c63efb",
+    "packages/registry/node-compat/bootstrap.js": "a6011542d4e0162ccd4ad0b0dacc591d691303d2ce4fa3606b0443dc5e45755c",
     "third_party/node-core/adapter.js": "62d08d0de6ea1b8aef5f0dc54c46e53b175e5cbbc481475cbfb2059ad912e292",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/asymmetric-keygen-platform-adapter.js": "94b3dc26b1f783b97cb38eaa91baff3be883c66f8d80a6c76568a72ebf0207b0",
@@ -60,7 +60,7 @@
     "third_party/node-core/fs-truncate-adapter.js": "e51c3642e13bc06116e9322855e2b8e5f9a7bc1676d0503e6ad4dba0909bba06",
     "third_party/node-core/glob-platform-adapter.js": "ef189654bd1768c142bb48152e3432fb4b04718cfde3bd5a32f278d86f0c9e83",
     "third_party/node-core/histogram-platform-adapter.js": "4447d727f6acd1b3ae181c5e5e87c68c5c19882bc77bd7105cdfe16186f2d454",
-    "third_party/node-core/http-agent-adapter.js": "c8150a79f4f68cbea64db1bb90ff6d328f592ff960c15f3fcf161e2dc16fa837",
+    "third_party/node-core/http-agent-adapter.js": "953c1daa205025c13c0141437a38b9fb7c9f728096baf5e1fb79bc0ea477677a",
     "third_party/node-core/http-headers-adapter.js": "ea0571356e14c94e8679037759502368aa9d5e680cfe07832c4ea76a82f4e8be",
     "third_party/node-core/http-incoming-adapter.js": "6dedb3fe1773cfd0c6a804db0482d131533be15f8babf934287da3638edbd44a",
     "third_party/node-core/http-outgoing-adapter.js": "35ca48ff3efb87d5236c378c6429aa56af5c28babfa839fc03be7dd4e36fe1ed",
@@ -82,7 +82,7 @@
     "third_party/node-core/os-platform-adapter.js": "654a45a4e799959eab045fdf5737828202bc24dcd2edf8fa2526cbfc45243a57",
     "third_party/node-core/package-policy-adapter.js": "90466889c2bce75aaa31dcfa1b0372f21bfd7cad52bd2fca30ed47b4c5c83fa6",
     "third_party/node-core/package-reader-adapter.js": "5b1c6cea7421a956779a24692850b3b2a3a212ff5973dc7e4f1c9f009e1819ce",
-    "third_party/node-core/path-metadata-adapter.js": "6a3fcff47e24523aa11155520e58063933e1fc5b5c0b760fe6d0cdec15c422e7",
+    "third_party/node-core/path-metadata-adapter.js": "ef14e34e6ecb8792369a8f70a69b5a7627413f2546d45ad72b8b988eeab86fdf",
     "third_party/node-core/path-platform-adapter.js": "ea6f20759e080a0128db19ee90913e5a0cecc07b94da5751c121db1706886c88",
     "third_party/node-core/performance-observer-adapter.js": "7f7133c1fb0c62a57cff43365d6c4c338b929b759b5fecce48c660ef44097b49",
     "third_party/node-core/ports-platform-adapter.js": "3c62c3de8b83e0e8299d53a5d828613e158bb6d2bb26cc346771bf7480a83338",
@@ -90,7 +90,7 @@
     "third_party/node-core/process-exception-adapter.js": "a4bcbd7ea7cf8cc11782ad7d89f0657a426830d67b01815230fab5c321709c73",
     "third_party/node-core/process-lifetime-adapter.js": "c10aa4e4f2c8e1701f5fd6d6958cf32ec6870070d46e9f33b7b5ca7947f16fff",
     "third_party/node-core/process-signals-platform-adapter.js": "f1e3e1dcfbb46b6b0f38638eb9e6390d19023b808238a68dcee8086bc5eeb521",
-    "third_party/node-core/process-state-adapter.js": "c443ea10a3b05c6b311ae5815efc94b00f5a0cfff4f66a914a10ac697a51b5b3",
+    "third_party/node-core/process-state-adapter.js": "17109738947c31c9562aafb38e7193535132109340bbd94a9e25741ee5941268",
     "third_party/node-core/process-usage-adapter.js": "ad4a506a23019556ac4557a8198c4f0f03e6e360490a2cc82124b577361a22ae",
     "third_party/node-core/public-constants-platform-adapter.js": "b6fb6bd1674b6533b098bbb5d484693ca7c4eccb6191eedf64033801f5699a47",
     "third_party/node-core/query-codecs-platform-adapter.js": "38065f1cb667ab06a30f3a337ad8fbb771882ae28b2b233def2e1705c90a9766",
@@ -2411,7 +2411,7 @@
       "selectedAdapterLiteralOccurrences": [
         {
           "path": "packages/registry/node-compat/bootstrap.js",
-          "line": 2920
+          "line": 2921
         }
       ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",

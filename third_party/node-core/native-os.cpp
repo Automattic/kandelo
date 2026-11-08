@@ -3,6 +3,10 @@
 #include "kandelo-node-default-locale.h"
 #include "kandelo-node-public-constants.h"
 #include "js/LocaleSensitive.h"
+#include "js/Exception.h"
+#include "js/PropertyAndElement.h"
+#include "js/Stack.h"
+#include <new>
 #include <type_traits>
 namespace {
 static bool KandeloOSBytes(JSContext* cx,const std::string& text,MutableHandleValue value) {
@@ -56,6 +60,66 @@ static bool KandeloPublicConstants(JSContext* cx,HandleObject fs,HandleObject si
       !JS_DefineProperty(cx,binding,"crypto",crypto,JSPROP_ENUMERATE))return false;
   output.setObject(*binding);return true;
 }
+// Node GetGroups uses ErrnoException, whose errno is positive and whose
+// message is the actual libc strerror text, rather than UVException's schema.
+static bool KandeloProcessGroupsError(JSContext* cx, int errorNumber) {
+  if (JS_IsExceptionPending(cx)) return false;
+  const char* errorCode = "";
+  const bool constants = kandelo::node_constants::DefineErrnoConstants(
+      [&](const char* name, double value) {
+        if (!*errorCode && value == errorNumber) errorCode = name;
+        return true;
+      });
+  MOZ_RELEASE_ASSERT(constants);
+  // Pinned errno_string returns an empty code for an unknown errno.
+  const std::string messageText = std::string(errorCode) + ", " + strerror(errorNumber);
+  RootedString message(cx, JS_NewStringCopyN(cx, messageText.data(), messageText.size()));
+  RootedString file(cx, JS_GetEmptyString(cx));
+  RootedObject stack(cx);
+  RootedValue error(cx);
+  if (!message || !JS::CaptureCurrentStack(cx, &stack) ||
+      !JS::CreateError(cx, JSEXN_ERR, stack, file, 0, JS::ColumnNumberOneOrigin(1), nullptr,
+                      message, JS::NothingHandleValue, &error)) return false;
+  RootedObject object(cx, &error.toObject());
+  auto checkedSet = [&](const char* key, HandleValue value) {
+    RootedString name(cx, JS_NewStringCopyZ(cx, key));
+    RootedId id(cx);
+    if (!name || !JS_StringToId(cx, name, &id)) return false;
+    RootedValue receiver(cx, ObjectValue(*object));
+    JS::ObjectOpResult result;
+    // Pinned ErrnoException performs checked ordinary Set in this order.
+    // Keep inherited setters/false-result policy with its actual native owner.
+    if (!JS_ForwardSetPropertyTo(cx, object, id, value, receiver, result))
+      MOZ_CRASH("Checked native process credential error assignment failed");
+    return true;
+  };
+  RootedValue value(cx, Int32Value(errorNumber));
+  if (!checkedSet("errno", value)) return false;
+  RootedString code(cx, JS_NewStringCopyZ(cx, errorCode));
+  if (!code) return false;
+  value.setString(code);
+  if (!checkedSet("code", value)) return false;
+  RootedString syscall(cx, JS_NewStringCopyZ(cx, "getgroups"));
+  if (!syscall) return false;
+  value.setString(syscall);
+  if (!checkedSet("syscall", value)) return false;
+  JS_SetPendingException(cx, error); return false;
+}
+static bool KandeloProcessGroups(JSContext* cx, MutableHandleValue value) {
+  try {
+    const auto result = kandelo::process_state::GetGroups();
+    if (result.error) return KandeloProcessGroupsError(cx, result.error);
+    RootedObject groups(cx, JS::NewArrayObject(cx, result.groups.size()));
+    if (!groups) return false;
+    for (size_t i = 0; i < result.groups.size(); ++i) {
+      RootedValue group(cx, NumberValue(double(result.groups[i])));
+      if (!JS_DefineElement(cx, groups, uint32_t(i), group, JSPROP_ENUMERATE)) return false;
+    }
+    value.setObject(*groups); return true;
+  } catch (const std::bad_alloc&) {
+    JS_ReportOutOfMemory(cx); return false;
+  }
+}
 static bool KandeloNativeOS(JSContext* cx,unsigned argc,Value* vp) {
   CallArgs args = CallArgsFromVp(argc,vp);
   if (!args.get(0).isString()) { JS_ReportErrorASCII(cx,"OS operation requires a name"); return false; }
@@ -73,7 +137,9 @@ static bool KandeloNativeOS(JSContext* cx,unsigned argc,Value* vp) {
       strcmp(name, "tty-input-stop") == 0 || strcmp(name, "tty-input-ref") == 0) {
     return KandeloTerminalDispatch(cx, args, name, args.rval(), &error);
   }
-  if (strncmp(name, "trace-", 6) == 0) {
+  if (strcmp(name, "process-getgroups") == 0) {
+    if (!KandeloProcessGroups(cx, &value)) return false;
+  } else if (strncmp(name, "trace-", 6) == 0) {
     if (!KandeloTraceDispatch(cx, args, name, &value, &error)) return false;
   } else if (strcmp(name,"constants") == 0) {
     if(!args.get(1).isObject() || !args.get(2).isObject()) {

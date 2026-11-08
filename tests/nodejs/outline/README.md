@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Three reviewed partial source contributions batched once; source275uncompiled/unexecuted, accepted271historical. All19families partial.
+See [source scope](core-filesystem-performance-groups-batch275-implementation.md).
+
 Four reviewed partial source contributions batched once; source274 uncompiled/unexecuted, accepted271 historical. All19families remain partial.
 See [source scope](core-mapping-curves-promise-fetch-batch274-implementation.md).
 

@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
+#include <utility>
 
 extern "C" { extern char** environ; }
 #if defined(__wasm__) || defined(__linux__)
@@ -22,6 +23,25 @@ namespace kandelo::process_state {
 
 inline std::mutex environment_mutex;
 inline std::mutex umask_mutex;
+
+struct GroupsResult { int error = 0; std::vector<gid_t> groups; };
+// Preserve pinned GetGroups' two real syscall snapshots and effective-gid
+// inclusion. The native vector owns all data before JS publication; no
+// borrowed group storage or credential cache crosses a JS allocation.
+inline GroupsResult GetGroups() {
+  int count = getgroups(0, nullptr);
+  if (count == -1) return {errno, {}};
+  std::vector<gid_t> groups(static_cast<size_t>(count));
+  count = getgroups(count, groups.data());
+  if (count == -1) return {errno, {}};
+  groups.resize(static_cast<size_t>(count));
+  const gid_t effective = getegid();
+  bool present = false;
+  for (gid_t group : groups) if (group == effective) { present = true; break; }
+  if (!present) groups.push_back(effective);
+  return {0, std::move(groups)};
+}
+
 
 // Abort is signal death, not a normal _exit(128 + SIGABRT). libc owns
 // unblock/reset/re-raise behavior, so waiters receive the real signal status.

@@ -133,6 +133,18 @@
       "start": "function validateHost(",
       "length": 294,
       "sha256": "06ad2aae2567e2a289bb0f8f2fc2ba1b42e5e70f7447ba041dcf05863df701bb"
+    },
+    "performanceStart": {
+      "source": "lib/_http_client.js",
+      "start": "  if (hasObserver('http')) {",
+      "length": 552,
+      "sha256": "b099c6b3bb35dbfede3e2e717da5fc7eb38b8141baa827e16b904d968e79633a"
+    },
+    "performanceStop": {
+      "source": "lib/_http_client.js",
+      "start": "  if (req[kClientRequestStatistics] && hasObserver('http')) {",
+      "length": 285,
+      "sha256": "4db78c4c8c4956e0957b59233458df1eb05f0b4065bd08aea2a7d20185f70c7b"
     }
   }
 }

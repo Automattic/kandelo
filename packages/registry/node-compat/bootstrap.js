@@ -1479,6 +1479,7 @@ const process = (() => {
         geteuid() { return _nodeNative.credentials().euid; },
         getgid() { return _nodeNative.credentials().gid; },
         getegid() { return _nodeNative.credentials().egid; },
+        getgroups: _nodeProcessState.getgroups,
         _kill(pid, signum) {
             try { _nodeNative.__kandeloKill(pid, signum); return 0; }
             catch (error) {
@@ -1887,7 +1888,7 @@ const fs = (() => {
     // fs.promises
     mod.promises = {};
     for (const key of Object.keys(mod)) {
-        if (key === 'readFile' || key === 'writeFile' || key === 'appendFile' ||
+        if (key === 'exists' || key === 'readFile' || key === 'writeFile' || key === 'appendFile' ||
             key.endsWith('Sync') || key === 'constants' || key === 'Stats' ||
             key === 'Dirent' || key === 'promises' || key === 'createReadStream' ||
             key === 'createWriteStream') continue;
@@ -2231,7 +2232,7 @@ const _nodeDirectoryPlatform = _createNodeDirectoryPlatform({
 Object.assign(fs, _nodeDirectoryPlatform.api);
 Object.assign(fs.promises, _nodeDirectoryPlatform.promises);
 const _nodePathMetadata = _createNodePathMetadata({
-    native: _nodeNative, values: _nodeValues, utils: _nodeFsStats,
+    fs, process, native: _nodeNative, values: _nodeValues, utils: _nodeFsStats,
     truncation: _nodeFsTruncation, constants: fs.constants,
 });
 Object.assign(fs, _nodePathMetadata.api);
@@ -4673,6 +4674,7 @@ const _nodeHttpAgent = _createNodeHttpAgent({
     process, Buffer, URL: url.URL, net, events, stream, values: _nodeValues,
     async: _nodeAsyncPlatform, socketStream: _nodeSocketStream, outgoing: _nodeHttpOutgoing,
     assert: assert, getTLS: () => tls,
+    observation: _nodePerformance.observation,
     getOptionValue: name => name === '--use-env-proxy' ? _nodeNative.cliOptions?.useEnvProxy : undefined,
 });
 
@@ -5035,6 +5037,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol, agentOwner }) {
             });
             this._respConnectionClose = /(^|,)\s*close\s*(,|$)/i.test(msg.headers.connection || '');
             if (!this._parser.shouldKeepAlive) this.shouldKeepAlive = false;
+            // Final response headers stop the genuine HttpClient entry before
+            // response publication, as in the pinned parserOnIncomingClient.
+            if (agentOwner) agentOwner.observeResponseHeaders(this, msg);
             // Auto-redirect (opt-in).
             if (this._followRedirects
                 && msg.statusCode >= 300 && msg.statusCode < 400

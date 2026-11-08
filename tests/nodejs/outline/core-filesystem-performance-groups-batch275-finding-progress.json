@@ -1,0 +1,288 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/filesystem-contracts.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "filesystem",
+      "observability",
+      "processes"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/filesystem-contracts.md",
+        "findingId": "FS-013",
+        "relation": "direct-partial",
+        "scope": "Actual exists callback-first validation, native async completion vs invalid-path synchronous false, and genuine custom promisify/existsSync semantics"
+      },
+      {
+        "document": "tests/nodejs/audit/observability.md",
+        "findingId": "O-008",
+        "relation": "direct-partial-owning-producer",
+        "scope": "Actual ordinary HTTP ClientRequest timing/observer consumption, not HTTPS/fullServer or broad measurement support."
+      },
+      {
+        "document": "tests/nodejs/audit/observability.md",
+        "findingId": "O-009",
+        "relation": "direct-partial-owning-producer",
+        "scope": "Actual ordinary HTTP ClientRequest timing/observer consumption, not HTTPS/fullServer or broad measurement support."
+      },
+      {
+        "document": "tests/nodejs/audit/processes.md",
+        "findingId": "PROC-005",
+        "relation": "direct-partial",
+        "scope": "Public supplementary-group getter over actual guest credentials, not setters or full process capabilities"
+      }
+    ],
+    "scope": "Partial public filesystem exists, actual HTTPentry producer/observer and process supplementary group getter; no full namespace/finding/family/four-host closure."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "filesystem-exists-public-owner",
+      "scope": "Complete pinned fs.exists/custom-promisify/existsSync block consumed by actual native access and FSReq callback owner, with existing public aliases and no invented promises.exists."
+    },
+    {
+      "feature": "http-client-real-performance-producer",
+      "scope": "Actual _finish/OutgoingMessage-before-clock and final response-header startPerf/stopPerf consumer, with real retained request/detail and monotonic performance observation. http supported type admitted through actual producer; existing timerify is not new credit."
+    },
+    {
+      "feature": "process-real-supplementary-groups",
+      "scope": "Public process.getgroups over actual guest libc/kernel count/data/effective-gid state, owned vector, rooted Number array and actual positive-errno ErrnoException publication. Existing getBuiltinModule is not duplicated or new credit."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core275-filesystem-performance-groups-source-r1/report.json",
+    "sha256": "25d55293300b7ea369b0df234573abe5d14c3e607a16b6b322754c759576e1a3",
+    "guardedInputs": 934,
+    "scope": "One normal source275 source/staging/input check plus three owning contributions and retained274/273/272/271 guards; no native/component reruns, compiler or guest proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core275-filesystem-performance-groups-affected-r1.json",
+    "sha256": "92d1d7fc845d8b1a06a61a4137e051f8c3bd7487ef9476b6c9954ec7f3fccf34",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core275-filesystem-performance-groups-source-r1/report.json",
+    "sha256": "25d55293300b7ea369b0df234573abe5d14c3e607a16b6b322754c759576e1a3",
+    "reportScope": "One normal source275 source/staging/input check plus three owning contributions and retained274/273/272/271 guards; no native/component reruns, compiler or guest proof.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true,
+    "freshComponentGroups": 0,
+    "freshAPIConformancePasses": 0,
+    "sourceAddressingRequiresActualGuards": true,
+    "administrativeAdmissionObservation": {
+      "path": ".context/core275-preparation-admission-failure-r1.json",
+      "sha256": "152588fa2153e4b4222e827cc22681f579bae361b49f1e8800df88d123c4c0d9",
+      "scope": "Wrong command-seal admission rejected before Popen/receipt/log/output creation;0runtime/compiler/generator attempt. Actual later preparation receipt remains separate; no API failure or extra generation credited."
+    }
+  },
+  "sealedEvidence": {
+    "report": ".context/core275-filesystem-performance-groups-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "3eded16986062305b8a44e0b8e2cbe5aab7c4c89d8bd4d0450bc53a3e5675de1",
+    "reusedEvidence": true,
+    "scope": "Three exact reviewed partial source owners; zero fresh runtime/API/native groups/helpers/compilers. Independent zero-engine inventory preserves allnine canonical images without invented F/R/F."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-selected-engine-270-r1/terminal.json",
+      "sha256": "760189a1b98dc7d26b2b25933dcb8bcf058cf08f6290cedc07d5f595908be4b0",
+      "classification": "Previously counted actual failed source270 engine compilation; historical only, no new275 credit.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/node26-selected-engine-271-r1/terminal.json",
+      "sha256": "ff44d7fb1d0acb9224c1553e3159e3638c5c21a7d62ad5d0617c9ae6c6ba809b",
+      "classification": "Actual resolver0 with original wrapper retention harness1; corrected verifier0/accepted271 retained. Historical, not engine failure or275 execution.",
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "Actual guest callback/timing/error/fatal/GC/OOM/realm/Worker teardown/current native queue validation has not run. Enabled Node Permission Model admission/read scope remains a genuine missing owner; guest POSIX rights still actual syscall state. Public experimental VFS installer/provider/loader/stream dispatch and full filesystem namespace/descriptor compatibility remain incomplete. Path BufferSource detach/resize/shared-memory/error/realm and backend mounted-fs semantics retain existing native ownership/validation limits. No full fs/FS-013/family/Node-or-browser/four-host conformance or closure.",
+    "HTTPS separate legacy ClientRequest path remains without this entry producer and faithful retained authority; implementation gap, not boundary. Full HTTP Server activation/persistence and native callback/resource/ref/close/error lifecycle remain partial. Only actual HTTP entry production is added; HTTP diagnostic-channel/trace portions of full target _finish are separate unimplemented/uncredited owners. GC/HTTP2/net/QUIC measurement producers remain unadvertised/missing. uvMetricsInfo, full milestone Worker ordering and legacy V8 field policy unchanged. Observer native/JSAPI/GC/realm/Worker/four-host conformance unvalidated. Pure Agent queue fixtures can still construct their owner without observation; executing new timing paths requires the real observation owner, never no-op stubs.",
+    "New C++/JSAPI/error/setter/fatal/stack publication remains uncompiled/unexecuted. OOM/native error aliases/locale/realm/access/GC/Worker/thread/teardown and credential mutation between two syscalls remain unvalidated. process.setgroups/initgroups and credential setters/active Node Permission Model remain separate missing owners. Full builtin namespace/ESM facade/evaluation/cache/loader conformance remains incomplete; existing getBuiltinModule is not new credit. No full process family/finding or four-host conformance closure. Root source review establishes no blocking finding; broader errno alias/unknown-code, stack/fatal/GC/Worker/concurrent-credential and all-host runtime parity remain unproved implementation/validation obligations, not accepted boundaries."
+  ],
+  "featureContributions": [
+    {
+      "id": "filesystem-exists-public-owner",
+      "family": "filesystem",
+      "qualifiedDefinitions": [
+        {
+          "document": "tests/nodejs/audit/filesystem-contracts.md",
+          "findingId": "FS-013",
+          "relation": "direct-partial",
+          "scope": "Actual exists callback-first validation, native async completion vs invalid-path synchronous false, and genuine custom promisify/existsSync semantics"
+        }
+      ],
+      "scope": "Complete pinned fs.exists/custom-promisify/existsSync block consumed by actual native access and FSReq callback owner, with existing public aliases and no invented promises.exists.",
+      "remaining": "Actual guest callback/timing/error/fatal/GC/OOM/realm/Worker teardown/current native queue validation has not run. Enabled Node Permission Model admission/read scope remains a genuine missing owner; guest POSIX rights still actual syscall state. Public experimental VFS installer/provider/loader/stream dispatch and full filesystem namespace/descriptor compatibility remain incomplete. Path BufferSource detach/resize/shared-memory/error/realm and backend mounted-fs semantics retain existing native ownership/validation limits. No full fs/FS-013/family/Node-or-browser/four-host conformance or closure.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "remainingList": [
+        "Actual guest callback/timing/error/fatal/GC/OOM/realm/Worker teardown/current native queue validation has not run.",
+        "Enabled Node Permission Model admission/read scope remains a genuine missing owner; guest POSIX rights still actual syscall state.",
+        "Public experimental VFS installer/provider/loader/stream dispatch and full filesystem namespace/descriptor compatibility remain incomplete.",
+        "Path BufferSource detach/resize/shared-memory/error/realm and backend mounted-fs semantics retain existing native ownership/validation limits.",
+        "No full fs/FS-013/family/Node-or-browser/four-host conformance or closure."
+      ],
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/filesystem-contracts.md",
+          "findingId": "FS-013",
+          "relation": "direct-partial",
+          "scope": "Actual exists callback-first validation, native async completion vs invalid-path synchronous false, and genuine custom promisify/existsSync semantics"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "770ec6b97faa9e05438636250051b89ca325176d7e962f4c7824f5d2f95bc9d0",
+      "producerSeal": {
+        "path": ".context/filesystem-breadth-owner-agent/SEAL.json",
+        "sha256": "ad27545bad1ff127deb3b115d24118a849bc8f9c645c588e77a08c11bfca0d98"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core275-filesystem-performance-groups-source-r1/report.json",
+        "sha256": "25d55293300b7ea369b0df234573abe5d14c3e607a16b6b322754c759576e1a3",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "http-client-real-performance-producer",
+      "family": "observability",
+      "qualifiedDefinitions": [
+        {
+          "document": "tests/nodejs/audit/observability.md",
+          "findingId": "O-008",
+          "relation": "direct-partial-owning-producer",
+          "scope": "Actual ordinary HTTP ClientRequest timing/observer consumption, not HTTPS/fullServer or broad measurement support."
+        },
+        {
+          "document": "tests/nodejs/audit/observability.md",
+          "findingId": "O-009",
+          "relation": "direct-partial-owning-producer",
+          "scope": "Actual ordinary HTTP ClientRequest timing/observer consumption, not HTTPS/fullServer or broad measurement support."
+        }
+      ],
+      "scope": "Actual _finish/OutgoingMessage-before-clock and final response-header startPerf/stopPerf consumer, with real retained request/detail and monotonic performance observation. http supported type admitted through actual producer; existing timerify is not new credit.",
+      "remaining": "HTTPS separate legacy ClientRequest path remains without this entry producer and faithful retained authority; implementation gap, not boundary. Full HTTP Server activation/persistence and native callback/resource/ref/close/error lifecycle remain partial. Only actual HTTP entry production is added; HTTP diagnostic-channel/trace portions of full target _finish are separate unimplemented/uncredited owners. GC/HTTP2/net/QUIC measurement producers remain unadvertised/missing. uvMetricsInfo, full milestone Worker ordering and legacy V8 field policy unchanged. Observer native/JSAPI/GC/realm/Worker/four-host conformance unvalidated. Pure Agent queue fixtures can still construct their owner without observation; executing new timing paths requires the real observation owner, never no-op stubs.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "remainingList": [
+        "HTTPS separate legacy ClientRequest path remains without this entry producer and faithful retained authority; implementation gap, not boundary.",
+        "Full HTTP Server activation/persistence and native callback/resource/ref/close/error lifecycle remain partial.",
+        "Only actual HTTP entry production is added; HTTP diagnostic-channel/trace portions of full target _finish are separate unimplemented/uncredited owners.",
+        "GC/HTTP2/net/QUIC measurement producers remain unadvertised/missing.",
+        "uvMetricsInfo, full milestone Worker ordering and legacy V8 field policy unchanged.",
+        "Observer native/JSAPI/GC/realm/Worker/four-host conformance unvalidated.",
+        "Pure Agent queue fixtures can still construct their owner without observation; executing new timing paths requires the real observation owner, never no-op stubs."
+      ],
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/observability.md",
+          "findingId": "O-008",
+          "relation": "direct-partial-owning-producer",
+          "scope": "Actual ordinary HTTP ClientRequest timing/observer consumption, not HTTPS/fullServer or broad measurement support."
+        },
+        {
+          "document": "tests/nodejs/audit/observability.md",
+          "findingId": "O-009",
+          "relation": "direct-partial-owning-producer",
+          "scope": "Actual ordinary HTTP ClientRequest timing/observer consumption, not HTTPS/fullServer or broad measurement support."
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "770ec6b97faa9e05438636250051b89ca325176d7e962f4c7824f5d2f95bc9d0",
+      "producerSeal": {
+        "path": ".context/performance-owner-breadth-agent/SEAL.json",
+        "sha256": "13b66f828d140920ecc2a92656136cf973f44c55de376cfd5b057b07d1bfd850"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core275-filesystem-performance-groups-source-r1/report.json",
+        "sha256": "25d55293300b7ea369b0df234573abe5d14c3e607a16b6b322754c759576e1a3",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "process-real-supplementary-groups",
+      "family": "processes",
+      "qualifiedDefinitions": [
+        {
+          "document": "tests/nodejs/audit/processes.md",
+          "findingId": "PROC-005",
+          "relation": "direct-partial",
+          "scope": "Public supplementary-group getter over actual guest credentials, not setters or full process capabilities"
+        }
+      ],
+      "scope": "Public process.getgroups over actual guest libc/kernel count/data/effective-gid state, owned vector, rooted Number array and actual positive-errno ErrnoException publication. Existing getBuiltinModule is not duplicated or new credit.",
+      "remaining": "New C++/JSAPI/error/setter/fatal/stack publication remains uncompiled/unexecuted. OOM/native error aliases/locale/realm/access/GC/Worker/thread/teardown and credential mutation between two syscalls remain unvalidated. process.setgroups/initgroups and credential setters/active Node Permission Model remain separate missing owners. Full builtin namespace/ESM facade/evaluation/cache/loader conformance remains incomplete; existing getBuiltinModule is not new credit. No full process family/finding or four-host conformance closure. Root source review establishes no blocking finding; broader errno alias/unknown-code, stack/fatal/GC/Worker/concurrent-credential and all-host runtime parity remain unproved implementation/validation obligations, not accepted boundaries.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "remainingList": [
+        "New C++/JSAPI/error/setter/fatal/stack publication remains uncompiled/unexecuted.",
+        "OOM/native error aliases/locale/realm/access/GC/Worker/thread/teardown and credential mutation between two syscalls remain unvalidated.",
+        "process.setgroups/initgroups and credential setters/active Node Permission Model remain separate missing owners.",
+        "Full builtin namespace/ESM facade/evaluation/cache/loader conformance remains incomplete; existing getBuiltinModule is not new credit.",
+        "No full process family/finding or four-host conformance closure.",
+        "Root source review establishes no blocking finding; broader errno alias/unknown-code, stack/fatal/GC/Worker/concurrent-credential and all-host runtime parity remain unproved implementation/validation obligations, not accepted boundaries."
+      ],
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/processes.md",
+          "findingId": "PROC-005",
+          "relation": "direct-partial",
+          "scope": "Public supplementary-group getter over actual guest credentials, not setters or full process capabilities"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "770ec6b97faa9e05438636250051b89ca325176d7e962f4c7824f5d2f95bc9d0",
+      "producerSeal": {
+        "path": ".context/process-builtin-owner-agent/SEAL.json",
+        "sha256": "0ad98136bb557edb8a9532916bcd279a670e6467cb4a1c52ed50fd75c14c6652"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core275-filesystem-performance-groups-source-r1/report.json",
+        "sha256": "25d55293300b7ea369b0df234573abe5d14c3e607a16b6b322754c759576e1a3",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    }
+  ],
+  "batchReceiptIndex": {
+    "report": ".context/core275-filesystem-performance-groups-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "cc360dc5c3ad60683f62d1678a09a377c89438c60e1efed996285c8e48e5af46",
+    "scope": "Actual completed source/check/import receipts. Zero new component/native/API passes; no historical recount or new compiler/guest run."
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "documentationGate": "Historical native observations and negative outcomes retain their original scope. Current source/package predicates do not establish API passes.",
+  "sourceAddressing": {
+    "report": ".context/core275-filesystem-performance-groups-batch-metadata-bound-r1/source-addressed-gaps.json",
+    "sha256": "07c06272582d95b200aec6d93b9c061f2a68c7972bed4b7f52b9968fbfab65f7",
+    "scope": "Actual combined partial source ownership only; original findings/nonpasses remain immutable, no runtime or API closure."
+  },
+  "at": "2026-11-08T14:59:54.840664+00:00",
+  "recipeRevision": 275,
+  "lastAcceptedEngine": 271,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
