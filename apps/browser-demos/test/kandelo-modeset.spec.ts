@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from "../playwright-test";
+import { test } from "./support/persistent-page";
+import { expect, type Locator, type Page } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 
 /** Sample the actually presented canvas, including OffscreenCanvas scanout. */

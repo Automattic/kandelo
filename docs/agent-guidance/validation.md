@@ -337,7 +337,10 @@ profile passed to `launchPersistentContext`. Removing that profile alone
 does not reclaim those bytes. The run-owned home stays stable across browser
 restarts in the same run and is removed after normal suite teardown.
 Use owned persistent contexts for OPFS tests and inherit the project's launch
-environment, as the existing persistence suites do. In the pinned macOS
+environment, as the existing persistence suites do. Machine boot also opens
+the OPFS-backed computer library: use `test/support/persistent-page.ts`
+for those page fixtures, preserving resolved viewport, density and launch
+options. An ephemeral storage failure is not evidence about guest graphics. In the pinned macOS
 WebKit runner, a new nonpersistent context can reject even
 `navigator.storage.getDirectory()` with an `UnknownError`; a subsequent
 cleanup request can then stall. Diagnose the fixture's storage access before

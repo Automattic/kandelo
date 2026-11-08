@@ -27297,3 +27297,18 @@ output after retirement, rather than expecting interactive callbacks.
 It continues to require the explicit no-GLES error on Node. The actual
 two-file run passes 39 cases, including the new diagnostic regression.
 These are scoped preview results, not complete B1 or merge acceptance.
+
+A matched native storage control succeeds with a fresh persistent profile
+and fails in the default ephemeral WebKit context. The graphical machine
+specs now use the existing persistent-page fixture, as ScummVM and library
+checks already do. The helper forwards resolved viewport, density and
+launch settings so storage setup does not change the emulated display.
+No application fallback, retry or runtime workaround is added. The complete
+app typecheck and supplemental semantic check of the five focused specs
+pass; their corrected browser rerun remains required.
+
+The diagnostic Sway rerun now identifies status -12 (ENOMEM) at shared-file
+mapping completion for PIDs 105 and 107. This is not yet proof of which
+allocation or executable caused the failure; no memory limit is raised.
+The prepared Node rerun passes 46 admission and four partial-image/SDL
+cases, with zero failures or skips.
