@@ -1,0 +1,23 @@
+# Execute the real compiler-reported build-script output on Unix Wasm hosts.
+--- a/src/cargo/core/compiler/custom_build.rs
++++ b/src/cargo/core/compiler/custom_build.rs
+@@ -349,12 +349,13 @@
+     }
+ 
+     // Building the command to execute
+-    let bin_name = if bcx.gctx.cli_unstable().build_dir_new_layout {
+-        unit.target.crate_name()
+-    } else {
+-        unit.target.name().to_string()
+-    };
+-    let to_exec = script_dir.join(bin_name);
++    // The host compiler can emit a suffixed executable even on Unix.
++    // Use the output path queried from rustc, including its uplifted name.
++    let outputs = build_runner.outputs(build_script_unit)?;
++    let to_exec = outputs.iter()
++        .find(|output| output.flavor == super::FileFlavor::Normal)
++        .ok_or_else(|| internal("build script has no executable output"))?
++        .bin_dst().clone();
+ 
+     // Start preparing the process to execute, starting out with some
+     // environment variables. Note that the profile-related environment

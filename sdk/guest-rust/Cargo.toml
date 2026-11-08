@@ -1,0 +1,16 @@
+[package]
+name = "kandelo-rustc"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+libc = "0.2"
+serde_json = "=1.0.149"
+wasmparser = { version = "=0.240.0", default-features = false, features = ["std"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("kandelo"))'] }

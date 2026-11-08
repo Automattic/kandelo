@@ -840,16 +840,14 @@ LLVM's BSD-specific filesystem locality probe. It uses normal libc++
 `std::random_device` backed by `/dev/urandom` and normal LLVM file output;
 it does not replace entropy with fixed seeds or patch out mmap writeback.
 
-The SDK inside Kandelo has no fork instrumenter yet. A program that
-calls `fork` links there exactly as on the build machine (with its
-compiler facts, and `wasm-opt` left to the instrumenter), but it must be
-instrumented before it can run (see
-[Fork instrumentation](#fork-instrumentation-wasm-fork-instrument)), and
-the runtime refuses to start it until then. Today that step runs on the
-build machine. `wasm-fork-instrument` does not yet build for Kandelo: its
-dependencies (`rustix`, `getrandom`, and SQLite through `rusqlite`) do
-not know the Kandelo target. Porting them is the remaining work for this
-gap.
+The base C/C++ SDK archive does not include the fork instrumenter. A
+program that calls `fork` must be prepared before execution (see
+[Fork instrumentation](#fork-instrumentation-wasm-fork-instrument)). The
+`wasm-fork-instrument` package now builds for Kandelo. The experimental
+[Rust SDK](rust-target.md#cargo-inside-kandelo) bundles it with Cargo and
+the compiler entry point, which prepares Rust executable outputs before
+Cargo runs build scripts or programs. C/C++ links retain their normal
+explicit preparation step.
 
 Programs compiled here, like programs compiled ad hoc with the build
 machine's SDK, lack the `kandelo.abi.contract` digest stamp added by
