@@ -767,6 +767,28 @@ test("cookie jars are isolated per machine", async ({ page }) => {
   expect(twoCookies).not.toContain("one=");
 });
 
+for (const credentials of ["omit", "same-origin", "include"] as const) {
+  test(`guest cookies honor Fetch credentials=${credentials}`, async ({ page }) => {
+    await page.goto(`${FIXTURE_ORIGIN}/a/`);
+    await registerScope(page, "/a/");
+    const label = `credentials-${credentials}`;
+    const machine = await installBridge(page, SESSION_A, label);
+    await setBridgeCookieValue(page, label, "changed");
+    const observed = await page.evaluate(async ({ prefix, credentials, label }) => {
+      const response = await fetch(`${prefix}credential-mode`, { credentials, cache: "no-store" });
+      await response.text();
+      return { status: response.status, cookie: (window as any).__bridgeCookies[label].at(-1) };
+    }, { prefix: machine.appPrefix, credentials, label });
+    expect(observed.status).toBe(200);
+    expect(observed.cookie).toBe(credentials === "omit" ? "" : `${label}=1`);
+    // The response sets a new value too. Omitted credentials must neither
+    // send the old cookie nor replace it with that response's Set-Cookie.
+    await fetchText(page, `${machine.appPrefix}after-mode`);
+    expect(await page.evaluate(label => (window as any).__bridgeCookies[label].at(-1), label))
+      .toBe(`${label}=${credentials === "omit" ? "1" : "changed"}`);
+  });
+}
+
 test("a restarted SW restores each machine by name", async ({
   context,
   page,

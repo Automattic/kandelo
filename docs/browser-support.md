@@ -2783,7 +2783,11 @@ fetching without acquiring a machine's viewer authority.
 Each machine has its own cookie jar, keyed by its SW-minted name, so session
 cookies for one machine (WordPress admin cookies, for example) are never
 visible to another machine's requests even though both live under the same
-scope's origin.
+scope's origin. The jar follows the request's Fetch credentials mode:
+`omit` neither sends stored guest cookies nor accepts response `Set-Cookie`;
+`same-origin` and `include` retain their ordinary credential semantics.
+This also applies when a lost live bridge is restored from durable authority.
+The browser's physical-origin cookie store does not receive guest cookies.
 
 Each machine's bridge authority (session id and cookie jar, not its live
 `MessagePort`) is also persisted to Cache Storage under a per-name key as it is

@@ -2,6 +2,55 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Visitor-cache investigation and browser credential correction:** the stock
+WP Super Cache 3.1.5 plugin activates through the real WordPress admin UI.
+Its settings require pretty permalinks; ordinary admin setup satisfies that
+prerequisite. The next notice reports WP_CACHE false even though Internals
+reads the plugin's inserted true constant on line 2 of wp-config.php, before
+WordPress loads on line 76. A native PHP 8.5.12 file-cache-only control also
+reads stale code with timestamp validation off: invalidation returns false;
+turning validation on reads the changed file. This is a version/configuration
+diagnostic, not a general claim about every PHP release or a runtime patch.
+
+On the current c027/6f5a partial, a test-owned browser uses the ordinary maker
+terminal, sudo, the installed dinit control socket and actual HTTP readiness
+to set validate_timestamps=1/revalidate_freq=0 and restart real Caddy. The
+unchanged plugin then enables caching and retains that setting after fresh
+navigation (`wordpress-super-cache-revalidation-v4-1107-201609-db8c`, 1m10s).
+Earlier attempts retain the normal maker permission error, wrong default
+control socket and premature navigation before the listener was ready.
+The native control is `.context/php-file-cache-invalidation-control-20261108/`
+and browser reports are in the kernel evaluation checkout's owned jobs.
+No image recipe has adopted the INI change yet. Cron remains disabled;
+expiry/garbage collection and post/template invalidation are not validated.
+
+The anonymous cache probe exposes a general browser adapter defect: the
+service worker always injects the machine's virtual login cookies, including
+for Fetch credentials=omit, so all supposedly anonymous responses remain
+logged in and no visitor cache hit is established. The shared bridge now
+honors credentials for cookie replay and response storage. The corrected
+maintained regression fails its three omit cases before the fix, with the
+other nine controls passing, then passes all 12 across Chromium/Firefox/
+WebKit after the fix (jobs b5f5/e69c). Initial probes used a response header
+the fixture does not emit; they are retained as invalid fixture observations,
+not runtime reproductions. Four bootstrap source cases pass. The full
+three-engine bridge selection passes 94 cases in 59.6 seconds, with 14
+existing documented CDP-only restart skips and zero unexpected/flaky cases
+(`cookie-credentials-full-bridge-1107-203051-1725`). This validates the browser
+cookie contract, not full WordPress visitor caching or final artifacts.
+
+**Normal optimization build:** the peer cache-lock owner finishes, allowing
+the previously authorized protected cache-GC policy to reclaim 16.3 GiB.
+The build admits 26,662,543,360 free bytes and starts its own SDK and normal
+partial pipeline at source 7d85f1674. Caddy revision 22 links at 139,296,003
+bytes before instrumentation: code 84,042,711; data 48,967,177; names 5,865,315.
+The exact linked input is retained read-only in job b446's report with hash
+2ec5ad70072fb587ee956d626de1fc0f6e525686fa9ef347d01cf6dfcb927f4b.
+It is not an admissible instrumented program. Final instrumentation, classic
+revision 41, image audits and the queued Node/33-case gates are still active;
+no size saving, independent reproduction or performance result is claimed.
+Both existing preview sources/artifacts remain pinned until replacement proof.
+
 **Fresh combined-source preview:** the normal partial WordPress rebuild
 finishes in 1h27m with its FHS and embedded-program/plugin identity audits.
 After the composer correction is integrated, a normal refresh takes 3m20s
