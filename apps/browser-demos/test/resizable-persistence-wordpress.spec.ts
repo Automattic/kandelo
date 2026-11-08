@@ -2,6 +2,7 @@ import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "../playwright-test";
+import type { Request } from "@playwright/test";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import { startPersistentImageSource, type PersistentImageSource } from "./support/persistent-image-source";
 import { loginToWordPress } from "./support/wordpress-login";
@@ -68,13 +69,32 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
       page.on("domcontentloaded", () => recordLifecycle("main document loaded"));
       page.on("crash", () => recordLifecycle("page crashed"));
       page.on("pageerror", error => recordLifecycle("page error", String(error)));
+      const requestDetails = (request: Request) => {
+        let frameUrl: string | undefined;
+        try { frameUrl = request.frame().url(); } catch { /* service-worker requests have no frame */ }
+        const redirectedFrom: string[] = [];
+        for (let prior = request.redirectedFrom(); prior; prior = prior.redirectedFrom()) {
+          redirectedFrom.push(prior.url());
+        }
+        return { frameUrl, method: request.method(), resourceType: request.resourceType(), redirectedFrom };
+      };
       context.on("requestfailed", request => recordLifecycle("request failed", JSON.stringify({
         url: request.url(), method: request.method(), resourceType: request.resourceType(),
-        failure: request.failure(),
+        failure: request.failure(), ...requestDetails(request),
       })));
       context.on("response", response => {
         if (response.status() >= 400) {
-          const failure = { url: response.url(), status: response.status() };
+          const request = response.request();
+          const failure = { url: response.url(), status: response.status(),
+            fromServiceWorker: response.fromServiceWorker(), ...requestDetails(request) };
+          try {
+            void request.frame().locator("html").evaluate(() => ({
+              url: location.href, baseURI: document.baseURI,
+              controller: navigator.serviceWorker?.controller?.scriptURL ?? null,
+            }), undefined, { timeout: 5000 }).then(frame =>
+              recordLifecycle("HTTP error frame", JSON.stringify({ request: failure, frame })))
+              .catch(error => recordLifecycle("HTTP error frame unavailable", String(error)));
+          } catch { /* requests originating in the worker have no document */ }
           recordLifecycle("HTTP error", JSON.stringify(failure));
           void response.text().then(body => recordLifecycle("HTTP error body", JSON.stringify({
             ...failure, contentType: response.headers()["content-type"], body: body.slice(0, 2048),
@@ -319,7 +339,20 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
           contentType: "application/json",
           body: JSON.stringify({
             url: observationPage.url(),
-            frames: observationPage.frames().map(frame => frame.url()),
+            frames: await Promise.all(observationPage.frames().map(async frame => ({
+              url: frame.url(), name: frame.name(),
+              document: await frame.locator("html").evaluate(() => ({
+                url: location.href, baseURI: document.baseURI, readyState: document.readyState,
+                controller: navigator.serviceWorker?.controller?.scriptURL ?? null,
+                iframes: Array.from(document.querySelectorAll("iframe")).map(iframe => ({
+                  name: iframe.name, title: iframe.title, src: iframe.src,
+                  srcdoc: iframe.getAttribute("srcdoc")?.slice(0, 2048),
+                })),
+                editables: Array.from(document.querySelectorAll('[contenteditable], [role="textbox"], .editor-post-title'))
+                  .slice(0, 20).map(element => element.outerHTML.slice(0, 4096)),
+                body: document.body?.innerText.slice(0, 12_000),
+              }), undefined, { timeout: 5000 }).catch(error => ({ error: String(error) })),
+            }))),
             body: (await observationPage.locator("body").innerText({ timeout: 5000 }).catch(() => "unavailable")).slice(-64 * 1024),
           }),
         });
