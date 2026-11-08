@@ -35,8 +35,8 @@ async function syslogText(page: Page): Promise<string> {
 
 /** The machine's terminal: the shell that runs sway, and sway's stderr. */
 async function terminalText(page: Page): Promise<string> {
-  if ((await page.locator(".xterm-rows").count()) === 0) return "";
-  const rows = await page.locator(".xterm-rows").first().locator(":scope > div").allInnerTexts();
+  if ((await page.locator(".kshell-host:visible .xterm-rows").count()) === 0) return "";
+  const rows = await page.locator(".kshell-host:visible .xterm-rows").first().locator(":scope > div").allInnerTexts();
   return rows.join("\n");
 }
 
@@ -322,7 +322,7 @@ async function exitSway(page: Page, out: Output, marker: string) {
     .getByRole("button", { name: "Terminal", exact: true }))
     .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
   await releasePointer(page);
-  await page.locator(".xterm").first().click();
+  await page.locator(".kshell-host:visible .xterm").first().click();
   await typePhysicalText(page, `echo ${marker}=$?\n`, { delay: 40 });
   await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(new RegExp(`${marker}=0(?:\\s|$)`));
 }
@@ -478,6 +478,78 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   expect(await displayOwner(page)).toBe(0);
 });
 
+
+/** Activity launch uses its own login/PTY; it must exercise the same real keys. */
+test("Sway Activity from shell opens another tiled Foot with Alt+Enter and exits cleanly", async ({ page }, testInfo) => {
+  test.setTimeout(420_000);
+  await gotoMachine(page, "shell");
+  await waitForMachineBootInput(page);
+  await expect.poll(() => terminalText(page), { timeout: 120_000 })
+    .toMatch(/maker@[^\r\n]*[$]\s*$/);
+  const computerUrl = page.url();
+  await page.getByRole("button", { name: "Activities", exact: true }).click();
+  const activities = page.getByRole("region", { name: "Installed activities" });
+  await activities.getByRole("button", { name: "Apps & Tools", exact: true }).click();
+  const sway = activities.locator('[data-image-activity="sway"]');
+  await expect(sway).toBeVisible({ timeout: 60_000 });
+  await expect(sway.getByRole("button", { name: "Start", exact: true })).toBeEnabled();
+  await sway.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(activities).not.toBeVisible({ timeout: 180_000 });
+  expect(page.url(), "launch the Activity on this shell computer").toBe(computerUrl);
+
+  await openSurface(page, "Graphics");
+  await expect(canvasLocator(page)).toBeVisible({ timeout: 30_000 });
+  await expect.poll(() => chipText(page), { timeout: 120_000 }).toMatch(/webgl2-gl/i);
+  await expect.poll(() => displayOwner(page), { timeout: 120_000 }).toBeGreaterThan(0);
+  const compositorOwner = await displayOwner(page);
+  const out = await output(page);
+  await expectClockTicks(page, out);
+  await nativeBarProcess(page);
+  await expect.poll(async () => isFoot(await meanColor(page, await middle(out))),
+    { timeout: 180_000, intervals: [2_000] }).toBe(true);
+
+  const footPids = async (count: number, attachment: string) => {
+    await releasePointer(page);
+    await openSurface(page, "Internals");
+    await page.getByRole("tab", { name: "Procs", exact: true }).click();
+    const rows = page.locator(".ktable tbody tr").filter({
+      has: page.locator("td:last-child", { hasText: /^(?:\/\S*\/)?foot(?:\s|$)/ }),
+    });
+    await expect(rows).toHaveCount(count, { timeout: 120_000 });
+    const pids: number[] = [];
+    for (const row of await rows.all()) {
+      const text = await row.locator("td:first-child").innerText();
+      const pid = text.match(/\b\d+\b/);
+      expect(pid, "actual process row has a PID").not.toBeNull();
+      pids.push(Number(pid![0]));
+    }
+    await testInfo.attach(attachment, { body: JSON.stringify({ pids, rows: await rows.allInnerTexts() }, null, 2), contentType: "application/json" });
+    await openSurface(page, "Graphics");
+    await canvasLocator(page).focus();
+    await expect(canvasLocator(page)).toBeFocused();
+    return pids;
+  };
+  const before = await footPids(1, "activity-foot-before.json");
+  const tiled = async () => (await lineColors(page, await seam(out), "column")).some(isBlue);
+  expect(await tiled(), "one initial Foot has no middle tile border").toBe(false);
+  await page.keyboard.press("Alt+Enter");
+  await expect.poll(tiled, { timeout: 180_000, intervals: [2_000] }).toBe(true);
+  const after = await footPids(2, "activity-foot-after.json");
+  expect(after.filter(pid => !before.includes(pid)), "Alt+Enter adds one actual Foot process").toHaveLength(1);
+  expect(after).toContain(before[0]);
+  expect(await displayOwner(page), "same live compositor owns both tiles").toBe(compositorOwner);
+  await testInfo.attach("activity-two-foot-tiles.png", { body: await canvasLocator(page).screenshot(), contentType: "image/png" });
+
+  // The shared helper presses Alt+M/Q, clicks real swaynag confirmation,
+  // then requires owner0, automatic terminal handback and parent exit status0.
+  await exitSway(page, out, "sway-activity-exit");
+  await openSurface(page, "Internals");
+  await page.getByRole("tab", { name: "Procs", exact: true }).click();
+  await expect(page.locator(".ktable tbody tr > td:last-child").filter({
+    hasText: /^(?:\/\S*\/)?(?:sway|swaybar|swaynag|swaybg|foot)(?:\s|$)/,
+  })).toHaveCount(0, { timeout: 90_000 });
+  expect(await displayOwner(page)).toBe(0);
+});
 
 for (const deviceScaleFactor of [1, 2]) {
   test.describe(`Sway logical desktop at ${deviceScaleFactor}x`, () => {

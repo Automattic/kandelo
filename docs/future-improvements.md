@@ -851,6 +851,16 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 
 ## Graphics
 
+The next shipment is the complete B1 guest-validation increment, with its
+normal-built preview and recorded B1 checks. Remaining campaign work must
+be named as follow-up steps: B2 asynchronous bindings and its ScummVM
+request gate; B3 local queries; B4 program interfaces; B5 native fences;
+B6 inline draws; then C1 Rust asynchronous scheduling, C2 executor
+separation and C3 the GPU worker. Each stage still needs its own frozen
+validation and measurements. Final Freeciv/ScummVM, desktop, conformance
+and native-feel acceptance remain required; a B1 shipment does not claim
+the later stages or their performance results.
+
 The current normal partial B1 preview now includes the private-selector and
 framebuffer-retirement corrections. The combined prepared-kernel matrix passes
 378 native browser cases on three engines; the current normal application

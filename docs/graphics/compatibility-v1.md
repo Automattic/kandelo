@@ -27401,3 +27401,29 @@ while the old snapshot remains live. Temporary replacement ownership is
 being repaired; no limit increase or recovered-desktop claim is made.
 Sway Activity terminal launch and its actual Alt+Enter path remain checks
 before the preview is ready.
+
+The replacement repair stages incoming snapshots and guard metadata as
+bounded temporary I/O. Exclusive guards preserve old snapshot custody and
+both live/temporary rollback headroom; all source reads and admissions
+precede guest writes. Growing and shrinking replacements, mixed commit/drop
+order, late read/promotion refusal and failed guest writes have dedicated
+controls. Empty refresh cohorts skip allocation and table traversal.
+The pressure regression fails on the parent with ENOMEM. The first full
+native candidate run reports 3,595 passed and one failed (265.39 seconds):
+its new write-failure fixture targets address16, while changed-run writes
+correctly skip four unchanged bytes and start at20. The injection target
+is corrected; final rerun and normal browser recovery remain pending.
+
+The new browser regression exercises Sway through the shell's Activities
+UI, focuses its real canvas, requires Alt+Enter to add an actual Foot PID
+and a tiled repaint, then verifies native exit and process cleanup. Its
+terminal helpers select the visible Activity PTY, preserving the direct
+profile path. These checks are authored, not yet a browser pass.
+
+The corrected frozen native rerun passes all 3,596 runtime-core library
+tests, zero failures or skips (191.86 seconds). All twelve new replacement
+and traversal controls pass, including the actual changed-run write
+refusal. The Sway Playwright spec also passes semantic TypeScript checking.
+The earlier 3,595/1 result remains recorded as a failed candidate run; it
+is not relabeled green. Normal rebuild, actual Activity/browser recovery
+and the remaining B1 release checks are still required.

@@ -2377,6 +2377,16 @@ The ordinary procfs read renders the report only when requested. These
 failures are distinct from acknowledged writeback loss; a refused snapshot
 allocation alone does not establish that file data was lost.
 
+Peer refresh stages replacement snapshots and guard metadata against the
+bounded temporary I/O allowance. A guard borrows its exact old snapshot,
+admits any retained growth, and preserves rollback credit in both the live
+and temporary classes. All source reads and replacement admissions finish
+before the first guest-memory write. Only a completed mapping refresh
+publishes its new snapshot, content version and clean stamp; a later failure
+restores uncommitted replacements without allocating or consuming another
+mapping's rollback headroom. Empty refresh selections acquire no credit and
+walk no mapping table. Ordinary owned reads retain their live-I/O policy.
+
 Different processes have different WebAssembly memories, so a pointer store in
 one process cannot immediately mutate another process's linear memory. Kandelo
 coordinates anonymous `MAP_SHARED`, SysV SHM attachments, and regular-file

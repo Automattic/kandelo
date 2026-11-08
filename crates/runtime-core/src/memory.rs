@@ -2749,6 +2749,28 @@ impl FileBacking {
         Ok(out)
     }
 
+    /// Refresh bytes are provisional replacements, not another retained copy.
+    /// Keep their credits temporary until their exact snapshot guard admits
+    /// promotion; ordinary owned reads retain their existing live policy.
+    fn read_range_staged(
+        &mut self, offset: u64, len: usize, io: &mut dyn SharedMappingIo,
+    ) -> Result<crate::io_buffer::StagedIoBuffer<u8>, Errno> {
+        offset.checked_add(len as u64).ok_or(Errno::EINVAL)?;
+        let mut out = crate::io_buffer::StagedIoBuffer::try_filled(len, 0)?;
+        let mut copied = 0usize;
+        while copied < len {
+            let absolute = offset + copied as u64;
+            let page = absolute / FILE_PAGE_SIZE as u64;
+            let page_offset = (absolute % FILE_PAGE_SIZE as u64) as usize;
+            let count = (FILE_PAGE_SIZE - page_offset).min(len - copied);
+            self.ensure_page_loaded(page, io)?;
+            let src = &self.pages[&page][page_offset..page_offset + count];
+            out[copied..copied + count].copy_from_slice(src);
+            copied += count;
+        }
+        Ok(out)
+    }
+
     /// Copy bytes into the cache at `offset`, marking touched pages dirty.
     ///
     /// (The TypeScript original also had an `else` branch clearing the dirty
@@ -3922,29 +3944,32 @@ impl SharedMappingTable {
         addrs: &[u64],
         io: &mut dyn SharedMappingIo,
     ) -> Result<(), Errno> {
-        // Phase 2a — read every final snapshot before mutating process memory.
-        let mut refreshes: IoBuffer<(u64, IoBuffer<u8>, u64)> = IoBuffer::try_with_capacity(addrs.len())?;
-        for map_addr in addrs {
-            let Self {
-                mappings,
-                file_backings,
-                failures,
-                ..
-            } = self;
-            let Some(mapping) = mappings.get(&pid).and_then(|m| m.get(map_addr)) else {
-                continue;
-            };
-            let Some(backing) = mapping
-                .backing_key
-                .as_deref()
-                .and_then(|key| file_backings.get_mut(key))
-            else {
-                continue;
-            };
-            if mapping.seen_version == backing.version {
-                continue;
-            }
-            let latest = match backing.read_range(mapping.file_offset, mapping.len, io) {
+        // A current mapping needs no replacement or table walk. This is the
+        // ordinary no-work completion path, so it must not acquire I/O credit.
+        if addrs.is_empty() { return Ok(()); }
+        debug_assert!(addrs.windows(2).all(|pair| pair[0] <= pair[1]));
+        struct Refresh<'a> {
+            addr: u64,
+            replacement: crate::io_buffer::PreparedIoBufferReplacement<'a, u8>,
+            seen_version: &'a mut u64,
+            clean: &'a mut Option<CleanStamp>,
+            version: u64,
+        }
+        // All reads AND replacement admissions precede every process write.
+        // Temporary metadata owns the guards, so any later failure rolls back
+        // earlier credits and snapshots without another allocation.
+        let mut refreshes = crate::io_buffer::StagedIoBuffer::try_with_capacity(addrs.len())?;
+        let Self { mappings, file_backings, failures, .. } = self;
+        let Some(pid_mappings) = mappings.get_mut(&pid) else { return Ok(()); };
+        // Both internal callers enumerate the sorted mapping table. Retain
+        // that order while borrowing disjoint snapshot/version/epoch fields;
+        // no second lookup or alias into a mutably borrowed table is needed.
+        pid_mappings.try_for_each_mut_entry(|map_addr, mapping| {
+            if addrs.binary_search(map_addr).is_err() { return Ok(()); }
+            let Some(backing) = mapping.backing_key.as_deref()
+                .and_then(|key| file_backings.get_mut(key)) else { return Ok(()); };
+            if mapping.seen_version == backing.version { return Ok(()); }
+            let latest = match backing.read_range_staged(mapping.file_offset, mapping.len, io) {
                 Ok(latest) => latest,
                 Err(error) => {
                     failures.record("refresh_read", pid, *map_addr, mapping.len,
@@ -3952,40 +3977,36 @@ impl SharedMappingTable {
                     return Err(error);
                 }
             };
-            refreshes.push((*map_addr, latest, backing.version));
-        }
+            let replacement = match latest.prepare_replacing(&mut mapping.snapshot) {
+                Ok(replacement) => replacement,
+                Err(error) => {
+                    failures.record("refresh_promote", pid, *map_addr, mapping.len,
+                        mapping.file_offset, backing.handle, 0, mapping.len, error);
+                    return Err(error);
+                }
+            };
+            refreshes.push(Refresh { addr: *map_addr, replacement,
+                seen_version: &mut mapping.seen_version, clean: &mut mapping.clean,
+                version: backing.version });
+            Ok(())
+        })?;
 
-        // Phase 2b — apply them, writing only the runs a peer changed.
-        //
-        // After phase 1 a writable alias's snapshot is the process's own
-        // bytes, so `latest` differs from it exactly where peers (or
-        // descriptor writes) changed the file. Writing the whole range
-        // would also rewrite bytes nobody else changed, and could overwrite
-        // a store a sibling thread of this process made to them after phase
-        // 1 read them. See `refresh_runs`.
-        for (map_addr, latest, version) in refreshes {
-            let runs = match self
-                .mappings
-                .get(&pid)
-                .and_then(|m| m.get(&map_addr))
-                .and_then(|mapping| mapping.snapshot.as_deref())
-            {
-                Some(snapshot) => refresh_runs(&latest, snapshot),
-                None => alloc::vec![(0, latest.len())],
+        // Preserve changed-run publication: unrelated sibling stores outside
+        // the peer's changed runs must survive the refresh.
+        for refresh in refreshes {
+            let runs = match refresh.replacement.original() {
+                Some(snapshot) => refresh_runs(refresh.replacement.latest(), snapshot),
+                None => alloc::vec![(0, refresh.replacement.latest().len())],
             };
             for (start, end) in runs {
-                io.write_process(pid, map_addr + start as u64, &latest[start..end])?;
+                io.write_process(pid, refresh.addr + start as u64,
+                    &refresh.replacement.latest()[start..end])?;
             }
-            // The writes above changed the process's epoch; a stamp taken
-            // now covers the bytes they left, which equal `latest`.
-            let observed = io
-                .quiescent_epoch(pid)
+            let observed = io.quiescent_epoch(pid)
                 .map(|epoch| CleanStamp { epoch, log_position: io.kernel_write_position() });
-            if let Some(mapping) = self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr)) {
-                mapping.snapshot = Some(latest);
-                mapping.seen_version = version;
-                mapping.clean = observed;
-            }
+            refresh.replacement.commit();
+            *refresh.seen_version = refresh.version;
+            *refresh.clean = observed;
         }
         Ok(())
     }
@@ -6092,6 +6113,130 @@ mod shared_mapping_tests {
         table.sync_anonymous_from_process(1, false, &mut io).unwrap();
         table.sync_anonymous_from_process(2, false, &mut io).unwrap();
         assert_eq!(io.peek(2, 0, 8), b"AAAA\0\0\0\0".to_vec());
+    }
+
+    fn refresh_replacement_pair(io: &mut MockIo) -> (SharedMappingTable, [String; 2]) {
+        let mut table = SharedMappingTable::new();
+        let keys = [io.key_of(10), io.key_of(11)];
+        for (index, handle) in [10, 11].into_iter().enumerate() {
+            let key = &keys[index];
+            let stat = io.stat_of(handle);
+            let backing = table.get_or_create_file_backing(key, &stat, true, io).unwrap();
+            backing.ref_count = 1;
+            let initial = backing.read_range(0, 8, io).unwrap();
+            let addr = (16 * index) as u64;
+            io.write_process(1, addr, &initial).unwrap();
+            table.insert_mapping(1, addr, SharedMapping::file(
+                3 + index as i32, 0, 8, true, true, key.clone(), initial, 0));
+        }
+        for (key, bytes) in keys.iter().zip([b"AAAA....", b"....BBBB"]) {
+            let backing = table.file_backing_mut(key).unwrap();
+            backing.write_range(0, bytes, false, io).unwrap();
+            backing.version += 1;
+        }
+        (table, keys)
+    }
+
+    fn refresh_replacement_io() -> MockIo {
+        MockIo::new().with_process(1, 64)
+            .with_file(10, 1, 2, b"........".to_vec())
+            .with_file(11, 1, 3, b"........".to_vec())
+    }
+
+    #[test]
+    fn refresh_replacements_need_temporary_not_duplicate_live_snapshot_credit() {
+        let mut io = refresh_replacement_io();
+        let (mut table, keys) = refresh_replacement_pair(&mut io);
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+        {
+            // All retained mappings/cache pages fit. Their equally sized
+            // replacements and staging metadata need no additional LIVE room.
+            let _limit = crate::io_buffer::test_budget(held);
+            table.refresh_mappings(1, &[0, 16], &mut io).unwrap();
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+        }
+        for (addr, key, bytes) in [(0, &keys[0], b"AAAA...."), (16, &keys[1], b"....BBBB")] {
+            assert_eq!(io.peek(1, addr, 8).as_slice(), bytes);
+            let mapping = table.mapping(1, addr).unwrap();
+            assert_eq!(mapping.snapshot.as_deref(), Some(&bytes[..]));
+            assert_eq!(mapping.seen_version, table.file_backing(key).unwrap().version);
+        }
+    }
+
+    #[test]
+    fn late_refresh_read_failure_restores_all_guards_before_any_guest_write() {
+        let mut io = refresh_replacement_io();
+        let (mut table, keys) = refresh_replacement_pair(&mut io);
+        table.file_backing_mut(&keys[1]).unwrap().invalidate_clean_pages();
+        io.files.remove(&11); // Actual later backing read returns EBADF.
+        let usage = crate::io_buffer::IO_MEMORY.usage().0;
+        let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+        let epoch = io.epochs[&1];
+        assert_eq!(table.refresh_mappings(1, &[0, 16], &mut io), Err(Errno::EBADF));
+        assert_eq!(io.epochs[&1], epoch);
+        for addr in [0, 16] {
+            assert_eq!(io.peek(1, addr, 8).as_slice(), b"........");
+            let mapping = table.mapping(1, addr).unwrap();
+            assert_eq!(mapping.snapshot.as_deref(), Some(&b"........"[..]));
+            assert_eq!(mapping.seen_version, 0);
+        }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, usage);
+        assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+    }
+
+    #[test]
+    fn later_refresh_promotion_refusal_preserves_all_guest_bytes_and_snapshots() {
+        let mut io = refresh_replacement_io();
+        let (mut table, _) = refresh_replacement_pair(&mut io);
+        // The pre-existing no-baseline refresh path needs an entire new live
+        // snapshot. It must not spend an earlier guard's rollback capacity.
+        table.mappings.get_mut(&1).unwrap().get_mut(&16).unwrap().snapshot = None;
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+        let epoch = io.epochs[&1];
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(table.refresh_mappings(1, &[0, 16], &mut io), Err(Errno::ENOMEM));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+        }
+        assert_eq!(io.epochs[&1], epoch);
+        assert_eq!(io.peek(1, 0, 8).as_slice(), b"........");
+        assert_eq!(io.peek(1, 16, 8).as_slice(), b"........");
+        assert_eq!(table.mapping(1, 0).unwrap().snapshot.as_deref(), Some(&b"........"[..]));
+        assert!(table.mapping(1, 16).unwrap().snapshot.is_none());
+        assert_eq!(table.mapping(1, 0).unwrap().seen_version, 0);
+        assert_eq!(table.mapping(1, 16).unwrap().seen_version, 0);
+    }
+
+    #[test]
+    fn refresh_write_failure_restores_only_uncommitted_replacement_and_credits() {
+        let mut io = refresh_replacement_io();
+        let (mut table, keys) = refresh_replacement_pair(&mut io);
+        io.parked.insert(1);
+        // The second alias starts at16, but its unchanged four-byte prefix
+        // is deliberately not written. Inject at the actual changed run.
+        io.fail_write_process_at = Some(20);
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(table.refresh_mappings(1, &[0, 16], &mut io), Err(Errno::EFAULT));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+        }
+        assert_eq!(io.peek(1, 0, 8).as_slice(), b"AAAA....");
+        assert_eq!(io.peek(1, 16, 8).as_slice(), b"........");
+        let first = table.mapping(1, 0).unwrap();
+        assert_eq!(first.snapshot.as_deref(), Some(&b"AAAA...."[..]));
+        assert_eq!(first.seen_version, table.file_backing(&keys[0]).unwrap().version);
+        assert_eq!(first.clean.unwrap().epoch, io.epochs[&1]);
+        let second = table.mapping(1, 16).unwrap();
+        assert_eq!(second.snapshot.as_deref(), Some(&b"........"[..]));
+        assert_eq!(second.seen_version, 0);
+        assert!(second.clean.is_none());
     }
 
     #[test]

@@ -14,6 +14,128 @@ pub(crate) fn reserve_payload(bytes: usize, writeback: bool) -> Result<MetadataR
     budget.reserve(bytes.checked_mul(2).ok_or(Errno::ENOMEM)?)
 }
 
+/// Temporary-owned staging cannot become a published IoBuffer without an
+/// admitted replacement. Stage metadata can use the same bounded class while
+/// it holds replacement guards; it never becomes retained kernel state.
+pub(crate) struct StagedIoBuffer<Value> {
+    values: Vec<Value>,
+    reservation: MetadataReservation<'static>,
+}
+
+impl<Value> StagedIoBuffer<Value> {
+    pub(crate) fn try_with_capacity(capacity: usize) -> Result<Self, Errno> {
+        let credits = capacity.checked_mul(core::mem::size_of::<Value>())
+            .and_then(|bytes| bytes.checked_mul(2)).ok_or(Errno::ENOMEM)?;
+        let mut reservation = IO_MEMORY.reserve_temporary(credits)?;
+        let mut values = Vec::new();
+        values.try_reserve_exact(capacity).map_err(|_| Errno::ENOMEM)?;
+        reservation.resize(values.capacity().checked_mul(core::mem::size_of::<Value>())
+            .and_then(|bytes| bytes.checked_mul(2)).ok_or(Errno::ENOMEM)?)?;
+        Ok(Self { values, reservation })
+    }
+
+    pub(crate) fn push(&mut self, value: Value) {
+        assert!(self.values.len() < self.values.capacity(), "staged I/O publication lacks capacity");
+        self.values.push(value);
+    }
+
+    pub(crate) fn prepare_replacing<'a>(
+        mut self, target: &'a mut Option<IoBuffer<Value>>,
+    ) -> Result<PreparedIoBufferReplacement<'a, Value>, Errno> {
+        let budget = self.reservation.budget();
+        if target.as_ref().is_some_and(|old| !core::ptr::eq(old.budget(), budget)) {
+            return Err(Errno::EIO);
+        }
+        let old_bytes = target.as_ref().map_or(0, |old| old.reservation.bytes());
+        let growth = self.reservation.bytes().saturating_sub(old_bytes);
+        let live_surplus = if growth == 0 { budget.empty() } else { budget.reserve(growth)? };
+        let temporary_surplus = self.reservation.split(growth);
+        let mut matched = match target.as_mut() {
+            Some(old) => old.reservation.split(old_bytes.min(self.reservation.bytes())),
+            None => budget.empty(),
+        };
+        // WHY: exchange equal matched credits, retain a shrinking old buffer's
+        // unmatched LIVE credit, and escrow a growing incoming buffer's TEMP
+        // surplus beside separately admitted LIVE growth. Neither class lends
+        // rollback headroom to later work; Drop cannot increase either class,
+        // even when mixed-size guards are committed/dropped in arbitrary order.
+        if let Err(error) = budget.exchange(&mut [&mut self.reservation], &mut [&mut matched]) {
+            if let Some(old) = target.as_mut() { old.reservation.merge(matched); }
+            return Err(error);
+        }
+        Ok(PreparedIoBufferReplacement {
+            target, incoming: Some(self), matched, live_surplus, temporary_surplus,
+        })
+    }
+}
+
+impl<Value: Copy> StagedIoBuffer<Value> {
+    pub(crate) fn try_filled(length: usize, value: Value) -> Result<Self, Errno> {
+        let mut staged = Self::try_with_capacity(length)?;
+        staged.values.resize(length, value);
+        Ok(staged)
+    }
+}
+
+impl<Value> Deref for StagedIoBuffer<Value> {
+    type Target = [Value];
+    fn deref(&self) -> &[Value] { &self.values }
+}
+
+impl<Value> DerefMut for StagedIoBuffer<Value> {
+    fn deref_mut(&mut self) -> &mut [Value] { &mut self.values }
+}
+
+impl<Value> IntoIterator for StagedIoBuffer<Value> {
+    type Item = Value;
+    type IntoIter = IoIntoIter<Value>;
+    fn into_iter(self) -> Self::IntoIter {
+        IoIntoIter { values: self.values.into_iter(), _reservation: self.reservation }
+    }
+}
+
+/// The exclusive target borrow prevents a demoted old allocation from escaping
+/// while its replacement owns the live credit. Only commit publishes incoming
+/// bytes; all error/drop paths restore the exact original allocation and credit.
+pub(crate) struct PreparedIoBufferReplacement<'a, Value> {
+    target: &'a mut Option<IoBuffer<Value>>,
+    incoming: Option<StagedIoBuffer<Value>>,
+    matched: MetadataReservation<'static>,
+    live_surplus: MetadataReservation<'static>,
+    temporary_surplus: MetadataReservation<'static>,
+}
+
+impl<Value> PreparedIoBufferReplacement<'_, Value> {
+    pub(crate) fn latest(&self) -> &[Value] { self.incoming.as_ref().expect("prepared replacement") }
+    pub(crate) fn original(&self) -> Option<&[Value]> { self.target.as_deref() }
+
+    pub(crate) fn commit(mut self) {
+        let StagedIoBuffer { values, mut reservation } = self.incoming.take().expect("prepared replacement");
+        let admitted_growth = self.live_surplus.split(self.live_surplus.bytes());
+        reservation.merge(admitted_growth);
+        // Preparation already promoted this exact allocation. No fallible
+        // admission may remain after the caller's first process-memory write.
+        let old = self.target.replace(IoBuffer { values, reservation });
+        drop(old);
+    }
+}
+
+impl<Value> Drop for PreparedIoBufferReplacement<'_, Value> {
+    fn drop(&mut self) {
+        if let Some(incoming) = self.incoming.as_mut() {
+            incoming.reservation.budget().exchange(
+                &mut [&mut self.matched], &mut [&mut incoming.reservation],
+            ).expect("replacement rollback exchanges equal admitted credits");
+            let restored_temporary = self.temporary_surplus.split(self.temporary_surplus.bytes());
+            incoming.reservation.merge(restored_temporary);
+            if let Some(old) = self.target.as_mut() {
+                let restored = self.matched.split(self.matched.bytes());
+                old.reservation.merge(restored);
+            }
+        }
+    }
+}
+
 pub struct IoBuffer<Value> {
     values: Vec<Value>,
     reservation: MetadataReservation<'static>,
@@ -363,6 +485,183 @@ impl Drop for IoBudgetGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staged_replacement_commits_without_additional_live_credit() {
+        let baseline = IO_MEMORY.usage().0;
+        let temporary = IO_MEMORY.temporary_usage();
+        let mut target = Some(IoBuffer::copy_from(b"original").unwrap());
+        let incoming = StagedIoBuffer::try_filled(8, b'N').unwrap();
+        let held = IO_MEMORY.usage().0;
+        assert_eq!(IO_MEMORY.temporary_usage(), temporary + 16);
+        {
+            let _limit = test_budget(held);
+            let prepared = incoming.prepare_replacing(&mut target).unwrap();
+            assert_eq!(prepared.original(), Some(&b"original"[..]));
+            assert_eq!(prepared.latest(), b"NNNNNNNN");
+            assert_eq!(IO_MEMORY.usage().0, held);
+            prepared.commit();
+            assert_eq!(IO_MEMORY.usage().0, held);
+        }
+        assert_eq!(target.as_deref(), Some(&b"NNNNNNNN"[..]));
+        assert_eq!(IO_MEMORY.temporary_usage(), temporary);
+        drop(target);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn replacement_rollback_keeps_shrink_headroom_across_growing_peer() {
+        let baseline = IO_MEMORY.usage().0;
+        let temporary = IO_MEMORY.temporary_usage();
+        let mut large = Some(IoBuffer::copy_from(b"12345678").unwrap());
+        let mut small = Some(IoBuffer::copy_from(b"abcd").unwrap());
+        let held = IO_MEMORY.usage().0;
+        let shrinking = StagedIoBuffer::try_filled(4, b'S').unwrap()
+            .prepare_replacing(&mut large).unwrap();
+        // Shrinking cannot expose rollback headroom for this growing peer.
+        assert_eq!(IO_MEMORY.usage().0, held);
+        let growing = StagedIoBuffer::try_filled(8, b'G').unwrap()
+            .prepare_replacing(&mut small).unwrap();
+        let prepared = IO_MEMORY.usage().0;
+        {
+            let _limit = test_budget(prepared);
+            drop(shrinking); // Deliberately not reverse preparation order.
+            assert_eq!(IO_MEMORY.usage().0, prepared);
+            drop(growing);
+        }
+        assert_eq!(large.as_deref(), Some(&b"12345678"[..]));
+        assert_eq!(small.as_deref(), Some(&b"abcd"[..]));
+        assert_eq!(IO_MEMORY.usage().0, held);
+        assert_eq!(IO_MEMORY.temporary_usage(), temporary);
+        drop((large, small));
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn mixed_replacement_commit_and_drop_orders_preserve_live_custody() {
+        let baseline = IO_MEMORY.usage().0;
+        let temporary = IO_MEMORY.temporary_usage();
+        for commit_shrink in [false, true] {
+            let mut large = Some(IoBuffer::copy_from(b"12345678").unwrap());
+            let mut small = Some(IoBuffer::copy_from(b"abcd").unwrap());
+            let shrinking = StagedIoBuffer::try_filled(4, b'S').unwrap()
+                .prepare_replacing(&mut large).unwrap();
+            let growing = StagedIoBuffer::try_filled(8, b'G').unwrap()
+                .prepare_replacing(&mut small).unwrap();
+            let held = IO_MEMORY.usage().0;
+            {
+                let _limit = test_budget(held);
+                if commit_shrink {
+                    shrinking.commit();
+                    drop(growing);
+                } else {
+                    growing.commit();
+                    drop(shrinking);
+                }
+            }
+            if commit_shrink {
+                assert_eq!(large.as_deref(), Some(&b"SSSS"[..]));
+                assert_eq!(small.as_deref(), Some(&b"abcd"[..]));
+                assert_eq!(IO_MEMORY.usage().0, baseline + 16);
+            } else {
+                assert_eq!(large.as_deref(), Some(&b"12345678"[..]));
+                assert_eq!(small.as_deref(), Some(&b"GGGGGGGG"[..]));
+                assert_eq!(IO_MEMORY.usage().0, baseline + 32);
+            }
+            assert_eq!(IO_MEMORY.temporary_usage(), temporary);
+            drop((large, small));
+            assert_eq!(IO_MEMORY.usage().0, baseline);
+        }
+    }
+
+    #[test]
+    fn new_target_replacement_requires_live_admission_and_rolls_back_to_none() {
+        let baseline = IO_MEMORY.usage().0;
+        let temporary = IO_MEMORY.temporary_usage();
+        let mut target = None;
+        let prepared = StagedIoBuffer::try_filled(8, b'N').unwrap()
+            .prepare_replacing(&mut target).unwrap();
+        assert_eq!(prepared.original(), None);
+        assert_eq!(IO_MEMORY.usage().0, baseline + 16);
+        drop(prepared);
+        assert!(target.is_none());
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+        assert_eq!(IO_MEMORY.temporary_usage(), temporary);
+        StagedIoBuffer::try_filled(8, b'N').unwrap()
+            .prepare_replacing(&mut target).unwrap().commit();
+        assert_eq!(target.as_deref(), Some(&b"NNNNNNNN"[..]));
+        drop(target);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+        assert_eq!(IO_MEMORY.temporary_usage(), temporary);
+    }
+
+    #[test]
+    fn later_replacement_refusal_restores_earlier_snapshot_and_all_credits() {
+        let baseline = IO_MEMORY.usage().0;
+        let temporary = IO_MEMORY.temporary_usage();
+        let mut first = Some(IoBuffer::copy_from(b"original").unwrap());
+        let mut second = Some(IoBuffer::copy_from(b"x").unwrap());
+        let held = IO_MEMORY.usage().0;
+        {
+            let _limit = test_budget(held);
+            let prepared = StagedIoBuffer::try_filled(8, b'A').unwrap()
+                .prepare_replacing(&mut first).unwrap();
+            assert!(matches!(StagedIoBuffer::try_filled(8, b'B').unwrap()
+                .prepare_replacing(&mut second), Err(Errno::ENOMEM)));
+            drop(prepared);
+            assert_eq!(IO_MEMORY.usage().0, held);
+            assert_eq!(IO_MEMORY.temporary_usage(), temporary);
+        }
+        assert_eq!(first.as_deref(), Some(&b"original"[..]));
+        assert_eq!(second.as_deref(), Some(&b"x"[..]));
+        drop((first, second));
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn growing_replacement_drop_cannot_spend_later_temporary_staging_headroom() {
+        let baseline = IO_MEMORY.usage().0;
+        let temporary = IO_MEMORY.temporary_usage();
+        assert_eq!(temporary, 0);
+        let mut target = Some(IoBuffer::copy_from(b"x").unwrap());
+        let prepared = StagedIoBuffer::try_filled(4, b'N').unwrap()
+            .prepare_replacing(&mut target).unwrap();
+        let held = IO_MEMORY.usage().0;
+        assert_eq!(IO_MEMORY.temporary_usage(), 8);
+        {
+            let _limit = test_budget(held);
+            let mut refused = None;
+            let later = StagedIoBuffer::try_filled(1, b'R').unwrap();
+            let available = 2 * held - IO_MEMORY.temporary_usage();
+            let filler = StagedIoBuffer::<u8>::try_with_capacity(available / 2).unwrap();
+            assert_eq!(IO_MEMORY.temporary_usage(), 2 * held);
+            assert!(matches!(later.prepare_replacing(&mut refused), Err(Errno::ENOMEM)));
+            assert!(refused.is_none());
+            let refill = StagedIoBuffer::try_filled(1, b'F').unwrap();
+            assert_eq!(IO_MEMORY.temporary_usage(), 2 * held);
+            // Keep later staging alive while rolling back the larger incoming
+            // snapshot. Promoting its surplus early would now trap in Drop.
+            drop(prepared);
+            assert_eq!(IO_MEMORY.usage().0, baseline + 2);
+            assert_eq!(IO_MEMORY.temporary_usage(), 2 * held - 8);
+            drop((filler, refill));
+            assert_eq!(IO_MEMORY.temporary_usage(), temporary);
+        }
+        assert_eq!(target.as_deref(), Some(&b"x"[..]));
+        drop(target);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn staged_capacity_refusal_preserves_existing_temporary_bound() {
+        let live = IO_MEMORY.usage().0;
+        let temporary = IO_MEMORY.temporary_usage();
+        let limit = live.max(temporary.div_ceil(2));
+        let _limit = test_budget(limit);
+        assert!(matches!(StagedIoBuffer::<u8>::try_with_capacity(limit + 1), Err(Errno::ENOMEM)));
+        assert_eq!(IO_MEMORY.usage().0, live);
+        assert_eq!(IO_MEMORY.temporary_usage(), temporary);
+    }
 
     #[test]
     fn filled_buffer_refuses_before_publication_and_owns_retained_capacity() {

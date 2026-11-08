@@ -331,6 +331,18 @@ fn for_each_mut<'scope, Key, Value>(root: &'scope mut Link<Key, Value>, visit: &
     }
 }
 
+fn try_for_each_mut_entry<'scope, Key, Value>(
+    root: &'scope mut Link<Key, Value>,
+    visit: &mut impl FnMut(&'scope Key, &'scope mut Value) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    if let Some(root) = root {
+        try_for_each_mut_entry(&mut root.left, visit)?;
+        visit(&root.key, &mut root.value)?;
+        try_for_each_mut_entry(&mut root.right, visit)?;
+    }
+    Ok(())
+}
+
 fn retain<Key, Value>(root: Link<Key, Value>, keep: &mut impl FnMut(&Key, &mut Value) -> bool, removed: &mut usize) -> Link<Key, Value> {
     let mut root = root?;
     let left = retain(root.left.take(), keep, removed);
@@ -474,6 +486,15 @@ impl<Key: Ord, Value> PreparedMap<Key, Value> {
 
     pub(crate) fn for_each_mut<'scope>(&'scope mut self, mut visit: impl FnMut(&'scope mut Value)) {
         for_each_mut(&mut self.root, &mut visit);
+    }
+
+    /// Lend disjoint entries for one scope, stopping before any later entry
+    /// after refusal. Field splitting preserves ownership without raw aliases.
+    pub(crate) fn try_for_each_mut_entry<'scope>(
+        &'scope mut self,
+        mut visit: impl FnMut(&'scope Key, &'scope mut Value) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        try_for_each_mut_entry(&mut self.root, &mut visit)
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&Key, &mut Value) -> bool) {
@@ -650,6 +671,24 @@ mod tests {
         drop(values);
         assert_eq!(map.get(&1), Some(&11));
         assert_eq!(map.get(&2), Some(&22));
+    }
+
+    #[test]
+    fn fallible_mutable_walk_lends_disjoint_entries_and_stops_at_refusal() {
+        let mut map = PreparedMap::<u32, u64>::new();
+        for key in [3, 1, 2] { map.insert(key, u64::from(key)); }
+        let mut entries = Vec::new();
+        assert_eq!(map.try_for_each_mut_entry(|key, value| {
+            entries.push((*key, value));
+            if *key == 2 { Err(Errno::EAGAIN) } else { Ok(()) }
+        }), Err(Errno::EAGAIN));
+        assert_eq!(entries.iter().map(|(key, _)| *key).collect::<Vec<_>>(), vec![1, 2]);
+        *entries[0].1 = 10;
+        *entries[1].1 = 20;
+        drop(entries);
+        assert_eq!(map.get(&1), Some(&10));
+        assert_eq!(map.get(&2), Some(&20));
+        assert_eq!(map.get(&3), Some(&3));
     }
 
     #[test]
