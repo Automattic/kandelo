@@ -2,6 +2,30 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Canonical build finished; family acceptance failed.** `4770` publishes
+two normal images and three Go programs, passes layout and both standalone
+WordPress Node cases, then fails all three selected family cases. One
+switch encounters fork-retirement backpressure; MariaDB requests return
+HTTP 500. Control `54a7` proves the family compositor overwrites FPM's
+MariaDB socket configuration: original settings fail to connect, ordinary
+socket settings connect and serve HTTP 200. The family revision-13 recipe
+preserves FPM's configuration; embedded PHP already has a separate file.
+Normal rebuilt-family acceptance remains pending. See the
+[family checkpoint](2026-11-08-wordpress-family-checkpoint.md).
+
+The review now includes fetched main `5f484a853eec` (Rust guest native-test
+fixtures). All earlier queued jobs stop on their failed prerequisite;
+none constitutes final validation. The fresh own-SDK refresh reaches SDK
+bootstrap, then correctly rejects a stale generated package index before
+publication. Its replacement must generate that index normally before
+collecting browser demand. No receipts or artifacts are restamped.
+
+**Index-reuse memory pilot does not establish a benefit.** Both sides of
+`b633` pass real WebKit HTTP/lifecycle checks, but the candidate's OS peak
+is 11.0 GiB versus baseline 9.9 GiB in this one pair. The candidate stays
+on its separate branch; no memory fix is adopted or claimed. See the
+[phase measurements](2026-11-08-wordpress-webkit-memory-checkpoint.md#module-function-index-ownership-pilot).
+
 **Latest cache gate: six passes across three engines.** Job `7a70` ends
 10m54s with classic and real Caddy passing on Chromium, Firefox and WebKit,
 zero skips/retries. It covers privacy, post/template invalidation, real

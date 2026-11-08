@@ -313,3 +313,36 @@ inventing alignment for those samples. Source locations refer to the
 Vite-transformed JavaScript, not the same line in the original TypeScript.
 Raw events, traces and corrected summaries are retained under this job's
 `scratch/kernel-cpu/wordpress/cpu-profiles/` directory in the review checkout.
+
+## Module function-index ownership pilot
+
+Separate host candidate `0f7e14b77` reuses the module-lifetime function
+identity index across fork transactions instead of rebuilding a second
+index each time. It changes shared host bookkeeping, without compiler,
+Go/PHP/plugin patches or ABI changes. The candidate remains on a separate
+branch and is not adopted into PR #1492.
+
+Job `b633` passes one serial baseline/candidate WebKit pair in 10m53s,
+using the same hash-verified revision-45 partial artifacts, two actual PHP
+threads, 120 validated WordPress requests with a minimum 500 ms cadence,
+crash recovery, held-request drain and 60-second post-destroy observation.
+The baseline and candidate retain the same 685.9 MiB Caddy linear memory,
+six module compilations and roughly 40.7 MiB Go Sys during traffic.
+
+| Observation | Baseline | Index-reuse candidate |
+|---|---:|---:|
+| OS whole-run peak footprint | 9.9 GiB | 11.0 GiB |
+| Selected footprint before traffic | 4.8 GiB | 4.8 GiB |
+| Footprint 60 seconds after destroy | 888.9 MiB | 709.3 MiB |
+
+This single instrumented pair, overlapping normal build work, establishes
+no peak-memory improvement, throughput result, leak fix or allocation
+owner. Lower post-destroy footprint does not establish a general benefit.
+RSS remains much higher than footprint after destruction, reinforcing
+that those counters cannot be substituted for one another. The candidate
+also passes 32 focused source checks and both real Node Go/PHP consumer
+checks; those do not substitute for full conformance or benchmarks.
+Raw artifacts, source identities and the phase summary are under the
+candidate checkout's
+`.context/agent-jobs/wordpress-function-catalog-native-pilot-1108-032711-b633/scratch/catalog-native-pilot/`,
+including `paired-observations.json`. No engine defect is claimed.

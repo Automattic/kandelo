@@ -3719,6 +3719,14 @@ not require or fetch those image bytes. If the selected profile's local or
 resolver-managed artifact is absent, the browser reports that exact missing
 image and asks the user to run `./run.sh local-build`.
 
+The WordPress family composes Caddy into the LAMP image while retaining
+separate PHP configuration files. PHP-FPM keeps `/etc/php.ini`, including
+MariaDB's `/run/mysqld/mysql.sock` client setting; embedded PHP uses
+`/etc/frankenphp/php.ini`. Replacing the shared FPM configuration with the
+SQLite-only image's settings loses that socket and breaks the MariaDB
+backend. The revision-13 recipe preserves it; final rebuilt-image and
+backend-switch acceptance remain open in the milestone plan.
+
 Normal Vite development resolves exact optional binary URL globs through
 the verified binary resolver, including the implicit SourceOnly tree.
 The authored legacy mirror need not exist for a built image to be found.

@@ -41,9 +41,10 @@ function installWordPressFamilyCaddy(source: KandeloImageFs, fs: KandeloImageFs)
     "/etc/caddy",
     "/etc/dinit.d/frankenphp-caddy",
     "/etc/dinit.d/env-frankenphp",
-    "/etc/php.ini",
     "/srv/www/html/wp-content/plugins/wp-super-cache",
   ]) copyImageTree(source, fs, path);
+  // Keep the LAMP image's FPM php.ini, including its MariaDB socket.
+  // Embedded PHP uses its separate /etc/frankenphp/php.ini copied above.
   // The family shares core files, but each database backend owns its content.
   // PHP selects that ordinary WordPress content directory through its env.
   const environment = new TextDecoder().decode(fs.readFile("/etc/dinit.d/env-frankenphp"));
