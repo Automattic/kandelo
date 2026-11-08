@@ -193,6 +193,8 @@ wasm32posix-configure \
     --disable-shared \
     --enable-static \
     --with-openssl="$OPENSSL_PREFIX" \
+    --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt \
+    --with-ca-path=/etc/ssl/certs \
     --with-zlib="$ZLIB_PREFIX" \
     --without-brotli \
     --without-zstd \

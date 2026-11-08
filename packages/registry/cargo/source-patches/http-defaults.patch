@@ -1,0 +1,11 @@
+--- a/src/cargo/util/network/http.rs
++++ b/src/cargo/util/network/http.rs
+@@ -80,7 +80,7 @@
+         } else {
+             format!("cargo/{}", crate::version())
+         };
+-        let multiplexing = http.multiplexing.unwrap_or(true);
++        let multiplexing = http.multiplexing.unwrap_or_else(|| curl::Version::get().feature_http2());
+         let mut handle = HandleConfiguration {
+             proxy: None,
+             cainfo: None,
