@@ -360,6 +360,19 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
             url: observationPage.url(),
             frames: await Promise.all(observationPage.frames().map(async frame => ({
               url: frame.url(), name: frame.name(),
+              mainWorld: await Promise.race([
+                frame.evaluate(() => ({
+                  url: location.href, htmlPresent: !!document.documentElement,
+                  html: document.documentElement?.outerHTML.slice(0, 12_000),
+                  frameConnected: window.frameElement?.isConnected,
+                  frameMarkup: window.frameElement?.outerHTML.slice(0, 1024),
+                  welcomePresent: !!document.querySelector('[role="dialog"][aria-label="Welcome to the editor"]'),
+                  editables: Array.from(document.querySelectorAll('[contenteditable="true"]')).slice(0, 5)
+                    .map(element => ({ html: element.outerHTML.slice(0, 2048),
+                      display: getComputedStyle(element).display, visibility: getComputedStyle(element).visibility })),
+                })).catch(error => ({ error: String(error) })),
+                new Promise(resolve => setTimeout(() => resolve({ error: "Main-world observation exceeded 5 seconds" }), 5000)),
+              ]),
               document: await frame.locator("html").evaluate(() => ({
                 url: location.href, baseURI: document.baseURI, readyState: document.readyState,
                 controller: navigator.serviceWorker?.controller?.scriptURL ?? null,
