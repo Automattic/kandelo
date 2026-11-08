@@ -13,10 +13,14 @@ inputs = [
   "packages/registry/wordpress/build-wordpress.sh",
   "packages/registry/wordpress/package.toml",
   "packages/registry/wordpress-sqlite-integration-source/package.toml",
+  "packages/registry/wordpress-super-cache-source/package.toml",
   "scripts/package-build-roots.sh",
   "images/vfs/scripts/build-wp-vfs-image.sh",
   "images/vfs/scripts/build-wp-vfs-image.ts",
   "images/vfs/scripts/dinit-image-helpers.ts",
+  "images/vfs/scripts/wordpress-cron.ts",
+  "images/vfs/scripts/service-activities.ts",
+  "packages/registry/wordpress/services.json",
   "images/rootfs/etc/services",
   "images/vfs/scripts/tracked-demo-config.ts",
   "packages/registry/wordpress/wordpress-demo.json",
@@ -52,5 +56,5 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 30
+revision = 49
 publication_state = "pending"

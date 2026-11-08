@@ -234,7 +234,11 @@ cargo xtask local-build plan --set packages/sets/local-supported.toml --status -
 ```
 
 It runs the same up-front cache check as `run` and lists each selected node as
-`cached` or `will run`, with the node's median recorded duration. That median
+`cached` or `will run`, with the node's median recorded duration. The up-front
+check requires both a valid shared-cache entry and its intact projected members
+in the selected output root. A fresh output root can therefore report
+`will run` even when the child resolver will reuse existing compiled bytes and only
+materialize them; this status does not by itself mean recompilation. That median
 is taken over its 10 most recent non-failed runs. `Source`-kind packages are
 never skipped up front, because their child checks the fetched source itself.
 They therefore appear as `will run (source check)`. The estimate has two
@@ -1559,7 +1563,9 @@ side-file admission also runs in the resolver. Wasm inside runtime archives
 is not recursively audited here. Host names and kinds come from shared ABI
 declarations; typed kernel process imports come from the current
 architecture's actual SDK libc and startup objects, plus the shared fork
-import declaration.
+and process-worker thread-exit import declarations. Go's runtime uses the
+typed `kernel.kernel_thread_exit` process-worker import directly; it is not
+the similarly named kernel Wasm export used by the host adapter.
 Kernel-worker-only exports are not process imports. Unknown modules,
 unknown main-module host names, and wrong kernel function types fail.
 Side modules may import ordinary dynamic-library symbols and the loader's

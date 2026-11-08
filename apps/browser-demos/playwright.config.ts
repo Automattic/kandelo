@@ -197,6 +197,7 @@ export default defineConfig<{}, KandeloWorkerOptions>({
   webServer:
     protectedBrowserBaseUrl === undefined && !scopedDeploymentsRun
     ? {
+      cwd: __dirname,
           command:
             serveSealedDist || assembledSiteRoot !== undefined
               ? assembledSiteRoot === undefined

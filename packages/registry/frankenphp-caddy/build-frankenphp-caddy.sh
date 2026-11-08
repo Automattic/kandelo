@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+source "$REPO_ROOT/sdk/activate.sh"
+
+: "${WASM_POSIX_BUILD_GIT_GO_TOOLCHAIN_DIR:?pinned Go source is required}"
+: "${WASM_POSIX_BUILD_GIT_XSYS_DIR:?pinned x/sys source is required}"
+: "${WASM_POSIX_BUILD_GIT_BBOLT_DIR:?pinned bbolt source is required}"
+: "${WASM_POSIX_BUILD_GIT_READLINE_DIR:?pinned readline source is required}"
+: "${WASM_POSIX_BUILD_GIT_LOGRUS_DIR:?pinned logrus source is required}"
+: "${WASM_POSIX_BUILD_GIT_CERTIFICATE_TRANSPARENCY_DIR:?pinned certificate-transparency source is required}"
+: "${WASM_POSIX_DEP_PHP_ZTS_DIR:?php-zts dependency is required}"
+: "${WASM_POSIX_DEP_ICU_DIR:?ICU dependency is required}"
+: "${WASM_POSIX_DEP_LIBCXX_DIR:?libcxx dependency is required}"
+: "${WASM_POSIX_DEP_LIBCURL_DIR:?curl dependency is required}"
+: "${WASM_POSIX_DEP_LIBZIP_DIR:?zip dependency is required}"
+: "${WASM_POSIX_DEP_LIBXML2_DIR:?libxml2 dependency is required}"
+: "${WASM_POSIX_DEP_OPENSSL_DIR:?OpenSSL dependency is required}"
+: "${WASM_POSIX_DEP_SQLITE_DIR:?SQLite dependency is required}"
+: "${WASM_POSIX_DEP_LIBICONV_DIR:?iconv dependency is required}"
+: "${WASM_POSIX_DEP_ZLIB_DIR:?zlib dependency is required}"
+
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+GO_ROOT="$WORK_DIR/go"
+SOURCE_DIR="$WORK_DIR/frankenphp-src"
+mkdir -p "$GO_ROOT" "$WORK_DIR/tmp" "$WORK_DIR/gocache" "$WORK_DIR/gopath" "$WORK_DIR/gomodcache"
+
+source "$REPO_ROOT/scripts/build-kandelo-go-toolchain.sh"
+kandelo_build_go_toolchain "$WORK_DIR"
+GO_ROOT="$KANDELO_BUILT_GO_ROOT"
+
+kandelo_package_stage_verified_source frankenphp-caddy "$SOURCE_DIR" \
+    "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$WASM_POSIX_DEP_SOURCE_URL" \
+    "$WASM_POSIX_DEP_SOURCE_SHA256" "$WORK_DIR"
+mkdir -p "$SOURCE_DIR/caddy/cmd/kandelo"
+cp "$SCRIPT_DIR/main.go" "$SOURCE_DIR/caddy/cmd/kandelo/main.go"
+
+source "$REPO_ROOT/scripts/go-cgo-static-libs.sh"
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_PHP_ZTS_DIR" libphp.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_ICU_DIR" \
+    libicui18n.a libicuio.a libicuuc.a libicudata.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_LIBCXX_DIR" libc++.a libc++abi.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_LIBCURL_DIR" libcurl.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_LIBZIP_DIR" libzip.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_LIBXML2_DIR" libxml2.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_OPENSSL_DIR" libssl.a libcrypto.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_SQLITE_DIR" libsqlite3.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_LIBICONV_DIR" libiconv.a
+kandelo_go_require_static_archives "$WASM_POSIX_DEP_ZLIB_DIR" libz.a
+# SDK compatibility archives use the linker's normal compiler lookup.
+test -f "$REPO_ROOT/sysroot/lib/libkandelo-ucontext-unsupported.a"
+
+stage_go_module() {
+    local name="$1" source="$2" module="$3"
+    local destination="$WORK_DIR/$name"
+    mkdir -p "$destination"
+    tar --exclude=.git -cf - -C "$source" . |
+        tar -xf - -C "$destination"
+    chmod -R u+w "$destination"
+    (cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" mod edit -replace="$module=../../$name")
+}
+
+export GOENV=off GOTOOLCHAIN=local GOWORK=off
+export GOMAXPROCS="${GOMAXPROCS:-4}" GOFLAGS="-trimpath -p=${GOMAXPROCS:-4}"
+export GOCACHE="$WORK_DIR/gocache" GOPATH="$WORK_DIR/gopath"
+export GOMODCACHE="$WORK_DIR/gomodcache" GOTMPDIR="$WORK_DIR/tmp"
+export GOROOT="$GO_ROOT" GOOS=kandelo GOARCH=wasm32 CGO_ENABLED=1 CC=wasm32posix-cc
+php_include="$WASM_POSIX_DEP_PHP_ZTS_DIR/include/php"
+# CGO_CFLAGS replaces Go's defaults; retain optimization when adding PHP headers.
+export CGO_CFLAGS="-O2 -I$php_include -I$php_include/main -I$php_include/Zend -I$php_include/TSRM -I$php_include/sapi/embed -I$php_include/ext"
+# Keep upstream pointer access and bulk CGI registration. Supply its documented
+# static PHP linkage through build flags instead of an application source patch.
+export CGO_LDFLAGS="${KANDELO_GO_STATIC_LIBRARY_FLAGS[*]} -lphp -licui18n -licuio -licuuc -licudata -lc++ -lc++abi -lcurl -lzip -lxml2 -lssl -lcrypto -lsqlite3 -liconv -lz -lkandelo-ucontext-unsupported -ldl"
+stage_go_module xsys "$WASM_POSIX_BUILD_GIT_XSYS_DIR" golang.org/x/sys
+stage_go_module bbolt "$WASM_POSIX_BUILD_GIT_BBOLT_DIR" go.etcd.io/bbolt
+stage_go_module readline "$WASM_POSIX_BUILD_GIT_READLINE_DIR" github.com/chzyer/readline
+stage_go_module logrus "$WASM_POSIX_BUILD_GIT_LOGRUS_DIR" github.com/sirupsen/logrus
+stage_go_module certificate-transparency "$WASM_POSIX_BUILD_GIT_CERTIFICATE_TRANSPARENCY_DIR" github.com/google/certificate-transparency-go
+
+(cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" build -tags nowatcher \
+    -o "$WORK_DIR/frankenphp-caddy.wasm" ./cmd/kandelo)
+unset CC CXX AR RANLIB CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+echo "frankenphp-caddy linked bytes before instrumentation: $(wc -c < "$WORK_DIR/frankenphp-caddy.wasm")"
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$WORK_DIR/frankenphp-caddy.wasm" \
+    -o "$WORK_DIR/frankenphp-caddy-instrumented.wasm"
+echo "frankenphp-caddy bytes after instrumentation and post-optimization: $(wc -c < "$WORK_DIR/frankenphp-caddy-instrumented.wasm")"
+if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" != source-only-v1 ]; then
+    source "$REPO_ROOT/scripts/build-programs-abi-stamp.sh"
+    record_built_program_output "$WORK_DIR/frankenphp-caddy-instrumented.wasm"
+    stamp_built_program_outputs
+fi
+
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_binary frankenphp-caddy "$WORK_DIR/frankenphp-caddy-instrumented.wasm" frankenphp-caddy.wasm

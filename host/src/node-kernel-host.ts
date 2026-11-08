@@ -166,8 +166,8 @@ export interface NodeKernelHostOptions {
   /**
    * Opt in to mount-based VFS for this kernel boot.
    *
-   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs.zst`, falling back
-   *     to the resolver-managed `programs/rootfs.vfs.zst` artifact, and apply
+   *   - `"default"` — load the resolver-managed `programs/rootfs.vfs.zst`
+   *     artifact, falling back to `<repoRoot>/host/wasm/rootfs.vfs.zst`, and apply
    *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The kernel parses the
    *     image and serves `/` and the scratch mounts (`/tmp` etc.) itself;
    *     the worker's `VirtualPlatformIO` holds only host-backed mounts
@@ -180,6 +180,8 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /** Transfer a whole ArrayBuffer image to the worker, surrendering caller ownership. */
+  takeRootfsImageOwnership?: boolean;
   /**
    * Kandelo exchange: whether the platform may start the image's agent
    * (`/usr/libexec/kandelo/exchange-agent`) when a batch needs a consumer.
@@ -304,7 +306,7 @@ export class NodeKernelHost {
   private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
 
   constructor(options?: NodeKernelHostOptions) {
-    this.options = options ?? {};
+    this.options = { ...options };
   }
 
   /** Initialize the kernel by spawning a dedicated worker_thread */
@@ -329,7 +331,8 @@ export class NodeKernelHost {
       throw new Error("rootfs image file integrity metadata is invalid");
     }
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
-    const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
+    const takeRootfsImageOwnership = this.options.takeRootfsImageOwnership === true;
+    const rootfsImage = resolveRootfsImage(this.options.rootfsImage, takeRootfsImageOwnership);
     if (this.options.enableTcpNetwork && this.options.offlineEgressLink) {
       throw new Error("enableTcpNetwork and offlineEgressLink are exclusive: a machine has one egress link");
     }
@@ -551,6 +554,7 @@ export class NodeKernelHost {
           offlineEgressLink: this.options.offlineEgressLink,
         };
         const transfer: Transferable[] = [
+          ...(rootfsImage === null ? [] : [rootfsImage]),
           ...(this.options.remoteNetwork?.role === "joiner"
             ? [this.options.remoteNetwork.peer.port as import("node:worker_threads").MessagePort]
             : []),
@@ -559,6 +563,7 @@ export class NodeKernelHost {
           ),
         ];
         this.worker.postMessage(initMsg, transfer);
+        if (takeRootfsImageOwnership) this.options.rootfsImage = undefined;
       });
     } catch (error) {
       // WHY: a worker that rejected initialization owns no usable kernel and
@@ -1656,7 +1661,11 @@ function loadKernelWasm(): ArrayBuffer {
  */
 function resolveRootfsImage(
   override: "default" | ArrayBuffer | Uint8Array | undefined,
+  takeOwnership = false,
 ): ArrayBuffer | null {
+  if (takeOwnership && !(override instanceof ArrayBuffer)) {
+    throw new Error("owned rootfs image must be one whole ordinary ArrayBuffer");
+  }
   if (override === undefined) return null;
   // Shipped images are zstd-compressed (`rootfs.vfs.zst`, `*.vfs.zst`), and
   // the kernel's image reader takes decoded bytes: zstd is a host-side
@@ -1668,7 +1677,14 @@ function resolveRootfsImage(
       ? override
       : new Uint8Array(override);
   const decoded = maybeDecompressImage(bytes);
-  if (decoded === bytes && override instanceof ArrayBuffer) return override;
+  if (takeOwnership && decoded === bytes) return override as ArrayBuffer;
+  // WHY: a fresh decode or internal default fetch belongs to this host, so
+  // transferring it preserves caller input without another full-image copy.
+  if (
+    (takeOwnership || override === "default" || decoded !== bytes) &&
+    decoded.buffer instanceof ArrayBuffer &&
+    decoded.byteOffset === 0 && decoded.byteLength === decoded.buffer.byteLength
+  ) return decoded.buffer;
   // Copy into a fresh ArrayBuffer — the source might live in a
   // SharedArrayBuffer, which the worker init protocol doesn't accept.
   const out = new ArrayBuffer(decoded.byteLength);

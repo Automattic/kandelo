@@ -352,22 +352,22 @@ fn match_dev_fd(path: &[u8]) -> Option<i32> {
 }
 
 /// Return the target text exposed by readlink for a devfs descriptor alias.
-fn dev_fd_link_target<'a>(
-    proc: &'a Process,
+fn dev_fd_link_target(
+    proc: &Process,
     path: &[u8],
     target_fd: i32,
-) -> Result<&'a [u8], Errno> {
+) -> Result<crate::IoBuffer<u8>, Errno> {
     match path {
-        b"/dev/stdin" => Ok(b"/dev/fd/0"),
-        b"/dev/stdout" => Ok(b"/dev/fd/1"),
-        b"/dev/stderr" => Ok(b"/dev/fd/2"),
+        b"/dev/stdin" => crate::IoBuffer::copy_from(b"/dev/fd/0"),
+        b"/dev/stdout" => crate::IoBuffer::copy_from(b"/dev/fd/1"),
+        b"/dev/stderr" => crate::IoBuffer::copy_from(b"/dev/fd/2"),
         _ => {
             let entry = proc.fd_table.get(target_fd).map_err(|_| Errno::ENOENT)?;
             let ofd = proc
                 .ofd_table
                 .get(entry.ofd_ref.0)
                 .ok_or(Errno::ENOENT)?;
-            Ok(&ofd.path)
+            crate::IoBuffer::copy_from(ofd.current_path()?.as_slice())
         }
     }
 }
@@ -3088,7 +3088,7 @@ fn inspect_directory_entry(
             Ok(target) => Ok(Some((
                 crate::IoBuffer::copy_from(name)?,
                 dev_fd_lstat(proc, &child, fd)?,
-                Some(crate::IoBuffer::copy_from(target)?),
+                Some(target),
             ))),
             Err(Errno::ENOENT) => Ok(None),
             Err(error) => Err(error),
@@ -3899,7 +3899,8 @@ pub fn sys_open(
 /// Permission enforcement against the inode mode is likewise deferred; scratch
 /// mounts are broadly writable today.
 fn open_host_file(proc: &mut Process, host: &mut dyn HostIO, resolved: Vec<u8>, oflags: u32, mode: u32, created: bool) -> Result<i32, Errno> {
-    proc.open_descriptor(FileType::Regular, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |proc, description| {
+    let mut prepared = proc.prepare_descriptor(FileType::Regular, oflags & !CREATION_FLAGS, &resolved)?;
+    let opened = (|| -> Result<i64, Errno> {
         let handle = crate::hostdir::open(host, &resolved, oflags, mode)?;
         if created {
             if let Err(error) = crate::hostdir::chown(host, &resolved, proc.effective_uid(), proc.effective_gid()) {
@@ -3911,10 +3912,22 @@ fn open_host_file(proc: &mut Process, host: &mut dyn HostIO, resolved: Vec<u8>, 
             Ok(stat) => stat,
             Err(error) => { let _ = host.host_close(handle); return Err(error); }
         };
+        let description = prepared.description_mut();
         if oflags & O_DIRECTORY != 0 || stat.st_mode & S_IFMT == S_IFDIR { description.file_type = FileType::Directory; }
         if stat.st_ino != 0 { description.file_id = Some(FileId::Host { dev: stat.st_dev, ino: stat.st_ino }); }
         Ok(handle)
-    })
+    })();
+    match opened {
+        Ok(handle) => {
+            if let Err(error) = proc.register_prepared_directory(&prepared) {
+                let _ = host.host_close(handle);
+                proc.cancel_descriptor(prepared);
+                return Err(error);
+            }
+            Ok(proc.publish_descriptor(prepared, handle, oflags_to_fd_flags(oflags)))
+        }
+        Err(error) => { proc.cancel_descriptor(prepared); Err(error) }
+    }
 }
 
 fn open_pcm_descriptor(proc: &mut Process, status_flags: u32, fd_flags: u32, path: &[u8]) -> Result<i32, Errno> {
@@ -6361,7 +6374,7 @@ pub fn sys_lseek(
             return Err(Errno::EINVAL);
         }
 
-        let path = ofd.path.clone();
+        let path = ofd.current_path()?;
         let backing_handle = ofd.host_handle;
         let old_dir_handle = ofd.dir_host_handle;
 
@@ -8666,6 +8679,9 @@ fn tmpfs_rmdir(resolved: &[u8]) -> Result<(), Errno> {
 
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
+    if final_component_is_dot(path) {
+        return Err(Errno::EINVAL);
+    }
     if crate::tmpfs::claims_path(&resolved) {
         check_may_delete(proc, host, &resolved)?;
         return tmpfs_rmdir(&resolved);
@@ -8986,6 +9002,9 @@ pub fn sys_rename(
     newpath: &[u8],
 ) -> Result<(), Errno> {
     let old_entry = resolve_namespace_path(proc, host, oldpath, PathResolveOptions::NOFOLLOW)?;
+    if final_component_is_dot(oldpath) {
+        return Err(Errno::EINVAL);
+    }
     let new_options = if old_entry
         .stat
         .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFDIR)
@@ -8996,6 +9015,7 @@ pub fn sys_rename(
     };
     let new = resolve_namespace_path(proc, host, newpath, new_options)?.path;
     let old = old_entry.path;
+    let rename_paths = proc.ofd_table.prepare_directory_rename(&old, &new)?;
     // Route by in-kernel tmpfs authority: both endpoints on tmpfs → in-kernel
     // rename; a tmpfs/host mix is a cross-filesystem rename → EXDEV.
     let old_tmpfs = crate::tmpfs::claims_path(&old);
@@ -9009,13 +9029,16 @@ pub fn sys_rename(
             == crate::exchange::policy::Rename::Publish
         {
             tmpfs_stamp_now(host)?;
-            return crate::exchange::outputs::publish(&old, &new, exchange_now_ms(host)?);
+            crate::exchange::outputs::publish(&old, &new, exchange_now_ms(host)?)?;
+            rename_paths.publish();
+            return Ok(());
         }
         // A tmpfs fifo lives in the fifo/pipe table keyed by path (alongside its
         // Special inode), and an AF_UNIX socket in the unix-socket registry.
         // Advance a displaced fifo's cached ctime and rekey both registries
         // across the move, exactly as the host path does below.
         rename_with_fifo_registration(host, &old, &new, |_| crate::tmpfs::rename(&old, &new))?;
+        rename_paths.publish();
         return Ok(());
     }
     // Route by in-kernel rootfs authority (neither endpoint is tmpfs here). Both
@@ -9028,6 +9051,7 @@ pub fn sys_rename(
         }
         check_may_rename(proc, host, &old, &new)?;
         rename_with_fifo_registration(host, &old, &new, |_| crate::rootfs::rename(&old, &new))?;
+        rename_paths.publish();
         return Ok(());
     }
     ensure_host_mutable_namespace_path(&old)?;
@@ -9039,6 +9063,7 @@ pub fn sys_rename(
         check_sticky_child(proc, host, &new)?;
     }
     rename_with_fifo_registration(host, &old, &new, |host| crate::hostdir::rename(host, &old, &new))?;
+    rename_paths.publish();
     Ok(())
 }
 
@@ -9352,7 +9377,7 @@ pub fn sys_fchdir(proc: &mut Process, fd: i32) -> Result<(), Errno> {
     if ofd.file_type != FileType::Directory {
         return Err(Errno::ENOTDIR);
     }
-    proc.cwd = ofd.path.clone();
+    proc.cwd = ofd.current_path()?;
     Ok(())
 }
 
@@ -9646,7 +9671,7 @@ pub fn sys_getdents64(
         return Err(Errno::ENOTDIR);
     }
 
-    let path = ofd.path.clone();
+    let path = ofd.current_path()?;
     let stale_dir_handle =
         ofd.directory_iterator_is_stale().then_some(ofd.dir_host_handle);
     if let Some(old_handle) = stale_dir_handle {
@@ -14118,12 +14143,20 @@ pub fn sys_bind(
             }
 
             let assigned_port = if port == 0 {
-                let p = proc.next_ephemeral_port;
-                proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
-                if proc.next_ephemeral_port == 0 {
+                if proc.next_ephemeral_port < 49152 {
                     proc.next_ephemeral_port = 49152;
                 }
-                p
+                let start = proc.next_ephemeral_port;
+                loop {
+                    let candidate = proc.next_ephemeral_port;
+                    bump_ephemeral_port(proc);
+                    if crate::socket::tcp_can_bind(proc.pid, sock_idx, ip, candidate) {
+                        break candidate;
+                    }
+                    if proc.next_ephemeral_port == start {
+                        return Err(Errno::EADDRINUSE);
+                    }
+                }
             } else {
                 port
             };
@@ -14563,10 +14596,10 @@ fn prepare_inline_stream_accept(proc: &mut Process, listener_idx: usize) -> Resu
 
 /// Connect a socket to an address.
 ///
-/// For AF_INET sockets connecting to 127.0.0.1, performs loopback connect:
+/// For AF_INET sockets connecting to this machine, performs local connect:
 /// finds the listening socket on the target port, creates pipe pairs, and
 /// pushes a pending connection to the listener's backlog.
-/// Non-loopback AF_INET streams delegate to the host via `host_net_connect`;
+/// Other AF_INET streams delegate to the host via `host_net_connect`;
 /// AF_INET6 currently exposes only local `::`/`::1` stream routing.
 /// For AF_UNIX SOCK_STREAM, performs same-process connect via the global
 /// UnixSocketRegistry (cross-process connect is handled in wasm_api.rs).
@@ -14819,10 +14852,7 @@ fn sys_connect_impl(
                 return Err(Errno::ENETUNREACH);
             }
 
-            // Check for loopback address (127.0.0.1)
-            let is_loopback = ip == [127, 0, 0, 1];
-
-            if is_loopback && sock.domain == SocketDomain::Inet {
+            if let Some(local_source) = crate::netif::local_ipv4_source(ip, host) {
                 // UDP DGRAM connect: just record peer address (no listener needed)
                 if sock.sock_type == SocketType::Dgram {
                     let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -14840,7 +14870,7 @@ fn sys_connect_impl(
                     client.peer_port = port;
                     if client.bind_port == 0 {
                         client.bind_port = client_port;
-                        client.bind_addr = [127, 0, 0, 1];
+                        client.bind_addr = local_source;
                     }
                     return Ok(());
                 }
@@ -14880,7 +14910,7 @@ fn sys_connect_impl(
                 // Assign ephemeral port/addr to client if unbound
                 let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
                 let client_addr = if client_sock.bind_addr == [0; 4] {
-                    [127, 0, 0, 1]
+                    local_source
                 } else {
                     client_sock.bind_addr
                 };
@@ -14906,10 +14936,14 @@ fn sys_connect_impl(
                 accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to pipe_b (client's reads)
                 accepted_sock.bind_port = listener_port;
                 if listener_domain == SocketDomain::Inet6 {
-                    accepted_sock.bind_addr6 = listener_addr6;
+                    accepted_sock.bind_addr6 = if is_unspecified_addr6(listener_addr6) {
+                        ipv4_mapped_addr6(ip)
+                    } else {
+                        listener_addr6
+                    };
                     accepted_sock.peer_addr6 = ipv4_mapped_addr6(client_addr);
                 } else {
-                    accepted_sock.bind_addr = listener_addr;
+                    accepted_sock.bind_addr = if listener_addr == [0; 4] { ip } else { listener_addr };
                     accepted_sock.peer_addr = client_addr;
                 }
                 accepted_sock.peer_port = client_port;
@@ -14932,7 +14966,9 @@ fn sys_connect_impl(
                 client.global_pipes = true;
                 if client.bind_port == 0 {
                     client.bind_port = client_port;
-                    client.bind_addr = [127, 0, 0, 1];
+                }
+                if client.bind_addr == [0; 4] {
+                    client.bind_addr = local_source;
                 }
 
                 // Set peer_idx on accepted socket for OOB data exchange
@@ -16084,7 +16120,7 @@ fn resolve_at_path(
     if ofd.file_type != FileType::Directory {
         return Err(Errno::ENOTDIR);
     }
-    let base = ofd.path.clone();
+    let base = ofd.current_path()?;
 
     resolve_namespace_path_from(proc, host, path, &base, options)
 }
@@ -16409,6 +16445,9 @@ pub fn sys_unlinkat(
     use wasm_posix_shared::flags::AT_REMOVEDIR;
 
     let resolved = resolve_at_path(proc, host, dirfd, path, PathResolveOptions::NOFOLLOW)?.path;
+    if flags & AT_REMOVEDIR != 0 && final_component_is_dot(path) {
+        return Err(Errno::EINVAL);
+    }
 
     // `unlinkat` is `unlink` and `rmdir` under one name, differing only in how
     // the target is named, so each branch must reach exactly the filesystems
@@ -16479,6 +16518,12 @@ pub fn sys_unlinkat(
     unlink_host_entry(host, &resolved)
 }
 
+fn final_component_is_dot(path: &[u8]) -> bool {
+    path.rsplit(|byte| *byte == b'/')
+        .find(|component| !component.is_empty())
+        == Some(b".".as_slice())
+}
+
 /// mkdirat -- mkdir relative to directory fd.
 pub fn sys_mkdirat(
     proc: &mut Process,
@@ -16538,6 +16583,9 @@ pub fn sys_renameat(
     newpath: &[u8],
 ) -> Result<(), Errno> {
     let old_entry = resolve_at_path(proc, host, olddirfd, oldpath, PathResolveOptions::NOFOLLOW)?;
+    if final_component_is_dot(oldpath) {
+        return Err(Errno::EINVAL);
+    }
     let new_options = if old_entry
         .stat
         .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFDIR)
@@ -16548,6 +16596,7 @@ pub fn sys_renameat(
     };
     let new_resolved = resolve_at_path(proc, host, newdirfd, newpath, new_options)?.path;
     let old_resolved = old_entry.path;
+    let rename_paths = proc.ofd_table.prepare_directory_rename(&old_resolved, &new_resolved)?;
     // See sys_rename: both endpoints on tmpfs → in-kernel rename; a mix → EXDEV.
     let old_tmpfs = crate::tmpfs::claims_path(&old_resolved);
     let new_tmpfs = crate::tmpfs::claims_path(&new_resolved);
@@ -16560,12 +16609,15 @@ pub fn sys_renameat(
             == crate::exchange::policy::Rename::Publish
         {
             tmpfs_stamp_now(host)?;
-            return crate::exchange::outputs::publish(&old_resolved, &new_resolved, exchange_now_ms(host)?);
+            crate::exchange::outputs::publish(&old_resolved, &new_resolved, exchange_now_ms(host)?)?;
+            rename_paths.publish();
+            return Ok(());
         }
         // Keep the fifo/pipe table and unix-socket registry coherent across the
         // move (see sys_rename): advance a displaced fifo's cached ctime, rekey
         // both registries.
         rename_with_fifo_registration(host, &old_resolved, &new_resolved, |_| crate::tmpfs::rename(&old_resolved, &new_resolved))?;
+        rename_paths.publish();
         return Ok(());
     }
     // In-kernel rootfs authority (neither endpoint is tmpfs). Both on rootfs →
@@ -16578,6 +16630,7 @@ pub fn sys_renameat(
         }
         check_may_rename(proc, host, &old_resolved, &new_resolved)?;
         rename_with_fifo_registration(host, &old_resolved, &new_resolved, |_| crate::rootfs::rename(&old_resolved, &new_resolved))?;
+        rename_paths.publish();
         return Ok(());
     }
     ensure_host_mutable_namespace_path(&old_resolved)?;
@@ -16589,6 +16642,7 @@ pub fn sys_renameat(
         check_sticky_child(proc, host, &new_resolved)?;
     }
     rename_with_fifo_registration(host, &old_resolved, &new_resolved, |host| crate::hostdir::rename(host, &old_resolved, &new_resolved))?;
+    rename_paths.publish();
     Ok(())
 }
 
@@ -34774,6 +34828,89 @@ mod tests {
     }
 
     #[test]
+    fn test_tcp_connect_local_interface_retains_endpoint_addresses() {
+        use wasm_posix_shared::socket::*;
+
+        fn address(ip: [u8; 4], port: u16) -> [u8; 16] {
+            let mut result = [0; 16];
+            result[0] = AF_INET as u8;
+            result[2..4].copy_from_slice(&port.to_be_bytes());
+            result[4..8].copy_from_slice(&ip);
+            result
+        }
+
+        for ip in [[127, 0, 0, 2], [10, 0, 2, 15], [192, 0, 2, 22]] {
+            for listener_ip in [[0; 4], ip] {
+                for bind_client in [false, true] {
+                    let mut proc = Process::new(9040);
+                    let mut host = MockHostIO::new();
+                    if ip[0] != 127 {
+                        host.network_interface = crate::netif::InterfaceConfig::validated(ip, [255, 255, 255, 0]);
+                    }
+                    let server = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+                    sys_bind(&mut proc, &mut host, server, &address(listener_ip, 35001)).unwrap();
+                    sys_listen(&mut proc, &mut host, server, 1).unwrap();
+                    let client = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+                    if bind_client {
+                        sys_bind(&mut proc, &mut host, client, &address([0; 4], 0)).unwrap();
+                    }
+                    sys_connect(&mut proc, &mut host, client, &address(ip, 35001)).unwrap();
+                    let accepted = sys_accept(&mut proc, &mut host, server).unwrap();
+                    let source = if ip[0] == 127 { [127, 0, 0, 1] } else { ip };
+                    let mut actual = [0; 16];
+                    sys_getsockname(&mut proc, client, &mut actual).unwrap();
+                    assert_eq!(&actual[4..8], &source);
+                    sys_getsockname(&mut proc, accepted, &mut actual).unwrap();
+                    assert_eq!(&actual[4..8], &ip);
+                    sys_getpeername(&mut proc, accepted, &mut actual).unwrap();
+                    assert_eq!(&actual[4..8], &source);
+                    assert!(host.net_connect_calls.is_empty());
+                    sys_close(&mut proc, &mut host, accepted).unwrap();
+                    sys_close(&mut proc, &mut host, client).unwrap();
+                    sys_close(&mut proc, &mut host, server).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_tcp_connect_to_another_interface_host_remains_external() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9041);
+        let mut host = MockHostIO::new();
+        host.network_interface = crate::netif::InterfaceConfig::validated([10, 0, 2, 15], [255, 255, 255, 0]);
+        host.net_connect_result = Err(Errno::EHOSTUNREACH);
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut address = [0; 16];
+        address[0] = AF_INET as u8;
+        address[2..4].copy_from_slice(&35001u16.to_be_bytes());
+        address[4..8].copy_from_slice(&[10, 0, 2, 16]);
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &address), Err(Errno::EHOSTUNREACH));
+        assert_eq!(host.net_connect_calls.len(), 1);
+        assert_eq!(host.net_connect_calls[0].1, [10, 0, 2, 16]);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_ipv4_bind_zero_skips_an_occupied_ephemeral_port() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9042);
+        let mut host = MockHostIO::new();
+        let first = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let second = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut address = [0; 16];
+        address[0] = AF_INET as u8;
+        proc.next_ephemeral_port = 56001;
+        sys_bind(&mut proc, &mut host, first, &address).unwrap();
+        proc.next_ephemeral_port = 56001;
+        sys_bind(&mut proc, &mut host, second, &address).unwrap();
+        sys_getsockname(&proc, second, &mut address).unwrap();
+        assert_eq!(u16::from_be_bytes([address[2], address[3]]), 56002);
+        sys_close(&mut proc, &mut host, first).unwrap();
+        sys_close(&mut proc, &mut host, second).unwrap();
+    }
+
+    #[test]
     fn test_connect_inet_stream_validates_sockaddr_before_host_or_state_mutation() {
         use crate::socket::SocketState;
         use wasm_posix_shared::socket::*;
@@ -35611,6 +35748,35 @@ mod tests {
         let mut host = MockHostIO::new();
         let result = sys_unlinkat(&mut proc, &mut host, AT_FDCWD, b"/tmp/dir", AT_REMOVEDIR);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_remove_dot_does_not_reach_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        for path in [b".".as_slice(), b"./", b"/tmp/.", b"/tmp/.//"] {
+            assert_eq!(sys_rmdir(&mut proc, &mut host, path), Err(Errno::EINVAL));
+            assert_eq!(
+                sys_unlinkat(&mut proc, &mut host, AT_FDCWD, path, AT_REMOVEDIR),
+                Err(Errno::EINVAL)
+            );
+        }
+    }
+
+    #[test]
+    fn test_rename_dot_does_not_reach_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        for path in [b".".as_slice(), b"./", b"/tmp/.", b"/tmp/.//"] {
+            assert_eq!(
+                sys_rename(&mut proc, &mut host, path, b"/tmp/new"),
+                Err(Errno::EINVAL)
+            );
+            assert_eq!(
+                sys_renameat(&mut proc, &mut host, AT_FDCWD, path, AT_FDCWD, b"/tmp/new"),
+                Err(Errno::EINVAL)
+            );
+        }
     }
 
     #[test]

@@ -39,8 +39,8 @@ export interface ThreadPageAllocatorOptions {
 /**
  * Manages pthread channel/TLS allocation within a process WebAssembly.Memory.
  *
- * New process launches reserve only the main-thread control pages. Pthread
- * slots are either allocated from a fixed compatibility arena or dynamically
+ * New process launches reserve the main-thread control pages and, when the
+ * guest opts in, a bounded pthread arena. Other pthread slots are dynamically
  * reserved in the process address space by the kernel worker.
  *
  * Per-thread slot layout:
@@ -52,11 +52,13 @@ export interface ThreadPageAllocatorOptions {
 export class ThreadPageAllocator {
   private nextPage: number;
   private freePages: number[] = [];
+  private freeHostControlPages: number[] = [];
   private readonly maxPageExclusive: number;
   private readonly direction: "up" | "down";
   private readonly ptrWidth: 4 | 8;
   private readonly reservedSlots: number;
   private readonly reserveSlotStartPage?: () => number;
+  private readonly preallocatedSlots: boolean;
   private activeCount = 0;
   private readonly hostControlPages = new Set<number>();
 
@@ -72,6 +74,7 @@ export class ThreadPageAllocator {
       this.ptrWidth = 4;
       this.reservedSlots = Math.max(0, Math.floor(options / PAGES_PER_THREAD));
       this.reserveSlotStartPage = undefined;
+      this.preallocatedSlots = false;
     } else {
       if (options.firstSlotStartPage !== undefined) {
         this.nextPage = options.firstSlotStartPage;
@@ -89,6 +92,7 @@ export class ThreadPageAllocator {
         Math.floor((this.maxPageExclusive - this.nextPage) / PAGES_PER_THREAD),
       );
       this.reserveSlotStartPage = options.reserveSlotStartPage;
+      this.preallocatedSlots = this.nextPage < this.maxPageExclusive;
     }
   }
 
@@ -122,9 +126,11 @@ export class ThreadPageAllocator {
     }
 
     let slotStartPage: number;
-    if (this.freePages.length > 0) {
+    if (hostControl && this.reserveSlotStartPage) {
+      slotStartPage = this.freeHostControlPages.pop() ?? this.reserveSlotStartPage();
+    } else if (this.freePages.length > 0) {
       slotStartPage = this.freePages.pop()!;
-    } else if (this.reserveSlotStartPage) {
+    } else if (this.reserveSlotStartPage && !this.preallocatedSlots) {
       slotStartPage = this.reserveSlotStartPage();
     } else {
       slotStartPage = this.nextPage;
@@ -135,15 +141,17 @@ export class ThreadPageAllocator {
       }
     }
 
-    if (!this.reserveSlotStartPage && (
-      slotStartPage < 0 ||
-      slotStartPage + PAGES_PER_THREAD > this.maxPageExclusive
-    )) {
-      throw new Error(
-        `process pthread slot limit exhausted (limit=${this.reservedSlots}, ` +
-          `active=${this.activeCount}). Rebuild with --kandelo-thread-slots=N ` +
-          "or increase the host defaultThreadSlots setting.",
-      );
+    if ((this.preallocatedSlots && !hostControl) || !this.reserveSlotStartPage) {
+      if (
+        slotStartPage < 0 ||
+        slotStartPage + PAGES_PER_THREAD > this.maxPageExclusive
+      ) {
+        throw new Error(
+          `process pthread slot limit exhausted (limit=${this.reservedSlots}, ` +
+            `active=${this.activeCount}). Rebuild with --kandelo-thread-slots=N ` +
+            "or increase the host defaultThreadSlots setting.",
+        );
+      }
     }
 
     const tlsOffset =
@@ -178,9 +186,12 @@ export class ThreadPageAllocator {
 
   /** Return pages to the free list after thread exit. */
   free(slotStartPage: number): void {
-    this.freePages.push(slotStartPage);
-    if (!this.hostControlPages.delete(slotStartPage)) {
-      this.activeCount = Math.max(0, this.activeCount - 1);
+    const hostControl = this.hostControlPages.delete(slotStartPage);
+    if (hostControl && this.reserveSlotStartPage) {
+      this.freeHostControlPages.push(slotStartPage);
+    } else {
+      this.freePages.push(slotStartPage);
+      if (!hostControl) this.activeCount = Math.max(0, this.activeCount - 1);
     }
   }
 }

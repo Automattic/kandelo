@@ -1457,6 +1457,11 @@ impl Process {
         assert!(self.fd_table.release_reserved(prepared.fd), "prepared descriptor reservation changed");
     }
 
+    pub fn register_prepared_directory(&mut self, prepared: &PreparedDescriptor) -> Result<(), Errno> {
+        assert_eq!(prepared.pid, self.pid, "prepared descriptor changed process");
+        self.ofd_table.register_prepared_directory(&prepared.ofd)
+    }
+
     pub fn publish_descriptor(&mut self, prepared: PreparedDescriptor, handle: i64, flags: u32) -> i32 {
         assert_eq!(prepared.pid, self.pid, "prepared descriptor changed process");
         let index = self.ofd_table.publish(prepared.ofd, handle);

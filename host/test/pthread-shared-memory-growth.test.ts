@@ -1,12 +1,10 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { compileSdkFixture } from "./support/compile-sdk-fixture";
 
 const TEST_TIMEOUT_MS = 60_000;
 const PROGRAM_TIMEOUT_MS = 10_000;
@@ -35,14 +33,10 @@ const fixtures = [
 const architectures = [
   {
     name: "wasm32",
-    compiler: "wasm32posix-cc",
-    suffix: ".wasm",
     iterations: ITERATIONS,
   },
   {
     name: "wasm64",
-    compiler: "wasm64posix-cc",
-    suffix: ".wasm64.wasm",
     iterations: 1,
   },
 ] as const;
@@ -61,27 +55,25 @@ const architectures = [
  * already-repeated suite's permanent cost.
  */
 
-let buildDirectory: string;
+const builtFixtures: ReturnType<typeof compileSdkFixture>[] = [];
 const programs = new Map<string, string>();
 
 beforeAll(() => {
-  buildDirectory = mkdtempSync(join(tmpdir(), "kandelo-pthread-growth-"));
   for (const architecture of architectures) {
     for (const fixture of fixtures) {
-      const outputName = fixture.output.replace(/\.wasm$/, architecture.suffix);
-      const output = join(buildDirectory, outputName);
-      execFileSync(architecture.compiler, [fixture.source, "-o", output], {
-        stdio: "inherit",
+      // Fresh SDK outputs need the current ABI digest too. Leaving it out
+      // makes current fixtures enter the legacy unbound-program path.
+      const built = compileSdkFixture(pathToFileURL(fixture.source), [], {
+        arch: architecture.name,
       });
-      programs.set(`${architecture.name}:${fixture.output}`, output);
+      builtFixtures.push(built);
+      programs.set(`${architecture.name}:${fixture.output}`, built.programPath);
     }
   }
 });
 
 afterAll(() => {
-  if (buildDirectory) {
-    rmSync(buildDirectory, { recursive: true, force: true });
-  }
+  for (const fixture of builtFixtures) fixture.cleanup();
 });
 
 describe("pthread shared WebAssembly.Memory growth", () => {

@@ -501,13 +501,13 @@ async function terminateThreadWorkers(
   for (const thread of threads) {
     intentionallyTerminated.add(thread.worker as object);
   }
-  for (const t of threads) {
+  await Promise.all(threads.map(async (thread) => {
     await (
-      t.termination ??
-      terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
+      thread.termination ??
+      terminateTrackedWorker(thread.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
     );
-    threadExits.release(pid, t.channelOffset);
-  }
+    threadExits.release(pid, thread.channelOffset);
+  }));
   // After the live threads, so none of them can grow the memory meanwhile.
   await terminateExitedThreadWorkers(pid);
   return allQuiescent;
@@ -1027,6 +1027,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         processMemoryAllocator.observeTarget(memory, target);
       },
       onKernelFatal: terminatePoisonedKernelWorker,
+      waitForForkMemoryAdmission: (parentBytes) =>
+        processMemoryAllocator.deferForRetirementBacklog(parentBytes),
       onFork: ({
         parentPid,
         childPid,
@@ -4151,16 +4153,16 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   // Terminate thread workers
   const threads = threadWorkers.get(pid);
   if (threads) {
-    for (const t of threads) {
+    await Promise.all(threads.map(async (thread) => {
       await (
-        t.termination ??
-        terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
+        thread.termination ??
+        terminateTrackedWorker(thread.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
       );
       try {
-        kernelWorker.notifyThreadExit(pid, t.tid);
-        kernelWorker.removeChannel(pid, t.channelOffset);
+        kernelWorker.notifyThreadExit(pid, thread.tid);
+        kernelWorker.removeChannel(pid, thread.channelOffset);
       } catch {}
-    }
+    }));
     threadWorkers.delete(pid);
   }
   await terminateExitedThreadWorkers(pid);
@@ -4366,7 +4368,12 @@ async function performDestroy() {
   }
   destroyProgress.drained(retiringPids.size - liveWoken);
   if (liveWoken > 0) {
-    console.warn(`[kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
+    const waiting = [...retiringPids].flatMap(pid => {
+      const info = processes.get(pid);
+      return info ? [{ pid, quiescent: info.workerQuiescence.settled,
+        exitTeardownStarted: info.worker ? processTeardowns.has(info.worker) : false }] : [];
+    });
+    console.warn(`[kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating: ${JSON.stringify(waiting)}`);
   }
 
   // Phase 3 — terminate any stragglers (non-blocked workers, or any that

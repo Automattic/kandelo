@@ -1,0 +1,86 @@
+import { readFileSync } from "node:fs";
+import { runCentralizedProgram } from "../../../host/test/centralized-test-helper.ts";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs.ts";
+
+const [programPath, kernelPath, testFilter] = process.argv.slice(2);
+if (!programPath || !kernelPath) {
+  throw new Error("usage: node --import tsx run.ts <os-test.wasm> <kernel.wasm> [test-filter]");
+}
+const timeout = Number(process.env.KANDELO_GO_TEST_TIMEOUT_MS ?? 90_000);
+if (!Number.isSafeInteger(timeout) || timeout <= 0) {
+  throw new Error("KANDELO_GO_TEST_TIMEOUT_MS must be a positive safe integer");
+}
+
+const image = KandeloImageFs.create();
+image.setImageCapacity(8 * 1024 * 1024);
+image.mkdir("/tmp", 0o777);
+image.mkdir("/etc", 0o755);
+image.mkdir("/exec", 0o755);
+image.mkdir("/usr", 0o755);
+image.mkdir("/usr/bin", 0o755);
+image.mkdir("/testdata", 0o755);
+image.mkdir("/testdata/issue37161", 0o755);
+image.mkdir("/testdata/dirfs", 0o755);
+image.mkdir("/testdata/dirfs/dir", 0o755);
+for (const path of ["/testdata/dirfs/a", "/testdata/dirfs/b", "/testdata/dirfs/dir/x"]) {
+  image.createFileWithOwner(path, 0o644, 0, 0, new Uint8Array());
+}
+image.createFileWithOwner("/etc/group", 0o644, 0, 0, new TextEncoder().encode("staff:x:200:runner\n"));
+image.createFileWithOwner("/read_test.go", 0o644, 0, 0, new TextEncoder().encode("package os_test\n"));
+for (const name of ["a", "b", "c"]) {
+  image.createFileWithOwner(`/testdata/issue37161/${name}`, 0o644, 0, 0, new TextEncoder().encode(`${name}\n`));
+}
+
+const selectedTests = [
+  "TestStat", "TestStatError", "TestReadClosed", "TestReadAt", "TestReadAtOffset",
+  "TestReadAtNegativeOffset", "TestOpenError", "TestReaddirNValues", "TestReaddirOfFile",
+  "TestChmod", "TestOpenFileKeepsPermissions", "TestChown", "TestFileChown",
+  "TestLchown", "TestReadFile", "TestWriteFile", "TestReadDir", "TestMkdirAll",
+  "TestRemoveAll", "TestSymlink", "TestRename", "TestCreateTemp", "TestMkdirTemp",
+  "TestTruncate", "TestDirSeek", "TestReaddirSmallSeek", "TestSeek", "TestSeekError",
+  "TestRootOpen_File", "TestRootOpen_Directory", "TestRootSymlink",
+  "TestRootConsistencyMkdirAll", "TestRootConsistencyRename", "TestRootDirFS",
+  "TestRootRemoveDot",
+  "TestExpand", "TestConsistentEnviron", "TestUnsetenv", "TestClearenv",
+  "TestLookupEnv", "TestEnvironConsistency", "TestErrIsExist",
+  "TestErrIsNotExist", "TestIsExist", "TestIsPermission", "TestErrPathNUL",
+  "TestPathErrorUnwrap", "TestErrorIsMethods", "TestStatSymlinkLoop",
+  "TestFstat", "TestLstat", "TestRead0", "TestHardLink", "TestLongSymlink",
+  "TestRenameOverwriteDest", "TestRenameFailed", "TestRenameNotExisting",
+  "TestRenameToDirFailed", "TestFTruncate", "TestTruncateNonexistentFile",
+];
+const requiredMarkers = [
+  "--- PASS: TestOpenError", "--- PASS: TestReaddirNValues", "--- PASS: TestChmod",
+  "--- PASS: TestChown", "--- PASS: TestFileChown", "--- PASS: TestLchown",
+  "--- PASS: TestMkdirAll", "--- PASS: TestRemoveAll", "--- PASS: TestReadFile",
+  "--- PASS: TestReadDir", "--- PASS: TestDirSeek", "--- PASS: TestReaddirSmallSeek",
+  "--- PASS: TestSeek", "--- PASS: TestSeekError",
+  "--- PASS: TestRootOpen_File", "--- PASS: TestRootOpen_Directory",
+  "--- PASS: TestRootSymlink", "--- PASS: TestRootConsistencyMkdirAll",
+  "--- PASS: TestRootConsistencyRename",
+  "--- PASS: TestRootRemoveDot", "--- PASS: TestRootDirFS",
+  "--- PASS: TestExpand", "--- PASS: TestEnvironConsistency",
+  "--- PASS: TestHardLink", "--- PASS: TestFstat", "--- PASS: TestLstat",
+  "--- PASS: TestRenameOverwriteDest", "--- PASS: TestFTruncate",
+];
+
+const result = await runCentralizedProgram({
+  programPath,
+  kernelWasmBytes: readFileSync(kernelPath),
+  rootfsImage: new Uint8Array(await image.saveImage()),
+  argv: ["go-os-test", testFilter ?? `-test.run=^(${selectedTests.join("|")})$`, "-test.v"],
+  timeout,
+});
+
+console.log(JSON.stringify({
+  exitCode: result.exitCode,
+  stdout: result.stdout,
+  stderr: result.stderr,
+  hostDiagnostics: result.hostDiagnostics,
+}));
+if (result.exitCode !== 0 ||
+    (testFilter === undefined && requiredMarkers.some((marker) => !result.stdout.includes(marker))) ||
+    !result.stdout.includes("PASS\n") ||
+    result.stderr !== "" || result.hostDiagnostics.length !== 0) {
+  process.exitCode = 1;
+}

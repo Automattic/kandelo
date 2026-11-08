@@ -2,6 +2,100 @@
   "version": 1,
   "defaultProfile": "wordpress-sqlite",
   "profiles": {
+    "wordpress-frankenphp-caddy": {
+      "identity": {
+        "title": "WordPress on FrankenPHP + Caddy",
+        "summary": "WordPress SQLite served by FrankenPHP's Caddy php_server, without nginx or PHP-FPM.",
+        "accent": "#21759b",
+        "glyph": "wp",
+        "packages": [
+          "dinit@local",
+          "frankenphp-caddy@local",
+          "wordpress@local",
+          "sqlite@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "memoryPages": 16384,
+          "maxWorkers": 12
+        }
+      },
+      "init": {
+        "program": "/bin/sh",
+        "args": [
+          "/sbin/kandelo-init",
+          "frankenphp-caddy"
+        ],
+        "cwd": "/root",
+        "uid": 0,
+        "gid": 0
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
+    "wordpress-frankenphp": {
+      "identity": {
+        "title": "WordPress on FrankenPHP",
+        "summary": "WordPress SQLite served directly by FrankenPHP classic mode, without nginx or PHP-FPM.",
+        "accent": "#21759b",
+        "glyph": "wp",
+        "packages": [
+          "dinit@local",
+          "frankenphp-classic@local",
+          "wordpress@local",
+          "sqlite@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "memoryPages": 16384,
+          "maxWorkers": 12
+        }
+      },
+      "init": {
+        "program": "/bin/sh",
+        "args": [
+          "/sbin/kandelo-init",
+          "frankenphp-classic"
+        ],
+        "cwd": "/root",
+        "uid": 0,
+        "gid": 0
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
     "wordpress-sqlite": {
       "identity": {
         "title": "WordPress SQLite",
@@ -25,7 +119,14 @@
         }
       },
       "init": {
-        "target": "nginx"
+        "program": "/bin/sh",
+        "args": [
+          "/sbin/kandelo-init",
+          "nginx"
+        ],
+        "cwd": "/root",
+        "uid": 0,
+        "gid": 0
       },
       "web": {
         "requiredPorts": [
@@ -41,24 +142,6 @@
         ],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer"
-      },
-      "guide": {
-        "title": "WordPress demo",
-        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
-        "groups": [
-          {
-            "title": "Admin",
-            "actions": [
-              {
-                "id": "wp-admin-login",
-                "label": "Log in as admin",
-                "description": "Open wp-admin with the bundled admin account.",
-                "kind": "web.wordpressLogin",
-                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
-              }
-            ]
-          }
-        ]
       }
     },
     "wordpress": {
@@ -84,7 +167,14 @@
         }
       },
       "init": {
-        "target": "nginx"
+        "program": "/bin/sh",
+        "args": [
+          "/sbin/kandelo-init",
+          "nginx"
+        ],
+        "cwd": "/root",
+        "uid": 0,
+        "gid": 0
       },
       "web": {
         "requiredPorts": [
@@ -100,24 +190,6 @@
         ],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer"
-      },
-      "guide": {
-        "title": "WordPress demo",
-        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
-        "groups": [
-          {
-            "title": "Admin",
-            "actions": [
-              {
-                "id": "wp-admin-login",
-                "label": "Log in as admin",
-                "description": "Open wp-admin with the bundled admin account.",
-                "kind": "web.wordpressLogin",
-                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
-              }
-            ]
-          }
-        ]
       }
     }
   }

@@ -11,7 +11,7 @@ use wasm_posix_shared::flags::{O_ACCMODE, O_APPEND, O_NONBLOCK, O_PATH};
 
 use crate::fd::FdTable;
 use crate::io_buffer::IoBuffer;
-use crate::io_owner::{IoRc, IoBox};
+use crate::io_owner::{IoRc, IoBox, IoWeak};
 use crate::metadata_budget::MetadataBytes;
 use crate::lock::{FileId, OfdId};
 use crate::prepared_map::{PreparedEntry, PreparedMap};
@@ -700,6 +700,67 @@ struct SharedOfdStateInner {
     owner_pid: Cell<u32>,
     position_generation: Cell<u64>,
     epoll_identity: Cell<Option<OfdId>>,
+    directory_path: RefCell<DirectoryPath>,
+}
+
+enum DirectoryPath {
+    Untracked,
+    Linked(OfdPath),
+    Unlinked,
+}
+
+struct DirectoryPathRegistry {
+    entries: IoBuffer<IoWeak<SharedOfdStateInner>>,
+}
+
+pub struct PreparedDirectoryRename {
+    changes: IoBuffer<(IoRc<SharedOfdStateInner>, DirectoryPath)>,
+}
+
+impl PreparedDirectoryRename {
+    pub fn publish(self) {
+        for (state, replacement) in self.changes.into_iter() {
+            *state.directory_path.borrow_mut() = replacement;
+        }
+    }
+}
+
+impl DirectoryPathRegistry {
+    fn new() -> Self { Self { entries: IoBuffer::new() } }
+
+    fn register(&mut self, state: &SharedOfdState) -> Result<(), Errno> {
+        self.entries.retain(|entry| entry.strong_count() != 0);
+        let reference = state.0.try_downgrade()?;
+        if !self.entries.iter().any(|entry| entry.ptr_eq(&reference)) {
+            self.entries.try_push(reference)?;
+        }
+        Ok(())
+    }
+
+    fn prepare_rename(&self, old: &[u8], new: &[u8]) -> Result<PreparedDirectoryRename, Errno> {
+        // Admit every replacement before changing any live state.
+        let mut changes = IoBuffer::new();
+        if old == new { return Ok(PreparedDirectoryRename { changes }); }
+        for entry in self.entries.iter() {
+            let Some(state) = entry.upgrade() else { continue };
+            let path = state.directory_path.borrow();
+            let DirectoryPath::Linked(current) = &*path else { continue };
+            let replacement = if path_is_within(current, old) {
+                let mut bytes = IoBuffer::copy_from(new)?;
+                bytes.try_reserve(current.len() - old.len())?;
+                bytes.extend_from_slice(&current[old.len()..]);
+                DirectoryPath::Linked(OfdPath::copy_from(&bytes)?)
+            } else if path_is_within(current, new) {
+                DirectoryPath::Unlinked
+            } else { continue };
+            changes.try_push((state.clone(), replacement))?;
+        }
+        Ok(PreparedDirectoryRename { changes })
+    }
+}
+
+fn path_is_within(path: &[u8], prefix: &[u8]) -> bool {
+    path == prefix || (path.starts_with(prefix) && path.get(prefix.len()) == Some(&b'/'))
 }
 
 impl Drop for SharedOfdStateInner {
@@ -737,7 +798,23 @@ impl SharedOfdState {
             owner_pid: Cell::new(owner_pid),
             position_generation: Cell::new(0),
             epoll_identity: Cell::new(None),
+            directory_path: RefCell::new(DirectoryPath::Untracked),
         })?))
+    }
+
+    fn track_directory_path(&self, path: &[u8]) -> Result<(), Errno> {
+        if matches!(*self.0.directory_path.borrow(), DirectoryPath::Untracked) {
+            *self.0.directory_path.borrow_mut() = DirectoryPath::Linked(OfdPath::copy_from(path)?);
+        }
+        Ok(())
+    }
+
+    fn directory_path(&self) -> Result<Option<OfdPath>, Errno> {
+        match &*self.0.directory_path.borrow() {
+            DirectoryPath::Untracked => Ok(None),
+            DirectoryPath::Linked(path) => Ok(Some(path.clone())),
+            DirectoryPath::Unlinked => Err(Errno::ENOENT),
+        }
     }
 
     fn status_flags(&self) -> u32 {
@@ -847,6 +924,15 @@ impl Clone for PendingDirEntry {
 }
 
 impl OpenFileDesc {
+    pub fn current_path(&self) -> Result<OfdPath, Errno> {
+        if self.file_type == FileType::Directory {
+            if let Some(path) = self.shared_state.directory_path()? {
+                return Ok(path);
+            }
+        }
+        Ok(self.path.clone())
+    }
+
     fn try_clone(&self) -> Result<Self, Errno> {
         let dri_state = self.dri_state.as_ref().map(|state| IoBox::try_new(state.try_clone()?)).transpose()?;
         let input_state = self.input_state.as_ref().map(|state| IoBox::try_new((**state).clone())).transpose()?;
@@ -1038,6 +1124,7 @@ impl OpenFileDesc {
 
 pub struct OfdTable {
     entries: IoBuffer<OfdSlot>,
+    directory_paths: Option<IoRc<RefCell<DirectoryPathRegistry>>>,
 }
 
 enum OfdSlot {
@@ -1064,7 +1151,53 @@ impl OfdTable {
     pub fn new() -> Self {
         OfdTable {
             entries: IoBuffer::new(),
+            directory_paths: None,
         }
+    }
+
+    pub fn ensure_directory_registry(&mut self) -> Result<(), Errno> {
+        if self.directory_paths.is_none() {
+            self.directory_paths = Some(IoRc::try_new(RefCell::new(DirectoryPathRegistry::new()))?);
+        }
+        Ok(())
+    }
+
+    pub fn share_directory_paths_from(&mut self, source: &OfdTable) -> Result<(), Errno> {
+        self.directory_paths = source.directory_paths.clone();
+        for (_, ofd) in self.iter() {
+            if ofd.file_type == FileType::Directory {
+                // Fork normally relinks to the parent's exact state, already
+                // registered there. A restored independent directory is
+                // registered by restore_entry before publication.
+                if let Some(registry) = &self.directory_paths {
+                    registry.borrow_mut().register(&ofd.shared_state)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn rename_directory_paths(&self, old: &[u8], new: &[u8]) -> Result<(), Errno> {
+        self.prepare_directory_rename(old, new)?.publish();
+        Ok(())
+    }
+
+    pub fn prepare_directory_rename(&self, old: &[u8], new: &[u8]) -> Result<PreparedDirectoryRename, Errno> {
+        match &self.directory_paths {
+            Some(registry) => registry.borrow().prepare_rename(old, new),
+            None => Ok(PreparedDirectoryRename { changes: IoBuffer::new() }),
+        }
+    }
+
+    fn register_directory(&mut self, ofd: &OpenFileDesc) -> Result<(), Errno> {
+        if ofd.file_type != FileType::Directory { return Ok(()); }
+        ofd.shared_state.track_directory_path(&ofd.path)?;
+        self.ensure_directory_registry()?;
+        self.directory_paths.as_ref().unwrap().borrow_mut().register(&ofd.shared_state)
+    }
+
+    pub fn register_prepared_directory(&mut self, prepared: &PreparedOfd) -> Result<(), Errno> {
+        self.register_directory(&prepared.value)
     }
 
     /// Create a new open file description. Returns the OFD index.
@@ -1144,6 +1277,7 @@ impl OfdTable {
     }
 
     fn reserve(&mut self, value: OpenFileDesc) -> Result<PreparedOfd, Errno> {
+        self.register_directory(&value)?;
         for index in 0..self.entries.len() {
             if matches!(self.entries[index], OfdSlot::Free) {
                 self.entries[index] = OfdSlot::Reserved;
@@ -1278,10 +1412,20 @@ impl OfdTable {
                 None => OfdSlot::Free,
             });
         }
-        Ok(OfdTable { entries: admitted })
+        let mut table = OfdTable { entries: admitted, directory_paths: None };
+        for index in 0..table.entries.len() {
+            let Some((state, path)) = table.get(index)
+                .filter(|ofd| ofd.file_type == FileType::Directory)
+                .map(|ofd| (ofd.shared_state.clone(), ofd.path.clone())) else { continue };
+            state.track_directory_path(&path)?;
+            table.ensure_directory_registry()?;
+            table.directory_paths.as_ref().unwrap().borrow_mut().register(&state)?;
+        }
+        Ok(table)
     }
 
     pub fn restore_entry(&mut self, index: usize, value: OpenFileDesc) -> Result<(), Errno> {
+        self.register_directory(&value)?;
         let length = index.checked_add(1).ok_or(Errno::ENOMEM)?;
         if length > self.entries.capacity() {
             let capacity = length.max(self.entries.capacity().saturating_mul(2)).max(4);
@@ -1302,7 +1446,7 @@ impl OfdTable {
         for slot in self.entries.iter() {
             entries.push(match slot { OfdSlot::Open(value) => OfdSlot::Open(value.try_clone()?), _ => OfdSlot::Free });
         }
-        Ok(Self { entries })
+        Ok(Self { entries, directory_paths: self.directory_paths.clone() })
     }
 
     #[cfg(test)]
@@ -1353,6 +1497,7 @@ impl OfdTable {
                 child_input.ring = source_input.ring.clone();
             }
         }
+        self.share_directory_paths_from(source)?;
         Ok(())
     }
 }
@@ -1620,6 +1765,47 @@ mod tests {
         assert_eq!(ofd.offset(), 0);
         assert_eq!(ofd.ref_count, 1);
         assert_eq!(ofd.path, b"/test");
+    }
+
+    #[test]
+    fn directory_paths_follow_rename_across_tables_and_fork() {
+        let mut first = OfdTable::new();
+        let first_index = first.create(FileType::Directory, O_RDONLY, 10, b"/tmp/a".to_vec());
+        let forked = first.clone();
+        let mut second = OfdTable::new();
+        second.share_directory_paths_from(&first).unwrap();
+        let second_index = second.create(FileType::Directory, O_RDONLY, 11, b"/tmp/a/sub".to_vec());
+
+        second.rename_directory_paths(b"/tmp/a", b"/tmp/b").unwrap();
+        assert_eq!(
+            first.get(first_index).unwrap().current_path().unwrap().as_slice(),
+            b"/tmp/b"
+        );
+        assert_eq!(
+            forked.get(first_index).unwrap().current_path().unwrap().as_slice(),
+            b"/tmp/b"
+        );
+        assert_eq!(
+            second.get(second_index).unwrap().current_path().unwrap().as_slice(),
+            b"/tmp/b/sub"
+        );
+    }
+
+    #[test]
+    fn replaced_directory_path_does_not_alias_new_occupant() {
+        let mut table = OfdTable::new();
+        let old_index = table.create(FileType::Directory, O_RDONLY, 10, b"/tmp/old".to_vec());
+        let displaced_index = table.create(FileType::Directory, O_RDONLY, 11, b"/tmp/new".to_vec());
+
+        table.rename_directory_paths(b"/tmp/old", b"/tmp/new").unwrap();
+        assert_eq!(
+            table.get(old_index).unwrap().current_path().unwrap().as_slice(),
+            b"/tmp/new"
+        );
+        assert_eq!(
+            table.get(displaced_index).unwrap().current_path().err(),
+            Some(Errno::ENOENT)
+        );
     }
 
     #[test]

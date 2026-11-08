@@ -1688,37 +1688,7 @@ fn current_pid_eids() -> (u32, u32, u32) {
 }
 
 // ---------------------------------------------------------------------------
-// 3b. Memory growth helper
-// ---------------------------------------------------------------------------
-
-/// Grow Wasm memory if `end_addr` exceeds the current memory size.
-/// Wasm pages are 64KB each. Returns true if memory was sufficient or grown.
-#[cfg(target_arch = "wasm32")]
-fn ensure_memory_covers(end_addr: usize) {
-    let current_pages = core::arch::wasm32::memory_size(0);
-    let current_bytes = current_pages * 65536;
-    if end_addr > current_bytes {
-        let needed_pages = (end_addr - current_bytes + 65535) / 65536;
-        core::arch::wasm32::memory_grow(0, needed_pages);
-    }
-}
-
-#[cfg(target_arch = "wasm64")]
-fn ensure_memory_covers(end_addr: usize) {
-    let current_pages = core::arch::wasm64::memory_size(0);
-    let current_bytes = current_pages * 65536;
-    if end_addr > current_bytes {
-        let needed_pages = (end_addr - current_bytes + 65535) / 65536;
-        core::arch::wasm64::memory_grow(0, needed_pages);
-    }
-}
-
-#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-fn ensure_memory_covers(_end_addr: usize) {
-    // No-op on non-Wasm targets (tests)
-}
-
-// 3c. Signal delivery at syscall boundaries
+// 3b. Signal delivery at syscall boundaries
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -3563,9 +3533,9 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u3
 }
 
 /// Handle SYS_SPAWN for `caller_tid` in `parent_pid`: read the target path
-/// and request blob from the caller's memory, refuse a target a launch could
-/// not run before anything changes (`exec_target::probe_spawn_target`), then
-/// build the child, applying its attributes and file actions exactly once.
+/// and request blob from the caller's memory, then build the child, applying
+/// its attributes and file actions exactly once. Probe the target before
+/// construction only when the caller has the same lookup context as the child.
 ///
 /// Returns the child pid, or a negated errno. `EAGAIN` means a lazily fetched
 /// target is still arriving; nothing has changed, so the host retries.
@@ -3597,7 +3567,17 @@ pub extern "C" fn kernel_spawn_process(
             blob_len as usize,
         )
         .and_then(|(path, parsed)| {
-            crate::exec_target::probe_spawn_target(proc, locks, &mut host, &path).map(|()| parsed)
+            // File actions can change the child's CWD or descriptor targets,
+            // and RESETIDS changes its access checks. A parent-context probe
+            // would then reject valid child-relative paths or judge the wrong
+            // object. The normal retained-target admission after construction
+            // validates those launches against the child's actual state.
+            if parsed.file_actions.is_empty()
+                && parsed.attrs.flags & crate::spawn::attr_flags::RESETIDS == 0
+            {
+                crate::exec_target::probe_spawn_target(proc, locks, &mut host, &path)?;
+            }
+            Ok(parsed)
         });
         match request {
             Ok(parsed) => parsed,
@@ -5431,9 +5411,6 @@ fn dispatch_channel_mmap(
     if let Ok(mapped_address) = result {
         unsafe { crate::memory::global_shared_mapping_table() }
             .bind_kernel_file_mapping(proc.pid, mapped_address as u64).expect("mmap preparation changed before address binding");
-        if protection != 0 {
-            ensure_memory_covers(mapped_address.saturating_add(length));
-        }
     }
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     if result.is_err() {
@@ -11898,15 +11875,12 @@ pub fn kernel_munmap(addr: usize, len: usize) -> i32 {
 }
 
 /// brk. Returns the current or new program break.
-/// Grows Wasm memory if the new break exceeds the current memory size.
 pub fn kernel_brk(addr: usize) -> usize {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    // WHY: this is a process address, not a kernel allocation. The shared
+    // host adapter grows the separate process memory after dispatch; growing
+    // memory index zero here would also enlarge the kernel for that address.
     let result = syscalls::sys_brk(proc, addr);
-
-    // Ensure Wasm memory covers the new program break.
-    if result > 0 {
-        ensure_memory_covers(result);
-    }
 
     let mut host = WasmHostIO;
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
@@ -12178,7 +12152,7 @@ pub fn kernel_accept4(
 
 /// Connect to an address. Returns 0 on success, negative errno on error.
 ///
-/// If the same-process loopback connect fails with ECONNREFUSED, searches
+/// If the same-process local connect fails with ECONNREFUSED, searches
 /// all processes in the ProcessTable for a matching listener. This enables
 /// cross-process loopback (e.g. nginx -> php-fpm).
 pub fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
@@ -12202,10 +12176,10 @@ pub fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
                     Err(e) => -(e as i32),
                 }
             } else if family == 2 && addr_len >= 8 {
-                // AF_INET loopback
+                // AF_INET within this machine's own namespace.
                 let ip = [addr[4], addr[5], addr[6], addr[7]];
-                if ip == [127, 0, 0, 1] {
-                    match cross_process_loopback_connect(table, pid, fd, addr) {
+                if let Some(source) = crate::netif::local_ipv4_source(ip, &mut host) {
+                    match cross_process_local_connect(table, pid, fd, addr, source) {
                         Ok(()) => 0,
                         Err(e) => -(e as i32),
                     }
@@ -12239,11 +12213,12 @@ pub fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
 ///
 /// Searches all processes in the ProcessTable for a listening socket on the
 /// target port, then creates global pipe pairs to connect the two processes.
-fn cross_process_loopback_connect(
+fn cross_process_local_connect(
     table: &mut crate::process_table::ProcessTable,
     my_pid: u32,
     fd: i32,
     addr: &[u8],
+    local_source: [u8; 4],
 ) -> Result<(), Errno> {
     use crate::pipe::PipeBuffer;
     use crate::socket::{SocketDomain, SocketState, SocketType};
@@ -12328,7 +12303,7 @@ fn cross_process_loopback_connect(
     // Set up client socket (in current process)
     let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
     let client_addr = if client_sock.bind_addr == [0; 4] {
-        [127, 0, 0, 1]
+        local_source
     } else {
         client_sock.bind_addr
     };
@@ -12350,7 +12325,9 @@ fn cross_process_loopback_connect(
     client.global_pipes = true; // pipes are in global pipe table
     if client.bind_port == 0 {
         client.bind_port = client_port;
-        client.bind_addr = [127, 0, 0, 1];
+    }
+    if client.bind_addr == [0; 4] {
+        client.bind_addr = local_source;
     }
 
     // Push the connection metadata to the listener's shared accept queue.
@@ -12367,7 +12344,7 @@ fn cross_process_loopback_connect(
     let accept_wake_idx = listener_sock.accept_wake_idx;
 
     let pc = crate::socket::PendingConnection {
-        local_addr: [127,0,0,1],
+        local_addr: ip,
         peer_addr: client_addr,
         peer_addr6: [0; 16],
         peer_is_ipv6: false,

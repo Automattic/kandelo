@@ -1,6 +1,7 @@
 schema = 1
 policy = "source-only-v1"
 dependency_only = [
+  "go-bootstrap-source",
   "bytepath-source",
   "genesis-plus-gx-source",
   "snkrx-source",
@@ -17,6 +18,7 @@ dependency_only = [
   "sqlite-amalgamation-source",
   "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
+  "wordpress-super-cache-source",
 ]
 registry_non_roots = []
 
@@ -219,6 +221,14 @@ name = "foot"
 class = "user-software"
 
 [[packages]]
+name = "frankenphp-caddy"
+class = "user-software"
+
+[[packages]]
+name = "frankenphp-classic"
+class = "user-software"
+
+[[packages]]
 name = "freetype"
 class = "platform"
 
@@ -245,6 +255,10 @@ class = "platform"
 [[packages]]
 name = "glibmm"
 class = "platform"
+
+[[packages]]
+name = "go-hello"
+class = "user-software"
 
 [[packages]]
 name = "grep"
@@ -565,6 +579,10 @@ name = "php"
 class = "user-software"
 
 [[packages]]
+name = "php-zts"
+class = "user-software"
+
+[[packages]]
 name = "pixman"
 class = "platform"
 
@@ -841,6 +859,10 @@ class = "user-software"
 [[packages]]
 name = "rust-llvm"
 class = "platform"
+
+[[exclusions]]
+name = "caddy"
+reason = "deferred standalone server; FrankenPHP Caddy has its own package"
 
 [[exclusions]]
 name = "erlang"

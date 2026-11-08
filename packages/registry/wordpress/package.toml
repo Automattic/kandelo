@@ -1,19 +1,25 @@
 kind = "program"
 name = "wordpress"
 version = "7.0"
-kernel_abi = 52
+kernel_abi = 55
 # build-wp-vfs-image.ts starts from shell.vfs.zst, then bakes a service
-# image: dinit as service supervisor, nginx, php-fpm/opcache, the WordPress tree, and
+# image: dinit as service supervisor, nginx/php-fpm or FrankenPHP, the WordPress tree, and
 # the SQLite drop-in with a preinstalled WordPress database. The interactive
 # terminal sees the same shell files that the shell demo ships.
 depends_on = [
     "shell@0.1.0",
     "nginx@1.24.0",
     "php@8.5.12",
+    "php-zts@8.5.12",
+    "frankenphp-classic@1.13.5",
+    "frankenphp-caddy@1.13.5",
     "dinit@0.19.4",
+    "curl@8.11.1",
     "msmtpd@1.8.32",
     "kernel@0.1.0",
     "wordpress-sqlite-integration-source@2.1.16",
+    "wordpress-super-cache-source@3.1.5",
+    "service-activity-tools@0.1.0",
 ]
 
 [source]

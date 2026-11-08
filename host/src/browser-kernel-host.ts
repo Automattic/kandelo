@@ -558,13 +558,14 @@ export class BrowserKernel {
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
   }): Promise<void> {
+    const sourceImage = options.vfsImage;
     const [wasmBytes, vfsImage] = await Promise.all([
       options.kernelWasm
         ? Promise.resolve(options.kernelWasm)
         : fetchDefaultBrowserKernelArtifact("kernelWasm"),
-      options.vfsImage === "default"
+      sourceImage === "default"
         ? fetchDefaultRootfsVfsImage().then((b) => decodeVfsImage(new Uint8Array(b)))
-        : Promise.resolve(decodeVfsImage(options.vfsImage)),
+        : Promise.resolve(decodeVfsImage(sourceImage)),
     ]);
 
     await this.bootWorker({
@@ -580,7 +581,10 @@ export class BrowserKernel {
       persistentComputerName: options.persistentComputerName,
       persistenceComputerLease: options.persistenceComputerLease,
       requireExistingRootfsPersistence: options.requireExistingRootfsPersistence,
-      takeVfsImageOwnership: false,
+      // WHY: decoding or fetching the default creates host-owned bytes.
+      // Transfer those rather than cloning a whole decoded image into the
+      // worker. A raw caller view is still copied, preserving restart input.
+      takeVfsImageOwnership: vfsImage !== sourceImage,
     });
   }
 

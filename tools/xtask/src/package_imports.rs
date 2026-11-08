@@ -159,6 +159,11 @@ fn sdk_kernel_contract(sysroot: &Path) -> Result<KernelContract, String> {
         safepoint.params.iter().map(value).collect(),
         safepoint.results.iter().map(value).collect(),
     ));
+    let thread_exit = abi::PROCESS_WORKER_THREAD_EXIT_IMPORT;
+    contract.entry(thread_exit.name.into()).or_default().insert((
+        thread_exit.params.iter().map(value).collect(),
+        thread_exit.results.iter().map(value).collect(),
+    ));
     Ok(contract)
 }
 
@@ -351,6 +356,33 @@ mod tests {
             };
             assert!(!audit(&invalid, &contract).is_empty(), "{module}.{name}");
         }
+    }
+
+    #[test]
+    fn thread_exit_is_a_typed_process_worker_import() {
+        let declaration = abi::PROCESS_WORKER_THREAD_EXIT_IMPORT;
+        let contract = BTreeMap::from([(
+            declaration.name.into(),
+            BTreeSet::from([(vec![wasmparser::ValType::I32], vec![])]),
+        )]);
+        let valid = Imports {
+            entries: vec![(
+                declaration.module.into(),
+                declaration.name.into(),
+                TypeRef::Func(0),
+            )],
+            types: vec![FuncType::new([wasmparser::ValType::I32], [])],
+            ..Imports::default()
+        };
+        assert!(audit(&valid, &contract).is_empty());
+        let wrong_type = Imports {
+            types: vec![FuncType::new([wasmparser::ValType::I64], [])],
+            ..valid
+        };
+        assert_eq!(
+            audit(&wrong_type, &contract),
+            ["wrong function type for kernel.kernel_thread_exit"]
+        );
     }
 
     #[test]

@@ -46,6 +46,7 @@ import { createProxySessionTransport } from "../../host/src/networking/cors-prox
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
 import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
+import { devServerCache } from "./vite/dev-server-cache";
 import { devPartialImage } from "./vite/dev-partial-image";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
@@ -271,6 +272,38 @@ const crossOriginIsolationHeaders = {
   // responses remain admissible under COEP, including a 304 revalidation.
   "Cross-Origin-Resource-Policy": "same-origin",
 };
+
+/**
+ * A /computer/<name>/ URL belongs only to the service-worker HTTP bridge.
+ * If that worker is absent during a navigation, Vite's SPA fallback would
+ * serve index.html inside the web preview and recursively boot Kandelo.
+ * Fail the unhandled request at the static-server boundary instead.
+ */
+function rejectUncontrolledComputerRoutes(base: string): Plugin {
+  const namespace = `${base}computer`;
+  const attach = (middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"]) => {
+    middlewares.use((request, response, next) => {
+      const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+      if (pathname !== namespace && !pathname.startsWith(`${namespace}/`)) {
+        next();
+        return;
+      }
+      response.statusCode = 503;
+      response.setHeader("Content-Type", "text/plain; charset=utf-8");
+      response.setHeader("Cache-Control", "no-store");
+      for (const [name, value] of Object.entries(crossOriginIsolationHeaders)) {
+        response.setHeader(name, value);
+      }
+      response.end("Kandelo computer unavailable: the service worker did not handle this route. Reload the computer.");
+    });
+  };
+  return {
+    name: "reject-uncontrolled-computer-routes",
+    enforce: "pre",
+    configureServer(server) { attach(server.middlewares); },
+    configurePreviewServer(server) { attach(server.middlewares); },
+  };
+}
 
 function configuredCorsProxyUrl(): string | undefined {
   return process.env.VITE_CORS_PROXY_URL?.trim() || undefined;
@@ -1010,6 +1043,8 @@ export default defineConfig(() => {
       alias: browserRepositoryAliases(repoRoot),
     },
     plugins: [
+      devServerCache(),
+      rejectUncontrolledComputerRoutes(base),
       vfsProductsPlugin(base),
       devPartialImage({ partialDir: path.resolve(repoRoot, "local-binaries/partial") }),
       react(),

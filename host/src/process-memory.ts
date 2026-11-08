@@ -2,6 +2,7 @@ import {
   CH_TOTAL_SIZE,
   DEFAULT_MAX_PAGES,
   extractThreadSlotDeclaration,
+  extractThreadSlotPreallocation,
   WASM_PAGE_SIZE,
 } from "./constants";
 import {
@@ -262,9 +263,24 @@ export function computeProcessMemoryLayout(
   const firstThreadSlotPage = channelPage + CHANNEL_PAGES;
   const firstThreadBasePage =
     firstThreadSlotPage + PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE;
+  const declaredPreallocation = options.programBytes === undefined
+    ? null
+    : extractThreadSlotPreallocation(options.programBytes);
+  if (declaredPreallocation !== null && declaredPreallocation !== 1) {
+    throw new Error(`invalid process thread preallocation declaration: ${declaredPreallocation}`);
+  }
+  const declaredThreadSlots = options.programBytes === undefined
+    ? null
+    : extractThreadSlotDeclaration(options.programBytes);
+  if (declaredPreallocation === 1 && (
+    declaredThreadSlots === null || declaredThreadSlots <= 0
+  )) {
+    throw new Error("thread preallocation requires a positive thread slot declaration");
+  }
+  const preallocateThreadSlots = options.preallocateThreadSlots ?? declaredPreallocation === 1;
   const threadArenaEndPage =
     firstThreadSlotPage + (
-      options.preallocateThreadSlots ? threadSlotCount * PROCESS_MEMORY_PAGES_PER_THREAD_SLOT : 0
+      preallocateThreadSlots ? threadSlotCount * PROCESS_MEMORY_PAGES_PER_THREAD_SLOT : 0
     );
 
   const initialPages = Math.max(
@@ -819,6 +835,20 @@ export class ProcessMemoryAllocator {
         );
       }
     }
+  }
+
+  /**
+   * Preflight a snapshot transaction before it commits any child state.
+   * No lease is reserved: callers must still perform normal synchronous
+   * admission when they capture the snapshot. Avoid a yield on the fast path.
+   */
+  deferForRetirementBacklog(requestedBytes: number): Promise<void> | undefined {
+    if (!Number.isSafeInteger(requestedBytes) || requestedBytes <= 0) {
+      throw new Error(`invalid retirement admission size: ${requestedBytes}`);
+    }
+    return this.retirementBacklogSaturated()
+      ? this.waitForRetirementBacklogCapacity(requestedBytes)
+      : undefined;
   }
 
   async waitForRetirementBacklogCapacity(
@@ -1496,13 +1526,36 @@ export function growMemoryToCover(
   endOffset: number,
   ptrWidth: 4 | 8 = 4,
 ): void {
+  growMemoryToCoverWithFreshBoundary(memory, endOffset, ptrWidth);
+}
+
+/**
+ * Grow through endOffset and return the first byte appended by this call.
+ * Undefined means this call appended no pages. Only our own growth proves
+ * pages are fresh: another thread may have populated pages it appended.
+ */
+export function growMemoryToCoverWithFreshBoundary(
+  memory: WebAssembly.Memory,
+  endOffset: number,
+  ptrWidth: 4 | 8 = 4,
+): number | undefined {
   const requiredPages = Math.ceil(endOffset / WASM_PAGE_SIZE);
   const currentPages = Math.ceil(memory.buffer.byteLength / WASM_PAGE_SIZE);
   const delta = requiredPages - currentPages;
-  if (delta <= 0) return;
-  if (ptrWidth === 8) {
-    memory.grow(BigInt(delta) as any);
-  } else {
-    memory.grow(delta);
+  if (delta <= 0) return undefined;
+  try {
+    // The result belongs to the actual grow operation, unlike currentPages,
+    // which can become stale while another thread grows shared memory.
+    const previousPages = ptrWidth === 8
+      ? memory.grow(BigInt(delta) as any)
+      : memory.grow(delta);
+    return Number(previousPages) * WASM_PAGE_SIZE;
+  } catch (error) {
+    // A racing grow can satisfy the request but leave too little capacity
+    // for our stale delta. Its pages are existing storage and need clearing.
+    if (error instanceof RangeError && memory.buffer.byteLength >= endOffset) {
+      return undefined;
+    }
+    throw error;
   }
 }

@@ -1397,7 +1397,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 4,
+      "required_host_adapter_version": 5,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -1579,7 +1579,8 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 4,
+    "thread_slot_preallocate_export": "__wasm_posix_preallocate_thread_slots",
+    "version": 5,
     "worker_features": [
       {
         "bit": 2,

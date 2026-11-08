@@ -257,6 +257,7 @@ import {
   ProcessMemoryRetirementBacklogError,
   PROCESS_MMAP_BASE,
   growMemoryToCover,
+  growMemoryToCoverWithFreshBoundary,
 } from "./process-memory";
 import { VforkAddressSpaceBusyError } from "./vfork-lifetime";
 import { readForkContinuationAnchor } from "./fork-continuation";
@@ -1633,6 +1634,8 @@ interface ChannelInfo {
    *  retry/sleep/fork/exec path. Prevents the poller from re-entering a
    *  channel that is already in flight. Only used when usePolling=true. */
   handling?: boolean;
+  /** The owner is exiting; every waiter must observe its terminal completion. */
+  retiring?: boolean;
   /**
    * Handle for this channel's kernel-owned wait deadline, or undefined when
    * no wait is armed. Minted by `kernel_wait_deadline_open` and never reused,
@@ -2159,6 +2162,14 @@ export interface CentralizedKernelCallbacks {
    * Main-thread and pthread forks both carry the authoritative linked
    * continuation address in `request.continuation.forkBufAddr`.
    */
+  /**
+   * Consult only the host memory allocator. Return a bounded wait when retired
+   * address spaces temporarily block another snapshot, or undefined when ready.
+   * This runs before child creation; it must not enter the kernel or allocate
+   * a snapshot. Normal snapshot admission remains authoritative afterward.
+   */
+  waitForForkMemoryAdmission?: (parentBytes: number) => Promise<void> | undefined;
+
   onFork?: (request: ForkLaunchRequest) => Promise<number[]>;
 
   /**
@@ -3122,6 +3133,10 @@ export class CentralizedKernelWorker {
   private activeChannelRequests = new Map<
     ChannelInfo,
     FrozenChannelRequest
+  >();
+  /** One retirement wait for each exact in-flight ordinary fork request. */
+  private pendingForkMemoryAdmissions = new WeakMap<
+    ChannelInfo, { request: FrozenChannelRequest; ready: boolean }
   >();
   /** Pids whose authoritative kernel state is Stopped. Updated only from the
    * kernel wake-event stream, so ordinary syscall completion does not need an
@@ -12482,6 +12497,7 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     entry?: KernelWorkerEntryContext,
   ): void {
+    channel.retiring = true;
     const view = new DataView(channel.memory.buffer, channel.channelOffset);
     view.setUint32(CH_SIG_SIGNUM, SIGKILL, true);
     view.setUint32(CH_SIG_HANDLER, 0, true);
@@ -12521,6 +12537,7 @@ export class CentralizedKernelWorker {
     syscallNr: number,
     entry?: KernelWorkerEntryContext,
   ): void {
+    channel.retiring = true;
     this.completeChannelRaw(channel, 0, 0, entry);
     if (syscallNr === SYS_EXIT_GROUP) {
       // musl follows a returning EXIT_GROUP with the non-returning SYS_EXIT
@@ -15111,7 +15128,8 @@ export class CentralizedKernelWorker {
     kernelEntryIntrinsicApply(
       kernelEntryIntrinsicAtomicsNotify,
       kernelEntryIntrinsicAtomics,
-      [i32View, statusIndex, 1],
+      // A queued host listener must not consume the retiring guest's only wake.
+      [i32View, statusIndex, channel.retiring ? Infinity : 1],
     );
     if (prepared.relistenRequested && this.isRegisteredChannel(channel)) {
       this.relistenChannel(channel);
@@ -15403,10 +15421,12 @@ export class CentralizedKernelWorker {
           publication.prepared,
         );
       }
-      // Re-enter through the normal listener so polling mode and the browser's
-      // event-loop yielding policy retain their existing behavior.
+      // A deferred retry still owns its frozen request and Rust target token.
+      // Re-entering it as a fresh mailbox dispatch would lose that token and
+      // return EBUSY instead of completing the original operation.
       for (const channel of deferredToRelisten) {
-        this.relistenChannel(channel);
+        if (this.blockingRetrySnapshots.has(channel)) this.retrySyscall(channel);
+        else this.relistenChannel(channel);
       }
     });
     return true;
@@ -16039,6 +16059,7 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
     alreadyExited = false,
   ): void {
+    channel.retiring = true;
     if (alreadyExited || this.hostReaped?.has(channel.pid)) {
       this.wakeExitedChannelForRetirement(channel, entry);
       return;
@@ -21119,6 +21140,80 @@ export class CentralizedKernelWorker {
    * Handle SYS_FORK/SYS_VFORK: clone the Process in the kernel's ProcessTable,
    * then call the onFork callback to spawn the child Worker.
    */
+  #deferForkForMemoryAdmission(
+    channel: ChannelInfo,
+    origArgs: number[],
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    const wait = this.callbacks.waitForForkMemoryAdmission;
+    if (!wait) return false;
+    const request = this.activeChannelRequests.get(channel);
+    const pending = this.pendingForkMemoryAdmissions.get(channel);
+    if (request && pending?.request === request) {
+      if (!pending.ready) return true;
+      this.pendingForkMemoryAdmissions.delete(channel);
+      return false;
+    }
+    if (!request) throw new Error("fork admission has no captured request");
+    const parentMemory = channel.memory;
+    this.pendingForkMemoryAdmissions.set(channel, { request, ready: false });
+    // No child, shared-mapping snapshot or continuation has been committed.
+    // Consult the host allocator only after revoking kernel entry authority.
+    // Even the ready path resumes through the ordinary kernel entry queue;
+    // only the later committed fork transaction must avoid yielding.
+    entry.deferProtocolEffect(() => {
+      const resume = () => {
+        this.#runOrDeferKernelEntry("fork memory admission", (resumeEntry) => {
+          if (this.#claimForkAdmissionResume(channel, request, parentMemory, resumeEntry)) {
+            this.pendingForkMemoryAdmissions.set(channel, { request, ready: true });
+            // Ordinary dispatch preserves SIGSTOP and terminal teardown. The
+            // subsequent committed fork still captures bytes before yielding.
+            this.#handleSyscallWithinKernelEntry(channel, resumeEntry);
+          }
+          return undefined;
+        });
+      };
+      const refuse = (error: unknown) => {
+        this.#runOrDeferKernelEntry("fork memory admission rejection", (resumeEntry) => {
+          if (!this.#claimForkAdmissionResume(channel, request, parentMemory, resumeEntry)) {
+            return undefined;
+          }
+          if (error instanceof ProcessMemoryRetirementBacklogError) {
+            this.#completeForkWithinKernelEntry(channel, origArgs, -1, EAGAIN, resumeEntry);
+          } else {
+            this.#terminateForKernelProtocolFailureWithinKernelEntry(
+              channel, `fork memory admission failed: ${String(error)}`, resumeEntry,
+            );
+          }
+          return undefined;
+        });
+      };
+      try {
+        const admission = wait(parentMemory.buffer.byteLength);
+        if (admission) void admission.then(resume, refuse);
+        else resume();
+      } catch (error) {
+        refuse(error);
+      }
+      return undefined;
+    });
+    return true;
+  }
+
+  #claimForkAdmissionResume(
+    channel: ChannelInfo,
+    request: FrozenChannelRequest,
+    parentMemory: WebAssembly.Memory,
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    if (this.pendingForkMemoryAdmissions.get(channel)?.request !== request) return false;
+    this.pendingForkMemoryAdmissions.delete(channel);
+    return this.activeChannelRequests.get(channel) === request
+      && this.processes.get(channel.pid)?.memory === parentMemory
+      && Atomics.load(new Int32Array(channel.memory.buffer, channel.channelOffset, CH_TOTAL_SIZE / 4), CH_STATUS / 4) === CH_PENDING
+      && this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry);
+  }
+
   private handleFork(
     channel: ChannelInfo,
     _origArgs: number[],
@@ -21130,6 +21225,13 @@ export class CentralizedKernelWorker {
       this.#completeForkWithinKernelEntry(
         channel, _origArgs, -1, 38, entry,
       );
+      return;
+    }
+
+    if (
+      mode !== PROCESS_FORK_MODE_VFORK
+      && this.#deferForkForMemoryAdmission(channel, _origArgs, entry)
+    ) {
       return;
     }
 
@@ -21397,8 +21499,9 @@ export class CentralizedKernelWorker {
 
   /**
    * Handle SYS_SPAWN (path, path_len, blob, blob_len, pid_out, 0). The kernel
-   * reads the request from the caller's memory, refuses a target a launch
-   * could not run, and builds the child with its file actions applied once;
+   * reads the request from the caller's memory and builds the child with its
+   * file actions applied once. It prechecks the target only when the parent
+   * and child have the same lookup context;
    * the host then launches the child's committed target. The child pid is
    * written to `pid_out`, so a negative result is always a kernel error.
    */
@@ -22463,15 +22566,7 @@ export class CentralizedKernelWorker {
     }
     const cwd = new TextDecoder().decode(output.value);
     const joined = cwd.endsWith("/") ? cwd + path : cwd + "/" + path;
-    // Normalize . and .. components (e.g. /data/spawn/./prog → /data/spawn/prog)
-    const parts = joined.split("/");
-    const normalized: string[] = [];
-    for (const part of parts) {
-      if (part === "." || part === "") continue;
-      if (part === ".." && normalized.length > 0) { normalized.pop(); continue; }
-      normalized.push(part);
-    }
-    return { kind: "ok", value: "/" + normalized.join("/") };
+    return { kind: "ok", value: this.normalizeAbsoluteGuestPath(joined) };
   }
 
   /**
@@ -22610,7 +22705,7 @@ export class CentralizedKernelWorker {
         return;
       }
       const base = new TextDecoder().decode(output.value);
-      execPath = this.normalizeSharedMmapPath(`${base}/${pathStr}`);
+      execPath = this.normalizeAbsoluteGuestPath(`${base}/${pathStr}`);
     }
 
     if (!this.callbacks.onExec) {
@@ -23154,6 +23249,7 @@ export class CentralizedKernelWorker {
     const isMainChannel = this.isMainProcessChannel(channel);
 
     if (syscallNr === SYS_EXIT && !isMainChannel) {
+      channel.retiring = true;
       // Thread exit: finalize kernel-side thread state, complete the channel,
       // then ask the host to tear down the backing Worker (browser + Node both
       // wire onThreadExit).
@@ -24150,11 +24246,10 @@ export class CentralizedKernelWorker {
   // -----------------------------------------------------------------------
   // Process memory management
   //
-  // The kernel's ensure_memory_covers() grows the KERNEL's Wasm memory
-  // (memory index 0 in the kernel module). But the
-  // process runs in a different WebAssembly.Memory. After brk/mmap/mremap
-  // syscalls, we must grow the process's memory to cover the returned
-  // addresses — otherwise the process gets "memory access out of bounds".
+  // A process runs in a different WebAssembly.Memory from the kernel.
+  // After brk/mmap/mremap syscalls, grow that process's backing to cover
+  // the returned addresses. These addresses never size kernel memory;
+  // only allocations owned by the kernel grow its backing.
   // -----------------------------------------------------------------------
 
   private ensureFixedMmapProcessMemoryCapacity(
@@ -24261,9 +24356,10 @@ export class CentralizedKernelWorker {
     }
 
     const currentBytes = processMemory.buffer.byteLength;
+    let freshBoundary: number | undefined;
 
     if (endAddr > 0 && endAddr > currentBytes) {
-      growMemoryToCover(processMemory, endAddr, ptrWidth);
+      freshBoundary = growMemoryToCoverWithFreshBoundary(processMemory, endAddr, ptrWidth);
       const grownBuffer = processMemory.buffer;
       entry.deferObserverEffect(() => {
         this.observeProcessMemoryTarget(processMemory, grownBuffer);
@@ -24293,7 +24389,9 @@ export class CentralizedKernelWorker {
       const alignedLen = Math.ceil(mmapLen / PAGE_SIZE) * PAGE_SIZE;
       const newBytes = processMemory.buffer.byteLength;
       let zeroStart = mmapAddr;
-      const zeroEnd = Math.min(mmapAddr + alignedLen, newBytes);
+      // memory.grow already zeroes our appended pages. Clear all reused
+      // storage, including pages another thread grew before our operation.
+      const zeroEnd = Math.min(mmapAddr + alignedLen, freshBoundary ?? newBytes);
       if (syscallNr === SYS_MREMAP) {
         const oldAddr = origArgs[0];
         const oldLen = origArgs[1];
@@ -25908,7 +26006,7 @@ export class CentralizedKernelWorker {
       const path = new TextDecoder().decode(pathBytes);
       if (!path) return { kind: "error", errno: ENOENT };
       if (path.startsWith("/")) {
-        return { kind: "ok", value: this.normalizeSharedMmapPath(path) };
+        return { kind: "ok", value: this.normalizeAbsoluteGuestPath(path) };
       }
 
       let base: string;
@@ -25931,7 +26029,7 @@ export class CentralizedKernelWorker {
       }
       return {
         kind: "ok",
-        value: this.normalizeSharedMmapPath(`${base}/${path}`),
+        value: this.normalizeAbsoluteGuestPath(`${base}/${path}`),
       };
     } catch (err) {
       this.#rethrowKernelEntryFatal(err);
@@ -25939,7 +26037,7 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private normalizeSharedMmapPath(path: string): string {
+  private normalizeAbsoluteGuestPath(path: string): string {
     const normalized: string[] = [];
     for (const component of path.split("/")) {
       if (!component || component === ".") continue;

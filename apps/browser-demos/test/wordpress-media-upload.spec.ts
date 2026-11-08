@@ -1,4 +1,3 @@
-import { clickDockTool } from "./support/dock";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +5,12 @@ import { expect, test } from "../playwright-test";
 import { gotoInPreview, machineAppPrefix, machineUrl, previewFrame } from "./support/kandelo-machine";
 import { loginToWordPress } from "./support/wordpress-login";
 
-test("WordPress MariaDB media-library uploads survive refresh and oversized requests return 413", async ({ playwright, browserName }, testInfo) => {
+for (const demo of [
+  { profile: "wordpress-mariadb", title: "WordPress MariaDB", rejectsOversizedBody: true },
+  { profile: "wordpress-frankenphp", title: "WordPress on FrankenPHP", rejectsOversizedBody: false },
+  { profile: "wordpress-frankenphp-caddy", title: "WordPress on FrankenPHP + Caddy", rejectsOversizedBody: false },
+] as const) {
+test(`${demo.title} media-library uploads survive refresh${demo.rejectsOversizedBody ? " and oversized requests return 413" : ""}`, async ({ playwright, browserName }, testInfo) => {
   test.setTimeout(540_000);
   const projectUse = testInfo.project.use as {
     channel?: string;
@@ -41,21 +45,29 @@ test("WordPress MariaDB media-library uploads survive refresh and oversized requ
       page.on("pageerror", error => {
         if (diagnostics.length < 200) diagnostics.push(error.message.slice(0, 1000));
       });
-      const target = await machineUrl(page, "wordpress-mariadb", {
+      const target = await machineUrl(page, demo.profile, {
         search: {
           experimentalPersistence: `media-upload-${crypto.randomUUID()}`,
           experimentalPersistenceMode: "resizable",
         },
       });
       await page.goto(target, { waitUntil: "domcontentloaded" });
-      const frame = previewFrame(page, "WordPress MariaDB");
+      const frame = previewFrame(page, demo.title);
       await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, { timeout: 240_000 });
-      const prefix = await machineAppPrefix(page, "WordPress MariaDB");
+      const prefix = await machineAppPrefix(page, demo.title);
       await loginToWordPress(frame, prefix);
       await gotoInPreview(frame, prefix, "wp-admin/media-new.php");
       await expect(frame.getByRole("button", { name: "Select Files", exact: true })).toBeVisible({ timeout: 120_000 });
+      // The server renders the button before plupload installs its HTML5
+      // file input. A click during that interval cannot open a chooser.
+      const fileInput = frame.locator('input[type="file"][id^="html5_"]');
+      await expect(fileInput).toBeAttached({ timeout: 30_000 });
+      await expect(fileInput).toBeEnabled();
       const uploaded: { path: string; bytes: number[] }[] = [];
-      for (const size of [2, 256, 640]) {
+      // nginx's configured/default request limit is separate from PHP's
+      // upload limits. Keep its 413 check on that stack; exercise the same
+      // successful multipart/file-picker uploads on both embedded services.
+      for (const size of demo.rejectsOversizedBody ? [2, 256, 640] : [2, 256]) {
         const bytes = await page.evaluate(async size => {
           const canvas = document.createElement("canvas");
           canvas.width = size;
@@ -77,6 +89,23 @@ test("WordPress MariaDB media-library uploads survive refresh and oversized requ
           });
           return Array.from(new Uint8Array(await blob.arrayBuffer()));
         }, size);
+        await testInfo.attach(`uploader-before-click-${size}`, {
+          body: JSON.stringify(await frame.locator("body").evaluate(() => {
+            const button = document.querySelector("#plupload-browse-button");
+            const bounds = button?.getBoundingClientRect();
+            const center = bounds && { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+            const target = center && document.elementFromPoint(center.x, center.y);
+            return {
+              readyState: document.readyState,
+              button: bounds?.toJSON(),
+              target: target && { tag: target.tagName, id: target.id },
+              inputs: Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]')).map(input => ({
+                id: input.id, disabled: input.disabled, bounds: input.getBoundingClientRect().toJSON(),
+              })),
+            };
+          })),
+          contentType: "application/json",
+        });
         let uploadPhase = "opening file chooser";
         const response = await Promise.all([
           page.waitForResponse(response => response.url().includes("/wp-admin/async-upload.php") && response.request().method() === "POST", { timeout: 120_000 }),
@@ -144,8 +173,8 @@ test("WordPress MariaDB media-library uploads survive refresh and oversized requ
       if (!imageUrl) throw new Error("machine URL has no source image");
       await page.route(imageUrl, route => route.abort("failed"));
       await page.reload({ waitUntil: "domcontentloaded" });
-      await expect(previewFrame(page, "WordPress MariaDB").locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, { timeout: 240_000 });
-      const restoredPrefix = await machineAppPrefix(page, "WordPress MariaDB");
+      await expect(previewFrame(page, demo.title).locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, { timeout: 240_000 });
+      const restoredPrefix = await machineAppPrefix(page, demo.title);
       for (const file of uploaded) {
         const actual = await page.evaluate(async url => {
           const response = await fetch(url, { cache: "no-store" });
@@ -162,3 +191,4 @@ test("WordPress MariaDB media-library uploads survive refresh and oversized requ
     rmSync(userDataDir, { recursive: true, force: true });
   }
 });
+}

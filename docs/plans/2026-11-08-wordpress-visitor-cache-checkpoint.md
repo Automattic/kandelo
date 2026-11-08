@@ -1,0 +1,224 @@
+# WordPress visitor-cache checkpoint
+
+This is functional evidence on a development image, not a throughput
+comparison or final canonical acceptance. The unchanged WP Super Cache
+3.1.5 plugin runs through the ordinary WordPress admin, HTTP bridge, PHP
+runtime and filesystem inside Kandelo. PHP's optimizer remains unchanged.
+
+## Selected configuration and checks
+
+The maintained `wordpress-super-cache.spec.ts` activates the stock plugin
+through WordPress, selects post-name permalinks and enables caching. It
+then selects ordinary generated configuration settings:
+
+- `wpsc_served_header=true`, so a response can establish a PHP cache hit;
+- `cache_rebuild_files=0`, disabling the serve-stale rebuild option;
+- `wp_cache_clear_on_post_edit=1`, selecting cache clearing on saved edits.
+
+These are test-selected plugin settings, not changes to plugin algorithms
+or a pre-enabled image configuration. Anonymous GETs must hit the cache
+without an admin bar. Authenticated GETs and anonymous POSTs must bypass
+it. WordPress's configured REST client creates and edits a separate
+published post, then saves a site-template heading. The first anonymous
+responses must show those saves; the test does not retry away stale content.
+
+For expiry, it changes the stock TTL to two seconds and lets four real
+seconds pass without aging files, clearing caches or changing clocks.
+The expired request must miss and show saved content, and the next request
+must hit the rebuilt entry.
+
+An authenticated test-owned observation endpoint schedules the stock
+`wp_cache_gc` hook in the past. It records actual cache-file paths and
+mtimes, then an explicit request to the unchanged `wp-cron.php` executes
+the hook. The test requires deletion of the expired post file, an updated
+GC timestamp and a future rescheduled hook. The observation endpoint is
+not shipped in product images and does not implement garbage collection.
+**Automatic cron remains disabled and is not validated by this test.**
+
+## Latest three-engine result
+
+Job `wordpress-cache-settings-client-all-engi-1108-031213-7a70` passes
+all six Go-service cases in 10m54s: classic and real Caddy on Chromium,
+Firefox and WebKit, with zero skips, retries or unexpected results. Each
+case completes the privacy, post/template freshness, real expiry and
+explicit stock-cron checks above. The test keeps WordPress's configured
+REST client in its already-loaded settings document, bounds each API
+request to 30 seconds and retains readable error details. This cache test
+does not navigate or validate the rendered editor; that separate gate
+remains open.
+
+Raw results are in the review checkout under
+`.context/agent-jobs/wordpress-cache-settings-client-all-engi-1108-031213-7a70/scratch/visitor-cache-engines/`.
+The selected image/kernel/program identities remain the revision-45
+partial cohort listed below. This is not final rebuilt-image acceptance.
+
+The separate FPM control `9ef2` passes its complete cache selection in
+1m22s after the test-owned machine receives the ordinary nginx metadata
+and ownership corrections. Actual metadata changes from null to
+`nginx/1.24.0`, and all three PHP write checks change from false to true.
+It then passes privacy, post/template invalidation, expiry, deletion of
+expired files and the stock hook's 600-second rescheduling. This confirms
+the controlled deployment configuration, not acceptance of rebuilt
+revision-46/family-12 images. Earlier failures remain recorded below.
+
+## Guest minute-scheduler control
+
+Private control `e5bb` passes one real Caddy/WordPress Chromium case in
+2m23s, zero skips/retries, on the normal full revision-45 WordPress image
+`1993e1bc29ef` with the same kernel and Go daemon hashes listed below.
+A test-owned ordinary Dinit process service runs the existing guest curl
+against `http://127.0.0.1:8080/wp-cron.php`. Its restart interval is 60 real
+seconds, with smooth recovery and a bounded 25-second HTTP operation.
+The [Dinit service manual](https://raw.githubusercontent.com/davmac314/dinit/v0.19.4/doc/manpages/dinit-service.5.m4)
+describes the restart and dependency semantics; no host timer invokes cron.
+
+The test observes the first successful curl invocation, then schedules the
+stock hook in the past. Without a browser request to `wp-cron.php`, the
+next minute tick executes it: expired home and post entries disappear,
+`lastGc` advances and the stock hook is rescheduled 600 seconds later.
+The service log changes from one to two successful HTTP markers. Explicit
+service stop succeeds and the subsequent Dinit listing reports it stopped.
+The test retains privacy and saved-content freshness checks. Its additional
+PHP helper only observes the authenticated scheduler log and cache state.
+It is not shipped in the product and does not implement cron or cache GC.
+
+Raw source, identities, observations and the browser report are in the
+review checkout under
+`.context/agent-jobs/wordpress-guest-minute-cron-normal-v3-1108-035419-e5bb/scratch/guest-auto-cron-control/`.
+Original `9ed1` fails because the partial development image omits curl;
+`c9bb` fails during discovery because copied evidence is collected as an
+extra spec. Both are retained separately. The successful control selects
+the normal full image and a dedicated fixture directory.
+
+**Automatic cron is still not integrated into shipped image services.**
+This control does not prove automatic start/stop with profile switches,
+crash recovery, a full stopped interval, Node parity, the other two engines
+or final refreshed artifacts. Integration must preserve Dinit dependency
+and shutdown semantics, rather than leave an orphan polling process.
+
+## Earlier Chromium result
+
+Job `wordpress-stock-cache-policy-and-gc-v6-1108-021151-5f37` ends with
+two passes and one failure in 3m44s, with zero skips or retries. Classic
+FrankenPHP passes in 78.4 seconds; real Caddy/FrankenPHP passes in 76.8
+seconds. Both complete every check above. Their expired post and home
+cache files are removed, and the stock hook is rescheduled 600 seconds
+after its observed execution. These test durations are not performance
+measurements.
+
+The PHP-FPM control fails before plugin activation: the permalink screen
+offers an `/index.php/%postname%/` value instead of `/%postname%/`. Its
+actual rendered screenshot confirms the screen is present; the first
+automatic screenshot belongs to the persistent browser's empty initial
+page and must not be mistaken for the tested application's document.
+The WordPress image's nginx FastCGI blocks omit `SERVER_SOFTWARE`, unlike
+the generic nginx/PHP image.
+
+Control `ee8e` observes `SERVER_SOFTWARE=null` in real PHP-FPM, adds the
+standard nginx FastCGI parameter through the test-owned machine's ordinary
+configuration, and observes `nginx/1.24.0`. The expected permalink option
+then works. Plugin setup next exposes root-owned configuration/content
+paths that the FPM account cannot write. Follow-up `a2be` observes all
+three relevant PHP `is_writable` checks false, changes ordinary ownership
+of the document root, content directory and configuration file to UID/GID
+65534, and observes them true. Plugin activation, anonymous hits and
+authenticated/POST bypass then pass; the later REST operation fails with
+an unexpanded object error. Neither of those two controls is a full PHP-FPM cache pass; the later
+`9ef2` result is recorded separately above.
+
+The image recipes now prepare the standard server metadata and ownership
+required for atomic configuration replacement: WordPress revision 46 and
+WordPress family revision 12. The family already gives each backend its
+own writable content directory. No recursive source rewrite or application
+patch is involved. These source changes still require normal builds,
+Node/browser checks and a replacement-preview proof. The shared preview
+and its revision-45 image remain unchanged.
+
+The cohort is normal revision-45 **partial** WordPress image
+`9cbbb185ced4`, ABI-55 kernel `6f5afada9ae3`, classic `f1314f3e7675`
+and Caddy `cfdba6545bd4`. Served image bytes and selected kernel/program
+hashes are checked before execution. The consumer includes main through
+`c3703ba28d6e`; its selected host/runtime code matches the earlier measured
+consumer, but the image predates that integration and the SDK metadata fix.
+No borrowed SDK, restamped receipt, new engine flag or forced GC is used.
+
+## Investigation history and limits
+
+Original failures remain separate evidence:
+
+- `4931` and `c3df` each fail both cases while extracting an assumed REST
+  nonce format. Waiting for the inline script does not establish a fix.
+  The maintained test instead uses WordPress's configured REST client.
+- `55f7` reaches successful post updates, but cached visitor responses
+  retain the old title under the initial stock settings.
+- `2a1e` disables rebuilds alone; both cases still fail the first visitor
+  check after publishing. That setting alone does not meet the test's
+  freshness policy.
+- `a0cc` adds stock clear-on-edit: classic passes the full gate, PHP-FPM
+  fails at permalinks, and Caddy loses an initial terminal command. It is
+  one pass/two failures, not a successful aggregate run.
+- `5f37` waits for the terminal input and actual maker prompt before
+  sending each command. Both Go services pass; the separate PHP-FPM
+  permalink failure remains. This does not prove every earlier input loss
+  or editor intermittency had the same cause.
+
+Raw reports, workload source and artifact identities are retained under
+each job's `scratch/visitor-cache/` in the review checkout. The current
+test-owned PHP probe is also retained with its identity under `a0cc`.
+Private cross-engine and FastCGI controls retain their own source snapshots
+and reports; no unexecuted selection is counted as a pass.
+
+The first private control `f8da` and cross-engine attempt `6684` select no
+tests because their grep expressions incorrectly anchor the full Playwright
+test title. Corrected controls remove the anchor; those discovery failures
+are not runtime results. The executed cross-engine selection `87cc` fails all four cases: Firefox
+reaches the 360-second timeout and WebKit reports opaque REST objects.
+The later `7bea` selection also fails; Chromium passes both cases but
+Firefox editor-document checks fail. A direct Firefox document observation
+in `293f` times out as well. None establishes an engine defect or a cause
+for the separate rendered-editor failures. The maintained cache test now
+avoids an unnecessary editor navigation and retains readable REST errors;
+its six-case result is recorded separately above.
+
+Final coherent artifacts, automatic cron/lifecycle behavior and PHP-FPM
+validation on rebuilt images remain required. The separate native WebKit
+memory investigation is unresolved. Fair uncached runtime comparisons and
+cache-enabled visitor comparisons must report their different policies and
+measured results rather than attributing cache hits to Go/PHP server speed.
+
+## Image-owned scheduler integration
+
+The current source declares ordinary Dinit/curl schedulers with each
+WordPress activity. A complete Node control passes in 4m40s and its browser
+control passes all three engines in 14m37s, zero retries/skips. Those use
+retained normal45 with the new configuration and a test-owned WordPress
+action, not the stock cache hook or final normal49/family16 artifacts.
+A maintained shared regression then passes Node in 4m32s; its three-engine
+run is active. Earlier preload failures stay recorded independently.
+
+The updated stock-cache case now requires the image's scheduler and checks
+its configured public host and exact machine prefix. It schedules overdue
+`wp_cache_gc` and waits up to 95 seconds for guest delivery, requiring expired
+files to disappear and the stock hook to reschedule. It rejects any browser
+request to `wp-cron.php`. This updated cache case has not yet run; the six
+older passes above remain evidence for explicit delivery only.
+
+Source inspection catches two integration details before replacement-preview
+acceptance. A partial shell does not install every built image dependency,
+so WordPress must install curl from its direct dependency itself. Also, the
+machine prefix is assigned after image composition. Browser boot supplies generic public URL metadata after the bridge
+handshake. An image-owned Dinit service configures curl headers from it,
+rather than capture the pre-mint `/computer` placeholder. Normal49/family16 and
+actual app/cache validation of these paths remain open. The existing 5492
+preview is preserved.
+
+The final configuration owner is the image, not the app: generic
+`KANDELO_PUBLIC_URL` init metadata reaches an ordinary Dinit configuration
+service that atomically writes a curl header file. Control `a5bc` passes
+real header-file loading and all Node lifecycle phases in 4m40s. The earlier
+maintained shared scenario also passes all three browsers in 14m49s; the
+current regression now requires this image-owned configuration path and
+will rerun against normal49. The normal47 pipeline confirms the missing
+curl installation with ENOENT after completing its selected packages.
+Those completed current-SDK artifacts remain available for the normal49
+successor. No updated stock-cache app pass is claimed yet.

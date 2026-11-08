@@ -20,6 +20,29 @@ function catalogModule(): WebAssembly.Module {
 }
 
 describe("ForkFunctionCatalog", () => {
+  it("leaves no recipes or aliases behind when registration fails", () => {
+    const source = new WebAssembly.Instance(catalogModule()).exports
+      .__wpk_fork_function_catalog as WebAssembly.Table;
+    const invalid = new WebAssembly.Table({ element: "anyfunc", initial: 3 });
+    invalid.set(0, source.get(0));
+    invalid.set(1, source.get(1));
+    const existing = new WebAssembly.Table({ element: "anyfunc", initial: 1 });
+    existing.set(0, source.get(0));
+    const catalog = new ForkFunctionCatalog();
+    catalog.register(7, existing);
+    expect(() => catalog.register(2, invalid)).toThrow("non-function entry 2");
+    expect(catalog.encode(source.get(0))).toEqual({ moduleActivation: 7, ordinal: 0 });
+    expect(() => catalog.encode(source.get(1))).toThrow("absent from");
+    expect(() => catalog.decode({ moduleActivation: 2, ordinal: 0 })).toThrow("not registered");
+    // Failure must also leave the activation available for a valid retry.
+    invalid.set(2, source.get(0));
+    catalog.register(2, invalid);
+    expect(catalog.encode(source.get(0))).toEqual({ moduleActivation: 2, ordinal: 0 });
+    catalog.unregister(2);
+    expect(catalog.encode(source.get(0))).toEqual({ moduleActivation: 7, ordinal: 0 });
+    expect(() => catalog.encode(source.get(1))).toThrow("absent from");
+  });
+
   it("reconstructs the same logical function from a fresh module instance", () => {
     const module = catalogModule();
     const parentInstance = new WebAssembly.Instance(module);

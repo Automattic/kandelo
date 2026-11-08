@@ -962,9 +962,30 @@ pub fn may_compile(user_args: &[String], arch: WasmArch) -> Result<bool> {
         || needs_linking(&parsed))
 }
 
+pub fn sdk_tool_query(user_args: &[String], toolchain: &Toolchain) -> Option<String> {
+    let [arg] = user_args else {
+        return None;
+    };
+    let name = arg.strip_prefix("--print-file-name=")?;
+    if name == "libc.a" {
+        return Some(join(&join(&toolchain.sysroot, "lib"), name));
+    }
+    if matches!(
+        name,
+        "channel_syscall.c" | "compiler_rt.c" | "cxxrt.c" | "dlopen.c"
+    ) {
+        return Some(join(&toolchain.glue_dir, name));
+    }
+    None
+}
+
 /// The shared entry of wasm{32,64}posix-cc and -c++: the exit status.
 pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -> Result<i32> {
     let mut toolchain = crate::toolchain::resolve_toolchain(arch)?;
+    if let Some(path) = sdk_tool_query(user_args, &toolchain) {
+        println!("{path}");
+        return Ok(0);
+    }
     let compiler = match language {
         Language::C => toolchain.cc.clone(),
         Language::Cxx => toolchain.cxx.clone(),

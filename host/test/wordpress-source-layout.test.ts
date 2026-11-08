@@ -15,6 +15,7 @@ import {
   materializeWordPressSqlitePlugin,
   resolveWordPressCoreSource,
   resolveWordPressSqlitePluginSource,
+  resolveWordPressSuperCacheSource,
   WORDPRESS_CORE_GUEST_PATH,
   WORDPRESS_SETUP_SQLITE_PLUGIN_ALIAS,
   WORDPRESS_SQLITE_PLUGIN_GUEST_PATH,
@@ -53,6 +54,9 @@ describe("WordPress product source layout", () => {
         "/resolver/wordpress-sqlite",
       ),
     ).toBe("/resolver/wordpress-sqlite");
+    expect(resolveWordPressSuperCacheSource(
+      repoRoot, fallback, "/resolver/wordpress-super-cache",
+    )).toBe("/resolver/wordpress-super-cache");
     expect(fallback).not.toHaveBeenCalled();
   });
 
@@ -65,9 +69,13 @@ describe("WordPress product source layout", () => {
     expect(resolveWordPressSqlitePluginSource("/repo", fallback)).toBe(
       "/cache/wordpress-sqlite-integration-source",
     );
+    expect(resolveWordPressSuperCacheSource("/repo", fallback)).toBe(
+      "/cache/wordpress-super-cache-source",
+    );
     expect(fallback.mock.calls).toEqual([
       ["wordpress", "/repo"],
       ["wordpress-sqlite-integration-source", "/repo"],
+      ["wordpress-super-cache-source", "/repo"],
     ]);
   });
 

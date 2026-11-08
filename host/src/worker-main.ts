@@ -66,6 +66,7 @@ import {
   PROCESS_METADATA_ENTRY_MAX_BYTES,
   PROCESS_STARTUP_MAX_ARGV_COUNT,
   PROCESS_STARTUP_MAX_ENVP_COUNT,
+  PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND,
@@ -81,6 +82,7 @@ import { assertDeclaredEnvImports } from "./env-imports";
 import {
   FORK_SAVE_BUFFER_SIZE,
   FORK_SAVE_CONTROL_PREFIX_SIZE,
+  CHANNEL_PAGES,
 } from "./process-memory";
 import {
   ContinuationAllocationError,
@@ -358,6 +360,7 @@ function continuationMunmap(
  */
 type KernelImports = Record<string, WebAssembly.ExportValue> & {
   kernel_exit: (status: number) => void;
+  kernel_thread_exit: (waitPtr: WasmGuestPointer) => void;
   kernel_fork: (mode: number) => number;
 };
 
@@ -495,7 +498,7 @@ function buildKernelImports(
     return encoded.byteLength;
   };
 
-  return {
+  const imports: KernelImports = {
     // CRT argv support
     kernel_get_argc: (): number => metadata.argv.length,
     kernel_argv_read: (index: number, bufPtr: number | bigint, bufMax: number): number => {
@@ -566,6 +569,20 @@ function buildKernelImports(
       // This disposable Worker trap also enforces `_Noreturn` for callers
       // without a trailing unreachable; the reusable kernel never traps.
       return trapProcessWorker();
+    },
+    kernel_thread_exit: (waitPtr: WasmGuestPointer): void => {
+      const range = checkedWasmMemoryRange(
+        memory,
+        waitPtr,
+        4,
+        ptrWidth,
+        "kernel_thread_exit",
+      );
+      if (range.offset % 4 !== 0) {
+        throw new RangeError("kernel_thread_exit: unaligned wait pointer");
+      }
+      Atomics.store(new Int32Array(memory.buffer), range.offset / 4, 0);
+      imports.kernel_exit(0);
     },
 
     // Clone dispatches through channel (SYS_CLONE)
@@ -650,6 +667,7 @@ function buildKernelImports(
       return result;
     },
   };
+  return imports;
 }
 
 /** @internal Exported for focused startup import contract tests. */
@@ -4668,6 +4686,10 @@ function setupChannelBase(
   programBytes?: ArrayBuffer,
   ptrWidth: 4 | 8 = 4,
 ): void {
+  const channelBase = instance.exports.__channel_base as WebAssembly.Global | undefined;
+  if (channelBase) {
+    channelBase.value = ptrWidth === 8 ? BigInt(channelOffset) : channelOffset;
+  }
   // If the module imports env.__channel_base as a global, the channel offset was
   // already set at instantiation via WebAssembly.Global in buildImportObject.
   const moduleImports = wasmModuleImports(module);
@@ -4808,9 +4830,14 @@ function sendForkSyscall(
  *   they would clobber shared global state (e.g. resetting LOGGER::file_log_handler
  *   to NULL in MariaDB).
  *
+ * Go's Kandelo modules instead have no Start section and use active data
+ * segments. Thread instances must omit those segments rather than replaying
+ * them over the already-running process memory.
+ *
  * This function:
- * 1. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
- * 2. Finds the constructor function by scanning the known LLVM helper exports
+ * 1. Removes all-active data sections from modules without a Start section.
+ * 2. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
+ * 3. Finds the constructor function by scanning the known LLVM helper exports
  *    for their common call target and replaces that function body with a no-op.
  */
 export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
@@ -4868,6 +4895,38 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     });
     if (sectionId === 8) hasStartSection = true;
     offset += totalSize;
+  }
+
+  if (!hasStartSection) {
+    const dataSection = sections.find((section) => section.id === 11);
+    const dataCountSection = sections.find((section) => section.id === 12);
+    if (dataSection && !dataCountSection) {
+      let position = dataSection.contentOffset;
+      const dataEnd = position + dataSection.contentSize;
+      const [segmentCount, countSize] = readLEB128(src, position);
+      position += countSize;
+      let activeDataOnly = true;
+      for (let index = 0; index < segmentCount && activeDataOnly; index++) {
+        if (src[position++] !== 0 || src[position++] !== 0x41) {
+          activeDataOnly = false;
+          break;
+        }
+        position += readLEB128(src, position)[1];
+        if (src[position++] !== 0x0b) {
+          activeDataOnly = false;
+          break;
+        }
+        const [dataLength, lengthSize] = readLEB128(src, position);
+        position += lengthSize + dataLength;
+        if (position > dataEnd) activeDataOnly = false;
+      }
+      if (activeDataOnly && position === dataEnd) {
+        const patched = new Uint8Array(src.length - dataSection.totalSize);
+        patched.set(src.subarray(0, dataSection.offset));
+        patched.set(src.subarray(dataSection.offset + dataSection.totalSize), dataSection.offset);
+        return patched.buffer;
+      }
+    }
   }
 
   if (!hasStartSection) return bytes;
@@ -5960,6 +6019,18 @@ export async function centralizedThreadWorkerMain(
       ptrWidth,
     );
 
+    const cgoThreadBootstrap = instance.exports.__kandelo_cgo_thread_bootstrap as
+      ((slotIndex: number) => void) | undefined;
+    if (cgoThreadBootstrap) {
+      const firstSlotOffset = processChannelOffset + CHANNEL_PAGES * WASM_PAGE_SIZE;
+      const slotSize = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE;
+      const slotIndex = (tlsOffset - firstSlotOffset) / slotSize;
+      if (!Number.isInteger(slotIndex) || slotIndex < 0) {
+        throw new Error(`pid=${pid} tid=${tid}: invalid cgo thread slot ${tlsOffset}`);
+      }
+      cgoThreadBootstrap(slotIndex);
+    }
+
     // Call the thread function via indirect function table
     const table = threadTable;
     if (!table) {
@@ -5988,6 +6059,15 @@ export async function centralizedThreadWorkerMain(
         `pid=${pid} tid=${tid}: fork-capable program is missing ` +
           "wpk_fork_resume_thread",
       );
+    }
+    // Startup has decoded and registered all artifact metadata. These buffers
+    // are private structured clones owned by this thread Worker; retaining
+    // its init message must not retain another complete executable. The
+    // kernel worker keeps the original source for fork and later launches.
+    // Older hosts without ArrayBuffer.transfer retain the existing behavior.
+    if (typeof initData.programBytes.transfer === "function") {
+      if (programBytes && programBytes !== initData.programBytes) programBytes.transfer(0);
+      initData.programBytes.transfer(0);
     }
     let result = 0;
     if (hasForkInstrumentation && threadProcessContinuation) {

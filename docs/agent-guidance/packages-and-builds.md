@@ -43,6 +43,11 @@ that owns those direct dependencies, including an archive-stage override. A
 build script that relies on ambient host tools, global SDK links, undeclared
 transitive deps, or files outside its contract is not cache-safe.
 
+When an upstream build validates Python dependency versions, give it a private
+virtual environment under its work directory. Other tools declared in the
+dev shell can require different versions. Preserve the upstream requirements
+instead of weakening them to match unrelated host tooling.
+
 Build scripts configure, fetch, patch, generate, and compile only under
 `WASM_POSIX_DEP_WORK_DIR`, and install only into `WASM_POSIX_DEP_OUT_DIR`.
 The checkout is reviewed input, not scratch. Two resolves of one recipe in
@@ -60,6 +65,15 @@ resolver owns the roots. Standalone runs may keep package-local defaults.
 The resolver enforces the recipe-directory part of this rule: it records the
 package directory and the build script's directory before the script runs,
 and fails the build, publishing nothing, if anything in them changed.
+
+Freeze every declared build input during a live publication, including
+files outside `packages/registry/`. Test helpers can be real recipe inputs:
+`coreutils-docs/build.toml` names `host/test/centralized-test-helper.ts`
+because it runs actual guests to generate documentation. Changing that
+helper after the docs build changes the expected key during downstream
+image assembly. The resolver correctly rejects the inconsistent receipts;
+retain the completed caches and rebuild through the normal pipeline with
+stable inputs. Do not edit receipts or weaken their equality checks.
 
 The persistent SourceOnly build cache lives at
 `$HOME/.cache/kandelo/source-only` and is **shared across every worktree on

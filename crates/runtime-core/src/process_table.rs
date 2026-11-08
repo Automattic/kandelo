@@ -757,7 +757,10 @@ impl ProcessTable {
         let slot = PreparedMapSlot::new_in(&crate::io_buffer::IO_MEMORY, 0)?;
         let task_id = self.allocate_task_id()?;
         let pid = task_id.as_raw();
-        let entry = slot.finish(pid, Process::new_allocated_with_stdio(task_id, stdio)?)?;
+        let mut process = Process::new_allocated_with_stdio(task_id, stdio)?;
+        let init = self.processes.get(&SYNTHETIC_INIT_PID).ok_or(Errno::ESRCH)?;
+        process.ofd_table.share_directory_paths_from(&init.ofd_table)?;
+        let entry = slot.finish(pid, process)?;
         crate::image_build_determinism::process_created(pid);
         self.processes.publish_io(entry);
         Ok(pid)
@@ -778,6 +781,7 @@ impl ProcessTable {
             // state that could later be mutated or cleaned up by a host path.
             init.fd_table = crate::fd::FdTable::new();
             init.ofd_table = crate::ofd::OfdTable::new();
+            init.ofd_table.ensure_directory_registry()?;
             init.terminal.foreground_pgid = 0;
             // Init reaps its children: with SIGCHLD ignored (POSIX: as
             // SA_NOCLDWAIT), a child of pid 1 never lingers as a zombie,
@@ -2607,6 +2611,38 @@ mod wait_tests {
         );
         assert_eq!(table.get(fork_pid).unwrap().ppid, parent_pid);
         assert_eq!(table.get(spawn_pid).unwrap().ppid, parent_pid);
+    }
+
+    #[test]
+    fn separate_processes_share_live_directory_paths() {
+        let mut table = ProcessTable::new();
+        let first_pid = table.create_process().unwrap();
+        let second_pid = table.create_process().unwrap();
+        let first_index = table
+            .get_mut(first_pid)
+            .unwrap()
+            .ofd_table
+            .create(FileType::Directory, 0, 10, b"/tmp/old".to_vec());
+        let second_index = table
+            .get_mut(second_pid)
+            .unwrap()
+            .ofd_table
+            .create(FileType::Directory, 0, 11, b"/tmp/old".to_vec());
+
+        table
+            .get_mut(first_pid)
+            .unwrap()
+            .ofd_table
+            .rename_directory_paths(b"/tmp/old", b"/tmp/new").unwrap();
+
+        assert_eq!(
+            table.get(first_pid).unwrap().ofd_table.get(first_index).unwrap().current_path().unwrap().as_slice(),
+            b"/tmp/new"
+        );
+        assert_eq!(
+            table.get(second_pid).unwrap().ofd_table.get(second_index).unwrap().current_path().unwrap().as_slice(),
+            b"/tmp/new"
+        );
     }
 
     fn host_stdin_pipe_fixture() -> (ProcessTable, u32, usize) {

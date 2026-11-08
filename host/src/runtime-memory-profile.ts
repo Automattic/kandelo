@@ -57,13 +57,14 @@ export interface RuntimeMemoryProfile {
    */
   readonly kernelMaxPages: number;
   /**
-   * How many worker processes a pre-forking service should start.
+   * Upper bound for a host-managed pre-fork pool; smaller image settings stay.
    *
    * A pool like php-fpm's `pm.max_children` claims that many process address
    * spaces at once, each charged at `processMaxPages`. When the pool does not
    * fit, the service does not degrade gracefully: php-fpm's master SIGTERMs
    * the children it did start and exits, taking the demo's init tree with it.
-   * Sizing the pool to the host is what keeps that from happening.
+   * Capping an explicit pool to the host keeps that from happening without
+   * increasing an image's configured demand or replacing its other settings.
    */
   readonly preforkServiceProcesses: number;
 }

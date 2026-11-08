@@ -300,7 +300,7 @@ export class NodePlatformIO implements PlatformIO {
     this.fstat(handle);
     return backendPathconf(name, {
       supportsSymlinks: true,
-      timestampResolutionNs: 1_000_000,
+      timestampResolutionNs: 1,
     });
   }
 
@@ -338,7 +338,7 @@ export class NodePlatformIO implements PlatformIO {
     fs.statSync(this.rewritePath(path), { bigint: true });
     return backendPathconf(name, {
       supportsSymlinks: true,
-      timestampResolutionNs: 1_000_000,
+      timestampResolutionNs: 1,
     });
   }
 
@@ -426,11 +426,23 @@ export class NodePlatformIO implements PlatformIO {
       : mtimeNsec === UTIME_NOW
         ? nowMs
         : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
+    const atimeNs = atimeNsec === UTIME_OMIT
+      ? current.atimeNs ?? stat.atimeNs
+      : atimeNsec === UTIME_NOW
+        ? BigInt(nowMs) * 1_000_000n
+        : BigInt(atimeSec) * 1_000_000_000n + BigInt(atimeNsec);
+    const mtimeNs = mtimeNsec === UTIME_OMIT
+      ? current.mtimeNs ?? stat.mtimeNs
+      : mtimeNsec === UTIME_NOW
+        ? BigInt(nowMs) * 1_000_000n
+        : BigInt(mtimeSec) * 1_000_000_000n + BigInt(mtimeNsec);
     fs.utimesSync(nativePath, atimeMs / 1000, mtimeMs / 1000);
     this.metadata.utimens(
       stat,
       atimeMs,
       mtimeMs,
+      atimeNs,
+      mtimeNs,
       fs.statSync(nativePath, { bigint: true }),
     );
   }

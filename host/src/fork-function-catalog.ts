@@ -50,6 +50,10 @@ export class ForkFunctionCatalog {
         );
       }
       entries.push(value);
+    }
+    // Validate the whole table before publishing recipes. Otherwise a later
+    // null entry leaves encode() pointing at a module that was never registered.
+    for (const [ordinal, value] of entries.entries()) {
       const recipes = this.recipesByFunction.get(value) ?? [];
       if (!recipes.some((recipe) =>
         recipe.moduleActivation === moduleActivation

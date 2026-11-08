@@ -794,7 +794,7 @@ export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
 export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
-export const HOST_ADAPTER_VERSION = 4 as const;
+export const HOST_ADAPTER_VERSION = 5 as const;
 export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
 export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;
 export const HOST_ADAPTER_MANIFEST_SIZE = 40 as const;
@@ -1247,6 +1247,7 @@ export const PROCESS_MEMORY_DEFAULT_THREAD_SLOTS = 1024 as const;
 export const PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT = -1 as const;
 export const PROCESS_MEMORY_THREAD_SLOTS_NONE = 0 as const;
 export const PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT = "__wasm_posix_thread_slots" as const;
+export const PROCESS_MEMORY_THREAD_SLOT_PREALLOCATE_EXPORT = "__wasm_posix_preallocate_thread_slots" as const;
 export const PROCESS_MEMORY_LEGACY_MMAP_BASE = 67108864 as const;
 export const PROCESS_MEMORY_FALLBACK_BRK_BASE = 16777216 as const;
 export const PROCESS_MEMORY_FORK_SAVE_CONTROL_PREFIX_SIZE = 4096 as const;

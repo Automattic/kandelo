@@ -1,0 +1,4 @@
+  1) [chromium] › test/go-signals.spec.ts:63:5 › Go pure signal blocked-wait ───────────────────────
+    Error: page.evaluate: RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`.
+  2) [chromium] › test/go-signals.spec.ts:63:5 › Go cgo signal blocked-wait ────────────────────────
+    Error: page.evaluate: RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer size is larger than 8MB. Use WebAssembly.compile, compile on a worker thread, or use the flag `--enable-features=WebAssemblyUnlimitedSyncCompilation`.

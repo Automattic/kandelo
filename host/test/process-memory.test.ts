@@ -45,18 +45,30 @@ function nameBytes(name: string): number[] {
   return [...uleb128(encoded.length), ...encoded];
 }
 
-function wasmWithThreadSlotDeclaration(value: number): ArrayBuffer {
+function wasmWithThreadSlotDeclaration(
+  value: number,
+  preallocate: number | null = null,
+): ArrayBuffer {
   const body = [0x00, 0x41, ...sleb128I32(value), 0x0b];
+  const markerBody = preallocate === null
+    ? []
+    : [0x00, 0x41, ...sleb128I32(preallocate), 0x0b];
+  const functionCount = preallocate === null ? 1 : 2;
   return new Uint8Array([
     0x00, 0x61, 0x73, 0x6d,
     0x01, 0x00, 0x00, 0x00,
     ...section(1, [0x01, 0x60, 0x00, 0x01, 0x7f]),
-    ...section(3, [0x01, 0x00]),
+    ...section(3, [functionCount, ...Array(functionCount).fill(0)]),
     ...section(7, [
-      0x01,
+      functionCount,
       ...nameBytes("__wasm_posix_thread_slots"), 0x00, 0x00,
+      ...(preallocate === null ? [] : [
+        ...nameBytes("__wasm_posix_preallocate_thread_slots"), 0x00, 0x01,
+      ]),
     ]),
-    ...section(10, [0x01, ...uleb128(body.length), ...body]),
+    ...section(10, [functionCount, ...uleb128(body.length), ...body,
+      ...(preallocate === null ? [] : [...uleb128(markerBody.length), ...markerBody]),
+    ]),
   ]).buffer;
 }
 
@@ -167,5 +179,32 @@ describe("process memory layout", () => {
       expect(layout.threadSlotCount).toBe(expected);
       expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage);
     }
+  });
+
+  it("reserves an opt-in thread arena below the guest heap", () => {
+    const layout = computeProcessMemoryLayout({
+      ptrWidth: 4,
+      heapBase: 0x00120000,
+      maxPages: 256,
+      programBytes: wasmWithThreadSlotDeclaration(3, 1),
+    });
+
+    expect(layout.threadSlotCount).toBe(3);
+    expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage + 3 * PAGES_PER_THREAD);
+    expect(layout.brkBase).toBe(layout.threadArenaEndPage * WASM_PAGE_SIZE);
+    expect(layout.initialPages).toBe(layout.threadArenaEndPage);
+  });
+
+  it("rejects preallocation without a positive explicit slot count", () => {
+    for (const count of [-1, 0]) {
+      expect(() => computeProcessMemoryLayout({
+        ptrWidth: 4,
+        programBytes: wasmWithThreadSlotDeclaration(count, 1),
+      })).toThrow(/positive thread slot declaration/);
+    }
+    expect(() => computeProcessMemoryLayout({
+      ptrWidth: 4,
+      programBytes: wasmWithThreadSlotDeclaration(3, 0),
+    })).toThrow(/invalid process thread preallocation/);
   });
 });

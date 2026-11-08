@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { zstdCompressSync } from "node:zlib";
 import { WASM_PAGE_SIZE } from "../src/constants";
 import type { HttpResponse } from "../src/networking";
 import { PERSISTENT_KERNEL_REALM_DESTROY_TIMEOUT_MS } from "../src/kernel-realm-destroy";
@@ -379,6 +380,50 @@ describe("BrowserKernel", () => {
     worker.simulateMessage({ type: "ready" });
     await initPromise;
     expect(sourceBuffer.byteLength).toBe(4);
+  });
+
+  it("transfers a decoded image while preserving the compressed caller input", async () => {
+    MockWorker.detachTransfers = true;
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const expected = new Uint8Array([1, 2, 3, 4]);
+    const source = new Uint8Array(zstdCompressSync(expected));
+    const original = source.slice();
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8), vfsImage: source,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    const captured = worker.sent.find(({ data }) => data?.type === "init")!;
+    // The decoded image travels with the kernel, not as another structured clone.
+    expect(captured.transfer).toHaveLength(2);
+    expect(captured.transfer).not.toContain(source.buffer);
+    expect(captured.data.vfsImage).toEqual(expected);
+    expect(source).toEqual(original);
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+    expect(source).toEqual(original);
+  });
+
+  it("preserves the initial raw input even if the caller replaces its options", async () => {
+    MockWorker.detachTransfers = true;
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const source = new Uint8Array([1, 2, 3, 4]);
+    const replacement = new Uint8Array([5, 6, 7, 8]);
+    const options = { kernelWasm: new ArrayBuffer(8), vfsImage: source };
+    const initPromise = kernel.initFromImage(options);
+    options.vfsImage = replacement;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    const captured = worker.sent.find(({ data }) => data?.type === "init")!;
+    expect(captured.transfer).not.toContain(source.buffer);
+    expect(captured.transfer).not.toContain(replacement.buffer);
+    expect(source).toEqual(new Uint8Array([1, 2, 3, 4]));
+    expect(replacement).toEqual(new Uint8Array([5, 6, 7, 8]));
+    expect(captured.data.vfsImage).toEqual(source);
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
   });
 
   it("detaches exactly the caller-owned VFS buffer through initFromOwnedImage", async () => {

@@ -2065,6 +2065,8 @@ pub mod process_memory {
     /// the requested concurrent pthread limit.
     pub const THREAD_SLOT_DECL_EXPORT: &str = wasm_posix_program_abi::abi::THREAD_SLOT_DECL_EXPORT;
 
+    pub const THREAD_SLOT_PREALLOCATE_EXPORT: &str = "__wasm_posix_preallocate_thread_slots";
+
     /// Legacy kernel MemoryManager::MMAP_BASE. Compact hosts override this
     /// per process but still expose the legacy boundary for compatibility.
     pub const LEGACY_MMAP_BASE: u32 = 0x0400_0000;
@@ -2195,7 +2197,7 @@ pub mod abi {
     /// 1: the host accepted any kernel requiring at most its own version.
     /// 2: the check is exact, and this version (not `ABI_VERSION`) is the
     ///    epoch for kernel-host-only changes (ABI 55).
-    pub const HOST_ADAPTER_VERSION: u32 = 4;
+    pub const HOST_ADAPTER_VERSION: u32 = 5;
     pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
 
     pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;

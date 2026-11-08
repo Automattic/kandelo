@@ -5,7 +5,7 @@ use kandelo_cc::Result;
 use kandelo_cc::arch::{Language, WasmArch};
 use kandelo_cc::driver::{
     LinkerPreparation, build_clang_args, build_glue_compile_args, decode_llvm_response_file,
-    glue_sources, linker_args_from_clang_trace, working_directory_from_clang_trace,
+    glue_sources, linker_args_from_clang_trace, sdk_tool_query, working_directory_from_clang_trace,
 };
 use kandelo_cc::flags::MAX_EXECUTABLE_MEMORY_SIZE;
 use kandelo_cc::toolchain::Toolchain;
@@ -26,6 +26,27 @@ fn toolchain() -> Toolchain {
         glue_dir: "/tmp/glue".into(),
         calltypes_plugin: None,
     }
+}
+
+#[test]
+fn sdk_tool_queries_report_libc_and_glue_to_go_linker() {
+    let toolchain = toolchain();
+    for (name, expected) in [
+        ("libc.a", "/tmp/sysroot/lib/libc.a"),
+        ("channel_syscall.c", "/tmp/glue/channel_syscall.c"),
+        ("compiler_rt.c", "/tmp/glue/compiler_rt.c"),
+        ("cxxrt.c", "/tmp/glue/cxxrt.c"),
+        ("dlopen.c", "/tmp/glue/dlopen.c"),
+    ] {
+        assert_eq!(
+            sdk_tool_query(&strings(&[&format!("--print-file-name={name}")]), &toolchain),
+            Some(expected.to_string()),
+        );
+    }
+    assert_eq!(
+        sdk_tool_query(&strings(&["--print-file-name=libgcc.a"]), &toolchain),
+        None,
+    );
 }
 
 /// An executable link prepared with `stack` bytes of main-thread stack.

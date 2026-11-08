@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { Socket } from "node:net";
 import { join } from "node:path";
-import { NodeKernelHost } from "../../host/src/node-kernel-host";
+import { NodeKernelHost, type NodeKernelHostOptions } from "../../host/src/node-kernel-host";
 import { findRepoRoot, tryResolveBinary } from "../../host/src/binary-resolver";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { ensureDirRecursive, writeVfsFile } from "../../host/src/vfs/image-helpers";
@@ -22,8 +22,9 @@ export interface ServiceVfsImageRef {
   buildHint: string;
 }
 
-export interface BootDinitServiceOptions {
+export interface BootDinitServiceOptions extends Pick<NodeKernelHostOptions, "onHostDiagnostic"> {
   image: ServiceVfsImageRef;
+  imagePath?: string;
   target?: string;
   maxWorkers?: number;
   maxPages?: number;
@@ -34,11 +35,12 @@ export interface BootDinitServiceOptions {
 
 export interface BootedDinitService {
   host: NodeKernelHost;
+  pid: number;
   exitPromise: Promise<number>;
 }
 
 export async function bootDinitServiceVfs(options: BootDinitServiceOptions): Promise<BootedDinitService> {
-  const imagePath = resolveServiceVfsImage(options.image);
+  const imagePath = options.imagePath ?? resolveServiceVfsImage(options.image);
   const image = readFileSync(imagePath);
   // WHY: configuration rewrites are host-side effects derived from imported
   // image state, so reject forged lazy-tree seals before reading or writing it.
@@ -55,13 +57,20 @@ export async function bootDinitServiceVfs(options: BootDinitServiceOptions): Pro
   await options.configure?.(fs);
 
   const rootfsImage = await fs.saveImage();
+  if (!(rootfsImage.buffer instanceof ArrayBuffer) ||
+      rootfsImage.byteOffset !== 0 ||
+      rootfsImage.byteLength !== rootfsImage.buffer.byteLength) {
+    throw new Error("service VFS image must occupy one whole ArrayBuffer");
+  }
 
   const host = new NodeKernelHost({
     maxWorkers: options.maxWorkers ?? 12,
     maxPages: options.maxPages,
-    rootfsImage,
+    rootfsImage: rootfsImage.buffer,
+    takeRootfsImageOwnership: true,
     onStdout: (_pid, data) => process.stdout.write(data),
     onStderr: (_pid, data) => process.stderr.write(data),
+    onHostDiagnostic: options.onHostDiagnostic,
   });
   await host.init();
 
@@ -71,12 +80,12 @@ export async function bootDinitServiceVfs(options: BootDinitServiceOptions): Pro
   // WHY: dinit belongs to the imported image. Resolve it through the
   // worker-owned VFS so the Node demo exercises the same executable lookup
   // path as every service dinit starts, without a second host-side byte copy.
-  const { exit: exitPromise } = await host.spawnFromVfs("/sbin/dinit", argv, {
+  const { pid, exit: exitPromise } = await host.spawnFromVfs("/sbin/dinit", argv, {
     env: options.env ?? SERVICE_DEMO_ENV,
     cwd: options.cwd ?? "/",
   });
 
-  return { host, exitPromise };
+  return { host, pid, exitPromise };
 }
 
 export function resolveServiceVfsImage(image: ServiceVfsImageRef): string {
@@ -149,9 +158,29 @@ export function removeServiceLogfiles(fs: KandeloImageFs, services: string[]): v
 
 export function configureWordPressRuntime(
   fs: KandeloImageFs,
-  options: { port: number; freshSqliteDatabase?: boolean; phpFpmWorkers?: number },
+  options: { port: number; freshSqliteDatabase?: boolean; phpFpmWorkers?: number; frankenPhpThreads?: number },
 ): void {
   rewriteNginxListenPort(fs, options.port);
+  try {
+    fs.stat("/etc/wordpress/cron.curl");
+    const config = readVfsText(fs, "/etc/wordpress/cron.curl");
+    writeVfsFile(fs, "/etc/wordpress/cron.curl", config.replace(
+      "http://127.0.0.1:8080/wp-cron.php", `http://127.0.0.1:${options.port}/wp-cron.php`,
+    ));
+  } catch (error) {
+    if ((error as { errno?: number }).errno !== 2) throw error;
+  }
+
+  if (options.frankenPhpThreads !== undefined) {
+    if (!Number.isSafeInteger(options.frankenPhpThreads) || options.frankenPhpThreads < 1 || options.frankenPhpThreads > 32) {
+      throw new RangeError("frankenPhpThreads must be an integer from 1 to 32");
+    }
+    const path = "/etc/dinit.d/env-frankenphp";
+    const config = readVfsText(fs, path);
+    const setting = /^FRANKENPHP_NUM_THREADS=\d+$/m;
+    if (!setting.test(config)) throw new Error(`Missing PHP pool setting in ${path}`);
+    writeVfsFile(fs, path, config.replace(setting, `FRANKENPHP_NUM_THREADS=${options.frankenPhpThreads}`));
+  }
 
   try {
     const phpFpmConf = readVfsText(fs, "/etc/php-fpm.conf")
@@ -196,6 +225,7 @@ export function configureWordPressRuntime(
     "mariadb",
     "php-fpm",
     "nginx",
+    "frankenphp-classic",
   ]);
 }
 
@@ -253,10 +283,28 @@ export function trackDinitExit(exitPromise: Promise<number>): () => boolean {
   return () => exited;
 }
 
-export async function finishWhenDinitExits(host: NodeKernelHost, exitPromise: Promise<number>): Promise<never> {
+export async function finishWhenDinitExits(
+  host: NodeKernelHost,
+  exitPromise: Promise<number>,
+  serviceLogPath?: string,
+): Promise<never> {
   const status = await exitPromise;
+  if (serviceLogPath) {
+    try {
+      const serviceLog = await Promise.race([
+        host.readFileFromVfs(serviceLogPath),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error("log read timed out after 5s")), 5_000)),
+      ]);
+      if (serviceLog) {
+        const tail = serviceLog.subarray(Math.max(0, serviceLog.byteLength - 16_384));
+        console.error(`${serviceLogPath}:\n${new TextDecoder().decode(tail)}`);
+      }
+    } catch (error) {
+      console.error(`Could not read ${serviceLogPath}: ${String(error)}`);
+    }
+  }
   await host.destroy().catch(() => {});
-  process.exit(status);
+  process.exit(status || 1);
 }
 
 function connectOnce(port: number, timeoutMs: number): Promise<void> {

@@ -29,6 +29,10 @@ See [software examples and versions](packages/README.md) for more. These are
 upstream projects compiled through Kandelo's SDK; package recipes include
 portability patches where needed.
 
+Go and FrankenPHP support is under development. See the
+[support overview](docs/go.md) for package entry points, tested contracts,
+known gaps, and WordPress service profiles.
+
 ## Quick start
 
 To build locally, you need **macOS or Linux**, **Git**, and

@@ -385,6 +385,169 @@ carries a PHP warning or fatal error, rather than timing an error page.
 
 Build requirements: `wasm32posix-cc` SDK. The PHP build script automatically builds dependencies (SQLite, zlib, OpenSSL, libxml2). WordPress must be downloaded separately into `packages/registry/wordpress/wordpress/`.
 
+#### wordpress-stack
+
+The WordPress image includes unchanged WP Super Cache 3.1.5 as an
+initially inactive plugin. Its pinned source uses the normal resolver
+and image pipeline. Cache activation, expiry, authenticated bypass and
+edit invalidation still require validation before visitor-cache results
+can be reported. The runtime comparison below uses the inactive state;
+cache-enabled measurements must record their WordPress settings and
+report their results separately. This plugin is a different cache from
+[FrankenWP's Sidekick module](https://github.com/StephenMiracle/frankenwp).
+
+`benchmarks/wordpress-stack.ts` compares the preinstalled WordPress nginx/PHP-FPM
+and FrankenPHP classic services, or FrankenPHP+Caddy with
+`--alternative=caddy`, from the **same** resolver-selected
+`wordpress.vfs.zst`. It first prepares a controlled copy with the same
+explicit PHP pool capacity for both services (`--php-workers=2` by default).
+The shipped defaults differ: one FPM child and two FrankenPHP threads.
+Those defaults must be a separate user comparison, not an equal-pool claim.
+Browser composition preserves the configured pool when it fits the host's
+pre-fork limit. If that limit lowers the pool, the comparison fails its
+effective-capacity check instead of accepting unequal settings.
+Unlike the `wordpress` suite above, it measures complete
+dynamic homepage responses through the actual dinit service stacks, once on
+the Node host and once through the Chromium browser demo. It verifies that
+the browser-served image has the same SHA-256 as the Node input before
+recording browser samples. Each profile boots a fresh machine per round;
+profile order alternates. Each Node round runs in a fresh child process and
+records its native process ID, just as each Chromium round launches a fresh
+browser. Three requests warm the stack, then 12 unique-query
+responses per round are timed including full response bodies. A separate
+four-client phase issues four requests per client and records completed
+requests per second over the whole concurrent phase. HTTP errors,
+missing WordPress content, and PHP diagnostics fail the run. The JSON report
+retains every latency, concurrent-phase request count and duration, the image
+digest, startup times, environment, median, p90, and throughput median across
+rounds. Node runs assign distinct HTTP and SMTP ports to prevent one demo
+or round from conflicting with another.
+
+The preparation runs in a disposable process before any measured round.
+It changes only the ordinary FPM and FrankenPHP pool settings, preserves
+the source image, and retains both source and configured image hashes in
+the report. The disposable input uses level 3 Zstandard compression and
+retains preparation-stage evidence beside it. Node and Chromium load that
+same configured input. The local
+Vite server streams it through its normal filesystem route, so serve this
+checkout when running browser comparisons. Its selected lazy-asset cohort
+must match the source image. The browser input's SHA-256 must match the
+Node input before measurement. This controlled image is benchmark
+configuration, not a canonical image build or cache-activation test.
+
+Each result also retains its real service log. Go panic/fatal headers or
+multiple FrankenPHP startup markers fail the measurement even if HTTP later
+recovers. Node also checks that the single-process Go server retains its
+listener PID. nginx legitimately distributes a shared listener across worker
+PIDs. Both hosts verify the FrankenPHP thread count or PHP-FPM configuration
+against the requested capacity. Log and configuration inspection run after
+the timed and RSS phases. A larger explicit PHP pool can exceed the host's
+worker budget and must fail visibly; the harness does not raise that budget.
+
+First build and publish the WordPress source-only image. For browser runs,
+serve `apps/browser-demos` with its source-only Vite configuration on port
+5401. Then run the comparison from the repository root:
+
+```bash
+scripts/dev-shell.sh bash -c 'export WASM_POSIX_RESOLUTION_POLICY=source-only-v1 WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"; node --import tsx benchmarks/wordpress-stack.ts --host=both --rounds=4 --warmups=3 --samples=12 --clients=4 --concurrent-samples=4 --alternative=caddy'
+```
+
+The default report is `.context/wordpress-stack-benchmark.json`; use
+`--output=...`, `--host=node|browser|both`, `--alternative=classic|caddy`, `--browser-base-url=...`, or
+`--port=...`, `--clients=...`, `--concurrent-samples=...`, or
+`--php-workers=...` to change it. Use a fresh report path to preserve prior
+results and the adjacent retained comparison input. Unique-query/no-store
+requests do not establish visitor-cache performance; cache-enabled work
+needs stable visitor URLs and proven hit, invalidation and bypass behavior.
+Use `--image-path=...` to select an archived immutable image for a Node
+comparison. Browser runs still require the served image to match its hash.
+This is a paired, single-machine latency, cold-boot, and bounded
+multi-client throughput comparison, not a statistically powered superiority
+test. Node and Chromium medians describe different
+request paths and must not be pooled. The existing full benchmark suite is
+still required for broad platform performance claims.
+The comparison measures each complete HTTP stack, including its PHP
+execution mode. Both profiles use PHP 8.5 with file-cache-only OPcache;
+FrankenPHP embeds the thread-safe build and nginx uses PHP-FPM processes.
+Both Node and Chromium use the configured comparison pool, which defaults
+to two PHP-FPM children and two FrankenPHP threads. Caddy and the classic
+wrapper consume the same FrankenPHP service environment. The shipped
+one-child FPM and two-thread FrankenPHP defaults describe the unmodified
+demo, not these controlled comparison inputs. Retain the base and configured
+image identities and the effective pool checks when interpreting concurrency.
+The demo's two-thread default accounts for host Wasm-instance costs as well
+as PHP allocations. Six idle PHP threads already produce about 8.2 GiB in
+WebKit's native allocation bucket in the recorded revision-38 control,
+before executing a WordPress PHP request. This is not a whole-process RSS
+measurement or a claim that other engines have that cost. See the
+[implementation measurements](plans/2026-09-05-go-gc-port-milestone1-plan.md).
+The image prewarms the FPM file cache at build time. FrankenPHP builds its
+own compatible cache during requests, so cold-start and warm-request
+results must remain separate. Verify actual OPcache activation and warm
+both workloads before interpreting warm timings. The comparison leaves the
+optional full-page cache inactive; these results cannot establish the
+performance of a cache-enabled visitor experience. The Node Caddy profile requests a 1 GiB
+Wasm memory ceiling, versus 256 MiB for the nginx/PHP-FPM profile; this is
+an address-space ceiling, not a measurement of host physical memory.
+
+Add `--soak-seconds=900` for a sustained four-client phase after each
+profile's timed measurements. Every response must still contain the real
+WordPress page without PHP diagnostics. The report keeps completed request
+counts and native RSS samples at the start, every 15 seconds, and the end.
+Sampling follows the timed phases, so native process inspection does not
+affect their latency samples. Node reports the whole round's child process,
+including its worker threads, image staging, native code, and allocator pages.
+Chromium reports the sum of RSS for processes returned by its browser
+debugging session, using `benchmarks/process-rss.py` and the dev shell's
+declared psutil library. Failed queries remain errors rather than zero
+samples. Darwin's Nix `ps` cannot query RSS without a system entitlement.
+That sum can count shared native pages more than once;
+it is not unique physical footprint or guest linear-memory usage. Each
+Chromium round already uses a fresh browser. A bounded run and an RSS trend
+do not by themselves prove a leak fix or long-term production stability.
+
+Module-cache counters are not engine allocation measurements.
+`compiledBytes` is cumulative Wasm input size, while `retainedBytes` weights
+strongly retained cache entries by their original Wasm byte lengths.
+Neither reports native compilation/instance costs. Zero retained bytes
+does not mean that running workers, instances or the engine released their
+modules. Compare these counters with separate guest and native observations;
+do not add overlapping memory views. The
+[wasm32 WordPress/WebKit checkpoint](plans/2026-11-08-wordpress-webkit-memory-checkpoint.md)
+records a 10.6 GiB OS peak with tens of MiB of Go Sys, a large engine `page`
+category, and partial post-destroy reclamation; the allocation source and
+final budgets remain unresolved.
+
+For the focused `frankenphp-wordpress-host.spec.ts` diagnostic, set
+`KANDELO_WORDPRESS_FRANKENPHP_VFS` to the retained image. If its deferred
+members belong to a different build than the current test server, set
+`KANDELO_WORDPRESS_FRANKENPHP_LAZY_ASSET_DIRECTORY` to that image's matching
+asset directory. `KANDELO_FRANKENPHP_RECOVERY_ROUNDS` selects one to eight
+real Caddy crash/restart cycles (default one). This is ordinary transport binding: the kernel still
+checks every fetched body's size and digest. An image and another build's
+same-named utility are not an interchangeable artifact cohort.
+
+The same diagnostic supports fixed-count controls with
+`KANDELO_FRANKENPHP_SOAK_REQUESTS=120`, a minimum start-to-start cadence
+with `KANDELO_FRANKENPHP_SOAK_PACE_MS=500`, and a target selected by
+`KANDELO_FRANKENPHP_SOAK_WORKLOAD=wordpress|php-scalar|static`.
+Set either requests or `KANDELO_FRANKENPHP_SOAK_SECONDS`, not both.
+All targets retain the initial WordPress workload and lifecycle checks;
+the small PHP/static targets require exact response bytes. The attached
+`traffic-workload` records completed requests and elapsed time. These
+instrumented controls do not measure uninstrumented throughput or isolate
+allocation owners. See the checkpoint above for the measured limits.
+
+The separate `wordpress-super-cache.spec.ts` functional gate activates the
+stock plugin through WordPress, selects clear-on-edit with stale rebuilds
+disabled, and checks anonymous hits, authenticated/POST bypass, saved post
+and template visibility, real-clock expiry and explicit WordPress cron GC.
+It does not establish automatic cron execution or throughput. Keep those
+settings distinct from an uncached server comparison; its two-second expiry
+is a test condition, not a recommended deployment TTL. See the
+[visitor-cache checkpoint](plans/2026-11-08-wordpress-visitor-cache-checkpoint.md)
+for measured results, retained failures and pending image acceptance.
+
 #### mariadb
 
 Runs MariaDB 10.5 with the Aria or InnoDB storage engine. Measures bootstrap (system table creation) and a sequence of SQL operations.

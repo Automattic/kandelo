@@ -26,6 +26,30 @@ function expectAllZero(memory: WebAssembly.Memory): void {
 }
 
 describe("ProcessMemoryAllocator", () => {
+  it("preflights retirement without reserving or copying a fork snapshot", async () => {
+    vi.useFakeTimers();
+    const allocator=new ProcessMemoryAllocator({maxMemories:3,maxTotalBytes:16*WASM_PAGE_SIZE,
+      retirementAdmissionMemoryThreshold:1,retirementBackpressureMs:100});
+    try {
+      expect(allocator.deferForRetirementBacklog(WASM_PAGE_SIZE)).toBeUndefined();
+      const parent=allocator.acquire(request(4));
+      const retired=allocator.acquire(request(4));
+      retired.release();
+      const before=allocator.getRetirementStats();
+      const ready=allocator.deferForRetirementBacklog(parent.memory.buffer.byteLength);
+      expect(ready).toBeInstanceOf(Promise);
+      expect(allocator.getRetirementStats()).toEqual(before);
+      await vi.advanceTimersByTimeAsync(100);
+      await ready;
+      expect(allocator.deferForRetirementBacklog(parent.memory.buffer.byteLength)).toBeUndefined();
+      new Uint8Array(parent.memory.buffer).fill(7);
+      const child=acquireForkMemoryClone(allocator,parent.memory,4,32);
+      new Uint8Array(parent.memory.buffer).fill(9);
+      expect(new Uint8Array(child.memory.buffer).every(byte=>byte===7)).toBe(true);
+      child.release();parent.release();
+    } finally {allocator.clear();vi.useRealTimers();}
+  });
+
   it("reports native constructor exhaustion as ENOMEM without consuming admission", () => {
     const exhausted = new RangeError("native reservation exhausted");
     const construction = vi.spyOn(WebAssembly, "Memory").mockImplementationOnce(function () {

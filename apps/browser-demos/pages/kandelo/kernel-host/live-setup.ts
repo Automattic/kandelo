@@ -2077,7 +2077,20 @@ async function bootProfile(
           kernelBytes,
           vfsImageBytes,
         );
-      await kernel.initFromImage(kernelInitOptions);
+      if (profile.candidateEvidence !== undefined) {
+        await kernel.initFromImage(kernelInitOptions);
+      } else {
+        // The composer transferred this image to us solely for this boot.
+        // Forward ownership so the persistent page never keeps a full copy.
+        if (!(vfsImageBytes.buffer instanceof ArrayBuffer)
+          || vfsImageBytes.byteOffset !== 0
+          || vfsImageBytes.byteLength !== vfsImageBytes.buffer.byteLength) {
+          throw new Error("Image composer must return one whole ordinary buffer");
+        }
+        await kernel.initFromOwnedImage({
+          ...kernelInitOptions, vfsImage: vfsImageBytes.buffer,
+        });
+      }
     }
     assertCurrent();
     await markFilesystemInitialized?.();
@@ -2245,13 +2258,22 @@ async function bootProfile(
       );
       if (ignoredMessage !== null) tick(ignoredMessage);
       tick(`spawning ${initArgv[0]}...`);
+      // The bridge assigns this URL after image composition. Supply generic
+      // init metadata; image-owned services decide which configuration to render.
+      const initEnv = [...initLaunch.env];
+      if (bridgeSent && profile.candidateEvidence === undefined) {
+        const publicUrl = new URL(machineAppPrefix, window.location.href).href;
+        const previous = initEnv.findIndex(value => value.startsWith("KANDELO_PUBLIC_URL="));
+        if (previous !== -1) initEnv.splice(previous, 1);
+        initEnv.push(`KANDELO_PUBLIC_URL=${publicUrl}`);
+      }
       // The init binary lives in the kernel-owned VFS; spawn it by path rather
       // than shipping bytes the kernel already has.
       const { exit: initExit } = await kernel.spawnFromVfs(
         initArgv[0],
         initArgv,
         {
-          env: initLaunch.env,
+          env: initEnv,
           cwd: initLaunch.cwd,
           uid: initLaunch.uid,
           gid: initLaunch.gid,

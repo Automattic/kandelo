@@ -17,6 +17,8 @@ export const WORDPRESS_SETUP_SQLITE_PLUGIN_ALIAS =
 export const WORDPRESS_CORE_GUEST_PATH = "/srv/www/html";
 export const WORDPRESS_SQLITE_PLUGIN_GUEST_PATH =
   "/srv/www/html/wp-content/plugins/sqlite-database-integration";
+export const WORDPRESS_SUPER_CACHE_GUEST_PATH =
+  "/srv/www/html/wp-content/plugins/wp-super-cache";
 
 type SourceExtract = typeof ensureSourceExtract;
 
@@ -38,6 +40,15 @@ export function resolveWordPressSqlitePluginSource(
   return (
     primarySource ?? resolve("wordpress-sqlite-integration-source", repoRoot)
   );
+}
+
+/** Resolve the unchanged page-cache plugin from its pinned source package. */
+export function resolveWordPressSuperCacheSource(
+  repoRoot: string,
+  resolve: SourceExtract = ensureSourceExtract,
+  primarySource: string | undefined = process.env.WORDPRESS_SUPER_CACHE_SOURCE_DIR,
+): string {
+  return primarySource ?? resolve("wordpress-super-cache-source", repoRoot);
 }
 
 export function isWordPressSetupOnlySourceEntry(relativePath: string): boolean {
@@ -79,4 +90,12 @@ export function materializeWordPressSqlitePlugin(
     WORDPRESS_SQLITE_PLUGIN_GUEST_PATH,
     { exclude: (relativePath) => relativePath.endsWith(".db") },
   );
+}
+
+/** Install upstream files; activation and cache policy belong to WordPress. */
+export function materializeWordPressSuperCache(
+  fs: VfsImageFilesystem,
+  sourceDir: string,
+): number {
+  return walkAndWrite(fs, sourceDir, WORDPRESS_SUPER_CACHE_GUEST_PATH);
 }

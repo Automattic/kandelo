@@ -21,10 +21,18 @@ SRC=$(cd "$(dirname "$0")" && pwd)
 # The plugin shares clang's C++ runtime: nixpkgs builds LLVM with libc++ on
 # Darwin and libstdc++ on Linux. -fno-rtti matches LLVM's own build.
 STDLIB=()
-[ "$(uname -s)" = Darwin ] && STDLIB=(-stdlib=libc++)
+LINK_FLAGS=()
+if [ "$(uname -s)" = Darwin ]; then
+  STDLIB=(-stdlib=libc++)
+  # The default library ID embeds the staging path/PID, changing the plugin
+  # hash and every dependent SDK cache key on an otherwise identical build.
+  LINK_FLAGS=(-Wl,-install_name,@rpath/KandeloCallTypes.dylib)
+fi
 clang++ -std=c++17 "${STDLIB[@]}" -fno-rtti -fPIC -shared -O2 \
+  "-ffile-prefix-map=$SRC=/kandelo/sdk/plugin" \
   -I"$KANDELO_LLVM_DEV/include" -I"$KANDELO_CLANG_DEV/include" \
   "$SRC/KandeloCallTypes.cpp" "$SRC/KandeloFnCasts.cpp" \
   -L"$KANDELO_LLVM_LIB/lib" -L"$KANDELO_CLANG_LIB/lib" -lLLVM -lclang-cpp \
   -Wl,-rpath,"$KANDELO_LLVM_LIB/lib" -Wl,-rpath,"$KANDELO_CLANG_LIB/lib" \
+  "${LINK_FLAGS[@]}" \
   -o "$OUT"

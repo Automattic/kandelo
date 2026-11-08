@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect } from "vitest";
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync, type BigIntStats } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -57,6 +57,32 @@ describe("NativeMetadataOverlay content transactions", () => {
 
     commit();
     expect(metadata.toStatResult(stat).mode & 0o7777).toBe(0o755);
+  });
+
+  it("drops an exact override after a native mutation within the same millisecond", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-native-metadata-"));
+    roots.push(root);
+    const path = join(root, "file");
+    writeFileSync(path, "content");
+    const native = statSync(path, { bigint: true });
+    const metadata = new NativeMetadataOverlay();
+    const requested = 1_790_000_000_123_456_789n;
+    metadata.utimens(
+      native,
+      1_790_000_000_123,
+      1_790_000_000_123,
+      requested,
+      requested,
+      native,
+    );
+    expect(metadata.toStatResult(native).mtimeNs).toBe(requested);
+
+    const changed = {
+      ...native,
+      mtimeNs: native.mtimeNs + 1n,
+      ctimeNs: native.ctimeNs + 1n,
+    } as BigIntStats;
+    expect(metadata.toStatResult(changed).mtimeNs).toBe(changed.mtimeNs);
   });
 });
 
