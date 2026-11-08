@@ -4706,7 +4706,21 @@
       "length": 278,
       "sha256": "5e39c3d62043ed5ae41ff5141134376eaff8b40570489f65e90aaf22acc615a1"
     },
-    "scope": "Full pinned KeyObject/CryptoKey wrappers over real native material. Secret, PEM/DER, raw and RSA/EC/OKP/AKP JWK owners; store/PKCS12/WebCrypto/transfer and provider/lifecycle/guest conformance remain implementation gaps. JWK portable and native-handle controls do not establish compiled guest or four-host conformance."
+    "scope": "Full pinned KeyObject/CryptoKey wrappers over real native material. Secret, PEM/DER, raw and RSA/EC/OKP/AKP JWK owners; store/PKCS12/WebCrypto/transfer and provider/lifecycle/guest conformance remain implementation gaps. JWK portable and native-handle controls do not establish compiled guest or four-host conformance.",
+    "usageSections": {
+      "usageMasks": {
+        "source": "lib/internal/crypto/util.js",
+        "start": "// Must be at most 31 entries.",
+        "length": 2266,
+        "sha256": "c58735e3d59dfb9c83baa27a41676a32c2f0b650416a31e36201d1441416bff6"
+      },
+      "setMembership": {
+        "source": "lib/internal/crypto/util.js",
+        "start": "function hasAnyNotIn(set, checks) {",
+        "length": 139,
+        "sha256": "c9612c21824ddb4d3e4f211f49e6bbf5aab7cd42575da7245db45e1d9d056939"
+      }
+    }
   },
   "moduleSyntax": {
     "sources": {
@@ -6136,5 +6150,46 @@
         "sha256": "e66b5cf4290a75ff4ad6fd9e5d99478c711ff4e5795985127f1088ecf278aeb2"
       }
     }
+  },
+  "builtinExports": {
+    "sources": {
+      "realm": {
+        "path": "upstream/worker-lazy/lib/internal/bootstrap/realm.js",
+        "upstreamPath": "lib/internal/bootstrap/realm.js",
+        "sha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b"
+      },
+      "cjs": {
+        "path": "upstream/module-records/lib/internal/modules/cjs/loader.js",
+        "upstreamPath": "lib/internal/modules/cjs/loader.js",
+        "sha256": "67b2bdc0180626e308aa6dca723696398b5db965b44e2df6060762b6d4f6a199"
+      }
+    },
+    "selections": {
+      "getOwn": {
+        "source": "realm",
+        "start": "const getOwn = (target, property, receiver) => {",
+        "length": 170,
+        "sha256": "42cbe6c40d619bed08600f047b6c3465bf857bd07991a32aeb0d16b8c345dd7b"
+      },
+      "compileForPublicLoader": {
+        "source": "realm",
+        "start": "  compileForPublicLoader() {",
+        "length": 665,
+        "sha256": "1a3c7dd5eda3415f6241fc3ec7355d8ac18f9f25c9cc96839a1208a9fbb1f848"
+      },
+      "syncExports": {
+        "source": "realm",
+        "start": "  syncExports() {",
+        "length": 346,
+        "sha256": "183b9169fe87d60a161acb7fb8ae1cf33b7e83b93ec248ee678e8d9bc40c23e5"
+      },
+      "publicSync": {
+        "source": "cjs",
+        "start": "Module.syncBuiltinESMExports = function syncBuiltinESMExports() {",
+        "length": 213,
+        "sha256": "9e6908967f583e787fd59522ad6e18f90caa1c3a0dda119b579fc2e2b9e44382"
+      }
+    },
+    "scope": "Unchanged real public builtin key capture/own reads/sync loop; native facade binding supplied by actual module record owner"
   }
 }

@@ -56483,10 +56483,7 @@ function _createNodeESMGraphPlatform(platform) {
                 const normalized = platform.normalizeBuiltin('node:' + id);
                 if (!StringPrototypeStartsWith(url, 'node:') || normalized === undefined)
                     throw new ERR_UNKNOWN_BUILTIN_MODULE(url);
-                const exports = platform.loadBuiltin(normalized);
-                const names = ObjectKeys(exports);
-                if (!ArrayPrototypeIncludes(names, 'default')) ArrayPrototypePush(names, 'default');
-                return synthetic(names, () => valuesFor(names, name => name === 'default' ? exports : exports[name]));
+                return platform.builtinExports.descriptor(normalized);
             }
             case 'commonjs': case 'commonjs-sync': case 'require-commonjs': {
                 const file = filename(url), source = stringify(loaded.source);
@@ -100769,6 +100766,107 @@ function _createNodeModuleSyntax(platform) {
     return { contains, commonJsFormat, initialCommonJsFormat, esmFormat, entryIsModule, compile };
 }
 
+// Rights are the actual immutable native CryptoKey mask. Public usages arrays
+// are independently cached metadata and cannot grant additional authority.
+function _createNodeCryptoKeyUsages() {
+    'use strict';
+    const { ArrayPrototypeIncludes, ArrayPrototypePush, SafeSet } = _createNodePrimordials();
+    // Must be at most 31 entries.
+const kCanonicalUsageOrder = [
+  'encrypt', 'decrypt',
+  'sign', 'verify',
+  'deriveKey', 'deriveBits',
+  'wrapKey', 'unwrapKey',
+  'encapsulateKey', 'encapsulateBits',
+  'decapsulateKey', 'decapsulateBits',
+];
+
+const kUsageMasks = {
+  __proto__: null,
+};
+const kUsageByMask = {
+  __proto__: null,
+};
+// Derive both lookup tables from kCanonicalUsageOrder so adding a new
+// usage only requires updating the canonical list above. The numeric
+// mask uses the usage's canonical index as its bit position.
+for (let n = 0; n < kCanonicalUsageOrder.length; n++) {
+  const usage = kCanonicalUsageOrder[n];
+  const mask = 1 << n;
+  kUsageMasks[usage] = mask;
+  kUsageByMask[mask] = usage;
+}
+
+/**
+ * Collects a key usage list into a set.
+ * @param {string[]} usages
+ * @returns {SafeSet<string>}
+ */
+function toUsagesSet(usages) {
+  const usagesSet = new SafeSet();
+  for (let n = 0; n < usages.length; n++) {
+    usagesSet.add(usages[n]);
+  }
+  return usagesSet;
+}
+
+/**
+ * Returns a bit mask representing the usages from `usageSet`.
+ * @param {SafeSet<string>} usageSet
+ * @returns {number}
+ */
+function getUsagesMask(usageSet) {
+  // No usages is a valid state for some public keys, represented by a
+  // zero mask.
+  if (usageSet.size === 0) return 0;
+  let mask = 0;
+  for (const usage of usageSet) {
+    mask |= kUsageMasks[usage];
+  }
+  return mask;
+}
+
+/**
+ * Returns whether `mask` contains `usage`.
+ * @param {number} mask
+ * @param {string} usage
+ * @returns {boolean}
+ */
+function hasUsage(mask, usage) {
+  return (mask & kUsageMasks[usage]) !== 0;
+}
+
+/**
+ * Returns the usages represented by `mask` in canonical order.
+ * @param {number} mask
+ * @returns {string[]}
+ */
+function getUsagesFromMask(mask) {
+  // Short circuit most common cases, empty and single usage
+  // No usages is a valid state for some public keys
+  if (mask === 0) return [];
+  // A mask with exactly one bit set maps directly to one usage
+  if ((mask & (mask - 1)) === 0) {
+    return [kUsageByMask[mask]];
+  }
+  // Multiple usages need to be expanded in canonical order.
+  const result = [];
+  for (let n = 0; n < kCanonicalUsageOrder.length; n++) {
+    if (mask & (1 << n))
+      ArrayPrototypePush(result, kCanonicalUsageOrder[n]);
+  }
+  return result;
+}
+
+    function hasAnyNotIn(set, checks) {
+  for (const s of set)
+    if (!ArrayPrototypeIncludes(checks, s))
+      return true;
+  return false;
+}
+    return { hasAnyNotIn, getUsagesMask, getUsagesFromMask, hasUsage, toUsagesSet };
+}
+
 // Pinned KeyObject/CryptoKey wrappers over actual private engine key owners.
 function _createNodeCryptoKeys(platform) {
     'use strict';
@@ -100839,6 +100937,7 @@ function _createNodeCryptoKeys(platform) {
                 platform.getX509().nativeHandlePrototype, bundle, passphrase);
         },
     };
+    const keyUsages = _createNodeCryptoKeyUsages();
     function missingWebCrypto() { throw new ERR_METHOD_NOT_IMPLEMENTED('WebCrypto algorithm/import owner'); }
     function bigIntArrayToUnsignedBigInt(input) {
   let result = 0n;
@@ -102432,10 +102531,8 @@ module.exports = {
         if (name === 'internal/util/inspect') return platform.inspection;
         if (name === 'internal/url') return platform.url;
         if (name === 'internal/crypto/util') return { ...platform.digestHelpers,
-            bigIntArrayToUnsignedBigInt, normalizeAlgorithm: missingWebCrypto,
-            hasAnyNotIn: missingWebCrypto, getUsagesMask: missingWebCrypto,
-            getUsagesFromMask: missingWebCrypto, hasUsage: missingWebCrypto,
-            toUsagesSet: missingWebCrypto };
+            ...keyUsages, bigIntArrayToUnsignedBigInt,
+            normalizeAlgorithm: missingWebCrypto };
         if (!ObjectPrototypeHasOwnProperty(factories, name))
             throw new ERR_METHOD_NOT_IMPLEMENTED('Key dependency ' + name);
         const module = { exports: {} };
@@ -111754,6 +111851,103 @@ class BuiltinModule {
         getAllBuiltinModuleIds: BuiltinModule.getAllBuiltinModuleIds,
         getBuiltinModule,
     };
+}
+
+// Actual loaded builtin records share public require/process/ESM identity.
+function _createNodeBuiltinExports(platform) {
+    'use strict';
+    const { ArrayPrototypeSlice, ArrayPrototypeIncludes, ArrayPrototypePush,
+        ObjectKeys, ObjectPrototypeHasOwnProperty, ReflectGet,
+        SafeMap, StringPrototypeStartsWith, Error } = _createNodePrimordials();
+    const Module = platform.Module;
+    const getOwn = (target, property, receiver) => {
+  return ObjectPrototypeHasOwnProperty(target, property) ?
+    ReflectGet(target, property, receiver) :
+    undefined;
+};
+    class BuiltinModule {
+        static map = new SafeMap();
+        static canBeRequiredByUsers(id) { return platform.canBeRequiredByUsers(id); }
+        static canBeRequiredWithoutScheme(id) { return platform.canBeRequiredWithoutScheme(id); }
+        constructor(id) {
+            this.id = id;
+            this.loaded = false;
+            this.exports = undefined;
+            this.exportKeys = undefined;
+            // This is only an actual native synthetic module owner supplied
+            // after its real environment exists, never a URL/name lookup.
+            this.module = undefined;
+        }
+        compileForInternalLoader() {
+            if (!this.loaded) {
+                this.exports = platform.load(this.id);
+                this.loaded = true;
+            }
+            return this.exports;
+        }
+          compileForPublicLoader() {
+    if (!BuiltinModule.canBeRequiredByUsers(this.id)) {
+      // No code because this is an assertion against bugs
+      // eslint-disable-next-line no-restricted-syntax
+      throw new Error(`Should not compile ${this.id} for public use`);
+    }
+    this.compileForInternalLoader();
+    if (!this.exportKeys) {
+      // When using --expose-internals, we do not want to reflect the named
+      // exports from core modules as this can trigger unnecessary getters.
+      const internal = StringPrototypeStartsWith(this.id, 'internal/');
+      this.exportKeys = internal ? [] : ObjectKeys(this.exports);
+    }
+    return this.exports;
+  }
+          syncExports() {
+    const names = this.exportKeys;
+    if (this.module) {
+      for (let i = 0; i < names.length; i++) {
+        const exportName = names[i];
+        if (exportName === 'default') continue;
+        this.module.setExport(exportName,
+                              getOwn(this.exports, exportName, this.exports));
+      }
+    }
+  }
+    }
+    for (const id of platform.ids) BuiltinModule.map.set(id, new BuiltinModule(id));
+    Module.syncBuiltinESMExports = function syncBuiltinESMExports() {
+  for (const mod of BuiltinModule.map.values()) {
+    if (BuiltinModule.canBeRequiredWithoutScheme(mod.id)) {
+      mod.syncExports();
+    }
+  }
+};
+    function load(id) {
+        const builtin = BuiltinModule.map.get(id);
+        if (builtin === undefined) throw new Error('Unknown actual builtin record: ' + id);
+        return builtin.compileForPublicLoader();
+    }
+    function descriptor(id) {
+        load(id);
+        const builtin = BuiltinModule.map.get(id);
+        const names = ArrayPrototypeSlice(builtin.exportKeys);
+        if (!ArrayPrototypeIncludes(names, 'default')) ArrayPrototypePush(names, 'default');
+        return { __proto__: null, format: 'synthetic', exportNames: names,
+            initialize(owner) { builtin.module = owner; },
+            evaluate(owner) {
+                builtin.syncExports();
+                owner.setExport('default', builtin.exports);
+                // Returning the exact actual owner tells the native evaluator
+                // that bindings were written in sequence through its setter.
+                return owner;
+            } };
+    }
+    // process.getBuiltinModule uses internal require in the pinned helper:
+    // it must not snapshot public export keys until actual public loading.
+    function loadInternal(id) {
+        const builtin = BuiltinModule.map.get(id);
+        if (builtin === undefined) throw new Error('Unknown actual builtin record: ' + id);
+        return builtin.compileForInternalLoader();
+    }
+    return { load, loadInternal, descriptor };
 }
 
 // Shared real native constant bags, and lazy public-module initialization.

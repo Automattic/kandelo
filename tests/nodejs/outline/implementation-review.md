@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source261 combines returned timer/selected primitive-ID ownership, builtin ESM synchronization and CryptoKey usage-mask foundations in one source batch. Shared source/package reports and per-feature focused evidence retain explicit native dependencies. Historical component evidence, original timeouts and preparation failures stay separate; current guest/four-host conformance remains unestablished.
+See [source scope](core-batch261-implementation.md).
+
 Source260 adds normal-open TLS transport shutdown ownership over actual retained TCP/TLS/ShutdownWrap/BIO flight owners. Alert output waits real captured-parent completion/ack before SHUT_WR; public_final stays inactive and early-handshake/in-SSL deferral/full inputBIO/fatal/destruction/provider parity remain gaps. Actual successor normal910inputs/23sourcechecks/8commands pass, clean6protocol/native2actualShutdownWrap references and package14 independent. Two retained TLS1.3 injected-queue preservation nonpasses remain unresolved. Four historical tiny helper compiles counted once365 to369; zero new root compiler, no guest/four-host or full TLS shutdown claim.
 See [source scope](tls-write-shutdown-integration.md).
 

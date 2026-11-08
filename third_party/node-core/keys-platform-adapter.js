@@ -68,6 +68,7 @@ function _createNodeCryptoKeys(platform) {
                 platform.getX509().nativeHandlePrototype, bundle, passphrase);
         },
     };
+    const keyUsages = _createNodeCryptoKeyUsages();
     function missingWebCrypto() { throw new ERR_METHOD_NOT_IMPLEMENTED('WebCrypto algorithm/import owner'); }
     /* NODE_KEY_BIGINT */
     const modules = new SafeMap();
@@ -85,10 +86,8 @@ function _createNodeCryptoKeys(platform) {
         if (name === 'internal/util/inspect') return platform.inspection;
         if (name === 'internal/url') return platform.url;
         if (name === 'internal/crypto/util') return { ...platform.digestHelpers,
-            bigIntArrayToUnsignedBigInt, normalizeAlgorithm: missingWebCrypto,
-            hasAnyNotIn: missingWebCrypto, getUsagesMask: missingWebCrypto,
-            getUsagesFromMask: missingWebCrypto, hasUsage: missingWebCrypto,
-            toUsagesSet: missingWebCrypto };
+            ...keyUsages, bigIntArrayToUnsignedBigInt,
+            normalizeAlgorithm: missingWebCrypto };
         if (!ObjectPrototypeHasOwnProperty(factories, name))
             throw new ERR_METHOD_NOT_IMPLEMENTED('Key dependency ' + name);
         const module = { exports: {} };

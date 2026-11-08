@@ -1744,6 +1744,19 @@ a = key_util_source.index(selector['start'])
 key_bigint = key_util_source[a:a + selector['length']]
 if hashlib.sha256(key_bigint.encode()).hexdigest() != selector['sha256']:
     raise ValueError('Key BigInt helper identity mismatch')
+key_usage_adapter = (root / 'crypto-key-usages-platform-adapter.js').read_text()
+for name, marker in [('usageMasks', '/* NODE_KEY_USAGE_MASKS */'),
+                     ('setMembership', '/* NODE_KEY_USAGE_MEMBERSHIP */')]:
+    selector = keys_spec['usageSections'][name]
+    raw = (root / keys_spec['sources'][selector['source']]['path']).read_text()
+    if raw.count(selector['start']) != 1:
+        raise ValueError('Ambiguous key usage source selection: ' + name)
+    start = raw.index(selector['start'])
+    selected = raw[start:start + selector['length']]
+    if hashlib.sha256(selected.encode()).hexdigest() != selector['sha256'] or key_usage_adapter.count(marker) != 1:
+        raise ValueError('Key usage owner source identity mismatch: ' + name)
+    key_usage_adapter = key_usage_adapter.replace(marker, selected)
+bundle += key_usage_adapter + '\n'
 key_adapter = (root / 'keys-platform-adapter.js').read_text()
 for marker, replacement in [
     ('/* NODE_KEY_BIGINT */', key_bigint),
@@ -2076,6 +2089,18 @@ for marker, key in [('/* NODE_BUILTIN_POLICY */', 'builtinPolicy'), ('/* NODE_GE
         raise ValueError('Missing or ambiguous public builtin policy marker')
     policy_platform = policy_platform.replace(marker, (root / manifest[key]['path']).read_text())
 bundle += policy_platform + '\n'
+
+builtin_exports_spec = manifest['builtinExports']
+builtin_exports_adapter = (root / 'builtin-exports-platform-adapter.js').read_text()
+for marker, name in [('/* NODE_BUILTIN_EXPORT_GET_OWN */', 'getOwn'),
+                     ('/* NODE_BUILTIN_EXPORT_PUBLIC_LOAD */', 'compileForPublicLoader'),
+                     ('/* NODE_BUILTIN_EXPORT_SYNC */', 'syncExports'),
+                     ('/* NODE_BUILTIN_EXPORT_PUBLIC_SYNC */', 'publicSync')]:
+    if builtin_exports_adapter.count(marker) != 1:
+        raise ValueError('Builtin export owner marker mismatch: ' + name)
+    builtin_exports_adapter = builtin_exports_adapter.replace(marker,
+        selected_platform_section(builtin_exports_spec, name))
+bundle += builtin_exports_adapter + '\n'
 
 public_constants_spec = manifest['publicConstants']
 for name in public_constants_spec['sources']:

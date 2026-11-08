@@ -1,0 +1,84 @@
+diff --git a/js/src/shell/ModuleLoader.cpp b/js/src/shell/ModuleLoader.cpp
+index f0ed4e1afa0b3b69e6a1febfd8199d1e80a3901c..fd49e13bf31513280619dec05d0dcbd937d28120 100644
+--- a/js/src/shell/ModuleLoader.cpp
++++ b/js/src/shell/ModuleLoader.cpp
+@@ -26,7 +26,9 @@
+ #include "js/Promise.h"  // JS::GetPromiseState, JS::GetPromiseResult
+ #include "js/PropertyAndElement.h"  // JS_DefineProperty, JS_GetProperty
++#include "js/Realm.h"
+ #include "js/SourceText.h"
+ #include "js/StableStringChars.h"
+ #include "js/ValueArray.h"  // JS::RootedValueArray
++#include "js/Wrapper.h"
+ #include "shell/jsshell.h"
+ #include "shell/kandelo-node-vm-module-hooks.h"
+@@ -215,4 +217,38 @@ static const JSClass KandeloSyntheticOwnerClass = {
+     "NodeSyntheticExportsOwner", JSCLASS_HAS_RESERVED_SLOTS(KandeloSyntheticSlotCount)};
+
++// A real synthetic module environment, not a caller-provided URL or record.
++static bool KandeloSetSyntheticExport(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (!args.thisv().isObject()) {
++    JS_ReportErrorASCII(cx, "Invalid native synthetic export owner");
++    return false;
++  }
++  RootedObject owner(cx, &args.thisv().toObject());
++  owner = CheckedUnwrapDynamic(owner, cx);
++  if (!owner) {
++    if (!JS_IsExceptionPending(cx)) ReportAccessDenied(cx);
++    return false;
++  }
++  if (JS::GetClass(owner) != &KandeloSyntheticOwnerClass ||
++      args.length() != 2 || !args[0].isString()) {
++    JS_ReportErrorASCII(cx, "Invalid native synthetic export operation");
++    return false;
++  }
++  JSAutoRealm realm(cx, owner);
++  RootedValue exportName(cx, args[0]), value(cx, args[1]);
++  if (!JS_WrapValue(cx, &exportName) || !JS_WrapValue(cx, &value)) return false;
++  Rooted<ModuleObject*> module(cx,
++      &JS::GetReservedSlot(owner, KandeloSyntheticRecord).toObject().as<ModuleObject>());
++  Rooted<JSAtom*> name(cx, AtomizeString(cx, exportName.toString()));
++  if (!name) return false;
++  if (!ModuleObject::setSyntheticExport(cx, module, name, value)) {
++    if (!JS_IsExceptionPending(cx))
++      JS_ReportErrorASCII(cx, "Unknown actual synthetic export name");
++    return false;
++  }
++  args.rval().setUndefined();
++  return true;
++}
++
+ static bool KandeloEvaluateSynthetic(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+@@ -225,6 +261,14 @@ static bool KandeloEvaluateSynthetic(JSContext* cx, unsigned argc, Value* vp) {
+   RootedObject descriptor(cx, &JS::GetReservedSlot(owner, KandeloSyntheticDescriptor).toObject());
+   RootedValue callback(cx), values(cx);
++  JS::RootedValueArray<1> arguments(cx);
++  arguments[0].setObject(*owner);
+   if (!JS_GetProperty(cx, descriptor, "evaluate", &callback) ||
+-      !JS_CallFunctionValue(cx, descriptor, callback, JS::HandleValueArray::empty(), &values)) return false;
++      !JS_CallFunctionValue(cx, descriptor, callback, arguments, &values)) return false;
++  // Only the exact actual native owner denotes completed direct binding writes.
++  // Other synthetic descriptors retain the existing export-value array contract.
++  if (values.isObject() && &values.toObject() == owner) {
++    args.rval().setUndefined();
++    return true;
++  }
+   if (!values.isObject()) {
+     JS_ReportErrorASCII(cx, "Synthetic evaluation did not return export values"); return false;
+@@ -268,4 +312,14 @@ static JSObject* KandeloCompileSynthetic(JSContext* cx, HandleObject descriptor,
+   JS::SetReservedSlot(owner, KandeloSyntheticDescriptor, ObjectValue(*descriptor));
+   JS::SetReservedSlot(owner, KandeloSyntheticIdentity, StringValue(identity));
++  if (!JS_DefineFunction(cx, owner, "setExport", KandeloSetSyntheticExport, 2,
++                         JSPROP_READONLY | JSPROP_PERMANENT)) return nullptr;
++  RootedValue initialize(cx), ignored(cx);
++  if (!JS_GetProperty(cx, descriptor, "initialize", &initialize)) return nullptr;
++  if (!initialize.isUndefined()) {
++    JS::RootedValueArray<1> arguments(cx);
++    arguments[0].setObject(*owner);
++    if (!JS_CallFunctionValue(cx, descriptor, initialize, arguments, &ignored))
++      return nullptr;
++  }
+   return module;
+ }

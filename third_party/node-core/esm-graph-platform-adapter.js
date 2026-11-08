@@ -126,10 +126,7 @@ function _createNodeESMGraphPlatform(platform) {
                 const normalized = platform.normalizeBuiltin('node:' + id);
                 if (!StringPrototypeStartsWith(url, 'node:') || normalized === undefined)
                     throw new ERR_UNKNOWN_BUILTIN_MODULE(url);
-                const exports = platform.loadBuiltin(normalized);
-                const names = ObjectKeys(exports);
-                if (!ArrayPrototypeIncludes(names, 'default')) ArrayPrototypePush(names, 'default');
-                return synthetic(names, () => valuesFor(names, name => name === 'default' ? exports : exports[name]));
+                return platform.builtinExports.descriptor(normalized);
             }
             case 'commonjs': case 'commonjs-sync': case 'require-commonjs': {
                 const file = filename(url), source = stringify(loaded.source);

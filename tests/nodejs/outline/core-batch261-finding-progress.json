@@ -1,0 +1,350 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/timer-contracts.md",
+    "findingIds": [
+      "A-012",
+      "A-015"
+    ],
+    "relatedFamilies": [
+      "async",
+      "loading",
+      "crypto"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/timer-contracts.md",
+        "findingId": "A-012",
+        "relation": "direct-partial",
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/timer-contracts.md",
+        "findingId": "A-015",
+        "relation": "direct-partial",
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/loading.md",
+        "findingId": "L-009",
+        "relation": "direct-selected-partial",
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/loading.md",
+        "findingId": "L-011",
+        "relation": "direct-selected-partial",
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-007",
+        "relation": "direct-selected-partial",
+        "closed": false
+      }
+    ],
+    "scope": "Four feature groups with separate source/remaining scopes; no complete definition/range/API disposition or closure."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "timer-returned",
+      "scope": "Ordinary returned Timeout/Immediate methods and captured private inspection owner, followed by additive A015; curated current doc keeps originals immutable."
+    },
+    {
+      "feature": "timer-primitive",
+      "scope": "Actual task async ID, primitive/known-ID lookup and selected expiry/refresh/cleanup semantics."
+    },
+    {
+      "feature": "builtin-sync",
+      "scope": "Shared actual builtin public/internal load registry, captured named keys and checked real synthetic export owner."
+    },
+    {
+      "feature": "crypto-usages",
+      "scope": "Exact pinned immutable-usage mask/set functions consumed by CryptoKey getters/internal rights and private generic secret import."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core261-batch-source-r1/report.json",
+    "sha256": "5557ae7a09512a2725e6392862b9a771c66569bee84bdbf796c3e5e9b1d423ca",
+    "guardedInputs": 912,
+    "scope": "One batch normal generation/staging/syntax/input closure; selected timer9/builtin11/usage12 native-dependent composition/security controls only. Historical returned12/local18/modulehooks17/A015upstream remain historical, not fresh/guest proof; init-cancel timeouts preserved. No new compiler, overall/full build or closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core261-batch-affected-r1.json",
+    "sha256": "33470bac6e06e7f1298c9519a75085ce9f9ea8ccc96e11c19777a8f3458dc328",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core261-batch-source-r1/report.json",
+    "sha256": "5557ae7a09512a2725e6392862b9a771c66569bee84bdbf796c3e5e9b1d423ca",
+    "guardedInputs": 912,
+    "sourcePredicates": 33,
+    "sourceCommands": 8,
+    "freshNativeDependentPairedGroups": 32,
+    "pairedGroupsByFeature": {
+      "timer-primitive": 9,
+      "builtin-sync": 11,
+      "crypto-usages": 12
+    },
+    "upstreamFiles": 1,
+    "upstreamSubjects": 2,
+    "unchangedPinnedAlgorithmSelections": 6,
+    "newRootCompilerAttempts": 0,
+    "guestExecution": false,
+    "all19FamiliesPartial": true
+  },
+  "sealedEvidence": {
+    "report": ".context/core261-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "6abf3a033c6511588b0da72bb52b7ce71d3167c32c5327bfcfc845ba0e66a572",
+    "reusedEvidence": true,
+    "scope": "Index of four immutable producer/component histories and independent reviews, not a passing runtime claim for the combined core."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/timer-returned-owner-agent/evidence/returned-before.stdout",
+      "sha256": "275abf950e7f3c87c591132bd7273ee0f9f91268adceca9dc296f0d9f9fa53e7",
+      "classification": "historical-native-dependent baseline3pass9nonpasses",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/timer-primitive-owner-agent/evidence-r1/timeout.json",
+      "sha256": "54e7843ae56d099623691b6a81ce58bb000098a580204c08cecaecf5332c9cc9",
+      "classification": "historical-native45s timeout with original partial output unavailable",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/timer-primitive-owner-agent/evidence-r2/disposition.json",
+      "sha256": "99d6af27e1a0865f2cc83db39fd3710cd0ea890ddffba4fc19880a73316ad552",
+      "classification": "historical-native12s init-cancel timeout, rawstdout/stderr preserved separately",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/module-builtin-sync-owner-agent/evidence-r1/report.json",
+      "sha256": "d87c6caa8283e05aad290536b7e663419defc8204677dbf102f8292ec82b6572",
+      "classification": "original10of11 fixture nonpass retained",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/module-builtin-sync-owner-agent/regression-evidence/module-hooks/report.json",
+      "sha256": "2d1d869127e031259806daef5f394a2474d52375fe03dae040aa6aa6825e4f8b",
+      "classification": "original0of17 stale-source-selector harness failures retained",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/crypto-key-usages-owner-agent/evidence-r1/report.json",
+      "sha256": "52d91bb9b2db32a26ffd00f1ec0cd33c1c41d61ae1e31fc1d7c0a5013085d685",
+      "classification": "original baseline1pass11nonpasses and initialafter12pass preserved",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/core261-batch-compose-r1/source-whitespace.stdout",
+      "sha256": "a7de59f7778c1532d5f6efe877ac1407a787ef983d143e194220d0fc691549bf",
+      "classification": "Original private preparation exit2 after composition/F-R-F/current core; outer patch trailing blank context. Administrative source-whitespace nonpass, no runtime/compiler attempt.",
+      "runtimeCases": 0
+    },
+    {
+      "report": ".context/node261-patch-eof-encoding-r1/git-forward.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "classification": "Original independent EOF probe setup error. Original actual partial diagnostic retained, not reconstructed.",
+      "runtimeCases": 0
+    },
+    {
+      "report": ".context/timer261-main-ref-admission-observation.json",
+      "sha256": "d1db84793411a3f30c0cb855f6cd08e611a27e5a46ac18820fca2a5768a7fb42",
+      "classification": "Initial main-reference guard admission exec75080 failed before clone/generation; raw process log unavailable, preserved observation is not reconstructed raw output.",
+      "runtimeCases": 0
+    },
+    {
+      "report": ".context/core261-batch-admission-r1/observation.json",
+      "sha256": "46384d42a90cbbc906618e8af9a8397e0cbce63927c34ef29eecd08242dbaed2",
+      "classification": "Original noncanonical33-character check-ID preflight rejection, before source apply/checks.",
+      "runtimeCases": 0
+    },
+    {
+      "report": ".context/core261-batch-admission-r2/observation.json",
+      "sha256": "49635ab8cb34da055f2ec8c325aecdd5487b8926dfab8d8a25d80e480a57c623",
+      "classification": "Converted seal-root preflight rejection, corrected by exact-byte admitted seal copies before source apply/checks.",
+      "runtimeCases": 0
+    }
+  ],
+  "remaining": [
+    "Current A015 selected ID/map code is present, not an absence claim.",
+    "Private inspection/native scheduler/ref/fatal/GC/realm/Worker and full timer conformance remain open.",
+    "Original45s/12s inside-init cancellation native timeouts unresolved; bounded observation is different coverage.",
+    "Mutable public async-ID symbol vs private runTask record-ID behavior remains a source question.",
+    "A022 Promise hook mode and native fatal/phase/GC/realm/Worker/four-host obligations remain.",
+    "Async module.register InternalWorker/notification/error/job owners missing.",
+    "Initial facade timing, alternate cache identity and first-load reentry open.",
+    "New ModuleLoader JSAPI/realm/access/GC/OOM/publication/Worker uncompiled.",
+    "Public toCryptoKey first needs crypto WebIDL, then genuine normalization/algorithm import owners.",
+    "Subtle singleton/Promise/jobs/provider/FIPS/capability/full operations remain missing.",
+    "Native key/Buffer/Values/inspection component dependencies are not guest slot/realm/GC/transfer/Worker proof."
+  ],
+  "featureContributions": [
+    {
+      "id": "timer-returned",
+      "family": "async",
+      "auditDocument": "tests/nodejs/audit/timer-contracts.md",
+      "findingIds": [
+        "A-012"
+      ],
+      "relation": "direct-partial",
+      "producer": ".context/timer-returned-owner-agent",
+      "sourceScope": "Ordinary returned Timeout/Immediate methods and captured private inspection owner, followed by additive A015; curated current doc keeps originals immutable.",
+      "freshEvidence": "Composed actual timer path/source guards only; original returned12/local18 reused historical, not newly rerun.",
+      "remaining": [
+        "Current A015 selected ID/map code is present, not an absence claim.",
+        "Private inspection/native scheduler/ref/fatal/GC/realm/Worker and full timer conformance remain open."
+      ],
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "producerSeal": {
+        "path": ".context/timer-returned-owner-agent/SEAL.json",
+        "sha256": "51bbc8e96646fdef1ea0d4c437f900f8ff6b1ae65da8679ba0f86fdb5012a131"
+      },
+      "currentSourceBinding": "8d904e65ce93ffe23d1d05e652bcfe6d67d564647d18f80d0f207c3aef87de6e",
+      "freshPairedGroups": 0
+    },
+    {
+      "id": "timer-primitive",
+      "family": "async",
+      "auditDocument": "tests/nodejs/audit/timer-contracts.md",
+      "findingIds": [
+        "A-015"
+      ],
+      "relation": "direct-partial",
+      "producer": ".context/timer-primitive-owner-agent",
+      "sourceScope": "Actual task async ID, primitive/known-ID lookup and selected expiry/refresh/cleanup semantics.",
+      "freshEvidence": {
+        "report": ".context/core261-batch-root-controls-r1/report.json",
+        "sha256": "5053a8c379b5c3c051d7691580f16019ae2cdd20ee6b1ebf3215dd5a6d69e789",
+        "pairedGroups": 9,
+        "scope": "One bounded composition/security set, explicit native scheduler/async/private inspection, V8 modules and native key storage dependencies. Historical returned12/localPromise18/A015upstream/moduleHooks17 remain historical source-scoped observations, not fresh combined-bundle execution or guest proof. Original native45s/12s init-cancellation timeouts are not rerun/reclassified.",
+        "guestRuntimeExecuted": false
+      },
+      "remaining": [
+        "Original45s/12s inside-init cancellation native timeouts unresolved; bounded observation is different coverage.",
+        "Mutable public async-ID symbol vs private runTask record-ID behavior remains a source question.",
+        "A022 Promise hook mode and native fatal/phase/GC/realm/Worker/four-host obligations remain."
+      ],
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "producerSeal": {
+        "path": ".context/timer-primitive-owner-agent/SEAL.json",
+        "sha256": "3730b92d0159b3311e4b06b80f4b9cf23190df08a0ab7dd54194705fd05d5d78"
+      },
+      "currentSourceBinding": "8d904e65ce93ffe23d1d05e652bcfe6d67d564647d18f80d0f207c3aef87de6e",
+      "freshPairedGroups": 9
+    },
+    {
+      "id": "builtin-sync",
+      "family": "loading",
+      "auditDocument": "tests/nodejs/audit/loading.md",
+      "findingIds": [
+        "L-009",
+        "L-011"
+      ],
+      "relation": "direct-selected-partial",
+      "producer": ".context/module-builtin-sync-owner-agent",
+      "sourceScope": "Shared actual builtin public/internal load registry, captured named keys and checked real synthetic export owner.",
+      "freshEvidence": {
+        "report": ".context/core261-batch-root-controls-r1/report.json",
+        "sha256": "5053a8c379b5c3c051d7691580f16019ae2cdd20ee6b1ebf3215dd5a6d69e789",
+        "pairedGroups": 11,
+        "scope": "One bounded composition/security set, explicit native scheduler/async/private inspection, V8 modules and native key storage dependencies. Historical returned12/localPromise18/A015upstream/moduleHooks17 remain historical source-scoped observations, not fresh combined-bundle execution or guest proof. Original native45s/12s init-cancellation timeouts are not rerun/reclassified.",
+        "guestRuntimeExecuted": false
+      },
+      "remaining": [
+        "Async module.register InternalWorker/notification/error/job owners missing.",
+        "Initial facade timing, alternate cache identity and first-load reentry open.",
+        "New ModuleLoader JSAPI/realm/access/GC/OOM/publication/Worker uncompiled."
+      ],
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "producerSeal": {
+        "path": ".context/module-builtin-sync-owner-agent/SEAL.json",
+        "sha256": "8674fa29bac6653c3799fd2143788b97651cdad606ffe800bd3fc9106eacca39"
+      },
+      "currentSourceBinding": "8d904e65ce93ffe23d1d05e652bcfe6d67d564647d18f80d0f207c3aef87de6e",
+      "freshPairedGroups": 11
+    },
+    {
+      "id": "crypto-usages",
+      "family": "crypto",
+      "auditDocument": "tests/nodejs/audit/crypto.md",
+      "findingIds": [
+        "C-007"
+      ],
+      "relation": "direct-selected-partial",
+      "producer": ".context/crypto-key-usages-owner-agent",
+      "sourceScope": "Exact pinned immutable-usage mask/set functions consumed by CryptoKey getters/internal rights and private generic secret import.",
+      "freshEvidence": {
+        "report": ".context/core261-batch-root-controls-r1/report.json",
+        "sha256": "5053a8c379b5c3c051d7691580f16019ae2cdd20ee6b1ebf3215dd5a6d69e789",
+        "pairedGroups": 12,
+        "scope": "One bounded composition/security set, explicit native scheduler/async/private inspection, V8 modules and native key storage dependencies. Historical returned12/localPromise18/A015upstream/moduleHooks17 remain historical source-scoped observations, not fresh combined-bundle execution or guest proof. Original native45s/12s init-cancellation timeouts are not rerun/reclassified.",
+        "guestRuntimeExecuted": false
+      },
+      "remaining": [
+        "Public toCryptoKey first needs crypto WebIDL, then genuine normalization/algorithm import owners.",
+        "Subtle singleton/Promise/jobs/provider/FIPS/capability/full operations remain missing.",
+        "Native key/Buffer/Values/inspection component dependencies are not guest slot/realm/GC/transfer/Worker proof."
+      ],
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "producerSeal": {
+        "path": ".context/crypto-key-usages-owner-agent/SEAL.json",
+        "sha256": "8a128027218c016e9d6b7d62bb438eaf22f47c55e6a6685a70f9f7ebfe15fed3"
+      },
+      "currentSourceBinding": "8d904e65ce93ffe23d1d05e652bcfe6d67d564647d18f80d0f207c3aef87de6e",
+      "freshPairedGroups": 12
+    }
+  ],
+  "batchFocusedControlReport": {
+    "report": ".context/core261-batch-root-controls-r1/report.json",
+    "sha256": "5053a8c379b5c3c051d7691580f16019ae2cdd20ee6b1ebf3215dd5a6d69e789",
+    "scope": "One bounded composition/security set, explicit native scheduler/async/private inspection, V8 modules and native key storage dependencies. Historical returned12/localPromise18/A015upstream/moduleHooks17 remain historical source-scoped observations, not fresh combined-bundle execution or guest proof. Original native45s/12s init-cancellation timeouts are not rerun/reclassified."
+  },
+  "batchReceiptIndex": {
+    "report": ".context/core261-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "06c2e2ec17b3a50b3305b554783984bbe0955de039e5e619ef90bac55bce0cc8",
+    "scope": "Actual completed source binding/check/import receipts plus preserved failed-preparation/successor provenance, parent-reviewed; no global build-cache or guest proof."
+  },
+  "historicalOnlyEvidence": [
+    {
+      "feature": "timer-returned/primitive",
+      "path": ".context/timer-primitive-owner-agent/verification-r2/report.json",
+      "sourceScope": "Final A015 timer region+fixture exact equality checked; native refs partly reused from verification-r1. Returned12/localPromise18/A015upstream remain historical component observations, not fresh combined-core execution.",
+      "freshExecution": false,
+      "sha256": "e855323ac785d3fada3e64dd604e68db8e0ee399d074254266c55838765d64ab"
+    },
+    {
+      "feature": "builtin-sync",
+      "path": ".context/module-builtin-sync-owner-agent/regression-evidence-r2/module-hooks/report.json",
+      "sourceScope": "Existing17module-hook native-dependent observations; same relevant source guarded below, but combined whole core/bootstrap identity differs. Do not credit as fresh runtime/conformance.",
+      "freshExecution": false,
+      "sha256": "257a00bde5849e0b4b6fdaea6acdeba4809e5310105915147c95df963a28a9a6"
+    }
+  ],
+  "originalInitCancellationTimeoutsStillUnresolved": true,
+  "mutableAsyncIdVsPrivateTaskRecordQuestionOpen": true,
+  "at": "2026-11-08T07:48:57.376438+00:00",
+  "recipeRevision": 261,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

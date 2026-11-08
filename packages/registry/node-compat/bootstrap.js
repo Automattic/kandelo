@@ -2324,10 +2324,14 @@ const string_decoder = _createNodeStringDecoder({
 
 let _nodeTimerInternals;
 const timers = (() => {
-    const { MathTrunc } = _createNodePrimordials();
-    const refed = Symbol('refed'), token = Symbol('timer'), id = Symbol('timerId');
-    const known = new Map();
-    let nextId = 1, warnedNegative = false, warnedNaN = false;
+    const { MathTrunc, SymbolFor } = _createNodePrimordials();
+    const inspect = _nodeInspection.inspect;
+    const customInspect = SymbolFor('nodejs.util.inspect.custom');
+    const refed = Symbol('refed'), token = Symbol('timer');
+    const id = _nodeAsyncPlatform.symbols.async_id_symbol;
+    const hasPrimitive = Symbol('kHasPrimitive');
+    const known = { __proto__: null };
+    let warnedNegative = false, warnedNaN = false;
     function invalid(name, expected) {
         const error = new TypeError('The "' + name + '" argument must be of type ' + expected);
         error.code = 'ERR_INVALID_ARG_TYPE'; return error;
@@ -2355,7 +2359,6 @@ const timers = (() => {
         if (timer._idleTimeout < 0 || !timer._onTimeout) return;
         os.clearTimeout(timer[token]);
         if (timer._destroyed) {
-            known.delete(String(timer[id])); timer[id] = nextId++;
             timer._destroyed = false;
             _nodeAsyncPlatform.createTask(timer, 'Timeout');
             if (timer._destroyed || !timer._onTimeout) return;
@@ -2364,6 +2367,7 @@ const timers = (() => {
         timer[token] = os.setTimeout(() => {
             timer[token] = undefined;
             const entered = os.timerNow();
+            const asyncId = timer[id];
             try {
                 if (timer._onTimeout) _nodeAsyncPlatform.runTask(
                     timer, timer._onTimeout, timer, timer._timerArgs || []);
@@ -2372,8 +2376,14 @@ const timers = (() => {
                 if (timer._repeat && timer._idleTimeout !== -1) {
                     timer._idleTimeout = timer._repeat; activate(timer, entered);
                 } else if (timer[token] === undefined) {
-                    timer._destroyed = true; known.delete(String(timer[id]));
-                    _nodeAsyncPlatform.retireTask(timer);
+                    if (timer._destroyed) {
+                        timer._onTimeout = undefined;
+                        timer._timerArgs = undefined;
+                    } else {
+                        timer._destroyed = true;
+                        if (timer[hasPrimitive]) delete known[asyncId];
+                        _nodeAsyncPlatform.retireTask(timer);
+                    }
                 }
             }
         }, MathTrunc(msecs), !!timer[refed], start);
@@ -2383,19 +2393,18 @@ const timers = (() => {
             this._idleTimeout = duration(after);
             this._onTimeout = callback; this._timerArgs = args;
             this._repeat = repeat ? this._idleTimeout : null;
-            this._destroyed = false; this[refed] = isRefed; this[id] = nextId++;
+            this._destroyed = false; this[refed] = isRefed; this[hasPrimitive] = false;
             _nodeAsyncPlatform.createTask(this, 'Timeout');
         }
         refresh() { activate(this); return this; }
         unref() { if (this[refed]) { this[refed] = false; os.timerRef(this[token], false); } return this; }
         ref() { if (!this[refed]) { this[refed] = true; os.timerRef(this[token], true); } return this; }
         hasRef() { return this[refed]; }
-        close() { clearTimeout(this); return this; }
-        [Symbol.toPrimitive]() {
-            if (!this._destroyed) known.set(String(this[id]), this);
-            return this[id];
+        // Exact pinned internal/timers Timeout custom-inspection consumer.
+        // Keep the private inspection owner, not mutable public util.inspect.
+        [customInspect](_, options) {
+            return inspect(this, { ...options, depth: 0, customInspect: false });
         }
-        [Symbol.dispose]() { clearTimeout(this); }
     }
     function setTimeout(callback, after, ...args) {
         validateCallback(callback);
@@ -2408,14 +2417,15 @@ const timers = (() => {
         activate(timeout); return timeout;
     }
     function clearTimeout(timer) {
-        if (typeof timer === 'number' || typeof timer === 'string') timer = known.get(String(timer));
+        if (typeof timer === 'number' || typeof timer === 'string') timer = known[timer];
         if (!timer?._onTimeout) return;
         timer._onTimeout = undefined; timer._timerArgs = undefined;
         // A fired owner is already unenrolled. Clear its retained arguments
         // without changing the original delay or retiring the resource twice.
         if (timer._destroyed) return;
         timer._idleTimeout = -1; timer._destroyed = true;
-        os.clearTimeout(timer[token]); timer[token] = undefined; known.delete(String(timer[id]));
+        os.clearTimeout(timer[token]); timer[token] = undefined;
+        if (timer[hasPrimitive]) delete known[timer[id]];
         _nodeAsyncPlatform.retireTask(timer);
     }
     function clearInterval(timer) { clearTimeout(timer); }
@@ -2436,7 +2446,6 @@ const timers = (() => {
         ref() { if (this[refed] === false) { this[refed] = true; os.timerRef(this[token], true); } return this; }
         unref() { if (this[refed] === true) { this[refed] = false; os.timerRef(this[token], false); } return this; }
         hasRef() { return !!this[refed]; }
-        [Symbol.dispose]() { clearImmediate(this); }
     }
     function setImmediate(callback, ...args) {
         validateCallback(callback); return new Immediate(callback, args.length ? args : undefined);
@@ -2448,8 +2457,30 @@ const timers = (() => {
         immediate._onImmediate = null; immediate._argv = null;
         _nodeAsyncPlatform.retireTask(immediate);
     }
-    for (const key of ['close', Symbol.toPrimitive, Symbol.dispose]) Object.defineProperty(Timeout.prototype, key, { enumerable: true });
-    Object.defineProperty(Immediate.prototype, Symbol.dispose, { enumerable: true });
+    // Ordinary declarations are the target's callable/constructible owners,
+    // not class-method facades with only enumerability patched afterwards.
+    Timeout.prototype.close = function() {
+        'use strict';
+        clearTimeout(this);
+        return this;
+    };
+    Timeout.prototype[Symbol.dispose] = function() {
+        'use strict';
+        clearTimeout(this);
+    };
+    Timeout.prototype[Symbol.toPrimitive] = function() {
+        'use strict';
+        const asyncId = this[id];
+        if (!this[hasPrimitive]) {
+            this[hasPrimitive] = true;
+            known[asyncId] = this;
+        }
+        return asyncId;
+    };
+    Immediate.prototype[Symbol.dispose] = function() {
+        'use strict';
+        clearImmediate(this);
+    };
     _nodeTimerInternals = { Timeout, Immediate,
         insert(timer, msecs) { activate(timer, os.timerNow(), msecs); } };
     const api = { setTimeout, clearTimeout, setImmediate, clearImmediate, setInterval, clearInterval };
@@ -5484,6 +5515,7 @@ const _nodePackagePolicy = _createNodePackagePolicy({
     },
     containsModuleSyntax: (source, filename) => _nodeModuleSyntax.contains(source, filename),
 });
+let _nodeBuiltinExports;
 const _nodeModuleRecords = _createNodeModuleRecords({
     path, process, values: _nodeValues, packages: _nodePackageReader, policy: _nodePackagePolicy,
     TextDecoder: globalThis.TextDecoder,
@@ -5508,7 +5540,7 @@ const _nodeModuleRecords = _createNodeModuleRecords({
     },
     normalizeBuiltin: id => _nodeBuiltinPolicy.normalizeRequirableId(id),
     canBeRequiredByUsers: id => _nodeBuiltinPolicy.canBeRequiredByUsers(id),
-    loadBuiltin: id => _builtinModules[id],
+    loadBuiltin: id => _nodeBuiltinExports.load(id),
     initialFormat: filename => _nodeModuleSyntax.initialCommonJsFormat(filename),
     resolveFile: (request, basedir, paths) => _resolveFile(request, basedir, paths),
     realpath: filename => _moduleRealpath(filename),
@@ -5528,9 +5560,14 @@ Module.findPackageJSON = _nodePackageReader.findPackageJSON;
 Module.SourceMap = _createNodeSourceMapPlatform({ values: _nodeValues }).SourceMap;
 _builtinModules.module = Module;
 _builtinModules.process = process;
+_nodeBuiltinExports = _createNodeBuiltinExports({
+    Module, ids: Object.keys(_builtinModules).sort(), load: id => _builtinModules[id],
+    canBeRequiredByUsers: id => _nodeBuiltinPolicy.canBeRequiredByUsers(id),
+    canBeRequiredWithoutScheme: id => _nodeBuiltinPolicy.canBeRequiredWithoutScheme(id),
+});
 const _nodeBuiltinPolicy = _createNodeBuiltinPolicy({
     ids: Object.keys(_builtinModules).sort(), values: _nodeValues,
-    load: id => _builtinModules[id],
+    load: id => _nodeBuiltinExports.loadInternal(id),
     getOptionValue: option => option === '--experimental-sqlite'
         ? _nodeNative.cliOptions?.experimentalSqlite === true
         : option === '--experimental-ffi' ? _nodeNative.cliOptions?.experimentalFfi === true
@@ -5950,11 +5987,12 @@ function _makeBareEsmSource(token, obj) {
 
 const _nodeESMGraph = _createNodeESMGraphPlatform({
     records: _nodeModuleRecords, values: _nodeValues, native: _nodeNative,
+    builtinExports: _nodeBuiltinExports,
     path, process, url: { URL: _nodeWebPlatform.URL, pathToFileURL: url.pathToFileURL,
         fileURLToPath: url.fileURLToPath },
     TextDecoder: globalThis.TextDecoder, types: util.types,
     normalizeBuiltin: id => _nodeBuiltinPolicy.normalizeRequirableId(id),
-    loadBuiltin: id => _builtinModules[id], parseJSON: _parseCommonJsJSON,
+    loadBuiltin: id => _nodeBuiltinExports.load(id), parseJSON: _parseCommonJsJSON,
 });
 globalThis.__kandeloResolveBare = function(specifier, referrerPath, resolveOnly = false, attributes, request) {
     if (typeof specifier !== 'string') return null;

@@ -1,5 +1,14 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0182-node-builtin-esm-sync.patch",
+  "third_party/node-core/tests/timer-returned-owner",
+  "third_party/node-core/tests/timer-primitive-owner",
+  "third_party/node-core/builtin-exports-platform-adapter.js",
+  "third_party/node-core/builtin-exports-owner.md",
+  "third_party/node-core/tests/builtin-esm-sync",
+  "third_party/node-core/crypto-key-usages-platform-adapter.js",
+  "third_party/node-core/crypto-key-usages-owner.md",
+  "third_party/node-core/tests/crypto-key-usages",
   "packages/registry/spidermonkey/patches/0181-node-tls-write-shutdown-owner.patch",
   "third_party/node-core/tests/tls-write-shutdown-owner",
   "third_party/node-core/tests/sqlite-authorizer",
@@ -793,4 +802,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 260
+revision = 261
