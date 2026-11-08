@@ -2,6 +2,25 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Build admission and owned-resource cleanup:** disk headroom falls to
+about 11 GiB during the browser run. Seven superseded, exact owned Vite
+preview process groups on 5417/5451–5456 are retired with SIGTERM; their
+exit143 results are intentional cleanup, not validation failures. Verified
+previews 5457, 5464 and 5486 remain HTTP200. No other agent or user app is
+stopped. Standard Cargo cleanup and removal of only the primary checkout's
+remaining idle generated Rust debug directories restore about 10 GiB,
+leaving 21.6 GiB free at collection. Source, SDK, release binaries, image
+cohorts and evidence are preserved. The primary `.context/` holds the exact
+preview retirement manifest, per-job exit logs and debug recovery receipt.
+
+The dry canonical/family and latest-main benchmark plans are prepared.
+A fresh projection reports many nodes as will-run because its materialized
+members do not yet exist, even when the child can reuse compiled cache
+entries. Inspection confirms the normal precheck requires both canonical
+cache provenance and matching projected members. The package guide now
+makes that distinction explicit; these plan counts are not evidence of
+unnecessary recompilation. No canonical build or timing has yet run.
+
 **Optimized artifact checkpoint:** the normal revision-41 classic and
 revision-22 Caddy package builds complete at source 7d85f1674, with the
 upstream PHP CFG optimizer unchanged. The partial image passes FHS and
