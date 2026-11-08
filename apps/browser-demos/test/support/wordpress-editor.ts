@@ -8,6 +8,14 @@ type WordPressEntityWindow = Window & {
   } } };
 };
 
+type WordPressPostWindow = Window & {
+  wp?: { data?: { select(store: string): {
+    getCurrentPostId(): number;
+    getCurrentPostAttribute(attribute: string): string;
+    getEditedPostAttribute(attribute: string): string;
+  } } };
+};
+
 export async function saveWordPressTemplateHeading(frame: FrameLocator, heading: string, templateId: string): Promise<void> {
   const canvas = frame.frameLocator('iframe[name="editor-canvas"]');
   await expect(canvas.locator("[data-block]").first()).toBeVisible({ timeout: 180_000 });
@@ -72,8 +80,15 @@ export async function publishWordPressPost(frame: FrameLocator, title: string): 
   });
   try {
     await expectWordPressEditor(frame);
-    await frame.frameLocator('iframe[name="editor-canvas"]')
-      .getByRole("textbox", { name: "Add title", exact: true }).fill(title, { timeout: 30_000 });
+    const titleInput = frame.frameLocator('iframe[name="editor-canvas"]')
+      .getByRole("textbox", { name: "Add title", exact: true });
+    // Unlike fill, click requires the field to receive pointer events. Let
+    // the welcome handler dismiss its overlay before entering the title.
+    await titleInput.click({ timeout: 30_000 });
+    await titleInput.fill(title, { timeout: 30_000 });
+    await expect.poll(() => frame.locator("body").evaluate(() =>
+      (window as WordPressPostWindow).wp?.data?.select("core/editor").getEditedPostAttribute("title")),
+    { timeout: 30_000, message: "WordPress must receive the entered post title" }).toBe(title);
     await frame.getByRole("button", { name: "Publish", exact: true }).click({ timeout: 30_000 });
     const panel = frame.locator(".editor-post-publish-panel");
     await panel.getByRole("button", { name: "Publish", exact: true }).click({ timeout: 30_000 });
@@ -82,9 +97,7 @@ export async function publishWordPressPost(frame: FrameLocator, title: string): 
     await page.removeLocatorHandler(welcome);
   }
   const postId = await frame.locator("body").evaluate(() => {
-    const editor = (window as Window & {
-      wp?: { data?: { select(store: string): { getCurrentPostId(): number; getCurrentPostAttribute(attribute: string): string } } };
-    }).wp?.data?.select("core/editor");
+    const editor = (window as WordPressPostWindow).wp?.data?.select("core/editor");
     if (!editor || editor.getCurrentPostAttribute("status") !== "publish") {
       throw new Error("WordPress editor has not published its current post");
     }
