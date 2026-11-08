@@ -16,7 +16,7 @@ It does not close findings or establish runtime compatibility.
 | Lexical finding IDs | 357 | Navigation labels; not unique APIs or independent bugs |
 | Document-qualified definitions | 417 | Original document + label + line; collisions remain separate |
 | Original ranges | 52 | Original grouped requirements; expansion is navigation only |
-| Source-progress records | 164 | Scoped contributions, evidence and retained nonpasses |
+| Source-progress records | 167 | Scoped contributions, evidence and retained nonpasses |
 | Dependency narratives | 66 | Shared owners and unresolved prerequisites |
 | Findings lacking an exact source-slice link | 212 | Unknown disposition, not a count of missing implementations |
 | Findings closed by this reconciliation | 0 | Source progress is separate from API closure |
@@ -771,6 +771,16 @@ rebuilding remain deferred.
 ## Source241 qualified progress overlay
 
 Added exact records: clone-configuration-forwarding, file-handle-lease, file-handle-transfer. Each document-qualified link retains its
+own supplied direct-partial, shared-prerequisite or prose-only relation and
+scope. Prose references do not manufacture definitions. Original357groups,
+417definitions,52ranges and all19partialfamilies remain; no closure or new
+runtime/compiler evidence. All prior engine/nonpasses and compilation
+lower-bound/uncertainty metadata remain unchanged.
+
+
+## Source244 qualified progress overlay
+
+Added exact records: sqlite-serialization, tty-write-owner, vm-script-cache. Each document-qualified link retains its
 own supplied direct-partial, shared-prerequisite or prose-only relation and
 scope. Prose references do not manufacture definitions. Original357groups,
 417definitions,52ranges and all19partialfamilies remain; no closure or new

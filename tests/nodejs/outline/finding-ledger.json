@@ -25,7 +25,7 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 164,
+    "sourceSliceRecords": 167,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 212
@@ -7803,6 +7803,17 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Partial consumed captured-output initialization/lifetime prerequisite; public TTY constructors/method coverage and guest queued-close remain incomplete.",
           "closure": false
+        },
+        {
+          "slice": "tty-write-owner",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -7890,6 +7901,17 @@
         {
           "slice": "tty-output",
           "relation": "explicit"
+        },
+        {
+          "slice": "tty-write-owner",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -8085,6 +8107,17 @@
           "contributionKind": "shared-prerequisite",
           "prerequisiteOnly": true,
           "scope": "Shared captured stdio/resize ownership prerequisite only; no public tty.WriteStream constructor/handle activation, Socket inheritance or API completion. Partial direct stdio dimensions/resize owner for T-008. Producer label T-010 is preserved historically; public tty.WriteStream class remains absent, so T-010 receives a shared prerequisite only, not direct API activation/closure.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "tty-write-owner",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete",
           "publicApiClosure": false,
           "closure": false
         }
@@ -10001,6 +10034,17 @@
         {
           "slice": "vm-module",
           "relation": "explicit"
+        },
+        {
+          "slice": "vm-script-cache",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/engine.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial owning source/build-identity prerequisite only. Encoding does not implement safe cache input, metadata rebinding, compileFunction or whole VM/V8 compatibility; no accepted exclusion or closure.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -10536,6 +10580,17 @@
           "auditDocument": "tests/nodejs/audit/native-integration.md",
           "standaloneDefinitionRecovered": true,
           "scope": "Actual SQLite Statement stat/resetStats, native mapping/error and receiver/counter admission prerequisites. No full SQLite or finding closure.",
+          "closure": false
+        },
+        {
+          "slice": "sqlite-serialization",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual SQLite image serialize/deserialize connection/statement/allocation ownership only; full SQLite surface remains open.",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -26472,6 +26527,461 @@
       },
       "acceptedPlatformLimitsAsRecorded": [],
       "publicApiClosure": false
+    },
+    "sqlite-serialization": {
+      "document": "tests/nodejs/outline/sqlite-serialization-finding-progress.json",
+      "sha256": "00cb567b863ce75496627cc54a694a5e7a9a470640fb1e89d4b76053d06c6eaa",
+      "recordedRevision": 242,
+      "explicitFindingIds": [
+        "NI-002"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-sqlite242-source-r1/report.json",
+          "sha256": "686aedd7358eaa802b990abebf1c1bf80cae8854273d64ced7b91381371d58e0",
+          "guardedInputs": 898,
+          "scope": "Source242 real SQLite image serialize/replace owner and current-root generated consumer, existing nativeV8/NAPI/component dependencies; new guest nativeJSAPI uncompiled/unexecuted, no API/finding/fourhost closure"
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-sqlite242-affected-r1.json",
+          "sha256": "7c954c464bf15dcf851b55bda16ebc2f13d57fc0a950202e1d10d043a31fca87",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-sqlite242-source-r1/report.json",
+          "sha256": "686aedd7358eaa802b990abebf1c1bf80cae8854273d64ced7b91381371d58e0",
+          "nativeGroups": 14,
+          "candidateGroups": 14,
+          "unchangedUpstreamCasesPerSubject": 21,
+          "portableOwnerGroups": 8,
+          "newRootCompilerAttempts": 0,
+          "historicalProducerHelperCompileAttempts": 3,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Current generated root JS over actual portableSQLite/NAPI, exact nativeNode reference and existing owner binary. Explicit nativeV8/privatebindings/common/test/encoding/VM dependencies; new nativeSQLite/JSAPI/realm/GC/OOM/VFS uncompiled/unexecuted.",
+          "globalBindingSelfContained": false,
+          "externalExcludedWrappers": 2,
+          "externalHistoricalGitMembers": 36
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/sqlite-serialization-owner-agent/report.json",
+          "sha256": "d433f6fd0593c7bd4da31648fe29e8e94fa96382b04949901b55a68410b36808",
+          "reusedEvidence": true,
+          "scope": "Historical source19135-based modified private SQLite3.54 image/connection owner and native-dependent controls, three successful helpers; not an execution of current242sourcecommit. Exact postimage/header/component equivalence is separately guarded."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/sqlite-serialization-owner-agent/owner-control-r1-run-result.json",
+          "sha256": "195a804411f012f9ae51e15a07996fc60f70d886f9d6b8b9598736f6bfeed829",
+          "scope": "Original actual portable allocator tracker assertion child-6/shell250 preserved; tracker erroneously followed old address across real successful realloc. Corrected tracker follows actual moved pointer with same once-only/free/empty-ledger assertions."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/sqlite-serialization-owner-agent/sourcegen-result.json",
+          "sha256": "f01bbc5a3256705453a97566f0aa37a73c58cec2d918ac02a1bfc087152d32cc",
+          "scope": "Original sparse normal-generator fixture missing unchanged0044(and required0043/bootstrap) failed; corrected full declared input fixture remains separate, no generator/assertion weakening."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/node26-sqlite242-compose-smfyz1vk/compose.log",
+          "sha256": "94eead977b8f5a87f6b4e78ac3f518bc2b5a6351e27574750c4ff1639f0c2d70",
+          "scope": "Actual sealed preparation helper blanket-symlink guard rejected legitimate tracked skill links before source.patch/gen. Parent subsequent narrow-ancestor composition is separate."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/sqlite-serialization-integration-prep/composition.json",
+          "sha256": "ac307ea2941e8af9bb1172acaa8b7c1170e16e1419198e811c69408f52199981",
+          "scope": "Actual parent composition report retains failed raw-SHA bundle selection and same-commit successful HEAD bundle; success is not relabeling the original failed preparation."
+        },
+        {
+          "field": "$.preservedNonpasses[4]",
+          "report": ".context/sqlite-serialization242-prep/author-preparation-failures.json",
+          "sha256": "93ea32889ec3b65292df78b2c67df82090082d2bfbae777d8acd11ba4e2ca417",
+          "scope": "Authored helper-text NameError and unexecuted superseded clone draft retained; no test/compiler/runtime from failed author command."
+        },
+        {
+          "field": "$.preservedNonpasses[5]",
+          "report": ".context/node26-sqlite242-record-r2.log",
+          "sha256": "0acdca1bb8cc4047db310d4ff9a3101152c381dff90b6bc63786f575dd6cf294",
+          "scope": "Metadata preparation R2 raw-versus-canonical manifest identity guard failed before spec or tracked metadata writes. Corrected source uses exact engine.encoded digest plus frozen dict equality and separately pinned raw file SHA; original failure retained, no source/runtime/compiler execution."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/sqlite-serialization-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/sqlite-serialization-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Consume real existing Connection/Image/Statement owners and actualSQLite3.54 sqlite3_serialize/deserialize APIs",
+        "Return genuine Uint8Array image bytes with independent storage and actual allocator cleanup",
+        "Capture genuine Uint8Array length before dbName getter; late checked/copy snapshot preserves original length, rejects detach/shrink and atomically loads shared storage",
+        "Finalize existing statements before replacement even on actual backend failure, preserve real callback/reentry/close guards and exactly-once FREEONCLOSE ownership",
+        "Preserve unchanged descriptors/aliases/public receiver/error route and regenerate actual parent241core without overwriting FileHandle bootstrap/0174 owners"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/sqlite-serialization-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "New guest native-sqlite.cpp compilation and realm/CCW/access-denied/GC/OOM/pending-exception runtime validation",
+        "Guest SQLite allocator/VFS/transaction/thread/finalizer behavior and identified-artifact four-host conformance",
+        "SQLite internal allocations remain outside process retained-memory ledger integration",
+        "Future actual authorizer owner must add serialize admission prohibition; current public setAuthorizer remains a real implementation gap",
+        "Extensions/permission/loading, virtual-table module callbacks, tag stores and remaining full SQLite public semantics stay open",
+        "No overall conformance suite or product rebuild; no accepted engine artifact includes this private slice"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/native-integration.md",
+      "findingScope": "Partial actual SQLite image serialize/deserialize connection/statement/allocation ownership only; full SQLite surface remains open.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/native-integration.md": [
+          "NI-002"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [
+        {
+          "document": "tests/nodejs/audit/native-public-contracts.md",
+          "section": "SQLite table serialize/deserialize row: Uint8Array/dbName, statement retirement before attempted replacement and callback/reentry restrictions",
+          "kind": "section-requirement-not-invented-finding-id"
+        }
+      ],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/native-integration.md",
+        "findingIds": [
+          "NI-002"
+        ],
+        "additionalRequirement": {
+          "document": "tests/nodejs/audit/native-public-contracts.md",
+          "section": "SQLite table: serialize/deserialize"
+        },
+        "relatedIdentity": [
+          "NI-006 in native-integration.md; original standalone reference differs from actual current node-sqlite",
+          "NI-009/NI-010 in native-public-contracts.md are qualified historical standalone-backend findings, not closed by this slice"
+        ],
+        "individualApiClosure": false,
+        "all19FamiliesRemainPartial": true,
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/native-integration.md",
+            "findingId": "NI-002",
+            "scope": "Partial actual SQLite image serialize/deserialize connection/statement/allocation ownership only; full SQLite surface remains open."
+          },
+          {
+            "document": "tests/nodejs/audit/native-public-contracts.md",
+            "section": "SQLite table serialize/deserialize row: Uint8Array/dbName, statement retirement before attempted replacement and callback/reentry restrictions",
+            "kind": "section-requirement-not-invented-finding-id"
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "tty-write-owner": {
+      "document": "tests/nodejs/outline/tty-write-owner-finding-progress.json",
+      "sha256": "7aa1c43c64f9021486b7c63b7b859dfb17c8d50e9155798f2e5622204a17d227",
+      "recordedRevision": 243,
+      "explicitFindingIds": [],
+      "prerequisiteFindingIds": [
+        "T-002",
+        "T-006",
+        "T-010"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tty243-source-r1/report.json",
+          "sha256": "27da64e21cddc76df43e759bba8b76c73a54ef877808c88b0c60f8fac11bbd77",
+          "guardedInputs": 900,
+          "scope": "Actual root corrected TTY prerequisite over real PTYs/native Node TTY and one exact historical portable artifact. Distinct1/5/4subjects; eleven header conditions are annotations, not eleven APIs. No new guest JSAPI or four-host proof."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tty243-affected-r1.json",
+          "sha256": "a8eedb79cc6d31f0af62b4b1dd744198f81d7fa8d96a9b827c1bdbf0c4bdfabf",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tty243-source-r1/report.json",
+          "sha256": "27da64e21cddc76df43e759bba8b76c73a54ef877808c88b0c60f8fac11bbd77",
+          "portableArtifactSubjects": 1,
+          "portableConditionAnnotations": 11,
+          "nativeTargetSubjects": 5,
+          "candidateJsComponents": 4,
+          "newRootCompilerAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Actual current-root TTY JavaScript over genuine native PTY/Node dependency:4components;5native target subjects and1reused portable artifact separately. Eleven condition labels are annotations. No new C++compiler/guest/fourhost evidence.",
+          "actualSubjectProcessCount": 9,
+          "actualSourceCommands": 8,
+          "guardedInputs": 900,
+          "supervisorReceipts": [
+            {
+              "path": ".context/node26-tty243-checks-r1/source-receipt.json",
+              "sha256": "37c45f856ca7eb5c3adb46a5d85d08064a15e4a2c6ecb25afb7f9c215ff021fe",
+              "log": ".context/node26-tty243-checks-r1/source.log",
+              "logSha256": "bd4f39354ae4bb9f87cb64cd483beaa65102ed218a891534d258493af823becc"
+            },
+            {
+              "path": ".context/node26-tty243-checks-r1/package-receipt.json",
+              "sha256": "64b28d5c8c67c2112a646f3db74eda62f2b52375c2028e252a3de7ea1e969400",
+              "log": ".context/node26-tty243-checks-r1/package.log",
+              "logSha256": "9324ed72392d25e823a89816417ff7b236e8ccf398cf6638a627a9f726a7469e"
+            }
+          ],
+          "manualExecutableBoundary": true,
+          "v1SourceBindingClaimed": false
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tty-stream-write-correction-agent/report.json",
+          "sha256": "90ef0415caeefc91a82ea0f88f680be264ca4e27117bf0c2da5cc084bc20b634",
+          "reusedEvidence": true,
+          "scope": "Original and correction source/native dependency evidence plus independent reviews; no new guest JSAPI execution."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/tty-stream-write-owner-agent/REPORT.md",
+          "sha256": "4693723a1d0fbd22e484677040cf6c12ec309b6137e323e86ae2cdeae316097d",
+          "scope": "Original lower/public TTY/guest and preserved master/restoration gaps."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/tty-stream-write-review-agent/report.json",
+          "sha256": "87c1a0c37d4ec66eb8efe0a6fd21126e6fdb23c99e018fd5184148aaef829566",
+          "scope": "Original three source P2s remain historically recorded, superseded only by explicit correction."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/tty-stream-write-correction-agent/report.json",
+          "sha256": "90ef0415caeefc91a82ea0f88f680be264ca4e27117bf0c2da5cc084bc20b634",
+          "scope": "Original raw missing-header compiler failure and authored phase/species/classifier/source-guard/packaging errors retained."
+        },
+        {
+          "field": "$.actualControlReport",
+          "report": ".context/node26-tty243-source-r1/fresh-tty-controls/report.json",
+          "sha256": "88e15c74107d368dc7f6d2b25496f7486a3e59305443b9df1a749c794a08f955",
+          "portableArtifactSubjects": 1,
+          "portableConditionAnnotations": 11,
+          "nativeTargetSubjects": 5,
+          "currentRootJsComponents": 4,
+          "processSubjects": 9,
+          "scope": "Distinct subjects, not API or guest conformance passes"
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/tty-write-owner-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/tty-write-owner-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Factor unchanged TCP original-allocation material into an actual shared header consumed by captured TTY writes",
+        "Retain actual original spans and native WRITEWRAP/frame/default trigger through genuine queue/completion/cancel/close lifetimes",
+        "Consume real scalar/vector results in current stdio Writable, preserving committed callback/publication errors",
+        "Correct raw portable/staged header mapping, real closed/retired method admission and species-free indexed all-buffer preparation"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/tty-write-owner-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and execute actual new TTY JSAPI/CCW/GC/realm/frame/close/retirement/fatal paths on identified artifacts across all four hosts",
+        "Implement genuine public tty constructors and Socket adoption, full AsyncWrap/native init timing, mixed/string/input writes and real nonblocking/control/shutdown owners",
+        "Preserve private-fd/concurrent/fork/Worker and existing fallback nonpasses; no unsupported case is a passing API"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/terminal.md",
+      "findingScope": "Shared prerequisites only; no public class/API closure from stdio/vector consumers.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/terminal.md": [
+          "T-002",
+          "T-006",
+          "T-010"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingIds": [],
+        "prerequisiteFindingIds": [
+          "T-002",
+          "T-010",
+          "T-006"
+        ],
+        "relatedFamilies": [
+          "terminal",
+          "streams",
+          "async",
+          "network"
+        ],
+        "scope": "Shared prerequisites only; no public class/API closure from stdio/vector consumers.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "findingId": "T-002",
+            "relation": "shared-prerequisite",
+            "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete",
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "findingId": "T-010",
+            "relation": "shared-prerequisite",
+            "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete",
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "findingId": "T-006",
+            "relation": "shared-prerequisite",
+            "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete",
+            "closed": false
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "vm-script-cache": {
+      "document": "tests/nodejs/outline/vm-script-cache-finding-progress.json",
+      "sha256": "8c35ddc5dcf8f45337f593f255a070058bacbe6b080e28914e4c8cb38d2c38a3",
+      "recordedRevision": 244,
+      "explicitFindingIds": [
+        "E-008"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-vm244-source-r2/report.json",
+          "sha256": "78b2c326e9e4cfb3623ce0068fdfc1ddd16f46abfb2d4dd2cdf986a913a1c9ad",
+          "guardedInputs": 902,
+          "scope": "VM244encoding/buildidentity/publication source foundation. NativeContextify/FastBuffer fixture and actualgenerator/portable envelope only; no new SM decoder/encoder/GC/realm execution. Actual Rust handoff evidence recorded separately."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-vm244-affected-r1.json",
+          "sha256": "7be80642329bfeb70a7d5c9b95115394924367fba96189d77b06dc57be4db58c",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": true
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-vm244-source-r2/report.json",
+          "sha256": "78b2c326e9e4cfb3623ce0068fdfc1ddd16f46abfb2d4dd2cdf986a913a1c9ad",
+          "nativePublicationSubjects": 8,
+          "currentJsPublicationSubjects": 8,
+          "currentEncodingFrontendGroups": 5,
+          "generatorPolicyGroups": 6,
+          "portableEnvelopeArtifactSubjects": 1,
+          "portableConditionAnnotations": 11,
+          "nativeRustNewTests": 2,
+          "nativeRustExistingCompanion": 1,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Native ContextifyScript/FastBuffer dependencies do not execute new SM Stencil/JSAPI. Generator fixture uses explicit test keys/manual nonces, not a production engine artifact key. Rust evidence and exact native binary are linked separately."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/vm-script-cache-owner-agent/report.json",
+          "sha256": "69d8e3a7c07340cc4b41e840197503af03efbc5980e6df120d2dc0d134c8e5e2",
+          "reusedEvidence": true,
+          "scope": "Historical source foundation and one portable header compile; original uncompiled Rust status is historical. Current actual Rust results are separate, never projected backward."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/vm-script-cache-owner-agent/report.json",
+          "sha256": "69d8e3a7c07340cc4b41e840197503af03efbc5980e6df120d2dc0d134c8e5e2",
+          "scope": "Original missing-input/stale-bundle/warm-cache/metadata/upstream-harness/zero-context-composition nonpasses and blocked decoder proposal retained; old proposal results are not current decoder passes."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/vm-cache-buffer-publication-correction-agent/report.json",
+          "sha256": "a29ab1e730bd1a3fa2fcc4b60e5ebaa48ec4d5672dea18bac137f80acdb46203",
+          "scope": "Original before publication3pass/5nonpass and explicit correction8pass, no guest proof."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/node26-vm244-manual-apply.log",
+          "sha256": "062f77ab33bf22c5b9d630b45c5adaabaa6b1622ab0d8eaa97d591a5dbfd4dbd",
+          "scope": "Root first git apply --check stopped before mutation on nested patch blank-context whitespace; exact contextual normalization and reverse/forward proof are separate."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/node26-vm244-normalization-r2/REPORT.json",
+          "sha256": "3e571eb60f9d71cc90b6b7657c7316a212ced98b811ff78e49ca8001f9d8108e",
+          "scope": "Same engine postimage; narrower nonblank context retained strict whitespace checks. No zero-context/fuzzy old-coordinate selection."
+        },
+        {
+          "field": "$.preservedNonpasses[4]",
+          "report": ".context/node26-vm244-checks-r1/rustfmt-edition2024.json",
+          "sha256": "eb539bd15f3b998068dbdb7eddbb0b634ae62631a6e579ae14d3fa059c2bf560",
+          "scope": "Read-only layout mismatch after first successful Rust run; corrected new test layout for actual edition2024 and reran only targeted native/source checks. All successful earlier receipts retained."
+        },
+        {
+          "field": "$.nativeResolverEvidence.earlier",
+          "report": ".context/node26-vm244-checks-r1/rust-result.json",
+          "sha256": "2f60277fde24fbbb0b126e21a424fca36ed06b18a668b930a68bf267dedba4ff"
+        },
+        {
+          "field": "$.nativeResolverEvidence.current",
+          "report": ".context/node26-vm244-checks-r2/rust-result.json",
+          "sha256": "c16006adcd8c30d408ebbcea9ae319aa92b32f0815dfdc98c540fd97a6194ee5"
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/vm-script-cache-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/vm-script-cache-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Real compiled Stencil/source/metadata ownership and lazy-delazification sharing; trusted createCachedData/produceCachedData encoding into native storage",
+        "Actual private FastBuffer publication bypasses mutable public byte/constructor/coercion hooks; errors remain outside ordered metadata assignment swallowing",
+        "Generic resolver exports its actual immutable content key after policy scrubbing and overrides inherited values; exact build-key generator replaces shell constant",
+        "Real child-recipe/cache invalidation tests for Default and SourceOnlyV1 plus stale-generator barrier and reserved-collision control; matching native xtask built",
+        "Strict actual-parent additive composition preserves FileHandle/SQLite/TTY owners, normal input declarations and executable mode; fresh context patch has exact forward/reverse source identity"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/vm-script-cache-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Implement safe arbitrary XDR validation/admission, source/warm-cache policy and current filename/line/column rebinding; current cachedData input still throws ERR_NOT_IMPLEMENTED and is nonpassing compatibility",
+        "CompileFunction caches, negative offsets, parsing-context/per-context job ownership and remaining VM/module/heap/inspector APIs",
+        "Compile actual new C++ encoder/Stencil/private Buffer/GC/realm/Worker/lifetime paths; native fixture is not guest conformance",
+        "Normal production engine header/cache-key/artifact proof and identified-artifact conformance across all four hosts",
+        "Original runtime source document describes its producer-capsule evidence; this current integration record supersedes the historical uncompiled-Rust statement only. No engine/platform exclusion or finding closure"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/engine.md",
+      "findingScope": "Partial owning source/build-identity prerequisite only. Encoding does not implement safe cache input, metadata rebinding, compileFunction or whole VM/V8 compatibility; no accepted exclusion or closure.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/engine.md": [
+          "E-008"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/engine.md",
+        "findingIds": [
+          "E-008"
+        ],
+        "relatedFamilies": [
+          "engine",
+          "loading",
+          "values"
+        ],
+        "scope": "Partial owning source/build-identity prerequisite only. Encoding does not implement safe cache input, metadata rebinding, compileFunction or whole VM/V8 compatibility; no accepted exclusion or closure."
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
     }
   },
   "dependencyNarratives": {
@@ -29096,6 +29606,68 @@
           "sha256": "835e3cfc2b461e035e81d3b54954b6d54164cf5c424b49b70cdaa1912be1efb4"
         },
         "scope": "Qualified explicit partial-source links only; preserve all runtime/compilation/nonpasses/closure state. Future records must be supplied explicitly after integration, never inferred by filename."
+      },
+      {
+        "at": "2026-11-08T01:06:34.157744+00:00",
+        "sourceCheckpoint": 244,
+        "sourceHead": "e224221bda4e0e23aaa073a4ce76648f8a60503b",
+        "addedSourceSlices": [
+          "sqlite-serialization",
+          "tty-write-owner",
+          "vm-script-cache"
+        ],
+        "qualifiedLinks": [
+          {
+            "document": "tests/nodejs/audit/native-integration.md",
+            "finding": "NI-002",
+            "slice": "sqlite-serialization",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial actual SQLite image serialize/deserialize connection/statement/allocation ownership only; full SQLite surface remains open."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "finding": "T-002",
+            "slice": "tty-write-owner",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete"
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "finding": "T-010",
+            "slice": "tty-write-owner",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete"
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "finding": "T-006",
+            "slice": "tty-write-owner",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete"
+          },
+          {
+            "document": "tests/nodejs/audit/engine.md",
+            "finding": "E-008",
+            "slice": "vm-script-cache",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial owning source/build-identity prerequisite only. Encoding does not implement safe cache input, metadata rebinding, compileFunction or whole VM/V8 compatibility; no accepted exclusion or closure."
+          }
+        ],
+        "latestAcceptedEngine": 239,
+        "currentCombinedEngineCompiled": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "spec": {
+          "path": ".context/finding-ledger-qualified244-prep/sqlite242-tty243-vm244.json",
+          "sha256": "92d1bef7ce8a49a45f395e8723d58cade98d4bc28e7a8ba0afe58b7c476448fb"
+        },
+        "scope": "Metadata-only explicit SQLite242/TTY243/VM244 qualified progress overlay164\u2192167. NI-002 and E-008 retain only recorded partial source scope; T-002/T-010/T-006 are shared prerequisites. SQLite section-only obligations stay sections, not invented IDs. No API/family closure or new runtime/compiler evidence; preserve all337known lower-bound attempts,4unattributed dependency subjects, accepted239historical evidence and every existing source/failure/skip/unsupported/timeout/harness record."
       }
     ]
   }
