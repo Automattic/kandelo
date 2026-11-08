@@ -7343,3 +7343,7 @@ Source264 adds four scoped owner contributions in one ordinary-file source/gener
 ### Batched timeout, data Fetch, Worker CLI and internal benchmark owners
 
 Source265 combines four scoped owners in one normal generation/check batch. Only source/input/package checks are fresh; native-component histories retain their original source/dependency/nonpass scopes. No fresh API/host conformance or public benchmark activation is established.
+
+### Batched retained terminal IO, TLS certificate and private Fetch owners
+
+Source266 combines real terminal shutdown/completion and encoded-string owners with owned abbreviated TLS certificate material and private currentURL data dispatch. One normal source/package batch has no currentruntime/component evidence; historical TTY3compileattempts/2fixturefailures are credited once, not newrootcompilers.

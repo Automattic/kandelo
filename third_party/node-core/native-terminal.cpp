@@ -26,6 +26,7 @@ enum KandeloTerminalWriteSlot { TerminalWriteState, TerminalWriteFrame,
   TerminalWriteParent, TerminalWriteSlotCount };
 namespace js::shell {
 using KandeloTerminalWriteTicket = kandelo::terminal::WriteTicket<JS::KandeloBacking::SpanRef>;
+struct KandeloTerminalShutdownRequest;
 struct KandeloTerminalWriteRequest {
   KandeloTerminalLease* parent;
   KandeloNativeAsyncState* lifetime;
@@ -48,6 +49,7 @@ struct KandeloTerminalWriteRequest {
   ~KandeloTerminalWriteRequest();
 };
 static void KandeloDiscardTerminalWrites(KandeloTerminalLease*);
+static void KandeloDiscardTerminalShutdown(KandeloTerminalLease*);
 static thread_local uint64_t gKandeloTerminalGeneration = 0;
 struct KandeloTerminalLease {
   KandeloNativeAsyncState* state;
@@ -60,6 +62,8 @@ struct KandeloTerminalLease {
   kandelo::terminal::WriteOwner<JS::KandeloBacking::SpanRef> writes;
   KandeloTerminalWriteRequest* writeHead = nullptr;
   KandeloTerminalWriteRequest* writeTail = nullptr;
+  kandelo::terminal::ShutdownOwner shutdown;
+  KandeloTerminalShutdownRequest* shutdownRequest = nullptr;
   std::unique_ptr<JS::PersistentRootedObject> closeRoot;
   // Real continuous read demand survives a failed after/job checkpoint.
   // Its next reservation is created only on ordinary exception-free dispatch.
@@ -73,13 +77,13 @@ struct KandeloTerminalLease {
   kandelo::terminal::IOHandle io;
   bool outputOwner = false, inputOwner = false, inputClosing = false;
   explicit KandeloTerminalLease(JSContext* cx, KandeloNativeAsyncState* state)
-      : state(state), cx(cx), reads(++gKandeloTerminalGeneration), writes(reads.Generation()), next(state->terminalLeases) {
+      : state(state), cx(cx), reads(++gKandeloTerminalGeneration), writes(reads.Generation()), shutdown(reads.Generation()), next(state->terminalLeases) {
     state->Retain();if (next) next->previous = this;state->terminalLeases = this;
   }
   ~KandeloTerminalLease() {
     bool cancelled;inputClosing = true;reads.Close();readRoot.reset();
     (void)KandeloTerminalCancelRead(nullptr, this, false, &cancelled);
-    writes.Close();KandeloDiscardTerminalWrites(this);
+    writes.Close();KandeloDiscardTerminalWrites(this);KandeloDiscardTerminalShutdown(this);
     io.Close();mode.Close();Retire();closeRoot.reset();
     if (previous) previous->next = next;else state->terminalLeases = next;
     if (next) next->previous = previous;
@@ -115,11 +119,45 @@ KandeloTerminalWriteRequest::~KandeloTerminalWriteRequest() {
 static void KandeloDiscardTerminalWrites(KandeloTerminalLease* lease) {
   while (lease->writeHead) lease->writeHead->Retire();
 }
+struct KandeloTerminalShutdownRequest {
+  KandeloTerminalLease* parent;
+  KandeloNativeAsyncState* lifetime;
+  JSContext* cx;
+  kandelo::terminal::ShutdownTicket ticket;
+  std::unique_ptr<JS::PersistentRootedObject> pending;
+  kandelo::memory::Allocation allocation{sizeof(KandeloTerminalShutdownRequest)};
+  kandelo::memory::Claims claims;
+  double id = -1, trigger = -1;
+  bool queued = false, retired = false, callbackActive = false;
+  explicit KandeloTerminalShutdownRequest(JSContext* cx, KandeloTerminalLease* parent)
+      : parent(parent), lifetime(parent->state), cx(cx), ticket(parent->reads.Generation()) { lifetime->Retain(); }
+  void Retire() noexcept;
+  ~KandeloTerminalShutdownRequest() { Retire();lifetime->Release(); }
+};
+// Same three genuine frame/parent slots as write requests, not JS-visible fd identity.
+void KandeloTerminalShutdownRequest::Retire() noexcept {
+  if (retired) return;
+  retired = true;
+  if (queued) {
+    MOZ_RELEASE_ASSERT(parent && parent->shutdownRequest == this);
+    parent->shutdownRequest = nullptr;--parent->requests;queued = false;
+  }
+  if (pending) {
+    JS::SetReservedSlot(*pending, TerminalWriteFrame, UndefinedValue());
+    JS::SetReservedSlot(*pending, TerminalWriteParent, UndefinedValue());
+  }
+  pending.reset();parent = nullptr;claims.Clear();
+  allocation.Resize(sizeof(KandeloTerminalShutdownRequest));
+  if (id >= 0) lifetime->Finalized(id);
+}
+static void KandeloDiscardTerminalShutdown(KandeloTerminalLease* lease) {
+  if (lease->shutdownRequest) lease->shutdownRequest->Retire();
+}
 static void KandeloShutdownTerminalLeases(KandeloNativeAsyncState* state) {
   for (auto* lease = state->terminalLeases; lease; lease = lease->next) {
     lease->inputClosing = true;lease->reads.Close();lease->readRoot.reset();bool cancelled;
     (void)KandeloTerminalCancelRead(nullptr, lease, false, &cancelled);
-    lease->writes.Close();KandeloDiscardTerminalWrites(lease);
+    lease->writes.Close();KandeloDiscardTerminalWrites(lease);KandeloDiscardTerminalShutdown(lease);
     lease->io.Close();lease->mode.Close();lease->Retire();lease->closed = true;lease->closing = false;lease->closeRoot.reset();
   }
 }
@@ -393,6 +431,107 @@ static bool KandeloTerminalWriteResourceInfo(JSContext* cx, HandleObject request
   RootedObject packet(cx, JS::NewArrayObject(cx, fields));if (!packet) return false;
   result.setObject(*packet);return true;
 }
+static void KandeloTerminalShutdownFinalize(JS::GCContext*, JSObject* object) {
+  const auto slot = JS::GetReservedSlot(object, TerminalWriteState);
+  if (!slot.isUndefined()) delete static_cast<js::shell::KandeloTerminalShutdownRequest*>(slot.toPrivate());
+}
+static const JSClassOps KandeloTerminalShutdownOps = {
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, KandeloTerminalShutdownFinalize,
+  nullptr, nullptr, nullptr};
+static const JSClass KandeloTerminalShutdownClass = {"ShutdownWrap",
+  JSCLASS_HAS_RESERVED_SLOTS(TerminalWriteSlotCount) | JSCLASS_FOREGROUND_FINALIZE,
+  &KandeloTerminalShutdownOps};
+static bool KandeloTerminalShutdownResourceInfo(JSContext* cx, HandleObject request,
+                                               MutableHandleValue result) {
+  const auto slot = JS::GetReservedSlot(request, TerminalWriteState);
+  auto* state = slot.isUndefined() ? nullptr : static_cast<js::shell::KandeloTerminalShutdownRequest*>(slot.toPrivate());
+  if (!state || state->cx != cx || state->lifetime->detached) {
+    JS_ReportErrorASCII(cx, "TTY shutdown resource belongs to another or retired context");return false;
+  }
+  JS::RootedValueArray<5> fields(cx);
+  fields[0].setNumber(state->id);fields[1].setNumber(state->trigger);
+  fields[2].set(JS::GetReservedSlot(request, TerminalWriteFrame));
+  RootedString provider(cx, JS_NewStringCopyZ(cx, "SHUTDOWNWRAP"));if (!provider) return false;
+  fields[3].setString(provider);fields[4].setObject(*request);
+  for (size_t i = 0; i < 5; ++i) if (!JS_WrapValue(cx, fields[i])) return false;
+  RootedObject packet(cx, JS::NewArrayObject(cx, fields));if (!packet) return false;
+  result.setObject(*packet);return true;
+}
+static bool KandeloTerminalCreateShutdownRequest(JSContext* cx, HandleObject parent,
+                                                 MutableHandleValue result) {
+  JSAutoRealm realm(cx, parent);
+  RootedObject request(cx, JS_NewObject(cx, &KandeloTerminalShutdownClass));if (!request) return false;
+  JS::SetReservedSlot(request, TerminalWriteParent, ObjectValue(*parent));
+  RootedValue null(cx, NullValue());
+  for (const char* name : {"oncomplete","callback","handle"})
+    if (!JS_DefineProperty(cx, request, name, null, JSPROP_ENUMERATE)) return false;
+  result.setObject(*request);return true;
+}
+static bool KandeloTerminalShutdown(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);RootedObject parent(cx), request(cx), requestParent(cx);
+  auto* lease = KandeloTerminalThis(cx, args, &parent);if (!lease) return false;
+  if (lease->retired) { args.rval().setUndefined();return true; }
+  if (lease->closed) { args.rval().setInt32(-EINVAL);return true; }
+  if (!KandeloTerminalCheckedObject(cx, args.get(0), &request)) return false;
+  if (!request || JS::GetClass(request) != &KandeloTerminalShutdownClass ||
+      !JS::GetReservedSlot(request, TerminalWriteState).isUndefined()) {
+    JS_ReportErrorASCII(cx, "TTY shutdown requires its actual unsubmitted request");return false;
+  }
+  RootedValue parentValue(cx, JS::GetReservedSlot(request, TerminalWriteParent));
+  if (!KandeloTerminalCheckedObject(cx, parentValue, &requestParent)) return false;
+  if (requestParent != parent) { JS_ReportErrorASCII(cx, "TTY shutdown request has a different parent");return false; }
+  JSAutoRealm realm(cx, request);
+  try {
+    auto preparing = std::make_unique<js::shell::KandeloTerminalShutdownRequest>(cx, lease);
+    const auto account = KandeloNativeMemoryOwner(cx);
+    preparing->claims.Add(preparing->allocation.Handle(), account);
+    preparing->pending = std::make_unique<PersistentRootedObject>(cx, request);
+    preparing->allocation.Resize(sizeof(*preparing) + sizeof(PersistentRootedObject));
+    auto* state = preparing.release();JS::SetReservedSlot(request, TerminalWriteState, PrivateValue(state));
+    bool published = false;
+    auto abandon = mozilla::MakeScopeExit([&] { if (!published) state->Retire(); });
+    kandelo::async::DefaultTriggerScope trigger(cx->kandeloDefaultTrigger(), lease->id);
+    if (!trigger.Ready()) { JS_ReportErrorASCII(cx, "TTY shutdown parent has no valid async identity");return false; }
+    RootedValue frame(cx);
+    if (!cx->kandeloAsyncProperty("frame", &frame) ||
+        !cx->getKandeloDefaultTriggerAsyncId(&state->trigger) || !JS_WrapValue(cx, &frame)) return false;
+    state->id = cx->allocateKandeloAsyncId();JS::SetReservedSlot(request, TerminalWriteFrame, frame);
+    if (!cx->notifyKandeloAsyncLifecycle("native:init", request, frame)) return false;
+    // Init may close this exact retained owner or admit nested writes/shutdown.
+    // Only this nonallocating commit removes future write admission.
+    const int error = lease->state->detached || GetShellContext(cx)->quitting ? ECANCELED :
+        lease->shutdown.Publish(state->ticket, lease->io.Writable(), lease->closing || lease->closed);
+    if (error) { args.rval().setInt32(-error);return true; }
+    lease->shutdownRequest = state;state->queued = true;++lease->requests;
+    published = true;args.rval().setInt32(0);return true;
+  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx);return false; }
+}
+static int KandeloDispatchTerminalShutdown(JSContext* cx, js::shell::KandeloTerminalLease* lease) {
+  auto* state = lease->shutdownRequest;
+  if (!state || !state->pending || state->callbackActive) return 0;
+  if (!lease->shutdown.Progress(state->ticket, lease->io, lease->writeHead != nullptr,
+                                lease->closing || lease->closed)) return 0;
+  RootedObject request(cx, *state->pending);JSAutoRealm realm(cx, request);
+  RootedObject parent(cx, &JS::GetReservedSlot(request, TerminalWriteParent).toObject());
+  state->callbackActive = true;
+  auto retire = mozilla::MakeScopeExit([&] { state->Retire(); });
+  RootedValue callback(cx), status(cx, Int32Value(-state->ticket.error));
+  if (!JS_GetProperty(cx, request, "oncomplete", &callback)) return -1;
+  if (!callback.isObject() || !JS::IsCallable(&callback.toObject())) {
+    // Shared StreamBase completion publishes actual status when the callback
+    // is absent or replaced. Ordinary setter/getter exceptions stay pending.
+    // The native TTY shutdown syscall has no separate stream error string.
+    return JS_SetProperty(cx, request, "writeStatus", status) ? 1 : -1;
+  }
+  RootedValue frame(cx, JS::GetReservedSlot(request, TerminalWriteFrame)), ignored(cx);
+  KandeloNativeCallbackScope scope(cx, request, frame);
+  if (!scope.Enter()) return -1;
+  if (scope.Stopped()) return scope.Close() ? 1 : -1;
+  JS::RootedValueArray<3> arguments(cx);
+  arguments[0].set(status);arguments[1].setObject(*parent);arguments[2].setUndefined();
+  const bool called = scope.Call(callback, arguments, &ignored);
+  return (called ? scope.Close() : scope.Fail()) ? 1 : -1;
+}
 // All fallible security/realm work precedes native publication. The actual
 // unshared Int32Array stays rooted; no pointer crosses an allocation or JS call.
 static bool KandeloTerminalWriteStateView(JSContext* cx, HandleValue value,
@@ -467,6 +606,9 @@ static bool KandeloTerminalSubmitWrite(JSContext* cx, HandleObject parent,
   if (!KandeloTerminalWriteStateView(cx, streamState, &view)) return false;
   auto material = std::make_unique<Ticket>(lease->writes.Generation(), std::move(spans));
   const uint64_t bytes = material->material.totalBytes;
+  if (lease->shutdown.WriteEnded()) {
+    KandeloTerminalWriteResult(cx, view, bytes, EPIPE, false, none, result);return true;
+  }
   if (lease->closing || lease->closed) {
     KandeloTerminalWriteResult(cx, view, bytes, EBADF, false, none, result);return true;
   }
@@ -521,7 +663,7 @@ static bool KandeloTerminalSubmitWrite(JSContext* cx, HandleObject parent,
   // accounting still marks the stream nonempty/error-state.
   const bool emptyBefore = !lease->writes.HasRemaining();
   int error = lease->state->detached || GetShellContext(cx)->quitting ? ECANCELED :
-      lease->writes.Publish(state->ticket.get());
+      lease->shutdown.WriteEnded() ? EPIPE : lease->writes.Publish(state->ticket.get());
   if (error) {
     KandeloTerminalWriteResult(cx, view, bytes, error, false, publicRequest, result);return true;
   }
@@ -531,6 +673,25 @@ static bool KandeloTerminalSubmitWrite(JSContext* cx, HandleObject parent,
   published = true;
   if (emptyBefore) lease->writes.Progress(lease->io, state->ticket.get());
   KandeloTerminalWriteResult(cx, view, bytes, 0, true, publicRequest, result);return true;
+}
+template<kandelo::encoding::encoding Mode>
+static bool KandeloTerminalWriteString(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);RootedObject owner(cx);
+  auto* lease = KandeloTerminalThis(cx, args, &owner);if (!lease) return false;
+  if (lease->retired) { args.rval().setUndefined();return true; }
+  if (lease->closed) { args.rval().setInt32(-EINVAL);return true; }
+  MOZ_RELEASE_ASSERT(args.get(1).isString());RootedString text(cx, args[1].toString());
+  JS::KandeloBacking::SpanRef span;int error;
+  if (!KandeloStreamStringSpan(cx, text, Mode, &span, &error)) return false;
+  if (error) { args.rval().setInt32(-error);return true; }
+  RootedObject resultGlobal(cx, JS::CurrentGlobalOrNull(cx));
+  if (!resultGlobal) { JS_ReportErrorASCII(cx, "TTY string write requires its calling realm");return false; }
+  JSAutoRealm realm(cx, owner);
+  try {
+    std::vector<JS::KandeloBacking::SpanRef> spans;spans.push_back(std::move(span));
+    return KandeloTerminalSubmitWrite(cx, owner, lease, resultGlobal, std::move(spans), args.rval());
+  } catch (const std::length_error&) { JS_ReportErrorASCII(cx, "TTY string write byte count overflow");return false; }
+  catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx);return false; }
 }
 static bool KandeloTerminalWriteBuffer(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);RootedObject owner(cx);
@@ -641,6 +802,11 @@ static bool KandeloTerminalPrototype(JSContext* cx, MutableHandleObject result) 
       JS_FN("setBlocking", KandeloTerminalSetBlocking, 1, 0),
       JS_FN("configureRead", KandeloTerminalConfigure, 2, 0),
       JS_FN("configureWrite", KandeloTerminalConfigureWrite, 1, 0),
+      JS_FN("shutdown", KandeloTerminalShutdown, 1, 0),
+      JS_FN("writeUtf8String", KandeloTerminalWriteString<kandelo::encoding::UTF8>, 0, 0),
+      JS_FN("writeAsciiString", KandeloTerminalWriteString<kandelo::encoding::ASCII>, 0, 0),
+      JS_FN("writeLatin1String", KandeloTerminalWriteString<kandelo::encoding::BINARY>, 0, 0),
+      JS_FN("writeUcs2String", KandeloTerminalWriteString<kandelo::encoding::UCS2>, 0, 0),
       JS_FN("writeBuffer", KandeloTerminalWriteBuffer, 2, 0),
       JS_FN("writeVector", KandeloTerminalWriteVector, 1, 0),
       JS_FN("readStart", KandeloTerminalReadStart, 0, 0),JS_FN("readStop", KandeloTerminalReadStop, 0, 0),
@@ -674,7 +840,7 @@ static bool KandeloTerminalHasReferences(JSContext* cx) {
   auto* state = js::shell::KandeloGetNativeAsyncState(cx);if (!state) return false;
   for (auto* lease = state->terminalLeases; lease; lease = lease->next) {
     if (lease->cx != cx) continue;
-    if (lease->writeHead) return true; // Genuine active requests keep uv alive independently of handle unref.
+    if (lease->writeHead || lease->shutdownRequest) return true; // Genuine active requests keep uv alive independently of handle unref.
     if (lease->closing && lease->closeRoot) return true;
     if (lease->readRoot && lease->reads.Reading() && lease->referenced) return true;
   }
@@ -686,6 +852,8 @@ static int KandeloDispatchTerminalOwners(JSContext* cx) {
     if (lease->cx != cx) continue;
     const int written = KandeloDispatchTerminalWrite(cx, lease);
     if (written) return written; // No lease/list-next survives JS reentry.
+    const int shut = KandeloDispatchTerminalShutdown(cx, lease);
+    if (shut) return shut; // Close waits request callback/after/checkpoint retirement.
     if (!lease->closing || lease->requests || !lease->closeRoot || lease->closeActive) continue;
     RootedObject owner(cx, *lease->closeRoot);JSAutoRealm realm(cx, owner);
     lease->closeActive = true;lease->closed = true;lease->closing = false;
@@ -840,6 +1008,21 @@ static bool KandeloTerminalOpenStream(JSContext* cx, const CallArgs& args,
 static bool KandeloTerminalDispatch(JSContext* cx, const CallArgs& args,
                                     const char* name, MutableHandleValue value, int* error) {
   if (strcmp(name, "tty-stream-open") == 0) return KandeloTerminalOpenStream(cx, args, value);
+  if (strcmp(name, "tty-stream-shutdown-request") == 0) {
+    RootedObject parent(cx);
+    if (!KandeloTerminalCheckedObject(cx, args.get(1), &parent)) return false;
+    if (!parent || JS::GetClass(parent) != &KandeloTerminalIOClass ||
+        JS::GetReservedSlot(parent, TerminalState).isUndefined()) {
+      JS_ReportErrorASCII(cx, "TTY shutdown request requires its actual native owner");return false;
+    }
+    auto* lease = static_cast<js::shell::KandeloTerminalLease*>(JS::GetReservedSlot(parent, TerminalState).toPrivate());
+    if (lease->cx != cx || lease->state->detached) {
+      JS_ReportErrorASCII(cx, "TTY shutdown owner belongs to another or retired context");return false;
+    }
+    RootedValue request(cx);
+    if (!KandeloTerminalCreateShutdownRequest(cx, parent, &request) || !JS_WrapValue(cx, &request)) return false;
+    value.set(request);return true;
+  }
   if (strcmp(name, "tty-constructor") == 0) {
     RootedObject prototype(cx);if (!KandeloTerminalPrototype(cx, &prototype)) return false;
     value.set(JS::GetReservedSlot(prototype, TerminalConstructor));return true;

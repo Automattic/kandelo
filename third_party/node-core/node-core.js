@@ -33986,6 +33986,42 @@ function onWriteComplete(status) {
 }
 
 
+    function writeGeneric(handle, data, encoding, cb) {
+  let ret;
+  let buffer = null;
+
+  switch (encoding) {
+    case 'buffer':
+      buffer = data;
+      ret = handle.writeBuffer(null, data);
+      break;
+    case 'latin1':
+    case 'binary':
+      ret = handle.writeLatin1String(null, data);
+      break;
+    case 'utf8':
+    case 'utf-8':
+      ret = handle.writeUtf8String(null, data);
+      break;
+    case 'ascii':
+      ret = handle.writeAsciiString(null, data);
+      break;
+    case 'ucs2':
+    case 'ucs-2':
+    case 'utf16le':
+    case 'utf-16le':
+      ret = handle.writeUcs2String(null, data);
+      break;
+    default:
+      buffer = Buffer.from(data, encoding);
+      ret = handle.writeBuffer(null, buffer);
+      break;
+  }
+
+  return afterWriteDispatched(handle, ret, buffer, cb);
+}
+
+
     function onStreamRead(arrayBuffer) {
   const nread = streamBaseState[kReadBytesOrError];
 
@@ -34220,9 +34256,12 @@ Socket.prototype.setKeepAlive = function(enable, initialDelayMsecs,
 }
         return afterShutdown;
     })(require('internal/util/debuglog').debuglog('net'));
-    function shutdown(owner, cb) {
+    function shutdown(owner, cb, terminal = false) {
+        const createShutdownRequest = terminal
+            ? owner => platform.native.operatingSystem('tty-stream-shutdown-request', owner)
+            : owner => platform.native.socketShutdownRequest(owner);
         const { UV_ENOTCONN } = platform.uv.binding;
-          const req = platform.native.socketShutdownRequest(owner);
+          const req = createShutdownRequest(owner);
   req.oncomplete = afterShutdown;
   req.handle = owner;
   req.callback = cb;
@@ -34282,7 +34321,7 @@ Socket.prototype.setKeepAlive = function(enable, initialDelayMsecs,
         stream[kAfterAsyncWrite] = function() { this._lastWriteQueueSize = 0; };
         return owner;
     }
-    return { bind, onStreamRead, afterWriteDispatched, createConstructor, installSocket, shutdown, initOptions, applyOptions,
+    return { bind, onStreamRead, afterWriteDispatched, writeGeneric, createConstructor, installSocket, shutdown, initOptions, applyOptions,
         binding: { kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync, kLastWriteErr, streamBaseState },
         symbols: { kUpdateTimer, kAfterAsyncWrite, kHandle, kMaybeDestroy } };
 }
@@ -125891,15 +125930,56 @@ module.exports = {
 function _createNodeX509Platform(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
-    const { ObjectDefineProperty, ObjectPrototypeHasOwnProperty, Error } = primordials;
+    const { ObjectDefineProperty, ObjectGetOwnPropertyDescriptor, ObjectPrototypeHasOwnProperty, Error, JSONParse } = primordials;
     const nativeHandlePrototype = platform.keys.nativeHandlePrototype;
+    function translatePeerCertificate(c) {
+  if (!c)
+    return null;
+
+  if (c.issuerCertificate != null && c.issuerCertificate !== c) {
+    c.issuerCertificate = translatePeerCertificate(c.issuerCertificate);
+  }
+  if (c.infoAccess != null) {
+    const info = c.infoAccess;
+    c.infoAccess = { __proto__: null };
+
+    // XXX: More key validation?
+    info.replace(/([^\n:]*):([^\n]*)(?:\n|$)/g,
+                 (all, key, val) => {
+                   if (val.charCodeAt(0) === 0x22) {
+                     // The translatePeerCertificate function is only
+                     // used on internally created legacy certificate
+                     // objects, and any value that contains a quote
+                     // will always be a valid JSON string literal,
+                     // so this should never throw.
+                     val = JSONParse(val);
+                   }
+                   if (key in c.infoAccess)
+                     c.infoAccess[key].push(val);
+                   else
+                     c.infoAccess[key] = [val];
+                 });
+  }
+  return c;
+}
+
+    const copyBytes = platform.codecs.copyBytes;
+    function legacyBuffers(value) {
+        function copy(name) {
+            const property = ObjectGetOwnPropertyDescriptor(value, name);
+            if (property && property.value !== undefined)
+                ObjectDefineProperty(value, name, { value: copyBytes(property.value) });
+        }
+        copy('pubkey'); copy('raw');
+        return value;
+    }
     const { ERR_METHOD_NOT_IMPLEMENTED } = platform.values.errors.codes;
     function call(name, ...args) {
         const packet = platform.native.x509Operation(name, ...args);
         if (packet.error !== undefined) {
             throw packet.error;
         }
-        return packet.value;
+        return name === 'toLegacy' ? legacyBuffers(packet.value) : packet.value;
     }
     class NativeX509Certificate {
         constructor(input) { return call('create', new.target.prototype, input); }
@@ -125932,6 +126012,7 @@ function _createNodeX509Platform(platform) {
         if (name === 'internal/validators') return platform.values.validators;
         if (name === 'internal/util/types') return platform.types;
         if (name === 'internal/errors') return platform.values.errors;
+        if (name === 'internal/tls/common') return { translatePeerCertificate };
         if (name === 'buffer') return { Buffer: platform.Buffer };
         throw new ERR_METHOD_NOT_IMPLEMENTED('X509 dependency ' + name);
     }
@@ -126376,7 +126457,9 @@ module.exports = {
 };
 
     })(module, module.exports, require, internalBinding, primordials);
-    return { ...module.exports, nativeHandlePrototype: NativeX509Certificate.prototype };
+    return { ...module.exports, nativeHandlePrototype: NativeX509Certificate.prototype,
+        legacyCertificate: handle => translatePeerCertificate(call('toLegacy', handle)),
+        translatePeerCertificate };
 }
 
 // Pinned process listener activation over a real main-environment SignalWrap.

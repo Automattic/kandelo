@@ -4,6 +4,7 @@
 #include "native-retained-memory.h"
 #include <ncrypto.h>
 #include <openssl/buffer.h>
+#include <openssl/ec.h>
 #include <openssl/pkcs12.h>
 #include <openssl/x509v3.h>
 #include <climits>
@@ -73,6 +74,15 @@ inline PKCS12Contents ParseCryptoPKCS12(const ncrypto::BIOPointer& bio, const ch
 }
 // The parser owns an actual ncrypto/OpenSSL certificate after this call. No
 // caller bytes, JS roots, context or guessed certificate metadata are retained.
+struct X509Legacy {
+  using Name = std::vector<std::pair<std::string,std::string>>;
+  std::optional<std::string> subjectAltName,infoAccess,modulus,exponent;
+  std::optional<std::string> validFrom,validTo,fingerprint,fingerprint256,fingerprint512,serialNumber,asn1Curve,nistCurve;
+  std::optional<std::vector<unsigned char>> pubkey,raw;
+  std::optional<std::vector<std::string>> usages;
+  std::optional<int> bits;
+  bool ca=false,exponentNull=false;
+};
 class X509Material {
   ncrypto::X509Pointer certificate_;
   std::shared_ptr<X509Material> issuer_;
@@ -135,6 +145,19 @@ class X509Material {
     auto result = std::shared_ptr<X509Material>(new X509Material(std::move(certificate), account));
     result->issuer_ = std::move(issuer); return result;
   }
+  static std::shared_ptr<X509Material> PeerLeafFromTLS(SSL* ssl,
+      const kandelo::memory::AccountHandle& account) {
+    ncrypto::ClearErrorOnReturn errors;if(!ssl)return {};
+    ncrypto::X509Pointer certificate;
+    if(SSL_is_server(ssl))certificate.reset(SSL_get1_peer_certificate(ssl));
+    if(!certificate) {
+      const auto* chain=SSL_get_peer_cert_chain(ssl);
+      if(!chain||sk_X509_num(chain)==0)return {};
+      certificate=ncrypto::X509View(sk_X509_value(chain,0)).clone();
+    }
+    if(!certificate)return {};
+    return std::shared_ptr<X509Material>(new X509Material(std::move(certificate),account));
+  }
   const std::shared_ptr<X509Material>& Issuer() const noexcept { return issuer_; }
   const kandelo::memory::RecordHandle& Record() const noexcept { return material_.Handle(); }
   ncrypto::X509View View() const { return certificate_.view(); }
@@ -179,6 +202,65 @@ class X509Material {
     if(!mem)return std::nullopt;
     const auto* data=reinterpret_cast<const unsigned char*>(mem->data);
     return mem->length ? std::vector<unsigned char>(data,data+mem->length) : std::vector<unsigned char>{};
+  }
+  X509Legacy::Name LegacyName(bool issuer) const {
+    const auto cert=View();
+    const auto input=issuer?cert.getIssuerName():cert.getSubjectName();
+    if (!input) throw X509Error("Failed to inspect X509 name","ERR_CRYPTO_OPERATION_FAILED");
+    X509Legacy::Name result;
+    for (auto entry:input) {
+      if (!entry) throw X509Error("Failed to convert X509 name to UTF-8","ERR_CRYPTO_OPERATION_FAILED");
+      if (entry->value) result.emplace_back(entry->key,*entry->value);
+    }
+    return result;
+  }
+  X509Legacy Legacy() const {
+    X509Legacy output;const auto cert=View();
+    bool present=false;auto san=cert.getSubjectAltName(&present);
+    output.subjectAltName=san?Text(std::move(san)):(present?std::optional<std::string>("DNS:"):std::nullopt);
+    output.infoAccess=Text(cert.getInfoAccess());output.ca=cert.isCA();
+    output.validFrom=String("validFrom");output.validTo=String("validTo");
+    output.fingerprint=String("fingerprint");output.fingerprint256=String("fingerprint256");
+    output.fingerprint512=String("fingerprint512");output.serialNumber=String("serialNumber");
+    output.usages=KeyUsage();output.raw=Raw();
+    // A missing decodable public key suppresses key-specific fields, as in
+    // pinned X509ToObject, without inventing a key or provider capability.
+    bool decoded;
+    { ncrypto::MarkPopErrorOnReturn mark;decoded=X509_get0_pubkey(cert.get())!=nullptr; }
+    if (!decoded) return output;
+    auto bytes=[](ncrypto::BIOPointer bio)->std::optional<std::vector<unsigned char>> {
+      if(!bio)return std::nullopt;BUF_MEM* memory=bio;if(!memory)return std::nullopt;
+      const auto* data=reinterpret_cast<const unsigned char*>(memory->data);
+      return memory->length?std::vector<unsigned char>(data,data+memory->length):std::vector<unsigned char>{};
+    };
+    cert.ifRsa([&](const ncrypto::Rsa& rsa) {
+      auto key=rsa.getPublicKey();output.modulus=Text(ncrypto::BIOPointer::New(key.n));
+      if (key.e) {
+        ncrypto::MarkPopErrorOnReturn mark;auto bio=ncrypto::BIOPointer::NewMem();
+        if(!bio||!ncrypto::BIOPointer::WriteAll(bio,"0x")||BN_print(bio.get(),key.e)!=1)
+          throw X509Error("Failed to format public key exponent","ERR_CRYPTO_OPERATION_FAILED");
+        output.exponent=Text(std::move(bio));
+      } else output.exponentNull=true;
+      output.pubkey=bytes(rsa.derPublicKey());output.bits=ncrypto::BignumPointer::GetBitCount(key.n);return true;
+    });
+    cert.ifEc([&](const ncrypto::Ec& ec) {
+      const auto group=ec.getGroup();const auto point=ec.getPublicKey();
+      if(point) {
+        const auto form=ec.getPointConversionForm();const size_t length=EC_POINT_point2oct(group,point,form,nullptr,0,nullptr);
+        if(!length)throw X509Error("Failed to get public key length","ERR_CRYPTO_OPERATION_FAILED");
+        std::vector<unsigned char> value(length);
+        if(!EC_POINT_point2oct(group,point,form,value.data(),value.size(),nullptr))
+          throw X509Error("Failed to get public key","ERR_CRYPTO_OPERATION_FAILED");
+        output.pubkey=std::move(value);
+      }
+      if(group){const int bits=EC_GROUP_order_bits(group);if(bits>0)output.bits=bits;}
+      const int nid=ec.getCurve();if(nid) {
+        const char* asn1=OBJ_nid2sn(nid);const char* nist=EC_curve_nid2nist(nid);
+        if(asn1&&*asn1)output.asn1Curve=asn1;if(nist&&*nist)output.nistCurve=nist;
+      }
+      return true;
+    });
+    return output;
   }
   ncrypto::EVPKeyPointer PublicKey() const {
     auto key=View().getPublicKey();

@@ -1,0 +1,23 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index 24a3e40a3e644762636b3cf1ab8858d9a69334f0..7072f226076779cf365746f4db9d894513494fc2 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3356,6 +3356,8 @@ static bool KandeloNativeTlsX509(JSContext* cx, unsigned argc, Value* vp) {
+     // Capture the actual SSL-owned certificate/chain before JS allocation,
+     // wrapping or GC. No borrowed SSL/X509 pointer survives this capture.
+-    auto material = kandelo::crypto::X509Material::FromTLS(
+-        state->owner.Ssl(), args.get(1).isTrue(), KandeloNativeMemoryOwner(cx));
++    auto material = args.get(3).isTrue() ?
++        kandelo::crypto::X509Material::PeerLeafFromTLS(state->owner.Ssl(),KandeloNativeMemoryOwner(cx)) :
++        kandelo::crypto::X509Material::FromTLS(
++            state->owner.Ssl(), args.get(1).isTrue(), KandeloNativeMemoryOwner(cx));
+     if (!material) { args.rval().setUndefined(); return true; }
+     return KandeloX509OwnMaterial(cx, std::move(material), prototype, args.rval());
+@@ -4440,4 +4442,7 @@ static bool KandeloNativeAsyncResourceInfo(JSContext* cx, unsigned argc, Value*
+     return KandeloTlsResourceInfo(cx, unwrapped, args.rval());
+   }
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloTerminalShutdownClass) {
++    return KandeloTerminalShutdownResourceInfo(cx, unwrapped, args.rval());
++  }
+   if (unwrapped && JS::GetClass(unwrapped) == &KandeloTerminalWriteClass) {
+     return KandeloTerminalWriteResourceInfo(cx, unwrapped, args.rval());

@@ -3938,10 +3938,7 @@ const net = (() => {
             // No acquired native stream exists to shut down. Complete the
             // actual Writable finalization rather than issuing shutdown(-1).
             if (!owner) return cb();
-            if (socketTerminalOwners.has(this)) {
-                return cb(new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('TTY native shutdown request ownership'));
-            }
-            return _nodeSocketStream.shutdown(owner, cb);
+            return _nodeSocketStream.shutdown(owner, cb, socketTerminalOwners.has(this));
         }
 
         connect(...args) {
@@ -4003,31 +4000,30 @@ const net = (() => {
         _read() { this._scheduleRead(); }
 
         _write(chunk, encoding, cb) {
-            // The pinned Socket constructor preserves strings. Materialize the
-            // requested encoding before handing bytes to the real span owner.
-            const buf = typeof chunk === 'string' ? Buffer.from(chunk, encoding) : toU8(chunk);
+            // Preserve native string admission and encoding across connect.
+            // The pinned dispatcher owns its four native string entry methods.
+            const buf = typeof chunk === 'string' ? chunk : toU8(chunk);
             if (this.connecting || this._fd < 0) {
-                this._writeQueue.push({ buf, cb });
+                this._writeQueue.push({ buf, encoding, cb });
                 return;
             }
-            this._writeToSocket(buf, cb);
+            this._writeToSocket(buf, cb, encoding);
         }
 
         _flushWriteQueue() {
             const q = this._writeQueue;
             this._writeQueue = [];
-            for (const { buf, cb } of q) {
-                this._writeToSocket(buf, cb);
+            for (const { buf, encoding, cb } of q) {
+                this._writeToSocket(buf, cb, encoding);
             }
         }
 
-        _writeToSocket(buf, cb) {
+        _writeToSocket(buf, cb, encoding) {
             this._unrefTimer();
             const owner = socketNativeOwners.get(this);
             if (!owner) { cb(new _nodeValues.errors.ErrnoException(-9, 'write')); return; }
-            const result = owner.writeBuffer(null, buf);
-            this._lastWriteQueueSize = owner.writeQueueSize;
-            _nodeSocketStream.afterWriteDispatched(owner, result, buf, cb);
+            const result = _nodeSocketStream.writeGeneric(owner, buf, typeof buf === 'string' ? encoding : 'buffer', cb);
+            if (result.async) this._lastWriteQueueSize = result.bytes;
         }
 
         _unrefTimer() {
@@ -4508,8 +4504,24 @@ const tls = (() => {
             if (bytes === null) return null;
             return bytes === undefined ? undefined : Buffer.from(bytes);
         }
-        getPeerCertificate() { return {}; }
     }
+
+    TLSSocket.prototype.getPeerCertificate = function(detailed) {
+        'use strict';
+        const state = nativeTLS.get(this);
+        if (!state) {
+            if (this._handle) return _nodeX509.translatePeerCertificate(
+                this._handle.getPeerCertificate(detailed)) || {};
+            return null;
+        }
+        if (state.destroyed) return null;
+        if (!state.owner) return {};
+        const cert = nat.tlsX509(state.owner, false, _nodeX509.nativeHandlePrototype, true);
+        if (!cert) return {};
+        if (detailed === true) throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED(
+            'TLSSocket.getPeerCertificate detailed issuer chain');
+        return _nodeX509.legacyCertificate(cert);
+    };
 
     TLSSocket.prototype.getPeerX509Certificate = function(detailed) {
         'use strict';
@@ -6375,6 +6387,10 @@ globalThis.exports = globalThis.module.exports;
     async function fetch(input, init) {
         const request = new FetchRequest(input, init);
         const requestState = bodyPlatform.getRequestState(request);
+        // Scheme dispatch consumes the real Request record before any public
+        // HTTP-facing getters or global URL constructor can intercept it.
+        const currentURL = requestState.urlList[requestState.urlList.length - 1];
+        if (currentURL.protocol === 'data:') return bodyPlatform.fetchDataURL(request);
         const urlStr = request.url;
         const mergedHeaders = request.headers;
         const signal = request.signal;
@@ -6382,7 +6398,6 @@ globalThis.exports = globalThis.module.exports;
         const requestBody = requestState.body;
 
         const parsed = new URL(urlStr);
-        if (parsed.protocol === 'data:') return bodyPlatform.fetchDataURL(request);
         const client = parsed.protocol === 'https:' ? https : http;
         const port = parsed.port ? parseInt(parsed.port, 10)
             : (parsed.protocol === 'https:' ? 443 : 80);

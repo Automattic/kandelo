@@ -737,7 +737,7 @@ if socket_adapter.count('/* NODE_SOCKET_STREAM_STATE_LAYOUT */') != 1:
 socket_adapter = socket_adapter.replace('/* NODE_SOCKET_STREAM_STATE_LAYOUT */', socket_state['javascript'])
 for name, marker in [('symbols', 'STREAM_SYMBOLS'), ('afterWrite', 'STREAM_AFTER_WRITE'), ('read', 'STREAM_READ'),
                      ('netOptions', 'NET_OPTIONS'), ('destroySoon', 'DESTROY_SOON'),
-                     ('shutdownBody', 'SHUTDOWN_BODY'), ('afterShutdown', 'AFTER_SHUTDOWN'), ('netInit', 'NET_INIT'), ('netApply', 'NET_APPLY'),
+                     ('writeGeneric', 'WRITE_GENERIC'), ('shutdownBody', 'SHUTDOWN_BODY'), ('afterShutdown', 'AFTER_SHUTDOWN'), ('netInit', 'NET_INIT'), ('netApply', 'NET_APPLY'),
                      ('constructorValidate', 'CONSTRUCTOR_VALIDATE'), ('constructorNormalize', 'CONSTRUCTOR_NORMALIZE'),
                      ('constructorFlow', 'CONSTRUCTOR_FLOW')]:
     item = socket_spec['sections'][name]
@@ -746,10 +746,14 @@ for name, marker in [('symbols', 'STREAM_SYMBOLS'), ('afterWrite', 'STREAM_AFTER
     selected = source[begin:begin + item['length']]
     if hashlib.sha256(selected.encode()).hexdigest() != item['sha256']:
         raise ValueError('Socket stream selection mismatch: ' + name)
+    if name == 'writeGeneric':
+        if selected.count('self') != 2 or selected.count('  const handle = self[kHandle];\n') != 1:
+            raise ValueError('Review native stream string write owner admission')
+        selected = selected.replace('function writeGeneric(self,', 'function writeGeneric(handle,').replace('  const handle = self[kHandle];\n', '')
     if name == 'shutdownBody':
         if selected.count('new ShutdownWrap()') != 1 or selected.count('this._handle') != 2:
             raise ValueError('Review retained TCP shutdown owning adaptation')
-        selected = selected.replace('new ShutdownWrap()', 'platform.native.socketShutdownRequest(owner)').replace('this._handle', 'owner')
+        selected = selected.replace('new ShutdownWrap()', 'createShutdownRequest(owner)').replace('this._handle', 'owner')
     token = '/* NODE_SOCKET_' + marker + ' */'
     if socket_adapter.count(token) != 1:
         raise ValueError('Socket stream selection marker mismatch: ' + name)
@@ -2367,7 +2371,17 @@ for name, item in {**x509_spec['sources'], **x509_spec['references']}.items():
 x509_adapter = (root / 'x509-platform-adapter.js').read_text()
 if x509_adapter.count('/* NODE_X509_MODULE */') != 1:
     raise ValueError('Review X509 module marker')
-bundle += x509_adapter.replace('/* NODE_X509_MODULE */',
+legacy_spec = x509_spec['selections']['legacyTranslation']
+legacy_source = (root / x509_spec['sources'][legacy_spec['source']]['path']).read_text()
+if legacy_source.count(legacy_spec['start']) != 1:
+    raise ValueError('Review X509 legacy translation boundary')
+legacy_start = legacy_source.index(legacy_spec['start'])
+legacy_section = legacy_source[legacy_start:legacy_start + legacy_spec['length']]
+if hashlib.sha256(legacy_section.encode()).hexdigest() != legacy_spec['sha256']:
+    raise ValueError('X509 legacy translation identity mismatch')
+if x509_adapter.count('/* NODE_X509_TRANSLATE_PEER */') != 1:
+    raise ValueError('Review X509 legacy translation marker')
+bundle += x509_adapter.replace('/* NODE_X509_TRANSLATE_PEER */', legacy_section).replace('/* NODE_X509_MODULE */',
     (root / x509_spec['sources']['lib/internal/crypto/x509.js']['path']).read_text()).rstrip('\n') + '\n'
 
 bundle += '\n' + runpy.run_path(str(root / 'generate-process-signals.py'))['assemble']().rstrip('\n') + '\n'

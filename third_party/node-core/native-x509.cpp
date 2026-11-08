@@ -107,6 +107,74 @@ static bool KandeloKeyParsePKCS12(JSContext* cx, const CallArgs& args, MutableHa
   JS::RootedValueArray<3> fields(cx);fields[0].set(key);fields[1].set(cert);fields[2].setObject(*others);
   RootedObject result(cx,JS::NewArrayObject(cx,fields));if(!result)return false;output.setObject(*result);return true;
 }
+// Convert the actual retained immutable certificate snapshot, preserving
+// pinned legacy key order, undefined own fields and null-prototype DN objects.
+static bool KandeloX509LegacyName(JSContext* cx,const kandelo::crypto::X509Legacy::Name& name,
+                                   MutableHandleValue output) {
+  RootedObject object(cx,JS_NewObjectWithGivenProto(cx,nullptr,nullptr));if(!object)return false;
+  for(const auto& entry:name) {
+    RootedValue key(cx),value(cx),prior(cx);RootedId id(cx);
+    if(!KandeloFsPathString(cx,entry.first.data(),entry.first.size(),&key))return false;
+    RootedString keyString(cx,key.toString());
+    if(!JS_StringToId(cx,keyString,&id)||
+        !KandeloFsPathString(cx,entry.second.data(),entry.second.size(),&value))return false;
+    bool present;if(!JS_HasPropertyById(cx,object,id,&present))return false;
+    if(present) {
+      if(!JS_GetPropertyById(cx,object,id,&prior))return false;
+      bool array=false;
+      if(prior.isObject()&&!JS::IsArrayObject(cx,prior,&array))return false;
+      if(array) {
+        RootedObject values(cx,&prior.toObject());uint32_t length;
+        if(!JS::GetArrayLength(cx,values,&length)||!JS_SetElement(cx,values,length,value))return false;
+        continue;
+      }
+      JS::RootedValueArray<2> pair(cx);pair[0].set(prior);pair[1].set(value);
+      RootedObject values(cx,JS::NewArrayObject(cx,pair));if(!values)return false;
+      value.setObject(*values);
+    }
+    if(!JS_SetPropertyById(cx,object,id,value))return false;
+  }
+  output.setObject(*object);return true;
+}
+static bool KandeloX509LegacyObject(JSContext* cx,const kandelo::crypto::X509Material& certificate,
+                                     MutableHandleValue output) {
+  // The caller roots/owns the immutable X509Material independently of SSL.
+  // Preserve name-array setter reentry before reading later certificate/key
+  // fields; no borrowed SSL or temporary BIO survives any JS operation.
+  JS::RootedValueArray<19> values(cx);
+  for(size_t i=0;i<19;++i)values[i].setUndefined();
+  if(!KandeloX509LegacyName(cx,certificate.LegacyName(false),values[0])||
+      !KandeloX509LegacyName(cx,certificate.LegacyName(true),values[1]))return false;
+  const auto data=certificate.Legacy();
+  auto text=[&](size_t index,const std::optional<std::string>& value) {
+    return !value||KandeloFsPathString(cx,value->data(),value->size(),values[index]);
+  };
+  auto bytes=[&](size_t index,const std::optional<std::vector<unsigned char>>& value) {
+    if(!value)return true;RootedObject array(cx,KandeloNewUint8ArrayCopy(cx,value->data(),value->size()));
+    if(!array)return false;values[index].setObject(*array);return true;
+  };
+  values[4].setBoolean(data.ca);if(data.bits)values[8].setInt32(*data.bits);
+  if(data.exponentNull)values[6].setNull();
+  if(!text(2,data.subjectAltName)||!text(3,data.infoAccess)||!text(5,data.modulus)||
+      !text(6,data.exponent)||!bytes(7,data.pubkey)||!text(9,data.validFrom)||
+      !text(10,data.validTo)||!text(11,data.fingerprint)||!text(12,data.fingerprint256)||
+      !text(13,data.fingerprint512)||!text(15,data.serialNumber)||!bytes(16,data.raw)||
+      !text(17,data.asn1Curve)||!text(18,data.nistCurve))return false;
+  if(data.usages) {
+    RootedObject array(cx,JS::NewArrayObject(cx,data.usages->size()));if(!array)return false;
+    for(size_t i=0;i<data.usages->size();++i) {
+      const auto& usage=(*data.usages)[i];RootedValue value(cx);
+      if(!KandeloFsPathString(cx,usage.data(),usage.size(),&value)||!JS_DefineElement(cx,array,i,value,JSPROP_ENUMERATE))return false;
+    }
+    values[14].setObject(*array);
+  }
+  static const char* names[]={"subject","issuer","subjectaltname","infoAccess","ca",
+      "modulus","exponent","pubkey","bits","valid_from","valid_to","fingerprint",
+      "fingerprint256","fingerprint512","ext_key_usage","serialNumber","raw","asn1Curve","nistCurve"};
+  RootedObject object(cx,JS_NewPlainObject(cx));if(!object)return false;
+  for(size_t i=0;i<19;++i)if(!JS_DefineProperty(cx,object,names[i],values[i],JSPROP_ENUMERATE))return false;
+  output.setObject(*object);return true;
+}
 static bool KandeloX509Dispatch(JSContext* cx,const CallArgs& args,MutableHandleValue result) {
   UniqueChars operation;if(!KandeloGetString(cx,args.get(0),&operation))return false;
   const std::string_view name(operation.get());
@@ -159,6 +227,10 @@ static bool KandeloX509Dispatch(JSContext* cx,const CallArgs& args,MutableHandle
   auto* box=KandeloX509BoxOf(wrapper);
   if(!box)throw kandelo::crypto::X509Error("Value of this must be of type X509Certificate","ERR_INVALID_THIS");
   const auto&cert=*box->material;
+  if(name=="toLegacy") {
+    ncrypto::ClearErrorOnReturn clear;
+    return KandeloX509LegacyObject(cx,cert,result);
+  }
   if(name=="getIssuerCert") {
     auto issuer=cert.Issuer();if(!issuer){result.setUndefined();return true;}
     RootedObject prototype(cx);

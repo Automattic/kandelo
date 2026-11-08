@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source266adds four scoped IOowner contributions. PublicTTY/detailedTLS/fullFetch remain incomplete; source predicates and packagechecks are not APIpasses.
+See [source scope](core-io-batch266-implementation.md).
+
 Source265 adds selected async-spawn timeout, dataURL Fetch, Worker warning execArgv and internal benchmark prerequisites. Documentation gates retain failures, explicit missing owners and all19partial; no source or package predicates count as API passes.
 See [source scope](core-batch265-implementation.md).
 

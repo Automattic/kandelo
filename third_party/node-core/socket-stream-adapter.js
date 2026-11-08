@@ -17,6 +17,7 @@ function _createNodeSocketStream(platform) {
     }
     /* NODE_SOCKET_STREAM_SYMBOLS */
     /* NODE_SOCKET_STREAM_AFTER_WRITE */
+    /* NODE_SOCKET_WRITE_GENERIC */
     /* NODE_SOCKET_STREAM_READ */
     const kSetNoDelay = Symbol('kSetNoDelay'), kSetKeepAlive = Symbol('kSetKeepAlive');
     const kSetKeepAliveInitialDelay = Symbol('kSetKeepAliveInitialDelay');
@@ -58,7 +59,10 @@ function _createNodeSocketStream(platform) {
         /* NODE_SOCKET_AFTER_SHUTDOWN */
         return afterShutdown;
     })(require('internal/util/debuglog').debuglog('net'));
-    function shutdown(owner, cb) {
+    function shutdown(owner, cb, terminal = false) {
+        const createShutdownRequest = terminal
+            ? owner => platform.native.operatingSystem('tty-stream-shutdown-request', owner)
+            : owner => platform.native.socketShutdownRequest(owner);
         const { UV_ENOTCONN } = platform.uv.binding;
         /* NODE_SOCKET_SHUTDOWN_BODY */
     }
@@ -100,7 +104,7 @@ function _createNodeSocketStream(platform) {
         stream[kAfterAsyncWrite] = function() { this._lastWriteQueueSize = 0; };
         return owner;
     }
-    return { bind, onStreamRead, afterWriteDispatched, createConstructor, installSocket, shutdown, initOptions, applyOptions,
+    return { bind, onStreamRead, afterWriteDispatched, writeGeneric, createConstructor, installSocket, shutdown, initOptions, applyOptions,
         binding: { kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync, kLastWriteErr, streamBaseState },
         symbols: { kUpdateTimer, kAfterAsyncWrite, kHandle, kMaybeDestroy } };
 }

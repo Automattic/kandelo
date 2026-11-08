@@ -2,6 +2,9 @@
 // Included after native callback/retained-memory owners; source candidate.
 #include "kandelo-node-socket-owner.h"
 #include "kandelo-node-socket-stream-state.h"
+#include "kandelo-node-string-bytes.h"
+#include "js/CharacterEncoding.h"
+#include "js/String.h"
 #include "js/WeakMap.h"
 #include <netinet/tcp.h>
 #include <netdb.h>
@@ -685,6 +688,59 @@ static bool KandeloSocketSubmitWrite(JSContext* cx, HandleObject parent,
   submitted = true;
   return KandeloSocketWriteResult(cx, streamState, bytes, 0, request, result);
 }
+// Primitive string encoding creates new native-owned material. Never call a
+// public Buffer constructor or any valueOf/iterator/property conversion hook.
+// The view is private; Acquire retains its true backing through the existing
+// write queue after this root and the caller's immutable string go away.
+static bool KandeloStreamStringSpan(JSContext* cx, JS::HandleString text,
+    kandelo::encoding::encoding mode, JS::KandeloBacking::SpanRef* result, int* error) {
+  *error = 0;
+  JSLinearString* linear = JS_EnsureLinearString(cx, text);if (!linear) return false;
+  const size_t units = JS::GetLinearStringLength(linear);
+  const size_t factor = mode == kandelo::encoding::UTF8 ? 3 : mode == kandelo::encoding::UCS2 ? 2 : 1;
+  // Preserve StreamBase::WriteString's StorageSize/INT_MAX admission. UTF8's
+  // actual payload can be smaller than its three-byte-per-code-unit reserve.
+  if (units > size_t(INT32_MAX) / factor) { *error = ENOBUFS;return true; }
+  const size_t length = mode == kandelo::encoding::UTF8 ? JS::GetDeflatedUTF8StringLength(linear) : units * factor;
+  if (length == SIZE_MAX) { JS_ReportOutOfMemory(cx);return false; }
+  RootedObject view(cx, JS_NewUint8Array(cx, length));if (!view) return false;
+  // Allocation can move the rooted string. Reacquire its linear characters
+  // only after the private byte allocation, then hold no-GC through encoding.
+  linear = JS_EnsureLinearString(cx, text);if (!linear) return false;
+  {
+    JS::AutoCheckCannotGC nogc;bool shared;
+    uint8_t* output = JS_GetUint8ArrayData(view, &shared, nogc);
+    MOZ_RELEASE_ASSERT(!shared && (output || !length));
+    if (length && mode == kandelo::encoding::UTF8) {
+      const size_t written = JS::DeflateStringToUTF8Buffer(linear,
+          mozilla::Span<char>(reinterpret_cast<char*>(output), length));
+      MOZ_RELEASE_ASSERT(written == length);
+    } else if (length) {
+      const size_t written = JS::LinearStringHasLatin1Chars(linear)
+          ? kandelo::encoding::bytes::Write(output, length, JS::GetLatin1LinearStringChars(nogc, linear), units, mode)
+          : kandelo::encoding::bytes::Write(output, length, JS::GetTwoByteLinearStringChars(nogc, linear), units, mode);
+      MOZ_RELEASE_ASSERT(written == length);
+    }
+  }
+  *result = JS::KandeloBacking::Acquire(cx, view);return bool(*result);
+}
+template<kandelo::encoding::encoding Mode>
+static bool KandeloSocketWriteString(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);auto* state = KandeloSocketThis(cx, args);
+  if (!state) return false;
+  if (state->closeCompleted) { args.rval().setInt32(-EINVAL);return true; }
+  // Same StreamBase internal string invariant; public Writable owns validation.
+  MOZ_RELEASE_ASSERT(args.get(1).isString());
+  RootedObject parent(cx, js::CheckedUnwrapStatic(&args.thisv().toObject()));
+  JSAutoRealm realm(cx, parent);RootedString text(cx, args[1].toString());
+  JS::KandeloBacking::SpanRef span;int error;
+  if (!KandeloStreamStringSpan(cx, text, Mode, &span, &error)) return false;
+  if (error) { args.rval().setInt32(-error);return true; }
+  try {
+    std::vector<JS::KandeloBacking::SpanRef> spans;spans.push_back(std::move(span));
+    return KandeloSocketSubmitWrite(cx, parent, state, std::move(spans), args.rval());
+  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx);return false; }
+}
 static bool KandeloSocketWrite(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp); auto* parentState = KandeloSocketThis(cx, args);
   if (!parentState) return false;
@@ -787,6 +843,10 @@ static bool KandeloCreateSocketOwner(JSContext* cx, MutableHandleObject result,
   state->next = gKandeloSocketOwners; gKandeloSocketOwners = state;
   static const JSFunctionSpec methods[] = {
     JS_FN("shutdown", KandeloSocketShutdown, 1, 0),
+    JS_FN("writeUtf8String", KandeloSocketWriteString<kandelo::encoding::UTF8>, 0, 0),
+    JS_FN("writeAsciiString", KandeloSocketWriteString<kandelo::encoding::ASCII>, 0, 0),
+    JS_FN("writeLatin1String", KandeloSocketWriteString<kandelo::encoding::BINARY>, 0, 0),
+    JS_FN("writeUcs2String", KandeloSocketWriteString<kandelo::encoding::UCS2>, 0, 0),
     JS_FN("write", KandeloSocketWrite, 1, 0),
     JS_FN("writeVector", KandeloSocketWriteVector, 1, 0),
     JS_FN("close", KandeloSocketClose, 0, 0), JS_FN("ref", KandeloSocketRef, 1, 0),

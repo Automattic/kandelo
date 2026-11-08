@@ -11,17 +11,18 @@ subsequently reused public descriptor.
 The Socket handle branch recognizes the checked native terminal class and
 context. It consumes the real read dispatcher, stream-state binding,
 buffer/vector write requests, async ID, ref/unref and queued close. TCP
-adoption, numeric address queries and shutdown are not terminal routes.
+adoption and numeric address queries are not terminal routes. Terminal
+shutdown uses its own retained request/fd owner, described in
+[terminal-shutdown-owner.md](terminal-shutdown-owner.md).
 Captured stdio streams publish the actual owner as `_handle`; failed
 publication rolls back through its close method. A live read-only terminal
 rejects writes with EPIPE; a closed descriptor rejects with EBADF.
 
-Public `tty.ReadStream` and `WriteStream` remain placeholders. A genuine
-terminal shutdown request, native mixed/string entry methods,
+Public `tty.ReadStream` and `WriteStream` remain placeholders. Native mixed/string entry methods,
 unreopenable/master/file/pipe admissions and exact prototype/descriptor/
-close-phase parity remain gaps. The terminal Socket final branch reports
-its missing request owner instead of calling a numeric TCP route or
-manufacturing completion. Init-hook close parity is unresolved: current
+close-phase parity remain gaps. The terminal Socket final branch consumes
+the queued terminal shutdown owner; it does not use a numeric TCP route.
+Init-hook close parity is unresolved: current
 admission immediately retires any descriptor acquired under a closed owner.
 
 Candidate JSAPI/context/realm/GC/OOM, partial-EAGAIN fairness, Worker and

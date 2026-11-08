@@ -1,0 +1,371 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/terminal.md",
+    "findingIds": [
+      "T-002",
+      "T-007",
+      "T-010",
+      "T-016"
+    ],
+    "relatedFamilies": [
+      "terminal",
+      "network",
+      "secure-network",
+      "crypto",
+      "web"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-002",
+        "relation": "shared-request-finalization-prerequisite"
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-007",
+        "relation": "shared-request-finalization-prerequisite"
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-010",
+        "relation": "shared-request-finalization-prerequisite"
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-016",
+        "relation": "shared-request-finalization-prerequisite"
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-002",
+        "relation": "shared-native-string-write-prerequisite"
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-016",
+        "relation": "shared-native-string-write-prerequisite"
+      },
+      {
+        "document": "tests/nodejs/audit/secure-network-contracts.md",
+        "findingId": "S-002",
+        "relation": "direct-selected-abbreviated-legacy-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/secure-network.md",
+        "findingId": "S-002",
+        "relation": "direct-selected-abbreviated-legacy-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-001",
+        "relation": "broad-shared-X509-related-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/web.md",
+        "findingId": "WEB-005",
+        "relation": "partial-owning-data-dispatch-correction"
+      }
+    ],
+    "exactApiRequirements": [
+      {
+        "document": "tests/nodejs/audit/secure-network-requirements.json",
+        "path": "memberRequirements['node:tls']['TLSSocket.prototype.getPeerCertificate']",
+        "alias": "memberRequirements['node:_tls_wrap']['TLSSocket.prototype.getPeerCertificate']",
+        "scope": "Abbreviated/legacy partial only; detailedissuerchain missing."
+      },
+      {
+        "document": "tests/nodejs/audit/crypto-requirements.json",
+        "path": "memberRequirements['node:crypto']['X509Certificate.prototype.toLegacyObject']",
+        "scope": "Real legacyprojection owner, no wholeX509closure."
+      },
+      {
+        "document": "tests/nodejs/audit/crypto-contracts.md",
+        "reference": "X509 row at138",
+        "scope": "Unnumbered exactrow; no inventedfinding ID."
+      }
+    ],
+    "scope": "Four owningpartials, actual auditedAPIpaths/row retained where no numberedfinding. No detailedchain/publicTTY/fourhost closure."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "terminal-shutdown-owner",
+      "scope": "Real queuedSHUTDOWNWRAP/retainedTTYfd/finalization source plus ordinarywriteStatus completion correction; earlierwrite callbacks/closecancel/publicTTYinactive."
+    },
+    {
+      "feature": "stream-string-write-owner",
+      "scope": "Four actualencodedstring/nativeSpan methods plus pinneddispatcher and deferredSocketstring/encoding; historical5nativecodec-dependent groups, currentCPPunexecuted."
+    },
+    {
+      "feature": "tls-legacy-leaf-certificate",
+      "scope": "Real owned leafX509legacyprojection and abbreviatedpeerroute, exactpinnedtranslation; absent/presecure/closed policies source, detailedtrue issuerchain remains explicitmissing."
+    },
+    {
+      "feature": "fetch-private-data-dispatch",
+      "scope": "ActualRequestprivatecurrentURL determinesdata route before HTTPpublicgetters/globalURL parsing; sourceonly successor to durable source265routing finding."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core266-io-batch-source-r1/report.json",
+    "sha256": "a9668355daae2aeaa013008e8cbc44c927408705f981295dc2d9f40dbf3a954d",
+    "guardedInputs": 922,
+    "scope": "One normal266IOgeneration/staging/syntax/input check. No repeated historical component/native controls; newterminal/TLS/string/privateFetch owners sourceonly. Zero newrootcompilers/reference replay/overall/guest."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core266-io-batch-affected-r1.json",
+    "sha256": "21bd93cf10cbca84f351c396a7fb7d8a9c2914ed05843a5965a1b2b281a69a73",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core266-io-batch-source-r1/report.json",
+    "sha256": "a9668355daae2aeaa013008e8cbc44c927408705f981295dc2d9f40dbf3a954d",
+    "reportScope": "One normal266IOgeneration/staging/syntax/input check. No repeated historical component/native controls; newterminal/TLS/string/privateFetch owners sourceonly. Zero newrootcompilers/reference replay/overall/guest.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true,
+    "freshComponentGroups": 0,
+    "freshAPIConformancePasses": 0
+  },
+  "sealedEvidence": {
+    "report": ".context/core266-io-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "85be11b45c1847112dee5b3a1cf02357ea2ddc61c2f05d85c8b5159a1bf509e3",
+    "reusedEvidence": true,
+    "scope": "Five immutableproducers with TTYcompletioncorrection/reviews and originalnative/helper/failureversions; reusedhistoricalscope only."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/terminal-shutdown-owner-agent/report.json",
+      "sha256": "29a2c789a7005a50b9f1835ab7cd72e3c052c0e21a16d22135a7ec49df43cffa",
+      "classification": "Threehistoricalhelperattempts/twoauthoredfixturecompilefailures; portable6/nativePTY2 are component/referenceonly; no newguestcompile.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/terminal-shutdown-completion-correction-agent/REPORT.md",
+      "sha256": "b43bd543f48ab837438cc450f57abbb6444bb5fa6134254e7c0d71bea32fe2be",
+      "classification": "OrdinarywriteStatus completion P2source correction, no execution; originalcapsuleunchanged.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/stream-string-write-owner-agent/report.json",
+      "sha256": "3a9fc3d21f40f1e6a4fc6ba3ae77736605b1149a67ad8479b583d4b5eec43d05",
+      "classification": "NativeTCPcodec-dependent5vsbefore1controls, twoextractionSyntaxErrorfailures retained; actualcandidateencoderCPPunexecuted and laterUTF8assertionsourceonly.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/tls-legacy-certificate-owner-agent/report.json",
+      "sha256": "7244cbed27cb6608a5b110d30c75d83962de6c7e278a260ae8b1d428b97ef12f",
+      "classification": "Native4observations targetonly; no candidate. Detailedtrue realissuerchain intentionally remains implementationgap, not acceptedboundary.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/fetch-private-dispatch-owner-root/report.json",
+      "sha256": "40fe1dba0d5d3e2e9a0de8370a29d6835a2946a1fb8ff5f97d31f94d7c50c375",
+      "classification": "CurrentURL routing source correction over durable265finding; no runtimeprobe or fullFetchclosure. OtherHTTPpublicgetters/SRI/shape/signalpolicy remain gaps.",
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "NativeJSAPI/root/realm/GC/OOM/frame/ref/fatal/Worker/fourhost unvalidated; publicTTYactivation/fullStreamBase/encodedmixed/privateoverloads remain open.",
+    "Mixedvectors/privateoverloads/prototypes/fullTCP/TTYphases and guestallocation/lifecycle/realm/fourhosts remain gaps.",
+    "Detailedissuersearch/truststore/selfcycle/identity/caches, newCPP/provider/errors/GC/realm/fatal/fullTLS/guest/fourhost conformance remain gaps.",
+    "HTTPconsumer stillpublicgetter/globalconstructor paths; fullFetchcontroller/SRI/functionshape/signalpolicy and newdata-routeguest/fourhost validation remain open."
+  ],
+  "featureContributions": [
+    {
+      "id": "terminal-shutdown-owner",
+      "family": "terminal",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-002",
+          "relation": "shared-request-finalization-prerequisite"
+        },
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-007",
+          "relation": "shared-request-finalization-prerequisite"
+        },
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-010",
+          "relation": "shared-request-finalization-prerequisite"
+        },
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-016",
+          "relation": "shared-request-finalization-prerequisite"
+        }
+      ],
+      "scope": "Real queuedSHUTDOWNWRAP/retainedTTYfd/finalization source plus ordinarywriteStatus completion correction; earlierwrite callbacks/closecancel/publicTTYinactive.",
+      "remaining": "NativeJSAPI/root/realm/GC/OOM/frame/ref/fatal/Worker/fourhost unvalidated; publicTTYactivation/fullStreamBase/encodedmixed/privateoverloads remain open.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "59fe69d70b00cbe592aa373f8b6a078bdd31f38c0dfc8197af8698211d42db7b",
+      "producerSeal": {
+        "path": ".context/terminal-shutdown-owner-agent/SEAL.json",
+        "sha256": "49b711fac0b225db23f5d941ccecbd2176e8149f9d8d42b541a11ccf06d1279c"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core266-io-batch-source-r1/report.json",
+        "sha256": "a9668355daae2aeaa013008e8cbc44c927408705f981295dc2d9f40dbf3a954d",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    },
+    {
+      "id": "stream-string-write-owner",
+      "family": "network",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-002",
+          "relation": "shared-native-string-write-prerequisite"
+        },
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-016",
+          "relation": "shared-native-string-write-prerequisite"
+        }
+      ],
+      "scope": "Four actualencodedstring/nativeSpan methods plus pinneddispatcher and deferredSocketstring/encoding; historical5nativecodec-dependent groups, currentCPPunexecuted.",
+      "remaining": "Mixedvectors/privateoverloads/prototypes/fullTCP/TTYphases and guestallocation/lifecycle/realm/fourhosts remain gaps.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "59fe69d70b00cbe592aa373f8b6a078bdd31f38c0dfc8197af8698211d42db7b",
+      "producerSeal": {
+        "path": ".context/stream-string-write-owner-agent/SEAL.json",
+        "sha256": "5f635bc632f78d09fda13123467fa36f696a343be023e3a6afd0f23309e217e2"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core266-io-batch-source-r1/report.json",
+        "sha256": "a9668355daae2aeaa013008e8cbc44c927408705f981295dc2d9f40dbf3a954d",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    },
+    {
+      "id": "tls-legacy-leaf-certificate",
+      "family": "secure-network",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/secure-network-contracts.md",
+          "findingId": "S-002",
+          "relation": "direct-selected-abbreviated-legacy-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/secure-network.md",
+          "findingId": "S-002",
+          "relation": "direct-selected-abbreviated-legacy-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/crypto.md",
+          "findingId": "C-001",
+          "relation": "broad-shared-X509-related-partial"
+        }
+      ],
+      "scope": "Real owned leafX509legacyprojection and abbreviatedpeerroute, exactpinnedtranslation; absent/presecure/closed policies source, detailedtrue issuerchain remains explicitmissing.",
+      "remaining": "Detailedissuersearch/truststore/selfcycle/identity/caches, newCPP/provider/errors/GC/realm/fatal/fullTLS/guest/fourhost conformance remain gaps.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "exactApiRequirements": [
+        {
+          "document": "tests/nodejs/audit/secure-network-requirements.json",
+          "path": "memberRequirements['node:tls']['TLSSocket.prototype.getPeerCertificate']",
+          "alias": "memberRequirements['node:_tls_wrap']['TLSSocket.prototype.getPeerCertificate']",
+          "scope": "Abbreviated/legacy partial only; detailedissuerchain missing."
+        },
+        {
+          "document": "tests/nodejs/audit/crypto-requirements.json",
+          "path": "memberRequirements['node:crypto']['X509Certificate.prototype.toLegacyObject']",
+          "scope": "Real legacyprojection owner, no wholeX509closure."
+        },
+        {
+          "document": "tests/nodejs/audit/crypto-contracts.md",
+          "reference": "X509 row at138",
+          "scope": "Unnumbered exactrow; no inventedfinding ID."
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "59fe69d70b00cbe592aa373f8b6a078bdd31f38c0dfc8197af8698211d42db7b",
+      "producerSeal": {
+        "path": ".context/tls-legacy-certificate-owner-agent/SEAL.json",
+        "sha256": "cfa8aa1c51f9681aa2e188b41ea9ef521b946e563b2a3ec9d4424df6c8336807"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core266-io-batch-source-r1/report.json",
+        "sha256": "a9668355daae2aeaa013008e8cbc44c927408705f981295dc2d9f40dbf3a954d",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    },
+    {
+      "id": "fetch-private-data-dispatch",
+      "family": "web",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/web.md",
+          "findingId": "WEB-005",
+          "relation": "partial-owning-data-dispatch-correction"
+        }
+      ],
+      "scope": "ActualRequestprivatecurrentURL determinesdata route before HTTPpublicgetters/globalURL parsing; sourceonly successor to durable source265routing finding.",
+      "remaining": "HTTPconsumer stillpublicgetter/globalconstructor paths; fullFetchcontroller/SRI/functionshape/signalpolicy and newdata-routeguest/fourhost validation remain open.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "59fe69d70b00cbe592aa373f8b6a078bdd31f38c0dfc8197af8698211d42db7b",
+      "producerSeal": {
+        "path": ".context/fetch-private-dispatch-owner-root/SEAL.json",
+        "sha256": "344e9fc66c9487515a527339431b1b74c18a00eab8d8d2dec20a5a3feb7aeb14"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core266-io-batch-source-r1/report.json",
+        "sha256": "a9668355daae2aeaa013008e8cbc44c927408705f981295dc2d9f40dbf3a954d",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    }
+  ],
+  "batchReceiptIndex": {
+    "report": ".context/core266-io-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "43f10f1c8499736a4ec0bf7799366f2b67373c7ed6eb39a695115d53ae63480c",
+    "scope": "Actual completed source/check/import receipts. Zero newcomponent/native/APIpasses; historicalTTY3helperattempts2failures creditedonce, no newrootcompiler/guest."
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "documentationGate": "Historical/native dependencies and failures retain originalscope; current source and package predicates do not establish APIpasses.",
+  "at": "2026-11-08T10:21:05.282096+00:00",
+  "recipeRevision": 266,
+  "lastAcceptedEngine": 263,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

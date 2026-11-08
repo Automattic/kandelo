@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <utility>
+#include <sys/socket.h>
 namespace kandelo::terminal {
 template<class SpanRef> struct WriteTicket {
   enum class Phase { Preparing, Queued, Delivering, Admitted, Retired };
@@ -81,6 +82,36 @@ template<class SpanRef> class WriteOwner {
         ticket->material.error = ECANCELED;ticket->material.complete = true;
       }
     }
+  }
+};
+// uv_shutdown admits one request after init, removes future write admission,
+// and performs the actual retained-fd shutdown only after all earlier write
+// callbacks retire. TTYs are not sockets: preserve real ENOTSOCK, not success.
+struct ShutdownTicket {
+  const uint64_t generation;
+  int error = 0;
+  bool queued = false, complete = false;
+  explicit ShutdownTicket(uint64_t generation) noexcept : generation(generation) {}
+};
+class ShutdownOwner {
+  const uint64_t generation_;
+  bool submitted_ = false;
+ public:
+  explicit ShutdownOwner(uint64_t generation) noexcept : generation_(generation) {}
+  bool WriteEnded() const noexcept { return submitted_; }
+  int Publish(ShutdownTicket& ticket, bool writable, bool closing) noexcept {
+    if (ticket.generation != generation_ || ticket.queued || ticket.complete) return EINVAL;
+    if (submitted_ || !writable || closing) return ENOTCONN;
+    submitted_ = true;ticket.queued = true;return 0;
+  }
+  template<class IO>
+  bool Progress(ShutdownTicket& ticket, IO& io, bool earlierWrites, bool closing) noexcept {
+    if (ticket.complete) return true;
+    if (!ticket.queued || ticket.generation != generation_) return false;
+    if (earlierWrites) return false;
+    if (closing || io.Descriptor() < 0) ticket.error = ECANCELED;
+    else if (::shutdown(io.Descriptor(), SHUT_WR) < 0) ticket.error = errno;
+    ticket.complete = true;return true;
   }
 };
 }  // namespace kandelo::terminal

@@ -74,13 +74,20 @@
       "start": "  const req = new ShutdownWrap();",
       "length": 314,
       "sha256": "82c33e1d172355bea67022b5925a1f75a1b515d0419cfca0624f9c75924274cb",
-      "adaptation": "new ShutdownWrap() -> platform.native.socketShutdownRequest(owner); this._handle -> owner; actual retained native identity, no dummy constructor"
+      "adaptation": "new ShutdownWrap() -> createShutdownRequest(owner); actual native TCP or terminal request factory selected by admitted private kind; this._handle -> owner"
     },
     "afterShutdown": {
       "source": "net",
       "start": "function afterShutdown() {",
       "length": 146,
       "sha256": "56ece3b9e776dfe8a10944599d5a0b5a0ed84b5be3d71de5af29bfffe5fb054b"
+    },
+    "writeGeneric": {
+      "source": "stream",
+      "start": "function writeGeneric(",
+      "length": 828,
+      "sha256": "63599782837037ddbff72584b5b3b522e7b66e8915f1404043490855becc9223",
+      "adaptation": "self->handle parameter; remove self[kHandle] lookup; actual private admitted native owner passed directly"
     }
   },
   "tcpProvider": {
