@@ -1,0 +1,156 @@
+diff --git a/js/src/builtin/Promise.cpp b/js/src/builtin/Promise.cpp
+index 57b6206ea3d084bae6918412999a964c7653ae70..805327ec34ec65ea73674d411427f6d1916b88c3 100644
+--- a/js/src/builtin/Promise.cpp
++++ b/js/src/builtin/Promise.cpp
+@@ -5361,4 +5361,23 @@ static bool PromiseThenNewPromiseCapability(
+   }
+
++  // Only the current realm's exact intrinsic constructor gets this parent,
++  // as in V8 PromisePrototypeThen's AllocateAndInit branch. Foreign-realm,
++  // wrapped and custom species constructors create parentless side promises.
++  RootedObject intrinsic(cx, GlobalObject::getOrCreatePromiseConstructor(cx, cx->global()));
++  if (!intrinsic) return false;
++  const double priorParent = cx->kandeloAsyncParentId();
++  RootedValue priorParentPromise(cx, cx->kandeloAsyncPromiseParent());
++  auto restoreParent = mozilla::MakeScopeExit([&] {
++    cx->kandeloAsyncParentId() = priorParent;
++    cx->kandeloAsyncPromiseParent() = priorParentPromise;
++  });
++  cx->kandeloAsyncParentId() = -1;
++  cx->kandeloAsyncPromiseParent() = UndefinedValue();
++  if (C.get() == intrinsic.get() && cx->kandeloPromiseInitActive()) {
++    double parentId;
++    if (!GetKandeloPromiseParentId(cx, promiseObj, &parentId)) return false;
++    cx->kandeloAsyncParentId() = parentId;
++    cx->kandeloAsyncPromiseParent() = ObjectValue(*promiseObj);
++  }
+   // Step 4. Let resultCapability be ? NewPromiseCapability(C).
+   if (!NewPromiseCapability(cx, C, resultCapability, true)) {
+@@ -5414,10 +5433,15 @@ static bool PromiseThenNewPromiseCapability(
+   // Step 4. Let resultCapability be ? NewPromiseCapability(C).
+   const double priorParent = cx->kandeloAsyncParentId();
++  RootedValue priorParentPromise(cx, cx->kandeloAsyncPromiseParent());
+   if (cx->kandeloPromiseInitActive()) {
+     double parentId;
+     if (!GetKandeloPromiseParentId(cx, unwrappedPromise, &parentId)) return nullptr;
+     cx->kandeloAsyncParentId() = parentId;
++    cx->kandeloAsyncPromiseParent() = ObjectValue(*unwrappedPromise);
+   }
+-  auto restoreParent = mozilla::MakeScopeExit([&] { cx->kandeloAsyncParentId() = priorParent; });
++  auto restoreParent = mozilla::MakeScopeExit([&] {
++    cx->kandeloAsyncParentId() = priorParent;
++    cx->kandeloAsyncPromiseParent() = priorParentPromise;
++  });
+   Rooted<PromiseObject*> newPromise(
+       cx, CreatePromiseObjectWithoutResolutionFunctions(cx));
+@@ -5584,10 +5608,15 @@ static bool OriginalPromiseThenBuiltin(JSContext* cx, HandleValue promiseVal,
+   if (rvalUsed) {
+     const double priorParent = cx->kandeloAsyncParentId();
++    RootedValue priorParentPromise(cx, cx->kandeloAsyncPromiseParent());
+     if (cx->kandeloPromiseInitActive()) {
+       double parentId;
+       if (!GetKandeloPromiseParentId(cx, promise, &parentId)) return false;
+       cx->kandeloAsyncParentId() = parentId;
++      cx->kandeloAsyncPromiseParent() = ObjectValue(*promise);
+     }
+-    auto restoreParent = mozilla::MakeScopeExit([&] { cx->kandeloAsyncParentId() = priorParent; });
++    auto restoreParent = mozilla::MakeScopeExit([&] {
++      cx->kandeloAsyncParentId() = priorParent;
++      cx->kandeloAsyncPromiseParent() = priorParentPromise;
++    });
+     PromiseObject* resultPromise =
+         CreatePromiseObjectWithoutResolutionFunctions(cx);
+diff --git a/js/src/vm/JSContext.cpp b/js/src/vm/JSContext.cpp
+index 6974ff1d459940773524ec58e6fc6fe1087cbb21..010a77f88c385cf6d1f63ed6a602611740d7c5a8 100644
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -853,5 +853,6 @@ bool JSContext::getKandeloDefaultTriggerAsyncId(double* result) {
+ bool JSContext::notifyKandeloAsyncLifecycle(const char* kind,
+                                            HandleObject resource,
+-                                           HandleValue frame) {
++                                           HandleValue frame,
++                                           HandleValue promiseParent) {
+   RootedValue callback(this, kandeloAsyncLifecycleHook());
+   if (callback.isUndefined()) return true;
+@@ -859,9 +860,11 @@ bool JSContext::notifyKandeloAsyncLifecycle(const char* kind,
+   RootedString name(this, JS_NewStringCopyZ(this, kind));
+   if (!name) return false;
+-  JS::RootedValueArray<3> args(this);
++  JS::RootedValueArray<4> args(this);
+   args[0].setString(name);
+   args[1].setObject(*resource);
+   args[2].set(frame);
+-  if (!JS_WrapValue(this, args[1]) || !JS_WrapValue(this, args[2])) return false;
++  args[3].set(promiseParent);
++  if (!JS_WrapValue(this, args[1]) || !JS_WrapValue(this, args[2]) ||
++      !JS_WrapValue(this, args[3])) return false;
+   RootedValue result(this);
+   return JS::Call(this, UndefinedHandleValue, callback, args, &result);
+@@ -917,8 +920,15 @@ bool js::InitKandeloPromiseResource(JSContext* cx, HandleObject promise) {
+   RootedObject data(cx, &promise->as<PromiseObject>().getReservedSlot(PromiseSlot_KandeloAsyncResource).toObject());
+   const double parent = cx->kandeloAsyncParentId();
++  RootedValue parentPromise(cx, cx->kandeloAsyncPromiseParent());
++  // Hook-created side promises are roots of their own construction, not
++  // children of the Promise whose init callback is currently executing.
+   cx->kandeloAsyncParentId() = -1;
+-  auto restore = mozilla::MakeScopeExit([&] { cx->kandeloAsyncParentId() = parent; });
++  cx->kandeloAsyncPromiseParent() = UndefinedValue();
++  auto restore = mozilla::MakeScopeExit([&] {
++    cx->kandeloAsyncParentId() = parent;
++    cx->kandeloAsyncPromiseParent() = parentPromise;
++  });
+   RootedValue frame(cx, data->as<KandeloAsyncResourceData>().getReservedSlot(2));
+-  return cx->notifyKandeloAsyncLifecycle("promise:init", promise, frame);
++  return cx->notifyKandeloAsyncLifecycle("promise:init", promise, frame, parentPromise);
+ }
+ bool js::ResolveKandeloPromiseResource(JSContext* cx, HandleObject promise) {
+@@ -1240,4 +1250,5 @@ JSContext::JSContext(JSRuntime* runtime, const JS::ContextOptions& options)
+       kandeloAsyncIdCounter_(this, 0),
+       kandeloAsyncParentId_(this, -1),
++      kandeloAsyncPromiseParent_(this),
+       kandeloPromiseHookMode_(this, 0),
+       kandeloInternalMicrotask_(this, false),
+diff --git a/js/src/vm/JSContext.h b/js/src/vm/JSContext.h
+index a2ddaeca714e87e100fd0d7e00cf63441fb8d153..cbb46a5a80b1601e84c241537e4c5df9c2c1f313 100644
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -613,4 +613,7 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
+   js::ContextData<double> kandeloAsyncIdCounter_;
+   js::ContextData<double> kandeloAsyncParentId_;
++  // A synchronous intrinsic Promise-birth scope owns this actual parent.
++  // Never retain a child->parent edge in Promise resource metadata.
++  js::ContextData<JS::PersistentRooted<JS::Value>> kandeloAsyncPromiseParent_;
+   // Native producer admission, independent from ALS snapshot propagation.
+   js::ContextData<uint8_t> kandeloPromiseHookMode_;
+@@ -731,5 +734,12 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
+   bool kandeloAsyncProperty(const char* name, JS::MutableHandleValue value);
+   bool notifyKandeloAsyncLifecycle(const char* kind, JS::HandleObject resource,
+-                                   JS::HandleValue frame);
++                                   JS::HandleValue frame,
++                                   JS::HandleValue promiseParent = JS::UndefinedHandleValue);
++  JS::Value& kandeloAsyncPromiseParent() {
++    if (!kandeloAsyncPromiseParent_.ref().initialized()) {
++      kandeloAsyncPromiseParent_.ref().init(this);
++    }
++    return kandeloAsyncPromiseParent_.ref().get();
++  }
+
+   // Private embedding state, rooted independently of the active realm. Job
+diff --git a/js/src/vm/MemoryMetrics.cpp b/js/src/vm/MemoryMetrics.cpp
+index eb9a96597bdcd0fbf2afec24762ee3efa6672ac7..c7e38948ee7e38a3bdf4b88bb41d92ff148778e3 100644
+--- a/js/src/vm/MemoryMetrics.cpp
++++ b/js/src/vm/MemoryMetrics.cpp
+@@ -838,6 +838,11 @@ JS::CollectKandeloArrayBufferSnapshot(JSContext* cx, MallocSizeOf mallocSizeOf,
+   // active incremental collection and no callback before entry, that operation
+   // cannot collect/reenter. Busy contexts fail before taking any data pointers.
+-  if (RuntimeHeapIsBusy() || IsIncrementalGCInProgress(cx) || cx->suppressGC ||
+-      !cx->isNurseryAllocAllowed()) return Status::Busy;
++  if (RuntimeHeapIsBusy() || IsIncrementalGCInProgress(cx) || cx->suppressGC)
++    return Status::Busy;
++#ifdef DEBUG
++  // This nursery-allocation assertion state exists only in debug builds in
++  // the pinned engine. Keep its guard without depending on it in release.
++  if (!cx->isNurseryAllocAllowed()) return Status::Busy;
++#endif
+   KandeloBufferWalk walk(mallocSizeOf);
+   KandeloArrayBufferSnapshot snapshot;

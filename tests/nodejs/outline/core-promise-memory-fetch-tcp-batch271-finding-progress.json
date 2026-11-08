@@ -1,0 +1,312 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/async.md",
+    "findingIds": [
+      "A-022"
+    ],
+    "relatedFamilies": [
+      "async",
+      "observability",
+      "web",
+      "network"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/async.md",
+        "findingId": "A-022",
+        "relation": "direct-partial",
+        "scope": "Actual rooted Promise-parent channel and strict-current-realm intrinsic slow-path AsyncHook trigger; not raw public hooks"
+      },
+      {
+        "document": "tests/nodejs/audit/observability.md",
+        "findingId": "O-012",
+        "relation": "shared-owning-prerequisite",
+        "scope": "Release build admission for existing real backing-allocation snapshot; public memoryUsage remains inactive"
+      },
+      {
+        "document": "tests/nodejs/audit/web-contracts.md",
+        "findingId": "WEB-005",
+        "relation": "direct-partial",
+        "scope": "Strict ordinary public wrapper with real two-formal forwarding and captured inner WebIDL argument check"
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-013",
+        "relation": "shared-owning-prerequisite",
+        "scope": "Actual plain TCP registration/pending completion, request roots and callback-scope retirement"
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-020",
+        "relation": "direct-partial",
+        "scope": "Failed-connect queued-write cancellation, real pending completion and stop/error publication fences"
+      }
+    ],
+    "scope": "Actual Promise-parent owner, release build guard prerequisite, Fetch strict wrapper and TCP event/request ownership; no API or finding closure."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "promise-parent-intrinsic-prerequisite",
+      "scope": "Consumed actual-parent engine channel and existing AsyncHook native ID consumer. No synthetic ID map or persistent child-parent edge."
+    },
+    {
+      "feature": "backing-snapshot-release-build-correction",
+      "scope": "DEBUG-only nursery admission state stays guarded under DEBUG; existing real snapshot/error/GC ownership unchanged."
+    },
+    {
+      "feature": "fetch-strict-public-forwarding-webidl",
+      "scope": "Narrow strict factory gives actual ordinary named/default-parameter Fetch function; Request remains real conversion owner; no new public missing-arg rejection."
+    },
+    {
+      "feature": "tcp-registration-pending-drain-scope",
+      "scope": "Only full root270-to-final90e870 unit, including real empty queued requests, lexical callback checkpoints and stop/exception fences. Old/intermediate patches are historical only."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core271-promise-memory-fetch-tcp-source-r1/report.json",
+    "sha256": "1aee69ef8ae14151a5e1b6d26dbb5c073b4504cdc2559788abfd7c54c6affb7f",
+    "guardedInputs": 934,
+    "scope": "One normal source271 source/staging/input check plus four owning contributions and retained270 guards; no native/component reruns, compiler or guest proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core271-promise-memory-fetch-tcp-affected-r1.json",
+    "sha256": "d93f178f8761d8dcd95ddd9f8aba7ec8f50b17948a871c24c3deefb15e274a64",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core271-promise-memory-fetch-tcp-source-r1/report.json",
+    "sha256": "1aee69ef8ae14151a5e1b6d26dbb5c073b4504cdc2559788abfd7c54c6affb7f",
+    "reportScope": "One normal source271 source/staging/input check plus four owning contributions and retained270 guards; no native/component reruns, compiler or guest proof.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true,
+    "freshComponentGroups": 0,
+    "freshAPIConformancePasses": 0,
+    "sourceAddressingRequiresActualGuards": true,
+    "historicalNativeHelperAttemptsCredited": 2,
+    "priorGuestEngineAttemptsCredited": 1,
+    "priorGuestEngineFailuresCredited": 1
+  },
+  "sealedEvidence": {
+    "report": ".context/core271-promise-memory-fetch-tcp-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "5bc60a5063da72beea17c0441c1e4f9fb05b39d604bcfc09908f46f9298d333c",
+    "reusedEvidence": true,
+    "scope": "Exact reviewed Promise-parent, MemoryMetrics release guard, full Fetch strict successor and full TCP root-to-final successor. Historical helper/reference scope only; zero fresh API/runtime groups."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/engine270-terminal-attribution-r1.json",
+      "sha256": "38bd44fbd0af558c30969d03a196b395545d2140534b467d02e7674d24d67df8",
+      "classification": "Actual source270 selected engine compile attempt failed once on release call to DEBUG-only nursery API. Counted as one guest engine failure, not a native helper. No other dependency attempt inferred from the plan.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/engine270-manager-records-r2/copy-receipt.json",
+      "sha256": "13f3b26a32e1ba3e46d98d43f17f8c5b5777c92c1ae5823329c2e7cb9fa8ae87",
+      "classification": "Actual manager metadata copy r1 used wrong registry path; r2 retained exact terminal manager files. Administrative setup observation only, no build rerun.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/fetch-front-root-review-r1/review.json",
+      "sha256": "3fbdc6c042c0fcbae2bbd27b47be4de180ee0d44d726ac4c10f95c39f428b1fe",
+      "classification": "Original Fetch module-strictness claim contradicted by actual generated Script path. Original5f294 source rejected; full strict-factory successor is separate source addressing, no runtime test.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/tcp-registration-review-agent/review.json",
+      "sha256": "e836a3aee87af9938517a3742ae78a645e2c6f325e474a519f189df5ae113cb2",
+      "classification": "Original two registration stranding paths retained; full successor addresses source only, not runtime closure.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/tcp-registration-pending-independent-review-agent/review.json",
+      "sha256": "0b7338d5abf355d256dfd648889b4070b3cf3407d55a9375fc3d054c0b327655",
+      "classification": "Intermediate65c08 rejected for empty-write drain, callback-scope depth and stopped getter entry. All original source findings remain immutable; final90e870 source review is separate.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/tcp-registration-drain-scope-correction-agent/packaging-observation.json",
+      "sha256": "efabcb36aa37801a1bdc100eb2210b1928171af8c149ffc4308d06bb8e1519b1",
+      "classification": "Private member-schema packaging KeyError before source writes; no compiler/runtime failure.",
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "Public v8.promiseHooks shared chronological registry/multiplex/raw-only mode and real error owner; actual creation/order/GC/realm/Worker/four-host validation.",
+    "Actual guest compilation/runtime/GC proof, unmaterialized/shared/mapped/Wasm/external classes, process RSS/CPU/heap providers and public memoryUsage.",
+    "SRI, prior cancellation nonpasses, error/controller/Promise/stack/lazy import, HTTP getter/transport/redirect/cache/filter/CORS and four-host conformance.",
+    "Guest JSAPI/GC/OOM/realm/stopping/Worker execution; supplied-fd/Pipe/TLS/legacy interest/metadata/full Server and four-host conformance.",
+    "Supplied-fd, TLS/legacy event interest, public Promise multiplexer, SRI/cancellation and broader guest/four-host paths remain incomplete."
+  ],
+  "featureContributions": [
+    {
+      "id": "promise-parent-intrinsic-prerequisite",
+      "family": "async",
+      "scope": "Consumed actual-parent engine channel and existing AsyncHook native ID consumer. No synthetic ID map or persistent child-parent edge.",
+      "remaining": "Public v8.promiseHooks shared chronological registry/multiplex/raw-only mode and real error owner; actual creation/order/GC/realm/Worker/four-host validation.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/async.md",
+          "findingId": "A-022",
+          "relation": "direct-partial",
+          "scope": "Actual rooted Promise-parent channel and strict-current-realm intrinsic slow-path AsyncHook trigger; not raw public hooks"
+        }
+      ],
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "c4eb31e7a3dc0a0363af9eec9e924c6ec92db9f65fc79faeac9a12224806ea2c",
+      "producerSeal": {
+        "path": ".context/promise-parent-owner-agent/SEAL.json",
+        "sha256": "0a9ad2071b132ca7542323cbc58aef83a7eea19b0edc61610146e66a35038ba0"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core271-promise-memory-fetch-tcp-source-r1/report.json",
+        "sha256": "1aee69ef8ae14151a5e1b6d26dbb5c073b4504cdc2559788abfd7c54c6affb7f",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "backing-snapshot-release-build-correction",
+      "family": "observability",
+      "scope": "DEBUG-only nursery admission state stays guarded under DEBUG; existing real snapshot/error/GC ownership unchanged.",
+      "remaining": "Actual guest compilation/runtime/GC proof, unmaterialized/shared/mapped/Wasm/external classes, process RSS/CPU/heap providers and public memoryUsage.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/observability.md",
+          "findingId": "O-012",
+          "relation": "shared-owning-prerequisite",
+          "scope": "Release build admission for existing real backing-allocation snapshot; public memoryUsage remains inactive"
+        }
+      ],
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "c4eb31e7a3dc0a0363af9eec9e924c6ec92db9f65fc79faeac9a12224806ea2c",
+      "producerSeal": {
+        "path": ".context/backing-snapshot-build-correction-owner/SEAL.json",
+        "sha256": "87ef9e682a0a9ce41fbd2161101c2ebbcfea81f9e486da5d8c3c5386ba7865e0"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core271-promise-memory-fetch-tcp-source-r1/report.json",
+        "sha256": "1aee69ef8ae14151a5e1b6d26dbb5c073b4504cdc2559788abfd7c54c6affb7f",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "fetch-strict-public-forwarding-webidl",
+      "family": "web",
+      "scope": "Narrow strict factory gives actual ordinary named/default-parameter Fetch function; Request remains real conversion owner; no new public missing-arg rejection.",
+      "remaining": "SRI, prior cancellation nonpasses, error/controller/Promise/stack/lazy import, HTTP getter/transport/redirect/cache/filter/CORS and four-host conformance.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/web-contracts.md",
+          "findingId": "WEB-005",
+          "relation": "direct-partial",
+          "scope": "Strict ordinary public wrapper with real two-formal forwarding and captured inner WebIDL argument check"
+        }
+      ],
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "c4eb31e7a3dc0a0363af9eec9e924c6ec92db9f65fc79faeac9a12224806ea2c",
+      "producerSeal": {
+        "path": ".context/fetch-front-strict-owner-agent/SEAL.json",
+        "sha256": "0a10a71674073b859062750936575fdfe4984a24aa09bcf8b9ef98628a74a0e3"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core271-promise-memory-fetch-tcp-source-r1/report.json",
+        "sha256": "1aee69ef8ae14151a5e1b6d26dbb5c073b4504cdc2559788abfd7c54c6affb7f",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "tcp-registration-pending-drain-scope",
+      "family": "network",
+      "scope": "Only full root270-to-final90e870 unit, including real empty queued requests, lexical callback checkpoints and stop/exception fences. Old/intermediate patches are historical only.",
+      "remaining": "Guest JSAPI/GC/OOM/realm/stopping/Worker execution; supplied-fd/Pipe/TLS/legacy interest/metadata/full Server and four-host conformance.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-013",
+          "relation": "shared-owning-prerequisite",
+          "scope": "Actual plain TCP registration/pending completion, request roots and callback-scope retirement"
+        },
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-020",
+          "relation": "direct-partial",
+          "scope": "Failed-connect queued-write cancellation, real pending completion and stop/error publication fences"
+        }
+      ],
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "c4eb31e7a3dc0a0363af9eec9e924c6ec92db9f65fc79faeac9a12224806ea2c",
+      "producerSeal": {
+        "path": ".context/tcp-registration-drain-scope-correction-agent/SEAL.json",
+        "sha256": "90e8704dae7814f39f40849e0c8167c74a8485ab2318ec81ecf408cde373dde4"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core271-promise-memory-fetch-tcp-source-r1/report.json",
+        "sha256": "1aee69ef8ae14151a5e1b6d26dbb5c073b4504cdc2559788abfd7c54c6affb7f",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    }
+  ],
+  "batchReceiptIndex": {
+    "report": ".context/core271-promise-memory-fetch-tcp-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "e63796b9dc14d706a306cd84398d385febc69cbc90e190eb78d1d0ae17642cb9",
+    "scope": "Actual completed source/check/import receipts. Zero new component/native/API passes or source271 compiler/guest runs; actual prior engine2701 and historical native helpers2 credited separately and once."
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "documentationGate": "Historical native observations and negative outcomes retain their original scope. Current source/package predicates do not establish API passes.",
+  "sourceAddressing": {
+    "report": ".context/core271-promise-memory-fetch-tcp-batch-metadata-bound-r1/source-addressed-gaps.json",
+    "sha256": "2a089730ea4ed7778c1026148d17fb0a4edb28d00c5746b99f62eb557c364ad0",
+    "scope": "Actual combined source addressing only; original source findings and rejected intermediate capsules remain historical, no runtime/API closure."
+  },
+  "engine270Failure": {
+    "report": ".context/core271-promise-memory-fetch-tcp-batch-metadata-bound-r1/build-attribution.json",
+    "sha256": "f2d7735319b684ea505cc239d7e76f5bb9eb8060c8259eb937cb10f8d530f259",
+    "scope": "One actual source270 selected engine failure, credited separately from two historical native TCP helper successes. No source271 compilation or guest run."
+  },
+  "at": "2026-11-08T12:49:33.745624+00:00",
+  "recipeRevision": 271,
+  "lastAcceptedEngine": 263,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

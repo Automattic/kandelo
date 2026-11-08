@@ -7363,3 +7363,7 @@ Source269 adds ordinary non-forced public FIPS state over the linked native owne
 ### Listener acceptance, public TTY composition and SourceMap support reader
 
 Source 270 restores the consumed native listener accept provider and required export, routes public pinned TTY constructors through real native/Socket owners with actual ShutdownWrap packet values, and forwards the original SourceMap support reader. Actual combined source guards and one source/package batch support source addressing only; no guest or API conformance is claimed.
+
+### Promise parent ownership, release snapshot guard, Fetch entry and TCP completion
+
+Source 271 consumes the actual Promise parent, corrects the release-only snapshot admission call, gives Fetch a real strict ordinary wrapper over captured WebIDL, and incorporates reviewed TCP registration and completion ownership. Source checks are not runtime conformance. The actual failed source270 engine attempt and two historical TCP helper compiles are attributed separately.

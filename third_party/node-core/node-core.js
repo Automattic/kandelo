@@ -8769,7 +8769,7 @@ class AsyncResource {
         }
         return record;
     }
-    function lifecycle(kind, resource, capturedFrame) {
+    function lifecycle(kind, resource, capturedFrame, promiseParent) {
         if (kind === 'frame:enter') {
             // Host-defined job context is real even with Promise observers off.
             // Do not allocate an id or enter any execution-resource scope.
@@ -8792,7 +8792,12 @@ class AsyncResource {
         if (kind === 'native:init') nativeResources.delete(resource);
         const record = nativeResource(resource, kind === 'promise:init');
         if (kind === 'promise:init' || kind === 'task:init' || kind === 'native:init') {
-            emit('init', [record.id, record.nativeType ?? (record.isPromise ? 'PROMISE' : 'Microtask'), record.triggerId, record.executionResource], record.isPromise);
+            // The engine supplies an actual rooted parent only for a witnessed
+            // intrinsic child birth. Read its existing native identity; never
+            // reconstruct a Promise from a numeric ID or retain it on a child.
+            const triggerId = kind === 'promise:init' && promiseParent !== undefined
+                ? nativeResource(promiseParent).id : record.triggerId;
+            emit('init', [record.id, record.nativeType ?? (record.isPromise ? 'PROMISE' : 'Microtask'), triggerId, record.executionResource], record.isPromise);
         } else if (kind === 'promise:resolve') {
             emit('promiseResolve', [record.id], true);
         } else if (kind === 'before' || kind === 'promise:before') {
@@ -128763,6 +128768,7 @@ function _createNodeFetchBodyPlatform(platform) {
     const { ReadableStream, TransformStream } = platform.stream.web;
     const { isReadable: isReadableStream, finished: streamFinished } = platform.stream.api;
     const requireStream = platform.stream.require;
+    const argumentLengthCheck = platform.formData.webidl.argumentLengthCheck;
     const factories = {
         __proto__: null,
         "multipart": function(module, exports, require) {
@@ -133676,7 +133682,7 @@ module.exports = {
     }
 
     return { ...body, ...response, ...require('request'), responseBodyFromIncoming, fetchDataURL,
-        isFormData: platform.formData.webidl.is.FormData };
+        argumentLengthCheck, isFormData: platform.formData.webidl.is.FormData };
 }
 // Unchanged pinned X509 wrapper/cache/validation over real native certificates.
 function _createNodeX509Platform(platform) {

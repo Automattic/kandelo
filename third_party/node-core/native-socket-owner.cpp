@@ -9,7 +9,9 @@
 #include <netinet/tcp.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <algorithm>
 #include <fcntl.h>
+#include <poll.h>
 namespace {
 namespace SocketStreamStateFields = kandelo::socket::state;
 using KandeloSocketWriteMaterial = kandelo::socket::Write<JS::KandeloBacking::SpanRef>;
@@ -33,7 +35,7 @@ struct KandeloSocketState {
   uint64_t writeSequence = 0;
   bool connect = false, connectSubmitted = false, connectPreparing = false, writeResource = false, shutdownResource = false;
   int connectError = 0;
-  bool retired = false, detached = false, closing = false, closeCompleted = false, socketPublished = false, callbackActive = false;
+  bool retired = false, detached = false, closing = false, closeCompleted = false, socketPublished = false, callbackActive = false, completionReserved = false;
   kandelo::memory::Allocation allocation{sizeof(KandeloSocketState)};
   kandelo::memory::Claims claims;
   std::unique_ptr<kandelo::memory::Claim> readClaim, inflightReadClaim;
@@ -74,6 +76,20 @@ struct KandeloSocketState {
 // It is confined to the JS thread; context shutdown removes its own entries.
 static thread_local KandeloSocketState* gKandeloSocketOwners = nullptr;
 static thread_local uint64_t gKandeloSocketGeneration = 0;
+// Native poll collection and future supplied-fd admission share this exact
+// per-context event authority. No request root or fd ownership implies events.
+static short KandeloPlainTcpRegisteredEvents(JSContext* cx, int fd) {
+  if (fd < 0) return 0;
+  short events = 0;
+  for (auto* state = gKandeloSocketOwners;state;state = state->next) {
+    if (state->cx != cx || state->detached || !state->socket || state->socket->Fd() != fd) continue;
+    const auto& registration = state->socket->PollRegistration();
+    if (registration.ReadRegistered()) events |= POLLIN;
+    if (registration.WriteRegistered()) events |= POLLOUT;
+  }
+  return events;
+}
+
 static void KandeloSocketOwnerUnlink(KandeloSocketState* state) {
   auto** link = &gKandeloSocketOwners;
   while (*link) {
@@ -612,6 +628,17 @@ static bool KandeloSocketEarlierWrite(JSContext* cx, HandleObject parent) {
   }
   return false;
 }
+// Drain authority is actual admitted incomplete queue membership, including
+// zero-byte requests. EarlierWrite intentionally remains a byte-policy helper
+// for try-write admission and cannot answer whether this queue is drained.
+static bool KandeloSocketHasQueuedWrite(JSContext* cx, HandleObject parent) {
+  for (auto* work = gKandeloSocketOwners;work;work = work->next) {
+    if (work->cx != cx || !work->write || !work->pending || work->write->complete) continue;
+    RootedObject request(cx, *work->pending);
+    if (JS::GetReservedSlot(request, SocketParent) == ObjectValue(*parent)) return true;
+  }
+  return false;
+}
 static bool KandeloSocketWriteResult(JSContext* cx, HandleValue streamState,
                                      uint64_t bytes, int error, HandleObject request,
                                      MutableHandleValue result) {
@@ -653,7 +680,8 @@ static bool KandeloSocketSubmitWrite(JSContext* cx, HandleObject parent,
   RootedObject empty(cx);
   // Capture precedes try-write and request initialization. A completed initial
   // try-write has no WRITEWRAP; EAGAIN retains the same original allocations.
-  if (!KandeloSocketEarlierWrite(cx, parent) && parentState->socket->ProgressWrite(*work))
+  if (!parentState->socket->PollRegistration().Connecting() &&
+      !KandeloSocketEarlierWrite(cx, parent) && parentState->socket->ProgressWrite(*work))
     return KandeloSocketWriteResult(cx, streamState, bytes, work->error, empty, result);
   RootedObject request(cx, JS_NewObject(cx, &KandeloSocketWriteClass)); if (!request) return false;
   std::unique_ptr<KandeloSocketState> preparing;
@@ -682,7 +710,9 @@ static bool KandeloSocketSubmitWrite(JSContext* cx, HandleObject parent,
   const int submissionError = parentState->socket->ValidateWrite(*state->write);
   if (submissionError)
     return KandeloSocketWriteResult(cx, streamState, bytes, submissionError, request, result);
-  if (!KandeloSocketEarlierWrite(cx, parent)) parentState->socket->ProgressWrite(*state->write, true);
+  if (!parentState->socket->PollRegistration().Connecting() && !KandeloSocketEarlierWrite(cx, parent))
+    parentState->socket->ProgressWrite(*state->write, true);
+  parentState->socket->AdmitQueuedWrite(*state->write);
   state->writeSequence = ++parentState->writeSequence;
   state->next = gKandeloSocketOwners; gKandeloSocketOwners = state;
   submitted = true;
@@ -787,13 +817,14 @@ static int KandeloDispatchSocketWrite(JSContext* cx, KandeloSocketState* state) 
     RootedObject earlier(cx, *prior->pending);
     if (JS::GetReservedSlot(earlier, SocketParent) == ObjectValue(*parent)) return 0;
   }
-  if (parentState->socket->Fd() < 0 && !state->write->complete) {
-    state->write->error = ECANCELED; state->write->complete = true;
-  } else if (!parentState->socket->ProgressWrite(*state->write, true)) return 0;
+  if (!parentState->socket->ProgressQueuedWrite(*state->write)) return 0;
   state->callbackActive = true;
   auto leaveCallback = mozilla::MakeScopeExit([&] { state->callbackActive = false; });
   auto disposeRequest = mozilla::MakeScopeExit([&] {
     KandeloRetireSocketRequest(request, state);
+    // The actual callback/after/tick scope has returned. Nested writes keep
+    // their own queued interest; no completion root itself rearms POLLOUT.
+    parentState->socket->RetireWriteCallback(KandeloSocketHasQueuedWrite(cx, parent));
     KandeloSocketRetireClosed(cx, parent, parentState);
   });
   RootedValue callback(cx), status(cx, Int32Value(-state->write->error));
@@ -1026,18 +1057,13 @@ static bool KandeloNativeConnectSocketOwner(JSContext* cx, unsigned argc, Value*
       }
       const int openError = ensureDescriptor();
       if (openError) { KandeloRetireSocketRequest(request, state); KandeloSocketRetireClosed(cx, owner, parentState); return failed(openError, "connect"); }
-      int connected;
-      do {
-        errno = 0;
-        connected = connect(parentState->socket->Fd(), target->ai_addr, target->ai_addrlen);
-      } while (connected < 0 && errno == EINTR);
-      if (connected < 0 && errno != 0 && errno != EINPROGRESS) {
-        if (errno == ECONNREFUSED) state->connectError = ECONNREFUSED;
-        else {
-          const int error = errno; KandeloRetireSocketRequest(request, state);
-          KandeloSocketRetireClosed(cx, owner, parentState); return failed(error, "connect");
-        }
+      int delayedError;
+      const int connectError = parentState->socket->SubmitConnect(target->ai_addr, target->ai_addrlen, &delayedError);
+      if (connectError) {
+        KandeloRetireSocketRequest(request, state);
+        KandeloSocketRetireClosed(cx, owner, parentState);return failed(connectError, "connect");
       }
+      state->connectError = delayedError;
       state->connectSubmitted = true;
       submitted = true; result.setObject(*request); return true;
     };
@@ -1083,37 +1109,99 @@ static bool KandeloNativeRefSocketOwnerConnect(JSContext* cx, unsigned argc, Val
   auto* parent = KandeloSocketOwnerState(cx, owner); if (!parent) return false;
   parent->socket->Ref(JS::ToBoolean(args.get(1))); return true;
 }
+static void KandeloCancelConnectQueuedWrites(JSContext* cx, HandleObject parent,
+                                               KandeloSocketState* parentState) {
+  // Native-only cancellation is safe even while preserving a pending original
+  // exception. Actual private parent slots/rooted requests are the authority.
+  for (auto* work = gKandeloSocketOwners;work;work = work->next) {
+    if (work->cx != cx || !work->write || !work->pending || work->write->complete) continue;
+    if (JS::GetReservedSlot(*work->pending, SocketParent) == ObjectValue(*parent))
+      parentState->socket->CancelQueuedWrite(*work->write);
+  }
+}
+static bool KandeloFlushConnectQueuedWrites(JSContext* cx, HandleObject parent,
+                                            KandeloSocketState* parentState) {
+  // The admission cut is AFTER the connect callback/after/tick scope: writes
+  // admitted by it are included. Only the following completed batch is fixed,
+  // so writes later created by these write callbacks are not swallowed here.
+  KandeloCancelConnectQueuedWrites(cx, parent, parentState);
+  // Cancellation is native-only. A stopped environment must not allocate a
+  // callback batch or enter oncomplete getters/writeStatus setters; preserve
+  // an original exception instead of publishing through it.
+  if (JS_IsExceptionPending(cx)) return false;
+  if (GetShellContext(cx)->quitting) return true;
+  JS::RootedObjectVector batch(cx);
+  for (auto* work = gKandeloSocketOwners;work;work = work->next) {
+    if (work->cx != cx || !work->write || !work->pending || work->callbackActive || work->completionReserved) continue;
+    RootedObject request(cx, *work->pending);
+    if (JS::GetReservedSlot(request, SocketParent) != ObjectValue(*parent)) continue;
+    if (!batch.append(request)) { JS_ReportOutOfMemory(cx);return false; }
+    // Pending roots protect this state; no cached next pointer crosses append.
+  }
+  auto stateFor = [](JSObject* request) {
+    return static_cast<KandeloSocketState*>(JS::GetReservedSlot(request, SocketState).toPrivate());
+  };
+  std::sort(batch.begin(), batch.end(), [&](JSObject* a, JSObject* b) {
+    return stateFor(a)->writeSequence < stateFor(b)->writeSequence;
+  });
+  for (JSObject* request : batch) stateFor(request)->completionReserved = true;
+  auto release = mozilla::MakeScopeExit([&] {
+    for (JSObject* request : batch) stateFor(request)->completionReserved = false;
+  });
+  for (JSObject* request : batch) {
+    // A previous callback/after/tick may have stopped the environment. This
+    // fence precedes the reused dispatcher's reflectable property operations.
+    if (JS_IsExceptionPending(cx)) return false;
+    if (GetShellContext(cx)->quitting) break;
+    auto* work = stateFor(request);
+    if (work->cx != cx || work->retired || !work->pending || !work->write) continue;
+    // Existing WriteWrap callback/frame/fatal/retirement owner, not a second
+    // callback implementation. Nested dispatch cannot select reserved members.
+    const int progress = KandeloDispatchSocketWrite(cx, work);
+    if (progress < 0) return false;
+    if (!progress || GetShellContext(cx)->quitting) break;
+  }
+  return true;
+}
 static int KandeloDispatchSocketConnect(JSContext* cx, KandeloSocketState* state) {
   if (!state->connectSubmitted) return 0;
   RootedObject request(cx, *state->pending); JSAutoRealm realm(cx, request);
   RootedObject owner(cx, &JS::GetReservedSlot(request, SocketParent).toObject());
   auto* parent = KandeloSocketOwnerState(cx, owner); if (!parent) return -1;
   int error = state->connectError;
-  if (!error && parent->socket->Fd() < 0) error = ECANCELED;
-  if (!error) {
-    pollfd descriptor = {}; descriptor.fd = parent->socket->Fd(); descriptor.events = POLLOUT;
-    const int ready = poll(&descriptor, 1, 0);
-    if (ready == 0 || (ready < 0 && errno == EINTR)) return 0;
-    if (ready < 0) error = errno;
-    else { socklen_t size = sizeof(error);
-      if (getsockopt(parent->socket->Fd(), SOL_SOCKET, SO_ERROR, &error, &size) < 0) error = errno; }
-  }
-  state->callbackActive = true;
-  auto leaveCallback = mozilla::MakeScopeExit([&] { state->callbackActive = false; });
-  auto disposeRequest = mozilla::MakeScopeExit([&] {
-    KandeloRetireSocketRequest(request, state);
-    KandeloSocketRetireClosed(cx, owner, parent);
+  if (!parent->socket->ProgressConnect(&error)) return 0;
+  // If a before/callback/fatal boundary stops this turn, cancellation itself
+  // still owns every admitted remainder without allocating or invoking JS.
+  auto cancelOnUnwind = mozilla::MakeScopeExit([&] {
+    if (error && parent->socket->Fd() >= 0) KandeloCancelConnectQueuedWrites(cx, owner, parent);
   });
-  RootedValue frame(cx, JS::GetReservedSlot(request, SocketFrame));
-  KandeloNativeCallbackScope scope(cx, request, frame);
-  if (!scope.Enter()) return -1;
-  if (scope.Stopped()) return scope.Close() ? 0 : -1;
-  if (!error && parent->socket->Fd() < 0) error = ECANCELED;
-  RootedValue callback(cx, JS::GetReservedSlot(request, SocketDispatch)), ignored(cx);
-  JS::RootedValueArray<2> arguments(cx);
-  arguments[0].setInt32(-error); arguments[1].setObject(*owner);
-  const bool called = JS_CallFunctionValue(cx, request, callback, arguments, &ignored);
-  if (!(called ? scope.Close() : scope.Fail())) return -1;
+  {
+    state->callbackActive = true;
+    auto leaveCallback = mozilla::MakeScopeExit([&] { state->callbackActive = false; });
+    auto disposeRequest = mozilla::MakeScopeExit([&] {
+      KandeloRetireSocketRequest(request, state);
+      KandeloSocketRetireClosed(cx, owner, parent);
+    });
+    // Scope.Close intentionally retains callback depth until destruction.
+    // Finish that actual connect callback scope before subsequent write scopes
+    // so each canceled write owns its own ordinary checkpoint/fatal boundary.
+    RootedValue frame(cx, JS::GetReservedSlot(request, SocketFrame));
+    KandeloNativeCallbackScope scope(cx, request, frame);
+    if (!scope.Enter()) return -1;
+    if (scope.Stopped()) return scope.Close() ? 0 : -1;
+    if (!error && parent->socket->Fd() < 0) error = ECANCELED;
+    RootedValue callback(cx, JS::GetReservedSlot(request, SocketDispatch)), ignored(cx);
+    JS::RootedValueArray<2> arguments(cx);
+    arguments[0].setInt32(-error); arguments[1].setObject(*owner);
+    const bool called = JS_CallFunctionValue(cx, request, callback, arguments, &ignored);
+    if (!(called ? scope.Close() : scope.Fail())) return -1;
+  }
+  if (JS_IsExceptionPending(cx)) return -1;
+  if (GetShellContext(cx)->quitting) return 1;
+  if (error && parent->socket->Fd() >= 0) {
+    cancelOnUnwind.release();
+    if (!KandeloFlushConnectQueuedWrites(cx, owner, parent)) return -1;
+  }
   return 1;
 }
 static int KandeloDispatchSocketShutdown(JSContext* cx, KandeloSocketState* state) {
@@ -1193,7 +1281,7 @@ static bool KandeloSocketOwnersHaveReferences(JSContext* cx) {
     if (state->cx != cx) continue;
     if (state->closing) return true;
     if (!state->pending) continue;
-    if (state->socket && state->socket->Reading() && state->socket->Referenced()) return true;
+    if (state->socket && state->socket->PollRegistration().ReadRegistered() && state->socket->Referenced()) return true;
     if ((state->write || state->connect || state->shutdown) && !state->callbackActive &&
         (!state->connect || state->connectSubmitted)) {
       RootedObject request(cx, *state->pending);
@@ -1210,7 +1298,7 @@ static int KandeloDispatchSocketOwners(JSContext* cx) {
   // At most one actual completion per socket phase. Never hold raw list-next
   // pointers across JS: before/onread/checkpoint can close or GC other owners.
   for (auto* state = gKandeloSocketOwners; state; state = state->next) {
-    if (state->cx != cx || state->callbackActive) continue;
+    if (state->cx != cx || state->callbackActive || state->completionReserved) continue;
     if (state->closing) {
       const int progress = KandeloDispatchSocketClose(cx, state);
       if (progress) return progress;
@@ -1240,6 +1328,14 @@ static int KandeloDispatchSocketOwners(JSContext* cx) {
             state->socket->CurrentRead()->allocation.Handle(), KandeloNativeMemoryOwner(cx));
       } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return -1; }
       state->RefreshMemory();
+    }
+    const auto current = state->socket->CurrentRead();
+    if (current && current->phase == kandelo::socket::Read::Phase::Waiting) {
+      pollfd descriptor = {};descriptor.fd = state->socket->Fd();
+      descriptor.events = KandeloPlainTcpRegisteredEvents(cx, descriptor.fd) & POLLIN;
+      const int ready = descriptor.events ? poll(&descriptor, 1, 0) : 0;
+      if (ready == 0 || (ready < 0 && errno == EINTR)) continue;
+      // Let the real nonblocking read own its errno; poll is readiness only.
     }
     state->socket->ProgressRead();
     auto ticket = state->socket->BeginDelivery(); if (!ticket) continue;
@@ -1287,11 +1383,13 @@ static int KandeloDispatchSocketOwners(JSContext* cx) {
       JS_ReportErrorASCII(cx, "TCP read admission lost its actual ticket"); return -1;
     }
     state->inflightReadClaim = std::move(state->readClaim);
-    if (ticket->status <= 0) state->socket->StopRead();
+    if (ticket->status == 0) state->socket->StopRead();
+    else if (ticket->status < 0) state->socket->BeginReadErrorDelivery();
     state->RefreshMemory();
     auto retireDelivery = mozilla::MakeScopeExit([&] {
       ticket->phase = kandelo::socket::Read::Phase::Retired;
       state->delivering.reset(); state->inflightReadClaim.reset();
+      if (ticket->status < 0) state->socket->StopRead();
       if (!state->socket->Reading() || state->socket->Fd() < 0) state->pending.reset();
       state->RefreshMemory();
     });

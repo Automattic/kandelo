@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0192-node-promise-parent-memory-fetch-tcp.patch",
   "packages/registry/spidermonkey/patches/0191-node-listener-tty-support-reader.patch",
   "third_party/node-core/tty-public-platform-adapter.js",
   "packages/registry/spidermonkey/patches/0190-node-public-fips-state.patch",
@@ -829,4 +830,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 270
+revision = 271

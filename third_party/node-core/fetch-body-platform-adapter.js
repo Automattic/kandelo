@@ -11,6 +11,7 @@ function _createNodeFetchBodyPlatform(platform) {
     const { ReadableStream, TransformStream } = platform.stream.web;
     const { isReadable: isReadableStream, finished: streamFinished } = platform.stream.api;
     const requireStream = platform.stream.require;
+    const argumentLengthCheck = platform.formData.webidl.argumentLengthCheck;
     const factories = {
         __proto__: null,
         /* NODE_FETCH_BODY_MODULES */
@@ -227,5 +228,5 @@ function _createNodeFetchBodyPlatform(platform) {
     }
 
     return { ...body, ...response, ...require('request'), responseBodyFromIncoming, fetchDataURL,
-        isFormData: platform.formData.webidl.is.FormData };
+        argumentLengthCheck, isFormData: platform.formData.webidl.is.FormData };
 }

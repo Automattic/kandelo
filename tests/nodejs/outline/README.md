@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Four reviewed partial source contributions are batched once. The current guest remains uncompiled, accepted source263 remains historical, and all 19 families remain partial.
+See [source scope](core-promise-memory-fetch-tcp-batch271-implementation.md).
+
 Three reviewed partial source foundations are composed in one batch. Original source269 gaps remain preserved as historical evidence. All 19 families remain partial.
 See [source scope](core-ready-foundations-batch270-implementation.md).
 

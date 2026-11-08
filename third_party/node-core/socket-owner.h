@@ -15,6 +15,7 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
+#include <poll.h>
 #include <unistd.h>
 
 namespace kandelo::socket {
@@ -105,8 +106,30 @@ class TransportWrite {
   int Error() const noexcept { return error_; }
 };
 
+// Actual native I/O admission, independent of descriptor/material/ref ownership.
+// Only native start/queue/connect/stop/drain/close consumers change this owner.
+class Registration {
+  bool read_ = false, write_ = false, connect_ = false, closed_ = false;
+ public:
+  bool ReadRegistered() const noexcept { return !closed_ && read_; }
+  bool WriteRegistered() const noexcept { return !closed_ && (write_ || connect_); }
+  bool Connecting() const noexcept { return !closed_ && connect_; }
+  void StartRead() noexcept { if (!closed_) read_ = true; }
+  void StopRead() noexcept { read_ = false; }
+  void QueueWrite() noexcept { if (!closed_) write_ = true; }
+  // An error stops POLLOUT before callbacks. Successful drain stops it after
+  // callbacks, and must not resurrect interest merely because work is rooted.
+  void FailWrite() noexcept { write_ = false; }
+  void DrainWrite() noexcept { write_ = false; }
+  void SubmitConnect() noexcept { if (!closed_) connect_ = true; }
+  void CompleteConnect(bool failed) noexcept { connect_ = false;if (failed) write_ = false; }
+  void Close() noexcept { read_ = write_ = connect_ = false;closed_ = true; }
+};
+
 class Owner {
   Lease descriptor_;
+  Registration registration_;
+  bool writeDispatchPending_ = false;
   TransportAttachment* transport_ = nullptr;
   TransportWrite* transportWrite_ = nullptr;
   Shutdown* transportShutdown_ = nullptr;
@@ -127,6 +150,8 @@ class Owner {
   int Fd() const noexcept { return descriptor_.Fd(); }
   uint64_t Generation() const noexcept { return generation_; }
   bool Referenced() const noexcept { return referenced_; }
+  Registration& PollRegistration() noexcept { return registration_; }
+  const Registration& PollRegistration() const noexcept { return registration_; }
   bool AttachTransport(TransportAttachment* transport) noexcept {
     if (!transport || transport_ || closed_ || reading_ || read_) return false;
     transport_ = transport; return true;
@@ -245,12 +270,13 @@ class Owner {
   // A native transport recipient is fully allocated before this no-JS commit.
   // In-flight reads may already own consumed bytes and cannot be transferred.
   bool TransferTo(Lease& recipient) noexcept {
-    if (closed_ || transport_ || Fd() < 0 || reading_ || read_ || recipient.Fd() >= 0) return false;
+    if (closed_ || transport_ || Fd() < 0 || reading_ || read_ ||
+        registration_.ReadRegistered() || registration_.WriteRegistered() || recipient.Fd() >= 0) return false;
     if (!recipient.Adopt(descriptor_)) return false;
-    closed_ = true; return true;
+    registration_.Close();closed_ = true; return true;
   }
   void Close() noexcept {
-    closed_ = true; reading_ = false;transportShutdown_ = nullptr;
+    writeDispatchPending_ = false;registration_.Close();closed_ = true; reading_ = false;transportShutdown_ = nullptr;
     if (transportWrite_) { transportWrite_->error_ = ECANCELED; transportWrite_->phase_ = TransportWrite::Phase::Ready; }
     descriptor_.Close();
     // This is a no-JS invalidation. SSL must never use a later reuse of the fd.
@@ -265,10 +291,13 @@ class Owner {
       auto replacement = std::make_shared<Read>(generation_, nextRead_ + 1, size);
       read_ = std::move(replacement); ++nextRead_;
     }
-    reading_ = true; return true;
+    reading_ = true;registration_.StartRead();return true;
   }
+  // Non-EOF read errors retain the actual poll registration until the native
+  // error callback/after hooks return, unlike EOF and explicit readStop.
+  void BeginReadErrorDelivery() noexcept { reading_ = false; }
   void StopRead() noexcept {
-    reading_ = false;
+    registration_.StopRead();reading_ = false;
     // Stopping readiness cannot discard bytes/error/EOF already consumed.
     if (read_ && read_->phase == Read::Phase::Waiting) read_.reset();
   }
@@ -340,6 +369,81 @@ class Owner {
       write.error = errno; write.complete = true;
     }
     return write.complete;
+  }
+
+  // Queued completion is separate authority from poll registration. Like
+  // uv__io_feed, it can advance admitted work after POLLOUT was stopped.
+  bool HasPendingWriteDispatch() const noexcept { return writeDispatchPending_; }
+  template<class SpanRef> void AdmitQueuedWrite(const Write<SpanRef>& write) noexcept {
+    if (write.error) registration_.FailWrite();
+    else if (!write.complete) registration_.QueueWrite();
+    if (write.complete && !closed_) writeDispatchPending_ = true;
+  }
+  template<class SpanRef> bool ProgressQueuedWrite(Write<SpanRef>& write) noexcept {
+    if (!write.complete) {
+      if (Fd() < 0) { write.error = ECANCELED;write.complete = true; }
+      else {
+        if (registration_.Connecting()) return false;
+        const bool pending = std::exchange(writeDispatchPending_, false);
+        if (!registration_.WriteRegistered() && !pending) return false;
+        if (!pending) {
+          pollfd descriptor = {};descriptor.fd = Fd();descriptor.events = POLLOUT;
+          const int ready = ::poll(&descriptor, 1, 0);
+          if (ready == 0 || (ready < 0 && errno == EINTR)) return false;
+          if (ready < 0) { write.error = errno;write.complete = true; }
+        }
+        if (!write.complete && !ProgressWrite(write, true)) {
+          // A real nonblocking attempt left bytes (including EAGAIN). This
+          // syscall result, not a retained root or canceled job, rearms poll.
+          registration_.QueueWrite();return false;
+        }
+      }
+    }
+    if (write.error) registration_.FailWrite();
+    if (!closed_) writeDispatchPending_ = true;
+    // Success retains prior registration until the actual callback/drain;
+    // error leaves registration stopped but completion progress remains owned.
+    return true;
+  }
+  template<class SpanRef> void CancelQueuedWrite(Write<SpanRef>& write) noexcept {
+    // Match uv__stream_flush_write_queue: already-completed requests keep their
+    // result, admitted incomplete queue entries become real ECANCELED work.
+    if (write.complete) return;
+    write.error = ECANCELED;write.complete = true;
+    if (!closed_) writeDispatchPending_ = true;
+  }
+  void RetireWriteCallback(bool queuedRemainder) noexcept {
+    if (!queuedRemainder) { registration_.DrainWrite();writeDispatchPending_ = false; }
+  }
+  int SubmitConnect(const sockaddr* address, socklen_t length, int* delayedError) noexcept {
+    *delayedError = 0;
+    if (closed_ || Fd() < 0) return EBADF;
+    int connected;
+    do { errno = 0;connected = ::connect(Fd(), address, length); }
+    while (connected < 0 && errno == EINTR);
+    if (connected < 0 && errno != 0 && errno != EINPROGRESS) {
+      if (errno != ECONNREFUSED) return errno;
+      *delayedError = ECONNREFUSED;
+    }
+    registration_.SubmitConnect();return 0;
+  }
+  bool ProgressConnect(int* error) noexcept {
+    if (!*error && Fd() < 0) *error = ECANCELED;
+    if (!*error) {
+      if (!registration_.Connecting()) return false;
+      pollfd descriptor = {};descriptor.fd = Fd();descriptor.events = POLLOUT;
+      const int ready = ::poll(&descriptor, 1, 0);
+      if (ready == 0 || (ready < 0 && errno == EINTR)) return false;
+      if (ready < 0) *error = errno;
+      else {
+        socklen_t size = sizeof(*error);
+        if (::getsockopt(Fd(), SOL_SOCKET, SO_ERROR, error, &size) < 0) *error = errno;
+      }
+      if (*error == EINPROGRESS) return false;
+    }
+    // Connect interest retires before callback; queued writes independently
+    // retain output on success, whereas a connect error stops both causes.
+    registration_.CompleteConnect(*error != 0);return true;
   }
 
  private:

@@ -6402,7 +6402,8 @@ globalThis.exports = globalThis.module.exports;
 
     const FetchRequest = bodyPlatform.Request;
 
-    async function fetch(input, init) {
+    async function fetchImpl(input, init) {
+        bodyPlatform.argumentLengthCheck(arguments, 1, 'globalThis.fetch');
         const request = new FetchRequest(input, init);
         const requestState = bodyPlatform.getRequestState(request);
         // Scheme dispatch consumes the real Request record before any public
@@ -6538,6 +6539,14 @@ globalThis.exports = globalThis.module.exports;
         });
     }
 
+    // Node's ordinary public wrapper forwards both formal arguments, even
+    // for fetch(). Keep that real call boundary before the inner WebIDL check.
+    const fetch = (function createPublicFetch() {
+        'use strict';
+        return function fetch(input, init = undefined) {
+            return fetchImpl(input, init);
+        };
+    })();
     globalThis.fetch = fetch;
     globalThis.Headers = FetchHeaders;
     globalThis.Response = FetchResponse;

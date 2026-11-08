@@ -8,11 +8,11 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "1eb5a003fa9618b856a97efd7f0687762e53066294ad87ee94f6e7cce8a94720",
+    "packages/registry/node-compat/bootstrap.js": "c5990bf66ea440cc53bb89e1cf1f031fceb34c041fd2f22e887ff9774aaf9038",
     "third_party/node-core/adapter.js": "62d08d0de6ea1b8aef5f0dc54c46e53b175e5cbbc481475cbfb2059ad912e292",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/asymmetric-keygen-platform-adapter.js": "94b3dc26b1f783b97cb38eaa91baff3be883c66f8d80a6c76568a72ebf0207b0",
-    "third_party/node-core/async-platform-adapter.js": "9ab13a21b53395fb23fdfaf36e5b708be6e77752b282dc2b9b4cb305178d9250",
+    "third_party/node-core/async-platform-adapter.js": "b04c8db09f5d76ce3e85a0e3ecdbcad8c8e2f8962d09a771fdc6246531ff56a8",
     "third_party/node-core/buffer-bytes-adapter.js": "f7336c50f3fa23bd889ca2bf0225ade34798f651a092d097dda4669f4898ff47",
     "third_party/node-core/buffer-codecs-adapter.js": "de9373d9f1ab96f82dc3f9087a7d4e5a66db9cf997f83986ac14076f0ae9a552",
     "third_party/node-core/buffer-constructor-adapter.js": "2074bd8ba330ce3450d65bc6b09a965c85679adc6a33c79bfd409d5149375da1",
@@ -46,7 +46,7 @@
     "third_party/node-core/event-loop-delay-platform-adapter.js": "37ed94c3eb86ecda79c69f3ac563d5878bf2e965741ca3f45b1ef15c8510728f",
     "third_party/node-core/event-platform-adapter.js": "83c398737e7a7fa0af9b86f10ee289057b10f2a210e7a31a0025301e2e1773ed",
     "third_party/node-core/fd-stream-platform-adapter.js": "3f6ecfb2c0878175781f3605e9b0ccceba998d78bb8298424837892d32cff3d9",
-    "third_party/node-core/fetch-body-platform-adapter.js": "49020446db3f829bd88d576094b3e8897fa4b0e91a163bf43917e786210f2d99",
+    "third_party/node-core/fetch-body-platform-adapter.js": "6b69e590d4ac4777f8095895fdfcf6cb2cd2d8d36fcacb13b26132366d68077e",
     "third_party/node-core/ffi-library-platform-adapter.js": "cd542f7a1f97a3d512a6377b3739ea9d085b1ebfbf76e8f4254b6dc859bea995",
     "third_party/node-core/file-jobs-adapter.js": "421c39f5139be3c48861f6e881eba2520118d621d757c1cfa40351aa41168a60",
     "third_party/node-core/file-platform-adapter.js": "14f6702bde786ab09e9e05cd86c743a548c9cc33074716ee616ac995c11e348c",
