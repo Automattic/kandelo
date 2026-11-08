@@ -2,6 +2,30 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Fresh combined-source preview:** the normal partial WordPress rebuild
+finishes in 1h27m with its FHS and embedded-program/plugin identity audits.
+After the composer correction is integrated, a normal refresh takes 3m20s
+with all 43 selected dependency nodes cached. Its image is
+`c027dd4441e68c11767deeaf8da6242a37e3ee6ab209f91eff4bc97651abeffe`;
+kernel `6f5afada9ae3`, classic `3dafa57690ed`, and Caddy `5da4b0e70382`.
+The initial build's complete image/kernel/program bytes are retained before
+refreshing the uncached partial output. Different historical hashes are not
+treated as independent same-key reproduction.
+
+Both current Node service cases pass in 1m10s, including the normal host
+build (`wordpress-current-node-1107-185455-b068`). The normal partial web app
+then passes the actual Chromium preview check in 1m05s
+(`frankenphp-current-preview-proof-1107-190148-632c`): streamed image hash,
+actual fetched kernel hash, the demo login button, Appearance Editor and a
+real template save. Source inputs match the combined implementation at
+`8842bb2b4`. Screenshot and verified-preview.json are under
+`.context/candidate-partial-preview-proof/` in the isolated checkout.
+The verified new development URL is
+<http://127.0.0.1:5486/?vfs=http%3A%2F%2F127.0.0.1%3A5486%2F%40kandelo-partial%2Fimage.vfs.zst&profile=wordpress-frankenphp-caddy>.
+The original 5464 preview remains available. Full 33-case three-engine
+UI/persistence, canonical/family, memory/lifecycle and performance acceptance
+are still pending. These are partial development artifacts, not release proof.
+
 **Comparison configuration checkpoint:** an isolated benchmark change replaces
 Node's fixed six-worker setup and the browser's unequal shipped defaults with
 one explicitly configured image, defaulting to two PHP workers per service.
