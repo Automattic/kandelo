@@ -27900,7 +27900,8 @@ path, rather than refresh replacement, is therefore the captured failing
 operation. Its owning cache/dirty-write lifetime needs repair; no limit is
 raised and the private cold-refresh candidate is not claimed as that repair.
 
-After teardown, `fs_memory` reports I/O live 14,856,384, peak live 132,120,548,
+After the captured failures, the live `fs_memory` read reports I/O live
+14,856,384, peak live 132,120,548,
 peak temporary 655,536 and peak total 132,120,796 admission credits. These
 are admission credits, not browser RSS, and the later current count must not
 replace failure-time values. The full trace is retained; the bounded console
@@ -27916,3 +27917,45 @@ one Alt+Enter action. Neither subsequent unchanged passes nor this memory
 finding proves the origin of that duplicate launch. B1 remains the next
 shipment after its own correctness, desktop/lifecycle and stage-measurement
 checks; B2–B6 and C1–C3 remain explicit ordered follow-ups.
+
+### B1 bounded dirty-publication recovery, 2026-11-08
+
+The captured `pull_merge` failure leads to a kernel-owned repair: only when
+merging a page returns ENOMEM and a write-through backing holds dirty pages,
+persist the already-accepted prefix, release its clean cache, then retry
+that same immutable source page once. The incremental comparison snapshot
+prevents replay of accepted bytes. Ordinary publication gains no per-page
+flush or admission probe. No memory limit, ABI or guest-client code changes.
+If pressure writeback fails, dirty bytes remain owned and the writeback loss
+is recorded; the unaccepted tail still returns its original ENOMEM. Genuine
+first-page admission refusal remains a refusal.
+
+R961's original-source test executes exactly one case and fails with ENOMEM.
+The candidate passes the main pressure, partial-write and zero-headroom
+controls, but its fourth control incorrectly expects a persistent refusal
+from the existing one-shot allocation-failure hook. That adverse 3/1 result
+is retained. R962 corrects only that fixture's expectation; the production
+patch is unchanged. R963 then passes all four controls and the entire native
+runtime-core library: 3,605 passed, zero failed, ignored or filtered out,
+121.28 seconds. Exact command inside the declared dev shell:
+
+```sh
+cargo test --locked -p runtime-core --lib --target aarch64-apple-darwin -- --test-threads=1
+```
+
+The four controls cover aligned/unaligned multi-page publication with only
+one measured dirty page of cache headroom, partial-write custody and
+accepted-prefix isolation from later descriptor writes, one-shot admission
+recovery, and genuine zero-headroom ENOMEM. Test and production source
+integrated here are byte-identical to the private tested file, SHA-256
+`513ebbe146b9326bc1250e13c33414701c5b0f3f45ce2d05d3b3cc6f36078e50`.
+Normal ABI-56 fixture bytes are copied and hash-verified for that native
+cut; the earlier archive-only cut's missing-fixture compiler failure is
+retained and is not counted as a failing regression assertion.
+
+Evidence is in `.context/graphics-pull-pressure-native-r961/` and
+`.context/graphics-pull-pressure-native-r963/`. The normal kernel rebuild,
+Node/browser regression checks and original large-viewport reproduction
+remain pending. The advertised port-59239 checkpoint still has the prior
+kernel. This native result establishes the bounded publication behavior,
+not browser repair, complete B1, a performance improvement or native feel.

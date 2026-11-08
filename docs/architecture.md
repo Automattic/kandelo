@@ -2444,7 +2444,15 @@ fallible shared I/O admission before cache mutation.
 Unreleased storage-memory work also admits file-cache page payloads and
 cache nodes through that shared budget, reclaims only clean pages on
 admission pressure, and prepares replacement pages before publishing a
-refresh. Failure invalidation walks resident cache entries without
+refresh. If publication cannot admit its next page while a kernel-owned
+write-through backing retains dirty pages, it first persists that already
+accepted prefix, releases the resulting clean cache, and retries the same
+immutable source page once against its advanced comparison snapshot. This
+avoids needing a whole mapping of dirty cache in addition to its retained
+snapshots. Ordinary publication adds no per-page flush. A failed pressure
+writeback retains dirty custody and records the writeback loss; the
+unaccepted tail still returns its original admission failure. A retry
+cannot replay an accepted prefix over a later descriptor write. Failure invalidation walks resident cache entries without
 allocating a logical-page cohort. File publication reads process memory
 through fixed page scratch and streams changed runs, retaining accepted
 progress if a later page read fails. The optional native comparison borrows

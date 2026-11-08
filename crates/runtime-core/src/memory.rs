@@ -4375,6 +4375,7 @@ impl SharedMappingTable {
         let was_current = mapping.seen_version == backing.version;
         let mut changed = false;
         let mut failure = None;
+        let mut pressure_writeback_failed = false;
         // Publication is fixed-page scratch, as on the normal descriptor
         // fence path. A full current copy would need another live mapping's
         // credit while its original snapshot must remain owned for retry.
@@ -4395,7 +4396,31 @@ impl SharedMappingTable {
                     "quiescence proof for pid {pid} mapping {map_addr:#x}+{} at epoch {:?} missed a change",
                     mapping.len, epoch));
             }
-            match backing.merge_changed_runs(src, snap, mapping.file_offset + offset as u64, io) {
+            let merged = match backing.merge_changed_runs(src, snap, mapping.file_offset + offset as u64, io) {
+                Err(Errno::ENOMEM) if backing.writes_through() && backing.dirty_page_count() != 0 => {
+                    // WHY: accepted dirty pages otherwise accumulate until the
+                    // entire mapping fits in cache. Only under real pressure,
+                    // persist that owned prefix and release its clean cache.
+                    // Retry this immutable page once against the advanced
+                    // snapshot, so accepted bytes are never replayed. Ordinary
+                    // publication pays no per-page flush or admission query.
+                    match backing.flush_all(io) {
+                        Ok(()) => {
+                            backing.settle();
+                            backing.merge_changed_runs(src, snap, mapping.file_offset + offset as u64, io)
+                        }
+                        Err(_) => {
+                            // The unaccepted tail still lacks admission. Keep
+                            // ENOMEM, retain dirty custody, and report the real
+                            // failed writeback after restoring the snapshot.
+                            pressure_writeback_failed = true;
+                            Err(Errno::ENOMEM)
+                        }
+                    }
+                }
+                result => result,
+            };
+            match merged {
                 Ok(true) => changed = true,
                 Ok(false) => {}
                 Err(err) => {
@@ -4409,7 +4434,12 @@ impl SharedMappingTable {
         // freshly read range here would hide unmerged bytes after a refusal.
         mapping.snapshot = Some(snapshot);
         mapping.clean = if failure.is_none() { observed } else { None };
-        if let Some(err) = failure { return Err(err); }
+        if let Some(err) = failure {
+            if pressure_writeback_failed {
+                self.report_writeback_loss(pid, map_addr, &key, "write failed", io);
+            }
+            return Err(err);
+        }
         #[cfg(feature = "shared-mapping-proof-verify")]
         if proved { PROOFS_VERIFIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed); }
         if !changed { return Ok(PullOutcome::Unchanged); }
@@ -6379,6 +6409,141 @@ mod shared_mapping_tests {
         assert_eq!(io.retained_count(10), retained);
         assert_eq!(table.mapping(1, 0).unwrap().backing_key.as_deref(), Some(key.as_str()));
         assert_eq!(table.file_backing(&key).unwrap().handle, 10);
+    }
+
+    fn pull_pressure_fixture(offset: usize, len: usize) -> (MockIo, SharedMappingTable, String, usize, usize) {
+        let mut io = MockIo::new().with_process(1, len + 64).with_process(2, len + 64)
+            .with_kernel_file(10, 1, 2, alloc::vec![b'.'; offset + len]);
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        let stat = io.stat_of(10);
+        let backing = table.get_or_create_file_backing(&key, &stat, true, &mut io).unwrap();
+        backing.ref_count = 2;
+        let initial = backing.read_range(offset as u64, len, &mut io).unwrap();
+        for pid in [1u32, 2u32] {
+            io.write_process(pid, 0, &initial).unwrap();
+            table.insert_mapping(pid, 0, SharedMapping::file(3, offset as u64, len,
+                true, true, key.clone(), initial.clone(), 0));
+        }
+        drop(initial);
+        table.file_backing_mut(&key).unwrap().settle();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        // Measure actual one-page+dirty ownership; do not encode native/Wasm
+        // layout sizes or increase any production/native budget.
+        let backing = table.file_backing_mut(&key).unwrap();
+        backing.write_range(0, b".", true, &mut io).unwrap();
+        let one_page = crate::io_buffer::IO_MEMORY.usage().0 - held;
+        backing.flush_all(&mut io).unwrap();backing.settle();
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        (io, table, key, held, one_page)
+    }
+
+    #[test]
+    fn pull_pressure_reclaims_write_through_dirty_prefix_without_full_mapping_cache() {
+        for offset in [0usize, 7] {
+            let len = 3 * FILE_PAGE_SIZE + 19;
+            let (mut io, mut table, key, held, one_page) = pull_pressure_fixture(offset, len);
+            io.poke(1, 0, &alloc::vec![b'A'; len]);
+            let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+            {
+                // Existing snapshots plus ONE actual dirty page fit. The old
+                // whole-mapping dirty cache cannot, despite fitting retention.
+                let _limit = crate::io_buffer::test_budget(held + one_page);
+                table.sync_file_at_completion(2, &mut io).unwrap();
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+                assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+            }
+            assert_eq!(&io.files[&10][offset..offset + len], &alloc::vec![b'A'; len]);
+            assert_eq!(io.peek(2, 0, len), alloc::vec![b'A'; len]);
+            for pid in [1u32, 2u32] {
+                assert_eq!(table.mapping(pid, 0).unwrap().snapshot.as_deref(), Some(&alloc::vec![b'A'; len][..]));
+                assert_eq!(table.mapping(pid, 0).unwrap().seen_version, table.file_backing(&key).unwrap().version);
+            }
+            assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 0);
+            assert_eq!(table.file_backing(&key).unwrap().cached_page_count(), 0);
+            assert!(io.losses.is_empty());
+        }
+    }
+
+    #[test]
+    fn pull_pressure_partial_flush_keeps_accepted_prefix_and_unaccepted_tail_distinct() {
+        let offset = 7usize;let len = 3 * FILE_PAGE_SIZE + 19;
+        let (mut io, mut table, key, held, one_page) = pull_pressure_fixture(offset, len);
+        io.poke(1, 0, &alloc::vec![b'A'; len]);
+        io.write_budget = Some(3);
+        let accepted = FILE_PAGE_SIZE - offset;
+        let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
+        {
+            let _limit = crate::io_buffer::test_budget(held + one_page);
+            // The first page was accepted before the next page's allocation
+            // refused. Failed reclamation cannot accept the unseen tail or
+            // turn this into historical-success WritebackFailed.
+            assert_eq!(table.pull_mapping(1, 0, &mut io), Err(Errno::ENOMEM));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held + one_page);
+            assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
+        }
+        let snapshot = table.mapping(1, 0).unwrap().snapshot.as_ref().unwrap();
+        assert_eq!(&snapshot[..accepted], &alloc::vec![b'A'; accepted]);
+        assert_eq!(&snapshot[accepted..], &alloc::vec![b'.'; len - accepted]);
+        assert!(table.file_backing(&key).unwrap().version > 0);
+        assert_eq!(table.mapping(1, 0).unwrap().seen_version, 0);
+        assert!(table.mapping(1, 0).unwrap().clean.is_none());
+        assert_eq!(&io.files[&10][offset..offset + 3], b"AAA");
+        assert_eq!(&io.files[&10][offset + 3..], &alloc::vec![b'.'; len - 3]);
+        assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 1);
+        assert_eq!(io.losses.len(), 1);
+        assert!(table.take_writeback_error(1, 0, len as u64));
+        assert!(!table.take_writeback_error(1, 0, len as u64));
+        // A later descriptor write supersedes an already-persisted byte.
+        // Retrying publication must not replay the previously accepted A.
+        io.write_budget = None;
+        io.descriptor_write(10, offset, b"B");
+        table.pull_backing(&key, None, &mut io).unwrap();
+        assert_eq!(io.files[&10][offset], b'B');
+        assert_eq!(&io.files[&10][offset + 1..], &alloc::vec![b'A'; len - 1]);
+        assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 0);
+    }
+
+    #[test]
+    fn pull_pressure_one_shot_allocation_refusal_recovers_once() {
+        let len = 2 * FILE_PAGE_SIZE;
+        let (mut io, mut table, key, _, _) = pull_pressure_fixture(0, len);
+        io.poke(1, 0, b"A");io.fail_pwrite = true;
+        assert_eq!(table.pull_mapping(1, 0, &mut io), Ok(PullOutcome::WritebackFailed(Errno::EIO)));
+        io.fail_pwrite = false;io.losses.clear();
+        io.poke(1, FILE_PAGE_SIZE as u64, b"Z");
+        let mut expected = table.mapping(1, 0).unwrap().snapshot.clone();
+        // WHY: fail_after_allocations(0) is deliberately one-shot: its zero
+        // counter wraps to MAX at the refusal. The bounded recovery may now
+        // admit the page; asserting persistent ENOMEM would misstate the
+        // fixture. Separate zero-headroom coverage preserves real refusal.
+        crate::prepared_map::fail_after_allocations(0);
+        let result = table.pull_mapping(1, 0, &mut io);
+        crate::prepared_map::fail_after_allocations(usize::MAX);
+        assert_eq!(result, Ok(PullOutcome::Published));
+        expected.as_mut().unwrap()[FILE_PAGE_SIZE] = b'Z';
+        assert_eq!(table.mapping(1, 0).unwrap().snapshot, expected);
+        assert_eq!(table.mapping(1, 0).unwrap().seen_version, table.file_backing(&key).unwrap().version);
+        assert_eq!(io.files[&10][0], b'A');
+        assert_eq!(io.files[&10][FILE_PAGE_SIZE], b'Z');
+        assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 0);
+        assert!(io.losses.is_empty());
+    }
+
+    #[test]
+    fn pull_pressure_without_first_page_credit_still_reports_enomem() {
+        let len = 2 * FILE_PAGE_SIZE;
+        let (mut io, mut table, key, held, _) = pull_pressure_fixture(0, len);
+        io.poke(1, 0, &alloc::vec![b'A'; len]);
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(table.pull_mapping(1, 0, &mut io), Err(Errno::ENOMEM));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        assert_eq!(table.mapping(1, 0).unwrap().snapshot.as_deref(), Some(&alloc::vec![b'.'; len][..]));
+        assert_eq!(&io.files[&10][..], &alloc::vec![b'.'; len]);
+        assert_eq!(table.file_backing(&key).unwrap().version, 0);
+        assert!(io.losses.is_empty());
     }
 
     #[test]
