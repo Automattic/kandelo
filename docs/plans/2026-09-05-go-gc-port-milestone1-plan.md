@@ -13,8 +13,8 @@ tables are engine allocations outside Go's heap limit and normal module-cache
 counters; avoiding JS enumeration does not establish a memory benefit.
 
 All 46 focused source/authority checks pass in `2e59`. Both real Go/PHP
-Node consumer probes pass in `2648`, including 32 concurrent string-lifetime
-requests across Go GC and normal exit zero. Three pure browser contracts
+Node consumer probes pass in `2648`, including 32 string-lifetime
+requests at concurrency four across Go GC and normal exit zero. Three pure browser contracts
 pass on Chromium, Firefox and WebKit. These are neither real browser service
 acceptance nor final normal-artifact/conformance/performance validation.
 The initial unit attempt retains a test-file parse failure; the corrected
