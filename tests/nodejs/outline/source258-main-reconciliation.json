@@ -1,0 +1,24 @@
+{
+  "at": "2026-11-08T06:19:54.291435+00:00",
+  "fetchedMain": "b764fbf54856cac6d7be6b56bebfe5315ffc5cc3",
+  "previousMain": "faf9b31720e868fac7c431d81b5076f40a4c16c1",
+  "mergeCommit": "1d66bd790da8f07268b32a31a0b43f459513bd27",
+  "mainIsAncestor": true,
+  "changedMainLeaves": {
+    ".claude/skills/porting-software-to-kandelo/SKILL.md": "d44c6bae743ce3965c7ea80f486e3a7fb4e71cfbb047becadeabd937a93652f3",
+    "docs/agent-guidance/packages-and-builds.md": "6370d119280f00fbc50e4009453293944c1f0a52c082770051d9f8ae4156202c",
+    "docs/porting-guide.md": "dee47811a175ddd0146990d855f081c121cd1422ff59d2d389cce7726806525e"
+  },
+  "sourceIdentityChanges": {
+    "docs/porting-guide.md": {
+      "before": "a0fd9eaf560c5f6c4c910b7ccbc9b9119fe541b117ff2c4fb950893a550ed7bc",
+      "after": "dee47811a175ddd0146990d855f081c121cd1422ff59d2d389cce7726806525e"
+    }
+  },
+  "foreignRegularFilesPreserved": 52,
+  "recipeRevision": 258,
+  "runtimeImplementationChanged": false,
+  "newRuntimeTests": 0,
+  "newCompilations": 0,
+  "scope": "Documentation-only main reconciliation. New man-page guidance read; current runtime/source checks retain their exact historical binding. No pin, audit, implementation, test or build changes. Prior post-reconciliation assertion correctly exposed the porting-guide documentation hash change; only that declared doc identity is advanced."
+}

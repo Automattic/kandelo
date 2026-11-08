@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-08T06:18:14.737704+00:00",
+  "updatedAt": "2026-11-08T06:19:54.291435+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -1713,7 +1713,7 @@
     "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "bd003f68c6d4e5aef8d8b2264e5df8e31a283e2690359afedce7045bc9ab3ad2",
     "apps/browser-demos/test/harper.spec.ts": "18d204c6f1113db52eec65169472c505a1129c76d1b1fab945530852a90a0f2e",
     "apps/browser-demos/vite.config.ts": "64e42ac531740c975d9b8092fef62c2f92d05f541377f6162a3c1e8c4ed435c5",
-    "docs/porting-guide.md": "a0fd9eaf560c5f6c4c910b7ccbc9b9119fe541b117ff2c4fb950893a550ed7bc",
+    "docs/porting-guide.md": "dee47811a175ddd0146990d855f081c121cd1422ff59d2d389cce7726806525e",
     "host/test/harper-smoke.test.ts": "75aa2efd8dc424446e3a85ba8dd3de9eb902b32795b3c54ad77a5e65567caf90",
     "host/test/kernel-scratch-contract.test.ts": "b605c17f538726189c12d4416098710418e8714f8f0987dc39704331e9dac080",
     "host/test/support/harper-lsp-probe.ts": "80c2b91092e14a8928cb121e2f2de7d7410a7ea2ea6cd38e1c9e4e977c71afb0",
@@ -2688,7 +2688,8 @@
     "third_party/node-core/tests/listener-owner/server-receiver.cjs": "ff8d519cd3c9bdc115d49a66df2b3e715438b99e52830c1f46896357c27d0dce",
     "packages/registry/spidermonkey/patches/0180-node-server-listener-owner.patch": "adb581e70466354c62870a691c1fbf8ba2ad283d86f57b1b96a57cfc7089f2ff",
     "third_party/node-core/native-listener.cpp": "fdd5936b47cf7c43cb1aa29133ed736dd142fa070598e827eb9a53c6fa8d4560",
-    "third_party/node-core/listener-owner.md": "363641509e4edfe8c4ff467e9fdeb72598b3f2bba4a068c62c370034f3d0da3f"
+    "third_party/node-core/listener-owner.md": "363641509e4edfe8c4ff467e9fdeb72598b3f2bba4a068c62c370034f3d0da3f",
+    "tests/nodejs/outline/source258-main-reconciliation.json": "cf540db97e80278021194050347fb59641b0002540f5f55b2bacf9b5c2768cb0"
   },
   "changes": [
     {
@@ -52684,45 +52685,31 @@
     "Shared callback policy compiles with explicit hook/context/queue boundary adapters and matches real native Node-API/libuv behavior in eight scenarios, with expected termination codes 1/17 retained. SpiderMonkey rooted/context/checkpoint adapter, engine/root-entry patch and changed DNS/FS/codec owners remain uncompiled. Full rejection events/modes/uncaught recovery, weak-reference/zero-ID/VM/worker and complete loop phases remain missing or unvalidated. Native addon loading in the reference does not imply a guest addon implementation."
   ],
   "mainReconciliation": {
-    "at": "2026-11-07T21:59:24.666984+00:00",
-    "fetchedMain": "faf9b31720e868fac7c431d81b5076f40a4c16c1",
-    "previousMain": "8df17e53b27f6570f0938b0e28bb1e9872425524",
-    "headBefore": "49639c5aa2a15c24c89de4de3ee7dbea54147ddd",
-    "mergeCommit": "95ec74e2ddbd421373c53b86f5555749523ba3b0",
+    "at": "2026-11-08T06:19:54.291435+00:00",
+    "fetchedMain": "b764fbf54856cac6d7be6b56bebfe5315ffc5cc3",
+    "previousMain": "faf9b31720e868fac7c431d81b5076f40a4c16c1",
+    "mergeCommit": "1d66bd790da8f07268b32a31a0b43f459513bd27",
     "mainIsAncestor": true,
-    "action": "Adopt merged campaign checkpoint helper/guidance. No automatic worker rotation or optional context-hook installation. Existing wait guard main maintenance only.",
     "changedMainLeaves": {
-      ".claude/hooks/context-checkpoint.py": "bfc19783b32da4c80eb95a36f17540026a018b4d22a5695078a89b3118c1ba2c",
-      ".claude/hooks/install-hooks.py": "f0c7825f08a120b0b9de2085f0d931d8572b894228300dc122bcc8d93a37fcf0",
-      "CLAUDE.md": "b52e9cc9764622ee93ba3cf3e84404d8c23960aba868cbf4e122b4894423e9f4",
-      "docs/agent-guidance/README.md": "4e6d79fb79d5917dbaf0c986baadef72083a982a281bb06faa4ed3acd32dad90",
-      "docs/agent-guidance/campaigns.md": "dedbfa3a6ca932592fb136e9f18b0c15c507f2a678ac260a0e4b188d789bd225",
-      "docs/repository-organization.md": "47f331ca4ada4b036bdc903ca01f74b41a6cd1b1d47ba77b207a68e5955bad73",
-      "evals/agent-skills/README.md": "49fee21bd8f9f942fbc56326d68f95b7839c49cf31804a4f7a3c7a17b318457f",
-      "evals/agent-skills/test_context_checkpoint.py": "d415291ed77fd18f6b07318715ca3d9a957b84e70bd8ca5785ea8f083d9e9f11",
-      "evals/build-waiting/test_install_hooks.py": "155904435366c14058a5dd9a72d7a90d12aa4020e6992f06f153d33a4c9c62a3",
-      "scripts/agent-checkpoint": "59ce39618ffeec1ea6537e35825ae97fdb32c83235739556669a6736e1553075"
+      ".claude/skills/porting-software-to-kandelo/SKILL.md": "d44c6bae743ce3965c7ea80f486e3a7fb4e71cfbb047becadeabd937a93652f3",
+      "docs/agent-guidance/packages-and-builds.md": "6370d119280f00fbc50e4009453293944c1f0a52c082770051d9f8ae4156202c",
+      "docs/porting-guide.md": "dee47811a175ddd0146990d855f081c121cd1422ff59d2d389cce7726806525e"
     },
-    "protectedIdentityChanges": {},
-    "requiredEngineInputsVerified": 897,
-    "unrelatedDirtyIdsPreserved": {
-      "apps/browser-demos/test/node-core-compat.spec.ts": "d595f9cc14d5bc836fb1baec855081611e8be96fde76650ad6d8f74675cfc9e3",
-      "host/test/node-core-compat.test.ts": "2425f8e35e947a1f0fce8c60bf546c9368122f677e86468e726e505126fce733",
-      "scripts/nodejs-guest-runner.ts": "27d60d8632ac29d8d3eacc48c1b8b0579519d519b9f42dcc54c60c9677a80009"
+    "sourceIdentityChanges": {
+      "docs/porting-guide.md": {
+        "before": "a0fd9eaf560c5f6c4c910b7ccbc9b9119fe541b117ff2c4fb950893a550ed7bc",
+        "after": "dee47811a175ddd0146990d855f081c121cd1422ff59d2d389cce7726806525e"
+      }
     },
-    "acceptedEngine": 238,
-    "acceptedArtifactSha256": "3cdede1f62ba40787f0703b11a3e6d72c2a0fb10aed060626cc9737661dc39ba",
+    "foreignRegularFilesPreserved": 52,
+    "recipeRevision": 258,
+    "runtimeImplementationChanged": false,
     "newRuntimeTests": 0,
     "newCompilations": 0,
-    "newGuidanceRead": [
-      "docs/agent-guidance/campaigns.md",
-      "CLAUDE.md campaign delta",
-      "docs/repository-organization.md campaign delta"
-    ],
-    "scope": "Tooling/coordination reconciliation only; no897engineinputs change and no new runtime compatibility claim. Clone239hotfix remains immediate nextimplementation.",
+    "scope": "Documentation-only main reconciliation. New man-page guidance read; current runtime/source checks retain their exact historical binding. No pin, audit, implementation, test or build changes. Prior post-reconciliation assertion correctly exposed the porting-guide documentation hash change; only that declared doc identity is advanced.",
     "evidence": {
-      "report": "tests/nodejs/outline/engine238-campaign-main-reconciliation.json",
-      "sha256": "aadaa5e10536ddf76019755d1e0c99850c95ceb9f343a40f33ece1556f1fef0a"
+      "report": "tests/nodejs/outline/source258-main-reconciliation.json",
+      "sha256": "cf540db97e80278021194050347fb59641b0002540f5f55b2bacf9b5c2768cb0"
     }
   },
   "storageMaintenance": {
@@ -134657,6 +134644,48 @@
         "report": "tests/nodejs/outline/engine238-main-reconciliation.json",
         "sha256": "e839fd8d4185edfad5f348c4b59acaa6ab2fc06e8bd0b8e6b895c22dd1dd7e55"
       }
+    },
+    {
+      "at": "2026-11-07T21:59:24.666984+00:00",
+      "fetchedMain": "faf9b31720e868fac7c431d81b5076f40a4c16c1",
+      "previousMain": "8df17e53b27f6570f0938b0e28bb1e9872425524",
+      "headBefore": "49639c5aa2a15c24c89de4de3ee7dbea54147ddd",
+      "mergeCommit": "95ec74e2ddbd421373c53b86f5555749523ba3b0",
+      "mainIsAncestor": true,
+      "action": "Adopt merged campaign checkpoint helper/guidance. No automatic worker rotation or optional context-hook installation. Existing wait guard main maintenance only.",
+      "changedMainLeaves": {
+        ".claude/hooks/context-checkpoint.py": "bfc19783b32da4c80eb95a36f17540026a018b4d22a5695078a89b3118c1ba2c",
+        ".claude/hooks/install-hooks.py": "f0c7825f08a120b0b9de2085f0d931d8572b894228300dc122bcc8d93a37fcf0",
+        "CLAUDE.md": "b52e9cc9764622ee93ba3cf3e84404d8c23960aba868cbf4e122b4894423e9f4",
+        "docs/agent-guidance/README.md": "4e6d79fb79d5917dbaf0c986baadef72083a982a281bb06faa4ed3acd32dad90",
+        "docs/agent-guidance/campaigns.md": "dedbfa3a6ca932592fb136e9f18b0c15c507f2a678ac260a0e4b188d789bd225",
+        "docs/repository-organization.md": "47f331ca4ada4b036bdc903ca01f74b41a6cd1b1d47ba77b207a68e5955bad73",
+        "evals/agent-skills/README.md": "49fee21bd8f9f942fbc56326d68f95b7839c49cf31804a4f7a3c7a17b318457f",
+        "evals/agent-skills/test_context_checkpoint.py": "d415291ed77fd18f6b07318715ca3d9a957b84e70bd8ca5785ea8f083d9e9f11",
+        "evals/build-waiting/test_install_hooks.py": "155904435366c14058a5dd9a72d7a90d12aa4020e6992f06f153d33a4c9c62a3",
+        "scripts/agent-checkpoint": "59ce39618ffeec1ea6537e35825ae97fdb32c83235739556669a6736e1553075"
+      },
+      "protectedIdentityChanges": {},
+      "requiredEngineInputsVerified": 897,
+      "unrelatedDirtyIdsPreserved": {
+        "apps/browser-demos/test/node-core-compat.spec.ts": "d595f9cc14d5bc836fb1baec855081611e8be96fde76650ad6d8f74675cfc9e3",
+        "host/test/node-core-compat.test.ts": "2425f8e35e947a1f0fce8c60bf546c9368122f677e86468e726e505126fce733",
+        "scripts/nodejs-guest-runner.ts": "27d60d8632ac29d8d3eacc48c1b8b0579519d519b9f42dcc54c60c9677a80009"
+      },
+      "acceptedEngine": 238,
+      "acceptedArtifactSha256": "3cdede1f62ba40787f0703b11a3e6d72c2a0fb10aed060626cc9737661dc39ba",
+      "newRuntimeTests": 0,
+      "newCompilations": 0,
+      "newGuidanceRead": [
+        "docs/agent-guidance/campaigns.md",
+        "CLAUDE.md campaign delta",
+        "docs/repository-organization.md campaign delta"
+      ],
+      "scope": "Tooling/coordination reconciliation only; no897engineinputs change and no new runtime compatibility claim. Clone239hotfix remains immediate nextimplementation.",
+      "evidence": {
+        "report": "tests/nodejs/outline/engine238-campaign-main-reconciliation.json",
+        "sha256": "aadaa5e10536ddf76019755d1e0c99850c95ceb9f343a40f33ece1556f1fef0a"
+      }
     }
   ],
   "sqliteLifecycleImplementation": {
@@ -148376,5 +148405,9 @@
     "individualApiClosure": false,
     "implementationComplete": false,
     "acceptedPlatformLimits": []
+  },
+  "postSnapshotDocumentationReconciliation": {
+    "report": "tests/nodejs/outline/source258-main-reconciliation.json",
+    "sha256": "cf540db97e80278021194050347fb59641b0002540f5f55b2bacf9b5c2768cb0"
   }
 }
