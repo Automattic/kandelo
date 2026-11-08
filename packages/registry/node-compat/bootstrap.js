@@ -3400,10 +3400,9 @@ Object.assign(crypto, _createNodeSignaturePlatform({
     constants: _nodeConstantBinding,
     makeError: _nodeFsTruncation.makeError,
 }));
-// Asymmetric keypair generation still needs its separate native owner.
-// Imported keys above own real ncrypto material; their presence does not
-// establish those separate consumers or WebCrypto algorithm compatibility.
-crypto.generateKeyPairSync = _notImpl('crypto', 'generateKeyPairSync');
+Object.assign(crypto, _createNodeAsymmetricKeygen({
+    keys: _nodeCryptoKeys, values: _nodeValues, types: util.types, codecs: _nodeBufferCodecs,
+}));
 const _nodeX509 = _createNodeX509Platform({
     native: _nodeNative, values: _nodeValues, keys: _nodeCryptoKeys,
     types: util.types, inspection: _nodeInspection, Buffer, codecs: _nodeBufferCodecs,

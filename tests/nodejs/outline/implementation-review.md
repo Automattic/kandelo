@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source251 adds actual public asymmetric generation over complete pinned wrappers, five real ncrypto/OpenSSL traits, KEYPAIRGENREQUEST/native CPU work and GC-owned immutable key roles. Fresh current-root source checks guard908inputs/8checks/8commands;16paired native/candidate differential groups and4unchanged upstream files per subject use identified native dependencies. Newly integrated guest JSAPI/work/publication/GC/realm/fatal/private-role guard and all4hosts remain uncompiled/unexecuted; valid-private ecPkcs8 remains missing. No crypto/API/finding closure.
+See [source scope](asymmetric-keygen-integration.md).
+
 Source 250 integrates bounded HTTP request Body/Complete and private byte-publication owners. Six unchanged headers Vitest failures remain visible as harness errors; no HTTP or guest compatibility closure.
 See [source scope](http-request-callback-integration.md).
 

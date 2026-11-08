@@ -1774,6 +1774,12 @@ for name, marker in [('wrap', '/* NODE_SECRET_KEY_WRAP */'), ('symmetric', '/* N
         raise ValueError('Secret key generation section mismatch: ' + name)
     secret_gen_adapter = secret_gen_adapter.replace(marker, section)
 bundle += secret_gen_adapter + '\n'
+pair_generator = runpy.run_path(str(root / 'generate-asymmetric-keygen.py'))
+_, pair_public = pair_generator['generate'](root)
+pair_adapter = (root / 'asymmetric-keygen-platform-adapter.js').read_text()
+if pair_adapter.count('/* NODE_ASYMMETRIC_KEY_GENERATION */') != 1:
+    raise ValueError('Review asymmetric key generation marker')
+bundle += pair_adapter.replace('/* NODE_ASYMMETRIC_KEY_GENERATION */', pair_public) + '\n'
 cipher_spec = manifest['cipherPlatform']
 cipher_sources = {}
 for name, item in cipher_spec['sources'].items():

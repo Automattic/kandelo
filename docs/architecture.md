@@ -7283,3 +7283,7 @@ Source 249 adds actual retained native codec state/context/vector/string capacit
 ### HTTP request callback and private byte publication ownership
 
 Source 250 integrates real request Body/Complete synchronous llhttp callbacks and noncoercing private FastBuffer publication over already independent native bytes. It contributes partially to H-003 and shared H-001/H-013 dependencies. Production core is regenerated normally; no component-expanded core is installed. Actual source checks guard904inputs/16checks/eightcommands; portable9, factory5, headers17/18,14incoming and two poison modes/four subjects use explicit native dependencies. Separate unchanged-file headers Vitest has six failures due to a missing _createNodeHttpAgent fixture dependency; these are harness errors, not passes or unsupported cases. Guest JSAPI/GC/realm/provider/full Server/reuse/stack/shared-input/four-host behavior remains unvalidated.
+
+### Asymmetric key generation and native private-role admission
+
+Source251 adds actual public asymmetric generation over complete pinned wrappers, five real ncrypto/OpenSSL traits, KEYPAIRGENREQUEST/native CPU work and GC-owned immutable key roles. Fresh current-root source checks guard908inputs/8checks/8commands;16paired native/candidate differential groups and4unchanged upstream files per subject use identified native dependencies. Newly integrated guest JSAPI/work/publication/GC/realm/fatal/private-role guard and all4hosts remain uncompiled/unexecuted; valid-private ecPkcs8 remains missing. No crypto/API/finding closure.

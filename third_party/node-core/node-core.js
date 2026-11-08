@@ -102523,6 +102523,321 @@ function generateKeySync(type, options) {
     return { generateKey, generateKeySync };
 }
 
+// Complete unchanged public asymmetric keygen algorithms over actual native jobs.
+function _createNodeAsymmetricKeygen(platform) {
+    'use strict';
+    const primordials = _createNodePrimordials();
+    const { FunctionPrototypeCall, ObjectDefineProperty, ObjectGetPrototypeOf,
+        SafeArrayIterator } = primordials;
+    const { PublicKeyObject, PrivateKeyObject, parsePublicKeyEncoding,
+        parsePrivateKeyEncoding } = platform.keys;
+    const { customPromisifyArgs, kEmptyObject } = platform.values.util;
+    const { validateFunction, validateBuffer, validateString, validateInteger,
+        validateObject, validateOneOf, validateInt32, validateUint32 } = platform.values.validators;
+    const { codes: { ERR_INCOMPATIBLE_OPTION_PAIR, ERR_INVALID_ARG_VALUE,
+        ERR_MISSING_OPTION } } = platform.values.errors;
+    const { isArrayBufferView } = platform.types;
+    const { kCryptoJobAsync, kCryptoJobSync, kKeyVariantRSA_PSS,
+        kKeyVariantRSA_SSA_PKCS1_v1_5, OPENSSL_EC_NAMED_CURVE,
+        OPENSSL_EC_EXPLICIT_CURVE, pairRsa, pairDsa, pairEc, pairDh,
+        pairNamed } = platform.keys.keyOperation('pairConstants');
+    function create(receiver, kind, args) {
+        // Construction already performed its genuine newTarget prototype Get.
+        // Read this real fresh receiver's intrinsic prototype, not the public
+        // constructor.prototype property a second time.
+        return platform.keys.keyOperation('createPairGen', ObjectGetPrototypeOf(receiver),
+            platform.keys.nativeHandlePrototype, platform.codecs.copyBytes, kind, ...args);
+    }
+    function RsaKeyPairGenJob(...args) { return create(this, pairRsa, args); }
+    function DsaKeyPairGenJob(...args) { return create(this, pairDsa, args); }
+    function EcKeyPairGenJob(...args) { return create(this, pairEc, args); }
+    function DhKeyPairGenJob(...args) { return create(this, pairDh, args); }
+    function NamedKeyPairGenJob(...args) { return create(this, pairNamed, args); }
+    for (const constructor of [RsaKeyPairGenJob, DsaKeyPairGenJob, EcKeyPairGenJob,
+        DhKeyPairGenJob, NamedKeyPairGenJob]) {
+        ObjectDefineProperty(constructor.prototype, 'run', {
+            configurable: true, writable: true,
+            value: function run() { return platform.keys.keyOperation('runPairGen', this); },
+        });
+    }
+    function isJwk(obj) {
+  return obj != null && obj.kty !== undefined;
+}
+
+function wrapKey(key, ctor) {
+  if (typeof key === 'string' ||
+      isArrayBufferView(key) ||
+      isJwk(key))
+    return key;
+  return new ctor(key);
+}
+
+function generateKeyPair(type, options, callback) {
+  if (typeof options === 'function') {
+    callback = options;
+    options = undefined;
+  }
+  validateFunction(callback, 'callback');
+
+  const job = createJob(kCryptoJobAsync, type, options);
+
+  job.ondone = (error, result) => {
+    if (error) return FunctionPrototypeCall(callback, job, error);
+    // If no encoding was chosen, return key objects instead.
+    let { 0: pubkey, 1: privkey } = result;
+    pubkey = wrapKey(pubkey, PublicKeyObject);
+    privkey = wrapKey(privkey, PrivateKeyObject);
+    FunctionPrototypeCall(callback, job, null, pubkey, privkey);
+  };
+
+  job.run();
+}
+
+ObjectDefineProperty(generateKeyPair, customPromisifyArgs, {
+  __proto__: null,
+  value: ['publicKey', 'privateKey'],
+  enumerable: false,
+});
+
+function generateKeyPairSync(type, options) {
+  return handleError(createJob(kCryptoJobSync, type, options).run());
+}
+
+function handleError(ret) {
+  if (ret == null)
+    return; // async
+
+  const { 0: err, 1: keys } = ret;
+  if (err !== undefined)
+    throw err;
+
+  const { 0: publicKey, 1: privateKey } = keys;
+
+  // If no encoding was chosen, return key objects instead.
+  return {
+    publicKey: wrapKey(publicKey, PublicKeyObject),
+    privateKey: wrapKey(privateKey, PrivateKeyObject),
+  };
+}
+
+function parseKeyEncoding(keyType, options = kEmptyObject) {
+  const { publicKeyEncoding, privateKeyEncoding } = options;
+
+  let publicFormat, publicType;
+  if (publicKeyEncoding == null) {
+    publicFormat = publicType = undefined;
+  } else if (typeof publicKeyEncoding === 'object') {
+    ({
+      format: publicFormat,
+      type: publicType,
+    } = parsePublicKeyEncoding(publicKeyEncoding, keyType,
+                               'options.publicKeyEncoding'));
+  } else {
+    throw new ERR_INVALID_ARG_VALUE('options.publicKeyEncoding',
+                                    publicKeyEncoding);
+  }
+
+  let privateFormat, privateType, cipher, passphrase;
+  if (privateKeyEncoding == null) {
+    privateFormat = privateType = undefined;
+  } else if (typeof privateKeyEncoding === 'object') {
+    ({
+      format: privateFormat,
+      type: privateType,
+      cipher,
+      passphrase,
+    } = parsePrivateKeyEncoding(privateKeyEncoding, keyType,
+                                'options.privateKeyEncoding'));
+  } else {
+    throw new ERR_INVALID_ARG_VALUE('options.privateKeyEncoding',
+                                    privateKeyEncoding);
+  }
+
+  return [
+    publicFormat,
+    publicType,
+    privateFormat,
+    privateType,
+    cipher,
+    passphrase,
+  ];
+}
+
+function createJob(mode, type, options) {
+  validateString(type, 'type');
+
+  if (options !== undefined)
+    validateObject(options, 'options');
+
+  const encoding = new SafeArrayIterator(parseKeyEncoding(type, options));
+
+  switch (type) {
+    case 'rsa':
+    case 'rsa-pss':
+    {
+      validateObject(options, 'options');
+      let { modulusLength } = options;
+      validateUint32(modulusLength, 'options.modulusLength');
+      // Coerce -0 to +0.
+      modulusLength += 0;
+
+      let { publicExponent } = options;
+      if (publicExponent == null) {
+        publicExponent = 0x10001;
+      } else {
+        validateUint32(publicExponent, 'options.publicExponent');
+        // Coerce -0 to +0.
+        publicExponent += 0;
+      }
+
+      if (type === 'rsa') {
+        return new RsaKeyPairGenJob(
+          mode,
+          kKeyVariantRSA_SSA_PKCS1_v1_5,  // Used also for RSA-OAEP
+          modulusLength,
+          publicExponent,
+          ...encoding);
+      }
+
+      const { hashAlgorithm, mgf1HashAlgorithm } = options;
+      let { saltLength } = options;
+
+      if (saltLength !== undefined) {
+        validateInt32(saltLength, 'options.saltLength', 0);
+        // Coerce -0 to +0.
+        saltLength += 0;
+      }
+      if (hashAlgorithm !== undefined)
+        validateString(hashAlgorithm, 'options.hashAlgorithm');
+      if (mgf1HashAlgorithm !== undefined)
+        validateString(mgf1HashAlgorithm, 'options.mgf1HashAlgorithm');
+      if (options.hash !== undefined) {
+        // This API previously accepted a `hash` option that was deprecated
+        // and removed. However, in order to make the change more visible, we
+        // opted to throw an error if hash is specified rather than removing it
+        // entirely.
+        throw new ERR_INVALID_ARG_VALUE(
+          'options.hash',
+          options.hash,
+          'is no longer supported',
+        );
+      }
+      if (options.mgf1Hash !== undefined) {
+        // This API previously accepted a `mgf1Hash` option that was deprecated
+        // and removed. However, in order to make the change more visible, we
+        // opted to throw an error if mgf1Hash is specified rather than removing
+        // it entirely.
+        throw new ERR_INVALID_ARG_VALUE(
+          'options.mgf1Hash',
+          options.mgf1Hash,
+          'is no longer supported',
+        );
+      }
+
+      return new RsaKeyPairGenJob(
+        mode,
+        kKeyVariantRSA_PSS,
+        modulusLength,
+        publicExponent,
+        hashAlgorithm,
+        mgf1HashAlgorithm,
+        saltLength,
+        ...encoding);
+    }
+    case 'dsa':
+    {
+      validateObject(options, 'options');
+      let { modulusLength } = options;
+      validateUint32(modulusLength, 'options.modulusLength');
+      // Coerce -0 to +0.
+      modulusLength += 0;
+
+      let { divisorLength } = options;
+      if (divisorLength == null) {
+        divisorLength = -1;
+      } else {
+        validateInt32(divisorLength, 'options.divisorLength', 0);
+        // Coerce -0 to +0.
+        divisorLength += 0;
+      }
+
+      return new DsaKeyPairGenJob(
+        mode,
+        modulusLength,
+        divisorLength,
+        ...encoding);
+    }
+    case 'ec':
+    {
+      validateObject(options, 'options');
+      const { namedCurve } = options;
+      validateString(namedCurve, 'options.namedCurve');
+      let { paramEncoding } = options;
+      if (paramEncoding == null || paramEncoding === 'named')
+        paramEncoding = OPENSSL_EC_NAMED_CURVE;
+      else if (paramEncoding === 'explicit')
+        paramEncoding = OPENSSL_EC_EXPLICIT_CURVE;
+      else
+        throw new ERR_INVALID_ARG_VALUE('options.paramEncoding', paramEncoding);
+
+      return new EcKeyPairGenJob(
+        mode,
+        namedCurve,
+        paramEncoding,
+        ...encoding);
+    }
+    case 'dh':
+    {
+      validateObject(options, 'options');
+      const { group, prime } = options;
+      let { primeLength, generator } = options;
+      if (group != null) {
+        if (prime != null)
+          throw new ERR_INCOMPATIBLE_OPTION_PAIR('group', 'prime');
+        if (primeLength != null)
+          throw new ERR_INCOMPATIBLE_OPTION_PAIR('group', 'primeLength');
+        if (generator != null)
+          throw new ERR_INCOMPATIBLE_OPTION_PAIR('group', 'generator');
+
+        validateString(group, 'options.group');
+
+        return new DhKeyPairGenJob(mode, group, ...encoding);
+      }
+
+      if (prime != null) {
+        if (primeLength != null)
+          throw new ERR_INCOMPATIBLE_OPTION_PAIR('prime', 'primeLength');
+
+        validateBuffer(prime, 'options.prime');
+      } else if (primeLength != null) {
+        validateInt32(primeLength, 'options.primeLength', 0);
+        // Coerce -0 to +0.
+        primeLength += 0;
+      } else {
+        throw new ERR_MISSING_OPTION(
+          'At least one of the group, prime, or primeLength options');
+      }
+
+      if (generator != null) {
+        validateInt32(generator, 'options.generator', 0);
+        // Coerce -0 to +0.
+        generator += 0;
+      }
+      return new DhKeyPairGenJob(
+        mode,
+        prime != null ? prime : primeLength,
+        generator == null ? 2 : generator,
+        ...encoding);
+    }
+    default:
+      return new NamedKeyPairGenJob(mode, type, ...encoding);
+  }
+}
+
+
+    return { generateKeyPair, generateKeyPairSync };
+}
+
 // Pinned Cipheriv/Decipheriv classes over real private native EVP state.
 function _createNodeCipherPlatform(platform) {
     'use strict';

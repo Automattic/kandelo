@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0179-node-keypair-gen.patch",
   "packages/registry/spidermonkey/patches/0178-node-tls-encrypted-output.patch",
   "packages/registry/spidermonkey/patches/0177-node-tty-shared-io.patch",
   "packages/registry/spidermonkey/patches/0176-node-vm-cache.patch",
@@ -330,6 +331,13 @@ inputs = [
   "third_party/node-core/symmetric-keygen-sources.json",
   "third_party/node-core/secret-keygen-operations.h",
   "third_party/node-core/native-secret-keygen.cpp",
+  "third_party/node-core/asymmetric-keygen-platform-adapter.js",
+  "third_party/node-core/asymmetric-keygen-sources.json",
+  "third_party/node-core/generate-asymmetric-keygen.py",
+  "third_party/node-core/native-keypair-gen.cpp",
+  "third_party/node-core/asymmetric-keygen.md",
+  "third_party/node-core/tests/asymmetric-keygen",
+  "third_party/node-core/upstream/asymmetric-keygen",
   "third_party/node-core/upstream/symmetric-keygen/lib/internal/crypto/keygen.js",
   "third_party/node-core/upstream/symmetric-keygen/src/crypto/crypto_keygen.cc",
   "third_party/node-core/upstream/symmetric-keygen/src/crypto/crypto_keygen.h",
@@ -777,4 +785,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 250
+revision = 251

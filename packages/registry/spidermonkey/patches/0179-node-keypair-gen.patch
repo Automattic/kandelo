@@ -1,0 +1,10 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4322 +4322,6 @@
+-                    JS::GetClass(unwrapped) == &KandeloSecretKeyGenRequestClass)) {
++                    JS::GetClass(unwrapped) == &KandeloSecretKeyGenRequestClass ||
++                    JS::GetClass(unwrapped) == &KandeloRsaKeyPairGenRequestClass ||
++                    JS::GetClass(unwrapped) == &KandeloDsaKeyPairGenRequestClass ||
++                    JS::GetClass(unwrapped) == &KandeloEcKeyPairGenRequestClass ||
++                    JS::GetClass(unwrapped) == &KandeloDhKeyPairGenRequestClass ||
++                    JS::GetClass(unwrapped) == &KandeloNamedKeyPairGenRequestClass)) {

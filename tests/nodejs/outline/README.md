@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source251 adds actual public asymmetric generation over complete pinned wrappers, five real ncrypto/OpenSSL traits, KEYPAIRGENREQUEST/native CPU work and GC-owned immutable key roles. Fresh current-root source checks guard908inputs/8checks/8commands;16paired native/candidate differential groups and4unchanged upstream files per subject use identified native dependencies. Newly integrated guest JSAPI/work/publication/GC/realm/fatal/private-role guard and all4hosts remain uncompiled/unexecuted; valid-private ecPkcs8 remains missing. No crypto/API/finding closure.
+See [source scope](asymmetric-keygen-integration.md).
+
 The [current source backlog crosswalk](source249-backlog-reconciliation.md)
 records 43 proposed tasks across all 19 families, shared prerequisites and
 unresolved questions at source249. It corrects stale absence claims without

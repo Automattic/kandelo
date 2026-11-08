@@ -1,0 +1,332 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto.md",
+    "findingIds": [
+      "C-001",
+      "C-015"
+    ],
+    "prerequisiteFindingIds": [
+      "C-008",
+      "C-009",
+      "C-011"
+    ],
+    "relatedFamilies": [
+      "crypto",
+      "async",
+      "values",
+      "engine"
+    ],
+    "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-001",
+        "definitionKey": "tests/nodejs/audit/crypto.md#C-001:L15",
+        "relation": "partial-owning-source",
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-008",
+        "definitionKey": "tests/nodejs/audit/crypto.md#C-008:L22",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false
+      }
+    ],
+    "proseReferences": [
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-015",
+        "line": 49,
+        "relation": "partial-owning-source",
+        "standaloneDefinitionRecovered": false,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-009",
+        "line": 45,
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "standaloneDefinitionRecovered": false,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-011",
+        "line": 47,
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "standaloneDefinitionRecovered": false,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/crypto-contracts.md",
+        "findingId": "C-015",
+        "line": 141,
+        "relation": "partial-owning-source",
+        "standaloneDefinitionRecovered": false,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/crypto-contracts.md",
+        "findingId": "C-011",
+        "line": 141,
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "standaloneDefinitionRecovered": false,
+        "closed": false
+      }
+    ],
+    "originalRangeReferences": [
+      {
+        "document": "tests/nodejs/audit/crypto-contracts.md",
+        "line": 76,
+        "text": "C-009 through C-013",
+        "meaning": "Original grouped range retained, not new standalone findings"
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Complete unchanged pinned asymmetric public keygen algorithms now flow through final exposed crypto.generateKeyPair/generateKeyPairSync; symmetric232 remains distinct.",
+    "Five actual RSA/PSS,DSA,EC,DH and namedOKP/PQC ncrypto/OpenSSL Setup/generation owners configure before genuine KEYPAIRGENREQUEST/init, use existing CPU queue/publication/callback ownership and real entropy/backend availability.",
+    "Real material is owned once by native GC edges shared by immutable public/private handle roles; real PEM/DER/JWK/raw/privatebuffer encoders preserve validation/getter/error order without public Buffer.from coercion.",
+    "Native immutable private-role admission now fatally gates rawPrivate/rawSeed/ecPrivate/ecPkcs8 before backend access as pinned CHECKs require; real missing ecPkcs8 owner remains explicit.",
+    "Manual31path composition preserves250HTTP FastBuffer/249codec/TLS/EventEmitter and actual0755script, declares0179/recipe251, genuinely regenerates current production core and source-stages the exact composed engine hunk with strict F/R/F replay."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-keypair251-source-r1/report.json",
+    "sha256": "7646dcfdab8f9cee0942e790a7229c5a3a98ea644215f755618351726f7df25c",
+    "guardedInputs": 908,
+    "scope": "Normal current core/bootstrap/native staging+actual5job/provider/role-source owners, unchanged native helper reused. New guest C++ uncompiled; ecPkcs8 private owner still missing; no closure."
+  },
+  "packageChecks": {
+    "report": ".context/node26-keypair251-affected-r1.json",
+    "sha256": "757fabc08b9b3de59b2990acb38b84fa4380102a0ec0fa5e5efe65d3c3241d43",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-keypair251-source-r1/report.json",
+    "sha256": "7646dcfdab8f9cee0942e790a7229c5a3a98ea644215f755618351726f7df25c",
+    "guardedInputs": 908,
+    "sourceChecks": 8,
+    "sourceCommands": 8,
+    "nativeDifferentialGroups": 16,
+    "candidateDifferentialGroups": 16,
+    "pairedValuesEqual": true,
+    "upstreamFilesPerSubject": 4,
+    "upstreamSubjects": 2,
+    "upstreamScriptRuns": 8,
+    "packagePassed": 14,
+    "sourceOwnedFiles": 31,
+    "actualProductionCore": "e6149323741f23e90b05f7ce665292718e0683e5703b6e76a6c70aaa8134c66e",
+    "actualEngineCpp": "48447f50e435b8f71df81634c5bd700bbccd76041124c16c373a11eb1f118b9e",
+    "newRootCompilerAttempts": 0,
+    "historicalHelpersAccounted": 2,
+    "historicalHelperFailures": 0,
+    "guestExecuted": false,
+    "productionJSAPICompiled": false,
+    "privateRoleGuardGuestExecuted": false,
+    "validPrivateEcPkcs8Missing": true,
+    "expectedHistoricalFatalNegatives": 8,
+    "fatalNegativeCompatibilityPasses": 0,
+    "scope": "Source251 adds actual public asymmetric generation over complete pinned wrappers, five real ncrypto/OpenSSL traits, KEYPAIRGENREQUEST/native CPU work and GC-owned immutable key roles. Fresh current-root source checks guard908inputs/8checks/8commands;16paired native/candidate differential groups and4unchanged upstream files per subject use identified native dependencies. Newly integrated guest JSAPI/work/publication/GC/realm/fatal/private-role guard and all4hosts remain uncompiled/unexecuted; valid-private ecPkcs8 remains missing. No crypto/API/finding closure."
+  },
+  "sealedEvidence": {
+    "report": ".context/asymmetric-keygen-owner-agent/report.json",
+    "sha256": "2733245c56a3eb78fe975b81d1c0aec3fec3bed18440c638a1971c5bd03b4884",
+    "reusedEvidence": true,
+    "scope": "Historical actual portable generation/serialization and pinned frontend over native V8/uv/DER-copy/JWK/privateallocator dependencies; originalfailures/8fatalnegatives retained, no guest or ownsign proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/normal-coregen-r1/result.json",
+      "sha256": "485dd9f5e025ca29b4802ea78dc00897df2136f2ef05f11095a556032e57ff5a",
+      "classification": "source-check-fixture-failure",
+      "scope": "Sparse private source missed exact0043/0044normal generator inputs; retainedfailure before corrected source-only preparation.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/native-control-r1/result.json",
+      "sha256": "485dd9f5e025ca29b4802ea78dc00897df2136f2ef05f11095a556032e57ff5a",
+      "classification": "historical-reference-fixture-nonpass",
+      "scope": "15/16: wrong authored DSA-JWK support expectation, exact native unsupported error retained.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/candidate-control-r1/result.json",
+      "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+      "classification": "historical-native-component-abort",
+      "scope": "SIGABRT(-6) from authored Job destructor after HandleScope; original binary/SHA retained, not a guest failure or compiler failure.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/candidate-control-r2/result.json",
+      "sha256": "485dd9f5e025ca29b4802ea78dc00897df2136f2ef05f11095a556032e57ff5a",
+      "classification": "historical-native-dependency-nonpass",
+      "scope": "14/16: native util.promisify private-symbol and native sign JS #slots fixture mismatches; corrected actual candidate promisify and genuine PEM native interoperability are narrowly scoped.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/initial-author-fixture-failure.json",
+      "sha256": "31195cefe64d7f1c5f577741a369db7e304b1266b20de8bbeb10879f67a795ed",
+      "classification": "preserved-author-setup-failure",
+      "scope": "Missing copied fixture path/driver; initial full command output was tool-transcript-only, no reconstructed original file;0compiler/runtime attempts.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/versions/native-keys-before-private-role-guard.cpp",
+      "sha256": "80bf1b9f903ebbd435f6eea519c5741e15788a2fbbfbbd504445b00c7af228c9",
+      "classification": "review-found-source-admission-gap",
+      "scope": "KEYPAIR-ROOT-001: actual public roles may share private EVP material; native private raw access lacked rolecheck. Finalguard580d1411 source-addresses it with targetfatalpolicy; guest execution unproven.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-native-raw-private/result.json",
+      "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+      "classification": "expected-native-fatal-admission-negative",
+      "exit": -6,
+      "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-candidate-raw-private/result.json",
+      "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+      "classification": "expected-native-fatal-admission-negative",
+      "exit": -6,
+      "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-native-raw-seed/result.json",
+      "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+      "classification": "expected-native-fatal-admission-negative",
+      "exit": -6,
+      "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-candidate-raw-seed/result.json",
+      "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+      "classification": "expected-native-fatal-admission-negative",
+      "exit": -6,
+      "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-native-ec-raw-private/result.json",
+      "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+      "classification": "expected-native-fatal-admission-negative",
+      "exit": -6,
+      "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-candidate-ec-raw-private/result.json",
+      "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+      "classification": "expected-native-fatal-admission-negative",
+      "exit": -6,
+      "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-native-ec-pkcs8-private-binding/result.json",
+      "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+      "classification": "expected-native-fatal-admission-negative",
+      "exit": -6,
+      "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-candidate-ec-pkcs8-private-binding/result.json",
+      "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+      "classification": "expected-native-fatal-admission-negative",
+      "exit": -6,
+      "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+      "compatibilityPass": false
+    },
+    {
+      "report": ".context/asymmetric-keygen-owner-agent/fatal-core-limit-observation.json",
+      "sha256": "a6b6dabdf87a6f6e6ef1857479bebf3ea135485d96f57dca088575d34afde496",
+      "classification": "historical-observation-limitation",
+      "scope": "Initial8fatal processes predate explicitperprocess RLIMIT_CORE journal; currentinheritedsoft0/no privatecorepayload observed, no retroactiveclaim. Futuredriversset0."
+    }
+  ],
+  "remaining": [
+    "Compile and validate actual guest native key-pair JSAPI/classes/CPU queue/init/reentry/publication/cancellation/retirement, realm/CCW roots/finalizers/OOM/fatal and role authority against identified artifacts on allfourhosts.",
+    "Implement the genuinely missing valid-private ecPkcs8 owner; guarding its dispatcher name is not an implementation or compatibility pass.",
+    "Close remaining WebCrypto generation, KEM/encapsulate/decapsulate, broader prime/exchange/STORE/provider/FIPS/secureheap and opaque EVP/BIGNUM/provider allocation accounting gaps; no algorithm/version support invented from linkage.",
+    "Validate generation-error decoration one-argument async versus sync-throw owner, ordinary encoding exceptions and callback/AsyncWrap order in the actual guest; native dependent fixture does not execute the bridge.",
+    "Keep original239symmetric guest evidence, historical compilation uncertainty, allnonpasses and overall/fullproduct rebuild deferrals; no finding or platform-boundary acceptance from source/control presence."
+  ],
+  "actualCurrentRootEvidence": {
+    "focusedReport": ".context/node26-keypair251-source-r1/focused-controls/report.json",
+    "focusedReportSha256": "85739b1810c488e027c63c7f36e6e8a61077e8e377d4d95cbb87f3e4e5ad7c5a",
+    "pairedDifferentialGroups": 16,
+    "upstreamScriptRuns": 8,
+    "nativeCandidateValuesEqual": true,
+    "sourceInputCount": 908,
+    "sourceChecks": 8,
+    "sourceCommands": 8,
+    "packagePassed": 14,
+    "actualCoreSha256": "e6149323741f23e90b05f7ce665292718e0683e5703b6e76a6c70aaa8134c66e",
+    "newRootCompilers": 0,
+    "guestBridgeExecuted": false,
+    "guestRoleGuardExecuted": false,
+    "validPrivateEcPkcs8Missing": true
+  },
+  "manualIntegration": {
+    "receipt": ".context/node26-keypair251-manual-apply-r1.json",
+    "receiptSha256": "278275737d0aa6d5212aba82ccdb399329ec44b8e96879c6044c2f8fa2b9ffe6",
+    "sourceComposition": ".context/node26-keypair251-composed-r1/integration.json",
+    "compositionSha256": "1899b638ec21ebd127d44f1ee490b13386d29617036782033bd7e9e3de6b9889",
+    "ownedFiles": 31,
+    "buildScriptMode": "0755",
+    "v1OperationClaimed": false,
+    "checks": [
+      {
+        "path": ".context/node26-keypair251-checks-r1/source-and-keypair-owner-receipt.json",
+        "sha256": "fc5b2ab2fddfe0b75b93a909f1f35fd147295be20a644a444cd84e1c558a7341",
+        "pid": 75647,
+        "exit": 0,
+        "logSha256": "afc381b88483e6473ddd6c363adbc3fa741e6fc4c674340b0a67e30335be94b1"
+      },
+      {
+        "path": ".context/node26-keypair251-checks-r1/affected-package-inputs-receipt.json",
+        "sha256": "69ef99d5f7cbc930ba1c0b7ec291b70326333dcb45048de98857a8a02ba4759b",
+        "pid": 75646,
+        "exit": 0,
+        "logSha256": "7eb3acc8354eeb61eabe19f9eab5bd28487fdc8d80541b1ddf6e12eb07831b0f"
+      }
+    ],
+    "normalCoreGeneratedFromCurrent250": true,
+    "componentExpandedCoreInstalled": false
+  },
+  "independentReview": {
+    "seal": ".context/keypair-root-review-r1/SEAL.json",
+    "sealSha256": "4d82104cdc9ae7cf978cbe04202b8c09a7fbe4c503e5793178424cd389628f12",
+    "finalReviewSha256": "2a4439b168e8f1e12a8fd8cf2fe8bdccf807ffcf26e48fa94aeac9c7dcbfa04f",
+    "finalRuntimeIdentities": {
+      "native-keypair-gen.cpp": "491ce237bd202c9bde862087127be48bf78f7008b067947b70a46a8cb4b916e0",
+      "native-keys.cpp": "580d1411ab8e22919c98fec82aeda0997ba2a19f441fbf6b74c103f20e6d53c5",
+      "keypair-operations.h": "ce6b35cf354c80a3ebb32abe9a26bc18b7b130ab1826cb5047918a80b0dfb1cd",
+      "native-fs.cpp": "724e2e1a3432b03de3719c7130e3473492bcfe698cbcbfdab6ec7e60ddff3648",
+      "native-fs-promise.cpp": "4e3140bf3251acf201f262800f3b886c123e02f5c51215b00898f477b0d33592",
+      "asymmetric-keygen-platform-adapter.js": "94b3dc26b1f783b97cb38eaa91baff3be883c66f8d80a6c76568a72ebf0207b0"
+    },
+    "KEYPAIR-ROOT-001": "Source-addressed only; eight expected native/dependent wrapper fatal negatives are not guest guard execution. No wholecrypto/guest safety signoff."
+  },
+  "at": "2026-11-08T03:58:01.564264+00:00",
+  "recipeRevision": 251,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

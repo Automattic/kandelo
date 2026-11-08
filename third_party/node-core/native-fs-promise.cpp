@@ -81,6 +81,10 @@ static bool KandeloFsPromiseRequest(JSContext* cx, HandleValue makeError,
 static void KandeloFsAbandonRequest(JSObject* request) {
   auto* state = static_cast<KandeloFsRequestState*>(JS::GetReservedSlot(request, FsRequestState).toPrivate());
   state->Retire();
+  if (state->pairJob) {
+    JS::RemoveAssociatedMemory(request, state->pairBytes, JS::MemoryUse::Embedding3);
+    state->pairBytes = 0; state->pairJob.reset();
+  }
   for (uint32_t slot : {FsRequestFrame, FsRequestCallback, FsRequestParent,
                         FsRequestPromise, FsRequestBuffers, FsRequestResult})
     JS::SetReservedSlot(request, slot, UndefinedValue());

@@ -378,12 +378,18 @@ static bool KandeloKeyParsePKCS12(JSContext* cx, const CallArgs& args, MutableHa
 static bool KandeloCreateSecretKeyGen(JSContext*, const CallArgs&, MutableHandleValue,
                                       KandeloFsRequestPublication&);
 static bool KandeloRunSecretKeyGen(JSContext*, const CallArgs&, MutableHandleValue);
+static bool KandeloCreatePairGen(JSContext*, const CallArgs&, MutableHandleValue, KandeloFsRequestPublication&);
+static bool KandeloRunPairGen(JSContext*, const CallArgs&, MutableHandleValue);
+static bool KandeloPairConstants(JSContext*, MutableHandleValue);
 static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandleValue output,
                                KandeloFsRequestPublication& publication) {
   std::string name; if (!KandeloKeyString(cx, args.get(0), &name)) return false;
   if (name == "parsePKCS12") return KandeloKeyParsePKCS12(cx, args, output);
   if (name == "createSecretGen") return KandeloCreateSecretKeyGen(cx, args, output, publication);
   if (name == "runSecretGen") return KandeloRunSecretKeyGen(cx, args, output);
+  if (name == "createPairGen") return KandeloCreatePairGen(cx, args, output, publication);
+  if (name == "runPairGen") return KandeloRunPairGen(cx, args, output);
+  if (name == "pairConstants") return KandeloPairConstants(cx, output);
   if (name == "constants") {
     using Key = kandelo::crypto::KeyMaterial::Key;
     RootedObject object(cx, JS_NewPlainObject(cx)); if (!object) return false;
@@ -522,6 +528,13 @@ static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandl
   RootedValue materialOwner(cx, JS::GetReservedSlot(handle, 0));
   auto* material = KandeloKeyMaterial(handle); if (!material) { JS_ReportErrorASCII(cx, "Key handle is not initialized"); return false; }
   const int role = KandeloKeyRole(handle);
+  // Private export methods are reflectable/borrowable from the public
+  // PrivateKeyObject prototype. A public role can share an actual private
+  // EVP owner; only the native immutable role grants private serialization.
+  // Preserve the pinned KeyObjectHandle CHECK policy before backend access.
+  if (name == "rawPrivate" || name == "rawSeed" || name == "ecPrivate" || name == "ecPkcs8") {
+    MOZ_RELEASE_ASSERT(role == 2);
+  }
   if (name == "type") { output.setInt32(role); return true; }
   if (name == "size") { output.setNumber(double(material->secret.size())); return true; }
   if (name == "asymmetricType") {

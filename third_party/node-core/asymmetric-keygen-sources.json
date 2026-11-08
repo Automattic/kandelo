@@ -1,0 +1,94 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "src/crypto/crypto_keygen.cc": {
+      "path": "upstream/asymmetric-keygen/src/crypto/crypto_keygen.cc",
+      "sha256": "63dd29db755b0770b1bb928e56911345fde2643a132e971e4081692b0a175c9f"
+    },
+    "src/crypto/crypto_keygen.h": {
+      "path": "upstream/asymmetric-keygen/src/crypto/crypto_keygen.h",
+      "sha256": "24355e2a2ad286f253fbaaa219c71c07b583d78bdc78305aa74ea1ad4c78d42e"
+    },
+    "src/crypto/crypto_rsa.cc": {
+      "path": "upstream/asymmetric-keygen/src/crypto/crypto_rsa.cc",
+      "sha256": "6fb9229a1dfffab09dd3dfbfa805309fea5e2a2960d2462b89e8ff9b85756c2c"
+    },
+    "src/crypto/crypto_rsa.h": {
+      "path": "upstream/asymmetric-keygen/src/crypto/crypto_rsa.h",
+      "sha256": "78209001efaf631ed6e9b22a227c680cb59b42ac77eaa8543ef29f42ba366843"
+    },
+    "src/crypto/crypto_ec.cc": {
+      "path": "upstream/asymmetric-keygen/src/crypto/crypto_ec.cc",
+      "sha256": "526b35c048d2d82ac07b761c65d4b4a8c4079351c1bdf4815b48d81cef176123"
+    },
+    "src/crypto/crypto_ec.h": {
+      "path": "upstream/asymmetric-keygen/src/crypto/crypto_ec.h",
+      "sha256": "478769d0abb82fece81ba84a0ee7e7e0009812929f31a1d26498c12823a9190d"
+    },
+    "src/crypto/crypto_dsa.cc": {
+      "path": "upstream/asymmetric-keygen/src/crypto/crypto_dsa.cc",
+      "sha256": "1ba023d816a9567b6bf696ce84382aa8031deaaa1da7b76824af55b508b179cf"
+    },
+    "src/crypto/crypto_dsa.h": {
+      "path": "upstream/asymmetric-keygen/src/crypto/crypto_dsa.h",
+      "sha256": "43ec9d85697ccf7c9e1abcda6faadf5e156a83300ba5a5523b67d8d73a51d1ae"
+    },
+    "src/crypto/crypto_dh.cc": {
+      "path": "upstream/asymmetric-keygen/src/crypto/crypto_dh.cc",
+      "sha256": "af3a25e8b8c4fc061973097d4bf5cbf56c370ed1f40301503fe789d1462d4dc4"
+    },
+    "src/crypto/crypto_dh.h": {
+      "path": "upstream/asymmetric-keygen/src/crypto/crypto_dh.h",
+      "sha256": "9fad6240c0571ab40575e1d387bdb83f052ed81d66eaa6f3dac280f28d87b5d6"
+    },
+    "lib/internal/crypto/keygen.js": {
+      "path": "upstream/symmetric-keygen/lib/internal/crypto/keygen.js",
+      "sha256": "11f62343421173bbe2e29726f55f8d1ee5db492e3f04fa8d07bbc93547dc9b4e"
+    }
+  },
+  "sections": {
+    "rsaDigest": {
+      "source": "src/crypto/crypto_rsa.cc",
+      "start": "bool IsRsaPssDigestEncodable(",
+      "length": 331,
+      "sha256": "64d5b79508206f728f00d96a3985c7d2455a3946c11725811c1a92e45d2010f2"
+    },
+    "rsa": {
+      "source": "src/crypto/crypto_rsa.cc",
+      "start": "EVPKeyCtxPointer RsaKeyGenTraits::Setup(",
+      "length": 1661,
+      "sha256": "34785b8124d35dfbf2e5931d26c4d1170e2c392a8578dea88047ce8e9643e641"
+    },
+    "dsa": {
+      "source": "src/crypto/crypto_dsa.cc",
+      "start": "EVPKeyCtxPointer DsaKeyGenTraits::Setup(",
+      "length": 618,
+      "sha256": "12b2e2fa049d3daecb0ca75eadce39132faafecb391ebe2aa74c0dde78e1da9c"
+    },
+    "ec": {
+      "source": "src/crypto/crypto_ec.cc",
+      "start": "EVPKeyCtxPointer EcKeyGenTraits::Setup(",
+      "length": 685,
+      "sha256": "979101c7f41acdcf48122ec9a27f2be4ed20f04c9e8014543e78abd6d6da9bca"
+    },
+    "dh": {
+      "source": "src/crypto/crypto_dh.cc",
+      "start": "EVPKeyCtxPointer DhKeyGenTraits::Setup(",
+      "length": 1017,
+      "sha256": "68cb2c82b538c1f3f86ccdac326ea7aa621e89dde3ce2b6432616715ae854600"
+    },
+    "named": {
+      "source": "src/crypto/crypto_keygen.cc",
+      "start": "EVPKeyCtxPointer NamedKeyPairGenTraits::Setup(",
+      "length": 217,
+      "sha256": "9547bd2cf73e8051fd1837ccd790224dba84817606d953f0d666f7018db2508c"
+    },
+    "public": {
+      "source": "lib/internal/crypto/keygen.js",
+      "start": "function isJwk(obj) {",
+      "length": 8017,
+      "sha256": "210ecbe5ca6e1ca42da6b44b188cddd2090040e24ab6af3e240c22a009959a73"
+    }
+  }
+}
