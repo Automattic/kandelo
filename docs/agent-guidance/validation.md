@@ -79,6 +79,9 @@ or substitute unrelated executable bytes.
 
 Conformance wrappers must reject an empty selected test inventory. A missing
 upstream checkout is provisioning work, never a successful zero-test run.
+Browser exec fixtures must use Bash for `/bin/sh`, matching the normal Node
+rootfs. Required-tool HTTP or body failures must stop fixture readiness;
+missing tools are not a partially working conformance environment.
 
 A spec must not skip because a binary or image the supported build produces
 is missing. Missing supported output is a build defect: fail with the reason,

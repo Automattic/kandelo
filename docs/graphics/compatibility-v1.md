@@ -27786,3 +27786,39 @@ It preserves every referenced generation and leaves unrecognized entries
 alone. Observed free space rises to approximately 35 GiB; that filesystem
 change is not attributed exclusively to this collector. No live build lock
 or shared cache generation is bypassed or manually removed.
+
+
+### Current libc execution and browser fixture repair, 2026-11-08
+
+R931 executes the initialized current upstream suite through the normal SDK.
+Node accounts for all 324 cases: 306 Pass, 17 existing expected failures and
+one known flaky case that passes, with no unexpected failure, build error
+or unexpected timeout. All 7,298 authored inputs, including the 926 pinned
+upstream files, match before and after the combined run.
+
+The browser half compiles all 324 fixtures but reports 324 startup errors,
+zero guest cases executed: `exec-binaries.ts` receives HTTP 500. The retained
+response names its unowned `programs/wasm32/dash.wasm` import. That fixture
+still used Dash for `/bin/sh`, diverging from the normal Bash-based Node
+rootfs. This is a browser fixture/provisioning failure, not 324 libc
+semantic failures or a conformance pass.
+
+The fixture now imports the normally selected Bash program and installs
+`/bin/bash` with `/bin/sh` pointing to it. Required tools use checked fetches
+rather than fulfilled error responses or silently omitted binaries. HTTP
+failures, empty/truncated bodies and HTML with status 200 stop readiness
+with an attributed error. Full module and ABI validation remain owned by
+the ordinary loader; the transport guard checks only the Wasm magic.
+
+Six actual-helper Node controls pass, as do complete semantic type checks
+for 143 browser and 46 Node-test roots. Through the ordinary browser runner,
+the already-built argv, popen and spawn controls now exit zero. These prove
+startup recovery and the selected real shell operations, not the full
+browser libc suite, which must rerun normally. Original raw errors and the
+HTTP response remain in integration's `.context/graphics-b1-libc-r931/`
+and `.context/graphics-browser-libc-init-r935/`; no failed run is overwritten.
+
+The current canonical source-only graphics gate separately passes all
+2,353 checks across 93 files with its image-write audit and zero skips.
+That source result does not replace actual browser rendering, the full
+GLES2/EGL audit, lifecycle, measurements or any remaining B1/final gate.
