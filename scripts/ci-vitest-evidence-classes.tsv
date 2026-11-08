@@ -460,6 +460,7 @@ host/test/runtime-memory-profile.test.ts	source-only
 host/test/rust-backtrace.test.ts	prepared-product
 host/test/rust-c-interop.test.ts	prepared-product
 host/test/rust-compatibility-in-guest.test.ts	prepared-product
+host/test/rust-debugger.test.ts	prepared-product
 host/test/rust-devtools-in-guest.test.ts	prepared-product
 host/test/rust-native-dependencies-in-guest.test.ts	prepared-product
 host/test/rust-std.test.ts	prepared-product
@@ -560,6 +561,7 @@ host/test/vm-interrupt-timer.test.ts	source-only
 host/test/wait-lifecycle-guest.test.ts	prepared-product
 host/test/wasi-shim.test.ts	prepared-product
 host/test/wasm-binary-parse.test.ts	prepared-product
+host/test/wasm-debug-breakpoints.test.ts	source-only
 host/test/wasm-function-imports.test.ts	source-only
 host/test/wasm-guest-pointer.test.ts	source-only
 host/test/wasm-memory-write-audit.test.ts	prepared-product
