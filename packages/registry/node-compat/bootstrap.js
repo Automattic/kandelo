@@ -692,12 +692,11 @@ EventEmitter.prototype.getMaxListeners = function getMaxListeners() {
 };
 
 function getUnhandledErrorException(ee, args) {
-  const value = args[0];
+  const value = args.length > 0 ? args[0] : undefined;
   if (value instanceof Error) return value;
   let rendered;
-  try { rendered = inspect(value); } catch { rendered = value; }
-  const error = new Error(rendered === undefined ? 'Unhandled error.' : `Unhandled error. (${rendered})`);
-  error.code = 'ERR_UNHANDLED_ERROR';
+  try { rendered = _nodeInspection.inspect(value); } catch { rendered = value; }
+  const error = new _nodeValues.errors.codes.ERR_UNHANDLED_ERROR(rendered);
   error.context = value;
   return error;
 }

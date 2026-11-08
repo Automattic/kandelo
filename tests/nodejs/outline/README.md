@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source 248 repairs the actual non-Error EventEmitter unhandled-error owner. This is a partial A-018 source contribution, not full stack/fatal or ASYNC compatibility.
+See [source scope](event-unhandled-error-integration.md).
+
 Source 247 adds the actual encrypted-output transport prerequisite and reviewed publication corrections. It does not activate public graceful shutdown or establish guest conformance.
 See [source scope](tls-encrypted-output-integration.md).
 

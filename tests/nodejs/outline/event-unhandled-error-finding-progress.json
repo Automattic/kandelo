@@ -1,0 +1,142 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/event-emitter-contracts.md",
+    "findingIds": [
+      "A-018"
+    ],
+    "relatedFamilies": [
+      "values"
+    ],
+    "scope": "Partial actual non-Error coded error, private inspection and omitted-argument owner. Same-Error stack/fatal and broader ASYNC obligations remain open.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/event-emitter-contracts.md",
+        "findingId": "A-018",
+        "relation": "partial-owning-source",
+        "closed": false,
+        "scope": "Non-Error coded constructor/private inspect/argument admission only; no stack/fatal closure."
+      },
+      {
+        "document": "tests/nodejs/audit/async.md",
+        "findingId": "A-018",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false,
+        "scope": "Preserve distinct broader qualified definition; fatal-stack, namespace and emitter resource obligations are not closed."
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "The public EventEmitter helper consumes the actual initialized Values ERR_UNHANDLED_ERROR class instead of a handwritten Error plus code field.",
+    "Unhandled payload rendering uses the actual private inspection owner, retaining target inspection fallback, coercion and ordinary context assignment order.",
+    "Omitted rest payload checks actual length before reading index zero, avoiding inherited-array getter execution while preserving explicit undefined and target captured Error instanceof semantics.",
+    "Actual current-parent bootstrap/native-reference controls and normal generated bootstrap checks preserve before-source nonpasses, unchanged core/engine and genuine early owner availability."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-events248-source-r1/report.json",
+    "sha256": "2806977b2db24d89049e18392bea0976585a161d7885d6de1b2f40d422e104d7",
+    "guardedInputs": 903,
+    "scope": "Actual current bootstrap EventEmitter helper and Values over explicit native Error/inspection/VM/process dependencies. Baseline nonpasses and limited upstream assertions kept separate; candidate inspection/engine/stack/fatal/GC and four-host runtime remain open."
+  },
+  "packageChecks": {
+    "report": ".context/node26-events248-affected-r1.json",
+    "sha256": "2c1f8dc60ded93e44a76fa6ee88e6c9dee47289107188ffc05fa7aff5cdf89d4",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-events248-source-r1/report.json",
+    "sha256": "2806977b2db24d89049e18392bea0976585a161d7885d6de1b2f40d422e104d7",
+    "nativeGroups": 10,
+    "beforeMatched": 3,
+    "beforeDifferent": 7,
+    "beforePublicExit": 1,
+    "afterMatched": 10,
+    "afterDifferent": 0,
+    "unchangedUpstreamFiles": 1,
+    "upstreamAssertionsPerSubject": 3,
+    "upstreamSubjects": [
+      "native",
+      "before",
+      "after"
+    ],
+    "earlySubjects": 3,
+    "sourceChecks": 12,
+    "sourceCommands": 8,
+    "newRootCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Source 248 changes only the EventEmitter unhandled non-Error helper and recipe revision. Ten native groups compare against actual current Values/EventEmitter source: before matches three and differs on seven with one real exit-one assertion; after matches all ten. One unchanged upstream file has three assertions per subject, and early owner-independent construction/ordinary/same-Error controls are separate. Native Error/inspection/VM/process dependencies do not execute candidate inspection/engine/stack/fatal/GC or establish four-host conformance.",
+    "globalBindingSelfContained": false
+  },
+  "sealedEvidence": {
+    "report": ".context/events-unhandled-owner-agent/report.json",
+    "sha256": "81a05d78789e5cb07eae344d40e0ec4618f4c483ab32e6f6bcb9a1ea625bdf06",
+    "reusedEvidence": true,
+    "scope": "Historical actual Events/Values source over native dependencies, including retained original and final baseline mismatches. No guest or whole newer pending-core validation claim."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/events248-root-controls-r1/report.json",
+      "sha256": "1b7c182c91fbea00d5b632ae7e7c5913d43bb9b9bbabf669695cb0228c8a637f",
+      "scope": "Current before-source baseline matches three of ten native groups and differs on seven; its public process exits one on omitted-payload inherited-index admission. After-source matches ten. These are versioned fixture comparisons, not public API counts or erased failures."
+    },
+    {
+      "report": ".context/events248-root-controls-r1/results/before-public.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "scope": "Actual baseline public process exit one retained with original assertion; no assertion weakening or conversion into pass."
+    },
+    {
+      "report": ".context/events-unhandled-owner-agent/evidence/comparison.json",
+      "sha256": "dd6a3c1405d7eee7410d5b8ad76fc4171f3a2ea6b1dcfa5e18cbab002aae9116",
+      "scope": "Original nine-group control version preserves six before/native mismatches even though observer processes exited zero."
+    },
+    {
+      "report": ".context/events-unhandled-owner-agent/evidence/run-r2.4ZfRgu/results/comparison.json",
+      "sha256": "10357f46a747f9ec3bcd3fd12626dfd97523f497c68073a929859a04510a2e54",
+      "scope": "Historical final ten-group before3/after10 comparison and baseline exit one retained; not newly compiled guest or broad family evidence."
+    }
+  ],
+  "remaining": [
+    "Implement the remaining A-018 same-Error private stack enhancement, inspector/fatal rendering and related actual process exception ownership; unchanged branch is not an accepted platform exclusion.",
+    "Validate actual candidate inspection, Error/Values, realm/GC/startup/native async/provider behavior on identified guest artifacts across Node, Chromium, Firefox and WebKit.",
+    "Keep the unchanged upstream file's three assertions per native/before/after subject separate from the ten richer differential groups; before passing that limited file does not erase seven mismatches.",
+    "Continue the full EventEmitter/ASYNC module surface and inherited/namespace/lifecycle/resource obligations; this non-Error helper slice does not close the broad A-018 range.",
+    "Overall suites and full product rebuild remain deferred while independent audited breadth work continues; native Error/inspection/VM/process dependencies are not current guest conformance."
+  ],
+  "actualControlReport": {
+    "report": ".context/events248-root-controls-r1/report.json",
+    "sha256": "1b7c182c91fbea00d5b632ae7e7c5913d43bb9b9bbabf669695cb0228c8a637f",
+    "nativeGroups": 10,
+    "beforeMatched": 3,
+    "beforeDifferent": 7,
+    "beforePublicExit": 1,
+    "afterMatched": 10,
+    "afterDifferent": 0,
+    "unchangedUpstreamFiles": 1,
+    "upstreamAssertionsPerSubject": 3,
+    "earlySubjects": 3,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "scope": "Current EventEmitter/Values over native Error/inspection/VM/process. Baseline nonpasses preserved; upstream three assertions separate from ten groups; no new guest stack/fatal/GC proof."
+  },
+  "integrationTool": {
+    "report": ".context/node26-events248-tool-completion.json",
+    "sha256": "26fbaa3a058978fd4244b17d76be8637832d9ecc793b3b835aa21515514a285d",
+    "sourceBinding": "c34a58a31cee4ac93210fe012b7ee35777f7a7489630c5da3ea93c1ecdb6d7e7",
+    "selectedInputBindingOnly": true,
+    "globalBindingSelfContained": false,
+    "sourceImportExit3Meaning": "First import awaited the second check; both actual checks exited zero and final operation completed."
+  },
+  "at": "2026-11-08T02:39:50.120876+00:00",
+  "recipeRevision": 248,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
