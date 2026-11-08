@@ -12,7 +12,7 @@ const bundle = readFileSync(new URL('../../third_party/node-core/node-core.js', 
 const target = JSON.parse(readFileSync(new URL('../../packages/registry/node-compat/target.json', import.meta.url), 'utf8'));
 const factories = Function(`${bundle};return { headers:_createNodeHttpHeaders, incoming:_createNodeHttpIncoming, values:_createNodeValuesPlatform,
   bytes:_installNodeBufferBytes, codecs:_installNodeBufferCodecs, unpooled:_installNodeBufferUnpooled,
-  parser:_createNodeHttpParser };`)();
+  parser:_createNodeHttpParser, agent:_createNodeHttpAgent };`)();
 function section(start: string, end: string) {
   const a = source.indexOf(start), b = source.indexOf(end, a);
   if (a < 0 || b < 0) throw Error('Missing HTTP source boundary'); return source.slice(a, b);
@@ -27,22 +27,51 @@ function subject(live = false) {
   const pending: Array<() => void> = [];
   // Actual request/parser/header/Buffer source. Native streams and URL are
   // explicit boundaries; only live controls use real native loopback sockets.
-  const make = Function('_nodeHttpHeaders', '_nodeHttpIncoming', '_nodeHttpServerResponse', 'Buffer', '_FastBuffer', 'stream', 'url', 'queueMicrotask', '_nodeValues', '_createNodeHttpParser', '_nodeNative', '_nodeHttpOutgoing',
+  const { internalBinding } = require('internal/test/binding');
+  const asyncOwner = { ...require('internal/async_hooks'), api: require('node:async_hooks') };
+  const socketStream = { ...require('internal/stream_base_commons'), binding: internalBinding('stream_wrap') };
+  const acquisitions: net.NetConnectOpts[] = [];
+  const openSocket = live ? (options: net.NetConnectOpts) => net.connect(options) : (_options: net.NetConnectOpts) => {
+    // Real native Socket controls are required by the consumed keep-alive Agent.
+    // Match nativeRequest; held connecting, these header controls admit no TCP.
+    const socket = new net.Socket();
+    (socket as any).connecting = true; return socket;
+  };
+  const connect = (options: net.NetConnectOpts) => {
+    acquisitions.push(options);
+    return openSocket(options);
+  };
+  const nativeNet = { ...net, createConnection: connect };
+  const { makeHttpModule: make, agent } = Function('_nodeHttpHeaders', '_nodeHttpIncoming', '_nodeHttpServerResponse', 'Buffer', '_FastBuffer', 'stream', 'url', 'queueMicrotask', '_nodeValues', '_createNodeHttpParser', '_nodeNative', '_nodeHttpOutgoing', '_createNodeHttpAgent', '_nodeAsyncPlatform', '_nodeSocketStream', 'process', 'net', 'events', 'assert', 'tls',
     'const STATUS_CODES=_nodeHttpHeaders.STATUS_CODES;' +
-    section('const HTTP_METHODS =', 'const http = makeHttpModule(') + ';return makeHttpModule;')
+    section('const HTTP_METHODS =', 'const http = makeHttpModule(') + ';return { makeHttpModule, agent: _nodeHttpAgent };')
     (headers, incoming, { ServerResponse: http.ServerResponse }, Buffer, FastBuffer, stream, url, live ? queueMicrotask : (fn: () => void) => pending.push(fn), values,
-      factories.parser, require('./fixtures/node-http-incoming-platform.cjs').nativeParserBoundary(), outgoing);
+      factories.parser, require('./fixtures/node-http-incoming-platform.cjs').nativeParserBoundary(), outgoing,
+      factories.agent, asyncOwner, socketStream, process, nativeNet, require('node:events'), require('node:assert'), require('node:tls'));
   return { api: make({ defaultPort: 80, defaultProtocol: 'http:',
-    connect: (options: net.NetConnectOpts) => net.connect(options) }), headers, Buffer, pending };
+    connect, agentOwner: agent }), headers, Buffer, pending, acquisitions };
 }
 function failure(fn: () => unknown) {
   try { fn(); return undefined; } catch (e: any) { return { name: e.name, code: e.code, message: e.message }; }
 }
 function nativeRequest(options: any) {
-  const socket = new stream.Duplex({ read() {}, write(_chunk, _encoding, cb) { cb(); } });
+  const socket = new net.Socket();
   (socket as any).connecting = true;
   const request = http.request({ host: 'headers.test', createConnection: () => socket as any, ...options });
   request.on('error', () => {}); return request;
+}
+
+async function destroyPreconnectPair(candidate: any, control: any) {
+  const observations = await Promise.all([candidate, control].map(request => new Promise<any[]>(resolve => {
+    const errors: any[] = [];
+    const onError = (error: any) => errors.push({ name: error.name, code: error.code, message: error.message });
+    request.on('error', onError);
+    request.once('close', () => { request.removeListener('error', onError); resolve(errors); });
+    request.destroy();
+  })));
+  // Both actual request owners report the intentional pre-connect teardown.
+  expect(observations[0]).toEqual(observations[1]);
+  expect(observations[0].map(error => error.code)).toEqual(['ECONNRESET']);
 }
 
 describe.skipIf(process.versions.node !== target.version)('pinned outgoing HTTP header owners', () => {
@@ -64,7 +93,7 @@ describe.skipIf(process.versions.node !== target.version)('pinned outgoing HTTP 
     }
   });
 
-  it('retains typed values, shallow arrays, original casing and append/set/remove behavior', () => {
+  it('retains typed values, shallow arrays, original casing and append/set/remove behavior', async () => {
     function run(request: any) {
       const values = ['one', 'two'];
       expect(request.setHeader('X-Test', values)).toBe(request);
@@ -78,10 +107,10 @@ describe.skipIf(process.versions.node !== target.version)('pinned outgoing HTTP 
     }
     const candidate = subject().api.request({ headers: { Host: 'headers.test', Connection: 'close' } });
     const control = nativeRequest({ headers: { Host: 'headers.test', Connection: 'close' } });
-    try { expect(run(candidate)).toEqual(run(control)); } finally { candidate.destroy(); control.destroy(); }
+    try { expect(run(candidate)).toEqual(run(control)); } finally { await destroyPreconnectPair(candidate, control); }
   });
 
-  it('matches method/path and outgoing validation options before network acquisition', () => {
+  it('matches method/path and outgoing validation options before network acquisition', async () => {
     const s = subject();
     for (const options of [{ method: 'BAD METHOD' }, { method: 1 }, { path: '/bad\r\nx: injected' },
       { httpValidation: 'bad' }, { insecureHTTPParser: 1 }, { httpValidation: 'strict', insecureHTTPParser: false },
@@ -89,19 +118,22 @@ describe.skipIf(process.versions.node !== target.version)('pinned outgoing HTTP 
       expect(failure(() => s.api.request(options))).toEqual(failure(() => nativeRequest(options)));
     }
     expect(s.pending).toHaveLength(0);
+    await new Promise<void>(resolve => process.nextTick(resolve));
+    expect(s.acquisitions).toHaveLength(0);
   });
 
-  it('freezes actual compiled header state when flushing before connection', () => {
+  it('freezes actual compiled header state when flushing before connection', async () => {
     const s = subject(), candidate = s.api.request({ headers: { Host: 'headers.test', Connection: 'close' } });
     const control = nativeRequest({ headers: { Host: 'headers.test', Connection: 'close' } });
     try {
       expect(candidate.headersSent).toBe(false); expect(control.headersSent).toBe(false);
       candidate.flushHeaders(); control.flushHeaders();
+      expect(s.acquisitions).toHaveLength(1);
       expect(candidate.headersSent).toBe(true); expect(control.headersSent).toBe(true);
       for (const method of ['setHeader', 'appendHeader', 'removeHeader']) {
         expect(failure(() => candidate[method]('x', 'value'))).toEqual(failure(() => (control as any)[method]('x', 'value')));
       }
-    } finally { candidate.destroy(); control.destroy(); }
+    } finally { await destroyPreconnectPair(candidate, control); }
   });
 
   it('encodes shared Buffer single-byte aliases as low bytes without UTF-8 substitution', () => {

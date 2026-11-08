@@ -1,0 +1,133 @@
+{
+  "kind": "fixture-only-validation-repair",
+  "at": "2026-11-08T03:42:14.195769+00:00",
+  "recipeRevision": 250,
+  "runtimeCodeChanged": false,
+  "buildRecipeChanged": false,
+  "compilerAttempts": 0,
+  "guestExecuted": false,
+  "findingClosure": false,
+  "implementationComplete": false,
+  "fourHostConformance": false,
+  "rootCheck": {
+    "report": {
+      "path": ".context/node26-http-headers-fixture250-r2-affected-r1.json",
+      "sha256": "6ef28620ef905af9bc78c0cfd3d306fdd4d0039e8db0f1543f29b9a11bb06358"
+    },
+    "receipt": {
+      "path": ".context/http-headers-fixture250-root-r2/check-receipt.json",
+      "sha256": "bdfd2e1277fe0e1bbb48dd6994b29321530a2eb1abe8849c2ef44c19a22f50ba"
+    },
+    "log": {
+      "path": ".context/http-headers-fixture250-root-r2/check.log",
+      "sha256": "6099c728b8be3edff0d37151a1ceceea3251fe593459541d662b6185417c8ae7"
+    },
+    "pid": 40306,
+    "exit": 0,
+    "passedCases": 6,
+    "failedCases": 0,
+    "skippedCases": 0
+  },
+  "source": {
+    "path": "host/test/node-http-headers.test.ts",
+    "beforeSha256": "9c6d2044b4bd3a8c2a1fb0779b56b5a75327462caf704744d6b89e7a4036ad7d",
+    "afterSha256": "ba42e82a15f4e815038bc8a477c6354e4c29c98a10d1819a0217ad03b992598d"
+  },
+  "actualConnectAdmission": {
+    "invalidInputsAfterNativeNextTick": 0,
+    "validFlush": 1,
+    "scope": "Actual consumed Agent calls supplied native connect capability before genuine native Socket construction or live loopback connect; non-live connecting Socket is not physical network/guest success. Legacy pending-array check is not credited."
+  },
+  "assertions": {
+    "originalExpectStatementsPreserved": 20,
+    "cleanupExpectsAdded": 2,
+    "acquisitionExpectsAdded": 2
+  },
+  "integration": {
+    "completion": {
+      "path": ".context/http-headers-fixture250-root-r2/completion.json",
+      "sha256": "0786d2cd4752d67aed4f16f66a08248814da105a851383a70e90a35cfb428f84"
+    },
+    "sourceBinding": "605aede2e87f5cbc518f6631e6bae33b5fc6e593f83a46984c6aeeb9c3b96938",
+    "toolLedger": {
+      "path": ".context/agent-integrations/node26-http-headers-fixture250-r2/ledger.json",
+      "sha256": "8821db0239fa38d25109f2060fceccc006e5849b81242f0224e06218ba7049e1"
+    },
+    "ownedFiles": 1
+  },
+  "historicalHttp250Bindings": {
+    "implementationRecordPreserved": true,
+    "sourceReport": {
+      "path": ".context/node26-http250-source-r1/report.json",
+      "sha256": "327eedbcff7cea38f3d96b159403e23752f28324ad139335edee180e1cdaced5"
+    },
+    "toolCompletion": {
+      "path": ".context/node26-http250-tool-completion.json",
+      "sha256": "639514902879041e080c12ad96dc0205dae37cd9306d36c731d69a60f26fdc0c"
+    },
+    "normalSourceSnapshotPreserved": {
+      "path": ".context/node26-implementation-snapshots/http-request-callback250-20261108T032429Z.tar.gz",
+      "sha256": "47c89caca90ebd1e3c836b609cbc319c84bde56ed8e3fafa41eb5b8a49243f53",
+      "bytes": 13675849,
+      "scope": "Source 250 integrates real request Body/Complete synchronous llhttp callbacks and noncoercing private FastBuffer publication over already independent native bytes. It contributes partially to H-003 and shared H-001/H-013 dependencies. Production core is regenerated normally; no component-expanded core is installed. Actual source checks guard904inputs/16checks/eightcommands; portable9, factory5, headers17/18,14incoming and two poison modes/four subjects use explicit native dependencies. Separate unchanged-file headers Vitest has six failures due to a missing _createNodeHttpAgent fixture dependency; these are harness errors, not passes or unsupported cases. Guest JSAPI/GC/realm/provider/full Server/reuse/stack/shared-input/four-host behavior remains unvalidated.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    "normalSnapshotScope": "Historical normal runtime/source evidence; this later fixture/document checkpoint is separate."
+  },
+  "committedDocumentationAdmission": {
+    "README": {
+      "tests/nodejs/outline/README.md": "bc074dafb6a9af7be0e49e5e7cedc98fbea3f1225eb6cfaaff5c794863657027"
+    },
+    "commit": "124ea52ef0ae503ae5fb7cbaaec9cfc84362d26c",
+    "backlogReferencesVerified": 63,
+    "guardObservation": {
+      "path": ".context/http-headers-fixture250-metadata-prep/author-guard-r1-observation.json",
+      "sha256": "a56bff0fab810eda9212fbb1014f8dc8e4227c244ecba906e05920605f1d5906"
+    }
+  },
+  "preservedNonpasses": [
+    {
+      "report": {
+        "path": ".context/node26-http250-headers-vitest-r1.json",
+        "sha256": "55e13c9885d6d5c00c106a573b40bed24cb5210881f53000380d709ce2413865"
+      },
+      "kind": "original-six-ReferenceError-harness-failures",
+      "failedCases": 6
+    },
+    {
+      "receipt": {
+        "path": ".context/http-headers-fixture-owner-agent/evidence-r1/receipt.json",
+        "sha256": "1bf4eb5c465ea115db52db8e504d4a8ce0644ba06b22801d97e218d9a0363976"
+      },
+      "exit": 1,
+      "kind": "private-exit1-despite-JSON6passes"
+    },
+    {
+      "receipt": {
+        "path": ".context/http-headers-fixture-owner-agent/evidence-r2/receipt.json",
+        "sha256": "32e0dbf55a8555d96d1c6855ca1667b60349fc864069f76e10c923a3c92cb8ff"
+      },
+      "exit": 1,
+      "kind": "private-exit1-despite-JSON6passes"
+    },
+    {
+      "receipt": {
+        "path": ".context/http-headers-fixture-owner-agent/evidence-r3/receipt.json",
+        "sha256": "f7d5306bdccfe0e883ddb518bda42376fa2ced5bbe3fdcd10113a579545dffb0"
+      },
+      "exit": 1,
+      "kind": "private-exit1-despite-JSON6passes"
+    }
+  ],
+  "sourceCapsules": [
+    {
+      "path": ".context/http-headers-fixture-owner-agent/SEAL.json",
+      "sha256": "8756c1e7a32ba0fc47dc64dfc46bb0d992c5fc4aad7b7d57b0e1795055dd2ce2"
+    },
+    {
+      "path": ".context/http-headers-fixture-acquisition-correction-agent/SEAL.json",
+      "sha256": "e9518da182f90e6679d08bf14f470a9d5944ccd64d9cd126f58b04d0ae630668"
+    }
+  ],
+  "limits": "Explicit native dependency fixture evidence only. Public HTTP/fullServer/reuse/stack/provider/shared-input/guest JSAPI/GC/realm/Worker/four-host obligations remain open. No new normal source generation/package check or compatibility pass claim."
+}
