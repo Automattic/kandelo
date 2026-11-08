@@ -178,9 +178,18 @@ for entry in "$NIX_LIBCXX_SOURCE/runtimes"/*; do
     [ -e "$entry" ] || continue
     ln -s "$entry" "$LLVM_SRC_DIR/runtimes/$(basename "$entry")"
 done
-ln -s "$NIX_LIBUNWIND_SOURCE/libunwind" "$LLVM_SRC_DIR/libunwind"
+# This source receives the target-selection patch below. Dereference it into
+# writable private files rather than patching the immutable Nix derivation.
+cp -RL "$NIX_LIBUNWIND_SOURCE/libunwind" "$LLVM_SRC_DIR/libunwind"
+chmod -R u+w "$LLVM_SRC_DIR/libunwind"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+
+# Select the VM unwinder backend without native register assembly. Patch only
+# the private source copy; source derivations and the checkout stay immutable.
+for patch_file in "$SCRIPT_DIR"/patches/*.patch; do
+    patch --fuzz=0 -p1 -d "$LLVM_SRC_DIR" < "$patch_file"
+done
 
 # Configure + build libc++/libc++abi/libunwind into <build_dir> with the given
 # compile-flags string (plus any extra cmake args). Factored so the default
@@ -296,7 +305,13 @@ build_libcxx_variant() {
         2>&1 | tail -20
 
       echo "==> Compiling (this may take a few minutes)..."
-      make -j"$NPROC" cxx cxxabi unwind 2>&1 | tail -10 )
+      if ! make -j"$NPROC" cxx cxxabi unwind > "$variant_build_dir/build.log" 2>&1; then
+          echo "ERROR: libc++ compile failed; first diagnostics:" >&2
+          grep -n -m20 -E 'error:|fatal error:|Error [0-9]|FAILED:' "$variant_build_dir/build.log" >&2 || true
+          tail -40 "$variant_build_dir/build.log" >&2
+          exit 1
+      fi
+      tail -10 "$variant_build_dir/build.log" )
 }
 
 echo "==> Building default (static, non-PIC) libc++/libc++abi for ${ARCH}..."
