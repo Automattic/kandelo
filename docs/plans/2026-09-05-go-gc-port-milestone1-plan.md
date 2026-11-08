@@ -43,6 +43,21 @@ are corrected. Firefox's test-owned storage cleanup still reports EACCES;
 this does not turn the successful assertions into a cleanup guarantee.
 The current 33-case rendered WordPress/persistence run must be restarted.
 
+**Private browser storage cleanup:** macOS's deny-delete directory ACLs
+are observed on both Firefox's Downloads and nested Library/Application
+Support in the run-owned home. Cleanup now visits owned directories only,
+removes their ACLs and leaves symbolic links and files untouched. Ten
+source cases pass, including actual deny-delete ACLs and linked external
+folders whose ACL/content must remain unchanged. Six real browser cases
+pass across Chromium, Firefox and WebKit, and their private home is removed
+without a cleanup warning (`browser-storage-acls-v3-1107-194157-f545`,
+13-second job / browser assertions in its owned report). The first real
+attempt was stopped143 because global setup started an unnecessary pinned
+historical baseline rebuild; the exact manifest-verified existing cohort
+was installed without compilation/restamping. The second attempt passes
+six assertions but its explicit cleanup gate fails on the nested ACL;
+that failure remains separate. The final helper covers nested folders.
+
 **Cgo optimization evaluation prepared:** a separate checkout restores
 explicit O2 for the C portions of both FrankenPHP builds and records linked
 and post-instrumentation byte counts. Classic revision 41 and combined
