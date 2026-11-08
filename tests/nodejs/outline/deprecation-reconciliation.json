@@ -8,11 +8,11 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "d146dcbd2f5cb1c7c4e19bc1387309457bc2e0c7fa0a3c90c0dfde4565f61437",
+    "packages/registry/node-compat/bootstrap.js": "cf98828dbec191690aa3675a2a03b842ac854dce79b6bf1abac07bd2a363cf00",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/asymmetric-keygen-platform-adapter.js": "94b3dc26b1f783b97cb38eaa91baff3be883c66f8d80a6c76568a72ebf0207b0",
-    "third_party/node-core/async-platform-adapter.js": "48578296b3b29adc8955c4d66db9e414e2eda046873fbfa2eb71c44b2cdf69a0",
+    "third_party/node-core/async-platform-adapter.js": "9ab13a21b53395fb23fdfaf36e5b708be6e77752b282dc2b9b4cb305178d9250",
     "third_party/node-core/buffer-bytes-adapter.js": "f7336c50f3fa23bd889ca2bf0225ade34798f651a092d097dda4669f4898ff47",
     "third_party/node-core/buffer-codecs-adapter.js": "de9373d9f1ab96f82dc3f9087a7d4e5a66db9cf997f83986ac14076f0ae9a552",
     "third_party/node-core/buffer-constructor-adapter.js": "2074bd8ba330ce3450d65bc6b09a965c85679adc6a33c79bfd409d5149375da1",
@@ -27,7 +27,7 @@
     "third_party/node-core/console-platform-adapter.js": "c9924d83296b563aedc8598828fc3b30edf0432a534c8200703bec1a5813259b",
     "third_party/node-core/copy-directory-platform-adapter.js": "91810dafa31579407ef421133ea0c3f0f445cb88503a5d3331ceb583abb64713",
     "third_party/node-core/copy-file-adapter.js": "198f13bc4306348d4e3e42e498fddeb33dd723b9b625750d2ef692b046883540",
-    "third_party/node-core/crypto-digest-adapter.js": "595615d75315234b3e27be65bfa780fc6243db4e7f66914b548d475f5eddd482",
+    "third_party/node-core/crypto-digest-adapter.js": "b3662656263b6656ef7d227610c791d83d7ade88cc32211c4982b825b1d9dbaf",
     "third_party/node-core/crypto-key-usages-platform-adapter.js": "7c9aa59d4a121cb16ef4ae178faa8bfcd212fb16ef544b53dc2b096d2f7556c3",
     "third_party/node-core/crypto-random-jobs-adapter.js": "2007d77846b6b7bb6632351c5e450f0568730f785f2bdf6d4b4df5d50ed0bb0a",
     "third_party/node-core/crypto-random-sync-adapter.js": "cfa961263245ceca02a665c02c227dd8c6587ad07ab55b96e90bf118d2955fb9",

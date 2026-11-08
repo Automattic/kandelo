@@ -1,5 +1,9 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/upstream/digests/src/crypto/crypto_mac.cc",
+  "packages/registry/spidermonkey/patches/0185-node-promise-listener-mac.patch",
+  "third_party/node-core/crypto-mac-inventory-owner.md",
+  "third_party/node-core/tests/crypto-mac-inventory",
   "packages/registry/spidermonkey/patches/0184-node-fips-state.patch",
   "third_party/node-core/sqlite-tag-cache.h",
   "packages/registry/spidermonkey/patches/0183-node-listener-statfs.patch",
@@ -810,4 +814,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 263
+revision = 264

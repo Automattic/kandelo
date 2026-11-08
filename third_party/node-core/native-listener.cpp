@@ -15,7 +15,7 @@ struct KandeloListenerState {
   double id = -1, trigger = -1;
   size_t accepts = 0;
   bool detached = false, retired = false, closing = false, closeCompleted = false;
-  bool callbackActive = false, initializing = true;
+  bool callbackActive = false, initializing = true, accepting = false;
   kandelo::memory::Allocation allocation{sizeof(KandeloListenerState)};
   kandelo::memory::Claims claims;
   KandeloListenerState(JSContext* cx, uint64_t generation)
@@ -25,7 +25,7 @@ struct KandeloListenerState {
   }
   void BeginClose() noexcept {
     if (closing || closeCompleted) return;
-    listener.Close();closing = true;
+    accepting = false;listener.Close();closing = true;
   }
   void Retire() noexcept {
     if (!retired && lifetime && id >= 0) { retired = true;lifetime->Finalized(id); }
@@ -187,8 +187,28 @@ static bool KandeloCreateListener(JSContext* cx, MutableHandleObject object,
     JS_FN("close",KandeloListenerClose,0,0),JS_FN("ref",KandeloListenerRef,0,0),
     JS_FN("unref",KandeloListenerUnref,0,0),JS_FN("hasRef",KandeloListenerHasRef,0,0),
     JS_FN("getAsyncId",KandeloListenerAsyncId,0,0),JS_FS_END};
-  if (!JS_DefineFunctions(cx,object,methods) || !KandeloListenerInitialize(cx,object,state)) return false;
+  // TCPWrap's actual instance field is installed before init hooks and is
+  // consumed by the owning connection dispatcher, not a metadata placeholder.
+  if (!JS_DefineFunctions(cx,object,methods) ||
+      !JS_DefineProperty(cx,object,"onconnection",NullHandleValue,JSPROP_ENUMERATE) ||
+      !KandeloListenerInitialize(cx,object,state)) return false;
   initialized=true;*result=state;return true;
+}
+// Install the actual native onconnection consumer. Its receiver and async
+// resource remain this retained TCPSERVERWRAP, never the public Server facade.
+static bool KandeloNativeListenerStart(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args=CallArgsFromVp(argc,vp);RootedObject owner(cx);KandeloListenerState* state;
+  if (!KandeloListenerFromValue(cx,args.get(0),&owner,&state)) return false;
+  if (!state || !args.get(1).isObject() || !JS::IsCallable(&args[1].toObject())) {
+    JS_ReportErrorASCII(cx,"Listener callback requires an actual listener and callable");return false;
+  }
+  JSAutoRealm realm(cx,owner);RootedValue callback(cx,args[1]);
+  if (!JS_WrapValue(cx,&callback) || !JS_SetProperty(cx,owner,"onconnection",callback)) return false;
+  // Property publication can run a real setter that closes the listener.
+  if (state->initializing || state->listener.Closed() || state->closeCompleted) {
+    args.rval().setInt32(-EBADF);return true;
+  }
+  state->accepting=true;args.rval().setInt32(0);return true;
 }
 static bool KandeloNativeListenerFd(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc,vp);RootedObject owner(cx);KandeloListenerState* state;
@@ -199,7 +219,7 @@ static bool KandeloNativeListenerFd(JSContext* cx, unsigned argc, Value* vp) {
 static void KandeloShutdownListeners(JSContext* cx) {
   for (auto* state = gKandeloListeners;state;state = state->next) {
     if (state->cx == cx) {
-      state->listener.Close();state->detached=true;state->closing=false;state->closeCompleted=true;
+      state->accepting=false;state->listener.Close();state->detached=true;state->closing=false;state->closeCompleted=true;
       if (state->liveRoot) {
         JS::SetReservedSlot(*state->liveRoot,ListenerFrame,UndefinedValue());
         JS::SetReservedSlot(*state->liveRoot,ListenerCloseCallback,UndefinedValue());

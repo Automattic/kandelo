@@ -3136,6 +3136,11 @@
         "path": "upstream/digests/src/node_errors.h",
         "upstreamPath": "src/node_errors.h",
         "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8"
+      },
+      "src/crypto/crypto_mac.cc": {
+        "path": "upstream/digests/src/crypto/crypto_mac.cc",
+        "upstreamPath": "src/crypto/crypto_mac.cc",
+        "sha256": "14367ebc13307436693216e233818e5fbcb0ebb70de1cd7ddeec377c99ba9f74"
       }
     },
     "algorithms": {
@@ -3168,9 +3173,22 @@
         "start": "function getBufferSourceBytes(V) {",
         "length": 914,
         "sha256": "7d10b635a242f61a133df48bb1fee49144bd2715d1248d110678c36278db4b9f"
+      },
+      "runtimeProviderCache": {
+        "source": "lib/internal/crypto/util.js",
+        "start": "  return () => {\n    while (true) {",
+        "length": 396,
+        "sha256": "7bf8f04fa2176a85816b78f5cd8497761c3f352a97317c40a9656daf59a07426"
+      },
+      "getMacs": {
+        "source": "lib/internal/crypto/util.js",
+        "start": "const getMacs = cachedArrayByFipsGeneration(",
+        "length": 137,
+        "sha256": "9a481aa7e23e8145cb8e06387def248c5f69ef5cbdf8371eca06ad8d1a586cf4"
       }
     },
-    "scope": "Pinned one-shot/public algorithm helpers over actual uncached OpenSSL backend; incremental Hash/Hmac/keys/async/FIPS still separate gaps."
+    "scope": "Pinned one-shot/public algorithm helpers over actual uncached OpenSSL backend; incremental Hash/Hmac/keys/async/FIPS still separate gaps.",
+    "macInventoryScope": "Actual provider MAC names with exact normal-execution FIPS cache loop/getMacs source. V8 startup-snapshot serialization hook is not selected; no isBuildingSnapshot stub or alias-ID/cache claim. Full normalizer still requires genuine KmacJob/key-availability owner."
   },
   "readlineInterfaces": {
     "sources": {

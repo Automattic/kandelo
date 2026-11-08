@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <ncrypto.h>
 #include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -110,6 +111,56 @@ inline std::vector<std::string> DigestNames() {
   }, &names);
   if (names.failure) std::rethrow_exception(names.failure);
   return names.values;
+}
+// Names are immediate provider-query results, not native alias/cache IDs.
+// The public JS owner below owns the actual FIPS-generation cache. No
+// pointer from OpenSSL enumeration or fetched method survives this call.
+struct MacNamesResult {
+  std::vector<std::string> names;
+  std::exception_ptr failure;
+  void Add(const char* name) noexcept {
+    if (!name || failure) return;
+    try {
+      std::string normalized(name);
+      const bool dotted = normalized.find('.') != std::string::npos &&
+          std::all_of(normalized.begin(), normalized.end(), [](unsigned char c) {
+            return (c >= '0' && c <= '9') || c == '.';
+          });
+      if (dotted) return;
+      std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                     [](unsigned char c) { return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c; });
+      names.push_back(std::move(normalized));
+    } catch (...) { failure = std::current_exception(); }
+  }
+};
+inline std::vector<std::string> MacNames() {
+  MacNamesResult result;
+#if OPENSSL_WITH_EVP_MAC
+  ncrypto::MarkPopErrorOnReturn mark;
+  EVP_MAC_do_all_provided(nullptr, [](EVP_MAC* enumerated, void* opaque) {
+    auto* result = static_cast<MacNamesResult*>(opaque);
+    if (result->failure) return;
+    const char* name = EVP_MAC_get0_name(enumerated);
+    if (!name) return;
+    // Fetch through current default properties. Enumeration alone can include
+    // an implementation that this process is not permitted to use.
+    ncrypto::EVPMacPointer fetched;
+    {
+      // Match the target per-fetch scope too, so failed lookups cannot pile
+      // up and evict an existing marked caller error during enumeration.
+      ncrypto::MarkPopErrorOnReturn fetch_mark;
+      fetched = ncrypto::EVPMacPointer::Fetch(name);
+    }
+    if (!fetched) return;
+    EVP_MAC_names_do_all(fetched.get(), [](const char* alias, void* opaque) {
+      static_cast<MacNamesResult*>(opaque)->Add(alias);
+    }, result);
+  }, &result);
+#endif
+  if (result.failure) std::rethrow_exception(result.failure);
+  std::sort(result.names.begin(), result.names.end());
+  result.names.erase(std::unique(result.names.begin(), result.names.end()), result.names.end());
+  return result.names;
 }
 }  // namespace kandelo::crypto
 #endif

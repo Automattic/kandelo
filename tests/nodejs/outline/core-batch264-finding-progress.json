@@ -1,0 +1,338 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/async-context-contracts.md",
+    "findingIds": [
+      "A-022"
+    ],
+    "relatedFamilies": [
+      "async",
+      "network",
+      "crypto"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/async-context-contracts.md",
+        "findingId": "A-022",
+        "relation": "partial-shared-engine-prerequisite"
+      },
+      {
+        "document": "tests/nodejs/audit/network.md",
+        "findingId": "N-004",
+        "relation": "direct-selected-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-001",
+        "relation": "direct-selected-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-004",
+        "relation": "direct-selected-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-013",
+        "relation": "direct-selected-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-020",
+        "relation": "direct-selected-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-011",
+        "relation": "shared-prerequisite-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/crypto-contracts.md",
+        "findingId": "C-015",
+        "relation": "direct-selected-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-007",
+        "relation": "shared-normalizer-prerequisite-partial"
+      }
+    ],
+    "scope": "Fourpartialsource contributions, explicitqualified findingrelations; no closure or source/APIcounts from componentobservations."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "promise-mode-activation",
+      "scope": "Real per-context Promise observer mode/lazy identity/frame/job ownership. Native late-parent target observation reused; no candidateVM/runtime proof."
+    },
+    {
+      "feature": "dns-default-recovery",
+      "scope": "Actual c-ares default-channel refusal feedback/configuration/recreation ownership, preserving actual explicit/nonloopback policy. Sourceonly, no resolverconfiguration/networkmutation/control run."
+    },
+    {
+      "feature": "server-native-callback",
+      "scope": "Actual retained listener native callback/acceptedTCP lease/nextTick trigger source, replacing public Promise-reaction path while preservinglegacy privatePromise API. Sourceonly, no nativehosttransport substitute."
+    },
+    {
+      "feature": "mac-provider-inventory",
+      "scope": "Actual EVP_MAC names/default-propertyquery and exact ordinarycache/getMacs public/private consumers. OnlycurrentgeneratedfactoryMAC6native-dependent component comparedtoSHA-boundoldnative6, no reference rerun/newCpp."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core264-batch-source-r2/report.json",
+    "sha256": "5864da70f1b632698241757f0051c76ef8ca27237a3d504776c620aeb98184ad",
+    "guardedInputs": 916,
+    "scope": "One normal264generation/staging/syntax/inputcheck withMAC6currentfactorycomponent overretainednative6. Promise/DNS/Servercallback newnativecode sourceonly; no native reference replay/compiler/fullbuild/overall/guestproof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core264-batch-affected-r2.json",
+    "sha256": "d24e7d86e580dc892da3b7b7f40ef676e7276a43a67e2769e4baa6d9121e06bd",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core264-batch-source-r2/report.json",
+    "sha256": "5864da70f1b632698241757f0051c76ef8ca27237a3d504776c620aeb98184ad",
+    "reportScope": "One normal264generation/staging/syntax/inputcheck withMAC6currentfactorycomponent overretainednative6. Promise/DNS/Servercallback newnativecode sourceonly; no native reference replay/compiler/fullbuild/overall/guestproof.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true
+  },
+  "sealedEvidence": {
+    "report": ".context/core264-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "89ffb184692a422bd05b9b0d838bb6e82b42b14f18cf7253bb1bb37d96465694",
+    "reusedEvidence": true,
+    "scope": "Immutablefourproducer/rootreviews andoriginalnonpasses. MAColdnative6 isreused, othersources notruntimevalidated."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/promise-hook-activation-owner-agent/report.json",
+      "sha256": "1ab43bce9f8f18b4dc2bc88d079a13f2891b1b8c58c1437eff98ef9f52a319da",
+      "classification": "Nativeparentlateenable observation targetonly, customPromise/symbol/GC/fatal/Worker remain gaps.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/dns-default-recovery-owner-agent/report.json",
+      "sha256": "688832c44df349326ca308811ff6a17afb7f3e98aa786169874c045ff1716e6f",
+      "classification": "Sourceonly0runtime0compile; actualcancel/join/refusal/config/recovery remainsunvalidated.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/server-listener-callback-owner-agent/report.json",
+      "sha256": "c99614ce510117b1c7e609a86ede5daff2d3d22f9f37c913aa3f8c40f54a67eb",
+      "classification": "Sourceonly0runtime0compile; accept-beforeclientinit discrepancy remains, no transportdelegate fixturepass.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/crypto-mac-inventory-owner-agent/report.json",
+      "sha256": "ab296a6415549017181600d134f3e0f1911080dec69610dda032d564d0402d67",
+      "classification": "Native6/candidate6component only; finalCppqueue/index hardening sourceonly, originalouterexitmissing/afterruncoreidentity limits retained.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/core264-batch-tool-run-r1/source-receipt.json",
+      "sha256": "022303550a861e93ca1d5e0d4f305c484deded58b3bed79309aeb5d759f80bc9",
+      "classification": "Actual retained R1 source failure; successor evidence is separate, not reclassification.",
+      "exit": 1,
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/core264-batch-tool-run-r1/package-receipt.json",
+      "sha256": "9686d0ba4a0b38859b1338ddce8d155a33cc0967519ce8f1e6057343a6e35990",
+      "classification": "Actual retained R1 package failure; successor evidence is separate, not reclassification.",
+      "exit": 1,
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "Public v8.promiseHooks multiplexer, mutable Promise symbols/descriptors/native GC destroy/optimizedawait/customspecies/fatal/realm/Worker remain gaps.",
+    "Actual producerjoin/cancel/races/native init timing/permission/CLI/Worker/snapshot/realm/records/error/perhostnetwork behavior remain unvalidated.",
+    "Candidate accept precedesclientinit unlikepinneduv_accept; fullprototypes/suppliedfd/reinit/counts/cluster/transfer/fatal/realm/GC/Worker/liveness remain open.",
+    "Native aliascache/ID integration,snapshot serialization,providertransitions/newCppqueue/GC/OOM/realm/Worker andfullnormalizer/KmacJob remainmissing/unvalidated."
+  ],
+  "featureContributions": [
+    {
+      "id": "promise-mode-activation",
+      "family": "async",
+      "qualifiedDefinitions": [
+        {
+          "document": "tests/nodejs/audit/async-context-contracts.md",
+          "findingId": "A-022",
+          "relation": "partial-shared-engine-prerequisite"
+        }
+      ],
+      "scope": "Real per-context Promise observer mode/lazy identity/frame/job ownership. Native late-parent target observation reused; no candidateVM/runtime proof.",
+      "remaining": [
+        "Public v8.promiseHooks multiplexer, mutable Promise symbols/descriptors/native GC destroy/optimizedawait/customspecies/fatal/realm/Worker remain gaps."
+      ],
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "6112b9c024354edb65ae9b5ab2fd5d74f8118d53718c99e49ba34a427ec43058",
+      "producerSeal": {
+        "path": ".context/promise-hook-activation-owner-agent/SEAL.json",
+        "sha256": "2e696564b706ce8333ccc1b527d5204f45ad4d37337dc9dd01edad6d29057a11"
+      },
+      "freshEvidence": {
+        "path": ".context/core264-batch-root-controls-r2/report.json",
+        "sha256": "73376407aa48710b0083c8bff49d1d6969ea9b05b10e285dc8e625bacce1e69f",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Actual current normal-generated factory byte-equivalence plus focused native-provider-dependent source algorithms. Backend delegates are native Node MAC/FIPS, not candidate C++ provider enumeration/JSAPI/queue/GC/realm/Worker. No full MAC/crypto/normalizer/snapshot/fourhost closure."
+      }
+    },
+    {
+      "id": "dns-default-recovery",
+      "family": "network",
+      "qualifiedDefinitions": [
+        {
+          "document": "tests/nodejs/audit/network.md",
+          "findingId": "N-004",
+          "relation": "direct-selected-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-001",
+          "relation": "direct-selected-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-004",
+          "relation": "direct-selected-partial"
+        }
+      ],
+      "scope": "Actual c-ares default-channel refusal feedback/configuration/recreation ownership, preserving actual explicit/nonloopback policy. Sourceonly, no resolverconfiguration/networkmutation/control run.",
+      "remaining": [
+        "Actual producerjoin/cancel/races/native init timing/permission/CLI/Worker/snapshot/realm/records/error/perhostnetwork behavior remain unvalidated."
+      ],
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "6112b9c024354edb65ae9b5ab2fd5d74f8118d53718c99e49ba34a427ec43058",
+      "producerSeal": {
+        "path": ".context/dns-default-recovery-owner-agent/SEAL.json",
+        "sha256": "1ab2712458fc10250e0669529e5252151b7aff25d9483ecfb982371567e272a3"
+      },
+      "freshEvidence": {
+        "path": ".context/core264-batch-root-controls-r2/report.json",
+        "sha256": "73376407aa48710b0083c8bff49d1d6969ea9b05b10e285dc8e625bacce1e69f",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Actual current normal-generated factory byte-equivalence plus focused native-provider-dependent source algorithms. Backend delegates are native Node MAC/FIPS, not candidate C++ provider enumeration/JSAPI/queue/GC/realm/Worker. No full MAC/crypto/normalizer/snapshot/fourhost closure."
+      }
+    },
+    {
+      "id": "server-native-callback",
+      "family": "network",
+      "qualifiedDefinitions": [
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-013",
+          "relation": "direct-selected-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-020",
+          "relation": "direct-selected-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-011",
+          "relation": "shared-prerequisite-partial"
+        }
+      ],
+      "scope": "Actual retained listener native callback/acceptedTCP lease/nextTick trigger source, replacing public Promise-reaction path while preservinglegacy privatePromise API. Sourceonly, no nativehosttransport substitute.",
+      "remaining": [
+        "Candidate accept precedesclientinit unlikepinneduv_accept; fullprototypes/suppliedfd/reinit/counts/cluster/transfer/fatal/realm/GC/Worker/liveness remain open."
+      ],
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "6112b9c024354edb65ae9b5ab2fd5d74f8118d53718c99e49ba34a427ec43058",
+      "producerSeal": {
+        "path": ".context/server-listener-callback-owner-agent/SEAL.json",
+        "sha256": "f9b318b43610c5799ef07949a19a5b9ce9d7371a7f799bb2a4a64a40e0bf7b6a"
+      },
+      "freshEvidence": {
+        "path": ".context/core264-batch-root-controls-r2/report.json",
+        "sha256": "73376407aa48710b0083c8bff49d1d6969ea9b05b10e285dc8e625bacce1e69f",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Actual current normal-generated factory byte-equivalence plus focused native-provider-dependent source algorithms. Backend delegates are native Node MAC/FIPS, not candidate C++ provider enumeration/JSAPI/queue/GC/realm/Worker. No full MAC/crypto/normalizer/snapshot/fourhost closure."
+      }
+    },
+    {
+      "id": "mac-provider-inventory",
+      "family": "crypto",
+      "qualifiedDefinitions": [
+        {
+          "document": "tests/nodejs/audit/crypto-contracts.md",
+          "findingId": "C-015",
+          "relation": "direct-selected-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/crypto.md",
+          "findingId": "C-007",
+          "relation": "shared-normalizer-prerequisite-partial"
+        }
+      ],
+      "scope": "Actual EVP_MAC names/default-propertyquery and exact ordinarycache/getMacs public/private consumers. OnlycurrentgeneratedfactoryMAC6native-dependent component comparedtoSHA-boundoldnative6, no reference rerun/newCpp.",
+      "remaining": [
+        "Native aliascache/ID integration,snapshot serialization,providertransitions/newCppqueue/GC/OOM/realm/Worker andfullnormalizer/KmacJob remainmissing/unvalidated."
+      ],
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateCompositionGroups": 6,
+      "currentSourceBinding": "6112b9c024354edb65ae9b5ab2fd5d74f8118d53718c99e49ba34a427ec43058",
+      "producerSeal": {
+        "path": ".context/crypto-mac-inventory-owner-agent/SEAL.json",
+        "sha256": "9c9dc79bafdc64baa5ae73f18c6c9b6d09767964a18dbb0fc6dadd4c62ed743a"
+      },
+      "freshEvidence": {
+        "path": ".context/core264-batch-root-controls-r2/report.json",
+        "sha256": "73376407aa48710b0083c8bff49d1d6969ea9b05b10e285dc8e625bacce1e69f",
+        "candidateGroups": 6,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Actual current normal-generated factory byte-equivalence plus focused native-provider-dependent source algorithms. Backend delegates are native Node MAC/FIPS, not candidate C++ provider enumeration/JSAPI/queue/GC/realm/Worker. No full MAC/crypto/normalizer/snapshot/fourhost closure."
+      }
+    }
+  ],
+  "batchFocusedControlReport": {
+    "report": ".context/core264-batch-root-controls-r2/report.json",
+    "sha256": "73376407aa48710b0083c8bff49d1d6969ea9b05b10e285dc8e625bacce1e69f",
+    "scope": "Actual current normal-generated factory byte-equivalence plus focused native-provider-dependent source algorithms. Backend delegates are native Node MAC/FIPS, not candidate C++ provider enumeration/JSAPI/queue/GC/realm/Worker. No full MAC/crypto/normalizer/snapshot/fourhost closure."
+  },
+  "batchReceiptIndex": {
+    "report": ".context/core264-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "33ec01586f232afdb68ac650c8fad11be166b32ccc0581b7b8fa6cf956cdc143",
+    "scope": "Actual completed source binding/check/import receipts plus preserved failed-preparation/successor provenance, parent-reviewed; no global build-cache or guest proof."
+  },
+  "historicalOnlyEvidence": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/crypto-mac-inventory-owner-agent/evidence-r1/native.stdout",
+    "sha256": "46dec101cf5bdef82abebcaf50ada881bbffc4dba7eced59982a861ed99f7430"
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "at": "2026-11-08T09:32:20.523019+00:00",
+  "recipeRevision": 264,
+  "lastAcceptedEngine": 263,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

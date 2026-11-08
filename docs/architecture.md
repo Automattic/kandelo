@@ -7335,3 +7335,7 @@ Source262 combines real listener async lifetime, complete pinned crypto WebIDL p
 ### Batched SQLTagStore, internal FIPS and TTY birth
 
 Source263 combines real SQLTagStore cache/prepared-statement ownership, linked ncrypto internal FIPS state/generation and shared native TTY birth/prototype/init ownership. One manual source application preserves executable0755, followed by one actual source/package checkpoint. Historical component evidence and current native-dependent frontend observations remain separate from uncompiled guest behavior.
+
+### Batched Promise, DNS, Server callback and MAC owners
+
+Source264 adds four scoped owner contributions in one ordinary-file source/generation/checkpoint batch. CurrentMAC6component observations use native backend dependencies and historicalnative reference; othernewnative/VMpaths remain sourceonly. Accepted263compilation/cache evidence stays historical, notcurrent264runtime proof.

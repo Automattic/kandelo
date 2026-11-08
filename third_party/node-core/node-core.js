@@ -8157,12 +8157,29 @@ function _createNodeAsyncPlatform(platform) {
     function syncDestroyTracking() {
         platform.native.setAsyncDestroyTracking(hookExists('destroy'));
     }
-    // Promise mode installation/removal is an engine integration gap. These
-    // entry points preserve public registry transitions without manufacturing
-    // an activation state the actual engine does not implement.
+    // The actual engine observes mode changes, independent of ALS frames.
+    // Removal is an internal microtask so an entered Promise keeps its after.
+    let wantPromiseHook = false;
+    let promiseDestroyTracking = false;
     function enableHooks() { syncDestroyTracking(); }
-    function disableHooks() { syncDestroyTracking(); }
-    function updatePromiseHookMode() { syncDestroyTracking(); }
+    function disableHooks() {
+        syncDestroyTracking();
+        wantPromiseHook = false;
+        platform.native.enqueueInternalMicrotask(disablePromiseHookIfNecessary);
+    }
+    function updatePromiseHookMode() {
+        syncDestroyTracking();
+        wantPromiseHook = true;
+        promiseDestroyTracking = destroyHooksExist();
+        platform.native.setPromiseHookMode(true, initHooksExist() || promiseDestroyTracking,
+            hookExists('promiseResolve'));
+    }
+    function disablePromiseHookIfNecessary() {
+        if (!wantPromiseHook) {
+            promiseDestroyTracking = false;
+            platform.native.setPromiseHookMode(false, false, false);
+        }
+    }
     function emit(kind, args, isPromise = false) {
         if (hooksFatal || !hookExists(kind)) return;
         const symbol = kind === 'init' ? init_symbol : kind === 'before' ? before_symbol :
@@ -8734,7 +8751,7 @@ class AsyncResource {
 
     const nativeResources = new primordials.SafeWeakMap();
     const tasks = new primordials.SafeWeakMap();
-    function nativeResource(resource) {
+    function nativeResource(resource, promiseInit = false) {
         let record = nativeResources.get(resource);
         if (record === undefined) {
             const info = platform.native.getAsyncResourceInfo(resource);
@@ -8745,13 +8762,19 @@ class AsyncResource {
                 hasExecutionResource: ObjectPrototypeHasOwnProperty(info, 4),
                 isPromise: platform.native.isPromise(resource) };
             nativeResources.set(resource, record);
-            if (nativeType === undefined && destroyHooksExist()) {
+            if (nativeType === undefined && (record.isPromise
+                ? promiseInit && promiseDestroyTracking : destroyHooksExist())) {
                 finalizers.register(resource, { asyncId: id, destroyed: { destroyed: false }, isPromise: record.isPromise });
             }
         }
         return record;
     }
     function lifecycle(kind, resource, capturedFrame) {
+        if (kind === 'frame:enter') {
+            // Host-defined job context is real even with Promise observers off.
+            // Do not allocate an id or enter any execution-resource scope.
+            setFrame(capturedFrame);return;
+        }
         if (kind === 'callback:zero') {
             // Pinned InternalCallbackScope({0,0}) pushes its actual execution
             // resource/default frame without manufacturing an AsyncWrap ID.
@@ -8767,16 +8790,26 @@ class AsyncResource {
         // resource before init. Replace only that raw handle's cached epoch;
         // active callbacks keep the numeric IDs owned by the native stack.
         if (kind === 'native:init') nativeResources.delete(resource);
-        const record = nativeResource(resource);
+        const record = nativeResource(resource, kind === 'promise:init');
         if (kind === 'promise:init' || kind === 'task:init' || kind === 'native:init') {
             emit('init', [record.id, record.nativeType ?? (record.isPromise ? 'PROMISE' : 'Microtask'), record.triggerId, record.executionResource], record.isPromise);
         } else if (kind === 'promise:resolve') {
             emit('promiseResolve', [record.id], true);
-        } else if (kind === 'before') {
-            platform.native.pushAsyncExecution(record.id, record.triggerId, resource, true);
+        } else if (kind === 'before' || kind === 'promise:before') {
+            // Pinned getOrSetAsyncId may have assigned only this old Promise's
+            // id as a child's parent. Float64 trigger storage then reads NaN.
+            const triggerId = record.isPromise && record.triggerId === undefined
+                ? 0 / 0 : record.triggerId;
+            platform.native.pushAsyncExecution(record.id, triggerId, resource, true);
             setState(ObjectFreeze({ __proto__: null, frame: capturedFrame,
-                id: record.id, triggerId: record.triggerId, resource }));
+                id: record.id, triggerId, resource }));
             emit('before', [record.id], record.isPromise);
+        } else if (kind === 'promise:after') {
+            emit('after', [record.id], true);
+            // Enabling while a reaction runs can yield after without before.
+            // It must not pop a different actual native execution scope.
+            if (record.id === platform.native.executionAsyncId())
+                setState(platform.native.popAsyncExecution(record.id));
         } else if (kind === 'after') {
             const enteringId = platform.native.executionAsyncId();
             emit('after', [enteringId], record.isPromise);
@@ -19771,7 +19804,7 @@ function parseEnv(content) {
 function _createNodeCryptoDigest(platform) {
     'use strict';
     const P = _createNodePrimordials();
-    const { ArrayFrom, ArrayPrototypeSort, SafeMap, StringPrototypeToLowerCase,
+    const { ArrayFrom, ArrayPrototypeSlice, ArrayPrototypeSort, SafeMap, StringPrototypeToLowerCase,
         StringPrototypeReplace, TypedArrayPrototypeIncludes, ObjectCreate, Error, TypeError, RangeError,
         ArrayBufferIsView, ArrayBufferPrototypeGetByteLength,
         DataViewPrototypeGetBuffer, DataViewPrototypeGetByteLength, DataViewPrototypeGetByteOffset,
@@ -19965,6 +19998,33 @@ function normalizeCShakeParameter(value, name) {
 }
 
     function getHashes() { return filterDuplicateStrings(platform.native.digestNames()); }
+    const _getMacs = () => platform.native.macNames();
+    const getFipsCryptoGeneration = platform.native.getFipsCryptoGeneration;
+    let _macCache;
+    function cachedArrayByFipsGeneration(fn, onRefresh) {
+        let result;
+        let generation;
+        // Exact target return/refresh loop for ordinary execution. V8 startup
+        // snapshot serialization has no owner here and remains a separate gap.
+          return () => {
+    while (true) {
+      const current = getFipsCryptoGeneration();
+      if (result === undefined || generation !== current) {
+        const next = fn();
+        if (current !== getFipsCryptoGeneration()) continue;
+        result = next;
+        generation = current;
+        if (onRefresh !== undefined) onRefresh();
+      }
+      return ArrayPrototypeSlice(result);
+    }
+  };
+    }
+    const getMacs = cachedArrayByFipsGeneration(
+  () => filterDuplicateStrings(_getMacs(), true),
+  () => {
+    _macCache = undefined;
+  });
     function timingSafeEqual(a, b) {
         const result = platform.native.timingSafeEqual(a, b);
         if (typeof result === 'boolean') return result;
@@ -19977,8 +20037,8 @@ function normalizeCShakeParameter(value, name) {
         error.code = 'ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH'; throw error;
     }
     if (platform.captureHelpers !== undefined)
-        platform.captureHelpers({ getArrayBufferOrView, getBufferSourceBytes, filterDuplicateStrings, getHashes });
-    return { hash, getHashes, timingSafeEqual };
+        platform.captureHelpers({ getArrayBufferOrView, getBufferSourceBytes, filterDuplicateStrings, getHashes, getMacs });
+    return { hash, getHashes, getMacs, timingSafeEqual };
 }
 
 // Pinned public digest classes over real native contexts and private bytes.

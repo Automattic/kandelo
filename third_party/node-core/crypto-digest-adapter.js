@@ -3,7 +3,7 @@
 function _createNodeCryptoDigest(platform) {
     'use strict';
     const P = _createNodePrimordials();
-    const { ArrayFrom, ArrayPrototypeSort, SafeMap, StringPrototypeToLowerCase,
+    const { ArrayFrom, ArrayPrototypeSlice, ArrayPrototypeSort, SafeMap, StringPrototypeToLowerCase,
         StringPrototypeReplace, TypedArrayPrototypeIncludes, ObjectCreate, Error, TypeError, RangeError,
         ArrayBufferIsView, ArrayBufferPrototypeGetByteLength,
         DataViewPrototypeGetBuffer, DataViewPrototypeGetByteLength, DataViewPrototypeGetByteOffset,
@@ -40,6 +40,17 @@ function _createNodeCryptoDigest(platform) {
     }
     /* NODE_DIGEST_HASH */
     function getHashes() { return filterDuplicateStrings(platform.native.digestNames()); }
+    const _getMacs = () => platform.native.macNames();
+    const getFipsCryptoGeneration = platform.native.getFipsCryptoGeneration;
+    let _macCache;
+    function cachedArrayByFipsGeneration(fn, onRefresh) {
+        let result;
+        let generation;
+        // Exact target return/refresh loop for ordinary execution. V8 startup
+        // snapshot serialization has no owner here and remains a separate gap.
+        /* NODE_DIGEST_RUNTIME_PROVIDER_CACHE */
+    }
+    /* NODE_DIGEST_GET_MACS */
     function timingSafeEqual(a, b) {
         const result = platform.native.timingSafeEqual(a, b);
         if (typeof result === 'boolean') return result;
@@ -52,6 +63,6 @@ function _createNodeCryptoDigest(platform) {
         error.code = 'ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH'; throw error;
     }
     if (platform.captureHelpers !== undefined)
-        platform.captureHelpers({ getArrayBufferOrView, getBufferSourceBytes, filterDuplicateStrings, getHashes });
-    return { hash, getHashes, timingSafeEqual };
+        platform.captureHelpers({ getArrayBufferOrView, getBufferSourceBytes, filterDuplicateStrings, getHashes, getMacs });
+    return { hash, getHashes, getMacs, timingSafeEqual };
 }

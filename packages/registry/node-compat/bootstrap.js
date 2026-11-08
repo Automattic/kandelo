@@ -4112,21 +4112,26 @@ const net = (() => {
         // listener remains owned by its actual pending accept closure, as in
         // Node's old native handle; never reset/reuse that owner's epoch/fd.
         const owner = { listener: null, generation: 0, referenced: true,
-            closing: false, opening: false, abortCleanup: null };
+            closing: false, opening: false, abortCleanup: null, asyncId: undefined };
         serverOwnerTokens.add(owner);publishServerOwner(server, owner);
         server._connections = 0;
     }
+    function queueServerTick(owner, callback) {
+        _nodeAsyncPlatform.defaultTriggerAsyncIdScope(owner.asyncId, process.nextTick, callback);
+    }
     function acceptServer(server, owner, generation) {
         if (!serverOwnerTokens.has(owner) || owner.listener === null || owner.generation !== generation) return;
-        const pending = nat.socketAcceptLease(owner.listener);
-        if (!owner.referenced) nat.socketRef(owner.listener, false);
-        pending.then(accepted => {
+        const status = nat.socketListenerStart(owner.listener, function onconnection(status, accepted) {
+            if (status) {
+                if (owner.listener !== null && owner.generation === generation)
+                    server.emit('error', new _nodeValues.errors.ErrnoException(status, 'accept'));
+                return;
+            }
             // Native acceptance already owns this descriptor. Every getter,
             // constructor, listener and failure leaves only the actual lease
             // to close; successful adoption empties it without a numeric ABA.
             try {
                 if (owner.listener === null || owner.generation !== generation) return;
-                acceptServer(server, owner, generation);
                 if (server.maxConnections != null && server._connections >= server.maxConnections) {
                     const local = nat.socketAddress(nat.socketAcceptedFd(accepted));
                     const remote = nat.socketAddress(nat.socketAcceptedFd(accepted), true);
@@ -4168,9 +4173,9 @@ const net = (() => {
                 if (serverSocketChannel.hasSubscribers) serverSocketChannel.publish({ socket });
                 if (!server.pauseOnConnect) socket._scheduleRead();
             } finally { nat.socketAcceptedClose(accepted); }
-        }, reason => {
-            if (owner.listener !== null && owner.generation === generation) server.emit('error', connectError(reason, undefined, undefined, 'accept'));
         });
+        if (status) throw new _nodeValues.errors.ErrnoException(status, 'accept');
+        if (!owner.referenced) nat.socketRef(owner.listener, false);
     }
     function closeServerOwner(server, owner, cb) {
         if (!serverOwnerTokens.has(owner)) throw new _nodeValues.errors.codes.ERR_INVALID_THIS('net.Server');
@@ -4192,7 +4197,7 @@ const net = (() => {
         if (!serverOwnerTokens.has(owner) || !owner.closing || server._connections !== 0) return;
         owner.closing = false;
         if (serverOwners.get(server) === owner) server._closing = false;
-        queueMicrotask(() => server.emit('close'));
+        queueServerTick(owner, () => server.emit('close'));
     }
     class ServerCore extends events.EventEmitter {
         listen(...args) {
@@ -4227,7 +4232,7 @@ const net = (() => {
                 owner.opening = false;
                 owner.abortCleanup?.();owner.abortCleanup = null;
                 if (serverOwners.get(this) === owner) this._opening = false;
-                queueMicrotask(() => this.emit('error', connectError(reason, host || '::', port, 'listen')));
+                queueServerTick(owner, () => this.emit('error', connectError(reason, host || '::', port, 'listen')));
             };
             const bind = (address, family) => {
                 if (owner.generation !== generation || serverOwners.get(this) !== owner) return;
@@ -4235,12 +4240,13 @@ const net = (() => {
                 try { listener = nat.socketListen(address, port, family, backlog || 511, ipv6Only, reusePort); }
                 catch (reason) { fail(reason); return; }
                 owner.listener = listener;owner.opening = false;
+                owner.asyncId = nat.getAsyncResourceInfo(listener)[0];
                 // Only this admitted current binding may publish its result.
                 // Active prior listeners keep their captured accept owners;
                 // pending resolution from a reinitialized receiver is stale.
                 publishServerOwner(this, owner);this._opening = false;
                 acceptServer(this, owner, generation);
-                queueMicrotask(() => {
+                queueServerTick(owner, () => {
                     if (owner.generation === generation && owner.listener !== null) this.emit('listening');
                 });
             };
@@ -4257,7 +4263,7 @@ const net = (() => {
             return this;
         }
         address() { const owner = serverOwner(this);return owner.listener === null ? null : nat.socketAddress(owner.listener); }
-        getConnections(cb) { queueMicrotask(() => cb(null, this._connections)); return this; }
+        getConnections(cb) { queueServerTick(serverOwner(this), () => cb(null, this._connections)); return this; }
         close(cb) { return closeServerOwner(this, serverOwner(this), cb); }
         ref() { const owner = serverOwner(this);owner.referenced = true;this._referenced = true;if (owner.listener !== null) nat.socketRef(owner.listener, true);return this; }
         unref() { const owner = serverOwner(this);owner.referenced = false;this._referenced = false;if (owner.listener !== null) nat.socketRef(owner.listener, false);return this; }

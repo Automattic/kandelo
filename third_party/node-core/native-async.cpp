@@ -289,6 +289,14 @@ static bool KandeloNativeAckFsGcClose(JSContext* cx, unsigned argc, Value* vp) {
   state->fsGcRetry.reset(); args.rval().setUndefined(); return true;
 }
 
+static bool KandeloNativeSetPromiseHookMode(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  if (!args.get(0).isBoolean() || !args.get(1).isBoolean() || !args.get(2).isBoolean()) {
+    JS_ReportErrorASCII(cx, "Promise observer mode requires three boolean admissions");return false;
+  }
+  cx->setKandeloPromiseHookMode(args[0].toBoolean(), args[1].toBoolean(), args[2].toBoolean());
+  args.rval().setUndefined();return true;
+}
 static bool KandeloNativeSetDestroyTracking(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   if (!args.get(0).isBoolean()) {

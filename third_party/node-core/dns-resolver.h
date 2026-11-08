@@ -4,6 +4,7 @@
 #include <ares.h>
 #include <ares_dns_record.h>
 #include <arpa/inet.h>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -142,6 +143,56 @@ class Resolver {
   std::mutex mutex_;
   ares_channel_t* channel_ = nullptr;
   int status_ = ARES_ENOTINITIALIZED;
+  const int timeout_;
+  const int tries_;
+  const unsigned maxTimeout_;
+  bool serversDefault_ = true;
+  // c-ares completes on its event thread. Only this observed native status,
+  // not JS/root state, crosses into the next owning-thread query admission.
+  std::atomic<bool> queryLastOk_{true};
+
+  void SetupLocked() {
+    ares_options options{};
+    options.flags = ARES_FLAG_NOCHECKRESP;
+    options.timeout = timeout_;
+    options.tries = tries_;
+    options.qcache_max_ttl = 0;
+    options.maxtimeout = maxTimeout_;
+    options.evsys = ARES_EVSYS_POLL;
+    int mask = ARES_OPT_FLAGS | ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES |
+               ARES_OPT_QUERY_CACHE | ARES_OPT_EVENT_THREAD;
+    if (maxTimeout_) mask |= ARES_OPT_MAXTIMEOUTMS;
+    status_ = ares_init_options(&channel_, &options, mask);
+  }
+
+  // Pinned ChannelWrap::EnsureServers: only refused queries against the
+  // actual sole fallback loopback resolver may reload system configuration.
+  // An explicit server list is never silently replaced by system defaults.
+  int EnsureServersLocked() {
+    if (!channel_) return status_;
+    if (queryLastOk_.load(std::memory_order_relaxed) || !serversDefault_)
+      return ARES_SUCCESS;
+    ares_addr_port_node* raw = nullptr;
+    const int status = ares_get_servers_ports(channel_, &raw);
+    std::unique_ptr<void, records::FreeData> owned(raw);
+    if (status != ARES_SUCCESS) return status;
+    if (!raw) return ARES_SUCCESS;
+    if (raw->next) { serversDefault_ = false; return ARES_SUCCESS; }
+    static const unsigned char loopback6[16] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const bool loopback = raw->family == AF_INET ?
+        raw->addr.addr4.s_addr == htonl(INADDR_LOOPBACK) :
+        raw->family == AF_INET6 &&
+            std::memcmp(&raw->addr.addr6, loopback6, sizeof(loopback6)) == 0;
+    if (!loopback) { serversDefault_ = false; return ARES_SUCCESS; }
+    owned.reset();
+    // Real destruction joins the event producer and completes outstanding
+    // packets before replacing the channel; no retained raw channel escapes.
+    ares_destroy(channel_);
+    channel_ = nullptr;
+    SetupLocked();
+    return status_;
+  }
 
   static void Completion(void* data, ares_status_t status, size_t timeouts,
                          const ares_dns_record_t* record) {
@@ -155,23 +206,13 @@ class Resolver {
   }
 
  public:
-  Resolver(int timeout = -1, int tries = 4, unsigned max_timeout = 0) {
+  Resolver(int timeout = -1, int tries = 4, unsigned max_timeout = 0)
+      : timeout_(timeout), tries_(tries), maxTimeout_(max_timeout) {
     status_ = InitializeCares();
     if (status_ != ARES_SUCCESS) return;
     if (!ares_threadsafety()) { status_ = ARES_ENOTIMP; return; }
-    ares_options options{};
-    options.flags = ARES_FLAG_NOCHECKRESP;
-    options.timeout = timeout;
-    options.tries = tries;
-    options.qcache_max_ttl = 0;
-    options.maxtimeout = max_timeout;
-    // poll is a real portable guest libc primitive. c-ares owns and retires
-    // its thread/descriptors/timers; no host DNS data or fake socket exists.
-    options.evsys = ARES_EVSYS_POLL;
-    int mask = ARES_OPT_FLAGS | ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES |
-               ARES_OPT_QUERY_CACHE | ARES_OPT_EVENT_THREAD;
-    if (max_timeout) mask |= ARES_OPT_MAXTIMEOUTMS;
-    status_ = ares_init_options(&channel_, &options, mask);
+    // c-ares owns the real guest poll/thread/descriptors/timers.
+    SetupLocked();
   }
   Resolver(const Resolver&) = delete;
   Resolver& operator=(const Resolver&) = delete;
@@ -185,7 +226,9 @@ class Resolver {
   int SetServers(const char* csv) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!channel_) return ARES_ENOTINITIALIZED;
-    return ares_set_servers_ports_csv(channel_, csv);
+    const int status = ares_set_servers_ports_csv(channel_, csv);
+    if (status == ARES_SUCCESS && csv[0] != '\0') serversDefault_ = false;
+    return status;
   }
 
   int SetServers(const std::vector<ares_addr_port_node>& servers) {
@@ -193,7 +236,9 @@ class Resolver {
     if (!channel_) return ARES_ENOTINITIALIZED;
     // The caller owns and links this native array for the synchronous copy.
     if (servers.empty()) return ares_set_servers(channel_, nullptr);
-    return ares_set_servers_ports(channel_, servers.data());
+    const int status = ares_set_servers_ports(channel_, servers.data());
+    if (status == ARES_SUCCESS) serversDefault_ = false;
+    return status;
   }
 
   int GetServers(std::vector<std::pair<std::string, int>>* output) {
@@ -251,8 +296,9 @@ class Resolver {
                               void* data = nullptr) {
     auto query = std::make_shared<Query>(completion, data);
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!channel_) {
-      query->Complete(ARES_ENOTINITIALIZED, 0, nullptr);
+    const int status = EnsureServersLocked();
+    if (status != ARES_SUCCESS) {
+      query->Complete(status, 0, nullptr);
       return query;
     }
     // The pinned ares_query_dnsrec invokes its callback on submission failure
@@ -266,10 +312,15 @@ class Resolver {
                                void (*completion)(void*, const QueryResult&), void* data) {
     auto query = std::make_shared<Query>(completion, data);
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!channel_) { query->Complete(ARES_ENOTINITIALIZED, 0, nullptr); return query; }
+    const int status = EnsureServersLocked();
+    if (status != ARES_SUCCESS) { query->Complete(status, 0, nullptr); return query; }
     auto* token = new std::shared_ptr<Query>(query);
     ares_gethostbyaddr(channel_, address, length, family, ReverseCompletion, token);
     return query;
+  }
+
+  void RecordQueryStatus(int status) {
+    queryLastOk_.store(status != ARES_ECONNREFUSED, std::memory_order_relaxed);
   }
 
   void Cancel() {

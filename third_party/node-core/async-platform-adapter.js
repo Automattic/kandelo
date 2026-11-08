@@ -59,12 +59,29 @@ function _createNodeAsyncPlatform(platform) {
     function syncDestroyTracking() {
         platform.native.setAsyncDestroyTracking(hookExists('destroy'));
     }
-    // Promise mode installation/removal is an engine integration gap. These
-    // entry points preserve public registry transitions without manufacturing
-    // an activation state the actual engine does not implement.
+    // The actual engine observes mode changes, independent of ALS frames.
+    // Removal is an internal microtask so an entered Promise keeps its after.
+    let wantPromiseHook = false;
+    let promiseDestroyTracking = false;
     function enableHooks() { syncDestroyTracking(); }
-    function disableHooks() { syncDestroyTracking(); }
-    function updatePromiseHookMode() { syncDestroyTracking(); }
+    function disableHooks() {
+        syncDestroyTracking();
+        wantPromiseHook = false;
+        platform.native.enqueueInternalMicrotask(disablePromiseHookIfNecessary);
+    }
+    function updatePromiseHookMode() {
+        syncDestroyTracking();
+        wantPromiseHook = true;
+        promiseDestroyTracking = destroyHooksExist();
+        platform.native.setPromiseHookMode(true, initHooksExist() || promiseDestroyTracking,
+            hookExists('promiseResolve'));
+    }
+    function disablePromiseHookIfNecessary() {
+        if (!wantPromiseHook) {
+            promiseDestroyTracking = false;
+            platform.native.setPromiseHookMode(false, false, false);
+        }
+    }
     function emit(kind, args, isPromise = false) {
         if (hooksFatal || !hookExists(kind)) return;
         const symbol = kind === 'init' ? init_symbol : kind === 'before' ? before_symbol :
@@ -230,7 +247,7 @@ function _createNodeAsyncPlatform(platform) {
     /* NODE_ASYNC_RESOURCE */
     const nativeResources = new primordials.SafeWeakMap();
     const tasks = new primordials.SafeWeakMap();
-    function nativeResource(resource) {
+    function nativeResource(resource, promiseInit = false) {
         let record = nativeResources.get(resource);
         if (record === undefined) {
             const info = platform.native.getAsyncResourceInfo(resource);
@@ -241,13 +258,19 @@ function _createNodeAsyncPlatform(platform) {
                 hasExecutionResource: ObjectPrototypeHasOwnProperty(info, 4),
                 isPromise: platform.native.isPromise(resource) };
             nativeResources.set(resource, record);
-            if (nativeType === undefined && destroyHooksExist()) {
+            if (nativeType === undefined && (record.isPromise
+                ? promiseInit && promiseDestroyTracking : destroyHooksExist())) {
                 finalizers.register(resource, { asyncId: id, destroyed: { destroyed: false }, isPromise: record.isPromise });
             }
         }
         return record;
     }
     function lifecycle(kind, resource, capturedFrame) {
+        if (kind === 'frame:enter') {
+            // Host-defined job context is real even with Promise observers off.
+            // Do not allocate an id or enter any execution-resource scope.
+            setFrame(capturedFrame);return;
+        }
         if (kind === 'callback:zero') {
             // Pinned InternalCallbackScope({0,0}) pushes its actual execution
             // resource/default frame without manufacturing an AsyncWrap ID.
@@ -263,16 +286,26 @@ function _createNodeAsyncPlatform(platform) {
         // resource before init. Replace only that raw handle's cached epoch;
         // active callbacks keep the numeric IDs owned by the native stack.
         if (kind === 'native:init') nativeResources.delete(resource);
-        const record = nativeResource(resource);
+        const record = nativeResource(resource, kind === 'promise:init');
         if (kind === 'promise:init' || kind === 'task:init' || kind === 'native:init') {
             emit('init', [record.id, record.nativeType ?? (record.isPromise ? 'PROMISE' : 'Microtask'), record.triggerId, record.executionResource], record.isPromise);
         } else if (kind === 'promise:resolve') {
             emit('promiseResolve', [record.id], true);
-        } else if (kind === 'before') {
-            platform.native.pushAsyncExecution(record.id, record.triggerId, resource, true);
+        } else if (kind === 'before' || kind === 'promise:before') {
+            // Pinned getOrSetAsyncId may have assigned only this old Promise's
+            // id as a child's parent. Float64 trigger storage then reads NaN.
+            const triggerId = record.isPromise && record.triggerId === undefined
+                ? 0 / 0 : record.triggerId;
+            platform.native.pushAsyncExecution(record.id, triggerId, resource, true);
             setState(ObjectFreeze({ __proto__: null, frame: capturedFrame,
-                id: record.id, triggerId: record.triggerId, resource }));
+                id: record.id, triggerId, resource }));
             emit('before', [record.id], record.isPromise);
+        } else if (kind === 'promise:after') {
+            emit('after', [record.id], true);
+            // Enabling while a reaction runs can yield after without before.
+            // It must not pop a different actual native execution scope.
+            if (record.id === platform.native.executionAsyncId())
+                setState(platform.native.popAsyncExecution(record.id));
         } else if (kind === 'after') {
             const enteringId = platform.native.executionAsyncId();
             emit('after', [enteringId], record.isPromise);

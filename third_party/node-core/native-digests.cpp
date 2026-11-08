@@ -272,6 +272,29 @@ static bool KandeloNativeDigestNames(JSContext* cx, unsigned argc, Value* vp) {
   }
   args.rval().setObject(*result); return true;
 }
+static bool KandeloNativeMacNames(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  std::vector<std::string> names;
+  {
+    // Same real default-property owner as internal getFipsCrypto. Do not
+    // retain the lock while allocating JS strings/arrays or entering JS.
+    std::lock_guard<std::mutex> lock(gKandeloFipsStateMutex);
+    names = kandelo::crypto::MacNames();
+  }
+  if (names.size() > UINT32_MAX) { JS_ReportOutOfMemory(cx);return false; }
+  RootedObject result(cx, JS::NewArrayObject(cx, 0));
+  if (!result) return false;
+  for (size_t index = 0; index < names.size(); ++index) {
+    RootedString name(cx, JS_NewStringCopyUTF8N(cx,
+        JS::UTF8Chars(names[index].data(), names[index].size())));
+    if (!name) return false;
+    RootedValue value(cx, StringValue(name));
+    // Target vector publication creates own elements. A user-installed
+    // Array.prototype numeric setter must not intercept provider names.
+    if (!JS_DefineElement(cx, result, uint32_t(index), value, JSPROP_ENUMERATE)) return false;
+  }
+  args.rval().setObject(*result);return true;
+}
 static bool KandeloNativeTimingSafeEqual(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp); kandelo::crypto::Bytes a, b;
   KandeloCryptoByteSource first(cx), second(cx);

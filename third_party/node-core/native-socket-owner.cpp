@@ -128,11 +128,12 @@ static KandeloSocketState* KandeloAcceptedSocketState(JSContext* cx, HandleValue
   }
   return state;
 }
-static bool KandeloResolveAcceptedSocket(JSContext* cx, HandleObject promise, int fd) {
+static bool KandeloCreateAcceptedSocket(JSContext* cx, HandleObject creationOwner,
+                                         int fd, MutableHandleObject result) {
   kandelo::socket::Lease prior(fd);
-  // Poll dispatch need not still be in the realm that registered the accept.
-  // The actual request Promise owns the creation realm of its TCP and token.
-  JSAutoRealm realm(cx, promise);
+  // Either the real listener or the legacy request Promise owns this realm.
+  // No Promise is needed to create an actual accepted TCP/lease capability.
+  JSAutoRealm realm(cx, creationOwner);
   RootedObject token(cx, JS_NewObjectWithGivenProto(cx, &KandeloAcceptedSocketClass, nullptr)); if (!token) return false;
   std::unique_ptr<KandeloSocketState> preparing;
   try {
@@ -154,11 +155,19 @@ static bool KandeloResolveAcceptedSocket(JSContext* cx, HandleObject promise, in
   auto* state = preparing.release();
   JS::SetReservedSlot(token, SocketState, PrivateValue(state));
   state->next = gKandeloSocketOwners; gKandeloSocketOwners = state;
+  result.set(token);
+  return true;
+}
+static bool KandeloResolveAcceptedSocket(JSContext* cx, HandleObject promise, int fd) {
+  JSAutoRealm realm(cx, promise);
+  RootedObject token(cx);
+  if (!KandeloCreateAcceptedSocket(cx, promise, fd, &token)) return false;
+  auto* state = static_cast<KandeloSocketState*>(JS::GetReservedSlot(token, SocketState).toPrivate());
   bool resolved = false;
   auto rollback = mozilla::MakeScopeExit([&] { if (!resolved) state->CloseAccepted(); });
   RootedValue result(cx, ObjectValue(*token));
-  // Keep the null-prototype capability: publishing a mutable TCP prototype
-  // directly would add an inherited then-getter assimilation/reentry path.
+  // Retain the old Promise API for its independent callers. The public Server
+  // callback path below does not introduce Promise assimilation or reactions.
   if (!JS::ResolvePromise(cx, promise, result)) return false;
   resolved = true; return true;
 }

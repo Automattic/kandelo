@@ -116,6 +116,9 @@ class KandeloDnsRecordWork final : public js::shell::KandeloNativeWork {
   static void Publish(void* data, const kandelo::dns::QueryResult& result) {
     auto* work = static_cast<KandeloDnsRecordWork*>(data);
     work->packet_ = result;
+    // Match QueryWrap::QueueResponseCallback before exposing completion or
+    // admitting the next query; the native event thread never enters JS.
+    work->resolver_->RecordQueryStatus(result.status);
     // Node retires wire activity when queuing the callback, allowing server
     // replacement inside that callback. The rooted request remains active
     // through MakeCallback/microtasks until its JS completion is unwound.

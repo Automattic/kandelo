@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source264 combines Promise mode, actualDNS default recovery, nativeServer callbacks andMACinventory foundations. Onebatch preserves separatefeature/evidence scopes, all19partial and unvalidated currentguest behavior.
+See [source scope](core-batch264-implementation.md).
+
 Source263 combines SQLTagStore, internal FIPS state and native TTY birth foundations. Manual source application preserves the executable build boundary. Source presence and scoped native-dependent frontend observations do not establish guest or public module conformance.
 See [source scope](core-batch263-implementation.md).
 

@@ -417,7 +417,8 @@ for name, selector in digest_manifest['algorithms'].items():
 digest_adapter = (root / 'crypto-digest-adapter.js').read_text()
 for marker, name in [('HASH', 'hash'), ('NORMALIZATION', 'normalization'),
                      ('FILTER_NAMES', 'filterNames'), ('BYTE_VALIDATION', 'getArrayBufferOrView'),
-                     ('BUFFER_BYTES', 'getBufferSourceBytes')]:
+                     ('BUFFER_BYTES', 'getBufferSourceBytes'), ('RUNTIME_PROVIDER_CACHE', 'runtimeProviderCache'),
+                     ('GET_MACS', 'getMacs')]:
     token = '/* NODE_DIGEST_' + marker + ' */'
     if digest_adapter.count(token) != 1:
         raise ValueError('Review digest source marker: ' + marker)
