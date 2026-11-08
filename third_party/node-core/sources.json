@@ -2260,6 +2260,16 @@
         "path": "upstream/testing/lib/internal/error_serdes.js",
         "upstreamPath": "lib/internal/error_serdes.js",
         "sha256": "a5dd5c2259cf8f3a4431901329329eebf742ada048f4b67bfadee082a470a4bd"
+      },
+      "internal/bench_runner/reporter/json": {
+        "path": "upstream/testing/lib/internal/bench_runner/reporter/json.js",
+        "upstreamPath": "lib/internal/bench_runner/reporter/json.js",
+        "sha256": "4c710b8a9b1040d074465dff5cc08340c3ff3dc3a8805f07158a2ad95abf62e9"
+      },
+      "internal/bench_runner/reporter/spec": {
+        "path": "upstream/testing/lib/internal/bench_runner/reporter/spec.js",
+        "upstreamPath": "lib/internal/bench_runner/reporter/spec.js",
+        "sha256": "bb2ce5450447669ba0ce802c27c4d54a27271b1e0529689ab7d2cb7f86fcb4c6"
       }
     },
     "sections": {

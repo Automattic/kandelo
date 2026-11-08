@@ -40,15 +40,23 @@ the private assertion capture call changes to the genuine native owner.
 
 Unavailable retained source, inaccessible/muted frames, saturated coordinates,
 missing cutoff/caller or an unrepresentable source extent produce no expression.
-Only actual UTF-16 source input is admitted now: CJS/VM normal native compilation
-uses UTF-16 SourceText, while UTF-8 extent conversion remains an implementation
-gap. Permission denial and pending native/OOM/control exceptions propagate;
+Retained UTF-16 and UTF-8 source input are admitted. SourceExtent offsets count
+input code units, so UTF-8 sourceStart is a byte offset; both SourceExtent and PC
+columns already count UTF-16 units. Before decoding, the raw offset is checked
+against the encoded ScriptSource length. In the caller realm, the actual
+ScriptSource::substring decoder creates a rooted prefix through sourceStart and
+a rooted full source; the prefix's UTF-16 length becomes the scanner start.
+Columns are not converted again. ScriptSource owns compressed-source pinning and
+NewStringCopyUTF8N decoding, while AutoStableStringChars owns the decoded line
+scan/copy. No manual UTF-8 decoder, filename load or byte/character ratio is used.
+Permission denial and pending native/OOM/control exceptions propagate;
 they are not converted into absent source. No source-loading hook or host fs
 fallback runs from this diagnostic path.
 
 All new C++ remains uncompiled/unexecuted. Actual optimized frame/clone/GC/realm
 behavior, CJS source-note columns, wrapper variants, async and mapped stacks,
-UTF-8 source, eval and complete VM diagnostics require validation. One native
+UTF-8 extent/column admission, eval and complete VM diagnostics require validation.
+One native
 VM.Script first-line lineOffset50/columnOffset7 observation produced an
 ERR_INVALID_ARG_TYPE message for undefined assertion text. It is retained as
 a concrete native diagnostic/parity question, not a passing offset case or an
@@ -59,3 +67,29 @@ does not prove full diagnostic equality.
 No compiler, generator, package or guest suite ran for this slice. One pinned
 native process provided four ownership/message observations, including that
 negative VM-offset outcome. No existing upstream assertion was changed.
+
+## UTF-8 source admission references
+
+The pinned Mozilla SourceExtent contract (`vm/SharedStencil.h:185–227`) counts
+source offsets in input code units and columns in UTF-16 units.
+`frontend/TokenStream.cpp:595–659,800–855` already computes UTF-8 columns by
+CountUTF16CodeUnits; `vm/JSScript.cpp:2663–2721` preserves those source-note
+columns in PCToLineNumber. `ScriptSource::substring` at
+`vm/JSScript.cpp:1299–1329` pins the requested encoded range, including compressed
+source, and decodes UTF-8 with NewStringCopyUTF8N. The encoding-aware prefix uses
+that actual decoder rather than repeating its conversion algorithm.
+
+For example, a prefix containing U+00E9 and U+1F642 occupies six UTF-8 units but
+three UTF-16 units. The retained decoder supplies three for the line scanner;
+the already-UTF-16 PC delta is left intact. CRLF, Unicode line separators,
+first-line compilation offsets and zero-origin tokenizer admission continue
+through the existing scanner. Decoder allocation/errors propagate unchanged;
+missing/muted source and invalid/saturated/unrepresentable coordinates retain
+absence semantics. No new source hook or JS callback is invoked by decoding.
+
+This additive admission slice had source inspection and exact patch replay only:
+zero new runtime controls, compilers or generation. It does not validate UTF-8
+or UTF-16 guest execution. Prefix/full-source decoding can allocate; no memory
+bound or performance improvement is claimed. The prior native VM-offset
+negative observation and all optimized, mapped, cross-realm/GC/OOM and complete
+stack/diagnostic parity gaps remain open.

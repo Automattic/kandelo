@@ -1,0 +1,268 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto-contracts.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "crypto",
+      "testing",
+      "values"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/testing.md",
+        "findingId": "TEST-004",
+        "relation": "partial-internal-reporter-consumers"
+      },
+      {
+        "document": "tests/nodejs/audit/values.md",
+        "findingId": "V-010",
+        "relation": "partial-retained-UTF8-source-admission"
+      }
+    ],
+    "proseReferences": [
+      {
+        "document": "tests/nodejs/audit/crypto-contracts.md",
+        "line": 139,
+        "text": "| Metadata/FIPS/secure heap/engines | Entire public route absent. Provider/cipher/hash/curve/MAC lists and getCipherInfo must reflect fetchable implementations and active properties, not static promises. FIPS state reports the default property query, not certification or necessarily a loaded provider; forced startup state and worker setFips restrictions matter. secureHeapUsed must report actual allocations. Deprecated setEngine remains observable, including configured no-engine failure. |",
+        "relation": "explicit-prose-progress"
+      }
+    ],
+    "scope": "Direct partial ordinary FIPS row139, internal testing TEST-004 and UTF8 values V-010; unnumbered FIPS row remains prose, no invented FIPS definition or closure."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "ordinary-public-fips-state",
+      "scope": "Ordinary non-forced public getFips/setFips and deprecated fips accessor consume actual linked ncrypto state, generation and Worker/main authority. Historical seven native and seven JS-over-native observations are reused only."
+    },
+    {
+      "feature": "internal-benchmark-reporters",
+      "scope": "Complete pinned internal JSON async-generator and Spec Transform reporters consume actual record stream/Transform owners through the existing testing factory. Four historical native/component selected observations retain explicit native dependencies; no public namespace activation."
+    },
+    {
+      "feature": "assertion-utf8-source-admission",
+      "scope": "Actual encoded sourceStart range is checked, then the rooted native ScriptSource decoder supplies prefix UTF-16 length for the existing line scanner. Already UTF-16 PC/extent columns remain unchanged. No filename fallback, manual decoder, new public stack API or fresh runtime evidence."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core269-fips-reporters-batch-source-r1/report.json",
+    "sha256": "64723fa57532b43e70c9291d1e7b97142d55d007b893e3c185891dfe3da66319",
+    "guardedInputs": 933,
+    "scope": "One normal source 269 generation/staging/syntax/input check for ordinary FIPS, internal reporters and UTF-8 assertion admission. No native/current component reruns, compilers, guest or overall proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core269-fips-reporters-batch-affected-r1.json",
+    "sha256": "fff0710e9b2a5264deaab1fc15ae98f5967e633af0ab5fd4a8a0c19a355cd33b",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core269-fips-reporters-batch-source-r1/report.json",
+    "sha256": "64723fa57532b43e70c9291d1e7b97142d55d007b893e3c185891dfe3da66319",
+    "reportScope": "One normal source 269 generation/staging/syntax/input check for ordinary FIPS, internal reporters and UTF-8 assertion admission. No native/current component reruns, compilers, guest or overall proof.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true,
+    "freshComponentGroups": 0,
+    "freshAPIConformancePasses": 0
+  },
+  "sealedEvidence": {
+    "report": ".context/core269-fips-reporters-batch-metadata-bound-r2/feature-evidence-index.json",
+    "sha256": "d975da05a4edf04c1f4f2c24cdcf9f0c605ff5bd9e7f3c5bea956d93248bf0a3",
+    "reusedEvidence": true,
+    "scope": "Exact FIPS/reporter/UTF8 producer and independent review versions. Seven FIPS native plus seven JS-over-native observations and four selected reporter observations are historical with explicit V8/stream/async dependencies. UTF8 is source-only; zero fresh runtime/guest/API credit."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/crypto-public-fips-owner-agent/controls/candidate-result.json",
+      "sha256": "1c6d727e50d995f3d735b8799a0a8b18faa04f76f0b3cf665cc2529b6e39ed11",
+      "classification": "Original fixture primordial import TypeError before candidate creation; preserved separately from corrected historical JS-over-native evidence.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/crypto-public-fips-owner-agent/history/lock-publication-correction.json",
+      "sha256": "9bf2387b6649711797bd48eb38341cbac9dde7afbf36eb7899890171e2434573",
+      "classification": "Original lock-through-ordinary-property-publication source draft corrected before seal; source-driven risk only, no executed deadlock or Node-defect attribution.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/benchmark-owner-agent/evidence-r3/missing-v8-error-record.stderr",
+      "sha256": "bbdca294f22521a4737a59c70198b4ef90f972ca30fb5229c410fc1fa7785d6d",
+      "classification": "Actual earlier candidate missing V8 named-error identity is an unresolved nonpass; native V8-dependent reporter positives are not a replacement.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/benchmark-reporters-owner-agent/source-setup-failure.json",
+      "sha256": "80ad0585ecd6c59e6aa265e7f0f09e840334d8a50258654e478855582de0ec9b",
+      "classification": "Wrong generated-file fixture path; failed source setup before runtime.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/benchmark-reporters-owner-agent/root-owned-guard-failure.json",
+      "sha256": "75b976e90ae404c1f35b98917fdc3b079c4bc1830fefa88a797eb706f2562f1d",
+      "classification": "Concurrent parent source drift guard stopped private packaging before replay, no root write.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/assertion-utf8-source-owner-agent/packaging-schema-failure.json",
+      "sha256": "c325cbf30a40bd0d2e365e573ab5ee31282043ad599fdf5ffb437805d5441140",
+      "classification": "Original read-only member schema mismatch during packaging; not a runtime/compiler attempt.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/assertion-source-owner-agent/report.json",
+      "sha256": "f508fba358258aec9993baba704b3714f52d73cb69324857e24a7d4ed54f908c",
+      "classification": "Earlier actual native VM offset produced undefined-message ERR_INVALID_ARG_TYPE rather than expected source; unresolved parity, not passing or accepted boundary.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/node269-fips-reporters-batch-integration-prep/packaging-failure-r1.json",
+      "sha256": "ef58c6713bdb3310204756f9056e18118f4e8f7ae8ed8dfd8c52d6c4f8462060",
+      "classification": "Author source-packet metadata derivation NameError before prepared source operation; no root/source/compiler/generation attempt.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/listener-accept-dispatch-source-gap-r1.json",
+      "sha256": "84cc1c8ac232aeca3fd0e37cb487278e001195329ad1202ecb2b79987aab9cd5",
+      "classification": "Current source registers listener onconnection but has no consumer/poll/accept dispatch for this route. Legacy Promise socketAccept is no longer called by bootstrap acceptServer. Source-only implementation gap, not a newly executed runtime failure.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/tty-shutdown-request-envelope-source-gap-r1.json",
+      "sha256": "22d67e4d7b15340e29e1795d7495b5dfef159542c87c7dd1b3987e3711b07763",
+      "classification": "TTY createShutdownRequest forwards the generic operatingSystem error/value packet, while native shutdown requires the actual unsubmitted ShutdownWrap object stored in packet.value. Source-only finding, not an executed runtime failure.",
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "Forced CLI/configuration/provider/strict admission, immutable force/Worker startup, full WebCrypto normalizer/jobs and native C++/GC/OOM/error/concurrent mutation/four-host behavior remain missing or unvalidated. No certification or provider availability claim.",
+    "Public benchmark/reporters aliases/constructor/warning/gate/CLI, real V8 serializer and named-error nonpass, isolation/IPC, full noisy/skewed/error branches and guest stream/async/clock/histogram/clone/realm/GC/Worker/four-host conformance remain incomplete.",
+    "Both original UTF-16 and new UTF-8 guest capture/tokenizer/PC behavior remain uncompiled and unvalidated. Optimized/async/mapped, CJS/eval/VM/offset parity, large-source allocation and realm/GC/OOM/security/Worker/four-host behavior remain open. The prior native VM-offset negative result is preserved."
+  ],
+  "featureContributions": [
+    {
+      "id": "ordinary-public-fips-state",
+      "family": "crypto",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/crypto-contracts.md",
+          "relation": "explicit-prose-progress",
+          "line": 139,
+          "text": "| Metadata/FIPS/secure heap/engines | Entire public route absent. Provider/cipher/hash/curve/MAC lists and getCipherInfo must reflect fetchable implementations and active properties, not static promises. FIPS state reports the default property query, not certification or necessarily a loaded provider; forced startup state and worker setFips restrictions matter. secureHeapUsed must report actual allocations. Deprecated setEngine remains observable, including configured no-engine failure. |"
+        }
+      ],
+      "proseReferences": [
+        {
+          "document": "tests/nodejs/audit/crypto-contracts.md",
+          "line": 139,
+          "text": "| Metadata/FIPS/secure heap/engines | Entire public route absent. Provider/cipher/hash/curve/MAC lists and getCipherInfo must reflect fetchable implementations and active properties, not static promises. FIPS state reports the default property query, not certification or necessarily a loaded provider; forced startup state and worker setFips restrictions matter. secureHeapUsed must report actual allocations. Deprecated setEngine remains observable, including configured no-engine failure. |",
+          "relation": "explicit-prose-progress"
+        }
+      ],
+      "scope": "Ordinary non-forced public getFips/setFips and deprecated fips accessor consume actual linked ncrypto state, generation and Worker/main authority. Historical seven native and seven JS-over-native observations are reused only.",
+      "remaining": "Forced CLI/configuration/provider/strict admission, immutable force/Worker startup, full WebCrypto normalizer/jobs and native C++/GC/OOM/error/concurrent mutation/four-host behavior remain missing or unvalidated. No certification or provider availability claim.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "9abe5afc897554eea9a7f6185554a5aa9e2aa603057efc7916d74b17ad3358f7",
+      "producerSeal": {
+        "path": ".context/crypto-public-fips-owner-agent/SEAL.json",
+        "sha256": "0b2fa56201912925185983e299c99d50ab74011eb3845e25b7f6e1f37647e239"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core269-fips-reporters-batch-source-r1/report.json",
+        "sha256": "64723fa57532b43e70c9291d1e7b97142d55d007b893e3c185891dfe3da66319",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "internal-benchmark-reporters",
+      "family": "testing",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/testing.md",
+          "findingId": "TEST-004",
+          "relation": "partial-internal-reporter-consumers"
+        }
+      ],
+      "scope": "Complete pinned internal JSON async-generator and Spec Transform reporters consume actual record stream/Transform owners through the existing testing factory. Four historical native/component selected observations retain explicit native dependencies; no public namespace activation.",
+      "remaining": "Public benchmark/reporters aliases/constructor/warning/gate/CLI, real V8 serializer and named-error nonpass, isolation/IPC, full noisy/skewed/error branches and guest stream/async/clock/histogram/clone/realm/GC/Worker/four-host conformance remain incomplete.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "9abe5afc897554eea9a7f6185554a5aa9e2aa603057efc7916d74b17ad3358f7",
+      "producerSeal": {
+        "path": ".context/benchmark-reporters-owner-agent/SEAL.json",
+        "sha256": "7fa65bf2afc3b3e6aa620672ee268d9811c0f37012eb0c739fb2313cddb1e950"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core269-fips-reporters-batch-source-r1/report.json",
+        "sha256": "64723fa57532b43e70c9291d1e7b97142d55d007b893e3c185891dfe3da66319",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "assertion-utf8-source-admission",
+      "family": "values",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/values.md",
+          "findingId": "V-010",
+          "relation": "partial-retained-UTF8-source-admission"
+        }
+      ],
+      "scope": "Actual encoded sourceStart range is checked, then the rooted native ScriptSource decoder supplies prefix UTF-16 length for the existing line scanner. Already UTF-16 PC/extent columns remain unchanged. No filename fallback, manual decoder, new public stack API or fresh runtime evidence.",
+      "remaining": "Both original UTF-16 and new UTF-8 guest capture/tokenizer/PC behavior remain uncompiled and unvalidated. Optimized/async/mapped, CJS/eval/VM/offset parity, large-source allocation and realm/GC/OOM/security/Worker/four-host behavior remain open. The prior native VM-offset negative result is preserved.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "9abe5afc897554eea9a7f6185554a5aa9e2aa603057efc7916d74b17ad3358f7",
+      "producerSeal": {
+        "path": ".context/assertion-utf8-source-owner-agent/SEAL.json",
+        "sha256": "9e198a42dff98e1b7dd50e0dfc11da981c3b4db349f91d1acdd1011fd6245bac"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core269-fips-reporters-batch-source-r1/report.json",
+        "sha256": "64723fa57532b43e70c9291d1e7b97142d55d007b893e3c185891dfe3da66319",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    }
+  ],
+  "batchReceiptIndex": {
+    "report": ".context/core269-fips-reporters-batch-metadata-bound-r2/receipt-index.json",
+    "sha256": "8a29d95dffa0bb4a11c23e90928d3b420197f07072536646987fc42f039429e3",
+    "scope": "Actual completed source/check/import receipts. Zero new component/native/API passes; no historical recount or new compiler/guest run."
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "documentationGate": "Historical native observations and negative outcomes retain their original scope. Current source/package predicates do not establish API passes.",
+  "at": "2026-11-08T11:30:21.144717+00:00",
+  "recipeRevision": 269,
+  "lastAcceptedEngine": 263,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

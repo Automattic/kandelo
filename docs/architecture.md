@@ -7355,3 +7355,7 @@ Source267adds real compile/cache/weakModule/sourceMap lookup routing and an inte
 ### Assertion source capture and HTTP parser storage lifetimes
 
 Source 268 adds an actual retained-source assertion diagnostic owner and real private HTTP parser reset, storage reuse and deferred retirement. One normal source/package batch is separate from runtime conformance. Public stack mapping/capture, HTTPParser AsyncWrap/provider lifecycle and Server persistence remain incomplete.
+
+### FIPS state, internal benchmark reporting and assertion source admission
+
+Source269 adds ordinary non-forced public FIPS state over the linked native owner, complete selected internal benchmark JSON/Spec consumers, and actual retained UTF-8 assertion extent admission. One shared source/input/package batch supplies source evidence only; forced startup, public benchmark and full stack/guest conformance remain open.

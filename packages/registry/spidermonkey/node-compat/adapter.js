@@ -510,6 +510,8 @@
         digestNames() { return native.digestNames(); },
         macNames() { return native.macNames(); },
         getFipsCrypto() { return native.getFipsCrypto(); },
+        setFipsCrypto(value) { return native.setFipsCrypto(value); },
+        ownsCryptoProcessState() { return native.ownsCryptoProcessState(); },
         getFipsCryptoGeneration() { return native.getFipsCryptoGeneration(); },
         getOpenSSLVersion() { return native.getOpenSSLVersion(); },
         timingSafeEqual(a, b) { return native.timingSafeEqual(a, b); },

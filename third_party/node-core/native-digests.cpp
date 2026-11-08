@@ -3,6 +3,7 @@
 #include "kandelo-node-string-bytes.h"
 #include "js/ArrayBuffer.h"
 #include "js/BigInt.h"
+#include "js/Conversions.h"
 #include "js/Realm.h"
 #include "js/Exception.h"
 #include "js/Stack.h"
@@ -16,10 +17,9 @@
 #include <mutex>
 #include <utility>
 namespace {
-// The real linked ncrypto/OpenSSL default-property state, not a boolean
-// capability or certification claim. No mutable FIPS setter is exposed here.
-// Any later setter must use this same owning state lock and real CLI/Worker
-// admission before changing provider properties; generation alone is no lock.
+// Actual linked default-property state; not a provider/certification claim.
+// Public mutation and provider-list enumeration share this process owner.
+// Forced startup/configuration admission is not yet implemented by the CLI.
 static std::mutex gKandeloFipsStateMutex;
 static bool KandeloNativeGetFipsCrypto(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -33,6 +33,10 @@ static bool KandeloNativeGetFipsCryptoGeneration(JSContext* cx, unsigned argc, V
   JS::BigInt* generation = JS::NumberToBigInt(cx, ncrypto::getFipsStateGeneration());
   if (!generation) return false;
   args.rval().setBigInt(generation);return true;
+}
+static bool KandeloNativeOwnsCryptoProcessState(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  args.rval().setBoolean(!GetShellContext(cx)->isWorker);return true;
 }
 static bool KandeloNativeOpenSSLVersion(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -238,6 +242,34 @@ static bool KandeloThrowCryptoError(JSContext* cx,const kandelo::crypto::Error& 
   RootedValue error(cx);
   if (!KandeloDigestError(cx,failure,&error,type)) return false;
   JS_SetPendingException(cx,error);return false;
+}
+static bool KandeloNativeSetFipsCrypto(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  // The public wrapper throws the pinned Worker error. Raw internal entry has
+  // the target's fatal owns_process_state admission, before touching libcrypto.
+  MOZ_RELEASE_ASSERT(!GetShellContext(cx)->isWorker);
+  kandelo::crypto::CryptoErrorStore store;
+  bool success;
+  {
+    std::lock_guard<std::mutex> lock(gKandeloFipsStateMutex);
+    ncrypto::CryptoErrorList errors;
+    // BooleanValue/ToBoolean never invokes a user coercion hook. ncrypto owns
+    // transition detection, the atomic generation and the actual error queue.
+    success = ncrypto::setFipsEnabled(JS::ToBoolean(args.get(0)), &errors);
+    if (!success) for (const auto& error : errors) store.Insert(error);
+  }
+  if (!success) {
+    // All queue strings are owned before unlock. Do not hold the process-state
+    // mutex while an inherited Error.prototype setter can reenter this owner.
+    // cryptoErrorListToException uses last-message/preceding-stack only, not
+    // numeric ERR decoration. Its empty-list fallback is env->ok_string ("ok"),
+    // distinct from CryptoErrorStore::ToException's fallback.
+    std::optional<std::string> message;
+    if (store.errors_.empty()) message = "ok";
+    return KandeloThrowCryptoError(cx,
+        kandelo::crypto::Error::FromCaptured(std::move(store), std::move(message)));
+  }
+  args.rval().setUndefined();return true;
 }
 static bool KandeloNativeOneShotDigest(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);

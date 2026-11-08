@@ -447,6 +447,7 @@ for marker, name in [('HASH', 'hash'), ('NORMALIZATION', 'normalization'),
         raise ValueError('Review digest source marker: ' + marker)
     digest_adapter = digest_adapter.replace(token, digest_sections[name])
 bundle += digest_adapter + '\n'
+bundle += (root / 'crypto-fips-platform-adapter.js').read_text() + '\n'
 incremental_spec = manifest['incrementalCrypto']
 for name, item in incremental_spec['sources'].items():
     if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:

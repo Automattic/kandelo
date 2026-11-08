@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source269 combines three reviewed partial source contributions. All component/native observations are exact historical evidence, not rerun or fresh conformance. All19families remain partial.
+See [source scope](core-fips-reporters-batch269-implementation.md).
+
 Source 268 combines two bounded owning source contributions. Native reference observations are historical; new C++/GC/realm/lifecycle behavior is uncompiled and all 19 families remain partial.
 See [source scope](core-parser-assertion-batch268-implementation.md).
 

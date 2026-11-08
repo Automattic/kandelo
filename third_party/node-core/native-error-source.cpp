@@ -44,17 +44,28 @@ static bool KandeloCaptureAssertionSource(JSContext* cx, unsigned argc, Value* v
       caller->column().oneOriginValue() == JS::LimitedColumnNumberOneOrigin::Limit)
     return true;
   auto* source = caller->scriptSource();
-  // Kandelo CJS/VM compilation supplies actual UTF-16 SourceText. UTF-8 source
-  // extents use other code units; no byte-to-UTF16 guess is substituted here.
-  if (!source->hasSourceText() || !source->hasSourceType<char16_t>() ||
-      line < caller->lineno()) return true;
-  const uint32_t sourceStart = caller->sourceStart();
+  if (!source->hasSourceText() || line < caller->lineno()) return true;
+  const bool utf8 = source->hasSourceType<mozilla::Utf8Unit>();
+  if (!utf8 && !source->hasSourceType<char16_t>()) return true;
+  // Extents count input code units, whereas extent/PC columns already count
+  // UTF-16 units. Only the sourceStart byte offset needs decoding for UTF-8.
+  size_t sourceStart = caller->sourceStart();
   const uint32_t sourceLine = caller->lineno();
   const uint32_t sourceColumn = caller->column().oneOriginValue();
   const uint32_t actualColumn = column.oneOriginValue();
   RootedValue result(cx);
   {
     JSAutoRealm realm(cx, caller);
+    if (sourceStart > source->length()) return true;
+    // ScriptSource owns compressed-source pinning and UTF-8 decoding. Keep
+    // both decoded strings rooted; no raw UTF-8 pointer or guessed byte ratio
+    // enters the UTF-16 line scanner or the unchanged tokenizer.
+    RootedString prefix(cx);
+    if (utf8) {
+      prefix = source->substring(cx, 0, sourceStart);
+      if (!prefix) return false;
+      sourceStart = prefix->length();
+    }
     RootedString text(cx, source->substring(cx, 0, source->length()));
     if (!text) return false;
     RootedString selected(cx);

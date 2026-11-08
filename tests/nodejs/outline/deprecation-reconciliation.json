@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "0b4ebd7441c63337eacf76b00b6f1a9bbb1dca57d7d5fdc2f3b727e6270fc2d9",
+    "packages/registry/node-compat/bootstrap.js": "d7ccf715a8a0fb10d48430abb90a5c3d6795dfbb98dc4b61e32fb3949523cfb1",
     "third_party/node-core/adapter.js": "62d08d0de6ea1b8aef5f0dc54c46e53b175e5cbbc481475cbfb2059ad912e292",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/asymmetric-keygen-platform-adapter.js": "94b3dc26b1f783b97cb38eaa91baff3be883c66f8d80a6c76568a72ebf0207b0",
@@ -28,6 +28,7 @@
     "third_party/node-core/copy-directory-platform-adapter.js": "91810dafa31579407ef421133ea0c3f0f445cb88503a5d3331ceb583abb64713",
     "third_party/node-core/copy-file-adapter.js": "198f13bc4306348d4e3e42e498fddeb33dd723b9b625750d2ef692b046883540",
     "third_party/node-core/crypto-digest-adapter.js": "b3662656263b6656ef7d227610c791d83d7ade88cc32211c4982b825b1d9dbaf",
+    "third_party/node-core/crypto-fips-platform-adapter.js": "eb99ae36d69a6573921a504f994eb61671f93a6935c1fcf8ea072a2700e9387b",
     "third_party/node-core/crypto-key-usages-platform-adapter.js": "7c9aa59d4a121cb16ef4ae178faa8bfcd212fb16ef544b53dc2b096d2f7556c3",
     "third_party/node-core/crypto-random-jobs-adapter.js": "2007d77846b6b7bb6632351c5e450f0568730f785f2bdf6d4b4df5d50ed0bb0a",
     "third_party/node-core/crypto-random-sync-adapter.js": "cfa961263245ceca02a665c02c227dd8c6587ad07ab55b96e90bf118d2955fb9",
@@ -1240,7 +1241,16 @@
       "declaredCurrentType": "Runtime",
       "ownerFamily": "crypto",
       "originalOwnerReport": "tests/nodejs/audit/crypto-contracts.md",
-      "selectedAdapterLiteralOccurrences": [],
+      "selectedAdapterLiteralOccurrences": [
+        {
+          "path": "third_party/node-core/crypto-fips-platform-adapter.js",
+          "line": 28
+        },
+        {
+          "path": "third_party/node-core/crypto-fips-platform-adapter.js",
+          "line": 30
+        }
+      ],
       "currentSourceDelta": "Original target requirement retained; owning warning/alias/removal/origin/activation/lifecycle finding remains open",
       "completeImplementationEstablished": false,
       "runtimeConformanceEstablished": false

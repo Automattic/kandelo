@@ -1,5 +1,7 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0190-node-public-fips-state.patch",
+  "third_party/node-core/crypto-fips-platform-adapter.js",
   "packages/registry/spidermonkey/patches/0189-node-assertion-source-parser-reuse.patch",
   "third_party/node-core/native-error-source.cpp",
   "third_party/node-core/upstream/assert-source",
@@ -825,4 +827,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 268
+revision = 269

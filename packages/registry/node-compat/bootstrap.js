@@ -3440,6 +3440,8 @@ const crypto = (() => {
     };
 })();
 
+_installNodeCryptoFips(crypto, { native: _nodeNative, values: _nodeValues });
+
 let _nodeDigestHelpers;
 Object.assign(crypto, _createNodeCryptoDigest({
     native: _nodeNative, values: _nodeValues, Buffer, types: util.types,

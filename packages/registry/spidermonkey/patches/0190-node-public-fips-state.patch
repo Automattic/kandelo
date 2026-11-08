@@ -1,0 +1,11 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index c75f081596db0db615cda4da70b427de131b9bee..6662cbf7220dd55998a78fa055160779c7ce171e 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -5070,4 +5070,6 @@ static bool DefineKandeloNodeNative(JSContext* cx) {
+       JS_FN("macNames", (KandeloCryptoGuard<KandeloNativeMacNames>), 0, 0),
+       JS_FN("getFipsCrypto", (KandeloCryptoGuard<KandeloNativeGetFipsCrypto>), 0, 0),
++      JS_FN("setFipsCrypto", (KandeloCryptoGuard<KandeloNativeSetFipsCrypto>), 1, 0),
++      JS_FN("ownsCryptoProcessState", KandeloNativeOwnsCryptoProcessState, 0, 0),
+       JS_FN("getFipsCryptoGeneration", (KandeloCryptoGuard<KandeloNativeGetFipsCryptoGeneration>), 0, 0),
+       JS_FN("getOpenSSLVersion", KandeloNativeOpenSSLVersion, 0, 0),
