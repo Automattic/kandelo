@@ -2408,3 +2408,12 @@ immediately when those checks pass. B2 asynchronous bindings and its request
 gate, B3 queries, B4 interfaces, B5 fences and B6 inline draws follow B1; then
 C1 scheduling, C2 executor separation and C3 the GPU worker. Each stage stays
 separately landed, validated and measured; all final campaign gates remain.
+
+The demonstrated child-wait BO visibility defect now has a shared-host
+repair and causal Node/browser regression evidence: nine new Node/unit
+failures become a59-case pass; twelve browser failures become twelve passes
+on both widths and all three engines. Output-write ordering, failed-wait
+errors and pending-reader custody remain protected. This closes the focused
+defect, not complete B1 or native-feel acceptance. Run the remaining B1
+release checks on the combined candidate, then ship the bounded milestone
+with the already listed B2–B6/C1–C3 follow-up steps.

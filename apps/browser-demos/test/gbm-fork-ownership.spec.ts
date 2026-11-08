@@ -18,7 +18,7 @@ test.beforeAll(() => {
 test.afterAll(() => { for (const fixture of fixtures.values()) fixture.cleanup(); });
 
 for (const arch of ["wasm32", "wasm64"] as const) {
-for (const mode of ["inherited", "mapping-replacement", "mapping-partial", "mapping-middle", "mapping-same-bo"] as const) {
+for (const mode of ["inherited", "mapping-replacement", "mapping-partial", "mapping-middle", "mapping-same-bo", "waitpid", "waitid"] as const) {
 test(`normal ${arch} GBM guest preserves exact custody through ${mode}`, async ({ page, baseURL, browser }) => {
   test.setTimeout(90_000);
   const program = readFileSync(fixtures.get(arch)!.programPath);
@@ -55,7 +55,8 @@ test(`normal ${arch} GBM guest preserves exact custody through ${mode}`, async (
     }, { url: new URL(`/@fs${module}`, baseURL).href, mode });
     expect(result.status, JSON.stringify(result)).toBe(0);
     expect(result.stdout.trim()).toBe(mode === "inherited"
-      ? "OK inherited GBM storage and custody" : "OK exact GBM mapping replacement custody");
+      ? "OK inherited GBM storage and custody" : mode === "waitpid" || mode === "waitid"
+      ? `OK GBM child publication through ${mode}` : "OK exact GBM mapping replacement custody");
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);
     const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");

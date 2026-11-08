@@ -5828,15 +5828,21 @@ KMS master, cursor and event inheritance still have separate gaps; see
 The worker's DRI registry merges changed byte runs relative to a private
 snapshot of each mapping. It uses the same merge primitive as anonymous
 `MAP_SHARED` publication. Allocator and importer writes both publish at
-mapping, readiness, successful receive completion, texture submission,
-and cursor/scanout presentation boundaries; unchanged readers do not
+mapping, readiness, successful receive/child-wait completion, texture
+submission, and cursor/scanout presentation boundaries; unchanged readers do not
 overwrite newer bytes. A readiness wake is insufficient when a producer
 stores pixels and sends another commit while the consumer is draining its
 socket. Successful `read`, `readv`, `recvfrom` and `recvmsg` completions
 therefore refresh live imported BO mappings after their output writes land
-and before the guest resumes. EOF, failed receives and unrelated calls do
-not perform this scan; a process without mapped imports does not copy BOs. Refreshing a
-reader also refreshes its snapshot. A pending reader remains eligible for
+and before the guest resumes. Successful `wait4` and `waitid` completions
+refresh after status/siginfo and shared-map materialization too: child exit
+can publish BO bytes while leaving the parent's independent view stale.
+Both ordinary/frozen retries and kernel-decided parked waits refresh before
+completion publication. `waitid` succeeds with zero; a successful WNOHANG
+zero may refresh without claiming a child event. Failed waits preserve their
+errno and pending readers. EOF, failed receives and unrelated calls do not
+perform this scan; a process without mapped imports does not copy BOs.
+Refreshing a reader also refreshes its snapshot. A pending reader remains eligible for
 refresh after the last writer unmaps, exits, or replaces its address space.
 Publication scans retain the independent baseline without copying it when
 no changed runs are found. A changed publication advances only its copied
@@ -5861,7 +5867,7 @@ reader refresh survives alias retirement, including publications made by
 that retirement itself. GPU textures follow the same final destruction
 event. All guest mappings and snapshots stay inside disposable workers.
 The host bind import includes the canonical offset; it ships with the
-matching kernel within the single unpublished ABI 56 / kernel-host 3 epoch.
+matching kernel within the single program ABI 56 / host-adapter 4 family.
 Fixed anonymous, private-file and new device mappings retire the affected
 device interval before the host populates replacement bytes. DRI admission
 stages new metadata, flushes the old aliases, then commits clipped views

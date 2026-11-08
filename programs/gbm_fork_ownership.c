@@ -7,6 +7,7 @@
 #include <drm/drm.h>
 #include <drm/drm_mode.h>
 #include <stdint.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -81,7 +82,41 @@ static int mapping_replacement(unsigned mode) {
     verify_replacement(pixels,extent,page,index);assert(!munmap(address,page)&&!close(card));
     puts("OK exact GBM mapping replacement custody");return 0;
 }
+static int wait_publication(int use_waitid) {
+    int card=open("/dev/dri/card0",O_RDWR|O_CLOEXEC);assert(card>=0);
+    struct gbm_device *device=gbm_create_device(card);assert(device);
+    struct gbm_bo *bo=gbm_bo_create(device,16,16,GBM_FORMAT_ARGB8888,
+        GBM_BO_USE_WRITE|GBM_BO_USE_LINEAR);assert(bo);
+    uint32_t stride;void *lease=NULL;
+    volatile uint32_t *pixels=gbm_bo_map(bo,0,0,16,16,GBM_BO_TRANSFER_READ_WRITE,&stride,&lease);
+    assert(pixels&&stride>=64);
+    /* Keep the parent's real mapping alive: remapping, msync, or another
+     * import would hide whether wait completion itself exposes child writes.
+     * Polling exercises a ready result; a plain wait permits a parked result. */
+    for(int poll=0;poll<2;poll++) {
+        pixels[0]=UINT32_C(0x11223344);pixels[1]=0;
+        pid_t child=fork();assert(child>=0);
+        if(!child){pixels[1]=UINT32_C(0xaabbccdd);_exit(0);}
+        if(use_waitid){
+            siginfo_t info;
+            do {memset(&info,0,sizeof info);
+                assert(!waitid(P_PID,child,&info,WEXITED|(poll?WNOHANG:0)));
+            }while(!info.si_pid);
+            assert(info.si_pid==child&&info.si_code==CLD_EXITED&&info.si_status==0);
+        }else{
+            int status;pid_t waited;
+            do {waited=waitpid(child,&status,poll?WNOHANG:0);assert(waited>=0);}while(!waited);
+            assert(waited==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
+        }
+        assert(pixels[0]==UINT32_C(0x11223344)&&pixels[1]==UINT32_C(0xaabbccdd));
+    }
+    gbm_bo_unmap(bo,lease);gbm_bo_destroy(bo);gbm_device_destroy(device);assert(!close(card));
+    puts(use_waitid?"OK GBM child publication through waitid":"OK GBM child publication through waitpid");
+    return 0;
+}
 int main(int argc,char **argv){
+    if(argc==2&&!strcmp(argv[1],"waitpid"))return wait_publication(0);
+    if(argc==2&&!strcmp(argv[1],"waitid"))return wait_publication(1);
     if(argc==2&&!strcmp(argv[1],"mapping-replacement"))return mapping_replacement(0);
     if(argc==2&&!strcmp(argv[1],"mapping-partial"))return mapping_replacement(1);
     if(argc==2&&!strcmp(argv[1],"mapping-middle"))return mapping_replacement(2);

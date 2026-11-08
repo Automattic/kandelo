@@ -27587,3 +27587,51 @@ scoped conformance and libc, wider desktop/lifecycle, measurements and
 manual-browser checks
 remain. B2–B6 and C1–C3 remain explicit ordered follow-ups, each separately
 landed, validated and measured. No acceptance criterion is reduced.
+
+### BO visibility at child wait completion, 2026-11-08
+
+A retained BO mapping can outlive its writer. The child-exit publication is
+correct, but ordinary wait completion previously resumed the parent without
+refreshing that mapping. The existing kernel-decided wait refresh also ran
+before shared-map materialization, allowing later materialization to obscure
+its result. This is a shared host completion defect, not permission to add
+`msync` or remapping to guest software.
+
+Successful captured `wait4`/`waitid` operations now refresh BO imports after
+all detached outputs and shared mappings materialize and before publication.
+The existing parked-wait refresh moves to that same position in raw
+completion. Final errno/return values gate the action; failed waits do not
+consume pending readers. `waitid` success zero and WNOHANG no-event zero are
+handled without rereading width-dependent guest siginfo. Unrelated
+completions invoke no BO scan. Exact live-channel/generation guards remain.
+The direct-published transfer path excludes child waits and DRI mappings,
+so it needs no speculative new hook.
+
+The ordinary GBM fixture now retains one parent mapping while a child stores
+pixels and exits, then reads it after blocking and WNOHANG forms of both
+wait APIs. No extra guest synchronization, remap or changed old mode is
+introduced. Five real-registry completion controls retain a disjoint mapped
+output byte while importing a departed writer; failed-wait controls retain
+the no-scan requirement. The same guest modes run through the normal SDK on
+Node and Chromium/Firefox/WebKit, both widths.
+
+| Frozen check | Before production repair | After production repair |
+| --- | --- | --- |
+| Two complete Node/unit files | 50 passed, 9 new failures, zero skipped | 59 passed, zero failed/skipped |
+| New ordinary browser wait modes | 12 failed, zero skipped/retried | 12 passed, zero failed/skipped/retried |
+
+Exact workspace commands are `scripts/dev-shell.sh bash
+.context/graphics-bo-wait-checks-r905/run.sh red`/`green` and the analogous
+`graphics-bo-wait-browser-r906/run.sh` commands. Original red reports remain
+failed evidence; their normal SDK/product and source manifests are retained.
+Before green, canonical `scripts/build-host.sh` succeeds in16s and all three
+compiled workers pass freshness with source fingerprint
+`2971b86fcdd6fd319c11a53b165410735445132a8ba074022677ed4ac97c6027`.
+The non-host-dist installed namespaces and authored inputs remain unchanged.
+Complete host and browser semantic type checks pass. No Rust, ABI, package
+recipe or ported-client change is made. Family remains56/4/17/21.
+
+These are correctness and host-parity results. Durations of failed versus
+passing runs are not performance comparisons. The complete B1 consumer,
+ownership, graphical, scoped conformance/libc, lifecycle and measurement
+checks still require the combined candidate; B1 is not yet merge-ready.

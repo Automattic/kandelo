@@ -579,9 +579,48 @@ describe("kernel-owned shared-mapping boundary failures", () => {
   );
 
   it.each([
+    [ABI_SYSCALLS.Wait4, 42, false],
+    [ABI_SYSCALLS.Wait4, 0, false],
+    [ABI_SYSCALLS.Waitid, 0, false],
+    [ABI_SYSCALLS.Wait4, 42, true],
+    [ABI_SYSCALLS.Waitid, 0, true],
+  ] as const)("imports departed child BO writes for wait %i result %i raw=%s before resume", (syscallNr, result, raw) => {
+    const h=sysvHarness(),channel=pendingChannel(h),reader=channel.memory;
+    const writer=h.memories.get(h.pids[1])!;
+    const kernel=new WasmPosixKernel({},{} as any,{getProcessMemory:pid=>h.memories.get(pid)});
+    h.kw.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
+    const address=0x6000,size=256;
+    kernel.bos.create({pid:h.pids[1],bo_id:7,size,w:16,h:4,stride:64});
+    for(const [pid,memory] of [[channel.pid,reader],[h.pids[1],writer]] as const){
+      kernel.bos.bind(pid,7,address,size);kernel.bos.primeBindFromSab(pid,7,memory,address);
+    }
+    new Uint8Array(writer.buffer)[address+17]=0xdc;
+    kernel.bos.unbind(h.pids[1],7,address,size);
+    expect(kernel.bos.pixelView(7)![17]).toBe(0xdc);
+    expect(new Uint8Array(reader.buffer)[address+17]).toBe(0);
+    const observed:number[]=[];
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({
+      relistenChannel:()=>{observed.push(...new Uint8Array(reader.buffer,address+17,2));},
+    });
+    if(raw){
+      // Kernel-decided wait outputs precede the completion event; preserve
+      // them while importing the departed writer's disjoint byte.
+      new Uint8Array(reader.buffer)[address+18]=0x5d;
+      (h.kw as any).completeChannelRaw(channel,result,0,undefined,true,true);
+    }else{
+      (h.kw as any).completeChannel(channel,syscallNr,[],undefined,result,0,
+        [{ptr:address+18,bytes:new Uint8Array([0x5d])}]);
+    }
+    expect(observed).toEqual([0xdc,0x5d]);
+    expect([...kernel.bos.pixelView(7)!.slice(17,19)]).toEqual([0xdc,0x5d]);
+  });
+
+  it.each([
     [ABI_SYSCALLS.Recvmsg, 0, 0],
     [ABI_SYSCALLS.Recvmsg, -1, 11],
     [ABI_SYSCALLS.Getpid, 61, 0],
+    [ABI_SYSCALLS.Wait4, -1, 10],
+    [ABI_SYSCALLS.Waitid, -1, 10],
   ])("does not scan BO imports for syscall %i returning %i with errno %i", (syscallNr, value, errno) => {
     const h = sysvHarness(), channel = pendingChannel(h);
     const kernel = new WasmPosixKernel({}, {} as any);

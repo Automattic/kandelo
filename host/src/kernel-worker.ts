@@ -15360,6 +15360,17 @@ export class CentralizedKernelWorker {
       this.#syncImportedBosBeforeResume(channel, 1);
     }
 
+    // WHY: child exit publishes its last BO writes into canonical storage,
+    // but the parent's independent mapped view is still stale. Both immediate
+    // waits and frozen retries reach this completion with their own syscall;
+    // import only after detached status/siginfo writes have landed, so a
+    // mapped output cannot be overwritten by an older BO baseline.
+    if (prepared.errVal === 0
+      && prepared.retVal >= 0
+      && (syscallNr === SYS_WAIT4 || syscallNr === SYS_WAITID)) {
+      this.#syncImportedBosBeforeResume(channel, 1);
+    }
+
     // The syscall is logically complete even if publication must wait for a
     // future SIGCONT. Retire one-shot timeout/deadline state now so no second
     // completion can race the parked one.
@@ -16660,6 +16671,7 @@ export class CentralizedKernelWorker {
     errVal: number,
     entry?: KernelWorkerEntryContext,
     relistenRequested = false,
+    refreshImportedBos = false,
   ): void {
     this.#releaseBlockingRetrySnapshot(channel, entry);
     this.#finishChannelRequest(channel);
@@ -16679,6 +16691,11 @@ export class CentralizedKernelWorker {
       relistenRequested,
     };
     this.materializePreparedChannelCompletion(channel, prepared, entry);
+    // Kernel-decided waits already copied their outputs. Finish shared-map
+    // materialization before BO import too; both publications precede wake.
+    if (refreshImportedBos && prepared.errVal === 0 && prepared.retVal >= 0) {
+      this.#syncImportedBosBeforeResume(channel, 1);
+    }
     if (entry) {
       this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
     } else {
@@ -16702,6 +16719,7 @@ export class CentralizedKernelWorker {
     retVal: number,
     errVal: number,
     entry?: KernelWorkerEntryContext,
+    refreshImportedBos = false,
   ): void {
     // WHY: publication and relistening are one protocol transaction. Encoding
     // the relisten request in the prepared completion prevents a publication
@@ -16713,6 +16731,7 @@ export class CentralizedKernelWorker {
       errVal,
       entry,
       true,
+      refreshImportedBos,
     );
   }
 
@@ -17125,17 +17144,15 @@ export class CentralizedKernelWorker {
         (flags & WAIT_COMPLETION_FLAGS.suppressRestart) !== 0,
       );
       if (this.#finishSignalTermination(channel, entry)) continue;
-      // Kernel-decided waits bypass the ordinary post-syscall readiness
-      // hooks. Publish device writers and refresh this exact live generation
-      // before making its successful completion visible to the guest.
-      if (value >= 0 && this.#kernel.bos.hasStaleableImports(channel.pid)) {
-        this.#kernel.bos.syncImportsForPid(channel.pid, channel.memory);
-      }
+      // Kernel-decided waits bypass ordinary marshalled completion. Keep
+      // their existing BO refresh, after output/shared-map materialization
+      // and before publication in the raw completion owner.
       this.completeChannelRawAndRelisten(
         channel,
         value,
         value < 0 ? -value : 0,
         entry,
+        true,
       );
     }
 
