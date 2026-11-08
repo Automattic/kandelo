@@ -2,6 +2,228 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Shared-browser delivery investigation and normal build recovery:** the
+PHP-FPM Firefox control `wordpress-media-fpm-control-v2-1107-222731-c782`
+ends with two failures in 7m10s, both at reopened editor-canvas readiness.
+Its screenshot renders the post title and uploaded image; this is not
+proof that the expected iframe structure is present. Stronger diagnostics
+retain redirect chains, request method/type/frame, service-worker response
+and controller information, and failed-frame DOM/editable inventories.
+The subsequent diagnostic selection passes once in 1m46s and twice more
+in 3m18s (`207a`, `b846`). These mixed outcomes remain intermittent; no
+editor fix or final all-33 acceptance is claimed.
+
+The diagnostic captures a separate, reduced delivery defect: WordPress's
+unchanged preferences-persistence library uses keepalive Fetch for user
+preferences. The POST has no redirect and originates in a controlled
+WordPress document, yet Firefox sends it to Vite, which returns the
+truthful unhandled-computer-route HTTP503. A complete persistence run
+also passes with these failed preference requests, so this does not
+establish the cause of the editor observation failures.
+
+A native-API-only GET/POST/PUT control reproduces keepalive bypass on
+Playwright Firefox155.0 and an isolated headless profile of installed
+Firefox159.0.1. Chromium153.0.8010.12 and WebKit26.6 intercept both ordinary
+and keepalive requests. The maintained self-judging reproduction and
+explicit delivery limitation are recorded as
+`FIREFOX-KEEPALIVE-SW-BYPASS`; registry consistency (12 entries) and its
+selected Firefox run pass. No application adaptation or keepalive-disabling
+shim is adopted. No upstream report is filed. Native profile cleanup
+leaves a macOS-protected temporary Downloads directory, separately from
+its successful HTTP observations; no user browser or other agent is closed.
+
+The normal full canonical/family job `60a4` continues independent work
+after Harper and kandelo-cc fail because this fresh worktree lacked its
+pinned Rust libc submodule. The reviewed submodule is now initialized at
+`71d5bfcc1bda`; no recipe/source patch is required. A normal cache-preserving
+retry `wordpress-canonical-family-resume-1107-223346-4770` waits for the
+first graph to terminate and admits only those exact two failures before
+retrying the same projection. Both attempts remain separate evidence.
+The canonical images and family runtime tests are still unvalidated.
+
+Latest main is fetched again at `faf9b31720e8`, already included; ABI55
+is unchanged. The verified revision-45 preview remains pinned on5492.
+The first current-image persistence admission correctly refuses the old
+comparison checkout's service-worker source: it lacked the already-tested
+Fetch-credentials correction. No browser executes in that three-second
+failed admission. That correction is now integrated into the comparison
+checkout, so its next browser run must verify the actual served revision-45
+image, identical normal kernel/Go programs and identical service-worker
+source before testing. This remains partial-image evidence, not canonical
+acceptance. A separate latest-main benchmark-product job `63d2` is queued
+behind successful canonical/family validation; it performs no timings.
+The full original memory, lifecycle, sustained-traffic, cache-policy and
+Node/Chromium comparison requirements remain open.
+
+**Revision-45 runtime/configuration and verified replacement preview:** the
+normal own-SDK partial refresh completes its image, FHS and exact embedded
+program/plugin audits. Both extended Node service cases pass (2/2, no skips),
+including disk opcode priming and atomic configuration replacement. Image
+`9cbbb185ced4efb4449ad66f58537b42fa51c1d97b44ea54dea809cb22e92e39`
+is 83,506,932 bytes; kernel remains `6f5afada9ae3`, classic `f1314f3e7675`,
+Caddy `cfdba6545bd4`. The aggregate b192 job exits1 after 43m55s because its
+last browser probe assumed an optional upstream cache-hit header was on.
+It is false in the stock generated wp-cache-config.php. The retained probe
+already shows anonymous cache-marked bodies, logged-in bypass and POST
+bypass; this was not another cookie leak or build failure.
+
+A new browser-only run enables the ordinary generated setting
+`$wpsc_served_header = true` through maker/sudo, leaving all 92 upstream
+plugin files unchanged. Job `wordpress-cache-header-1107-214022-60b2` passes
+in 1m05s: the second anonymous response has
+`X-WP-Super-Cache: Served supercache file from PHP`, a generated-cache footer
+and no admin bar; authenticated GET and anonymous POST have no cache marker
+or hit header, with the admin bar only on authenticated GET. All four return
+HTTP200. No compiler, image, kernel or PHP-source rebuild is needed for this
+fixture configuration correction. Expiry/GC/edit invalidation remain open.
+
+The new ordinary partial app is live on port5492. Proof job
+`wordpress-config-preview-proof-v3-1107-214417-67fe` passes in 57 seconds:
+actual image/kernel SHA-256, demo Login, Appearance Editor and a real template
+save. Its verified-preview.json and screenshot are under configuration
+checkout `.context/candidate-partial-preview-proof-v3/`. URL:
+<http://127.0.0.1:5492/?vfs=http%3A%2F%2F127.0.0.1%3A5492%2F%40kandelo-partial%2Fimage.vfs.zst&profile=wordpress-frankenphp-caddy>.
+Server `wordpress-config-preview-v2-1107-214200-d6c1` remains live, with its
+source/artifacts pinned. Older5457/5464/5486 previews remain available. The
+first queued proof/build jobs correctly refuse the aggregate failed b192;
+the second proof races run.sh's own app dependency installation and fails
+module import before browser execution. Once that owned installation and
+HTTP readiness finish, v3 passes. These attempts remain separate evidence.
+
+**Persistence follow-up:** title-focus/store-observation rerun 1f1a passes
+Chromium and WebKit but fails Firefox before restart: the saved uploaded
+block does not render as the required 2x2 PNG in the reopened editor. The
+strong assertion remains. The fixture now leaves the active editor before
+its external REST content replacement and checks the returned saved content,
+so WordPress save/autosave cannot race that external edit. Its Firefox-only
+rerun `wordpress-media-recheck-1107-214653-32dc` is active; no pass is claimed
+yet. Canonical artifact construction can proceed from the verified new
+configuration; final UI acceptance remains a separate required gate.
+Main is re-fetched and still faf9b31720e8. No upstream application algorithm
+or Go collector/code generator changes are made in these steps.
+
+**Optimized 33-case result and editor fixture correction:** job b446 ends
+exit1 after 1h33m including build; browser execution takes 40 minutes with
+32 passes and one WebKit experimental-persistence failure. All 27 ordinary
+three-engine WordPress UI cases pass, along with all Chromium/Firefox
+persistence cases and WebKit library persistence. The failed experimental
+case stops at Publish before persistence restart: the welcome dialog is
+dismissed only during that click, Publish stays disabled, and the diagnostic
+screenshot shows an empty title. Caddy and its PHP threads remain running;
+its retained service log has normal startup. Page lifecycle evidence also
+records compression-test XHR access-control errors and an unhandled promise;
+those are retained, not dismissed as proven unrelated.
+
+The editor helper now clicks the real title field before filling it,
+allowing normal pointer actionability checks to dismiss the welcome overlay,
+and observes the WordPress editor store receiving the title before Publish.
+No forced click, timeout increase, store mutation or application patch. This
+matches the already-used template helper's focus behavior and Playwright's
+[documented actionability checks](https://playwright.dev/docs/actionability).
+The original failed case remains evidence; the correction still needs its
+three-engine targeted rerun, queued as
+`wordpress-publish-recheck-1107-212850-1f1a` after the configuration preview.
+The original artifacts are in comparison checkout test-results run
+`509f7e4b-3317-40a0-a5f4-1389eba4d7a3`; page-lifecycle.jsonl and the failed
+screenshot retain the exact observations. The global 33-case gate is not
+claimed green.
+
+The separate revision-45 build b192 is now active after b446's terminal
+result, with the prior failure recorded explicitly. The new configuration
+preview/proof jobs 4386/1dc9 remain queued. The canonical/family phase a37c
+waits for that actual preview and the corrected persistence rerun before its
+own SDK/full normal graph; no independent worktree SDK is borrowed.
+
+**Canonical WordPress family integration prepared:** the family currently
+starts from LAMP and copies only SQLite-specific files from the WordPress
+image, so it lacks the new Caddy daemon, PHP configuration and service offer.
+An isolated composition change copies the exact normal Caddy package and
+configuration, selects the family's existing SQLite content directory through
+the ordinary process environment, and uses standard Caddy routing for that
+site's uploads. The service control preflight now maps Caddy to SQLite while
+retaining MariaDB as a separate site. No upstream PHP, FrankenPHP, Caddy or
+Go source changes. The canonical WordPress image still offers both standalone
+classic and Caddy; the combined family adds real Caddy as the SQLite server
+alternative. PHP-FPM receives the same timestamp revalidation settings.
+
+Family revision 11 declares the new activity/profile and carries unchanged
+WP Super Cache. A maintained Node case checks Caddy/FPM SQLite data sharing,
+MariaDB isolation, static uploads and denied PHP/database paths. The existing
+two browser family cases now switch to real Caddy and read the SQLite post
+and actual uploaded image without exposing the MariaDB upload. These cases
+and the normal canonical/family build have not run yet. They are the next
+integration phase after the queued revision-45 configuration preview.
+
+**Build admission and owned-resource cleanup:** disk headroom falls to
+about 11 GiB during the browser run. Seven superseded, exact owned Vite
+preview process groups on 5417/5451–5456 are retired with SIGTERM; their
+exit143 results are intentional cleanup, not validation failures. Verified
+previews 5457, 5464 and 5486 remain HTTP200. No other agent or user app is
+stopped. Standard Cargo cleanup and removal of only the primary checkout's
+remaining idle generated Rust debug directories restore about 10 GiB,
+leaving 21.6 GiB free at collection. Source, SDK, release binaries, image
+cohorts and evidence are preserved. The primary `.context/` holds the exact
+preview retirement manifest, per-job exit logs and debug recovery receipt.
+
+The dry canonical/family and latest-main benchmark plans are prepared.
+A fresh projection reports many nodes as will-run because its materialized
+members do not yet exist, even when the child can reuse compiled cache
+entries. Inspection confirms the normal precheck requires both canonical
+cache provenance and matching projected members. The package guide now
+makes that distinction explicit; these plan counts are not evidence of
+unnecessary recompilation. No canonical build or timing has yet run.
+
+**Optimized artifact checkpoint:** the normal revision-41 classic and
+revision-22 Caddy package builds complete at source 7d85f1674, with the
+upstream PHP CFG optimizer unchanged. The partial image passes FHS and
+embedded daemon/plugin identity audits; both actual Node service cases pass,
+including real requests and graceful shutdown. This is job
+`frankenphp-cgo-optimized-checkpoint-1107-195055-b446`; its three-engine
+33-case rendered UI/persistence gate remains active. All eleven Chromium
+cases pass, including both source-independent OPFS persistence backends.
+Firefox/WebKit completion is not yet claimed.
+
+| Artifact | Previous partial cohort | New optimized partial cohort |
+| --- | ---: | ---: |
+| Caddy Wasm | 185,037,671 bytes | 184,971,404 bytes |
+| Classic Wasm | 70,004,510 bytes | 69,939,352 bytes |
+| Compressed WordPress image | 83,524,699 bytes | 83,507,731 bytes |
+
+The new image is
+`969ec16b4d2bdf90edc45e294f1ff61b023594a11160be5fa6452b9ccc0ffca7`;
+kernel remains `6f5afada9ae3`. Caddy is `cfdba6545bd4`, classic
+`f1314f3e7675`. These historical/new observations are not an independent
+same-key reproduction or a speed result. Restoring C compilation's missing
+-O2 therefore does not explain most of the image size. The normal pipeline
+already applies post-instrumentation size optimization. Linked dependencies,
+instrumentation, three bundled server alternatives and PHP bytecode caches
+remain substantial contributors; none has been removed to mask the cost.
+
+**Combined configuration validation queued:** job
+`wordpress-mutable-config-1107-205359-b192` waits for the frozen 33-case run
+before its own normal revision-45 partial build. Its isolated checkout
+contains the tested Fetch-credentials correction and both INI changes. It
+will audit exact selected programs/plugin bytes, run the extended two-service
+Node configuration-replacement checks, then use the actual admin UI to enable
+the unchanged cache plugin and test anonymous hits, authenticated bypass and
+POST bypass. The old previews remain pinned. Canonical/family artifacts,
+full final-cohort browser/memory/lifecycle acceptance, cache expiry/edit
+invalidation and both kinds of performance comparisons remain open.
+
+**Mutable PHP configuration fix prepared:** WordPress revision 45 enables
+OPcache timestamp validation with revalidate_freq=0 for both PHP-FPM and
+FrankenPHP. The image prewarmer already normalizes source timestamps before
+compiling, preserving usable bytecode while allowing real plugin edits.
+The existing two-service Node gate now includes a PHP fixture that primes
+an actual disk opcode entry, atomically replaces its configuration file,
+invokes ordinary invalidation and requires a subsequent request to read the
+new value. The fixture's PHP syntax and TypeScript loading pass; these
+extended Node cases have not yet run on a newly built revision-45 image.
+The successful manual INI/restart browser experiment and native control
+recorded below justify this ordinary configuration change. No PHP/plugin algorithm
+is modified. Normal image construction and final browser/cache/lifecycle
+acceptance remain required after the ongoing cgo build completes.
+
 **Visitor-cache investigation and browser credential correction:** the stock
 WP Super Cache 3.1.5 plugin activates through the real WordPress admin UI.
 Its settings require pretty permalinks; ordinary admin setup satisfies that
@@ -21,7 +243,8 @@ Earlier attempts retain the normal maker permission error, wrong default
 control socket and premature navigation before the listener was ready.
 The native control is `.context/php-file-cache-invalidation-control-20261108/`
 and browser reports are in the kernel evaluation checkout's owned jobs.
-No image recipe has adopted the INI change yet. Cron remains disabled;
+Revision 45 now prepares this INI setting for both server stacks, but its
+new image has not yet built. Cron remains disabled;
 expiry/garbage collection and post/template invalidation are not validated.
 
 The anonymous cache probe exposes a general browser adapter defect: the

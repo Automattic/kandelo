@@ -34,6 +34,48 @@ function serviceDeclarations(packageName: string) {
     .map(service => ({ ...service, target: service.id }));
 }
 
+function installWordPressFamilyCaddy(source: KandeloImageFs, fs: KandeloImageFs): void {
+  for (const path of [
+    "/usr/sbin/frankenphp-caddy",
+    "/etc/frankenphp",
+    "/etc/caddy",
+    "/etc/dinit.d/frankenphp-caddy",
+    "/etc/dinit.d/env-frankenphp",
+    "/etc/php.ini",
+    "/srv/www/html/wp-content/plugins/wp-super-cache",
+  ]) copyImageTree(source, fs, path);
+  // The family shares core files, but each database backend owns its content.
+  // PHP selects that ordinary WordPress content directory through its env.
+  const environment = new TextDecoder().decode(fs.readFile("/etc/dinit.d/env-frankenphp"));
+  writeVfsFile(fs, "/etc/dinit.d/env-frankenphp", `${environment}KANDELO_WORDPRESS_BACKEND=sqlite\n`);
+  // Caddy's static upload route must use the same site as PHP. Keep PHP and
+  // database files out of that route, as the family's FPM router already does.
+  writeVfsFile(fs, "/etc/caddy/Caddyfile", `{
+\tadmin off
+\tauto_https off
+\tgrace_period 20s
+\tfrankenphp {
+\t\tnum_threads {$FRANKENPHP_NUM_THREADS:2}
+\t}
+}
+
+:{$FRANKENPHP_PORT:8080} {
+\troot * /srv/www/html
+\t@private path /wp-content/db.php /wp-content/database /wp-content/database/* /wp-content/uploads /wp-content/uploads/
+\t@uploaded_php path_regexp uploaded_php (?i)^/wp-content/uploads/.*\\.(php[0-9]*|phtml|phar)(/|$)
+\troute {
+\t\trespond @private 404
+\t\trespond @uploaded_php 404
+\t\thandle /wp-content/uploads/* {
+\t\t\troot * /var/lib/wordpress-sites/sqlite
+\t\t\tfile_server
+\t\t}
+\t\tphp_server
+\t}
+}
+`);
+}
+
 export async function buildWebStackImage(output: string): Promise<void> {
   const fs = load("nginx-php-vfs", "nginx-php-vfs.vfs.zst");
   cloneFile(fs, "/etc/nginx/nginx.conf", "/etc/nginx/php.conf");
@@ -78,6 +120,7 @@ export async function buildWebStackImage(output: string): Promise<void> {
 export async function buildWordPressFamilyImage(output: string): Promise<void> {
   const fs = load("lamp", "lamp.vfs.zst");
   const sqlite = load("wordpress", "wordpress.vfs.zst");
+  installWordPressFamilyCaddy(sqlite, fs);
   copyImageTree(sqlite, fs, "/srv/www/html/wp-content/plugins/sqlite-database-integration");
   ensureDirRecursive(fs, "/etc/wordpress");
   copyImageTree(sqlite, fs, "/srv/www/html/wp-content/db.php", "/etc/wordpress/sqlite-db.php");
@@ -163,7 +206,12 @@ if (strpos($uri, '/wp-content/') === 0) {
   fs.unlink("/etc/dinit.d/nginx");
   fs.unlink("/usr/share/kandelo/sessions/lamp.json");
   installImageSessions(fs, "wordpress-family-vfs");
-  installServiceActivities(fs, serviceDeclarations("wordpress-family-vfs"), new Uint8Array(readFileSync(resolveVfsArtifact("programs/service-activity-control.wasm", "service-activity-tools"))), 'backend=${target#wordpress-}; /usr/bin/kandelo-wordpress-select "$backend"');
+  installServiceActivities(fs, serviceDeclarations("wordpress-family-vfs"), new Uint8Array(readFileSync(resolveVfsArtifact("programs/service-activity-control.wasm", "service-activity-tools"))), `case "$target" in
+      wordpress-sqlite|frankenphp-caddy) backend=sqlite ;;
+      wordpress-mariadb) backend=mariadb ;;
+      *) exit 2 ;;
+    esac
+    /usr/bin/kandelo-wordpress-select "$backend"`);
   writeTrackedDemoConfig(fs, "packages/registry/wordpress-family-vfs/demo.json");
   await saveShellDerivedVfsImage(fs, output);
 }

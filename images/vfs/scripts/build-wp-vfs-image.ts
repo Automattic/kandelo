@@ -220,8 +220,8 @@ request_slowlog_trace_depth = 0
   // investigation). file_cache_only=1 writes compiled bytecode to
   // /var/cache/opcache, which lives in the rootfs image, so every FPM
   // worker reads the same cache files via the kernel's shared VFS.
-  // validate_timestamps=0 is safe because VFS files don't change at
-  // runtime.
+  // Plugin activation updates PHP configuration at runtime. Revalidate it;
+  // prewarming already uses the source timestamps the image will ship with.
   ensureDirRecursive(fs, "/usr/lib/php/extensions");
   const phpIni = `curl.cainfo=/etc/ssl/certs/ca-certificates.crt
 openssl.cafile=/etc/ssl/certs/ca-certificates.crt
@@ -232,7 +232,8 @@ opcache.enable=1
 opcache.enable_cli=0
 opcache.file_cache=/var/cache/opcache
 opcache.file_cache_only=1
-opcache.validate_timestamps=0
+opcache.validate_timestamps=1
+opcache.revalidate_freq=0
 opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
 `;
   writeVfsFile(fs, "/etc/php.ini", phpIni);
@@ -419,7 +420,8 @@ opcache.memory_consumption=64
 opcache.file_cache=/var/cache/opcache
 opcache.file_cache_only=1
 opcache.file_update_protection=0
-opcache.validate_timestamps=0
+opcache.validate_timestamps=1
+opcache.revalidate_freq=0
 opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
 `);
   ensureDirRecursive(fs, "/etc/dinit.d");

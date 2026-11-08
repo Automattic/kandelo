@@ -234,7 +234,11 @@ cargo xtask local-build plan --set packages/sets/local-supported.toml --status -
 ```
 
 It runs the same up-front cache check as `run` and lists each selected node as
-`cached` or `will run`, with the node's median recorded duration. That median
+`cached` or `will run`, with the node's median recorded duration. The up-front
+check requires both a valid shared-cache entry and its intact projected members
+in the selected output root. A fresh output root can therefore report
+`will run` even when the child resolver will reuse existing compiled bytes and only
+materialize them; this status does not by itself mean recompilation. That median
 is taken over its 10 most recent non-failed runs. `Source`-kind packages are
 never skipped up front, because their child checks the fetched source itself.
 They therefore appear as `will run (source check)`. The estimate has two

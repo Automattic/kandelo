@@ -46,6 +46,29 @@
           }
         ]
       }
+    },
+    {
+      "id": "frankenphp-caddy",
+      "title": "WordPress on FrankenPHP + Caddy",
+      "port": 8080,
+      "shortcuts": {
+        "title": "WordPress on FrankenPHP + Caddy",
+        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
+        "groups": [
+          {
+            "title": "Admin",
+            "actions": [
+              {
+                "id": "wp-admin-login",
+                "label": "Log in as admin",
+                "description": "Open wp-admin with the bundled admin account.",
+                "kind": "web.wordpressLogin",
+                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
