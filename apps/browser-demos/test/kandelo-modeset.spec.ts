@@ -57,26 +57,34 @@ test("Kandelo modeset demo commits PAGE_FLIPs through /dev/dri/card0", async ({ 
   await expect(page.getByRole("complementary", { name: "Download status" }))
     .toBeHidden({ timeout: 60_000 });
 
-  // Refresh the dye through ordinary guest input even if startup's seeded
-  // splats faded while assets loaded. Keep the drag below its teleport guard.
+  // Let the seeded startup dye fall below the SAME strict color criterion;
+  // fresh color after this boundary must be replenished by ordinary input.
+  await expect.poll(async () => coloredPixels(await fluidPixels(page, canvas)),
+    { timeout: 60_000, intervals: [1_000, 2_000, 5_000] }).toBe(0);
+  const flips = async () => Number(/(\d+)\s+flips/i.exec(await modesetControls.innerText())?.[1] ?? 0);
   const box = (await canvas.boundingBox())!;
+  await canvas.focus();
   await page.mouse.move(box.x + box.width * 0.45, box.y + box.height * 0.55);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.51, box.y + box.height * 0.51, { steps: 8 });
-  await page.mouse.up();
-
-  // Flips and PNG size can both pass for a blank/stale surface. Require
-  // colored dye and changing presented pixels, rather than metadata alone.
   let first: number[] = [];
-  await expect
-    .poll(
-      async () => {
-        first = await fluidPixels(page, canvas);
-        return coloredPixels(first);
-      },
-      { timeout: 60_000, intervals: [1_000, 2_000, 5_000] },
-    )
-    .toBeGreaterThan(16);
+  let right = true;
+  try {
+    await page.mouse.down();
+    // A fast DOWN/move/UP can fit between guest frames: drain_mouse then
+    // sees the final released state and emits no splat. Keep moving while
+    // held and observe real PAGE_FLIPs before releasing, without a sleep.
+    await expect.poll(async () => {
+      const beforeMotion = await flips();
+      await page.mouse.move(box.x + box.width * (right ? 0.51 : 0.45),
+        box.y + box.height * (right ? 0.51 : 0.55), { steps: 8 });
+      right = !right;
+      await expect.poll(flips, { timeout: 10_000, intervals: [50, 100, 250] })
+        .toBeGreaterThan(beforeMotion + 1);
+      first = await fluidPixels(page, canvas);
+      return coloredPixels(first);
+    }, { timeout: 60_000, intervals: [1_000, 2_000, 5_000] }).toBeGreaterThan(16);
+  } finally {
+    await page.mouse.up();
+  }
   await expect
     .poll(async () => changedPixels(first, await fluidPixels(page, canvas)),
       { timeout: 60_000, intervals: [1_000, 2_000, 5_000] })

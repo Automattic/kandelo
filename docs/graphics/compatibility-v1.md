@@ -27312,3 +27312,14 @@ mapping completion for PIDs 105 and 107. This is not yet proof of which
 allocation or executable caused the failure; no memory limit is raised.
 The prepared Node rerun passes 46 admission and four partial-image/SDL
 cases, with zero failures or skips.
+
+The corrected persistent-profile preview run reports 14 of 15 browser
+cases passing: Freeciv menu, ScummVM launcher, SDL editor and opaque
+scanout pass on all three engines. Fluid passes on Chromium and Firefox.
+The WebKit trace shows colored fluid before and just after the test's
+very short drag; its input was released before a guest frame observed the
+held button. The fixture now waits for a quiet color baseline, holds motion
+across actual flips and requires fresh colored, changing pixels before
+releasing in finally. The unchanged strict pixel thresholds pass on all
+three engines in the separate three-case candidate run (R858).
+This is rendering/input correctness evidence, not latency acceptance.
