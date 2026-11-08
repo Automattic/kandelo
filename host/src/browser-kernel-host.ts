@@ -39,6 +39,12 @@ import {
 } from "./networking/browser-cors-proxy";
 import type { InputEvent, InputSource } from "./input/input-source";
 import { batchBySynReport } from "./input/input-batch";
+import type {
+  InputDeviceConnectResult,
+  InputDeviceDescription,
+  InputDeviceRecord,
+  InputDeviceSource,
+} from "./input/input-device";
 
 export type { HttpRequest, HttpResponse };
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
@@ -1444,6 +1450,53 @@ export class BrowserKernel {
   }
 
   /**
+   * Plug in a host-described evdev device under `key`; it appears as
+   * `/dev/input/event<N>` with N from 2. Resolves with N, or with the reason
+   * it was refused (see `InputDeviceConnectResult`). Records sent for `key`
+   * afterwards are ordered behind the connect.
+   */
+  async connectInputDevice(
+    key: string,
+    description: InputDeviceDescription,
+  ): Promise<InputDeviceConnectResult> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "input_device_connect",
+      requestId,
+      key,
+      description,
+    });
+    return result as InputDeviceConnectResult;
+  }
+
+  /**
+   * Unplug the device connected under `key`. Its node disappears, and
+   * descriptors still open on it fail with `ENODEV` and poll as hung up.
+   */
+  disconnectInputDevice(key: string): void {
+    this.sendToKernel({ type: "input_device_disconnect", key });
+  }
+
+  /** Deliver `SYN_REPORT` frames for the device connected under `key`. */
+  injectInputDeviceEvents(key: string, records: InputDeviceRecord[]): void {
+    if (records.length === 0) return;
+    this.sendToKernel({ type: "input_device_events", key, records });
+  }
+
+  private attachedInputDeviceSource: InputDeviceSource | null = null;
+
+  /**
+   * Start a device source (such as `BrowserGamepadSource`) against this
+   * machine, replacing and stopping any previous one, which unplugs the
+   * devices it connected.
+   */
+  attachInputDeviceSource(source: InputDeviceSource): void {
+    this.attachedInputDeviceSource?.stop();
+    this.attachedInputDeviceSource = source;
+    source.start(this);
+  }
+
+  /**
    * Set the absolute input producer's coordinate extent so EVIOCGABS
    * on `/dev/input/event1` reports `ABS_X.maximum = width - 1` and
    * `ABS_Y.maximum = height - 1`. Consumers cache these bounds when
@@ -1979,6 +2032,8 @@ export class BrowserKernel {
     // Remove input-source DOM listeners regardless of worker state.
     this.attachedInputSource?.stop();
     this.attachedInputSource = null;
+    this.attachedInputDeviceSource?.stop();
+    this.attachedInputDeviceSource = null;
     if (!this.workerStarted) return;
     this.shuttingDown = true;
     const rejectedPersistentInitialization =

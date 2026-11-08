@@ -495,7 +495,7 @@ pub const INPUT_RING_MAX_RECORDS: usize = 1024;
 /// Per-OFD ring cap in bytes — `INPUT_RING_MAX_RECORDS * size_of::<WpkInputEvent>()`.
 pub const INPUT_RING_MAX_BYTES: usize = INPUT_RING_MAX_RECORDS * 24;
 
-/// Per-fd state for `/dev/input/event{0,1}` opens.
+/// Per-fd state for `/dev/input/event*` opens.
 ///
 /// Disjoint from [`DriOfdState`] — input fds carry no DRI bo state.
 /// We keep `input_state` as a separate `Option<Box<…>>` field on the
@@ -527,9 +527,16 @@ pub const INPUT_RING_MAX_BYTES: usize = INPUT_RING_MAX_RECORDS * 24;
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(Default))]
 pub struct InputFdState {
-    /// Which device this fd is bound to (0 = kbd, 1 = ptr). Cached
-    /// to avoid a second `VirtualDevice` lookup on read / poll.
+    /// Which device this fd is bound to (0 = kbd, 1 = ptr, 2.. = a
+    /// host-described device). Cached to avoid a second `VirtualDevice`
+    /// lookup on read / poll.
     pub device: u8,
+
+    /// The connection this description opened: 0 for the fixed devices,
+    /// otherwise the serial `input::hotplug` assigned at connect. Once that
+    /// connection ends, the description fails with `ENODEV` even if another
+    /// device later takes the same number.
+    pub serial: u64,
 
     /// Mutable ring shared by every descriptor naming this OFD; see
     /// [`SharedInputRing`].

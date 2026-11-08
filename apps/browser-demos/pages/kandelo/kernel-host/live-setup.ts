@@ -53,6 +53,7 @@ import {
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
+import { BrowserGamepadSource } from "../../../../../host/src/input/browser-gamepad-source";
 import {
   CopyOutFailure,
   startHostClipboardCopyOut,
@@ -2450,6 +2451,9 @@ function genericPresentationForMachine(
  * KMS uses fixed absolute-axis bounds independent of display modes. Other
  * input consumers use browser-window coordinates, clamped to the image's
  * declared display minimum and republished on resize.
+ *
+ * Standard-mapped gamepads are connected as hot-plugged evdev devices for
+ * every `evdev-input` image; their connections are logged to dmesg.
  */
 function attachDeclaredInputSource(
   kernel: BrowserKernel,
@@ -2537,6 +2541,21 @@ function attachDeclaredInputSource(
     }),
     dims(),
   );
+  // Gamepads the page can see are plugged into the machine as evdev
+  // devices (/dev/input/event2 and up), as USB pads are on Linux. Browsers
+  // reveal a pad only after one of its buttons is pressed.
+  kernel.attachInputDeviceSource(new BrowserGamepadSource(window, {
+    onConnected: (pad, device) =>
+      tick(`gamepad: "${pad.id}" connected as /dev/input/event${device}`),
+    onDisconnected: (pad) => tick(`gamepad: "${pad.id}" disconnected`),
+    onUnsupported: (pad) =>
+      tick(`gamepad: "${pad.id}" not connected: browser mapping "${pad.mapping}" has no known evdev layout`),
+    onRefused: (pad, result) =>
+      tick(`gamepad: "${pad.id}" not connected: ${
+        result.reason === "kernel-refused" ? `kernel refused it (errno ${result.errno})`
+          : result.reason === "host-error" ? result.message
+          : result.reason}`),
+  }));
 }
 
 

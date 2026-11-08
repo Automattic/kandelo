@@ -137,7 +137,9 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  * `kernel_process_metadata_stage` copies one complete entry into a token-owned
  * Rust vector before returning; both executable-target prepare exports copy
  * the path before returning. `kernel_exec_target_admit` and
- * `kernel_process_metadata_read` only write their record into the lease. The transfer execute export names no raw pointer,
+ * `kernel_process_metadata_read` only write their record into the lease.
+ * `kernel_input_device_connect` copies the device description out of the
+ * lease before validating it. The transfer execute export names no raw pointer,
  * but its token authorizes Rust to borrow the allocation represented by this
  * exact lease. Adding a name requires the same lifetime review and a pointer-
  * position update below.
@@ -174,6 +176,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_handle_channel",
   "kernel_handle_channel_record",
   "kernel_inject_datagram",
+  "kernel_input_device_connect",
   "kernel_ioctl",
   "kernel_kms_cursor_read",
   "kernel_ipc_shm_read_chunk",
@@ -280,6 +283,7 @@ export function kernelScratchRequiredPointerArguments(
       return REQUIRED_POINTER_1_3;
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
+    case "kernel_input_device_connect":
     case "kernel_drain_audio":
     case "kernel_drain_wait_completions":
     case "kernel_drain_wakeup_events":
@@ -405,6 +409,7 @@ function isKernelScratchExportName(
     case "kernel_overlay_activation_codec":
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
+    case "kernel_input_device_connect":
     case "kernel_dequeue_signal":
     case "kernel_drain_audio":
     case "kernel_drain_wait_completions":

@@ -922,6 +922,8 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_clipboard_guest_read",
   "kernel_clipboard_offer",
   "kernel_clipboard_stage",
+  "kernel_input_device_connect",
+  "kernel_input_device_disconnect",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
   "kernel_set_max_addr",
@@ -1174,12 +1176,54 @@ export const INPUT_CODES = {
   BTN_MIDDLE: 274,
   BTN_SIDE: 275,
   BTN_EXTRA: 276,
+  BTN_GAMEPAD: 304,
+  BTN_SOUTH: 304,
+  BTN_A: 304,
+  BTN_EAST: 305,
+  BTN_B: 305,
+  BTN_NORTH: 307,
+  BTN_X: 307,
+  BTN_WEST: 308,
+  BTN_Y: 308,
+  BTN_TL: 310,
+  BTN_TR: 311,
+  BTN_SELECT: 314,
+  BTN_START: 315,
+  BTN_MODE: 316,
+  BTN_THUMBL: 317,
+  BTN_THUMBR: 318,
   REL_X: 0,
   REL_Y: 1,
   REL_HWHEEL: 6,
   REL_WHEEL: 8,
   ABS_X: 0,
   ABS_Y: 1,
+  ABS_Z: 2,
+  ABS_RX: 3,
+  ABS_RY: 4,
+  ABS_RZ: 5,
+  ABS_HAT0X: 16,
+  ABS_HAT0Y: 17,
+  ABS_MAX: 63,
+} as const;
+
+export const INPUT_BUS_VIRTUAL = 6 as const;
+export const KANDELO_INPUT_VENDOR = 4617 as const;
+export const INPUT_MAX_DEVICES = 32 as const;
+
+/** Byte layout of `shared::input::WpkInputDeviceDesc`. */
+export const INPUT_DEVICE_DESC_LAYOUT = {
+  size: 1728,
+  idOffset: 0,
+  nameOffset: 8,
+  nameBytes: 80,
+  keyBitsOffset: 88,
+  keyBitsBytes: 96,
+  absBitsOffset: 184,
+  absBitsBytes: 8,
+  absinfoOffset: 192,
+  absinfoBytes: 24,
+  absCount: 64,
 } as const;
 
 export const KANDELO_CLIPBOARD_DEVICE_PATH = "/dev/kandelo/clipboard" as const;

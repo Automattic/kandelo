@@ -2359,6 +2359,8 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_len"),
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_ptr"),
         HostAdapterKernelExport::required("kernel_initial_exec_commit"),
+        HostAdapterKernelExport::optional("kernel_input_device_connect"),
+        HostAdapterKernelExport::optional("kernel_input_device_disconnect"),
         HostAdapterKernelExport::required("kernel_install_host_stdin_pipe"),
         HostAdapterKernelExport::required("kernel_ipc_shm_lookup_mapping_for_task"),
         HostAdapterKernelExport::required("kernel_ipc_shm_record_mapping_for_process"),
@@ -4862,6 +4864,27 @@ pub mod input {
     pub const BTN_SIDE: u16 = 0x113;
     pub const BTN_EXTRA: u16 = 0x114;
 
+    // Gamepad buttons. Linux names the four face buttons by position
+    // (`BTN_SOUTH` ...) and keeps the `BTN_A` ... aliases; `xpad`, and SDL's
+    // evdev auto-mapping for every non-Sony vendor, read the left face button
+    // as `BTN_X` (= `BTN_NORTH`) and the top one as `BTN_Y` (= `BTN_WEST`).
+    pub const BTN_GAMEPAD: u16 = 0x130;
+    pub const BTN_SOUTH: u16 = 0x130;
+    pub const BTN_A: u16 = BTN_SOUTH;
+    pub const BTN_EAST: u16 = 0x131;
+    pub const BTN_B: u16 = BTN_EAST;
+    pub const BTN_NORTH: u16 = 0x133;
+    pub const BTN_X: u16 = BTN_NORTH;
+    pub const BTN_WEST: u16 = 0x134;
+    pub const BTN_Y: u16 = BTN_WEST;
+    pub const BTN_TL: u16 = 0x136;
+    pub const BTN_TR: u16 = 0x137;
+    pub const BTN_SELECT: u16 = 0x13a;
+    pub const BTN_START: u16 = 0x13b;
+    pub const BTN_MODE: u16 = 0x13c;
+    pub const BTN_THUMBL: u16 = 0x13d;
+    pub const BTN_THUMBR: u16 = 0x13e;
+
     // --- REL_* codes (relative axes; EV_REL records carry these) ---------
 
     pub const REL_X: u16 = 0x00;
@@ -4873,6 +4896,16 @@ pub mod input {
 
     pub const ABS_X: u16 = 0x00;
     pub const ABS_Y: u16 = 0x01;
+    pub const ABS_Z: u16 = 0x02;
+    pub const ABS_RX: u16 = 0x03;
+    pub const ABS_RY: u16 = 0x04;
+    pub const ABS_RZ: u16 = 0x05;
+    pub const ABS_HAT0X: u16 = 0x10;
+    pub const ABS_HAT0Y: u16 = 0x11;
+    /// `ABS_MAX` / `ABS_CNT` — the largest axis code and the bit count of
+    /// an `EVIOCGBIT(EV_ABS)` bitmap, as in Linux UAPI.
+    pub const ABS_MAX: u16 = 0x3f;
+    pub const ABS_CNT: u16 = ABS_MAX + 1;
 
     /// Canonical `(name, value)` index of every evdev event-type / SYN /
     /// KEY / BTN / REL / ABS code above. The individual `pub const`s
@@ -5061,12 +5094,35 @@ pub mod input {
         ("BTN_MIDDLE", BTN_MIDDLE),
         ("BTN_SIDE", BTN_SIDE),
         ("BTN_EXTRA", BTN_EXTRA),
+        ("BTN_GAMEPAD", BTN_GAMEPAD),
+        ("BTN_SOUTH", BTN_SOUTH),
+        ("BTN_A", BTN_A),
+        ("BTN_EAST", BTN_EAST),
+        ("BTN_B", BTN_B),
+        ("BTN_NORTH", BTN_NORTH),
+        ("BTN_X", BTN_X),
+        ("BTN_WEST", BTN_WEST),
+        ("BTN_Y", BTN_Y),
+        ("BTN_TL", BTN_TL),
+        ("BTN_TR", BTN_TR),
+        ("BTN_SELECT", BTN_SELECT),
+        ("BTN_START", BTN_START),
+        ("BTN_MODE", BTN_MODE),
+        ("BTN_THUMBL", BTN_THUMBL),
+        ("BTN_THUMBR", BTN_THUMBR),
         ("REL_X", REL_X),
         ("REL_Y", REL_Y),
         ("REL_HWHEEL", REL_HWHEEL),
         ("REL_WHEEL", REL_WHEEL),
         ("ABS_X", ABS_X),
         ("ABS_Y", ABS_Y),
+        ("ABS_Z", ABS_Z),
+        ("ABS_RX", ABS_RX),
+        ("ABS_RY", ABS_RY),
+        ("ABS_RZ", ABS_RZ),
+        ("ABS_HAT0X", ABS_HAT0X),
+        ("ABS_HAT0Y", ABS_HAT0Y),
+        ("ABS_MAX", ABS_MAX),
     ];
 
     // --- BUS_* constants (subset) ----------------------------------------
@@ -5074,6 +5130,23 @@ pub mod input {
     /// `BUS_VIRTUAL` = 0x06 — closest match for a kernel-synthesised
     /// device (Linux uses this for `uinput`-backed devices).
     pub const BUS_VIRTUAL: u16 = 0x06;
+
+    /// The pid.codes vendor id Kandelo's virtual input devices report in
+    /// `EVIOCGID` (keyboard product 1, pointer 2; the host picks the
+    /// product of a device it describes).
+    pub const KANDELO_INPUT_VENDOR: u16 = 0x1209;
+
+    // --- device numbering --------------------------------------------------
+
+    /// `/dev/input/event0` (keyboard) and `event1` (pointer) exist for the
+    /// life of the machine.
+    pub const INPUT_FIXED_DEVICES: u8 = 2;
+    /// Devices the host describes take `event2` up to `event31`: Linux's
+    /// legacy evdev minor range is 32 nodes (minors 64..=95).
+    pub const INPUT_MAX_DEVICES: u8 = 32;
+    /// `EVIOCGNAME` capacity for a host-described device, NUL included —
+    /// `uinput`'s `UINPUT_MAX_NAME_SIZE`.
+    pub const INPUT_DEVICE_NAME_BYTES: usize = 80;
 
     // --- ioctl numbers ('E' magic, Linux UAPI verbatim) ------------------
     //
@@ -5197,6 +5270,41 @@ pub mod input {
         pub resolution: i32,// 20  1 unit per pixel
                             // total: 24
     }
+
+    /// A host-described evdev device, passed to
+    /// `kernel_input_device_connect`. The shape follows Linux `uinput`'s
+    /// legacy `struct uinput_user_dev`: a name, an `input_id`, and the
+    /// capabilities, with one `input_absinfo` per axis code. Only `EV_KEY`
+    /// and `EV_ABS` capabilities can be described; `EV_SYN` is implied.
+    ///
+    /// Kernel-host wire format only: guest programs never see this struct.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct WpkInputDeviceDesc {
+        pub id: WpkInputId,                                   // 0
+        /// NUL-terminated UTF-8, at most `INPUT_DEVICE_NAME_BYTES - 1` bytes.
+        pub name: [u8; INPUT_DEVICE_NAME_BYTES],              // 8
+        pub key_bits: [u8; (KEY_CNT as usize) / 8],           // 88
+        pub abs_bits: [u8; (ABS_CNT as usize) / 8],           // 184
+        /// Indexed by axis code; entries for axes not in `abs_bits` are
+        /// ignored. `value` is the axis position at connect.
+        pub absinfo: [WpkInputAbsinfo; ABS_CNT as usize],     // 192
+                                                              // total: 1728
+    }
+
+    impl Default for WpkInputDeviceDesc {
+        fn default() -> Self {
+            Self {
+                id: WpkInputId::default(),
+                name: [0; INPUT_DEVICE_NAME_BYTES],
+                key_bits: [0; (KEY_CNT as usize) / 8],
+                abs_bits: [0; (ABS_CNT as usize) / 8],
+                absinfo: [WpkInputAbsinfo::default(); ABS_CNT as usize],
+            }
+        }
+    }
+
+    const _: () = assert!(core::mem::size_of::<WpkInputDeviceDesc>() == 1728);
 }
 
 #[cfg(test)]
@@ -5564,6 +5672,20 @@ mod input_tests {
         assert_eq!(size_of::<WpkInputEvent>(), 24);
         assert_eq!(size_of::<WpkInputId>(), 8);
         assert_eq!(size_of::<WpkInputAbsinfo>(), 24);
+    }
+
+    #[test]
+    fn input_device_desc_layout_is_fixed() {
+        // The host encodes this layout from the generated
+        // `INPUT_DEVICE_DESC_LAYOUT`; lock the offsets it publishes.
+        use core::mem::offset_of;
+        assert_eq!(offset_of!(WpkInputDeviceDesc, id), 0);
+        assert_eq!(offset_of!(WpkInputDeviceDesc, name), 8);
+        assert_eq!(offset_of!(WpkInputDeviceDesc, key_bits), 88);
+        assert_eq!(offset_of!(WpkInputDeviceDesc, abs_bits), 184);
+        assert_eq!(offset_of!(WpkInputDeviceDesc, absinfo), 192);
+        assert_eq!(size_of::<WpkInputDeviceDesc>(), 1728);
+        assert!(INPUT_FIXED_DEVICES < INPUT_MAX_DEVICES);
     }
 
     #[test]

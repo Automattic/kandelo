@@ -1463,6 +1463,8 @@
       "kernel_clipboard_guest_read",
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
+      "kernel_input_device_connect",
+      "kernel_input_device_disconnect",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
@@ -3044,6 +3046,16 @@
       "kind": "func",
       "name": "kernel_inject_mouse_event",
       "signature": "(i32,i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_input_device_connect",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_input_device_disconnect",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",

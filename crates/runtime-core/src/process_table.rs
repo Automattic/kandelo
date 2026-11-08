@@ -2748,6 +2748,7 @@ mod wait_tests {
             parent.ofd_table.get_mut(idx).unwrap().input_state =
                 Some(crate::IoBox::new(InputFdState {
                     device: 0,
+                    serial: 0,
                     ring: SharedInputRing::default(),
                 }));
             // Fork inherits open descriptions through the fd table, so the

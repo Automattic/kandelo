@@ -3891,6 +3891,20 @@ function handleExchangeRange(msg: Extract<MainToKernelMessage, { type: "exchange
   }
 }
 
+async function handleInputDeviceConnect(
+  msg: Extract<MainToKernelMessage, { type: "input_device_connect" }>,
+) {
+  if (!initReady) {
+    respondError(msg.requestId, "input device connect requires an initialized kernel");
+    return;
+  }
+  try {
+    respond(msg.requestId, await kernelWorker.connectInputDevice(msg.key, msg.description));
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function handleClipboardOffer(
   msg: Extract<MainToKernelMessage, { type: "clipboard_offer" }>,
 ) {
@@ -4415,6 +4429,15 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "input_event_batch_inject":
       kernelWorker.injectInputEventBatch(msg.records);
+      break;
+    case "input_device_connect":
+      void handleInputDeviceConnect(msg);
+      break;
+    case "input_device_disconnect":
+      kernelWorker.disconnectInputDevice(msg.key);
+      break;
+    case "input_device_events":
+      kernelWorker.injectInputDeviceEvents(msg.key, msg.records);
       break;
     case "set_input_canvas_dims":
       kernelWorker.setInputCanvasDims(msg.width, msg.height);

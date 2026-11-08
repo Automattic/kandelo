@@ -162,14 +162,26 @@ pub enum VirtualDevice {
     Dsp,           // /dev/dsp          host_handle = -7
     DriRenderD128, // /dev/dri/renderD128  host_handle = -8
     DriCard0,      // /dev/dri/card0       host_handle = -9
-    /// `/dev/input/event{0,1}`. `device = 0` → kbd (host_handle -10),
-    /// `device = 1` → ptr (host_handle -11). v1 exposes exactly these
-    /// two; `/dev/input/eventN` for N≥2 is not synthesised.
+    /// `/dev/input/eventN`. `device = 0` → kbd (host_handle -10),
+    /// `device = 1` → ptr (host_handle -11). `device` 2..=31 is a
+    /// host-described device (`input::hotplug`), host_handle
+    /// `-(INPUT_HOTPLUG_HANDLE_BASE + device)`; its node exists only while
+    /// the device is connected.
     InputEvent { device: u8 },
     /// `/dev/kandelo/clipboard` — host clipboard text for the guest's
     /// clipboard agent (see `crate::clipboard`). host_handle -12.
     Clipboard,
 }
+
+/// Host-described evdev nodes take host handles `-102..=-131`, between the
+/// clipboard (-12) and the procfs directory sentinel (-150); event0/event1
+/// keep -10/-11.
+const INPUT_HOTPLUG_HANDLE_BASE: i64 = 100;
+const _: () = assert!(
+    -(INPUT_HOTPLUG_HANDLE_BASE + wasm_posix_shared::input::INPUT_MAX_DEVICES as i64)
+        > crate::procfs::PROCFS_DIR_HANDLE
+        && -(INPUT_HOTPLUG_HANDLE_BASE + wasm_posix_shared::input::INPUT_FIXED_DEVICES as i64) < -12
+);
 
 impl VirtualDevice {
     /// Encode as a negative host_handle for CharDevice OFDs.
@@ -184,7 +196,12 @@ impl VirtualDevice {
             VirtualDevice::Dsp => -7,
             VirtualDevice::DriRenderD128 => -8,
             VirtualDevice::DriCard0 => -9,
-            VirtualDevice::InputEvent { device } => -10 - device as i64,
+            VirtualDevice::InputEvent { device }
+                if device < wasm_posix_shared::input::INPUT_FIXED_DEVICES =>
+            {
+                -10 - device as i64
+            }
+            VirtualDevice::InputEvent { device } => -(INPUT_HOTPLUG_HANDLE_BASE + device as i64),
             VirtualDevice::Clipboard => -12,
         }
     }
@@ -204,7 +221,10 @@ impl VirtualDevice {
             -10 => Some(VirtualDevice::InputEvent { device: 0 }),
             -11 => Some(VirtualDevice::InputEvent { device: 1 }),
             -12 => Some(VirtualDevice::Clipboard),
-            _ => None,
+            h => u8::try_from(h.saturating_neg() - INPUT_HOTPLUG_HANDLE_BASE)
+                .ok()
+                .filter(|device| crate::input::hotplug::is_hotplug(*device))
+                .map(|device| VirtualDevice::InputEvent { device }),
         }
     }
 
@@ -220,7 +240,14 @@ impl VirtualDevice {
             VirtualDevice::Dsp => 7,
             VirtualDevice::DriRenderD128 => 8,
             VirtualDevice::DriCard0 => 9,
-            VirtualDevice::InputEvent { device } => 10 + device as u64,
+            VirtualDevice::InputEvent { device }
+                if device < wasm_posix_shared::input::INPUT_FIXED_DEVICES =>
+            {
+                10 + device as u64
+            }
+            VirtualDevice::InputEvent { device } => {
+                INPUT_HOTPLUG_HANDLE_BASE as u64 + device as u64
+            }
             VirtualDevice::Clipboard => 12,
         }
     }
@@ -276,8 +303,21 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/input/event0" => Some(VirtualDevice::InputEvent { device: 0 }),
         b"/dev/input/event1" => Some(VirtualDevice::InputEvent { device: 1 }),
         b"/dev/kandelo/clipboard" => Some(VirtualDevice::Clipboard),
-        _ => None,
+        _ => match_hotplug_input_node(path),
     }
+}
+
+/// `/dev/input/eventN` for a connected host-described device. The number
+/// is canonical decimal, as devtmpfs names it: `event02` names nothing.
+fn match_hotplug_input_node(path: &[u8]) -> Option<VirtualDevice> {
+    let digits = path.strip_prefix(b"/dev/input/event")?;
+    if digits.len() > 1 && digits[0] == b'0' {
+        return None;
+    }
+    let device = u8::try_from(parse_ascii_usize(digits)?).ok()?;
+    (crate::input::hotplug::is_hotplug(device)
+        && crate::input::hotplug::serial(device).is_some())
+    .then_some(VirtualDevice::InputEvent { device })
 }
 
 /// Return content for dynamic files that cannot be owned by rootfs.vfs.zst.
@@ -772,11 +812,13 @@ fn install_dri_state_on_open(description: &mut crate::ofd::OpenFileDesc, dev: Vi
 }
 
 /// Install the evdev sidecar on a freshly-allocated OFD for a
-/// `/dev/input/event{0,1}` open. No-op for any other virtual device.
+/// `/dev/input/event*` open, bound to the device's current connection. No-op
+/// for any other virtual device.
 fn install_input_state_on_open(description: &mut crate::ofd::OpenFileDesc, dev: VirtualDevice) -> Result<(), Errno> {
     if let VirtualDevice::InputEvent { device } = dev {
+        let serial = crate::input::hotplug::serial(device).ok_or(Errno::ENODEV)?;
         description.input_state = Some(crate::IoBox::try_new(crate::ofd::InputFdState {
-            device, ring: crate::ofd::SharedInputRing::try_new()?,
+            device, serial, ring: crate::ofd::SharedInputRing::try_new()?,
         })?);
     }
     Ok(())
@@ -2083,9 +2125,11 @@ fn handle_dri_card_ioctl(
     }
 }
 
-/// `EVIOCG*` ioctl surface for `/dev/input/event{0,1}`. Unknown
+/// `EVIOCG*` ioctl surface for `/dev/input/event*`. Unknown
 /// requests return `ENOTTY` (not `EINVAL`) so SDL2's evdev probe keeps
-/// walking instead of fataling on the first unsupported call.
+/// walking instead of fataling on the first unsupported call. A
+/// description whose device has disconnected answers every request with
+/// `ENODEV`, as Linux's `evdev_ioctl_handler` checks the device first.
 fn handle_input_ioctl(
     proc: &mut Process,
     ofd_idx: usize,
@@ -2099,8 +2143,18 @@ fn handle_input_ioctl(
     let nr = request & 0xff;
     let size = ((request >> 16) & 0x3fff) as usize;
 
+    let input = input_state(proc, ofd_idx)?;
+    let (device, serial) = (input.device, input.serial);
+    if !crate::input::hotplug::is_live(device, serial) {
+        return Err(Errno::ENODEV);
+    }
     if magic != b'E' as u32 {
         return Err(Errno::ENOTTY);
+    }
+    if crate::input::hotplug::is_hotplug(device) {
+        return crate::input::hotplug::with_device(device, serial, |d| {
+            handle_hotplug_input_ioctl(d, nr, dir, size, buf)
+        })?;
     }
 
     match nr {
@@ -2119,7 +2173,7 @@ fn handle_input_ioctl(
             let device = input_state(proc, ofd_idx)?.device;
             let id = WpkInputId {
                 bustype: BUS_VIRTUAL,
-                vendor: 0x1209,
+                vendor: KANDELO_INPUT_VENDOR,
                 product: if device == 0 { 0x0001 } else { 0x0002 },
                 version: 0x0001,
             };
@@ -2242,6 +2296,80 @@ fn handle_input_ioctl(
         // the exclusivity a caller asked for. We return ENOTTY (the honest
         // "unsupported operation" for this device) rather than pretend —
         // real grab is deferred to a later change. See docs/posix-status.md.
+        _ => Err(Errno::ENOTTY),
+    }
+}
+
+/// `EVIOCG*` for a connected host-described device: identity, capabilities
+/// and state come from its description and the records delivered since.
+fn handle_hotplug_input_ioctl(
+    device: &crate::input::hotplug::HostInputDevice,
+    nr: u32,
+    dir: u32,
+    size: usize,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
+    use wasm_posix_shared::input::*;
+
+    let zeroed = |buf: &mut [u8]| -> core::ops::Range<usize> {
+        let len = size.min(buf.len());
+        buf[..len].fill(0);
+        0..len
+    };
+    match nr {
+        0x01 if dir == 2 => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            buf[0..4].copy_from_slice(&0x0001_0001u32.to_le_bytes());
+            Ok(())
+        }
+        0x02 if dir == 2 => {
+            if buf.len() < core::mem::size_of::<WpkInputId>() {
+                return Err(Errno::EINVAL);
+            }
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkInputId, device.id());
+            }
+            Ok(())
+        }
+        n if n == EVIOCGNAME_NR && dir == 2 => {
+            // The name and its terminating NUL, truncated to the caller
+            // (Linux `str_to_user`); bytes past them are left alone.
+            let name = device.name();
+            let len = (name.len() + 1).min(size).min(buf.len());
+            let copy = name.len().min(len);
+            buf[..copy].copy_from_slice(&name[..copy]);
+            if len > copy {
+                buf[copy] = 0;
+            }
+            Ok(())
+        }
+        n if (EVIOCGBIT_NR_BASE..EVIOCGBIT_NR_BASE + 32).contains(&n) && dir == 2 => {
+            let range = zeroed(buf);
+            device.populate_evbit((n - EVIOCGBIT_NR_BASE) as u16, &mut buf[range]);
+            Ok(())
+        }
+        n if (EVIOCGABS_NR_BASE..EVIOCGABS_NR_BASE + 64).contains(&n) && dir == 2 => {
+            let abs = device.absinfo((n - EVIOCGABS_NR_BASE) as u16)?;
+            if buf.len() < core::mem::size_of::<WpkInputAbsinfo>() {
+                return Err(Errno::EINVAL);
+            }
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkInputAbsinfo, abs);
+            }
+            Ok(())
+        }
+        n if (n == EVIOCGPHYS_NR || n == EVIOCGUNIQ_NR) && dir == 2 => Err(Errno::ENOENT),
+        n if (n == EVIOCGPROP_NR || n == EVIOCGLED_NR || n == EVIOCGSW_NR) && dir == 2 => {
+            zeroed(buf);
+            Ok(())
+        }
+        n if n == EVIOCGKEY_NR && dir == 2 => {
+            let range = zeroed(buf);
+            device.copy_key_state(&mut buf[range]);
+            Ok(())
+        }
         _ => Err(Errno::ENOTTY),
     }
 }
@@ -5602,6 +5730,12 @@ pub fn sys_read(
                                 return Err(Errno::EINVAL);
                             }
                             let input = input_state(proc, ofd_idx)?;
+                            // Linux evdev_read checks the device before the
+                            // buffer: once it is gone, queued records are not
+                            // readable.
+                            if !crate::input::hotplug::is_live(input.device, input.serial) {
+                                return Err(Errno::ENODEV);
+                            }
                             let mut ring = input.ring.borrow_mut();
                             // Empty ring: O_NONBLOCK gets EAGAIN; a blocking
                             // read returns Ok(0) (not a kernel park) so the
@@ -15705,12 +15839,17 @@ fn poll_check_depth(
                     // Gate POLLIN on the ring or the SYN_DROPPED latch:
                     // always-ready would spin libinput against an empty
                     // ring (sys_read returns Ok(0), not a record).
-                    if pollfd.events & POLLIN != 0 {
-                        if let Some(input) = ofd.input() {
-                            let ring = input.ring.borrow();
-                            if !ring.event_ring.is_empty() || ring.dropped {
-                                revents |= POLLIN;
-                            }
+                    if let Some(input) = ofd.input() {
+                        let ring = input.ring.borrow();
+                        if pollfd.events & POLLIN != 0
+                            && (!ring.event_ring.is_empty() || ring.dropped)
+                        {
+                            revents |= POLLIN;
+                        }
+                        // A disconnected device hangs up, whatever was
+                        // requested (Linux evdev_poll).
+                        if !crate::input::hotplug::is_live(input.device, input.serial) {
+                            revents |= POLLHUP | POLLERR;
                         }
                     }
                 } else {
@@ -17085,7 +17224,7 @@ pub fn sys_ioctl(
         }
     }
 
-    // --- /dev/input/event{0,1} ioctls — evdev EVIOCG* surface ---
+    // --- /dev/input/event* ioctls — evdev EVIOCG* surface ---
     {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         if ofd.file_type == FileType::CharDevice {
@@ -55020,6 +55159,7 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn match_virtual_device_recognizes_evdev_nodes() {
+        let _guard = crate::input::hotplug::test_guard();
         assert_eq!(
             match_virtual_device(b"/dev/input/event0"),
             Some(VirtualDevice::InputEvent { device: 0 })
@@ -55028,7 +55168,7 @@ impl HostIO for RelSymlinkMock {
             match_virtual_device(b"/dev/input/event1"),
             Some(VirtualDevice::InputEvent { device: 1 })
         );
-        // event2+ deliberately not synthesised.
+        // event2+ exist only while a host-described device is connected.
         assert_eq!(match_virtual_device(b"/dev/input/event2"), None);
         assert_eq!(match_virtual_device(b"/dev/input/event10"), None);
     }
@@ -55078,6 +55218,7 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn open_nonexistent_event_path_returns_enoent() {
+        let _guard = crate::input::hotplug::test_guard();
         let mut proc = Process::new(301);
         let mut host = MockHostIO::new();
         let r = sys_open(&mut proc, &mut host, b"/dev/input/event2", O_RDONLY, 0);
@@ -55686,6 +55827,177 @@ impl HostIO for RelSymlinkMock {
         let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
         assert_eq!(n, 0);
         assert_eq!(pollfd.revents & POLLOUT, 0);
+    }
+
+    // -- Host-described (hot-plugged) evdev devices ---------------------------
+
+    /// A process in the global table, so `input::dispatch::push_event`'s
+    /// fan-out reaches its descriptions. Tests use their own pids.
+    fn install_global_process(pid: u32) -> &'static mut Process {
+        let table = unsafe { &mut *crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
+        table.processes.insert(pid, Process::new(pid));
+        let proc = table.processes.get_mut(&pid).unwrap();
+        unsafe { &mut *(proc as *mut Process) }
+    }
+
+    fn remove_global_process(pid: u32) {
+        let table = unsafe { &mut *crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
+        table.processes.remove(&pid);
+    }
+
+    fn test_pad() -> wasm_posix_shared::input::WpkInputDeviceDesc {
+        use wasm_posix_shared::input::{ABS_X, BTN_A, BTN_B};
+        crate::input::hotplug::test_desc("Kandelo test pad", &[BTN_A, BTN_B], &[(ABS_X, -32768, 32767, 0)])
+    }
+
+    fn read_records(proc: &mut Process, host: &mut MockHostIO, fd: i32) -> Result<Vec<(u16, u16, i32)>, Errno> {
+        let mut buf = [0u8; 24 * 8];
+        let n = sys_read(proc, host, fd, &mut buf)?;
+        Ok(buf[..n]
+            .chunks_exact(24)
+            .map(|r| {
+                (
+                    u16::from_le_bytes([r[16], r[17]]),
+                    u16::from_le_bytes([r[18], r[19]]),
+                    i32::from_le_bytes([r[20], r[21], r[22], r[23]]),
+                )
+            })
+            .collect())
+    }
+
+    #[test]
+    fn hotplug_device_node_exists_only_while_connected() {
+        use wasm_posix_shared::mode::S_IFCHR;
+        let _guard = crate::input::hotplug::test_guard();
+        let mut proc = Process::new(7201);
+        let mut host = MockHostIO::new();
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/dev/input/event2").unwrap_err(), Errno::ENOENT);
+
+        let device = crate::input::hotplug::connect(&test_pad(), (1000, 0)).unwrap();
+        assert_eq!(device, 2);
+        let st = sys_stat(&mut proc, &mut host, b"/dev/input/event2").unwrap();
+        assert_eq!(st.st_mode & S_IFCHR, S_IFCHR);
+        assert_eq!(st.st_rdev, makedev(13, 66));
+        // The number is canonical decimal; other spellings name nothing.
+        assert!(sys_open(&mut proc, &mut host, b"/dev/input/event02", O_RDONLY, 0).is_err());
+        assert!(sys_open(&mut proc, &mut host, b"/dev/input/event3", O_RDONLY, 0).is_err());
+
+        crate::input::disconnect_device(2, (1001, 0)).unwrap();
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/dev/input/event2").unwrap_err(), Errno::ENOENT);
+        assert!(sys_open(&mut proc, &mut host, b"/dev/input/event2", O_RDONLY, 0).is_err());
+    }
+
+    #[test]
+    fn hotplug_device_reports_its_description_through_evioc() {
+        use wasm_posix_shared::input::*;
+        let _guard = crate::input::hotplug::test_guard();
+        crate::input::hotplug::connect(&test_pad(), (1000, 0)).unwrap();
+        let (mut proc, mut host, fd) = open_evdev(7202, b"/dev/input/event2");
+
+        let mut name = [0xffu8; 64];
+        sys_ioctl(&mut proc, &mut host, fd, evioc(2, EVIOCGNAME_NR, 64), &mut name).unwrap();
+        assert_eq!(&name[..17], b"Kandelo test pad\0");
+        assert_eq!(name[17], 0xff, "bytes past the NUL are left alone");
+
+        let mut id = [0u8; 8];
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGID, &mut id).unwrap();
+        assert_eq!(u16::from_le_bytes([id[0], id[1]]), BUS_VIRTUAL);
+        assert_eq!(u16::from_le_bytes([id[2], id[3]]), KANDELO_INPUT_VENDOR);
+        assert_eq!(u16::from_le_bytes([id[4], id[5]]), 0x0003);
+
+        let mut types = [0u8; 4];
+        sys_ioctl(&mut proc, &mut host, fd, evioc(2, EVIOCGBIT_NR_BASE, 4), &mut types).unwrap();
+        assert_eq!(types[0], (1 << EV_SYN) | (1 << EV_KEY) | (1 << EV_ABS));
+
+        let mut keys = [0u8; 96];
+        sys_ioctl(&mut proc, &mut host, fd, evioc(2, EVIOCGBIT_NR_BASE + EV_KEY as u32, 96), &mut keys).unwrap();
+        let has = |bits: &[u8], code: u16| bits[(code >> 3) as usize] & (1 << (code & 7)) != 0;
+        assert!(has(&keys, BTN_A) && has(&keys, BTN_B) && !has(&keys, BTN_X));
+
+        let mut abs = [0u8; 24];
+        sys_ioctl(&mut proc, &mut host, fd, evioc(2, EVIOCGABS_NR_BASE + ABS_X as u32, 24), &mut abs).unwrap();
+        assert_eq!(i32::from_le_bytes(abs[4..8].try_into().unwrap()), -32768);
+        assert_eq!(i32::from_le_bytes(abs[8..12].try_into().unwrap()), 32767);
+        // Unadvertised axis of a device with EV_ABS: zeroed, as on Linux.
+        let mut abs = [0xffu8; 24];
+        sys_ioctl(&mut proc, &mut host, fd, evioc(2, EVIOCGABS_NR_BASE + ABS_RZ as u32, 24), &mut abs).unwrap();
+        assert_eq!(abs, [0u8; 24]);
+
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, evioc(2, EVIOCGPHYS_NR, 16), &mut [0u8; 16]),
+            Err(Errno::ENOENT)
+        );
+    }
+
+    #[test]
+    fn hotplug_device_records_reach_readers_and_disconnect_hangs_them_up() {
+        use wasm_posix_shared::input::*;
+        use wasm_posix_shared::poll::{POLLERR, POLLHUP, POLLIN};
+        use wasm_posix_shared::WasmPollFd;
+        let _guard = crate::input::hotplug::test_guard();
+        let pid = 7203;
+        let proc = install_global_process(pid);
+        let mut host = MockHostIO::new();
+        crate::input::hotplug::connect(&test_pad(), (1000, 0)).unwrap();
+        let fd = sys_open(proc, &mut host, b"/dev/input/event2", O_RDONLY | O_NONBLOCK, 0).unwrap();
+        // The fixed keyboard must not see the pad's records.
+        let kbd = sys_open(proc, &mut host, b"/dev/input/event0", O_RDONLY | O_NONBLOCK, 0).unwrap();
+
+        crate::input::dispatch::push_event(2, EV_KEY, BTN_A, 1, 0, 0);
+        crate::input::dispatch::push_event(2, EV_ABS, ABS_X, 1234, 0, 0);
+        crate::input::dispatch::push_event(2, EV_SYN, SYN_REPORT, 0, 0, 0);
+        // Filtered like the input core: unadvertised, unchanged, empty frame.
+        crate::input::dispatch::push_event(2, EV_KEY, BTN_X, 1, 0, 0);
+        crate::input::dispatch::push_event(2, EV_KEY, BTN_A, 1, 0, 0);
+        crate::input::dispatch::push_event(2, EV_SYN, SYN_REPORT, 0, 0, 0);
+        assert_eq!(
+            read_records(proc, &mut host, fd).unwrap(),
+            [(EV_KEY, BTN_A, 1), (EV_ABS, ABS_X, 1234), (EV_SYN, SYN_REPORT, 0)]
+        );
+        assert_eq!(read_records(proc, &mut host, kbd).unwrap_err(), Errno::EAGAIN);
+
+        // EVIOCGKEY and EVIOCGABS report the device state.
+        let mut keys = [0u8; 96];
+        sys_ioctl(proc, &mut host, fd, evioc(2, EVIOCGKEY_NR, 96), &mut keys).unwrap();
+        assert_ne!(keys[(BTN_A >> 3) as usize] & (1 << (BTN_A & 7)), 0);
+        let mut abs = [0u8; 24];
+        sys_ioctl(proc, &mut host, fd, evioc(2, EVIOCGABS_NR_BASE + ABS_X as u32, 24), &mut abs).unwrap();
+        assert_eq!(i32::from_le_bytes(abs[0..4].try_into().unwrap()), 1234);
+
+        // A queued record does not survive the disconnect: read is ENODEV.
+        crate::input::dispatch::push_event(2, EV_KEY, BTN_B, 1, 0, 0);
+        crate::input::disconnect_device(2, (1001, 0)).unwrap();
+        let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+        assert_eq!(sys_poll(proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap(), 1);
+        assert_eq!(pollfd.revents & (POLLHUP | POLLERR), POLLHUP | POLLERR);
+        // Hang-up is reported even when no event was requested.
+        let mut pollfd = WasmPollFd { fd, events: 0, revents: 0 };
+        assert_eq!(sys_poll(proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap(), 1);
+        assert_eq!(read_records(proc, &mut host, fd).unwrap_err(), Errno::ENODEV);
+        assert_eq!(
+            sys_ioctl(proc, &mut host, fd, EVIOCGVERSION, &mut [0u8; 4]),
+            Err(Errno::ENODEV)
+        );
+        // Linux checks the device before decoding the request: SDL's
+        // JSIOCGNAME probe ('j' magic) is ENODEV, not ENOTTY.
+        let jsiocgname = (2u32 << 30) | (64 << 16) | ((b'j' as u32) << 8) | 0x13;
+        assert_eq!(sys_ioctl(proc, &mut host, fd, jsiocgname, &mut [0u8; 64]), Err(Errno::ENODEV));
+        // fstat still describes the open node, and close works.
+        assert_eq!(sys_fstat(proc, &mut host, fd).unwrap().st_rdev, makedev(13, 66));
+
+        // A new device at the same number is a new connection: the old
+        // descriptor stays dead and never sees its records.
+        crate::input::hotplug::connect(&test_pad(), (1002, 0)).unwrap();
+        let fresh = sys_open(proc, &mut host, b"/dev/input/event2", O_RDONLY | O_NONBLOCK, 0).unwrap();
+        crate::input::dispatch::push_event(2, EV_KEY, BTN_B, 1, 0, 0);
+        crate::input::dispatch::push_event(2, EV_SYN, SYN_REPORT, 0, 0, 0);
+        assert_eq!(read_records(proc, &mut host, fd).unwrap_err(), Errno::ENODEV);
+        assert_eq!(
+            read_records(proc, &mut host, fresh).unwrap(),
+            [(EV_KEY, BTN_B, 1), (EV_SYN, SYN_REPORT, 0)]
+        );
+        sys_close(proc, &mut host, fd).unwrap();
+        remove_global_process(pid);
     }
 
     // -- Extended attributes: no filesystem supports them yet --------------

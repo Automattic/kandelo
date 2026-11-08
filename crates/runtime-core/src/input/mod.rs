@@ -1,10 +1,20 @@
-//! evdev input subsystem — backs `/dev/input/event{0,1}`.
+//! evdev input subsystem — backs `/dev/input/event*`.
 //!
 //! Covers the canvas-dim cache used to size `EVIOCGABS(ABS_X/ABS_Y)`,
-//! the `EVIOCGBIT(*)` bitmap helper, and (in [`dispatch`]) the host-
-//! callable event fan-out.
+//! the `EVIOCGBIT(*)` bitmap helper for the fixed keyboard and pointer,
+//! (in [`hotplug`]) the devices the host connects and disconnects, and
+//! (in [`dispatch`]) the host-callable event fan-out.
 
 pub mod dispatch;
+pub mod hotplug;
+
+/// Unplug host-described `device`: its node disappears, and descriptions
+/// still bound to it fail with `ENODEV` and poll as `POLLHUP | POLLERR`.
+pub fn disconnect_device(device: u8, now: (i64, u32)) -> Result<(), wasm_posix_shared::Errno> {
+    let serial = hotplug::disconnect(device, now)?;
+    dispatch::hang_up(device, serial);
+    Ok(())
+}
 
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering};
 

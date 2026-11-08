@@ -54,6 +54,12 @@ import { connectorModeSize } from "./dri/kms-registry";
 import { getCanvasWebGl2Context } from "./webgl/canvas-context";
 import { ABSOLUTE_POINTER_EXTENT } from "./input/input-source.js";
 import {
+  encodeInputDeviceDescription,
+  type InputDeviceConnectResult,
+  type InputDeviceDescription,
+  type InputDeviceRecord,
+} from "./input/input-device.js";
+import {
   createKernelEntryScopedInstance,
   invokeKernelEntrySerializedHostOperation,
   isKernelExportFailure,
@@ -28169,6 +28175,103 @@ export class CentralizedKernelWorker {
         this.scheduleWakeBlockedRetries(entry);
       },
     );
+  }
+
+  /** Host device keys in use, reserved from connect until disconnect runs. */
+  readonly #inputDeviceKeys = new Set<string>();
+  /** Host device key → kernel evdev number, once the kernel accepted it. */
+  readonly #inputDeviceNumbers = new Map<string, number>();
+
+  /**
+   * Plug in a host-described evdev device (`/dev/input/event2` and up)
+   * under `key`. The description is copied into kernel scratch and
+   * validated by `kernel_input_device_connect`. Records and the disconnect
+   * for `key` run as later kernel entries, so they stay ordered behind this
+   * connect without a round trip to the caller.
+   */
+  connectInputDevice(
+    key: string,
+    description: InputDeviceDescription,
+  ): Promise<InputDeviceConnectResult> {
+    if (this.#inputDeviceKeys.has(key)) {
+      return Promise.resolve({ ok: false, reason: "duplicate-key" });
+    }
+    // Encode before reserving: an invalid description throws to the caller.
+    const bytes = encodeInputDeviceDescription(description);
+    this.#inputDeviceKeys.add(key);
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("input device connect", (entry) => {
+        if (typeof entry.instance.exports.kernel_input_device_connect !== "function") {
+          this.#inputDeviceKeys.delete(key);
+          resolve({ ok: false, reason: "unsupported" });
+          return undefined;
+        }
+        let device = 0;
+        this.#requireMainScratchRegion().withLease((lease) => {
+          lease.copyFrom(bytes, 0, 0, bytes.byteLength);
+          device = this.#invokeEntryScratchExport(
+            entry,
+            lease,
+            "kernel_input_device_connect",
+            [lease.exportPointer(0, bytes.byteLength), bytes.byteLength],
+          );
+        });
+        if (device < 0) {
+          this.#inputDeviceKeys.delete(key);
+          resolve({ ok: false, reason: "kernel-refused", errno: -device });
+          return undefined;
+        }
+        this.#inputDeviceNumbers.set(key, device);
+        // A scanner parked in poll/sleep is not woken by a new node; it
+        // notices on its next directory scan.
+        resolve({ ok: true, device });
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * Unplug the device connected under `key`. Its node disappears, and
+   * descriptions still open on it fail with `ENODEV` and poll as hung up;
+   * blocked readers are woken to observe that.
+   */
+  disconnectInputDevice(key: string): void {
+    this.#runOrDeferKernelEntry("input device disconnect and wake", (entry) => {
+      const device = this.#inputDeviceNumbers.get(key);
+      this.#inputDeviceNumbers.delete(key);
+      this.#inputDeviceKeys.delete(key);
+      if (device === undefined) return undefined;
+      const disconnect = entry.instance.exports.kernel_input_device_disconnect as
+        | ((device: number) => number)
+        | undefined;
+      if (!disconnect) return undefined;
+      disconnect(device);
+      this.scheduleWakeBlockedRetries(entry);
+      return undefined;
+    });
+  }
+
+  /**
+   * Deliver records for the device connected under `key`, then wake blocked
+   * readers once. Records for a key that is not connected (refused, or
+   * already disconnected) reach no device.
+   */
+  injectInputDeviceEvents(
+    key: string,
+    records: ReadonlyArray<InputDeviceRecord>,
+  ): void {
+    if (records.length === 0) return;
+    this.#runOrDeferKernelEntry("input device events and wake", (entry) => {
+      const device = this.#inputDeviceNumbers.get(key);
+      if (device === undefined) return undefined;
+      const inject = entry.instance.exports.kernel_input_event as
+        | ((device: number, ev_type: number, code: number, value: number) => void)
+        | undefined;
+      if (!inject) return undefined;
+      for (const r of records) inject(device, r.ev_type, r.code, r.value);
+      this.scheduleWakeBlockedRetries(entry);
+      return undefined;
+    });
   }
 
   /**

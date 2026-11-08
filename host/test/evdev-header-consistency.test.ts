@@ -17,10 +17,17 @@ const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 function parseDefines(relPath: string): Record<string, number> {
   const text = readFileSync(new URL(relPath, `file://${repoRoot}`), "utf8");
   const out: Record<string, number> = {};
+  const aliases: [string, string][] = [];
   for (const line of text.split("\n")) {
     // #define NAME 0x110   |   #define NAME 30   (tab- or space-separated)
     const m = line.match(/^#define\s+([A-Z0-9_]+)\s+(0[xX][0-9a-fA-F]+|\d+)\b/);
     if (m) out[m[1]] = parseInt(m[2], m[2].toLowerCase().startsWith("0x") ? 16 : 10);
+    // #define BTN_A BTN_SOUTH — a UAPI alias for an earlier code.
+    const alias = line.match(/^#define\s+([A-Z0-9_]+)\s+([A-Z][A-Z0-9_]*)\s*$/);
+    if (alias) aliases.push([alias[1], alias[2]]);
+  }
+  for (const [name, target] of aliases) {
+    if (target in out) out[name] = out[target];
   }
   return out;
 }
