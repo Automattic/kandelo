@@ -38,7 +38,8 @@ class Reader {
   }
 }
 
-interface SourceLocation { readonly file: string; readonly line: number; readonly column: number }
+export interface SourceLocation { readonly file: string; readonly line: number; readonly column: number }
+export interface SourceBreakpoint extends SourceLocation { readonly pc: number }
 interface Section { id: number; start: number; end: number; name?: string; data?: number }
 function sections(bytes: Uint8Array): Section[] {
   require(bytes.length >= 8 && bytes[0] === 0 && bytes[1] === 97 && bytes[2] === 115 && bytes[3] === 109 && bytes[4] === 1 && bytes[5] === 0 && bytes[6] === 0 && bytes[7] === 0, "expected a core module");
@@ -133,6 +134,25 @@ class SourceMap {
     if (this.locations[index] === 0xffffffff) return;
     return { file: this.files[this.locations[index]], line: this.locations[index + 1] + 1, column: this.locations[index + 2] + 1 };
   }
+  breakpoints(file: string, line: number, column?: number): SourceBreakpoint[] {
+    // A basename can name several source files. Refuse ambiguity rather than
+    // silently setting a breakpoint in a different crate's main.rs.
+    const matches = this.files.includes(file) ? [file] : [...new Set(this.files.filter(name =>
+      !file.startsWith("/") && name.endsWith(`/${file}`)))];
+    require(matches.length <= 1, `ambiguous breakpoint filename ${JSON.stringify(file)}`);
+    if (!matches.length) return [];
+    const result: SourceBreakpoint[] = [];
+    for (let row = 0; row < this.offsets.length; row++) {
+      const index = row * 3;
+      // Equal-offset records obey the same last-record rule as lookup().
+      if (this.offsets[row] === this.offsets[row + 1]) continue;
+      if (this.files[this.locations[index]] !== matches[0] || this.locations[index + 1] + 1 !== line
+        || (column !== undefined && this.locations[index + 2] + 1 !== column)) continue;
+      require(result.length < 4096, "breakpoint location budget exceeded");
+      result.push({ file: matches[0], line, column: this.locations[index + 2] + 1, pc: this.offsets[row] });
+    }
+    return result;
+  }
 }
 
 export class WasmDebugInfo {
@@ -192,5 +212,26 @@ export class WasmDebugInfo {
     if (!Number.isInteger(body) || body < 0 || body >= this.bodies.length / 2) return;
     if (pc !== undefined && (pc < this.bodies[body * 2] || pc >= this.bodies[body * 2 + 1])) return;
     return { name: this.names.get(index), location: pc === undefined ? undefined : this.map?.lookup(pc) };
+  }
+  /** Resolve a debugger's absolute Wasm offset only within a real function. */
+  resolvePc(pc: number): { index: number; name?: string; location?: SourceLocation } | undefined {
+    if (!Number.isSafeInteger(pc) || pc < 0) return;
+    let low = 0, high = this.bodies.length / 2;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (this.bodies[middle * 2] <= pc) low = middle + 1; else high = middle;
+    }
+    if (low === 0) return;
+    const index = low - 1 + this.imported;
+    const resolved = this.resolve(index, pc);
+    return resolved && { index, ...resolved };
+  }
+  /** Filenames select diagnostic metadata; they never authorize file access. */
+  breakpoints(file: string, line: number, column?: number): SourceBreakpoint[] {
+    require(file.length > 0 && file.length <= PATH_BYTES && encoder.encode(file).length <= PATH_BYTES && !file.includes("\0"), "invalid breakpoint filename");
+    require(Number.isSafeInteger(line) && line > 0 && line <= 0xffffffff, "invalid breakpoint line");
+    require(column === undefined || (Number.isSafeInteger(column) && column > 0 && column <= 0xffffffff), "invalid breakpoint column");
+    return (this.map?.breakpoints(file, line, column) ?? [])
+      .filter(location => this.resolvePc(location.pc)?.location !== undefined);
   }
 }

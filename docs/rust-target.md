@@ -598,3 +598,5 @@ The documented `std` surface is demonstrated. Remaining hardening: reconcile the
 remaining WALI-derived constants/syscall numbers in the wasm32 libc leaf
 to Kandelo's ABI (none has affected the demonstrated surface), and
 upstream the target as tier-3.
+
+For the development-checkout source debugger, see [Debugging Rust programs](rust-debugging.md).
