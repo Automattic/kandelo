@@ -38295,10 +38295,10 @@ function _createNodeSqlitePlatform(platform) {
         close() { native('close', database(this).handle); }
         get isOpen() { return native('isOpen', database(this).handle); }
         get isTransaction() { return native('isTransaction', database(this).handle); }
-        exec(sql) { native('exec', database(this).handle, string(sql, 'sql')); }
+        exec(sql) { const db = database(this); native('checkAuthorizer', db.handle); native('exec', db.handle, string(sql, 'sql')); }
         serialize() {
             const db = serializationDatabase(this);
-            native('checkDatabase', db.handle);
+            native('checkAuthorizer', db.handle);
             const name = arguments.length === 0 ? undefined : arguments[0];
             return native('serialize', db.handle, name === undefined ? 'main' : string(name, 'dbName'));
         }
@@ -38319,7 +38319,7 @@ function _createNodeSqlitePlatform(platform) {
         }
         location(dbName = 'main') { return native('location', database(this).handle, string(dbName, 'dbName')); }
         prepare(sql, options) {
-            const db = database(this);
+            const db = database(this); native('checkAuthorizer', db.handle);
             string(sql, 'sql');
             if (options !== undefined) optionsObject(options); else options = {};
             const settings = config(options, db.defaults, 'options.');
@@ -38335,7 +38335,7 @@ function _createNodeSqlitePlatform(platform) {
             return result;
         }
         function(...args) {
-            const db = database(this); native('checkDatabase', db.handle);
+            const db = database(this); native('checkAuthorizer', db.handle);
             const name = string(args[0], 'name');
             const fnIndex = args.length < 3 ? 1 : 2;
             let big = false, varargs = false, deterministic = false, direct = false;
@@ -38354,7 +38354,7 @@ function _createNodeSqlitePlatform(platform) {
             native('registerScalar', db.handle, name, fn, arity, big, deterministic, direct);
         }
         aggregate(...args) {
-            const db = database(this); native('checkDatabase', db.handle);
+            const db = database(this); native('checkAuthorizer', db.handle);
             const name = string(args[0], 'name'), options = optionsObject(args[1]);
             const start = options.start;
             if (start === undefined) argument('options.start', 'a function or a primitive value');
@@ -38377,7 +38377,7 @@ function _createNodeSqlitePlatform(platform) {
         }
         createSession(options) {
             const db = database(this);
-            native('checkDatabase', db.handle);
+            native('checkAuthorizer', db.handle);
             let schema = 'main', table = '';
             if (arguments.length) {
                 optionsObject(options);
@@ -38395,7 +38395,7 @@ function _createNodeSqlitePlatform(platform) {
         }
         applyChangeset(changeset, options) {
             const db = database(this);
-            native('checkDatabase', db.handle);
+            native('checkAuthorizer', db.handle);
             if (!platform.util.types.isUint8Array(changeset)) argument('changeset', 'a Uint8Array');
             let conflict, filter;
             if (options !== undefined) {
@@ -38409,16 +38409,23 @@ function _createNodeSqlitePlatform(platform) {
             }
             return native('applyChangeset', db.handle, changeset, filter, conflict);
         }
-        createTagStore() { return unavailable('tag-store cache owner'); }
-        setAuthorizer() { return unavailable('authorizer callback owner'); }
-        enableLoadExtension() { return unavailable('extension permission/library owner'); }
+        createTagStore() { native('checkAuthorizer', database(this).handle); return unavailable('tag-store cache owner'); }
+        setAuthorizer() {
+            const db = serializationDatabase(this);
+            native('checkAuthorizer', db.handle);
+            // Native FunctionCallbackInfo missing args are undefined, never an
+            // inherited rest-array element. Receiver/open/reentry wins first.
+            native('setAuthorizer', db.handle, arguments.length ? arguments[0] : undefined);
+        }
+        enableLoadExtension() { native('checkAuthorizer', database(this).handle); return unavailable('extension permission/library owner'); }
         loadExtension() { return unavailable('extension permission/library owner'); }
         enableDefensive(active) {
-            const db = database(this); native('checkDatabase', db.handle);
+            const db = database(this); native('checkAuthorizer', db.handle);
             native('defensive', db.handle, boolean(active, 'active'));
         }
         get limits() { const db = database(this); return db.limits ??= native('limits', db.handle); }
     }
+    ObjectDefineProperty(Database.prototype, 'setAuthorizer', { enumerable: true });
     ObjectDefineProperty(Database.prototype, 'serialize', { enumerable: true });
     ObjectDefineProperty(Database.prototype, 'deserialize', { enumerable: true });
     ObjectDefineProperty(Database.prototype, SymbolDispose, { configurable: true, writable: true,
@@ -38491,6 +38498,7 @@ function _createNodeSqlitePlatform(platform) {
     }
     function execute(object, mode, args) {
         const owner = statement(object);
+        native('checkStatementExecution', owner.handle);
         if (owner.active) fail('ERR_INVALID_STATE', 'statement is already executing');
         owner.active = true;
         let failed = false;
@@ -38543,7 +38551,7 @@ function _createNodeSqlitePlatform(platform) {
         setAllowBareNamedParameters(value) { statement(this).settings.allowBareNamedParameters = boolean(value, 'allowBareNamedParameters'); }
         setAllowUnknownNamedParameters(value) { statement(this).settings.allowUnknownNamedParameters = boolean(value, 'allowUnknownNamedParameters'); }
         iterate(...args) {
-            const owner = statement(this);
+            const owner = statement(this); native('checkStatementExecution', owner.handle);
             if (owner.active) fail('ERR_INVALID_STATE', 'statement is already executing');
             owner.active = true;
             try {
@@ -38599,6 +38607,7 @@ function _createNodeSqlitePlatform(platform) {
         next() {
             const [state, owner] = iterator(this);
             if (state.done) return iterationResult(true, null);
+            native('checkStatementExecution', owner.handle);
             if (owner.active) fail('ERR_INVALID_STATE', 'statement is already executing');
             if (state.generation !== owner.generation) fail('ERR_INVALID_STATE', 'iterator was invalidated');
             owner.active = true;
@@ -38614,6 +38623,7 @@ function _createNodeSqlitePlatform(platform) {
         return() {
             const [state, owner] = iterator(this);
             if (!state.done) {
+                native('checkStatementExecution', owner.handle);
                 if (owner.active) fail('ERR_INVALID_STATE', 'statement is already executing');
                 owner.active = true;
                 try { native('reset', owner.handle, false, true); }

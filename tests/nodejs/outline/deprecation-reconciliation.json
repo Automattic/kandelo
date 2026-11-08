@@ -99,7 +99,7 @@
     "third_party/node-core/signature-platform-adapter.js": "1e44bb8672c1d51c5b752a25b540e863cf93eecbd366091584fabda62443d7f2",
     "third_party/node-core/socket-stream-adapter.js": "826624fec6c07de9b87dc3a511cb2e2f778cf63407916c2037a3c201585e3a2f",
     "third_party/node-core/source-map-platform-adapter.js": "cf215318dcfa6a95edd314d85b71a98c4b52f12dc10c646f3ed13a4a4b42c9fc",
-    "third_party/node-core/sqlite-platform-adapter.js": "3f8d9ed6319e56c7afcd01082c7ea6b496af9888acb4ff2371504fd2ed6d21cc",
+    "third_party/node-core/sqlite-platform-adapter.js": "22df5ae37c49dcd0b219aecb5e6fdca15f7953797cced26ce00b77cdf17fe91e",
     "third_party/node-core/stat-watcher-platform-adapter.js": "a39ff9c4d95f076284eb1b3f74e2d3b1a6fd34854cc41e1f1789900904456602",
     "third_party/node-core/stdio-output-platform-adapter.js": "a69246b289cf0ce7d74cf3220cec5a928755c9b3bcd083f8f22dca9c0c23f07d",
     "third_party/node-core/stream-platform-adapter.js": "2073a7b29238c6feb09667e76806e6f42ad725f321758b9514699812223e4ac9",

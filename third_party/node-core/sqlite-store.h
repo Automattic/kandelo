@@ -72,6 +72,19 @@ class Connection : public std::enable_shared_from_this<Connection> {
   std::vector<std::weak_ptr<Session>> sessions_;
 #endif
   size_t callbackDepth_ = 0;
+  size_t authorizerDepth_ = 0;
+  using Authorization = std::function<int(int, const char*, const char*, const char*, const char*)>;
+  Authorization authorizer_;
+  std::exception_ptr authorizerFailure_;
+  static int Authorize(void* data, int action, const char* a, const char* b,
+                       const char* database, const char* trigger) noexcept {
+    auto& owner = *static_cast<Connection*>(data);
+    if (owner.authorizerFailure_) return SQLITE_DENY;
+    CallbackScope callback(owner);
+    struct Depth { size_t& n; explicit Depth(size_t& n) : n(n) { ++n; } ~Depth() { --n; } } depth(owner.authorizerDepth_);
+    try { return owner.authorizer_(action, a, b, database, trigger); }
+    catch (...) { owner.authorizerFailure_ = std::current_exception(); return SQLITE_DENY; }
+  }
  public:
   Connection(std::string path, Options options) : path_(std::move(path)), options_(options) {
     if (path_.find('\0') != std::string::npos) throw Error("ERR_INVALID_ARG_VALUE", "Database path must not contain null bytes");
@@ -111,6 +124,10 @@ class Connection : public std::enable_shared_from_this<Connection> {
     for (size_t i = 0; i < options_.limits.size(); ++i) {
       if (options_.limits[i]) sqlite3_limit(candidate, int(i), *options_.limits[i]);
     }
+    if (authorizer_) {
+      result = sqlite3_set_authorizer(candidate, Authorize, this);
+      if (result != SQLITE_OK) throw DatabaseError(candidate, result);
+    }
     db_ = guard.release();
   }
   void Close();
@@ -120,7 +137,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
     if (InCallback()) StateError("database cannot be deserialized while in a callback");
   }
   Image Serialize(const std::string& schema = "main") const {
-    auto* db = Require();
+    auto* db = Require(); CheckAuthorizer();
     Image image;
     image.data.reset(sqlite3_serialize(db, schema.c_str(), &image.size, 0));
     if (!image.data && image.size != 0) throw DatabaseError(db, SQLITE_ERROR);
@@ -128,7 +145,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
   }
   void Deserialize(Image image, const std::string& schema = "main");
   void Exec(const std::string& sql) {
-    sqlite3* db = Require();
+    sqlite3* db = Require(); CheckAuthorizer();
 #if defined(SQLITE_ENABLE_SESSION)
     // User SQL functions may trigger GC while SQLite is walking attached
     // sessions. Keep the actual native sessions through the whole operation,
@@ -136,6 +153,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
     const auto sessions = PinSessions();
 #endif
     const int result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
+    RethrowAuthorizer();
     if (result != SQLITE_OK) throw DatabaseError(db, result);
   }
   std::shared_ptr<Statement> Prepare(const std::string& sql, bool persistent = false);
@@ -146,17 +164,33 @@ class Connection : public std::enable_shared_from_this<Connection> {
     return sqlite3_limit(Require(), id, -1);
   }
   void SetLimit(int id, int value) {
+    Require(); CheckAuthorizer();
     Limit(id);
     sqlite3_limit(Require(), id, value);
     options_.limits[size_t(id)] = value;
   }
   void EnableDefensive(bool active) {
-    auto* db = Require();
+    auto* db = Require(); CheckAuthorizer();
     const int result = sqlite3_db_config(db, SQLITE_DBCONFIG_DEFENSIVE, active, nullptr);
     if (result != SQLITE_OK) throw DatabaseError(db, result);
     options_.defensive = active;
   }
   bool InCallback() const { return callbackDepth_ != 0; }
+  bool InAuthorizer() const { return authorizerDepth_ != 0; }
+  void CheckAuthorizer() const {
+    if (InAuthorizer()) StateError("database cannot be accessed from an authorizer callback");
+  }
+  void RethrowAuthorizer() {
+    auto error = std::exchange(authorizerFailure_, {});
+    if (error) std::rethrow_exception(error);
+  }
+  void SetAuthorizer(Authorization callback) {
+    auto* db = Require();
+    CheckAuthorizer();
+    authorizer_ = std::move(callback);
+    const int result = sqlite3_set_authorizer(db, authorizer_ ? Authorize : nullptr, authorizer_ ? this : nullptr);
+    if (result != SQLITE_OK) throw DatabaseError(db, result);
+  }
 #if defined(SQLITE_ENABLE_SESSION)
   std::shared_ptr<Session> CreateSession(const std::string& schema, const std::string& table);
   std::vector<std::shared_ptr<Session>> PinSessions() const {
@@ -167,7 +201,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
   bool ApplyChangeset(const std::vector<uint8_t>& bytes,
       const std::function<bool(const char*)>& filter = {},
       const std::function<int(int)>& conflict = {}) {
-    auto* db = Require();
+    auto* db = Require(); CheckAuthorizer();
     if (bytes.size() > size_t(std::numeric_limits<int>::max())) throw Error("ERR_OUT_OF_RANGE", "The changeset is too large.");
     struct Callbacks {
       const std::function<bool(const char*)>& filter;
@@ -194,6 +228,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
     const int result = sqlite3changeset_apply(db, int(bytes.size()),
         bytes.empty() ? const_cast<void*>(static_cast<const void*>("")) : static_cast<void*>(const_cast<uint8_t*>(bytes.data())),
         filter ? +select : nullptr, +resolve, &callbacks);
+    RethrowAuthorizer();
     if (callbacks.failure) std::rethrow_exception(callbacks.failure);
     if (result == SQLITE_OK) return true;
     if (result == SQLITE_ABORT) return false;
@@ -243,6 +278,7 @@ class Statement {
       return;
     }
     if (executing_) StateError("statement is already being executed");
+    if (owner_->InAuthorizer() && sqlite3_stmt_busy(stmt_)) owner_->CheckAuthorizer();
     Finalize();
   }
   void Finalize() {
@@ -253,6 +289,7 @@ class Statement {
   }
   void Reset(bool clear = false, bool ignorePreviousError = false) {
     auto* stmt = Require();
+    owner_->CheckAuthorizer();
     ExecutionScope execution(*this);
 #if defined(SQLITE_ENABLE_SESSION)
     const auto sessions = owner_->PinSessions();
@@ -292,7 +329,7 @@ class Statement {
     return sqlite3_bind_parameter_index(Require(), name.c_str());
   }
   void Bind(int index, const Cell& value) {
-    auto* stmt = Require();
+    auto* stmt = Require(); owner_->CheckAuthorizer();
     int result;
     switch (value.type) {
       case SQLITE_NULL: result = sqlite3_bind_null(stmt, index); break;
@@ -311,11 +348,13 @@ class Statement {
   }
   bool Step() {
     Require();
+    owner_->CheckAuthorizer();
     ExecutionScope execution(*this);
 #if defined(SQLITE_ENABLE_SESSION)
     const auto sessions = owner_->PinSessions();
 #endif
     const int result = sqlite3_step(Require());
+    owner_->RethrowAuthorizer();
     if (result == SQLITE_ROW) return true;
     if (result == SQLITE_DONE) return false;
     throw DatabaseError(owner_->Require(), result);
@@ -396,7 +435,7 @@ class Session {
     Delete();
   }
   std::vector<uint8_t> Changeset(bool patch) {
-    auto* db = owner_->Require();
+    auto* db = owner_->Require(); owner_->CheckAuthorizer();
     if (!session_) StateError("session is not open");
     struct Generation { bool& state; explicit Generation(bool& value) : state(value) { state = true; } ~Generation() { state = false; } } guard(generating_);
     void* raw = nullptr;
@@ -404,6 +443,7 @@ class Session {
     const int result = patch ? sqlite3session_patchset(session_, &length, &raw)
                              : sqlite3session_changeset(session_, &length, &raw);
     std::unique_ptr<void, decltype(&sqlite3_free)> bytes(raw, sqlite3_free);
+    owner_->RethrowAuthorizer();
     if (result != SQLITE_OK) throw DatabaseError(db, result);
     if (!length) return {};
     const auto* data = static_cast<const uint8_t*>(raw);
@@ -411,7 +451,7 @@ class Session {
   }
 };
 inline std::shared_ptr<Session> Connection::CreateSession(const std::string& schema, const std::string& table) {
-  auto* db = Require();
+  auto* db = Require(); CheckAuthorizer();
   sqlite3_session* raw = nullptr;
   int result = sqlite3session_create(db, schema.c_str(), &raw);
   std::unique_ptr<sqlite3_session, decltype(&sqlite3session_delete)> guard(raw, sqlite3session_delete);
@@ -461,11 +501,12 @@ inline void Connection::Close() {
   db_ = nullptr;
 }
 inline std::shared_ptr<Statement> Connection::Prepare(const std::string& sql, bool persistent) {
-  auto* db = Require();
+  auto* db = Require(); CheckAuthorizer();
   if (sql.size() > size_t(std::numeric_limits<int>::max())) throw Error("ERR_OUT_OF_RANGE", "SQL text exceeds SQLite length range");
   sqlite3_stmt* raw = nullptr;
   const int result = sqlite3_prepare_v3(db, sql.data(), int(sql.size()), persistent ? SQLITE_PREPARE_PERSISTENT : 0, &raw, nullptr);
   std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> guard(raw, sqlite3_finalize);
+  RethrowAuthorizer();
   if (result != SQLITE_OK) throw DatabaseError(db, result);
   if (!raw) throw Error("ERR_INVALID_ARG_VALUE", "The SQL query contains no statements.");
   auto statement = std::make_shared<Statement>(shared_from_this(), raw);

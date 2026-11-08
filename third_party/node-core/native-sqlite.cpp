@@ -17,6 +17,7 @@
 #include "js/TracingAPI.h"
 #include <algorithm>
 #include <cmath>
+#include <thread>
 
 namespace {
 using SqliteConnection = kandelo::sqlite::Connection;
@@ -46,9 +47,13 @@ static bool KandeloSqliteRaise(JSContext* cx, const SqliteError& error) {
   }
   JS_SetPendingException(cx, value); return false;
 }
+// A failed JSAPI call (including uncatchable interruption with no pending
+// value) must emerge as false, not a manufactured catchable SQLITE_AUTH.
+struct KandeloSqliteAuthorizerAbrupt {};
 template <typename Function>
 static bool KandeloSqliteTry(JSContext* cx, Function&& function) {
   try { return function(); }
+  catch (const KandeloSqliteAuthorizerAbrupt&) { return false; }
   catch (const SqliteError& error) { return KandeloSqliteRaise(cx, error); }
   catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
 }
@@ -73,7 +78,8 @@ class KandeloSqliteLimitsHandler final : public js::ForwardingProxyHandler {
     return true;
   }
   static bool Assign(JSContext* cx, HandleObject proxy, int index, HandleValue value) {
-    auto owner = Owner(proxy); // closed state precedes value validation
+    auto owner = Owner(proxy); // closed state precedes callback/value validation
+    owner->CheckAuthorizer(); // mutation only; native limit reads stay usable
     int limit;
     if (value.isNumber() && value.toNumber() == std::numeric_limits<double>::infinity()) limit = INT_MAX;
     else if (!value.isNumber() || std::trunc(value.toNumber()) != value.toNumber() ||
@@ -183,6 +189,9 @@ struct KandeloSqliteAggregate;
 struct KandeloSqliteCallbacks {
   JSContext* cx;
   size_t retiring = 0;
+  const std::thread::id thread = std::this_thread::get_id();
+  std::weak_ptr<SqliteConnection> connection;
+  JS::Heap<Value> authorizer{NullValue()};
   std::vector<KandeloSqliteFunction*> functions;
   explicit KandeloSqliteCallbacks(JSContext* cx) : cx(cx) {}
   void Trace(JSTracer* tracer);
@@ -216,9 +225,58 @@ struct KandeloSqliteFunction {
   }
 };
 void KandeloSqliteCallbacks::Trace(JSTracer* tracer) {
+  JS::TraceEdge(tracer, &authorizer, "SQLite authorizer");
   for (auto* entry : functions) entry->Trace(tracer);
 }
 
+// Exact pinned node_sqlite.cc AuthorizerCallback: no value coercion and no
+// replacement of a pending original callback exception by SQLITE_AUTH.
+static bool KandeloSqliteAuthorizerReturnError(JSContext* cx, JSExnType type,
+                                              const char* text) {
+  if (JS_IsExceptionPending(cx)) return false;
+  RootedString message(cx, JS_NewStringCopyZ(cx, text)), file(cx, JS_GetEmptyString(cx));
+  RootedObject stack(cx); RootedValue error(cx);
+  if (!message || !JS::CaptureCurrentStack(cx, &stack) ||
+      !JS::CreateError(cx, type, stack, file, 0, JS::ColumnNumberOneOrigin(1), nullptr,
+                       message, JS::NothingHandleValue, &error)) return false;
+  JS_SetPendingException(cx, error); return false;
+}
+static int KandeloSqliteAuthorize(const std::shared_ptr<KandeloSqliteCallbacks>& registry,
+                                  int action, const char* a, const char* b,
+                                  const char* database, const char* trigger) {
+  // Public owners are nontransferable and all SQL preparation/stepping is on
+  // this context thread. Backup copies B-tree pages, never authorizes source
+  // SQL on its worker. Never enter JS if a future native consumer violates it.
+  if (registry->thread != std::this_thread::get_id()) return SQLITE_DENY;
+  JSContext* cx = registry->cx;
+  auto connection = registry->connection.lock();
+  if (!connection || registry->retiring || JS_IsExceptionPending(cx)) return SQLITE_DENY;
+  RootedValue callback(cx, registry->authorizer), result(cx);
+  JS::RootedValueArray<5> args(cx); args[0].setInt32(action);
+  size_t index = 1;
+  for (const char* value : {a, b, database, trigger}) {
+    if (!value) args[index].setNull();
+    else if (!KandeloSqliteText(cx, value, args[index])) throw KandeloSqliteAuthorizerAbrupt{};
+    ++index;
+  }
+  if (!JS::Call(cx, JS::UndefinedHandleValue, callback, args, &result)) throw KandeloSqliteAuthorizerAbrupt{};
+  // Node/V8 IsInt32 is semantic, not SpiderMonkey's storage tag.
+  if (!result.isNumber() || !std::isfinite(result.toNumber()) ||
+      std::trunc(result.toNumber()) != result.toNumber() ||
+      (result.toNumber() == 0 && std::signbit(result.toNumber())) ||
+      result.toNumber() < INT32_MIN || result.toNumber() > INT32_MAX) {
+    KandeloSqliteAuthorizerReturnError(cx, JSEXN_TYPEERR,
+        "Authorizer callback must return an integer authorization code");
+    throw KandeloSqliteAuthorizerAbrupt{};
+  }
+  const int code = int(result.toNumber());
+  if (code != SQLITE_OK && code != SQLITE_DENY && code != SQLITE_IGNORE) {
+    KandeloSqliteAuthorizerReturnError(cx, JSEXN_RANGEERR,
+        "Authorizer callback returned a invalid authorization code");
+    throw KandeloSqliteAuthorizerAbrupt{};
+  }
+  return code;
+}
 static bool KandeloSqliteCallbackArgument(JSContext* cx, sqlite3_value* value,
                                          bool big, MutableHandleValue result) {
   switch (sqlite3_value_type(value)) {
@@ -560,13 +618,33 @@ static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
     auto owner = std::make_unique<KandeloSqliteHandle>();
     owner->connection = std::make_shared<SqliteConnection>(std::move(path), config);
     owner->callbacks = std::make_shared<KandeloSqliteCallbacks>(cx);
+    owner->callbacks->connection = owner->connection;
     if (open) owner->connection->Open();
     return KandeloSqliteNewOwner(cx, std::move(owner), args.rval());
   }
-  const bool statementOperation = operation == "checkStatement" || operation == "isStatementFinalized" || operation == "closeStatement" || operation == "columns" || operation == "finalize" || operation == "reset" || operation == "bind" || operation == "step" || operation == "stepDiscard" || operation == "names" || operation == "parameters" || operation == "sourceSQL" || operation == "expandedSQL" || operation == "stat" || operation == "resetStats";
+  const bool statementOperation = operation == "checkStatementExecution" || operation == "checkStatement" || operation == "isStatementFinalized" || operation == "closeStatement" || operation == "columns" || operation == "finalize" || operation == "reset" || operation == "bind" || operation == "step" || operation == "stepDiscard" || operation == "names" || operation == "parameters" || operation == "sourceSQL" || operation == "expandedSQL" || operation == "stat" || operation == "resetStats";
   const bool sessionOperation = operation == "sessionChangeset" || operation == "closeSession";
   auto* owner = KandeloSqliteOwner(args.get(1), sessionOperation ? 2 : statementOperation ? 1 : 0);
-  if (operation == "open") owner->connection->Open();
+  if (operation == "checkAuthorizer") { owner->connection->Require(); owner->connection->CheckAuthorizer(); }
+  else if (operation == "checkStatementExecution") { owner->statement->Require(); owner->statement->Owner()->CheckAuthorizer(); }
+  else if (operation == "setAuthorizer") {
+    auto connection = owner->connection;
+    connection->Require(); connection->CheckAuthorizer();
+    RootedValue callback(cx, args.get(2));
+    if (!callback.isNull() && (!callback.isObject() || !JS::IsCallable(&callback.toObject())))
+      throw SqliteError("ERR_INVALID_ARG_TYPE", "The \"callback\" argument must be a function or null.");
+    auto registry = owner->callbacks;
+    if (registry->cx != cx || registry->thread != std::this_thread::get_id())
+      throw SqliteError("ERR_INVALID_STATE", "SQLite authorizer belongs to a different context or thread");
+    std::function<int(int, const char*, const char*, const char*, const char*)> authorize;
+    if (!callback.isNull()) authorize = [registry](int action, const char* a, const char* b,
+                                                  const char* database, const char* trigger) {
+      return KandeloSqliteAuthorize(registry, action, a, b, database, trigger);
+    };
+    registry->authorizer = callback;
+    connection->SetAuthorizer(std::move(authorize));
+  }
+  else if (operation == "open") owner->connection->Open();
   else if (operation == "close") {
     owner->connection->Close();
     if (JS_IsExceptionPending(cx)) return false;
@@ -624,7 +702,7 @@ static bool KandeloSqliteDispatch(JSContext* cx, unsigned argc, Value* vp) {
   } else if (operation == "registerScalar" || operation == "registerAggregate") {
     const bool scalar = operation == "registerScalar";
     auto connection = owner->connection;
-    sqlite3* db = connection->Require();
+    sqlite3* db = connection->Require(); connection->CheckAuthorizer();
     std::string name;
     if (!KandeloSqliteString(cx, args.get(2), &name)) return false;
     const unsigned arityIndex = scalar ? 4 : 7, bigIndex = scalar ? 5 : 8;

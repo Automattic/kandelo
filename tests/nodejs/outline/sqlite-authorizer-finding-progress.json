@@ -1,0 +1,156 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/native-integration.md",
+    "findingIds": [
+      "NI-002"
+    ],
+    "relatedFamilies": [
+      "async",
+      "filesystem",
+      "engine"
+    ],
+    "scope": "Partial actual SQLite authorizer/callback/limits-phase owner only; no full SQLite namespace, native bridge or qualified finding closure.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/native-integration.md",
+        "findingId": "NI-002",
+        "definitionKey": "tests/nodejs/audit/native-integration.md#NI-002:L13",
+        "relation": "partial-owning-source",
+        "closed": false
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "actual sqlite3_set_authorizer registration, replacement/null clear and reinstall after close/open",
+    "same existing native connection, per-callback authorizer/callback depth, C++ exception captured before SQLite C-frame return",
+    "actual JS callback traced by existing database registry, weak native connection, creating thread/context checks, undefined receiver and native nullable strings",
+    "noncoercing semantic int32 validation including negative-zero rejection, original JS exception/uncatchable failure retained through real post-SQL abrupt channel",
+    "same-connection mutating/execution/limits/session and busy-close guards, other connection and idle-close policy retained",
+    "public method routes to real native owner; no exported facade or SQL emulation",
+    "ROOT-SQLITE-AUTH-001 correction removes the shared readonly depth guard, keeps live actual Limit reads and places Require/CheckAuthorizer in Assign/SetLimit before validation/mutation."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-sqlite259-source-r1/report.json",
+    "sha256": "2a1e4e81869df783616d3a2c12b032ce7b5f7312ddbf2589c7a2b880c5a1a4ee",
+    "guardedInputs": 910,
+    "scope": "Actual current normal SQLite frontend/native staging plus corrected source-equivalent portable Connection8/native limit phases3/native-dependent public12+12. Parameter-free SQL fixture metadata is not general parameter support. No new guest registry/exception/root/GC/realm/Worker/fatal proof or full SQLite/LoadExtension/authz-file/four-host acceptance. Old wrong limit read-rejection is not target agreement. Two historical helper attempts pending once; zero new root compilers."
+  },
+  "packageChecks": {
+    "report": ".context/node26-sqlite259-affected-r1.json",
+    "sha256": "5d9e384e32ca4be20e4071b04a18a98c9273b5924c3a410f434ebdb63c2f0e03",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-sqlite259-source-r1/report.json",
+    "sha256": "2a1e4e81869df783616d3a2c12b032ce7b5f7312ddbf2589c7a2b880c5a1a4ee",
+    "correctedPortableOwnerGroups": 8,
+    "nativeLimitPhaseReferences": 3,
+    "nativePublicGroups": 12,
+    "candidateFrontendNativeDependencyGroups": 12,
+    "sameObservedGroups": 12,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "historicalChainHelperAttempts": 2,
+    "oldWrongReadRejectionCreditedAsTargetAgreement": false,
+    "scope": "Current actual adapter/core with native Node SQLite callback/error/Values and parameter-free selected SQL dependencies; corrected exact-source portable Connection/SQLite object and native3phase references. No new guest JSAPI registry/exception/GC/realm/Worker or full SQLite/four-host proof. Original wrong readonly rejection is not target agreement. LoadExtension remains unsupported; no authz upstream file executed.",
+    "guardedInputs": 910,
+    "sourceChecks": 19,
+    "sourceCommands": 8,
+    "packagePassed": 14,
+    "newRootCompilerAttempts": 0,
+    "historicalHelpers": 2
+  },
+  "sealedEvidence": {
+    "report": ".context/sqlite-authorizer-limits-correction-agent/report.json",
+    "sha256": "766c969da7048f19258989a2d55ff583055e637f8e50d79efb7570acff52456e",
+    "reusedEvidence": true,
+    "scope": "Original actual authorizer plus separate readonly/mutation phase correction. Corrected portable8/native3phase and original native12/candidate12 frontend are native-dependent components; original wrong readonly test uncredited. No new guest JSAPI proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/sqlite-authorizer-owner-agent/evidence/native.stdout",
+      "sha256": "b8d283905d9cfff39cb50c582e47a2620096a3cdd4e7f34fee2b4b5cf54f6606",
+      "classification": "authored-negative-zero-assumption-nonpass",
+      "scope": "Original native11/12 because authored expectation admitted-0. Original source/control/raw outcomes preserved; semantic int32 source now rejects it. Native frontend dependency does not validate guest return/error bridge."
+    },
+    {
+      "report": ".context/sqlite-authorizer-owner-agent/authoring-failure.json",
+      "sha256": "6e4aa41990b3e9113a3bca2cae8a767ebe266d3b83bc5c8f7b6d3ae3188c281c",
+      "classification": "orchestration-syntax-failure",
+      "scope": "Author JS syntax failure, no command/compiler/source execution."
+    },
+    {
+      "report": ".context/sqlite-authorizer-owner-agent/evidence/owner-r1.stdout",
+      "sha256": "751c7ba25c17590aa816bced9b1ade5a2f6326fb68f75b0ed13dd0b70566a970",
+      "classification": "historical-candidate-behavior-not-target-agreement",
+      "scope": "Original portable8 includes mistaken readonly Limit rejection. It is not credited as target agreement. Corrected regression uses real SetLimit mutation and positive read/unchanged-value assertions."
+    }
+  ],
+  "remaining": [
+    "New guest JSAPI callback/root/realm/GC/worker/fatal/OOM/interruption behavior uncompiled/unexecuted; native frontend fixture uses actual pinned Node SQLite callback/error backend",
+    "Portable test proves exact header/backend ownership; native frontend dependency checks do not execute new native callback result/error/abrupt bridge",
+    "Tag stores/extensions/virtual tables/modules and other SQLite gaps remain unavailable or partial; authorizer initial guard is not implementation of those features",
+    "Existing generic SQLite receiver/cross-realm admission and full callback/Statement parameter/iterator/backup boundaries not claimed closed",
+    "Unchanged upstream authz file examined/pinned but not executed; no whole-file, overall or four-host support claim",
+    "Preserve pinned deserialize general InCallback policy. LoadExtension permission flags precede authorizer in target, while extension owner stays unavailable; initial guards do not implement it."
+  ],
+  "actualSqliteAuthorizerControlReport": {
+    "report": ".context/sqlite259-root-controls-r1/report.json",
+    "sha256": "cf8e8daff9d13d4bf281e13706459de01d88acfca2e16f2d1668d5beb00fc0eb",
+    "correctedPortableOwnerGroups": 8,
+    "nativeLimitPhaseReferences": 3,
+    "nativePublicGroups": 12,
+    "candidateFrontendNativeDependencyGroups": 12,
+    "sameObservedGroups": 12,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "historicalChainHelperAttempts": 2,
+    "oldWrongReadRejectionCreditedAsTargetAgreement": false,
+    "scope": "Current actual adapter/core with native Node SQLite callback/error/Values and parameter-free selected SQL dependencies; corrected exact-source portable Connection/SQLite object and native3phase references. No new guest JSAPI registry/exception/GC/realm/Worker or full SQLite/four-host proof. Original wrong readonly rejection is not target agreement. LoadExtension remains unsupported; no authz upstream file executed."
+  },
+  "integrationTool": {
+    "ledger": ".context/agent-integrations/node26-sqlite259/ledger.json",
+    "sha256": "915a47fa3a58cde48077b7c8ce3f422eb9aee8bf034568be8e5e638da3df8836",
+    "sourceBinding": "865f62521fa647eff03c93b1a3e5beb5652394f68fbdabd5bb1de4359a7ce820",
+    "allStepsDone": true,
+    "imports": [
+      3,
+      0
+    ],
+    "actualPids": [
+      13021,
+      13009
+    ],
+    "selectedBindingOnly": true,
+    "globalCacheKeyBindingClaimed": false,
+    "actualImporter": {
+      "path": ".context/import-successful-integration-receipts.py",
+      "sha256": "dba2ff1ccc5631a9ac164a4fbac8be1723bf9a64520f02faeda930f59bccd847"
+    },
+    "importPlan": {
+      "path": ".context/sqlite259-import-plan.json",
+      "sha256": "1ce71b16c08b108d79fd09610aabf19f6742e3e09cd24e7d552131d4ee9197af"
+    }
+  },
+  "guestAuthorizerBridgeExecuted": false,
+  "oldWrongReadRejectionCreditedAsTargetAgreement": false,
+  "sourceCorrectionAddressed": {
+    "id": "ROOT-SQLITE-AUTH-001",
+    "classification": "source-addressed, guest-uncompiled",
+    "originalSeal": ".context/sqlite-authorizer-owner-agent/SEAL.json",
+    "separateCorrectionSeal": ".context/sqlite-authorizer-limits-correction-agent/SEAL.json",
+    "independentReviewSeal": ".context/sqlite-authorizer-independent-review-agent/SEAL.json"
+  },
+  "at": "2026-11-08T06:25:04.162299+00:00",
+  "recipeRevision": 259,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

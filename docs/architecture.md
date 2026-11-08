@@ -7315,3 +7315,7 @@ Source257 implements pinned getCallSites overload/validator/getter/error order a
 ### Opaque ordinary Server listener ownership
 
 Source258 routes ordinary net.Server through a genuine opaque foreground-finalized captured-descriptor listener owner and existing accepted TCP lifecycle. Actual normal910inputs/6sourcechecks/8commands pass, with portable8/nativeServer10/currentJS11/nativefd3reference observations; package14 independent. Candidate listen({fd}) remains inactive, nativeClass/AsyncWrap/GC/realm/fatal/Worker/fullServer/four-host behavior uncompiled. Contextual0180 source patch has exact Git and production patch forward/reverse/forward proof; mode0755 manual coupling, no V1 operation. One historical helper counts once362 to363, no root compiler.
+
+### SQLite authorizer callback ownership
+
+Source259 connects actual sqlite3_set_authorizer to existing Connection/Statement/Session ownership, traced database callback registry and post-SQL exception_ptr/abrupt handoff. Separate limits correction permits real readonly cached limit access and guards actual mutations before value validation. Normal910inputs/19sourcechecks/8commands pass, correctedportable8/nativeLimit3/frontend12native+12candidate selected observations and package14 independent. Native backend/error/Values/parameter-free SQL dependencies do not execute new guest JSAPI bridge. Two historical helpers count once363 to365; zero root compiler, no engine patch/full SQLite or guest closure.
