@@ -2,6 +2,14 @@
 
 ## Current checkpoint — 2026-11-08
 
+The failure-only outer-document pilot `1a68` passes its one scenario in
+2m32s of browser execution; it therefore captures no failed parent. This
+does not resolve the earlier failures. The maintained persistence fixture
+now saves that additional bounded, read-only DOM view when a test fails,
+while preserving all ordinary editor, save and restart assertions. Test
+discovery passes for the bounded three-repetition Firefox selection, whose
+actual run is pending. No production or ported-software code changes.
+
 **Firefox investigation separates keepalive delivery from missing frame contexts.**
 Diagnostic `ca3a` finishes one pass / one failure. The failed run closes the
 welcome dialog and publishes despite the observed keepalive REST 503s,
