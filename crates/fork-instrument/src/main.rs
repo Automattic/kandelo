@@ -39,11 +39,19 @@ use fork_instrument::{
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let io::Inputs { artifact: mut snapshot, permissions, name: input_name } = io::Inputs::open(&cli)?;
+    let io::Inputs {
+        artifact: mut snapshot,
+        permissions,
+        name: input_name,
+    } = io::Inputs::open(&cli)?;
     if cli.original_reference {
         match fork_instrument::original_artifact::original_reference(snapshot.bytes())? {
             Some(reference) => {
-                let digest: String = reference.sha256.iter().map(|byte| format!("{byte:02x}")).collect();
+                let digest: String = reference
+                    .sha256
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
                 println!("{}\t{digest}", reference.length);
             }
             None => println!("none"),
@@ -52,20 +60,56 @@ fn main() -> Result<()> {
     }
     if let Some(original_path) = &cli.verify_original {
         let reference = fork_instrument::original_artifact::original_reference(snapshot.bytes())?
-            .ok_or_else(|| anyhow::anyhow!("input has no retained original-program reference"))?;
-        anyhow::ensure!(reference.length <= cli.max_input_bytes,
-            "original program exceeds artifact byte budget");
+            .ok_or_else(|| {
+            anyhow::anyhow!("input has no retained original-program reference")
+        })?;
+        anyhow::ensure!(
+            reference.length <= cli.max_input_bytes,
+            "original program exceeds artifact byte budget"
+        );
         fork_instrument::original_artifact::load_original_file(
-            original_path, &reference, cli.max_input_bytes)?;
+            original_path,
+            &reference,
+            cli.max_input_bytes,
+        )?;
         return Ok(());
     }
     if cli.reprepare_from_original {
         let reference = fork_instrument::original_artifact::original_reference(snapshot.bytes())?
-            .ok_or_else(|| anyhow::anyhow!("input has no retained original-program reference"))?;
+            .ok_or_else(|| {
+            anyhow::anyhow!("input has no retained original-program reference")
+        })?;
         snapshot = fork_instrument::original_artifact::load_original(
-            cli.original_store.as_ref().expect("clap requires an original store"), &reference, cli.max_input_bytes)?;
+            cli.original_store
+                .as_ref()
+                .expect("clap requires an original store"),
+            &reference,
+            cli.max_input_bytes,
+        )?;
     }
     let input = snapshot.bytes();
+
+    if let Some(offset) = &cli.debug_location {
+        use sha2::{Digest, Sha256};
+        let offset = if let Some(hex) = offset.strip_prefix("0x") {
+            u64::from_str_radix(hex, 16)
+        } else {
+            offset.parse::<u64>()
+        }
+        .context("invalid debug instruction byte offset")?;
+        let map = fork_instrument::debug_info::embedded_map(input, Default::default())?
+            .ok_or_else(|| {
+                anyhow::anyhow!("input has no embedded source map; prepare with --debug-map")
+            })?;
+        let location = map.lookup(offset).map(|location| serde_json::json!({
+            "file": map.files[location.file as usize], "line": u64::from(location.line) + 1, "column": u64::from(location.column) + 1
+        }));
+        println!(
+            "{}",
+            serde_json::json!({ "sha256": format!("{:x}", Sha256::digest(input)), "offset": offset, "location": location })
+        );
+        return Ok(());
+    }
 
     if cli.streaming_scan {
         let scan = fork_instrument::streaming::scan(&input)
@@ -153,8 +197,8 @@ fn main() -> Result<()> {
     };
 
     if cli.sink_report {
-        let report = sink_report(input, &opts)
-            .with_context(|| format!("analyzing {input_name}"))?;
+        let report =
+            sink_report(input, &opts).with_context(|| format!("analyzing {input_name}"))?;
         println!("source\t{}", report.source.as_str());
         if let Some(f) = &report.facts {
             println!(
@@ -175,8 +219,7 @@ fn main() -> Result<()> {
     }
 
     if cli.discover_only {
-        let analysis =
-            analyze(input, &opts).with_context(|| format!("analyzing {input_name}"))?;
+        let analysis = analyze(input, &opts).with_context(|| format!("analyzing {input_name}"))?;
         print_analysis_json(&analysis);
         return Ok(());
     }
@@ -186,27 +229,47 @@ fn main() -> Result<()> {
             "--output is required unless an analysis or contract-inspection mode is set"
         )
     })?;
-    let original_store = if cli.bind_original { None } else {
-        cli.original_store.or_else(||
-            std::env::var_os("WASM_POSIX_BUILD_ORIGINAL_STORE").map(std::path::PathBuf::from))
+    let original_store = if cli.bind_original {
+        None
+    } else {
+        cli.original_store.or_else(|| {
+            std::env::var_os("WASM_POSIX_BUILD_ORIGINAL_STORE").map(std::path::PathBuf::from)
+        })
     };
     let original = if cli.bind_original {
-        Some(fork_instrument::original_artifact::reference_for_original(snapshot.bytes())?)
+        Some(fork_instrument::original_artifact::reference_for_original(
+            snapshot.bytes(),
+        )?)
     } else {
-        original_store.as_ref().map(|store|
-            fork_instrument::original_artifact::retain_original(&snapshot, store, permissions.clone())).transpose()?
+        original_store
+            .as_ref()
+            .map(|store| {
+                fork_instrument::original_artifact::retain_original(
+                    &snapshot,
+                    store,
+                    permissions.clone(),
+                )
+            })
+            .transpose()?
     };
     if let (Some(store), Some(original)) = (&original_store, &original) {
         let output_path = output;
         let original_directory = std::fs::canonicalize(original.path(store).parent().unwrap())?;
-        let output_directory = output_path.parent().filter(|parent| !parent.as_os_str().is_empty())
+        let output_directory = output_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or(std::path::Path::new("."));
-        anyhow::ensure!(!std::fs::canonicalize(output_directory)?.starts_with(&original_directory),
-            "output must be outside the immutable original-program store");
+        anyhow::ensure!(
+            !std::fs::canonicalize(output_directory)?.starts_with(&original_directory),
+            "output must be outside the immutable original-program store"
+        );
     }
     if cli.retain_uninstrumented {
         let retained = fork_instrument::original_artifact::attach_original_reference(
-            &snapshot, original.as_ref().expect("clap requires an original store"), cli.max_output_bytes)?;
+            &snapshot,
+            original.as_ref().expect("clap requires an original store"),
+            cli.max_output_bytes,
+        )?;
         return retained.publish(output, permissions);
     }
     let artifact = transform::run(
@@ -215,6 +278,7 @@ fn main() -> Result<()> {
         transform::Settings {
             optimize: &cli.post_optimize,
             keep_names: cli.keep_names,
+            debug_map: cli.debug_map,
             output_bytes: cli.max_output_bytes,
             original: original.as_ref(),
         },
