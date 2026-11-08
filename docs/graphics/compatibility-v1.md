@@ -27427,3 +27427,40 @@ refusal. The Sway Playwright spec also passes semantic TypeScript checking.
 The earlier 3,595/1 result remains recorded as a failed candidate run; it
 is not relabeled green. Normal rebuild, actual Activity/browser recovery
 and the remaining B1 release checks are still required.
+
+### Normal B1 checkpoint and remaining fork refusal, 2026-11-08
+
+R874 normally builds pushed ba21cf8ea9 plus main5f484a853e in 33m54s,
+including curl's changed dependency and rebuilt Freeciv. The twelve-root
+graphical image is 822,588 bytes, SHA-256
+`67f91d06af8acdb38f5465a1e12515c53643d5603a89f42bd2c49c0d966b285d`;
+kernel SHA-256 is
+`3a6dbc5a72c0ad985a2651f215b83305a7d1d864731077e90814457b0d552656`.
+Both actual HTTP payloads match. Prepared Node checks pass51, zero skips.
+
+Chromium now paints Swaybar and the first Foot, accepts typing and switches
+workspaces. Both direct and Activities tests still fail when Alt+Enter
+launches another Foot. The actual console records shared-mapping inheritance
+ENOMEM for the new child 7.4ms after the key action. This is a fork refusal,
+not evidence of a missing shortcut. Before-cold diagnostic R879 reads the
+real procfs reports through an independent pre-existing TTY2: I/O live
+28,611,062 / limit31,457,280 before the trigger; the unextended failure
+report has total0, so it does not identify the failed fork allocation.
+
+The separate fifteen-case rendering run passes14 and fails Firefox's SDL
+editor case. All three engines pass the fluid, ScummVM launcher, Freeciv
+menu and opaque-scanout checks. That SDL case never established its first
+presented frame while Internals remained open, and completed only one PNG
+pair. Its reported zero variance is insufficient evidence of animation
+stall. The fixture now selects real Graphics and requires positive,
+advancing presentation counts before preserving its existing pixel/size
+thresholds; this correction still needs real browser execution.
+
+Fork-phase records now extend the existing fixed eight-entry diagnostic.
+The focused memory rerun passes190, zero failures (1.88s), and Sway/SDL
+spec semantic types pass. The first diagnostic candidate's 189/1 result is
+preserved: its new test incorrectly counted clean cache pages as retained
+custody. Explicit cold-retained accounting and rewarming preserve exact
+credit assertions while allowing the pre-existing settle operation. No
+quota, ABI, original error or transaction order changes. Normal diagnostic
+rebuild and actual fork-phase collection remain pending; B1 is not ready.

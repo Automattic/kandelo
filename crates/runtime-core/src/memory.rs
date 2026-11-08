@@ -4840,24 +4840,34 @@ impl SharedMappingTable {
             return Err(Errno::EEXIST);
         }
 
-        let mut recorded = IoBuffer::try_with_capacity(self.sysv_mapping_count_for(parent_pid))?;
+        let attachment_count = self.sysv_mapping_count_for(parent_pid);
+        let mut recorded = IoBuffer::try_with_capacity(attachment_count).inspect_err(|&error|
+            self.failures.record("fork_sysv_prepare", child_pid, 0, 0, 0, -1, 0,
+                attachment_count.saturating_mul(core::mem::size_of::<u64>()), error))?;
         let mut failure: Option<Errno> = None;
-        for (map_addr, seg_id, size, read_only) in self.sysv_attachments_for(parent_pid) {
+        for (map_addr, mapping) in self.sysv.get(&parent_pid).into_iter().flat_map(|entries| entries.iter()) {
+            let (map_addr, seg_id, size, read_only) = (*map_addr, mapping.seg_id, mapping.size, mapping.read_only);
             match ops.attach(child_pid, seg_id, read_only) {
                 // An attachment whose size does not match the parent's record
                 // still incremented nattch, so it is released before unwinding.
                 Ok(attached) if attached == size => {}
                 Ok(_) => {
+                    self.failures.record("fork_sysv_attach_size", child_pid, map_addr,
+                        size, 0, -1, 0, size, Errno::EIO);
                     ops.detach_segment(child_pid, seg_id);
                     failure = Some(Errno::EIO);
                     break;
                 }
                 Err(err) => {
+                    self.failures.record("fork_sysv_attach", child_pid, map_addr,
+                        size, 0, -1, 0, size, err);
                     failure = Some(err);
                     break;
                 }
             }
             if let Err(err) = ops.record(child_pid, map_addr, seg_id, size) {
+                self.failures.record("fork_sysv_record", child_pid, map_addr,
+                    size, 0, -1, 0, size, err);
                 ops.detach_segment(child_pid, seg_id);
                 failure = Some(err);
                 break;
@@ -5413,6 +5423,10 @@ impl SharedMappingTable {
         }
         let child_bytes = self.process_memory_len(child_pid, io).ok_or(Errno::ESRCH)?;
 
+        // WHY: a fork can refuse either retained child state or temporary
+        // rollback storage. Distinguish those owners before considering any
+        // change in admission policy; fixed records never retain resources.
+        let failures = &mut self.failures;
         // --- stage -------------------------------------------------------
         let mut staged = PreparedMap::new();
         for (map_addr, mapping) in self.mappings.get(&parent_pid).into_iter().flat_map(|entries| entries.iter()) {
@@ -5429,7 +5443,10 @@ impl SharedMappingTable {
                     };
                     backing.reconcile_source(io);
                     let version = backing.version;
-                    let latest = backing.read_range(mapping.file_offset, mapping.len, io);
+                    let latest = backing.read_range(mapping.file_offset, mapping.len, io)
+                        .inspect_err(|&error| failures.record("fork_stage_read", child_pid,
+                            *map_addr, mapping.len, mapping.file_offset, backing.handle,
+                            0, mapping.len, error));
                     backing.settle();
                     (latest?, version)
                 }
@@ -5441,15 +5458,28 @@ impl SharedMappingTable {
                     if base.saturating_add(mapping.len) > backing.bytes.len() {
                         return Err(Errno::EINVAL);
                     }
-                    (IoBuffer::copy_from(&backing.bytes[base..base + mapping.len])?, backing.version)
+                    (IoBuffer::copy_from(&backing.bytes[base..base + mapping.len])
+                        .inspect_err(|&error| failures.record("fork_anon_stage", child_pid,
+                            *map_addr, mapping.len, mapping.file_offset, -1,
+                            0, mapping.len, error))?, backing.version)
                 }
             };
-            let mut inherited = mapping.try_copy_range(0, 0)?;
+            let mut inherited = mapping.try_copy_range(0, 0).inspect_err(|&error| {
+                let handle = mapping.backing_key.as_deref().and_then(|key| self.file_backings.get(key))
+                    .map_or(-1, |backing| backing.handle);
+                failures.record("fork_stage_copy", child_pid, *map_addr, mapping.len,
+                    mapping.file_offset, handle, 0, core::mem::size_of::<SharedMapping>(), error);
+            })?;
             inherited.len = mapping.len;
             inherited.snapshot = Some(latest);
             inherited.seen_version = version;
             inherited.clean = None;
-            staged.try_insert_io(*map_addr, inherited)?;
+            staged.try_insert_io(*map_addr, inherited).inspect_err(|&error| {
+                let handle = mapping.backing_key.as_deref().and_then(|key| self.file_backings.get(key))
+                    .map_or(-1, |backing| backing.handle);
+                failures.record("fork_stage_metadata", child_pid, *map_addr, mapping.len,
+                    mapping.file_offset, handle, 0, core::mem::size_of::<SharedMapping>(), error);
+            })?;
         }
 
         let mut staged_sysv = PreparedMap::new();
@@ -5460,38 +5490,74 @@ impl SharedMappingTable {
             {
                 return Err(Errno::EINVAL);
             }
-            let mut latest = IoBuffer::try_filled(mapping.size, 0)?;
-            io.shm_read(mapping.seg_id, 0, &mut latest)?;
+            let mut latest = IoBuffer::try_filled(mapping.size, 0).inspect_err(|&error|
+                failures.record("fork_sysv_alloc", child_pid, *map_addr, mapping.size,
+                    0, -1, 0, mapping.size, error))?;
+            io.shm_read(mapping.seg_id, 0, &mut latest).inspect_err(|&error|
+                failures.record("fork_sysv_read", child_pid, *map_addr, mapping.size,
+                    0, -1, 0, mapping.size, error))?;
             staged_sysv.try_insert_io(*map_addr, SysvShmMapping {
                 seg_id: mapping.seg_id,
                 size: mapping.size,
                 read_only: mapping.read_only,
                 snapshot: latest,
-                seen_version: self.sysv_segment_version(mapping.seg_id),
-            })?;
+                seen_version: self.sysv_versions.get(&mapping.seg_id).copied().unwrap_or(0),
+            }).inspect_err(|&error| failures.record("fork_sysv_metadata", child_pid,
+                *map_addr, mapping.size, 0, -1, 0, core::mem::size_of::<SysvShmMapping>(), error))?;
         }
 
         // Snapshot the child bytes each publication overwrites, so a failed
         // commit can put the child's address space back as it was.
-        let mut originals = IoBuffer::try_with_capacity(staged.len().checked_add(staged_sysv.len()).ok_or(Errno::ENOMEM)?)?;
+        let original_count = staged.len().checked_add(staged_sysv.len()).ok_or(Errno::ENOMEM)
+            .inspect_err(|&error| failures.record("fork_rollback_metadata", child_pid,
+                0, 0, 0, -1, 0, usize::MAX, error))?;
+        let mut originals = IoBuffer::try_with_capacity(original_count).inspect_err(|&error|
+            failures.record("fork_rollback_metadata", child_pid, 0, 0, 0, -1, 0,
+                original_count.saturating_mul(core::mem::size_of::<(u64, IoBuffer<u8>)>()), error))?;
         for (map_addr, mapping) in &staged {
-            let mut bytes = IoBuffer::try_filled(mapping.len, 0)?;
-            io.read_process(child_pid, *map_addr, &mut bytes)?;
+            let mut bytes = IoBuffer::try_filled(mapping.len, 0).inspect_err(|&error| {
+                let handle = mapping.backing_key.as_deref().and_then(|key| self.file_backings.get(key))
+                    .map_or(-1, |backing| backing.handle);
+                failures.record("fork_rollback_alloc", child_pid, *map_addr, mapping.len,
+                    mapping.file_offset, handle, 0, mapping.len, error);
+            })?;
+            io.read_process(child_pid, *map_addr, &mut bytes).inspect_err(|&error| {
+                let handle = mapping.backing_key.as_deref().and_then(|key| self.file_backings.get(key))
+                    .map_or(-1, |backing| backing.handle);
+                failures.record("fork_rollback_read", child_pid, *map_addr, mapping.len,
+                    mapping.file_offset, handle, 0, mapping.len, error);
+            })?;
             originals.push((*map_addr, bytes));
         }
         for (map_addr, mapping) in &staged_sysv {
-            let mut bytes = IoBuffer::try_filled(mapping.size, 0)?;
-            io.read_process(child_pid, *map_addr, &mut bytes)?;
+            let mut bytes = IoBuffer::try_filled(mapping.size, 0).inspect_err(|&error|
+                failures.record("fork_sysv_rollback_alloc", child_pid, *map_addr, mapping.size,
+                    0, -1, 0, mapping.size, error))?;
+            io.read_process(child_pid, *map_addr, &mut bytes).inspect_err(|&error|
+                failures.record("fork_sysv_rollback_read", child_pid, *map_addr, mapping.size,
+                    0, -1, 0, mapping.size, error))?;
             originals.push((*map_addr, bytes));
         }
 
-        let staged = if staged.is_empty() { None } else { Some(self.mappings.prepare_io(child_pid, ProcessMappings::new(staged))?) };
-        let staged_sysv = if staged_sysv.is_empty() { None } else { Some(self.sysv.prepare_io(child_pid, ProcessMappings::new(staged_sysv))?) };
+        let staged = if staged.is_empty() { None } else {
+            Some(self.mappings.prepare_io(child_pid, ProcessMappings::new(staged))
+                .inspect_err(|&error| failures.record("fork_map_admit", child_pid,
+                    0, 0, 0, -1, 0, core::mem::size_of::<ProcessMappings<SharedMapping>>(), error))?)
+        };
+        let staged_sysv = if staged_sysv.is_empty() { None } else {
+            Some(self.sysv.prepare_io(child_pid, ProcessMappings::new(staged_sysv))
+                .inspect_err(|&error| failures.record("fork_sysv_admit", child_pid,
+                    0, 0, 0, -1, 0, core::mem::size_of::<ProcessMappings<SysvShmMapping>>(), error))?)
+        };
 
         // --- commit ------------------------------------------------------
         let mut failure: Option<Errno> = None;
         for (map_addr, mapping) in staged.as_ref().into_iter().flat_map(|entry| entry.value().iter()) {
             if let Err(err) = io.write_process(child_pid, *map_addr, mapping.snapshot.as_deref().unwrap_or(&[])) {
+                let handle = mapping.backing_key.as_deref().and_then(|key| self.file_backings.get(key))
+                    .map_or(-1, |backing| backing.handle);
+                failures.record("fork_commit_write", child_pid, *map_addr, mapping.len,
+                    mapping.file_offset, handle, 0, mapping.len, err);
                 failure = Some(err);
                 break;
             }
@@ -5499,6 +5565,8 @@ impl SharedMappingTable {
         if failure.is_none() {
             for (map_addr, mapping) in staged_sysv.as_ref().into_iter().flat_map(|entry| entry.value().iter()) {
                 if let Err(err) = io.write_process(child_pid, *map_addr, &mapping.snapshot) {
+                    failures.record("fork_sysv_commit_write", child_pid, *map_addr, mapping.size,
+                        0, -1, 0, mapping.size, err);
                     failure = Some(err);
                     break;
                 }
@@ -5506,7 +5574,13 @@ impl SharedMappingTable {
         }
         if let Some(err) = failure {
             for (map_addr, bytes) in originals {
-                let _ = io.write_process(child_pid, map_addr, &bytes);
+                if let Err(error) = io.write_process(child_pid, map_addr, &bytes) {
+                    let mapping = staged.as_ref().and_then(|entry| entry.value().get(&map_addr));
+                    let handle = mapping.and_then(|mapping| mapping.backing_key.as_deref())
+                        .and_then(|key| self.file_backings.get(key)).map_or(-1, |backing| backing.handle);
+                    failures.record("fork_rollback_write", child_pid, map_addr, bytes.len(),
+                        mapping.map_or(0, |mapping| mapping.file_offset), handle, 0, bytes.len(), error);
+                }
             }
             return Err(err);
         }
@@ -8590,6 +8664,93 @@ mod shared_mapping_tests {
     }
 
     // -- fork inheritance --------------------------------------------------
+
+    #[test]
+    fn fork_failures_identify_snapshot_read_rollback_read_metadata_and_write_without_mutation() {
+        for scenario in 0..4 {
+            let mut io = MockIo::new().with_process(1, 64).with_process(2, 64)
+                .with_process(3, 64).with_kernel_file(10, 1, 2, b"........".to_vec());
+            let key = io.key_of(10);
+            let mut table = file_table_with_two_observers(&mut io, &key);
+            io.poke(3, 0, b"ORIGINAL");
+            let retained = io.retained_count(10);
+            let version = table.file_backing(&key).unwrap().version;
+            // Inheritance settles write-through cache pages even on refusal.
+            // Measure exact retained custody cold, then warm the cache so the
+            // injected map-node refusal cannot hit an earlier page admission.
+            table.file_backing_mut(&key).unwrap().settle();
+            let retained_usage = crate::io_buffer::IO_MEMORY.usage().0;
+            drop(table.file_backing_mut(&key).unwrap().read_range(0, 8, &mut io).unwrap());
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let (error, phase) = match scenario {
+                0 => {
+                    let _limit = crate::io_buffer::test_budget(held);
+                    let result = table.inherit_process_mappings(1, 3, &mut io);
+                    assert_eq!(result, Err(Errno::ENOMEM));
+                    (Errno::ENOMEM, "fork_stage_read")
+                }
+                1 => {
+                    io.fail_read_process_at = Some((3, 0));
+                    assert_eq!(table.inherit_process_mappings(1, 3, &mut io), Err(Errno::EFAULT));
+                    (Errno::EFAULT, "fork_rollback_read")
+                }
+                2 => {
+                    io.fail_write_process_at = Some(0);
+                    assert_eq!(table.inherit_process_mappings(1, 3, &mut io), Err(Errno::EFAULT));
+                    (Errno::EFAULT, "fork_commit_write")
+                }
+                _ => {
+                    crate::prepared_map::fail_after_allocations(0);
+                    let result = table.inherit_process_mappings(1, 3, &mut io);
+                    crate::prepared_map::fail_after_allocations(usize::MAX);
+                    assert_eq!(result, Err(Errno::ENOMEM));
+                    (Errno::ENOMEM, "fork_stage_metadata")
+                }
+            };
+            assert!(table.mapping(3, 0).is_none());
+            assert_eq!(io.peek(3, 0, 8).as_slice(), b"ORIGINAL");
+            assert_eq!(table.mapping(1, 0).unwrap().snapshot.as_deref(), Some(&b"........"[..]));
+            assert_eq!(table.file_backing(&key).unwrap().version, version);
+            assert_eq!(table.file_backing(&key).unwrap().ref_count, 2);
+            assert_eq!(io.retained_count(10), retained);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, retained_usage);
+            let record = table.failures.records[0].unwrap();
+            assert_eq!(record.phase, phase);
+            assert_eq!(record.pid, 3);
+            assert_eq!((record.addr, record.len, record.handle), (0, 8, 10));
+            assert_eq!(record.status, -(error as i32));
+            let report = table.render_failures().unwrap();
+            let report = core::str::from_utf8(&report).unwrap();
+            assert!(report.contains(&alloc::format!("phase={phase} pid=3 addr=0x0 len=8 file_offset=0 handle=10")));
+            if scenario == 0 {
+                assert!(report.contains(&alloc::format!("io_live={held} io_limit={held}")));
+            }
+            if scenario == 2 {
+                // Diagnostic observation must not turn the original rollback
+                // attempt into another write or replace its original errno.
+                assert_eq!(table.failures.total, 2);
+                assert_eq!(table.failures.records[1].unwrap().phase, "fork_rollback_write");
+            }
+        }
+    }
+
+    #[test]
+    fn anonymous_fork_stage_refusal_records_no_fabricated_file_authority() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        let mut table = SharedMappingTable::new();
+        table.track_anonymous_mapping(1, 0, 8, true, &mut io).unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(table.inherit_process_mappings(1, 2, &mut io), Err(Errno::ENOMEM));
+        }
+        assert!(table.mapping(2, 0).is_none());
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        let record = table.failures.records[0].unwrap();
+        assert_eq!(record.phase, "fork_anon_stage");
+        assert_eq!((record.pid, record.addr, record.len, record.handle), (2, 0, 8, -1));
+        assert_eq!(record.status, -(Errno::ENOMEM as i32));
+    }
 
     #[test]
     fn a_child_inherits_the_latest_shared_bytes_and_a_backing_reference() {

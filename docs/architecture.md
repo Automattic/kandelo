@@ -2369,13 +2369,19 @@ Processes may export `__wasm_posix_thread_slots` to declare their maximum concur
 ### Shared mapping coherence
 
 `/proc/kandelo/shared_mapping_failures` retains the first eight failed
-publication or refresh operations, plus total and dropped counts. Records
+publication, refresh or fork-inheritance operations, plus total and dropped
+counts. Records
 identify the phase, process, mapping range, retained backing handle, signed
 errno and I/O credit at refusal. Recording uses fixed numerical state and
 never retains a resource, allocates memory or changes the original result.
 The ordinary procfs read renders the report only when requested. These
 failures are distinct from acknowledged writeback loss; a refused snapshot
-allocation alone does not establish that file data was lost.
+allocation alone does not establish that file data was lost. Fork records
+identify whether refusal happened while preparing retained child state,
+rollback bytes, mapping metadata or process-memory writes. A handle of -1
+means that no file authority belongs to that record; cohort-only metadata
+records have no mapping range. Diagnostics preserve the original error and
+never change the inheritance transaction's publication or rollback order.
 
 Peer refresh stages replacement snapshots and guard metadata against the
 bounded temporary I/O allowance. A guard borrows its exact old snapshot,
