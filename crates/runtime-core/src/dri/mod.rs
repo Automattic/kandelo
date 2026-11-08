@@ -104,7 +104,7 @@ pub fn take_vblank_wake() -> bool {
 /// Append one 32-byte `struct drm_event_vblank` (a `DRM_EVENT_VBLANK` or
 /// `DRM_EVENT_FLIP_COMPLETE`) stamped with `seq` and its vblank time.
 fn write_vblank_event(
-    event_ring: &mut alloc::collections::VecDeque<u8>,
+    event_ring: &mut crate::IoDeque<u8>,
     ev_type: u32,
     user_data: u64,
     crtc_id: u32,
@@ -120,7 +120,7 @@ fn write_vblank_event(
     record[20..24].copy_from_slice(&tv_usec.to_le_bytes());
     record[24..28].copy_from_slice(&seq.to_le_bytes());
     record[28..32].copy_from_slice(&crtc_id.to_le_bytes());
-    event_ring.extend(record.iter());
+    event_ring.extend_from_slice(&record);
 }
 
 /// Queue a `DRM_EVENT_VBLANK` for an already-passed target, as
@@ -173,23 +173,23 @@ pub fn retire_vblank_for_process(
         // Flip events belong to the CRTC's one pending commit; one whose
         // in-fences have not signaled is still pending.
         if commit_completed {
-            for flip in kms.pending_flips.drain(..) {
+            for flip in &kms.pending_flips {
                 write_vblank_event(&mut kms.event_ring, DRM_EVENT_FLIP_COMPLETE,
                     flip.user_data, flip.crtc_id, seq as u32, tv_sec, tv_usec);
             }
+            kms.pending_flips.clear();
         }
-        let mut waiting = alloc::vec::Vec::new();
         let off = kms::vblank_off_generation();
-        for event in core::mem::take(&mut kms.pending_vblank_events) {
+        kms.pending_vblank_events.retain(|event| {
             // drm_crtc_vblank_off sends queued events prematurely.
             if vblank_passed(seq, event.target) || event.off_generation != off {
                 write_vblank_event(&mut kms.event_ring, DRM_EVENT_VBLANK,
                     event.user_data, event.crtc_id, seq as u32, tv_sec, tv_usec);
+                false
             } else {
-                waiting.push(event);
+                true
             }
-        }
-        kms.pending_vblank_events = waiting;
+        });
         if kms.event_ring.len() != before {
             wake = true;
             crate::epoll::notify(crate::epoll::Source::Description(id), 0x41);

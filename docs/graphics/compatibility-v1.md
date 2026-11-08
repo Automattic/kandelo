@@ -27341,3 +27341,26 @@ The complete runtime-core library run reports 3,576 passed, four failed,
 zero skipped. All 183 memory tests pass. The four remaining graphics
 decode, CPU mapping and syscall controls remain open; rebuilt browser
 recovery and Node/browser acceptance are still required.
+
+The follow-up restores KMS pending-flip and completion-ring admission before
+legacy, atomic and vblank effects. Decoder admission includes the event
+bytes that a pending flip already promises. Delivery and ring reads use
+retained capacity; non-event operations reserve none. Device unmap admits
+only actual survivors, and BO replacement reserves its new slot in that
+replacement table before mutation. Existing quota and exact-replacement
+controls remain unchanged.
+
+A same-table regression also proves that removing a fresh root consumed
+another fork family's native-close counts for stdio 0, 1 and 2. The host
+permanently preopens these streams, so native-file retention, admission,
+close and final-reference queries now consistently exclude them. Guest
+OFD identities remain intact. Both new controls fail on the parent and
+pass with the repair. The limbo test keeps its exact accounting assertion;
+no fixture-only isolation was used. The queued executable-owner fixture
+requires closure of a real unrelated native file and preserves its cursor
+and pair-lifetime checks.
+
+The final runtime-core library run passes all 3,582 tests, zero failures
+or skips (123.79 seconds). This supersedes the native failures recorded
+above. The focused normal rebuild and browser recovery still need to run;
+these native results do not establish complete B1 or merge readiness.

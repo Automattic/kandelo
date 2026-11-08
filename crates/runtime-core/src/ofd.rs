@@ -187,10 +187,11 @@ impl InheritedOfdRefs {
 
 // ── Global host handle refcount table ──
 //
-// Tracks how many processes share each host file handle (host_handle >= 0).
-// Handles NOT in this table have an implicit refcount of 1 (single owner).
+// Tracks shared native file handles, excluding permanently preopened stdio0..2.
+// Closable handles NOT in this table have an implicit single owner.
+// Permanently preopened streams 0..2 have no native close lifetime.
 //
-// - fork_process: increments for each inherited host_handle >= 0
+// - fork_process: increments for each inherited closable native handle
 // - sys_close: decrements; only calls host_close when the count reaches 0
 //
 // This prevents fork children from invalidating host file handles that the
@@ -205,10 +206,18 @@ fn get_host_handle_refs() -> &'static mut PreparedMap<i64, u32> {
     unsafe { &mut *HOST_HANDLE_REFS.0.get() }
 }
 
+// WHY: the host adapter permanently reserves 0/1/2 and never closes them.
+// Independent roots reuse those numbers without acquiring another root's
+// native-file lease, so neither fork nor cleanup may credit/debit this table.
+const fn is_reserved_stdio_handle(handle: i64) -> bool {
+    matches!(handle, 0..=2)
+}
+
 /// Register that a host handle is now shared by one more process (fork).
 /// If the handle is being forked for the first time, sets count to 2
 /// (parent + child). Otherwise increments by 1.
 pub fn host_handle_fork_ref(handle: i64) -> Result<(), Errno> {
+    if is_reserved_stdio_handle(handle) { return Ok(()); }
     let refs = get_host_handle_refs();
     if let Some(count) = refs.get_mut(&handle) {
         *count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
@@ -225,7 +234,7 @@ pub(crate) struct PreparedHostHandleRefs {
 }
 
 fn inherited_host_handle(ofd: &OpenFileDesc) -> Option<i64> {
-    (ofd.host_handle >= 0 && matches!(ofd.file_type,
+    (ofd.host_handle >= 0 && !is_reserved_stdio_handle(ofd.host_handle) && matches!(ofd.file_type,
         FileType::Regular | FileType::Directory | FileType::CharDevice | FileType::Pipe))
         .then_some(ofd.host_handle)
 }
@@ -276,9 +285,10 @@ impl PreparedHostHandleRefs {
 }
 
 /// Decrement the cross-process refcount for a host handle.
-/// Returns `true` if the handle should be closed (refcount reached 0 or
-/// the handle was never shared).
+/// Returns `true` if a closable handle reached its final reference.
+/// Permanently preopened stdio always returns `false`.
 pub fn host_handle_close_ref(h: i64) -> bool {
+    if is_reserved_stdio_handle(h) { return false; }
     let refs = get_host_handle_refs();
     if let Some(count) = refs.get_mut(&h) {
         *count -= 1;
@@ -295,6 +305,7 @@ pub fn host_handle_close_ref(h: i64) -> bool {
 /// Observe the actual cross-process authority without consuming it. Internal
 /// executable cancellation uses this before its sole native close attempt.
 pub(crate) fn host_handle_is_final_reference(h: i64) -> bool {
+    if is_reserved_stdio_handle(h) { return false; }
     get_host_handle_refs().get(&h).is_none_or(|count| *count == 1)
 }
 
@@ -665,7 +676,7 @@ pub struct KmsFdState {
     pub fbs: SharedKmsFbs,
     /// Flips queued with `DRM_MODE_PAGE_FLIP_EVENT`; a flip without the
     /// flag completes at the same vblank but produces no event.
-    pub pending_flips: Vec<PendingFlip>,
+    pub pending_flips: IoBuffer<PendingFlip>,
     /// `DRM_VBLANK_EVENT` requests whose target vblank has not passed.
     pub pending_vblank_events: Vec<PendingVblankEvent>,
     /// Blocking `DRM_IOCTL_WAIT_VBLANK` calls parked on the host's EAGAIN
@@ -675,10 +686,24 @@ pub struct KmsFdState {
     /// retries, for the flip they committed; see
     /// [`crate::dri::atomic::CommitWait`].
     pub commit_waits: Vec<crate::dri::atomic::CommitWait>,
-    pub event_ring: VecDeque<u8>,
+    pub event_ring: crate::IoDeque<u8>,
 }
 
 impl KmsFdState {
+    /// Admit delivery storage while refusal can still leave scanout untouched.
+    /// Vblank must consume already-owned capacity, never allocate after a
+    /// successful commit has promised an event to the client.
+    pub(crate) fn prepare_event(&mut self) -> Result<(), Errno> {
+        let count = self.pending_flips.len().checked_add(self.pending_vblank_events.len())
+            .and_then(|count| count.checked_add(1)).ok_or(Errno::ENOMEM)?;
+        self.event_ring.try_reserve(count.checked_mul(32).ok_or(Errno::ENOMEM)?)
+    }
+
+    pub(crate) fn prepare_flip(&mut self) -> Result<(), Errno> {
+        self.pending_flips.try_reserve(1)?;
+        self.prepare_event()
+    }
+
     /// Bytes of `drm_file.event_space` in use: delivered but unread events
     /// plus every event already reserved by a pending flip or vblank event.
     pub fn event_space_used(&self) -> usize {
@@ -2451,6 +2476,7 @@ mod tests {
         assert!(Rc::ptr_eq(&ka.0, &kb.0));
         b.gem.borrow_mut().handles.remove(&1);
         assert!(!a.gem.borrow().handles.contains_key(&1));
+        kb.borrow_mut().prepare_flip().unwrap();
         kb.borrow_mut().pending_flips.push(PendingFlip { crtc_id: 1, fb_id: 1, user_data: 0x1234 });
         assert_eq!(ka.borrow().pending_flips.len(), 1);
         kb.borrow_mut().pending_flips.clear();
@@ -2549,6 +2575,19 @@ mod tests {
         // Lock the per-fd memory budget so it cannot drift silently.
         assert_eq!(INPUT_RING_MAX_RECORDS, 1024);
         assert_eq!(INPUT_RING_MAX_BYTES, 24 * 1024);
+    }
+
+    #[test]
+    fn reserved_stdio_reference_routes_need_no_native_close_metadata() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let _limit = crate::io_buffer::test_budget(baseline);
+        for handle in [0, 1, 2] {
+            assert_eq!(host_handle_fork_ref(handle), Ok(()));
+            assert_eq!(host_handle_ref_count(handle), 0);
+            assert!(!host_handle_close_ref(handle));
+            assert!(!host_handle_is_final_reference(handle));
+        }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
     }
 
     #[test]

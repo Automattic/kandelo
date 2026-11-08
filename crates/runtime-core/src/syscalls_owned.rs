@@ -706,12 +706,11 @@ impl OwnedMappingPlan {
         flags: u32,
         bo: u32,
     ) -> Result<Self, Errno> {
-        proc.dri_bindings
-            .try_reserve(1)
-            .map_err(|_| Errno::ENOMEM)?;
         crate::dri::with_registry(|r| r.incref(bo)).ok_or(Errno::ENOMEM)?;
         let hold = DriMappingHold(Some(bo));
-        let allocation = DeviceMapAllocation::prepare(proc, addr, len, prot, flags)?;
+        let allocation = DeviceMapAllocation::prepare_with_binding_slots(
+            proc, addr, len, prot, flags, 1,
+        )?;
         Ok(Self::Bo {
             allocation,
             hold,

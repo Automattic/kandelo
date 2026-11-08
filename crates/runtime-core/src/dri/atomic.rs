@@ -1143,6 +1143,11 @@ pub fn atomic_ioctl(
             .push(CommitWait { pid, tid, phase: WaitPhase::Dependency });
         return Err(Errno::EAGAIN);
     }
+    // Event custody must be admitted before the out-fence descriptor/output
+    // and native scanout effects make this commit observable.
+    if wants_event {
+        crate::dri::ioctl_kms::kms_state_mut(proc, ofd_idx)?.prepare_flip()?;
+    }
     if out_fence {
         // prepare_signaling + setup_out_fence: the CRTC's next fence, a
         // close-on-exec sync_file for it, and the fd written to the caller's

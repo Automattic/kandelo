@@ -867,7 +867,6 @@ fn acquire_decoded_gem_refs(ofds: &OfdTable) -> Result<(), Errno> {
 }
 
 fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno> {
-    use alloc::collections::VecDeque;
     let holds_master = r.read_u8()? != 0;
     if r.read_u32()? != 0 {
         return Err(Errno::EINVAL);
@@ -882,8 +881,7 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
     if pending_count > 65536 {
         return Err(Errno::EINVAL);
     }
-    let mut pending_flips = Vec::new();
-    pending_flips.try_reserve_exact(pending_count).map_err(|_| Errno::ENOMEM)?;
+    let mut pending_flips = crate::IoBuffer::try_with_capacity(pending_count)?;
     for _ in 0..pending_count {
         let crtc_id = r.read_u32()?;
         let fb_id = r.read_u32()?;
@@ -894,6 +892,11 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
             user_data,
         });
     }
+    // A decoded flip already promises a future completion event. Admit its
+    // receiver before publishing the shared DRM file; vblank must not need
+    // another allocation after it consumes that pending flip.
+    let mut event_ring = crate::IoDeque::new();
+    event_ring.try_reserve(pending_count.checked_mul(32).ok_or(Errno::ENOMEM)?)?;
     Ok(crate::ofd::KmsFdState {
         master_identity: None,
         holds_master,
@@ -902,7 +905,7 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
         magic,
         fbs: crate::ofd::SharedKmsFbs::default(),
         pending_flips,
-        event_ring: VecDeque::new(),
+        event_ring,
         ..Default::default()
     })
 }
@@ -2337,15 +2340,17 @@ mod tests {
             assert!(matches!(read_dri_fd_state(&mut Reader::new(&wire)), Err(Errno::EINVAL)));
             assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
         }
-        let mut wire = [0u8; 33];
+        // Encode the current KMS wire: caps is one byte; framebuffer names
+        // and their allocator belong to the live shared DRM file, not this wire.
+        let mut wire = [0u8; 30];
         let mut writer = Writer::new(&mut wire);
-        writer.write_u8(0).unwrap();
-        writer.write_u32(0).unwrap();
-        writer.write_u32(0).unwrap();
-        writer.write_u32(0).unwrap();
-        writer.write_u32(1).unwrap();
-        writer.write_u32(1).unwrap();
-        writer.write_u32(7).unwrap();
+        writer.write_u8(0).unwrap(); // holds_master
+        writer.write_u32(0).unwrap(); // reserved legacy cursor word
+        writer.write_u8(0).unwrap(); // caps
+        writer.write_u32(0).unwrap(); // magic
+        writer.write_u32(1).unwrap(); // pending count
+        writer.write_u32(1).unwrap(); // CRTC
+        writer.write_u32(7).unwrap(); // framebuffer
         writer.write_u64(0x9876).unwrap();
         for allowance in [0, 2 * core::mem::size_of::<crate::ofd::PendingFlip>()] {
             let _limit = crate::io_buffer::test_budget(baseline + allowance);

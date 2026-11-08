@@ -3081,7 +3081,9 @@ mod wait_tests {
             let mut table = ProcessTable::new();
             let parent_pid = table.create_process().unwrap();
             let bo = crate::dri::with_registry(|registry| registry.try_alloc(4,4,32).unwrap().id);
-            table.get_mut(parent_pid).unwrap().dri_bindings.push(crate::process::DriBoBinding {addr:65536,len:65536,bo_id:bo,bo_offset:0});
+            // Publication into an owned IoBuffer requires admitted capacity,
+            // even in a fixture whose BO has no descriptor owner.
+            table.get_mut(parent_pid).unwrap().dri_bindings.try_push(crate::process::DriBoBinding {addr:65536,len:65536,bo_id:bo,bo_offset:0}).unwrap();
             let child_pid = table.fork_process_for_caller_with_mode(parent_pid,parent_pid,mode).unwrap();
             let bindings = &table.get(child_pid).unwrap().dri_bindings;
             assert_eq!(bindings.len(),1); assert_eq!((bindings[0].addr,bindings[0].len,bindings[0].bo_id),(65536,65536,bo));
@@ -3326,6 +3328,37 @@ mod wait_tests {
         assert_eq!(table.bind_current_tid(pid, 0), Err(Errno::ESRCH));
         assert_eq!(table.bind_current_tid(pid, tid), Err(Errno::ESRCH));
         assert_eq!(table.current_tid(), 0);
+    }
+
+    #[test]
+    fn reserved_stdio_fork_ownership_survives_independent_root_removal() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = ProcessTable::new();
+        let parent = table.create_process().unwrap();
+        let child = table.fork_process_for_caller(parent, parent).unwrap();
+        let descriptions = |table: &ProcessTable, pid| {
+            let process = table.get(pid).unwrap();
+            [0, 1, 2].map(|fd| {
+                let index = process.fd_table.get(fd).unwrap().ofd_ref.0;
+                let ofd = process.ofd_table.get(index).unwrap();
+                (index, ofd.ofd_id, ofd.host_handle, ofd.file_type)
+            })
+        };
+        let parent_descriptions = descriptions(&table, parent);
+        let child_descriptions = descriptions(&table, child);
+        let held = [0, 1, 2].map(crate::ofd::host_handle_ref_count);
+        let fresh = table.create_process().unwrap();
+        table.remove_process(fresh).unwrap();
+        // WHY: fresh roots reuse permanently preopened stdio numbers, not a
+        // native-file lease owned by this existing fork family. Its removal
+        // must not consume their lifetime accounting or descriptor identities.
+        assert_eq!([0, 1, 2].map(crate::ofd::host_handle_ref_count), held);
+        assert_eq!(descriptions(&table, parent), parent_descriptions);
+        assert_eq!(descriptions(&table, child), child_descriptions);
+        table.remove_process(child).unwrap();
+        table.remove_process(parent).unwrap();
+        drop(table);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
     }
 
     #[test]

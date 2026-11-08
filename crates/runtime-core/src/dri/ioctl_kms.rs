@@ -789,6 +789,7 @@ pub(crate) fn handle_dri_card_ioctl_target(
             // for one. libdrm's `drmModePageFlip → poll → drmHandleEvent`
             // loop therefore runs at refresh rate, not ioctl rate.
             let mut kms_file = kms_state_mut(proc, ofd_idx)?;
+            if wants_event { kms_file.prepare_flip()?; }
             let event = wants_event.then_some((&mut *kms_file, req.user_data));
             commit.apply(&mut CommitContext { host, pid }, CommitKind::Flip, event);
             Ok(())
@@ -1515,6 +1516,12 @@ pub(crate) fn handle_drm_wait_vblank(
         // The reply's time fields are left as the caller's request bytes.
         if kms.event_space_used() + 32 > DRM_EVENT_SPACE {
             return Err(Errno::ENOMEM);
+        }
+        // Own both the eventual event bytes and the queued record before
+        // acknowledging it; the vblank callback cannot refuse delivery later.
+        kms.prepare_event()?;
+        if !crate::dri::vblank_passed(seq, target) {
+            kms.pending_vblank_events.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
         }
         let reply_sequence = if crate::dri::vblank_passed(seq, target) {
             crate::dri::queue_vblank_event_now(&mut *kms, signal, kms::CRTC_ID)

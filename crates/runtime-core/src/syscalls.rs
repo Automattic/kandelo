@@ -6994,8 +6994,8 @@ pub fn sys_read(
                                 if length > buf.len() - n || length > kms.event_ring.len() {
                                     break;
                                 }
-                                for (slot, byte) in buf[n..n + length].iter_mut().zip(kms.event_ring.drain(..length)) {
-                                    *slot = byte;
+                                for slot in &mut buf[n..n + length] {
+                                    *slot = kms.event_ring.pop_front().expect("validated DRM event length");
                                 }
                                 n += length;
                             }
@@ -13023,6 +13023,17 @@ impl DeviceMapAllocation {
         prot: u32,
         flags: u32,
     ) -> Result<Self, Errno> {
+        Self::prepare_with_binding_slots(proc, addr, len, prot, flags, 0)
+    }
+
+    fn prepare_with_binding_slots(
+        proc: &mut Process,
+        addr: usize,
+        len: usize,
+        prot: u32,
+        flags: u32,
+        additional_bindings: usize,
+    ) -> Result<Self, Errno> {
         let (previous, retirement) = if flags & wasm_posix_shared::mmap::MAP_FIXED != 0 && addr != 0
         {
             if addr & 0xFFFF != 0 {
@@ -13032,11 +13043,17 @@ impl DeviceMapAllocation {
             if aligned_len == 0 {
                 return Err(Errno::ENOMEM);
             }
-            let retirement = DeviceUnmapPlan::prepare(proc, addr, aligned_len)?;
+            // Fixed replacement publishes the survivor table, discarding the
+            // old table's spare capacity. Admit the new BO's slot in that
+            // exact replacement table before VM or native effects begin.
+            let retirement = DeviceUnmapPlan::prepare_with_binding_slots(
+                proc, addr, aligned_len, additional_bindings,
+            )?;
             let mut previous = crate::IoBuffer::try_with_capacity(proc.memory.mappings().len())?;
             for mapping in proc.memory.mappings() { previous.push(mapping.clone()); }
             (Some(previous), Some(retirement))
         } else {
+            proc.dri_bindings.try_reserve(additional_bindings)?;
             (None, None)
         };
         let mapped = proc
@@ -13102,15 +13119,23 @@ struct DeviceUnmapPlan {
 
 impl DeviceUnmapPlan {
     fn prepare(proc: &Process, addr: usize, len: usize) -> Result<Self, Errno> {
+        Self::prepare_with_binding_slots(proc, addr, len, 0)
+    }
+
+    fn prepare_with_binding_slots(
+        proc: &Process, addr: usize, len: usize, additional_bindings: usize,
+    ) -> Result<Self, Errno> {
         let end = addr.checked_add(len).ok_or(Errno::EINVAL)?;
-        Self::prepare_ranges(proc, DeviceUnmapRanges::One([(addr, end)]))
+        Self::prepare_ranges(proc, DeviceUnmapRanges::One([(addr, end)]), additional_bindings)
     }
 
     fn prepare_exact(proc: &Process, ranges: Vec<(usize, usize)>) -> Result<Self, Errno> {
-        Self::prepare_ranges(proc, DeviceUnmapRanges::Exact(ranges))
+        Self::prepare_ranges(proc, DeviceUnmapRanges::Exact(ranges), 0)
     }
 
-    fn prepare_ranges(proc: &Process, ranges: DeviceUnmapRanges) -> Result<Self, Errno> {
+    fn prepare_ranges(
+        proc: &Process, ranges: DeviceUnmapRanges, additional_bindings: usize,
+    ) -> Result<Self, Errno> {
         let spans = ranges.as_slice();
         if spans.iter().any(|(start, end)| start >= end)
             || spans.windows(2).any(|pair| pair[0].1 > pair[1].0) {
@@ -13118,10 +13143,27 @@ impl DeviceUnmapPlan {
         }
         let mut fragments = crate::IoBuffer::new();
         let mut split_holds = Vec::new();
-        let bound = proc.dri_bindings.len().checked_add(spans.len().checked_mul(2).ok_or(Errno::ENOMEM)?)
-            .ok_or(Errno::ENOMEM)?;
-        fragments.try_reserve_exact(bound).map_err(|_| Errno::ENOMEM)?;
-        split_holds.try_reserve_exact(spans.len()).map_err(|_| Errno::ENOMEM)?;
+        // Count actual survivors before admission. In particular removing the
+        // last whole BO mapping needs no replacement metadata; reserving a
+        // geometric upper bound would make release itself fail at its quota.
+        let mut bound = 0usize;
+        let mut split_count = 0usize;
+        for binding in &proc.dri_bindings {
+            let binding_end = binding.addr.checked_add(binding.len).ok_or(Errno::EINVAL)?;
+            let mut count = 0usize;
+            let mut cursor = binding.addr;
+            for &(start, end) in spans {
+                if end <= cursor || start >= binding_end { continue; }
+                if cursor < start { count = count.checked_add(1).ok_or(Errno::ENOMEM)?; }
+                cursor = end.min(binding_end).max(cursor);
+            }
+            if cursor < binding_end { count = count.checked_add(1).ok_or(Errno::ENOMEM)?; }
+            bound = bound.checked_add(count).ok_or(Errno::ENOMEM)?;
+            split_count = split_count.checked_add(count.saturating_sub(1)).ok_or(Errno::ENOMEM)?;
+        }
+        let capacity = bound.checked_add(additional_bindings).ok_or(Errno::ENOMEM)?;
+        fragments.try_reserve_exact(capacity).map_err(|_| Errno::ENOMEM)?;
+        split_holds.try_reserve_exact(split_count).map_err(|_| Errno::ENOMEM)?;
         for binding in &proc.dri_bindings {
             let binding_end = binding.addr.checked_add(binding.len).ok_or(Errno::EINVAL)?;
             let before = fragments.len();
