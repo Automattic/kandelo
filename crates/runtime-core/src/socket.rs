@@ -992,6 +992,14 @@ impl SocketInfo {
     /// the association is process-local. `None` when no datagram association
     /// is recorded, which includes every stream socket.
     pub fn unix_dgram_peer(&self, owner_pid: u32) -> Option<UnixDgramEndpoint> {
+        // A datagram association, and only a datagram one. `socketpair` also
+        // records a peer slot for a stream pair, because MSG_OOB needs it, so
+        // without this a stream socket would answer here and contradict the
+        // contract above. Every caller happens to re-test the type today; one
+        // reading only the contract would not.
+        if self.sock_type != SocketType::Dgram {
+            return None;
+        }
         if self.peer_endpoint_id == 0 {
             return None;
         }

@@ -160,7 +160,7 @@ succeeded and handed nothing. That stub is gone.
 Neither `dmesg` nor `klogctl` is POSIX, so this is a chosen design for a
 facility POSIX does not describe, not a compatibility claim. The committed
 contract is the rendered byte stream: one line per record, `<pri>` followed by
-the text and a newline, where `pri = facility * 8 + level`. Reads (actions 2,
+`[seconds.microseconds]`, the text and a newline, where `pri = facility * 8 + level`. Reads (actions 2,
 3 and 4) are unrestricted because a Kandelo machine has no multi-tenant threat
 model; clearing (actions 4 and 5) requires root because it destroys state
 every reader shares. Actions 6, 7 and 8 are refused with `EINVAL` rather than

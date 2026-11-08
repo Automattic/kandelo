@@ -5197,6 +5197,12 @@ fn mark_var_log_names(path: &[u8]) {
         let Some(root) = state.root else { return };
         let Ok(start) = state.walk(root, &components) else { return };
         let mut stack: Vec<u32> = Vec::new();
+        // Best effort, like the push inside the walk below: an abort here
+        // would make a marking failure fatal, which is exactly what the
+        // contract in this function says it must not be.
+        if stack.try_reserve(1).is_err() {
+            return;
+        }
         stack.push(start);
         while let Some(index) = stack.pop() {
             let Some(inode) = state.get_mut(index) else { continue };

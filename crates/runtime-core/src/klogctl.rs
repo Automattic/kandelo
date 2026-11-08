@@ -20,8 +20,13 @@ use crate::kmsg::{KmsgRecordRef, KmsgRing};
 // machine what the kernel has recorded. `/dev/kmsg` is the richer surface.
 //
 // The committed contract is the rendered byte stream, not the ring's storage
-// layout: one line per record, `<pri>` followed by the text and a newline,
-// where `pri = facility * 8 + level` (see `crate::kmsg`).
+// layout: one line per record, `<pri>[seconds.microseconds] text` and a
+// newline, where `pri = facility * 8 + level` (see `crate::kmsg`). The
+// bracketed timestamp is Linux's `printk_time` form, and it is not
+// decoration: clients parse this surface and require it. toybox's `dmesg`
+// reads this path with `sscanf(msg, "<%u>[%llu.%llu] %n", ...)` and silently
+// drops every line the pattern does not match, so a stream without the
+// timestamp printed nothing and exited 0.
 //
 // Access posture: reads are unrestricted, because a Kandelo machine has no
 // multi-tenant threat model and gating reads behind root would make `dmesg`
@@ -251,9 +256,73 @@ fn syslog_unread_rendered_bytes(ring: &KmsgRing, cursor: u64) -> usize {
     total
 }
 
-/// Bytes one record occupies in the rendered stream: `<pri>`, text, newline.
+/// Width Linux's `printk_time` pads the seconds field to.
+const SYSLOG_TS_SECONDS_WIDTH: usize = 5;
+/// Microsecond digits, always written in full.
+const SYSLOG_TS_MICROS_WIDTH: usize = 6;
+/// `[`, seconds, `.`, microseconds, `]`, one space.
+const SYSLOG_TS_MAX_LEN: usize =
+    1 + crate::kmsg::U64_DECIMAL_DIGITS + 1 + SYSLOG_TS_MICROS_WIDTH + 1 + 1;
+
+/// Render `[%5llu.%06llu] ` -- Linux's `printk_time` form -- into `out` and
+/// return the bytes written.
+///
+/// WHY the stream carries a timestamp at all: clients parse this surface and
+/// require it. toybox's `dmesg` reads the `klogctl` path with
+/// `sscanf(msg, "<%u>[%llu.%llu] %n", ...)` and silently drops every record
+/// the pattern does not match, so a stream of `<pri>text` printed nothing and
+/// exited 0 -- a reader could not tell an empty log from an unparseable one.
+///
+/// One function serves both the length and the render so the two cannot
+/// disagree: a length that under-counts would mis-size a caller's buffer and
+/// truncate records, and `SYSLOG_ACTION_SIZE_UNREAD` promises the exact byte
+/// count a read will produce.
+fn syslog_timestamp<'a>(
+    record: &KmsgRecordRef<'_>,
+    out: &'a mut [u8; SYSLOG_TS_MAX_LEN],
+) -> &'a [u8] {
+    let seconds = record.ts_nsec / 1_000_000_000;
+    let micros = (record.ts_nsec / 1_000) % 1_000_000;
+    let mut seconds_digits = [0u8; crate::kmsg::U64_DECIMAL_DIGITS];
+    let seconds = crate::kmsg::format_decimal(seconds, &mut seconds_digits);
+    let mut micros_digits = [0u8; crate::kmsg::U64_DECIMAL_DIGITS];
+    let micros = crate::kmsg::format_decimal(micros, &mut micros_digits);
+
+    let mut written = 0;
+    out[written] = b'[';
+    written += 1;
+    // Seconds are right-aligned in a five-wide field, as printk does; a
+    // machine old enough to need six digits simply gets a wider field.
+    for _ in seconds.len()..SYSLOG_TS_SECONDS_WIDTH {
+        out[written] = b' ';
+        written += 1;
+    }
+    out[written..written + seconds.len()].copy_from_slice(seconds);
+    written += seconds.len();
+    out[written] = b'.';
+    written += 1;
+    for _ in micros.len()..SYSLOG_TS_MICROS_WIDTH {
+        out[written] = b'0';
+        written += 1;
+    }
+    out[written..written + micros.len()].copy_from_slice(micros);
+    written += micros.len();
+    out[written] = b']';
+    written += 1;
+    out[written] = b' ';
+    written += 1;
+    &out[..written]
+}
+
+/// Bytes one record occupies in the rendered stream: `<pri>`, the timestamp,
+/// text, newline.
 fn syslog_rendered_len(record: &KmsgRecordRef<'_>) -> usize {
-    syslog_pri_digits(syslog_pri(record)) + 2 + record.text.len() + 1
+    let mut timestamp = [0u8; SYSLOG_TS_MAX_LEN];
+    syslog_pri_digits(syslog_pri(record))
+        + 2
+        + syslog_timestamp(record, &mut timestamp).len()
+        + record.text.len()
+        + 1
 }
 
 /// RFC 5424 priority: `facility * 8 + level`.
@@ -270,8 +339,9 @@ fn syslog_pri_digits(pri: u32) -> usize {
     }
 }
 
-/// Render `<pri>text\n` into `out`, writing only what fits. Returns the bytes
-/// written, which is [`syslog_rendered_len`] unless `out` was too small.
+/// Render `<pri>[seconds.microseconds] text\n` into `out`, writing only what
+/// fits. Returns the bytes written, which is [`syslog_rendered_len`] unless
+/// `out` was too small.
 fn syslog_render(record: &KmsgRecordRef<'_>, out: &mut [u8]) -> usize {
     let mut digits = [0u8; crate::kmsg::U64_DECIMAL_DIGITS];
     let pri = crate::kmsg::format_decimal(u64::from(syslog_pri(record)), &mut digits);
@@ -281,8 +351,11 @@ fn syslog_render(record: &KmsgRecordRef<'_>, out: &mut [u8]) -> usize {
     prefix[pri.len() + 1] = b'>';
     let prefix_len = pri.len() + 2;
 
+    let mut timestamp_buf = [0u8; SYSLOG_TS_MAX_LEN];
+    let timestamp = syslog_timestamp(record, &mut timestamp_buf);
+
     let mut written = 0;
-    for part in [&prefix[..prefix_len], record.text, &b"\n"[..]] {
+    for part in [&prefix[..prefix_len], timestamp, record.text, &b"\n"[..]] {
         let room = out.len() - written;
         if room == 0 {
             break;
@@ -333,9 +406,9 @@ mod tests {
         // pri = facility * 8 + level, so LOG_KERN/LOG_INFO is 6 and
         // LOG_USER/LOG_WARNING is 12.
         let mut expected = Vec::new();
-        expected.extend_from_slice(b"<6>boot: hello\n");
-        expected.extend_from_slice(b"<3>enosys: syscall 999 not implemented\n");
-        expected.extend_from_slice(b"<12>a user-facility warning\n");
+        expected.extend_from_slice(b"<6>[    0.000000] boot: hello\n");
+        expected.extend_from_slice(b"<3>[    0.000000] enosys: syscall 999 not implemented\n");
+        expected.extend_from_slice(b"<12>[    0.000000] a user-facility warning\n");
         assert_eq!(&out[..read as usize], expected.as_slice());
         // READ_ALL consumes nothing: the cursor is untouched and a second
         // call returns the same bytes.
@@ -361,12 +434,12 @@ mod tests {
         let unread = |ring: &mut KmsgRing, cursor: &mut u64| {
             syslog_action(ring, cursor, SYSLOG_ACTION_SIZE_UNREAD, None, USER)
         };
-        assert_eq!(unread(&mut ring, &mut cursor), Ok(b"<6>one\n<6>two\n".len() as i32));
+        assert_eq!(unread(&mut ring, &mut cursor), Ok(b"<6>[    0.000000] one\n<6>[    0.000000] two\n".len() as i32));
         // A caller sizes its buffer from SIZE_UNREAD and then READs, so the
         // count must be the RENDERED length, never the stored header-plus-text
         // length — that would under-size the buffer and silently lose records.
         assert!(
-            ring.unread_bytes(cursor) > b"<6>one\n<6>two\n".len(),
+            ring.unread_bytes(cursor) > b"<6>[    0.000000] one\n<6>[    0.000000] two\n".len(),
             "the stored byte count is the one SIZE_UNREAD must not report",
         );
 
@@ -375,7 +448,7 @@ mod tests {
         assert_eq!(unread(&mut ring, &mut cursor), Ok(0));
 
         ring.push(0, 6, 3, b"three");
-        assert_eq!(unread(&mut ring, &mut cursor), Ok(b"<6>three\n".len() as i32));
+        assert_eq!(unread(&mut ring, &mut cursor), Ok(b"<6>[    0.000000] three\n".len() as i32));
     }
 
     #[test]
@@ -398,7 +471,7 @@ mod tests {
         let mut out = buffer();
         let read =
             syslog_action(&mut ring, &mut cursor, SYSLOG_ACTION_READ, Some(&mut out), USER).unwrap();
-        assert_eq!(&out[..read as usize], b"<6>first\n<6>second\n");
+        assert_eq!(&out[..read as usize], b"<6>[    0.000000] first\n<6>[    0.000000] second\n");
         // What READ returned is gone from the cursor's view.
         assert_eq!(
             syslog_action(&mut ring, &mut cursor, SYSLOG_ACTION_READ, Some(&mut out), USER),
@@ -419,7 +492,7 @@ mod tests {
         ring.push(0, 6, 3, b"third");
         let read =
             syslog_action(&mut ring, &mut cursor, SYSLOG_ACTION_READ, Some(&mut out), USER).unwrap();
-        assert_eq!(&out[..read as usize], b"<6>third\n");
+        assert_eq!(&out[..read as usize], b"<6>[    0.000000] third\n");
     }
 
     #[test]
@@ -466,7 +539,7 @@ mod tests {
                 Some(&mut out),
                 USER
             ),
-            Ok(b"<6>kept\n".len() as i32),
+            Ok(b"<6>[    0.000000] kept\n".len() as i32),
         );
 
         let read = syslog_action(
@@ -477,7 +550,7 @@ mod tests {
             ROOT,
         )
         .unwrap();
-        assert_eq!(&out[..read as usize], b"<6>kept\n");
+        assert_eq!(&out[..read as usize], b"<6>[    0.000000] kept\n");
         assert_eq!(
             syslog_action(
                 &mut ring,
@@ -567,7 +640,7 @@ mod tests {
                 Some(&mut out),
                 ROOT
             ),
-            Ok(b"<6>something to read\n".len() as i32),
+            Ok(b"<6>[    0.000000] something to read\n".len() as i32),
         );
     }
 
@@ -585,16 +658,16 @@ mod tests {
         ring.push(0, 6, 3, b"three");
         let mut cursor = 0;
 
-        let every_record = b"<6>one\n<6>two\n<6>three\n";
-        let after_first = b"<6>two\n<6>three\n";
+        let every_record = b"<6>[    0.000000] one\n<6>[    0.000000] two\n<6>[    0.000000] three\n";
+        let after_first = b"<6>[    0.000000] two\n<6>[    0.000000] three\n";
 
         // Consume exactly the first record, leaving the cursor mid-log.
-        let mut one = [0u8; b"<6>one\n".len()];
+        let mut one = [0u8; b"<6>[    0.000000] one\n".len()];
         assert_eq!(
             syslog_action(&mut ring, &mut cursor, SYSLOG_ACTION_READ, Some(&mut one), USER),
             Ok(one.len() as i32),
         );
-        assert_eq!(&one, b"<6>one\n");
+        assert_eq!(&one, b"<6>[    0.000000] one\n");
         assert_eq!(cursor, 1);
 
         // SIZE_UNREAD now describes the remainder, not the whole log.
@@ -716,12 +789,17 @@ mod tests {
             ),
             Ok(5),
         );
-        assert_eq!(&out, b"<6>aa");
+        // Cut mid-prefix, which is the worst case: the reader gets a partial
+        // line rather than nothing, and the cursor still moves on.
+        assert_eq!(&out, b"<6>[ ");
         assert_eq!(cursor, 1);
 
         // READ_ALL with a short buffer returns the NEWEST whole records that
         // fit, which is what a truncating reader wants to see.
-        let mut out = [0u8; 14];
+        // Room for exactly one rendered record: `<6>` (3) + the timestamp
+        // (15) + ten characters of text + a newline.
+        const ONE_RECORD: usize = 3 + 15 + 10 + 1;
+        let mut out = [0u8; ONE_RECORD];
         assert_eq!(
             syslog_action(
                 &mut ring,
@@ -730,8 +808,8 @@ mod tests {
                 Some(&mut out),
                 USER
             ),
-            Ok(14),
+            Ok(ONE_RECORD as i32),
         );
-        assert_eq!(&out, b"<6>bbbbbbbbbb\n");
+        assert_eq!(&out, b"<6>[    0.000000] bbbbbbbbbb\n");
     }
 }

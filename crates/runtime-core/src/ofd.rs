@@ -360,7 +360,7 @@ pub struct PrimeBoState {
 
 /// `host_handle` sentinel for prime-bo fds. Disjoint from every other
 /// negative sentinel space by construction, not by call-site convention:
-/// the `VirtualDevice` range (-1..=-13, so the fd is never routed to a
+/// the `VirtualDevice` range (-1..=-14, so the fd is never routed to a
 /// render or card ioctl path), `PROCFS_DIR_HANDLE` (-150),
 /// `DEVFS_DIR_HANDLE` (-160), and procfs buffers (<= -`PROCFS_BUF_BASE`).
 /// -200 was the first procfs buffer handle; it was safe only because every

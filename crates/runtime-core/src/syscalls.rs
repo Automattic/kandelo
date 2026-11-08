@@ -11877,8 +11877,10 @@ pub fn sys_socketpair(
     let sock_a_idx = proc.sockets.publish_prepared(sock_a);
     let sock_b_idx = proc.sockets.publish_prepared(sock_b);
 
-    // Set peer indices. A datagram pair also records each half's endpoint
-    // identity, which is what the send and receive filters compare.
+    // Set peer indices. Both halves record the peer's slot -- a stream pair
+    // needs it too, for MSG_OOB -- and a datagram pair's endpoint identity is
+    // what the send and receive filters compare. `unix_dgram_peer` is the one
+    // that must not answer for a stream socket, and it enforces that itself.
     let endpoint_a = unix_dgram_endpoint_in(proc, sock_a_idx)?;
     let endpoint_b = unix_dgram_endpoint_in(proc, sock_b_idx)?;
     let owner_pid = proc.pid;
@@ -18823,7 +18825,25 @@ fn epoll_sources(proc: &Process, fd: i32) -> Result<Vec<crate::epoll::Source>, E
                 .ok_or(Errno::EBADF)?;
             sock.poll_identity.set(Some(ofd.ofd_id));
             if sock.sock_type == crate::socket::SocketType::Dgram {
-                if let Some(peer_idx) = sock.peer_idx {
+                // `peer_idx` is a slot in the OWNING process's socket table,
+                // so it may only be resolved against this table when the peer
+                // lives here -- `peer_owner_pid` is `None` exactly then.
+                // Searching this table for a foreign slot number matches an
+                // unrelated local socket, which would key
+                // `Source::DatagramCapacity` to the wrong description: an
+                // edge-triggered EPOLLOUT waiter would never wake when the
+                // real peer drained, and draining the unrelated socket would
+                // report a spurious one.
+                //
+                // Known gap, deliberately left visible: an EPOLLET EPOLLOUT
+                // waiter on a datagram socket connected across processes is
+                // not notified when its peer drains. Doing so needs the
+                // foreign socket's `poll_identity`, which is in another
+                // process's table and out of reach here. Level-triggered
+                // `epoll`, `poll` and `select` re-evaluate readiness when
+                // they run and are unaffected.
+                let peer_is_local = sock.peer_owner_pid.is_none();
+                if let Some(peer_idx) = sock.peer_idx.filter(|_| peer_is_local) {
                     if let Some((_, peer_ofd)) = proc.ofd_table.iter().find(|(_, o)| {
                         o.file_type == FileType::Socket && o.host_handle == -(peer_idx as i64 + 1)
                     }) {
@@ -58531,7 +58551,15 @@ impl HostIO for RelSymlinkMock {
 
             let mut out = vec![0u8; 4096];
             let n = sys_syslog(3, Some(&mut out), 0).unwrap() as usize; // SYSLOG_ACTION_READ_ALL
-            assert_eq!(&out[..n], b"<4>process 5 killed by signal 11 (SIGSEGV)\n");
+            // The same record, in the other surface's shape: klogctl renders
+            // Linux's printk_time form, `<pri>[seconds.microseconds] text`.
+            // Clients parse it -- toybox's `dmesg` requires the bracketed
+            // timestamp and drops any line without it -- and the two surfaces
+            // must agree on the record, not merely both return something.
+            assert_eq!(
+                &out[..n],
+                b"<4>[    2.250000] process 5 killed by signal 11 (SIGSEGV)\n"
+            );
         }
 
         #[test]

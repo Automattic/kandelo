@@ -317,9 +317,10 @@ pipe pair.
   details, device first-opens, processes killed by a signal, and every syscall
   a program asked for that Kandelo does not implement. It needs no daemon and
   works on every machine, because the ring is a kernel surface: `dmesg` reads
-  it through `/dev/kmsg`, or through `klogctl` with `-S`. Several readers can
-  follow it at once without taking records from each other, so `dmesg -w` and
-  a log daemon coexist.
+  it through `/dev/kmsg`, or through `klogctl` with `-S`, which returns the
+  whole buffer in one call as `<pri>[seconds.microseconds] text` lines.
+  Several readers can follow `/dev/kmsg` at once without taking records from
+  each other, so `dmesg -w` and a log daemon coexist.
 - Writing to the log. `logger` sends a message through `syslog(3)` to
   `/dev/log`, which is where any ported program's own logging goes. Whether
   anything receives it depends on the image: one that runs the `syslogd`
