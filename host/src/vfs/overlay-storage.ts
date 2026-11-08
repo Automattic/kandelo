@@ -1,4 +1,6 @@
 /// <reference path="./opfs-types.d.ts" />
+// Worker OPFS types must be visible through both host entry points. This
+// declaration adds no runtime capability; Node uses OverlayStorageFile.
 import { hostFilePositionToSafeNumber } from "../file-offset";
 import { browserPersistenceDirectory } from "../browser-computer-storage";
 import { OPEN_FLAGS } from "../generated/abi";

@@ -269,10 +269,10 @@ async function relaunch(page: Page, mode: "host" | "join" | "local") {
 test.afterEach(async ({ page }, info) => {
   if (info.status === info.expectedStatus) return;
   await page.evaluate(() => document.exitPointerLock());
-  await page.screenshot({ path: "../../.context/freeciv-browser-failure.png" });
-  writeFileSync("../../.context/freeciv-browser-failure.txt", await page.locator("body").innerText());
+  await page.screenshot({ path: test.info().outputPath("freeciv-browser-failure.png") });
+  writeFileSync(test.info().outputPath("freeciv-browser-failure.txt"), await page.locator("body").innerText());
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
-  writeFileSync("../../.context/freeciv-browser-terminal.txt", await page.locator("body").innerText());
+  writeFileSync(test.info().outputPath("freeciv-browser-terminal.txt"), await page.locator("body").innerText());
 });
 
 test("Freeciv's SDL2 client renders its main menu", async ({ page, browserName }) => {
@@ -281,14 +281,14 @@ test("Freeciv's SDL2 client renders its main menu", async ({ page, browserName }
   console.log("Resolving and booting the Freeciv machine");
   await gotoMachine(page, "freeciv");
   console.log(`Boot URL: ${page.url()}`);
-  writeFileSync("../../.context/freeciv-current-demo-url.txt", page.url());
+  writeFileSync(test.info().outputPath("freeciv-current-demo-url.txt"), page.url());
   await expect(page.locator(".kdock-status-text"))
     .toHaveAttribute("data-status", "running", { timeout: 180_000 });
   await showGame(page);
   const display = await canvas(page).boundingBox();
   expect(display).not.toBeNull();
   await waitForPanel(page, display!.width - 60, display!.height - 60);
-  await page.screenshot({ path: "../../.context/freeciv-main-menu.png" });
+  await page.screenshot({ path: test.info().outputPath("freeciv-main-menu.png") });
 });
 
 test("overlapping mouse buttons produce distinct kernel input records", async ({ page, browserName }) => {
@@ -323,7 +323,7 @@ test("overlapping mouse buttons produce distinct kernel input records", async ({
   await page.mouse.up({ button: "right" });
   await page.mouse.move(box.x + 310, box.y + 180);
   const events = await page.evaluate(() => (globalThis as any).__mouseButtonTrace);
-  writeFileSync("../../.context/freeciv-mouse-chord-events.json", JSON.stringify(events));
+  writeFileSync(test.info().outputPath("freeciv-mouse-chord-events.json"), JSON.stringify(events));
   expect(events).toEqual([[272, 1], [273, 1], [272, 0], [273, 0]]);
   // Simulate an OS/browser transition that loses both release notifications.
   // The next trusted movement reports buttons=0 and must end the old press.
@@ -371,7 +371,7 @@ test("overlapping mouse buttons produce distinct kernel input records", async ({
   for (let i = 0; i < 2; i++) {
     await canvas(page).click({ position: await menuPosition(page, "options") });
     await waitForPanel(page, box.width / 2 + 100, box.height / 2 + 100);
-    if (i === 1) await page.screenshot({ path: "../../.context/freeciv-pointer-recovery.png", scale: "css" });
+    if (i === 1) await page.screenshot({ path: test.info().outputPath("freeciv-pointer-recovery.png"), scale: "css" });
     await page.keyboard.press("Escape");
     await waitForPanel(page, box.width / 2 + 100, box.height / 2 + 100, false);
   }
@@ -510,8 +510,8 @@ test.describe("local Freeciv peer routing", () => {
       }
       await showGame(page);
       await showGame(joiner);
-      await page.screenshot({ path: "../../.context/freeciv-network-host.png" });
-      await joiner.screenshot({ path: "../../.context/freeciv-network-joiner.png" });
+      await page.screenshot({ path: test.info().outputPath("freeciv-network-host.png") });
+      await joiner.screenshot({ path: test.info().outputPath("freeciv-network-joiner.png") });
       console.log("Both lobbies rendered; starting the game from each client");
       // Both players press Freeciv's own Start button in the connection lobby.
       for (const player of [page, joiner]) {
@@ -540,8 +540,8 @@ test.describe("local Freeciv peer routing", () => {
         await expect.poll(async () => Buffer.compare(before, await player.screenshot({ clip })),
           { timeout: 60_000 }).not.toBe(0);
       }
-      await page.screenshot({ path: "../../.context/freeciv-game-host.png" });
-      await joiner.screenshot({ path: "../../.context/freeciv-game-joiner.png" });
+      await page.screenshot({ path: test.info().outputPath("freeciv-game-host.png") });
+      await joiner.screenshot({ path: test.info().outputPath("freeciv-game-joiner.png") });
     } finally {
       for (const [name, player] of [["host", page], ["joiner", joiner]] as const) {
         // Each repeat owns its evidence: a later successful session must never
@@ -598,7 +598,7 @@ test("New Game launches Freeciv's own local server child", async ({ page, browse
   await expect.poll(async () => (await page.screenshot({ clip: {
     x: display!.x, y: display!.y, width: 250, height: 60,
   } })).byteLength, { timeout: 60_000 }).toBeGreaterThan(1_000);
-  await page.screenshot({ path: "../../.context/freeciv-local-lobby.png" });
+  await page.screenshot({ path: test.info().outputPath("freeciv-local-lobby.png") });
 });
 
 // These are native display pixels inside the guest, with the same CSS pane.
@@ -667,7 +667,7 @@ for (const density of [1, 2]) {
       await page.keyboard.insertText('printf "SECOND_FREECIV_EXIT=%s\\n" "$?"');
       await page.keyboard.press("Enter");
       await expect.poll(() => terminal.innerText()).toMatch(/^SECOND_FREECIV_EXIT=0$/m);
-      await page.screenshot({ path: `../../.context/freeciv-auto-terminal-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-auto-terminal-${density}.png`), scale: "css" });
     });
 
     test("cursor pixels and menu targets stay aligned as the viewport fits down and up", async ({ page, browserName }) => {
@@ -734,9 +734,9 @@ for (const density of [1, 2]) {
       await gotoDefaultMachine(page, "freeciv");
       await running(page);
       await showGame(page);
-      writeFileSync("../../.context/freeciv-scaled-demo-url.txt", page.url());
+      writeFileSync(test.info().outputPath("freeciv-scaled-demo-url.txt"), page.url());
       await expect(page.getByRole("button", { name: "Display settings", exact: true })).toHaveCount(0);
-      await page.screenshot({ path: `../../.context/freeciv-scale-default-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-scale-default-${density}.png`), scale: "css" });
       await expect(page.getByText("960×540", { exact: false })).toBeVisible();
       const box = (await canvas(page).boundingBox())!;
       expect(box.width).toBeCloseTo(1440, 0);
@@ -808,7 +808,7 @@ for (const density of [1, 2]) {
       }, { timeout: 15_000 }).toBe(true);
       await canvas(page).click({ position: await menuPosition(page, "options") });
       await waitForOptions(page);
-      await page.screenshot({ path: `../../.context/freeciv-edge-cursor-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-edge-cursor-${density}.png`), scale: "css" });
     });
 
     test("menu music reaches the shared audio output", async ({ page, browserName }) => {
@@ -851,7 +851,7 @@ for (const density of [1, 2]) {
       // shipped Ogg menu track and wrote through SDL_mixer and /dev/dsp.
       await expect.poll(async () => (await audio()).peak, { timeout: 30_000 }).toBeGreaterThan(0.01);
       console.log(`Freeciv audio ${density}x: ${JSON.stringify(await audio())}`);
-      await page.screenshot({ path: `../../.context/freeciv-audio-menu-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-audio-menu-${density}.png`), scale: "css" });
     });
 
     test("New Game shows filtered nations and readable leader controls", async ({ page, browserName }) => {
@@ -908,7 +908,7 @@ for (const density of [1, 2]) {
         await page.screenshot({ scale: "css", clip: leaderCrop }))).not.toBe(0);
       await expect.poll(() => countPixels(195, 80, 100, 20, "text"))
         .toBeGreaterThan(20);
-      await page.screenshot({ path: `../../.context/freeciv-core-picker-fixed-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-core-picker-fixed-${density}.png`), scale: "css" });
       // Select two different visible entries, then commit through the real
       // server. This exercises filtered row identity as well as painting.
       const selection = { x: box.x + box.width / 2 + 10,
@@ -944,8 +944,8 @@ for (const density of [1, 2]) {
       // A dark in-game status strip distinguishes the world from the lobby.
       await expect.poll(() => countPixels(-200, -box.height / 2 + 7, 400, 14, "text"),
         { timeout: 60_000 }).toBeGreaterThan(2_000);
-      await page.screenshot({ path: `../../.context/freeciv-native-new-game-fixed-${density}.png`, scale: "css" });
-      writeFileSync("../../.context/freeciv-current-demo-url.txt", page.url());
+      await page.screenshot({ path: test.info().outputPath(`freeciv-native-new-game-fixed-${density}.png`), scale: "css" });
+      writeFileSync(test.info().outputPath("freeciv-current-demo-url.txt"), page.url());
       // Continue the first-turn flow: found a city and change production
       // through the native editor.
       await waitForPanel(page, box.width - 60, box.height - 60);
@@ -984,7 +984,7 @@ for (const density of [1, 2]) {
       // The unmodified cards must retain clear bottom padding at the
       // shared display scale.
       await expect.poll(() => countPixels(-250, -190, 650, 2, "text")).toBe(0);
-      await page.screenshot({ path: `../../.context/freeciv-production-fixed-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-production-fixed-${density}.png`), scale: "css" });
       // The first card is Barracks, or Aqueduct for a river city. With
       // zero random starting technologies, both are predictable choices.
       await nativeAction(page, () => canvas(page).click({ position: {
@@ -1036,13 +1036,13 @@ for (const density of [1, 2]) {
         .toMatch(/has connected from (?:localhost|127\.0\.0\.1)/);
       await showGame(page);
       const box = (await canvas(page).boundingBox())!;
-      writeFileSync("../../.context/freeciv-current-demo-url.txt", page.url());
+      writeFileSync(test.info().outputPath("freeciv-current-demo-url.txt"), page.url());
       await waitForPanel(page, 60, 80);
       await nativeAction(page, () => canvas(page).click({ position: {
         x: box.width - 165, y: box.height - 24,
       } }));
       await waitForNationPicker(page);
-      await page.screenshot({ path: `../../.context/freeciv-nation-initial-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-nation-initial-${density}.png`), scale: "css" });
       // Switch Core -> Extended, matching the reported nation picker.
       await nativeAction(page, () => canvas(page).click({ position: {
         x: box.width / 2 + 299, y: box.height / 2 - 165,
@@ -1058,7 +1058,7 @@ for (const density of [1, 2]) {
         x: box.width - 165, y: box.height - 24,
       } }));
       await waitForNationPicker(page);
-      await page.screenshot({ path: `../../.context/freeciv-nation-extended-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-nation-extended-${density}.png`), scale: "css" });
       for (let attempt = 0; attempt < 3; attempt++) {
         const list = { x: box.x + box.width / 2 - 450, y: box.y + box.height / 2 - 265,
           width: 270, height: 480 };
@@ -1068,7 +1068,7 @@ for (const density of [1, 2]) {
         await page.mouse.move(box.x + box.width / 2 - 150, box.y + box.height / 2 + 174, { steps: 12 });
         await page.mouse.up();
         await page.mouse.move(box.x + box.width / 2 + 300, box.y + box.height / 2);
-        await page.screenshot({ path: `../../.context/freeciv-nation-dragged-${density}-${attempt}.png`, scale: "css" });
+        await page.screenshot({ path: test.info().outputPath(`freeciv-nation-dragged-${density}-${attempt}.png`), scale: "css" });
         let scrollFailure: unknown;
         try {
           await expect.poll(async () => Buffer.compare(before,
@@ -1079,7 +1079,7 @@ for (const density of [1, 2]) {
           x: box.width / 2 - 393, y: box.height / 2 + 290,
         } }));
         await waitForNationPicker(page, false);
-        await page.screenshot({ path: `../../.context/freeciv-nation-cancelled-${density}-${attempt}.png`, scale: "css" });
+        await page.screenshot({ path: test.info().outputPath(`freeciv-nation-cancelled-${density}-${attempt}.png`), scale: "css" });
         if (scrollFailure) throw scrollFailure;
         if (attempt < 2) {
           await nativeAction(page, () => canvas(page).click({ position: {
@@ -1105,10 +1105,10 @@ for (const density of [1, 2]) {
       await expect.poll(captured).toBe("CANVAS");
       await expect(page.getByTestId("kms-pointer-hint")).toHaveText("Pointer captured · Press Esc to release");
       await page.getByTestId("kms-pointer-hint").screenshot({
-        path: `../../.context/freeciv-pointer-capture-hint-${density}.png`, scale: "css",
+        path: test.info().outputPath(`freeciv-pointer-capture-hint-${density}.png`), scale: "css",
       });
       await waitForPanel(page, box.width / 2 + 100, box.height / 2 + 100);
-      await page.screenshot({ path: `../../.context/freeciv-click-to-capture-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-click-to-capture-${density}.png`), scale: "css" });
       await expect(page.getByTestId("kms-pointer-hint")).toBeHidden({ timeout: 6_000 });
       await page.keyboard.press("Escape");
       await expect.poll(captured).toBeNull();
@@ -1228,7 +1228,7 @@ for (const density of [1, 2]) {
       await move((10 - px!) * scale, (10 - py!) * scale);
       await page.mouse.down(); await page.mouse.up();
       await waitForOptions(page);
-      await page.screenshot({ path: `../../.context/freeciv-pointer-lock-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-pointer-lock-${density}.png`), scale: "css" });
       await page.keyboard.press("Escape");
       await expect.poll(captured).toBeNull();
 
@@ -1290,7 +1290,7 @@ for (const density of [1, 2]) {
       };
       const readUnits = async (name: string) => {
         await command(`/save ${name}`);
-        await page.screenshot({ path: `../../.context/freeciv-${name}-${density}.png`, scale: "css" });
+        await page.screenshot({ path: test.info().outputPath(`freeciv-${name}-${density}.png`), scale: "css" });
         const script = String.raw`
           /^\[player0\]/{human=1}
           /^\[/{if ($0 != "[player0]") human=0}
@@ -1344,7 +1344,7 @@ for (const density of [1, 2]) {
       // does not prove that minimap recentering actually worked.
       await canvas(page).click({ button: "right", position: await nativePosition(page, 5, -125) });
       await expect.poll(centerTerrainPixels, { timeout: 10_000 }).toBeLessThan(10);
-      await page.screenshot({ path: `../../.context/freeciv-minimap-pan-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-minimap-pan-${density}.png`), scale: "css" });
       await canvas(page).focus();
       await page.keyboard.press("c");
       await expect.poll(centerTerrainPixels).toBeGreaterThan(5_000);
@@ -1359,12 +1359,12 @@ for (const density of [1, 2]) {
         await waitForOptions(page);
         await page.keyboard.press("Escape");
         await waitForOptions(page, false);
-        if (i % 3 === 0) await page.screenshot({ path: `../../.context/freeciv-navigation-${density}-${i}.png`, scale: "css" });
+        if (i % 3 === 0) await page.screenshot({ path: test.info().outputPath(`freeciv-navigation-${density}-${i}.png`), scale: "css" });
       }
       for (let i = 0; i < 3; i++) {
         await canvas(page).click({ button: "right", delay: 750,
           position: { x: box.width / 2 + 64, y: box.height / 2 } });
-        await page.screenshot({ path: `../../.context/freeciv-map-context-${density}-${i}.png`, scale: "css" });
+        await page.screenshot({ path: test.info().outputPath(`freeciv-map-context-${density}-${i}.png`), scale: "css" });
         await page.keyboard.press("Escape");
         await canvas(page).click({ position: { x: 16, y: 16 } });
         await waitForOptions(page);
@@ -1386,7 +1386,7 @@ for (const density of [1, 2]) {
       }
       const after = await readUnits("controls-after");
       expect(after).toBe(before); // Panning must not move units or assign routes.
-      writeFileSync(`../../.context/freeciv-navigation-saves-${density}.txt`, `${before}\n${after}`);
+      writeFileSync(test.info().outputPath(`freeciv-navigation-saves-${density}.txt`), `${before}\n${after}`);
       await canvas(page).focus();
       await nativeAction(page, () => page.keyboard.press("g"));
       for (let i = 0; i < 60; i++) {
@@ -1403,7 +1403,7 @@ for (const density of [1, 2]) {
       await page.keyboard.press("Escape");
       // A native chat/save round-trip is an input-consumption barrier.
       expect(await readUnits("controls-cancel")).toBe(before);
-      await page.screenshot({ path: `../../.context/freeciv-goto-escape-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-goto-escape-${density}.png`), scale: "css" });
       // Escape cancels the pending destination, rather than opening Options.
       await waitForOptions(page, false);
       await canvas(page).click({ position: {
@@ -1438,13 +1438,13 @@ for (const density of [1, 2]) {
           // action. Terrain can also satisfy a single warm-pixel check.
           await canvas(page).click({ position: await nativePosition(page, 16, 16) });
           await waitForOptions(page);
-          await page.screenshot({ path: `../../.context/freeciv-quit-options-${density}.png`, scale: "css" });
+          await page.screenshot({ path: test.info().outputPath(`freeciv-quit-options-${density}.png`), scale: "css" });
           // Click the native settings dialog's bottom Quit entry.
           await canvas(page).click({ position: { x: box.width / 2, y: box.height / 2 + 171 } });
         } else {
           await canvas(page).click({ position: await menuPosition(page, "quit") });
         }
-        await page.screenshot({ path: `../../.context/freeciv-quit-after-${density}-${inGame}.png`, scale: "css" });
+        await page.screenshot({ path: test.info().outputPath(`freeciv-quit-after-${density}-${inGame}.png`), scale: "css" });
         // Require the actual display release and automatic terminal handoff.
         // A prompt in hidden xterm DOM is stale, and a background server can
         // also print after a prompt. Execute a real command in the launching
@@ -1600,7 +1600,7 @@ for (const density of [1, 2]) {
       const result = { ...metrics, paced, burst: { ...burst, observedMs: burstMs },
         density, browser: page.context().browser()!.version(), viewport: page.viewportSize(),
         archive: archiveModule.match(/export default "([^"]+)"/)?.[1] };
-      writeFileSync(`../../.context/freeciv-render-${label}-${density}.json`, JSON.stringify(result, null, 2));
+      writeFileSync(test.info().outputPath(`freeciv-render-${label}-${density}.json`), JSON.stringify(result, null, 2));
       console.log(`Cursor rendering ${label} ${density}x: ${JSON.stringify(result)}`);
       if (label !== "before") {
         expect(metrics.presentations).toBeGreaterThan(20);
@@ -1652,12 +1652,12 @@ for (const density of [1, 2]) {
       // the minimap toolbar at 1x; a font-only DPI fix leaves it black at 2x.
       const toolbarPoint = await nativePosition(page, 180, -40);
       await waitForPanel(page, toolbarPoint.x, toolbarPoint.y);
-      await page.screenshot({ path: `../../.context/freeciv-minimap-${density}.png`, scale: "css", clip: {
+      await page.screenshot({ path: test.info().outputPath(`freeciv-minimap-${density}.png`), scale: "css", clip: {
         x: box.x, y: box.y + box.height - 240, width: 330, height: 240,
       } });
       await page.mouse.move(clip.x, clip.y);
       await expect.poll(cursorPixels, { timeout: 15_000 }).toBeGreaterThan(10);
-      await page.screenshot({ path: `../../.context/freeciv-cursor-game-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-cursor-game-${density}.png`), scale: "css" });
       await page.mouse.move(box.x + box.width - 0.1, box.y + 80);
       await page.getByRole("button", { name: "Terminal", exact: true }).click();
       await showGame(page);
@@ -1691,7 +1691,7 @@ for (const density of [1, 2]) {
       await canvas(page).focus();
       await page.keyboard.press("g");
       await expect.poll(() => originNear(584, 144)).toMatchObject({ near: true });
-      await page.screenshot({ path: `../../.context/freeciv-color-cursor-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-color-cursor-${density}.png`), scale: "css" });
       await page.keyboard.press("Escape");
       await expect.poll(() => originNear(600, 160)).toMatchObject({ near: true });
 
@@ -1736,7 +1736,7 @@ for (const density of [1, 2]) {
       // At the default 10-point setting a merged pair of text rows would
       // span more than 20 CSS pixels, at either native display density.
       expect(Math.max(...metrics.bands)).toBeLessThanOrEqual(20);
-      await page.screenshot({ path: `../../.context/freeciv-unit-panel-${density}.png`, scale: "css", clip: {
+      await page.screenshot({ path: test.info().outputPath(`freeciv-unit-panel-${density}.png`), scale: "css", clip: {
         x: box.x + box.width - 260, y: box.y + box.height - 350, width: 260, height: 350,
       } });
       // Exercise the actual unit-cycle and end-turn controls shown to users.
@@ -1829,13 +1829,13 @@ for (const density of [1, 2]) {
       await click(635, 353); // Screen resolution dropdown.
       await expect.poll(async () => Buffer.compare(beforeChoices,
         await page.screenshot({ scale: "css", clip: choicesClip }))).not.toBe(0);
-      await page.screenshot({ path: `../../.context/freeciv-resolution-choices-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-resolution-choices-${density}.png`), scale: "css" });
       // SDL orders the 17 standard modes from largest to smallest. The
       // dropdown opens upward by 17 rows of 15 guest pixels.
       await click(635, 321); // 800x600.
       await click(691, 92); // Apply through the native titlebar checkmark.
       await expect(page.getByText("800×600", { exact: false })).toBeVisible({ timeout: 30_000 });
-      await page.screenshot({ path: `../../.context/freeciv-resolution-800-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-resolution-800-${density}.png`), scale: "css" });
       // Apply returns to the category picker. Leave both option levels
       // before exercising the relocated main-menu button.
       await closeOptions(800, 600);
@@ -1846,7 +1846,7 @@ for (const density of [1, 2]) {
       await click(555, 306); // 1280x720, row 12, menu top at 119.
       await click(611, 122);
       await expect(page.getByText("1280×720", { exact: false })).toBeVisible({ timeout: 30_000 });
-      await page.screenshot({ path: `../../.context/freeciv-resolution-1280-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-resolution-1280-${density}.png`), scale: "css" });
       await closeOptions(1280, 720);
       await click(1180, 665); // Options remains clickable at the new mode.
       const box = (await canvas(page).boundingBox())!;
@@ -1862,7 +1862,7 @@ for (const density of [1, 2]) {
       await expect(page.getByText("1280×720", { exact: false })).toBeVisible({ timeout: 30_000 });
       const restoredMenu = await nativePosition(page, 1250, 690);
       await waitForPanel(page, restoredMenu.x, restoredMenu.y);
-      await page.screenshot({ path: `../../.context/freeciv-resolution-restored-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-resolution-restored-${density}.png`), scale: "css" });
       // Start an actual game at the saved mode, then change resolution
       // while its map and unit panels are live.
       await relaunch(page, "host");
@@ -1884,7 +1884,7 @@ for (const density of [1, 2]) {
       await click(16, 16);
       await titlebar(960, 540, -148);
       await page.keyboard.press("Escape", { delay: 100 });
-      await page.screenshot({ path: `../../.context/freeciv-resolution-game-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-resolution-game-${density}.png`), scale: "css" });
 
     });
     test("font settings accept typed digits", async ({ page, browserName }) => {
@@ -1901,21 +1901,21 @@ for (const density of [1, 2]) {
       await expect(page.getByText(`960×540`, { exact: false })).toBeVisible();
       // A narrow menu here would mean text shrank with device density.
       await waitForPanel(page, display!.width - 60, display!.height - 60);
-      await page.screenshot({ path: `../../.context/freeciv-density-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-density-${density}.png`), scale: "css" });
       // Options is the second entry from the bottom of Freeciv's menu.
       await nativeAction(page, async () => canvas(page).click({ position: await menuPosition(page, "options") }));
       await waitForPanel(page, display!.width / 2 + 100, display!.height / 2 + 100);
-      await page.screenshot({ path: `../../.context/freeciv-options-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-options-${density}.png`), scale: "css" });
       await nativeAction(page, () => canvas(page).click({ position: {
         x: display!.width / 2, y: display!.height / 2 - 144,
       } }));
       await waitForPanel(page, display!.width / 2 - 145, display!.height / 2, false);
-      await page.screenshot({ path: `../../.context/freeciv-categories-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-categories-${density}.png`), scale: "css" });
       await nativeAction(page, () => canvas(page).click({ position: {
         x: display!.width / 2, y: display!.height / 2 + 149,
       } }));
       await waitForPanel(page, display!.width / 2 - 200, display!.height / 2);
-      await page.screenshot({ path: `../../.context/freeciv-fonts-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-fonts-${density}.png`), scale: "css" });
       // Drag away and back before editing. SDL mouse-state reads and
       // events must use the same guest display coordinates.
       const title = { x: display!.x + display!.width / 2,
@@ -1962,8 +1962,8 @@ for (const density of [1, 2]) {
         await page.keyboard.type("14", { delay: 100 });
         await page.keyboard.press("Enter", { delay: 100 });
       });
-      await page.screenshot({ path: `../../.context/freeciv-font-edited-${density}.png`, scale: "css" });
-      await page.screenshot({ path: `../../.context/freeciv-font-setting-${density}.png`, scale: "css", clip: {
+      await page.screenshot({ path: test.info().outputPath(`freeciv-font-edited-${density}.png`), scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-font-setting-${density}.png`), scale: "css", clip: {
         x: display!.x + display!.width / 2 - 200,
         y: display!.y + display!.height / 2 - 125,
         width: 400, height: 250,
@@ -1987,7 +1987,7 @@ for (const density of [1, 2]) {
       await relaunch(page, "local");
       await showGame(page);
       await waitForPanel(page, display!.width - 60, display!.height - 60);
-      await page.screenshot({ path: `../../.context/freeciv-custom-font-${density}.png`, scale: "css" });
+      await page.screenshot({ path: test.info().outputPath(`freeciv-custom-font-${density}.png`), scale: "css" });
     });
   });
 }

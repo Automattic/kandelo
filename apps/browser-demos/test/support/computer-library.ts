@@ -1,4 +1,6 @@
 import { expect, type Locator, type Page } from "../../playwright-test";
+import { readFileSync, statSync } from "node:fs";
+import { partialLibrarySelection } from "./partial-library-selection.ts";
 
 /** The dialog asking whether to keep a computer, with its warning already checked. */
 export async function keepComputerDialog(page: Page): Promise<Locator> {
@@ -12,12 +14,34 @@ export async function confirmKeepComputer(page: Page): Promise<void> {
 }
 
 export async function configureNewComputer(page: Page, profileId: string, title?: string): Promise<void> {
+  const partialManifest = process.env.KANDELO_TEST_PARTIAL_LIBRARY_MANIFEST;
+  const readSmallFile = (file: string) => {
+    if (statSync(file).size > 256 * 1024) throw new Error(`test Library input exceeds 256KiB: ${file}`);
+    const text = readFileSync(file, "utf8");
+    if (Buffer.byteLength(text) > 256 * 1024) throw new Error(`test Library input exceeds 256KiB: ${file}`);
+    return text;
+  };
+  const preparedUrls = process.env.KANDELO_TEST_MACHINE_URLS;
+  const partial = partialManifest === undefined ? null : partialLibrarySelection(profileId, page.url(),
+    readSmallFile(partialManifest), preparedUrls === undefined ? undefined : readSmallFile(preparedUrls));
+  if (partial !== null) {
+    // Prove the requested route serves this manifest before changing UI state;
+    // a stale/missing partial must fail, never fall back to a canonical row.
+    const image = await page.request.head(partial.imageUrl);
+    await expect(image).toBeOK();
+    expect(image.status()).toBe(200);
+    expect(image.headers()["x-kandelo-partial-image-sha256"]).toBe(partial.sha256);
+    expect(image.headers()["content-length"]).toBe(String(partial.bytes));
+    expect(image.headers()["cache-control"]).toMatch(/(?:^|,)\s*no-store(?:\s|,|$)/);
+  }
   await page.getByRole("button", { name: "Library", exact: true }).click();
   await page.getByRole("button", { name: "+ New computer", exact: true }).click();
   await page.getByRole("searchbox", { name: "Find starting computers" }).fill(profileId);
-  // A worktree's partial image (`./run.sh partial`) is listed too; these
-  // helpers start from the canonical images.
-  const image = page.locator('[data-image-id]:not([data-image-id^="partial-"])');
+  // Canonical remains the default. Partial runs require the explicit
+  // manifest+prepared-URL opt-in above and select only that exact row.
+  const image = page.locator(partial === null
+    ? '[data-image-id]:not([data-image-id^="partial-"])'
+    : `[data-image-id="${partial.imageId}"]`);
   await expect(image).toHaveCount(1);
   await image.getByRole("button").click();
   await page.getByRole("combobox", { name: "Boot profile", exact: true }).selectOption(profileId);

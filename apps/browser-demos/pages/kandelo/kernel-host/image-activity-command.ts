@@ -58,6 +58,8 @@ export async function runImageActivityCommand(
   await retryImageActivityCleanup();
   assertCurrent();
   if (retained.size + activeCommands >= MAX_COMMANDS) throw new Error("Activity command cleanup is still pending; no command slot is available");
+  // Bind cleanup to this kernel before starting. A later machine switch must
+  // never redirect cancellation or release to its replacement kernel.
   const owner = host.captureOwnedJobs?.();
   if (!owner) throw new Error("The host cannot bind activity commands to their kernel owner");
   activeCommands++;
@@ -83,6 +85,8 @@ export async function runImageActivityCommand(
     }
   } finally {
     activeCommands--;
+    // A rejected start may have reached the kernel before its reply failed.
+    // Keep its captured owner until termination and release are confirmed.
     retained.set(id, { id, owner, finished, cancelRequested: false, cleanup: null });
     await retryImageActivityCleanup();
   }

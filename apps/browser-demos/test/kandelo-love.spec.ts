@@ -1,7 +1,5 @@
 import { setInternalsOpen } from "./support/dock";
 import { expect, test, type Page } from "../playwright-test";
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
 import { gotoMachine } from "./support/kandelo-machine";
 import { encodeBootDescriptor } from "../../../web-libs/kandelo-session/src/boot-descriptor";
 import { createInlineBootInput } from "../../../web-libs/kandelo-session/src/boot-inputs";
@@ -91,8 +89,6 @@ test("LÖVE menu launches all six games through the native renderer @slow", asyn
   }
   await page.keyboard.press("Escape");
 
-  const screenshotDir = resolve("../../.context/love-browser");
-  mkdirSync(screenshotDir, { recursive: true });
   // Return to Pong too, proving the last custom loop releases the display.
   for (const [index, [id]] of [...games, games[0]].entries()) {
     if (index > 0) {
@@ -142,7 +138,7 @@ test("LÖVE menu launches all six games through the native renderer @slow", asyn
       timeout: 120_000, intervals: [1_000, 2_000, 5_000],
     }).toBeGreaterThan(5_000);
     await expect(page.getByTestId("kms-dock-action-error")).toHaveCount(0);
-    await canvas.screenshot({ path: resolve(screenshotDir, `${id}.png`) });
+    await canvas.screenshot({ path: test.info().outputPath(`${id}.png`) });
     // Mount the terminal view so guest stderr is available for inspection.
     await terminalText(page, id);
     // Terminal replay is incremental. Wait for this command's audio line,
@@ -260,9 +256,7 @@ test("LÖVE pointer tracks device coordinates across the playfield and CSS resiz
       }, { timeout: 30_000, message: `LÖVE marker must follow pointer at ${x},${y}` }).toBeLessThan(3);
     }
   }
-  const screenshotDir = resolve("../../.context/love-pointer");
-  mkdirSync(screenshotDir, { recursive: true });
-  await canvas.screenshot({ path: resolve(screenshotDir, "pointer-probe.png") });
+  await canvas.screenshot({ path: test.info().outputPath("pointer-probe.png") });
 });
 
 

@@ -224,5 +224,5 @@ test("SDL's default cursor uses the shared KMS cursor plane", async ({ page, bro
     }).toBe(true);
     expect((await worker!.evaluate(() => (globalThis as any).__kmsCursorProbe)).opaque).toBeGreaterThan(20);
   }
-  await page.screenshot({ path: "../../.context/sdl-shared-kms-cursor.png", scale: "css", clip: box });
+  await page.screenshot({ path: test.info().outputPath("sdl-shared-kms-cursor.png"), scale: "css", clip: box });
 });
