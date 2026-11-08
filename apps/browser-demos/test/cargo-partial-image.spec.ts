@@ -5,11 +5,13 @@ import { cargoProjectFiles, cargoProjectBinaryFiles, cargoProjectOutput } from "
 import { test } from "./support/persistent-page";
 import { runTerminalCommand } from "./support/terminal-command";
 
+const imageKind = process.env.KANDELO_RUST_SHELL_IMAGE ?? "partial";
+if (imageKind !== "partial" && imageKind !== "canonical") throw new Error("KANDELO_RUST_SHELL_IMAGE must be partial or canonical");
 const manifestPath = resolve(import.meta.dirname, "../../../local-binaries/partial/partial.json");
-const manifest: { selection: string[] } | null = existsSync(manifestPath)
+const manifest: { selection: string[] } | null = imageKind === "partial" && existsSync(manifestPath)
   ? JSON.parse(readFileSync(manifestPath, "utf8")) : null;
 const tools = ["cargo", "rustc", "kandelo-rustc", "kandelo-sdk-browser-bundle", "wasm-fork-instrument"];
-const available = tools.every(name => manifest?.selection.includes(name));
+const available = imageKind === "canonical" || tools.every(name => manifest?.selection.includes(name));
 if (!available && process.env.KANDELO_REQUIRE_GUEST_CARGO === "1") {
   throw new Error("Build the partial Rust shell before running Cargo UI acceptance");
 }
@@ -18,10 +20,10 @@ function quote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'";
 }
 
-test("the partial Rust shell builds a Cargo workspace through its login terminal", async ({ page }) => {
+test(`the ${imageKind} Rust shell builds a Cargo workspace through its login terminal`, async ({ page }) => {
   test.skip(!available, "requires the partial Rust shell");
   test.setTimeout(900_000);
-  await page.goto("/?vfs=%2F%40kandelo-partial%2Fimage.vfs.zst&profile=shell");
+  await page.goto(imageKind === "canonical" ? "/?profile=shell" : "/?vfs=%2F%40kandelo-partial%2Fimage.vfs.zst&profile=shell");
   await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
   await expect.poll(() => page.locator(".xterm-rows").first().textContent(), { timeout: 120_000 })
     .toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);

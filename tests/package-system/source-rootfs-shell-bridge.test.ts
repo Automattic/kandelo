@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
+import { createServer } from "node:net";
 import { zipSync } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
 import { ABI_VERSION } from "../../host/src/generated/abi";
@@ -59,6 +60,7 @@ import {
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
   parseExperimentalTerminalSession,
 } from "../../web-libs/kandelo-session/src/experimental-terminal-session";
+import { playwrightPort } from "../playwright-run";
 import { partialShellSelection } from "../../images/vfs/scripts/shell-selection";
 import {
   readSourceRootfsShellDependencyContract,
@@ -434,6 +436,28 @@ describe("canonical source-rootfs shell", () => {
       },
     ]) {
       expect(() => assertSourceRootfsShellMetadata(invalid)).toThrow();
+    }
+  });
+
+  it("allocates a browser server port independently of an occupied preview", async () => {
+    const preview = createServer();
+    await new Promise<void>((resolve, reject) => {
+      preview.once("error", reject);
+      preview.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const address = preview.address();
+      if (address === null || typeof address === "string") throw new Error("Preview did not bind");
+      const selected = await playwrightPort(undefined);
+      expect(selected).not.toBe(address.port);
+      const owned = createServer();
+      await new Promise<void>((resolve, reject) => {
+        owned.once("error", reject);
+        owned.listen(selected, "127.0.0.1", resolve);
+      });
+      await new Promise<void>((resolve, reject) => owned.close(error => error ? reject(error) : resolve()));
+    } finally {
+      await new Promise<void>((resolve, reject) => preview.close(error => error ? reject(error) : resolve()));
     }
   });
 

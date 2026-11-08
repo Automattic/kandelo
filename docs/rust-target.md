@@ -152,6 +152,20 @@ an image served by the browser does not replace files in an existing
 persistent machine. A complete SDK installation or a new machine is still
 required before its new components can be used.
 
+A complete SDK replacement was validated on Node using the same project,
+Cargo home and target directory, with the compiler inode, length and mtime
+preserved. The new standard library and build-script output were used,
+then builds stayed fresh before and after reopening the persistent disk.
+
+The same full replacement currently fails during archive extraction on
+Chromium, Firefox and WebKit with ENOSPC. A Chromium diagnostic run also
+reported about 700 MiB origin usage against more than 10 GiB quota, so that
+failure is not established to be browser quota exhaustion. Its underlying
+persistence failure remains unresolved. Browser SDK replacement is not
+claimed as supported; an existing saved machine does not receive a new
+SDK merely because its boot image URL changes. Ordinary Cargo builds and
+same-SDK cache reuse are independently validated on all four hosts.
+
 Incremental compilation is disabled for the WebKit acceptance workflow.
 During bring-up, Cargo's default incremental mode repeatedly made WebKit
 terminate its web process with `ExceededMemoryLimit` while compiling the build script.

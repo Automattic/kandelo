@@ -1402,7 +1402,8 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/dylink.ts::instantiateSharedLibrarySteps::wasm-instance-authority::new WebAssembly.Instance(module, instanceImports)",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
-    why: "This instance is a user process's dynamically linked shared library and receives only that activation's wrapped process imports.",
+    count: 2,
+    why: "Both branches instantiate a user process's dynamically linked shared library with that activation's wrapped process imports. The optional synchronous wrapper binds stack capture to the owning module; neither branch receives kernel memory.",
   },
   {
     key: "host/src/fork-anyref-transit.ts::ForkAnyrefTransitTable.constructor::wasm-instance-authority::new WebAssembly.Instance(compileProviderModule())",
