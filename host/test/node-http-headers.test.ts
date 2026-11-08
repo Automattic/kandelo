@@ -19,7 +19,7 @@ function section(start: string, end: string) {
 }
 const require = createRequire(import.meta.url);
 function subject(live = false) {
-  const { Buffer, values } = require('./fixtures/node-buffer-pool.cjs').create();
+  const { Buffer, FastBuffer, values } = require('./fixtures/node-buffer-pool.cjs').create();
   values.require('internal/util/debuglog').initializeDebugEnv(process.env.NODE_DEBUG);
   const outgoing = require('./fixtures/node-http-outgoing-platform.cjs').create(Buffer, values);
   const headers = factories.headers({ Buffer, values, outgoing, insecureHTTPParser: false });
@@ -27,10 +27,10 @@ function subject(live = false) {
   const pending: Array<() => void> = [];
   // Actual request/parser/header/Buffer source. Native streams and URL are
   // explicit boundaries; only live controls use real native loopback sockets.
-  const make = Function('_nodeHttpHeaders', '_nodeHttpIncoming', 'Buffer', 'stream', 'url', 'queueMicrotask', '_nodeValues', '_createNodeHttpParser', '_nodeNative', '_nodeHttpOutgoing',
+  const make = Function('_nodeHttpHeaders', '_nodeHttpIncoming', '_nodeHttpServerResponse', 'Buffer', '_FastBuffer', 'stream', 'url', 'queueMicrotask', '_nodeValues', '_createNodeHttpParser', '_nodeNative', '_nodeHttpOutgoing',
     'const STATUS_CODES=_nodeHttpHeaders.STATUS_CODES;' +
     section('const HTTP_METHODS =', 'const http = makeHttpModule(') + ';return makeHttpModule;')
-    (headers, incoming, Buffer, stream, url, live ? queueMicrotask : (fn: () => void) => pending.push(fn), values,
+    (headers, incoming, { ServerResponse: http.ServerResponse }, Buffer, FastBuffer, stream, url, live ? queueMicrotask : (fn: () => void) => pending.push(fn), values,
       factories.parser, require('./fixtures/node-http-incoming-platform.cjs').nativeParserBoundary(), outgoing);
   return { api: make({ defaultPort: 80, defaultProtocol: 'http:',
     connect: (options: net.NetConnectOpts) => net.connect(options) }), headers, Buffer, pending };

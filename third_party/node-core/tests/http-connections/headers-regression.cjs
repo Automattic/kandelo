@@ -9,10 +9,10 @@ const core=path.resolve(__dirname,'../..');let groups=0;
 function create(connections){
  const parser=new HTTPParser();parser.initialize(HTTPParser.REQUEST,{type:'HTTPINCOMINGMESSAGE'},0,0,connections);let complete=false,upgrade=false,current;
  parser[HTTPParser.kOnHeaders]=()=>{throw Error('These focused fixtures do not overflow native field slots');};
- parser[HTTPParser.kOnBody]=bytes=>current.events.push({type:1,body:Buffer.from(bytes)});
- parser[HTTPParser.kOnMessageComplete]=()=>{current.events.push({type:2,headers:[],informational:false});complete=true;};
- function feed(bytes,callback){
-  let headers=0,inFeed=false,url='',code='';current={events:[],consumed:0};
+ parser[HTTPParser.kOnBody]=bytes=>{const event={type:1,body:Buffer.from(bytes)};if(current.bodyCallback)current.bodyCallback(event);else current.events.push(event);};
+ parser[HTTPParser.kOnMessageComplete]=()=>{const event={type:2,headers:[],informational:false};if(current.completeCallback)current.completeCallback(event);else current.events.push(event);complete=true;};
+ function feed(bytes,callback,bodyCallback,completeCallback){
+  let headers=0,inFeed=false,url='',code='';current={events:[],consumed:0,bodyCallback,completeCallback};
   parser[HTTPParser.kOnHeadersComplete]=function(major,minor,items,method,target,status,statusMessage,isUpgrade,keepAlive){
    headers++;inFeed=true;url=target;upgrade=!!isUpgrade;
    return callback({major,minor,headers:items,method,url:target,status,statusMessage,upgrade,keepAlive,request:true});
@@ -24,7 +24,12 @@ function create(connections){
   }
   return{...current,complete:complete||upgrade,upgrade,headers,inFeed,url,code,remainder:complete||upgrade?bytes.subarray(current.consumed):Buffer.alloc(0)};
  }
- return{parser,feed,close(){parser.close();}};
+ function finish(callback,bodyCallback,completeCallback){
+  current={events:[],consumed:0,bodyCallback,completeCallback};
+  const result=parser.finish();const error=result instanceof Error?result:null;
+  return{...current,complete,upgrade,code:error?.code||'',reason:error?.reason||'',remainder:Buffer.alloc(0)};
+ }
+ return{parser,feed,finish,close(){parser.close();}};
 }
 const cases=[
  ['ordinary',0,0,'POST /body HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\nabc'],
@@ -53,14 +58,15 @@ const boundary={httpParser(operation,...args){
  if(operation.startsWith('connections'))return operation==='connectionsExpired'?args[0].expired(args[1],args[2]):args[0][operation.slice(11).toLowerCase()]();
  if(operation==='remove'){Reflect.apply(HTTPParser.prototype.remove,args[0],[]);return;}
  if(operation==='createRequest'){const owner=create(args[4]);created.push(owner);nativeRequests.set(owner.parser,owner);return owner.parser;}
- if(operation==='feedRequestHeaders'){const[owner,bytes,callback]=args;return nativeRequests.get(owner).feed(bytes,callback);}
+ if(operation==='feedRequestHeaders'||operation==='feedRequest'){const[owner,bytes,...callbacks]=args;return nativeRequests.get(owner).feed(bytes,...callbacks);}
+ if(operation==='finishRequest'){const[owner,_bytes,...callbacks]=args;return nativeRequests.get(owner).finish(...callbacks);}
  throw Error('Outside focused native request boundary: '+operation);
 }};
 const adapter=fs.readFileSync(path.resolve(core,'../../packages/registry/spidermonkey/node-compat/adapter.js'),'utf8');
 const begin=adapter.indexOf('    const _nodeNative = {'),end=adapter.indexOf('    const entryPath =',begin);assert(begin>=0&&end>begin);
 const asyncBegin=adapter.indexOf('    const asyncApply = Reflect.apply, asyncAssign = Object.assign;'),asyncEnd=adapter.indexOf('    // The deadline heap owns',asyncBegin);assert(asyncBegin>=0&&asyncEnd>asyncBegin);
 const routed=Function('native','workerEnvironment',adapter.slice(asyncBegin,asyncEnd)+adapter.slice(begin,end)+';return _nodeNative;')(boundary,null);
-const responseFactory=factory({Buffer,incoming:Incoming,native:routed});const request=responseFactory.request;
+const responseFactory=factory({Buffer,FastBuffer:require('internal/buffer').FastBuffer,incoming:Incoming,native:routed});const request=responseFactory.request;
 try{
  for(const decision of [0,1]){
   const raw=Buffer.from(cases[0][3]),socket=new net.Socket();let headers=0,complete=0;
@@ -81,6 +87,11 @@ try{
   assert.equal(list.all()[0],parser);assert.equal(list.active()[0],parser);assert.equal(list.idle()[0],parser);assert.equal(parser.socket,socket);
   parser.feed(Buffer.from('POST /list HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\na'));assert.equal(callbacks,1);assert.deepEqual(list.idle(),[]);
   parser.feed(Buffer.from('b'));assert.equal(callbacks,2);assert.equal(parser.completed,true);parser.remove();assert.deepEqual(list.all(),[]);socket.destroy();groups++;
+ }
+ { // Real request EOF validation through the new private finish protocol.
+  const socket=new net.Socket();let failure;
+  const parser=request({socket,onError(error){failure=error;}});
+  try{parser.feed(Buffer.from('POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\na'));parser.end();assert.equal(failure.code,'HPE_INVALID_EOF_STATE');assert.equal(parser.message.complete,false);groups++;}finally{socket.destroy();}
  }
 }finally{for(const owner of created)owner.close();}
 const report={groups,portableNativeDifferential:rows,actualOriginalInputMutation:true,requestFactoryExecuted:true,productionForwarderExecuted:true,newAsyncResourceShadows:0,productionJSAPICompiled:false,scope:'Actual portable llhttp headers decision and candidate JS request consumer over native HTTPParser/IncomingMessage dependencies; no guest/fullServer/GC/engine backing/async/fatal/ConnectionsList conformance'};

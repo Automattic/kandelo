@@ -60,6 +60,8 @@ inline int HeadersDecision(double number) {
 struct HeadersHandler {
   void* context = nullptr;
   int (*call)(void*, const Event&) = nullptr;
+  int (*body)(void*, const Event&) = nullptr;
+  int (*complete)(void*, const Event&) = nullptr;
 };
 class Parser final {
  public:
@@ -290,6 +292,7 @@ class Parser final {
       if (size) {
         Event event(Event::Type::Body);
         event.body.assign(reinterpret_cast<const uint8_t*>(at), reinterpret_cast<const uint8_t*>(at) + size);
+        if (s.handler_.body) return s.handler_.body(s.handler_.context, event);
         s.step_->events.push_back(std::move(event));
       }
       return 0;
@@ -300,7 +303,10 @@ class Parser final {
       if (s.request_) s.connections_.Complete();
       Event event(Event::Type::Complete);
       event.headers = std::move(s.headers_); event.informational = s.informational_;
-      event.upgrade = s.upgrade_; s.step_->events.push_back(std::move(event));
+      event.upgrade = s.upgrade_;
+      if (s.handler_.complete) {
+        if (int error = s.handler_.complete(s.handler_.context, event)) return error;
+      } else s.step_->events.push_back(std::move(event));
       if (s.informational_) return 0;
       s.complete_ = true;
       return s.upgrade_ ? 0 : int(HPE_PAUSED);

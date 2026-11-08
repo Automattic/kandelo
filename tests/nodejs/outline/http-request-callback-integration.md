@@ -1,0 +1,13 @@
+# HTTP request callback and private Body publication
+
+Source 250 integrates real request Body/Complete synchronous llhttp callbacks and noncoercing private FastBuffer publication over already independent native bytes. It contributes partially to H-003 and shared H-001/H-013 dependencies. Production core is regenerated normally; no component-expanded core is installed. Actual source checks guard904inputs/16checks/eightcommands; portable9, factory5, headers17/18,14incoming and two poison modes/four subjects use explicit native dependencies. Separate unchanged-file headers Vitest has six failures due to a missing _createNodeHttpAgent fixture dependency; these are harness errors, not passes or unsupported cases. Guest JSAPI/GC/realm/provider/full Server/reuse/stack/shared-input/four-host behavior remains unvalidated.
+
+Original callback baseline is portable0/9 and ACTUAL frontend1/5, despite old sealed prose0/5. The immutable correction erratum and all original/corrector setup failures are preserved. Exactly three historical successful tiny compiles are counted once; correction/root add zero. Known count356 remains a lower bound with four unknown dependency attributions.
+
+The separate unchanged headers Vitest ran as PID51365, exited1 and failed6/6 due to _createNodeHttpAgent missing in its fixture Function dependencies. This is a harness error, not unsupported or passing compatibility. No assertions were weakened and no alternate subject replaced the file.
+
+- Compile and validate the actual production native HTTP event JSAPI/callback roots, reentry, realm/CCW, OOM, fatal/stack/provider and Worker lifetimes on identified guest artifacts; native dependency controls are not guest proof.
+- Implement/reconcile complete reusable/pipelined parser initialize/reset/execute/pause/resume/free/close/consume and retained original/shared input behavior; this slice does not implement the full Server/HTTP2/TLS transport owners.
+- Preserve independent Body copy/publication behavior while completing public parser remainder conversion and resource ownership. Unrelated mutable Buffer.from remainder conversion is explicitly outside this correction.
+- Repair the changed headers Vitest fixture against the actual existing Agent owners in a separate reviewed slice, without weakening its six assertions or substituting another subject; current six ReferenceErrors remain harness errors.
+- Collect applicable four-host conformance only within the authorized build constraints after the breadth pass; keep implementation gaps, failures, skips, unsupported cases, timeouts and harness errors distinct.

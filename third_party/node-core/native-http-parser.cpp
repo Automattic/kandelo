@@ -146,16 +146,21 @@ static bool KandeloHttpEvent(JSContext* cx, const kandelo::http::Event& event, M
 }
 struct KandeloHttpHeadersCall {
   JSContext* cx;
-  HandleValue callback;
+  HandleValue callback, body, complete;
   bool failed = false;
   static int Invoke(void* opaque, const kandelo::http::Event& event) {
     auto& state = *static_cast<KandeloHttpHeadersCall*>(opaque);
     RootedValue argument(state.cx), result(state.cx);
+    const auto type = event.type;
+    HandleValue callback = type == kandelo::http::Event::Type::Headers ? state.callback :
+        type == kandelo::http::Event::Type::Body ? state.body : state.complete;
     if (!KandeloHttpEvent(state.cx, event, &argument) ||
-        !JS::Call(state.cx, UndefinedHandleValue, state.callback,
+        !JS::Call(state.cx, UndefinedHandleValue, callback,
                   JS::HandleValueArray(argument), &result)) {
-      state.failed = true;return -1;
+      state.failed = true;
+      return type == kandelo::http::Event::Type::Body ? int(HPE_USER) : -1;
     }
+    if (type != kandelo::http::Event::Type::Headers) return 0;
     double number;
     if (!JS::ToNumber(state.cx, result, &number)) { state.failed = true;return -1; }
     return kandelo::http::HeadersDecision(number);
@@ -268,30 +273,43 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
   }
   // Callback/OOM failure can leave additional native capacity allocated.
   auto account = mozilla::MakeScopeExit([&] { KandeloHttpAccount(object, owner); });
-  const bool synchronous = strcmp(operation.get(), "feedRequestHeaders") == 0;
+  const bool fullCallbacks = strcmp(operation.get(), "feedRequest") == 0 ||
+      strcmp(operation.get(), "finishRequest") == 0;
+  const bool synchronous = fullCallbacks || strcmp(operation.get(), "feedRequestHeaders") == 0;
   if (owner->executing) { JS_ReportErrorASCII(cx, "HTTP parser is already executing");return false; }
   owner->executing = true;
   auto endExecution = mozilla::MakeScopeExit([&] { owner->executing = false; });
   kandelo::http::Step step;
   if (synchronous) {
     if (!owner->request) { JS_ReportErrorASCII(cx, "Synchronous request headers require a request parser");return false; }
-    RootedValue callback(cx, args.get(3));
+    RootedValue callback(cx, args.get(3)), body(cx, args.get(4)), complete(cx, args.get(5));
+    if (fullCallbacks && (!body.isObject() || !JS::IsCallable(&body.toObject()) ||
+        !complete.isObject() || !JS::IsCallable(&complete.toObject()))) {
+      JS_ReportErrorASCII(cx, "HTTP request parsing requires actual body and completion callbacks");return false;
+    }
     if (!callback.isObject() || !JS::IsCallable(&callback.toObject())) {
       JS_ReportErrorASCII(cx, "HTTP request parsing requires its actual headers callback");return false;
     }
-    KandeloCryptoByteSource input(cx);
-    if (!input.Init(args.get(2))) {
-      if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "HTTP input requires a real buffer source");
-      return false;
+    KandeloHttpHeadersCall call{cx, callback, body, complete};
+    const kandelo::http::HeadersHandler handlers{&call, KandeloHttpHeadersCall::Invoke,
+        fullCallbacks ? KandeloHttpHeadersCall::Invoke : nullptr,
+        fullCallbacks ? KandeloHttpHeadersCall::Invoke : nullptr};
+    if (strcmp(operation.get(), "finishRequest") == 0) {
+      step = owner->parser.Finish(handlers);
+    } else {
+      KandeloCryptoByteSource input(cx);
+      if (!input.Init(args.get(2))) {
+        if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "HTTP input requires a real buffer source");
+        return false;
+      }
+      auto original = input.Capture();if (!original) return false;
+      // The original allocation remains owned through all synchronous JS
+      // callbacks. Shared consumption still needs an actual atomic owner.
+      if (original->Shared()) {
+        JS_ReportErrorASCII(cx, "Synchronous HTTP shared input requires atomic parser consumption");return false;
+      }
+      step = owner->parser.Feed(original->Data(), original->Length(), handlers);
     }
-    auto original = input.Capture();if (!original) return false;
-    // A raw C parser cannot race shared JS writes. Atomic shared consumption
-    // needs a separate actual owner; never substitute a hidden copied buffer.
-    if (original->Shared()) {
-      JS_ReportErrorASCII(cx, "Synchronous HTTP shared input requires atomic parser consumption");return false;
-    }
-    KandeloHttpHeadersCall call{cx, callback};
-    step = owner->parser.Feed(original->Data(), original->Length(), {&call, KandeloHttpHeadersCall::Invoke});
     // Original JS/coercion failure wins over llhttp's unwind status. It is not
     // converted to a parser error packet that would manufacture a 400 response.
     if (call.failed || JS_IsExceptionPending(cx)) return false;
@@ -307,8 +325,19 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
 }
 static bool KandeloNativeHttpParser(JSContext* cx, unsigned argc, Value* vp) {
   try { return KandeloNativeHttpParserImpl(cx, argc, vp); }
-  catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
-  catch (const std::length_error&) { JS_ReportOutOfMemory(cx); return false; }
-  catch (...) { JS_ReportErrorASCII(cx, "Unexpected native HTTP parser failure"); return false; }
+  catch (const std::bad_alloc&) {
+    // Callback unwind may allocate native parser error text. Its original JS
+    // exception still owns failure even if that subsequent allocation fails.
+    if (!JS_IsExceptionPending(cx)) JS_ReportOutOfMemory(cx);
+    return false;
+  }
+  catch (const std::length_error&) {
+    if (!JS_IsExceptionPending(cx)) JS_ReportOutOfMemory(cx);
+    return false;
+  }
+  catch (...) {
+    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Unexpected native HTTP parser failure");
+    return false;
+  }
 }
 }  // namespace

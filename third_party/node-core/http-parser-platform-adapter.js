@@ -1,12 +1,17 @@
 // Pinned IncomingMessage callbacks over an opaque native llhttp owner.
 // Response events retain their packet contract. Request header decisions enter
 // the actual synchronous llhttp frame over the original input allocation;
-// body/completion callback and full HTTPServer/native consume remain separate.
+// body/completion join the same active frame. Full HTTPServer/native consume
+// and parser resource/provider lifecycle remain separate.
 function _createNodeHttpParser(platform) {
     'use strict';
-    const { MathMin, Symbol, ReflectApply, Error, ObjectAssign, ObjectCreate, ObjectDefineProperty, ObjectDefineProperties, ObjectGetOwnPropertyDescriptors, ObjectKeys } = _createNodePrimordials();
+    const { MathMin, Symbol, ReflectApply, Error, ObjectAssign, ObjectCreate, ObjectDefineProperty, ObjectDefineProperties, ObjectGetOwnPropertyDescriptors, ObjectKeys, TypedArrayPrototypeGetBuffer, TypedArrayPrototypeGetByteOffset, TypedArrayPrototypeGetByteLength } = _createNodePrimordials();
     const { IncomingMessage, readStart, readStop } = platform.incoming;
-    const Buffer = platform.Buffer;
+    const Buffer = platform.Buffer, FastBuffer = platform.FastBuffer;
+    // Native event bytes already own an independent copy of parser input.
+    // Publish that private storage without public Buffer.from/coercion hooks.
+    const bodyBuffer = bytes => new FastBuffer(TypedArrayPrototypeGetBuffer(bytes),
+        TypedArrayPrototypeGetByteOffset(bytes), TypedArrayPrototypeGetByteLength(bytes));
     const kIncomingMessage = Symbol('IncomingMessage');
     const kSkipPendingData = Symbol('SkipPendingData');
     /* NODE_HTTP_PARSER_CALLBACKS */
@@ -60,6 +65,14 @@ function _createNodeHttpParser(platform) {
                 event.headers, event.method, event.url, event.status, event.statusMessage,
                 event.upgrade, event.keepAlive]);
         }
+        function requestBody(event) {
+            ReflectApply(parserOnBody, parser, [bodyBuffer(event.body)]);
+        }
+        function requestComplete(event) {
+            ReflectApply(parserOnHeaders, parser, [event.headers, '']);
+            ReflectApply(parserOnMessageComplete, parser, []);
+            if (options.onComplete) options.onComplete();
+        }
         function consume(packet, input) {
             if (packet.remainder.length) remainder = Buffer.from(packet.remainder);
             for (let i = 0; i < packet.events.length; ++i) {
@@ -69,7 +82,7 @@ function _createNodeHttpParser(platform) {
                         event.headers, event.request ? event.method : undefined, event.request ? event.url : undefined, event.status, event.statusMessage,
                         event.upgrade, event.keepAlive]);
                 } else if (event.type === 1) {
-                    ReflectApply(parserOnBody, parser, [Buffer.from(event.body)]);
+                    ReflectApply(parserOnBody, parser, [bodyBuffer(event.body)]);
                 } else if (event.type === 2) {
                     // Use the same trailing-header cap and lifecycle algorithm.
                     ReflectApply(parserOnHeaders, parser, [event.headers, '']);
@@ -98,12 +111,13 @@ function _createNodeHttpParser(platform) {
             getRemainder() { return remainder; },
             feed(bytes) {
                 if (failed || completed) return;
-                consume(request ? platform.native.httpParser('feedRequestHeaders', owner, bytes, requestHeaders)
+                consume(request ? platform.native.httpParser('feedRequest', owner, bytes, requestHeaders, requestBody, requestComplete)
                     : platform.native.httpParser('feed', owner, bytes), bytes);
             },
             end() {
                 if (failed || completed) return;
-                consume(platform.native.httpParser('finish', owner));
+                consume(request ? platform.native.httpParser('finishRequest', owner, undefined, requestHeaders, requestBody, requestComplete)
+                    : platform.native.httpParser('finish', owner));
             },
         };
         if (!request) return api;

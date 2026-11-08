@@ -1,0 +1,268 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/http.md",
+    "findingIds": [
+      "H-003"
+    ],
+    "prerequisiteFindingIds": [
+      "H-001"
+    ],
+    "relatedFamilies": [
+      "streams",
+      "network",
+      "async",
+      "values"
+    ],
+    "scope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/http.md",
+        "findingId": "H-003",
+        "definitionKey": "tests/nodejs/audit/http.md#H-003:L18",
+        "relation": "partial-owning-source",
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/http.md",
+        "findingId": "H-001",
+        "definitionKey": "tests/nodejs/audit/http.md#H-001:L16",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/http-contracts.md",
+        "findingId": "H-013",
+        "definitionKey": "tests/nodejs/audit/http-contracts.md#H-013:L91",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Request llhttp Body and Complete callbacks enter the actual active native parse frame synchronously, preserving callback throw/removal chronology and real ConnectionsList state.",
+    "Native events retain independent copied body storage; the frontend publishes it through captured private FastBuffer plus primordial typed-array span getters, avoiding mutable public Buffer.from/valueOf/iterator publication hooks.",
+    "Actual bootstrap supplies the private FastBuffer capability. Both request and existing deferred response Body consumers use this genuine owner; unrelated remainder conversion is not changed.",
+    "Compose only reviewed source leaves over source249, preserve codec/TLS/TTY/VM inputs and executable script, and normally regenerate actual production core. Canonical engine remains unchanged."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-http250-source-r1/report.json",
+    "sha256": "327eedbcff7cea38f3d96b159403e23752f28324ad139335edee180e1cdaced5",
+    "guardedInputs": 904,
+    "scope": "Partial HTTP request Body/Complete synchronous owner plus noncoercing actual private FastBuffer publication. Actual production-generation only; native dependencies/portable old owners distinct from guest native parser/GC/realm/provider/fatal/Server/pipeline/shared-input/four-host validation. Original baseline 1/5 and portable 0/9, all preserved setup failures remain."
+  },
+  "packageChecks": {
+    "report": ".context/node26-http250-affected-r1.json",
+    "sha256": "7f7c8aa84926a390472a5cf683117f02d0e92fe15712e8172778f7983665e710",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-http250-source-r1/report.json",
+    "sha256": "327eedbcff7cea38f3d96b159403e23752f28324ad139335edee180e1cdaced5",
+    "portableGroups": 9,
+    "portableBeforeMatches": 0,
+    "portableAfterMatches": 9,
+    "requestHeaderGroups": 17,
+    "connectionHeaderGroups": 18,
+    "frontendGroups": 5,
+    "frontendBeforeMatched": 1,
+    "frontendAfterPassed": 5,
+    "bodyPoisonCases": 2,
+    "bodySubjectsPerCase": 4,
+    "bodyCorrectedMatched": 2,
+    "incomingCases": 14,
+    "incomingPassed": 14,
+    "actualProductionCore": "a12eda2c6619140be02729b280378d92c24684d6410de0c8dd39c8c86719f633",
+    "actualProductionFactory": "acd4c37a36c29c1d171b915c45d77ff1981d198c33c58c9f6d14855fecb66dc1",
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "productionJSAPICompiled": false,
+    "scope": "Source 250 integrates real request Body/Complete synchronous llhttp callbacks and noncoercing private FastBuffer publication over already independent native bytes. It contributes partially to H-003 and shared H-001/H-013 dependencies. Production core is regenerated normally; no component-expanded core is installed. Actual source checks guard904inputs/16checks/eightcommands; portable9, factory5, headers17/18,14incoming and two poison modes/four subjects use explicit native dependencies. Separate unchanged-file headers Vitest has six failures due to a missing _createNodeHttpAgent fixture dependency; these are harness errors, not passes or unsupported cases. Guest JSAPI/GC/realm/provider/full Server/reuse/stack/shared-input/four-host behavior remains unvalidated.",
+    "guardedInputs": 904,
+    "sourceChecks": 16,
+    "sourceCommands": 8,
+    "packagePassed": 14,
+    "separateHeadersVitestFailed": 6,
+    "separateHeadersVitestClassification": "harness-error",
+    "historicalHelpersAccounted": 3,
+    "historicalHelperFailures": 0,
+    "newRootCompilerAttempts": 0,
+    "fourHostConformance": false,
+    "globalBindingSelfContained": false
+  },
+  "sealedEvidence": {
+    "report": ".context/http-body-buffer-publication-correction-agent/handoff/report.json",
+    "sha256": "cad73a176778b0324f3fac8d9dbb489eb21b7af3ea66530f7958e390aa91dd84",
+    "reusedEvidence": true,
+    "scope": "Historical native-dependent correction and original callback control evidence, with actual frontend before1/5 erratum and three original helper successes; not guest JSAPI, Server or four-host acceptance."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-http250-headers-vitest-r1.json",
+      "sha256": "55e13c9885d6d5c00c106a573b40bed24cb5210881f53000380d709ce2413865",
+      "classification": "harness-error",
+      "failedTests": 6,
+      "passedTests": 0,
+      "scope": "Actual unchanged-file Vitest exit1: each subject fails ReferenceError _createNodeHttpAgent absent. No assertion weakening, subject substitution, unsupported classification or compatibility pass."
+    },
+    {
+      "report": ".context/node26-http250-tool-run-r1/headers-vitest-receipt.json",
+      "sha256": "6197929e045ce27080e2d171fd46b213d73b03cf76be92a606e560bf59bd094c",
+      "classification": "harness-error",
+      "pid": 51365,
+      "exit": 1,
+      "scope": "Separate actual manager-run observation outside the two V1 check declarations; original log retained."
+    },
+    {
+      "report": ".context/http-request-callback-owner-agent/frontend-report.json",
+      "sha256": "1e301c0e51bd127c1f61654f2f18d8d285082ff4d557006a43f3271f19f6039e",
+      "classification": "historical-baseline-nonpass",
+      "scope": "Actual original before1/5, corrected by immutable erratum; old prose0/5 is wrong. Portable baseline remains0/9."
+    },
+    {
+      "report": ".context/http-body-buffer-publication-correction-agent/EVIDENCE-ERRATUM.json",
+      "sha256": "5485a8a8def452453f34934aab28e44b8e2778e91040d8d74de30f9805b78a2b",
+      "scope": "Explicit additive correction to original baseline prose; original sealed owner/evidence unchanged."
+    },
+    {
+      "report": ".context/http-body-buffer-publication-correction-agent/report-final.json",
+      "sha256": "c212ca179eba16712237dee9a24adfa00973502ee730d1c2e0b17455eebb7416",
+      "scope": "Historical captured-from-only draft fails conversion-hook mode; old owner fails both mutation modes; corrected two cases over native dependencies, not guest proof."
+    },
+    {
+      "report": ".context/http-request-callback-owner-agent/controls-r1/control-before.stderr",
+      "sha256": "3799fdd5579ce0bc59dc02f119b7e891d81d32bc3aebc1465745c00b2da7a4d1",
+      "classification": "preserved-original-setup-failure",
+      "scope": "Original authored CRLF/control syntax, lost executable mode EACCES, remove-shadow recursion or wrong native list-index setup; preserved by exact original filename/report, not production passes."
+    },
+    {
+      "report": ".context/http-request-callback-owner-agent/controls-r2/control-before.stderr",
+      "sha256": "3932c6d16a6b01b7a7b7beddeeec569d3dff180eceb480ffdff2ad24d69ba763",
+      "classification": "preserved-original-setup-failure",
+      "scope": "Original authored CRLF/control syntax, lost executable mode EACCES, remove-shadow recursion or wrong native list-index setup; preserved by exact original filename/report, not production passes."
+    },
+    {
+      "report": ".context/http-request-callback-owner-agent/frontend-r1.log",
+      "sha256": "cc3502b52c25e3c545e5723552ddd75ded4371bbd7348f95882dbeac33452a55",
+      "classification": "preserved-original-setup-failure",
+      "scope": "Original authored CRLF/control syntax, lost executable mode EACCES, remove-shadow recursion or wrong native list-index setup; preserved by exact original filename/report, not production passes."
+    },
+    {
+      "report": ".context/http-request-callback-owner-agent/frontend-r2.log",
+      "sha256": "b1e941cef41aae35b3dd292f363607aaaf736570e5953d95e51a21dcd48f1442",
+      "classification": "preserved-original-setup-failure",
+      "scope": "Original authored CRLF/control syntax, lost executable mode EACCES, remove-shadow recursion or wrong native list-index setup; preserved by exact original filename/report, not production passes."
+    },
+    {
+      "report": ".context/http-request-callback-owner-agent/frontend-r3.log",
+      "sha256": "4ce1d630578b2e9d2a4a2afbd8e31ea6ad6e90d790985a492b091d26332fd20e",
+      "classification": "preserved-original-setup-failure",
+      "scope": "Original authored CRLF/control syntax, lost executable mode EACCES, remove-shadow recursion or wrong native list-index setup; preserved by exact original filename/report, not production passes."
+    },
+    {
+      "report": ".context/http-body-buffer-publication-correction-agent/affected-r1/control.cjs.stderr",
+      "sha256": "d32183513044df54fb91f6242b2025d144edd4459fad7dcf361c2d812659e6cb",
+      "classification": "preserved-corrector-setup-failure",
+      "scope": "Prior fixture feed shadow recursion, absent native methods catalog or ServerResponse namespace dependency; originals retained, no candidate behavior credited."
+    },
+    {
+      "report": ".context/http-body-buffer-publication-correction-agent/affected-r2/incoming-constructorAndDescriptors.stderr",
+      "sha256": "602fae166a22c9ee6fa283461dce86bcf6d311fe3f7d613d67a5bdf91e4c7b8c",
+      "classification": "preserved-corrector-setup-failure",
+      "scope": "Prior fixture feed shadow recursion, absent native methods catalog or ServerResponse namespace dependency; originals retained, no candidate behavior credited."
+    },
+    {
+      "report": ".context/http-body-buffer-publication-correction-agent/affected-r3/incoming-constructorAndDescriptors.stderr",
+      "sha256": "f78fa11c7af7cd6781b26c197ec35b125ae758ad00419301e341fa673b2b6965",
+      "classification": "preserved-corrector-setup-failure",
+      "scope": "Prior fixture feed shadow recursion, absent native methods catalog or ServerResponse namespace dependency; originals retained, no candidate behavior credited."
+    },
+    {
+      "report": ".context/node26-http250-finalizer-r1-failure.txt",
+      "sha256": "72da3f9f68f4cbc76abbab81ecf34a36498168634c2b8aba24fd9cc747553aae",
+      "classification": "bookkeeping-error",
+      "scope": "Copied root finalizer count903 disagreed with authoritative904; failed before any source/receipt/index mutation. Corrected finalizer completed. Not runtime/compiler failure."
+    },
+    {
+      "report": ".context/node26-http250-metadata-r1-failure.txt",
+      "sha256": "ddad57379df30d7dd182c8ad6723642cf11a345ae049941ff0fb382dbc6e6df6",
+      "classification": "bookkeeping-guard-error",
+      "scope": "Original metadata helper expected error text in stdout log, but JSON reporter wrote it only to assertion failureMessages. Failed before mandatory preflight, writer, checkpoint or any tracked mutation. Successor checks all six actual JSON failures; original result and assertions unchanged."
+    }
+  ],
+  "remaining": [
+    "Compile and validate the actual production native HTTP event JSAPI/callback roots, reentry, realm/CCW, OOM, fatal/stack/provider and Worker lifetimes on identified guest artifacts; native dependency controls are not guest proof.",
+    "Implement/reconcile complete reusable/pipelined parser initialize/reset/execute/pause/resume/free/close/consume and retained original/shared input behavior; this slice does not implement the full Server/HTTP2/TLS transport owners.",
+    "Preserve independent Body copy/publication behavior while completing public parser remainder conversion and resource ownership. Unrelated mutable Buffer.from remainder conversion is explicitly outside this correction.",
+    "Repair the changed headers Vitest fixture against the actual existing Agent owners in a separate reviewed slice, without weakening its six assertions or substituting another subject; current six ReferenceErrors remain harness errors.",
+    "Collect applicable four-host conformance only within the authorized build constraints after the breadth pass; keep implementation gaps, failures, skips, unsupported cases, timeouts and harness errors distinct."
+  ],
+  "actualControlReport": {
+    "report": ".context/http250-root-controls-r1/report.json",
+    "sha256": "4bce147ede4317854f11f5e1c70f31a248d31140d95bf323e771f59531ea2ebc",
+    "portableGroups": 9,
+    "portableBeforeMatches": 0,
+    "portableAfterMatches": 9,
+    "requestHeaderGroups": 17,
+    "connectionHeaderGroups": 18,
+    "frontendGroups": 5,
+    "frontendBeforeMatched": 1,
+    "frontendAfterPassed": 5,
+    "bodyPoisonCases": 2,
+    "bodySubjectsPerCase": 4,
+    "bodyCorrectedMatched": 2,
+    "incomingCases": 14,
+    "incomingPassed": 14,
+    "actualProductionCore": "a12eda2c6619140be02729b280378d92c24684d6410de0c8dd39c8c86719f633",
+    "actualProductionFactory": "acd4c37a36c29c1d171b915c45d77ff1981d198c33c58c9f6d14855fecb66dc1",
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "productionJSAPICompiled": false,
+    "scope": "Actual production-generated factory/client/IncomingMessage over explicit native parser/ConnectionsList/stream/Buffer/socket dependencies; precompiled portable owners separate. Native ServerResponse is an unused namespace dependency. No full Server/reuse/provider/GC/realm/stack/four-host proof."
+  },
+  "separateHeadersHarnessError": {
+    "report": ".context/node26-http250-headers-vitest-r1.json",
+    "sha256": "55e13c9885d6d5c00c106a573b40bed24cb5210881f53000380d709ce2413865",
+    "receipt": ".context/node26-http250-tool-run-r1/headers-vitest-receipt.json",
+    "receiptSha256": "6197929e045ce27080e2d171fd46b213d73b03cf76be92a606e560bf59bd094c",
+    "pid": 51365,
+    "exit": 1,
+    "failed": 6,
+    "passed": 0,
+    "classification": "harness-error",
+    "reason": "ReferenceError _createNodeHttpAgent is not defined in unchanged tested fixture",
+    "unsupported": false,
+    "compatibilityPass": false
+  },
+  "integrationTool": {
+    "report": ".context/node26-http250-tool-completion.json",
+    "sha256": "639514902879041e080c12ad96dc0205dae37cd9306d36c731d69a60f26fdc0c",
+    "sourceBinding": "d82b2f07effdb2533b56e9955974c187af9b5c7b8ee58471310e83a196ea77db",
+    "selectedInputBindingOnly": true,
+    "globalBindingSelfContained": false,
+    "sourceImportExit3Meaning": "First import awaited second check; both declared checks exited0 and operation completed. Separate headers harness error is outside declared checks.",
+    "ownedFiles": 15,
+    "actualReceiptPids": [
+      51403,
+      51398
+    ]
+  },
+  "bookkeepingFailure": {
+    "report": ".context/node26-http250-finalizer-r1-failure.txt",
+    "sha256": "72da3f9f68f4cbc76abbab81ecf34a36498168634c2b8aba24fd9cc747553aae",
+    "scope": "Root finalizer copied903 instead of authoritative904 and failed before mutations; corrected finalizer completed. This is bookkeeping, not runtime/compiler failure."
+  },
+  "at": "2026-11-08T03:24:28.065029+00:00",
+  "recipeRevision": 250,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

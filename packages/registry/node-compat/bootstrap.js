@@ -4516,7 +4516,7 @@ const _nodeHttpServerResponse = _createNodeHttpServerResponse({
 const HTTP_METHODS = _nodeNative.httpParser('methods').toSorted();
 
 const makeResponseParser = _createNodeHttpParser({
-    native: _nodeNative, incoming: _nodeHttpIncoming, Buffer,
+    native: _nodeNative, incoming: _nodeHttpIncoming, Buffer, FastBuffer: _FastBuffer,
 });
 
 const _nodeHttpAgent = _createNodeHttpAgent({

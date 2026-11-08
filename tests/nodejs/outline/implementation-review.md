@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source 250 integrates bounded HTTP request Body/Complete and private byte-publication owners. Six unchanged headers Vitest failures remain visible as harness errors; no HTTP or guest compatibility closure.
+See [source scope](http-request-callback-integration.md).
+
 Source 249 adds a real retained codec-capacity reporting prerequisite. It is partial ZIP-010 ownership, not heap graph, whole-process memory or compression-family compatibility.
 See [source scope](codec-owned-capacity-integration.md).
 
