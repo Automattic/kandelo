@@ -173,10 +173,12 @@ test(`${demo.title} stock visitor cache preserves privacy, edits and expiry`, as
     // stock hook. WordPress's real wp-cron.php executes garbage collection.
     const scheduler = await configure(
       `/sbin/dinitctl -p /run/kandelo-services/dinitctl is-started ${demo.service}-cron\n`
+      // xterm's DOM concatenates rows, so assert file line boundaries in
+      // the guest rather than reconstructing them from rendered output.
+      + `/bin/grep -Fx -- ${quote(`X-Forwarded-Host: ${new URL(page.url()).host}`)} /etc/wordpress/cron.headers\n`
+      + `/bin/grep -Fx -- ${quote(`X-Forwarded-Prefix: ${prefix.replace(/\/$/, "")}`)} /etc/wordpress/cron.headers\n`
       + "/bin/cat /etc/wordpress/cron.curl /etc/wordpress/cron.headers", "AUTOMATIC_CRON_READY");
     expect(scheduler.output).toContain('header = "@/etc/wordpress/cron.headers"');
-    expect(scheduler.output.split(/\r?\n/).map(line => line.trim())).toContain(`X-Forwarded-Host: ${new URL(page.url()).host}`);
-    expect(scheduler.output.split(/\r?\n/).map(line => line.trim())).toContain(`X-Forwarded-Prefix: ${prefix.replace(/\/$/, "")}`);
     observations.scheduler = scheduler;
     const cronProbe = readFileSync(new URL("./support/wordpress-cache-cron-probe.php", import.meta.url), "utf8");
     await configure(`printf '%s' ${quote(cronProbe)} > /srv/www/html/__kandelo_cache_cron.php`, "CACHE_CRON_PROBE_INSTALLED");

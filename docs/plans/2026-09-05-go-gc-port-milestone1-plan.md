@@ -3,6 +3,48 @@
 ## Current checkpoint — 2026-11-08
 
 
+**WordPress49 cron passes all three engines; fresh runtime probes pass Node.**
+`wordpress49-strict-cron-three-engines-1108-073243-217a` passes in 14m36s:
+Chromium, Firefox and WebKit, no retries or skips. Each case exercises real
+automatic WordPress cron delivery with public headers, a full stopped
+minute, restart, Caddy SIGKILL recovery, FPM/classic switching, the next
+FPM tick, held-PHP draining and cooperative init shutdown. The image,
+kernel and Go programs are the new normal49 cohort recorded below.
+
+`wordpress49-current-runtime-node-1108-073527-6fd2` builds five fresh
+maintained probes with the explicitly selected clean f605 prototype and
+this checkout's own current SDK. Both plain-Go/cgo wait and netpoll cases,
+plus cgo memory accounting, pass in Node; the job takes 43 seconds.
+The waits retain zero/short/multi-checkpoint deadlines, notification races,
+indefinite wakeups and blocking-I/O scheduler release. The memory probe
+collects dead 64 MiB Go allocations and reuses its linear backing while a
+32 MiB C allocation remains live: linear size starts at 560,726,016 bytes
+and settles at 594,804,736 bytes through repeated allocations. Go's
+released-page count is logical accounting, not physical reclamation.
+The explicit fixture compiler is not a new independent package bootstrap;
+full current Go/POSIX/cgo and three-browser acceptance remain separate.
+
+The current nine-case automatic stock-cache run `4568` exposes a fixture
+assertion error: xterm DOM text concatenates displayed rows, so splitting
+it on newlines cannot prove the actual header-file lines. All three
+Chromium cases reach that check with the expected header substrings after
+privacy, post/template invalidation and expiry checks. The corrected
+fixture runs exact-line `grep` inside the guest and requires its zero exit
+status through the normal terminal protocol. It leaves application,
+service, host and kernel behavior unchanged. The original run continues
+on frozen source; its evidence is preserved. Corrected three-engine run
+`349e` is queued after the existing serial browser selections.
+
+Current normal49 runtime15, expanded HTTP/memory6, rendered UI33 and
+media6 selections are queued serially. Canonical `f2f6` reaches guest Clang
+instrumentation; warm current-source refresh `ca1f` waits for its terminal
+result and reuses completed normal cache entries. Its separate capture
+binds the new daemon/kernel identities rather than the earlier cohort.
+The baseline remains queued. Preview5495 stays pinned and verified; no
+final canonical, native-memory budget or throughput pass is claimed.
+
+
+
 **Normal WordPress49 build and replacement preview verified.** Own-SDK job
 `wordpress-cron-normal-partial-v2-1108-070359-5564` passes in 13m25s:
 normal partial image composition, filesystem layout, both existing real

@@ -128,6 +128,10 @@ implementation log for the exact run scope. On the new wasm32 target the
 initial linear size is about 535 MiB: Go's ordinary 32-bit address reservation
 interacts with Kandelo's mmap-backed address space. That byte length is not a
 physical footprint measurement, and reservation/accounting work remains.
+This probe does not fit the constrained profile's 256 MiB per-process
+ceiling. Desktop browser results therefore do not establish that the
+current Go/cgo applications can run under that constrained budget or on
+iOS; no new mobile validation is claimed.
 
 The legacy target has different Go/C pointer widths and uses typed C
 accessors at that boundary. The new `wasm32` target uses ordinary typed C
