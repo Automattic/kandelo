@@ -77,6 +77,9 @@ run. For a lazy artifact size mismatch, check the selected image and
 executable identities and repair stale inputs. Do not relax size checks
 or substitute unrelated executable bytes.
 
+Conformance wrappers must reject an empty selected test inventory. A missing
+upstream checkout is provisioning work, never a successful zero-test run.
+
 A spec must not skip because a binary or image the supported build produces
 is missing. Missing supported output is a build defect: fail with the reason,
 as `gotoMachineOrSkip` and `gotoApp` in

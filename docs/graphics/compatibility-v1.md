@@ -27761,3 +27761,28 @@ wait, configuration change or software patch is substituted for a cause.
 B1 still requires libc, remaining desktop/lifecycle, measurements and
 manual-browser checks and resolution of that intermittent launch behavior.
 All ordered B2–B6/C1–C3 and final campaign requirements remain unwaived.
+
+
+### B1 libc provisioning and empty-inventory accounting, 2026-11-08
+
+R927 normally refreshes the canonical Node rootfs, then discovers that the
+integration checkout's pinned libc-test submodule is uninitialized. Node
+correctly refuses an empty inventory; the browser wrapper incorrectly
+returns zero with TOTAL zero. Neither host executes a libc case. Generated
+runner scratch is preserved privately before normal submodule initialization
+at `790f94c7b6feb8ade25868c10fba46233f783a0b`; the tracked pin is unchanged.
+
+The browser wrapper now rejects a zero selected inventory before browser
+launch. Two source-only regressions execute the actual wrapper with missing
+and empty upstream directories: the original returns success and fails both
+controls; the corrected wrapper passes both, with ABI preparation observed
+and no compiler or browser launch. The integrated focused run also passes
+both controls. This is runner-accounting evidence, not libc conformance.
+The initialized current Node/browser suites remain required.
+
+Supported `./run.sh cache-gc --apply` reclaims 24.1 GiB of abandoned build
+work/staging directories, plus small sidecars and one dead checkout record.
+It preserves every referenced generation and leaves unrecognized entries
+alone. Observed free space rises to approximately 35 GiB; that filesystem
+change is not attributed exclusively to this collector. No live build lock
+or shared cache generation is bypassed or manually removed.
