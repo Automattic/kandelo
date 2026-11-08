@@ -2406,6 +2406,15 @@ Fork force-publishes the parent before the child inherits the same backing;
 `exec`, exit, crash, `munmap`, `mremap`, and `MAP_FIXED` update backing
 ownership explicitly.
 
+A fork's child snapshots and mapping nodes retain ordinary live I/O credit.
+The child-original bytes needed only to undo a failed commit, and their
+transaction vector, use bounded temporary I/O instead. All original reads and
+child admissions precede process-memory writes. Failed preparation publishes
+no child mappings; a later write refusal restores previously written ranges
+before the transaction releases its temporary custody. These two owners must
+stay distinct: a child that fits its retained allowance must not be refused
+solely because rollback bytes compete for the same live credit.
+
 Who keeps a mapping coherent follows who owns its bytes. The host keeps
 anonymous regions and files on host-mounted directories
 (`host/src/kernel-worker.ts`). The kernel keeps SysV segments and every file
@@ -3582,8 +3591,12 @@ the same admission limit; production uses the streamed reachable-metadata mode.
 Journal cache slots and clean/dirty payloads, retained metadata-cache ownership,
 encoded/replayed transaction frames and prepared-publication vectors now share
 an I/O admission pool with ordinary and archive verified-read tables, chunks
-and streaming verification buffers. Both hosts configure the smaller of 32 MiB
-and one eighth of the kernel ceiling. A fixed 2 MiB slice is reserved for dirty
+and streaming verification buffers. The pool also owns retained mapping
+baselines and inherited child state, not only disposable cache. Both hosts
+configure the smaller of 128 MiB and one eighth of the existing kernel ceiling
+(128 MiB on desktop, 96 MiB on constrained). This changes admission capacity;
+it neither preallocates those bytes nor enlarges a Wasm memory maximum. A fixed
+2 MiB slice is reserved for dirty
 writeback cloning, framing and publication scratch; ordinary cache fills cannot
 spend it. Accepted dirty data can drain when ordinary admission is exhausted.
 This is distinct from the journal-state node reserve described above.

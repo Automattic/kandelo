@@ -27464,3 +27464,34 @@ custody. Explicit cold-retained accounting and rewarming preserve exact
 credit assertions while allowing the pre-existing settle operation. No
 quota, ABI, original error or transaction order changes. Normal diagnostic
 rebuild and actual fork-phase collection remain pending; B1 is not ready.
+
+### Measured fork admission and bounded profile allowance, 2026-11-08
+
+R881's normal diagnostic build succeeds in 4m31s and its51 prepared Node
+checks pass. Actual R879 mode1 captures fork_stage_read for child122,
+address0x10b0000, length2,817,408, handle-2000000021, status-12 at live
+28,968,408 / limit31,457,280. The requested retained snapshot needs
+5,634,816 credits; only2,488,872 remain. This is retained child pressure
+before rollback, not a shortcut failure or the repaired refresh staging.
+
+The shared host profile now caps I/O admission at128MiB while preserving
+its one-eighth-of-kernel-memory bound: desktop128MiB, constrained96MiB,
+smaller kernels scale as before. Namespace/journal allowances, Wasm memory
+constructor maxima, ABI and native exact-quota controls are unchanged.
+The existing kernel budget setter configures both Node and browser. This
+allowance is not preallocated; the HTTP concurrency consumer remains
+limited to16 as before. Fifty profile unit checks pass. Actual multi-Foot
+acceptance and browser-memory remain required before a release claim.
+
+Fork rollback originals separately use the existing bounded temporary
+buffer class; retained child snapshots/nodes remain live. The exact-child-
+allowance control fails on the parent with ENOMEM at fork_map_admit and
+passes after the class correction. File, anonymous and SysV cases retain
+exact credits, parent ownership and byte rollback through late reads and
+second-range write faults. The complete runtime-core rerun passes3,601,
+zero failures or skips (122.68s), plus all50 profile unit checks.
+
+The corrected SDL first-frame/animation case passes on Chromium, Firefox
+and WebKit (three cases,28.3s). The prior Firefox failure remains recorded
+as an invalid first-frame/sampling observation; it is not attributed to
+an engine defect. This is rendering evidence, not a native-feel claim.
