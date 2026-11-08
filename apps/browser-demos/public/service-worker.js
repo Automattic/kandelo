@@ -2147,6 +2147,10 @@ if (typeof window !== "undefined") {
         // port), we must not inject or store this request's cookies.
         var reqSessionId = record.sessionId;
         var reqBridgeEpoch = record.liveBridgeEpoch;
+        // Synthetic responses cannot use the browser's cookie store. Honor
+        // Fetch credentials for the virtual jar on both request and response.
+        var allowCookies = request.credentials === "include" ||
+          (request.credentials === "same-origin" && url.origin === self.location.origin);
         // Strip the machine's app prefix so the app server sees the original
         // path. handleAppRequest is only reached for named-in-path requests, so
         // the prefix is present, but keep the guard explicit.
@@ -2160,6 +2164,7 @@ if (typeof window !== "undefined") {
         request.headers.forEach(function (value, key) {
           headers[key] = value;
         });
+        if (!allowCookies) delete headers["cookie"];
         if (headers["user-agent"] === undefined) {
           headers["user-agent"] = self.navigator.userAgent;
         }
@@ -2175,7 +2180,7 @@ if (typeof window !== "undefined") {
           ? url.pathname
           : record.appPrefix.slice(0, -1) + url.pathname;
         var jarCookies =
-          reqSessionId === record.sessionId &&
+          allowCookies && reqSessionId === record.sessionId &&
             reqBridgeEpoch === record.liveBridgeEpoch
             ? getCookiesForPath(record, cookiePath)
             : "";
@@ -2213,7 +2218,7 @@ if (typeof window !== "undefined") {
           bridgeResp.headers["Set-Cookie"] ||
           bridgeResp.headers["set-cookie"];
         if (
-          rawSetCookie && reqSessionId === record.sessionId &&
+          allowCookies && rawSetCookie && reqSessionId === record.sessionId &&
           reqBridgeEpoch === record.liveBridgeEpoch
         ) {
           var jarMutated = storeCookies(
