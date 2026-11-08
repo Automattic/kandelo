@@ -2,6 +2,30 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Current WordPress UI/persistence selection finishes 32 passes / one failure.**
+`7f59` completes all 33 cases with no skips or retries. All ordinary
+login/editor/post/template cases pass across Chromium, Firefox and WebKit.
+Both Caddy persistence modes pass in Chromium and WebKit; Firefox library
+persistence passes. Firefox experimental persistence fails during its first
+post publication, before the source image is disabled or the machine is
+restarted. Its welcome dialog remains visible after the trusted Close click.
+The saved canvas contains a visible Add title field, but the locator handler
+waits for the dialog to disappear. Related WordPress REST POSTs receive the
+development server's 503 service-worker-route fallback. The captured Caddy
+process and startup log remain present; these observations do not establish
+a guest-server crash, persistence failure, or browser-engine defect.
+
+The full report, screenshots, service log, process snapshot and page lifecycle
+events remain under the normal checkout's `7f59` job and browser run
+`6cbe6fbe-8577-46a3-b4cc-ca90244b971a`. The request path and missing welcome
+preference save still need diagnosis. No application patch, timeout increase
+or weakened assertion is adopted. Media6 `bf0e` now runs; corrected cache9
+`349e` and archive/signal browser63 `e151` follow serially. Independent normal
+four-consumer reproducibility job `c981` awaits canonical publication and
+the existing publishers before force-building target recipes. Canonical
+`f2f6` advances to Qt configuration. Preview5495 still answers HTTP; final
+canonical, conformance, memory and comparative-performance gates remain open.
+
 
 **Current-artifact browser runtime and WordPress traffic gates pass.**
 `7dba` completes the fresh wait/netpoll/memory selection: 15 cases across
