@@ -25,7 +25,7 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 161,
+    "sourceSliceRecords": 164,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 212
@@ -2997,6 +2997,28 @@
         {
           "slice": "readfile-capacity",
           "relation": "explicit"
+        },
+        {
+          "slice": "file-handle-lease",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/filesystem.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Stable real descriptor lease/close/GC/rollback ownership prerequisite; partial finding progress only, no complete FileHandle/byte-path/transfer closure.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "file-handle-transfer",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/filesystem.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial real FileHandle ownership implementation: actual native admission, single-use lease move/sidecar, target-realm receiver initialization and abort/retirement plus consumed exact public registration hooks. Byte paths/full FileHandle/GC/failure and conformance remain open.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -8406,6 +8428,39 @@
           "auditDocument": "tests/nodejs/audit/workers.md",
           "scope": "Actual automatic native endpoint/packet/data cycle retirement and bridge ownership prerequisite; no generic stream-transfer, full Worker lifecycle or guest/API closure",
           "closure": false
+        },
+        {
+          "slice": "clone-configuration-forwarding",
+          "relation": "explicit-prose-prerequisite",
+          "auditDocument": "tests/nodejs/audit/worker-contracts.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Original prose reference only; shared outer configuration prerequisite, no recovered standalone definition or public clone/Worker closure.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "file-handle-lease",
+          "relation": "explicit-prose-prerequisite",
+          "auditDocument": "tests/nodejs/audit/worker-contracts.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Original prose reference only, not a recovered definition; shared native ownership prerequisite, no public Worker transport/clone/lifecycle closure.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "file-handle-transfer",
+          "relation": "explicit-prose-prerequisite",
+          "auditDocument": "tests/nodejs/audit/worker-contracts.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Original workerData/transferList prose reference only, no separately recovered definition. Actual FileHandle ownership/clone activation supplies a bounded shared prerequisite; full Worker loading/transport/lifecycle remains open.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -8723,6 +8778,39 @@
           "originalProseRefs": [],
           "standaloneDefinitionRecovered": true,
           "scope": "Partial retained admission-kind/identity/nested/partition source prerequisite; no full Worker/stream/guest closure",
+          "closure": false
+        },
+        {
+          "slice": "clone-configuration-forwarding",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/worker-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Shared outer clone-hook forwarding prerequisite only; receiver/data/packet/Worker lifecycle and full public behavior remain open.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "file-handle-lease",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/worker-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Single-owner descriptor lease prerequisite only; public transfer remains disabled until actual tag/sidecar/receiver/packet ownership is consumed.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "file-handle-transfer",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/worker-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Actual FileHandle transfer source activation over native tag/index/sidecar, same-process lease and target-realm registry; shared transport prerequisite only per recorded qualified scope. New native/SC/JSAPI/Worker/realm/GC behavior unexecuted, full cross-worker transport/conformance not closed.",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -25975,6 +26063,415 @@
       },
       "acceptedPlatformLimitsAsRecorded": [],
       "publicApiClosure": false
+    },
+    "clone-configuration-forwarding": {
+      "document": "tests/nodejs/outline/clone-configuration-forwarding-finding-progress.json",
+      "sha256": "1e5d37993ef89df67bedc001be820335988218a65930b2a4064dabee507f93f8",
+      "recordedRevision": 239,
+      "explicitFindingIds": [
+        "R-004",
+        "R-013"
+      ],
+      "prerequisiteFindingIds": [
+        "R-004",
+        "R-013"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-clone239-source-r1/report.json",
+          "sha256": "da86c0f73636ca7428501af29851260ccc8f09c8d449d12d3e925057d657e859",
+          "guardedInputs": 897,
+          "scope": "Three normal source guards and actual curated forwarding3groups; guest startup/clone/stream/backend unvalidated for239"
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/clone239-agent-integrate-r3/check-output/package-wxvgw_zu/report.json",
+          "sha256": "4565d52492111d03754688b9f2079f72fff9add5c827664509ff1faf73096d2f",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-clone239-source-r1/report.json",
+          "sha256": "da86c0f73636ca7428501af29851260ccc8f09c8d449d12d3e925057d657e859",
+          "normalSourceChecks": 3,
+          "forwardingComponentGroups": 3,
+          "newRootCompilerAttempts": 0,
+          "historicalProducerHelperCompileAttempts": 0,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "deterministicToolCompleted": true,
+          "declaredChecksImported": 2,
+          "scope": "Actual curated JavaScript method over an explicit native-facing fixture; no native clone backend execution. Historical238 guest run has three bootstrap failures and is preserved separately."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/clone239-agent-integrate-r3/preparation.json",
+          "sha256": "8288cf2a553d9104f8bf54380b4cadafd869d7cce1f2421ac2f96ee23b157583",
+          "reusedEvidence": true,
+          "scope": "Private exact four-leaf reparenting with unchanged core/native C++; reused old1pass2fail and fixed3pass boundary controls, zero compilers. Root exact checks are separate."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/node26-engine238-guest-focused-r1/report.json",
+          "sha256": "5fbb1c31f46247a9086cf6b7ae9b21be9af38b1487036bf0cc8175c53fbf1790",
+          "scope": "Historical actual Node-host guest: all three cases fail clone configuration before user code; no guest API pass."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/node26-engine238-guest-focused-r1/reference-expectation-correction.json",
+          "sha256": "1e64a89924d0130f1dae08d3c4f05501aafd5478ba52b880fc014d578636bc38",
+          "scope": "Original custom native sync-key expectation was incorrect; native ERR_INVALID_ARG_VALUE is retained. Corrected native controls do not erase the original assertion failure."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/clone239-agent-integrate-r2/runs/old-wrapper-control-xiaup4se/stdout.log",
+          "sha256": "e47ba5831723bc5ebda47a1bbaa7650aefd98487027d9604bcf8380078cda7b4",
+          "scope": "Original actual five-argument wrapper: one group passes, two fail; exact old outcomes retained."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/node26-clone239-post-handoff-display-failure.json",
+          "sha256": "fd0cb28e820a63737ce2d46adcf4b0f6d4b4a4c961db416b05b2f6d9e35be6cb",
+          "scope": "Coordinator display snippet syntax error after successful apply/handoff; no declared checks or compilers ran from that failed snippet."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/clone-configuration-forwarding-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/clone-configuration-forwarding-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Forward all actual configureClone arguments to the existing native receiver, retaining receiver identity and native callable checks",
+        "Preserve the private mode symbol, all five callable hooks including nested transfer discovery, and later opaque arguments",
+        "Add a permanent control executing the actual curated method; preserve old1/3pass2/3fail and corrected3/3pass outcomes",
+        "Advance only the output-changing engine recipe to239; generated core and native C++ remain unchanged"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/clone-configuration-forwarding-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Build selected239 engine normally and execute corrected bootstrap/symmetric-key subjects against its exact artifact",
+        "Validate clone and Web Stream registered-object transfers, native errors/GC/realm/Worker teardown across all four identified host artifacts",
+        "Integrate reviewed real FileHandle lease ownership and complete source/receiver/packet transfer retirement; no closure from forwarding alone",
+        "Preserve earlier audit correction withdrawing end-to-end stream activation inferred without the curated wrapper; full public clone/Worker APIs remain partial"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/worker-contracts.md",
+      "findingScope": "Shared configuration prerequisite only. R-004 is an original prose reference, not a recovered standalone definition. This fixes an omitted outer forwarding boundary; it does not close workerData/transfer transport, public clone semantics, streams or Worker lifecycle.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/worker-contracts.md": [
+          "R-004",
+          "R-013"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/worker-contracts.md",
+        "findingIds": [
+          "R-004",
+          "R-013"
+        ],
+        "relatedFamilies": [
+          "workers",
+          "streams",
+          "web",
+          "engine"
+        ],
+        "scope": "Shared configuration prerequisite only. R-004 is an original prose reference, not a recovered standalone definition. This fixes an omitted outer forwarding boundary; it does not close workerData/transfer transport, public clone semantics, streams or Worker lifecycle."
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "file-handle-lease": {
+      "document": "tests/nodejs/outline/file-handle-lease-finding-progress.json",
+      "sha256": "7c0c874d2fb51a6eb04768cfd0ec2555ff49ade0db0526bcd2f07a2dbc71b03e",
+      "recordedRevision": 240,
+      "explicitFindingIds": [
+        "FS-010"
+      ],
+      "prerequisiteFindingIds": [
+        "R-004",
+        "R-013"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-filehandle240-source-r2/report.json",
+          "sha256": "3ad1bc8657caf947864cf7faa848918b82b8c466c28a76ff6c85aa7f971be95b",
+          "guardedInputs": 898,
+          "scope": "Normal source generation/input closure/staging plus actual native-fs and native-file-handle unity identities; exact portable lease6/native reference2 groups. No new compiler, public transfer activation or guest/four-host conformance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-filehandle240-affected-r1.json",
+          "sha256": "2f8b2c1ae2919f3dc3422b3d465581c029a9b94dee2df3c582c122816eb47ee3",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": true
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-filehandle240-source-r2/report.json",
+          "sha256": "3ad1bc8657caf947864cf7faa848918b82b8c466c28a76ff6c85aa7f971be95b",
+          "normalSourceStages": 3,
+          "actualNativeUnityOwners": 2,
+          "portableHeaderGroups": 6,
+          "pinnedNativeReferenceGroups": 2,
+          "newRootCompilerAttempts": 0,
+          "historicalProducerHelperCompileAttempts": 1,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Actual production portable header over native fd/OFD/thread close; pinned native Node transfer/in-use references only. New candidate JSAPI/workqueue/lifecycle uncompiled and unexecuted.",
+          "packageEvidenceReusedAfterFixtureCorrection": true
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/filehandle-transfer-owner-agent/report.json",
+          "sha256": "dadc09427f2b1414b1b8dbaf4bc92eead2131f8944b47ff80fa383831c553f3b",
+          "reusedEvidence": true,
+          "scope": "Independent reviewed source lease/adoption/close/GC/workqueue prerequisite; original1successful tiny helper compilation,6portablegroups+2native references,10source predicates and known incomplete old input closure. Current normal source checks are separate."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/filehandle-transfer-owner-agent/handoff-preimage-r1-failure.json",
+          "sha256": "8cb432a27a168d7303b990d259e43244d82dbc4cd50e40ea7fb0ae99c1d8fbf0",
+          "scope": "Original private handoff recipe preimage mismatch after parent238 advanced; original237recipe retained and actual238header-input-only composition preserved. No failed compiler or guest result."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/node26-filehandle240-root-hnm9mwfs/source-result.json",
+          "sha256": "b6457320239cc72eccc646ad7f8e6b1e1e3f66db82460df82e824b8cd1dedf15",
+          "scope": "Original source checkexit1: sparse engine fixture omitted real upstream js/src/vm directory; production HostOrder.h staging failed before controls. Zero compiler/runtime attempts; full failed log retained."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/file-handle-lease-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/file-handle-lease-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Move-only actual fd lease implements consume-once close and preserves existing EINTR/EINPROGRESS no-retry policy",
+        "Existing FileHandle adoption/sync-close/GC consume lease; numeric fd remains observation only",
+        "Queued CloseHandle takes lease before publication and restores unperformed cancellation/admission failure before clearing the actual rooted parent",
+        "Performed close never restores or retries numeric fd; normal staging copies header and recipe declares source input",
+        "Preserve original pinned public FileHandle algorithms and keep transfer disabled until actual native sidecar/receiver owner is integrated"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/file-handle-lease-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Native FileHandle transfer admission/tag/single-use lease sidecar and actual target-realm registry/errorfactory/init/rollback; keep public hooks disabled until real consumers exist",
+        "Actual packet abandonment/closed-port/Worker exit/queued cancellation and GC/OOM/realm/fatal lifecycle validation across identified hosts",
+        "Compile current240 native-FS/FileHandle unity owners and validate actual guest close/adoption/workqueue behavior; portable header is not JSAPI or guest libc proof",
+        "Preserve raw outside fd-close/reuse and public active-I/O/ref/stream lifetime obligations without inventing stronger OFD guarantees",
+        "Keep accepted239 three scoped Node-host passes and all earlier failed239/238 evidence in their exact scopes; complete all19family gaps and nested guestWasm last"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/filesystem.md",
+      "findingScope": "Source-only descriptor ownership prerequisite, no finding/API/family closure.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/filesystem.md": [
+          "FS-010"
+        ],
+        "tests/nodejs/audit/worker-contracts.md": [
+          "R-004",
+          "R-013"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [
+        {
+          "document": "tests/nodejs/audit/filesystem-contracts.md",
+          "section": "FileHandle native descriptor lifetime/close/GC/transfer requirements, lines92-100",
+          "kind": "section-requirement-not-invented-finding-id"
+        }
+      ],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/filesystem.md",
+        "findingIds": [
+          "FS-010"
+        ],
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/filesystem.md",
+            "findingId": "FS-010",
+            "scope": "Stable ownership/lease/GC/failure prerequisite; no byte-path or complete finding closure"
+          },
+          {
+            "document": "tests/nodejs/audit/filesystem-contracts.md",
+            "section": "FileHandle native descriptor lifetime/close/GC/transfer requirements, lines92-100",
+            "kind": "section-requirement-not-invented-finding-id"
+          },
+          {
+            "document": "tests/nodejs/audit/worker-contracts.md",
+            "findingId": "R-013",
+            "proseReferences": [
+              "R-004"
+            ],
+            "scope": "Transfer prerequisite only; R-004 is prose reference, not a separately recovered definition"
+          }
+        ],
+        "relatedFamilies": [
+          "filesystem",
+          "workers",
+          "async",
+          "streams",
+          "engine"
+        ],
+        "scope": "Source-only descriptor ownership prerequisite, no finding/API/family closure."
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "file-handle-transfer": {
+      "document": "tests/nodejs/outline/file-handle-transfer-finding-progress.json",
+      "sha256": "c462c5c355b053863d83072627f8460239e51dd867b79e81b4df92c140627c7f",
+      "recordedRevision": 241,
+      "explicitFindingIds": [
+        "FS-010"
+      ],
+      "prerequisiteFindingIds": [
+        "R-004",
+        "R-013"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-filehandle241-source-r1/report.json",
+          "sha256": "a9674c2dedf4f2d977619b4c2a79d9c283b763c3f9c98cfa7b639fbb8e9a2fe6",
+          "guardedInputs": 898,
+          "scope": "Source241 real FileHandle transfer native tag/lease/receiver registry activation; normal source/input/staging and exact material5/native reference8 only. Candidate FS/SC/Worker/GC/realm/cancel/fatal uncompiled/unexecuted; no finding/API/four-host closure."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-filehandle241-affected-r1.json",
+          "sha256": "20cc46656d6dd2d344121f79d243d3285deaf4b11681cdce8c7d70646a27711c",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-filehandle241-source-r1/report.json",
+          "sha256": "a9674c2dedf4f2d977619b4c2a79d9c283b763c3f9c98cfa7b639fbb8e9a2fe6",
+          "normalSourceStages": 3,
+          "actualNativeUnityOwners": 3,
+          "materialGroups": 5,
+          "pinnedNativeReferenceGroups": 8,
+          "newRootCompilerAttempts": 0,
+          "historicalProducerHelperCompileAttempts": 1,
+          "guestExecuted": false,
+          "fourHostConformance": false,
+          "scope": "Exact extracted material+production lease over nativefd/OFD/thread with assertion dependency supplied; exact nativeNode public references only. New SC/nativeFS/JSAPI/Worker/fatal/GC/realm not executed. V1 cannot represent two plus-named SDK wrappers; external before/after byte guards retained, selected checks invoke no compiler.",
+          "globalBindingSelfContained": false,
+          "externalCppWrapperGuards": 2
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/filehandle-activation241-compose-r1/preparation.json",
+          "sha256": "a74bed4ae48e78b24da30a2c546eefad2d954e77c77d9d6118cfb5e1aa05bcec",
+          "reusedEvidence": true,
+          "scope": "Private parent-bound context/source/core composition over sealed activationf954/review68ac/lease87fe; exact source hashes only, portable/native evidence retains original narrow scope."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/filehandle-transfer-activation-agent/native-reference-r1.stderr",
+          "sha256": "88bc018d983caf2c6f3f2da199859463481a0cc9c8735fd7bfcc909226db9487",
+          "scope": "Original bad raw GetFD expectation failed; pinned exposed StreamBase IsAlive policy traced before source correction. Final native reference passes preserve this original failure."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/filehandle-transfer-activation-agent/adapter-prefix-parser-r2-failure.json",
+          "sha256": "ba7fc2a2118b30f1dffefdafbcc94216f24c1c8747d1633f6d57001d1ce113e6",
+          "scope": "Raw intentionally open adapter prefix parsed standalone and failed; later real combined bootstrap parse passes. No runtime workaround."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/filehandle-transfer-activation-agent/preparation-r1-failure.json",
+          "sha256": "5c5f5c8119a5624daa0462c1054dff69bf47f553e7292d703e1e8cfa89a2188a",
+          "scope": "Private source-composition anchor failure retained; no compiler/guest/test outcome."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/file-handle-transfer-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/file-handle-transfer-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Consume actual native FileHandle class/kind/checked-unwrapping/current environment and alias identity admission",
+        "Move one real lease through opaque native clone tag/index/sidecar with no JS pointer or numeric-fd ownership token crossing packet threads",
+        "Allocate receiver/root/rollback capacity before move; initialize genuine target-realm FILEHANDLE owner through local converter/error factory",
+        "Abort/discard consumes only actual remaining lease; reentrant queued close retains rooted owner authority through cancel/completion",
+        "Enable exact pinned registration/transfer/list/deserialize hooks and actual module registry after genuine native consumers exist",
+        "Materialize exact context-anchored0174 registration/shared teardown patch, preserve239variadic clone wrapper and240lease header staging; regenerate core from actual parent sources"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/file-handle-transfer-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile actual native FileHandle clone tag/admission/read/abort/context teardown JSAPI and validate real packet material retirement on identified guest artifacts",
+        "Exercise actual sender hook reentry/whole-list ABfirst errors and receiver init/GC/OOM/realm/late-read failure/reentrant queuedclose/fatal channels",
+        "Validate actual Worker startup, closed ports, packet discard, same guest process fd table and Worker/context exit cancellation across four hosts",
+        "Complete public inherited FileHandle/StreamBase/activeIO/rawoutsidefdclose/mark-as-untransferable semantics and audited filesystem/worker gaps",
+        "Retain all19partial state,315/316lowerbound uncertainty history, accepted239 scopedNode3cases as historicalstale for240/241; no overall/fullproduct; nested guestWasm last"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/filesystem.md",
+      "findingScope": "Source-only descriptor ownership prerequisite, no finding/API/family closure.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/filesystem.md": [
+          "FS-010"
+        ],
+        "tests/nodejs/audit/worker-contracts.md": [
+          "R-004",
+          "R-013"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [
+        {
+          "document": "tests/nodejs/audit/filesystem-contracts.md",
+          "section": "FileHandle native descriptor lifetime/close/GC/transfer requirements, lines92-100",
+          "kind": "section-requirement-not-invented-finding-id"
+        }
+      ],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/filesystem.md",
+        "findingIds": [
+          "FS-010"
+        ],
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/filesystem.md",
+            "findingId": "FS-010",
+            "scope": "Stable ownership/lease/GC/failure prerequisite; no byte-path or complete finding closure"
+          },
+          {
+            "document": "tests/nodejs/audit/filesystem-contracts.md",
+            "section": "FileHandle native descriptor lifetime/close/GC/transfer requirements, lines92-100",
+            "kind": "section-requirement-not-invented-finding-id"
+          },
+          {
+            "document": "tests/nodejs/audit/worker-contracts.md",
+            "findingId": "R-013",
+            "proseReferences": [
+              "R-004"
+            ],
+            "scope": "Transfer prerequisite only; R-004 is prose reference, not a separately recovered definition"
+          }
+        ],
+        "relatedFamilies": [
+          "filesystem",
+          "workers",
+          "async",
+          "streams",
+          "engine"
+        ],
+        "scope": "Source-only descriptor ownership prerequisite, no finding/API/family closure."
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
     }
   },
   "dependencyNarratives": {
@@ -28513,6 +29010,92 @@
         "fourHostConformance": false,
         "individualApiClosure": false,
         "scope": "Qualified232\u2013238owner-progress links only;237S008shared-prerequisite atmost,238O008directonly. Original definitions/ranges/evidence/nonpasses/engine limits preserved; no runtime/compiler/finding closure."
+      },
+      {
+        "at": "2026-11-08T00:10:09.836337+00:00",
+        "sourceCheckpoint": 241,
+        "sourceHead": "3a7403a3edca3c0d4d7b57f18475e74107ee25fe",
+        "addedSourceSlices": [
+          "clone-configuration-forwarding",
+          "file-handle-lease",
+          "file-handle-transfer"
+        ],
+        "qualifiedLinks": [
+          {
+            "document": "tests/nodejs/audit/worker-contracts.md",
+            "finding": "R-004",
+            "slice": "clone-configuration-forwarding",
+            "relation": "explicit-prose-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Original prose reference only; shared outer configuration prerequisite, no recovered standalone definition or public clone/Worker closure."
+          },
+          {
+            "document": "tests/nodejs/audit/worker-contracts.md",
+            "finding": "R-013",
+            "slice": "clone-configuration-forwarding",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Shared outer clone-hook forwarding prerequisite only; receiver/data/packet/Worker lifecycle and full public behavior remain open."
+          },
+          {
+            "document": "tests/nodejs/audit/filesystem.md",
+            "finding": "FS-010",
+            "slice": "file-handle-lease",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Stable real descriptor lease/close/GC/rollback ownership prerequisite; partial finding progress only, no complete FileHandle/byte-path/transfer closure."
+          },
+          {
+            "document": "tests/nodejs/audit/worker-contracts.md",
+            "finding": "R-013",
+            "slice": "file-handle-lease",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Single-owner descriptor lease prerequisite only; public transfer remains disabled until actual tag/sidecar/receiver/packet ownership is consumed."
+          },
+          {
+            "document": "tests/nodejs/audit/worker-contracts.md",
+            "finding": "R-004",
+            "slice": "file-handle-lease",
+            "relation": "explicit-prose-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Original prose reference only, not a recovered definition; shared native ownership prerequisite, no public Worker transport/clone/lifecycle closure."
+          },
+          {
+            "document": "tests/nodejs/audit/filesystem.md",
+            "finding": "FS-010",
+            "slice": "file-handle-transfer",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial real FileHandle ownership implementation: actual native admission, single-use lease move/sidecar, target-realm receiver initialization and abort/retirement plus consumed exact public registration hooks. Byte paths/full FileHandle/GC/failure and conformance remain open."
+          },
+          {
+            "document": "tests/nodejs/audit/worker-contracts.md",
+            "finding": "R-013",
+            "slice": "file-handle-transfer",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Actual FileHandle transfer source activation over native tag/index/sidecar, same-process lease and target-realm registry; shared transport prerequisite only per recorded qualified scope. New native/SC/JSAPI/Worker/realm/GC behavior unexecuted, full cross-worker transport/conformance not closed."
+          },
+          {
+            "document": "tests/nodejs/audit/worker-contracts.md",
+            "finding": "R-004",
+            "slice": "file-handle-transfer",
+            "relation": "explicit-prose-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Original workerData/transferList prose reference only, no separately recovered definition. Actual FileHandle ownership/clone activation supplies a bounded shared prerequisite; full Worker loading/transport/lifecycle remains open."
+          }
+        ],
+        "latestAcceptedEngine": 239,
+        "currentCombinedEngineCompiled": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "spec": {
+          "path": ".context/finding-ledger-batch241-spec.json",
+          "sha256": "835e3cfc2b461e035e81d3b54954b6d54164cf5c424b49b70cdaa1912be1efb4"
+        },
+        "scope": "Qualified explicit partial-source links only; preserve all runtime/compilation/nonpasses/closure state. Future records must be supplied explicitly after integration, never inferred by filename."
       }
     ]
   }

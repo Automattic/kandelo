@@ -1,14 +1,14 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-07T20:40:43.086647+00:00",
-  "sourceHead": "dfa38886feea1d05865f274682cbdec62ca4db93",
-  "recipeRevision": 238,
+  "at": "2026-11-08T00:10:09.836337+00:00",
+  "sourceHead": "3a7403a3edca3c0d4d7b57f18475e74107ee25fe",
+  "recipeRevision": 241,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 161,
+    "sourceSliceRecords": 164,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
     "findingsWithoutExplicitOrProposedSourceSlice": 212
@@ -26,28 +26,24 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 161,
+  "sourceSliceIdentitiesVerified": 164,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "e1b09b8eae984dfc5ab0bcca17732c3cc05cfce5a9ce954796b81256a8e227c1"
+    "sha256": "2219ff194a186342f9296f37b514638c51d59187235429dc7127e180aa662eb8"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
-  "scope": "Qualified partial source/evidence links only;237S008prerequisite/238O008direct, original definitions/ranges/limits/nonpasses preserved.",
+  "scope": "Qualified explicit partial-source links only; preserve all runtime/compilation/nonpasses/closure state. Future records must be supplied explicitly after integration, never inferred by filename.",
   "previousIntegrityIdentity": {
-    "sha256": "f4ab2d22e1493946cf872291142cda7b60166348f21e7253d3ae5af67c1803b0",
-    "sourceHead": "715f6d89fb39a00247d0057ac88be9bb81d2ee90",
+    "sha256": "8036a8b09b3fcaabb933eeb7ddb1f9084506424448da50e5d8636a5203ecf50e",
+    "sourceHead": "dfa38886feea1d05865f274682cbdec62ca4db93",
     "scope": "Prior committed integrity remains in source history"
   },
   "sourceProgressOverlaysAdded": [
-    "symmetric-keygen",
-    "tls-write-callback",
-    "key-operation-publication",
-    "tls-async-owner",
-    "http-connections",
-    "tls-x509-owner",
-    "performance-milestone"
+    "clone-configuration-forwarding",
+    "file-handle-lease",
+    "file-handle-transfer"
   ],
   "qualifiedReferenceCorrections": [
     {
@@ -71,64 +67,68 @@
   ],
   "qualifiedLinksAdded": [
     {
-      "document": "tests/nodejs/audit/crypto.md",
-      "finding": "C-015",
-      "slice": "symmetric-keygen",
-      "prerequisiteOnly": false
+      "document": "tests/nodejs/audit/worker-contracts.md",
+      "finding": "R-004",
+      "slice": "clone-configuration-forwarding",
+      "relation": "explicit-prose-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Original prose reference only; shared outer configuration prerequisite, no recovered standalone definition or public clone/Worker closure."
     },
     {
-      "document": "tests/nodejs/audit/secure-network-contracts.md",
-      "finding": "S-009",
-      "slice": "tls-write-callback",
-      "prerequisiteOnly": false
+      "document": "tests/nodejs/audit/worker-contracts.md",
+      "finding": "R-013",
+      "slice": "clone-configuration-forwarding",
+      "relation": "explicit-shared-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Shared outer clone-hook forwarding prerequisite only; receiver/data/packet/Worker lifecycle and full public behavior remain open."
     },
     {
-      "document": "tests/nodejs/audit/crypto.md",
-      "finding": "C-015",
-      "slice": "key-operation-publication",
-      "prerequisiteOnly": false
+      "document": "tests/nodejs/audit/filesystem.md",
+      "finding": "FS-010",
+      "slice": "file-handle-lease",
+      "relation": "explicit-progress-finding-id",
+      "prerequisiteOnly": false,
+      "scope": "Stable real descriptor lease/close/GC/rollback ownership prerequisite; partial finding progress only, no complete FileHandle/byte-path/transfer closure."
     },
     {
-      "document": "tests/nodejs/audit/secure-network.md",
-      "finding": "S-004",
-      "slice": "tls-async-owner",
-      "prerequisiteOnly": false
+      "document": "tests/nodejs/audit/worker-contracts.md",
+      "finding": "R-013",
+      "slice": "file-handle-lease",
+      "relation": "explicit-shared-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Single-owner descriptor lease prerequisite only; public transfer remains disabled until actual tag/sidecar/receiver/packet ownership is consumed."
     },
     {
-      "document": "tests/nodejs/audit/secure-network.md",
-      "finding": "S-009",
-      "slice": "tls-async-owner",
-      "prerequisiteOnly": false
+      "document": "tests/nodejs/audit/worker-contracts.md",
+      "finding": "R-004",
+      "slice": "file-handle-lease",
+      "relation": "explicit-prose-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Original prose reference only, not a recovered definition; shared native ownership prerequisite, no public Worker transport/clone/lifecycle closure."
     },
     {
-      "document": "tests/nodejs/audit/http-contracts.md",
-      "finding": "H-001",
-      "slice": "http-connections",
-      "prerequisiteOnly": false
+      "document": "tests/nodejs/audit/filesystem.md",
+      "finding": "FS-010",
+      "slice": "file-handle-transfer",
+      "relation": "explicit-progress-finding-id",
+      "prerequisiteOnly": false,
+      "scope": "Partial real FileHandle ownership implementation: actual native admission, single-use lease move/sidecar, target-realm receiver initialization and abort/retirement plus consumed exact public registration hooks. Byte paths/full FileHandle/GC/failure and conformance remain open."
     },
     {
-      "document": "tests/nodejs/audit/http-contracts.md",
-      "finding": "H-003",
-      "slice": "http-connections",
-      "prerequisiteOnly": false
+      "document": "tests/nodejs/audit/worker-contracts.md",
+      "finding": "R-013",
+      "slice": "file-handle-transfer",
+      "relation": "explicit-shared-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Actual FileHandle transfer source activation over native tag/index/sidecar, same-process lease and target-realm registry; shared transport prerequisite only per recorded qualified scope. New native/SC/JSAPI/Worker/realm/GC behavior unexecuted, full cross-worker transport/conformance not closed."
     },
     {
-      "document": "tests/nodejs/audit/secure-network-contracts.md",
-      "finding": "S-002",
-      "slice": "tls-x509-owner",
-      "prerequisiteOnly": false
-    },
-    {
-      "document": "tests/nodejs/audit/secure-network-contracts.md",
-      "finding": "S-008",
-      "slice": "tls-x509-owner",
-      "prerequisiteOnly": true
-    },
-    {
-      "document": "tests/nodejs/audit/observability.md",
-      "finding": "O-008",
-      "slice": "performance-milestone",
-      "prerequisiteOnly": false
+      "document": "tests/nodejs/audit/worker-contracts.md",
+      "finding": "R-004",
+      "slice": "file-handle-transfer",
+      "relation": "explicit-prose-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Original workerData/transferList prose reference only, no separately recovered definition. Actual FileHandle ownership/clone activation supplies a bounded shared prerequisite; full Worker loading/transport/lifecycle remains open."
     }
   ]
 }
