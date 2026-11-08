@@ -68,16 +68,29 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
       page.on("domcontentloaded", () => recordLifecycle("main document loaded"));
       page.on("crash", () => recordLifecycle("page crashed"));
       page.on("pageerror", error => recordLifecycle("page error", String(error)));
+      context.on("requestfailed", request => recordLifecycle("request failed", JSON.stringify({
+        url: request.url(), method: request.method(), resourceType: request.resourceType(),
+        failure: request.failure(),
+      })));
+      context.on("response", response => {
+        if (response.status() >= 400) recordLifecycle("HTTP error", JSON.stringify({
+          url: response.url(), status: response.status(),
+        }));
+      });
       context.on("console", message => {
         if (message.type() !== "error" && message.type() !== "warning") return;
         recordLifecycle(`console ${message.type()}`, message.text().slice(0, 4000));
         // Bridge failures log an Error whose cause is lost in text(). Read
         // it while its worker realm still exists, before reload/cleanup.
         void Promise.all(message.args().map(argument => argument.evaluate(value => {
-          const describe = (value: unknown, depth: number): unknown => value instanceof Error
-            ? { name: value.name, message: value.message, stack: value.stack,
-              cause: depth > 0 ? describe(value.cause, depth - 1) : undefined }
-            : String(value);
+          const describe = (value: unknown, depth: number): unknown => {
+            if (value !== null && typeof value === "object") {
+              const detail = value as { name?: unknown; message?: unknown; code?: unknown; stack?: unknown; cause?: unknown };
+              return { name: detail.name, message: detail.message, code: detail.code, stack: detail.stack,
+                cause: depth > 0 && detail.cause !== undefined ? describe(detail.cause, depth - 1) : undefined };
+            }
+            return String(value);
+          };
           return describe(value, 4);
         }))).then(details => recordLifecycle("console arguments", JSON.stringify(details).slice(0, 16000)))
           .catch(error => recordLifecycle("console arguments unavailable", String(error)));
@@ -182,6 +195,15 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
       // to render before navigating away. Byte persistence alone does not
       // establish that the editor can display the attachment.
       await gotoInPreviewViaDock(page, `/wp-admin/post.php?post=${postId}&action=edit`);
+      await testInfo.attach("saved-post-before-editor-reopen", {
+        contentType: "application/json",
+        body: JSON.stringify(await page.evaluate(async ({ appPrefix, nonce, postId }) => {
+          const response = await fetch(`${appPrefix}index.php?rest_route=/wp/v2/posts/${postId}&context=edit`, {
+            headers: { "X-WP-Nonce": nonce },
+          });
+          return { status: response.status, body: (await response.text()).slice(0, 16_000) };
+        }, { appPrefix, nonce, postId })),
+      });
       await expectWordPressEditor(frame);
       await expect.poll(() => frame.frameLocator('iframe[name="editor-canvas"]').locator("img")
         .evaluateAll((images, sourceUrl) => {
