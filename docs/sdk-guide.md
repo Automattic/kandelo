@@ -311,6 +311,15 @@ from `scripts/calltypes-plugin.sh <clang>`. A compile that requests a CFI
 sanitizer itself is left without the plugin, which would otherwise delete
 the checks it asked for.
 
+The native plugin must reproduce across checkout and staging directories:
+its bytes participate in the musl input fingerprint. On macOS its library
+ID is `@rpath/KandeloCallTypes.dylib`, rather than the temporary output path.
+Source paths in compiler-generated file names are normalized too. The
+package-system reproduction test builds it twice in different directories,
+compares the libraries, and loads both into Clang to verify identical Wasm
+objects with compiler facts. Its source/build-script cache key changes
+normally when these build flags change; old fingerprints are not restamped.
+
 Kandelo's own clang cannot load a native shared library, so the `clang`
 package compiles the same plugin sources into it (`KANDELO_CALLTYPES_STATIC`).
 There the SDK passes the same flags without `-load` and `-fpass-plugin`:
