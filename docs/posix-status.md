@@ -245,6 +245,13 @@ rather than stable directory identities: rename/unlink followed by recreation
 can therefore make `getcwd()`, `fchdir()`, or a dirfd-relative operation refer
 to a different directory than the original OFD.
 
+Rootfs and tmpfs directory cookies remain stable while returned entries
+are removed or renamed. `getdents64` therefore continues to return every
+unchanged survivor, including across libc's buffered `readdir` calls.
+Synthetic root mount names occupy fixed prefix slots. Directory ordering
+is unspecified; cookies must be passed back unchanged rather than treated
+as dense list indexes.
+
 | Function | Status | Notes |
 |----------|--------|-------|
 | `opendir()` | Partial | In-kernel for `/` and the scratch mounts, whose directory entries come from the kernel's own tree; host-delegated through the DirStream table under a host-mounted directory. Entry-at-a-time iteration. Stores resolved path for rewinddir. |

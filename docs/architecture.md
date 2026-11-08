@@ -2918,6 +2918,15 @@ the ephemeral in-kernel filesystems `fsync` succeeds without host work: they
 have no separate durable backing. An opt-in persistent root instead flushes
 its Rust-owned journal through the host storage adapter and reports failures.
 
+Rootfs directory entries retain a creation cookie until their name is
+removed. A second budgeted AVL index resumes `getdents64` by that cookie,
+so deleting or renaming returned entries cannot shift unread entries out
+of a stream. Both indexes are allocated before a namespace transaction
+commits. Synthetic root mount points reserve fixed prefix positions;
+callers must treat all returned directory cookies as opaque. Cookies are
+runtime state, rebuilt with the directory tree at boot; directory file
+descriptions do not survive a machine reboot.
+
 Persistent-root `statfs` computes the canonical composed-checkpoint footprint
 from live inodes, retaining allocations held by open descriptions or
 shared mappings after unlink. It uses the mounted block and inode ceilings,
