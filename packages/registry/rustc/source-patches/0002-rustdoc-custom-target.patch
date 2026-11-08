@@ -1,0 +1,42 @@
+--- a/src/librustdoc/doctest.rs
++++ b/src/librustdoc/doctest.rs
+@@ -515,14 +515,16 @@
+     unused_extern_names: Vec<String>,
+ }
+ 
+-fn add_exe_suffix(input: String, target: &TargetTuple) -> String {
+-    let exe_suffix = match target {
+-        TargetTuple::TargetTuple(_) => Target::expect_builtin(target).options.exe_suffix,
+-        TargetTuple::TargetJson { contents, .. } => {
+-            Target::from_json(contents).unwrap().0.options.exe_suffix
+-        }
+-    };
+-    input + &exe_suffix
++fn add_exe_suffix(input: String, options: &RustdocOptions) -> Result<String, String> {
++    // [RUNTIME-WORKAROUND: RUST-RUSTDOC-NAMED-CUSTOM-TARGET] Resolve named
++    // custom targets through the same sysroot and search path as rustc.
++    let (target, _) = Target::search(
++        &options.target,
++        options.sysroot.path(),
++        #[allow(rustc::bad_opt_access)] // There is no Session in this runner.
++        options.unstable_opts.unstable_options,
++    )?;
++    Ok(input + &target.options.exe_suffix)
+ }
+ 
+ fn wrapped_rustc_command(rustc_wrappers: &[PathBuf], rustc_binary: &Path) -> Command {
+@@ -581,7 +583,13 @@
+ ) -> (Duration, Result<(), TestFailure>) {
+     let langstr = &doctest.langstr;
+     // Make sure we emit well-formed executable names for our target.
+-    let rust_out = add_exe_suffix("rust_out".to_owned(), &rustdoc_options.target);
++    let rust_out = match add_exe_suffix("rust_out".to_owned(), rustdoc_options) {
++        Ok(path) => path,
++        Err(error) => {
++            eprintln!("could not resolve doctest target: {error}");
++            return (Duration::default(), Err(TestFailure::CompileError));
++        }
++    };
+     let output_file = doctest.test_opts.outdir.path().join(rust_out);
+     let instant = Instant::now();
+ 

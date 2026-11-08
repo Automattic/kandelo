@@ -1,0 +1,49 @@
+kind = "library"
+name = "rust-llvm"
+version = "22.1.2"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = ["libcxx@21.1.7"]
+
+# Exact submodule of rustc ca9a134e0985765ded9cfdde4030a5df4db7e2bd.
+[source]
+url = "https://github.com/rust-lang/llvm-project/archive/1cb4e3833c1919c2e6fb579a23ac0e2b22587b7e.tar.gz"
+sha256 = "de8712069787f4f2b306a5ff667cd18dcbdad75d9ccfab0ee9e23fde241c89f2"
+provider = "archive"
+
+[license]
+spdx = "Apache-2.0 WITH LLVM-exception"
+url = "https://github.com/rust-lang/llvm-project/blob/1cb4e3833c1919c2e6fb579a23ac0e2b22587b7e/LICENSE.TXT"
+
+[build]
+script_path = "packages/registry/rust-llvm/build.sh"
+
+[outputs]
+libs = ["lib/libLLVM.a"]
+headers = ["include/llvm", "include/llvm-c"]
+files = ["share/kandelo/llvm-config.json"]
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "clang"
+version_constraint = ">=21.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "llvm-ar"
+version_constraint = ">=21.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }

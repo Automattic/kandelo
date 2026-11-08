@@ -1,0 +1,21 @@
+script_path = "packages/registry/cargo/build.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 2
+inputs = [
+  "packages/registry/cargo/build.sh",
+  "packages/registry/cargo/source-patches",
+  "packages/registry/cargo/patches",
+  "scripts/package-build-roots.sh",
+  "scripts/package-rust-build-env.sh",
+  "scripts/build-rust-sysroot.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "sdk/activate.sh",
+  "sdk/rust/wasm32-unknown-kandelo-std.json",
+  "sdk/rust/libc-upstream",
+  "sdk/rust/libc-kandelo.patch",
+  "sdk/rust/std-overlay",
+  "sdk/rust/std-kandelo.patch",
+]

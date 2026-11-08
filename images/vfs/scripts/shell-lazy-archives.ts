@@ -53,6 +53,13 @@ function withArchiveAddresses<const T extends readonly Omit<ShellLazyArchiveSpec
 
 export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
   {
+    id: "rust-std",
+    dependency: "rustc",
+    resolverPath: "programs/wasm32/rustc/rust-std.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "lib/rustlib/wasm32-unknown-kandelo-std/target.json",
+  },
+  {
     id: "harper",
     dependency: "harper-browser-bundle",
     resolverPath: "programs/wasm32/harper.zip",
@@ -233,6 +240,11 @@ const SHELL_PROFILE_SCRIPTS = [
     register: registerManShellProfile,
     owner: "mandoc-browser-bundle",
   },
+  {
+    path: "/etc/profile.d/rust.sh",
+    register: registerRustShellProfile,
+    owner: "kandelo-rustc",
+  },
 ] as const satisfies ReadonlyArray<{
   path: string;
   register: (fs: VfsImageFilesystem) => void;
@@ -243,6 +255,13 @@ const SHELL_PROFILE_SCRIPTS = [
 /** Guest paths of every script `registerShellProfileScripts` writes. */
 export const SHELL_PROFILE_SCRIPT_PATHS: readonly string[] =
   SHELL_PROFILE_SCRIPTS.map((script) => script.path);
+
+export function registerRustShellProfile(fs: VfsImageFilesystem): void {
+  ensureDirRecursive(fs, "/etc/profile.d");
+  // The prebuilt standard library uses musl's time64 ABI on this target.
+  writeVfsFile(fs, "/etc/profile.d/rust.sh",
+    "export RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1\n", 0o644);
+}
 
 // The maker account's interactive identity: prompt, history file, locale,
 // terminal type, and the TLS trust anchors curl/wget/etc. expect at their

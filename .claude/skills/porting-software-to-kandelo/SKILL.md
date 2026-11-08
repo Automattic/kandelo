@@ -142,8 +142,11 @@ cross build:
   Makefiles must be the guest's, not the build machine's.
 - Guest-created files reach the build machine as mode 0600; set modes when
   installing outputs.
-- The SDK inside Kandelo has no fork instrumenter yet: link in the guest
-  and let `install_local_binary` instrument on the build machine.
+- The base C/C++ SDK archive omits the fork instrumenter. Add the
+  `wasm-fork-instrument` guest package when builds need preparation inside
+  Kandelo; the self-contained Rust SDK includes it already (see
+  `docs/rust-target.md` "Cargo inside Kandelo"). With only the base SDK,
+  let `install_local_binary` instrument on the build machine.
 - Each guest compile starts clang inside Kandelo and costs seconds, and a
   link several times that, so keep `make -j` where upstream allows it.
 - A guest build that fails differently from the cross build may be a

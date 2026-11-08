@@ -1,0 +1,67 @@
+kind = "program"
+name = "rustc"
+version = "1.97.0-nightly-2026-04-27"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = ["rust-llvm@22.1.2", "libcxx@21.1.7"]
+
+[source]
+url = "https://github.com/rust-lang/rust/archive/ca9a134e0985765ded9cfdde4030a5df4db7e2bd.tar.gz"
+sha256 = "c8c4e15cc47e65e7a49dc7e7635d6c78f8b775dade8f8db3eda1ecb96bb3acd7"
+provider = "archive"
+
+[license]
+spdx = "MIT OR Apache-2.0"
+url = "https://github.com/rust-lang/rust/blob/ca9a134e0985765ded9cfdde4030a5df4db7e2bd/COPYRIGHT"
+
+[build]
+script_path = "packages/registry/rustc/build.sh"
+
+[[outputs]]
+name = "rustc"
+wasm = "rustc.wasm"
+fork_instrumentation = "auto"
+
+[[runtime_files]]
+artifact = "rust-std.zip"
+guest_path = "/usr/share/kandelo/rust-std.zip"
+
+[[outputs]]
+name = "rustdoc"
+wasm = "rustdoc.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "rustfmt"
+wasm = "rustfmt.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "cargo-fmt"
+wasm = "cargo-fmt.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "cargo-clippy"
+wasm = "cargo-clippy.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "clippy-driver"
+wasm = "clippy-driver.wasm"
+fork_instrumentation = "auto"
+
+[[host_tools]]
+name = "cargo"
+version_constraint = ">=1.97.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "rustc"
+version_constraint = ">=1.97.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }

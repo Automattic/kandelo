@@ -1,0 +1,22 @@
+id = "RUST-RUSTDOC-NAMED-CUSTOM-TARGET"
+kind = "bug"
+status = "confirmed"
+runtimes = ["rustc"]
+summary = "rustdoc panics when a doctest target is resolved by name from a custom JSON specification"
+reports = "human-only"
+
+[[repro]]
+kind = "script"
+entry = "run.sh"
+targets = ["rustc"]
+self_judging = true
+timeout_seconds = 60
+
+[[observed]]
+runtime = "rustc"
+version = "rustc 1.97.0-nightly (ca9a134e0 2026-04-26)"
+os = "macos"
+reproduced = true
+date = 2026-11-07
+source = "manual"
+released = false
