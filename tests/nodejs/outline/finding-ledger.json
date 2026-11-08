@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 178,
+    "sourceSliceRecords": 182,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 208
+    "findingsWithoutExplicitOrProposedSourceSlice": 207
   },
   "families": [
     {
@@ -72,7 +72,7 @@
         "V-036",
         "V-037"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 7,
+      "findingsWithExplicitOrProposedSourceSlices": 8,
       "sourceRouteAsRecorded": "pinned URL/path/byte-path/HTTP-option helpers over shared parser and platform owners; generic native Error location policy; pinned AssertionError/Myers diff and shared validator/error/color/primordial owners; values/util/UV/dotenv/MIME/Buffer/path owners and full querystring/punycode algorithms with saved-frame load-origin source; pinned util/StringDecoder owners and callable Buffer/shared aligned pool/permanent storage/zero-fill source ; source140/146 actual retained-allocation capability and USER_OWNED commit source",
       "remainingAsRecorded": "Original allocation foundation and selected FS/codec routing are source-only; actual engine/GC/realm/transfer and remaining Buffer/util/URL/IDNA/error/descriptor/CLI/loader/warning behavior and four-host conformance remain open",
       "remainingOwner": "Buffer/string/URL/util/error compatibility adapters and actual native byte/ICU/SavedFrame owners",
@@ -1578,7 +1578,19 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "V-034 \u2014 inspection and call-site bridge limits.** ConstructorName uses",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "util-callsites",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/values-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial real getCallSites validation and raw no-cache-entry fallback only; mapping-required public cases and other inspection/native-stack obligations remain incomplete.",
+          "publicApiClosure": false,
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [
         "buffer-pool"
       ],
@@ -3546,6 +3558,17 @@
           "auditDocument": "tests/nodejs/audit/processes.md",
           "scope": "Actual supported async-spawn admission/pipe rollback/ordered source lifetime and own pair publication; not full ChildProcess/options/stdio/IPC/argv/coercion/error-hook/guest closure",
           "closure": false
+        },
+        {
+          "slice": "child-spawn-abort",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/processes.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual async spawn AbortSignal/killSignal JS ownership over existing launch/kill/reap/pipe-close paths. No full normalization, lifecycle or public API closure.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4406,6 +4429,28 @@
           "auditDocument": "tests/nodejs/audit/network.md",
           "scope": "Actual constructor receiver/options and captured listener source subset; no complete finding or public Server closure",
           "closure": false
+        },
+        {
+          "slice": "server-listener-ownership",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/network.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Actual retained native listener ownership is a shared prerequisite only; no public bind/options/transport/provider/finding closure.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "server-listener-ownership",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/network-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Actual retained native listener ownership is a shared prerequisite only; no public bind/options/transport/provider/finding closure.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4493,6 +4538,28 @@
           "originalProseRefs": [],
           "standaloneDefinitionRecovered": true,
           "scope": "Partial actual Socket receiver/genuine TCP admission/ref/read/write lifecycle prerequisite; not complete Socket/Server/TTY/StreamBase or guest/four-host closure",
+          "closure": false
+        },
+        {
+          "slice": "server-listener-ownership",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual listener lifetime for ordinary Server only; suppliedfd/publicServer initialization/providers/fulltransport remain incomplete.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "server-listener-ownership",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/network-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual listener lifetime for ordinary Server only; suppliedfd/publicServer initialization/providers/fulltransport remain incomplete.",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -4664,6 +4731,17 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/network.md",
           "scope": "Actual constructor receiver/options and captured listener source subset; no complete finding or public Server closure",
+          "closure": false
+        },
+        {
+          "slice": "server-listener-ownership",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/network-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Actual retained native listener ownership is a shared prerequisite only; no public bind/options/transport/provider/finding closure.",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -10913,6 +10991,17 @@
           "contributionKind": "partial-owning-source",
           "prerequisiteOnly": false,
           "scope": "Partial actual SQLite image serialize/deserialize connection/statement/allocation ownership only; full SQLite surface remains open.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "sqlite-authorizer",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/native-integration.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual SQLite authorizer/callback/limits-phase owner only; no full SQLite namespace, native bridge or qualified finding closure.",
           "publicApiClosure": false,
           "closure": false
         }
@@ -29619,6 +29708,720 @@
       },
       "acceptedPlatformLimitsAsRecorded": [],
       "publicApiClosure": false
+    },
+    "child-spawn-abort": {
+      "document": "tests/nodejs/outline/child-spawn-abort-finding-progress.json",
+      "sha256": "e7d6c180480aee7528e62d263d1d2d3aa7aac2ae726b2cd8a9464bf4c91a455f",
+      "recordedRevision": 256,
+      "explicitFindingIds": [
+        "CP-004"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-spawn256-source-r1/report.json",
+          "sha256": "012c6b2cb317029c73b5a075c0efae7a45e6b372e7b760adef069fb87fd57070",
+          "guardedInputs": 908,
+          "scope": "Normal current bootstrap/header/unity staging plus current-source18-group paired native POSIX kill/reap/EventTarget dependency observations and unchanged upstream parent-controller file, not complete file coverage. No guest provider/signal/scheduler/GC/realm/fatal/four-host proof. No new compiler; one sealed historical helper attempt pending once."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-spawn256-affected-r1.json",
+          "sha256": "d357b29eff85377cfdbcb6997d0f8960b0a45637ab1d2841232ee7ef73d3f8fe",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-spawn256-source-r1/report.json",
+          "sha256": "012c6b2cb317029c73b5a075c0efae7a45e6b372e7b760adef069fb87fd57070",
+          "nativeGroups": 18,
+          "candidateNativeDependentGroups": 18,
+          "sameObservedGroups": 18,
+          "unchangedUpstreamSubjects": 2,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "scope": "Actual current async spawn JS over retained native POSIX spawn/kill/WNOHANG wait and native streams/EventTarget/Values/loop dependencies. Native signal tables apply only to these controls. Two subjects of one unchanged upstream file are not complete child-process file coverage or guest/four-host conformance. Historical pre-fix/nonpass reports remain separate.",
+          "guardedInputs": 908,
+          "sourceChecks": 14,
+          "sourceCommands": 8,
+          "packagePassed": 14,
+          "newRootCompilerAttempts": 0,
+          "historicalHelpers": 1
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/child-spawn-abort-owner-agent/report.json",
+          "sha256": "318a31491013d538d2af3224698499a18e6160b72701a9329baf6e84c00040e6",
+          "reusedEvidence": true,
+          "scope": "Historical one successful native POSIX/WNOHANG helper and exact native/candidate frontend controls; native streams/loop/EventTarget/host signal dependencies, no guest proof."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/child-spawn-abort-owner-agent/preparation-r1-failure.json",
+          "sha256": "ec766855a15983d25521b0f0f62dd9f45d8ce016e8d1c24f51a53169e7cad3b7",
+          "classification": "author-preparation-ambiguous-anchor",
+          "scope": "Ambiguous sync/async anchor assertion stopped before source edits or compilers."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/child-spawn-abort-owner-agent/evidence-r1/commands.json",
+          "sha256": "12ea256ee4d279c0fe013854392b6f41dac00cac769df43bc2312055aa22d92c",
+          "classification": "authored-zero-killsignal-expectation-nonpass",
+          "scope": "Native and candidate15/16 contradicted authored killSignal0 option expectation identically; source unchanged, exact sanitizer rejection plus separate real kill(0) probe retained."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/child-spawn-abort-owner-agent/evidence-r2/commands.json",
+          "sha256": "352273d449b608f9785a079fa08bbf9014f318835c02f83327d7418efbbd8b26",
+          "classification": "preserved-baseline-nonpasses",
+          "scope": "Before source1/18, actual old missing cancellation/validation/disposal; cleanup fallback kill is never passing cancellation."
+        },
+        {
+          "field": "$.actualSpawnControlReport",
+          "report": ".context/spawn256-root-controls-r1/report.json",
+          "sha256": "771d0bdd84da75d57c93aa0744477142c16031943edd35f44c831892289bda28",
+          "nativeGroups": 18,
+          "candidateNativeDependentGroups": 18,
+          "sameObservedGroups": 18,
+          "unchangedUpstreamSubjects": 2,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "scope": "Actual current async spawn JS over retained native POSIX spawn/kill/WNOHANG wait and native streams/EventTarget/Values/loop dependencies. Native signal tables apply only to these controls. Two subjects of one unchanged upstream file are not complete child-process file coverage or guest/four-host conformance. Historical pre-fix/nonpass reports remain separate."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/child-spawn-abort-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/child-spawn-abort-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "signal/killSignal validation before real stdio descriptors",
+        "actual native child kill and existing reap/pipe-close owner, no synthetic cancellation result",
+        "real pinned addAbortListener and actual-exit disposal",
+        "exact target failed-spawn subscription behavior and original AbortError reason",
+        "platform actual signal table; killSignal0 rejection distinct from actual kill(0) probe"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/child-spawn-abort-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "guest native kill/wait/scheduler/reaction/ref/GC/realm/Worker and all-four-host identified-artifact evidence",
+        "reason-getter abrupt/fatal channels and deeper cancellation reentry remain unvalidated beyond matching reason/kill/error order",
+        "full normalizeSpawnArguments/error precedence, positive async timeout enforcement, uid/gid",
+        "argv0/immutable executed-image and entry-role authority, shell-string path, IPC/extra stdio"
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/processes.md",
+      "findingScope": "Partial actual async spawn AbortSignal/killSignal JS ownership over existing launch/kill/reap/pipe-close paths. No full normalization, lifecycle or public API closure.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/processes.md": [
+          "CP-004"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/processes.md",
+        "findingIds": [
+          "CP-004"
+        ],
+        "relatedFamilies": [
+          "async",
+          "streams",
+          "values"
+        ],
+        "scope": "Partial actual async spawn AbortSignal/killSignal JS ownership over existing launch/kill/reap/pipe-close paths. No full normalization, lifecycle or public API closure.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/processes.md",
+            "findingId": "CP-004",
+            "definitionKey": "tests/nodejs/audit/processes.md#CP-004:L40",
+            "relation": "partial-owning-source",
+            "closed": false
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "util-callsites": {
+      "document": "tests/nodejs/outline/util-callsites-finding-progress.json",
+      "sha256": "0e2cf3927cd193766024370755d893394a602cc66879c6c230842cf78e6f9f31",
+      "recordedRevision": 257,
+      "explicitFindingIds": [
+        "V-034"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-callsites257-source-r1/report.json",
+          "sha256": "a01e963f397db9473af0b80c90ef083840a834dfa2d4e0567c5186a7cf7ebb22",
+          "guardedInputs": 908,
+          "scope": "Current actual bootstrap27selected projections over genuine native CallSites capture/Values dependencies; not numeric SavedFrame/ScriptID/guest proof. Two unchanged files have4top-level native/candidate subjects, but candidate preload is not forwarded to spawned children: those assertions remain native-only, mapped child assertions are NOT candidate coverage. No real map/cache/defaultCLI/nativeformatter activation; all mapped valid cases remain implementation gaps.0new/historical compilers."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-callsites257-affected-r1.json",
+          "sha256": "4a6d892e8c1cce7dbb6db0cc2f3c351ff6d8e599abb5faf313e03fb1cc7160eb",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-callsites257-source-r1/report.json",
+          "sha256": "a01e963f397db9473af0b80c90ef083840a834dfa2d4e0567c5186a7cf7ebb22",
+          "nativeGroups": 27,
+          "candidateNativeDependentGroups": 27,
+          "sameSelectedObservations": 27,
+          "unchangedFileTopLevelSubjects": 4,
+          "candidateFileSubjectsHaveNativeChildren": true,
+          "candidateMappedChildCoverage": false,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "sourceMapSupportImplemented": false,
+          "scope": "Actual current public getCallSites validation/raw-no-entry frontend over genuine pinned native CallSites/Values dependencies. Selected projections do not compare numeric positions or script-ID identity. Two unchanged files run four top-level subjects; candidate subjects can include native children because preload is not forwarded. Mapped child assertions NOT candidate coverage. No candidate SavedFrame/GC/realm/Worker/four-host, mapping/cache/defaultCLI/nativeformatter proof or complete-file claim.",
+          "guardedInputs": 908,
+          "sourceChecks": 13,
+          "sourceCommands": 8,
+          "packagePassed": 14,
+          "newRootCompilerAttempts": 0,
+          "historicalHelpers": 0
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/util-callsites-owner-agent/report.json",
+          "sha256": "b312703aeac98237cc847cf24169a6c2232bd72e3b8b1aeb2b430140dd0ed5c5",
+          "reusedEvidence": true,
+          "scope": "Native27/candidate27 selected projections with genuine native CallSites/Values dependencies. Mixed candidate-top-level/native-child unchanged-file evidence only; no guest SavedFrame or mapped-child proof."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/util-callsites-owner-agent/evidence-r1/before.stdout",
+          "sha256": "2ddf1700020116fe99e39446361989aa5b72f5bdad39b010120765a0378736d2",
+          "classification": "preserved-baseline-mismatches",
+          "scope": "Before source21/27 predicate groups but only8 selected exact reports;6 categorical sourceMap:true errors and simplified diagnostics retained, no passing full-frame equivalence."
+        },
+        {
+          "field": "$.actualCallSitesControlReport",
+          "report": ".context/callsites257-root-controls-r1/report.json",
+          "sha256": "b75fb58b6ca360ac21fc7947413dd82e0b6cc30b1b81ea4940b4ab6474e46251",
+          "nativeGroups": 27,
+          "candidateNativeDependentGroups": 27,
+          "sameSelectedObservations": 27,
+          "unchangedFileTopLevelSubjects": 4,
+          "candidateFileSubjectsHaveNativeChildren": true,
+          "candidateMappedChildCoverage": false,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "sourceMapSupportImplemented": false,
+          "scope": "Actual current public getCallSites validation/raw-no-entry frontend over genuine pinned native CallSites/Values dependencies. Selected projections do not compare numeric positions or script-ID identity. Two unchanged files run four top-level subjects; candidate subjects can include native children because preload is not forwarded. Mapped child assertions NOT candidate coverage. No candidate SavedFrame/GC/realm/Worker/four-host, mapping/cache/defaultCLI/nativeformatter proof or complete-file claim."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/util-callsites-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/util-callsites-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Use pinned Values validateObject/validateBoolean/validateInteger algorithms and exact overload/repeated sourceMap getter/count-error order.",
+        "Invoke unchanged actual curated SavedFrame capture directly, preserving existing two-private-frame trim; no Error.stack parsing or invented frame/source identity.",
+        "Return real raw call sites when no actual cached source-map entry exists; no fake cache/export/activation metadata and no assertion of valid mapped-case support."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/util-callsites-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "compiler accepted sourceURL/sourceMapURL metadata on actual CJS/ESM/VM compiled identity",
+        "weak module lifetime/private data and cache-key URL/sourceURL ownership",
+        "native error stack/source formatter callbacks and real global support activation/default",
+        "actual cache lookup/remap consumer in getCallSites, generated code and node_modules policies",
+        "identified-artifact four-host conformance for mapping, error/callback/GC/realm/Worker ownership",
+        "Identified guest SavedFrame source IDs/positions/two-frame trim, realm/GC/OOM/fatal/Worker and four-host validation remain unexecuted.",
+        "Candidate child mapped/eval assertions remain unvalidated; preload is not forwarded to the two spawned children in test-util-getcallsites.js. Do not call top-level substitution full unchanged-file conformance."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/values-contracts.md",
+      "findingScope": "Partial real getCallSites validation and raw no-cache-entry fallback only; mapping-required public cases and other inspection/native-stack obligations remain incomplete.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/values-contracts.md": [
+          "V-034"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/values-contracts.md",
+        "findingIds": [
+          "V-034"
+        ],
+        "relatedFamilies": [
+          "loading",
+          "engine",
+          "observability"
+        ],
+        "scope": "Partial real getCallSites validation and raw no-cache-entry fallback only; mapping-required public cases and other inspection/native-stack obligations remain incomplete.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/values-contracts.md",
+            "findingId": "V-034",
+            "definitionKey": "tests/nodejs/audit/values-contracts.md#V-034:L209",
+            "relation": "partial-owning-source",
+            "closed": false
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "server-listener-ownership": {
+      "document": "tests/nodejs/outline/server-listener-ownership-finding-progress.json",
+      "sha256": "b07ecdb3211bbf6cdc8c7cb4b2146d4c651be7fef498ee4b539fdcf2d8bc59ad",
+      "recordedRevision": 258,
+      "explicitFindingIds": [
+        "N-013"
+      ],
+      "prerequisiteFindingIds": [
+        "N-011",
+        "N-018"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-listener258-source-r1/report.json",
+          "sha256": "da58a712a0a508e0ea9aef921f42a811390b6d809923f7c0f379e0d7b1c7ec46",
+          "guardedInputs": 910,
+          "scope": "Actual source/header/unity/engine contextual-patch source proof plus retained portable8/Server native10-currentJS11/native-fd3reference groups. Candidate suppliedfdinactive; no nativeClass/AsyncWrap/provider/GC/realm/Worker/legacy/fullServer/fourhost closure. Selected inputs not full global cache key."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-listener258-affected-r1.json",
+          "sha256": "a183ffa459d9071feb0f8613a56a94fbaea58efdea09295ba844982e217fd089",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-listener258-source-r1/report.json",
+          "sha256": "da58a712a0a508e0ea9aef921f42a811390b6d809923f7c0f379e0d7b1c7ec46",
+          "portableOwnerGroups": 8,
+          "nativeServerGroups": 10,
+          "candidateServerGroups": 11,
+          "nativeFdReferenceGroups": 3,
+          "newCompilerAttempts": 0,
+          "fdOptionCandidateActivated": false,
+          "guestJSAPIExecuted": false,
+          "commands": [
+            {
+              "name": "portable-owner",
+              "argv": [
+                "/Users/brandon/conductor/workspaces/kandelo/davao/.context/server-listener-owner-agent/evidence/owner"
+              ],
+              "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+              "passFds": [],
+              "coreSoftLimit": 0,
+              "exit": 0,
+              "timeout": false
+            },
+            {
+              "name": "server-native",
+              "argv": [
+                "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+                "--expose-internals",
+                "/Users/brandon/conductor/workspaces/kandelo/davao/third_party/node-core/tests/listener-owner/server-receiver.cjs",
+                "native"
+              ],
+              "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+              "passFds": [],
+              "coreSoftLimit": 0,
+              "exit": 0,
+              "timeout": false
+            },
+            {
+              "name": "server-candidate",
+              "argv": [
+                "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+                "--expose-internals",
+                "/Users/brandon/conductor/workspaces/kandelo/davao/third_party/node-core/tests/listener-owner/server-receiver.cjs",
+                "candidate"
+              ],
+              "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+              "passFds": [],
+              "coreSoftLimit": 0,
+              "exit": 0,
+              "timeout": false
+            },
+            {
+              "name": "native-fd-False",
+              "argv": [
+                "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+                "/Users/brandon/conductor/workspaces/kandelo/davao/third_party/node-core/tests/listener-owner/native-fd.cjs",
+                "3",
+                "bound"
+              ],
+              "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+              "passFds": [
+                3
+              ],
+              "coreSoftLimit": 0,
+              "exit": 0,
+              "timeout": false
+            },
+            {
+              "name": "native-fd-True",
+              "argv": [
+                "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+                "/Users/brandon/conductor/workspaces/kandelo/davao/third_party/node-core/tests/listener-owner/native-fd.cjs",
+                "3",
+                "already-listening"
+              ],
+              "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+              "passFds": [
+                3
+              ],
+              "coreSoftLimit": 0,
+              "exit": 0,
+              "timeout": false
+            },
+            {
+              "name": "native-file-fd",
+              "argv": [
+                "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+                "/Users/brandon/conductor/workspaces/kandelo/davao/third_party/node-core/tests/listener-owner/native-fd.cjs",
+                "3",
+                "regular-file"
+              ],
+              "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+              "passFds": [
+                3
+              ],
+              "coreSoftLimit": 0,
+              "exit": 0,
+              "timeout": false
+            }
+          ],
+          "scope": "Portable actual descriptor owner plus current Server source over explicit native TCPWrap/loop/stream/DNS/brand dependencies. Native fd controls are target references only; no candidate suppliedfd/provider/guest/fourhost closure.",
+          "guardedInputs": 910,
+          "sourceChecks": 6,
+          "sourceCommands": 8,
+          "packagePassed": 14,
+          "newRootCompilerAttempts": 0,
+          "historicalHelpers": 1
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/server-listener-owner-agent/report.json",
+          "sha256": "275cec992169935458f40dddfa6683862cdbb668d9884917cd1ff93b1ebfef37",
+          "reusedEvidence": true,
+          "scope": "Historical one portable actual Darwin POSIX listener Owner helper; Server JS depends on native TCPWrap/streams/events/DNS/loop/brands. Native fd3targetreferences do not activate candidate fd option or new native class/GC/realm."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/server-listener-owner-agent/source-evidence/normal-native-source-staging-stderr",
+          "sha256": "dfbaeff6ce118122eeeb43713ad441f7148594c27ef7ead6b175d25d19e96b78",
+          "classification": "initial-minimal-staging-setup-failure",
+          "scope": "Missing immutable KandeloBackingCapabilities.h; source fixture repair copies actual frozen bytes, no compiler."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/listener258-compose-r1/raw-patch-check.stderr",
+          "sha256": "e1a81823fe054ba6983681768edd7ed77e6e7494f29651395fe10785c85012b5",
+          "classification": "source-context-preparation-failure",
+          "scope": "Raw bootstrap hunk carried old one-line Socket.unref context superseded by TTY254; root unchanged. Actual three-way merge with exact base and reviewed prefix/suffix preservation retains current owners."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/listener258-compose-r2/source-whitespace.stdout",
+          "sha256": "08f87b4ba49b67013902dc642bdaa1f260cd6a57e3f2adb3704919f9463ec23e",
+          "classification": "embedded-context-patch-format-preparation-failure",
+          "scope": "Five required blank context prefixes are outer trailing whitespace. Remove only blank prefixes, preserve anchors/code, prove Git and production patch exact F/R/F; no ignore flags or assertions weakened."
+        },
+        {
+          "field": "$.actualListenerControlReport",
+          "report": ".context/listener258-root-controls-r1/report.json",
+          "sha256": "52bfd3475ab6001497e0c7f2eeac5f5cc938da420023697e404e702098cbd12f",
+          "portableOwnerGroups": 8,
+          "nativeServerGroups": 10,
+          "candidateServerGroups": 11,
+          "nativeFdReferenceGroups": 3,
+          "fdOptionCandidateActivated": false,
+          "guestJSAPIExecuted": false,
+          "newCompilerAttempts": 0,
+          "scope": "Portable actual descriptor owner plus current Server source over explicit native TCPWrap/loop/stream/DNS/brand dependencies. Native fd controls are target references only; no candidate suppliedfd/provider/guest/fourhost closure."
+        },
+        {
+          "field": "$.unvalidatedLegacyNumericFixtures",
+          "report": ".context/listener258-metadata-prep/legacy-protocol-observation.json",
+          "sha256": "ebd3c8fb4ca29f1db57c70262f12d20641142e375f9ecf7cec858014dcdd0932",
+          "classification": "unvalidated-legacy-numeric-protocol-fixtures",
+          "outcome": null,
+          "runtimeExecutedForThisProtocol": false,
+          "passingCasesCredited": 0,
+          "failedCasesCredited": 0,
+          "fixtures": [
+            {
+              "path": "host/test/node-network-attempts.test.ts",
+              "sha256": "2dd4f1cee7a6d649c99b8df68a9800f5efd18a5da0017cca02145f2a1c3e4ff8",
+              "sourceObservation": "socketListen fake returns7 at current lines124/170; actual opaque owner new controls separate."
+            },
+            {
+              "path": "third_party/node-core/tests/net-server-receiver/control.cjs",
+              "sha256": "039b256738b80767e2a87f1fa84e08c961b3faa50fa6141b71f58b68bf37d280",
+              "sourceObservation": "Old numeric native listener boundary; no fresh source-run result."
+            }
+          ]
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/server-listener-ownership-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/server-listener-ownership-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Opaque native foreground-finalized descriptor owner, not a JS fd tag. Ordinary socket/listen commits only after all allocation/validation; native fd no longer crosses JS as Server authority.",
+        "Existing accept watcher roots genuine owner/native state, rechecks after Promise creation and before accept, consumes only captured descriptor. Closed accepts retire/unlink before Promise publication and retain no list-next across reentry.",
+        "Actual listener reference flag, address and close route through same checked native class/context. Closed requests keep dispatch alive until cancellation retirement even after unref.",
+        "Actual context shutdown removes its watches and closes only its own native listeners without callbacks; foreground finalization unlinks raw registry and closes unrooted owner.",
+        "Existing real accepted TCP ownership/adoption/rollback retained; no parallel accept stack or fabricated TCPWRAP/AsyncWrap metadata."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/server-listener-ownership-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Public net.Server.listen({fd}) unchanged explicit ERR_NOT_IMPLEMENTED. Exact real TCP/Pipe classification, actual native server-wrap init-before-open/reentry, loop duplicate-fd(EEXIST) registration, open/listen transfer/error rollback and all public overload/getter chronology must precede activation.",
+        "Full public Server AsyncWrap/provider/trigger/callback/fatal/destroy/performance/diagnostic producer model is unimplemented; KandeloListener class does not manufacture these.",
+        "Generic numeric legacy native socket close/ref/accept paths remain outside opaque ordinary Server proof; external close/reuse after POSIX ownership transfer is not a retained kernel-OFD capability proof.",
+        "Existing global Server connection accounting after callable reinitialization, active hidden-listener policy, exact abort/error/listening/close ordering and inherited setter/publication failures remain incomplete.",
+        "Kernel requested backlog/host registration rollback are existing N-012 implementation gaps unchanged here; no accepted boundary.",
+        "Guest C++/JSAPI/context/realm/GC/OOM/fatal/Worker, selected new engine artifact and all fourhost runtime conformance remain uncompiled/unexecuted.",
+        "Legacy numeric listener fixture protocols in host/test/node-network-attempts.test.ts (socketListen returns7 at historical lines124/170) and third_party/node-core/tests/net-server-receiver/control.cjs are unvalidated under this opaque protocol. No current execution outcome; neither passes nor failures credited."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/network.md",
+      "findingScope": "Partial actual listener lifetime for ordinary Server only; suppliedfd/publicServer initialization/providers/fulltransport remain incomplete.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/network.md": [
+          "N-011",
+          "N-013"
+        ],
+        "tests/nodejs/audit/network-contracts.md": [
+          "N-011",
+          "N-013",
+          "N-018"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/network.md",
+        "findingIds": [
+          "N-013"
+        ],
+        "prerequisiteFindingIds": [
+          "N-011",
+          "N-018"
+        ],
+        "relatedFamilies": [
+          "async",
+          "streams",
+          "http",
+          "engine"
+        ],
+        "scope": "Partial actual listener lifetime for ordinary Server only; suppliedfd/publicServer initialization/providers/fulltransport remain incomplete.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/network.md",
+            "findingId": "N-013",
+            "definitionKey": "tests/nodejs/audit/network.md#N-013:L111",
+            "relation": "partial-owning-source",
+            "prerequisiteOnly": false,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/network.md",
+            "findingId": "N-011",
+            "definitionKey": "tests/nodejs/audit/network.md#N-011:L109",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/network-contracts.md",
+            "findingId": "N-013",
+            "definitionKey": "tests/nodejs/audit/network-contracts.md#N-013:L68",
+            "relation": "partial-owning-source",
+            "prerequisiteOnly": false,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/network-contracts.md",
+            "findingId": "N-011",
+            "definitionKey": "tests/nodejs/audit/network-contracts.md#N-011:L66",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/network-contracts.md",
+            "findingId": "N-018",
+            "definitionKey": "tests/nodejs/audit/network-contracts.md#N-018:L70",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "sqlite-authorizer": {
+      "document": "tests/nodejs/outline/sqlite-authorizer-finding-progress.json",
+      "sha256": "1dbfc1c8e0c06561426ee1612d570c6695139dc8608f8604a866b10fbe454b17",
+      "recordedRevision": 259,
+      "explicitFindingIds": [
+        "NI-002"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-sqlite259-source-r1/report.json",
+          "sha256": "2a1e4e81869df783616d3a2c12b032ce7b5f7312ddbf2589c7a2b880c5a1a4ee",
+          "guardedInputs": 910,
+          "scope": "Actual current normal SQLite frontend/native staging plus corrected source-equivalent portable Connection8/native limit phases3/native-dependent public12+12. Parameter-free SQL fixture metadata is not general parameter support. No new guest registry/exception/root/GC/realm/Worker/fatal proof or full SQLite/LoadExtension/authz-file/four-host acceptance. Old wrong limit read-rejection is not target agreement. Two historical helper attempts pending once; zero new root compilers."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-sqlite259-affected-r1.json",
+          "sha256": "5d9e384e32ca4be20e4071b04a18a98c9273b5924c3a410f434ebdb63c2f0e03",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-sqlite259-source-r1/report.json",
+          "sha256": "2a1e4e81869df783616d3a2c12b032ce7b5f7312ddbf2589c7a2b880c5a1a4ee",
+          "correctedPortableOwnerGroups": 8,
+          "nativeLimitPhaseReferences": 3,
+          "nativePublicGroups": 12,
+          "candidateFrontendNativeDependencyGroups": 12,
+          "sameObservedGroups": 12,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "historicalChainHelperAttempts": 2,
+          "oldWrongReadRejectionCreditedAsTargetAgreement": false,
+          "scope": "Current actual adapter/core with native Node SQLite callback/error/Values and parameter-free selected SQL dependencies; corrected exact-source portable Connection/SQLite object and native3phase references. No new guest JSAPI registry/exception/GC/realm/Worker or full SQLite/four-host proof. Original wrong readonly rejection is not target agreement. LoadExtension remains unsupported; no authz upstream file executed.",
+          "guardedInputs": 910,
+          "sourceChecks": 19,
+          "sourceCommands": 8,
+          "packagePassed": 14,
+          "newRootCompilerAttempts": 0,
+          "historicalHelpers": 2
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/sqlite-authorizer-limits-correction-agent/report.json",
+          "sha256": "766c969da7048f19258989a2d55ff583055e637f8e50d79efb7570acff52456e",
+          "reusedEvidence": true,
+          "scope": "Original actual authorizer plus separate readonly/mutation phase correction. Corrected portable8/native3phase and original native12/candidate12 frontend are native-dependent components; original wrong readonly test uncredited. No new guest JSAPI proof."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/sqlite-authorizer-owner-agent/evidence/native.stdout",
+          "sha256": "b8d283905d9cfff39cb50c582e47a2620096a3cdd4e7f34fee2b4b5cf54f6606",
+          "classification": "authored-negative-zero-assumption-nonpass",
+          "scope": "Original native11/12 because authored expectation admitted-0. Original source/control/raw outcomes preserved; semantic int32 source now rejects it. Native frontend dependency does not validate guest return/error bridge."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/sqlite-authorizer-owner-agent/authoring-failure.json",
+          "sha256": "6e4aa41990b3e9113a3bca2cae8a767ebe266d3b83bc5c8f7b6d3ae3188c281c",
+          "classification": "orchestration-syntax-failure",
+          "scope": "Author JS syntax failure, no command/compiler/source execution."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/sqlite-authorizer-owner-agent/evidence/owner-r1.stdout",
+          "sha256": "751c7ba25c17590aa816bced9b1ade5a2f6326fb68f75b0ed13dd0b70566a970",
+          "classification": "historical-candidate-behavior-not-target-agreement",
+          "scope": "Original portable8 includes mistaken readonly Limit rejection. It is not credited as target agreement. Corrected regression uses real SetLimit mutation and positive read/unchanged-value assertions."
+        },
+        {
+          "field": "$.actualSqliteAuthorizerControlReport",
+          "report": ".context/sqlite259-root-controls-r1/report.json",
+          "sha256": "cf8e8daff9d13d4bf281e13706459de01d88acfca2e16f2d1668d5beb00fc0eb",
+          "correctedPortableOwnerGroups": 8,
+          "nativeLimitPhaseReferences": 3,
+          "nativePublicGroups": 12,
+          "candidateFrontendNativeDependencyGroups": 12,
+          "sameObservedGroups": 12,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "historicalChainHelperAttempts": 2,
+          "oldWrongReadRejectionCreditedAsTargetAgreement": false,
+          "scope": "Current actual adapter/core with native Node SQLite callback/error/Values and parameter-free selected SQL dependencies; corrected exact-source portable Connection/SQLite object and native3phase references. No new guest JSAPI registry/exception/GC/realm/Worker or full SQLite/four-host proof. Original wrong readonly rejection is not target agreement. LoadExtension remains unsupported; no authz upstream file executed."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/sqlite-authorizer-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/sqlite-authorizer-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "actual sqlite3_set_authorizer registration, replacement/null clear and reinstall after close/open",
+        "same existing native connection, per-callback authorizer/callback depth, C++ exception captured before SQLite C-frame return",
+        "actual JS callback traced by existing database registry, weak native connection, creating thread/context checks, undefined receiver and native nullable strings",
+        "noncoercing semantic int32 validation including negative-zero rejection, original JS exception/uncatchable failure retained through real post-SQL abrupt channel",
+        "same-connection mutating/execution/limits/session and busy-close guards, other connection and idle-close policy retained",
+        "public method routes to real native owner; no exported facade or SQL emulation",
+        "ROOT-SQLITE-AUTH-001 correction removes the shared readonly depth guard, keeps live actual Limit reads and places Require/CheckAuthorizer in Assign/SetLimit before validation/mutation."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/sqlite-authorizer-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "New guest JSAPI callback/root/realm/GC/worker/fatal/OOM/interruption behavior uncompiled/unexecuted; native frontend fixture uses actual pinned Node SQLite callback/error backend",
+        "Portable test proves exact header/backend ownership; native frontend dependency checks do not execute new native callback result/error/abrupt bridge",
+        "Tag stores/extensions/virtual tables/modules and other SQLite gaps remain unavailable or partial; authorizer initial guard is not implementation of those features",
+        "Existing generic SQLite receiver/cross-realm admission and full callback/Statement parameter/iterator/backup boundaries not claimed closed",
+        "Unchanged upstream authz file examined/pinned but not executed; no whole-file, overall or four-host support claim",
+        "Preserve pinned deserialize general InCallback policy. LoadExtension permission flags precede authorizer in target, while extension owner stays unavailable; initial guards do not implement it."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/native-integration.md",
+      "findingScope": "Partial actual SQLite authorizer/callback/limits-phase owner only; no full SQLite namespace, native bridge or qualified finding closure.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/native-integration.md": [
+          "NI-002"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/native-integration.md",
+        "findingIds": [
+          "NI-002"
+        ],
+        "relatedFamilies": [
+          "async",
+          "filesystem",
+          "engine"
+        ],
+        "scope": "Partial actual SQLite authorizer/callback/limits-phase owner only; no full SQLite namespace, native bridge or qualified finding closure.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/native-integration.md",
+            "findingId": "NI-002",
+            "definitionKey": "tests/nodejs/audit/native-integration.md#NI-002:L13",
+            "relation": "partial-owning-source",
+            "closed": false
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
     }
   },
   "dependencyNarratives": {
@@ -32602,6 +33405,93 @@
           "sha256": "5551a0296c43b11661ba6a292e6e1dfeb20e05623017c45d857ae091fb484d05"
         },
         "scope": "Exact committed source250\u2013255 qualified progress overlay only: HTTP request callback, asymmetric keygen, FD input publication, Fetch response pull, TTY shared StreamBase prerequisite and EC private PKCS8. Preserve all failures, explicit partial/prose-only/shared relations and remaining obligations. No expanded ranges, inferred standalone definitions, closure, runtime/compiler evidence or current candidate changes."
+      },
+      {
+        "at": "2026-11-08T07:51:40.986216+00:00",
+        "sourceCheckpoint": 261,
+        "sourceHead": "88b6102b1d5bbcffd694e9187fa00fa11802fbd1",
+        "addedSourceSlices": [
+          "child-spawn-abort",
+          "util-callsites",
+          "server-listener-ownership",
+          "sqlite-authorizer"
+        ],
+        "qualifiedLinks": [
+          {
+            "document": "tests/nodejs/audit/processes.md",
+            "finding": "CP-004",
+            "slice": "child-spawn-abort",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial actual async spawn AbortSignal/killSignal JS ownership over existing launch/kill/reap/pipe-close paths. No full normalization, lifecycle or public API closure."
+          },
+          {
+            "document": "tests/nodejs/audit/values-contracts.md",
+            "finding": "V-034",
+            "slice": "util-callsites",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial real getCallSites validation and raw no-cache-entry fallback only; mapping-required public cases and other inspection/native-stack obligations remain incomplete."
+          },
+          {
+            "document": "tests/nodejs/audit/network.md",
+            "finding": "N-013",
+            "slice": "server-listener-ownership",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial actual listener lifetime for ordinary Server only; suppliedfd/publicServer initialization/providers/fulltransport remain incomplete."
+          },
+          {
+            "document": "tests/nodejs/audit/network.md",
+            "finding": "N-011",
+            "slice": "server-listener-ownership",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Actual retained native listener ownership is a shared prerequisite only; no public bind/options/transport/provider/finding closure."
+          },
+          {
+            "document": "tests/nodejs/audit/network-contracts.md",
+            "finding": "N-013",
+            "slice": "server-listener-ownership",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial actual listener lifetime for ordinary Server only; suppliedfd/publicServer initialization/providers/fulltransport remain incomplete."
+          },
+          {
+            "document": "tests/nodejs/audit/network-contracts.md",
+            "finding": "N-011",
+            "slice": "server-listener-ownership",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Actual retained native listener ownership is a shared prerequisite only; no public bind/options/transport/provider/finding closure."
+          },
+          {
+            "document": "tests/nodejs/audit/network-contracts.md",
+            "finding": "N-018",
+            "slice": "server-listener-ownership",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Actual retained native listener ownership is a shared prerequisite only; no public bind/options/transport/provider/finding closure."
+          },
+          {
+            "document": "tests/nodejs/audit/native-integration.md",
+            "finding": "NI-002",
+            "slice": "sqlite-authorizer",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial actual SQLite authorizer/callback/limits-phase owner only; no full SQLite namespace, native bridge or qualified finding closure."
+          }
+        ],
+        "latestAcceptedEngine": 239,
+        "currentCombinedEngineCompiled": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "spec": {
+          "path": ".context/finding-ledger-256-259-prep/spec.json",
+          "sha256": "2f4728d4bc4f9b59acec2b26c6e83bff38b9a5b1fb48424aca89e6d7b474f9f5"
+        },
+        "scope": "Metadata-only exact qualified source256\u2013259 overlay for spawn AbortSignal, raw getCallSites, listener lifetime and SQLite authorizer/limits correction. Direct partial/shared prerequisite scopes retain all source/native-dependency/guest limits, nonpasses, incomplete APIs and original qualified definitions/ranges. No runtime/compiler evidence or closure added."
       }
     ]
   }
