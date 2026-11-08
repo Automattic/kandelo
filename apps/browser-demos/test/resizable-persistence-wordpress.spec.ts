@@ -7,6 +7,7 @@ import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import { startPersistentImageSource, type PersistentImageSource } from "./support/persistent-image-source";
 import { loginToWordPress } from "./support/wordpress-login";
 import { expectWordPressEditor, publishWordPressPost, saveWordPressTemplateHeading } from "./support/wordpress-editor";
+import { describeWordPressFrameTree } from "./support/wordpress-frame-diagnostics";
 import { observeImageWorkerMemory, imageWorkerMemory } from "./support/image-worker-memory";
 import { clickDockTool } from "./support/dock";
 import {
@@ -354,6 +355,13 @@ test(`${machineTitle} ${content} survive OPFS restart without checkpointing or t
       }) });
     } catch (error) {
       if (!observationPage.isClosed()) {
+        const outerDocumentView = await Promise.race([
+          observationPage.evaluate(describeWordPressFrameTree).catch(error => ({ error: String(error) })),
+          new Promise(resolve => setTimeout(() => resolve({ error: "Outer-document observation exceeded 5 seconds" }), 5000)),
+        ]);
+        await testInfo.attach("outer-document-frame-view", {
+          body: JSON.stringify(outerDocumentView), contentType: "application/json",
+        });
         await testInfo.attach("persistent-computer-failure", {
           contentType: "application/json",
           body: JSON.stringify({
