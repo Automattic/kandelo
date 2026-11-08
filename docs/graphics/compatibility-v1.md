@@ -27495,3 +27495,95 @@ The corrected SDL first-frame/animation case passes on Chromium, Firefox
 and WebKit (three cases,28.3s). The prior Firefox failure remains recorded
 as an invalid first-frame/sampling observation; it is not attributed to
 an engine defect. This is rendering evidence, not a native-feel claim.
+
+### Current normal graphical preview, 2026-11-08
+
+The focused normal R884 build succeeds on pushed `777dddfd68`, including
+main `5f484a853e` and the canonical compiled host workers. It retains the
+same twelve graphical roots and completes in 4m42s. The roots are
+`sdl2-demo`, `wayland-demo`, `sway`, `swaybg`, `foot`,
+`bibata-cursor-theme`, `freeciv-browser-bundle`, `modeset`, `scummvm`,
+`curl`, `unzip` and `python-browser-bundle`. The 822,588-byte image
+has SHA-256
+`67f91d06af8acdb38f5465a1e12515c53643d5603a89f42bd2c49c0d966b285d`;
+kernel SHA-256 is
+`fa86a1935a348aed4e10c1e824dc817d3c127d68f8c10663d52eb9df5116e0af`.
+The current owned port 59235 serves these normal artifacts. Program 56,
+host 4, GL 17 and fork 21 remain unchanged.
+
+All 51 prepared Node checks pass. The direct Sway and actual shell Activity
+Alt+Enter cases pass on Chromium, Firefox and WebKit: the second real Foot
+paints and tiles, native workspace controls work, and ordinary desktop exit
+releases ownership and reaps its processes. Fluid, SDL GLSL editor/opaque
+scanout, Freeciv's menu and ScummVM's launcher also pass on all three
+engines. Combined focused selection: 21 passed, zero retries or skips.
+This does not establish active-game rendering or the full desktop suite.
+The successful browser runs retain Firefox run-owned Downloads-directory
+cleanup EACCES warnings; they are not application assertions or an
+attributed engine defect.
+
+A separate Chromium Activity probe verifies an actual 2560x1586 output at
+DPR 2 in a 1280x900 viewport, with two rendered Foot clients, ordinary exit
+and base-shell survival. Before exit its real procfs report has no mapping
+failures and live I/O 79,331,398 against a 132,120,576-credit retained limit;
+all temporary classes have returned to zero. This is one functional
+HiDPI case, not physical display timing or a performance claim.
+
+The current graphics source gate passes 2,353 checks across 93 files, zero
+failures or skips. The real shader-rewrite harness reports Chromium 297
+passed, WebKit 297 passed, Firefox 294 passed plus one inconclusive and two
+existing native-control observations, with zero hard failures. The
+inconclusive/control rows remain explicit rather than relabeled passes.
+
+The complete consumer's first admission refuses missing wasm64 GL/DRI
+archives before tests. Canonical `build-gles-stubs.sh --arch wasm64posix`
+and `build-dri-stubs.sh --arch wasm64posix` provision them in 28s; both SDK
+widths pass freshness and all 24 selected preview products remain unchanged.
+The next admission stops before tests because the private launcher supplies
+a descriptive run name where main requires a UUID. A new immutable runner
+uses separate canonical UUIDs for inventory and execution and routes each
+JSON report explicitly. No production code or test assertion changes.
+The fresh full selection collects 28 Node cases and 1,074 browser cases,
+358 per engine, with no inventory delta from the historical selection.
+All 28 Node cases pass. The full browser run finishes in 21m51s with 1,062
+passed and 12 failed, zero skips or retries. All 12 are the same driver-fork
+assertion across both widths/audit modes/three engines. A retained diagnostic
+confirms EGL_NOT_INITIALIZED (0x3001), not the fixture's BAD_CONTEXT (0x3006):
+the inherited display generation has been revoked before share validation.
+EGL 1.5 section 3.1 permits an applicable error rather than mandating that
+priority. The first two-state candidate then fails 12 because it still asks
+for a GL error from a revoked, non-current context. It is not relabeled green.
+
+The corrected test retains zero graphics requests for inherited dispatch and
+requires EGL_NO_CONTEXT. It then initializes a child display, verifies exact
+BAD_CONTEXT for the inherited share handle, makes a fresh child context
+current and verifies INVALID_OPERATION for its own unlinked program.
+Ordinary child/context cleanup and parent dispatch/cleanup checks remain.
+All 12 focused cases pass in28.6s, zero skips or retries, on the unchanged
+normal runtime. This is scoped recovery evidence, not a second full 1,074-case
+passing run. Native creation/deletion, error ownership and memory-boundary
+assertions remain enabled.
+
+The separate current target-ownership suite passes 16 Node and 48 browser cases
+in 1m50s, zero skips/retries and no inventory delta. Both widths and all three
+engines retain descriptor replacement, full/partial/middle/same-BO mappings,
+real fork/import/borrow pixels and cleanup assertions. All 1,502 installed
+SDK/worker/bank/tool namespace entries remain unchanged.
+
+The additional exported-fork refusal regression passes its failed-child,
+replacement-descriptor/address and later-child execution checks but fails
+both widths at the final parent read after waitpid. Diagnostics show child
+unbind publishes canonical bytes [109,117]/[73,83]/[37,43], while the resumed
+parent still sees [109,0]/[73,0]/[37,0], with pending-reader marks intact.
+The actual completion/coherence defect remains open. An additional new-test
+witness expects eager raw canonical bytes before an admitted native reader;
+that internal assumption must be reviewed separately, preserving actual
+parent bytes and exact rollback assertions. No guest msync workaround or
+release claim is made.
+
+These checks establish a usable focused normal checkpoint, not complete
+B1, merge readiness or native feel. The mapped-buffer visibility defect, current
+scoped conformance and libc, wider desktop/lifecycle, measurements and
+manual-browser checks
+remain. B2–B6 and C1–C3 remain explicit ordered follow-ups, each separately
+landed, validated and measured. No acceptance criterion is reduced.

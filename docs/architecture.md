@@ -632,12 +632,15 @@ For file mappings, the Wasm backend first compares the live process range
 against the existing initialized Rust snapshot through the synchronous
 `host_proc_compare_bytes` import. The host validates both complete ranges,
 rechecks the exact kernel Memory and generation after process lookup, and
-keeps all read-only native authority inside that call. Equal bytes retain the old
-snapshot without allocating or copying a new full range. Different bytes
-use the ordinary separately validated owned-copy path. Exactly zero means
-equal, one means different, and two requests that same owned-copy path when
-the optional native comparator is unavailable. Errors never publish partial
-bytes. The fixed read-only Wasm helper imports the two existing memories,
+keeps all read-only native authority inside that call. Exactly zero means
+equal, one means different, and two means the optional comparator is
+unavailable; unavailability never establishes equality. Shared-file
+publication retains an equal snapshot without allocating a new full range;
+changed bytes and unavailable comparisons use bounded page reads, advancing
+the baseline only for completed merges. Callers requiring an independent
+owned process snapshot retain their separately checked full-copy path.
+Errors never publish a partial owned snapshot. The fixed read-only Wasm
+helper imports the two existing memories,
 allocates no linear memory, writes nothing, and never retains an Instance
 or exported function beyond the synchronous borrow. Only compiled modules
 and frozen scalar constructor descriptors are cached. Trusted constructor

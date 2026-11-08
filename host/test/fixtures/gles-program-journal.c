@@ -143,12 +143,32 @@ static void check_driver_fork(EGLDisplay display,EGLConfig config,EGLContext con
     assert(!pthread_mutex_unlock(&p.mutex));
     pid_t child=fork();assert(child>=0);
     if(!child) {
+        /* WHY: fork revokes the display generation before share validation.
+         * Check inherited dispatch before fresh initialization can issue IO,
+         * then isolate stale-share rejection on a valid child display. */
         const uint64_t requests=_wpk_gl_device_requests();
         const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
         assert(eglCreateContext(display,config,context,attrs)==EGL_NO_CONTEXT);
-        assert(eglGetError()==EGL_BAD_CONTEXT);
+        assert(eglGetError()==EGL_NOT_INITIALIZED);
+        assert(eglGetCurrentContext()==EGL_NO_CONTEXT);
         glUseProgram(program);assert(_wpk_gl_device_requests()==requests);
-        assert(glGetError()==GL_INVALID_OPERATION);_exit(0);
+        /* WHY: the revoked binding has no GL error state. Check GL errors
+         * below with a fresh current context, rather than assuming a copied
+         * parent encoder survives solely to hold INVALID_OPERATION. */
+        assert(eglInitialize(display,NULL,NULL));
+        EGLConfig child_config;EGLint child_count=0;
+        assert(eglGetConfigs(display,&child_config,1,&child_count)&&child_count>0);
+        assert(eglCreateContext(display,child_config,context,attrs)==EGL_NO_CONTEXT);
+        assert(eglGetError()==EGL_BAD_CONTEXT);
+        EGLContext child_context=eglCreateContext(display,child_config,EGL_NO_CONTEXT,attrs);
+        assert(child_context!=EGL_NO_CONTEXT);
+        assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,child_context));
+        GLuint unlinked=glCreateProgram();assert(unlinked&&glGetError()==GL_NO_ERROR);
+        glUseProgram(unlinked);assert(glGetError()==GL_INVALID_OPERATION);
+        glDeleteProgram(unlinked);
+        assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
+        assert(eglDestroyContext(display,child_context));
+        assert(eglTerminate(display)&&eglReleaseThread());_exit(0);
     }
     int status=0;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
     assert(!pthread_mutex_lock(&p.mutex));p.release=1;assert(!pthread_cond_signal(&p.condition));

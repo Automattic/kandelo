@@ -2389,3 +2389,22 @@ Optional fullscreen/Keyboard Lock and an explicit guest-config modifier
 selector remain proposed product controls, not implemented features or
 substitutes for working windowed bindings. Current graphics acceptance still
 requires the new desktop configs and native Swaybar on all three engines.
+
+### B1 shipment checkpoint after current graphical acceptance
+
+The focused normal build now passes 21 graphical cases across Chromium,
+Firefox and WebKit, plus one actual HiDPI two-Foot Activity case. The
+current ownership selection passes 16 Node and 48 browser cases. The full
+consumer records 1,062 pass/12 fail; a correctly scoped fork fixture resolves
+those 12 in a separate focused pass on unchanged runtime. These are distinct
+runs, not a relabeled all-green full run.
+
+Before complete B1, fix the demonstrated wait-completion BO visibility gap:
+child writes reach canonical shared storage, while the parent resumes with
+stale mapped bytes. Preserve replacement descriptors/resources, exact
+cleanup, output-write ordering and Node/browser parity. Finish the remaining
+B1 conformance, lifecycle and measurement checks; announce its normal preview
+immediately when those checks pass. B2 asynchronous bindings and its request
+gate, B3 queries, B4 interfaces, B5 fences and B6 inline draws follow B1; then
+C1 scheduling, C2 executor separation and C3 the GPU worker. Each stage stays
+separately landed, validated and measured; all final campaign gates remain.
