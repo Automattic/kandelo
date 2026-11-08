@@ -26,48 +26,61 @@ The original 5464 preview remains available. Full 33-case three-engine
 UI/persistence, canonical/family, memory/lifecycle and performance acceptance
 are still pending. These are partial development artifacts, not release proof.
 
-**Comparison configuration checkpoint:** an isolated benchmark change replaces
-Node's fixed six-worker setup and the browser's unequal shipped defaults with
-one explicitly configured image, defaulting to two PHP workers per service.
-It retains source/configured hashes, uses a disposable preparation process,
-checks the service's configured pool on both hosts and preserves existing
-reports. Twelve pure configuration cases, syntax compilation and all 676
-test-file classifications pass. The host build, including declarations,
-passes. An additional broad TypeScript diagnostic still reports the existing
-`host/src/webgl/query.ts:403` cast; the unchanged entry reports that same
-diagnostic plus two test-fixture import errors. No new benchmark diagnostic
-is reported, but this is not a clean broad TypeScript gate. Real Node and
-Chromium harness checks remain pending. The final image build below is
-kept frozen in its own checkout; the comparison change is not integrated
-into the primary preview or draft PR branch yet. No performance result or
-visitor-cache behavior is claimed.
+**Browser infrastructure checkpoint:** the first current 33-case attempt
+(`wordpress-current-browser33-1107-190720-3da4`) is stopped after its first
+navigation failure, not counted as application validation. Its external
+Playwright configuration made Vite start in `.context`, causing React
+resolution failures and an HTTP error before WordPress boot. Diagnostics
+then consumed the case deadline because their timeout covered the final
+Internals click but not opening More. The shared configuration now pins
+`webServer.cwd` to the app; the dock helper forwards the timeout through
+both actions. An external-config regression passes all 12 selected cases
+across Chromium, Firefox and WebKit, including actual app rendering and
+cross-origin isolation (`dock-external-regression-v2-1107-193135-c116`,
+15.7 seconds). The initial helper attempt retains three incorrect fixture
+markup assertions and a missing resolver selection; both test-setup errors
+are corrected. Firefox's test-owned storage cleanup still reports EACCES;
+this does not turn the successful assertions into a cleanup guarantee.
+The current 33-case rendered WordPress/persistence run must be restarted.
 
-The actual smoke then passes both Node services but rejects the browser's
-FPM capacity: the composer rewrites the configured two-worker pool to six.
-That is stronger evidence than the earlier image-only audit; shipped FPM
-configuration is not the final browser configuration. The composer correction
-now caps a single explicit pool while preserving smaller pools and all other
-settings. Configurations it cannot safely recognize remain unchanged for
-ordinary FPM/process-budget handling. Twenty-two configuration cases pass;
-the corrected real browser rerun is still required. This changes Kandelo's
-configuration handling, not PHP or FrankenPHP source.
+**Image-size investigation:** the current image is 83,524,699 compressed
+bytes and embeds 434,019,464 unique file bytes: combined Caddy 185,037,671,
+standalone classic 70,004,510, PHP-FPM 36,999,507, WordPress 89,895,580 and
+precompiled PHP cache 47,459,112. The combined Caddy has 134,782,834 bytes
+of code and 48,368,731 bytes of data, with no large debug sections. PHP is
+compiled at O2 and instrumentation defaults to a post-optimization at Os.
+The cgo recipes override CGO_CFLAGS with include paths only, replacing Go's
+normal O2 defaults for initial C compilation. This is a concrete flag gap,
+not a measured explanation for the binary size. A controlled normal build
+must capture pre/post instrumentation sizes and evaluate restoring O2;
+there is no original reference on the current Caddy output from which to
+recover its pre-instrumentation bytes. No stripping or size/performance
+claim is adopted. Private measurements: `.context/current-image-size.json`
+and `.context/caddy-wasm-sections.json` in the isolated checkout.
 
-The corrected run passes all four functional cases in 1m58s as
-`wordpress-comparison-functional-v4-1107-182848-56ee`: FPM and real Caddy on
-Node and Chromium, with two effective PHP workers in every case. The source
-is `8fa97d2e493e`; it uses retained partial image `464d553bb3e5` and kernel
-`6f5410ea67d0`. The controlled image is
+**Comparison configuration checkpoint:** the benchmark and composer changes
+are integrated in the current PR. One explicitly configured image defaults
+to two PHP workers per service, retains source/configured/kernel identities,
+uses disposable preparation and checks actual effective capacity on both
+hosts. The composer now preserves a smaller explicit static pool and all
+other settings, capping only recognized oversized pools. This fixes its
+observed rewrite from the requested two workers to six. Dynamic, included
+and ambiguous pools remain for ordinary resource-budget enforcement.
+The corrected run passes all four actual FPM/Caddy cases on Node/Chromium
+in 1m58s (`wordpress-comparison-functional-v4-1107-182848-56ee`, source
+`8fa97d2e493e`), using retained partial image `464d553bb3e5` and kernel
+`6f5410ea67d0`. The configured image is
 `7e2a102c02fc57e5ba65650a287bd588c4c08f9d614a3585c91a0bcb876665da`.
-Its disposable preparation process completes in 2,993 ms with level 3
-compression; the release image remains unchanged. Earlier attempts retain
-the missing-writer error, rejected browser capacity and preparation timeout.
-The final source selection passes 82 cases: 25 configuration, 14 composer
-client and 43 memory-profile checks, plus its host/declaration build. Raw
-evidence is under the comparison checkout's `.context/agent-jobs/` and
-`.context/wordpress-pool-source-gates-v2/`. The smoke runs alongside the
-package build, so its timing samples are not performance evidence. It does
-not validate the pending replacement kernel/image, all-three-engine editor
-workflows, visitor caching or final acceptance.
+Preparation takes 2,993 ms with level 3 compression; the release image is
+unchanged. Earlier attempts retain the missing-writer error, rejected
+browser capacity and preparation timeout. The final source selection
+passes 82 cases: 25 configuration, 14 composer client and 43 memory-profile
+checks, plus its host/declaration build and 676 file classifications.
+A broad TypeScript check retains the pre-existing WebGL cast diagnostic;
+no new benchmark diagnostic appears. The smoke runs alongside a package
+build and is not performance or final-cohort acceptance. Visitor-cache
+behavior is still unvalidated. Raw evidence is under the comparison
+checkout's `.context/agent-jobs/` and `.context/wordpress-pool-source-gates-v2/`.
 
 **Workflow update:** main's campaign checkpoints and per-run validation
 isolation are merged. Both offline-listener fixtures are retained under

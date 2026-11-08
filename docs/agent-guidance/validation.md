@@ -67,6 +67,13 @@ finish later under full-suite load; a spawn assertion should observe the
 channel completion before checking its result. Keep a timeout so a missing
 completion remains a visible failure.
 
+When importing the browser app's Playwright configuration from a private
+configuration, keep the web server's working directory pinned to the app.
+Playwright otherwise derives it from the importing configuration's directory,
+which changes Vite's root and dependency resolution. Diagnostic helpers must
+forward caller timeouts through setup actions too: a bounded tool click must
+not wait indefinitely while opening its menu.
+
 Freeze Vite-watched application and fixture sources during browser lifecycle
 and persistence runs. Editing a fixture imported by another test page can
 broadcast a full reload to the real app, resetting page-local observations
