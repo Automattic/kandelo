@@ -45,11 +45,15 @@ const PROBES: Record<string, string> = {
   // writes to standard error, which is the only way to observe the message
   // on an image with no daemon -- syslog(3) returns void, so nothing else
   // can report where it went.
-  // `logger` runs first on purpose. Running it after `dmesg -r | head -n 1`
-  // hangs; see the `/dev/kmsg` known defect in docs/posix-status.md for the
-  // measured reproduction. Keeping the working order means this probe proves
-  // both tools rather than quietly timing out.
-  toybox: "logger -s -t probe hello 2>&1; dmesg -r | head -n 1",
+  // This exact order is a regression guard. It used to hang: a `/dev/kmsg`
+  // reader ended early by `head`, followed by a process opening an AF_UNIX
+  // datagram socket, never completed. It was measured as fixed over five
+  // consecutive runs under these same conditions, so if it ever comes back
+  // this probe is where it surfaces. `dmesg -r` keeps the `<pri>` prefix,
+  // which only the kernel can supply, and `logger -s` also writes to standard
+  // error -- the only way to observe the message on an image with no daemon,
+  // since syslog(3) returns void.
+  toybox: "dmesg -r | head -n 1; logger -s -t probe hello 2>&1",
 };
 
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
