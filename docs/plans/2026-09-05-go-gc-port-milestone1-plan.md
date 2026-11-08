@@ -63,10 +63,14 @@ because another workspace's build holds its lock; zero bytes are removed.
 The unrelated owner is Lansing job `mho22-setup-forkchurn-1107-181256-598b`;
 never stop it. Only this idle evaluation checkout's generated Rust debug
 outputs are removed, retaining all release binaries, SDK, source, reports,
-verified images and previews; free space then reaches 9.4 GiB. A one-case
-normal Caddy template rerun is pending after recovery. Wait for the peer
-build before applying the same protected cache-GC policy and starting the
-new cgo partial build; do not overlap its large memory/disk demands.
+verified images and previews; free space then reaches 9.4 GiB. The exact failed
+Caddy template case then passes, including UI save and fresh-navigation
+readback (`wordpress-storage-recovery-pilot-1107-194808-247d`, 56 seconds),
+with successful private-home cleanup and no skipped/flaky case. This is
+consistent with the observed host disk pressure, not final 33-case
+acceptance. Wait for the peer build before applying the same protected
+cache-GC policy and starting the new cgo partial build; do not overlap its
+large memory/disk demands.
 
 **Private browser storage cleanup:** macOS's deny-delete directory ACLs
 are observed on both Firefox's Downloads and nested Library/Application
