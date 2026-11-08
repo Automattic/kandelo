@@ -4369,6 +4369,25 @@ images: they write transient runtime configuration into a private copy of the
 image, give it to `NodeKernelHost`, and start `/sbin/dinit` with
 `spawnFromVfs()`.
 
+Service-activity builders may declare a process `stopTarget` for a dependency
+aggregate. The public target still selects and reports the whole activity.
+Stopping it uses Dinit's `stop --force` on that process dependency, which
+stops the dependent group, inhibits its automatic restarts and waits for
+actual process exit. An internal group becoming stopped alone does not prove
+its dependencies finished draining; service switching must wait for the
+process that owns the listener.
+
+The WordPress builder groups each public activity with its server and an
+ordinary Dinit/curl scheduler of upstream `wp-cron.php`. The scheduler depends
+on its server, uses a sixty-second minimum restart interval and has one
+bounded HTTP request in flight. The builder installs its declared curl
+binary directly, so a partial shell need not supply it implicitly. Browser
+boot writes the scheduler's public host/prefix only after the service worker
+mints that machine's URL and before Dinit starts. Protected candidate boots
+retain their original image configuration. Node uses guest loopback directly.
+Current normal-image and end-to-end acceptance remains tracked in the
+[Go implementation plan](plans/2026-09-05-go-gc-port-milestone1-plan.md).
+
 **Binary format.** A `.vfs.zst` file is one zstd frame around a VFSI
 container (`crates/runtime-core/src/vfsi_container.rs`). Raw `.vfs` files
 carry the same container without compression. Decompressed:

@@ -10,13 +10,17 @@ type WordPressApiWindow = Window & {
 };
 
 for (const demo of [
-  { profile: "wordpress-sqlite", title: "WordPress SQLite" },
-  { profile: "wordpress-frankenphp", title: "WordPress on FrankenPHP" },
-  { profile: "wordpress-frankenphp-caddy", title: "WordPress on FrankenPHP + Caddy" },
+  { profile: "wordpress-sqlite", title: "WordPress SQLite", service: "nginx" },
+  { profile: "wordpress-frankenphp", title: "WordPress on FrankenPHP", service: "frankenphp-classic" },
+  { profile: "wordpress-frankenphp-caddy", title: "WordPress on FrankenPHP + Caddy", service: "frankenphp-caddy" },
 ] as const) {
 test(`${demo.title} stock visitor cache preserves privacy, edits and expiry`, async ({ page }, testInfo) => {
   test.setTimeout(360_000);
   const observations: Record<string, unknown> = {};
+  const browserCronRequests: string[] = [];
+  page.on("request", request => {
+    if (new URL(request.url()).pathname.endsWith("/wp-cron.php")) browserCronRequests.push(request.url());
+  });
   const browserEvents: { event: string; detail: unknown }[] = [];
   const record = (event: string, detail: unknown) => {
     if (browserEvents.length < 200) browserEvents.push({ event, detail });
@@ -167,6 +171,12 @@ test(`${demo.title} stock visitor cache preserves privacy, edits and expiry`, as
 
     // This authenticated test-owned probe only schedules and observes the
     // stock hook. WordPress's real wp-cron.php executes garbage collection.
+    const scheduler = await configure(
+      `/sbin/dinitctl -p /run/kandelo-services/dinitctl is-started ${demo.service}-cron\n`
+      + "/bin/cat /etc/wordpress/cron.curl", "AUTOMATIC_CRON_READY");
+    expect(scheduler.output).toContain(`X-Forwarded-Host: ${new URL(page.url()).host}"`);
+    expect(scheduler.output).toContain(`X-Forwarded-Prefix: ${prefix.replace(/\/$/, "")}"`);
+    observations.scheduler = scheduler;
     const cronProbe = readFileSync(new URL("./support/wordpress-cache-cron-probe.php", import.meta.url), "utf8");
     await configure(`printf '%s' ${quote(cronProbe)} > /srv/www/html/__kandelo_cache_cron.php`, "CACHE_CRON_PROBE_INSTALLED");
     await new Promise(resolve => setTimeout(resolve, 4000));
@@ -177,25 +187,25 @@ test(`${demo.title} stock visitor cache preserves privacy, edits and expiry`, as
     expect(oldPostFiles.length).toBeGreaterThan(0);
     expect(oldPostFiles.every(file => file.mtime + 2 < beforeGc.now)).toBe(true);
     expect(beforeGc.nextGc).toBeLessThanOrEqual(beforeGc.now);
-    expect((await visitor("wp-cron.php")).status).toBe(200);
     await expect.poll(async () => {
       const response = await visitor("__kandelo_cache_cron.php", "GET", true);
       expect(response.status).toBe(200);
       const afterGc = JSON.parse(response.body) as typeof beforeGc;
       observations.scheduledGc = { before: beforeGc, after: afterGc,
-        execution: "Explicit request to stock wp-cron.php; not automatic scheduler acceptance" };
+        execution: "Image-owned Dinit/curl scheduler; browser never requests wp-cron.php" };
       return { ran: afterGc.lastGc >= beforeGc.now,
         removed: oldPostFiles.every(old => !afterGc.files.some(file => file.path === old.path)),
         rescheduled: afterGc.nextGc !== false && afterGc.nextGc > beforeGc.now };
-    }, { timeout: 30_000, message: "WordPress cron must remove expired cache files and reschedule the stock hook" })
+    }, { timeout: 95_000, message: "Image-owned cron must remove expired cache files and reschedule the stock hook" })
       .toEqual({ ran: true, removed: true, rescheduled: true });
+    expect(browserCronRequests).toEqual([]);
   } finally {
     await testInfo.attach("cache-browser-events", {
       body: JSON.stringify({ url: page.url(), events: browserEvents }), contentType: "application/json",
     });
     await testInfo.attach("visitor-cache-observations", {
       body: JSON.stringify({ ...observations,
-        scope: "Stock plugin browser activation, privacy, clear-on-edit post/template invalidation, real-clock expiry and explicit cron GC. Automatic cron remains a separate gate." }),
+        scope: "Stock plugin browser activation, privacy, clear-on-edit post/template invalidation, real-clock expiry and automatic guest cron GC. Final-artifact and lifecycle gates remain separate." }),
       contentType: "application/json",
     });
   }

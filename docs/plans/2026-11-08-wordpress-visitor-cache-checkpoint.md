@@ -185,3 +185,29 @@ validation on rebuilt images remain required. The separate native WebKit
 memory investigation is unresolved. Fair uncached runtime comparisons and
 cache-enabled visitor comparisons must report their different policies and
 measured results rather than attributing cache hits to Go/PHP server speed.
+
+## Image-owned scheduler integration
+
+The current source declares ordinary Dinit/curl schedulers with each
+WordPress activity. A complete Node control passes in 4m40s and its browser
+control passes all three engines in 14m37s, zero retries/skips. Those use
+retained normal45 with the new configuration and a test-owned WordPress
+action, not the stock cache hook or final normal48/family15 artifacts.
+A maintained shared regression then passes Node in 4m32s; its three-engine
+run is active. Earlier preload failures stay recorded independently.
+
+The updated stock-cache case now requires the image's scheduler and checks
+its configured public host and exact machine prefix. It schedules overdue
+`wp_cache_gc` and waits up to 95 seconds for guest delivery, requiring expired
+files to disappear and the stock hook to reschedule. It rejects any browser
+request to `wp-cron.php`. This updated cache case has not yet run; the six
+older passes above remain evidence for explicit delivery only.
+
+Source inspection catches two integration details before replacement-preview
+acceptance. A partial shell does not install every built image dependency,
+so WordPress must install curl from its direct dependency itself. Also, the
+machine prefix is assigned after image composition. Browser boot must write
+cron URL metadata after the bridge handshake, before starting Dinit, rather
+than capture the pre-mint `/computer` placeholder. Normal48/family15 and
+actual app/cache validation of these paths remain open. The existing 5492
+preview is preserved.

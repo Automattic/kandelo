@@ -48,6 +48,7 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
+import { wordpressCronCurlConfig } from "../../../lib/init/wordpress-runtime-config";
 import {
   imageOwnedLazyAssetDirectory,
   type ImageOwnedRuntimeLazyAssets,
@@ -1582,7 +1583,6 @@ function persistenceIdentity(
     profileId: storageProfileId,
     appPath: APP_PATH,
     proto: PROTO,
-    publicOrigin: location.origin,
     preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
     mounts: descriptor.mounts,
     ...(mode === "resizable" ? { persistenceMode: "resizable" } : {}),
@@ -1839,7 +1839,6 @@ async function bootProfile(
         descriptor: requestedDescriptor,
         appPath: APP_PATH,
         proto: PROTO,
-        publicOrigin: location.origin,
         preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
       },
       {
@@ -2222,6 +2221,18 @@ async function bootProfile(
           message: "HTTP bridge unavailable",
         });
       }
+    }
+
+    if (bridgeSent && profile.candidateEvidence === undefined
+      && await kernel.readFileFromVfs("/etc/wordpress/cron.curl") !== null) {
+      // The service worker mints the public path at this handshake. Image
+      // composition only knows the pre-mint /computer placeholder. Configure
+      // scheduled requests before Dinit starts so their links address this VM.
+      const publicUrl = new URL(machineAppPrefix, window.location.href);
+      await kernel.writeFileToVfs("/etc/wordpress/cron.curl", new TextEncoder().encode(
+        wordpressCronCurlConfig(publicUrl.origin, publicUrl.pathname.replace(/\/$/, "") || "/"),
+      ));
+      assertCurrent();
     }
 
     // ── Display size, then init and the command ─────────────────────────

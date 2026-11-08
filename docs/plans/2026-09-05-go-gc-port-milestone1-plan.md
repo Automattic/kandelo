@@ -2,6 +2,42 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Current cron integration and maintained regressions.** The complete
+controlled browser scenario `2557` passes Chromium, Firefox and WebKit in
+14m37s, zero retries/skips. Its maintained shared Node regression `1f11`
+passes in 4m32s with the normal offline egress link. Both use the retained
+normal45 image plus the new ordinary Dinit configuration, not final normal
+artifacts. A maintained shared browser regression is running as `65e1`.
+Two earlier private preload attempts fail before meaningful execution:
+`f558` needs the declared tsx loader; `53bb` installs the image-module class
+in the parent rather than Vitest's isolated module realm. The final driver
+uses Vitest setupFiles and the explicit hash-verified public fixture API.
+No product behavior is changed for those harness failures.
+
+Source inspection finds two actual integration gaps before preview
+replacement. A partial shell's selection excludes unselected commands even
+when the engine builds an image's direct dependency. WordPress48 therefore
+installs its declared curl binary itself; family15 consumes that result.
+The frozen normal47 producer `1e5b` is still building its useful dependency
+closure and will retain its original inputs. The successor can reuse its
+own SDK and completed package caches; no final47 composition is claimed.
+Also, image composition knows only the generic `/computer` placeholder.
+Browser boot now writes cron metadata after the service worker assigns the
+real machine prefix and before Dinit starts. Protected candidate images
+retain their original configuration; the premature composer input and
+persistence fingerprint field are removed. No new Go/PHP/compiler patch,
+ABI change or guest-library adaptation is introduced.
+
+The updated stock-cache regression checks the actual cron configuration's
+host and exact machine prefix, schedules upstream `wp_cache_gc`, and waits
+for the guest Dinit/curl tick. It rejects browser requests to `wp-cron.php`.
+This updated app/cache path has not run yet. Current app type checking has
+exactly the same 182 diagnostics as the recorded baseline, at identical
+locations/codes and no candidate-only errors; this is not a clean type-check
+pass. The memory diagnostic now requests existing proc-map and host-storage
+metadata counters alongside guest pages/Go/PHP/module counts; the expanded
+capture has not run yet and establishes no new memory result.
+
 **Automatic WordPress scheduling has a complete Node lifecycle control.**
 The candidate uses ordinary Dinit dependencies and curl configuration to
 invoke upstream `wp-cron.php` every sixty seconds while its service activity
@@ -33,8 +69,14 @@ headers from the public origin and machine prefix, while direct Node
 configuration keeps its ordinary loopback endpoint. Browser lifecycle
 control `9c8b` fails all three cases while loading its test artifacts,
 before kernel startup. Corrected control `2557` uses the maintained
-browser-host fixture's owned HTTP transport and is running; no browser
-pass is claimed yet. The app's strict
+browser-host fixture's owned HTTP transport and passes all three engines
+in 14m37s, with zero skips/retries. This remains the controlled normal45
+image, not normal47/family14 or final UI/conformance acceptance. The shared
+scenario is now being added as maintained Node and browser regressions.
+The first maintained Node attempt `f558` stops in its private preload,
+before loading tests, because Node's strip-only TypeScript mode rejects a
+parameter property. Its corrected driver preloads the declared tsx loader
+first; no product source change is needed. The app's strict
 TypeScript invocation reports exactly the same 182 diagnostics, at identical
 locations/codes, on the current review baseline and candidate; there are no
 candidate-only diagnostics, and this is not a clean app type-check pass.
