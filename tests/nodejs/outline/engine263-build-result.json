@@ -1,0 +1,241 @@
+{
+  "at": "2026-11-08T08:55:51.558977+00:00",
+  "recipeRevision": 263,
+  "sourceCommit": "011076e8a9319cca646029ccfbf5a4c187f678d8",
+  "jobId": "node26-engine263-r2-1108-033441-5bc3",
+  "result": "normal-production-build-and-cache-acceptance-success",
+  "normalBuildAccepted": true,
+  "compiledAndLinked": true,
+  "normalChecksSucceeded": true,
+  "normalCacheAccepted": true,
+  "artifact": {
+    "path": ".context/node26-engine263-terminal/artifacts/js.wasm",
+    "sha256": "90b2b4bce54995bad048e0ff9dd5dbe7f62fbd315826d7ade8772d889175463c",
+    "bytes": 52358963,
+    "mode": "0o755"
+  },
+  "cacheKey": "e9c4abb2f7dcc8024d5d873411d6dbcb9972ee5339a7681bc214607bfbb4e261",
+  "exactBuildKeySectionVerified": true,
+  "exactCurrentAbi55ContractSectionVerified": true,
+  "rawArtifactVerification": {
+    "path": ".context/node26-engine263-terminal/artifact-verification.json",
+    "sha256": "5113b89298abb990040e412b363c4bd7bf6546002cd72438aad9b82649994f14"
+  },
+  "selectedEvidence": {
+    ".context/node26-engine263-terminal/artifact-verification.json": "5113b89298abb990040e412b363c4bd7bf6546002cd72438aad9b82649994f14",
+    ".context/node26-engine263-terminal/cache-receipt.json": "d6043b9259a84f5fbb7af48c7b8a8ccd4b637ebaa04eefdc7107bb43b9bf2fd2",
+    ".context/node26-engine263-terminal/selected-input-plan.json": "9c317eebc36b3491d17cd8f5b0f974b6c9acf0cc84b4b8827e9ea0107daae462",
+    ".context/node26-engine263-terminal/resolver-commands.json": "db7169676981705b3ca35b01c7a3c7edf3ef027b917ebd2ad6c747dea85b7253",
+    ".context/node26-engine263-terminal/resolver-terminal.json": "48ae67e101e871ff103991851e0a57a1b5cec18ff75d7e8268a7b278003d7125",
+    ".context/node26-engine263-terminal/initial-copy-observation.json": "488d21bddfefc3da69b12d8354921329fa1237ca8f8ab9a0e31220dba1e2ba6c",
+    ".context/node26-engine263-terminal/job/meta.json": "bb620acf24660a1fb03c8adbabab78bf1e9003a7e7fe9bc95f2a157dfde8fb1b",
+    ".context/node26-engine263-terminal/job/result.json": "8acb8b4fc6dee3fc35d7497729ec9ad4f66e445aa86180bc017a95b5059a761c",
+    ".context/node26-engine263-terminal/job/output.log": "9ce3cd5e83041e2e5c01db10b69491373f96264f4b42c39280d74c6cbd88c327",
+    ".context/node26-selected-engine-263-r2/resolve.log": "c9a22e21fed10c4d02181bc63ccd3c6f604ff8b5758f60301a182ac0af3a5fc3",
+    ".context/agent-jobs/node26-engine263-1108-033051-c4d5/output.log": "e3df1a19e7d612ae65df64593ba6bf16ec999236070f99ca4f1fbe830655c8f8",
+    ".context/engine263-targeted-build-prep-r1/review.json": "f8f0cf577f0db1c70d22801c2bac5090a3ddf87cb0233abcc595723b6138281a",
+    ".context/engine263-targeted-build-prep-r1/build.sh": "6e4877758e6c60cd9932e43c37f93b448e2bb896a7651955d13830836cb6b6c2",
+    ".context/engine263-targeted-build-prep-r2/run.py": "b556c065cfd51197a35ff31846baa967255cbbf2397bf4648c19dccc8ae608e4",
+    ".context/engine263-targeted-build-prep-r2/pins.json": "145d085ebba64aeb3d093ff23f9f9cad231d1693446a491af49eed0bd42e0a12",
+    ".context/node26-selected-engine-263-r1-native-tool/result.json": "0473c85d7da514504413e2d981ee26d8695872712d04ff2e9f2dde19247b93dd",
+    ".context/node26-new-program-baseline-user-decision.json": "037ab4b9d6a53f9ec4d313f9e2291d08ace3dcbf1065f221363dbda1d3c3e5c1",
+    ".context/node26-engine263-terminal/prior-planner-job/meta.json": "81e5f67abd0426a6662be8db7f822696502f212e3daa5a73c395cb5881cafc6e",
+    ".context/node26-engine263-terminal/prior-planner-job/result.json": "f18f3e803e39eec0d06b4e10d5a57e1ce0070091ce389fd696615b74a759d510",
+    ".context/node26-engine263-terminal/pr-review-scope.json": "4be10b5a8a82f64bb5b1435d89ba392660dce75cba637d82a800781f6f11646a",
+    ".context/engine263-metadata-prep/SEAL.json": "ec5b78174d6e8ce91f8ce70135ea3d4cea3768ede3f2d5d113a3736042ebb3bb",
+    ".context/engine263-metadata-prep/record.py": "5d9a652d131c59abef2aaf031ba7a5fc73d71f89c85226c50bc5f38d39ea32e2",
+    ".context/engine263-metadata-prep/spec.json": "ce7d4e8b35352ff55ff93299b7eb8694e2691e642587d27d3dc78155b0ecfa3f",
+    ".context/engine263-metadata-prep/README.md": "6e048baf283890afd1717fcdf2256090bb7d9e708995099586f799b2dde6edf5"
+  },
+  "draftReviewScope": {
+    "pr": 1653,
+    "url": "https://github.com/Automattic/kandelo/pull/1653",
+    "draft": true,
+    "headBranch": "brandonpayton/node-event-emitter",
+    "headAtOpening": "011076e8a9319cca646029ccfbf5a4c187f678d8",
+    "baseBranch": "brandonpayton/node26-core-source262",
+    "baseCommit": "18b6947f2bdce203e219517beeb531fb2b95fc6b",
+    "changedFilesAtOpening": 24,
+    "scope": "Latest source263 native cache/provider/constructor batch, based on frozen source262 snapshot. No merge/deploy/release. Future implementation batches require child branch/draft stack rather than broadening this diff.",
+    "bodyPath": ".context/core263-draft-pr-body.md",
+    "bodySha256": "f443ef45671dea74552443b5fe954709cf3740d16cfd2ff66a8fc91692311b2a"
+  },
+  "metadataPreparationHistory": {
+    "originalPacket": ".context/engine263-metadata-prep/SEAL.json",
+    "sha256": "ec5b78174d6e8ce91f8ce70135ea3d4cea3768ede3f2d5d113a3736042ebb3bb",
+    "executed": false,
+    "correction": "Keep structured goal classification with prior copy; replace superseded local-payload-only unknown exit with actual shared-registry exit1 terminal receipt"
+  },
+  "artifactVerification": {
+    "scope": "Exact normal cache receipt/member verification and retained compiled engine artifact; no guest startup or four-host validation",
+    "sourceCommit": "011076e8a9319cca646029ccfbf5a4c187f678d8",
+    "revision": 263,
+    "jobId": "node26-engine263-r2-1108-033441-5bc3",
+    "resolverExit": 0,
+    "cacheKey": "e9c4abb2f7dcc8024d5d873411d6dbcb9972ee5339a7681bc214607bfbb4e261",
+    "cacheReceiptSha256": "d6043b9259a84f5fbb7af48c7b8a8ccd4b637ebaa04eefdc7107bb43b9bf2fd2",
+    "canonicalSource": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/spidermonkey-140.11.0esr-rev263-wasm32-abi55-e9c4abb2f7dcc8024d5d873411d6dbcb9972ee5339a7681bc214607bfbb4e261/js.wasm",
+    "retainedArtifact": {
+      "path": ".context/node26-engine263-terminal/artifacts/js.wasm",
+      "sha256": "90b2b4bce54995bad048e0ff9dd5dbe7f62fbd315826d7ade8772d889175463c",
+      "bytes": 52358963,
+      "mode": "0o755"
+    },
+    "customSections": [
+      {
+        "name": "kandelo.wpk_fork.gc_codec",
+        "bytes": 16,
+        "sha256": "05cc1e44315da38b60e05a3db555c5a314ddce07d39175f8f3727959edc1b34f",
+        "headHex": "4b464743010010000000000000000000",
+        "textIfUtf8": "KFGC\u0001\u0000\u0010\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+      },
+      {
+        "name": "kandelo.wpk_fork.exception_codec",
+        "bytes": 24,
+        "sha256": "6b0238e625ea4a8b8b3da9c32e2b782801204f1d5b31c43f020ffcc1c0979b48",
+        "headHex": "010000000100000000000000000000000400000000000000",
+        "textIfUtf8": "\u0001\u0000\u0000\u0000\u0001\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0004\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+      },
+      {
+        "name": "kandelo.wpk_fork.imported_globals",
+        "bytes": 16,
+        "sha256": "19ab9d5199b57256f8c98d1b83ec2a5bf167b87499b9f2cd9759eee2a96ff648",
+        "headHex": "4b464947020010000000000000000000",
+        "textIfUtf8": "KFIG\u0002\u0000\u0010\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+      },
+      {
+        "name": "kandelo.wpk_fork.imported_tables",
+        "bytes": 16,
+        "sha256": "b7636c7e494335c44fb38dbcabc5c1990dc2493eeb876177e3965c5ce52fe23f",
+        "headHex": "4b464954020010000000000000000000",
+        "textIfUtf8": "KFIT\u0002\u0000\u0010\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+      },
+      {
+        "name": "kandelo.wpk_fork.static_root_catalog",
+        "bytes": 12,
+        "sha256": "01ee52580b063c9d062755045c69267b123efcdb8181756b53dd8be84736d091",
+        "headHex": "4b46535201000c0000000000",
+        "textIfUtf8": "KFSR\u0001\u0000\f\u0000\u0000\u0000\u0000\u0000"
+      },
+      {
+        "name": "kandelo.wpk_fork.resume_catalog",
+        "bytes": 170612,
+        "sha256": "98695078f49f4b762aa838fc116a2826fda8f1ffdc274eae955c71f34ab0e8ca",
+        "headHex": "4b46524301000c004d5300000000000000000000010000000100000002000000020000000300000003000000040000000400000005000000050000000600000006000000070000000700000008000000",
+        "textIfUtf8": null
+      },
+      {
+        "name": "kandelo.wpk_fork.capabilities",
+        "bytes": 2,
+        "sha256": "44602a999abbebedf7de0ae1318e4f57e3cb1d67e482a65f9657f7541f3fe4bb",
+        "headHex": "0106",
+        "textIfUtf8": "\u0001\u0006"
+      },
+      {
+        "name": "kandelo.wpk_fork.linked_frames",
+        "bytes": 24,
+        "sha256": "bb49822bbb805a7ca7ed48ecf8d93db7f38f7dc1f81bc34966030ef6abe2f8c4",
+        "headHex": "4b4c43460100180004080300200000001800000020000000",
+        "textIfUtf8": "KLCF\u0001\u0000\u0018\u0000\u0004\b\u0003\u0000 \u0000\u0000\u0000\u0018\u0000\u0000\u0000 \u0000\u0000\u0000"
+      },
+      {
+        "name": "kandelo.wpk_fork.module_state",
+        "bytes": 24,
+        "sha256": "39c5bd4904196f52ba17899cea8e9f8d5be3ded010b808e712f4e985a09c9ff9",
+        "headHex": "4b464d440100180004080700010001000100000000000000",
+        "textIfUtf8": "KFMD\u0001\u0000\u0018\u0000\u0004\b\u0007\u0000\u0001\u0000\u0001\u0000\u0001\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+      },
+      {
+        "name": "kandelo.wpk_fork.unwind_transport",
+        "bytes": 2,
+        "sha256": "47dc540c94ceb704a23875c11273e16bb0b8a87aed84de911f2133568115f254",
+        "headHex": "0100",
+        "textIfUtf8": "\u0001\u0000"
+      },
+      {
+        "name": "kandelo.build.key",
+        "bytes": 32,
+        "sha256": "35e45f5c6fb3d30b6de13a2f94112b1aba1a67cdc9885bda14b1a1b2bb48d665",
+        "headHex": "e9c4abb2f7dcc8024d5d873411d6dbcb9972ee5339a7681bc214607bfbb4e261",
+        "textIfUtf8": "\ufffd\u012b\ufffd\ufffd\ufffd\ufffd\u0002M]\ufffd4\u0011\ufffd\ufffd\u02d9r\ufffdS9\ufffdh\u001b\ufffd\u0014`{\ufffd\ufffd\ufffda"
+      },
+      {
+        "name": "kandelo.abi.contract",
+        "bytes": 32,
+        "sha256": "0cf585c4a4c7a1204640749e66ba804ecd18924e004d87aaac98a2e2b91516af",
+        "headHex": "1358eca04a8d33fa5bcc27d1c672af2f6e7aaf466a398ad598d991347b1a4415",
+        "textIfUtf8": "\u0013X\ufffdJ\ufffd3\ufffd[\ufffd'\ufffd\ufffdr\ufffd/nz\ufffdFj9\ufffd\u0558\u06514{\u001aD\u0015"
+      }
+    ],
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "rawBuildLog": ".context/node26-selected-engine-263-r2/resolve.log",
+    "rawBuildLogSha256": "c9a22e21fed10c4d02181bc63ccd3c6f604ff8b5758f60301a182ac0af3a5fc3",
+    "priorProductPlannerFailureJob": "node26-engine263-1108-033051-c4d5",
+    "nativeBuildToolActualFreshFalse": 0,
+    "dependencyCompilationCount": "Not inferred from selected plan; exact resolver log retained for attribution.",
+    "exactBuildKeySectionVerified": true,
+    "exactCurrentAbi55ContractSectionVerified": true,
+    "baselineFileSha256": "ec6a7a3a24be9e2e964f058d0bc77842dca3a9c20748394d0df1be75822184be",
+    "knownNewEnginePackageAttempts": 1,
+    "knownNewAcceptedEnginePackageBuilds": 1,
+    "dependencyCompilationAttribution": "No dependency compiler attempt claimed from plan. Existing historical four unknowns remain; this normal resolver log demonstrates current engine package build."
+  },
+  "priorAttempt": {
+    "jobId": "node26-engine263-1108-033051-c4d5",
+    "result": "product-planner-error-before-engine-compilation",
+    "diagnostic": "Cargo depends on openssl 3.3.2 while registry has 3.5.9",
+    "numericTerminalExit": 1,
+    "durationSeconds": 3.9,
+    "numericTerminalExitScope": "Actual copied shared agent-job registry terminal result; metadata head and job identity verified",
+    "meta": ".context/node26-engine263-terminal/prior-planner-job/meta.json",
+    "metaSha256": "81e5f67abd0426a6662be8db7f822696502f212e3daa5a73c395cb5881cafc6e",
+    "terminalResult": ".context/node26-engine263-terminal/prior-planner-job/result.json",
+    "terminalResultSha256": "f18f3e803e39eec0d06b4e10d5a57e1ce0070091ce389fd696615b74a759d510",
+    "log": ".context/agent-jobs/node26-engine263-1108-033051-c4d5/output.log",
+    "sha256": "e3df1a19e7d612ae65df64593ba6bf16ec999236070f99ca4f1fbe830655c8f8",
+    "enginePackageAttempt": false
+  },
+  "normalPath": "Documented selected build-deps sha/path/resolve over exact reviewed input closure. No force flag, registry mutation or fabricated cache status.",
+  "compilerFactsWarning": "Fork instrumenter reported a post-link facts code-hash mismatch and used its bounded native baseline. The warning is retained, not a compiler-facts conformance claim.",
+  "accounting": {
+    "before": 371,
+    "after": 372,
+    "newEnginePackageAttempts": 1,
+    "acceptedEngineBuilds": 1,
+    "newNativeRustArtifactMessages": 0,
+    "nativeToolMessagesFresh": 175,
+    "dependencyCompilationsInferredFromPlan": 0,
+    "complete": false,
+    "knownLowerBound": true,
+    "unattributedDependencySubjects": [
+      "node26-engine239-global-1107-172655-2057:node-llhttp",
+      "node26-engine239-global-1107-172655-2057:node-sqlite",
+      "node26-engine239-global-1107-172655-2057:node-ncrypto",
+      "node26-engine239-global-1107-172655-2057:node-simdjson"
+    ]
+  },
+  "guestExecuted": false,
+  "guestStartupValidated": false,
+  "fourHostConformance": false,
+  "runtimeSubjectsThisRecord": 0,
+  "individualApiClosure": false,
+  "familyClosure": false,
+  "overallSuiteRun": false,
+  "fullProductRebuilt": false,
+  "historicalRuntimeEvidence": {
+    "tests/nodejs/outline/engine239-node-focused-result.json": "10b446fdc8d51d41d5414f11ac63dbdf04a145fa767e5ac50a789809fa2ce1ac",
+    "tests/nodejs/outline/engine239-global-build-result.json": "7d4d1a83496cd2792766ed045ce06475ef0e7e3cd92c86b8d84c679af3cfb083",
+    "tests/nodejs/outline/engine238-build-result.json": "69b645fd41b997596410227c7a58f800e3c71cae4bce047ff7ce43dca01170a2",
+    "tests/nodejs/outline/engine239-build-result.json": "f919c792036f879ad3f41eef7ac418634b07adde3c9edea99d885dd0c55a9fed"
+  },
+  "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263.",
+  "limitations": [
+    "No guest startup or execution on Node, Chromium, Firefox or WebKit",
+    "No API or family compatibility acceptance from compilation",
+    "Nine planned packages do not imply nine compiler attempts; only one engine package attempt is added",
+    "Four older unknown dependency compilation attributions are unchanged",
+    "Program ABI remains 55; successor baseline/artifact work remains deferred",
+    "Private DNS and native Server callback proposals are excluded from this source/artifact"
+  ]
+}

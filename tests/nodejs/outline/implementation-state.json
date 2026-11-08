@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-08T08:28:53.309020+00:00",
+  "updatedAt": "2026-11-08T08:55:51.558977+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -46,7 +46,7 @@
   "deployAuthorized": false,
   "overallSuitesRun": 0,
   "productRebuildsRun": 0,
-  "packageOrEngineCompilationsRun": 371,
+  "packageOrEngineCompilationsRun": 372,
   "families": {
     "values": {
       "breadthState": "started",
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "848c3bf50d14d5114b3665db3a60eb5a9e0397b54d42a69858ab3e08e6a19aa1",
+    "tests/nodejs/outline/status-by-family.md": "b48fa315dc38c49be445b0ec8b1de3bf1a51f9f36633478eb2181c94bcf8fe52",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -2738,7 +2738,8 @@
     "tests/nodejs/outline/core-batch263-implementation.md": "82d57a673ca90909ddc4ccbd31af242ec982f80ee7ec2f0e871f15914e1d9da4",
     "tests/nodejs/outline/core-batch263-finding-progress.json": "a26e18bda880864939ad29c23c49df9c0054550302c9999e611ed54c78958108",
     "third_party/node-core/sqlite-tag-cache.h": "12f84eb9d8f413139e27d39d38b1d4b4520b8b5390505ad602202be4f945ab43",
-    "packages/registry/spidermonkey/patches/0184-node-fips-state.patch": "544994a48da72cf43fff23609cfc7885e365ee9b4cc8b0a2ebf60d9d2c5d791d"
+    "packages/registry/spidermonkey/patches/0184-node-fips-state.patch": "544994a48da72cf43fff23609cfc7885e365ee9b4cc8b0a2ebf60d9d2c5d791d",
+    "tests/nodejs/outline/engine263-build-result.json": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568"
   },
   "changes": [
     {
@@ -10826,16 +10827,14 @@
     }
   ],
   "nextSourceWork": [
-    "SQL full statement/iteration/reset/binding/bytes/publication/fatal/realm/GC/OOM/Worker/native-callback ownership remains unvalidated.",
-    "Internal FIPS new native getter/mutex/uint64-to-BigInt/error/realm/Worker path uncompiled/unexecuted; source backend existence and native fixture do not establish guest behavior.",
-    "Public crypto.getFips/setFips/forcedCLI/process-state mutation/Worker admission/provider install/certification and full WebCrypto/jobs remain missing.",
-    "Old source262 FIPS/import frontiers stay immutable historical nonpasses. Current actual FIPS validator component observation must be separately scoped; public normalizer/import remains missing.",
-    "TTY stdio consumes shared native constructorPROTOTYPE/inittransaction; it does NOT invoke constructorfunction. Public fd-basedTTYconstructors/shutdown/encodedwrites remain missing.",
-    "No public invalid-fd/descriptor/constructor or fourhost acceptance from source. New SQL/FIPS/TTY JSAPI/GC/OOM/realm/fatal/Worker behavior uncompiled/unexecuted."
+    "Current engine263 is compiled/cache accepted; actual guest startup, JSAPI, GC, realm, fatal, Worker and four-host behavior remain unvalidated.",
+    "Continue dependency-ordered breadth work with private reviewed DNS and native Server callback sources on a focused successor branch; neither is included in263.",
+    "Preserve original audit, all unresolved APIs/backend gaps, historical239 runtime evidence and prior build/control nonpasses.",
+    "Keep overall conformance and full product/successor ABI artifact rebuilds deferred under current user direction."
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Three coherent owning source foundations with one batch check cycle; no API/family/breadth closure or guest/overall/product rebuild."
+    "reason": "Three real owning source prerequisites integrated as one scoped source/manual/checkpoint batch, retaining all19partial and no guest/fourhost/overall/fullproduct closure."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -53935,11 +53934,11 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/source263-sql-fips-tty-batch-20261108T082854Z.tar.gz",
-    "sha256": "45d9af22a69b8f92ff3e3fcba75c0c49fb0ae2b291d22998e76df39602d9e15d",
-    "bytes": 14276759,
-    "scope": "Current source263 includes exact0755 manual-boundary receipt, three scoped contributions and actual shared source/package/composition evidence; old histories/audit/main/fourABIplan docs preserved. No guest/fourhost/API closure.",
-    "stateFileNote": "Archived state precedes snapshot reference injection"
+    "path": ".context/node26-implementation-snapshots/engine263-accepted-20261108T085551558977Z.tar.gz",
+    "sha256": "240c8f7ac2c5d794b6eb4371a8d6feecaa3046115ffb676630893951970011fd",
+    "bytes": 12727792,
+    "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263.",
+    "stateFileNote": "Archived state precedes snapshot reference injection; no engine binary is duplicated"
   },
   "currentScopedStaticChecks": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -56432,15 +56431,14 @@
     "state": "OS lookup source and raw c-ares channel plus owned record decoder; public Resolver/channel/request/loop/JSAPI/guest linking/transport/error/malformed and four-host obligations remain open"
   },
   "nativeCompilationAccountingThisTurn": {
-    "acceptedEngineBuilds": 0,
+    "acceptedEngineBuilds": 1,
     "guestEngineBuildFailures": 0,
-    "guestPackageAttempts": 0,
+    "guestPackageAttempts": 1,
     "guestDependencyCompilations": 0,
+    "nativeHelperCompileAttempts": 0,
+    "nativeHelperCompileFailures": 0,
     "kernelWasmCompilations": 0,
-    "nativeHelperCompileAttempts": 2,
-    "nativeHelperCompileFailures": 1,
     "productRebuilds": 0,
-    "scope": "Credit exactly2previously executed SQLTagStore portable helper compilation attempts/1authored missing-main failure ONCE at integration369\u2192371knownlowerbound, same4unknown histories. These are historical producer attempts, not new root compilation; rootcompiler/guest/engine/kernel/library/product/overall0.",
     "knownCompilationCountIsLowerBound": true,
     "previousBuildUnattributedDependencySubjects": [
       "node26-engine239-global-1107-172655-2057:node-llhttp",
@@ -56448,9 +56446,7 @@
       "node26-engine239-global-1107-172655-2057:node-ncrypto",
       "node26-engine239-global-1107-172655-2057:node-simdjson"
     ],
-    "historicalTinyHelperAttempts": 2,
-    "historicalTinyHelperFailures": 1,
-    "newRootCompilerAttempts": 0
+    "scope": "One actual normal engine263 package attempt accepted: known lower bound371 to372. Plan node count is not compiler count. Native xtask reports175 fresh messages and zero newly emitted artifacts; four historical unknown dependency attributions remain."
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -57242,7 +57238,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Three real owning source prerequisites integrated as one scoped source/manual/checkpoint batch, retaining all19partial and no guest/fourhost/overall/fullproduct closure."
+    "reason": "Metadata for actual current engine263 build/cache acceptance. No new runtime tests, guest execution, API closure or four-host conformance."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -58376,29 +58372,25 @@
     "guestEngineCompiled": false
   },
   "targetedEngineBuild": {
-    "recipeRevision": 239,
-    "jobId": "node26-engine239-global-1107-172655-2057",
-    "report": "tests/nodejs/outline/engine239-global-build-result.json",
-    "sha256": "7d4d1a83496cd2792766ed045ce06475ef0e7e3cd92c86b8d84c679af3cfb083",
-    "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Accepted238 and initial failed239 preflight plus raw238 guest failures remain unchanged. Reviewed nine-node closure after shared dev-shell cache-key invalidation; no full product rebuild.",
+    "report": "tests/nodejs/outline/engine263-build-result.json",
+    "sha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
+    "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263.",
+    "recipeRevision": 263,
+    "currentSourceRevision": 263,
+    "jobId": "node26-engine263-r2-1108-033441-5bc3",
     "result": "normal-production-build-and-cache-acceptance-success",
     "productionCompilationSucceeded": true,
     "productionLinkSucceeded": true,
     "normalChecksSucceeded": true,
     "acceptedArtifact": true,
     "guestRuntimeValidated": false,
-    "currentSourceRevision": 263,
+    "guestBootstrapValidated": false,
     "artifact": {
-      "path": ".context/node26-engine239-global-terminal/artifacts/js.wasm",
-      "sha256": "22f49c87b4b7097fb0438d4ca14974701362bba5cedfc0918fcf00e7bdb795b0",
-      "bytes": 52080063
-    },
-    "focusedGuestEvidence": {
-      "report": "tests/nodejs/outline/engine239-node-focused-result.json",
-      "sha256": "10b446fdc8d51d41d5414f11ac63dbdf04a145fa767e5ac50a789809fa2ce1ac",
-      "scope": "Three actual Node-host guest subjects and three paired pinned-native subjects only; no API/family/four-host closure"
-    },
-    "guestBootstrapValidated": true
+      "path": ".context/node26-engine263-terminal/artifacts/js.wasm",
+      "sha256": "90b2b4bce54995bad048e0ff9dd5dbe7f62fbd315826d7ade8772d889175463c",
+      "bytes": 52358963,
+      "mode": "0o755"
+    }
   },
   "targetedEngineBuildHistory": [
     {
@@ -60553,16 +60545,43 @@
         "compiledSourceHeadUnchanged": "19135afd4e1b795172677f4d061b505fc80ea32b",
         "scope": "Tool changes only; previous Playwright/host isolation reconciliation retained in history, no new guest validation"
       }
+    },
+    {
+      "recipeRevision": 239,
+      "jobId": "node26-engine239-global-1107-172655-2057",
+      "report": "tests/nodejs/outline/engine239-global-build-result.json",
+      "sha256": "7d4d1a83496cd2792766ed045ce06475ef0e7e3cd92c86b8d84c679af3cfb083",
+      "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Accepted238 and initial failed239 preflight plus raw238 guest failures remain unchanged. Reviewed nine-node closure after shared dev-shell cache-key invalidation; no full product rebuild.",
+      "result": "normal-production-build-and-cache-acceptance-success",
+      "productionCompilationSucceeded": true,
+      "productionLinkSucceeded": true,
+      "normalChecksSucceeded": true,
+      "acceptedArtifact": true,
+      "guestRuntimeValidated": false,
+      "currentSourceRevision": 263,
+      "artifact": {
+        "path": ".context/node26-engine239-global-terminal/artifacts/js.wasm",
+        "sha256": "22f49c87b4b7097fb0438d4ca14974701362bba5cedfc0918fcf00e7bdb795b0",
+        "bytes": 52080063
+      },
+      "focusedGuestEvidence": {
+        "report": "tests/nodejs/outline/engine239-node-focused-result.json",
+        "sha256": "10b446fdc8d51d41d5414f11ac63dbdf04a145fa767e5ac50a789809fa2ce1ac",
+        "scope": "Three actual Node-host guest subjects and three paired pinned-native subjects only; no API/family/four-host closure"
+      },
+      "guestBootstrapValidated": true
     }
   ],
   "nativeEmbeddingIntegration": {
-    "at": "2026-11-08T08:28:53.309020+00:00",
+    "at": "2026-11-08T08:55:51.558977+00:00",
     "recipeRevision": 263,
-    "lastAcceptedEngine": 239,
-    "sourceOnly": true,
-    "guestCompiled": false,
+    "lastAcceptedEngine": 263,
+    "sourceOnly": false,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
-    "scope": "Source263 genuineSQLTagStore LRU/native statement source only; historicalportable8groups/target3notrerun, no currentSQLfrontend/newJSAPI/guest proof. Existing statement/iterator/reset/fatal/GC/realm/OOM/Worker/fourhost remain unvalidated."
+    "report": "tests/nodejs/outline/engine263-build-result.json",
+    "sha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
+    "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263."
   },
   "asyncAuditedFindingProgress": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -62524,6 +62543,15 @@
       "guestCompiled": false,
       "guestRuntimeValidated": false,
       "scope": "Source262 genuine listener async lifetime/accept-close barrier prerequisite only. Historical7native groups target-only,0candidate listener groups; public callbacks/suppliedfd/new JSAPI/fatal/realm/GC/OOM/Worker/fourhost remain open."
+    },
+    {
+      "at": "2026-11-08T08:28:53.309020+00:00",
+      "recipeRevision": 263,
+      "lastAcceptedEngine": 239,
+      "sourceOnly": true,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "scope": "Source263 genuineSQLTagStore LRU/native statement source only; historicalportable8groups/target3notrerun, no currentSQLfrontend/newJSAPI/guest proof. Existing statement/iterator/reset/fatal/GC/realm/OOM/Worker/fourhost remain unvalidated."
     }
   ],
   "bufferPoolImplementation": {
@@ -62832,13 +62860,13 @@
   },
   "sourceCandidateIntegration": {
     "recipeRevision": 263,
-    "sourceOnly": true,
-    "lastAcceptedEngine": 239,
-    "acceptedArtifactCurrentForCandidate": false,
-    "guestCompiled": false,
+    "sourceOnly": false,
+    "lastAcceptedEngine": 263,
+    "acceptedArtifactCurrentForCandidate": true,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
     "fourHostConformance": false,
-    "scope": "Current263combined guest source has no accepted build; accepted239and prior nonpasses retain their scopes. Pending private agent work excluded."
+    "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263."
   },
   "vmPlainContextImplementation": {
     "at": "2026-11-05T00:10:14.839714+00:00",
@@ -64904,6 +64932,13 @@
       "sha256": "a7578957b745bfe3e8644bc361d6b26f060beb23109d7cdc86c163171b297a3e",
       "bytes": 14116588,
       "scope": "Current coherent source262 with3feature scopes/shared actual receipts/historical native references; includes4unchanged ABI design docs as source/snapshot identities only. No ABI activation, guest/fourhost conformance or closure.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/source263-sql-fips-tty-batch-20261108T082854Z.tar.gz",
+      "sha256": "45d9af22a69b8f92ff3e3fcba75c0c49fb0ae2b291d22998e76df39602d9e15d",
+      "bytes": 14276759,
+      "scope": "Current source263 includes exact0755 manual-boundary receipt, three scoped contributions and actual shared source/package/composition evidence; old histories/audit/main/fourABIplan docs preserved. No guest/fourhost/API closure.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -67176,6 +67211,16 @@
       "guestRuntimeValidated": false,
       "fourHostConformance": false,
       "scope": "Current262combined guest source has no accepted build; accepted239and prior nonpasses retain their scopes. Pending private agent work excluded."
+    },
+    {
+      "recipeRevision": 263,
+      "sourceOnly": true,
+      "lastAcceptedEngine": 239,
+      "acceptedArtifactCurrentForCandidate": false,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "scope": "Current263combined guest source has no accepted build; accepted239and prior nonpasses retain their scopes. Pending private agent work excluded."
     }
   ],
   "nativeCompilationAccountingHistory": [
@@ -70217,6 +70262,27 @@
         "node26-engine239-global-1107-172655-2057:node-simdjson"
       ],
       "historicalTinyHelperAttempts": 0,
+      "newRootCompilerAttempts": 0
+    },
+    {
+      "acceptedEngineBuilds": 0,
+      "guestEngineBuildFailures": 0,
+      "guestPackageAttempts": 0,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "nativeHelperCompileAttempts": 2,
+      "nativeHelperCompileFailures": 1,
+      "productRebuilds": 0,
+      "scope": "Credit exactly2previously executed SQLTagStore portable helper compilation attempts/1authored missing-main failure ONCE at integration369\u2192371knownlowerbound, same4unknown histories. These are historical producer attempts, not new root compilation; rootcompiler/guest/engine/kernel/library/product/overall0.",
+      "knownCompilationCountIsLowerBound": true,
+      "previousBuildUnattributedDependencySubjects": [
+        "node26-engine239-global-1107-172655-2057:node-llhttp",
+        "node26-engine239-global-1107-172655-2057:node-sqlite",
+        "node26-engine239-global-1107-172655-2057:node-ncrypto",
+        "node26-engine239-global-1107-172655-2057:node-simdjson"
+      ],
+      "historicalTinyHelperAttempts": 2,
+      "historicalTinyHelperFailures": 1,
       "newRootCompilerAttempts": 0
     }
   ],
@@ -139581,15 +139647,15 @@
     "acceptedPlatformLimits": []
   },
   "latestProductionCompilation": {
-    "recipeRevision": 200,
-    "sourceCommit": "28eedb975955ad94387b1263c6fe24763291189a",
-    "report": "tests/nodejs/outline/engine200-build-result.json",
-    "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5",
+    "report": "tests/nodejs/outline/engine263-build-result.json",
+    "sha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
+    "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263.",
+    "recipeRevision": 263,
+    "sourceCommit": "011076e8a9319cca646029ccfbf5a4c187f678d8",
     "compiledAndLinked": true,
     "normalBuildAccepted": true,
     "guestExecuted": false,
-    "fourHostConformance": false,
-    "scope": "Identified compiled/cache-accepted engine only; product projection and runtime validation separate"
+    "fourHostConformance": false
   },
   "originalFindingLedger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
@@ -142626,35 +142692,15 @@
   },
   "nextSelectedEngineBuild": {
     "status": "completed-build-runtime-unvalidated",
-    "sourceAtPreparation": 200,
-    "prerequisite": "Commit/push200native compilation corrections; source/registry freeze during normal selected-engine retry",
-    "scripts": [
-      ".context/preflight-node26-selected-engine.py",
-      ".context/build-node26-selected-engine.sh"
-    ],
-    "runner": "scripts/agent-job with scripts/dev-shell.sh; parent waits by actual job ID and does not mutate frozen sources until terminal",
-    "beforeStarting": "Inspect scripts/agent-job list --all for live competing builds; use real job handles for any required wait",
-    "selectedClosure": "spidermonkey/wasm32 plus eight existing cached dependencies; abort on unexpected or stale dependency graph",
-    "resolver": "current-source cargo run --release, no stale standalone debug executable",
+    "sourceAtPreparation": 263,
+    "jobId": "node26-engine263-r2-1108-033441-5bc3",
+    "resultReport": "tests/nodejs/outline/engine263-build-result.json",
+    "resultSha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
+    "acceptedArtifactSha256": "90b2b4bce54995bad048e0ff9dd5dbe7f62fbd315826d7ade8772d889175463c",
     "fullProductRebuild": false,
     "overallSuite": false,
     "runtimeAcceptance": false,
-    "diskGuard": "At least18GiB actual free space before compile; normal cache GC completed after peer rebuild",
-    "peerCompleted": {
-      "id": "canonical-shell-1107-024350-9452",
-      "result": ".context/node26-peer-shell-terminal199.log"
-    },
-    "scriptsIdentities": {
-      ".context/preflight-node26-selected-engine.py": "e2f2f9a5f2eea0b65700a338e3039913b432035123c773cf0927b18a18240d1c",
-      ".context/build-node26-selected-engine.sh": "b4d8ad7e4c68f240bf408f39971b666d6a9839a570372bd7ed619c21778b6240"
-    },
-    "mostRecentFailedEngineJob": "node26-engine199-1107-032352-01c0",
-    "planPath": ".context/node26-next-engine-build-plan200.json",
-    "planSha256": "4fa86629da58d2983a25fb6a02089f7fd4170466c06e33a86ae6d61857867404",
-    "jobId": "node26-engine200-1107-035111-4754",
-    "resultReport": "tests/nodejs/outline/engine200-build-result.json",
-    "resultSha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5",
-    "acceptedArtifactSha256": "331c7af54f1c036b955f5e747a1ddfa9c5ce6ce3c41d5171800341bb081bcb45"
+    "selectedClosure": "Actual normal nine-node selected dependency closure; no dependency compiler count inferred from planning"
   },
   "messagePortTransferImplementation": {
     "auditRequirements": {
@@ -143444,6 +143490,17 @@
       "sourceCommit": "c21391f17f9108597ed5e598dba381b93d756da1",
       "report": "tests/nodejs/outline/engine173-build-result.json",
       "sha256": "1d4e9ccdef6d4d054e26371ba412843a43632a77b7977b83b910b1754fa50bad",
+      "compiledAndLinked": true,
+      "normalBuildAccepted": true,
+      "guestExecuted": false,
+      "fourHostConformance": false,
+      "scope": "Identified compiled/cache-accepted engine only; product projection and runtime validation separate"
+    },
+    {
+      "recipeRevision": 200,
+      "sourceCommit": "28eedb975955ad94387b1263c6fe24763291189a",
+      "report": "tests/nodejs/outline/engine200-build-result.json",
+      "sha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5",
       "compiledAndLinked": true,
       "normalBuildAccepted": true,
       "guestExecuted": false,
@@ -147162,6 +147219,29 @@
       "report": "tests/nodejs/outline/engine239-global-build-result.json",
       "sha256": "7d4d1a83496cd2792766ed045ce06475ef0e7e3cd92c86b8d84c679af3cfb083",
       "scope": "Selected production engine terminal/build accounting only; success requires normal cache receipt and hashed artifact. No artifact execution, runtime/API closure or four-host conformance. Accepted238 and initial failed239 preflight plus raw238 guest failures remain unchanged. Reviewed nine-node closure after shared dev-shell cache-key invalidation; no full product rebuild."
+    },
+    {
+      "jobId": "node26-engine263-1108-033051-c4d5",
+      "result": "product-planner-error-before-engine-compilation",
+      "diagnostic": "Cargo depends on openssl 3.3.2 while registry has 3.5.9",
+      "numericTerminalExit": 1,
+      "durationSeconds": 3.9,
+      "numericTerminalExitScope": "Actual copied shared agent-job registry terminal result; metadata head and job identity verified",
+      "meta": ".context/node26-engine263-terminal/prior-planner-job/meta.json",
+      "metaSha256": "81e5f67abd0426a6662be8db7f822696502f212e3daa5a73c395cb5881cafc6e",
+      "terminalResult": ".context/node26-engine263-terminal/prior-planner-job/result.json",
+      "terminalResultSha256": "f18f3e803e39eec0d06b4e10d5a57e1ce0070091ce389fd696615b74a759d510",
+      "log": ".context/agent-jobs/node26-engine263-1108-033051-c4d5/output.log",
+      "sha256": "e3df1a19e7d612ae65df64593ba6bf16ec999236070f99ca4f1fbe830655c8f8",
+      "enginePackageAttempt": false
+    },
+    {
+      "jobId": "node26-engine263-r2-1108-033441-5bc3",
+      "recipeRevision": 263,
+      "result": "normal-production-build-and-cache-acceptance-success",
+      "report": "tests/nodejs/outline/engine263-build-result.json",
+      "sha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
+      "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263."
     }
   ],
   "engine228PreflightR1": {
@@ -153031,5 +153111,48 @@
       "guestRuntimeValidated": false,
       "findingClosed": false
     }
+  },
+  "nextSelectedEngineBuildHistory": [
+    {
+      "status": "completed-build-runtime-unvalidated",
+      "sourceAtPreparation": 200,
+      "prerequisite": "Commit/push200native compilation corrections; source/registry freeze during normal selected-engine retry",
+      "scripts": [
+        ".context/preflight-node26-selected-engine.py",
+        ".context/build-node26-selected-engine.sh"
+      ],
+      "runner": "scripts/agent-job with scripts/dev-shell.sh; parent waits by actual job ID and does not mutate frozen sources until terminal",
+      "beforeStarting": "Inspect scripts/agent-job list --all for live competing builds; use real job handles for any required wait",
+      "selectedClosure": "spidermonkey/wasm32 plus eight existing cached dependencies; abort on unexpected or stale dependency graph",
+      "resolver": "current-source cargo run --release, no stale standalone debug executable",
+      "fullProductRebuild": false,
+      "overallSuite": false,
+      "runtimeAcceptance": false,
+      "diskGuard": "At least18GiB actual free space before compile; normal cache GC completed after peer rebuild",
+      "peerCompleted": {
+        "id": "canonical-shell-1107-024350-9452",
+        "result": ".context/node26-peer-shell-terminal199.log"
+      },
+      "scriptsIdentities": {
+        ".context/preflight-node26-selected-engine.py": "e2f2f9a5f2eea0b65700a338e3039913b432035123c773cf0927b18a18240d1c",
+        ".context/build-node26-selected-engine.sh": "b4d8ad7e4c68f240bf408f39971b666d6a9839a570372bd7ed619c21778b6240"
+      },
+      "mostRecentFailedEngineJob": "node26-engine199-1107-032352-01c0",
+      "planPath": ".context/node26-next-engine-build-plan200.json",
+      "planSha256": "4fa86629da58d2983a25fb6a02089f7fd4170466c06e33a86ae6d61857867404",
+      "jobId": "node26-engine200-1107-035111-4754",
+      "resultReport": "tests/nodejs/outline/engine200-build-result.json",
+      "resultSha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5",
+      "acceptedArtifactSha256": "331c7af54f1c036b955f5e747a1ddfa9c5ce6ce3c41d5171800341bb081bcb45"
+    }
+  ],
+  "engine263TerminalResult": {
+    "report": "tests/nodejs/outline/engine263-build-result.json",
+    "sha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
+    "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263.",
+    "jobId": "node26-engine263-r2-1108-033441-5bc3",
+    "acceptedArtifact": true,
+    "guestEngineAttempted": true,
+    "guestExecuted": false
   }
 }
