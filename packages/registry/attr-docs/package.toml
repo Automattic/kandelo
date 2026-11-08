@@ -1,0 +1,26 @@
+kind = "program"
+name = "attr-docs"
+version = "2.5.2"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `attr` package (getfattr, setfattr).
+# The source, SHA-256 and version are the `attr` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://download.savannah.nongnu.org/releases/attr/attr-2.5.2.tar.xz"
+sha256 = "f2e97b0ab7ce293681ab701915766190d607a1dba7fae8a718138150b700a70b"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://git.savannah.nongnu.org/cgit/attr.git/tree/doc/COPYING"
+
+[build]
+script_path = "packages/registry/attr-docs/build-attr-docs.sh"
+
+[[outputs]]
+name = "attr-docs"
+wasm = "attr-docs.zip"
+fork_instrumentation = "disabled"

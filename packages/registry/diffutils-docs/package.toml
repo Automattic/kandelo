@@ -1,0 +1,26 @@
+kind = "program"
+name = "diffutils-docs"
+version = "3.10"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `diffutils` package (diff, cmp, diff3, sdiff).
+# The source, SHA-256 and version are the `diffutils` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/diffutils/diffutils-3.10.tar.xz"
+sha256 = "90e5e93cc724e4ebe12ede80df1634063c7a855692685919bfe60b556c9bd09e"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/diffutils.git/tree/COPYING"
+
+[build]
+script_path = "packages/registry/diffutils-docs/build-diffutils-docs.sh"
+
+[[outputs]]
+name = "diffutils-docs"
+wasm = "diffutils-docs.zip"
+fork_instrumentation = "disabled"

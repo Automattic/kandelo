@@ -51,6 +51,52 @@ function withArchiveAddresses<const T extends readonly Omit<ShellLazyArchiveSpec
   return specs.map((spec) => ({ ...spec, archiveUrl: shellLazyArchiveAddress(spec.resolverPath) }));
 }
 
+/**
+ * `<pkg>-docs` packages that ship a program's upstream manual pages, each with
+ * the page whose presence proves the archive is mounted. They all mount at
+ * `/usr/`, so pages land in `/usr/share/man`, where the man front-end looks.
+ * See docs/porting-guide.md "Shipping man pages".
+ */
+const UPSTREAM_MAN_PAGE_ARCHIVES = [
+  ["attr-docs", "share/man/man1/getfattr.1"],
+  ["bash-docs", "share/man/man1/bash.1"],
+  ["bc-docs", "share/man/man1/bc.1"],
+  ["byacc-docs", "share/man/man1/yacc.1"],
+  ["bzip2-docs", "share/man/man1/bzip2.1"],
+  ["cpython-docs", "share/man/man1/python3.1"],
+  ["diffutils-docs", "share/man/man1/diff.1"],
+  ["elinks-docs", "share/man/man1/elinks.1"],
+  ["file-docs", "share/man/man1/file.1"],
+  ["findutils-docs", "share/man/man1/find.1"],
+  ["flex-docs", "share/man/man1/flex.1"],
+  ["gawk-docs", "share/man/man1/gawk.1"],
+  ["grep-docs", "share/man/man1/grep.1"],
+  ["gzip-docs", "share/man/man1/gzip.1"],
+  ["jq-docs", "share/man/man1/jq.1"],
+  ["less-docs", "share/man/man1/less.1"],
+  ["lhasa-docs", "share/man/man1/lha.1"],
+  ["love-docs", "share/man/man6/love.6"],
+  ["m4-docs", "share/man/man1/m4.1"],
+  ["make-docs", "share/man/man1/make.1"],
+  ["mandoc-docs", "share/man/man1/man.1"],
+  ["mariadb-docs", "share/man/man1/mysql.1"],
+  ["nano-docs", "share/man/man1/nano.1"],
+  ["netcat-docs", "share/man/man1/netcat.1"],
+  ["nethack-docs", "share/man/man6/nethack.6"],
+  ["php-docs", "share/man/man1/php.1"],
+  ["ruby-docs", "share/man/man1/ruby.1"],
+  ["scummvm-docs", "share/man/man6/scummvm.6"],
+  ["sfwbar-docs", "share/man/man1/sfwbar.1"],
+  ["sed-docs", "share/man/man1/sed.1"],
+  ["tar-docs", "share/man/man1/tar.1"],
+  ["tmux-docs", "share/man/man1/tmux.1"],
+  ["unzip-docs", "share/man/man1/unzip.1"],
+  ["vim-docs", "share/man/man1/vim.1"],
+  ["xz-docs", "share/man/man1/xz.1"],
+  ["zip-docs", "share/man/man1/zip.1"],
+  ["zstd-docs", "share/man/man1/zstd.1"],
+] as const;
+
 export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
   {
     id: "rust-std",
@@ -150,6 +196,13 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
     mountPrefix: "/usr/",
     requiredMember: "share/man/man8/lsof.8",
   },
+  ...UPSTREAM_MAN_PAGE_ARCHIVES.map(([name, requiredMember]) => ({
+    id: name,
+    dependency: name,
+    resolverPath: `programs/wasm32/${name}.zip`,
+    mountPrefix: "/usr/" as const,
+    requiredMember,
+  })),
   {
     id: "kandelo-sdk",
     dependency: "kandelo-sdk-browser-bundle",

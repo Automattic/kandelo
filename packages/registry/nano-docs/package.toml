@@ -1,0 +1,26 @@
+kind = "program"
+name = "nano-docs"
+version = "8.0"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `nano` package (nano).
+# The source, SHA-256 and version are the `nano` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/nano/nano-8.0.tar.xz"
+sha256 = "c17f43fc0e37336b33ee50a209c701d5beb808adc2d9f089ca831b40539c9ac4"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/nano.git/tree/COPYING"
+
+[build]
+script_path = "packages/registry/nano-docs/build-nano-docs.sh"
+
+[[outputs]]
+name = "nano-docs"
+wasm = "nano-docs.zip"
+fork_instrumentation = "disabled"

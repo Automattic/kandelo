@@ -1,0 +1,26 @@
+kind = "program"
+name = "xz-docs"
+version = "5.6.2"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `xz` package (xz, unxz, xzcat, lzma, unlzma, lzcat).
+# The source, SHA-256 and version are the `xz` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://tukaani.org/xz/xz-5.6.2.tar.xz"
+sha256 = "a9db3bb3d64e248a0fae963f8fb6ba851a26ba1822e504dc0efd18a80c626caf"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-or-later AND LGPL-2.1-or-later AND 0BSD"
+url = "https://github.com/tukaani-project/xz/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/xz-docs/build-xz-docs.sh"
+
+[[outputs]]
+name = "xz-docs"
+wasm = "xz-docs.zip"
+fork_instrumentation = "disabled"

@@ -1,0 +1,26 @@
+kind = "program"
+name = "tar-docs"
+version = "1.35"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `tar` package (tar).
+# The source, SHA-256 and version are the `tar` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/tar/tar-1.35.tar.xz"
+sha256 = "4d62ff37342ec7aed748535323930c7cf94acf71c3591882b26a7ea50f3edc16"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/tar.git/tree/COPYING"
+
+[build]
+script_path = "packages/registry/tar-docs/build-tar-docs.sh"
+
+[[outputs]]
+name = "tar-docs"
+wasm = "tar-docs.zip"
+fork_instrumentation = "disabled"

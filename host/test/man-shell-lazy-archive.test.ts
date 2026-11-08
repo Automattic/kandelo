@@ -4,52 +4,80 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { SHELL_LAZY_ARCHIVE_SPECS } from "../../images/vfs/scripts/shell-lazy-archives";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import type { ClosedLazyAsset } from "../src/vfs/closed-lazy-assets";
 
-// End-to-end Node-host proof that `man ls` and `man lsof` render real,
-// mandoc-formatted manual pages inside a booted Kandelo shell — the first
-// exercise of mandoc's `man` name-lookup front-end (as opposed to Task 1's
-// direct `mandoc -Tascii` invocation, which never reaches that code path).
+// End-to-end Node-host proof that every manual page a shell image carries
+// renders through mandoc's `man` name-lookup front-end inside a booted
+// Kandelo shell, faulting its docs archive in on first read.
 //
-// This boots the exact `shell.vfs.zst` product artifact and binds the three
-// lazy-archives it declares (`man.zip`, `coreutils-docs.zip`,
-// `lsof-docs.zip`) offline via `rootfsLazyAssets`, so the test never touches
-// the network and fails loudly if the recorded archive integrity drifts
-// from the bytes on disk.
+// The image under test is, in order of preference:
+//
+//  - the worktree's partial image (`./run.sh partial shell
+//    mandoc-browser-bundle bash-docs ...`), when its selection includes the
+//    man viewer. Lazy archives resolve through the Node host's repository
+//    resolver, as a developer's shell would.
+//  - the canonical source-only `shell.vfs.zst`, with every docs archive it
+//    declares bound offline via `rootfsLazyAssets`, so the test never
+//    touches the network and fails loudly if recorded archive integrity
+//    drifts from the bytes on disk.
+//
+// The page list is read from the image's own /usr/share/man tree, so a new
+// docs package is covered without editing this file.
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../..");
 const kernelPath = tryResolveBinary("kernel.wasm");
 
-// The shell product and its lazy-archives are resolved directly from the
-// source-only-v1 tree rather than through `resolveBinary`: the shell
-// composite image (`shell.vfs.zst`) is not itself a declared package
-// output with a stable cross-tier identity, so the general resolver
-// rejects mixing the mutable source-only-v1 tier with other tiers for it.
-// Reading the known build location directly matches how the plan's task
-// brief and Task 1-11 reports describe verifying this artifact.
+const partialDir = join(repoRoot, "local-binaries/partial");
+const partialManifestPath = join(partialDir, "partial.json");
+const partialManifest: { file: string; selection: string[] } | null =
+  existsSync(partialManifestPath)
+    ? JSON.parse(readFileSync(partialManifestPath, "utf8"))
+    : null;
+const usePartial =
+  partialManifest?.selection.includes("mandoc-browser-bundle") === true;
+
+// The canonical shell product and its lazy archives are read directly from
+// the source-only-v1 tree rather than through `resolveBinary`: the shell
+// composite image is not itself a declared package output with a stable
+// cross-tier identity, so the general resolver rejects mixing the mutable
+// source-only-v1 tier with other tiers for it.
 const sourceOnlyProgramsDir = join(
   repoRoot,
   "local-binaries/source-only-v1/programs/wasm32",
 );
-const shellImagePath = join(sourceOnlyProgramsDir, "shell.vfs.zst");
-const ARCHIVE_NAMES = ["man.zip", "coreutils-docs.zip", "lsof-docs.zip"] as const;
-const archivePaths = ARCHIVE_NAMES.map((name) =>
-  join(sourceOnlyProgramsDir, name)
-);
+const MAN_ARCHIVES = SHELL_LAZY_ARCHIVE_SPECS.filter(
+  (spec) => spec.id === "man" || spec.id.endsWith("-docs"),
+).map((spec) => spec.resolverPath.replace(/^programs\/wasm32\//, ""));
 
-const haveKernel = kernelPath !== null;
-const haveShellImage = existsSync(shellImagePath);
-const haveArchives = archivePaths.every(existsSync);
-const available = haveKernel && haveShellImage && haveArchives;
+const shellImagePath = usePartial
+  ? join(partialDir, partialManifest!.file)
+  : join(sourceOnlyProgramsDir, "shell.vfs.zst");
+const available =
+  kernelPath !== null &&
+  existsSync(shellImagePath) &&
+  (usePartial ||
+    MAN_ARCHIVES.every((name) => existsSync(join(sourceOnlyProgramsDir, name))));
 
-// Offline binding base. `shell.vfs.zst`'s lazy archives record their
-// package-mirror path (e.g. "kandelo-lazy:programs/wasm32/man.zip"), which
-// `rootfsLazyAssetDirectory` resolves to `<base>assets/programs/wasm32/man.zip`
-// before the closed, in-memory lazy fetcher is consulted. No request ever
-// leaves the process.
+// Offline binding base for the canonical image. Its lazy archives record
+// their package-mirror path (e.g. "kandelo-lazy:programs/wasm32/man.zip"),
+// which `rootfsLazyAssetDirectory` resolves to
+// `<base>assets/programs/wasm32/man.zip` before the closed, in-memory lazy
+// fetcher is consulted. No request ever leaves the process.
 const LAZY_URL_BASE = "https://kandelo.invalid/";
+
+const S_IFMT = 0o170000;
+const S_IFLNK = 0o120000;
+
+interface ManPage {
+  section: string;
+  name: string;
+  /** For an alias page, the page it links to (same section). */
+  target: string | null;
+}
 
 function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(
@@ -59,9 +87,7 @@ function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 function closedLazyAsset(name: string): ClosedLazyAsset {
-  const bytes = new Uint8Array(
-    readFileSync(join(sourceOnlyProgramsDir, name)),
-  );
+  const bytes = new Uint8Array(readFileSync(join(sourceOnlyProgramsDir, name)));
   return {
     url: `${LAZY_URL_BASE}assets/programs/wasm32/${name}`,
     sha256: createHash("sha256").update(bytes).digest("hex"),
@@ -70,86 +96,149 @@ function closedLazyAsset(name: string): ClosedLazyAsset {
   };
 }
 
-// mandoc's ASCII renderer marks bold/underlined text (section headers,
-// command names, ...) with classic nroff/groff backspace-overstrike
-// (`X\bX`), exactly like `mandoc -Tascii` output normally consumed through
-// `col -b` or a pager. Task 1's smoke test hit the same thing. Strip it so
-// assertions read the same text a human would see on screen.
+function imagePages(imageBytes: Uint8Array): ManPage[] {
+  const fs = KandeloImageFs.create();
+  fs.loadImage(imageBytes);
+  const pages: ManPage[] = [];
+  for (const dir of fs.readDirNames("/usr/share/man").sort()) {
+    const match = /^man([1-9])$/.exec(dir);
+    if (!match) continue;
+    for (const file of fs.readDirNames(`/usr/share/man/${dir}`).sort()) {
+      const name = new RegExp(`^(.+)\\.${match[1]}$`).exec(file)?.[1];
+      if (!name) continue;
+      const path = `/usr/share/man/${dir}/${file}`;
+      const isLink = (fs.lstat(path).mode & S_IFMT) === S_IFLNK;
+      const target = isLink ? fs.readlink(path).replace(/\.[1-9]$/, "") : null;
+      pages.push({ section: match[1], name, target });
+    }
+  }
+  return pages;
+}
+
+// mandoc's ASCII renderer marks bold/underlined text with classic nroff
+// backspace-overstrike (`X\bX`). Strip it so assertions read the text a
+// human sees on screen.
 function stripOverstrike(text: string): string {
   return text.replace(/.\x08/g, "");
 }
 
 describe.skipIf(!available)(
-  "man ls / man lsof render real manual pages (Node-host, offline)",
+  "every shell manual page renders through man (Node-host)",
   () => {
-    it("renders coreutils ls(1) through mandoc's man front-end", async () => {
-      const { stdout, stderr, exitCode } = await runManCommand("man ls");
-      expect(exitCode, `man ls stderr:\n${stderr}`).toBe(0);
-      const rendered = stripOverstrike(stdout);
+    const imageBytes = () => new Uint8Array(readFileSync(shellImagePath));
 
-      // Proof of real rendering: text derived from `ls --help`/coreutils'
-      // ls.1 DESCRIPTION section, not the raw troff source.
-      expect(rendered).toMatch(/\bNAME\b/);
-      expect(rendered).toMatch(/\bSYNOPSIS\b/);
-      expect(rendered).toMatch(/\bDESCRIPTION\b/);
-      expect(rendered).toContain(
-        "List information about the FILEs",
-      );
-      expect(rendered).not.toContain(".TH");
-      expect(rendered).not.toContain(".SH");
-    }, 60_000);
+    it("renders each page, and each alias as the page it names", async () => {
+      const pages = imagePages(imageBytes());
+      expect(pages.length, "no pages under /usr/share/man").toBeGreaterThan(0);
 
-    it("renders lsof(8) through mandoc's man front-end", async () => {
-      const { stdout, stderr, exitCode } = await runManCommand("man lsof");
-      expect(exitCode, `man lsof stderr:\n${stderr}`).toBe(0);
-      const rendered = stripOverstrike(stdout);
+      const script = pages
+        .map(
+          ({ section, name }) =>
+            `printf '\\n@@BEGIN %s %s\\n' ${section} '${name}'; ` +
+            `man ${section} '${name}' 2>/tmp/man.err; rc=$?; ` +
+            `printf '\\n@@ERR\\n'; cat /tmp/man.err; ` +
+            `printf '\\n@@END %s\\n' "$rc"`,
+        )
+        .join("\n");
+      const { stdout, stderr, exitCode } = await runInShell(imageBytes(), script);
+      expect(exitCode, `stderr:\n${stderr}`).toBe(0);
 
-      expect(rendered).toMatch(/\bNAME\b/);
-      expect(rendered).toMatch(/lsof/);
-      expect(rendered).toMatch(/list open files/);
-      expect(rendered).not.toContain(".TH");
-      expect(rendered).not.toContain(".SH");
-    }, 60_000);
+      const rendered = new Map<string, string>();
+      const failures: string[] = [];
+      const blocks = stdout.split("\n@@BEGIN ").slice(1);
+      for (const block of blocks) {
+        const header = block.slice(0, block.indexOf("\n"));
+        const errAt = block.lastIndexOf("\n@@ERR\n");
+        const end = block.lastIndexOf("\n@@END ");
+        const status = block.slice(end + "\n@@END ".length).trim();
+        const text = stripOverstrike(block.slice(header.length + 1, errAt));
+        const err = block.slice(errAt + "\n@@ERR\n".length, end).trim();
+        rendered.set(header, text);
+        // mandoc 1.14.6 warns whenever it finds a page by searching the
+        // manpath, which it must do because the image ships no mandoc.db
+        // index (the whatis/apropos gap in docs/porting-guide.md "Shell
+        // commands without man pages"). Any other diagnostic is a failure.
+        const unexpected = err
+          .split("\n")
+          .filter((line) => line !== "" && !/^man: outdated mandoc\.db lacks \S+ entry, run makewhatis \/usr\/share\/man$/.test(line));
+        if (status !== "0") failures.push(`${header}: man exited ${status}: ${err.slice(0, 200)}`);
+        else if (unexpected.length > 0) failures.push(`${header}: ${unexpected.join("; ").slice(0, 200)}`);
+        // Case-insensitive: docutils' manpage writer (sfwbar's pages) emits
+        // `.SH Name`, which mandoc renders as written.
+        else if (!/^NAME$/im.test(text)) failures.push(`${header}: no NAME section`);
+        else if (/^\.(TH|SH|Dd|Dt|so) /m.test(text)) failures.push(`${header}: raw roff in output`);
+      }
+      expect(blocks.length).toBe(pages.length);
+      expect(failures).toEqual([]);
+
+      for (const page of pages.filter((p) => p.target !== null)) {
+        expect(
+          rendered.get(`${page.section} ${page.name}`),
+          `${page.name}(${page.section}) is an alias of ${page.target}`,
+        ).toBe(rendered.get(`${page.section} ${page.target}`));
+      }
+    }, 900_000);
+
+    it("renders the text of the program's own manual", async () => {
+      const pages = new Set(imagePages(imageBytes()).map((p) => `${p.section} ${p.name}`));
+      const probes: [string, RegExp][] = [
+        ["1 ls", /List information about the FILEs/],
+        ["8 lsof", /list open files/],
+        ["1 bash", /GNU Bourne-Again SHell/],
+        ["1 sh", /GNU Bourne-Again SHell/],
+        ["1 grep", /print lines that match patterns/],
+        ["1 unxz", /Compress or decompress \.xz and\s+\.lzma files/],
+        ["1 man", /display manual pages/],
+      ];
+      const present = probes.filter(([page]) => pages.has(page));
+      expect(present.length).toBeGreaterThan(0);
+      const script = present
+        .map(([page]) => `printf '\\n@@BEGIN %s\\n' '${page}'; man ${page} 2>/dev/null`)
+        .join("\n");
+      const { stdout } = await runInShell(imageBytes(), script);
+      for (const [page, text] of present) {
+        const block = stripOverstrike(stdout.split(`\n@@BEGIN ${page}\n`)[1] ?? "");
+        expect(block.split("\n@@BEGIN ")[0], `man ${page}`).toMatch(text);
+      }
+    }, 300_000);
   },
 );
 
-async function runManCommand(
-  command: string,
+async function runInShell(
+  imageBytes: Uint8Array,
+  script: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
-  const shellImageBytes = new Uint8Array(readFileSync(shellImagePath));
-
   let stdout = "";
   let stderr = "";
+  const decoder = new TextDecoder();
   const host = new NodeKernelHost({
     // `MemoryFileSystem.fromImage` (used internally by the worker) detects
-    // the zstd magic and decompresses transparently — the compressed
-    // `.zst` product bytes are handed over exactly as built.
-    rootfsImage: shellImageBytes,
-    rootfsLazyUrlBase: LAZY_URL_BASE,
-    rootfsLazyAssetDirectory: LAZY_URL_BASE,
-    rootfsLazyAssets: ARCHIVE_NAMES.map(closedLazyAsset),
+    // the zstd magic and decompresses transparently.
+    rootfsImage: imageBytes,
+    ...(usePartial
+      ? {}
+      : {
+          rootfsLazyUrlBase: LAZY_URL_BASE,
+          rootfsLazyAssetDirectory: LAZY_URL_BASE,
+          rootfsLazyAssets: MAN_ARCHIVES.map(closedLazyAsset),
+        }),
     onStdout: (_pid, bytes) => {
-      stdout += new TextDecoder().decode(bytes);
+      stdout += decoder.decode(bytes, { stream: true });
     },
     onStderr: (_pid, bytes) => {
-      stderr += new TextDecoder().decode(bytes);
+      stderr += decoder.decode(bytes, { stream: true });
     },
   });
 
   try {
     await host.init(asArrayBuffer(kernelBytes));
-    // Bash is baked eagerly into the shell image at /bin/bash (not a
-    // lazy-archive member), so spawning it by VFS path never touches the
-    // closed lazy fetcher. `-lc` makes bash a login shell that sources
-    // /etc/profile, which in turn sources /etc/profile.d/man.sh — the
-    // script that exports MANPAGER=cat and MANPATH=/usr/share/man so
-    // mandoc's `man` front-end renders inline (this Node-host spawn has no
-    // pty, so stdout is already a non-tty and mandoc would not fork a
-    // pager regardless).
+    // `-lc` makes bash a login shell that sources /etc/profile, which in
+    // turn sources /etc/profile.d/man.sh for MANPATH=/usr/share/man.
+    // MANPAGER=cat after it renders inline instead of through less.
     const { exit } = await host.spawnFromVfs(
       "/bin/bash",
-      ["bash", "-lc", command],
+      ["bash", "-lc", `export MANPAGER=cat\n${script}`],
       {
         env: ["HOME=/home/maker", "USER=maker", "LOGNAME=maker"],
         uid: 1000,

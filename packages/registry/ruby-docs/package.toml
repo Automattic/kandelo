@@ -1,0 +1,26 @@
+kind = "program"
+name = "ruby-docs"
+version = "4.0.5"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `ruby` package (ruby, irb, gem, bundle, bundler).
+# The source, SHA-256 and version are the `ruby` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://cache.ruby-lang.org/pub/ruby/4.0/ruby-4.0.5.tar.gz"
+sha256 = "7d6149079a63f8ae1d326c9fa65c6019ba2dc3155eae7b39159817911c88958e"
+provider = "archive"
+
+[license]
+spdx = "Ruby OR BSD-2-Clause"
+url = "https://github.com/ruby/ruby/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/ruby-docs/build-ruby-docs.sh"
+
+[[outputs]]
+name = "ruby-docs"
+wasm = "ruby-docs.zip"
+fork_instrumentation = "disabled"

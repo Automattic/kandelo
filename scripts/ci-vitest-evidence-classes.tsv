@@ -763,6 +763,7 @@ tests/package-system/installed-host-package.test.ts	prepared-product
 tests/package-system/kandelo-build-image.test.ts	prepared-product
 tests/package-system/kernel-test-fixtures.test.ts	prepared-product
 tests/package-system/local-build-wrapper.test.ts	source-only
+tests/package-system/package-docs-source-parity.test.ts	source-only
 tests/package-system/partial-shell-selection.test.ts	prepared-product
 tests/package-system/playwright-server-policy.test.ts	prepared-product
 tests/package-system/program-resolver-literals.test.ts	prepared-product

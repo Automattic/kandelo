@@ -1,0 +1,26 @@
+kind = "program"
+name = "bc-docs"
+version = "1.07.1"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `bc` package (bc).
+# The source, SHA-256 and version are the `bc` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/gnu/bc/bc-1.07.1.tar.gz"
+sha256 = "62adfca89b0a1c0164c2cdca59ca210c1d44c3ffc46daf9931cf4942664cb02a"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/bc.git/tree/COPYING"
+
+[build]
+script_path = "packages/registry/bc-docs/build-bc-docs.sh"
+
+[[outputs]]
+name = "bc-docs"
+wasm = "bc-docs.zip"
+fork_instrumentation = "disabled"

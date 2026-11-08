@@ -1,0 +1,26 @@
+kind = "program"
+name = "zstd-docs"
+version = "1.5.6"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `zstd` package (zstd, unzstd, zstdcat).
+# The source, SHA-256 and version are the `zstd` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/facebook/zstd/archive/refs/tags/v1.5.6.tar.gz"
+sha256 = "30f35f71c1203369dc979ecde0400ffea93c27391bfd2ac5a9715d2173d92ff7"
+provider = "archive"
+
+[license]
+spdx = "BSD-3-Clause OR GPL-2.0-only"
+url = "https://github.com/facebook/zstd/blob/dev/LICENSE"
+
+[build]
+script_path = "packages/registry/zstd-docs/build-zstd-docs.sh"
+
+[[outputs]]
+name = "zstd-docs"
+wasm = "zstd-docs.zip"
+fork_instrumentation = "disabled"

@@ -1,0 +1,26 @@
+kind = "program"
+name = "love-docs"
+version = "11.5-kandelo-kms"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `love` package (love).
+# The source, SHA-256 and version are the `love` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/love2d/love/archive/6eb8d546736d5915a8b5af30b2cf33456dfdcb1a.tar.gz"
+sha256 = "508334a4b118199415bd34f64709d04797e1a4f86caa9be5dba07f90cfa37abb"
+provider = "archive"
+
+[license]
+spdx = "Zlib"
+url = "https://github.com/love2d/love/blob/11.5/license.txt"
+
+[build]
+script_path = "packages/registry/love-docs/build-love-docs.sh"
+
+[[outputs]]
+name = "love-docs"
+wasm = "love-docs.zip"
+fork_instrumentation = "disabled"
