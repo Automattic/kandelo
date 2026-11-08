@@ -25,10 +25,10 @@
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 172,
+    "sourceSliceRecords": 178,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 210
+    "findingsWithoutExplicitOrProposedSourceSlice": 208
   },
   "families": [
     {
@@ -157,7 +157,7 @@
         "STR-010",
         "STR-011"
       ],
-      "findingsWithExplicitOrProposedSourceSlices": 2,
+      "findingsWithExplicitOrProposedSourceSlices": 4,
       "sourceRouteAsRecorded": "stream/fd-stream platform adapters and shared pinned StringDecoder public/byte-state owner",
       "remainingAsRecorded": "Socket/TTY/file subclasses, backing-store transfer, fd reuse/retirement, pipeline/adapter lifecycle/errors and guest decoder integration",
       "remainingOwner": "Pinned classic/Web/iterable algorithms with actual fd/socket/TTY/port consumers",
@@ -2617,7 +2617,19 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "Classic Readable/Writable call Buffer.from(chunk, encoding) (`readable.js:459\u2013466,515\u2013518`; writable.js:465\u2013476). Candidate bootstrap:1178\u20131209 uses TextEncoder for non-hex/base64 strings, so latin1/UTF-16/etc do not supply their required bytes. This is existing V-014 propagated into actual stream I/O, lengths/HWM and decoding. Buffer.concat/copy/bounds and StringDecoder V-013\u2013V-017 prerequisites also remain; correctly copied stream code cannot fix them. Native FastBuffer view construction is not itself a copy bug: target typed-view stream conversion intentionally aliases actual byte spans.",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "fd-input-byte-publication",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial native input publication owner only, no definition/range/family closure.",
+          "publicApiClosure": false,
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [
         "stream-implementation-dependencies"
@@ -2708,7 +2720,19 @@
       ],
       "definitionAmbiguity": false,
       "titleForNavigationOnly": "process stdio is still a custom object/Map facade (`bootstrap:1695\u20131808,1809\u20132005`), not the proper Writable/Readable/TTY/socket/file owner. Output write always returns true, calls its callback immediately and ignores native write count/errors for typed data; non-Uint8Array views fall through without writing. Listener exceptions are converted to rejected Promises. Input has genuine cancellable native reads but its read() returns null and it lacks the full classic buffered/iterator/stream metadata owner. These are process/TTY/native integration gaps; no pipeline hang or successful cleanup is newly observed.",
-      "sourceSliceRefs": [],
+      "sourceSliceRefs": [
+        {
+          "slice": "fd-input-byte-publication",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/streams-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial native input publication owner only, no definition/range/family closure.",
+          "publicApiClosure": false,
+          "closure": false
+        }
+      ],
       "rowNavigationOnlySliceRefs": [],
       "relatedDependencyDocumentRefs": [],
       "remainingOwner": "Pinned classic/Web/iterable algorithms with actual fd/socket/TTY/port consumers",
@@ -4806,6 +4830,17 @@
           "scope": "Partial actual request-parser ConnectionsList/membership/deadline prerequisite. Full Server activation, persistent reuse, Body-before-Complete chronology, timeout/close ownership and full parser lifecycle remain incomplete.",
           "publicApiClosure": false,
           "closure": false
+        },
+        {
+          "slice": "http-request-callback",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/http.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure. Shared prerequisite only; no public API activation or finding closure inferred.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -4880,6 +4915,17 @@
           "contributionKind": "partial-owning-source",
           "prerequisiteOnly": false,
           "scope": "Partial actual request-parser ConnectionsList/membership/deadline prerequisite. Full Server activation, persistent reuse, Body-before-Complete chronology, timeout/close ownership and full parser lifecycle remain incomplete.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "http-request-callback",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/http.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure.",
           "publicApiClosure": false,
           "closure": false
         }
@@ -5170,6 +5216,17 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/http.md",
           "scope": "Consumed request-header/original-allocation/numeric-decision source prerequisite, not complete parser/Server/lifecycle or finding closure",
+          "closure": false
+        },
+        {
+          "slice": "http-request-callback",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/http-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure. Shared prerequisite only; no public API activation or finding closure inferred.",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -5838,6 +5895,28 @@
           "auditDocument": "tests/nodejs/audit/crypto.md",
           "scope": "Actual four one-shot RSA cipher transforms and material/range/guard prerequisite; not public signatures/keygen/STORE/WebCrypto, all per-callsite semantics or finding closure",
           "closure": false
+        },
+        {
+          "slice": "asymmetric-keygen",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "ec-private-pkcs8",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -6094,6 +6173,17 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Control-only native reference callback/frame evidence correction for existing one-shot source; not new production semantics, original-baseline reclassification or finding closure",
           "closure": false
+        },
+        {
+          "slice": "asymmetric-keygen",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Shared prerequisite only; no public API activation or finding closure inferred.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [
@@ -6166,6 +6256,28 @@
           ],
           "standaloneDefinitionRecovered": false,
           "scope": "Control-only native reference callback/frame evidence correction for existing one-shot source; not new production semantics, original-baseline reclassification or finding closure",
+          "closure": false
+        },
+        {
+          "slice": "asymmetric-keygen",
+          "relation": "explicit-prose-prerequisite",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto.md:45; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "ec-private-pkcs8",
+          "relation": "explicit-prose-prerequisite",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure. Explicit original prose at tests/nodejs/audit/crypto.md:45; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred.",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -6258,6 +6370,28 @@
         {
           "slice": "raw-key",
           "relation": "explicit"
+        },
+        {
+          "slice": "asymmetric-keygen",
+          "relation": "explicit-prose-prerequisite",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto.md:47; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "asymmetric-keygen",
+          "relation": "explicit-prose-prerequisite",
+          "auditDocument": "tests/nodejs/audit/crypto-contracts.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto-contracts.md:141; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -6455,6 +6589,39 @@
           "contributionKind": "partial-owning-source",
           "prerequisiteOnly": false,
           "scope": "Actual preparing-request ownership through shared outer keyOperation packet; consumed by secret key generation, no blanket otherfactory/MarkPop/guest/fullcrypto closure",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "asymmetric-keygen",
+          "relation": "explicit-prose-progress",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto.md:49; no standalone definition recovered.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "asymmetric-keygen",
+          "relation": "explicit-prose-progress",
+          "auditDocument": "tests/nodejs/audit/crypto-contracts.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto-contracts.md:141; no standalone definition recovered.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "ec-private-pkcs8",
+          "relation": "explicit-prose-progress",
+          "auditDocument": "tests/nodejs/audit/crypto.md",
+          "standaloneDefinitionRecovered": false,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure. Explicit original prose at tests/nodejs/audit/crypto.md:49; no standalone definition recovered.",
           "publicApiClosure": false,
           "closure": false
         }
@@ -6665,6 +6832,17 @@
         {
           "slice": "request-bodyinit",
           "relation": "explicit"
+        },
+        {
+          "slice": "fetch-response-pull",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/web-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial actual response pull/terminal owner; no full Fetch/controller/body-policy or qualified finding closure. Shared prerequisite only; no public API activation or finding closure inferred.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -6786,6 +6964,17 @@
           "relation": "explicit-progress-finding-id",
           "auditDocument": "tests/nodejs/audit/web.md",
           "scope": "Real Response constructor/statics/private body/header/clone and consumed HTTP publication source contribution; not complete Fetch/dependency semantics or finding closure",
+          "closure": false
+        },
+        {
+          "slice": "fetch-response-pull",
+          "relation": "explicit-progress-finding-id",
+          "auditDocument": "tests/nodejs/audit/web-contracts.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "partial-owning-source",
+          "prerequisiteOnly": false,
+          "scope": "Partial actual response pull/terminal owner; no full Fetch/controller/body-policy or qualified finding closure.",
+          "publicApiClosure": false,
           "closure": false
         }
       ],
@@ -7859,6 +8048,17 @@
           "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility.",
           "publicApiClosure": false,
           "closure": false
+        },
+        {
+          "slice": "tty-streambase",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -8015,6 +8215,17 @@
           "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility.",
           "publicApiClosure": false,
           "closure": false
+        },
+        {
+          "slice": "tty-streambase",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -8110,6 +8321,17 @@
           "standaloneDefinitionRecovered": true,
           "scope": "Partial native input/read/material/queued-close/stdin prerequisite; no complete public tty constructors, writes, StreamBase or guest/four-host closure",
           "closure": false
+        },
+        {
+          "slice": "tty-streambase",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred.",
+          "publicApiClosure": false,
+          "closure": false
         }
       ],
       "rowNavigationOnlySliceRefs": [],
@@ -8185,6 +8407,17 @@
           "contributionKind": "shared-prerequisite",
           "prerequisiteOnly": true,
           "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility.",
+          "publicApiClosure": false,
+          "closure": false
+        },
+        {
+          "slice": "tty-streambase",
+          "relation": "explicit-shared-prerequisite",
+          "auditDocument": "tests/nodejs/audit/terminal.md",
+          "standaloneDefinitionRecovered": true,
+          "contributionKind": "shared-prerequisite",
+          "prerequisiteOnly": true,
+          "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred.",
           "publicApiClosure": false,
           "closure": false
         }
@@ -27960,6 +28193,1432 @@
       },
       "acceptedPlatformLimitsAsRecorded": [],
       "publicApiClosure": false
+    },
+    "http-request-callback": {
+      "document": "tests/nodejs/outline/http-request-callback-finding-progress.json",
+      "sha256": "ccfc79cdaf9fd3411e742150d04f4154aac5b717d425d19fc9921f8127143722",
+      "recordedRevision": 250,
+      "explicitFindingIds": [
+        "H-003"
+      ],
+      "prerequisiteFindingIds": [
+        "H-001",
+        "H-013"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-http250-source-r1/report.json",
+          "sha256": "327eedbcff7cea38f3d96b159403e23752f28324ad139335edee180e1cdaced5",
+          "guardedInputs": 904,
+          "scope": "Partial HTTP request Body/Complete synchronous owner plus noncoercing actual private FastBuffer publication. Actual production-generation only; native dependencies/portable old owners distinct from guest native parser/GC/realm/provider/fatal/Server/pipeline/shared-input/four-host validation. Original baseline 1/5 and portable 0/9, all preserved setup failures remain."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-http250-affected-r1.json",
+          "sha256": "7f7c8aa84926a390472a5cf683117f02d0e92fe15712e8172778f7983665e710",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-http250-source-r1/report.json",
+          "sha256": "327eedbcff7cea38f3d96b159403e23752f28324ad139335edee180e1cdaced5",
+          "portableGroups": 9,
+          "portableBeforeMatches": 0,
+          "portableAfterMatches": 9,
+          "requestHeaderGroups": 17,
+          "connectionHeaderGroups": 18,
+          "frontendGroups": 5,
+          "frontendBeforeMatched": 1,
+          "frontendAfterPassed": 5,
+          "bodyPoisonCases": 2,
+          "bodySubjectsPerCase": 4,
+          "bodyCorrectedMatched": 2,
+          "incomingCases": 14,
+          "incomingPassed": 14,
+          "actualProductionCore": "a12eda2c6619140be02729b280378d92c24684d6410de0c8dd39c8c86719f633",
+          "actualProductionFactory": "acd4c37a36c29c1d171b915c45d77ff1981d198c33c58c9f6d14855fecb66dc1",
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "productionJSAPICompiled": false,
+          "scope": "Source 250 integrates real request Body/Complete synchronous llhttp callbacks and noncoercing private FastBuffer publication over already independent native bytes. It contributes partially to H-003 and shared H-001/H-013 dependencies. Production core is regenerated normally; no component-expanded core is installed. Actual source checks guard904inputs/16checks/eightcommands; portable9, factory5, headers17/18,14incoming and two poison modes/four subjects use explicit native dependencies. Separate unchanged-file headers Vitest has six failures due to a missing _createNodeHttpAgent fixture dependency; these are harness errors, not passes or unsupported cases. Guest JSAPI/GC/realm/provider/full Server/reuse/stack/shared-input/four-host behavior remains unvalidated.",
+          "guardedInputs": 904,
+          "sourceChecks": 16,
+          "sourceCommands": 8,
+          "packagePassed": 14,
+          "separateHeadersVitestFailed": 6,
+          "separateHeadersVitestClassification": "harness-error",
+          "historicalHelpersAccounted": 3,
+          "historicalHelperFailures": 0,
+          "newRootCompilerAttempts": 0,
+          "fourHostConformance": false,
+          "globalBindingSelfContained": false
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/http-body-buffer-publication-correction-agent/handoff/report.json",
+          "sha256": "cad73a176778b0324f3fac8d9dbb489eb21b7af3ea66530f7958e390aa91dd84",
+          "reusedEvidence": true,
+          "scope": "Historical native-dependent correction and original callback control evidence, with actual frontend before1/5 erratum and three original helper successes; not guest JSAPI, Server or four-host acceptance."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/node26-http250-headers-vitest-r1.json",
+          "sha256": "55e13c9885d6d5c00c106a573b40bed24cb5210881f53000380d709ce2413865",
+          "classification": "harness-error",
+          "failedTests": 6,
+          "passedTests": 0,
+          "scope": "Actual unchanged-file Vitest exit1: each subject fails ReferenceError _createNodeHttpAgent absent. No assertion weakening, subject substitution, unsupported classification or compatibility pass."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/node26-http250-tool-run-r1/headers-vitest-receipt.json",
+          "sha256": "6197929e045ce27080e2d171fd46b213d73b03cf76be92a606e560bf59bd094c",
+          "classification": "harness-error",
+          "pid": 51365,
+          "exit": 1,
+          "scope": "Separate actual manager-run observation outside the two V1 check declarations; original log retained."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/http-request-callback-owner-agent/frontend-report.json",
+          "sha256": "1e301c0e51bd127c1f61654f2f18d8d285082ff4d557006a43f3271f19f6039e",
+          "classification": "historical-baseline-nonpass",
+          "scope": "Actual original before1/5, corrected by immutable erratum; old prose0/5 is wrong. Portable baseline remains0/9."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/http-body-buffer-publication-correction-agent/EVIDENCE-ERRATUM.json",
+          "sha256": "5485a8a8def452453f34934aab28e44b8e2778e91040d8d74de30f9805b78a2b",
+          "scope": "Explicit additive correction to original baseline prose; original sealed owner/evidence unchanged."
+        },
+        {
+          "field": "$.preservedNonpasses[4]",
+          "report": ".context/http-body-buffer-publication-correction-agent/report-final.json",
+          "sha256": "c212ca179eba16712237dee9a24adfa00973502ee730d1c2e0b17455eebb7416",
+          "scope": "Historical captured-from-only draft fails conversion-hook mode; old owner fails both mutation modes; corrected two cases over native dependencies, not guest proof."
+        },
+        {
+          "field": "$.preservedNonpasses[5]",
+          "report": ".context/http-request-callback-owner-agent/controls-r1/control-before.stderr",
+          "sha256": "3799fdd5579ce0bc59dc02f119b7e891d81d32bc3aebc1465745c00b2da7a4d1",
+          "classification": "preserved-original-setup-failure",
+          "scope": "Original authored CRLF/control syntax, lost executable mode EACCES, remove-shadow recursion or wrong native list-index setup; preserved by exact original filename/report, not production passes."
+        },
+        {
+          "field": "$.preservedNonpasses[6]",
+          "report": ".context/http-request-callback-owner-agent/controls-r2/control-before.stderr",
+          "sha256": "3932c6d16a6b01b7a7b7beddeeec569d3dff180eceb480ffdff2ad24d69ba763",
+          "classification": "preserved-original-setup-failure",
+          "scope": "Original authored CRLF/control syntax, lost executable mode EACCES, remove-shadow recursion or wrong native list-index setup; preserved by exact original filename/report, not production passes."
+        },
+        {
+          "field": "$.preservedNonpasses[7]",
+          "report": ".context/http-request-callback-owner-agent/frontend-r1.log",
+          "sha256": "cc3502b52c25e3c545e5723552ddd75ded4371bbd7348f95882dbeac33452a55",
+          "classification": "preserved-original-setup-failure",
+          "scope": "Original authored CRLF/control syntax, lost executable mode EACCES, remove-shadow recursion or wrong native list-index setup; preserved by exact original filename/report, not production passes."
+        },
+        {
+          "field": "$.preservedNonpasses[8]",
+          "report": ".context/http-request-callback-owner-agent/frontend-r2.log",
+          "sha256": "b1e941cef41aae35b3dd292f363607aaaf736570e5953d95e51a21dcd48f1442",
+          "classification": "preserved-original-setup-failure",
+          "scope": "Original authored CRLF/control syntax, lost executable mode EACCES, remove-shadow recursion or wrong native list-index setup; preserved by exact original filename/report, not production passes."
+        },
+        {
+          "field": "$.preservedNonpasses[9]",
+          "report": ".context/http-request-callback-owner-agent/frontend-r3.log",
+          "sha256": "4ce1d630578b2e9d2a4a2afbd8e31ea6ad6e90d790985a492b091d26332fd20e",
+          "classification": "preserved-original-setup-failure",
+          "scope": "Original authored CRLF/control syntax, lost executable mode EACCES, remove-shadow recursion or wrong native list-index setup; preserved by exact original filename/report, not production passes."
+        },
+        {
+          "field": "$.preservedNonpasses[10]",
+          "report": ".context/http-body-buffer-publication-correction-agent/affected-r1/control.cjs.stderr",
+          "sha256": "d32183513044df54fb91f6242b2025d144edd4459fad7dcf361c2d812659e6cb",
+          "classification": "preserved-corrector-setup-failure",
+          "scope": "Prior fixture feed shadow recursion, absent native methods catalog or ServerResponse namespace dependency; originals retained, no candidate behavior credited."
+        },
+        {
+          "field": "$.preservedNonpasses[11]",
+          "report": ".context/http-body-buffer-publication-correction-agent/affected-r2/incoming-constructorAndDescriptors.stderr",
+          "sha256": "602fae166a22c9ee6fa283461dce86bcf6d311fe3f7d613d67a5bdf91e4c7b8c",
+          "classification": "preserved-corrector-setup-failure",
+          "scope": "Prior fixture feed shadow recursion, absent native methods catalog or ServerResponse namespace dependency; originals retained, no candidate behavior credited."
+        },
+        {
+          "field": "$.preservedNonpasses[12]",
+          "report": ".context/http-body-buffer-publication-correction-agent/affected-r3/incoming-constructorAndDescriptors.stderr",
+          "sha256": "f78fa11c7af7cd6781b26c197ec35b125ae758ad00419301e341fa673b2b6965",
+          "classification": "preserved-corrector-setup-failure",
+          "scope": "Prior fixture feed shadow recursion, absent native methods catalog or ServerResponse namespace dependency; originals retained, no candidate behavior credited."
+        },
+        {
+          "field": "$.preservedNonpasses[13]",
+          "report": ".context/node26-http250-finalizer-r1-failure.txt",
+          "sha256": "72da3f9f68f4cbc76abbab81ecf34a36498168634c2b8aba24fd9cc747553aae",
+          "classification": "bookkeeping-error",
+          "scope": "Copied root finalizer count903 disagreed with authoritative904; failed before any source/receipt/index mutation. Corrected finalizer completed. Not runtime/compiler failure."
+        },
+        {
+          "field": "$.preservedNonpasses[14]",
+          "report": ".context/node26-http250-metadata-r1-failure.txt",
+          "sha256": "ddad57379df30d7dd182c8ad6723642cf11a345ae049941ff0fb382dbc6e6df6",
+          "classification": "bookkeeping-guard-error",
+          "scope": "Original metadata helper expected error text in stdout log, but JSON reporter wrote it only to assertion failureMessages. Failed before mandatory preflight, writer, checkpoint or any tracked mutation. Successor checks all six actual JSON failures; original result and assertions unchanged."
+        },
+        {
+          "field": "$.actualControlReport",
+          "report": ".context/http250-root-controls-r1/report.json",
+          "sha256": "4bce147ede4317854f11f5e1c70f31a248d31140d95bf323e771f59531ea2ebc",
+          "portableGroups": 9,
+          "portableBeforeMatches": 0,
+          "portableAfterMatches": 9,
+          "requestHeaderGroups": 17,
+          "connectionHeaderGroups": 18,
+          "frontendGroups": 5,
+          "frontendBeforeMatched": 1,
+          "frontendAfterPassed": 5,
+          "bodyPoisonCases": 2,
+          "bodySubjectsPerCase": 4,
+          "bodyCorrectedMatched": 2,
+          "incomingCases": 14,
+          "incomingPassed": 14,
+          "actualProductionCore": "a12eda2c6619140be02729b280378d92c24684d6410de0c8dd39c8c86719f633",
+          "actualProductionFactory": "acd4c37a36c29c1d171b915c45d77ff1981d198c33c58c9f6d14855fecb66dc1",
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "productionJSAPICompiled": false,
+          "scope": "Actual production-generated factory/client/IncomingMessage over explicit native parser/ConnectionsList/stream/Buffer/socket dependencies; precompiled portable owners separate. Native ServerResponse is an unused namespace dependency. No full Server/reuse/provider/GC/realm/stack/four-host proof."
+        },
+        {
+          "field": "$.separateHeadersHarnessError",
+          "report": ".context/node26-http250-headers-vitest-r1.json",
+          "sha256": "55e13c9885d6d5c00c106a573b40bed24cb5210881f53000380d709ce2413865",
+          "receipt": ".context/node26-http250-tool-run-r1/headers-vitest-receipt.json",
+          "receiptSha256": "6197929e045ce27080e2d171fd46b213d73b03cf76be92a606e560bf59bd094c",
+          "pid": 51365,
+          "exit": 1,
+          "failed": 6,
+          "passed": 0,
+          "classification": "harness-error",
+          "reason": "ReferenceError _createNodeHttpAgent is not defined in unchanged tested fixture",
+          "unsupported": false,
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.integrationTool",
+          "report": ".context/node26-http250-tool-completion.json",
+          "sha256": "639514902879041e080c12ad96dc0205dae37cd9306d36c731d69a60f26fdc0c",
+          "sourceBinding": "d82b2f07effdb2533b56e9955974c187af9b5c7b8ee58471310e83a196ea77db",
+          "selectedInputBindingOnly": true,
+          "globalBindingSelfContained": false,
+          "sourceImportExit3Meaning": "First import awaited second check; both declared checks exited0 and operation completed. Separate headers harness error is outside declared checks.",
+          "ownedFiles": 15,
+          "actualReceiptPids": [
+            51403,
+            51398
+          ]
+        },
+        {
+          "field": "$.bookkeepingFailure",
+          "report": ".context/node26-http250-finalizer-r1-failure.txt",
+          "sha256": "72da3f9f68f4cbc76abbab81ecf34a36498168634c2b8aba24fd9cc747553aae",
+          "scope": "Root finalizer copied903 instead of authoritative904 and failed before mutations; corrected finalizer completed. This is bookkeeping, not runtime/compiler failure."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/http-request-callback-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/http-request-callback-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Request llhttp Body and Complete callbacks enter the actual active native parse frame synchronously, preserving callback throw/removal chronology and real ConnectionsList state.",
+        "Native events retain independent copied body storage; the frontend publishes it through captured private FastBuffer plus primordial typed-array span getters, avoiding mutable public Buffer.from/valueOf/iterator publication hooks.",
+        "Actual bootstrap supplies the private FastBuffer capability. Both request and existing deferred response Body consumers use this genuine owner; unrelated remainder conversion is not changed.",
+        "Compose only reviewed source leaves over source249, preserve codec/TLS/TTY/VM inputs and executable script, and normally regenerate actual production core. Canonical engine remains unchanged."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/http-request-callback-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and validate the actual production native HTTP event JSAPI/callback roots, reentry, realm/CCW, OOM, fatal/stack/provider and Worker lifetimes on identified guest artifacts; native dependency controls are not guest proof.",
+        "Implement/reconcile complete reusable/pipelined parser initialize/reset/execute/pause/resume/free/close/consume and retained original/shared input behavior; this slice does not implement the full Server/HTTP2/TLS transport owners.",
+        "Preserve independent Body copy/publication behavior while completing public parser remainder conversion and resource ownership. Unrelated mutable Buffer.from remainder conversion is explicitly outside this correction.",
+        "Repair the changed headers Vitest fixture against the actual existing Agent owners in a separate reviewed slice, without weakening its six assertions or substituting another subject; current six ReferenceErrors remain harness errors.",
+        "Collect applicable four-host conformance only within the authorized build constraints after the breadth pass; keep implementation gaps, failures, skips, unsupported cases, timeouts and harness errors distinct."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/http.md",
+      "findingScope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/http.md": [
+          "H-001",
+          "H-003"
+        ],
+        "tests/nodejs/audit/http-contracts.md": [
+          "H-013"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/http.md",
+        "findingIds": [
+          "H-003"
+        ],
+        "prerequisiteFindingIds": [
+          "H-001"
+        ],
+        "relatedFamilies": [
+          "streams",
+          "network",
+          "async",
+          "values"
+        ],
+        "scope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/http.md",
+            "findingId": "H-003",
+            "definitionKey": "tests/nodejs/audit/http.md#H-003:L18",
+            "relation": "partial-owning-source",
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/http.md",
+            "findingId": "H-001",
+            "definitionKey": "tests/nodejs/audit/http.md#H-001:L16",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/http-contracts.md",
+            "findingId": "H-013",
+            "definitionKey": "tests/nodejs/audit/http-contracts.md#H-013:L91",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "asymmetric-keygen": {
+      "document": "tests/nodejs/outline/asymmetric-keygen-finding-progress.json",
+      "sha256": "f417a0afe01657a68800304ff93b19ede8b7289e1ae6b72fa1943cc68de33eae",
+      "recordedRevision": 251,
+      "explicitFindingIds": [
+        "C-001",
+        "C-015"
+      ],
+      "prerequisiteFindingIds": [
+        "C-008",
+        "C-009",
+        "C-011"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-keypair251-source-r1/report.json",
+          "sha256": "7646dcfdab8f9cee0942e790a7229c5a3a98ea644215f755618351726f7df25c",
+          "guardedInputs": 908,
+          "scope": "Normal current core/bootstrap/native staging+actual5job/provider/role-source owners, unchanged native helper reused. New guest C++ uncompiled; ecPkcs8 private owner still missing; no closure."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-keypair251-affected-r1.json",
+          "sha256": "757fabc08b9b3de59b2990acb38b84fa4380102a0ec0fa5e5efe65d3c3241d43",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-keypair251-source-r1/report.json",
+          "sha256": "7646dcfdab8f9cee0942e790a7229c5a3a98ea644215f755618351726f7df25c",
+          "guardedInputs": 908,
+          "sourceChecks": 8,
+          "sourceCommands": 8,
+          "nativeDifferentialGroups": 16,
+          "candidateDifferentialGroups": 16,
+          "pairedValuesEqual": true,
+          "upstreamFilesPerSubject": 4,
+          "upstreamSubjects": 2,
+          "upstreamScriptRuns": 8,
+          "packagePassed": 14,
+          "sourceOwnedFiles": 31,
+          "actualProductionCore": "e6149323741f23e90b05f7ce665292718e0683e5703b6e76a6c70aaa8134c66e",
+          "actualEngineCpp": "48447f50e435b8f71df81634c5bd700bbccd76041124c16c373a11eb1f118b9e",
+          "newRootCompilerAttempts": 0,
+          "historicalHelpersAccounted": 2,
+          "historicalHelperFailures": 0,
+          "guestExecuted": false,
+          "productionJSAPICompiled": false,
+          "privateRoleGuardGuestExecuted": false,
+          "validPrivateEcPkcs8Missing": true,
+          "expectedHistoricalFatalNegatives": 8,
+          "fatalNegativeCompatibilityPasses": 0,
+          "scope": "Source251 adds actual public asymmetric generation over complete pinned wrappers, five real ncrypto/OpenSSL traits, KEYPAIRGENREQUEST/native CPU work and GC-owned immutable key roles. Fresh current-root source checks guard908inputs/8checks/8commands;16paired native/candidate differential groups and4unchanged upstream files per subject use identified native dependencies. Newly integrated guest JSAPI/work/publication/GC/realm/fatal/private-role guard and all4hosts remain uncompiled/unexecuted; valid-private ecPkcs8 remains missing. No crypto/API/finding closure."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/asymmetric-keygen-owner-agent/report.json",
+          "sha256": "2733245c56a3eb78fe975b81d1c0aec3fec3bed18440c638a1971c5bd03b4884",
+          "reusedEvidence": true,
+          "scope": "Historical actual portable generation/serialization and pinned frontend over native V8/uv/DER-copy/JWK/privateallocator dependencies; originalfailures/8fatalnegatives retained, no guest or ownsign proof."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/normal-coregen-r1/result.json",
+          "sha256": "485dd9f5e025ca29b4802ea78dc00897df2136f2ef05f11095a556032e57ff5a",
+          "classification": "source-check-fixture-failure",
+          "scope": "Sparse private source missed exact0043/0044normal generator inputs; retainedfailure before corrected source-only preparation.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/native-control-r1/result.json",
+          "sha256": "485dd9f5e025ca29b4802ea78dc00897df2136f2ef05f11095a556032e57ff5a",
+          "classification": "historical-reference-fixture-nonpass",
+          "scope": "15/16: wrong authored DSA-JWK support expectation, exact native unsupported error retained.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/candidate-control-r1/result.json",
+          "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+          "classification": "historical-native-component-abort",
+          "scope": "SIGABRT(-6) from authored Job destructor after HandleScope; original binary/SHA retained, not a guest failure or compiler failure.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/candidate-control-r2/result.json",
+          "sha256": "485dd9f5e025ca29b4802ea78dc00897df2136f2ef05f11095a556032e57ff5a",
+          "classification": "historical-native-dependency-nonpass",
+          "scope": "14/16: native util.promisify private-symbol and native sign JS #slots fixture mismatches; corrected actual candidate promisify and genuine PEM native interoperability are narrowly scoped.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[4]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/initial-author-fixture-failure.json",
+          "sha256": "31195cefe64d7f1c5f577741a369db7e304b1266b20de8bbeb10879f67a795ed",
+          "classification": "preserved-author-setup-failure",
+          "scope": "Missing copied fixture path/driver; initial full command output was tool-transcript-only, no reconstructed original file;0compiler/runtime attempts.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[5]",
+          "report": ".context/asymmetric-keygen-owner-agent/versions/native-keys-before-private-role-guard.cpp",
+          "sha256": "80bf1b9f903ebbd435f6eea519c5741e15788a2fbbfbbd504445b00c7af228c9",
+          "classification": "review-found-source-admission-gap",
+          "scope": "KEYPAIR-ROOT-001: actual public roles may share private EVP material; native private raw access lacked rolecheck. Finalguard580d1411 source-addresses it with targetfatalpolicy; guest execution unproven.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[6]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-native-raw-private/result.json",
+          "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+          "classification": "expected-native-fatal-admission-negative",
+          "exit": -6,
+          "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[7]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-candidate-raw-private/result.json",
+          "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+          "classification": "expected-native-fatal-admission-negative",
+          "exit": -6,
+          "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[8]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-native-raw-seed/result.json",
+          "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+          "classification": "expected-native-fatal-admission-negative",
+          "exit": -6,
+          "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[9]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-candidate-raw-seed/result.json",
+          "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+          "classification": "expected-native-fatal-admission-negative",
+          "exit": -6,
+          "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[10]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-native-ec-raw-private/result.json",
+          "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+          "classification": "expected-native-fatal-admission-negative",
+          "exit": -6,
+          "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[11]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-candidate-ec-raw-private/result.json",
+          "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+          "classification": "expected-native-fatal-admission-negative",
+          "exit": -6,
+          "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[12]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-native-ec-pkcs8-private-binding/result.json",
+          "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+          "classification": "expected-native-fatal-admission-negative",
+          "exit": -6,
+          "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[13]",
+          "report": ".context/asymmetric-keygen-owner-agent/evidence/private-role-candidate-ec-pkcs8-private-binding/result.json",
+          "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+          "classification": "expected-native-fatal-admission-negative",
+          "exit": -6,
+          "scope": "Isolated native target or wrapper-over-already-guarded-native-handle SIGABRT; candidate uses publicDER copyadoption, not actual guest sharedmaterial/role guard.0passingcompatibilitycases.",
+          "compatibilityPass": false
+        },
+        {
+          "field": "$.preservedNonpasses[14]",
+          "report": ".context/asymmetric-keygen-owner-agent/fatal-core-limit-observation.json",
+          "sha256": "a6b6dabdf87a6f6e6ef1857479bebf3ea135485d96f57dca088575d34afde496",
+          "classification": "historical-observation-limitation",
+          "scope": "Initial8fatal processes predate explicitperprocess RLIMIT_CORE journal; currentinheritedsoft0/no privatecorepayload observed, no retroactiveclaim. Futuredriversset0."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/asymmetric-keygen-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/asymmetric-keygen-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Complete unchanged pinned asymmetric public keygen algorithms now flow through final exposed crypto.generateKeyPair/generateKeyPairSync; symmetric232 remains distinct.",
+        "Five actual RSA/PSS,DSA,EC,DH and namedOKP/PQC ncrypto/OpenSSL Setup/generation owners configure before genuine KEYPAIRGENREQUEST/init, use existing CPU queue/publication/callback ownership and real entropy/backend availability.",
+        "Real material is owned once by native GC edges shared by immutable public/private handle roles; real PEM/DER/JWK/raw/privatebuffer encoders preserve validation/getter/error order without public Buffer.from coercion.",
+        "Native immutable private-role admission now fatally gates rawPrivate/rawSeed/ecPrivate/ecPkcs8 before backend access as pinned CHECKs require; real missing ecPkcs8 owner remains explicit.",
+        "Manual31path composition preserves250HTTP FastBuffer/249codec/TLS/EventEmitter and actual0755script, declares0179/recipe251, genuinely regenerates current production core and source-stages the exact composed engine hunk with strict F/R/F replay."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/asymmetric-keygen-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and validate actual guest native key-pair JSAPI/classes/CPU queue/init/reentry/publication/cancellation/retirement, realm/CCW roots/finalizers/OOM/fatal and role authority against identified artifacts on allfourhosts.",
+        "Implement the genuinely missing valid-private ecPkcs8 owner; guarding its dispatcher name is not an implementation or compatibility pass.",
+        "Close remaining WebCrypto generation, KEM/encapsulate/decapsulate, broader prime/exchange/STORE/provider/FIPS/secureheap and opaque EVP/BIGNUM/provider allocation accounting gaps; no algorithm/version support invented from linkage.",
+        "Validate generation-error decoration one-argument async versus sync-throw owner, ordinary encoding exceptions and callback/AsyncWrap order in the actual guest; native dependent fixture does not execute the bridge.",
+        "Keep original239symmetric guest evidence, historical compilation uncertainty, allnonpasses and overall/fullproduct rebuild deferrals; no finding or platform-boundary acceptance from source/control presence."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/crypto.md",
+      "findingScope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/crypto.md": [
+          "C-001",
+          "C-008",
+          "C-009",
+          "C-011",
+          "C-015"
+        ],
+        "tests/nodejs/audit/crypto-contracts.md": [
+          "C-011",
+          "C-015"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingIds": [
+          "C-001",
+          "C-015"
+        ],
+        "prerequisiteFindingIds": [
+          "C-008",
+          "C-009",
+          "C-011"
+        ],
+        "relatedFamilies": [
+          "crypto",
+          "async",
+          "values",
+          "engine"
+        ],
+        "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "findingId": "C-001",
+            "definitionKey": "tests/nodejs/audit/crypto.md#C-001:L15",
+            "relation": "partial-owning-source",
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "findingId": "C-008",
+            "definitionKey": "tests/nodejs/audit/crypto.md#C-008:L22",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false
+          }
+        ],
+        "proseReferences": [
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "findingId": "C-015",
+            "line": 49,
+            "relation": "partial-owning-source",
+            "standaloneDefinitionRecovered": false,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "findingId": "C-009",
+            "line": 45,
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "standaloneDefinitionRecovered": false,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "findingId": "C-011",
+            "line": 47,
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "standaloneDefinitionRecovered": false,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/crypto-contracts.md",
+            "findingId": "C-015",
+            "line": 141,
+            "relation": "partial-owning-source",
+            "standaloneDefinitionRecovered": false,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/crypto-contracts.md",
+            "findingId": "C-011",
+            "line": 141,
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "standaloneDefinitionRecovered": false,
+            "closed": false
+          }
+        ],
+        "originalRangeReferences": [
+          {
+            "document": "tests/nodejs/audit/crypto-contracts.md",
+            "line": 76,
+            "text": "C-009 through C-013",
+            "meaning": "Original grouped range retained, not new standalone findings"
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "fd-input-byte-publication": {
+      "document": "tests/nodejs/outline/fd-input-byte-publication-finding-progress.json",
+      "sha256": "51ac75761042526246e1b7c299cac8c5a2d73a90774fdc34c11cb6c0601780ab",
+      "recordedRevision": 252,
+      "explicitFindingIds": [
+        "STR-007",
+        "STR-011"
+      ],
+      "prerequisiteFindingIds": [],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-fd252-source-r2/report.json",
+          "sha256": "07e0d5f7d92c90d6788f9190721fdfc7c9045f8dd3158be97fc353b1836d839e",
+          "guardedInputs": 908,
+          "scope": "Actual normal source252generated FD owner and bootstrap/native staging, unchanged251C++/keygen/script. Real OS pipes/PTYS and native stream dependencies; baseline fatal3 plus correct bytes/extra copies6 retained separately. No package tests/new compiler/guest/provider/GC/realm/fatal/Worker/fork/cancel/four-host closure."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/fd252-metadata-prep/native-control-test-report.json",
+          "sha256": "4065aa476501cf738b4975ed83b228e3d6924e10a2dd1c6e39154f584d2ffb5c",
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false,
+          "scope": "Zero package or Vitest cases executed. Consumer report is explicitly a custom native-component bookkeeping adapter; actual native counts are separate."
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-fd252-source-r2/report.json",
+          "sha256": "07e0d5f7d92c90d6788f9190721fdfc7c9045f8dd3158be97fc353b1836d839e",
+          "nativeSubjects": 9,
+          "nativePassed": 9,
+          "candidateSubjects": 9,
+          "candidatePassed": 9,
+          "baselineFatalValueOfNonpasses": 3,
+          "baselineCorrectByteExtraCopyObservations": 6,
+          "baselineMatchesPrivateSpanOwner": 0,
+          "shortReadOffsetSubjects": 2,
+          "shortReadOffsetPassed": 2,
+          "priorSubjects": 4,
+          "priorPassed": 4,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "scope": "Source252adds private FastBuffer publication of actual native input Uint8Array spans on generic Promise, terminal Promise and terminal callback paths, with captured intrinsic buffer/offset/length getters. Bootstrap supplies the real private constructor; fixtures correct their actual native producer shape. Actual normal source check908inputs/6checks/8commands and manually reviewed real pipe/PTY controls pass: native9/candidate9, short offsets2/prior4. Baseline3valueOf fatal exits and6correct-byte extra-copy observations remain distinct. Original V1 source check failed only from harness variable shadowing after publication commands succeeded; it remains a terminal harness-error operation, never completed. No package/Vitest cases, compilers or guest runs occurred.",
+          "guardedInputs": 908,
+          "sourceChecks": 6,
+          "sourceCommands": 8,
+          "actualManualPid": 791,
+          "actualManualExit": 0,
+          "originalV1CheckExit": 1,
+          "originalV1Classification": "harness-error",
+          "originalV1Completed": false,
+          "manualReviewedSourceBinding": "748a03f11f0b391949b2ea23ca4df891f0dc070259be0018d244f3ff5640c26c",
+          "packageCasesRun": 0,
+          "vitestCasesRun": 0,
+          "compilerAttempts": 0,
+          "fourHostConformance": false
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/fd-input-byte-publication-owner-agent/handoff/report.json",
+          "sha256": "f8af850825b85c03ba7e3004df4d020445971450586c50b0cf823759b0061122",
+          "reusedEvidence": true,
+          "scope": "Historical original real pipe/PTY/private native byte-span controls with zero compilers; native dependencies/registration bridges not guest provider/GC/realm/fatal proof."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/fd252-tool-run-r1/source-receipt.json",
+          "sha256": "73ce07255bfce1686e1cdef07f791be96b6b3336c035bbe123e5bd0daf2b8002",
+          "classification": "harness-error",
+          "pid": 43689,
+          "exit": 1,
+          "scope": "Original V1 check failed after real publication27subjects completed0 because Python loop overwrote CompletedProcess p; no runtime fault or V1 completion claim."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/fd252-tool-run-r1/harness-error-import.json",
+          "sha256": "19959e4330998e942edbd08c5c55932f396d5a487e5967324e1f66f21847ec8b",
+          "classification": "imported-V1-harness-error",
+          "scope": "Actual original failure imported with exit_code1; applydone/checkfailed, evidence/checkpoint not completed."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/fd252-root-controls-r2/controls-r1/report.json",
+          "sha256": "164f31bac5fbb68c00da4486da7840b1c149015db7f6abb3660e720548205c3e",
+          "classification": "preserved-negative-controls",
+          "baselineFatalValueOfNonpasses": 3,
+          "baselineCorrectByteExtraCopyObservations": 6,
+          "scope": "Three original valueOf exit1/null-output subjects are fatal nonpasses. Six correct-byte subjects have extra private copy/span mismatch, not wrong-byte failure. Full27subject/rawstdoutstderr preserved."
+        },
+        {
+          "field": "$.actualNativeControlReport",
+          "report": ".context/fd252-root-controls-r2/report.json",
+          "sha256": "91c0dd8deb722fc0f9314e8f9ad6077fc704ed9c90beea009320660c2e0bdbd8",
+          "nativeSubjects": 9,
+          "nativePassed": 9,
+          "candidateSubjects": 9,
+          "candidatePassed": 9,
+          "baselineFatalValueOfNonpasses": 3,
+          "baselineCorrectByteExtraCopyObservations": 6,
+          "baselineMatchesPrivateSpanOwner": 0,
+          "shortReadOffsetSubjects": 2,
+          "shortReadOffsetPassed": 2,
+          "priorSubjects": 4,
+          "priorPassed": 4,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "scope": "Actual current generated FD byte owner over real OS pipe/PTY reads and explicit native Node stream/TTY/async dependencies. Baseline six correct-byte observations differ in ownership/extra copy, not byte failure. Three fatal baseline valueOf exits remain nonpasses. No guest provider/GC/realm/fatal/cancel/fork/Worker/four-host closure."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/fd-input-byte-publication-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/fd-input-byte-publication-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Capture actual private FastBuffer plus primordial typed-array buffer/byteOffset/byteLength getters at FD factory initialization, publishing views over the producer allocation instead of an extra public/coercing Buffer copy.",
+        "Generic Promise, captured terminal Promise and actual callback input paths consume that real owner with nonzero windows preserved; no provider/ref/cancel/close completion metadata is fabricated.",
+        "Actual bootstrap supplies the private constructor. Native component fixtures return the genuine current Uint8Array producer shape and provide real existing private FastBuffer; original assertions remain.",
+        "Compose exact eight original source leaves over251keypair plus recipe252/normal-generated production core; C++48447before=after, existing0755script/keygen/fixture evidence preserved."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/fd-input-byte-publication-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Compile and validate actual guest FD/TTY producer/publication roots, moving GC/realm/OOM/fatal/Worker/fork/cancellation/ref/read-stop and lifecycle on identified artifacts; native component dependencies are not guest proof.",
+        "Complete public TTY typed Socket/StreamBase constructors and remaining inherited/symbol/descriptor/error/lifecycle obligations independently; this byte publisher is not their support closure.",
+        "Keep primitive native copies inside actual producer bridge separate from removed extra JavaScript Buffer copy; descriptor/OFD reuse and backing-store transfer remain actual owning dependencies.",
+        "Preserve all original audit ranges/questions and run applicable four-host/overall validation only within authorized breadth/build constraints."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/streams-contracts.md",
+      "findingScope": "Partial native input publication owner only, no definition/range/family closure.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/streams-contracts.md": [
+          "STR-007",
+          "STR-011"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/streams-contracts.md",
+        "findingIds": [
+          "STR-007",
+          "STR-011"
+        ],
+        "relatedFamilies": [
+          "terminal",
+          "async",
+          "engine"
+        ],
+        "scope": "Partial native input publication owner only, no definition/range/family closure.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/streams-contracts.md",
+            "findingId": "STR-007",
+            "definitionKey": "tests/nodejs/audit/streams-contracts.md#STR-007:L109",
+            "relation": "partial-owning-source",
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/streams-contracts.md",
+            "findingId": "STR-011",
+            "definitionKey": "tests/nodejs/audit/streams-contracts.md#STR-011:L114",
+            "relation": "partial-owning-source",
+            "closed": false
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "fetch-response-pull": {
+      "document": "tests/nodejs/outline/fetch-response-pull-finding-progress.json",
+      "sha256": "c97d3de35519940209bc612d0a8ae16ba6ce9c956716bae8c06d0ed6841a7cbe",
+      "recordedRevision": 253,
+      "explicitFindingIds": [
+        "WEB-009"
+      ],
+      "prerequisiteFindingIds": [
+        "WEB-005"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-fetch253-source-r1/report.json",
+          "sha256": "e1ddd6e71b569cc83fbb8c06b5d126ba5e628f842a2692e95deb2291c5c5dc49",
+          "guardedInputs": 908,
+          "scope": "Actual source253normal generation/bootstrap/native staging, scoped9predicate groups per native/candidate, real namespace/error-hook/EOF corrections and full current-source public cause mismatch FAILED. No complete Fetch, native metadata parity, guest/GC/provider/four-host claim."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-fetch253-affected-r1.json",
+          "sha256": "52927b34df7f82c78595a9a710dea607a9bf2cdda3ea9b639f8840611a02173c",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-fetch253-source-r1/report.json",
+          "sha256": "e1ddd6e71b569cc83fbb8c06b5d126ba5e628f842a2692e95deb2291c5c5dc49",
+          "nativePredicateGroups": 9,
+          "candidatePredicateGroups": 9,
+          "predicateUnhandledRejections": 0,
+          "causeEquality": "failed",
+          "causeNameEqual": false,
+          "causeCodeEqual": false,
+          "namespaceCloseCase": 1,
+          "errorHookSubjects": 2,
+          "eofHookSubjects": 2,
+          "actualNodeInvocations": 9,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "scope": "Source 253 adds the real response-body pull owner over actual IncomingMessage iteration, private independent byte-copy publication and real cancellation/terminal ownership. Namespace, retirement-before-controller-error and EOF-publication fixes address all three reviewed source findings. Actual normal source checks guard 908 inputs with ten source checks/eight commands; scoped native/candidate predicate groups are nine each, with separate namespace/error-hook/EOF-hook subjects. Full public Fetch cause/name/code/socket metadata equality remains FAILED. Fourteen package input cases pass separately. No guest, complete Fetch or four-host acceptance.",
+          "guardedInputs": 908,
+          "sourceChecks": 10,
+          "sourceCommands": 8,
+          "packagePassed": 14,
+          "actualSourcePid": 35856,
+          "actualPackagePid": 35839,
+          "publicCauseEquality": "failed",
+          "publicationErrorQuestion": "unresolved source question, not runtime confirmed",
+          "sourceCorrectionsAddressed": [
+            "ROOT-001",
+            "ROOT-002",
+            "ROOT-003"
+          ],
+          "newCompilerAttempts": 0,
+          "fourHostConformance": false
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/fetch-pull-eof-publication-correction-agent/handoff/report.json",
+          "sha256": "af30b45da5d90641680276408e6597139f909ab4eea74f16e9837796dddd65e8",
+          "reusedEvidence": true,
+          "scope": "Historical exact-source correction chain after original pull owner and retirement/namespace fixes; scoped native controls and explicit current/historical failed cause comparisons, never full Fetch/guest proof."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/fetch253-root-controls-r1/evidence/cause-comparison.json",
+          "sha256": "1ba7228dd41894c5260554b9d5f4a399543063950ddf500359add3e03c249d39",
+          "classification": "runtime-confirmed-component-cause-mismatch",
+          "status": "failed",
+          "scope": "Actual current root error/cause/stack/descriptors/socket metadata: native SocketError/UND_ERR_SOCKET versus candidate Error/ECONNRESET without socket metadata. Real implementation gap, no backend/platform exclusion."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/fetch-publication-open-question.json",
+          "sha256": "79c5ae640370e607ac3eb4c2446ed807580550cc34e16058bdec8faa6eaed74d",
+          "classification": "unresolved-source-question",
+          "runtimeConfirmed": false,
+          "scope": "enqueue/desiredSize publication throws may be wrapped rather than escaping original async pull. EOF flag covers EOF only; later targeted differential required, no assertion weakened."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/fetch-pull-close-error-correction-agent/hook-r1-timeout-observation.json",
+          "sha256": "e3c8776432c81e6a42b142621a3a13c0504bca8770a65e46cb66546ab27cb051",
+          "classification": "native-control-timeout-with-evidence-limit",
+          "scope": "Initial permanent-hook native diagnostic timed out10seconds without outcome; rawstderr not retained by that runner, no reconstruction or Node/runtime blame."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/fetch-pull-eof-publication-correction-agent/evidence-r1/before.json",
+          "sha256": "c26c165fc2e6a84412dd7a5c413c9082d00e6b471ea64222f6f8031cc0a0ef4f",
+          "classification": "preserved-source-failure",
+          "scope": "Prior EOF close hook swallowed original marker, pending read/cleanup0/iteratorreturn0; actual exit1 preserved."
+        },
+        {
+          "field": "$.preservedNonpasses[4]",
+          "report": ".context/fetch-pull-close-error-correction-agent/evidence/before.stderr",
+          "sha256": "b83c38ea8b5778330e7bcf7aa55512113b07ddf8d01bec1606720d681033bfc3",
+          "classification": "preserved-source-failure",
+          "scope": "Prior genuine no-demand IncomingMessage no-error close throws namespace TypeError from missing actual constructor owner; actual exit1 retained."
+        },
+        {
+          "field": "$.preservedNonpasses[5]",
+          "report": ".context/fetch-pull-close-error-correction-agent/hook-evidence-r2/before.json",
+          "sha256": "71ea33577eaf36300ee6dbdc200f80e33d3d8960beb7acaade261143940542b1",
+          "classification": "preserved-source-failure",
+          "scope": "Prior controller.error hook leaves actual peer open before fixture cleanup; exact marker captured, read pending, exit1 retained."
+        },
+        {
+          "field": "$.preservedNonpasses[6]",
+          "report": ".context/fetch-response-pull-owner-agent/evidence-r1/native.stderr",
+          "sha256": "e9ee79646fae218c20235997110619cdf7d829058d90d823e0fa5a2f0fc8f56f",
+          "classification": "preserved-initial-control-or-source-nonpass",
+          "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+        },
+        {
+          "field": "$.preservedNonpasses[7]",
+          "report": ".context/fetch-response-pull-owner-agent/evidence-r2/native.stderr",
+          "sha256": "8e4364d8d146ede951deb34fc550c565b82a9aa7a37537e9d8365aa6e84bb587",
+          "classification": "preserved-initial-control-or-source-nonpass",
+          "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+        },
+        {
+          "field": "$.preservedNonpasses[8]",
+          "report": ".context/fetch-response-pull-owner-agent/evidence-r3/native.stderr",
+          "sha256": "8e4364d8d146ede951deb34fc550c565b82a9aa7a37537e9d8365aa6e84bb587",
+          "classification": "preserved-initial-control-or-source-nonpass",
+          "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+        },
+        {
+          "field": "$.preservedNonpasses[9]",
+          "report": ".context/fetch-response-pull-owner-agent/evidence-r4/candidate.stderr",
+          "sha256": "ed0afb9e6e00163050d983744c286119ef068791212a211e6470721379ccecd3",
+          "classification": "preserved-initial-control-or-source-nonpass",
+          "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+        },
+        {
+          "field": "$.preservedNonpasses[10]",
+          "report": ".context/fetch-response-pull-owner-agent/evidence-r5/candidate.stderr",
+          "sha256": "0c81243fa52f4c8a1585febf8754a8f0cb8bb6de18c6bac1a4722496a9526c46",
+          "classification": "preserved-initial-control-or-source-nonpass",
+          "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+        },
+        {
+          "field": "$.preservedNonpasses[11]",
+          "report": ".context/fetch-response-pull-owner-agent/evidence-r6/candidate.stderr",
+          "sha256": "a73104a8624aea9ff57251ba5b994a4b1d0941f494e0ff3cfc3a054244e00ee5",
+          "classification": "preserved-initial-control-or-source-nonpass",
+          "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+        },
+        {
+          "field": "$.actualControlReport",
+          "report": ".context/fetch253-root-controls-r1/report.json",
+          "sha256": "59c0b1e91c3b3214cb5fc5185f76be30fbb1c8ac15dcc4e7d882ee0d3144ca61",
+          "nativePredicateGroups": 9,
+          "candidatePredicateGroups": 9,
+          "predicateUnhandledRejections": 0,
+          "causeEquality": "failed",
+          "causeNameEqual": false,
+          "causeCodeEqual": false,
+          "namespaceCloseCase": 1,
+          "errorHookSubjects": 2,
+          "eofHookSubjects": 2,
+          "actualNodeInvocations": 9,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "scope": "Actual applied root Fetch pull owner/three source corrections over explicit native dependencies; known full cause mismatch FAILED, hook body pending not manufactured, historical failures retained. No full Fetch/guest/four-host closure."
+        },
+        {
+          "field": "$.causeEqualityFailed",
+          "report": ".context/fetch253-root-controls-r1/evidence/cause-comparison.json",
+          "sha256": "1ba7228dd41894c5260554b9d5f4a399543063950ddf500359add3e03c249d39",
+          "status": "failed",
+          "classification": "Remaining public error/cause/socket metadata implementation gap, never an accepted platform/backend exclusion."
+        },
+        {
+          "field": "$.sourcePublicationOpenQuestion",
+          "report": ".context/fetch-publication-open-question.json",
+          "sha256": "79c5ae640370e607ac3eb4c2446ed807580550cc34e16058bdec8faa6eaed74d",
+          "classification": "unresolved audit question",
+          "runtimeConfirmed": false,
+          "scope": "EOF correction does not dispose enqueue/desiredSize publication throw identity; later focused differential required."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/fetch-response-pull-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/fetch-response-pull-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Actual IncomingMessage iteration is driven by genuine Web byte-stream demand, retaining one native read ticket and no flowing data listener for observable bodies. Byte HWM follows pinned default; real lower socket pause/read progression supplies bounded input rather than invented desiredSize or completion.",
+        "Capture private byte intrinsics before vendored module initialization and copy source bytes into independent allocation before byte-controller transfer, preserving the original native Buffer pool without public conversion hooks.",
+        "Destroy the real response/request before releasing a pending iterator on cancel/abort/error; real finally retirement precedes reflectable controller error and preserves the exact observed hook throw.",
+        "Use the actual errors.codes constructor owner for no-demand close-without-error. EOF publication cleanup and iterator release run in real finally, while its original unexpected close-hook error rejects the pull with exact identity.",
+        "Actual bootstrap consumes this owner, preserves upload, drains genuine null bodies and rolls back admitted response publication failures. Normally regenerate over preserved keypair/FD source; no engine hunk or new production input."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/fetch-response-pull-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Implement genuine public SocketError/cause/code/socket metadata over retained actual transport state; current complete raw comparison is FAILED, never an accepted backend/platform exclusion.",
+        "Resolve the enqueue/desiredSize publication-error identity question through a later focused native differential; it is an unresolved source question, not a runtime-confirmed failure or closure from EOF handling.",
+        "Complete the full Fetch dispatcher/controller, redirects/filtering/CORS/integrity/decompression/upload/scheme policies independently; this response owner preserves existing upload but does not establish it.",
+        "Validate actual guest HTTP/stream/Socket/provider/ref/cancel/GC/realm/OOM/fatal/Worker and four-host ownership on identified artifacts within authorized build constraints.",
+        "Keep original setup/source nonpasses, the permanent error-hook timeout with missing rawstderr and unvalidated multiply failing hooks/cleanup paths visible."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/web-contracts.md",
+      "findingScope": "Partial actual response pull/terminal owner; no full Fetch/controller/body-policy or qualified finding closure.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/web-contracts.md": [
+          "WEB-005",
+          "WEB-009"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/web-contracts.md",
+        "findingIds": [
+          "WEB-009"
+        ],
+        "prerequisiteFindingIds": [
+          "WEB-005"
+        ],
+        "relatedFamilies": [
+          "streams",
+          "network",
+          "secure-network",
+          "async"
+        ],
+        "scope": "Partial actual response pull/terminal owner; no full Fetch/controller/body-policy or qualified finding closure.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/web-contracts.md",
+            "findingId": "WEB-009",
+            "definitionKey": "tests/nodejs/audit/web-contracts.md#WEB-009:L116",
+            "relation": "partial-owning-source",
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/web-contracts.md",
+            "findingId": "WEB-005",
+            "definitionKey": "tests/nodejs/audit/web-contracts.md#WEB-005:L112",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "tty-streambase": {
+      "document": "tests/nodejs/outline/tty-streambase-finding-progress.json",
+      "sha256": "f9ad1d71e51e552a096eae599c5d6b0c82051c82effb6982dca1e6f186d94ebe",
+      "recordedRevision": 254,
+      "explicitFindingIds": [],
+      "prerequisiteFindingIds": [
+        "T-002",
+        "T-007",
+        "T-009",
+        "T-010"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-tty254-source-r2/report.json",
+          "sha256": "b6fee49e8c2c3051269b0f50781130c1e47e220e0478fd22703c0a7e4c7a4948",
+          "guardedInputs": 908,
+          "scope": "Normal current bootstrap/native unity/header staging plus actual-root Socket/stdio native-dependent controls and exact source-equivalent portable header executable. Public constructors inactive, old3fixture protocols uncredited, init-close/fairness/guest GC/realm/Worker/four-host gaps explicit."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-tty254-affected-r1.json",
+          "sha256": "6ed6ea1856448154b8b21c1d6a3a19c45da51f32ece781c857f58b36cd2d56cd",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-tty254-source-r2/report.json",
+          "sha256": "b6fee49e8c2c3051269b0f50781130c1e47e220e0478fd22703c0a7e4c7a4948",
+          "portableGroups": 6,
+          "nativeAccessModes": 3,
+          "socketNativeGroups": 6,
+          "socketCandidateGroups": 6,
+          "baselineRejectedRealTty": true,
+          "stdioOutputGroups": 5,
+          "stdioInputGroups": 5,
+          "stdioRollbackGroups": 3,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "scope": "Actual current generated Socket/stdio JS plus genuine native Node TTY/stream dependency; exact source-equivalent portable IOHandle artifact reused. No candidate native JSAPI compilation/GC/realm/fatal/Worker/four-host proof; public TTY constructors inactive, original old3fixture protocols not passing coverage.",
+          "guardedInputs": 908,
+          "sourceChecks": 17,
+          "sourceCommands": 8,
+          "packagePassed": 14,
+          "originalV1Completed": false,
+          "originalV1SourceCheck": "harness-error",
+          "manualFollowupExit": 0
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/tty-streambase-owner-agent/report.json",
+          "sha256": "d098b0b958cf46bcee948f4cdcb1be297e7f12d1e2cebfc6c28653ffefebaa87",
+          "reusedEvidence": true,
+          "scope": "Historical source254 prerequisite and exactly one successful portable IOHandle helper compilation. No native JSAPI/guest proof."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/tty254-tool-run-r1/source-receipt.json",
+          "sha256": "f5744d0b1849234754472d57c0a84ca271fe1403655fc031b9f1c9aef0f4ce75",
+          "classification": "harness-error",
+          "scope": "Actual original source check exit1 after completed controls: final wrapper incorrectly required raw header equals normally include-formatted stage. Original V1 remains failed, not completed."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/tty-streambase-owner-agent/evidence/commands.json",
+          "sha256": "b591b41b2d320cacc2dd025b41a7446c75aa5bf4e9c2c81699f6fd47c10850c5",
+          "classification": "preserved-generator-setup-failure",
+          "scope": "Missing copied0044 normal input, no compiler."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/tty-streambase-owner-agent/frontend-final/report.json",
+          "sha256": "53337a0b1f186d9d22de38206338d700fa96720de5e9d5c55caf53bfe9a2efec",
+          "classification": "preserved-baseline-nonpass",
+          "scope": "TCP-only baseline rejects real native TTY; not passing compatibility."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/tty-streambase-owner-agent/root-owned-leaf-guard.json",
+          "sha256": "197df7be816126f95f2a233a9367d2ea57629596573c107bda834a2bf1cd7eb1",
+          "classification": "preserved-parent-drift-guard-failure",
+          "scope": "Actual FD252 parent drift separately classified; no root rollback."
+        },
+        {
+          "field": "$.actualTtyControlReport",
+          "report": ".context/tty254-root-controls-r2/report.json",
+          "sha256": "e02b5416bada9987509b7e395bef5a115d92b03553a2d02130efd6dc92de5549",
+          "portableGroups": 6,
+          "nativeAccessModes": 3,
+          "socketNativeGroups": 6,
+          "socketCandidateGroups": 6,
+          "baselineRejectedRealTty": true,
+          "stdioOutputGroups": 5,
+          "stdioInputGroups": 5,
+          "stdioRollbackGroups": 3,
+          "newCompilers": 0,
+          "guestExecuted": false,
+          "copiedInputs": {
+            "repo/packages/registry/node-compat/bootstrap.js": "41de7a7d3da35c0489e637ade243f56b58d35150347b5f801617995794e0ec64",
+            "repo/third_party/node-core/node-core.js": "92231d835a70d303ab8996356eb96b62e820cd09b7ab576a0d7149ff6e81fcc7",
+            "before/packages/registry/node-compat/bootstrap.js": "e441507b12e964819db877688062e599e03021c1974a75337c6e1d0ebed2628a",
+            "baseline-core.js": "e6149323741f23e90b05f7ce665292718e0683e5703b6e76a6c70aaa8134c66e",
+            "controls/frontend.cjs": "47e077575855d62c5ebf0ebf60174c9d13925b826dfdd17140ca6561b14b3438",
+            "controls/stdio.cjs": "72f4ae3ddcfa7573a9b25c98165823610db92fbf17457d7edfc139c3f7bb1e23",
+            "controls/native-access.cjs": "47d66f148c4403209be26ce111557ca897149d88b5ee8abd6bbd8a9143202e17",
+            "controls/run-frontend-final.py": "dc21c66da4b545b28be0f0e2070792c8953c564336637b2545b17be15666756d",
+            "controls/run-additional.py": "a9dcafaed358202c371c17b38645b0da9d03f31f1dd695c73610e1c2c223041d"
+          },
+          "scope": "Actual current generated Socket/stdio JS plus genuine native Node TTY/stream dependency; exact source-equivalent portable IOHandle artifact reused. No candidate native JSAPI compilation/GC/realm/fatal/Worker/four-host proof; public TTY constructors inactive, original old3fixture protocols not passing coverage."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/tty-streambase-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/tty-streambase-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "checked native terminal-class/context routes separately from TCP lease validation",
+        "real init-before-admission with actual O_ACCMODE/nonblocking policy",
+        "Socket consumes terminal read/write state and native requests, ID, ref/unref, close",
+        "stdio exposes real _handle; output explicitly selects blocking and rollback closes actual owner",
+        "readonly write EPIPE and closed EBADF; native TTY references separately confirm EPIPE/ENOTCONN"
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/tty-streambase-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Public callable tty.ReadStream/WriteStream constructors, prototypes, descriptors and metadata remain inactive and incomplete.",
+        "Implement genuine terminal shutdown requests and native string/mixed write methods; these are not supplied by the new TTY kind route.",
+        "Resolve init-hook close-before-admission exact phase/status and all native method close phases, master/unreopenable/file/pipe admission, partial-EAGAIN readiness/fairness.",
+        "Validate actual guest native JSAPI/resource/GC/realm/OOM/fatal/Worker and four-host ownership on identified artifacts. Accepted239 is historical and stale for this candidate.",
+        "The three old tracked OutputHandle-only terminal fixtures use stale protocol and are explicitly uncredited; update them against genuine current owners in a separate reviewed fixture slice."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/terminal.md",
+      "findingScope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/terminal.md": [
+          "T-002",
+          "T-007",
+          "T-009",
+          "T-010"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingIds": [],
+        "prerequisiteFindingIds": [
+          "T-002",
+          "T-007",
+          "T-009",
+          "T-010"
+        ],
+        "relatedFamilies": [
+          "streams",
+          "processes",
+          "async"
+        ],
+        "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "findingId": "T-002",
+            "definitionKey": "tests/nodejs/audit/terminal.md#T-002:L49",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "findingId": "T-007",
+            "definitionKey": "tests/nodejs/audit/terminal.md#T-007:L54",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "findingId": "T-009",
+            "definitionKey": "tests/nodejs/audit/terminal.md#T-009:L56",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "findingId": "T-010",
+            "definitionKey": "tests/nodejs/audit/terminal.md#T-010:L57",
+            "relation": "shared-prerequisite",
+            "prerequisiteOnly": true,
+            "closed": false
+          }
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
+    },
+    "ec-private-pkcs8": {
+      "document": "tests/nodejs/outline/ec-private-pkcs8-finding-progress.json",
+      "sha256": "7a96290ee0dd1c7a99b7e76fd9ad19c15b9a35314db54192cc83ceefbaac4a46",
+      "recordedRevision": 255,
+      "explicitFindingIds": [
+        "C-001",
+        "C-015"
+      ],
+      "prerequisiteFindingIds": [
+        "C-009"
+      ],
+      "matrixNavigationIds": [],
+      "evidence": [
+        {
+          "field": "$.sourceChecks",
+          "report": ".context/node26-ecpkcs8255-source-r1/report.json",
+          "sha256": "8dff4dcc28d7e329a3d7e1272501d449a8a5bb29c2093a4ab6b109ca9ca2dca2",
+          "guardedInputs": 908,
+          "scope": "Normal current root core/bootstrap/native staging plus genuine EC owner header/component. Original13/15 and fatal negative retained; no role/realm/GC/fatal/fourhost acceptance."
+        },
+        {
+          "field": "$.packageChecks",
+          "report": ".context/node26-ecpkcs8255-affected-r1.json",
+          "sha256": "c5daa323862112bf3eed9ee1a507d1ba14b1ce40f5fb69dbbe1779cf1f9e69eb",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "reusedEvidence": false
+        },
+        {
+          "field": "$.currentFocusedEvidence",
+          "report": ".context/node26-ecpkcs8255-source-r1/report.json",
+          "sha256": "8dff4dcc28d7e329a3d7e1272501d449a8a5bb29c2093a4ab6b109ca9ca2dca2",
+          "actualOwnerGroups": 15,
+          "ownerPassed": 15,
+          "ownerFailed": 0,
+          "guardedInputs": 908,
+          "sourceChecks": 5,
+          "sourceCommands": 8,
+          "packagePassed": 14,
+          "newRootCompilerAttempts": 0,
+          "historicalHelpers": 2,
+          "guestExecuted": false,
+          "publicSubtleImplemented": false,
+          "scope": "Actual shared helper/native private wrapper controls; native parsing/V8/DER-copy/GC dependencies, not guestJSAPI/Subtle/role-guard proof."
+        },
+        {
+          "field": "$.sealedEvidence",
+          "report": ".context/ec-pkcs8-owner-agent/report.json",
+          "sha256": "14dbc15653617d1c3c3dcf16b7254ac7f23bdcc228493d27c250d5a01da5a3d8",
+          "reusedEvidence": true,
+          "scope": "Two historical native component builds, actual ncrypto/OpenSSL3.5.9/V8/DER-copy/GC dependencies; not guest JSAPI or WebCrypto proof."
+        },
+        {
+          "field": "$.preservedNonpasses[0]",
+          "report": ".context/node26-ecpkcs8255-composed-r1/normal-current-core-generation-stderr",
+          "sha256": "5251916544edb5e03d30c77760b4fe589b903dd716b6f93b659337736b872cac",
+          "classification": "private-preparation-missing-source-input",
+          "scope": "Unchanged bootstrap omitted from private normal generator snapshot; no root change."
+        },
+        {
+          "field": "$.preservedNonpasses[1]",
+          "report": ".context/ec255-patch-repair-r1/proof.json",
+          "sha256": "0102b11b3c3dadf3b380b40b9e70b03633ca46e1bea6ba10c573ad69cdd86a18",
+          "classification": "private-patch-encoding-error",
+          "scope": "Original difflib recipe EOF lines corrupt; Git probe128/applyscript1 before writes. Same eight postimages repaired by exact Git encoding. Raw probe stderr/PID/log not retained; never reconstruct."
+        },
+        {
+          "field": "$.preservedNonpasses[2]",
+          "report": ".context/ec-pkcs8-owner-agent/evidence/owner-controls-r1/result.json",
+          "sha256": "485dd9f5e025ca29b4802ea78dc00897df2136f2ef05f11095a556032e57ff5a",
+          "classification": "authored-representation-stability-assumption-nonpass",
+          "scope": "Original13/15 exit1 retained; explicit-result SPKI normalization occurs in native and candidate. Exact PKCS8 already matched."
+        },
+        {
+          "field": "$.preservedNonpasses[3]",
+          "report": ".context/ec-pkcs8-owner-agent/evidence/native-role-negative-r1/result.json",
+          "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+          "classification": "native-fatal-admission-negative",
+          "scope": "Actual native exit-6/coreSoftLimit0, zero compatibility passes. Guest private-role guard unexecuted."
+        },
+        {
+          "field": "$.actualEcPkcs8ControlReport",
+          "report": ".context/node26-ecpkcs8255-source-r1/focused-controls/report.json",
+          "sha256": "c61ef235c354bd7afbb5efd1516468cf77427030b0c181f958579d744612190f",
+          "passed": 15,
+          "failed": 0,
+          "guestJSAPIExecuted": false,
+          "publicSubtleImplemented": false,
+          "scope": "Actual shared helper/native private wrapper controls; native parsing/V8/DER-copy/GC dependencies, not guestJSAPI/Subtle/role-guard proof."
+        }
+      ],
+      "closure": false,
+      "allEvidenceRef": "tests/nodejs/outline/ec-private-pkcs8-finding-progress.json (complete scoped source/evidence/nonpasses/identities)",
+      "recordedSourceContributionRef": "tests/nodejs/outline/ec-private-pkcs8-finding-progress.json#sourceImplemented",
+      "recordedSourceContributionSummary": [
+        "Existing private adapter.ecPkcs8 route now has actual native dispatch through new consumed KeyMaterial::ExportEcPrivatePkcs8, using exact existing ncrypto::Ec::ExportPrivatePkcs8.",
+        "No generic material.Export substitution: ncrypto clones EC, clears EC_PKEY_NO_PUBKEY under actual configured legacy branch and emits defaultDERPKCS8; wrongtype/failure retains targetERR_CRYPTO_OPERATION_FAILED/Failed to export EC private key.",
+        "Preserve251native private-role admission before backend access. Actual rooted material edge and owned BIO retain real data through JS allocation; KandeloNewUint8ArrayCopy and unchanged private codecs.copyBytes own output without public Buffer.from hooks.",
+        "Ordinary KeyObject.export/generateKeyPair PKCS8 route alreadyworks and remains unchanged; this does not activate fullSubtle/job/algorithm/admission owners."
+      ],
+      "remainingAsRecordedRef": "tests/nodejs/outline/ec-private-pkcs8-finding-progress.json#remaining",
+      "remainingSummaryAsRecorded": [
+        "Actual guest native dispatcher/byte allocation/RootedValue/realm/CCW/GC/reentry/OOM/fatal/private-role execution and allfourhost conformance remain uncompiled/unexecuted.",
+        "Complete public WebCrypto export/import/algorithm/extractability/usages/job-admission and broader key services without treating this private backend prerequisite as wholeAPI support.",
+        "Opaque EVP/provider/BIO heap accounting and full per-callsite errors/security remain broader C009/crypto gaps; no RSS or complete heap graph claim."
+      ],
+      "rootOverlay": true,
+      "contributionKind": "partial-source-progress",
+      "auditDocument": "tests/nodejs/audit/crypto.md",
+      "findingScope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure.",
+      "additionalAuditDocuments": {},
+      "qualifiedAuditFindingsAsRecorded": {
+        "tests/nodejs/audit/crypto.md": [
+          "C-001",
+          "C-009",
+          "C-015"
+        ]
+      },
+      "sectionRequirementsAsRecorded": [],
+      "auditRequirementsAsRecorded": {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingIds": [
+          "C-001",
+          "C-015"
+        ],
+        "scope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure.",
+        "qualifiedDefinitions": [
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "findingId": "C-001",
+            "definitionKey": "tests/nodejs/audit/crypto.md#C-001:L15",
+            "relation": "partial-owning-source",
+            "closed": false
+          }
+        ],
+        "proseReferences": [
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "findingId": "C-015",
+            "line": 49,
+            "relation": "partial-owning-source",
+            "standaloneDefinitionRecovered": false,
+            "closed": false
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "findingId": "C-009",
+            "line": 45,
+            "relation": "shared-prerequisite",
+            "standaloneDefinitionRecovered": false,
+            "closed": false
+          }
+        ],
+        "relatedFamilies": [
+          "secure-network",
+          "async",
+          "web"
+        ]
+      },
+      "acceptedPlatformLimitsAsRecorded": [],
+      "publicApiClosure": false
     }
   },
   "dependencyNarratives": {
@@ -30750,6 +32409,199 @@
           "sha256": "80835a7c62dfb3293f8f46893a2151061f724ebc57a11650e72b7a76281a687e"
         },
         "scope": "Exact committed WASI245, TTY246, TLS247, EventEmitter248 and codec249 partial source-progress overlay. Preserve direct-partial/shared prerequisites and distinct qualified definitions/ranges. Codec capacity/report contribution does not establish heap-graph/whole-process/public memory metrics or guest/four-host compatibility. No new runtime or compilation evidence."
+      },
+      {
+        "at": "2026-11-08T05:27:59.821248+00:00",
+        "sourceCheckpoint": 255,
+        "sourceHead": "f23bf057b834b14736a41a070f9487f0e241e679",
+        "addedSourceSlices": [
+          "http-request-callback",
+          "asymmetric-keygen",
+          "fd-input-byte-publication",
+          "fetch-response-pull",
+          "tty-streambase",
+          "ec-private-pkcs8"
+        ],
+        "qualifiedLinks": [
+          {
+            "document": "tests/nodejs/audit/http.md",
+            "finding": "H-003",
+            "slice": "http-request-callback",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure."
+          },
+          {
+            "document": "tests/nodejs/audit/http.md",
+            "finding": "H-001",
+            "slice": "http-request-callback",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure. Shared prerequisite only; no public API activation or finding closure inferred."
+          },
+          {
+            "document": "tests/nodejs/audit/http-contracts.md",
+            "finding": "H-013",
+            "slice": "http-request-callback",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure. Shared prerequisite only; no public API activation or finding closure inferred."
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "finding": "C-001",
+            "slice": "asymmetric-keygen",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition."
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "finding": "C-008",
+            "slice": "asymmetric-keygen",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Shared prerequisite only; no public API activation or finding closure inferred."
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "finding": "C-015",
+            "slice": "asymmetric-keygen",
+            "relation": "explicit-prose-progress",
+            "prerequisiteOnly": false,
+            "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto.md:49; no standalone definition recovered."
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "finding": "C-009",
+            "slice": "asymmetric-keygen",
+            "relation": "explicit-prose-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto.md:45; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred."
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "finding": "C-011",
+            "slice": "asymmetric-keygen",
+            "relation": "explicit-prose-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto.md:47; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred."
+          },
+          {
+            "document": "tests/nodejs/audit/crypto-contracts.md",
+            "finding": "C-015",
+            "slice": "asymmetric-keygen",
+            "relation": "explicit-prose-progress",
+            "prerequisiteOnly": false,
+            "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto-contracts.md:141; no standalone definition recovered."
+          },
+          {
+            "document": "tests/nodejs/audit/crypto-contracts.md",
+            "finding": "C-011",
+            "slice": "asymmetric-keygen",
+            "relation": "explicit-prose-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto-contracts.md:141; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred."
+          },
+          {
+            "document": "tests/nodejs/audit/streams-contracts.md",
+            "finding": "STR-007",
+            "slice": "fd-input-byte-publication",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial native input publication owner only, no definition/range/family closure."
+          },
+          {
+            "document": "tests/nodejs/audit/streams-contracts.md",
+            "finding": "STR-011",
+            "slice": "fd-input-byte-publication",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial native input publication owner only, no definition/range/family closure."
+          },
+          {
+            "document": "tests/nodejs/audit/web-contracts.md",
+            "finding": "WEB-009",
+            "slice": "fetch-response-pull",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial actual response pull/terminal owner; no full Fetch/controller/body-policy or qualified finding closure."
+          },
+          {
+            "document": "tests/nodejs/audit/web-contracts.md",
+            "finding": "WEB-005",
+            "slice": "fetch-response-pull",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial actual response pull/terminal owner; no full Fetch/controller/body-policy or qualified finding closure. Shared prerequisite only; no public API activation or finding closure inferred."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "finding": "T-002",
+            "slice": "tty-streambase",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "finding": "T-007",
+            "slice": "tty-streambase",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "finding": "T-009",
+            "slice": "tty-streambase",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred."
+          },
+          {
+            "document": "tests/nodejs/audit/terminal.md",
+            "finding": "T-010",
+            "slice": "tty-streambase",
+            "relation": "explicit-shared-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred."
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "finding": "C-001",
+            "slice": "ec-private-pkcs8",
+            "relation": "explicit-progress-finding-id",
+            "prerequisiteOnly": false,
+            "scope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure."
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "finding": "C-015",
+            "slice": "ec-private-pkcs8",
+            "relation": "explicit-prose-progress",
+            "prerequisiteOnly": false,
+            "scope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure. Explicit original prose at tests/nodejs/audit/crypto.md:49; no standalone definition recovered."
+          },
+          {
+            "document": "tests/nodejs/audit/crypto.md",
+            "finding": "C-009",
+            "slice": "ec-private-pkcs8",
+            "relation": "explicit-prose-prerequisite",
+            "prerequisiteOnly": true,
+            "scope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure. Explicit original prose at tests/nodejs/audit/crypto.md:45; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred."
+          }
+        ],
+        "latestAcceptedEngine": 239,
+        "currentCombinedEngineCompiled": false,
+        "guestRuntimeValidated": false,
+        "fourHostConformance": false,
+        "individualApiClosure": false,
+        "spec": {
+          "path": ".context/finding-ledger-250-255-spec-prep/records250-255.json",
+          "sha256": "5551a0296c43b11661ba6a292e6e1dfeb20e05623017c45d857ae091fb484d05"
+        },
+        "scope": "Exact committed source250\u2013255 qualified progress overlay only: HTTP request callback, asymmetric keygen, FD input publication, Fetch response pull, TTY shared StreamBase prerequisite and EC private PKCS8. Preserve all failures, explicit partial/prose-only/shared relations and remaining obligations. No expanded ranges, inferred standalone definitions, closure, runtime/compiler evidence or current candidate changes."
       }
     ]
   }

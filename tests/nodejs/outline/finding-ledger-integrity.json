@@ -1,17 +1,17 @@
 {
   "kind": "read-only-finding-ledger-integrity",
-  "at": "2026-11-08T03:00:27.322358+00:00",
-  "sourceHead": "81e50150e23cfc59e0292a29986f3e3284662f26",
-  "recipeRevision": 249,
+  "at": "2026-11-08T05:27:59.821248+00:00",
+  "sourceHead": "f23bf057b834b14736a41a070f9487f0e241e679",
+  "recipeRevision": 255,
   "counts": {
     "families": 19,
     "uniqueLexicalFindingIds": 357,
     "documentQualifiedDefinitionRecords": 417,
     "originalRangeRecords": 52,
-    "sourceSliceRecords": 172,
+    "sourceSliceRecords": 178,
     "dependencyNarrativeRecords": 66,
     "findingsWithoutRecoveredStandaloneDefinition": 34,
-    "findingsWithoutExplicitOrProposedSourceSlice": 210
+    "findingsWithoutExplicitOrProposedSourceSlice": 208
   },
   "auditIdentitiesVerified": 136,
   "definitionLinesVerified": 417,
@@ -26,26 +26,27 @@
     "tests/nodejs/audit/documentation-contracts.md#DOC-005:L104"
   ],
   "preservedPreparationFailure": ".context/node26-finding-ledger172-integration.log (initial checker incorrectly required range members to appear literally)",
-  "sourceSliceIdentitiesVerified": 172,
+  "sourceSliceIdentitiesVerified": 178,
   "ledger": {
     "path": "tests/nodejs/outline/finding-ledger.json",
-    "sha256": "ef31a81e4bb782a21f38fdfc35270006c9157bb6248d01972deab05b5166421f"
+    "sha256": "1ef166508319396c99a0f7af6cdae9c18c8c0709e32c6ade0a0005c0b4f1328a"
   },
   "runtimeTests": 0,
   "compilations": 0,
   "closedFindings": 0,
-  "scope": "Exact committed WASI245, TTY246, TLS247, EventEmitter248 and codec249 partial source-progress overlay. Preserve direct-partial/shared prerequisites and distinct qualified definitions/ranges. Codec capacity/report contribution does not establish heap-graph/whole-process/public memory metrics or guest/four-host compatibility. No new runtime or compilation evidence.",
+  "scope": "Exact committed source250\u2013255 qualified progress overlay only: HTTP request callback, asymmetric keygen, FD input publication, Fetch response pull, TTY shared StreamBase prerequisite and EC private PKCS8. Preserve all failures, explicit partial/prose-only/shared relations and remaining obligations. No expanded ranges, inferred standalone definitions, closure, runtime/compiler evidence or current candidate changes.",
   "previousIntegrityIdentity": {
-    "sha256": "9097e7716d320b341344524a8ea2369ff28967ce5be8b37f1e541b663caeb4b5",
-    "sourceHead": "e224221bda4e0e23aaa073a4ce76648f8a60503b",
+    "sha256": "028440a1efaa728779af0b4d1054c422b2f84057e830bf8bce162c764cdd4861",
+    "sourceHead": "81e50150e23cfc59e0292a29986f3e3284662f26",
     "scope": "Prior committed integrity remains in source history"
   },
   "sourceProgressOverlaysAdded": [
-    "wasi-fd",
-    "tty-shared-io",
-    "tls-encrypted-output",
-    "event-unhandled-error",
-    "codec-owned-capacity"
+    "http-request-callback",
+    "asymmetric-keygen",
+    "fd-input-byte-publication",
+    "fetch-response-pull",
+    "tty-streambase",
+    "ec-private-pkcs8"
   ],
   "qualifiedReferenceCorrections": [
     {
@@ -69,84 +70,172 @@
   ],
   "qualifiedLinksAdded": [
     {
-      "document": "tests/nodejs/audit/native-integration.md",
-      "finding": "NI-003",
-      "slice": "wasi-fd",
+      "document": "tests/nodejs/audit/http.md",
+      "finding": "H-003",
+      "slice": "http-request-callback",
       "relation": "explicit-progress-finding-id",
       "prerequisiteOnly": false,
-      "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance."
+      "scope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure."
     },
     {
-      "document": "tests/nodejs/audit/native-integration.md",
-      "finding": "NI-007",
-      "slice": "wasi-fd",
+      "document": "tests/nodejs/audit/http.md",
+      "finding": "H-001",
+      "slice": "http-request-callback",
+      "relation": "explicit-shared-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure. Shared prerequisite only; no public API activation or finding closure inferred."
+    },
+    {
+      "document": "tests/nodejs/audit/http-contracts.md",
+      "finding": "H-013",
+      "slice": "http-request-callback",
+      "relation": "explicit-shared-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Partial owning request chronology/Body publication plus shared full Server/reuse prerequisites only; no original definition closure. Shared prerequisite only; no public API activation or finding closure inferred."
+    },
+    {
+      "document": "tests/nodejs/audit/crypto.md",
+      "finding": "C-001",
+      "slice": "asymmetric-keygen",
       "relation": "explicit-progress-finding-id",
       "prerequisiteOnly": false,
-      "scope": "Partial actual guest WASI four-descriptor import ownership only:29source owners/17missing, distinct from existing outer host WASI shim. No nested backend activation, API/family closure or guest/four-host conformance."
+      "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition."
+    },
+    {
+      "document": "tests/nodejs/audit/crypto.md",
+      "finding": "C-008",
+      "slice": "asymmetric-keygen",
+      "relation": "explicit-shared-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Shared prerequisite only; no public API activation or finding closure inferred."
+    },
+    {
+      "document": "tests/nodejs/audit/crypto.md",
+      "finding": "C-015",
+      "slice": "asymmetric-keygen",
+      "relation": "explicit-prose-progress",
+      "prerequisiteOnly": false,
+      "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto.md:49; no standalone definition recovered."
+    },
+    {
+      "document": "tests/nodejs/audit/crypto.md",
+      "finding": "C-009",
+      "slice": "asymmetric-keygen",
+      "relation": "explicit-prose-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto.md:45; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred."
+    },
+    {
+      "document": "tests/nodejs/audit/crypto.md",
+      "finding": "C-011",
+      "slice": "asymmetric-keygen",
+      "relation": "explicit-prose-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto.md:47; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred."
+    },
+    {
+      "document": "tests/nodejs/audit/crypto-contracts.md",
+      "finding": "C-015",
+      "slice": "asymmetric-keygen",
+      "relation": "explicit-prose-progress",
+      "prerequisiteOnly": false,
+      "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto-contracts.md:141; no standalone definition recovered."
+    },
+    {
+      "document": "tests/nodejs/audit/crypto-contracts.md",
+      "finding": "C-011",
+      "slice": "asymmetric-keygen",
+      "relation": "explicit-prose-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Partial generation/role ownership only; preserve original grouped/prose/range definitions and every remaining API/guest obligation. No reconstructed standalone C-015/C-009/C-011 definition. Explicit original prose at tests/nodejs/audit/crypto-contracts.md:141; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred."
+    },
+    {
+      "document": "tests/nodejs/audit/streams-contracts.md",
+      "finding": "STR-007",
+      "slice": "fd-input-byte-publication",
+      "relation": "explicit-progress-finding-id",
+      "prerequisiteOnly": false,
+      "scope": "Partial native input publication owner only, no definition/range/family closure."
+    },
+    {
+      "document": "tests/nodejs/audit/streams-contracts.md",
+      "finding": "STR-011",
+      "slice": "fd-input-byte-publication",
+      "relation": "explicit-progress-finding-id",
+      "prerequisiteOnly": false,
+      "scope": "Partial native input publication owner only, no definition/range/family closure."
+    },
+    {
+      "document": "tests/nodejs/audit/web-contracts.md",
+      "finding": "WEB-009",
+      "slice": "fetch-response-pull",
+      "relation": "explicit-progress-finding-id",
+      "prerequisiteOnly": false,
+      "scope": "Partial actual response pull/terminal owner; no full Fetch/controller/body-policy or qualified finding closure."
+    },
+    {
+      "document": "tests/nodejs/audit/web-contracts.md",
+      "finding": "WEB-005",
+      "slice": "fetch-response-pull",
+      "relation": "explicit-shared-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Partial actual response pull/terminal owner; no full Fetch/controller/body-policy or qualified finding closure. Shared prerequisite only; no public API activation or finding closure inferred."
     },
     {
       "document": "tests/nodejs/audit/terminal.md",
       "finding": "T-002",
-      "slice": "tty-shared-io",
+      "slice": "tty-streambase",
       "relation": "explicit-shared-prerequisite",
       "prerequisiteOnly": true,
-      "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+      "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred."
     },
     {
       "document": "tests/nodejs/audit/terminal.md",
       "finding": "T-007",
-      "slice": "tty-shared-io",
+      "slice": "tty-streambase",
       "relation": "explicit-shared-prerequisite",
       "prerequisiteOnly": true,
-      "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+      "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred."
+    },
+    {
+      "document": "tests/nodejs/audit/terminal.md",
+      "finding": "T-009",
+      "slice": "tty-streambase",
+      "relation": "explicit-shared-prerequisite",
+      "prerequisiteOnly": true,
+      "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred."
     },
     {
       "document": "tests/nodejs/audit/terminal.md",
       "finding": "T-010",
-      "slice": "tty-shared-io",
+      "slice": "tty-streambase",
       "relation": "explicit-shared-prerequisite",
       "prerequisiteOnly": true,
-      "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
+      "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures. Shared prerequisite only; no public API activation or finding closure inferred."
     },
     {
-      "document": "tests/nodejs/audit/terminal.md",
-      "finding": "T-016",
-      "slice": "tty-shared-io",
-      "relation": "explicit-shared-prerequisite",
+      "document": "tests/nodejs/audit/crypto.md",
+      "finding": "C-001",
+      "slice": "ec-private-pkcs8",
+      "relation": "explicit-progress-finding-id",
+      "prerequisiteOnly": false,
+      "scope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure."
+    },
+    {
+      "document": "tests/nodejs/audit/crypto.md",
+      "finding": "C-015",
+      "slice": "ec-private-pkcs8",
+      "relation": "explicit-prose-progress",
+      "prerequisiteOnly": false,
+      "scope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure. Explicit original prose at tests/nodejs/audit/crypto.md:49; no standalone definition recovered."
+    },
+    {
+      "document": "tests/nodejs/audit/crypto.md",
+      "finding": "C-009",
+      "slice": "ec-private-pkcs8",
+      "relation": "explicit-prose-prerequisite",
       "prerequisiteOnly": true,
-      "scope": "Shared descriptor/OFD/mode/window/control ownership; not public class activation or full inherited/namespace compatibility."
-    },
-    {
-      "document": "tests/nodejs/audit/secure-network-contracts.md",
-      "finding": "S-009",
-      "slice": "tls-encrypted-output",
-      "relation": "explicit-progress-finding-id",
-      "prerequisiteOnly": false,
-      "scope": "Actual retained encrypted transport and terminal publication ownership; shutdown/_final, full errors/lifetime and guest validation remain incomplete."
-    },
-    {
-      "document": "tests/nodejs/audit/event-emitter-contracts.md",
-      "finding": "A-018",
-      "slice": "event-unhandled-error",
-      "relation": "explicit-progress-finding-id",
-      "prerequisiteOnly": false,
-      "scope": "Non-Error coded constructor/private inspect/argument admission only; no stack/fatal closure."
-    },
-    {
-      "document": "tests/nodejs/audit/async.md",
-      "finding": "A-018",
-      "slice": "event-unhandled-error",
-      "relation": "explicit-shared-prerequisite",
-      "prerequisiteOnly": true,
-      "scope": "Preserve distinct broader qualified definition; fatal-stack, namespace and emitter resource obligations are not closed."
-    },
-    {
-      "document": "tests/nodejs/audit/compression-contracts.md",
-      "finding": "ZIP-010",
-      "slice": "codec-owned-capacity",
-      "relation": "explicit-progress-finding-id",
-      "prerequisiteOnly": false,
-      "scope": "Actual retained native state/context/container capacity; no heap snapshot or full memory accounting closure."
+      "scope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure. Explicit original prose at tests/nodejs/audit/crypto.md:45; no standalone definition recovered. Shared prerequisite only; no public API activation or finding closure inferred."
     }
   ]
 }
