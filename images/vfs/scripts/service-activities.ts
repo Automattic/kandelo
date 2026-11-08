@@ -5,6 +5,8 @@ import type { DemoGuideConfig } from "../../../web-libs/kandelo-session/src/demo
 
 export interface ServiceActivity {
   target: string;
+  /** Process dependency whose completed stop also drains an aggregate activity. */
+  stopTarget?: string;
   port: number;
   title?: string;
   shortcuts?: DemoGuideConfig;
@@ -15,9 +17,25 @@ export function installServiceActivities(fs: KandeloImageFs, activities: readonl
   for (const activity of activities) {
     if (!/^[a-z][a-z0-9-]{0,63}$/.test(activity.target) || !Number.isInteger(activity.port) || activity.port < 1 || activity.port > 65535) throw new Error("Invalid service activity");
     fs.stat(`/etc/dinit.d/${activity.target}`);
+    if (activity.stopTarget !== undefined) {
+      if (!/^[a-z][a-z0-9-]{0,63}$/.test(activity.stopTarget)) throw new Error("Invalid activity stop target");
+      fs.stat(`/etc/dinit.d/${activity.stopTarget}`);
+    }
   }
   const targets = activities.map(activity => activity.target).join(" ");
   const ports = activities.map(activity => `  ${activity.target}) port=${activity.port} ;;`).join("\n");
+  const aggregateStops = activities.filter(activity => activity.stopTarget !== undefined);
+  // Dinit reports an internal group stopped before its process dependencies
+  // finish draining. Stop the declared leaf with --force to stop its whole
+  // dependent group, inhibit restarts, and wait for the actual process exit.
+  const stopFunction = aggregateStops.length ? `stop_activity() {
+  case "$1" in
+${aggregateStops.map(activity => `    ${activity.target}) control stop --force --ignore-unstarted ${activity.stopTarget} ;;`).join("\n")}
+    *) control stop --ignore-unstarted "$1" ;;
+  esac
+}
+` : "";
+  const stopCommand = aggregateStops.length ? "stop_activity" : "control stop --ignore-unstarted";
   for (const path of ["/sbin", "/usr/bin", "/usr/libexec", "/etc/kandelo", "/run/kandelo-services"]) ensureDirRecursive(fs, path);
   fs.chmod("/run/kandelo-services", 0o700);
   const services = parseComputerServices(JSON.stringify({ version: 1, services: activities.map(activity => ({
@@ -39,7 +57,7 @@ case "$action" in
 esac
 if [ "$(id -u)" != 0 ]; then echo 'Service helper requires its delegated credentials' >&2; exit 1; fi
 control() { /sbin/dinitctl -p /run/kandelo-services/dinitctl "$@"; }
-if [ "$action" = list ] || [ "$action" = inspect ]; then
+${stopFunction}if [ "$action" = list ] || [ "$action" = inspect ]; then
   machine=0
   if [ "$action" = inspect ]; then machine=1; fi
   enabled=-
@@ -89,7 +107,7 @@ case "$action" in
         if (name in declared && name != target && substr($0, 7, 1) == " ") print name
       }')
     for other in ${targets}; do
-      if [ "$other" != "$target" ]; then control stop --ignore-unstarted "$other"; fi
+      if [ "$other" != "$target" ]; then ${stopCommand} "$other"; fi
     done
     if ! control start "$target"; then
       for other in $stopped; do control start "$other" || echo "Could not restore $other" >&2; done
@@ -98,7 +116,7 @@ case "$action" in
     /usr/bin/curl --fail --silent --show-error --retry 30 --retry-connrefused --retry-delay 1 --max-time 3 --output /dev/null "http://127.0.0.1:$port/"
     control is-started "$target"
     ;;
-  stop) control stop --ignore-unstarted "$target" ;;
+  stop) ${stopCommand} "$target" ;;
   status) control status "$target" ;;
   enable)
     ${preflight}

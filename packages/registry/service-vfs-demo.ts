@@ -161,6 +161,15 @@ export function configureWordPressRuntime(
   options: { port: number; freshSqliteDatabase?: boolean; phpFpmWorkers?: number; frankenPhpThreads?: number },
 ): void {
   rewriteNginxListenPort(fs, options.port);
+  try {
+    fs.stat("/etc/wordpress/cron.curl");
+    const config = readVfsText(fs, "/etc/wordpress/cron.curl");
+    writeVfsFile(fs, "/etc/wordpress/cron.curl", config.replace(
+      "http://127.0.0.1:8080/wp-cron.php", `http://127.0.0.1:${options.port}/wp-cron.php`,
+    ));
+  } catch (error) {
+    if ((error as { errno?: number }).errno !== 2) throw error;
+  }
 
   if (options.frankenPhpThreads !== undefined) {
     if (!Number.isSafeInteger(options.frankenPhpThreads) || options.frankenPhpThreads < 1 || options.frankenPhpThreads > 32) {

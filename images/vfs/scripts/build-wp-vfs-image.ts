@@ -1,3 +1,4 @@
+import { installWordPressCron } from "./wordpress-cron";
 import { installImageSessions } from "./image-session-files";
 import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
@@ -505,8 +506,9 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
   // dependencies ensure wp-config.php is finalized and SMTP is listening
   // before any FastCGI request.
   addDinitInit(fs, buildServices(), { binaries: inputs.dinit });
+  installWordPressCron(fs, ["nginx", "frankenphp-classic", "frankenphp-caddy"]);
   const services = parseComputerServices(readFileSync(resolve(REPO_ROOT, "packages/registry/wordpress/services.json"), "utf8"));
-  installServiceActivities(fs, services.map(service => ({ target: service.id, port: service.port, title: service.title, shortcuts: service.shortcuts })), inputs.serviceActivityControl);
+  installServiceActivities(fs, services.map(service => ({ target: service.id, stopTarget: `${service.id}-server`, port: service.port, title: service.title, shortcuts: service.shortcuts })), inputs.serviceActivityControl);
 
   await preinstallWordPressSqlite(fs, inputs.buildPrograms);
 

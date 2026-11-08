@@ -14,6 +14,7 @@ depends_on = [
     "frankenphp-classic@1.13.5",
     "frankenphp-caddy@1.13.5",
     "dinit@0.19.4",
+    "curl@8.11.1",
     "msmtpd@1.8.32",
     "kernel@0.1.0",
     "wordpress-sqlite-integration-source@2.1.16",

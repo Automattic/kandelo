@@ -1582,6 +1582,7 @@ function persistenceIdentity(
     profileId: storageProfileId,
     appPath: APP_PATH,
     proto: PROTO,
+    publicOrigin: location.origin,
     preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
     mounts: descriptor.mounts,
     ...(mode === "resizable" ? { persistenceMode: "resizable" } : {}),
@@ -1838,6 +1839,7 @@ async function bootProfile(
         descriptor: requestedDescriptor,
         appPath: APP_PATH,
         proto: PROTO,
+        publicOrigin: location.origin,
         preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
       },
       {

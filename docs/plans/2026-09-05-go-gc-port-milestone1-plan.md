@@ -2,6 +2,42 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Automatic WordPress scheduling has a complete Node lifecycle control.**
+The candidate uses ordinary Dinit dependencies and curl configuration to
+invoke upstream `wp-cron.php` every sixty seconds while its service activity
+runs. No WordPress/PHP/Go algorithm or host timer is substituted. A public
+activity groups its server and scheduler; the scheduler depends on the
+server. A generic optional activity stop target tells service control to
+stop that process dependency with Dinit's `--force`, which stops its whole
+dependent group, inhibits automatic restarts and waits for actual server
+exit. Other service activities keep their existing generated commands.
+
+Control `3ab1` passes in 4m40s on retained normal WordPress45 with the new
+ordinary configuration applied in the image writer. A test-owned action is
+scheduled through WordPress and executed by real guest curl/wp-cron. The
+control proves inactivity during a full 65-second stop, resumed pending
+work after restart, Caddy SIGKILL recovery, FPM and classic switches, no
+Caddy scheduler requests during the following FPM minute, and held-PHP
+request drain before clean shutdown. The action records the configured
+public host/prefix. This proves scheduler ownership, not stock cache-GC
+cleanup, rendered UI, normal revision47/family14 or final SDK acceptance.
+Earlier `2617` exposes internal-group stop returning before server exit;
+`dbd8` proves the stopped interval but fails the private fixture's readiness
+probe at its old port8080. The final control declares the actual chosen
+port in its service activities. Both failures remain retained.
+
+The candidate declares curl in WordPress's direct dependencies and verifies
+its installed path during image composition, so a partial image cannot
+silently omit the scheduler command. Browser composition prepares the curl
+headers from the public origin and machine prefix, while direct Node
+configuration keeps its ordinary loopback endpoint. Browser lifecycle
+control `9c8b` is running; no browser pass is claimed yet. The app's strict
+TypeScript invocation reports exactly the same 182 diagnostics, at identical
+locations/codes, on the current review baseline and candidate; there are no
+candidate-only diagnostics, and this is not a clean app type-check pass.
+All current source changes remain isolated from the verified preview and
+from the frozen full normal build.
+
 **General fork-retirement admission now has cross-host evidence.** The host
 preflights temporary retirement debt before shared-mapping synchronization,
 continuation capture or Rust child creation. Host allocator callbacks run

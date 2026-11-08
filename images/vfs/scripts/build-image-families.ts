@@ -1,3 +1,4 @@
+import { installWordPressCron } from "./wordpress-cron";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -40,6 +41,9 @@ function installWordPressFamilyCaddy(source: KandeloImageFs, fs: KandeloImageFs)
     "/etc/frankenphp",
     "/etc/caddy",
     "/etc/dinit.d/frankenphp-caddy",
+    "/etc/dinit.d/frankenphp-caddy-server",
+    "/etc/dinit.d/frankenphp-caddy-cron",
+    "/etc/wordpress/cron.curl",
     "/etc/dinit.d/env-frankenphp",
     "/srv/www/html/wp-content/plugins/wp-super-cache",
   ]) copyImageTree(source, fs, path);
@@ -209,10 +213,11 @@ if (strpos($uri, '/wp-content/') === 0) {
   for (const backend of ["sqlite", "mariadb"]) {
     writeVfsFile(fs, `/etc/dinit.d/wordpress-${backend}`, nginx.replaceAll("/etc/nginx/nginx.conf", `/etc/nginx/wordpress-${backend}.conf`) + (backend === "mariadb" ? "depends-on = mariadb-ready\n" : ""));
   }
+  installWordPressCron(fs, ["wordpress-sqlite", "wordpress-mariadb"]);
   fs.unlink("/etc/dinit.d/nginx");
   fs.unlink("/usr/share/kandelo/sessions/lamp.json");
   installImageSessions(fs, "wordpress-family-vfs");
-  installServiceActivities(fs, serviceDeclarations("wordpress-family-vfs"), new Uint8Array(readFileSync(resolveVfsArtifact("programs/service-activity-control.wasm", "service-activity-tools"))), `case "$target" in
+  installServiceActivities(fs, serviceDeclarations("wordpress-family-vfs").map(service => ({ ...service, stopTarget: `${service.target}-server` })), new Uint8Array(readFileSync(resolveVfsArtifact("programs/service-activity-control.wasm", "service-activity-tools"))), `case "$target" in
       wordpress-sqlite|frankenphp-caddy) backend=sqlite ;;
       wordpress-mariadb) backend=mariadb ;;
       *) exit 2 ;;
