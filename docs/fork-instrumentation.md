@@ -871,6 +871,16 @@ function ordinal. `NativeResumeCatalog` emits the existing descriptor and
 fixed thunk table from strictly ascending frame ordinals; it supports sparse
 entry subsets without changing the ordinals stored in frames.
 
+The host activation registry indexes those immutable function identities once
+per registered activation. Table-delta recipes, full capture and fresh-child
+replay share that index; module registration changes are allowed only while
+the registry is idle. Completing or aborting a transaction releases its copied
+reference graph without clearing the active modules' function identities.
+Unregistering an activation removes its recipes, and destroying the registry
+clears the index. This ownership does not extend the lifetime of copied GC or
+externref graphs. Native-memory and performance effects require separate
+measurements; source-level lifetime checks alone do not establish them.
+
 `StaticRootPlan` discovers immutable GC global roots and aliases, allocating
 nonempty table initializers and allocating live element expressions directly
 from the original scan. It retains bounded source coordinates and visits no

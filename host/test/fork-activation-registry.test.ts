@@ -277,6 +277,56 @@ describe("ForkActivationRegistry", () => {
     owner.abort();
   });
 
+  it("preserves module functions across abort/replay and forgets retired activations", () => {
+    const memory = new WebAssembly.Memory({ initial: 8 });
+    const owner = registry(memory, "function lifetime");
+    owner.registerActivation(registration(0, []));
+    const original = funcrefTableActivation();
+    owner.registerActivation({ ...registration(7, []),
+      instance: original.instance, functionCatalog: original.functionCatalog });
+    const originalFunction = original.functionCatalog.get(0);
+
+    for (const abort of [true, false, false]) {
+      const arena = makeArena(memory, "function capture");
+      arena.begin();
+      owner.beginCapture(arena);
+      const recipe = owner.currentReferences().encodeFuncref(originalFunction);
+      expect(recipe).toBeGreaterThan(0);
+      if (abort) {
+        owner.abort();
+      } else {
+        owner.sealCapture();
+        owner.beginParentReplay();
+        owner.restoreModuleState();
+        expect(owner.currentReferences().decodeFuncref(recipe)).toBe(originalFunction);
+        owner.finishReplay();
+      }
+      expect(owner.phaseName()).toBe("idle");
+    }
+
+    owner.unregisterActivation(7);
+    const replacement = funcrefTableActivation();
+    owner.registerActivation({ ...registration(7, []),
+      instance: replacement.instance, functionCatalog: replacement.functionCatalog });
+    const arena = makeArena(memory, "replacement capture");
+    arena.begin();
+    owner.beginCapture(arena);
+    expect(() => owner.currentReferences().encodeFuncref(originalFunction))
+      .toThrow("funcref is absent from the process module catalogs");
+    owner.abort();
+    const validArena = makeArena(memory, "valid replacement capture");
+    validArena.begin();
+    owner.beginCapture(validArena);
+    const replacementFunction = replacement.functionCatalog.get(0);
+    const recipe = owner.currentReferences().encodeFuncref(replacementFunction);
+    owner.sealCapture();
+    owner.beginParentReplay();
+    owner.restoreModuleState();
+    expect(owner.currentReferences().decodeFuncref(recipe)).toBe(replacementFunction);
+    owner.finishReplay();
+    owner.clear();
+  });
+
   it("keeps table owner ordinals activation-local", () => {
     const memory = new WebAssembly.Memory({ initial: 2 });
     const owner = registry(memory, "tables");
