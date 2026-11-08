@@ -2,6 +2,40 @@
 
 ## Current checkpoint — 2026-11-08
 
+
+**Normal WordPress49 build and replacement preview verified.** Own-SDK job
+`wordpress-cron-normal-partial-v2-1108-070359-5564` passes in 13m25s:
+normal partial image composition, filesystem layout, both existing real
+WordPress Node service profiles and the strengthened cron lifecycle case
+(three passes, no skips). Package checks
+`wordpress49-go-consumer-node-1108-072314-ef5e` also pass for both fresh
+FrankenPHP programs, including 32 requests at concurrency four and
+Go-backed string lifetimes across garbage collection. These checks use
+kernel `7e2593cdb90a`, classic `380ff5931ad3` and Caddy `b0f2985aef0c`.
+
+The replacement preview is running on port 5495 from frozen source
+`95cd1dd170922a881c0c722a63e08df93f8c1f5b`. Its Chromium UI proof
+`wordpress49-running-preview-proof-1108-072552-0480` passes in 3m29s,
+including provisioning: actual demo login, Appearance Editor, a real
+saved template, and guest cron headers matching the actual browser host
+and service-worker machine prefix. The served image and kernel hashes
+are checked against the normal producer. Image SHA-256 is
+`107912d3f8b8e48ce22660537294e1754f8de1000f4e5893754fde8c1d293f8b`
+(84,392,850 bytes). URL:
+
+http://127.0.0.1:5495/?vfs=http%3A%2F%2F127.0.0.1%3A5495%2F%40kandelo-partial%2Fimage.vfs.zst&profile=wordpress-frankenphp-caddy
+
+The evidence and screenshot are in the producer checkout's
+`.context/wordpress49-preview-proof/`; server job
+`wordpress49-candidate-preview-1108-072017-89d6` stays running. The older
+5492 preview remains available. This is a normal partial WordPress
+FPM/classic/Caddy development image, not final canonical acceptance.
+Current three-engine cron, automatic stock-cache cleanup, complete editor,
+upload/persistence/recovery coverage, memory budgets and fair performance
+comparisons remain open. PHP's optimizer remains unchanged. The separate
+canonical producer `f2f6` is still running; its baseline successor is queued.
+
+
 **Image-owned public URL configuration and current-SDK rebuild.** The
 normal partial producer `1e5b` completes its own SDK and selected dependency
 builds, including both FrankenPHP programs, then fails after 48m30s exactly
