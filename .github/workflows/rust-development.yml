@@ -1,0 +1,112 @@
+name: Rust development clean environment
+
+# A complete pinned compiler build is expensive. This lane is explicitly
+# requested and starts with fresh Kandelo caches, rather than restoring
+# prepared SDKs or guest target directories from earlier workflow runs.
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Linux runner label with enough disk for a complete LLVM/Rust SDK build
+        required: true
+        default: ubuntu-latest
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-development-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rust-development:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    env:
+      KANDELO_SOURCE_CACHE_ROOT: ${{ runner.temp }}/kandelo-rust-${{ github.run_id }}-${{ github.run_attempt }}/source
+      WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/kandelo-rust-${{ github.run_id }}-${{ github.run_attempt }}/binaries
+      KANDELO_CACHE_GC_AUTO: '0'
+      WASM_POSIX_RESOLUTION_POLICY: source-only-v1
+      KANDELO_TEST_REPORT_DIR: ${{ github.workspace }}/.context/rust-development-reports
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require empty Kandelo caches
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          for variable in ('KANDELO_SOURCE_CACHE_ROOT', 'WASM_POSIX_BINARY_CACHE_ROOT'):
+              root = Path(os.environ[variable])
+              if root.exists() and any(root.iterdir()):
+                  raise SystemExit(f'Clean-environment check found existing data: {root}')
+          PY
+
+      - name: Fetch pinned native toolchain sources
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: libc/musl sdk/rust/libc-upstream
+
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+
+      - name: Install JavaScript dependencies and browsers
+        run: |
+          scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            npm ci --no-audit --no-fund
+            (cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund)
+            (cd apps/browser-demos && npm ci --no-audit --no-fund && npx playwright install --with-deps chromium firefox webkit)
+          '
+
+      - name: Build the Rust partial shell and standalone acceptance inputs
+        run: |
+          scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            mkdir -p .context/rust-development-reports
+            ./run.sh partial shell cargo rustc kandelo-rustc \
+              kandelo-sdk-browser-bundle wasm-fork-instrument \
+              rust-profiler-runtime-bundle rust-coverage-tools \
+              > .context/rust-development-reports/partial-build.log 2>&1
+            host_target=$(rustc -vV | sed -n "s/^host: //p")
+            for package in kandelo-rust-sdk rust-native-fixtures; do
+              cargo run --release --quiet -p xtask --target "$host_target" -- \
+                build-deps resolve "$package" --arch wasm32 \
+                > ".context/rust-development-reports/$package-build.log" 2>&1
+              tail -n 1 ".context/rust-development-reports/$package-build.log" \
+                > ".context/rust-development-reports/$package-root.txt"
+            done
+          '
+
+      - name: Verify Node Rust development workflows
+        run: |
+          scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            sdk=$(cat .context/rust-development-reports/kandelo-rust-sdk-root.txt)
+            native=$(cat .context/rust-development-reports/rust-native-fixtures-root.txt)
+            bash scripts/check-rust-development.sh node \
+              "$sdk/kandelo-rust-sdk.zip" \
+              "$native/share/kandelo/rust-native-fixtures.zip"
+          '
+
+      - name: Verify browser Rust development workflows
+        run: |
+          scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            sdk=$(cat .context/rust-development-reports/kandelo-rust-sdk-root.txt)
+            native=$(cat .context/rust-development-reports/rust-native-fixtures-root.txt)
+            bash scripts/check-rust-development.sh browser \
+              "$sdk/kandelo-rust-sdk.zip" \
+              "$native/share/kandelo/rust-native-fixtures.zip"
+          '
+
+      - name: Upload build and test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-development-evidence
+          path: |
+            .context/rust-development-reports/
+            local-binaries/partial/
+          if-no-files-found: warn
