@@ -24,8 +24,6 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 360
     env:
-      KANDELO_SOURCE_CACHE_ROOT: ${{ runner.temp }}/kandelo-rust-${{ github.run_id }}-${{ github.run_attempt }}/source
-      WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/kandelo-rust-${{ github.run_id }}-${{ github.run_attempt }}/binaries
       KANDELO_CACHE_GC_AUTO: '0'
       WASM_POSIX_RESOLUTION_POLICY: source-only-v1
       KANDELO_TEST_REPORT_DIR: ${{ github.workspace }}/.context/rust-development-reports
@@ -37,10 +35,15 @@ jobs:
           python3 - <<'PY'
           import os
           from pathlib import Path
-          for variable in ('KANDELO_SOURCE_CACHE_ROOT', 'WASM_POSIX_BINARY_CACHE_ROOT'):
-              root = Path(os.environ[variable])
-              if root.exists() and any(root.iterdir()):
-                  raise SystemExit(f'Clean-environment check found existing data: {root}')
+          root = Path(os.environ['RUNNER_TEMP']) / f"kandelo-rust-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          caches = {'KANDELO_SOURCE_CACHE_ROOT': root / 'source',
+                    'WASM_POSIX_BINARY_CACHE_ROOT': root / 'binaries'}
+          for path in caches.values():
+              if path.exists() and any(path.iterdir()):
+                  raise SystemExit(f'Clean-environment check found existing data: {path}')
+          with open(os.environ['GITHUB_ENV'], 'a') as environment:
+              for variable, path in caches.items():
+                  print(f'{variable}={path}', file=environment)
           PY
 
       - name: Fetch pinned native toolchain sources
@@ -53,6 +56,8 @@ jobs:
 
       - name: Install JavaScript dependencies and browsers
         run: |
+          # The quoted script is expanded by the inner dev-shell Bash.
+          # shellcheck disable=SC2016
           scripts/dev-shell.sh bash -c '
             set -euo pipefail
             npm ci --no-audit --no-fund
@@ -62,6 +67,8 @@ jobs:
 
       - name: Build the Rust partial shell and standalone acceptance inputs
         run: |
+          # The quoted script is expanded by the inner dev-shell Bash.
+          # shellcheck disable=SC2016
           scripts/dev-shell.sh bash -c '
             set -euo pipefail
             mkdir -p .context/rust-development-reports
@@ -72,7 +79,7 @@ jobs:
               > .context/rust-development-reports/partial-build.log 2>&1
             host_target=$(rustc -vV | sed -n "s/^host: //p")
             for package in kandelo-rust-sdk rust-native-fixtures; do
-              cargo run --release --quiet -p xtask --target "$host_target" -- \
+              cargo run --release --locked --quiet -p xtask --target "$host_target" -- \
                 build-deps resolve "$package" --arch wasm32 \
                 > ".context/rust-development-reports/$package-build.log" 2>&1
               tail -n 1 ".context/rust-development-reports/$package-build.log" \
@@ -82,6 +89,8 @@ jobs:
 
       - name: Verify Node Rust development workflows
         run: |
+          # The quoted script is expanded by the inner dev-shell Bash.
+          # shellcheck disable=SC2016
           scripts/dev-shell.sh bash -c '
             set -euo pipefail
             sdk=$(cat .context/rust-development-reports/kandelo-rust-sdk-root.txt)
@@ -93,6 +102,8 @@ jobs:
 
       - name: Verify browser Rust development workflows
         run: |
+          # The quoted script is expanded by the inner dev-shell Bash.
+          # shellcheck disable=SC2016
           scripts/dev-shell.sh bash -c '
             set -euo pipefail
             sdk=$(cat .context/rust-development-reports/kandelo-rust-sdk-root.txt)
