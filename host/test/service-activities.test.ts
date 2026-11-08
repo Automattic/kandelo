@@ -15,6 +15,9 @@ describe("image-owned service activities", () => {
     const fs = KandeloImageFs.create();
     ensureDirRecursive(fs, "/etc/dinit.d");
     writeVfsFile(fs, "/etc/dinit.d/web-php", "type = internal\n");
+    // The daemon requires the image's own config; a real product inherits it
+    // from the rootfs, which declares it in MANIFEST.
+    writeVfsFile(fs, "/etc/syslog.conf", "*.info\t\t\t-/var/log/messages\n");
     installServiceActivities(
       fs,
       [{ target: "web-php", port: 8080 }],

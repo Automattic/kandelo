@@ -521,6 +521,15 @@ describe("dinit-derived image binary ownership", () => {
  */
 describe("optional syslog daemon", () => {
   const syslogdBytes = encoder.encode("exact syslogd bytes");
+  // What the rootfs ships; the helper requires it rather than writing one.
+  const SYSLOG_CONF = "*.info\t\t\t-/var/log/messages\nrotate_size\t256k\nrotate_count\t5\n";
+
+  function createFs(): KandeloImageFs {
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/etc");
+    writeVfsFile(fs, "/etc/syslog.conf", SYSLOG_CONF);
+    return fs;
+  }
 
   it("stages the daemon and a config a user can read inside the machine", () => {
     const fs = createFs();
@@ -537,13 +546,10 @@ describe("optional syslog daemon", () => {
     expect(service.command).toContain("-F");
     expect(service.restart).toBe(true);
 
-    const conf = new TextDecoder().decode(fs.readFile("/etc/syslog.conf"));
-    expect(conf).toContain("/var/log/messages");
-    // Rotation is in the file rather than on the command line so it can be
-    // changed from inside the machine; sysklogd lets argv override the file,
-    // not the reverse.
-    expect(conf).toContain("rotate_size\t256k");
-    expect(conf).toContain("rotate_count\t5");
+    // The config is the image's, not this helper's: one copy, which the
+    // rootfs declares and a user can edit inside the machine.
+    expect(new TextDecoder().decode(fs.readFile("/etc/syslog.conf")))
+      .toBe(SYSLOG_CONF);
   });
 
   it("creates /var/log, which the image now owns rather than a scratch mount", () => {
@@ -552,12 +558,13 @@ describe("optional syslog daemon", () => {
     expect(fs.stat("/var/log").mode & 0o7777).toBe(0o755);
   });
 
-  it("carries the configured rotation into the file", () => {
-    const fs = createFs();
-    addSyslogService(fs, { binary: syslogdBytes, rotateSize: "1M", rotateCount: 2 });
-    const conf = new TextDecoder().decode(fs.readFile("/etc/syslog.conf"));
-    expect(conf).toContain("rotate_size\t1M");
-    expect(conf).toContain("rotate_count\t2");
+  it("refuses an image that would run a daemon with no rules", () => {
+    // A daemon with no config writes nothing and reports nothing, which is
+    // the failure this turns into a build error.
+    const bare = KandeloImageFs.create();
+    expect(() => addSyslogService(bare, { binary: syslogdBytes })).toThrow(
+      /must carry \/etc\/syslog\.conf/,
+    );
   });
 
   it("refuses inputs that would ship a daemon that cannot work", () => {
@@ -566,14 +573,6 @@ describe("optional syslog daemon", () => {
     expect(() => addSyslogService(fs, { binary: new Uint8Array() })).toThrow(
       /exact staged package bytes/,
     );
-    // A malformed rotation would be accepted silently by sysklogd and leave
-    // the log unbounded, which /var/log's cap cannot afford.
-    expect(() =>
-      addSyslogService(fs, { binary: syslogdBytes, rotateSize: "lots" }),
-    ).toThrow(/k\/M\/G/);
-    expect(() =>
-      addSyslogService(fs, { binary: syslogdBytes, rotateCount: 0 }),
-    ).toThrow(/positive integer/);
   });
 
   it("declares no syslogd service in an image that did not opt in", () => {
@@ -592,6 +591,7 @@ describe("optional syslog daemon", () => {
 
     expect(() => fs.stat("/etc/dinit.d/syslogd")).toThrow();
     expect(() => fs.stat("/usr/sbin/syslogd")).toThrow();
-    expect(() => fs.stat("/etc/syslog.conf")).toThrow();
+    // /etc/syslog.conf is not asserted absent: it belongs to the image, not
+    // to the daemon, so an image may carry it and run nothing.
   });
 });
