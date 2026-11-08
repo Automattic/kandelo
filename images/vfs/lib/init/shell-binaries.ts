@@ -72,6 +72,8 @@ export function shellLazyPlaceholderUrl(spec: VfsBinarySpec): string {
  * EAGER_SHELL_PROGRAMS in build-source-rootfs-shell-image.ts).
  */
 export const SHELL_LAZY_BINARY_SPECS = [
+  { id: "llvm-cov", dependency: "rust-coverage-tools", resolverPath: "programs/wasm32/rust-coverage-tools/llvm-cov.wasm", vfsPath: "/usr/bin/llvm-cov", symlinks: [] },
+  { id: "llvm-profdata", dependency: "rust-coverage-tools", resolverPath: "programs/wasm32/rust-coverage-tools/llvm-profdata.wasm", vfsPath: "/usr/bin/llvm-profdata", symlinks: [] },
   { id: "cargo", resolverPath: "programs/wasm32/cargo.wasm", vfsPath: "/usr/bin/cargo", symlinks: [] },
   { id: "rustc", resolverPath: "programs/wasm32/rustc/rustc.wasm", vfsPath: "/usr/libexec/rustc", symlinks: [] },
   { id: "rustdoc", dependency: "rustc", resolverPath: "programs/wasm32/rustc/rustdoc.wasm", vfsPath: "/usr/libexec/rustdoc", symlinks: [] },

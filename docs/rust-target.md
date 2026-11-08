@@ -356,7 +356,8 @@ digest through guest linking remains follow-up work.
 | Backtraces | Experimental worker VM capture with owned names and available source locations; see below |
 | Online registries, Git authentication and proxies | Transport defaults configured; end-to-end workflow unvalidated |
 | Incremental compilation on WebKit | Disabled in the tested profile because of native process memory limits |
-| Parallel test harnesses, release/LTO builds, benchmarks and coverage | Need dedicated guest-toolchain validation; the tested command deadline belongs to the embedding owned-job API |
+| Instrumentation coverage | Ordinary guest Cargo builds, subprocesses, synchronized threads and unit tests pass on Node/Chromium/Firefox/WebKit; see [the coverage workflow](rust-debugging.md#coverage-inside-kandelo) |
+| Parallel test harnesses, release/LTO builds and benchmarks | Need dedicated guest-toolchain validation; the tested command deadline belongs to the embedding owned-job API |
 
 On the build machine, the cross-compilation wrapper can build test targets
 with `--no-run`, but its `test` subcommand still needs a Cargo runner that
@@ -377,8 +378,9 @@ instruction offsets, so its trace has names but no source lines.
 
 Build through the normal `wasm32posix-cargo` wrapper. It retains function
 names and prepares available DWARF source lines automatically. The guest
-compiler entry point selects the same preparation flags; acceptance of the
-rebuilt guest SDK is still pending. The host wrapper retains immutable
+compiler entry point selects the same preparation flags. Ordinary guest Cargo
+builds capture backtraces across a persistent reboot and a source edit on all
+four hosts. The host wrapper retains immutable
 original linker outputs below the Cargo target directory, so a no-change build
 can prepare from the original again. It does not instrument generated fork
 runtime code a second time. Release builds still need debug information for

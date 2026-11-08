@@ -99,6 +99,13 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
 
 export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
   {
+    id: "rust-profiler-runtime",
+    dependency: "rust-profiler-runtime-bundle",
+    resolverPath: "programs/wasm32/rust-profiler-runtime.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "lib/rustlib/wasm32-unknown-kandelo-std/lib/libprofiler_builtins.rlib",
+  },
+  {
     id: "rust-std",
     dependency: "rustc",
     resolverPath: "programs/wasm32/rustc/rust-std.zip",
