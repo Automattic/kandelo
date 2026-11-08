@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-08T06:44:04.432853+00:00",
+  "updatedAt": "2026-11-08T06:51:50.376806+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -291,7 +291,7 @@
     "packages/registry/spidermonkey/patches/0055-kandelo-node-sqlite-owner.patch": "148ab0dc9f0d0437ce8b1661a4dc46b3c80eaf017735c1e86b739177804b248c",
     "packages/registry/spidermonkey/patches/0056-kandelo-node-port-owner.patch": "6ef0e40d73e0c9f587c34e72dddf121962c23474e4d86ca30ae65cf2e2262bca",
     "packages/registry/spidermonkey/patches/0057-kandelo-node-monotonic-hrtime.patch": "5c75e223641cff044f5306255162ffd365be572fde45e0c2830eccfbdcb1356d",
-    "scripts/ci-vitest-evidence-classes.tsv": "45a5f1d4eb77378e0e44567a67ec08adb3161e5ccecd2cacf3d3d14d6f6db52d",
+    "scripts/ci-vitest-evidence-classes.tsv": "b6abb4f52d3b0cc4c01ffdff750f81ea1cf0639e26809871afb7c2cc68c4fd6b",
     "third_party/node-core/buffer-bytes-adapter.js": "f7336c50f3fa23bd889ca2bf0225ade34798f651a092d097dda4669f4898ff47",
     "third_party/node-core/build.py": "073d23e9f7a27dd3827755e825417fb9210a8f188e546cbd49527a2c336a7d2b",
     "third_party/node-core/codec-handle.cpp": "26aa63c403f35ab5fd1b58ab46fe41fef3fe1918343b3431408df9d0b31e6225",
@@ -1112,7 +1112,7 @@
     "host/test/node-assertion-semantics.test.ts": "03a884cd87f744299d7dac96be21edc3d920b961e139ebe9fc299f4e793463bd",
     "host/test/fixtures/node-assertion-platform.cjs": "5cf9c33d8c856a9bfa48ba351e4225d03024809a10674f8708671a17d8e9c9cc",
     "host/test/fixtures/node-assertion-upstream.cjs": "e955f17a3fd2cf831ddd2739e10ba6003cd359ed8e9fecec9bc4d4f1eeb57464",
-    "packages/sets/local-supported.toml": "4d4fc82322cd92ffe933f02d0c53ee4d1881657ddcde7c81679121418ece6fd2",
+    "packages/sets/local-supported.toml": "19ebf8bf3623bca3027cde76b1246c671d709c0562fd3ee0ea37b6c14a92aec7",
     "tests/nodejs/outline/kernel-admission-integration.md": "d9dcad7fdae46a7faa9a1972b62055f008e078f08bb381b16d18434e8f560b81",
     "tests/nodejs/outline/assertion-error-implementation-dependencies.md": "23ace606a14ecf7d04aa29b0b041f50729a924a6c4ef4b029d39f0c0ff2cca28",
     "tests/nodejs/outline/assertion-error-finding-progress.json": "6178cb137c34812ee75d5e3feb87e024376ca1d749d936721351025c81815a8c",
@@ -1589,7 +1589,7 @@
     "tests/nodejs/outline/sdk-recovery-finding-progress.json": "f67234270856a477839bb7707bd3fac4a75c1e02d7d32a743a3b335691754198",
     "sdk/test/compiler-facts-recovery.py": "96d13573593c44d65aa3c30760390754749a15c80c2bd053bbd9f1bdcac7accd",
     "tests/nodejs/outline/sdk-recovery-integration.md": "ee59da926dd07c4987a6c0e77cfa6fbb2d929eee5732deeeb9693dc7dfb65a57",
-    "docs/sdk-guide.md": "043d8980add28f4bfd884adcb9a3f5abe6c6fc7bb9ae79862a054ad44f579c2a",
+    "docs/sdk-guide.md": "c47ba88b970700ad425289c325bcb4e500d0c4e08f0ae25772ef68e566bada21",
     "tests/nodejs/outline/native-lazy-data-finding-progress.json": "1b638df45de2b3a59f5ffeb158910ac8400eceb92b3091f86660c6f91b6ac750",
     "tests/nodejs/outline/native-lazy-data-integration.md": "eaecde4786a8673c70fa900b72ee9cf9ec7ff7f79a41ff80d474663f482190c6",
     "third_party/node-core/native-lazy-data.cpp": "b4e9eac964a8ae93935fc36d4cdd24b38b0a941313d32923954753d346167181",
@@ -1717,7 +1717,7 @@
     "host/test/harper-smoke.test.ts": "75aa2efd8dc424446e3a85ba8dd3de9eb902b32795b3c54ad77a5e65567caf90",
     "host/test/kernel-scratch-contract.test.ts": "b605c17f538726189c12d4416098710418e8714f8f0987dc39704331e9dac080",
     "host/test/support/harper-lsp-probe.ts": "80c2b91092e14a8928cb121e2f2de7d7410a7ea2ea6cd38e1c9e4e977c71afb0",
-    "images/vfs/scripts/shell-lazy-archives.ts": "8359cd02078b7a3d1839bd91cb5045a5f28acd2cf87d8cfd32607c81ab9d95a3",
+    "images/vfs/scripts/shell-lazy-archives.ts": "bc0a51bb4daace5aa7420ae86c05fd0a88ee1db7f602fc7b18f43b8820b8cd63",
     "packages/registry/harper-browser-bundle/build-harper-browser-bundle.sh": "b8945577b0ef6e38d71fb644d9da578a12bcb00eed2ccaf6db25880ecee9da60",
     "packages/registry/harper-browser-bundle/build.toml": "9580e72fec886b497a7c7723414d66014d43fe2f9d96aee09f0ee6cea81c7950",
     "packages/registry/harper-browser-bundle/package.toml": "d7bbf00a51a8941a293480429929cd7f2df90e46a43971446a9c1ec08a6cf086",
@@ -1735,12 +1735,12 @@
     "packages/registry/harper/patches/socket2-0.6.5.patch": "b40f0d005a34edca9e0b16ef416fb308c9c41aca60563c1d0ad34b2f9dba4554",
     "packages/registry/harper/patches/tokio-1.53.3.patch": "9c6472da0ad4d6046e656beeab6f3b4106b4c61d5066f93b972c2bc4f2ee9325",
     "packages/registry/harper/patches/tree-sitter-gitcommit-0.5.0.patch": "9d9524d51d8bba7c8de3386b5b583134b4416c0e7bb39e1eeb3cdc1b48008dbf",
-    "packages/registry/shell/build.toml": "6e1e58858767155801a4367ee2cc223d36db712002030ad921ff67206f37b713",
-    "packages/registry/shell/package.toml": "e25ecf38c6c4b97d0f0507add4eb35e6a86f3eef1d09d5dcc96ca47c462c8886",
-    "packages/registry/shell/source-rootfs-shell-dependencies.json": "5b0052478eedbe04436d8f2be0b464389e1e6e9727b7799824fcfee44490ff15",
-    "scripts/build-rust-sysroot.sh": "b78395930733ede830547087498a0d268cfe6f9c61348239aa5140d4b5d11483",
+    "packages/registry/shell/build.toml": "4bdf5b485b6c535ee8a04a173cd0b924f0312b9879061d6fe60d39d534f79691",
+    "packages/registry/shell/package.toml": "5d629613beb65304d5f330261562527b5836a7d693507103b5ec636969f89580",
+    "packages/registry/shell/source-rootfs-shell-dependencies.json": "a0a9d5f266cb231f6f7012a458afab7f95f549baa580412742b318da44046f66",
+    "scripts/build-rust-sysroot.sh": "17473c99688212b373f72b3f709496ae31d1077fa56b1a2c99130a0fbe4ffcef",
     "scripts/package-rust-build-env.sh": "f1b398b864b7dc63f435d30f906207d76154f0847bdd615151242d57e6520104",
-    "sdk/rust/README.md": "83d546ae5221671a0cc7e2866ed5692aba4d6162502109b2cff2c8bcbc401987",
+    "sdk/rust/README.md": "856af3a82e9d8a6646f3cd3e8be928db557d18910967c40c74e7fae5c8e03667",
     "tests/package-system/rust-package-workspace.test.ts": "4ac81a6016b08c32fdfa69cf463f45ba360b39cec50d86bd856fdb139d5547d1",
     "tests/package-system/source-rootfs-shell-bridge.test.ts": "7132d44eb326e56f5370c69df767575cd97c41525d42a3cf848e800ecc40cbbc",
     "tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.md": "b80face9b26075e2f89af32cbb2ff74e359f33c4645cf4c803dbb3c2303d95a4",
@@ -2702,7 +2702,8 @@
     "third_party/node-core/tls-write-shutdown-owner.md": "558a56570af295a06f3348c4955dd61b7b81b8d802ca224a7faff4c9f1c5592d",
     "third_party/node-core/tests/tls-write-shutdown-owner/native-reference.cjs": "7ab67d369ff0d16d183a60272003b8aa7261d43e9e085edda357220ebc4c8e83",
     "third_party/node-core/tests/tls-write-shutdown-owner/component.cpp": "38562a5a6d971fd87d5d85b7b931d325f5955a3307f68548744dfb5143ec1bb9",
-    "tests/nodejs/outline/tls-write-shutdown-integration.md": "543554f4737a1e98e59544538ec5a60b7b8601b8165041d80cbd37684044fae8"
+    "tests/nodejs/outline/tls-write-shutdown-integration.md": "543554f4737a1e98e59544538ec5a60b7b8601b8165041d80cbd37684044fae8",
+    "tests/nodejs/outline/source260-main-reconciliation.json": "cb0dcc2724e9e491dd500fcb1cd0bcc6007a1d028e17891a44e2c488810c5dfc"
   },
   "changes": [
     {
@@ -52931,31 +52932,154 @@
     "Shared callback policy compiles with explicit hook/context/queue boundary adapters and matches real native Node-API/libuv behavior in eight scenarios, with expected termination codes 1/17 retained. SpiderMonkey rooted/context/checkpoint adapter, engine/root-entry patch and changed DNS/FS/codec owners remain uncompiled. Full rejection events/modes/uncaught recovery, weak-reference/zero-ID/VM/worker and complete loop phases remain missing or unvalidated. Native addon loading in the reference does not imply a guest addon implementation."
   ],
   "mainReconciliation": {
-    "at": "2026-11-08T06:19:54.291435+00:00",
-    "fetchedMain": "b764fbf54856cac6d7be6b56bebfe5315ffc5cc3",
-    "previousMain": "faf9b31720e868fac7c431d81b5076f40a4c16c1",
-    "mergeCommit": "1d66bd790da8f07268b32a31a0b43f459513bd27",
+    "at": "2026-11-08T06:51:50.376806+00:00",
+    "fetchedMain": "c3703ba28d6efaff3a4cd1e3e6f53573cb58b064",
+    "previousMain": "b764fbf54856cac6d7be6b56bebfe5315ffc5cc3",
+    "headBefore": "bab08f89b90042b15a97139aafd136fd9071fdbc",
+    "mergeCommit": "84a21ffe60f6c9bd1ef2e632399b6dc92302b961",
     "mainIsAncestor": true,
-    "changedMainLeaves": {
-      ".claude/skills/porting-software-to-kandelo/SKILL.md": "d44c6bae743ce3965c7ea80f486e3a7fb4e71cfbb047becadeabd937a93652f3",
-      "docs/agent-guidance/packages-and-builds.md": "6370d119280f00fbc50e4009453293944c1f0a52c082770051d9f8ae4156202c",
-      "docs/porting-guide.md": "dee47811a175ddd0146990d855f081c121cd1422ff59d2d389cce7726806525e"
-    },
+    "mainChange": "Guest Rust compiler/Cargo/SDK support, Rust sysroot/libtest, shell lazy registrations, libcurl trust paths and docs/tests",
+    "changedMainPaths": [
+      ".claude/skills/porting-software-to-kandelo/SKILL.md",
+      "apps/browser-demos/test/cargo-in-guest.spec.ts",
+      "apps/browser-demos/test/cargo-partial-image.spec.ts",
+      "apps/browser-demos/test/rust-devtools-in-guest.spec.ts",
+      "apps/browser-demos/test/rustc-in-guest.spec.ts",
+      "docs/filesystem-layout.md",
+      "docs/rust-target.md",
+      "docs/sdk-guide.md",
+      "host/test/cargo-in-guest.test.ts",
+      "host/test/fixtures/cargo-project.ts",
+      "host/test/fixtures/rust-cargo.ts",
+      "host/test/fixtures/rust-compiler.ts",
+      "host/test/fixtures/rust-devtools.ts",
+      "host/test/fixtures/rust-guest-job.ts",
+      "host/test/partial-image.test.ts",
+      "host/test/rust-devtools-in-guest.test.ts",
+      "host/test/rustc-in-guest.test.ts",
+      "images/vfs/lib/init/shell-binaries.ts",
+      "images/vfs/scripts/shell-lazy-archives.ts",
+      "packages/registry/cargo/build.sh",
+      "packages/registry/cargo/build.toml",
+      "packages/registry/cargo/package.toml",
+      "packages/registry/cargo/patches/errno-0.3.14.patch",
+      "packages/registry/cargo/patches/filetime-0.2.27.patch",
+      "packages/registry/cargo/patches/getrandom-0.2.17.patch",
+      "packages/registry/cargo/patches/getrandom-0.3.4.patch",
+      "packages/registry/cargo/patches/getrandom-0.4.2.patch",
+      "packages/registry/cargo/patches/gix-pack-0.68.0.patch",
+      "packages/registry/cargo/patches/is_executable-1.0.5.patch",
+      "packages/registry/cargo/patches/libloading-0.9.0.patch",
+      "packages/registry/cargo/patches/parking_lot_core-0.9.12.patch",
+      "packages/registry/cargo/patches/rustix-1.1.4.patch",
+      "packages/registry/cargo/patches/socket2-0.6.3.patch",
+      "packages/registry/cargo/patches/tar-0.4.45.patch",
+      "packages/registry/cargo/source-patches/build-script-output.patch",
+      "packages/registry/cargo/source-patches/http-defaults.patch",
+      "packages/registry/cargo/source-patches/http1-transport.patch",
+      "packages/registry/kandelo-rust-sdk/build.sh",
+      "packages/registry/kandelo-rust-sdk/build.toml",
+      "packages/registry/kandelo-rust-sdk/package.toml",
+      "packages/registry/kandelo-rustc/build.sh",
+      "packages/registry/kandelo-rustc/build.toml",
+      "packages/registry/kandelo-rustc/package.toml",
+      "packages/registry/libcurl/build-libcurl.sh",
+      "packages/registry/libcurl/build.toml",
+      "packages/registry/rust-llvm/build.sh",
+      "packages/registry/rust-llvm/build.toml",
+      "packages/registry/rust-llvm/package.toml",
+      "packages/registry/rust-llvm/patches/0001-wasm-path-statvfs.patch",
+      "packages/registry/rustc/build.sh",
+      "packages/registry/rustc/build.toml",
+      "packages/registry/rustc/llvm-config.py",
+      "packages/registry/rustc/package.toml",
+      "packages/registry/rustc/patches/getrandom-0.2.16.patch",
+      "packages/registry/rustc/patches/getrandom-0.3.3.patch",
+      "packages/registry/rustc/patches/libloading-0.8.9.patch",
+      "packages/registry/rustc/patches/libloading-0.9.0.patch",
+      "packages/registry/rustc/patches/object-0.37.3.patch",
+      "packages/registry/rustc/patches/parking_lot_core-0.9.12.patch",
+      "packages/registry/rustc/patches/rustix-1.1.2.patch",
+      "packages/registry/rustc/prepare-tools.py",
+      "packages/registry/rustc/source-patches/0001-static-driver.patch",
+      "packages/registry/rustc/source-patches/0002-rustdoc-custom-target.patch",
+      "packages/registry/shell/build.toml",
+      "packages/registry/shell/package.toml",
+      "packages/registry/shell/source-rootfs-shell-dependencies.json",
+      "packages/sets/local-supported.toml",
+      "scripts/build-rust-sysroot.sh",
+      "scripts/ci-vitest-evidence-classes.tsv",
+      "sdk/guest-rust/.gitignore",
+      "sdk/guest-rust/Cargo.lock",
+      "sdk/guest-rust/Cargo.toml",
+      "sdk/guest-rust/README.md",
+      "sdk/guest-rust/licenses/LICENSE-APACHE",
+      "sdk/guest-rust/licenses/LICENSE-MIT",
+      "sdk/guest-rust/licenses/LICENSE-THIRD-PARTY",
+      "sdk/guest-rust/src/lib.rs",
+      "sdk/guest-rust/src/main.rs",
+      "sdk/rust/README.md",
+      "sdk/rust/std-kandelo.patch",
+      "sdk/rust/wasm32-unknown-kandelo-std.json",
+      "tests/runtime-workarounds/RUST-RUSTDOC-NAMED-CUSTOM-TARGET/entry.md",
+      "tests/runtime-workarounds/RUST-RUSTDOC-NAMED-CUSTOM-TARGET/entry.toml",
+      "tests/runtime-workarounds/RUST-RUSTDOC-NAMED-CUSTOM-TARGET/repro/run.sh"
+    ],
     "sourceIdentityChanges": {
-      "docs/porting-guide.md": {
-        "before": "a0fd9eaf560c5f6c4c910b7ccbc9b9119fe541b117ff2c4fb950893a550ed7bc",
-        "after": "dee47811a175ddd0146990d855f081c121cd1422ff59d2d389cce7726806525e"
+      "scripts/ci-vitest-evidence-classes.tsv": {
+        "before": "45a5f1d4eb77378e0e44567a67ec08adb3161e5ccecd2cacf3d3d14d6f6db52d",
+        "after": "b6abb4f52d3b0cc4c01ffdff750f81ea1cf0639e26809871afb7c2cc68c4fd6b"
+      },
+      "packages/sets/local-supported.toml": {
+        "before": "4d4fc82322cd92ffe933f02d0c53ee4d1881657ddcde7c81679121418ece6fd2",
+        "after": "19ebf8bf3623bca3027cde76b1246c671d709c0562fd3ee0ea37b6c14a92aec7"
+      },
+      "docs/sdk-guide.md": {
+        "before": "043d8980add28f4bfd884adcb9a3f5abe6c6fc7bb9ae79862a054ad44f579c2a",
+        "after": "c47ba88b970700ad425289c325bcb4e500d0c4e08f0ae25772ef68e566bada21"
+      },
+      "images/vfs/scripts/shell-lazy-archives.ts": {
+        "before": "8359cd02078b7a3d1839bd91cb5045a5f28acd2cf87d8cfd32607c81ab9d95a3",
+        "after": "bc0a51bb4daace5aa7420ae86c05fd0a88ee1db7f602fc7b18f43b8820b8cd63"
+      },
+      "packages/registry/shell/build.toml": {
+        "before": "6e1e58858767155801a4367ee2cc223d36db712002030ad921ff67206f37b713",
+        "after": "4bdf5b485b6c535ee8a04a173cd0b924f0312b9879061d6fe60d39d534f79691"
+      },
+      "packages/registry/shell/package.toml": {
+        "before": "e25ecf38c6c4b97d0f0507add4eb35e6a86f3eef1d09d5dcc96ca47c462c8886",
+        "after": "5d629613beb65304d5f330261562527b5836a7d693507103b5ec636969f89580"
+      },
+      "packages/registry/shell/source-rootfs-shell-dependencies.json": {
+        "before": "5b0052478eedbe04436d8f2be0b464389e1e6e9727b7799824fcfee44490ff15",
+        "after": "a0a9d5f266cb231f6f7012a458afab7f95f549baa580412742b318da44046f66"
+      },
+      "scripts/build-rust-sysroot.sh": {
+        "before": "b78395930733ede830547087498a0d268cfe6f9c61348239aa5140d4b5d11483",
+        "after": "17473c99688212b373f72b3f709496ae31d1077fa56b1a2c99130a0fbe4ffcef"
+      },
+      "sdk/rust/README.md": {
+        "before": "83d546ae5221671a0cc7e2866ed5692aba4d6162502109b2cff2c8bcbc401987",
+        "after": "856af3a82e9d8a6646f3cd3e8be928db557d18910967c40c74e7fae5c8e03667"
       }
     },
     "foreignRegularFilesPreserved": 52,
-    "recipeRevision": 258,
-    "runtimeImplementationChanged": false,
+    "recipeRevision": 260,
+    "nodeCoreAndEngineSourceChanged": false,
+    "nodeTargetPinChanged": false,
+    "programAbiChanged": false,
     "newRuntimeTests": 0,
     "newCompilations": 0,
-    "scope": "Documentation-only main reconciliation. New man-page guidance read; current runtime/source checks retain their exact historical binding. No pin, audit, implementation, test or build changes. Prior post-reconciliation assertion correctly exposed the porting-guide documentation hash change; only that declared doc identity is advanced.",
+    "newGuidanceRead": [
+      ".claude/skills/porting-software-to-kandelo/SKILL.md delta",
+      "docs/sdk-guide.md delta",
+      "docs/filesystem-layout.md delta"
+    ],
+    "freshEngineClosurePlanRequiredBeforeNextBuild": true,
+    "scope": "Main source reconciliation only. Nine declared identity changes are exact reviewed main-derived SDK/registry/image/test metadata leaves. Node source260 unchanged; prior checks retain historical exact bindings and are not restamped as current whole-tree or main Rust/Cargo conformance. Affected artifact rebuilds and overall/full-product validation remain deferred.",
     "evidence": {
-      "report": "tests/nodejs/outline/source258-main-reconciliation.json",
-      "sha256": "cf540db97e80278021194050347fb59641b0002540f5f55b2bacf9b5c2768cb0"
+      "report": "tests/nodejs/outline/source260-main-reconciliation.json",
+      "sha256": "cb0dcc2724e9e491dd500fcb1cd0bcc6007a1d028e17891a44e2c488810c5dfc"
     }
   },
   "storageMaintenance": {
@@ -135802,6 +135926,34 @@
         "report": "tests/nodejs/outline/engine238-campaign-main-reconciliation.json",
         "sha256": "aadaa5e10536ddf76019755d1e0c99850c95ceb9f343a40f33ece1556f1fef0a"
       }
+    },
+    {
+      "at": "2026-11-08T06:19:54.291435+00:00",
+      "fetchedMain": "b764fbf54856cac6d7be6b56bebfe5315ffc5cc3",
+      "previousMain": "faf9b31720e868fac7c431d81b5076f40a4c16c1",
+      "mergeCommit": "1d66bd790da8f07268b32a31a0b43f459513bd27",
+      "mainIsAncestor": true,
+      "changedMainLeaves": {
+        ".claude/skills/porting-software-to-kandelo/SKILL.md": "d44c6bae743ce3965c7ea80f486e3a7fb4e71cfbb047becadeabd937a93652f3",
+        "docs/agent-guidance/packages-and-builds.md": "6370d119280f00fbc50e4009453293944c1f0a52c082770051d9f8ae4156202c",
+        "docs/porting-guide.md": "dee47811a175ddd0146990d855f081c121cd1422ff59d2d389cce7726806525e"
+      },
+      "sourceIdentityChanges": {
+        "docs/porting-guide.md": {
+          "before": "a0fd9eaf560c5f6c4c910b7ccbc9b9119fe541b117ff2c4fb950893a550ed7bc",
+          "after": "dee47811a175ddd0146990d855f081c121cd1422ff59d2d389cce7726806525e"
+        }
+      },
+      "foreignRegularFilesPreserved": 52,
+      "recipeRevision": 258,
+      "runtimeImplementationChanged": false,
+      "newRuntimeTests": 0,
+      "newCompilations": 0,
+      "scope": "Documentation-only main reconciliation. New man-page guidance read; current runtime/source checks retain their exact historical binding. No pin, audit, implementation, test or build changes. Prior post-reconciliation assertion correctly exposed the porting-guide documentation hash change; only that declared doc identity is advanced.",
+      "evidence": {
+        "report": "tests/nodejs/outline/source258-main-reconciliation.json",
+        "sha256": "cf540db97e80278021194050347fb59641b0002540f5f55b2bacf9b5c2768cb0"
+      }
     }
   ],
   "sqliteLifecycleImplementation": {
@@ -149866,5 +150018,9 @@
     "individualApiClosure": false,
     "implementationComplete": false,
     "acceptedPlatformLimits": []
+  },
+  "postSnapshotMainReconciliation": {
+    "report": "tests/nodejs/outline/source260-main-reconciliation.json",
+    "sha256": "cb0dcc2724e9e491dd500fcb1cd0bcc6007a1d028e17891a44e2c488810c5dfc"
   }
 }
