@@ -139,6 +139,10 @@ describe("parseGalleryRoster", () => {
       "cage",
       "sway",
       "omarchy",
+      "redis",
+    ]);
+    expect([...new Set(roster.entries.map(entry => entry.product))]).toEqual([
+      "browser-main-shell", "browser-web-stack", "browser-wordpress-family",
     ]);
     // The floating Wayland desktop left the gallery when Omarchy joined it;
     // it still boots by URL (?profile=wayland) for its compositor specs.

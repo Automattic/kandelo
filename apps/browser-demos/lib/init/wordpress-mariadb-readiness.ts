@@ -1,6 +1,6 @@
-export const WORDPRESS_MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
+export const WORDPRESS_MARIADB_SOCKET_PATH = "/run/mysqld/mysql.sock";
 export const WORDPRESS_MARIADB_READY_PATH = "/kandelo-ready.php";
-export const WORDPRESS_MARIADB_READY_FILE = `/var/www/html${WORDPRESS_MARIADB_READY_PATH}`;
+export const WORDPRESS_MARIADB_READY_FILE = `/srv/www/html${WORDPRESS_MARIADB_READY_PATH}`;
 
 export const WORDPRESS_MARIADB_READY_PHP = `<?php
 mysqli_report(MYSQLI_REPORT_OFF);

@@ -1,6 +1,14 @@
 schema = 1
 kind = "kandelo-pages-vfs-products"
 
+[[products]]
+id = "browser-web-stack"
+load = "lazy"
+
+[[products]]
+id = "browser-wordpress-family"
+load = "lazy"
+
 # WHY lazy: the canonical rootfs is a supporting artifact, not part of any
 # machine's boot path. It seeds `/etc` for demos that start from an empty
 # filesystem, backs the network demo's own machine, and serves callers that ask

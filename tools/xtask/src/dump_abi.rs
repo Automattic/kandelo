@@ -4339,7 +4339,7 @@ impl Sections {
     }
 }
 
-fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
+fn declared_snapshot_sections() -> Sections {
     use Surface::{KernelHost, Program};
     let mut root: JsonMap = BTreeMap::new();
     // The ABI epoch is hashed into every digest separately; it is not a section.
@@ -4392,12 +4392,24 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     // Which kernel Wasm exports the build keeps.
     s.add(KernelHost, "export_deny", export_deny());
 
+    s
+}
+
+pub(crate) fn source_program_contract_digest() -> Result<[u8; 32], String> {
+    crate::local_abi_identity::program_contract_digest(
+        &Value::Object(declared_snapshot_sections().finish().into_iter().collect()),
+        shared::ABI_VERSION,
+    )
+}
+
+fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
+    let mut s = declared_snapshot_sections();
     let wasm =
         std::fs::read(kernel_wasm).map_err(|e| format!("read {}: {e}", kernel_wasm.display()))?;
     let exports = kernel_exports(&wasm)?;
     validate_host_adapter_export_lifecycles(&s.root["host_adapter"], &exports)?;
-    s.add(KernelHost, "kernel_exports", exports);
-    s.add(KernelHost, "kernel_imports", kernel_imports(&wasm)?);
+    s.add(Surface::KernelHost, "kernel_exports", exports);
+    s.add(Surface::KernelHost, "kernel_imports", kernel_imports(&wasm)?);
 
     Ok(s.finish())
 }

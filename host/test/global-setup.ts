@@ -30,6 +30,7 @@ const examplesDir = join(repoRoot, "examples");
 const fixturesDir = join(__dirname, "fixtures");
 
 const C_TEST_FIXTURES = [
+  { src: join(fixturesDir, "offline-listener.c"), out: join(fixturesDir, "offline-listener.wasm") },
   {
     src: join(repoRoot, "programs/exec-caller.c"),
     out: join(fixturesDir, "abi-version-user.wasm"),
@@ -74,6 +75,25 @@ const C_TEST_FIXTURES = [
 
 /** Program fixtures resolved through the normal local-binaries contract. */
 const RESOLVED_PROGRAM_FIXTURES = [
+  {
+    arch: "wasm32",
+    src: join(repoRoot, "programs/audiotest.c"),
+    out: join(repoRoot, "local-binaries/programs/wasm32/audiotest.wasm"),
+  },
+  ...[
+    "persistence-overwrite",
+    "persistence-boot-counter",
+    "persistence-mapping-memory",
+    "persistence-aggregate-pressure",
+    "http-retirement-server",
+    "exec-memory-refusal",
+    "exec-memory-refusal-small",
+    "exec-memory-refusal-large",
+  ].map(name => ({
+    arch: "wasm32" as const,
+    src: join(repoRoot, `programs/${name}.c`),
+    out: join(repoRoot, `local-binaries/test-fixtures/wasm32/${name}.wasm`),
+  })),
   {
     arch: "wasm32",
     src: join(repoRoot, "programs/tiny-http-server.c"),
@@ -127,6 +147,7 @@ const RESOLVED_PROGRAM_FIXTURES = [
 /** C programs that tests depend on. */
 const TEST_PROGRAMS = [
   "epoll_semantics_test.c",
+  "mmap_file_test.c",
   "clock_getcpuclockid_test.c",
   "syscall_cp_offset_test.c",
   "select_signal_test.c",
@@ -310,6 +331,7 @@ function fixtureBuildContract(
 }
 
 export async function setup() {
+  execFileSync("python3", [join(repoRoot, "scripts/build-program-baseline.py")], { cwd: repoRoot, stdio: "inherit" });
   // The program package index is a generated artifact (gitignored), not a
   // committed one. Generate it here so resolver and package-system tests that
   // read packages/registry/program-packages.json directly get a fresh

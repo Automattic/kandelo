@@ -135,20 +135,15 @@ pub fn devfs_open_dir(
     path: Vec<u8>,
     oflags: u32,
 ) -> Result<i32, Errno> {
-    use crate::fd::OpenFileDescRef;
     use crate::ofd::FileType;
 
     let creation_flags = 0o100 | 0o200 | 0o1000; // O_CREAT | O_EXCL | O_TRUNC
     let status_flags = oflags & !creation_flags;
-    let ofd_idx = proc
-        .ofd_table
-        .create(FileType::Directory, status_flags, DEVFS_DIR_HANDLE, path);
-    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-        ofd.dir_host_handle = DEVFS_DIR_HANDLE;
-    }
     let fd_flags = if oflags & 0o2000000 != 0 { 1 } else { 0 }; // O_CLOEXEC -> FD_CLOEXEC
-    let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-    Ok(fd)
+    proc.open_descriptor(FileType::Directory, status_flags, &path, fd_flags, |_, description| {
+        description.dir_host_handle = DEVFS_DIR_HANDLE;
+        Ok(DEVFS_DIR_HANDLE)
+    })
 }
 
 /// Generate getdents64 entries for a devfs directory.
@@ -160,7 +155,7 @@ pub fn devfs_getdents64(
     offset: i64,
 ) -> Result<(usize, i64, bool), Errno> {
     let entry = match_devfs_dir(path).ok_or(Errno::ENOENT)?;
-    let entries = dir_entries(proc, &entry);
+    let entries = dir_entries(proc, &entry)?;
     crate::procfs::write_virtual_dirents64(buf, offset, devfs_ino(path), 1, &entries)
 }
 
@@ -168,71 +163,71 @@ pub fn devfs_getdents64(
 pub(crate) fn dir_entries(
     proc: &crate::process::Process,
     entry: &DevfsEntry,
-) -> Vec<(Vec<u8>, u8, u64)> {
-    let mut entries = Vec::new();
+) -> Result<crate::procfs::VirtualDirectoryEntries, Errno> {
+    let mut entries = crate::IoBuffer::new();
 
     match entry {
         DevfsEntry::Root => {
             // Character devices
-            entries.push((b"null".into(), DT_CHR, devfs_ino(b"/dev/null")));
-            entries.push((b"zero".into(), DT_CHR, devfs_ino(b"/dev/zero")));
-            entries.push((b"full".into(), DT_CHR, devfs_ino(b"/dev/full")));
-            entries.push((b"random".into(), DT_CHR, devfs_ino(b"/dev/random")));
-            entries.push((b"urandom".into(), DT_CHR, devfs_ino(b"/dev/urandom")));
-            entries.push((b"tty".into(), DT_CHR, devfs_ino(b"/dev/tty")));
-            entries.push((b"console".into(), DT_CHR, devfs_ino(b"/dev/console")));
-            entries.push((b"ptmx".into(), DT_CHR, devfs_ino(b"/dev/ptmx")));
-            entries.push((b"fb0".into(), DT_CHR, devfs_ino(b"/dev/fb0")));
-            entries.push((b"dsp".into(), DT_CHR, devfs_ino(b"/dev/dsp")));
+            entries.try_push((crate::IoBuffer::copy_from(b"null")?, DT_CHR, devfs_ino(b"/dev/null")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"zero")?, DT_CHR, devfs_ino(b"/dev/zero")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"full")?, DT_CHR, devfs_ino(b"/dev/full")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"random")?, DT_CHR, devfs_ino(b"/dev/random")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"urandom")?, DT_CHR, devfs_ino(b"/dev/urandom")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"tty")?, DT_CHR, devfs_ino(b"/dev/tty")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"console")?, DT_CHR, devfs_ino(b"/dev/console")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"ptmx")?, DT_CHR, devfs_ino(b"/dev/ptmx")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"fb0")?, DT_CHR, devfs_ino(b"/dev/fb0")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"dsp")?, DT_CHR, devfs_ino(b"/dev/dsp")))?;
 
             // Symlinks
-            entries.push((b"stdin".into(), DT_LNK, devfs_ino(b"/dev/stdin")));
-            entries.push((b"stdout".into(), DT_LNK, devfs_ino(b"/dev/stdout")));
-            entries.push((b"stderr".into(), DT_LNK, devfs_ino(b"/dev/stderr")));
+            entries.try_push((crate::IoBuffer::copy_from(b"stdin")?, DT_LNK, devfs_ino(b"/dev/stdin")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"stdout")?, DT_LNK, devfs_ino(b"/dev/stdout")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"stderr")?, DT_LNK, devfs_ino(b"/dev/stderr")))?;
 
             // Subdirectories
-            entries.push((b"fd".into(), DT_DIR, devfs_ino(b"/dev/fd")));
-            entries.push((b"pts".into(), DT_DIR, devfs_ino(b"/dev/pts")));
-            entries.push((b"shm".into(), DT_DIR, devfs_ino(b"/dev/shm")));
-            entries.push((b"mqueue".into(), DT_DIR, devfs_ino(b"/dev/mqueue")));
-            entries.push((b"input".into(), DT_DIR, devfs_ino(b"/dev/input")));
-            entries.push((b"dri".into(), DT_DIR, devfs_ino(b"/dev/dri")));
-            entries.push((b"kandelo".into(), DT_DIR, devfs_ino(b"/dev/kandelo")));
+            entries.try_push((crate::IoBuffer::copy_from(b"fd")?, DT_DIR, devfs_ino(b"/dev/fd")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"pts")?, DT_DIR, devfs_ino(b"/dev/pts")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"shm")?, DT_DIR, devfs_ino(b"/dev/shm")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"mqueue")?, DT_DIR, devfs_ino(b"/dev/mqueue")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"input")?, DT_DIR, devfs_ino(b"/dev/input")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"dri")?, DT_DIR, devfs_ino(b"/dev/dri")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"kandelo")?, DT_DIR, devfs_ino(b"/dev/kandelo")))?;
         }
         DevfsEntry::KandeloDir => {
             // /dev/kandelo/clipboard — host clipboard text for the guest's
             // clipboard agent (crate::clipboard).
-            entries.push((
-                b"clipboard".into(),
+            entries.try_push((
+                crate::IoBuffer::copy_from(b"clipboard")?,
                 DT_CHR,
                 devfs_ino(b"/dev/kandelo/clipboard"),
-            ));
+            ))?;
         }
         DevfsEntry::InputDir => {
             // /dev/input/mice — Linux-compatible PS/2 mouse stream.
-            entries.push((b"mice".into(), DT_CHR, devfs_ino(b"/dev/input/mice")));
+            entries.try_push((crate::IoBuffer::copy_from(b"mice")?, DT_CHR, devfs_ino(b"/dev/input/mice")))?;
             // /dev/input/event0 — keyboard evdev (plan 5).
             // /dev/input/event1 — pointer evdev.
-            entries.push((b"event0".into(), DT_CHR, devfs_ino(b"/dev/input/event0")));
-            entries.push((b"event1".into(), DT_CHR, devfs_ino(b"/dev/input/event1")));
+            entries.try_push((crate::IoBuffer::copy_from(b"event0")?, DT_CHR, devfs_ino(b"/dev/input/event0")))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"event1")?, DT_CHR, devfs_ino(b"/dev/input/event1")))?;
         }
         DevfsEntry::DriDir => {
             // /dev/dri/card0 — KMS / display side.
             // /dev/dri/renderD128 — render / GPU side.
-            entries.push((b"card0".into(), DT_CHR, devfs_ino(b"/dev/dri/card0")));
-            entries.push((
-                b"renderD128".into(),
+            entries.try_push((crate::IoBuffer::copy_from(b"card0")?, DT_CHR, devfs_ino(b"/dev/dri/card0")))?;
+            entries.try_push((
+                crate::IoBuffer::copy_from(b"renderD128")?,
                 DT_CHR,
                 devfs_ino(b"/dev/dri/renderD128"),
-            ));
+            ))?;
         }
         DevfsEntry::PtsDir => {
             // List active PTY slaves
             for i in 0..crate::pty::MAX_PTYS {
                 if let Some(pty) = crate::pty::get_pty(i) {
                     if pty.slave_refs > 0 || pty.master_refs > 0 {
-                        let name = alloc::format!("{}", i).into_bytes();
-                        entries.push((name, DT_CHR, devfs_ino(b"/dev/pts/0") + i as u64));
+                        let name = crate::IoBuffer::formatted(format_args!("{}", i))?;
+                        entries.try_push((name, DT_CHR, devfs_ino(b"/dev/pts/0") + i as u64))?;
                     }
                 }
             }
@@ -241,9 +236,9 @@ pub(crate) fn dir_entries(
             // List open file descriptors for this process
             for fd in 0..1024i32 {
                 if proc.fd_table.get(fd).is_ok() {
-                    let name = alloc::format!("{}", fd).into_bytes();
-                    let path = alloc::format!("/dev/fd/{}", fd).into_bytes();
-                    entries.push((name, DT_LNK, devfs_ino(&path)));
+                    let name = crate::IoBuffer::formatted(format_args!("{}", fd))?;
+                    let path = crate::IoBuffer::formatted(format_args!("/dev/fd/{}", fd))?;
+                    entries.try_push((name, DT_LNK, devfs_ino(&path)))?;
                 }
             }
         }
@@ -252,7 +247,7 @@ pub(crate) fn dir_entries(
         }
     }
 
-    entries
+    Ok(entries)
 }
 
 /// Compute a stable inode number from a device path.
@@ -268,6 +263,22 @@ fn devfs_ino(path: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_admission_failure_does_not_publish_an_empty_or_partial_listing() {
+        let proc = crate::process::Process::new(1);
+        let mut output = [0xa5u8; 256];
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(dir_entries(&proc, &DevfsEntry::Root), Err(Errno::ENOMEM));
+            assert_eq!(devfs_getdents64(&proc, b"/dev", &mut output, 0), Err(Errno::ENOMEM));
+            assert_eq!(output, [0xa5; 256]);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        assert!(!dir_entries(&proc, &DevfsEntry::Root).unwrap().is_empty());
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
 
     fn dirent_len(name: &[u8]) -> usize {
         (19 + name.len() + 1 + 7) & !7
@@ -346,7 +357,7 @@ mod tests {
     #[test]
     fn fd_directory_entry_inode_matches_symlink_stat() {
         let proc = crate::process::Process::new(1);
-        let entries = dir_entries(&proc, &DevfsEntry::FdDir);
+        let entries = dir_entries(&proc, &DevfsEntry::FdDir).unwrap();
         let (_, entry_type, entry_ino) = entries
             .iter()
             .find(|(name, _, _)| name.as_slice() == b"0")
@@ -359,7 +370,7 @@ mod tests {
     #[test]
     fn fb0_is_listed_in_dev_dir() {
         let proc = crate::process::Process::new(1);
-        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let entries = dir_entries(&proc, &DevfsEntry::Root).unwrap();
         let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
         assert!(
             names.iter().any(|n| *n == b"fb0"),
@@ -377,7 +388,7 @@ mod tests {
     #[test]
     fn input_dir_is_listed_under_dev() {
         let proc = crate::process::Process::new(1);
-        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let entries = dir_entries(&proc, &DevfsEntry::Root).unwrap();
         let mut found = false;
         for (name, dtype, _) in entries.iter() {
             if name.as_slice() == b"input" {
@@ -391,7 +402,7 @@ mod tests {
     #[test]
     fn dsp_is_listed_in_dev_dir() {
         let proc = crate::process::Process::new(1);
-        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let entries = dir_entries(&proc, &DevfsEntry::Root).unwrap();
         let mut found = false;
         for (name, dtype, _) in entries.iter() {
             if name.as_slice() == b"dsp" {
@@ -405,7 +416,7 @@ mod tests {
     #[test]
     fn dri_dir_is_listed_under_dev() {
         let proc = crate::process::Process::new(1);
-        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let entries = dir_entries(&proc, &DevfsEntry::Root).unwrap();
         let mut found = false;
         for (name, dtype, _) in entries.iter() {
             if name.as_slice() == b"dri" {
@@ -419,9 +430,9 @@ mod tests {
     #[test]
     fn kandelo_dir_lists_the_clipboard_device() {
         let proc = crate::process::Process::new(1);
-        let root = dir_entries(&proc, &DevfsEntry::Root);
+        let root = dir_entries(&proc, &DevfsEntry::Root).unwrap();
         assert!(root.iter().any(|(n, t, _)| n.as_slice() == b"kandelo" && *t == DT_DIR));
-        let entries = dir_entries(&proc, &DevfsEntry::KandeloDir);
+        let entries = dir_entries(&proc, &DevfsEntry::KandeloDir).unwrap();
         let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
         assert_eq!(names, [b"clipboard".as_slice()]);
         assert_eq!(entries[0].1, DT_CHR);
@@ -432,7 +443,7 @@ mod tests {
     #[test]
     fn dri_dir_lists_card0_and_renderd128() {
         let proc = crate::process::Process::new(1);
-        let entries = dir_entries(&proc, &DevfsEntry::DriDir);
+        let entries = dir_entries(&proc, &DevfsEntry::DriDir).unwrap();
         let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
         assert!(names.iter().any(|n| *n == b"card0"));
         assert!(names.iter().any(|n| *n == b"renderD128"));
@@ -446,7 +457,7 @@ mod tests {
     #[test]
     fn mice_is_listed_in_dev_input_dir() {
         let proc = crate::process::Process::new(1);
-        let entries = dir_entries(&proc, &DevfsEntry::InputDir);
+        let entries = dir_entries(&proc, &DevfsEntry::InputDir).unwrap();
         let mut found = false;
         for (name, dtype, _) in entries.iter() {
             if name.as_slice() == b"mice" {
@@ -557,9 +568,9 @@ mod tests {
     #[test]
     fn devfs_getdents64_exact_last_entry_and_eof_preserve_cookies() {
         let proc = crate::process::Process::new(1);
-        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let entries = dir_entries(&proc, &DevfsEntry::Root).unwrap();
         let end_cookie = i64::try_from(entries.len()).unwrap() + 2;
-        let last_name = entries.last().unwrap().0.clone();
+        let last_name = entries.last().unwrap().0.as_slice().to_vec();
         let mut exact = vec![0u8; dirent_len(&last_name)];
 
         let (bytes, cookie, exhausted) =
@@ -590,7 +601,7 @@ mod tests {
     #[test]
     fn event0_and_event1_listed_in_dev_input_dir() {
         let proc = crate::process::Process::new(1);
-        let entries = dir_entries(&proc, &DevfsEntry::InputDir);
+        let entries = dir_entries(&proc, &DevfsEntry::InputDir).unwrap();
         let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
         assert!(names.iter().any(|n| *n == b"event0"), "event0 missing: {:?}", names);
         assert!(names.iter().any(|n| *n == b"event1"), "event1 missing: {:?}", names);

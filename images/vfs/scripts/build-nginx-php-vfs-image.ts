@@ -44,7 +44,7 @@ daemon off;
 master_process on;
 worker_processes 2;
 error_log stderr info;
-pid /tmp/nginx.pid;
+pid /run/nginx.pid;
 
 events {
     worker_connections 64;
@@ -70,7 +70,7 @@ http {
     server {
         listen 8080;
         server_name localhost;
-        root /var/www/html;
+        root /srv/www/html;
         index index.php index.html;
 
         # Route every request through fpm-router.php so PHP decides static
@@ -80,7 +80,7 @@ http {
             fastcgi_pass 127.0.0.1:9000;
             fastcgi_index fpm-router.php;
             include /etc/nginx/fastcgi_params;
-            fastcgi_param SCRIPT_FILENAME /var/www/fpm-router.php;
+            fastcgi_param SCRIPT_FILENAME /srv/www/fpm-router.php;
             # Report the requested path (not the router) as SCRIPT_NAME so
             # front controllers like Adminer build self-links against the
             # real URL (/, /info.php) instead of /fpm-router.php.
@@ -184,10 +184,10 @@ include $docRoot . '/index.php';
 `;
 
 // Runtime location of the demo SQLite database. PHP-FPM (running as `nobody`)
-// creates and seeds it on the first request, so /var/www/data must be
+// creates and seeds it on the first request, so /var/lib/php-demo must be
 // world-writable. The path is shared by the Adminer landing page and any
 // terminal/PHP inspection.
-const DEMO_DB_PATH = "/var/www/data/demo.db";
+const DEMO_DB_PATH = "/var/lib/php-demo/demo.db";
 
 // Sample database seeded on first request. A small bookstore schema gives
 // Adminer real tables, rows, and a foreign key to browse and edit.
@@ -371,11 +371,11 @@ export async function buildNginxPhpVfsImage(
         inputs.shellImage,
         NGINX_PHP_IMAGE_MAX_BYTES,
       );
-  fs.chmod("/tmp", 0o777);
+  fs.chmod("/tmp", 0o1777);
   ensureDirRecursive(fs, "/usr/sbin");
   ensureDirRecursive(fs, "/run");
   ensureDirRecursive(fs, "/var");
-  ensureDirRecursive(fs, "/var/www/html");
+  ensureDirRecursive(fs, "/srv/www/html");
   ensureDirRecursive(fs, "/etc/nginx");
   ensureDirRecursive(fs, "/tmp/nginx_client_temp");
   ensureDirRecursive(fs, "/tmp/nginx_fastcgi_temp");
@@ -390,38 +390,38 @@ export async function buildNginxPhpVfsImage(
   writeVfsFile(fs, "/etc/nginx/fastcgi_params", FASTCGI_PARAMS);
   writeVfsFile(fs, "/etc/php-fpm.conf", PHP_FPM_CONF);
   writeVfsFile(fs, "/etc/php.ini", PHP_INI);
-  writeVfsFile(fs, "/var/www/fpm-router.php", FPM_ROUTER_PHP);
-  writeVfsFile(fs, "/var/www/html/index.php", ADMINER_INDEX_PHP);
-  writeVfsBinary(fs, "/var/www/html/adminer.php", inputs.adminer, 0o644);
-  writeVfsFile(fs, "/var/www/html/seed.sql", SEED_SQL);
-  writeVfsFile(fs, "/var/www/html/info.php", INFO_PHP);
-  fs.chown("/var/www", DEMO_UID, DEMO_GID);
-  fs.chown("/var/www/html", DEMO_UID, DEMO_GID);
-  fs.chown("/var/www/fpm-router.php", DEMO_UID, DEMO_GID);
-  fs.chown("/var/www/html/index.php", DEMO_UID, DEMO_GID);
-  fs.chown("/var/www/html/adminer.php", DEMO_UID, DEMO_GID);
-  fs.chown("/var/www/html/seed.sql", DEMO_UID, DEMO_GID);
-  fs.chown("/var/www/html/info.php", DEMO_UID, DEMO_GID);
-  fs.chmod("/var/www", 0o755);
-  fs.chmod("/var/www/html", 0o755);
-  fs.chmod("/var/www/fpm-router.php", 0o644);
-  fs.chmod("/var/www/html/index.php", 0o644);
-  fs.chmod("/var/www/html/adminer.php", 0o644);
-  fs.chmod("/var/www/html/seed.sql", 0o644);
-  fs.chmod("/var/www/html/info.php", 0o644);
+  writeVfsFile(fs, "/srv/www/fpm-router.php", FPM_ROUTER_PHP);
+  writeVfsFile(fs, "/srv/www/html/index.php", ADMINER_INDEX_PHP);
+  writeVfsBinary(fs, "/srv/www/html/adminer.php", inputs.adminer, 0o644);
+  writeVfsFile(fs, "/srv/www/html/seed.sql", SEED_SQL);
+  writeVfsFile(fs, "/srv/www/html/info.php", INFO_PHP);
+  fs.chown("/srv/www", DEMO_UID, DEMO_GID);
+  fs.chown("/srv/www/html", DEMO_UID, DEMO_GID);
+  fs.chown("/srv/www/fpm-router.php", DEMO_UID, DEMO_GID);
+  fs.chown("/srv/www/html/index.php", DEMO_UID, DEMO_GID);
+  fs.chown("/srv/www/html/adminer.php", DEMO_UID, DEMO_GID);
+  fs.chown("/srv/www/html/seed.sql", DEMO_UID, DEMO_GID);
+  fs.chown("/srv/www/html/info.php", DEMO_UID, DEMO_GID);
+  fs.chmod("/srv/www", 0o755);
+  fs.chmod("/srv/www/html", 0o755);
+  fs.chmod("/srv/www/fpm-router.php", 0o644);
+  fs.chmod("/srv/www/html/index.php", 0o644);
+  fs.chmod("/srv/www/html/adminer.php", 0o644);
+  fs.chmod("/srv/www/html/seed.sql", 0o644);
+  fs.chmod("/srv/www/html/info.php", 0o644);
 
   // Writable data dir for the SQLite database PHP-FPM seeds on first request.
   // php-fpm runs as `nobody`, so this must be world-writable (mirrors the
   // /tmp 1777 precedent above).
-  ensureDirRecursive(fs, "/var/www/data");
-  fs.chown("/var/www/data", DEMO_UID, DEMO_GID);
-  fs.chmod("/var/www/data", 0o777);
+  ensureDirRecursive(fs, "/var/lib/php-demo");
+  fs.chown("/var/lib/php-demo", DEMO_UID, DEMO_GID);
+  fs.chmod("/var/lib/php-demo", 0o777);
 
   // Prewarm opcache: compile the demo's router and document-root PHP
   // files into the file cache so the first request doesn't pay the parse
   // cost. See build-wp-vfs-image.ts for the full rationale.
   await prewarmOpcache(fs, {
-    sourceRoots: ["/var/www"],
+    sourceRoots: ["/srv/www"],
     label: "nginx-php",
     cacheOwner: { uid: 65534, gid: 65534 }, // FPM's nobody account.
     programs: inputs.buildPrograms,

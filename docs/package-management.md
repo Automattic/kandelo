@@ -1,5 +1,22 @@
 # Package management (Wasm packages)
 
+## Executable build identity
+
+An executable's `kandelo.build.key` records its original producer for build
+diagnostics. Userspace packages may re-export an already-built executable;
+publication preserves that executable's stamp rather than requiring it to
+match the wrapper package's cache key. This identity is not a signature or
+a filesystem integrity check. Userspace cache admission does not enforce
+embedded build-key ownership.
+
+Publication still rejects an existing incompatible `kandelo.abi.contract`;
+it never relabels a binary to make it compatible. Package cache receipts,
+content hashes, dependency selection, and filesystem/journal checks remain
+in effect. Kernel build-key freshness checking remains enabled so tests
+cannot silently run a kernel from an older source tree.
+
+## Overview
+
 How we declare, build, cache, and publish the artifacts the project
 produces — static libraries (zlib, ncurses, openssl, libcurl,
 libxml2, libpng, sqlite, libcxx, …), ported programs (vim, git, php, …),
@@ -31,6 +48,7 @@ Most readers want one of these. Detailed sections follow further down.
 | I want to…                                    | Look at                                                                                                                                                                                                                                                            |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Add a new package to the registry             | [Schema: `package.toml`](#schema-packagetoml) + [docs/porting-guide.md](porting-guide.md#adding-a-new-package-to-the-registry) for the end-to-end workflow.                                                                                                        |
+| Try a package in a machine without building the whole shell | [Partial images](#partial-images) — `./run.sh partial shell <pkg>...` composes the rootfs base plus only the named packages. |
 | Resolve one package on demand                 | `cargo xtask build-deps resolve <name>` — source-builds if needed, populates the local cache.                                                                                                                                                                      |
 | Build every local VFS product                 | [Local DAG build](#local-dag-build) — one parallel, resumable command for all seven products and their package dependencies.                                                                                                                                       |
 | Find where an output lands                    | `cargo xtask build-deps output-path <name> <declared-artifact>` — single source of truth for the layout convention (flat for a one-member output/runtime closure, nested under `<pkg>/` for two or more members). A basename is accepted only when unique.         |
@@ -374,6 +392,10 @@ artifacts.
 
 ### Reproducible VFS image packages
 
+Installed guest paths follow [Kandelo's FHS layout](filesystem-layout.md),
+including lazy archive members and package runtime files. Shipped tools use
+one canonical command path and leave `/usr/local` to the administrator.
+
 A VFS image package (`nginx-php-vfs`, `wordpress`, `lamp`, …) is cached by
 its cache key like any other package, so two builds under the same key must
 produce the same bytes. When they do not, the resolver keeps whichever build
@@ -502,7 +524,7 @@ same image, database and prewarmed opcache included.
 `lamp` package under one cache key still produce different images, so the
 resolver keeps whichever build publishes first and records a
 rebuild-mismatch receipt for the other. Everything WordPress writes is
-identical between builds; the differences are all under `/data`, from
+identical between builds; the differences are all under `/var/lib/mysql`, from
 MariaDB's bootstrap, between 2 and about 76 files per pair of builds:
 
 - **InnoDB redo log and system tablespace (every pair).** After bootstrap
@@ -537,7 +559,7 @@ thread proceeds and advancing virtual time only when every thread is
 blocked. The order would then depend only on what the guests do, never on
 host timing, and MariaDB's bootstrap would be as reproducible as the
 WordPress install. It is the general fix: any threaded installer benefits,
-where the alternatives (a pinned pre-bootstrapped `/data`, or accepting
+where the alternatives (a pinned pre-bootstrapped `/var/lib/mysql`, or accepting
 `lamp` as non-reproducible) fix one package or none.
 
 **Why the scheduler waits for blocking waits to move into Rust.** To
@@ -561,7 +583,7 @@ bootstrap is not reproducible").
 
 What the build already does, so the remaining difference is only thread
 order: the bootstrap runs to completion instead of a fixed wait and a
-kill, the server shuts down slowly, and `/data` lives in the booted
+kill, the server shuts down slowly, and `/var/lib/mysql` lives in the booted
 kernel's own filesystem rather than a host directory, which removed the
 build host's case sensitivity (macOS made MariaDB set
 `lower_case_table_names=2`) from the image.
@@ -1033,12 +1055,12 @@ structured Rust lookup for the destination, exact declared artifact, and fork
 policy before instrumentation or filesystem mutation. It never guesses a path
 for an unregistered or malformed package. Package publication does not create
 a second `sh` resolver output; guest images own their explicit `/bin/sh`
-symlink. That symlink always targets bash: every Kandelo image binds
-`/bin/sh`, `/bin/bash` and `/usr/bin/sh` to `/usr/bin/bash`, and bash
+symlink. That symlink always targets bash: every Kandelo image installs
+`/bin/bash` and links `/bin/sh` to it, and bash
 honors POSIX mode when invoked as `sh`. The base rootfs declares the binding
 as bash's `aliases` in `images/rootfs/PACKAGES.toml`; images composed on it
-(the source-rootfs shell image) inherit it and assert that `/bin/bash`,
-`/usr/bin/bash`, `/bin/sh` and `/usr/bin/sh` all resolve to the image's
+(the source-rootfs shell image) inherit it and assert that `/bin/bash`
+and `/bin/sh` both resolve to the image's
 bash; images built from scratch (the MariaDB, MariaDB-test and SQLite-test
 builders, and the lazy shell image in `shell-vfs-build.ts`) bind it with
 `installBashAsPosixShell` in `images/vfs/scripts/vfs-image-helpers.ts`. An image may also ship dash (or any other shell) as an
@@ -1194,7 +1216,7 @@ fork descendant rather than accepting output as a proxy for process exit.
 The disabled legacy `erlang-vfs` compatibility recipe consumes `erlang`'s
 declared runtime archive through the resolver; it does not read a
 recipe-directory install tree or user cache. Its opt-in VFS image copies the
-complete archive under `/usr/local/lib/erlang`, preserves executable modes,
+complete archive under `/usr/lib/erlang`, preserves executable modes,
 and includes ABI metadata. Staging does not publish that image.
 
 ### `arches`
@@ -1246,6 +1268,14 @@ toolchain/sysroot input digests, sorted transitive dep cache-key
 shas)`, where `revision` is read from `build.toml` (overlaid onto the
 parsed `DepsManifest` at load time) and defaults to 1 when
 `build.toml` omits it or is absent.
+
+Recursive directory hashing skips children named exactly `.git`, whether
+they are worktree/submodule pointer files or standalone Git directories.
+Git administrative paths and history therefore do not split identical source
+trees across checkouts. All other entries, including `.gitignore`, remain
+inputs: local source edits, additions, and deletions still invalidate the key.
+This applies to both Default and SourceOnly hashing, including nested
+submodules. Trees without `.git` children retain their existing digests.
 
 Source-only cache keys add the stable semantic marker
 `kandelo-source-provider-v1\0` followed by `archive\0`, `repository\0`, or
@@ -1403,10 +1433,71 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_BUILD_GIT_<NAME>_COMMIT` | Exact declared commit corresponding to that checkout.                                                                                                                                                                                                                                                                                            |
 
 `local-build` passes its current executable as `WASM_POSIX_XTASK_BIN` to
-recipes. Runtime-file metadata queries reuse that source-built driver rather
+recipes. Output and runtime-file metadata queries reuse that source-built driver rather
 than compiling another xtask inside every recipe's private Cargo roots.
 Standalone callers still prepare xtask through Cargo and use its reported
 artifact path.
+
+The resolver also supplies `WASM_POSIX_INSTALL_OUTPUT_METADATA`, a JSON array
+of Rust-selected program output declarations for this exact package. Sealed
+`install_local_binary` calls use it without Cargo, verify the package name and
+refuse ambiguous output lookup or a conflicting explicit fork policy. Ordinary
+mirrored installs query the manifest instead of trusting ambient metadata.
+Recipes must not manufacture this metadata or pass another package's array.
+
+When selected direct dependencies declare originals, the resolver supplies
+`WASM_POSIX_DEP_ORIGINAL_INPUTS`: a readonly, version-1 JSON file in the private
+recipe work directory. Its kind is `kandelo-dependency-original-inputs`; it
+binds the consumer package and each original to the selected executable,
+architecture, cache key, native paths, permissions, lengths and SHA-256 hashes.
+The parent applies ordinary cache admission and verifies original content
+before issuing it, including wasm32 fallback for wasm64 consumers. It removes
+inherited values and leaves the variable absent when no dependency needs it.
+Readers limit metadata to 4 MiB and 4096 records, refuse unknown fields and
+duplicate identities, and recheck actual files with bounded stable reads.
+This build-time handoff avoids nested index generation inside sealed image
+recipes; it is not guest execution or package-upgrade authority.
+
+The optional producer-side `[[outputs]].original_wasm` declaration associates
+a raw original with an output without changing executable layout. When used,
+the resolver supplies `WASM_POSIX_BUILD_ORIGINAL_STORE` below the private work
+root so transformation can retain the exact input before recipes overwrite it.
+Inspection modes do not touch that store. The installer verifies and copies the
+original before publishing its output; canonical admission checks content and
+receipt binding. Neither environment variable is a runtime execution authority.
+SourceOnly publication and its index/aggregate receipts now carry immutable
+companion generations below the reserved
+`programs/<arch>/.originals/<package>/<cache-key>/` namespace. Originals are
+associated data, not executable/runtime members that change scalar layout.
+Companions become durable before executable activation and are never replaced
+with different content at the same generation path. The `less` recipe is the
+first SourceOnly producer to enable retention. Shell image builders resolve
+the exact associated original from the selected package, validate its binding
+in Rust and register a read-only digest-bound lazy file rather than embedding
+its body. An existing lazy executable from an explicitly selected dependency
+does not suppress original registration. Programs provided only by the base
+image remain base-owned rather than becoming undeclared direct dependencies.
+The actual package and image save/reload path are validated; full products have
+not yet been rebuilt for this change. Cache-backed Default mirrors also publish
+immutable originals before executable links, retaining scalar/package layouts
+and revalidating originals before each executable mutation. Default asset
+collection binds original paths to the same selected executable generation;
+missing executables cannot bypass that binding through literal-path fallback.
+The rootfs manifest generator also consumes these dependency bindings, either
+through the inherited variable or explicit `--original-inputs` argument
+(`ROOTFS_ORIGINAL_INPUTS` for `build-rootfs.sh`). Both eager and lazy programs
+retain readonly lazy originals; unrelated data files remain ordinary data.
+Standalone selected SourceOnly trees consult their recorded declarations even
+if a program's original reference was stripped. An opaque resolved-output map
+without local prepared bytes cannot be combined with original bindings yet.
+Generated references must round-trip through the image-owned lazy grammar;
+unsupported original names are refused before registration, including literal
+percent escapes that would otherwise name a different file after decoding.
+Manual direct-local sessions, runtime-side module originals and automatic
+execution remain unfinished. Direct-local sessions require their own complete
+original staging rather than borrowing a cache-backed generation's originals.
+See [original-program retention](persistent-program-compatibility.md#original-program-retention-prototype)
+for the current integration boundary and unfinished runtime work.
 
 Scripts that accept the optional sealed-build roots should source
 `scripts/package-build-roots.sh`. Explicit source, work, and output roots must
@@ -2010,12 +2101,100 @@ the previously cached artifact no longer matches. The next
 the canonical cache path, and rebuilds from source via `build-<name>.sh`.
 No stale-archive handling is needed — a changed recipe simply rebuilds.
 
-For pre-push iteration, edit the recipe and run `./run.sh local-build`
-(or `./run.sh browser`). The local DAG rebuilds the affected node and its
+To try a package in a machine while you iterate, build a
+[partial image](#partial-images) carrying only it. Before pushing, edit the
+recipe and run `./run.sh local-build` (or `./run.sh browser`). The local DAG rebuilds the affected node and its
 dependent products; unchanged content-addressed nodes are reused from
 cache. See [Local DAG build](#local-dag-build) for the aggregate build
 command and [Resolution order](#resolution-order) for the exact local
 override, cache, and source-build tiers.
+
+## Partial images
+
+The canonical shell depends on about 55 packages, from PHP and MariaDB to
+Qt and FFmpeg, and the browser app and `./run.sh local-build` build all of
+them. A worktree that only needs to try one package pays for every other.
+A **partial image** is a development build of one image that carries the
+rootfs base plus only the packages you name:
+
+```bash
+./run.sh partial shell tmux less          # compose it (members come from the shared cache)
+./run.sh partial shell tmux --with-tests  # ...then run packages/registry/tmux/test/
+./run.sh partial lamp tmux                # LAMP on a partial shell
+./run.sh browser --partial                # serve what is built, no full local-build
+```
+
+Every image that embeds the shell has a partial build: `shell`, `nginx`,
+`nginx-php`, `nginx-python`, `wordpress`, `lamp`, `web-stack` and
+`wordpress-family`. For an image derived from the shell, the partial image
+is that image's normal build with the partial shell in place of the
+canonical one: its own packages (nginx, PHP, MariaDB, ...) are all present.
+Images that do not embed the shell already build without it and have no
+partial build.
+
+What it contains:
+
+- the `rootfs` package's closure (bash, coreutils, grep, sed, gawk,
+  findutils, diffutils, make, login, sudo, ...) and `ca-certificates`;
+- each named package, installed exactly as the canonical shell installs it:
+  the same role from `packages/registry/shell/source-rootfs-shell-dependencies.json`,
+  the same lazy file or archive entry, wrappers, exchange rules and
+  `/etc/profile.d` script;
+- only the activities whose `requires` packages are present (see
+  [docs/package-sessions.md](package-sessions.md) "Activity catalog and game
+  data"). The command prints every activity it left out and the packages
+  that activity needs, e.g. `left out scummvm: needs scummvm, curl, unzip`.
+
+A package must already be in the canonical shell to go into a partial
+image: its role in `source-rootfs-shell-dependencies.json`, the same
+`name@version` in `packages/registry/shell/package.toml` `depends_on`, and
+the composer table entry that installs it (`SHELL_LAZY_BINARY_SPECS` in
+`images/vfs/lib/init/shell-binaries.ts` or `SHELL_LAZY_ARCHIVE_SPECS` in
+`images/vfs/scripts/shell-lazy-archives.ts`). The command refuses any other
+name and lists those three places. Naming a base package is a no-op.
+
+How it is built: `xtask partial-image` builds the kernel, SDK and member
+packages (and, for a derived image, its packages that do not embed the
+shell) through the normal local-build engine and shared cache. It then
+writes a registry root, `local-binaries/partial/registry/`, whose only
+package is a `shell` recipe narrowed to the selection, and builds the image
+package through the ordinary resolver with that root first on the
+[registry search path](#registry-search-path). The narrowed recipe runs
+`packages/registry/shell/build-shell.sh --selection`, which hands the shell
+composer (`images/vfs/scripts/build-source-rootfs-shell-image.ts`) an
+explicit package selection (`images/vfs/scripts/shell-selection.ts`).
+Without a selection the composer builds the canonical shell with every
+completeness check unchanged; with one it holds the image to that
+selection: every file a selected package owns is present, every file an
+unselected package owns is absent. The image's metadata records the
+selection (`partialSelection`), and
+`images/vfs/scripts/describe-partial-image.ts` reads the selection and
+activities back from the built image for `partial.json`.
+
+Because the narrowed `shell` recipe and every image built on it have their
+own cache keys, they sit in the shared on-disk cache beside the canonical
+entries without replacing them, and an unchanged selection is a cache hit.
+
+What it is not:
+
+- **Not a product.** It is copied into `local-binaries/partial/`
+  (`<image>-partial.vfs.zst`, the manifest `partial.json`, and the baked
+  `demo.json`), never into this worktree's published program view, so it
+  cannot stand in for `shell.vfs.zst` or any canonical image. One partial
+  image exists per worktree; a new build replaces the previous one. The
+  browser never serves it from a cache (see
+  [docs/browser-support.md](browser-support.md) "Consumer-owned product
+  selection").
+- **Not evidence for the canonical image.** A partial image proves the
+  named packages work on the base. It says nothing about the canonical
+  shell or the images that embed it. Build those (`./run.sh local-build`)
+  before claiming them.
+- **Not published.** Nothing in CI or release builds a partial image.
+
+Node tests can boot it: `host/test/partial-image.test.ts` boots the
+worktree's partial image, runs the named packages' programs (fetched as lazy
+files from this worktree's package view), and checks that unselected
+programs are absent. It is skipped when no partial image is built.
 
 ## Atomic cache install
 
@@ -2519,8 +2698,28 @@ not Kandelo defects. They stay until the engine or the upstream code changes.
 
 **Target recognition and upstream defects.**
 
+Harper also exposed two shared Kandelo build gaps, fixed outside its recipe:
+the Rust helper now excludes its private dependency directory roots from
+existing Cargo workspaces, and the Rust sysroot retains LLVM bitcode so
+upstream LTO profiles can link against its prebuilt standard library. Harper
+does not carry application-manifest patches for either issue.
+
+Burn's no-std ndarray backend generates a tensor RNG seed at compile time.
+The Harper recipe sets its dependency's documented `CONST_RANDOM_SEED` build
+option to the verified upstream source hash, so independent builds retain
+the same compiled constants. Runtime OS entropy is unaffected.
+
+Its `tree-sitter-gitcommit-0.5.0.patch` skips LLVM's costly irreducibility
+analysis only for that grammar's reducible generated state machines. The
+complete grammar still compiles through the SDK and normal instrumentation.
+The standalone reproduction and retirement conditions are recorded in
+[the compiler reachability-cost entry](../tests/runtime-workarounds/LLVM-WASM-CFG-REACHABILITY-COST/entry.md).
+This compiler option is unsuitable as a general SDK default: other programs
+can have irreducible control flow and need the analysis.
+
 | Package | Patch | Reason | Follow-up |
 |---|---|---|---|
+| `harper` | `patches/chrono-0.4.45.patch`, `cubecl-common-0.8.1.patch`, `dirs-7.0.0.patch`, `getrandom-0.3.4.patch`, `getrandom-0.4.3.patch`, `mio-1.2.4.patch`, `tokio-1.53.3.patch`, `socket2-0.6.5.patch`, `parking_lot_core-0.9.12.patch`, `open-5.4.4.patch`. | Recognize Unix Wasm and Kandelo's existing libc interfaces: time, XDG directories, entropy, native future execution, threads, files, sockets, epoll/eventfd, peer credentials, and musl layouts. `open` selects guest Unix launcher commands; no opener is bundled, and an absent launcher remains an I/O failure. | Upstream target-recognition changes and the musl field-initialization fix; retain the actual Unix APIs rather than replacing them with browser stubs. |
 | `vim` | `patches/0001-clamp-expired-input-check.patch`: clamp an expired calculated input timeout to zero before the first availability check. | Upstream `inchar_loop()` subtracts elapsed time from a zero/finite timeout, then passes a negative result to a helper that means "wait indefinitely". Slow or preempted execution stalls startup and insert-mode redraw until another key arrives. Clock and POSIX select behavior are correct; this is an upstream timing defect. | Send upstream; drop the patch when the pinned release includes the correction. |
 | `sdl2` | `patches/0001-recognize-kandelo-as-unix.patch`: `configure` accepts `wasm32-*-none` as a Unix target. `patches/0002-kmsdrm-display-dpi-from-connector.patch`: the KMSDRM backend answers `SDL_GetDisplayDPI` from the connector's physical size. | SDL's `configure` has a fixed list of host triples. SDL2's KMSDRM backend has no DPI query, unlike its X11 and Wayland backends, so a fullscreen client that scales by DPI (ScummVM) stayed at 1x. | Both are upstreamable: generic-Unix detection, and a missing backend feature that is not Kandelo-specific. |
 | `scummvm` | `patches/0001-kandelo-host-triple.patch`: `configure` maps the `wasm32posix` host to its generic POSIX/SDL backend (every `wasm32-*` triple otherwise selects the Emscripten port). `patches/0002-kandelo-opengl-default-graphics-manager.patch`: default to the OpenGL graphics manager. | ScummVM's hand-written `configure` keys on the triple. Kandelo's SDL2 is built without `SDL_Render`, so the OpenGL manager is the only presentation path. | The first is upstreamable. The second goes away if SDL2 is built with a renderer. |

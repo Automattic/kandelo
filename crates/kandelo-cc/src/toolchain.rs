@@ -213,7 +213,7 @@ mod discovery {
 
     /// Kandelo's SDK layout: `kandelo-sdk.zip` mounted at `/usr`.
     const LLVM_DIR: &str = "/usr/lib/llvm/bin";
-    const SDK_DIR: &str = "/usr/wasm32posix";
+    const SDK_DIR: &str = "/usr/lib/kandelo/wasm32posix";
 
     pub fn find_llvm_dir() -> Result<String> {
         let dir = env_nonempty("WASM_POSIX_LLVM_DIR").unwrap_or_else(|| LLVM_DIR.into());

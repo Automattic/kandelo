@@ -223,6 +223,19 @@ export function saveShellDerivedVfsImage(
     throw new Error(`${outFile} has an invalid ABI snapshot binding`);
   }
 
+  // An image built on a partial shell (docs/package-management.md "Partial
+  // images") is itself partial: it keeps the shell's record of what it
+  // carries, so it can never pass for one built on the canonical shell.
+  const partialSelection = inherited.partialSelection;
+  if (
+    partialSelection !== undefined &&
+    (typeof partialSelection !== "object" || partialSelection === null ||
+      (partialSelection as { schema?: unknown }).schema !== 1 ||
+      !Array.isArray((partialSelection as { packages?: unknown }).packages))
+  ) {
+    throw new Error(`${outFile} inherits an invalid partial shell selection`);
+  }
+
   return saveImage(fs, outFile, {
     ...saveOptions,
     kernelAbi,
@@ -234,6 +247,7 @@ export function saveShellDerivedVfsImage(
       capacity: { maxByteLength: expectedMaxByteLength },
       baseImage,
       shellComposition: PACKAGE_ROOTFS_SHELL_COMPOSITION,
+      ...(partialSelection === undefined ? {} : { partialSelection }),
     },
     normalizeTimestampsMs,
     expectedMaxByteLength,

@@ -1,5 +1,8 @@
 script_path = "packages/registry/python-vfs/build-python-vfs.sh"
 inputs = [
+  "images/vfs/scripts/filesystem-layout.ts",
+
+  "host/src/native-artifact-identity.ts",
   "packages/registry/python-vfs/build-python-vfs.sh",
   "images/vfs/scripts/build-python-vfs-image.ts",
   "images/vfs/scripts/tracked-demo-config.ts",
@@ -30,7 +33,12 @@ inputs = [
   "cargo:kandelo-image-module",
   "cargo:runtime-core",
   "crates/kandelo-image-module/build-wasm.sh",
+  "host/src/vfs/image-integrity.ts",
+  "host/src/vfs/image-manifest-memory.ts",
+  "host/src/vfs/overlay-seal-codec.ts",
+  "host/src/vfs/storage-memory-budget.ts",
+  "images/vfs/lib/positioned-image-targets.ts",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 6
+revision = 8

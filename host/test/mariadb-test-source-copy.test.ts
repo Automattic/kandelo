@@ -81,10 +81,10 @@ describe("MariaDB test source closure", () => {
         curatedTests: ["selected"],
       })).toBe(1);
 
-      expect(readVfsText(fs, "/mysql-test/main/selected.test")).toBe("selected");
-      expect(() => fs.stat("/mysql-test/main/other.test")).toThrow();
-      expect(readVfsText(fs, "/mysql-test/include/helper.inc")).toBe("include");
-      expect(readVfsText(fs, "/mysql-test/std_data/fixture.dat")).toBe("fixture");
+      expect(readVfsText(fs, "/var/lib/kandelo-tests/mariadb/main/selected.test")).toBe("selected");
+      expect(() => fs.stat("/var/lib/kandelo-tests/mariadb/main/other.test")).toThrow();
+      expect(readVfsText(fs, "/var/lib/kandelo-tests/mariadb/include/helper.inc")).toBe("include");
+      expect(readVfsText(fs, "/var/lib/kandelo-tests/mariadb/std_data/fixture.dat")).toBe("fixture");
     });
   });
 
@@ -97,9 +97,9 @@ describe("MariaDB test source closure", () => {
         curatedTests: [],
       })).toBe(2);
 
-      expect(readVfsText(fs, "/mysql-test/main/selected.test")).toBe("selected");
-      expect(readVfsText(fs, "/mysql-test/main/other.test")).toBe("other");
-      expect(() => fs.stat("/mysql-test/main/README")).toThrow();
+      expect(readVfsText(fs, "/var/lib/kandelo-tests/mariadb/main/selected.test")).toBe("selected");
+      expect(readVfsText(fs, "/var/lib/kandelo-tests/mariadb/main/other.test")).toBe("other");
+      expect(() => fs.stat("/var/lib/kandelo-tests/mariadb/main/README")).toThrow();
     });
   });
 

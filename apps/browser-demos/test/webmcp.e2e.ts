@@ -1,5 +1,5 @@
 import { compactToolCatalog } from "../pages/kandelo/webmcp/discovery";
-import { chromium, expect, test, type Page } from "@playwright/test";
+import { chromium, expect, test, type Page } from "../playwright-test";
 
 type Result = { ok: boolean; [key: string]: any };
 
@@ -236,9 +236,9 @@ test("gallery launch boots in place and the new computer rejects previous IDs", 
 test("nginx serves a guest file through the preview and rejects external or traversing paths", async ({ page }) => {
   await open(page, "nginx");
   const configuration = await call(page, "read_file", { path: "/etc/nginx/nginx.conf" });
-  expect(configuration.content).toContain("root /var/www/html");
+  expect(configuration.content).toContain("root /srv/www/html");
   expect((await call(page, "write_file", {
-    path: "/var/www/html/webmcp-proof.html", content: "<!doctype html><h1 id='proof'>WebMCP served proof</h1>", overwrite: true,
+    path: "/srv/www/html/webmcp-proof.html", content: "<!doctype html><h1 id='proof'>WebMCP served proof</h1>", overwrite: true,
   })).ok).toBe(true);
   await expect.poll(async () => (await call(page, "get_computer_status")).capabilities.preview, { timeout: 60_000 }).toBe(true);
   const navigated = await call(page, "navigate_preview", { path: "/webmcp-proof.html?test=1#proof" });
@@ -255,7 +255,7 @@ test("nginx serves a guest file through the preview and rejects external or trav
   expect((await call(page, "get_computer_status")).previewProgress.http.state).toBe("not_requested");
   await expect(page.getByText("Loading...", { exact: true })).not.toBeVisible();
   expect((await call(page, "write_file", {
-    path: "/var/www/html/webmcp-proof.html", content: "<!doctype html><h1>Updated WebMCP proof</h1>", overwrite: true,
+    path: "/srv/www/html/webmcp-proof.html", content: "<!doctype html><h1>Updated WebMCP proof</h1>", overwrite: true,
   })).ok).toBe(true);
   await call(page, "navigate_preview", { path: "/webmcp-proof.html?test=1#another" });
   await expect(page.frameLocator('iframe.kweb-frame').getByRole("heading", { name: "Updated WebMCP proof" })).toBeVisible();
@@ -269,7 +269,7 @@ test("nginx serves a guest file through the preview and rejects external or trav
   // Same-origin discovery may include parent tools, but the guest registers none.
   expect(exposed === undefined || exposed === 0).toBe(true);
   expect((await call(page, "write_file", {
-    path: "/var/www/html/webmcp-away.html", content: "<!doctype html><script>location.replace('about:blank')</script>", overwrite: true,
+    path: "/srv/www/html/webmcp-away.html", content: "<!doctype html><script>location.replace('about:blank')</script>", overwrite: true,
   })).ok).toBe(true);
   await call(page, "navigate_preview", { path: "/webmcp-away.html" });
   await expect.poll(() => page.locator('iframe.kweb-frame').evaluate((element: HTMLIFrameElement) => element.contentWindow?.location.href)).toBe("about:blank");

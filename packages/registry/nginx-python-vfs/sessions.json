@@ -15,7 +15,8 @@
         "/etc/kandelo/demo.json",
         "/usr/sbin/nginx"
       ],
-      "fields": []
+      "fields": [],
+      "category": "services"
     }
   ],
   "joins": [

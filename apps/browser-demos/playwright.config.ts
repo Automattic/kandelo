@@ -1,15 +1,19 @@
 import { defineConfig } from "@playwright/test";
-import { lstatSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import {
-  playwrightTestIgnoreForEnvironment,
-  shouldReuseExistingPlaywrightServer,
-} from "./playwright-server-policy";
+import { playwrightTestIgnoreForEnvironment } from "./playwright-server-policy";
+import { playwrightRun, playwrightPort } from "../../tests/playwright-run";
+import { browserStorageHome } from "./playwright-storage";
+import type { KandeloWorkerOptions } from "./playwright-test";
+
+const silentAudio = process.env.KANDELO_PLAYWRIGHT_AUDIBLE_AUDIO !== "1";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const port = Number(process.env.KANDELO_PLAYWRIGHT_PORT ?? 5401);
+const run = playwrightRun(__dirname);
+const port = await playwrightPort(process.env.KANDELO_PLAYWRIGHT_PORT);
+// Specs and nested tools must observe the port selected by this config.
+process.env.KANDELO_PLAYWRIGHT_PORT = String(port);
 const protectedBrowserBaseUrl = protectedLoopbackBaseUrl(
   process.env.KANDELO_ABI_STAGING_BROWSER_BASE_URL,
 );
@@ -82,10 +86,6 @@ function playwrightWebServerEnvironment(
     }
   }
   childEnvironment.KANDELO_BROWSER_TEST_NO_HMR = "1";
-  // WebKit has no mute flag (Chromium and Firefox are muted below), so the
-  // dev server routes page audio through a silent gain node instead; see
-  // muteBrowserTestAudio in vite.config.ts.
-  childEnvironment.KANDELO_BROWSER_TEST_MUTE_AUDIO = "1";
   return childEnvironment;
 }
 
@@ -119,7 +119,7 @@ const firefoxLaunchEnv: Record<string, string> =
   process.platform === "darwin"
     ? {
         ...browserLaunchEnv,
-        CFFIXED_USER_HOME: mkdtempSync(join(tmpdir(), "kandelo-pw-firefox-home-")),
+        CFFIXED_USER_HOME: browserStorageHome("firefox"),
       }
     : browserLaunchEnv;
 
@@ -147,12 +147,14 @@ const chromiumLaunchArgs = [
   ...sharedLaunchArgs,
   // Mute the browser's physical output; keep Web Audio processing and
   // autoplay policy intact so audio behavior still gets tested.
-  "--mute-audio",
+  ...(silentAudio ? ["--mute-audio"] : []),
   "--disable-features=MediaEngagementBypassAutoplayPolicies,WebRtcHideLocalIpsWithMdns",
   "--allow-loopback-in-peer-connection",
 ];
 
-export default defineConfig({
+export default defineConfig<{}, KandeloWorkerOptions>({
+  ...run,
+  globalSetup: join(__dirname, "playwright-storage-setup.ts"),
   testDir: join(__dirname, "test"),
   testMatch: "*.spec.ts",
   // The assembled-site and exact-product proofs read protected handoffs during
@@ -162,6 +164,7 @@ export default defineConfig({
   timeout: 120_000,
   workers: process.env.CI ? 1 : undefined,
   use: {
+    silentAudio,
     baseURL:
       protectedBrowserBaseUrl === undefined
         ? `http://127.0.0.1:${port}${assembledSiteRoot === undefined ? "" : "/kandelo/"}`
@@ -202,9 +205,7 @@ export default defineConfig({
         : `npx vite${viteModeArgument} --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`,
       port,
       env: webServerEnvironment,
-          reuseExistingServer:
-            assembledSiteRoot === undefined &&
-            shouldReuseExistingPlaywrightServer(process.env),
+      reuseExistingServer: false,
       timeout: 30_000,
     }
     : undefined,
@@ -220,7 +221,11 @@ export default defineConfig({
       use: {
         browserName: "chromium",
         channel: "chromium",
-        launchOptions: { env: browserLaunchEnv, args: chromiumLaunchArgs },
+        launchOptions: {
+          env: browserLaunchEnv,
+          args: chromiumLaunchArgs,
+          ignoreDefaultArgs: silentAudio ? undefined : ["--mute-audio"],
+        },
       },
     },
     {
@@ -229,14 +234,22 @@ export default defineConfig({
         browserName: "firefox",
         launchOptions: {
           env: firefoxLaunchEnv,
-          firefoxUserPrefs: { "media.volume_scale": "0.0" },
+          firefoxUserPrefs: silentAudio ? { "media.volume_scale": "0.0" } : {},
           args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
         },
       },
     },
     {
       name: "webkit",
-      use: { browserName: "webkit" },
+      use: {
+        browserName: "webkit",
+        launchOptions: {
+          env: process.platform === "darwin"
+            ? { ...browserLaunchEnv, CFFIXED_USER_HOME: browserStorageHome("webkit") }
+            : browserLaunchEnv,
+          args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
+        },
+      },
     },
   ],
 });

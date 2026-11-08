@@ -92,6 +92,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "wasm-fork-instrument",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
       "name": "php",
       "version": "8.5.12",
       "role": "lazy-file"
@@ -162,6 +167,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "harper-browser-bundle",
+      "version": "3.0.0",
+      "role": "lazy-archive"
+    },
+    {
       "name": "sqlite-cli",
       "version": "3.49.1",
       "role": "lazy-file"
@@ -207,6 +217,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "dosbox-pure",
+      "version": "1.0-preview8",
+      "role": "lazy-file"
+    },
+    {
       "name": "love",
       "version": "11.5-kandelo-kms",
       "role": "lazy-archive"
@@ -219,6 +234,11 @@
     {
       "name": "ffmpeg",
       "version": "9.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "retro-emulators",
+      "version": "0.1.0",
       "role": "lazy-file"
     },
     {
@@ -275,6 +295,21 @@
       "name": "kandelo-sdk-browser-bundle",
       "version": "21.1.7",
       "role": "lazy-archive"
+    },
+    {
+      "name": "cargo",
+      "version": "1.97.0-nightly-2026-04-27",
+      "role": "lazy-file"
+    },
+    {
+      "name": "rustc",
+      "version": "1.97.0-nightly-2026-04-27",
+      "role": "lazy-file"
+    },
+    {
+      "name": "kandelo-rustc",
+      "version": "0.1.0",
+      "role": "lazy-file"
     }
   ]
 }

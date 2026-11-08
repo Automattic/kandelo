@@ -30,8 +30,10 @@ const imagePath = join(
   repoRoot,
   "local-binaries/source-only-v1/programs/wasm32/wordpress.vfs.zst",
 );
-const DATABASE = "/var/www/html/wp-content/database/wordpress.db";
-const ADMIN_HASH = /\$wp\$2y\$10\$[./A-Za-z0-9]{53}/;
+const DATABASE = "/var/lib/wordpress/sqlite/wordpress.db";
+// WordPress hashes with PHP's default bcrypt cost: 10 before PHP 8.4, 12
+// since. The contract here is a per-machine salt, not the work factor.
+const ADMIN_HASH = /\$wp\$2y\$\d{2}\$[./A-Za-z0-9]{53}/;
 
 interface MachineState {
   database: Uint8Array;
@@ -117,6 +119,18 @@ function imageHash(): string {
 }
 
 describe.skipIf(!existsSync(imagePath))("WordPress admin hash re-salting", () => {
+  it.each(["wordpress", "lamp"])("%s ships a PHP-FPM-writable uploads directory", (image) => {
+    const filesystem = KandeloImageFs.create();
+    filesystem.loadImage(new Uint8Array(readFileSync(join(
+      repoRoot, `local-binaries/source-only-v1/programs/wasm32/${image}.vfs.zst`,
+    ))), {
+      maxDecompressedBytes: 1024 * 1024 * 1024,
+    });
+    const uploads = filesystem.stat("/srv/www/html/wp-content/uploads");
+    expect({ uid: uploads.uid, gid: uploads.gid, mode: uploads.mode & 0o777 })
+      .toEqual({ uid: 65534, gid: 65534, mode: 0o775 });
+  });
+
   it("gives each machine its own hash of the demo password and keeps it on a later boot", async () => {
     const shipped = imageHash();
     const port = 39100 + (process.pid % 400);

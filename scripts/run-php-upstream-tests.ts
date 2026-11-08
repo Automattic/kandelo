@@ -359,7 +359,7 @@ function extraChromiumArgsFromEnv(): string[] {
 
 function guestTestDir(test: PhptTest): string {
   const relDir = dirname(test.rel).split("\\").join("/");
-  return relDir === "." ? "/php-src" : `/php-src/${relDir}`;
+  return relDir === "." ? "/var/lib/kandelo-tests/php" : `/var/lib/kandelo-tests/php/${relDir}`;
 }
 
 function expandSectionPlaceholders(value: string, test: PhptTest): string {
@@ -893,8 +893,8 @@ function guestScriptPath(
 ): string {
   const relDir = dirname(test.rel).split("\\").join("/");
   return relDir && relDir !== "."
-    ? `/php-src/${relDir}/${scriptName}`
-    : `/php-src/${scriptName}`;
+    ? `/var/lib/kandelo-tests/php/${relDir}/${scriptName}`
+    : `/var/lib/kandelo-tests/php/${scriptName}`;
 }
 
 const UNSET_FOR_AUXILIARY_SECTIONS = new Set([
@@ -1077,7 +1077,7 @@ class NodePhpRunner implements PhpRunner {
       enableTcpNetwork: this.enableTcpNetwork,
       extraMounts: [
         {
-          mountPoint: "/php-src",
+          mountPoint: "/var/lib/kandelo-tests/php",
           hostPath: this.sourceRoot,
           // The source tree is the PHPT workspace. Present it as owned by the
           // guest account selected for this run so non-root FPM/CLI coverage
@@ -1210,7 +1210,7 @@ class NodePhpRunner implements PhpRunner {
           // php-src run-tests.php executes generated test files from the
           // source root. Several PHPTs intentionally use source-root-relative
           // paths such as ./ext/standard/tests/file.
-          cwd: "/php-src",
+          cwd: "/var/lib/kandelo-tests/php",
           env: [
             "HOME=/tmp",
             "USER=kandelo",
@@ -1218,7 +1218,7 @@ class NodePhpRunner implements PhpRunner {
             "LOGNAME=kandelo",
             "TMPDIR=/tmp",
             "PATH=/bin:/usr/bin:/usr/local/bin",
-            `TEST_PHP_SRCDIR=/php-src`,
+            `TEST_PHP_SRCDIR=/var/lib/kandelo-tests/php`,
             `TEST_PHP_EXECUTABLE=${this.virtualPhpPath}`,
             `TEST_PHP_EXECUTABLE_ESCAPED=${shellEscape(this.virtualPhpPath)}`,
             ...opts.env,
@@ -1596,15 +1596,15 @@ class BrowserPhpRunner implements PhpRunner {
       scriptPath,
       script: opts.script,
       argv: [...opts.argv, scriptPath, ...(opts.scriptArgs ?? [])],
-      cwd: "/php-src",
+      cwd: "/var/lib/kandelo-tests/php",
       env: [
         "PATH=/bin:/usr/bin:/usr/local/bin",
         "USER=kandelo",
         "USERNAME=kandelo",
         "LOGNAME=kandelo",
-        "TEST_PHP_SRCDIR=/php-src",
-        "TEST_PHP_EXECUTABLE=/usr/local/bin/php",
-        "TEST_PHP_EXECUTABLE_ESCAPED='/usr/local/bin/php'",
+        "TEST_PHP_SRCDIR=/var/lib/kandelo-tests/php",
+        "TEST_PHP_EXECUTABLE=/usr/bin/php",
+        "TEST_PHP_EXECUTABLE_ESCAPED='/usr/bin/php'",
         ...opts.env,
       ],
       uid: this.runUid,

@@ -62,6 +62,7 @@
 //!                         `check` keeps source tags and tests/runtime-workarounds entries
 //!                         consistent, `run` runs the self-judging reproductions, and
 //!                         `list` prints the weekly report.
+//!   test-failures         Import failures and anomalies from runner reports as JSON.
 //!   set-build-commit      Stamp `[build].commit = <sha>` into one
 //!                         `packages/registry/<name>/package.toml`. Used by the
 //!                         publish flow to record source provenance.
@@ -91,6 +92,7 @@ mod local_build_executor;
 mod local_build_timing;
 mod package_archive_limits;
 mod package_matrix;
+mod partial_image;
 mod pkg_manifest;
 mod program_env_imports;
 mod package_imports;
@@ -101,6 +103,8 @@ mod runtime_workarounds;
 mod source_archive_cache;
 mod source_extract;
 mod stamp_abi_contract;
+mod supported_program_baseline;
+mod test_failures;
 mod update_pkg_manifest;
 mod util;
 
@@ -111,12 +115,28 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, workspace-closure-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh, runtime-workarounds check|list|run"
+                "subcommands: vfs, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, workspace-closure-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh, test-failures, runtime-workarounds check|list|run"
             );
             return ExitCode::from(2);
         }
     };
     let rest: Vec<String> = args.collect();
+    if matches!(
+        sub.as_str(),
+        "bootstrap"
+            | "local-build"
+            | "partial-image"
+            | "build-deps"
+            | "bundle-program"
+            | "stamp-abi-contract"
+            | "vfs"
+            | "vfs-image"
+    ) {
+        if let Err(error) = supported_program_baseline::check(&repo_root()) {
+            eprintln!("xtask: {error}");
+            return ExitCode::from(1);
+        }
+    }
     if sub == "vfs" {
         return vfs_products::run(rest);
     }
@@ -137,13 +157,16 @@ fn main() -> ExitCode {
         "local-build" => local_build::run(rest),
         "check-determinism" => determinism_check::run(rest),
         "bootstrap" => local_build::run_bootstrap(rest),
+        "partial-image" => partial_image::run(rest),
         "clean" => local_build::run_clean(rest),
         #[cfg(unix)]
         "cache-gc" => cache_gc::run(rest),
         "stamp-abi-contract" => stamp_abi_contract::run(&rest),
         "abi-program-digest" => stamp_abi_contract::run_print(&rest),
+        "check-program-baseline" => supported_program_baseline::run(&rest),
         "runtime-workarounds" => runtime_workarounds::run(rest),
         "verify-fresh" => local_build::run_verify_fresh(rest),
+        "test-failures" => test_failures::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);

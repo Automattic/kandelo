@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 test("terminal close is explicit logical removal and cleanup is only detach", async ({
   page,

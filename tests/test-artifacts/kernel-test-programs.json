@@ -15,8 +15,7 @@
       "binary": "programs/wasm32/exec-caller.wasm",
       "resolver_path": "programs/exec-caller.wasm",
       "consumers": [
-        "host/test/exec.test.ts",
-        "host/test/abi-version.test.ts"
+        "host/test/exec.test.ts"
       ]
     },
     {
@@ -84,8 +83,7 @@
       "binary": "programs/wasm32/mmap_shared_test.wasm",
       "resolver_path": "programs/mmap_shared_test.wasm",
       "consumers": [
-        "host/test/global-setup.ts",
-        "host/test/mmap-shared.test.ts"
+        "host/test/global-setup.ts"
       ]
     },
     {

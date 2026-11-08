@@ -267,7 +267,53 @@ if (typeof window !== "undefined") {
     "walnut", "warbler", "wave", "willow", "wolf", "wombat", "wren", "yarrow",
     "yew", "zephyr",
   ];
-  var INSTANCE_NAME_PATTERN = /^[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}$/;
+  var INSTANCE_NAME_PATTERN = /^(?:[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}|p-[a-f0-9]{64})$/;
+
+  function persistentRouteName(computerName) {
+    var bytes = new TextEncoder().encode(JSON.stringify(["kandelo-persistent-web-v1", SCOPE_PATH, computerName]));
+    return crypto.subtle.digest("SHA-256", bytes).then(function (digest) {
+      return "p-" + Array.from(new Uint8Array(digest), function (byte) {
+        return byte.toString(16).padStart(2, "0");
+      }).join("");
+    });
+  }
+
+  function withRouteLock(name, operation) {
+    if (name.indexOf("p-") !== 0) return Promise.resolve().then(operation);
+    return self.navigator.locks.request("kandelo-http-route:" + SCOPE_PATH + name, operation);
+  }
+
+  function proveComputerLease(computerName, nonce) {
+    return self.navigator.locks.query().then(function (snapshot) {
+      var runtime = snapshot.held.find(function (lock) {
+        return lock.name === "kandelo-fixed-rootfs-runtime:" + computerName && lock.mode === "exclusive";
+      });
+      var proof = snapshot.held.find(function (lock) {
+        return lock.name === "kandelo-http-bridge-proof:" + nonce && lock.mode === "exclusive";
+      });
+      if (!runtime || !proof || !runtime.clientId || runtime.clientId !== proof.clientId) {
+        throw new Error("persistent computer lease proof refused");
+      }
+    });
+  }
+
+  function requestComputerLeaseProof(replyPort) {
+    return new Promise(function (resolve, reject) {
+      var nonce = crypto.randomUUID();
+      var timeout = setTimeout(function () {
+        replyPort.onmessage = null;
+        reject(new Error("persistent computer lease proof timed out"));
+      }, 10000);
+      replyPort.onmessage = function (event) {
+        clearTimeout(timeout);
+        replyPort.onmessage = null;
+        if (event.data && event.data.type === "bridge-lease-proof" && event.data.nonce === nonce) resolve(nonce);
+        else reject(new Error("invalid persistent computer lease proof"));
+      };
+      replyPort.start();
+      replyPort.postMessage({ type: "bridge-lease-challenge", nonce: nonce });
+    });
+  }
 
   function pickWord(list) {
     // crypto is available in a service worker global scope.
@@ -379,6 +425,14 @@ if (typeof window !== "undefined") {
     // record built from unread bytes.
   });
 
+  function adoptDurableInstance(name, authority) {
+    var record = makeInstanceRecord(name, authority.sessionId, null);
+    record.durableAuthority = authority;
+    record.status = "reconnecting";
+    instances.set(name, record);
+    return record;
+  }
+
   function restoreInstancesFromDurableAuthority() {
     return caches.open(BRIDGE_CACHE).then(function (cache) {
       return cache.keys().then(function (requests) {
@@ -391,11 +445,7 @@ if (typeof window !== "undefined") {
               var authority = bridgeAuthorityFromJson(text, name);
               // A present-but-invalid entry is quarantined, never used to
               // manufacture a partial record.
-              if (!authority) return null;
-              var record = makeInstanceRecord(name, authority.sessionId, null);
-              record.durableAuthority = authority;
-              record.status = "reconnecting";
-              instances.set(name, record);
+              if (authority) adoptDurableInstance(name, authority);
               return null;
             });
           });
@@ -685,7 +735,9 @@ if (typeof window !== "undefined") {
   // Serialize every authoritative write for one machine so a slower obsolete
   // commit can never overwrite a newer one.
   function enqueueRecordMutation(record, operation) {
-    var mutation = record.stateMutationQueue.then(operation);
+    var mutation = record.stateMutationQueue.then(function () {
+      return withRouteLock(record.name, operation);
+    });
     record.stateMutationQueue = mutation.catch(function () {});
     return mutation;
   }
@@ -696,7 +748,9 @@ if (typeof window !== "undefined") {
   // the successor's durable jar.
   function persistBridgeAuthority(record, bridgeEpoch, sessionId) {
     return enqueueRecordMutation(record, function () {
+      return matchesCachedAuthority(record).then(function (matches) {
       if (
+        !matches || instances.get(record.name) !== record ||
         bridgeEpoch !== record.liveBridgeEpoch || sessionId !== record.sessionId ||
         !record.durableAuthority || record.durableAuthority.sessionId !== sessionId
       ) {
@@ -711,6 +765,38 @@ if (typeof window !== "undefined") {
         record.durableAuthority = authority;
         return true;
       });
+      });
+    });
+  }
+
+  function readCachedAuthority(name) {
+    return caches.open(BRIDGE_CACHE).then(function (cache) {
+      return cache.match(bridgeAuthorityKeyFor(name));
+    }).then(function (response) {
+      return response ? response.text().then(function (text) {
+        return bridgeAuthorityFromJson(text, name);
+      }) : null;
+    });
+  }
+
+  function matchesCachedAuthority(record, expected) {
+    expected = expected || record.durableAuthority;
+    if (record.name.indexOf("p-") !== 0) return Promise.resolve(true);
+    return readCachedAuthority(record.name).then(function (cached) {
+      return !!(cached && expected && cached.sessionId === expected.sessionId && cached.revision === expected.revision);
+    });
+  }
+
+  function retireBridgePort(record) {
+    var port = record.bridgePort;
+    record.bridgePort = null;
+    if (!port) return;
+    port.close();
+    pendingRequests.forEach(function (pending, requestId) {
+      if (pending.port === port) {
+        pendingRequests.delete(requestId);
+        pending.reject(new Error("HTTP bridge retired"));
+      }
     });
   }
 
@@ -733,6 +819,7 @@ if (typeof window !== "undefined") {
   function notifyViewers(record, type) {
     record.viewerClientIds.forEach(function (id) {
       self.clients.get(id).then(function (client) {
+        if (instances.has(record.name) && instances.get(record.name) !== record) return;
         if (client) client.postMessage({ type: type, name: record.name });
       }).catch(function () {});
     });
@@ -746,8 +833,10 @@ if (typeof window !== "undefined") {
   // durableAuthority), and the GC delete is serialized behind the record's
   // pending mutations so a slower authority write cannot land after the delete.
   function markInstanceOffline(record) {
+    if (instances.get(record.name) !== record) return;
+    var retiredAuthority = record.durableAuthority;
     record.status = "offline";
-    record.bridgePort = null;
+    retireBridgePort(record);
     record.durableAuthority = null;
     notifyViewers(record, "machine-offline");
     instances.delete(record.name);
@@ -758,8 +847,13 @@ if (typeof window !== "undefined") {
     // bridgeAuthorityKeyFor); the brief's ":" form is not a valid Cache Storage
     // URL and would never match the persisted entry.
     enqueueRecordMutation(record, function () {
+      return (record.name.indexOf("p-") !== 0 ? Promise.resolve(true) : readCachedAuthority(record.name).then(function (cached) {
+        return !!(cached && retiredAuthority && cached.sessionId === retiredAuthority.sessionId);
+      })).then(function (matches) {
+      if (!matches) return false;
       return caches.open(BRIDGE_CACHE).then(function (cache) {
         return cache.delete(bridgeAuthorityKeyFor(record.name));
+      });
       });
     }).catch(function () {});
   }
@@ -796,6 +890,7 @@ if (typeof window !== "undefined") {
   // still return, so keep it reconnecting and tell viewers it is reconnecting.
   function classifyFailedRestore(record) {
     return self.clients.matchAll({ type: "window" }).then(function (wins) {
+      if (instances.get(record.name) !== record) return;
       var ownerGone = record.owningClientId &&
         !wins.some(function (w) { return w.id === record.owningClientId; });
       if (ownerGone) {
@@ -816,7 +911,7 @@ if (typeof window !== "undefined") {
       var m = event.data;
       if (m && m.type === "http-response") {
         var pending = pendingRequests.get(m.requestId);
-        if (pending) {
+        if (pending && pending.port === port) {
           pendingRequests.delete(m.requestId);
           pending.resolve({
             status: m.status,
@@ -826,7 +921,7 @@ if (typeof window !== "undefined") {
         }
       } else if (m && m.type === "http-error") {
         var pending2 = pendingRequests.get(m.requestId);
-        if (pending2) {
+        if (pending2 && pending2.port === port) {
           pendingRequests.delete(m.requestId);
           pending2.reject(new Error(m.error || "Bridge request failed"));
         }
@@ -841,7 +936,7 @@ if (typeof window !== "undefined") {
     }
     var requestId = nextRequestId++;
     return new Promise(function (resolve, reject) {
-      pendingRequests.set(requestId, { resolve: resolve, reject: reject });
+      pendingRequests.set(requestId, { resolve: resolve, reject: reject, port: record.bridgePort });
       record.bridgePort.postMessage({
         type: "http-request",
         requestId: requestId,
@@ -888,6 +983,8 @@ if (typeof window !== "undefined") {
       // validated before any registry mutation.
       if (
         !isValidSessionId(msg.sessionId) ||
+        (msg.persistentComputerName !== undefined &&
+          (typeof msg.persistentComputerName !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(msg.persistentComputerName))) ||
         !isBridgeMessagePort(port) || !isBridgeMessagePort(replyPort)
       ) {
         postInvalidScopeConfig(replyPort);
@@ -897,9 +994,16 @@ if (typeof window !== "undefined") {
       // collides with a machine the restart is still restoring, and so the
       // initial durable write is the machine's first linearized mutation.
       var record = null;
+      var persistent = msg.persistentComputerName !== undefined;
+      var nonce;
       event.waitUntil(
         appPrefixReady.then(function () {
-          var name = mintInstanceName();
+          if (!persistent) return mintInstanceName();
+          return requestComputerLeaseProof(replyPort).then(function (proofNonce) {
+            nonce = proofNonce;
+            return persistentRouteName(msg.persistentComputerName);
+          });
+        }).then(function (name) {
           record = makeInstanceRecord(
             name,
             msg.sessionId,
@@ -913,13 +1017,23 @@ if (typeof window !== "undefined") {
           // markViewer when it navigates to /computer/<name>/. teardownInstancesOwnedBy
           // and reconcileOwners key off record.owningClientId, not the viewing
           // map, so owner attribution is unaffected.
-          instances.set(name, record);
+          if (!persistent) instances.set(name, record);
           // Persist the machine's initial authority before acknowledging so a
           // fresh login survives a worker restart. The durable write is the
           // linearization point; the live bridge commits only after it lands.
           return enqueueRecordMutation(record, function () {
-            var authority = nextBridgeAuthority(record, record.sessionId, new Map());
+            return (persistent ? proveComputerLease(msg.persistentComputerName, nonce).then(function () {
+              return readCachedAuthority(name);
+            }) : Promise.resolve(null)).then(function (previousAuthority) {
+            var previous = instances.get(name);
+            record.durableAuthority = previousAuthority;
+            if (previousAuthority && previousAuthority.sessionId === msg.sessionId) {
+              record.cookieJar = cloneCookieJar(previousAuthority.cookieJar);
+            }
+            var authority = nextBridgeAuthority(record, record.sessionId, record.cookieJar);
             return writeBridgeAuthority(record, authority).then(function () {
+              if (previous && previous !== record) retireBridgePort(previous);
+              instances.set(name, record);
               record.durableAuthority = authority;
               initBridgePortFor(record, port);
               record.status = "live";
@@ -930,16 +1044,18 @@ if (typeof window !== "undefined") {
                 appPrefix: record.appPrefix,
               });
             });
+            });
           });
         }).catch(function () {
-          if (record) {
+          if (record && instances.get(record.name) === record) {
             instances.delete(record.name);
           }
+          port.close();
           replyPort.postMessage({
             type: "bridge-error",
             code: "bridge-init-failed",
           });
-        }),
+        }).finally(function () { replyPort.close(); }),
       );
     } else if (msg && msg.type === "instance-closing") {
       // A host tab announces (via pagehide) that it is going away. Only the tab
@@ -950,7 +1066,8 @@ if (typeof window !== "undefined") {
       if (isValidInstanceName(msg.name)) {
         var closing = instances.get(msg.name);
         var senderId = event.source && event.source.id;
-        if (closing && senderId && closing.owningClientId === senderId) {
+        if (closing && senderId && closing.owningClientId === senderId &&
+          (closing.name.indexOf("p-") !== 0 || msg.sessionId === closing.sessionId)) {
           markInstanceOffline(closing);
         }
       }
@@ -967,6 +1084,22 @@ if (typeof window !== "undefined") {
   // subresource requests (load-scripts.php/load-styles.php, block assets)
   // escape the bridge and 404 against the static origin.
   var BLOB_IFRAME_INTERCEPTOR_SRC = "__BLOB_IFRAME_INTERCEPTOR__";
+
+  // Whether a Content-Security-Policy header value (one or more
+  // comma-separated policies) sets the policy for inline <script> elements:
+  // script-src-elem, script-src, or the default-src they fall back to. A
+  // policy without them, such as WordPress admin's
+  // `frame-ancestors 'self'`, leaves inline scripts allowed, so the helper
+  // can run there without touching the policy.
+  function cspGovernsScripts(value) {
+    if (!value) return false;
+    return value.split(",").some(function (policy) {
+      return policy.split(";").some(function (directive) {
+        var name = directive.trim().split(/\s+/)[0].toLowerCase();
+        return name === "script-src-elem" || name === "script-src" || name === "default-src";
+      });
+    });
+  }
 
   // Insert the interceptor as the first <head> child so it runs before any
   // app script creates a blob iframe. Idempotent and HTML-only.
@@ -1288,6 +1421,11 @@ if (typeof window !== "undefined") {
       /^products\/([a-z0-9][a-z0-9._-]{0,127})\/sha256-([0-9a-f]{64})\/([a-z0-9][a-z0-9._-]{0,127})-([1-9][0-9]*)\.vfs\.zst$/,
     );
     return match !== null && match[1] === match[3];
+  }
+
+  function isPartialImageRequest(url) {
+    return url.origin === self.location.origin &&
+      url.pathname.startsWith(SCOPE_PATH + "@kandelo-partial/");
   }
 
   function isScopedLazyVfsRequest(request, url) {
@@ -1684,7 +1822,9 @@ if (typeof window !== "undefined") {
   function ensureBridge(record) {
     if (record.bridgePort) return Promise.resolve(true);
     if (record.bridgeRestorePromise) return record.bridgeRestorePromise;
-    record.bridgeRestorePromise = requestBridgeFromClient(record).then(
+    record.bridgeRestorePromise = refreshDurableAuthority(record).then(function () {
+      return requestBridgeFromClient(record);
+    }).then(
       function (result) {
         record.bridgeRestorePromise = null;
         if (result && record.bridgePort) return true;
@@ -1697,6 +1837,25 @@ if (typeof window !== "undefined") {
       return false;
     });
     return record.bridgeRestorePromise;
+  }
+
+  // This record's authority is whatever Cache Storage held when this worker
+  // started. A worker it replaced can still publish for the machine during
+  // the handover, which happens when a page that loaded under one release
+  // first starts a computer under the next. Cache Storage is the
+  // linearization point, so restore against it whichever way it moved: a
+  // machine that went offline restarts at a low revision. Checking a session
+  // against the stale copy would refuse the live page on every attempt.
+  function refreshDurableAuthority(record) {
+    if (record.name.indexOf("p-") !== 0) return Promise.resolve();
+    return enqueueRecordMutation(record, function () {
+      return readCachedAuthority(record.name).then(function (cached) {
+        var known = record.durableAuthority;
+        if (cached && (!known || cached.sessionId !== known.sessionId || cached.revision !== known.revision)) {
+          record.durableAuthority = cached;
+        }
+      });
+    });
   }
 
   // Broadcast need-bridge to every window client and accept the first
@@ -1789,7 +1948,13 @@ if (typeof window !== "undefined") {
   // restored machine (owningClientId null) is stuck reconnecting forever and
   // its durable authority never gets garbage-collected.
   function scheduleBridgeRestoration(record, port, clientId) {
+    var expectedAuthority = record.durableAuthority;
     return enqueueRecordMutation(record, function () {
+      return matchesCachedAuthority(record, expectedAuthority).then(function (matches) {
+      if (!matches || instances.get(record.name) !== record || record.durableAuthority !== expectedAuthority) {
+        port.close();
+        return false;
+      }
       if (record.bridgePort) {
         // A concurrent candidate already restored this machine.
         if (typeof port.close === "function") port.close();
@@ -1806,6 +1971,7 @@ if (typeof window !== "undefined") {
       record.status = "live";
       record.liveBridgeEpoch += 1;
       return true;
+      });
     });
   }
 
@@ -1830,6 +1996,15 @@ if (typeof window !== "undefined") {
     // owns and notifies viewers. There is no navigation-branch teardown here:
     // event.clientId is the empty string for a navigation request, so keying a
     // teardown off it never matched an owning client.
+
+    // A worktree's partial image (`./run.sh partial`, dev server only) is
+    // rebuilt in place at one URL, so it must never be served from a cache:
+    // straight to the network, never into Cache Storage, before any other
+    // route could cache it. vite/dev-partial-image.ts answers it no-store.
+    if (isPartialImageRequest(url)) {
+      event.respondWith(fetch(event.request, { cache: "no-store" }));
+      return;
+    }
 
     // Group assets have an immutable deployment-local identity. Cache only
     // their complete native responses before bridge/proxy/header rewriting.
@@ -1952,7 +2127,11 @@ if (typeof window !== "undefined") {
       // Retire crashed owners before either named or client-attributed requests.
       return reconcileOwners();
     }).then(function () {
-      var record = instances.get(name) || null;
+      // The startup scan misses a machine a replaced worker published later.
+      return instances.get(name) || readCachedAuthority(name).then(function (authority) {
+        return instances.get(name) || (authority ? adoptDurableInstance(name, authority) : null);
+      });
+    }).then(function (record) {
       if (!record) return offlineOrUnknownResponse(name);
       markViewer(record, event, event.request);
       if (record.bridgePort) return handleAppRequest(record, event.request, url);
@@ -1981,6 +2160,9 @@ if (typeof window !== "undefined") {
         request.headers.forEach(function (value, key) {
           headers[key] = value;
         });
+        if (headers["user-agent"] === undefined) {
+          headers["user-agent"] = self.navigator.userAgent;
+        }
         headers["host"] = url.host;
         headers["x-forwarded-host"] = url.host;
         headers["x-forwarded-prefix"] = appRootPathFor(record);
@@ -2075,9 +2257,9 @@ if (typeof window !== "undefined") {
           if (location) {
             try {
               var locUrl = new URL(location, url.origin);
-              if (locUrl.hostname === url.hostname) {
+              if (locUrl.host === url.host) {
                 locUrl.protocol = url.protocol;
-                if (!locUrl.pathname.startsWith(record.appPrefix)) {
+                if (!hasExplicitComputerPath(locUrl.pathname)) {
                   locUrl.pathname = record.appPrefix.slice(0, -1) +
                     locUrl.pathname;
                 }
@@ -2119,7 +2301,7 @@ if (typeof window !== "undefined") {
           // An application's CSP owns its script policy. Do not insert an
           // undeclared inline helper or loosen that policy to accommodate it.
           if (contentType.indexOf("text/html") === 0 &&
-              !respHeaders.has("Content-Security-Policy")) {
+              !cspGovernsScripts(respHeaders.get("Content-Security-Policy"))) {
             rewritten = injectBlobIframeInterceptor(rewritten);
           }
           if (rewritten !== text) {
@@ -2176,7 +2358,7 @@ if (typeof window !== "undefined") {
     var publicOrigin = requestUrl.protocol + "//" + requestUrl.host + "/";
     var publicBase = requestUrl.protocol + "//" + requestUrl.host + rootPath + "/";
     var hostPattern = escapeRegExp(requestUrl.host);
-    var appPathPattern = escapeRegExp(rootPath.slice(1));
+    var appPathPattern = "(?:[a-zA-Z0-9_.~-]+/)*computer/[a-zA-Z0-9_-]+";
     // A URL is already under the machine prefix when the prefix is followed by
     // more path (its slash form), a delimiter that ends the URL token, or end
     // of text. Matching only "/" or end-of-text re-prefixed a bare prefix like
@@ -2195,7 +2377,7 @@ if (typeof window !== "undefined") {
     );
     var encodedAppPathPattern = appPathPattern.replace(/\//g, "%2F");
     var encoded = new RegExp(
-      "http%3A%2F%2F" + hostPattern + "%2F(?!" + encodedAppPathPattern + "(?:%2F|$|" + urlEnd + "))",
+      "http%3A%2F%2F" + escapeRegExp(encodeURIComponent(requestUrl.host)) + "%2F(?!" + encodedAppPathPattern + "(?:%2F|%3F|%23|$|" + urlEnd + "))",
       "gi",
     );
     return text
@@ -2208,12 +2390,16 @@ if (typeof window !== "undefined") {
         publicOrigin.replace(/\//g, "\\/"),
       )
       .replace(
-        new RegExp("http%3A%2F%2F" + hostPattern + "%2F", "gi"),
+        new RegExp("http%3A%2F%2F" + escapeRegExp(encodeURIComponent(requestUrl.host)) + "%2F", "gi"),
         encodeURIComponent(publicOrigin),
       );
   }
 
   function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function hasExplicitComputerPath(pathname) {
+    return /^\/(?:[a-zA-Z0-9_.~-]+\/)*computer\/[a-zA-Z0-9_-]+(?:\/|$)/.test(pathname);
   }
 }

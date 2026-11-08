@@ -3,11 +3,11 @@
  *
  * The image contains:
  *   - /bin/sh plus standard shell utilities for PHP's shell-backed exec APIs
- *   - /usr/local/bin/php
- *   - /php-src/<test directories containing .phpt files>
+ *   - /usr/bin/php
+ *   - /var/lib/kandelo-tests/php/<test directories containing .phpt files>
  *
  * The Playwright-side runner parses each .phpt file and writes transient
- * PHP scripts into the restored image before spawning /usr/local/bin/php.
+ * PHP scripts into the restored image before spawning /usr/bin/php.
  */
 import {
   cpSync,
@@ -198,7 +198,7 @@ function copySupportFiles(
   dir: string,
 ): number {
   const relDir = relative(sourceRoot, dir);
-  const destDir = relDir ? `/php-src/${relDir}` : "/php-src";
+  const destDir = relDir ? `/var/lib/kandelo-tests/php/${relDir}` : "/var/lib/kandelo-tests/php";
   ensureDirRecursive(fs, destDir);
   let count = 0;
   for (const entry of readdirSync(dir)) {
@@ -344,14 +344,14 @@ export async function buildPhpTestVfsImage(
     if (fs.exportCapacityBytes() < maximumBytes) {
       fs.setImageCapacity(maximumBytes);
     }
-    ensureDirRecursive(fs, "/usr/local/bin");
-    ensureDirRecursive(fs, "/usr/local/sbin");
+    ensureDirRecursive(fs, "/usr/bin");
+    ensureDirRecursive(fs, "/usr/sbin");
     ensureDirRecursive(fs, "/usr/lib/php/extensions");
-    ensureDirRecursive(fs, "/php-src");
+    ensureDirRecursive(fs, "/var/lib/kandelo-tests/php");
 
-    writeVfsBinary(fs, "/usr/local/bin/php", inputs.php);
+    writeVfsBinary(fs, "/usr/bin/php", inputs.php);
     if (inputs.phpFpm !== undefined) {
-      writeVfsBinary(fs, "/usr/local/sbin/php-fpm", inputs.phpFpm);
+      writeVfsBinary(fs, "/usr/sbin/php-fpm", inputs.phpFpm);
     }
     for (const [name, bytes] of Object.entries(inputs.extensions).sort()) {
       writeVfsBinary(
@@ -377,7 +377,7 @@ export async function buildPhpTestVfsImage(
     let fileCount = 0;
     for (const dir of phptDirs) {
       const rel = relative(phpSrc, dir);
-      const dest = rel ? `/php-src/${rel}` : "/php-src";
+      const dest = rel ? `/var/lib/kandelo-tests/php/${rel}` : "/var/lib/kandelo-tests/php";
       ensureDirRecursive(fs, dirname(dest));
       fileCount += walkAndWrite(fs, dir, dest, {
         exclude: (childRel) => shouldExclude(phpSrc, rel ? `${rel}/${childRel}` : childRel),

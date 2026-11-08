@@ -30,7 +30,10 @@ import {
   writeVfsBinary,
   writeVfsFile,
 } from "./vfs-image-helpers";
-import { SHELL_LAZY_BINARY_SPECS } from "../lib/init/shell-binaries";
+import {
+  SHELL_LAZY_BINARY_SPECS,
+  shellLazySpecDependency,
+} from "../lib/init/shell-binaries";
 import {
   NETHACK_PLAYGROUND,
   SHELL_CA_BUNDLE,
@@ -43,6 +46,16 @@ import {
   populateSourceRootfsShellOverlay,
   PACKAGE_ROOTFS_SHELL_COMPOSITION,
 } from "./source-rootfs-shell-overlay";
+import type { ProgramOriginalResolver } from "./program-originals";
+import {
+  CANONICAL_SHELL_SELECTION,
+  filterDemoConfigForSelection,
+  partialShellSelection,
+  readShellContractPackageNames,
+  requireProfileRequirementsDeclared,
+  selectionIncludes,
+  type ShellSelection,
+} from "./shell-selection";
 
 const REGULAR_FILE_MODE = 0o100000;
 const DIRECTORY_MODE = 0o040000;
@@ -75,26 +88,40 @@ export interface SourceRootfsShellInputs {
   rootfsPath: string;
   caBundlePath: string;
   bashPath: string;
-  wldesktopPath: string;
-  omarchydesktopPath: string;
-  desktopDataPath: string;
-  libinputQuirksPath: string;
-  xkeyboardConfigPath: string;
-  espeakNgDataPath: string;
+  /** The five wayland-demo outputs; required when wayland-demo is selected. */
+  wldesktopPath?: string;
+  omarchydesktopPath?: string;
+  desktopDataPath?: string;
+  libinputQuirksPath?: string;
+  xkeyboardConfigPath?: string;
+  /** Required when espeak-ng is selected. */
+  espeakNgDataPath?: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
   outFile: string;
   resolveArtifact: ShellLazyArchiveResolver;
+  resolveOriginal?: ProgramOriginalResolver;
   sourceDateEpoch?: string;
+  /**
+   * Which shell packages the image carries. Absent is the canonical shell
+   * (every package, every completeness check); a partial selection composes
+   * a development image from the base plus named packages
+   * (images/vfs/scripts/shell-selection.ts).
+   */
+  selection?: ShellSelection;
+}
+
+/** A path input the selection makes required, or a loud failure. */
+function requiredInput(path: string | undefined, label: string): string {
+  if (path === undefined) throw new Error(`source-rootfs shell requires ${label}`);
+  return path;
 }
 
 // Every image binds bash as /bin/sh (docs/package-management.md); check
 // the sh aliases, not only the bash names, so a regression cannot pass.
 const REQUIRED_BASH_ALIASES = [
   "/bin/bash",
-  "/usr/bin/bash",
   "/bin/sh",
-  "/usr/bin/sh",
 ] as const;
 
 /**
@@ -106,7 +133,7 @@ const REQUIRED_BASH_ALIASES = [
  * machine boots, and eager programs accumulate one convenient addition at a
  * time — 2.4 MB of compressed image had grown to 4.1 MB this way.
  */
-const EAGER_SHELL_PROGRAMS: ReadonlySet<string> = new Set(["/usr/bin/bash"]);
+const EAGER_SHELL_PROGRAMS: ReadonlySet<string> = new Set(["/bin/bash"]);
 const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d] as const;
 export const SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES = [
   ...readSourceRootfsShellResolverDependencies(),
@@ -237,33 +264,41 @@ function loadDemoConfig(path: string, label: string): KandeloDemoConfig {
 }
 
 const SOURCE_ROOTFS_DEMO_COMMANDS = {
+  "dos-games": {
+    executable: "/usr/bin/dos-play",
+    command: "/usr/bin/dos-play keen1",
+  },
   freeciv: {
     executable: "/usr/bin/freeciv-play",
     command: "/usr/bin/freeciv-play",
   },
   love: {
-    executable: "/usr/local/bin/love",
-    command: "/usr/local/bin/love /usr/share/love/examples/pong",
+    executable: "/usr/bin/love",
+    command: "/usr/bin/love /usr/share/love/examples/pong",
   },
   doom: {
-    executable: "/usr/local/bin/doom-launch",
-    command: "/usr/local/bin/doom-launch",
+    executable: "/usr/bin/doom-launch",
+    command: "/usr/bin/doom-launch",
   },
   modeset: {
-    executable: "/usr/local/bin/modeset",
-    command: "/usr/local/bin/modeset",
+    executable: "/usr/bin/modeset",
+    command: "/usr/bin/modeset",
   },
   quake: {
-    executable: "/usr/local/bin/quake",
-    command: "/usr/local/bin/quake",
+    executable: "/usr/bin/quake",
+    command: "/usr/bin/quake",
   },
   scummvm: {
-    executable: "/usr/local/bin/scummvm",
-    command: "/usr/local/bin/scummvm",
+    executable: "/usr/bin/scummvm",
+    command: "/usr/bin/scummvm",
   },
   "ffmpeg-fbdev": {
     executable: "/usr/bin/ffmpeg",
     command: "/usr/bin/ffmpeg -nostdin -re -f lavfi -i testsrc=duration=60:size=320x240:rate=10 -f lavfi -i sine=duration=60 -map 0:v -pix_fmt bgra -f fbdev /dev/fb0 -map 1:a -f oss /dev/dsp",
+  },
+  "ffmpeg-video": {
+    executable: "/usr/bin/ffplay",
+    command: "/usr/bin/ffplay -loop 0 /usr/share/big-buck-bunny.mp4",
   },
   ffplay: {
     executable: "/usr/bin/ffplay",
@@ -287,11 +322,17 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
  * an asynchronous list).
  *
  * `supervise PIDFILE ARGS...` expects a function `start_engine` that starts
- * the engine in the background with ARGS and sets `engine` to its pid.
+ * the engine in the background with ARGS, its standard input redirected from
+ * descriptor 3 (`<&3 3<&-`), and sets `engine` to its pid. Why fd 3: POSIX
+ * gives an asynchronous list in a shell without job control /dev/null as its
+ * standard input, and these engines read the keyboard from standard input,
+ * so an engine started with a bare `&` never saw a key. supervise saves the
+ * terminal on fd 3 before the first start.
  */
 const SUPERVISE_FUNCTION = `supervise() {
     pidfile="$1"
     shift
+    exec 3<&0
     echo $$ > "$pidfile"
     restart=0
     trap 'restart=1; kill -TERM "$engine" 2>/dev/null' HUP
@@ -311,29 +352,28 @@ const SUPERVISE_FUNCTION = `supervise() {
 `;
 
 /**
- * fbDOOM's machine command, /usr/local/bin/doom-launch: DOOM with the user's
+ * fbDOOM's machine command, /usr/bin/doom-launch: DOOM with the user's
  * WAD when one has been sent to the machine, else the shareware one, under
  * the supervisor above. The doom WAD handler writes the user's WAD and sends
  * SIGHUP, so the next DOOM plays it.
  */
 const DOOM_LAUNCH_SCRIPT = `#!/bin/sh
-USER_WAD=/usr/share/doom/user.wad
+USER_WAD=/var/games/doom/user.wad
 ${SUPERVISE_FUNCTION}
 start_engine() {
-    wad=/doom1.wad
+    wad=/usr/share/doom/doom1.wad
     [ -f "$USER_WAD" ] && wad="$USER_WAD"
-    /usr/local/bin/fbdoom -iwad "$wad" "$@" &
+    /usr/bin/fbdoom -iwad "$wad" "$@" <&3 3<&- &
     engine=$!
 }
-supervise /tmp/doom-launch.pid "$@"
+supervise /run/user/1000/doom-launch.pid "$@"
 `;
 
 /**
  * The Kandelo exchange handlers for the game machines, run by kxchgd as the
- * handler account with the batch directory as $1. Each acts only while its
- * game's wrapper runs (its pid file names a live process); otherwise the
- * batch goes to the catch-all, which saves it to ~/Downloads, so dropping a
- * .zip on a plain shell is never mistaken for a game upload.
+ * handler account with the batch directory as $1. DOOM and Quake act only
+ * while their wrapper runs. The shared importer inspects ZIPs, directories
+ * and executable/ROM contents; unrecognized input goes to exchange-save.
  */
 const GAME_HANDLER_PRELUDE = `#!/bin/sh
 batch="$1"
@@ -345,9 +385,9 @@ first_entry() { for entry in "$batch"/*; do echo "$entry"; return; done; }
 `;
 
 const DOOM_LOAD_WAD_HANDLER = `${GAME_HANDLER_PRELUDE}
-pid=$(wrapper_pid /tmp/doom-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
+pid=$(wrapper_pid /run/user/1000/doom-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
 wad=$(first_entry)
-cp "$wad" /usr/share/doom/user.wad.tmp && mv -f /usr/share/doom/user.wad.tmp /usr/share/doom/user.wad || {
+cp "$wad" /var/games/doom/user.wad.tmp && mv -f /var/games/doom/user.wad.tmp /var/games/doom/user.wad || {
     status "failed: could not store the WAD"
     exit 1
 }
@@ -356,9 +396,9 @@ kill -HUP "$pid"
 `;
 
 const QUAKE_LOAD_PAK_HANDLER = `${GAME_HANDLER_PRELUDE}
-pid=$(wrapper_pid /tmp/quake-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
+pid=$(wrapper_pid /run/user/1000/quake-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
 pak=$(first_entry)
-dest=/usr/share/quake/id1/pak0.pak
+dest=/var/games/quake/id1/pak0.pak
 cp "$pak" "$dest.tmp" && mv -f "$dest.tmp" "$dest" || {
     status "failed: could not store the pak"
     exit 1
@@ -367,45 +407,346 @@ status "loading $(basename "$pak")"
 kill -HUP "$pid"
 `;
 
-const SCUMMVM_LOAD_ZIP_HANDLER = `${GAME_HANDLER_PRELUDE}
-wrapper_pid /tmp/scummvm-launch.pid >/dev/null || exec /usr/libexec/kandelo/exchange-save "$batch"
-GAMES=/usr/share/scummvm-games
-for zip in "$batch"/*; do
-    if ! unzip -o -q "$zip" -d "$GAMES"; then
-        status "failed: $(basename "$zip") is not a zip archive"
-        exit 1
-    fi
-done
-status "extracted into $GAMES; add it from the launcher"
+const GAME_IMPORT_SOURCE = fileURLToPath(new URL("../runtime/game-import.py", import.meta.url));
+const GAME_CONTENT_HANDLER = `#!/bin/sh
+export PYTHONHOME=/usr
+exec /usr/bin/python3 /usr/libexec/kandelo/game-import.py exchange "$@"
+`;
+const GAME_PLAY_SCRIPT = `#!/bin/sh
+export PYTHONHOME=/usr
+exec /usr/bin/python3 /usr/libexec/kandelo/game-import.py play "$@"
 `;
 
-/** Machine-specific exchange rules (the image's, in /etc). */
-const GAME_EXCHANGE_RULES: ReadonlyArray<{ name: string; handler: string; script: string; rule: string }> = [
+/**
+ * The emulator launcher, written eagerly to /usr/bin/retro-run. It picks one
+ * of the three lazy emulators (fceumm, genesis-plus-gx, snes9x) for a ROM and
+ * execs it:
+ * `retro-run game.sfc`, passing any further options (`--state FILE`) to the
+ * emulator. With no argument it runs the NES starter ROM.
+ * `retro-run --identify FILE` prints the system it detected (nes, md, sms, gg
+ * or sfc) and exits 0, or exits 1 when FILE is not a ROM. `retro-run --keys
+ * [FILE]` prints which key is which button for that ROM's emulator.
+ *
+ * WHY it reads the ROM instead of trusting its extension: dumps circulate with
+ * wrong or generic extensions (.bin, .smc for a HiROM game), so the system is
+ * identified the way emulator frontends identify a headerless dump: the iNES
+ * magic at offset 0, "SEGA" at 0x100 for Mega Drive, "TMR SEGA" near the end
+ * of a Master System or Game Gear ROM, and for SNES the header checksum and
+ * its complement at the LoROM/HiROM header offsets (with and without a
+ * 512-byte copier header). A file that matches none of them is rejected with
+ * a message rather than handed to an arbitrary core.
+ *
+ * The cores themselves take the system type from the path's extension, so
+ * the launcher runs the ROM through a symlink named for what it detected.
+ */
+const RETRO_RUN_SCRIPT = `#!/bin/bash
+# Pick the emulator core for a ROM from the ROM's own bytes, then exec it.
+#
+# Every process this script starts takes real time on Kandelo, so it reads the
+# ROM's first 64 KiB once and does everything else with bash builtins. Probing
+# each offset with its own dd|od|tr pipeline took about 25 processes to reach
+# the SNES test, and seconds before a SNES game started.
+IDENTIFY=""; KEYS=""
+case "\${1:-}" in
+    --identify) IDENTIFY=1; shift ;;
+    --keys) KEYS=1; shift ;;
+esac
+ROM=\${1:-/usr/share/retro-emulators/roms/240pee.nes}
+RUN=\${XDG_RUNTIME_DIR:-/run/user/$UID}/retro
+
+if [ ! -r "$ROM" ] || [ -d "$ROM" ]; then
+    echo "retro-run: cannot read ROM: $ROM" >&2
+    exit 1
+fi
+
+# Every signature below lies in the first 66,016 bytes.
+HEX=$(od -An -tx1 -v -N 66016 "$ROM" | tr -d ' \\n')
+# $1=offset $2=count -> H=lowercase hex of those bytes (shorter past the end)
+hex_at() { H=\${HEX:$(( $1 * 2 )):$(( $2 * 2 ))}; }
+
+# A SNES header stores a checksum and its bitwise complement side by side.
+snes_header_at() {
+    hex_at "$1" 4
+    [ \${#H} -eq 8 ] || return 1
+    [ $(( 16#\${H:0:4} ^ 16#\${H:4:4} )) -eq 65535 ]
+}
+
+CORE=""; EXT=""
+hex_at 0 4
+if [ "$H" = "4e45531a" ]; then
+    CORE=/usr/bin/fceumm; EXT=nes
+else
+    hex_at 256 4
+    if [ "$H" = "53454741" ]; then
+        CORE=/usr/bin/genesis-plus-gx; EXT=md
+    fi
+fi
+if [ -z "$CORE" ]; then
+    for off in 32752 16368 8176; do
+        hex_at "$off" 8
+        if [ "$H" = "544d522053454741" ]; then
+            CORE=/usr/bin/genesis-plus-gx; EXT=sms
+            # Region nibble: 5-7 are Game Gear, 3-4 are Master System.
+            hex_at $((off + 15)) 1
+            case \${H:0:1} in 5|6|7) EXT=gg ;; esac
+            break
+        fi
+    done
+fi
+if [ -z "$CORE" ]; then
+    for off in 32732 65500 33244 66012; do
+        if snes_header_at "$off"; then
+            CORE=/usr/bin/snes9x; EXT=sfc
+            break
+        fi
+    done
+fi
+if [ -z "$CORE" ]; then
+    echo "retro-run: $ROM is not a recognised NES, SNES, Mega Drive, Master System or Game Gear ROM" >&2
+    exit 1
+fi
+# --identify FILE: name the system and stop, for callers deciding whether a
+# file is a ROM at all (the ROM exchange handler).
+if [ -n "$IDENTIFY" ]; then echo "$EXT"; exit 0; fi
+
+# The cores read the system type from the path's extension, so give the ROM
+# a name that carries what its contents said. The rest of the name is the
+# ROM's own: FCEUmm takes an iNES 1.0 ROM's TV system from tags such as
+# "(E)" or "(Europe)" in it, and a European game named "rom" runs at NTSC
+# speed and pitch. Only a conservative character set survives.
+NAME=\${ROM##*/}
+BASE=\${NAME%.*}
+BASE=\${BASE//[^A-Za-z0-9 ._()!,&+-]/_}
+BASE=\${BASE:0:120}
+case "$BASE" in ""|.*|-*) BASE="rom$BASE" ;; esac
+case "$ROM" in /*) ;; *) ROM="$PWD/$ROM" ;; esac
+[ -d "$RUN" ] || mkdir -p "$RUN" || exit 1
+LINK="$RUN/$BASE.$EXT"
+ln -sf "$ROM" "$LINK" || exit 1
+[ -n "$KEYS" ] && exec "$CORE" "$LINK" --keys
+exec "$CORE" "$LINK" "\${@:2}"
+`;
+
+/**
+ * kandelo-terminal, written eagerly to /usr/bin/kandelo-terminal: asks the
+ * page showing the machine to open a terminal with a command typed at its
+ * prompt (web-libs/kandelo-session/src/terminal-request.ts). The ROM exchange
+ * handler uses it so a dropped game is a visible, repeatable command.
+ */
+const KANDELO_TERMINAL_SCRIPT = `#!/bin/sh
+# kandelo-terminal [--display] [--title TITLE] COMMAND-LINE
+#
+# Ask the page showing this machine to open a terminal and type COMMAND-LINE
+# at its prompt, as the user would, so the command is visible and can be run
+# again from that terminal's history. COMMAND-LINE is one shell command line,
+# used as written. --display: the command draws on the framebuffer, so the
+# page stops whatever holds the display and shows it.
+#
+# The request is a Kandelo exchange output of type
+# application/x-kandelo-terminal-command. Publishing it fails, and so does
+# this command (exit 1), when nothing outside the machine takes outputs; a
+# page that does not open terminals keeps it as an ordinary output.
+usage() {
+    echo "usage: kandelo-terminal [--display] [--title TITLE] COMMAND-LINE" >&2
+    exit 2
+}
+display=""
+title=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --display) display=1; shift ;;
+        --title) [ $# -ge 2 ] || usage; title=$2; shift 2 ;;
+        --) shift; break ;;
+        -*) usage ;;
+        *) break ;;
+    esac
+done
+[ $# -eq 1 ] && [ -n "$1" ] || usage
+command=$1
+[ -n "$title" ] || title=$command
+
+json_string() {
+    printf '"%s"' "$(printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g')"
+}
+file=$(mktemp "\${KANDELO_WORK:-\${TMPDIR:-/tmp}}/terminal-request.XXXXXX") || exit 1
+{
+    printf '{"version":1,"command":%s,"title":%s' "$(json_string "$command")" "$(json_string "$title")"
+    [ -z "$display" ] || printf ',"display":"framebuffer"'
+    printf '}\\n'
+} > "$file" || { rm -f "$file"; exit 1; }
+kandelo-publish --mime application/x-kandelo-terminal-command \\
+    --name "terminal-\${file##*.}.json" "$file" >/dev/null
+rc=$?
+rm -f "$file"
+exit $rc
+`;
+
+/**
+ * The Kandelo exchange handler for a dropped ROM, on every shell machine: it
+ * keeps the drop in ~/roms and starts the emulator on its first ROM, so
+ * dropping a game, or a folder of them, on the machine plays it. The
+ * machine's view brings the display forward when the emulator binds /dev/fb0.
+ *
+ * WHY it takes every drop and reads contents: ROM collections name files
+ * .rom, .bin or nothing at all, and arrive as folders, so no extension rule
+ * can pick them out. A drop with no ROM in it goes to exchange-save, exactly
+ * as the 99-save catch-all would have handled it.
+ *
+ * The emulator runs outside any terminal (kxchgd gives handlers /dev/null as
+ * stdin), so it reads keys from the machine's keyboard device rather than
+ * from a terminal (packages/registry/retro-emulators/frontend/main.c).
+ *
+ * A dropped ROM replaces the game that is playing: the handler stops the
+ * emulator a previous drop or a terminal started (its pid file names it) and
+ * waits until it is gone, so the display is free. A display held by another
+ * program is not taken; the emulator's own failure (EBUSY on /dev/fb0) is
+ * reported as the batch's status.
+ */
+const RETRO_LOAD_ROM_HANDLER = `#!/bin/sh
+batch="$1"
+status() { setfattr -n user.kandelo.status -v "$1" "$batch" 2>/dev/null || true; }
+RUNTIME=\${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+PIDFILE=$RUNTIME/retro.pid
+LOG=$RUNTIME/retro.log
+
+# A ROM is recognised by its contents (retro-run --identify), not its name:
+# collections name ROMs .rom, .bin or nothing at all, and arrive as folders.
+# Only names that could be a ROM are read, so a dropped photo or archive
+# costs one directory walk. The first ROM in path order is played.
+could_be_rom() {
+    base=\${1##*/}
+    case "$base" in
+        .*) return 1 ;;
+        *.*) ;;
+        *) return 0 ;;
+    esac
+    case "$base" in
+        *.[nN][eE][sS]|*.[sS][fF][cC]|*.[sS][mM][cC]|*.[mM][dD]|*.[gG][eE][nN]|*.[sS][mM][dD]) return 0 ;;
+        *.[sS][mM][sS]|*.[gG][gG]|*.[rR][oO][mM]|*.[bB][iI][nN]) return 0 ;;
+    esac
+    return 1
+}
+rom=$(find "$batch" -type f | sort | while IFS= read -r f; do
+    could_be_rom "$f" || continue
+    /usr/bin/retro-run --identify "$f" >/dev/null 2>&1 && { printf '%s\\n' "$f"; break; }
+done)
+# Not a game: what any other drop gets.
+[ -n "$rom" ] || exec /usr/libexec/kandelo/exchange-save "$batch"
+
+# The batch is removed when this handler exits, so the drop is kept in
+# ~/roms as it arrived: a file as itself, a folder with what is in it.
+dir="$HOME/roms"
+mkdir -p "$dir" || { status "failed: could not create $dir"; exit 1; }
+for entry in "$batch"/*; do
+    cp -Rf "$entry" "$dir/" || { status "failed: could not store $(basename "$entry") in $dir"; exit 1; }
+done
+path=\${rom#"$batch"/}
+name=\${rom##*/}
+
+# The game runs as a command in a terminal of its own, typed at the prompt:
+# the user sees what the drop ran, and once the game exits, Up and Enter run
+# it again. kandelo-terminal asks the page for that terminal. Where nothing
+# outside the machine opens one (the Node host, or no page taking outputs),
+# the game starts in the background instead, as below.
+quoted=$(printf '%s' "$path" | sed "s/'/'\\\\\\\\''/g")
+if /usr/bin/kandelo-terminal --display --title "$name" "retro-run ~/roms/'$quoted'" 2>/dev/null; then
+    status "opened a terminal: retro-run ~/roms/$path"
+    exit 0
+fi
+
+old=$(cat "$PIDFILE" 2>/dev/null)
+if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
+    status "stopping the current game"
+    kill -TERM "$old"
+    tries=0
+    while kill -0 "$old" 2>/dev/null; do
+        tries=$((tries + 1))
+        [ "$tries" -le 50 ] || { status "failed: the running emulator (pid $old) did not stop"; exit 1; }
+        sleep 0.1
+    done
+fi
+rm -f "$PIDFILE"
+
+status "starting $name"
+/usr/bin/retro-run "$dir/$path" </dev/null >"$LOG" 2>&1 &
+pid=$!
+# The emulator publishes its pid once it holds the display, sound and
+# keyboard. The first start of a core fetches it, which can take a while.
+tries=0
+while :; do
+    [ "$(cat "$PIDFILE" 2>/dev/null)" = "$pid" ] && { status "playing $name"; exit 0; }
+    if ! kill -0 "$pid" 2>/dev/null; then
+        # The emulator's own lines start with "[" and its key list with
+        # "Keys for" or two spaces; the last other line is the error.
+        why=$(grep -v -e '^\\[' -e '^Keys for ' -e '^  ' "$LOG" | tail -n 1)
+        [ -n "$why" ] || why=$(tail -n 1 "$LOG")
+        case "$why" in
+            "open /dev/fb0: "*busy*) why="another program holds the display; stop it and drop the ROM again" ;;
+        esac
+        status "failed: $why"
+        exit 1
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -le 1200 ] || { status "failed: the emulator did not start within 2 minutes (see $LOG)"; exit 1; }
+    sleep 0.1
+done
+`;
+
+/** The image's exchange rules (in /etc): the game machines' and the ROM rule. */
+const GAME_EXCHANGE_RULES: ReadonlyArray<{
+  name: string;
+  handler: string;
+  script: string;
+  rule: string;
+  /** The package whose game the rule feeds; a partial shell without it omits the rule. */
+  owner: string;
+}> = [
   {
     name: "50-doom-wad.handler",
     handler: "/usr/libexec/kandelo/doom-load-wad",
+    owner: "fbdoom",
     script: DOOM_LOAD_WAD_HANDLER,
     rule: "# A WAD for DOOM: it restarts with it.\nmatch extension .wad\nkind file\nmax-bytes 33554432\nrun /usr/libexec/kandelo/doom-load-wad\n",
   },
   {
     name: "50-quake-pak.handler",
     handler: "/usr/libexec/kandelo/quake-load-pak",
+    owner: "tyrquake",
     script: QUAKE_LOAD_PAK_HANDLER,
     rule: "# A pak0.pak for Quake: it restarts with it.\nmatch extension .pak\nkind file\nmax-bytes 33554432\nrun /usr/libexec/kandelo/quake-load-pak\n",
   },
   {
-    name: "50-scummvm-zip.handler",
-    handler: "/usr/libexec/kandelo/scummvm-load-zip",
-    script: SCUMMVM_LOAD_ZIP_HANDLER,
-    rule: "# Game data for ScummVM, zipped: extracted for its launcher.\nmatch extension .zip\nkind file\nmax-bytes 536870912\nrun /usr/libexec/kandelo/scummvm-load-zip\n",
+    name: "60-game-content.handler",
+    handler: "/usr/libexec/kandelo/game-import",
+    owner: "python-browser-bundle",
+    script: GAME_CONTENT_HANDLER,
+    rule: "# Inspect ZIP, DOS, ScummVM and console ROM contents before choosing a runtime.\nkind any\nmax-bytes 536870912\nrun /usr/libexec/kandelo/game-import\n",
+  },
+  {
+    // Sorted after the game machines' rules and before the 99-save
+    // catch-all: it takes every drop, plays one holding a ROM, and hands
+    // anything else to exchange-save as the catch-all would.
+    name: "90-retro-rom.handler",
+    handler: "/usr/libexec/kandelo/retro-load-rom",
+    owner: "retro-emulators",
+    script: RETRO_LOAD_ROM_HANDLER,
+    rule: [
+      "# A drop holding a NES, SNES, Mega Drive, Master System or Game Gear",
+      "# ROM, whatever it is named: kept in ~/roms and played. Anything",
+      "# else is saved to ~/Downloads, as the 99-save catch-all would.",
+      "kind any",
+      "max-bytes 16777216",
+      "run /usr/libexec/kandelo/retro-load-rom",
+      "",
+    ].join("\n"),
   },
 ];
 
 /**
  * The Quake software demo's launch wrapper, written eagerly to
- * /usr/local/bin/quake. It extracts id1/pak0.pak from id's original shareware
+ * /usr/bin/quake. It extracts id1/pak0.pak from id's original shareware
  * archive on first launch using the image's own lazy tools (unzip -> lha), then
- * execs the lazy engine at /usr/bin/quake with the shareware basedir. Using an
+ * execs the lazy engine at /usr/libexec/quake with the shareware basedir. Using an
  * absolute engine path avoids recursing back into this wrapper via PATH. The
  * step is idempotent and surfaces failure honestly; the engine then reports its
  * own missing-data error rather than faking success. The engine runs under
@@ -413,26 +754,26 @@ const GAME_EXCHANGE_RULES: ReadonlyArray<{ name: string; handler: string; script
  */
 const QUAKE_LAUNCH_SCRIPT = `#!/bin/sh
 set -e
-BASE=/usr/share/quake
+BASE=/var/games/quake
 PAK="$BASE/id1/pak0.pak"
-ZIP="$BASE/quake106.zip"
+ZIP=/usr/share/quake/quake106.zip
 if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
-    /usr/local/bin/quake-data shareware "$ZIP" "$BASE"
+    /usr/bin/quake-data shareware "$ZIP" "$BASE"
 fi
 ${SUPERVISE_FUNCTION}
 start_engine() {
-    /usr/bin/quake -basedir "$BASE" "$@" &
+    /usr/libexec/quake -basedir "$BASE" "$@" <&3 3<&- &
     engine=$!
 }
-supervise /tmp/quake-launch.pid "$@"
+supervise /run/user/1000/quake-launch.pid "$@"
 `;
 
 /**
- * fbDOOM's launch wrapper, written eagerly to /usr/local/bin/fbdoom; the
- * engine is the lazy /usr/bin/fbdoom. Doom keeps its settings in the user's
+ * fbDOOM's launch wrapper, written eagerly to /usr/bin/fbdoom; the
+ * engine is the lazy /usr/libexec/fbdoom. Doom keeps its settings in the user's
  * config file ($HOME/.fdoom.tar/default.cfg, read at startup and saved again
  * when Doom quits; fbdoom's 0009 patch restores both) and has no system-wide
- * one, and the home directory is an empty tmpfs on every boot. So, as a distribution's skeleton files would, the wrapper writes
+ * one. As a distribution's skeleton files would, the wrapper writes
  * this machine's defaults into a missing config on first launch:
  *
  * - screenblocks 10: the full-width view with the status bar. Doom's own
@@ -448,12 +789,12 @@ const FBDOOM_LAUNCH_SCRIPT = `#!/bin/sh
 if [ -n "\${HOME:-}" ] && [ ! -e "$HOME/.fdoom.tar/default.cfg" ]; then
     mkdir -p "$HOME/.fdoom.tar" && printf 'screenblocks 10\\n' > "$HOME/.fdoom.tar/default.cfg"
 fi
-exec /usr/bin/fbdoom "$@"
+exec /usr/libexec/fbdoom "$@"
 `;
 
 /**
- * The ScummVM demo's launch wrapper, written eagerly to /usr/local/bin/scummvm.
- * It execs the lazy engine at /usr/bin/scummvm (an absolute path, so PATH
+ * The ScummVM demo's launch wrapper, written eagerly to /usr/bin/scummvm.
+ * It execs the lazy engine at /usr/libexec/scummvm (an absolute path, so PATH
  * cannot recurse into this wrapper) after two pieces of setup:
  *
  * - SDL's display follows where it is launched. Inside a Wayland session (a
@@ -472,10 +813,9 @@ exec /usr/bin/fbdoom "$@"
  *   computes from the physical size the kernel reports on the connector
  *   (KMSDRM) or the compositor reports on wl_output (Wayland).
  *
- * The engine runs under the shared supervisor. Zipped game data sent to the
- * machine (Kandelo exchange) is extracted into $GAMES by the scummvm zip
- * handler while ScummVM keeps running, so the user keeps their place in the
- * launcher; the handler acts only while this wrapper's pid file names it.
+ * The engine runs under the shared supervisor. The shared content importer
+ * inspects uploads and starts detected games with an isolated config through
+ * this wrapper. Unknown input is saved without replacing the display owner.
  *
  * Because the engine runs as an asynchronous list in a non-interactive shell,
  * POSIX has it start with SIGINT and SIGQUIT ignored, so Ctrl+C at the
@@ -487,7 +827,7 @@ exec /usr/bin/fbdoom "$@"
  */
 const SCUMMVM_LAUNCH_SCRIPT = `#!/bin/sh
 set -e
-GAMES=/usr/share/scummvm-games
+GAMES=/var/games/scummvm
 INI="\${HOME:-/home/maker}/scummvm.ini"
 if [ ! -f "$INI" ]; then
     printf '[scummvm]\\ngui_scale=100\\nbrowser_lastpath=%s\\n' "$GAMES" > "$INI"
@@ -500,10 +840,10 @@ fi
 set +e
 ${SUPERVISE_FUNCTION}
 start_engine() {
-    /usr/bin/scummvm --config="$INI" "$@" &
+    /usr/libexec/scummvm --config="$INI" "$@" <&3 3<&- &
     engine=$!
 }
-supervise /tmp/scummvm-launch.pid "$@"
+supervise /run/user/1000/scummvm-launch.pid "$@"
 `;
 
 /**
@@ -526,8 +866,8 @@ supervise /tmp/scummvm-launch.pid "$@"
 const SCUMMVM_FREEWARE_CATALOG_SOURCE = fileURLToPath(
   new URL("../../../packages/registry/shell/scummvm-freeware-games.json", import.meta.url),
 );
-const SCUMMVM_PLAY_CATALOG = "/usr/local/share/scummvm-play/games.tsv";
-const SCUMMVM_PLAY_COMMAND = "/usr/local/bin/scummvm-play";
+const SCUMMVM_PLAY_CATALOG = "/usr/share/scummvm-play/games.tsv";
+const SCUMMVM_PLAY_COMMAND = "/usr/bin/scummvm-play";
 /** The dock action whose menu lists the catalog. */
 const SCUMMVM_FREEWARE_MENU_ACTION = "freeware";
 
@@ -670,7 +1010,7 @@ function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
 }
 
 /**
- * `/usr/local/bin/scummvm-play GAME`, the ScummVM machine's dock actions:
+ * `/usr/bin/scummvm-play GAME`, the ScummVM machine's dock actions:
  * fetch a catalog game, verify it, unpack it, and start it. `--list` prints
  * the catalog, so the same games are a command away in the terminal.
  *
@@ -698,7 +1038,7 @@ function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
 export const SCUMMVM_PLAY_SCRIPT = `#!/bin/sh
 set -e
 CATALOG=${SCUMMVM_PLAY_CATALOG}
-GAMES=/usr/share/scummvm-games
+GAMES=/var/games/scummvm
 TAB=$(printf '\\t')
 RANGE_LIMIT=$((100 * 1024 * 1024))
 RANGE_SIZE=$((32 * 1024 * 1024))
@@ -834,16 +1174,16 @@ if [ ! -f "$DIR/.targets" ]; then
     fi
     rm -f "$ZIP"
     say "Adding it to ScummVM..."
-    /usr/local/bin/scummvm --add --recursive -p "$DIR" \\
+    /usr/bin/scummvm --add --recursive -p "$DIR" \\
         | sed -n 's/^  Target: *//p' > "$DIR/.targets.partial"
     mv "$DIR/.targets.partial" "$DIR/.targets"
 fi
 if [ "$(grep -c . "$DIR/.targets" || true)" = 1 ]; then
     say "Starting $TITLE..."
-    exec /usr/local/bin/scummvm "$(cat "$DIR/.targets")"
+    exec /usr/bin/scummvm "$(cat "$DIR/.targets")"
 fi
 say "Opening the ScummVM launcher; $TITLE is in its game list"
-exec /usr/local/bin/scummvm
+exec /usr/bin/scummvm
 `;
 
 export function composeSourceRootfsDemoConfig(
@@ -928,9 +1268,34 @@ export function composeSourceRootfsDemoConfig(
   return bytes;
 }
 
+/**
+ * The composed demo config filtered to `selection`, as the bytes to bake.
+ *
+ * Every profile's `requires` is first checked against the shell contract, so
+ * a requirement can never name a package the shell does not have. The
+ * canonical selection bakes exactly the composed bytes.
+ */
+function selectDemoConfig(
+  composed: Uint8Array,
+  selection: ShellSelection,
+): { bytes: Uint8Array; included: string[] } {
+  const config = parseKandeloDemoConfig(decodeUtf8(composed, "composed demo config"));
+  if (config === null) throw new Error("composed demo config has an unsupported version");
+  requireProfileRequirementsDeclared(config, readShellContractPackageNames());
+  const filtered = filterDemoConfigForSelection(config, selection);
+  if (selection.kind === "canonical") {
+    return { bytes: composed, included: filtered.included };
+  }
+  return {
+    bytes: new TextEncoder().encode(`${JSON.stringify(filtered.config, null, 2)}\n`),
+    included: filtered.included,
+  };
+}
+
 function requireOwnedDemoCommands(
   fs: KandeloImageFs,
   demoBytes: Uint8Array,
+  includedProfiles: ReadonlySet<string>,
 ): void {
   const config = parseKandeloDemoConfig(
     decodeUtf8(demoBytes, "composed demo config"),
@@ -941,6 +1306,9 @@ function requireOwnedDemoCommands(
   for (const [profileId, expected] of Object.entries(
     SOURCE_ROOTFS_DEMO_COMMANDS,
   )) {
+    // A partial shell leaves out profiles whose packages it lacks; those it
+    // keeps are held to the same check as the canonical shell's.
+    if (!includedProfiles.has(profileId)) continue;
     const init = resolveDemoInit(config, profileId);
     if (init === null || !("shellCommand" in init)
       || init.shellCommand !== expected.command) {
@@ -1222,8 +1590,33 @@ function requirePreservedLazyState(
   }
 }
 
-function requireCompleteProductShellContract(fs: KandeloImageFs): void {
+/** Whether `path` names anything in the image, lazy or not. */
+function imagePathExists(fs: KandeloImageFs, path: string): boolean {
+  try {
+    fs.lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function requireCompleteProductShellContract(
+  fs: KandeloImageFs,
+  selection: ShellSelection,
+): void {
+  // A partial shell is complete for its selection: every file a selected
+  // package owns must be present, exactly as in the canonical shell, and a
+  // file an unselected package owns must be absent, so the image never
+  // promises a program it does not carry.
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
+    if (!selectionIncludes(selection, shellLazySpecDependency(spec))) {
+      if (imagePathExists(fs, spec.vfsPath)) {
+        throw new Error(
+          `partial shell carries ${spec.vfsPath} from unselected ${shellLazySpecDependency(spec)}`,
+        );
+      }
+      continue;
+    }
     if (!fs.isPathDeferred(spec.vfsPath)) {
       throw new Error(
         `source-rootfs shell omitted production lazy utility ${spec.vfsPath}`,
@@ -1238,6 +1631,12 @@ function requireCompleteProductShellContract(fs: KandeloImageFs): void {
   // this check while shipping exactly the right contents.
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
     const member = `${spec.mountPrefix}${spec.requiredMember}`;
+    if (!selectionIncludes(selection, spec.dependency)) {
+      if (imagePathExists(fs, member)) {
+        throw new Error(`partial shell carries ${member} from unselected ${spec.dependency}`);
+      }
+      continue;
+    }
     if (!fs.isPathDeferred(member)) {
       throw new Error(
         `source-rootfs shell omitted production lazy archive ${spec.archiveUrl}` +
@@ -1245,12 +1644,19 @@ function requireCompleteProductShellContract(fs: KandeloImageFs): void {
       );
     }
   }
-  for (const path of [
-    "/etc/gitconfig",
-    "/etc/profile",
-    `${NETHACK_PLAYGROUND}/perm`,
-    `${NETHACK_PLAYGROUND}/record`,
-  ]) {
+  for (const path of ["/etc/gitconfig", "/etc/profile", "/home/projects"]) {
+    fs.stat(path);
+  }
+  const projects = fs.stat("/home/projects");
+  if (
+    projects.uid !== 1000 ||
+    projects.gid !== 1000 ||
+    (projects.mode & 0o777) !== 0o755
+  ) {
+    throw new Error("source-rootfs shell lost the persistent projects directory contract");
+  }
+  if (!selectionIncludes(selection, "nethack-browser-bundle")) return;
+  for (const path of [`${NETHACK_PLAYGROUND}/perm`, `${NETHACK_PLAYGROUND}/record`]) {
     fs.stat(path);
   }
   // Group-owned state written only through the set-group-ID binary, so every
@@ -1293,13 +1699,14 @@ function removeEagerShellCaBundle(fs: KandeloImageFs, zipBytes: Uint8Array): voi
   for (const path of SHELL_CA_BUNDLE.guestPaths) fs.unlink(path);
 }
 
-function requireLazyShellData(fs: KandeloImageFs): void {
+function requireLazyShellData(fs: KandeloImageFs, selection: ShellSelection): void {
   for (const path of SHELL_CA_BUNDLE.guestPaths) {
     if (!fs.isPathDeferred(path)) {
       throw new Error(`source-rootfs shell must defer CA data ${path}`);
     }
   }
   for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
+    if (!selectionIncludes(selection, spec.dependency)) continue;
     const path = `${spec.mountPrefix}${spec.requiredMember}`;
     if (!fs.isPathDeferred(path)) {
       throw new Error(`source-rootfs shell must defer optional data ${path}`);
@@ -1585,16 +1992,21 @@ export async function buildSourceRootfsShellImage(
   // `sm_load_image`, so the source image gains its authority only after its
   // activation cohorts checked out -- there is no window between importing and
   // authenticating, and no second call to forget.
+  const selection = inputs.selection ?? CANONICAL_SHELL_SELECTION;
+  const includes = (pkg: string): boolean => selectionIncludes(selection, pkg);
   const fs = KandeloImageFs.create();
   fs.loadImage(rootfs);
   const terminalSession = readExperimentalTerminalSession(fs);
   // The rootfs owns its own eager programs (login); only what this composer
   // adds is held to the lazy default.
   const sourceEagerPrograms = eagerWasmPrograms(fs);
-  const demo = composeSourceRootfsDemoConfig(
+  const composedDemo = composeSourceRootfsDemoConfig(
     inputs.demoConfigPath,
     inputs.demoProfileOverlayPath,
   );
+  const demoSelection = selectDemoConfig(composedDemo, selection);
+  const demo = demoSelection.bytes;
+  const includedProfiles = new Set(demoSelection.included);
   const scummvmCatalog = loadScummvmFreewareCatalog();
 
   // WHY: the terminal document is image-owned policy. Validate its programs
@@ -1609,7 +2021,11 @@ export async function buildSourceRootfsShellImage(
   // at the same VFS path (see requireManSupersededByMandoc below). Capture
   // its prior identity now, alongside Bash's, so the overlay's "nothing else
   // changed" check does not flag this one intentional supersession.
-  const priorManIdentity = optionalLazyIdentity(fs, "/usr/bin/man");
+  // Without mandoc (a partial shell may leave it out) the applet stays, and
+  // the lazy-state check below must hold it to "unchanged" like any other.
+  const priorManIdentity = includes("mandoc-browser-bundle")
+    ? optionalLazyIdentity(fs, "/usr/bin/man")
+    : null;
   const omittedLazyIdentities = [
     sourceBash.identity,
     ...(priorManIdentity ? [priorManIdentity] : []),
@@ -1617,25 +2033,35 @@ export async function buildSourceRootfsShellImage(
   const unrelatedLazyBefore = lazyRecords(fs, omittedLazyIdentities);
 
   const bash = readRegularInput(inputs.bashPath, "bash dependency");
-  const wldesktop = readRegularInput(
-    inputs.wldesktopPath,
-    "wldesktop launcher dependency",
-  );
-  const omarchydesktop = readRegularInput(
-    inputs.omarchydesktopPath,
-    "omarchydesktop launcher dependency",
-  );
   const caBundle = readRegularInput(inputs.caBundlePath, "rootfs CA bundle dependency");
-  requireRegularInput(inputs.desktopDataPath, "desktop data dependency");
-  const libinputQuirks = readRegularInput(
-    inputs.libinputQuirksPath,
-    "libinput quirks dependency",
-  );
-  requireRegularInput(inputs.espeakNgDataPath, "espeak-ng data dependency");
-  const xkeyboardConfig = readRegularInput(
-    inputs.xkeyboardConfigPath,
-    "xkeyboard-config dependency",
-  );
+  const desktop = includes("wayland-demo")
+    ? {
+      wldesktop: readRegularInput(
+        requiredInput(inputs.wldesktopPath, "the wldesktop launcher"),
+        "wldesktop launcher dependency",
+      ),
+      omarchydesktop: readRegularInput(
+        requiredInput(inputs.omarchydesktopPath, "the omarchydesktop launcher"),
+        "omarchydesktop launcher dependency",
+      ),
+      xkeyboardConfig: readRegularInput(
+        requiredInput(inputs.xkeyboardConfigPath, "the xkeyboard-config archive"),
+        "xkeyboard-config dependency",
+      ),
+      dataPath: requiredInput(inputs.desktopDataPath, "the desktop data archive"),
+      libinputQuirks: readRegularInput(
+        requiredInput(inputs.libinputQuirksPath, "the libinput quirks archive"),
+        "libinput quirks dependency",
+      ),
+    }
+    : null;
+  if (desktop !== null) requireRegularInput(desktop.dataPath, "desktop data dependency");
+  const espeakNgDataPath = includes("espeak-ng")
+    ? requiredInput(inputs.espeakNgDataPath, "the espeak-ng data archive")
+    : null;
+  if (espeakNgDataPath !== null) {
+    requireRegularInput(espeakNgDataPath, "espeak-ng data dependency");
+  }
 
   // WHY: Bash remains the ordinary account shell and is therefore eager after
   // login. Opening its canonical alias follows a symlink when present,
@@ -1645,94 +2071,121 @@ export async function buildSourceRootfsShellImage(
   requireMaterializedBashIdentity(fs, sourceBash, bash);
   requirePreservedLazyState(unrelatedLazyBefore, fs, "Bash materialization");
 
-  populateSourceRootfsShellOverlay(fs, inputs.resolveArtifact);
+  populateSourceRootfsShellOverlay(fs, inputs.resolveArtifact, {
+    existingProgramDependencies: SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCY_SET,
+    resolveOriginal: inputs.resolveOriginal,
+    includesPackage: includes,
+  });
   requirePreservedLazyState(
     unrelatedLazyBefore,
     fs,
     "production shell overlay",
   );
   requireManSupersededByMandoc(fs, priorManIdentity);
-  requireCompleteProductShellContract(fs);
+  requireCompleteProductShellContract(fs, selection);
 
-  ensureDirRecursive(fs, "/usr/local/bin");
+  ensureDirRecursive(fs, "/usr/bin");
   // The desktops' launchers are small scripts, written eagerly. Every Wasm
   // program they exec (wlcompositor, wlterm, foot, Quickshell, ...)
   // is a lazy file registered by the overlay above, so a machine that never
   // starts a desktop never fetches them.
-  writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/omarchydesktop", omarchydesktop, 0o755);
+  if (desktop !== null) {
+    writeVfsBinary(fs, "/usr/bin/wldesktop", desktop.wldesktop, 0o755);
+    writeVfsBinary(fs, "/usr/bin/omarchydesktop", desktop.omarchydesktop, 0o755);
+  }
   // WHY: CA, speech and desktop data need not be fetched to boot a shell.
   // Register the exact package ZIPs at their compiled-in guest paths: normal
   // open/read triggers a verified first-use fetch on both Node and browser.
   removeEagerShellCaBundle(fs, caBundle);
-  const dataArchivePaths = {
+  const dataArchivePaths: Record<string, string | null> = {
     "ca-certificates": inputs.caBundlePath,
-    "desktop-data": inputs.desktopDataPath,
-    "espeak-ng-data": inputs.espeakNgDataPath,
+    "desktop-data": desktop?.dataPath ?? null,
+    "espeak-ng-data": espeakNgDataPath,
   };
   for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
-    registerDeclaredShellLazyArchive(fs, spec, () => dataArchivePaths[spec.id]);
+    if (!includes(spec.dependency)) continue;
+    registerDeclaredShellLazyArchive(
+      fs,
+      spec,
+      () => requiredInput(dataArchivePaths[spec.id] ?? undefined, `the ${spec.id} archive`),
+    );
   }
   // wlcompositor's statically linked libinput reads its device quirks from
   // LIBINPUT_QUIRKS_DIR, compiled in as /usr/share/libinput.
-  unpackDataZip(fs, "/usr/share/libinput", libinputQuirks);
+  if (desktop !== null) {
+    unpackDataZip(fs, "/usr/share/libinput", desktop.libinputQuirks);
+    // GTK3 compiles a default keymap before the compositor's keymap arrives.
+    // Only a selection carrying wayland-demo owns this package input.
+    unpackDataZip(fs, "/usr/share/X11/xkb", desktop.xkeyboardConfig);
+  }
   // fbDOOM is a lazy /usr/bin binary; only its launch wrapper is eager.
-  writeVfsBinary(
-    fs,
-    "/usr/local/bin/fbdoom",
-    new TextEncoder().encode(FBDOOM_LAUNCH_SCRIPT),
-    0o755,
-  );
-  // GTK3 compiles a default keymap from the xkeyboard-config rules before
-  // the compositor's keymap arrives; libxkbcommon reads them from its
-  // compiled-in root, /usr/share/X11/xkb.
-  unpackDataZip(fs, "/usr/share/X11/xkb", xkeyboardConfig);
+  if (includes("fbdoom")) {
+    writeVfsBinary(
+      fs,
+      "/usr/bin/fbdoom",
+      new TextEncoder().encode(FBDOOM_LAUNCH_SCRIPT),
+      0o755,
+    );
+  }
   // The Quake engine, unzip, and lha are lazy /usr/bin binaries; only this
   // small extraction+launch wrapper is written eagerly.
-  writeVfsBinary(
-    fs,
-    "/usr/local/bin/quake",
-    new TextEncoder().encode(QUAKE_LAUNCH_SCRIPT),
-    0o755,
-  );
-  // The quake profile stages quake106.zip into this basedir at page load, and
-  // the wrapper (running as the unprivileged demo user) extracts id1/pak0.pak
-  // beneath it. The directory must exist (the asset writer does not create
-  // parents) and be world-writable so the demo user can create id1/ and write
-  // the extracted pak.
+  if (includes("tyrquake")) {
+    writeVfsBinary(
+      fs,
+      "/usr/bin/quake",
+      new TextEncoder().encode(QUAKE_LAUNCH_SCRIPT),
+      0o755,
+    );
+  }
+  // The verified shareware archive is static data. The unprivileged wrapper
+  // extracts its playable data into /var/games/quake, never into /usr.
   ensureDirRecursive(fs, "/usr/share");
-  ensureDirRecursive(fs, "/usr/share/quake", 0o777);
+  if (includes("tyrquake")) ensureDirRecursive(fs, "/usr/share/quake");
   // ScummVM: the engine, its plugins and its GUI data are lazy; only the launch
   // wrapper, scummvm-play and its catalog are eager. Game data is either the
   // user's own upload or a freeware game scummvm-play fetches; both land in
-  // this directory and the unprivileged demo user unzips them in place — it
-  // must be world-writable, like the Quake basedir above.
-  writeVfsBinary(
-    fs,
-    "/usr/local/bin/scummvm",
-    new TextEncoder().encode(SCUMMVM_LAUNCH_SCRIPT),
-    0o755,
-  );
-  writeVfsBinary(
-    fs,
-    SCUMMVM_PLAY_COMMAND,
-    new TextEncoder().encode(SCUMMVM_PLAY_SCRIPT),
-    0o755,
-  );
-  ensureDirRecursive(fs, "/usr/local/share/scummvm-play");
-  writeVfsBinary(
-    fs,
-    SCUMMVM_PLAY_CATALOG,
-    new TextEncoder().encode(scummvmPlayCatalogTsv(scummvmCatalog)),
-    0o644,
-  );
-  ensureDirRecursive(fs, "/usr/share/scummvm-games", 0o777);
+  // /var/games/scummvm; the image account owns that mutable game directory.
+  if (includes("scummvm")) {
+    writeVfsBinary(
+      fs,
+      "/usr/bin/scummvm",
+      new TextEncoder().encode(SCUMMVM_LAUNCH_SCRIPT),
+      0o755,
+    );
+    writeVfsBinary(
+      fs,
+      SCUMMVM_PLAY_COMMAND,
+      new TextEncoder().encode(SCUMMVM_PLAY_SCRIPT),
+      0o755,
+    );
+    ensureDirRecursive(fs, "/usr/share/scummvm-play");
+    writeVfsBinary(
+      fs,
+      SCUMMVM_PLAY_CATALOG,
+      new TextEncoder().encode(scummvmPlayCatalogTsv(scummvmCatalog)),
+      0o644,
+    );
+    ensureDirRecursive(fs, "/var/games/scummvm");
+  }
   // DOOM: the machine command supervises fbdoom; a WAD sent to the machine
-  // lands in /usr/share/doom, world-writable like the game directories above
-  // because the exchange handler runs as the unprivileged handler account.
-  writeVfsBinary(fs, "/usr/local/bin/doom-launch", new TextEncoder().encode(DOOM_LAUNCH_SCRIPT), 0o755);
-  ensureDirRecursive(fs, "/usr/share/doom", 0o777);
-  // The game machines' Kandelo exchange handlers and their rules. The rules
+  // lands in /var/games/doom, owned by the unprivileged handler account.
+  if (includes("fbdoom")) {
+    writeVfsBinary(fs, "/usr/bin/doom-launch", new TextEncoder().encode(DOOM_LAUNCH_SCRIPT), 0o755);
+    ensureDirRecursive(fs, "/usr/share/doom");
+  }
+  // The emulators and their starter ROMs are lazy; only the launcher that
+  // picks one for a ROM is eager. A dropped ROM runs through it too (the
+  // retro ROM exchange handler below).
+  if (includes("retro-emulators")) {
+    writeVfsBinary(fs, "/usr/bin/retro-run", new TextEncoder().encode(RETRO_RUN_SCRIPT), 0o755);
+  }
+  if (includes("python-browser-bundle")) {
+    writeVfsBinary(fs, "/usr/bin/game-play", new TextEncoder().encode(GAME_PLAY_SCRIPT), 0o755);
+    ensureDirRecursive(fs, "/usr/libexec/kandelo");
+    writeVfsBinary(fs, "/usr/libexec/kandelo/game-import.py", readFileSync(GAME_IMPORT_SOURCE), 0o644);
+  }
+  writeVfsBinary(fs, "/usr/bin/kandelo-terminal", new TextEncoder().encode(KANDELO_TERMINAL_SCRIPT), 0o755);
+  // The image's Kandelo exchange handlers and their rules. The rules
   // go in the image's rule directory, which the base rootfs declares
   // (images/rootfs/MANIFEST) with the ownership kxchgd checks; creating it
   // here would hide a base that lacks it. Rule files are root-owned and not
@@ -1748,27 +2201,39 @@ export async function buildSourceRootfsShellImage(
     throw new Error(`${rulesDir} must be a directory`);
   }
   ensureDirRecursive(fs, "/usr/libexec/kandelo");
-  for (const { name, handler, script, rule } of GAME_EXCHANGE_RULES) {
+  for (const { name, handler, script, rule, owner } of GAME_EXCHANGE_RULES) {
+    if (!includes(owner)) continue;
     writeVfsBinary(fs, handler, new TextEncoder().encode(script), 0o755);
     writeVfsBinary(fs, `${rulesDir}/${name}`, new TextEncoder().encode(rule), 0o644);
   }
   // Create the id1 game dir too: the pak handler writes
-  // /usr/share/quake/id1/pak0.pak directly, and that path must work even
+  // /var/games/quake/id1/pak0.pak directly, and that path must work even
   // offline when no quake106.zip was staged and the wrapper's own
   // `mkdir -p id1` never ran.
-  ensureDirRecursive(fs, "/usr/share/quake/id1", 0o777);
-  writeSdl2ShaderPresets(fs);
+  if (includes("tyrquake")) ensureDirRecursive(fs, "/var/games/quake/id1");
+  if (includes("fbdoom")) ensureDirRecursive(fs, "/var/games/doom");
+  for (const [path, owner] of [
+    ["/var/games/quake", "tyrquake"],
+    ["/var/games/quake/id1", "tyrquake"],
+    ["/var/games/doom", "fbdoom"],
+    ["/var/games/scummvm", "scummvm"],
+  ] as const) {
+    if (!includes(owner)) continue;
+    fs.chown(path, 1000, 1000);
+    fs.chmod(path, 0o755);
+  }
+  if (includes("sdl2-demo")) writeSdl2ShaderPresets(fs);
   // WHY: the package shell must not promise optional programs it does not own.
   // Bind its extra profiles to executable bytes so a metadata-only edit cannot
   // advertise a demo that boots successfully but never launches its workload.
-  requireOwnedDemoCommands(fs, demo);
-  requireScummvmFreewareMenu(demo, scummvmCatalog);
+  requireOwnedDemoCommands(fs, demo, includedProfiles);
+  if (includedProfiles.has("scummvm")) requireScummvmFreewareMenu(demo, scummvmCatalog);
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demo, 0o644);
 
   // Checked before saving so a rejected composition writes no output.
   requireLazyShellPrograms(sourceEagerPrograms, fs);
-  requireLazyShellData(fs);
+  requireLazyShellData(fs, selection);
 
   // WHY: Bash is the one intentional eager identity. Every other source-rootfs
   // first-use download must retain the same path, URL, size, and tree metadata.
@@ -1782,6 +2247,15 @@ export async function buildSourceRootfsShellImage(
       kernelAbi: ABI_VERSION,
       createdBy: "build-source-rootfs-shell-image",
       shellComposition: PACKAGE_ROOTFS_SHELL_COMPOSITION,
+      // Only a partial shell says so: canonical metadata stays unchanged.
+      ...(selection.kind === "partial"
+        ? {
+          partialSelection: {
+            schema: 1,
+            packages: [...selection.packages].sort(),
+          },
+        }
+        : {}),
     },
     normalizeTimestampsMs: sourceDateEpochMilliseconds(
       inputs.sourceDateEpoch ?? process.env.SOURCE_DATE_EPOCH,
@@ -1809,28 +2283,56 @@ export async function buildSourceRootfsShellImage(
     outputFs,
     "serialized source-rootfs shell",
   );
-  requireCompleteProductShellContract(outputFs);
-  requireLazyShellData(outputFs);
+  requireCompleteProductShellContract(outputFs, selection);
+  requireLazyShellData(outputFs, selection);
   readExperimentalTerminalSession(outputFs);
   return image;
 }
 
+const REQUIRED_FLAGS = [
+  "--rootfs",
+  "--ca-bundle",
+  "--bash",
+  "--demo-config",
+  "--demo-profile-overlay",
+  "--dependency-contract",
+  "--out",
+] as const;
+
+/** Inputs only a selection that includes their package needs. */
+const SELECTED_INPUT_FLAGS: ReadonlyArray<{ flag: string; pkg: string }> = [
+  { flag: "--wldesktop", pkg: "wayland-demo" },
+  { flag: "--omarchydesktop", pkg: "wayland-demo" },
+  { flag: "--desktop-data", pkg: "wayland-demo" },
+  { flag: "--libinput-quirks", pkg: "wayland-demo" },
+  { flag: "--xkeyboard-config", pkg: "wayland-demo" },
+  { flag: "--espeak-ng-data", pkg: "espeak-ng" },
+];
+
+/**
+ * Read `--selection <file>`: `{"schema": 1, "packages": [...]}`, every
+ * package a partial shell carries (the rootfs base included). Written by
+ * `xtask partial-image`; the canonical recipe never passes it.
+ */
+export function readShellSelectionFile(path: string): ShellSelection {
+  const value: unknown = JSON.parse(decodeUtf8(readRegularInput(path, "shell selection"), path));
+  const packages = (value as { packages?: unknown } | null)?.packages;
+  if (
+    (value as { schema?: unknown } | null)?.schema !== 1 ||
+    !Array.isArray(packages) ||
+    packages.some((name) => typeof name !== "string" || !/^[a-z0-9][a-z0-9._-]*$/.test(name))
+  ) {
+    throw new Error(`shell selection ${path} must be {"schema": 1, "packages": [names]}`);
+  }
+  return partialShellSelection(packages as string[]);
+}
+
 function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
   const values = new Map<string, string>();
-  const allowed = new Set([
-    "--rootfs",
-    "--ca-bundle",
-    "--bash",
-    "--wldesktop",
-    "--omarchydesktop",
-    "--desktop-data",
-    "--libinput-quirks",
-    "--xkeyboard-config",
-    "--espeak-ng-data",
-    "--demo-config",
-    "--demo-profile-overlay",
-    "--dependency-contract",
-    "--out",
+  const allowed = new Set<string>([
+    ...REQUIRED_FLAGS,
+    ...SELECTED_INPUT_FLAGS.map(({ flag }) => flag),
+    "--selection",
   ]);
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
@@ -1853,34 +2355,55 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
           "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
           "--dependency-contract <dependencies.json> " +
+          "[--selection <selection.json>] " +
           "--out <shell.vfs.zst>",
       );
     }
     values.set(flag, value);
   }
-  if (values.size !== allowed.size) {
-    throw new Error("source-rootfs shell composer is missing a required input");
+  const selection = values.has("--selection")
+    ? readShellSelectionFile(values.get("--selection")!)
+    : CANONICAL_SHELL_SELECTION;
+  // The canonical shell needs every input; a partial one exactly those its
+  // selected packages own, and no others, so an input it would ignore is an
+  // error rather than a silent no-op.
+  for (const flag of REQUIRED_FLAGS) {
+    if (!values.has(flag)) {
+      throw new Error(`source-rootfs shell composer is missing a required input: ${flag}`);
+    }
   }
+  for (const { flag, pkg } of SELECTED_INPUT_FLAGS) {
+    const needed = selectionIncludes(selection, pkg);
+    if (needed !== values.has(flag)) {
+      throw new Error(
+        needed
+          ? `source-rootfs shell composer is missing a required input: ${flag}`
+          : `${flag} belongs to ${pkg}, which this shell does not select`,
+      );
+    }
+  }
+  const contractDependencies = readSourceRootfsShellResolverDependencies(
+    values.get("--dependency-contract")!,
+  );
   return {
     rootfsPath: values.get("--rootfs")!,
     caBundlePath: values.get("--ca-bundle")!,
     bashPath: values.get("--bash")!,
-    wldesktopPath: values.get("--wldesktop")!,
-    omarchydesktopPath: values.get("--omarchydesktop")!,
-    desktopDataPath: values.get("--desktop-data")!,
-    libinputQuirksPath: values.get("--libinput-quirks")!,
-    xkeyboardConfigPath: values.get("--xkeyboard-config")!,
-    espeakNgDataPath: values.get("--espeak-ng-data")!,
+    wldesktopPath: values.get("--wldesktop"),
+    omarchydesktopPath: values.get("--omarchydesktop"),
+    desktopDataPath: values.get("--desktop-data"),
+    libinputQuirksPath: values.get("--libinput-quirks"),
+    xkeyboardConfigPath: values.get("--xkeyboard-config"),
+    espeakNgDataPath: values.get("--espeak-ng-data"),
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
     outFile: values.get("--out")!,
+    selection,
+    // A partial shell may resolve only the packages it selected, so a step
+    // that reached for anything else fails here instead of pulling it in.
     resolveArtifact: strictResolverFromDependencyEnvironment(
       process.env,
-      new Set(
-        readSourceRootfsShellResolverDependencies(
-          values.get("--dependency-contract")!,
-        ),
-      ),
+      new Set(contractDependencies.filter((name) => selectionIncludes(selection, name))),
     ),
   };
 }

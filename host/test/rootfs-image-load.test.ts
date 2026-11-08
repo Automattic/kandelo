@@ -30,6 +30,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../..");
 const imageDir = join(repoRoot, "local-binaries/source-only-v1/programs/wasm32");
 const kernelPath = tryResolveBinary("kernel.wasm");
+const directKernelPath = join(repoRoot, "target/wasm32-unknown-unknown/release/kandelo_kernel.wasm");
 
 /**
  * Every production image the repo builds, named explicitly: a glob that
@@ -59,9 +60,14 @@ interface KernelUnderTest {
   imageReads: () => { calls: number; bytes: number; highestOffset: number };
 }
 
+interface PositionedImage {
+  length: number;
+  readAt(offset: number, length: number): Uint8Array;
+}
+
 async function instantiateKernel(
   kernelBytes: Uint8Array,
-  image: Uint8Array,
+  image: Uint8Array | PositionedImage,
 ): Promise<KernelUnderTest> {
   const module = await WebAssembly.compile(kernelBytes as BufferSource);
   // Matches `host/src/kernel.ts`'s kernel memory: shared, with headroom above
@@ -91,9 +97,11 @@ async function instantiateKernel(
       const start = Number(offset);
       if (start >= image.length) return 0;
       const n = Math.min(bufLen, image.length - start);
-      new Uint8Array(memory.buffer, bufPtr, n).set(
-        image.subarray(start, start + n),
-      );
+      const chunk = image instanceof Uint8Array
+        ? image.subarray(start, start + n)
+        : image.readAt(start, n);
+      if (chunk.length !== n) throw new Error("positioned image source returned a short read");
+      new Uint8Array(memory.buffer, bufPtr, n).set(chunk);
       calls += 1;
       bytes += n;
       highestOffset = Math.max(highestOffset, start + n);
@@ -258,6 +266,53 @@ describe("in-kernel rootfs base tree: image parse vs host-walked manifest", () =
     // This asserts the shape, not a tuned number: a whole-image read would be a
     // design regression, not merely a slow path.
     expect(bytes).toBeLessThan(image.length / 2);
+  });
+
+  it("loads a >4 GiB VFSI body through 64-bit positioned reads", async () => {
+    const currentKernelPath = existsSync(directKernelPath) ? directKernelPath : kernelPath;
+    expect(currentKernelPath, "the kernel artifact is required").not.toBeNull();
+    const original = await rebuiltImage("rootfs.vfs.zst");
+    const view = new DataView(original.buffer, original.byteOffset, original.byteLength);
+    const originalBodyLength = view.getUint32(12, true);
+    const body = original.subarray(16, 16 + originalBodyLength);
+    const trailer = original.subarray(16 + originalBodyLength);
+    expect(trailer.length).toBeGreaterThan(0);
+    const bodyLength = 2 ** 32 + 4096;
+    const trailerOffset = 24 + bodyLength;
+    const header = new Uint8Array(24);
+    header.set(original.subarray(0, 12));
+    const extendedView = new DataView(header.buffer);
+    extendedView.setUint32(4, 2, true);
+    extendedView.setUint32(12, 24, true);
+    extendedView.setBigUint64(16, BigInt(bodyLength), true);
+    const segments = [
+      { offset: 0, bytes: header },
+      { offset: 24, bytes: body },
+      { offset: trailerOffset, bytes: trailer },
+    ];
+    const source: PositionedImage = {
+      length: trailerOffset + trailer.length,
+      readAt(offset, length) {
+        const result = new Uint8Array(length);
+        for (const segment of segments) {
+          const start = Math.max(offset, segment.offset);
+          const end = Math.min(offset + length, segment.offset + segment.bytes.length);
+          if (start < end) {
+            result.set(segment.bytes.subarray(start - segment.offset, end - segment.offset), start - offset);
+          }
+        }
+        return result;
+      },
+    };
+    const kernel = await instantiateKernel(new Uint8Array(readFileSync(currentKernelPath!)), source);
+    const loaded = kernel.exports.kernel_rootfs_load_image(
+      source.length >>> 0,
+      Math.floor(source.length / 2 ** 32),
+    ) as number;
+    const { bytes, highestOffset } = kernel.imageReads();
+    expect(loaded, `image reads: ${bytes} bytes through ${highestOffset}`).toBeGreaterThan(0);
+    expect(highestOffset).toBeGreaterThan(trailerOffset);
+    expect(bytes).toBeLessThan(16 * 1024 * 1024);
   });
 
   it("reports a host with no image source as ENOSYS, not as a corrupt image", async () => {

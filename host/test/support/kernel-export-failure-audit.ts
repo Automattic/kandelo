@@ -228,7 +228,7 @@ const SYNCHRONOUS_CALLBACK_CALLS = new Set([
   "#invokeSerializedHostOperation",
   "#runOrDeferChannelKernelEntry",
   "#runOrDeferKernelEntry",
-  "#runOrDeferPendingSpawnCompletionKernelEntry",
+  "#runOrDeferPendingChildCompletionKernelEntry",
   "withLease",
 ]);
 

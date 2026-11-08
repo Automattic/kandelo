@@ -10,6 +10,7 @@ import {
   type ExchangeConsumerStateView,
   type ExchangeLike,
 } from "../src/exchange-session";
+import { TERMINAL_REQUEST_MIME, type TerminalRequest } from "../src/terminal-request";
 
 function scripted() {
   let outputListener: Parameters<ExchangeLike["onOutput"]>[0] | null = null;
@@ -43,17 +44,17 @@ function scripted() {
   };
   return {
     exchange,
-    publish(id: string, derivedFrom: string[]) {
+    publish(id: string, derivedFrom: string[], content: { body: string; mimeType: string } = { body: "out", mimeType: "text/plain" }) {
       let withdraw!: () => void;
       const lease = outputListener!(
         {
           id,
           name: `${id}.txt`,
           kind: "stored",
-          size: 3,
-          mimeType: "text/plain",
+          size: new TextEncoder().encode(content.body).byteLength,
+          mimeType: content.mimeType,
           derivedFrom,
-          read: () => new Response("out").body!,
+          read: () => new Response(content.body).body!,
           withdrawn: new Promise<void>((resolve) => (withdraw = resolve)),
         },
         { signal: new AbortController().signal },
@@ -148,6 +149,57 @@ describe("ExchangeSession", () => {
     session.detach();
     expect(session.outputs).toEqual([]);
     expect(session.consumer).toBeNull();
+  });
+
+  it("hands a terminal request to the app's handler instead of the tray", async () => {
+    const fake = scripted();
+    const session = new ExchangeSession();
+    session.attach(fake.exchange);
+    const opened: TerminalRequest[] = [];
+    session.setTerminalRequestHandler(async (request) => { opened.push(request); });
+    const body = JSON.stringify({ version: 1, command: "retro-run ~/roms/'Game (U).sfc'", title: "Game (U).sfc", display: "framebuffer" });
+    const { lease } = fake.publish("req-1", [], { body, mimeType: TERMINAL_REQUEST_MIME });
+    await lease;
+    await tick();
+    expect(opened).toEqual([{ command: "retro-run ~/roms/'Game (U).sfc'", title: "Game (U).sfc", display: "framebuffer" }]);
+    expect(session.outputs).toEqual([]);
+    expect(session.batches).toEqual([]);
+  });
+
+  it("keeps a terminal request as an ordinary output when no handler is set", async () => {
+    const fake = scripted();
+    const session = new ExchangeSession();
+    session.attach(fake.exchange);
+    const body = JSON.stringify({ version: 1, command: "ls", title: "ls" });
+    fake.publish("req-2", [], { body, mimeType: TERMINAL_REQUEST_MIME });
+    expect(session.outputs.map((o) => o.id)).toEqual(["req-2"]);
+  });
+
+  it("shows a refused or failed terminal request as a failed entry", async () => {
+    const fake = scripted();
+    const session = new ExchangeSession();
+    session.attach(fake.exchange);
+    const opened: TerminalRequest[] = [];
+    session.setTerminalRequestHandler(async (request) => {
+      if (request.title === "busy") throw new Error("Another activity is starting or stopping");
+      opened.push(request);
+    });
+    // A newline would run a second command at the prompt.
+    await fake.publish("req-3", [], {
+      body: JSON.stringify({ version: 1, command: "ls\nrm -rf ~", title: "two lines" }),
+      mimeType: TERMINAL_REQUEST_MIME,
+    }).lease;
+    await fake.publish("req-4", [], {
+      body: JSON.stringify({ version: 1, command: "ls", title: "busy" }),
+      mimeType: TERMINAL_REQUEST_MIME,
+    }).lease;
+    await tick();
+    expect(opened).toEqual([]);
+    expect(session.outputs).toEqual([]);
+    expect(session.batches.map((b) => [b.names, b.phase, b.status])).toEqual([
+      [["req-3.txt"], "failed", "The machine asked for a terminal, but the request's command contains control characters"],
+      [["busy"], "failed", "Could not open a terminal: Another activity is starting or stopping"],
+    ]);
   });
 
   it("describes each consumer state for the UI", () => {

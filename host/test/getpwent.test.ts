@@ -47,7 +47,7 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs.zst mount", 
       "PWENT 2 name=nobody uid=65534 gid=65534 home=/nonexistent shell=/usr/sbin/nologin",
     );
     expect(result.stdout).toContain(
-      "PWENT 3 name=www-data uid=33 gid=33 home=/var/www shell=/usr/sbin/nologin",
+      "PWENT 3 name=www-data uid=33 gid=33 home=/srv/www shell=/usr/sbin/nologin",
     );
     expect(result.stdout).toContain(
       "PWENT 4 name=redis uid=100 gid=100 home=/var/lib/redis shell=/usr/sbin/nologin",

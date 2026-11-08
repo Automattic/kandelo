@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { setInternalsOpen } from "./support/dock";
+import { expect, test, type Locator, type Page } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 import { QUAKE_ZIP_URL } from "../../../web-libs/kandelo-session/src/demo-guides";
 
@@ -41,10 +42,7 @@ async function syslogText(page: Page): Promise<string> {
 }
 
 async function setInternals(page: Page, open: boolean) {
-  const internals = page.getByRole("button", { name: "Internals" });
-  if ((await internals.count()) === 0) return;
-  const pressed = (await internals.getAttribute("aria-pressed")) === "true";
-  if (pressed !== open) await internals.click();
+  await setInternalsOpen(page, open);
 }
 
 // Both budgets run the same machine. `memoryProfile` is the dev override that
@@ -91,7 +89,7 @@ for (const [budgetLabel, memoryProfile] of BUDGETS) {
     try {
       await expect
         .poll(() => syslogText(page), { timeout: 120_000 })
-        .toMatch(/running \/usr\/local\/bin\/quake/);
+        .toMatch(/running \/usr\/bin\/quake/);
     } catch (e) {
       console.log("SYSLOG:\n" + (await syslogText(page)));
       console.log("CONSOLE ERRORS:\n" + consoleErrors.join("\n"));

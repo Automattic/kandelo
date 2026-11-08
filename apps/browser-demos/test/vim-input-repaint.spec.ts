@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 test("Vim repaints a paused open-line command before the next key", async ({ page }) => {
   test.setTimeout(180_000);
@@ -7,7 +7,7 @@ test("Vim repaints a paused open-line command before the next key", async ({ pag
   await page.goto("/pages/kandelo/?profile=shell");
   const rows = page.locator(".xterm-rows:visible");
   const screen = () => rows.textContent();
-  await expect.poll(screen, { timeout: 120_000 }).toMatch(/kandelo\$/);
+  await expect.poll(screen, { timeout: 120_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$/);
   await page.locator(".xterm-helper-textarea:visible").focus();
   await page.keyboard.type("vim /etc/gitconfig");
   await page.keyboard.press("Enter");
@@ -39,6 +39,6 @@ test("Vim repaints a paused open-line command before the next key", async ({ pag
   }
   await page.keyboard.type(":q!");
   await page.keyboard.press("Enter");
-  await expect.poll(screen, { timeout: 10_000 }).toMatch(/kandelo\$/);
+  await expect.poll(screen, { timeout: 10_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$/);
   expect(errors).toEqual([]);
 });

@@ -1,5 +1,8 @@
 script_path = "packages/registry/kandelo-build-image/build-kandelo-build-image.sh"
 inputs = [
+  "images/vfs/scripts/filesystem-layout.ts",
+  "scripts/check-image-layout.ts",
+
   "packages/registry/kandelo-build-image/build-kandelo-build-image.sh",
   "images/vfs/scripts/build-kandelo-build-image.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
@@ -39,7 +42,12 @@ inputs = [
   "cargo:kandelo-image-module",
   "cargo:runtime-core",
   "crates/kandelo-image-module/build-wasm.sh",
+  "host/src/vfs/image-integrity.ts",
+  "host/src/vfs/image-manifest-memory.ts",
+  "host/src/vfs/overlay-seal-codec.ts",
+  "host/src/vfs/storage-memory-budget.ts",
+  "images/vfs/lib/positioned-image-targets.ts",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 1
+revision    = 2

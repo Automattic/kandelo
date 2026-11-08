@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { ABI_VERSION } from "../host/src/generated/abi";
 import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs";
+import { assertKandeloFilesystemLayout } from "../images/vfs/scripts/filesystem-layout";
 import type { LazyDownloadEvent } from "../host/src/vfs/lazy-download-event";
 import {
   KANDELO_DEMO_CONFIG_PATH,
@@ -74,6 +75,7 @@ if (metadata?.kernelAbi !== ABI_VERSION) {
 // artifact says.
 const fs = KandeloImageFs.create();
 fs.loadImage(imageBytes);
+assertKandeloFilesystemLayout(fs);
 const terminalSessionConfigBytes = readVfsFile(
   fs,
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
@@ -87,10 +89,10 @@ const terminalSession = parseExperimentalTerminalSession(
   new TextDecoder("utf-8", { fatal: true }).decode(terminalSessionConfigBytes),
 );
 if (
-  terminalSession.initial.path !== "/usr/bin/login" ||
+  terminalSession.initial.path !== "/bin/login" ||
   terminalSession.initial.argv.join("\0") !==
     ["login", "-p", "-f", "maker"].join("\0") ||
-  terminalSession.afterExit?.path !== "/usr/bin/login" ||
+  terminalSession.afterExit?.path !== "/bin/login" ||
   terminalSession.afterExit.argv.join("\0") !== ["login", "-p"].join("\0")
 ) {
   throw new Error("source-rootfs shell does not preserve its login session contract");
@@ -102,11 +104,11 @@ expectExactBytes(
 );
 
 const binBash = fs.stat("/bin/bash");
-const usrBinBash = fs.stat("/usr/bin/bash");
+const posixShell = fs.stat("/bin/sh");
 if (
   fs.isPathDeferred("/bin/bash") ||
-  fs.isPathDeferred("/usr/bin/bash") ||
-  binBash.ino !== usrBinBash.ino ||
+  fs.isPathDeferred("/bin/sh") ||
+  binBash.ino !== posixShell.ino ||
   (binBash.mode & 0o111) === 0
 ) {
   throw new Error(
@@ -140,7 +142,7 @@ try {
   const command = [
     "set -eu",
     'test -n "$BASH_VERSION"',
-    "test /bin/bash -ef /usr/bin/bash",
+    "test /bin/bash -ef /bin/sh",
     "test -x /bin/grep",
     "printf 'source-rootfs-shell-node-ok:%s\\n' \"$BASH_VERSION\"",
   ].join("\n");
@@ -251,9 +253,13 @@ function readVfsFile(fs: KandeloImageFs, path: string): Uint8Array {
   const fd = fs.open(path, 0, 0);
   try {
     const bytes = new Uint8Array(stat.size);
-    const count = fs.read(fd, bytes, null, bytes.byteLength);
-    if (count !== bytes.byteLength) {
-      throw new Error(`${path} produced ${count} bytes, expected ${bytes.byteLength}`);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = fs.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
+      if (count <= 0 || count > bytes.byteLength - offset) {
+        throw new Error(`${path} produced ${offset} bytes, expected ${bytes.byteLength}`);
+      }
+      offset += count;
     }
     return bytes;
   } finally {

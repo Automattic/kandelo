@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { SHELL_LAZY_BINARY_SPECS } from "../../../images/vfs/lib/init/shell-binaries";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
@@ -22,7 +22,7 @@ test("base shell boots and fetches packaged jq on first use", async ({ page }) =
   await expect.poll(
     () => page.locator(".xterm-rows").first().textContent(),
     { timeout: 120_000 },
-  ).toContain("kandelo$");
+  ).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
   expect(downloads).toEqual([]);
   const result = await runTerminalCommand(
     page,

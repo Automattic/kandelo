@@ -33,12 +33,12 @@ ephemeral = true
 
 [boot]
 argv = ["/usr/bin/perl", "-e", "print qq(Perl on Kandelo\\n)"]
-cwd = "/home"
+cwd = "/home/maker"
 uid = 1000
 gid = 1000
 
 [boot.env]
-HOME = "/home"
+HOME = "/home/maker"
 PATH = "/usr/local/bin:/usr/bin:/bin"
 PERL5LIB = "/usr/lib/perl5"
 TMPDIR = "/tmp"

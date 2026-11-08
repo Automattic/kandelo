@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Page } from "../playwright-test";
 
 export async function contrast(page: Page) {
   return page.locator("[data-contrast]").evaluateAll((nodes) => {

@@ -21,8 +21,12 @@ those choices:
       Block until the job ends (keyed on its supervisor PID), then print the
       result and exit with the job's exit status. The default timeout, 540 s,
       stays under the Bash tool's 10-minute limit; on timeout it prints status
-      and exits 124, and you run the same command again. One call per
-      9 minutes, instead of a poll every few seconds. --timeout 0 waits
+      and exits 124. Repeat only when the wait-window notice says the job
+      is still running; a completed job can also exit 124, and its
+      FAILED (exit 124) result is final. One call per
+      9 minutes for headless main sessions. Subagents use --timeout 240
+      for targeted work to stay inside their shorter prompt cache; return
+      known long jobs to the parent. --timeout 0 waits
       without limit, for an interactive main session that runs it with
       run_in_background and ends its turn. Never end your turn to wait in a
       headless (claude -p) session or a subagent: they stop when the turn
@@ -33,7 +37,9 @@ those choices:
       loop on its PID. --peer <text> picks the one running job, in any
       worktree, whose command contains <text> (for example `local-build` or
       `prepare-browser`). If none or several match, it lists them on stderr
-      and exits 2 rather than guess.
+      and exits 2 rather than guess. After a selector wait times out, retry
+      by the resolved job id in `waiting on <id>` or `resume with:`, never
+      by --peer again: a new job could match instead.
   agent-job status [<id>]
       What is running: elapsed vs the usual duration, log age, local-build
       node progress, and every process in the job with command line and age.
@@ -48,9 +54,23 @@ those choices:
       relates to your HEAD (same, ancestor, descendant, diverged), so you
       can tell whether a peer's build is of the tree you are on.
 
-State lives in ~/.cache/kandelo/agent-jobs (override: KANDELO_AGENT_JOBS_DIR):
-one directory per job and an append-only ledger.jsonl of finished jobs, which
-evals/build-waiting/wait-impact.py reads to judge whether this tool helps.
+  agent-job release <job-id|playwright-run-uuid> [--dry-run]
+      Release inactive evidence after reviewing it. Preserve the recorded exit
+      status and a bounded summary. Refuse any run with active writers.
+  agent-job cleanup [--dry-run]
+      Close this checkout/worktree to new runs, refuse active writers, then
+      release its managed payloads. Run before removing a worktree in any IDE
+      or plain Git workflow. Never stops a process or touches build caches.
+  agent-job reopen
+      Allow new runs after a refused cleanup or workspace restore.
+  agent-job gc [--dry-run]
+      Recover orphaned records and old external job payloads whose worktrees
+      disappeared. Refuse active writers; never follow a reused worktree path.
+
+Bulk output lives under <worktree>/.context/agent-jobs/<id>/. The shared
+~/.cache/kandelo/agent-jobs registry (override: KANDELO_AGENT_JOBS_DIR) retains
+metadata, bounded result summaries, leases, workspace UUIDs, and ledger.jsonl
+for history/evals. Reading an old job ID still reads its old global layout.
 
 Why Python rather than an xtask verb (the usual choice for new tools): the
 waiting tool must work while xtask itself is being edited or rebuilt, and in a
@@ -63,10 +83,14 @@ import os
 import re
 import shlex
 import signal
+import shutil
 import statistics
 import subprocess
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import validation_artifacts as artifacts
 
 ROOT = os.path.expanduser(os.environ.get("KANDELO_AGENT_JOBS_DIR", "~/.cache/kandelo/agent-jobs"))
 JOBS = os.path.join(ROOT, "jobs")
@@ -287,10 +311,22 @@ def usual_duration(key):
 
 
 def job_dir(job_id):
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", job_id) or job_id in (".", ".."):
+        raise artifacts.CleanupError("invalid job id")
     d = os.path.join(JOBS, job_id)
     if not os.path.isdir(d):
         sys.exit(f"agent-job: no such job {job_id!r} (see `agent-job list`)")
     return d
+
+
+def payload_file(d, name):
+    meta = read_json(os.path.join(d, "meta.json")) or {}
+    if not meta.get("artifact_id"):
+        return os.path.join(d, name)
+    record = artifacts.load(meta["artifact_id"])
+    if not record.get("released_at") and artifacts.same_workspace(record):
+        return os.path.join(meta["payload_dir"], name)
+    return os.path.join(d, "released-payload", name)
 
 
 def state_of(d):
@@ -298,7 +334,9 @@ def state_of(d):
     result = read_json(os.path.join(d, "result.json"))
     if result:
         return "finished", meta, result
-    if meta.get("supervisor_pid") and alive(meta["supervisor_pid"]):
+    if meta.get("artifact_id") and artifacts.busy(artifacts.load(meta["artifact_id"])):
+        return "running", meta, None
+    if not meta.get("artifact_id") and meta.get("supervisor_pid") and alive(meta["supervisor_pid"]):
         return "running", meta, None
     # The supervisor died without recording an exit status (machine sleep,
     # kill -9). Report that plainly: treating it as "still running" would
@@ -323,7 +361,7 @@ def jobs_in(worktree):
 
 # ---------------------------------------------------------------- supervisor
 
-def supervise(d):
+def supervise(d, lease_fd=None):
     """Detached process: run the command, then record its result.
 
     A separate supervisor, not the agent's own shell, owns the run. The
@@ -332,16 +370,21 @@ def supervise(d):
     `result`, and the ledger outlive the process that produced it.
     """
     meta = read_json(os.path.join(d, "meta.json"))
-    log = open(os.path.join(d, "output.log"), "ab", buffering=0)
+    payload = meta.get("payload_dir", d)
+    log = open(os.path.join(payload, "output.log"), "ab", buffering=0)
     # KANDELO_LOCAL_BUILD_EVENTS asks local-build/setup to write progress
     # events, which `status` reads. That replaces turns spent probing
     # processes and log sizes to guess how far along a build is.
-    env = dict(os.environ, KANDELO_LOCAL_BUILD_EVENTS=os.path.join(d, "events.jsonl"),
-               KANDELO_AGENT_JOB=meta["id"])
+    scratch = os.path.abspath(os.path.join(payload, "scratch"))
+    if not meta.get("artifact_id"):
+        os.makedirs(scratch, mode=0o700, exist_ok=True)
+    env = dict(os.environ, KANDELO_LOCAL_BUILD_EVENTS=os.path.join(payload, "events.jsonl"),
+               KANDELO_AGENT_JOB=meta["id"], KANDELO_AGENT_SCRATCH_DIR=scratch)
     # Its own session/process group, so a stop request can reach every
     # process the build spawned (cargo, clang, node workers), not just bash.
     child = subprocess.Popen(["bash", "-c", meta["cmd"]], cwd=meta["cwd"], stdin=subprocess.DEVNULL,
-                             stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+                             stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True,
+                             pass_fds=(() if lease_fd is None else (lease_fd,)))
     # `start` writes meta.json a second time, to add supervisor_pid, after
     # this process exists. Merge child_pid into that write, not into the
     # copy read above: writing the stale copy could drop supervisor_pid, and
@@ -354,6 +397,12 @@ def supervise(d):
     meta["supervisor_pid"] = os.getpid()
     meta["child_pid"] = child.pid
     write_json(os.path.join(d, "meta.json"), meta)
+    if meta.get("artifact_id"):
+        with artifacts.locked():
+            record = artifacts.load(meta["artifact_id"])
+            record["owner"] = artifacts.owner(os.getpid())
+            record["pgid"] = child.pid
+            artifacts.save(record)
 
     # Forward a stop to the whole build group. A wrapper that dies alone
     # leaves the build running and holding the checkout, and the next run
@@ -376,12 +425,18 @@ def supervise(d):
         ended=end,
         duration=round(end - meta["started"], 1),
     )
+    lines = tail_lines(os.path.join(payload, "output.log"), 4000)
+    result["log_tail"] = "\n".join(lines[-LOG_TAIL:])[-8192:].splitlines()
+    result["health"] = [line[:1000] for line in lines if "[suite-health]" in line][-8:]
     write_json(os.path.join(d, "result.json"), result)
+    log.close()
+    if lease_fd is not None:
+        os.close(lease_fd)
     # The ledger is how evals/build-waiting/wait-impact.py judges whether this
     # tool earns its place, and how history() learns usual durations.
     record = {k: meta.get(k) for k in ("id", "name", "key", "cmd", "cwd", "worktree", "head", "dirty", "started",
                                        "usual_duration")}
-    record.update(result)
+    record.update({key: result[key] for key in ("exit_code", "signal", "ended", "duration")})
     os.makedirs(ROOT, exist_ok=True)
     with open(LEDGER, "a") as f:
         f.write(json.dumps(record) + "\n")
@@ -416,6 +471,11 @@ def shell_command(words):
 
 
 def cmd_start(args):
+    with artifacts.locked():
+        cmd_start_locked(args)
+
+
+def cmd_start_locked(args):
     if not args.command:
         sys.exit("agent-job start: give the command after --")
     cmd = shell_command(args.command)
@@ -437,11 +497,16 @@ def cmd_start(args):
     default_name = " ".join([os.path.basename(key_words[0])] + key_words[1:]) if key_words else "job"
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", args.name or default_name)[:40].strip("-.") or "job"
     job_id = f"{name}-{time.strftime('%m%d-%H%M%S')}-{os.urandom(2).hex()}"
+    record = artifacts.register(worktree, [f".context/agent-jobs/{job_id}"], "job", job_id=job_id)
+    payload = os.path.join(record["worktree"], record["roots"][0])
+    os.mkdir(os.path.join(payload, "scratch"), 0o700)
+    lease_fd = artifacts.open_lease(record)
     d = os.path.join(JOBS, job_id)
     os.makedirs(d)
     key = job_key(cmd)
     head, dirty_paths = tree_state(cwd)
     meta = dict(id=job_id, name=name, key=key, cmd=cmd, cwd=cwd, worktree=worktree, started=now(),
+                artifact_id=record["id"], workspace_id=record["workspace_id"], payload_dir=payload,
                 usual_duration=usual_duration(key), head=head,
                 dirty=None if dirty_paths is None else bool(dirty_paths),
                 dirty_paths=(dirty_paths or [])[:DIRTY_PATHS_KEPT])
@@ -449,14 +514,26 @@ def cmd_start(args):
     # Detach the supervisor fully: new session, no inherited stdio, so the
     # Bash tool call that ran `start` returns immediately instead of
     # blocking on the build's output.
-    sup = subprocess.Popen([sys.executable, os.path.abspath(__file__), "_supervise", d],
+    sup = subprocess.Popen([sys.executable, os.path.abspath(__file__), "_supervise", d, str(lease_fd)],
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           start_new_session=True, close_fds=True)
+                           start_new_session=True, close_fds=True, pass_fds=(lease_fd,))
     meta["supervisor_pid"] = sup.pid
     write_json(os.path.join(d, "meta.json"), meta)
+    record["owner"] = artifacts.owner(sup.pid)
+    artifacts.save(record)
+    os.close(lease_fd)
     usual = f"; usually takes {fmt_secs(meta['usual_duration'])}" if meta["usual_duration"] else ""
-    print(f"{job_id}\nlog: {os.path.join(d, 'output.log')}{usual}\n"
-          f"wait with: {sys.argv[0]} wait {job_id}   (repeat if it exits 124; do not poll)")
+    print(f"{job_id}\nlog: {os.path.join(payload, 'output.log')}{usual}\n"
+          f"scratch: {os.path.join(payload, 'scratch')} (child: $KANDELO_AGENT_SCRATCH_DIR)\n"
+          f"wait with (choose your session type; do not poll):\n"
+          f"  interactive main: {shlex.quote(sys.argv[0])} wait {job_id} --timeout 0  "
+          f"(Bash run_in_background: true; act on one completion notification)\n"
+          f"  headless main: {shlex.quote(sys.argv[0])} wait {job_id}  "
+          f"(foreground; repeat only if wait reports still running; "
+          f"FAILED (exit 124) is final; never end the turn to wait)\n"
+          f"  subagent: {shlex.quote(sys.argv[0])} wait {job_id} --timeout 240  "
+          f"(foreground, targeted work only; return known long jobs to parent; "
+          f"repeat only if wait reports still running; FAILED (exit 124) is final; never end the turn to wait)")
 
 
 def peer_job(text):
@@ -496,7 +573,7 @@ def cmd_wait(args):
         args.id, d = peer_job(args.peer)
         meta = read_json(os.path.join(d, "meta.json")) or {}
         # Name the chosen job up front, so the agent knows which build it
-        # waited on (and can re-run `wait <id>` by id after an exit 124).
+        # waited on (and can re-run `wait <id>` after a wait-window timeout).
         print(f"waiting on {args.id} in {meta.get('worktree', '?')}: {meta.get('cmd', '')[:120]}")
         print(describe_commit(meta, os.getcwd()), flush=True)
     else:
@@ -507,8 +584,9 @@ def cmd_wait(args):
         if state != "running":
             break
         if deadline and now() >= deadline:
-            print(f"agent-job: still running after {args.timeout}s of waiting; run the same wait again "
-                  f"(exit 124 means not finished, not failed)\n")
+            print(f"agent-job: still running after {args.timeout}s of waiting "
+                  f"(wait window expired; exit 124)\n"
+                  f"resume with: {shlex.quote(sys.argv[0])} wait {args.id} --timeout {args.timeout}\n")
             print_status(args.id, d)
             sys.exit(124)
         time.sleep(2)
@@ -517,7 +595,7 @@ def cmd_wait(args):
 
 def print_result(job_id, d):
     state, meta, result = state_of(d)
-    log = os.path.join(d, "output.log")
+    log = payload_file(d, "output.log")
     if state == "lost":
         print(f"{job_id}: LOST — the supervisor died without recording an exit status. "
               f"Treat the run as failed; log: {log}")
@@ -532,7 +610,10 @@ def print_result(job_id, d):
     print(f"command: {meta['cmd']}")
     print_where(meta)
     lines = tail_lines(log, 4000)
-    health = [l for l in lines[:-LOG_TAIL] if "[suite-health]" in l]
+    if not os.path.exists(log):
+        print("evidence released or worktree removed; retained summary follows")
+        lines = result.get("log_tail", [])
+    health = result.get("health", []) or [l for l in lines[:-LOG_TAIL] if "[suite-health]" in l]
     for l in health[-8:]:
         print(l)
     print(f"--- last {LOG_TAIL} log lines ({log}) ---")
@@ -633,7 +714,7 @@ def print_status(job_id, d):
     if state != "running":
         print_result(job_id, d)
         return
-    log = os.path.join(d, "output.log")
+    log = payload_file(d, "output.log")
     elapsed = now() - meta["started"]
     usual = meta.get("usual_duration")
     print(f"{job_id}: running {fmt_secs(elapsed)}" + (f" (usually {fmt_secs(usual)})" if usual else ""))
@@ -644,7 +725,7 @@ def print_status(job_id, d):
         print(f"log: {log} (last write {fmt_secs(age)} ago)")
     except OSError:
         print(f"log: {log} (not written yet)")
-    prog = events_progress(os.path.join(d, "events.jsonl"))
+    prog = events_progress(payload_file(d, "events.jsonl"))
     if prog:
         total = prog["total"] or "?"
         print(f"local-build: {prog['done']}/{total} nodes done, {len(prog['failed'])} failed, "
@@ -716,9 +797,93 @@ def cmd_list(args):
             print(f"{j:48s} {extra:28s} {meta.get('cmd', '')[:80]}")
 
 
+def legacy_busy(meta):
+    return (bool(meta.get("supervisor_pid") and alive(meta["supervisor_pid"]))
+            or artifacts.process_group_alive(meta.get("child_pid")))
+
+
+def release_legacy(d, dry_run=False):
+    meta = read_json(os.path.join(d, "meta.json")) or {}
+    if legacy_busy(meta):
+        raise artifacts.CleanupError(f"legacy job {meta.get('id')} still has active writers")
+    # Legacy payloads are already in the unique global job directory. Never
+    # follow a redirected entry or infer ownership of other /tmp files.
+    artifacts.safe_directory(artifacts.ROOT, "jobs/" + os.path.basename(d))
+    paths = [os.path.join(d, name) for name in ("output.log", "events.jsonl", "scratch")]
+    for path in paths:
+        if os.path.islink(path):
+            raise artifacts.CleanupError(f"legacy payload is redirected: {path}")
+    if dry_run:
+        return
+    result = read_json(os.path.join(d, "result.json"))
+    if result is not None:
+        result.setdefault("log_tail", "\n".join(tail_lines(os.path.join(d, "output.log"), LOG_TAIL))[-8192:].splitlines())
+        write_json(os.path.join(d, "result.json"), result)
+    for path in paths:
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        elif os.path.exists(path):
+            os.unlink(path)
+    meta["evidence_released_at"] = now()
+    write_json(os.path.join(d, "meta.json"), meta)
+
+
+def cmd_release(args):
+    with artifacts.locked():
+        if os.path.isdir(os.path.join(JOBS, args.id)):
+            d = job_dir(args.id)
+            meta = read_json(os.path.join(d, "meta.json")) or {}
+            if meta.get("artifact_id"):
+                artifacts.release(artifacts.load(meta["artifact_id"]), args.dry_run)
+            else:
+                release_legacy(d, args.dry_run)
+        else:
+            artifacts.release(artifacts.load(args.id), args.dry_run)
+    print(f"{'would release' if args.dry_run else 'released'} evidence for {args.id}; summary retained")
+
+
+def cmd_cleanup(args):
+    path = worktree_of(os.getcwd())
+    with artifacts.locked():
+        ws = artifacts.workspace(path, allow_closed=True)
+        if not args.dry_run:
+            ws["closed"] = True
+            artifacts.write_json(artifacts.ROOT / "workspaces" / f"{ws['id']}.json", ws)
+        legacy = [(jid, d) for jid, d in jobs_in(path)
+                  if not (read_json(os.path.join(d, "meta.json")) or {}).get("artifact_id")]
+        active = [jid for jid, d in legacy if legacy_busy(read_json(os.path.join(d, "meta.json")) or {})]
+        if active:
+            raise artifacts.CleanupError("cleanup refused; active legacy writers: " + ", ".join(active))
+        count = artifacts.archive(path, args.dry_run)
+        for _, d in legacy:
+            release_legacy(d, args.dry_run)
+    print(f"{'would release' if args.dry_run else 'released'} {count + len(legacy)} runs for {path}")
+
+
+def cmd_reopen(args):
+    with artifacts.locked():
+        ws = artifacts.workspace(worktree_of(os.getcwd()), allow_closed=True)
+        ws["closed"] = False
+        artifacts.write_json(artifacts.ROOT / "workspaces" / f"{ws['id']}.json", ws)
+    print("worktree reopened for validation")
+
+
+def cmd_gc(args):
+    with artifacts.locked():
+        count = artifacts.collect(args.dry_run)
+        for jid, d in jobs_in(None):
+            meta = read_json(os.path.join(d, "meta.json")) or {}
+            if (not meta.get("artifact_id") and meta.get("worktree")
+                    and not os.path.exists(meta["worktree"]) and not meta.get("evidence_released_at")
+                    and not legacy_busy(meta)):
+                release_legacy(d, args.dry_run)
+                count += 1
+    print(f"{'would collect' if args.dry_run else 'collected'} {count} orphaned runs; live runs and shared build caches preserved")
+
+
 def main():
-    if len(sys.argv) == 3 and sys.argv[1] == "_supervise":
-        supervise(sys.argv[2])
+    if len(sys.argv) in (3, 4) and sys.argv[1] == "_supervise":
+        supervise(sys.argv[2], int(sys.argv[3]) if len(sys.argv) == 4 else None)
         return
     # --help shows the command reference from this file's docstring, so the
     # help and the docstring cannot drift apart.
@@ -747,11 +912,23 @@ def main():
     p.add_argument("--limit", type=int, default=15)
     p.add_argument("--all", action="store_true", help="jobs from every worktree on this machine, with worktree, "
                    "commit, and relation to your HEAD")
+    p = sub.add_parser("release", help="release a completed run's evidence, retaining its summary")
+    p.add_argument("id", help="job id or Playwright run UUID")
+    p.add_argument("--dry-run", action="store_true")
+    p = sub.add_parser("cleanup", help="close this worktree to new runs and release its inactive evidence")
+    p.add_argument("--dry-run", action="store_true")
+    sub.add_parser("reopen", help="allow new runs after refused cleanup or workspace restore")
+    p = sub.add_parser("gc", help="recover orphaned payloads without touching active writers or shared build caches")
+    p.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     if args.sub == "start" and args.command and args.command[0] == "--":
         args.command = args.command[1:]
-    {"start": cmd_start, "wait": cmd_wait, "status": cmd_status, "result": cmd_result, "list": cmd_list}[args.sub](args)
+    {"start": cmd_start, "wait": cmd_wait, "status": cmd_status, "result": cmd_result, "list": cmd_list, "release": cmd_release, "cleanup": cmd_cleanup,
+     "reopen": cmd_reopen, "gc": cmd_gc}[args.sub](args)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (artifacts.CleanupError, OSError, ValueError) as error:
+        sys.exit(f"agent-job: {error}")

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../playwright-test";
 import { gotoMachine as gotoDefaultMachine } from "./support/kandelo-machine";
 import { writeFileSync } from "node:fs";
 import { buildTerminalCommand, parseTerminalCommandResult } from "./support/terminal-command";
@@ -35,7 +35,7 @@ async function showGame(page: Page, { pointerLock = false } = {}) {
     }
     scope.__releaseTestPointerLock();
   }, pointerLock);
-  await page.getByRole("button", { name: "Demo", exact: true }).click({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Graphics", exact: true }).click({ timeout: 60_000 });
   await expect(canvas(page)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText(/Waiting for PAGE_FLIP on CRTC/)).toBeHidden({ timeout: 120_000 });
   await expect.poll(async () => (await canvas(page).screenshot()).byteLength,
@@ -43,7 +43,7 @@ async function showGame(page: Page, { pointerLock = false } = {}) {
 }
 async function terminalLines(page: Page) {
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
-  // Dock commands run in TTY1. A hidden xterm keeps parsing output but
+  // The launcher runs in TTY1. A hidden xterm keeps parsing output but
   // does not necessarily repaint its DOM, so reading the first terminal's
   // hidden rows can mistake an old server log for a still-running process.
   await page.getByRole("tab", { name: "TTY1", exact: true }).click();
@@ -51,7 +51,16 @@ async function terminalLines(page: Page) {
   await screen.screenshot(); // Observe its painted screen before hiding it again.
   const output = await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").evaluate(
     node => [...node.children].map(row => row.textContent).join("\n"));
-  const demo = page.getByRole("button", { name: "Demo", exact: true });
+  const demo = page.getByRole("button", { name: "Graphics", exact: true });
+  if (await demo.isEnabled()) await demo.click();
+  return output;
+}
+/** The selected terminal: an activity runs in a tab of its own, not TTY1. */
+async function activityTerminal(page: Page) {
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  const output = await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").evaluate(
+    node => [...node.children].map(row => row.textContent).join("\n"));
+  const demo = page.getByRole("button", { name: "Graphics", exact: true });
   if (await demo.isEnabled()) await demo.click();
   return output;
 }
@@ -60,7 +69,7 @@ async function guestCommand(page: Page, command: string) {
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
   const slot = page.locator(".kshell-terminal-slot:not([hidden])");
   const transcript = () => slot.locator(".xterm-rows").innerText();
-  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/kandelo\$\s*$/);
+  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   const protocol = buildTerminalCommand(command);
   await slot.locator(".xterm-screen").click();
   await page.keyboard.insertText(protocol.command);
@@ -87,15 +96,15 @@ async function gotoMachine(...args: Parameters<typeof gotoDefaultMachine>) {
   await expect(page.getByRole("button", { name: "Terminal", exact: true }))
     .toHaveAttribute("aria-current", "true", { timeout: 30_000 });
   await expect.poll(() => page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").innerText())
-    .toMatch(/kandelo\$\s*$/);
+    .toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   await guestCommand(page, [
     'mkdir -p "$HOME/.freeciv"',
     'printf "[client]\\nmigration_sdl2_from_sdl=TRUE\\nflag_sdl2_default_screen_size_set=TRUE\\ngui_sdl2_screen.width=960\\ngui_sdl2_screen.height=540\\nsound_effects_volume=25\\n" > "$HOME/.freeciv/freeciv-client-rc-3.2"',
   ].join("\n"));
   // With no display owner the Demo tab is correctly unavailable. Relaunch
   // from the real shell rather than trying to open the old preview's controls.
-  // This second terminal also verifies dock replacements follow the actual
-  // display owner instead of assuming the primary terminal owns every game.
+  // This second terminal also verifies relaunches follow the actual display
+  // owner instead of assuming the primary terminal owns every game.
   await page.keyboard.insertText("/usr/bin/freeciv");
   await page.keyboard.press("Enter");
   await expect(canvas(page)).toBeVisible({ timeout: 60_000 });
@@ -226,9 +235,35 @@ async function waitForChatInput(page: Page) {
   }, { timeout: 10_000 }).toBe(true);
 }
 
-async function multiplayer(page: Page, entry: "host" | "join" | "local") {
-  await page.getByTestId("kms-dock-action-multiplayer").click({ timeout: 15_000 });
-  await page.getByTestId(`kms-dock-menu-entry-${entry}`).click({ timeout: 15_000 });
+/**
+ * Start the launcher again at TTY1's prompt. The running client may belong
+ * to another terminal, so first end whichever process owns the display, as
+ * a person would from a shell of their own, and wait for it to exit.
+ */
+async function relaunch(page: Page, mode: "host" | "join" | "local") {
+  const graphics = page.getByRole("button", { name: "Graphics", exact: true });
+  if (await graphics.isEnabled()) await graphics.click();
+  const owner = await page.locator(".kmodeset-surface").first().getAttribute("data-kms-owner-pid");
+  if (owner && owner !== "0") {
+    await guestCommand(page, `kill -TERM ${owner}\nwhile kill -0 ${owner} 2>/dev/null; do sleep 1; done`);
+  }
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  await page.getByRole("tab", { name: "TTY1", exact: true }).click();
+  const slot = page.locator(".kshell-terminal-slot:not([hidden])");
+  await expect.poll(() => slot.locator(".xterm-rows").innerText(), { timeout: 30_000 })
+    .toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
+  await slot.locator(".xterm-screen").click();
+  await page.keyboard.insertText(`freeciv-play ${mode}`);
+  await page.keyboard.press("Enter");
+  // The new client owns the display once it presents its first frame.
+  await expect(graphics).toBeEnabled({ timeout: 60_000 });
+  await graphics.click();
+  const surface = page.locator(".kmodeset-surface").first();
+  await expect.poll(() => surface.getAttribute("data-kms-owner-pid"), { timeout: 60_000 })
+    .toMatch(new RegExp(`^(?!${owner ?? "0"}$)[1-9]\\d*$`));
+  const presented = Number(await surface.getAttribute("data-kms-present-count"));
+  await expect.poll(async () => Number(await surface.getAttribute("data-kms-present-count")), { timeout: 60_000 })
+    .toBeGreaterThan(presented);
 }
 
 test.afterEach(async ({ page }, info) => {
@@ -430,19 +465,17 @@ test.describe("local Freeciv peer routing", () => {
     await gotoMachine(page, "freeciv");
     await running(page);
     await showGame(page);
-    console.log("Creating the network session");
+    console.log("Hosting the Freeciv activity from the dock's network session button");
     await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
-    await page.getByLabel("Session name").fill("Freeciv night");
-    await page.getByRole("button", { name: "Create invite", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Network session: connected", exact: true }))
-      .toBeAttached({ timeout: 30_000 });
+    const form = page.getByRole("form", { name: "Host activity" });
+    await form.getByLabel("Activity", { exact: true }).selectOption("freeciv-browser-bundle/game");
+    await form.getByLabel("Your name", { exact: true }).fill("Alice");
+    await form.getByRole("button", { name: "Start activity", exact: true }).click();
+    await expect(page.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 120_000 });
     const link = await page.locator("[data-network-link]").getAttribute("data-network-link");
-    expect(link).toBeTruthy();
     await page.locator(".knetwork .kshare-x").click();
-    console.log("Starting the hosting Freeciv server and client");
-    await multiplayer(page, "host");
-    await expect.poll(() => terminalLines(page), { timeout: 90_000 })
-      .toMatch(/Player-[0-9a-f]+ has connected from (?:localhost|127\.0\.0\.1)/);
+    await expect.poll(() => activityTerminal(page), { timeout: 90_000 })
+      .toMatch(/Alice has connected from (?:localhost|127\.0\.0\.1)/);
     console.log("Host client connected; opening the invited machine");
     const context = await browser.newContext({ permissions: ["microphone"] });
     const joiner = await context.newPage();
@@ -451,8 +484,13 @@ test.describe("local Freeciv peer routing", () => {
     try {
       await joiner.goto(link!, { waitUntil: "domcontentloaded" });
       await running(joiner);
-      await joiner.getByRole("button", { name: "Join session", exact: true }).click();
-      await expect(joiner.locator(".knetwork-status")).toContainText("this computer is 10.89.0.2", { timeout: 90_000 });
+      console.log("Joining Freeciv from the invitation");
+      await joiner.getByRole("form", { name: "Join activity" })
+        .getByLabel("Your name", { exact: true }).fill("Bob");
+      await joiner.getByRole("form", { name: "Join activity" })
+        .getByRole("button", { name: "Join and play Freeciv", exact: true }).click();
+      await expect.poll(() => activityTerminal(page), { timeout: 180_000 })
+        .toMatch(/Bob has connected from 10\.89\.0\.2/);
       // Prove that this is the intended local fixture rather than a lucky LAN
       // hairpin route. Observe the browser's selected pair without rewriting SDP.
       for (const player of [page, joiner]) {
@@ -470,17 +508,8 @@ test.describe("local Freeciv peer routing", () => {
           return false;
         }), { timeout: 15_000 }).toBe(true);
       }
-      await joiner.locator(".knetwork .kshare-x").click();
-      await showGame(joiner);
-      console.log("Joining Freeciv through the peer network");
-      await multiplayer(joiner, "join");
-      await expect.poll(() => terminalLines(page), { timeout: 90_000 })
-        .toMatch(/Player-[0-9a-f]+ has connected from 10\.89\.0\.2/);
       await showGame(page);
       await showGame(joiner);
-      for (const player of [page, joiner]) {
-        await expect(player.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 30_000 });
-      }
       await page.screenshot({ path: "../../.context/freeciv-network-host.png" });
       await joiner.screenshot({ path: "../../.context/freeciv-network-joiner.png" });
       console.log("Both lobbies rendered; starting the game from each client");
@@ -491,7 +520,7 @@ test.describe("local Freeciv peer routing", () => {
         expect(box).not.toBeNull();
         await display.click({ position: { x: box!.width * 0.925, y: box!.height * 0.95 } });
       }
-      await expect.poll(() => terminalLines(page), { timeout: 90_000 }).toMatch(/rules the/);
+      await expect.poll(() => activityTerminal(page), { timeout: 90_000 }).toMatch(/rules the/);
       await showGame(page);
       await showGame(joiner);
       // End a turn from both keyboards and observe the year/status strip
@@ -513,9 +542,6 @@ test.describe("local Freeciv peer routing", () => {
       }
       await page.screenshot({ path: "../../.context/freeciv-game-host.png" });
       await joiner.screenshot({ path: "../../.context/freeciv-game-joiner.png" });
-      for (const player of [page, joiner]) {
-        await expect(player.getByTestId("kms-dock-action-error")).toHaveCount(0);
-      }
     } finally {
       for (const [name, player] of [["host", page], ["joiner", joiner]] as const) {
         // Each repeat owns its evidence: a later successful session must never
@@ -550,7 +576,7 @@ test("New Game launches Freeciv's own local server child", async ({ page, browse
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
   const slot = page.locator(".kshell-terminal-slot:not([hidden])");
   const transcript = () => slot.locator(".xterm-rows").innerText();
-  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/kandelo\$\s*$/);
+  await expect.poll(transcript, { timeout: 60_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
   const protocol = buildTerminalCommand([
     "for path in /proc/[0-9]*/cmdline; do",
     "  command=$(tr '\\0' ' ' < \"$path\" 2>/dev/null)",
@@ -622,7 +648,7 @@ for (const density of [1, 2]) {
           .toBe(true);
         const terminal = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows");
         await expect(terminal).toBeVisible();
-        await expect.poll(() => terminal.innerText()).toMatch(/kandelo\$\s*$/);
+        await expect.poll(() => terminal.innerText()).toMatch(/maker@[^:\s]+:[^\r\n]*\$\s*$/);
         return terminal;
       };
 
@@ -1005,10 +1031,9 @@ for (const density of [1, 2]) {
       await gotoMachine(page, "freeciv");
       await running(page);
       await showGame(page);
-      await multiplayer(page, "host");
+      await relaunch(page, "host");
       await expect.poll(() => terminalLines(page), { timeout: 60_000 })
         .toMatch(/has connected from (?:localhost|127\.0\.0\.1)/);
-      await expect(page.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 30_000 });
       await showGame(page);
       const box = (await canvas(page).boundingBox())!;
       writeFileSync("../../.context/freeciv-current-demo-url.txt", page.url());
@@ -1124,10 +1149,9 @@ for (const density of [1, 2]) {
       await gotoMachine(page, "freeciv");
       await running(page);
       await showGame(page);
-      await multiplayer(page, "host");
+      await relaunch(page, "host");
       await expect.poll(() => terminalLines(page), { timeout: 60_000 })
         .toMatch(/has connected from (?:localhost|127\.0\.0\.1)/);
-      await expect(page.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 30_000 });
       const box = (await canvas(page).boundingBox())!;
       await canvas(page).click({ position: { x: box.width - 50, y: box.height - 24 } });
       await expect.poll(() => terminalLines(page), { timeout: 60_000 }).toMatch(/rules the/);
@@ -1248,10 +1272,9 @@ for (const density of [1, 2]) {
       await gotoMachine(page, "freeciv");
       await running(page);
       await showGame(page);
-      await multiplayer(page, "host");
+      await relaunch(page, "host");
       await expect.poll(() => terminalLines(page), { timeout: 60_000 })
         .toMatch(/has connected from (?:localhost|127\.0\.0\.1)/);
-      await expect(page.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 30_000 });
       await showGame(page);
       const box = (await canvas(page).boundingBox())!;
       await canvas(page).click({ position: { x: box.width - 50, y: box.height - 24 } });
@@ -1400,10 +1423,9 @@ for (const density of [1, 2]) {
         const box = (await canvas(page).boundingBox())!;
         await waitForPanel(page, box.width - 60, box.height - 60);
         if (inGame) {
-          await multiplayer(page, "host");
+          await relaunch(page, "host");
           await expect.poll(() => terminalLines(page), { timeout: 60_000 })
             .toMatch(/has connected from (?:localhost|127\.0\.0\.1)/);
-          await expect(page.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 30_000 });
           await canvas(page).click({ position: { x: box.width - 50, y: box.height - 24 } });
           await expect.poll(() => terminalLines(page), { timeout: 60_000 }).toMatch(/rules the/);
           await showGame(page);
@@ -1591,10 +1613,9 @@ for (const density of [1, 2]) {
       await gotoMachine(page, "freeciv");
       await running(page);
       await showGame(page);
-      await multiplayer(page, "host");
+      await relaunch(page, "host");
       await expect.poll(() => terminalLines(page), { timeout: 90_000 })
         .toMatch(/has connected from (?:localhost|127\.0\.0\.1)/);
-      await expect(page.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 30_000 });
       const box = (await canvas(page).boundingBox())!;
       await canvas(page).click({ position: { x: box.width - 50, y: box.height - 24 } });
       await expect.poll(() => terminalLines(page), { timeout: 90_000 }).toMatch(/rules the/);
@@ -1835,7 +1856,7 @@ for (const density of [1, 2]) {
       expect(settings).toMatch(/1280/);
       expect(settings).toMatch(/720/);
       await showGame(page);
-      await multiplayer(page, "local");
+      await relaunch(page, "local");
       await showGame(page);
       await expect(page.getByText("1280×720", { exact: false })).toBeVisible({ timeout: 30_000 });
       const restoredMenu = await nativePosition(page, 1250, 690);
@@ -1843,7 +1864,7 @@ for (const density of [1, 2]) {
       await page.screenshot({ path: `../../.context/freeciv-resolution-restored-${density}.png`, scale: "css" });
       // Start an actual game at the saved mode, then change resolution
       // while its map and unit panels are live.
-      await multiplayer(page, "host");
+      await relaunch(page, "host");
       await expect.poll(() => terminalLines(page), { timeout: 60_000 })
         .toMatch(/has connected from (?:localhost|127\.0\.0\.1)/);
       await showGame(page);
@@ -1962,10 +1983,9 @@ for (const density of [1, 2]) {
       expect(settings).toMatch(/gui_sdl2_font_size\s*=\s*14\b/);
       expect(settings).toMatch(/gui_sdl2_use_theme_font_size\s*=\s*false/i);
       await showGame(page);
-      await multiplayer(page, "local");
+      await relaunch(page, "local");
       await showGame(page);
       await waitForPanel(page, display!.width - 60, display!.height - 60);
-      await expect(page.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 30_000 });
       await page.screenshot({ path: `../../.context/freeciv-custom-font-${density}.png`, scale: "css" });
     });
   });

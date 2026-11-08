@@ -8,3 +8,7 @@ Filesystem image inputs and builders live here.
 
 The `tools/mkrootfs` CLI contains the reusable image builder implementation.
 Scripts in this directory should compose package outputs into runtime images.
+
+Kandelo-provided images follow the [filesystem layout](../docs/filesystem-layout.md).
+Read the [image agent guide](../docs/agent-guidance/images.md) before changing
+installed guest paths, archive mounts or runtime-file destinations.

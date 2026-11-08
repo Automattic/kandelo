@@ -139,7 +139,7 @@ async function runManCommand(
 
   try {
     await host.init(asArrayBuffer(kernelBytes));
-    // Bash is baked eagerly into the shell image at /usr/bin/bash (not a
+    // Bash is baked eagerly into the shell image at /bin/bash (not a
     // lazy-archive member), so spawning it by VFS path never touches the
     // closed lazy fetcher. `-lc` makes bash a login shell that sources
     // /etc/profile, which in turn sources /etc/profile.d/man.sh — the
@@ -148,7 +148,7 @@ async function runManCommand(
     // pty, so stdout is already a non-tty and mandoc would not fork a
     // pager regardless).
     const { exit } = await host.spawnFromVfs(
-      "/usr/bin/bash",
+      "/bin/bash",
       ["bash", "-lc", command],
       {
         env: ["HOME=/home/maker", "USER=maker", "LOGNAME=maker"],

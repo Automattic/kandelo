@@ -52,6 +52,7 @@ export function useDockActions(
   frameCount: number | null = null,
   stop?: () => Promise<void>,
   readFrameCount?: () => number,
+  terminalPath?: string,
 ): {
   controls: React.ReactNode;
   toasts: React.ReactNode;
@@ -94,6 +95,13 @@ export function useDockActions(
     if (running !== null) return;
     stopFollowing();
     const generation = followingGenerationRef.current;
+    // A queued restart belongs to the machine it was asked of: not to one
+    // that stopped, nor to one booted in its place. Watch the host itself,
+    // since this pane may unmount before the command is written.
+    let machineLeftRunning = host.getStatus() !== "running";
+    const unsubscribeStatus = host.subscribeStatus((value) => {
+      if (value !== "running") machineLeftRunning = true;
+    });
     setError(null);
     setRunning({ id: buttonId, phase: "stopping" });
     const programName = dockActionProgramName(action.restart);
@@ -101,9 +109,14 @@ export function useDockActions(
     try {
       await runDemoDockAction(host, action, {
         stop,
+        terminalPath,
         onPhase: async (phase) => {
           // Dispatch may still be waiting on the old prompt during teardown.
-          if (followingGenerationRef.current !== generation) throw new Error("Dock action cancelled");
+          if (machineLeftRunning) throw new Error("Dock action cancelled");
+          // The pane can unmount mid-action. On /dev/fb0 it does exactly
+          // that when this action ends the display's owner, so unmounting
+          // ends progress following, not the restart the user asked for.
+          if (followingGenerationRef.current !== generation) return;
           setRunning({ id: buttonId, phase });
           if (phase !== "starting" || frameCountRef.current === null) return;
           // Follow this command until its display starts presenting.
@@ -122,11 +135,12 @@ export function useDockActions(
               return;
             }
             setFollowing({ label: action.label, progress });
-          });
-          // A frame can arrive while attachPty is still in flight.
+          }, terminalPath);
+          // Following can end while attachPty is still in flight (a frame
+          // arrived, or the pane unmounted); the command is still written.
           if (followingGenerationRef.current !== generation) {
             unsubscribe();
-            throw new Error("Dock action cancelled");
+            return;
           }
           stopFollowingRef.current = unsubscribe;
         },
@@ -136,9 +150,10 @@ export function useDockActions(
       stopFollowing();
       setError(`${action.label}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      unsubscribeStatus();
       setRunning(null);
     }
-  }, [host, running, stopFollowing, stop, readFrameCount]);
+  }, [host, running, stopFollowing, stop, readFrameCount, terminalPath]);
 
   const controls = React.useMemo(() => {
     if (status !== "running" || actions.length === 0) return null;

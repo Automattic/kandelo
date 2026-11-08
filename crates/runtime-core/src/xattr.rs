@@ -44,7 +44,7 @@ enum Resolved {
     /// On the exchange filesystem: its canonical path, its stat, and the
     /// tmpfs handle when the target is an open regular file (which may have
     /// been renamed since it was opened).
-    Exchange { path: Vec<u8>, stat: WasmStat, handle: Option<i64> },
+    Exchange { path: crate::ofd::OfdPath, stat: WasmStat, handle: Option<i64> },
     /// A filesystem that stores no extended attributes.
     Unsupported,
 }
@@ -61,7 +61,7 @@ fn resolve(proc: &mut Process, host: &mut dyn HostIO, target: XattrTarget<'_>) -
             };
             let canonical = syscalls::canonical_path(proc, host, path, follow)?;
             if crate::exchange::owns_path(&canonical) && crate::tmpfs::claims_path(&canonical) {
-                Ok(Resolved::Exchange { path: canonical, stat, handle: None })
+                Ok(Resolved::Exchange { path: crate::ofd::OfdPath::copy_from(&canonical)?, stat, handle: None })
             } else {
                 Ok(Resolved::Unsupported)
             }

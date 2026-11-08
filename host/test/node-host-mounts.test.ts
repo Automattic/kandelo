@@ -42,7 +42,7 @@ import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { DEFAULT_MOUNT_SPEC, type MountSpec } from "../src/vfs/default-mounts";
 // The in-kernel tmpfs owns its scratch prefixes unconditionally, so scratch
 // writes to `/tmp` etc. are served by the kernel. The session-seed case seeds a
-// non-tmpfs `/run` scratch mount the host still materialises.
+// non-tmpfs `/var/lib/kandelo-tests` scratch mount the host still materialises.
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -113,7 +113,13 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
       const actual = new Uint8Array(st.size);
       const fd = fs.open(path, 0, 0);
       try {
-        expect(fs.read(fd, actual, null, actual.length)).toBe(actual.length);
+        // read() may return fewer bytes than requested.
+        let offset = 0;
+        while (offset < actual.length) {
+          const count = fs.read(fd, actual.subarray(offset), null, actual.length - offset);
+          expect(count).toBeGreaterThan(0);
+          offset += count;
+        }
       } finally {
         fs.close(fd);
       }
@@ -158,17 +164,17 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
       rootfsImage: "default" as const,
       rootfsMountSpec: [
         ...DEFAULT_MOUNT_SPEC,
-        { path: "/run", source: "scratch", mode: 0o755, nosuid: true },
+        { path: "/var/lib/kandelo-tests", source: "scratch", mode: 0o755, nosuid: true },
       ],
       sessionSeedTrees: [{
         sourcePath: fixtureRoot,
-        destinationPath: "/run/kandelo-run",
+        destinationPath: "/var/lib/kandelo-tests/runner",
       }],
     });
 
     try {
       await host.init();
-      const entries = await host.readDirFromVfs("/run/kandelo-run/suite");
+      const entries = await host.readDirFromVfs("/var/lib/kandelo-tests/runner/suite");
       expect(entries?.map((entry) => entry.name).sort()).toEqual([
         "fixture",
         "nested",
@@ -180,11 +186,11 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
       expect(dir.mode & 0o170000).toBe(0o040000);
 
       await expect(
-        host.statVfsPath("/run/kandelo-run/suite/fixture"),
+        host.statVfsPath("/var/lib/kandelo-tests/runner/suite/fixture"),
       ).resolves.toMatchObject({ size: 4 });
       // A missing path is `null`, never an empty listing or a zeroed stat.
-      await expect(host.readDirFromVfs("/run/kandelo-run/absent")).resolves.toBeNull();
-      await expect(host.statVfsPath("/run/kandelo-run/absent")).resolves.toBeNull();
+      await expect(host.readDirFromVfs("/var/lib/kandelo-tests/runner/absent")).resolves.toBeNull();
+      await expect(host.statVfsPath("/var/lib/kandelo-tests/runner/absent")).resolves.toBeNull();
     } finally {
       await host.destroy();
       rmSync(fixtureRoot, { recursive: true, force: true });
@@ -201,16 +207,16 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
       program.byteOffset,
       program.byteOffset + program.byteLength,
     );
-    // Seed a `/run` scratch mount: the in-kernel tmpfs owns `/tmp` and the other
+    // Seed `/var/lib/kandelo-tests`: the in-kernel tmpfs owns `/tmp` and the other
     // canonical scratch prefixes unconditionally, so host-materialised session
     // seeds live on a non-tmpfs scratch mount the host still owns.
     const rootfsMountSpec: MountSpec[] = [
       ...DEFAULT_MOUNT_SPEC,
-      { path: "/run", source: "scratch", mode: 0o755, nosuid: true },
+      { path: "/var/lib/kandelo-tests", source: "scratch", mode: 0o755, nosuid: true },
     ];
-    const seedPath = "/run/kandelo-run/suite/fixture";
+    const seedPath = "/var/lib/kandelo-tests/runner/suite/fixture";
     // Verify through ordinary guest reads as well as the inspection RPC above.
-    // A guest `mount_probe rootfs` read routes through the `/run` backend and
+    // A guest `mount_probe rootfs` read routes through the fixture backend and
     // reports `ROOTFS size=<n> ... head=<hex>`.
     function makeSeededHost(): { host: NodeKernelHost; readOut: () => string } {
       let out = "";
@@ -219,7 +225,7 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
         rootfsMountSpec,
         sessionSeedTrees: [{
           sourcePath: fixtureRoot,
-          destinationPath: "/run/kandelo-run",
+          destinationPath: "/var/lib/kandelo-tests/runner",
         }],
         onStdout: (_pid, data) => {
           out += new TextDecoder().decode(data);
@@ -274,7 +280,7 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
       await Promise.allSettled([first.host.destroy(), second.host.destroy()]);
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it.each([
     ["/etc/ssl/openssl.cnf", opensslConfigSource],

@@ -1,0 +1,11 @@
+script_path = "packages/registry/rust-native-fixtures/build.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = [
+  "packages/registry/rust-native-fixtures/build.sh",
+  "packages/registry/rust-native-fixtures/fixture",
+  "scripts/package-build-roots.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "sdk/activate.sh",
+]

@@ -366,6 +366,16 @@ test("checks registered VFS build targets without owning non-VFS prerequisites",
 
 test("keeps canonical resolution ahead of legacy fallback for every Pages product", () => {
   withTempDir((directory) => {
+    for (const activation of ["activate(productId)", "activatePositioned(productId, stagingDirectory)"]) {
+      const missingActivation = copyBrowserSources(directory, (source, contents) => {
+        if (!source.endsWith("live-setup.ts")) return contents;
+        return contents.replace(`CANONICAL_PAGES_VFS_LOADER.${activation}`, "untrustedLoader.activate(productId)");
+      });
+      assert.throws(
+        () => checkPagesVfsProductRegistry({ ...paths, browserSources: missingActivation }),
+        /canonical on-demand Pages product loader/i,
+      );
+    }
     const reordered = copyBrowserSources(directory, (source, contents) => {
       if (!source.endsWith("vite.config.ts")) return contents;
       return contents.replace(
@@ -511,27 +521,6 @@ test("admits product-id-keyed plumbing (not a machine-identity table)", () => {
     // "browser-main-shell" and "browser-wordpress" ARE in realCatalog.productIds,
     // so this must pass against the real catalog admission rule too.
     assert.doesNotThrow(() => assertNoAppMachineIdentityTables(realCatalog, directory));
-  });
-});
-
-test("exempts the peer-network guest game selector without exempting machine profiles", () => {
-  withTempDir((directory) => {
-    const path = "apps/browser-demos/pages/peer-network/main.ts";
-    const selector = `type PeerNetworkGame = "doom" | "quake";`;
-    writeFixture(directory, path, selector);
-    assert.doesNotThrow(() => assertNoAppMachineIdentityTables(fakeCatalog, directory));
-    writeFixture(directory, path, `${selector}\ntype MachineProfile = "doom" | "quake";`);
-    assert.throws(
-      () => assertNoAppMachineIdentityTables(fakeCatalog, directory),
-      /union type.*MachineProfile/,
-    );
-    writeFixture(directory, path, `${selector}\nconst MACHINE_SPECS = {
-      doom: { argv: ["/bin/fbdoom"] }, quake: { argv: ["/bin/quake"] },
-    };`);
-    assert.throws(
-      () => assertNoAppMachineIdentityTables(fakeCatalog, directory),
-      /object literal.*MACHINE_SPECS/,
-    );
   });
 });
 

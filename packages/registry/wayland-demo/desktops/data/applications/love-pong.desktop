@@ -1,4 +1,4 @@
 [Desktop Entry]
 Type=Application
 Name=Pong
-Exec=/usr/local/bin/love /usr/share/love/examples/pong
+Exec=/usr/bin/love /usr/share/love/examples/pong

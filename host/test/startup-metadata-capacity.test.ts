@@ -310,6 +310,13 @@ describe("process startup metadata capacity contract", () => {
 });
 
 describe("process fork-mode import contract", () => {
+  it.each([4, 8] as const)("refuses unsupported legacy argv mutation for %i-byte pointers", (pointerWidth) => {
+    const { imports } = reader(pointerWidth, ["original"], [], "argv");
+    const push = imports.kernel_push_argv as (pointer: number | bigint, length: number) => number;
+    expect(push(pointer(pointerWidth, 0), 0)).toBe(-38);
+    expect((imports.kernel_get_argc as () => number)()).toBe(1);
+  });
+
   it("routes ordinary fork and vfork to distinct syscalls", () => {
     const memory = new WebAssembly.Memory({
       initial: 1,

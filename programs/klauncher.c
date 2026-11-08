@@ -11,7 +11,7 @@
  * Entries come from the .conf files under /usr/share/kandelo/apps, one per app:
  *
  *     name = Terminal
- *     exec = /usr/local/bin/wlterm
+ *     exec = /usr/bin/wlterm
  *
  * That directory is the desktop-entry registry: dropping a file in adds an
  * app, which is how a package installs itself into the launcher.

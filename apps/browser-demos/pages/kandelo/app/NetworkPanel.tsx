@@ -8,11 +8,13 @@ import type { PackageSessionControls } from "./use-package-sessions";
 import { ActivityJoinForm, ActivityOfferForm, ActivityClientForm, ActivityMetadata } from "./ActivityForms";
 import { SessionNotice } from "./SessionNotice";
 import { randomSessionName } from "./session-name";
+import { networkJoinReadiness } from "./network-join-readiness";
 
-export const NetworkPanel: React.FC<{ session: NetworkSession; activity: PackageSessionControls; running: boolean; failed?: boolean }> = ({ session, activity, running, failed }) => {
+export const NetworkPanel: React.FC<{ session: NetworkSession; activity: PackageSessionControls; running: boolean; failed?: boolean; initialSelection?: { activity: string; imageId?: string }; onActivityStarted?: () => void }> = ({ session, activity, running, failed, initialSelection, onActivityStarted }) => {
   const { state, invitation } = session;
-  const [name, setName] = React.useState(randomSessionName);
-  const [editing, setEditing] = React.useState<"activity" | "new" | null>(state.phase !== "connected" ? "activity" : null);
+  const [name, setName] = React.useState(() => state.name ?? randomSessionName());
+  const [editing, setEditing] = React.useState<{ mode: "activity" | "new"; selection?: string; imageId?: string } | null>(() =>
+    initialSelection !== undefined || state.phase !== "connected" ? { mode: "activity", selection: initialSelection?.activity, imageId: initialSelection?.imageId } : null);
   const active = state.phase === "connected" && !invitation && editing === null && !activity.busy;
   const close = () => session.setOpen(false);
 
@@ -22,18 +24,16 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; activity: Package
   const self = state.snapshot?.address ?? null;
   const members = state.snapshot?.members ?? [];
   const errorHint = networkErrorHint(state.error);
-  const leave = async () => { activity.cancel(); await session.leave(); setEditing("activity"); setName(randomSessionName()); };
+  const leave = async () => { activity.cancel(); await session.leave(); setEditing({ mode: "activity" }); setName(randomSessionName()); };
   const joined = state.snapshot?.state === "joined";
   const canChange = !joined || activity.remoteChoices.length > 0;
-  const title = invitation ? "Session invitation" : active ? "Active session" : editing === "new" ? "New session" : state.phase === "connected" ? "Change activity" : "Network session";
+  const title = invitation ? "Session invitation" : active ? "Active session" : editing?.mode === "new" ? "New session" : state.phase === "connected" ? "Change activity" : "Network session";
+  const readiness = networkJoinReadiness({ failed, error: state.error ?? activity.error, invitationError: activity.invitationError,
+    running, ready: activity.ready, busy, progress: activity.progress });
 
   const notice = invitation ? <SessionNotice readiness transfer={activity.transfer}
-            tone={failed || activity.invitationError ? "error" : running && activity.ready && !busy ? "success" : "working"}>
-            {failed ? "Computer failed to start."
-              : !running ? "Starting computer…"
-              : !activity.ready ? "Loading activity…"
-              : activity.progress ?? (busy ? "Connecting to host…"
-              : activity.invitationError ? "Cannot join this activity." : "Ready to join.")}
+            tone={readiness.tone}>
+            {readiness.message}
           </SessionNotice> : activity.progress || busy ? <SessionNotice transfer={activity.transfer}>
             {activity.progress ?? (state.phase === "joining" ? "Connecting to host…" : "Preparing session…")}
           </SessionNotice> : active && activity.copyStatus !== "idle" ? <SessionNotice key={activity.copySequence}
@@ -47,14 +47,13 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; activity: Package
             <strong>{invitation?.name ?? state.name ?? "No session"}</strong>
             <span>{NETWORK_PHASE_LABEL[state.phase]}{self ? ` · this computer is ${self}` : ""}</span>
           </div>} notice={notice} actions={<>
-          <button className="kshare-btn" onClick={close}>Close</button>
           <div style={{ flex: 1 }} />
           {activity.busy && !inSession && !state.room && <button className="kshare-btn" onClick={activity.cancel}>Cancel preparation</button>}
           {(inSession || state.room) && <button className="kshare-btn" onClick={() => void leave()}>Leave session</button>}
           {active && <>
-            {canChange && <button className="kshare-btn" onClick={() => { setName(state.name ?? randomSessionName()); setEditing("activity"); }}>Change activity</button>}
-            {joined && <button className="kshare-btn" onClick={() => { setName(randomSessionName()); setEditing("new"); }}>New session</button>}
-            <button className="kshare-btn kshare-btn-primary" disabled={busy} onClick={() => void activity.copyLink()}>Copy link</button>
+            {canChange && <button className="kshare-btn" onClick={() => { setName(state.name ?? randomSessionName()); setEditing({ mode: "activity" }); }}>Change activity</button>}
+            {joined && <button className="kshare-btn" onClick={() => { setName(randomSessionName()); setEditing({ mode: "new" }); }}>New session</button>}
+            <button className="kshare-btn kshare-btn-primary" disabled={busy || activity.link === null} onClick={() => void activity.copyLink()}>Copy link</button>
           </>}
           {!active && !invitation && state.phase === "connected" && <button className="kshare-btn" disabled={busy} onClick={() => setEditing(null)}>Back to active session</button>}
         </>}>
@@ -82,7 +81,9 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; activity: Package
             <ActivityMetadata activity={activity} />
             <div>
               <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Invite link</div>
-              <div className="kshare-url" data-network-link={activity.link}>{activity.link}</div>
+              {activity.linkUnavailable === null
+                ? <div className="kshare-url" data-network-link={activity.link}>{activity.link}</div>
+                : <p className="knetwork-note">{activity.linkUnavailable}</p>}
             </div>
             <div>
               <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Computers</div>
@@ -94,9 +95,9 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; activity: Package
               </ul>
             </div>
           </> : <>
-            {state.phase === "connected" && joined && editing !== "new"
+            {state.phase === "connected" && joined && editing?.mode !== "new" && editing?.selection === undefined
               ? <ActivityClientForm activity={activity} blocked={blocked} session={session} onComplete={() => setEditing(null)} />
-              : <ActivityOfferForm key={editing} replaceSession={editing === "new"} activity={activity} blocked={blocked} name={name} setName={setName} session={session} onComplete={() => setEditing(null)} />}
+              : <ActivityOfferForm key={editing?.mode} initialSelection={editing?.selection} imageId={editing?.imageId} replaceSession={editing?.mode === "new"} activity={activity} blocked={blocked} name={name} setName={setName} session={session} onComplete={started => { setEditing(null); if (started) onActivityStarted?.(); }} />}
           </>}
   </NetworkDialog>;
 };

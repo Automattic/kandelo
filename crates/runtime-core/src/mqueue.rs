@@ -4,9 +4,9 @@
 //! marshals data between process memory and kernel scratch; all queue
 //! logic lives here.
 
-use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::vec::Vec;
+use crate::{IoBuffer, PreparedMap};
+use crate::prepared_map::{MapMemory, PreparedEntry};
 use wasm_posix_shared::{platform_limits, signal::NSIG, Errno};
 
 // Access mode flags
@@ -34,7 +34,7 @@ const MQD_MAX: u32 = i32::MAX as u32;
 
 /// A single message in a queue.
 struct MqMessage {
-    data: Vec<u8>,
+    data: IoBuffer<u8>,
     priority: u32,
 }
 
@@ -54,7 +54,7 @@ struct MqPinId(u64);
 struct MqQueue {
     maxmsg: u32,
     msgsize: u32,
-    messages: Vec<MqMessage>,
+    messages: IoBuffer<MqMessage>,
     linked: bool,
     open_count: u32,
     active_pins: u32,
@@ -68,6 +68,23 @@ struct MqDescriptor {
     queue_id: MqQueueId,
     access_mode: u32,
     nonblock: bool,
+}
+
+macro_rules! map_memory {
+    ($($value:ty),*) => { $(impl MapMemory for $value {
+        fn heap_bytes(&self) -> Result<usize, Errno> { Ok(0) }
+    })* };
+}
+
+map_memory!(MqQueueId, MqPinId, MqDescriptor, MqQueue);
+
+fn prepare_queue_name(name: &str, queue_id: MqQueueId) -> Result<PreparedEntry<String, MqQueueId>, Errno> {
+    let budget = &crate::io_buffer::IO_MEMORY;
+    let reservation = PreparedEntry::<String, MqQueueId>::reserve_in(budget, name.len())?;
+    let mut owned = String::new();
+    owned.try_reserve_exact(name.len()).map_err(|_| Errno::ENOMEM)?;
+    owned.push_str(name);
+    PreparedEntry::new_reserved_in(budget, owned, queue_id, reservation)
 }
 
 /// Opaque authority retained by one potentially blocking operation.
@@ -128,7 +145,7 @@ pub struct MqAttr {
 /// Result of a receive operation.
 #[derive(Debug)]
 pub struct MqRecvResult {
-    pub data: Vec<u8>,
+    pub data: IoBuffer<u8>,
     pub priority: u32,
 }
 
@@ -140,10 +157,10 @@ pub struct MqSendResult {
 
 /// Global message queue table.
 pub struct MqueueTable {
-    names: BTreeMap<String, MqQueueId>,
-    queues: BTreeMap<MqQueueId, MqQueue>,
-    descriptors: BTreeMap<u32, MqDescriptor>,
-    active_pins: BTreeMap<MqPinId, MqQueueId>,
+    names: PreparedMap<String, MqQueueId>,
+    queues: PreparedMap<MqQueueId, MqQueue>,
+    descriptors: PreparedMap<u32, MqDescriptor>,
+    active_pins: PreparedMap<MqPinId, MqQueueId>,
     next_queue_id: Option<MqQueueId>,
     next_mqd: Option<u32>,
     next_pin_id: Option<MqPinId>,
@@ -153,10 +170,10 @@ pub struct MqueueTable {
 impl MqueueTable {
     pub const fn new() -> Self {
         MqueueTable {
-            names: BTreeMap::new(),
-            queues: BTreeMap::new(),
-            descriptors: BTreeMap::new(),
-            active_pins: BTreeMap::new(),
+            names: PreparedMap::new(),
+            queues: PreparedMap::new(),
+            descriptors: PreparedMap::new(),
+            active_pins: PreparedMap::new(),
             next_queue_id: Some(MqQueueId(1)),
             next_mqd: Some(MQD_BASE),
             next_pin_id: Some(MqPinId(1)),
@@ -307,13 +324,14 @@ impl MqueueTable {
     pub fn pin_descriptor(&mut self, mqd: u32) -> Result<PinnedMqueueDescriptor, Errno> {
         let descriptor = self.resolve_descriptor(MqDescriptorAuthority::Public(mqd))?;
         let (pin_id, next_pin_id) = self.next_free_pin_id()?;
+        let prepared = self.active_pins.prepare_io(pin_id, descriptor.queue_id)?;
         let queue = self
             .queues
             .get_mut(&descriptor.queue_id)
             .ok_or(Errno::EBADF)?;
         queue.active_pins = queue.active_pins.checked_add(1).ok_or(Errno::EOVERFLOW)?;
 
-        self.active_pins.insert(pin_id, descriptor.queue_id);
+        self.active_pins.publish_io(prepared);
         self.next_pin_id = next_pin_id;
         Ok(PinnedMqueueDescriptor {
             pin_id,
@@ -412,37 +430,32 @@ impl MqueueTable {
             None
         };
 
-        let queue_id = if let Some(queue_id) = existing_queue_id {
+        let queue_id = existing_queue_id.or(new_queue_identity.map(|identity| identity.0)).ok_or(Errno::EIO)?;
+        let descriptor = self.descriptors.prepare_io(mqd, MqDescriptor { queue_id, access_mode, nonblock })?;
+        if let Some(queue_id) = existing_queue_id {
             let queue = self.queues.get_mut(&queue_id).ok_or(Errno::EIO)?;
             queue.open_count = queue.open_count.checked_add(1).ok_or(Errno::EMFILE)?;
-            queue_id
         } else {
             let (queue_id, next_queue_id) = new_queue_identity.ok_or(Errno::EIO)?;
             let (maxmsg, msgsize) = new_queue_attributes.ok_or(Errno::EIO)?;
             let queue = MqQueue {
                 maxmsg,
                 msgsize,
-                messages: Vec::new(),
+                messages: IoBuffer::new(),
                 linked: true,
                 open_count: 1,
                 active_pins: 0,
                 notification: None,
                 mode,
             };
-            self.queues.insert(queue_id, queue);
-            self.names.insert(String::from(name), queue_id);
+            let prepared_queue = self.queues.prepare_io(queue_id, queue)?;
+            let prepared_name = prepare_queue_name(name, queue_id)?;
+            self.queues.publish_io(prepared_queue);
+            self.names.publish_io(prepared_name);
             self.next_queue_id = next_queue_id;
-            queue_id
-        };
+        }
 
-        self.descriptors.insert(
-            mqd,
-            MqDescriptor {
-                queue_id,
-                access_mode,
-                nonblock,
-            },
-        );
+        self.descriptors.publish_io(descriptor);
         self.next_mqd = next_mqd;
 
         Ok(mqd)
@@ -513,8 +526,8 @@ impl MqueueTable {
         mqd: u32,
         data: &[u8],
         priority: u32,
-        reserve_message: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), Errno>,
-        reserve_slot: impl FnOnce(&mut Vec<MqMessage>) -> Result<(), Errno>,
+        reserve_message: impl FnOnce(&mut IoBuffer<u8>, usize) -> Result<(), Errno>,
+        reserve_slot: impl FnOnce(&mut IoBuffer<MqMessage>) -> Result<(), Errno>,
     ) -> Result<MqSendResult, Errno> {
         self.mq_send_for_with_reserve(
             MqDescriptorAuthority::Public(mqd),
@@ -530,8 +543,8 @@ impl MqueueTable {
         authority: MqDescriptorAuthority<'_>,
         data: &[u8],
         priority: u32,
-        reserve_message: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), Errno>,
-        reserve_slot: impl FnOnce(&mut Vec<MqMessage>) -> Result<(), Errno>,
+        reserve_message: impl FnOnce(&mut IoBuffer<u8>, usize) -> Result<(), Errno>,
+        reserve_slot: impl FnOnce(&mut IoBuffer<MqMessage>) -> Result<(), Errno>,
     ) -> Result<MqSendResult, Errno> {
         let descriptor = self.resolve_descriptor(authority)?;
         if descriptor.access_mode == O_RDONLY {
@@ -558,7 +571,7 @@ impl MqueueTable {
         // WHY: allocation failure is an ordinary ENOMEM result, not a Wasm
         // trap. Finish both potentially allocating preparations before
         // inserting the message or consuming the one-shot notification.
-        let mut message_data = Vec::new();
+        let mut message_data = IoBuffer::new();
         reserve_message(&mut message_data, data.len())?;
         if message_data.capacity() < data.len() {
             return Err(Errno::ENOMEM);
@@ -715,13 +728,13 @@ impl MqueueTable {
 
     /// Clean up notifications for an exiting process.
     pub fn cleanup_process(&mut self, pid: u32) {
-        for queue in self.queues.values_mut() {
+        self.queues.for_each_mut(|queue| {
             if let Some(ref notif) = queue.notification {
                 if notif.pid == pid {
                     queue.notification = None;
                 }
             }
-        }
+        });
     }
 
     #[cfg(test)]
@@ -771,6 +784,78 @@ pub unsafe fn global_mqueue_table() -> &'static mut MqueueTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_admission_preserves_unpublished_names_counts_and_identities() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = MqueueTable::new();
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(table.mq_open("/admission", O_CREAT | O_RDWR, 0o600, 2, 16, true), Err(Errno::ENOMEM));
+        }
+        for successful_nodes in 0..3 {
+            crate::prepared_map::fail_after_allocations(successful_nodes);
+            let result = table.mq_open("/admission", O_CREAT | O_RDWR, 0o600, 2, 16, true);
+            crate::prepared_map::fail_after_allocations(usize::MAX);
+            assert_eq!(result, Err(Errno::ENOMEM));
+            assert!(table.names.is_empty());
+            assert!(table.queues.is_empty());
+            assert!(table.descriptors.is_empty());
+            assert_eq!(table.next_mqd, Some(MQD_BASE));
+            assert_eq!(table.next_queue_id, Some(MqQueueId(1)));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        let descriptor = table.mq_open("/admission", O_CREAT | O_RDWR, 0o600, 2, 16, true).unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(table.mq_open("/admission", O_RDWR, 0, 0, 0, false), Err(Errno::ENOMEM));
+            assert!(matches!(table.pin_descriptor(descriptor), Err(Errno::ENOMEM)));
+            let queue = table.linked_queue_for_test("/admission");
+            assert_eq!((queue.open_count, queue.active_pins), (1, 0));
+            assert_eq!(table.next_pin_id, Some(MqPinId(1)));
+            assert!(table.active_pins.is_empty());
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        let pin = table.pin_descriptor(descriptor).unwrap();
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            table.release_pinned_descriptor(pin).unwrap();
+        }
+        drop(table);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn payload_refusal_keeps_notification_and_receive_transfers_existing_credit() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = MqueueTable::new();
+        let descriptor = table.mq_open("/payload-admission", O_CREAT | O_RDWR, 0o600, 2, 16, true).unwrap();
+        table.mq_notify(descriptor, 77, Some(SIGEV_NONE), 0, 0).unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        for allowance in [0, 2 * b"bytes".len()] {
+            let _limit = crate::io_buffer::test_budget(held + allowance);
+            assert!(matches!(table.mq_send(descriptor, b"bytes", 7), Err(Errno::ENOMEM)));
+            let queue = table.linked_queue_for_test("/payload-admission");
+            assert!(queue.messages.is_empty());
+            assert!(queue.notification.is_some());
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        assert!(table.mq_send(descriptor, b"bytes", 7).unwrap().notification.is_some());
+        let result = {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            let result = table.mq_receive(descriptor, 16).unwrap();
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            table.mq_unlink("/payload-admission").unwrap();
+            table.mq_close(descriptor).unwrap();
+            result
+        };
+        assert_eq!((result.data.as_slice(), result.priority), (b"bytes".as_slice(), 7));
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 > baseline);
+        drop(result);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
 
     #[test]
     fn test_create_and_open() {

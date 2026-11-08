@@ -21,7 +21,7 @@
       "init": {
         "program": "/usr/bin/ruby",
         "args": [
-          "/var/lib/todo/server.rb"
+          "/usr/share/kandelo/ruby-todo/server.rb"
         ],
         "cwd": "/var/lib/todo",
         "uid": 1000,

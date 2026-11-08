@@ -1,0 +1,20 @@
+script_path = "packages/registry/wasm-fork-instrument/build.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 3
+inputs = [
+  "packages/registry/wasm-fork-instrument",
+  "crates/fork-instrument",
+  "crates/program-abi",
+  "crates/wasm-artifact",
+  "Cargo.toml",
+  "Cargo.lock",
+  "scripts/package-build-roots.sh",
+  "scripts/package-rust-build-env.sh",
+  "scripts/build-rust-sysroot.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "sdk/activate.sh",
+  "sdk/rust",
+]

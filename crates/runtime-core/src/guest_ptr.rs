@@ -50,11 +50,39 @@
 //! the kernel, so no `exec` or `exit` can interleave and rebind the pid's
 //! memory. Every caller in this module passes the dispatching pid.
 
-use alloc::vec::Vec;
-
 use wasm_posix_shared::Errno;
 
 use crate::process::HostIO;
+
+pub fn read_guest_buffer(
+    host: &mut dyn HostIO, pid: i32, addr: u64, len: usize, limit: usize,
+) -> Result<crate::IoBuffer<u8>, Errno> {
+    if len > limit { return Err(Errno::EINVAL); }
+    if len != 0 && addr == 0 { return Err(Errno::EFAULT); }
+    read_guest_buffer_at_any_address(host, pid, addr, len, limit)
+}
+
+pub fn read_guest_buffer_at_any_address(
+    host: &mut dyn HostIO, pid: i32, addr: u64, len: usize, limit: usize,
+) -> Result<crate::IoBuffer<u8>, Errno> {
+    let mut buffer = zeroed_io_staging(len, limit)?;
+    read_guest_bytes_into_at_any_address(host, pid, addr, &mut buffer)?;
+    Ok(buffer)
+}
+
+pub fn read_guest_bytes_into_at_any_address(
+    host: &mut dyn HostIO, pid: i32, addr: u64, buffer: &mut [u8],
+) -> Result<(), Errno> {
+    if !buffer.is_empty() && host.proc_read_bytes(pid, addr, buffer) < 0 { return Err(Errno::EFAULT); }
+    Ok(())
+}
+
+pub fn zeroed_io_staging(len: usize, limit: usize) -> Result<crate::IoBuffer<u8>, Errno> {
+    if len > limit { return Err(Errno::EINVAL); }
+    let mut buffer = crate::IoBuffer::try_with_capacity(len)?;
+    buffer.resize(len, 0);
+    Ok(buffer)
+}
 
 /// Copy `len` bytes out of the process at `pid`, starting at guest address
 /// `addr`.
@@ -68,18 +96,8 @@ pub fn read_guest_bytes(
     addr: u64,
     len: usize,
     limit: usize,
-) -> Result<Vec<u8>, Errno> {
-    if len > limit {
-        return Err(Errno::EINVAL);
-    }
-    let buf = Vec::new();
-    if len == 0 {
-        return Ok(buf);
-    }
-    if addr == 0 {
-        return Err(Errno::EFAULT);
-    }
-    read_guest_bytes_at_any_address(host, pid, addr, len, limit)
+) -> Result<crate::IoBuffer<u8>, Errno> {
+    read_guest_buffer(host, pid, addr, len, limit)
 }
 
 /// [`read_guest_bytes`] without the null-pointer convention, for an argument
@@ -90,35 +108,13 @@ pub fn read_guest_bytes_at_any_address(
     addr: u64,
     len: usize,
     limit: usize,
-) -> Result<Vec<u8>, Errno> {
-    if len > limit {
-        return Err(Errno::EINVAL);
-    }
-    let mut buf = Vec::new();
-    if len == 0 {
-        return Ok(buf);
-    }
-    let _ = addr;
-    // `try_reserve_exact` rather than `vec![0; len]`: `limit` bounds the
-    // request semantically, but a kernel that cannot satisfy a legitimate
-    // allocation must report ENOMEM rather than abort.
-    buf.try_reserve_exact(len).map_err(|_| Errno::ENOMEM)?;
-    buf.resize(len, 0);
-    if host.proc_read_bytes(pid, addr, &mut buf) < 0 {
-        return Err(Errno::EFAULT);
-    }
-    Ok(buf)
+) -> Result<crate::IoBuffer<u8>, Errno> {
+    read_guest_buffer_at_any_address(host, pid, addr, len, limit)
 }
 
 /// Allocate a zeroed staging buffer of `len` bytes for a copy-back.
-pub fn zeroed_staging(len: usize, limit: usize) -> Result<Vec<u8>, Errno> {
-    if len > limit {
-        return Err(Errno::EINVAL);
-    }
-    let mut buf = Vec::new();
-    buf.try_reserve_exact(len).map_err(|_| Errno::ENOMEM)?;
-    buf.resize(len, 0);
-    Ok(buf)
+pub fn zeroed_staging(len: usize, limit: usize) -> Result<crate::IoBuffer<u8>, Errno> {
+    zeroed_io_staging(len, limit)
 }
 
 /// Copy `bytes` into the process at `pid`, starting at guest address `addr`.
@@ -275,6 +271,24 @@ mod tests {
     use super::*;
     use crate::process::test_host::GuestMemoryHost;
     use alloc::vec;
+
+    #[test]
+    fn legacy_guest_staging_retains_credit_and_refuses_before_copy() {
+        let mut guest = GuestMemoryHost::new(0x1000, 16);
+        guest.poke(0x1000, b"bytes");
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(read_guest_bytes(&mut guest, 1, 0x1000, 5, 16), Err(Errno::ENOMEM));
+            assert_eq!(zeroed_staging(5, 16), Err(Errno::ENOMEM));
+            assert!(read_guest_bytes(&mut guest, 1, 0, 0, 16).unwrap().is_empty());
+        }
+        let bytes = read_guest_bytes(&mut guest, 1, 0x1000, 5, 16).unwrap();
+        assert_eq!(bytes, b"bytes");
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 > baseline);
+        drop(bytes);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
 
     #[test]
     fn a_length_above_the_proven_limit_is_rejected_before_any_allocation() {

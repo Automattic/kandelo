@@ -105,8 +105,8 @@ exit 1
 
   const script = join(root, "scummvm-play");
   writeFileSync(script, SCUMMVM_PLAY_SCRIPT
-    .replace("/usr/local/share/scummvm-play/games.tsv", catalog)
-    .replace("/usr/share/scummvm-games", games)
+    .replace("/usr/share/scummvm-play/games.tsv", catalog)
+    .replace("/var/games/scummvm", games)
     .replace("RANGE_LIMIT=$((100 * 1024 * 1024))", `RANGE_LIMIT=${options.ranged === false ? 128 : 64}`)
     .replace("RANGE_SIZE=$((32 * 1024 * 1024))", "RANGE_SIZE=16")
     .replace("FALLBACK_SIZE=$((16 * 1024 * 1024))", "FALLBACK_SIZE=8"));

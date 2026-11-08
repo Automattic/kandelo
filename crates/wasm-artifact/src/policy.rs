@@ -173,7 +173,7 @@ pub fn describe_facts_policy_failures(
         // metadata was found, so naming 12 would assert something false: that
         // the reader recognized ABI 12 fork surface, which it has no tables to
         // recognize.
-        let epoch = wasm_posix_shared::ABI_VERSION.to_string();
+        let epoch = wasm_posix_program_abi::ABI_VERSION.to_string();
         report.failures.push(format!(
             "contains ABI {epoch} wasm-fork-instrument metadata, imports, or exports"
         ));

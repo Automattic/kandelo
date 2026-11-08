@@ -23,6 +23,25 @@ import {
   writeRing,
 } from "./pcm-test-helpers";
 
+describe("PCM processor terminal detach", () => {
+  it("drops both backing views before acknowledging detach without needing a render quantum", () => {
+    const descriptor = createPcmTransport();
+    const processor = new KandeloPcmProcessor({ processorOptions: processorOptions(descriptor) });
+    const responses: unknown[] = [];
+    processor.port.postMessage = (message: unknown) => {
+      expect(processor.words).toBeNull();
+      expect(processor.ring).toBeNull();
+      responses.push(message);
+    };
+    processor.port.onmessage({ data: { type: "detach" } });
+    expect(responses).toEqual([{ type: "detached" }]);
+    const output = [new Float32Array([1, 2])];
+    expect(processor.process([], [output])).toBe(false);
+    expect([...output[0]!]).toEqual([0, 0]);
+    expect(processor.process([], [[]])).toBe(false);
+  });
+});
+
 function processorOptions(descriptor: ReturnType<typeof createPcmTransport>) {
   return {
     ...descriptor,
@@ -59,6 +78,36 @@ function render(
 }
 
 describe("Kandelo PCM AudioWorklet", () => {
+  it.each([PCM_CONTROL.producerSeq, PCM_CONTROL.consumerSeq, PCM_CONTROL.discardSeq])(
+    "yields silence and remains detachable when cursor sequence %s is abandoned odd", sequence => {
+      const descriptor = createPcmTransport({ activeCapacityBytes: 16 });
+      writeProducer(descriptor, 8n);
+      const words = pcmControlWords(descriptor);
+      storeU32(words, sequence, 1);
+      const processor = new KandeloPcmProcessor({ processorOptions: processorOptions(descriptor) });
+      const before = Array.from(words);
+      expect([...render(processor, 128)[0]!]).toEqual(new Array(128).fill(0));
+      expect(Array.from(words)).toEqual(before);
+      processor.port.onmessage({ data: { type: "detach" } });
+      expect(processor.words).toBeNull();
+      expect(processor.ring).toBeNull();
+    },
+  );
+
+  it("resumes consumption after a temporarily odd writer sequence settles", () => {
+    const descriptor = createPcmTransport({ activeCapacityBytes: 16, format: PcmSampleFormat.U8, channels: 1, frameBytes: 1 });
+    writeRing(descriptor, 0n, Uint8Array.from([0, 255]), 16);
+    writeProducer(descriptor, 2n);
+    const words = pcmControlWords(descriptor);
+    const sequence = Atomics.load(words, PCM_CONTROL.producerSeq);
+    storeU32(words, PCM_CONTROL.producerSeq, sequence + 1);
+    const processor = new KandeloPcmProcessor({ processorOptions: processorOptions(descriptor) });
+    expect([...render(processor, 2)[0]!]).toEqual([0, 0]);
+    storeU32(words, PCM_CONTROL.producerSeq, sequence + 2);
+    expect([...render(processor, 2)[0]!]).toEqual([-1, 127 / 128]);
+    expect(readConsumerPosition(words)).toBe(2n);
+  });
+
   it("renders idle silence without recording false underruns", () => {
     const descriptor = createPcmTransport({ state: PcmStreamState.Stopped });
     const processor = new KandeloPcmProcessor({
@@ -68,6 +117,28 @@ describe("Kandelo PCM AudioWorklet", () => {
     expect(
       Atomics.load(pcmControlWords(descriptor), PCM_CONTROL.underruns),
     ).toBe(0);
+  });
+
+  it("plays already-published queued samples while a new producer cursor is being published", () => {
+    const descriptor = createPcmTransport({ activeCapacityBytes: 16,
+      format: PcmSampleFormat.U8, channels: 1, frameBytes: 1 });
+    writeRing(descriptor, 0n, Uint8Array.from([0, 64, 192, 255]), 16);
+    writeProducer(descriptor, 4n);
+    const words = pcmControlWords(descriptor);
+    const processor = new KandeloPcmProcessor({ processorOptions: processorOptions(descriptor) });
+    expect([...render(processor, 1)[0]!]).toEqual([-1]);
+    Atomics.add(words, PCM_CONTROL.producerSeq, 1);
+    expect([...render(processor, 2)[0]!]).toEqual([-0.5, 0.5]);
+    expect(readConsumerPosition(words)).toBe(3n);
+    Atomics.add(words, PCM_CONTROL.discardSeq, 1);
+    expect([...render(processor, 1)[0]!]).toEqual([0]);
+    expect(readConsumerPosition(words)).toBe(3n);
+    Atomics.add(words, PCM_CONTROL.discardSeq, 1);
+    // A reset must invalidate the cached publication, even if the new writer
+    // has not finished publishing its first cursor yet.
+    Atomics.add(words, PCM_CONTROL.generation, 1);
+    expect([...render(processor, 1)[0]!]).toEqual([0]);
+    expect(readConsumerPosition(words)).toBe(3n);
   });
 
   it("converts unsigned 8-bit mono and advances the byte cursor", () => {
@@ -360,22 +431,22 @@ describe("Kandelo PCM AudioWorklet", () => {
 
 
 describe("AudioWorklet memory ownership", () => {
-  it("drops all transport views and stops processing on release", () => {
+  it("drops all transport views and stops processing on detach", () => {
     const processor = new KandeloPcmProcessor(processorOptions(createPcmTransport()));
     expect(processor.words).not.toBeNull();
     expect(processor.ring).not.toBeNull();
     const replies: unknown[] = [];
     processor.port.postMessage = (message: unknown) => replies.push(message);
-    processor.port.onmessage({ data: { type: "release" } });
+    processor.port.onmessage({ data: { type: "detach" } });
     expect(processor.words).toBeNull();
     expect(processor.ring).toBeNull();
-    expect(replies).toEqual([{ type: "released" }]);
+    expect(replies).toEqual([{ type: "detached" }]);
     const output = new Float32Array([1, 1]);
     expect(processor.process([], [[output]])).toBe(false);
     expect([...output]).toEqual([0, 0]);
   });
 
-  it("attaches kernel memory directly from its transferred connection", async () => {
+  it("attaches the independent mirror from its transferred connection", async () => {
     const descriptor = createPcmTransport();
     const { buffer: _buffer, ...config } = processorOptions(descriptor);
     const processor = new KandeloPcmProcessor(config);
@@ -393,7 +464,7 @@ describe("AudioWorklet memory ownership", () => {
       await expect.poll(() => processor.words !== null).toBe(true);
       Atomics.store(pcmControlWords(descriptor), PCM_CONTROL.underruns, 77);
       expect(Atomics.load(processor.words, PCM_CONTROL.underruns)).toBe(77);
-      processor.port.onmessage({ data: { type: "release" } });
+      processor.port.onmessage({ data: { type: "detach" } });
       expect(processor.connection).toBeNull();
       expect(processor.words).toBeNull();
     } finally {
@@ -401,10 +472,53 @@ describe("AudioWorklet memory ownership", () => {
       connection.port2.close();
     }
   });
+
+  it("cannot reattach after detach even through an already queued connection callback", () => {
+    const { buffer: _buffer, ...config } = processorOptions(createPcmTransport());
+    const processor = new KandeloPcmProcessor(config);
+    const connection = { onmessage: null as ((event: { data: unknown }) => void) | null,
+      postMessage: vi.fn(), close: vi.fn() };
+    processor.port.onmessage({ data: { type: "attach", port: connection } });
+    const delivery = connection.onmessage!;
+    processor.port.onmessage({ data: { type: "detach" } });
+    delivery({ data: createPcmTransport() });
+    const lateConnection = { postMessage: vi.fn(), close: vi.fn() };
+    processor.port.onmessage({ data: { type: "attach", port: lateConnection } });
+    expect(processor.connection).toBeNull();
+    expect(processor.words).toBeNull();
+    expect(processor.ring).toBeNull();
+    expect(connection.close).toHaveBeenCalledOnce();
+    expect(connection.onmessage).toBeNull();
+    expect(lateConnection.postMessage).not.toHaveBeenCalled();
+    expect(lateConnection.close).toHaveBeenCalledOnce();
+    expect(processor.process([], [[new Float32Array(2)]])).toBe(false);
+  });
 });
 
 
 describe("bounded browser PCM relay", () => {
+  it("leaves unchanged cursor publications readable between actual updates", () => {
+    vi.useFakeTimers();
+    const original = createPcmTransport();
+    writeProducer(original, 8n);
+    const mirror = new BrowserPcmMirror(original);
+    const target = pcmControlWords(mirror.transport);
+    const producerSequence = Atomics.load(target, PCM_CONTROL.producerSeq);
+    const discardSequence = Atomics.load(target, PCM_CONTROL.discardSeq);
+    try {
+      vi.advanceTimersByTime(10);
+      expect(Atomics.load(target, PCM_CONTROL.producerSeq)).toBe(producerSequence);
+      expect(Atomics.load(target, PCM_CONTROL.discardSeq)).toBe(discardSequence);
+      writeProducer(original, 12n);
+      vi.advanceTimersByTime(2);
+      expect(Atomics.load(target, PCM_CONTROL.producerSeq)).toBe(producerSequence + 2);
+      expect(Atomics.load(target, PCM_CONTROL.discardSeq)).toBe(discardSequence);
+      writeDiscard(original, 4n);
+      vi.advanceTimersByTime(2);
+      expect(Atomics.load(target, PCM_CONTROL.discardSeq)).toBe(discardSequence + 2);
+    } finally { mirror.close(); vi.useRealTimers(); }
+  });
+
   it("returns worklet underruns and permanent sink failures to the kernel", () => {
     vi.useFakeTimers();
     const original = createPcmTransport();

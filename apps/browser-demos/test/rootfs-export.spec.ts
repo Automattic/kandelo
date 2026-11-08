@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 

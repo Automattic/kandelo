@@ -1,0 +1,64 @@
+{
+  "scope": "Development history for the integration CLI only; no runtime conformance claim.",
+  "test_command": "scripts/dev-shell.sh python3 -m unittest discover -s tests/agent-integration -p 'test_*.py' -v",
+  "runs": [
+    {
+      "log": "test-run-01.log",
+      "tests": 34,
+      "failures": [
+        {
+          "test": "test_staged_new_file_whitespace",
+          "observed": "Git diff --no-index --check returned 3, causing a generic command diagnostic instead of the expected new-file whitespace diagnostic.",
+          "resolution": "Accept diagnostic exit 3 at the low-level command boundary; still reject any whitespace diagnostic."
+        },
+        {
+          "test": "test_process_exit_124_timeout_skip_unsupported_and_harness_error_preserved/fail",
+          "observed": "Expected recorded nonpass exit 1; got blocked exit 2 while implementation files were edited during this run.",
+          "resolution": "Rerun with implementation files held fixed; retain the original failure and avoid attributing it to process behavior without evidence."
+        }
+      ]
+    },
+    {
+      "log": "test-run-02.log",
+      "tests": 39,
+      "result": "passed"
+    },
+    {
+      "log": "test-run-03.log",
+      "tests": 43,
+      "result": "passed"
+    },
+    {
+      "log": "test-run-04.log",
+      "tests": 45,
+      "elapsed_seconds": 119.273,
+      "result": "passed; final implementation held fixed"
+    }
+  ],
+  "demonstration_runs": [
+    {
+      "log": "demo-run-01.log",
+      "result": "failed during setup before CLI preflight",
+      "detail": "Git refused staging an unrelated fixture file outside sparse-checkout patterns.",
+      "resolution": "Use git add --sparse only in the isolated demonstration setup; production staging remains limited to owned paths."
+    },
+    {
+      "log": "demo-run-02.log",
+      "result": "passed",
+      "detail": "Real docs/schema patch; manual JSON syntax check; one checkpoint; byte-identical ledger on resume; unrelated staged/unstaged work retained. Nix emitted ignored eval-cache busy messages, retained in raw log."
+    },
+    {
+      "log": "demo-run-03.log",
+      "result": "passed on final implementation"
+    }
+  ],
+  "audit_findings": [
+    "Include cached index changes in dirty overlap detection even when worktree bytes equal HEAD.",
+    "Reject later owned index edits rather than overwrite them at checkpoint.",
+    "Include the entire reviewed manifest in the source binding so evidence cannot inherit a different scope.",
+    "Separate frozen Git author/committer environment from temporary-index environment.",
+    "Report nonpassing imported outcomes in compact CLI output without assuming a detail string.",
+    "Parse imported JSON from the exact reviewed bytes rather than rereading its path.",
+    "Sync newly created journal directories as well as atomic ledger replacements."
+  ]
+}

@@ -82,12 +82,12 @@ async function collectArtifactsFromKernel(
 ): Promise<SqliteTestResult["artifacts"]> {
   const artifacts: NonNullable<SqliteTestResult["artifacts"]> = [];
   for (const path of [
-    "/sqlite/testrunner.db",
-    "/sqlite/testrunner.db-journal",
-    "/sqlite/testrunner.db-shm",
-    "/sqlite/testrunner.db-wal",
-    "/sqlite/testrunner.log",
-    "/sqlite/testrunner_build.log",
+    "/var/lib/kandelo-tests/sqlite/testrunner.db",
+    "/var/lib/kandelo-tests/sqlite/testrunner.db-journal",
+    "/var/lib/kandelo-tests/sqlite/testrunner.db-shm",
+    "/var/lib/kandelo-tests/sqlite/testrunner.db-wal",
+    "/var/lib/kandelo-tests/sqlite/testrunner.log",
+    "/var/lib/kandelo-tests/sqlite/testrunner_build.log",
   ]) {
     // The kernel owns the VFS; read result files back over the RPC bridge.
     const bytes = await kernel.readFileFromVfs(path);
@@ -97,12 +97,12 @@ async function collectArtifactsFromKernel(
 }
 
 function installTestrunnerPatches(fs: KandeloImageFs): void {
-  const runnerPath = "/sqlite/test/testrunner.tcl";
+  const runnerPath = "/var/lib/kandelo-tests/sqlite/test/testrunner.tcl";
   const decoder = new TextDecoder();
   const runner = decoder.decode(readVfsFile(fs, runnerPath));
   writeVfsFile(fs, runnerPath, patchTestrunnerForKandelo(runner), 0o644);
 
-  writeVfsFile(fs, "/sqlite/kandelo-testrunner.tcl", [
+  writeVfsFile(fs, "/var/lib/kandelo-tests/sqlite/kandelo-testrunner.tcl", [
     testrunnerPlatformShim,
     "set argv0 test/testrunner.tcl",
     "source $argv0",
@@ -117,10 +117,10 @@ async function createFs(): Promise<KandeloImageFs> {
   const fs = await restoreVerifiedImageForBuild(vfsImageBytes, {
     maxByteLength: 512 * 1024 * 1024,
   });
-  fs.chmod("/sqlite", 0o777);
+  fs.chmod("/var/lib/kandelo-tests/sqlite", 0o777);
   fs.chmod("/tmp", 0o777);
   try {
-    fs.chmod("/sqlite/testdir", 0o777);
+    fs.chmod("/var/lib/kandelo-tests/sqlite/testdir", 0o777);
   } catch {}
   return fs;
 }
@@ -203,7 +203,7 @@ async function init() {
       const textDecoder = new TextDecoder();
       const exitCode = await Promise.race([
         kernel.spawn(testfixtureBytes!, argv, {
-          cwd: "/sqlite",
+          cwd: "/var/lib/kandelo-tests/sqlite",
           uid: options.uid,
           gid: options.gid,
           env: [

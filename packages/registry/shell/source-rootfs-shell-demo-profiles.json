@@ -1,7 +1,45 @@
 {
   "version": 1,
   "profiles": {
+    "dos-games": {
+      "requires": ["dosbox-pure", "curl", "unzip", "python-browser-bundle"],
+      "identity": {
+        "title": "DOS games",
+        "summary": "Play Commander Keen 1 (Apogee shareware), DOS Defender, vitetris or Anarch. Games download on first use; you can also load your own DOS games.",
+        "accent": "#8b5cf6",
+        "glyph": "DOS",
+        "packages": ["dosbox-pure@local", "bash@local", "coreutils@local"]
+      },
+      "runtime": { "features": ["framebuffer"] },
+      "init": { "shellCommand": "/usr/bin/dos-play keen1" },
+      "activity": { "category": "apps" },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["framebuffer", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "dockActions": [
+        {
+          "id": "games",
+          "label": "Choose game",
+          "description": "Switch games. Each download is size/hash checked and reused on later launches. Commander Keen is Apogee shareware; the other demos are freely licensed.",
+          "menu": [
+            { "id": "keen1", "label": "Commander Keen 1 (Apogee shareware)", "restart": "/usr/bin/dos-play keen1" },
+            { "id": "dosdefender", "label": "DOS Defender", "restart": "/usr/bin/dos-play dosdefender" },
+            { "id": "vitetris", "label": "vitetris", "restart": "/usr/bin/dos-play vitetris" },
+            { "id": "anarch", "label": "Anarch", "restart": "/usr/bin/dos-play anarch" }
+          ]
+        }
+      ],
+      "exchange": { "label": "Load game", "accept": [".zip", ".exe", ".com", ".bat", ".conf"] },
+      "guide": {
+        "title": "DOS games",
+        "summary": "Start with Commander Keen 1: Marooned on Mars, the Apogee shareware episode. Press a key through its opening screens. Arrows move; Ctrl enters a level or jumps; Alt uses the pogo stick once collected; Ctrl+Alt fires. F2 toggles sound. F3 remaps controls, for example to Z/X for jump/pogo on a Mac. Choose game switches to the other demos; DOS Defender uses the mouse and left button. Click the screen to capture input; Esc releases the mouse. Ctrl+Shift+F12 quits DOSBox. Load game or drop a ZIP/folder to inspect your own content. Downloads are kept in this computer; keep the computer in Library to reuse them. Paid Keen episodes are not included."
+      }
+    },
     "freeciv": {
+      "requires": ["freeciv-browser-bundle"],
       "identity": {
         "title": "Freeciv",
         "summary": "Build a civilization with the SDL2 client and a networked Freeciv server.",
@@ -33,37 +71,17 @@
         "internalsAccess": "drawer",
         "displayScale": 1.5
       },
-      "dockActions": [
-        {
-          "id": "multiplayer",
-          "label": "Multiplayer",
-          "description": "Create or join a Network session, then host a game or connect to its host. Each player gets a separate screen name.",
-          "menu": [
-            {
-              "id": "host",
-              "label": "Host a game",
-              "restart": "/usr/bin/freeciv-play host"
-            },
-            {
-              "id": "join",
-              "label": "Join session host",
-              "restart": "/usr/bin/freeciv-play join"
-            },
-            {
-              "id": "local",
-              "label": "Single player / main menu",
-              "restart": "/usr/bin/freeciv-play"
-            }
-          ]
-        }
-      ],
       "guide": {
         "title": "Freeciv",
-        "summary": "Use New Game for single player. For multiplayer, create a Network session and choose Multiplayer → Host a game. Friends join the session and choose Join session host. The host starts play after everyone has joined. Automatic LAN discovery is unavailable; connections use host:5556. Save games in your home directory; download the save files to keep them beyond this running machine's lifetime.",
+        "summary": "Use New Game for single player. For multiplayer, open the Network session panel and start the Freeciv game activity, then share its invite link. Friends open the link and join; the host starts play after everyone has joined. Automatic LAN discovery is unavailable; connections use host:5556. Save games in your home directory; download the save files to keep them beyond this running machine's lifetime.",
         "groups": []
+      },
+      "activity": {
+        "share": "freeciv-browser-bundle/game"
       }
     },
     "doom": {
+      "requires": ["fbdoom"],
       "identity": {
         "title": "fbDOOM",
         "summary": "DOOM on /dev/fb0 with OSS audio through /dev/dsp.",
@@ -82,7 +100,7 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/doom-launch"
+        "shellCommand": "/usr/bin/doom-launch"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -93,32 +111,19 @@
       },
       "assets": [
         {
-          "path": "/doom1.wad",
+          "path": "/usr/share/doom/doom1.wad",
           "url": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
           "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
           "mode": 420
         }
       ],
-      "dockActions": [
-        {
-          "id": "lan",
-          "label": "LAN game",
-          "description": "Play with the other computers in this network session: host a game that starts once every player has joined (or press Space in its waiting room to start sooner), or join one hosted on the session. Everyone plays the shareware WAD.",
-          "menu": [
-            { "id": "coop-2", "label": "2 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 2" },
-            { "id": "coop-3", "label": "3 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 3" },
-            { "id": "coop-4", "label": "4 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 4" },
-            { "id": "deathmatch-2", "label": "2 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 2 -deathmatch" },
-            { "id": "deathmatch-3", "label": "3 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 3 -deathmatch" },
-            { "id": "deathmatch-4", "label": "4 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 4 -deathmatch" },
-            { "id": "join", "label": "Join a LAN game", "group": "Join", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -autojoin" },
-            { "id": "single", "label": "Back to single player", "group": "Single player", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad" }
-          ]
-        }
-      ],
-      "exchange": {"label": "Load WAD", "accept": [".wad"]}
+      "exchange": {"label": "Load WAD", "accept": [".wad"]},
+      "activity": {
+        "share": "fbdoom/game"
+      }
     },
     "quake": {
+      "requires": ["tyrquake", "lhasa", "unzip"],
       "identity": {
         "title": "Quake (software)",
         "summary": "TyrQuake's software renderer on /dev/fb0, extracted from id's shareware archive inside Kandelo.",
@@ -138,7 +143,7 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/quake"
+        "shellCommand": "/usr/bin/quake"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -155,9 +160,13 @@
           "mode": 420
         }
       ],
-      "exchange": {"label": "Load pak0.pak", "accept": [".pak"]}
+      "exchange": {"label": "Load pak0.pak", "accept": [".pak"]},
+      "activity": {
+        "share": "tyrquake/game"
+      }
     },
     "ffmpeg-fbdev": {
+      "requires": ["ffmpeg"],
       "identity": {
         "title": "FFmpeg to /dev/fb0",
         "summary": "FFmpeg drawing a test pattern into the framebuffer with a tone on /dev/dsp.",
@@ -182,9 +191,14 @@
         "runningPrimary": ["framebuffer", "terminal", "syslog"],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer"
+      },
+      "activity": {
+        "category": "demos",
+        "visible": false
       }
     },
     "ffplay": {
+      "requires": ["ffmpeg"],
       "identity": {
         "title": "ffplay",
         "summary": "ffplay showing a test pattern through SDL2 on /dev/dri/card0, with a tone.",
@@ -209,9 +223,14 @@
         "runningPrimary": ["kms", "terminal", "syslog"],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer"
+      },
+      "activity": {
+        "category": "demos",
+        "visible": false
       }
     },
     "modeset": {
+      "requires": ["modeset"],
       "identity": {
         "title": "DRM/KMS fluid sim",
         "summary": "Pavel-style EGL/GLES fluid simulation presented through /dev/dri/card0 page flips.",
@@ -229,16 +248,20 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/modeset"
+        "shellCommand": "/usr/bin/modeset"
       },
       "presentation": {
         "bootPrimary": "syslog",
         "runningPrimary": ["kms", "terminal", "syslog"],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer"
+      },
+      "activity": {
+        "category": "demos"
       }
     },
     "scummvm": {
+      "requires": ["scummvm", "curl", "unzip", "python-browser-bundle"],
       "identity": {
         "title": "ScummVM",
         "summary": "ScummVM fullscreen on /dev/dri/card0: SDL2's KMSDRM backend takes the display as DRM master and renders GLES2 directly, with OSS audio on /dev/dsp. Play a freeware game fetches any of the freeware adventures the ScummVM project distributes, from inside the machine, and starts it; Load game data takes your own zipped SCUMM title, which you then add from the launcher.",
@@ -258,7 +281,7 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/scummvm"
+        "shellCommand": "/usr/bin/scummvm"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -276,157 +299,157 @@
               "id": "steel-sky",
               "label": "Beneath a Steel Sky",
               "detail": "69 MB",
-              "restart": "/usr/local/bin/scummvm-play steel-sky"
+              "restart": "/usr/bin/scummvm-play steel-sky"
             },
             {
               "id": "drascula",
               "label": "Dráscula: The Vampire Strikes Back",
               "detail": "33 MB",
-              "restart": "/usr/local/bin/scummvm-play drascula"
+              "restart": "/usr/bin/scummvm-play drascula"
             },
             {
               "id": "dreamweb",
               "label": "DreamWeb",
               "detail": "10 MB",
-              "restart": "/usr/local/bin/scummvm-play dreamweb"
+              "restart": "/usr/bin/scummvm-play dreamweb"
             },
             {
               "id": "fotaq",
               "label": "Flight of the Amazon Queen",
               "detail": "34 MB",
-              "restart": "/usr/local/bin/scummvm-play fotaq"
+              "restart": "/usr/bin/scummvm-play fotaq"
             },
             {
               "id": "god-of-thunder",
               "label": "God of Thunder",
               "detail": "1 MB",
-              "restart": "/usr/local/bin/scummvm-play god-of-thunder"
+              "restart": "/usr/bin/scummvm-play god-of-thunder"
             },
             {
               "id": "griffon",
               "label": "The Griffon Legend",
               "detail": "10 MB",
-              "restart": "/usr/local/bin/scummvm-play griffon"
+              "restart": "/usr/bin/scummvm-play griffon"
             },
             {
               "id": "lure",
               "label": "Lure of the Temptress",
               "detail": "6 MB",
-              "restart": "/usr/local/bin/scummvm-play lure"
+              "restart": "/usr/bin/scummvm-play lure"
             },
             {
               "id": "mystery-house",
               "label": "Hi-Res Adventure #1: Mystery House",
               "detail": "59 KB",
-              "restart": "/usr/local/bin/scummvm-play mystery-house"
+              "restart": "/usr/bin/scummvm-play mystery-house"
             },
             {
               "id": "nippon-safes",
               "label": "Nippon Safes, Inc.",
               "detail": "2 MB",
-              "restart": "/usr/local/bin/scummvm-play nippon-safes"
+              "restart": "/usr/bin/scummvm-play nippon-safes"
             },
             {
               "id": "sfinx",
               "label": "Sfinx",
               "detail": "17 MB",
-              "restart": "/usr/local/bin/scummvm-play sfinx"
+              "restart": "/usr/bin/scummvm-play sfinx"
             },
             {
               "id": "soltys",
               "label": "Sołtys",
               "detail": "3 MB",
-              "restart": "/usr/local/bin/scummvm-play soltys"
+              "restart": "/usr/bin/scummvm-play soltys"
             },
             {
               "id": "above-the-waves",
               "label": "Above the Waves",
               "detail": "30 MB",
-              "restart": "/usr/local/bin/scummvm-play above-the-waves"
+              "restart": "/usr/bin/scummvm-play above-the-waves"
             },
             {
               "id": "cubert-badbone",
               "label": "Cubert Badbone, P.I.",
               "detail": "11 MB",
-              "restart": "/usr/local/bin/scummvm-play cubert-badbone"
+              "restart": "/usr/bin/scummvm-play cubert-badbone"
             },
             {
               "id": "frasse",
               "label": "Frasse and the Peas of Kejick",
               "detail": "13 MB",
-              "restart": "/usr/local/bin/scummvm-play frasse"
+              "restart": "/usr/bin/scummvm-play frasse"
             },
             {
               "id": "full-moon",
               "label": "Full Moon",
               "detail": "73 MB",
-              "restart": "/usr/local/bin/scummvm-play full-moon"
+              "restart": "/usr/bin/scummvm-play full-moon"
             },
             {
               "id": "the-interview",
               "label": "The Interview",
               "detail": "2 MB",
-              "restart": "/usr/local/bin/scummvm-play the-interview"
+              "restart": "/usr/bin/scummvm-play the-interview"
             },
             {
               "id": "leptons-quest",
               "label": "Lepton's Quest",
               "detail": "71 MB",
-              "restart": "/usr/local/bin/scummvm-play leptons-quest"
+              "restart": "/usr/bin/scummvm-play leptons-quest"
             },
             {
               "id": "life-flashes-by",
               "label": "Life Flashes By",
               "detail": "160 MB",
-              "restart": "/usr/local/bin/scummvm-play life-flashes-by"
+              "restart": "/usr/bin/scummvm-play life-flashes-by"
             },
             {
               "id": "mandy-christmas",
               "label": "Mandy Christmas Adventure",
               "detail": "4 MB",
-              "restart": "/usr/local/bin/scummvm-play mandy-christmas"
+              "restart": "/usr/bin/scummvm-play mandy-christmas"
             },
             {
               "id": "nathans-second-chance",
               "label": "Nathan's Second Chance",
               "detail": "8 MB",
-              "restart": "/usr/local/bin/scummvm-play nathans-second-chance"
+              "restart": "/usr/bin/scummvm-play nathans-second-chance"
             },
             {
               "id": "out-of-order",
               "label": "Out of Order",
               "detail": "11 MB",
-              "restart": "/usr/local/bin/scummvm-play out-of-order"
+              "restart": "/usr/bin/scummvm-play out-of-order"
             },
             {
               "id": "robins-rescue",
               "label": "Robin's Rescue",
               "detail": "14 MB",
-              "restart": "/usr/local/bin/scummvm-play robins-rescue"
+              "restart": "/usr/bin/scummvm-play robins-rescue"
             },
             {
               "id": "sam-and-max-flintlocked",
               "label": "Sam and Max Flintlocked",
               "detail": "14 MB",
-              "restart": "/usr/local/bin/scummvm-play sam-and-max-flintlocked"
+              "restart": "/usr/bin/scummvm-play sam-and-max-flintlocked"
             },
             {
               "id": "cruise-ship",
               "label": "The Game That Takes Place on a Cruise Ship",
               "detail": "20 MB",
-              "restart": "/usr/local/bin/scummvm-play cruise-ship"
+              "restart": "/usr/bin/scummvm-play cruise-ship"
             },
             {
               "id": "tremendous-corporation",
               "label": "The Secret of Tremendous Corporation",
               "detail": "35 MB",
-              "restart": "/usr/local/bin/scummvm-play tremendous-corporation"
+              "restart": "/usr/bin/scummvm-play tremendous-corporation"
             },
             {
               "id": "wage-collection",
               "label": "World Builder (WAGE) game collection",
               "detail": "93 MB",
-              "restart": "/usr/local/bin/scummvm-play wage-collection"
+              "restart": "/usr/bin/scummvm-play wage-collection"
             },
             {
               "id": "broken-sword-25",
@@ -444,6 +467,7 @@
       "exchange": {"label": "Load game data", "accept": [".zip"]}
     },
     "love": {
+      "requires": ["love"],
       "identity": {
         "title": "LÖVE games",
         "summary": "Play Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX. Choose a game from the Games menu and enable audio to hear sound. Steam features are unavailable in this port.",
@@ -460,7 +484,7 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/love /usr/share/love/examples/pong"
+        "shellCommand": "/usr/bin/love /usr/share/love/examples/pong"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -481,36 +505,84 @@
             {
               "id": "pong",
               "label": "Pong",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/pong"
+              "restart": "/usr/bin/love /usr/share/love/examples/pong"
             },
             {
               "id": "snake",
               "label": "Snake",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/snake"
+              "restart": "/usr/bin/love /usr/share/love/examples/snake"
             },
             {
               "id": "breakout",
               "label": "Breakout",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/breakout"
+              "restart": "/usr/bin/love /usr/share/love/examples/breakout"
             },
             {
               "id": "asteroids",
               "label": "Asteroids",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/asteroids"
+              "restart": "/usr/bin/love /usr/share/love/examples/asteroids"
             },
             {
               "id": "bytepath",
               "label": "BYTEPATH",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/bytepath"
+              "restart": "/usr/bin/love /usr/share/love/examples/bytepath"
             },
             {
               "id": "snkrx",
               "label": "SNKRX",
-              "restart": "/usr/local/bin/love /usr/share/love/examples/snkrx"
+              "restart": "/usr/bin/love /usr/share/love/examples/snkrx"
             }
           ]
         }
       ]
+    },
+    "ffmpeg-video": {
+      "requires": ["ffmpeg"],
+      "identity": {
+        "title": "FFmpeg video",
+        "summary": "Watch a Big Buck Bunny clip with sound. © 2008 Blender Foundation · CC BY 3.0.",
+        "accent": "#1565c0",
+        "glyph": "▶",
+        "packages": [
+          "ffmpeg@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/bin/ffplay -loop 0 /usr/share/big-buck-bunny.mp4"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "activity": {
+        "category": "demos"
+      },
+      "assets": [
+        {
+          "path": "/usr/share/big-buck-bunny.mp4",
+          "url": "https://raw.githubusercontent.com/mediaelement/mediaelement-files/4d21a042353022326071acb0251ab75cd6bae114/big_buck_bunny.mp4",
+          "sha256": "543a4ad9fef4c9e0004ec9482cb7225c2574b0f889291e8270b1c4d61dbc1ab8",
+          "mode": 420
+        }
+      ],
+      "guide": {
+        "title": "Big Buck Bunny",
+        "summary": "Sample clip from Big Buck Bunny. © 2008 Blender Foundation / www.bigbuckbunny.org. Creative Commons Attribution 3.0: https://creativecommons.org/licenses/by/3.0/. Original film: https://peach.blender.org/. Clip supplied by MediaElement.js: https://github.com/mediaelement/mediaelement-files. The clip repeats; press Escape to stop.",
+        "groups": []
+      }
     }
   }
 }

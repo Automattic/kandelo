@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { readFileSync } from "node:fs";
 import { gotoMachine, machineAppPrefix, previewFrameSelector } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
@@ -30,7 +30,7 @@ for (const { profile, title, pageText } of [
     await page.getByRole("button", { name: "Terminal", exact: true }).click({
       timeout: 120_000,
     });
-    await expect(page.locator(".xterm-rows").first()).toContainText("kandelo$", {
+    await expect(page.locator(".xterm-rows").first()).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, {
       timeout: 120_000,
     });
 
@@ -58,7 +58,7 @@ for (const { profile, title, pageText } of [
     expect(response.status).toBe(200);
     expect(response.body).toMatch(pageText);
     // Switching surfaces must preserve the live document and its navigation.
-    await page.getByRole("button", { name: "Demo", exact: true }).click();
+    await page.getByRole("button", { name: "Web", exact: true }).click();
     await expect(preview).toBeVisible();
     await expect.poll(previewText, { timeout: 30_000 }).toMatch(pageText);
   });

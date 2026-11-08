@@ -1,4 +1,5 @@
 import { blitPresentTarget } from "./present-target.js";
+import { getCanvasWebGl2Context } from "./canvas-context.js";
 import { prepareSurfaceCreation, validSurfaceCreation, type GlSurfaceCreation } from "./surface-create.js";
 import { GlContextRegistry, type GlForwardChannel } from "./registry.js";
 import { decodeAndDispatch, validateCommandBuffer } from "./bridge.js";
@@ -248,13 +249,7 @@ export function setupMainForward(
           if (shareSession !== undefined && (!source || source === b || source.contextId === null || !source.gl)) {
             completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
           }
-          const gl = canvas.getContext("webgl2", {
-            antialias: false,
-            premultipliedAlpha: false,
-            depth: true,
-            stencil: true,
-            preserveDrawingBuffer: true,
-          }) as WebGL2RenderingContext | null;
+          const gl = getCanvasWebGl2Context(canvas);
           if (!gl || gl.isContextLost() || (b.surface.gl && b.surface.gl !== gl)) {
             completeGlForwardQuery(msg.mailbox, -19, new Uint8Array());
             return;

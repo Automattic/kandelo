@@ -1,3 +1,4 @@
+import { COREUTILS_NAMES, coreutilsCommandPath } from "../lib/init/shell-binaries";
 /**
  * Build a fully-bootable VFS image for the MariaDB browser demo.
  * dinit, the first user process, brings up the selected engine's service tree:
@@ -52,15 +53,7 @@ import { ensureSourceExtract } from "./source-extract-helper";
 // in the shell demo without waiting for a lazy-load fetch. Not strictly
 // required by the bootstrap wrapper (which is just `exec mariadbd < sql`).
 
-const COREUTILS_SYMLINK_NAMES = [
-  "ls", "cat", "cp", "mv", "rm", "echo", "mkdir", "rmdir", "touch", "pwd",
-  "head", "tail", "wc", "sort", "uniq", "cut", "tr", "date", "basename",
-  "dirname", "chmod", "chown", "ln", "readlink", "true", "false", "yes",
-  "sleep", "env", "printenv", "id", "whoami", "hostname", "uname", "stat",
-  "df", "du", "tee", "nl", "paste", "tac", "rev", "expand", "unexpand",
-  "fold", "fmt", "pr", "od", "hexdump", "xxd", "sha256sum", "sha512sum",
-  "md5sum", "seq", "test", "[",
-];
+const COREUTILS_SYMLINK_NAMES = [...COREUTILS_NAMES, "["];
 
 function commonMariadbArgs(engine: string): string[] {
   return [
@@ -68,7 +61,7 @@ function commonMariadbArgs(engine: string): string[] {
     // mariadbd refuses to run as root by default; we have a mysql user
     // in /etc/passwd (uid 101) precisely for this.
     "--user=mysql",
-    "--datadir=/data", "--tmpdir=/data/tmp",
+    "--datadir=/var/lib/mysql", "--tmpdir=/var/tmp/mysql",
     `--default-storage-engine=${engine}`,
     "--skip-grant-tables",
     "--key-buffer-size=1048576", "--table-open-cache=10",
@@ -101,14 +94,14 @@ function buildEngineServices(engine: "Aria" | "InnoDB"): DinitService[] {
   const bootstrapArgs = [
     ...args, ...innodbArgs,
     "--bootstrap", "--skip-networking", "--log-warnings=0",
-    `--log-error=/data/${tag}-bootstrap.log`,
+    `--log-error=/var/log/mysql/${tag}-bootstrap.log`,
   ].join(" ");
   const daemonCmd = [
     ...args, ...innodbArgs,
     "--skip-networking=0", "--port=3306",
     "--bind-address=0.0.0.0", "--socket=",
     "--max-connections=10",
-    `--log-error=/data/${tag}-error.log`,
+    `--log-error=/var/log/mysql/${tag}-error.log`,
   ].join(" ");
 
   return [
@@ -160,9 +153,9 @@ export async function buildMariadbVfsImage(
   for (const dir of [
     "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
     "/usr/local", "/usr/local/bin", "/usr/share", "/root", "/usr/sbin",
-    "/data", "/data/mysql", "/data/tmp", "/data/test",
+    "/var/lib/mysql", "/var/lib/mysql/mysql", "/var/tmp/mysql", "/var/lib/mysql/test",
   ]) {
-    ensureDir(fs, dir);
+    ensureDirRecursive(fs, dir);
   }
   prepareMariadbWritableDirectories(fs);
 
@@ -172,11 +165,10 @@ export async function buildMariadbVfsImage(
   // at its own name; it does not claim /bin/sh.
   installBashAsPosixShell(fs, inputs.bash);
   writeVfsBinary(fs, "/bin/dash", inputs.dash);
-  symlink(fs, "/bin/dash", "/usr/bin/dash");
+  ensureDirRecursive(fs, "/usr/sbin");
   writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils);
   for (const name of COREUTILS_SYMLINK_NAMES) {
-    symlink(fs, "/bin/coreutils", `/bin/${name}`);
-    symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
+    symlink(fs, "/bin/coreutils", coreutilsCommandPath(name));
   }
 
   console.log("  Writing mariadbd binary...");
@@ -205,7 +197,7 @@ export async function buildMariadbVfsImage(
     const bootstrapCmd = [
       ...args, ...innodbArgs,
       "--bootstrap", "--skip-networking", "--log-warnings=0",
-      `--log-error=/data/${eng.tag}-bootstrap.log`,
+      `--log-error=/var/log/mysql/${eng.tag}-bootstrap.log`,
     ].join(" ");
     // `exec` replaces the wrapper shell with mariadbd so dinit observes
     // mariadbd's exit status directly. mariadbd reads the bootstrap SQL

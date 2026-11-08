@@ -80,7 +80,7 @@ ephemeral = true
 
 [boot]
 argv = ["/bin/sh"]
-cwd = "/sqlite"
+cwd = "/var/lib/kandelo-tests/sqlite"
 uid = 0
 gid = 0
 

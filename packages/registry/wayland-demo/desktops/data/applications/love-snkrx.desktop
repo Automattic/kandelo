@@ -1,4 +1,4 @@
 [Desktop Entry]
 Type=Application
 Name=SNKRX
-Exec=/usr/local/bin/love /usr/share/love/examples/snkrx
+Exec=/usr/bin/love /usr/share/love/examples/snkrx

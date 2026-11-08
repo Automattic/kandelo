@@ -19,140 +19,175 @@ script_path = "packages/registry/posix-utils-lite/build-posix-utils-lite.sh"
 [[outputs]]
 name = "ar"
 wasm = "ar.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "asa"
 wasm = "asa.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "cal"
 wasm = "cal.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "cflow"
 wasm = "cflow.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "compress"
 wasm = "compress.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "ctags"
 wasm = "ctags.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "cxref"
 wasm = "cxref.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "ed"
 wasm = "ed.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "ex"
 wasm = "ex.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "fuser"
 wasm = "fuser.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "gencat"
 wasm = "gencat.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "getconf"
 wasm = "getconf.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "gettext"
 wasm = "gettext.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "iconv"
 wasm = "iconv.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "ipcrm"
 wasm = "ipcrm.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "ipcs"
 wasm = "ipcs.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "locale"
 wasm = "locale.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "logger"
 wasm = "logger.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "man"
 wasm = "man.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "more"
 wasm = "more.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "msgfmt"
 wasm = "msgfmt.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "ngettext"
 wasm = "ngettext.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "nm"
 wasm = "nm.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "patch"
 wasm = "patch.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "pax"
 wasm = "pax.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "pgrep"
 wasm = "pgrep.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "ps"
 wasm = "ps.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "renice"
 wasm = "renice.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "strings"
 wasm = "strings.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "strip"
 wasm = "strip.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "uncompress"
 wasm = "uncompress.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "uudecode"
 wasm = "uudecode.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "uuencode"
 wasm = "uuencode.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "what"
 wasm = "what.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "xgettext"
 wasm = "xgettext.wasm"
+fork_instrumentation = "disabled"
 

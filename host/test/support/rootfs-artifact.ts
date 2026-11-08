@@ -1,5 +1,5 @@
 import { tryResolveBinary } from "../../src/binary-resolver";
-import type { ResolvedRootfsArtifact } from "../../src/node-kernel-host";
+import { ROOTFS_ARTIFACT_REQUESTS, type ResolvedRootfsArtifact } from "../../src/node-kernel-host";
 
 /**
  * The default rootfs image as the binary resolver finds it -- the same two
@@ -13,7 +13,7 @@ import type { ResolvedRootfsArtifact } from "../../src/node-kernel-host";
  */
 export function tryResolveRootfsArtifact(): ResolvedRootfsArtifact | null {
   for (
-    const resolverRequest of ["rootfs.vfs.zst", "programs/rootfs.vfs.zst"] as const
+    const resolverRequest of ROOTFS_ARTIFACT_REQUESTS
   ) {
     const selectedPath = tryResolveBinary(resolverRequest);
     if (selectedPath !== null) return { resolverRequest, selectedPath };

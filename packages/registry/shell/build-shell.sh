@@ -2,7 +2,20 @@
 # Canonical package-system recipe for the browser shell. Every program and
 # archive comes from a declared resolver dependency; this wrapper performs no
 # package lookup, binary fallback, or network access.
+#
+# `--selection <file>` composes a PARTIAL shell instead: the rootfs base plus
+# only the packages the file lists (`./run.sh partial`, see
+# docs/package-management.md "Partial images"). The recipe then requires
+# exactly the dependencies its selection names; the canonical shell (no
+# selection) requires every dependency in its contract, as before.
 set -euo pipefail
+
+SELECTION_FILE=""
+if [ "$#" -gt 0 ]; then
+    [ "$#" -eq 2 ] && [ "$1" = "--selection" ] ||
+        { echo "build-shell: usage: build-shell.sh [--selection <selection.json>]" >&2; exit 2; }
+    SELECTION_FILE="$2"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -52,8 +65,6 @@ require_regular_file() {
 [ -n "$WORK_DIR" ] || fail "WASM_POSIX_DEP_WORK_DIR is required"
 [ -n "$ROOTFS_DIR" ] || fail "WASM_POSIX_DEP_ROOTFS_DIR is required"
 [ -n "$BASH_DIR" ] || fail "WASM_POSIX_DEP_BASH_DIR is required"
-[ -n "$WAYLAND_DEMO_DIR" ] || fail "WASM_POSIX_DEP_WAYLAND_DEMO_DIR is required"
-[ -n "$ESPEAK_NG_DIR" ] || fail "WASM_POSIX_DEP_ESPEAK_NG_DIR is required"
 [ "$TARGET_ARCH" = "wasm32" ] ||
     fail "source-rootfs shell composition supports only wasm32"
 [ -n "$DECLARED_TOOL_PATH" ] ||
@@ -87,13 +98,31 @@ done <<<"$dependency_lines"
 [ "${#EXTENDED_DEPENDENCIES[@]}" -gt 0 ] ||
     fail "source-rootfs dependency contract has no resolver-owned dependencies"
 
+# selected NAME: whether this shell carries package NAME.
+SELECTED_PACKAGES=""
+if [ -n "$SELECTION_FILE" ]; then
+    require_regular_file "partial shell selection" "$SELECTION_FILE"
+    SELECTED_PACKAGES="$(
+        PATH="$DECLARED_TOOL_PATH" "$NODE_BIN" -e '
+            const value = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            if (value.schema !== 1 || !Array.isArray(value.packages)) process.exit(2);
+            for (const name of value.packages) {
+                if (typeof name !== "string" || !/^[a-z0-9][a-z0-9._-]*$/.test(name)) process.exit(2);
+                console.log(name);
+            }' "$SELECTION_FILE"
+    )" || fail "invalid partial shell selection: $SELECTION_FILE"
+fi
+selected() {
+    [ -z "$SELECTION_FILE" ] && return 0
+    printf '%s\n' "$SELECTED_PACKAGES" | grep -qx -- "$1"
+}
+
 require_real_directory WASM_POSIX_DEP_OUT_DIR "$OUT_DIR"
 require_real_directory WASM_POSIX_DEP_WORK_DIR "$WORK_DIR"
 require_real_directory WASM_POSIX_DEP_ROOTFS_DIR "$ROOTFS_DIR"
 require_real_directory WASM_POSIX_DEP_BASH_DIR "$BASH_DIR"
-require_real_directory WASM_POSIX_DEP_WAYLAND_DEMO_DIR "$WAYLAND_DEMO_DIR"
-require_real_directory WASM_POSIX_DEP_ESPEAK_NG_DIR "$ESPEAK_NG_DIR"
 for dependency in "${EXTENDED_DEPENDENCIES[@]}"; do
+    selected "$dependency" || continue
     dependency_key="$(printf '%s' "$dependency" | tr '[:lower:]-' '[:upper:]_')"
     env_key="WASM_POSIX_DEP_${dependency_key}_DIR"
     dependency_dir="${!env_key:-}"
@@ -109,17 +138,31 @@ BASH="$BASH_DIR/bash.wasm"
 # Other programs (fbdoom, modeset, sdl2, espeak-ng, the desktops' programs)
 # are lazy files it resolves from the dependency's declared directory.
 #
-# The Wayland desktop's launcher. A package runtime_file is NOT installed
-# into the shell image by the composer, so it has to be threaded explicitly.
-WLDESKTOP="$WAYLAND_DEMO_DIR/wldesktop"
-# The Omarchy desktop's launcher and the desktops' data.
-OMARCHYDESKTOP="$WAYLAND_DEMO_DIR/omarchydesktop"
-DESKTOP_DATA="$WAYLAND_DEMO_DIR/kandelo-desktop-data.zip"
-# libinput's device quirks, unpacked by the composer at /usr/share/libinput.
-LIBINPUT_QUIRKS="$WAYLAND_DEMO_DIR/libinput-quirks.zip"
-# The xkeyboard-config rules, unpacked by the composer at /usr/share/X11/xkb.
-XKEYBOARD_CONFIG="$WAYLAND_DEMO_DIR/xkeyboard-config.zip"
-ESPEAK_NG_DATA="$ESPEAK_NG_DIR/espeak-ng-data.zip"
+# Inputs only the packages that own them bring: the Wayland desktops'
+# launchers (a package runtime_file is NOT installed into the shell image by
+# the composer, so it has to be threaded explicitly), their data, libinput's
+# device quirks (unpacked at /usr/share/libinput), xkeyboard-config rules
+# (unpacked at /usr/share/X11/xkb), and the speech data.
+SELECTED_INPUTS=()
+if selected wayland-demo; then
+    [ -n "$WAYLAND_DEMO_DIR" ] || fail "WASM_POSIX_DEP_WAYLAND_DEMO_DIR is required"
+    require_real_directory WASM_POSIX_DEP_WAYLAND_DEMO_DIR "$WAYLAND_DEMO_DIR"
+    for input in wldesktop:wldesktop omarchydesktop:omarchydesktop \
+        desktop-data:kandelo-desktop-data.zip libinput-quirks:libinput-quirks.zip \
+        xkeyboard-config:xkeyboard-config.zip; do
+        require_regular_file "${input%%:*} dependency output" "$WAYLAND_DEMO_DIR/${input#*:}"
+        SELECTED_INPUTS+=("--${input%%:*}" "$WAYLAND_DEMO_DIR/${input#*:}")
+    done
+fi
+if selected espeak-ng; then
+    [ -n "$ESPEAK_NG_DIR" ] || fail "WASM_POSIX_DEP_ESPEAK_NG_DIR is required"
+    require_real_directory WASM_POSIX_DEP_ESPEAK_NG_DIR "$ESPEAK_NG_DIR"
+    require_regular_file "espeak-ng data dependency output" "$ESPEAK_NG_DIR/espeak-ng-data.zip"
+    SELECTED_INPUTS+=(--espeak-ng-data "$ESPEAK_NG_DIR/espeak-ng-data.zip")
+fi
+if [ -n "$SELECTION_FILE" ]; then
+    SELECTED_INPUTS+=(--selection "$SELECTION_FILE")
+fi
 DEMO_CONFIG="$SCRIPT_DIR/source-rootfs-shell-demo.json"
 DEMO_PROFILE_OVERLAY="$SCRIPT_DIR/source-rootfs-shell-demo-profiles.json"
 COMPOSER="$REPO_ROOT/images/vfs/scripts/build-source-rootfs-shell-image.ts"
@@ -127,12 +170,6 @@ TSX_CLI="$REPO_ROOT/node_modules/tsx/dist/cli.mjs"
 
 require_regular_file "rootfs dependency output" "$ROOTFS"
 require_regular_file "bash dependency output" "$BASH"
-require_regular_file "wldesktop dependency output" "$WLDESKTOP"
-require_regular_file "omarchydesktop dependency output" "$OMARCHYDESKTOP"
-require_regular_file "desktop data dependency output" "$DESKTOP_DATA"
-require_regular_file "libinput quirks dependency output" "$LIBINPUT_QUIRKS"
-require_regular_file "xkeyboard-config dependency output" "$XKEYBOARD_CONFIG"
-require_regular_file "espeak-ng data dependency output" "$ESPEAK_NG_DATA"
 require_regular_file "main-shell demo config" "$DEMO_CONFIG"
 require_regular_file "source-rootfs demo profile overlay" "$DEMO_PROFILE_OVERLAY"
 require_regular_file "source-rootfs shell composer" "$COMPOSER"
@@ -156,12 +193,7 @@ TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     --rootfs "$ROOTFS" \
     --ca-bundle "$CA_BUNDLE" \
     --bash "$BASH" \
-    --wldesktop "$WLDESKTOP" \
-    --omarchydesktop "$OMARCHYDESKTOP" \
-    --desktop-data "$DESKTOP_DATA" \
-    --libinput-quirks "$LIBINPUT_QUIRKS" \
-    --xkeyboard-config "$XKEYBOARD_CONFIG" \
-    --espeak-ng-data "$ESPEAK_NG_DATA" \
+    ${SELECTED_INPUTS[@]+"${SELECTED_INPUTS[@]}"} \
     --demo-config "$DEMO_CONFIG" \
     --demo-profile-overlay "$DEMO_PROFILE_OVERLAY" \
     --dependency-contract "$DEPENDENCY_CONTRACT" \

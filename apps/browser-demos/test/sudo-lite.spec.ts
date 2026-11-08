@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { devServerAssetUrl } from "./support/dev-server-assets";
 import {
   DEMO_LOGIN_PASSWORD,
@@ -175,7 +175,7 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
         0,
         credentials,
       );
-      fs.createFileWithOwner("/usr/bin/login", 0o4755, 0, 0, login);
+      fs.createFileWithOwner("/bin/login", 0o4755, 0, 0, login);
       fs.createFileWithOwner("/usr/bin/sudo-lite", 0o4755, 0, 0, sudo);
       fs.createFileWithOwner("/usr/bin/sudo", 0o4755, 0, 0, sudo);
       const image = await fs.saveImage();
@@ -213,7 +213,7 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
           const exitCode = await Promise.race([
             kernel.spawn(
               launcher.slice().buffer,
-              ["exec-argv", "/usr/bin/login", "-f", "maker"],
+              ["exec-argv", "/bin/login", "-f", "maker"],
               {
                 uid: 0,
                 gid: 0,

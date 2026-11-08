@@ -26,12 +26,15 @@ import importlib.util
 import json
 import os
 import pathlib
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 AGENT_JOB = REPO / "scripts" / "agent-job"
@@ -71,11 +74,62 @@ class JobsDirCase(unittest.TestCase):
         job_id = self.agent_job("start", "--", *command).stdout.splitlines()[0]
         waited = self.agent_job("wait", job_id, "--timeout", "30", check=False)
         self.assertNotEqual(waited.returncode, 124, f"job did not finish:\n{waited.stdout}")
-        with open(os.path.join(self.jobs_dir, "jobs", job_id, "output.log")) as f:
+        meta = json.loads(pathlib.Path(self.jobs_dir, "jobs", job_id, "meta.json").read_text())
+        with open(os.path.join(meta["payload_dir"], "output.log")) as f:
             return waited.returncode, f.read()
 
 
 class AgentJobTest(JobsDirCase):
+    def test_wait_parser_keeps_main_default_and_explicit_windows(self):
+        module = load_agent_job()
+        for argv, timeout in ((["wait", "job"], 540), (["wait", "job", "--timeout", "0"], 0),
+                              (["wait", "job", "--timeout", "240"], 240)):
+            with self.subTest(argv=argv), mock.patch.object(module, "cmd_wait") as wait, \
+                    mock.patch.object(sys, "argv", [str(AGENT_JOB), *argv]):
+                module.main()
+                self.assertEqual(wait.call_args.args[0].timeout, timeout)
+
+    def test_start_prints_executable_wait_hints_for_all_session_types(self):
+        started = self.agent_job("start", "--", "sleep 0.1; echo hint-result; exit 7").stdout
+        job_id = started.splitlines()[0]
+        hints = {line.split(": ", 1)[0].strip(): line.split(": ", 1)[1]
+                 for line in started.splitlines() if line.startswith("  ")}
+        self.assertEqual(set(hints), {"interactive main", "headless main", "subagent"}, started)
+        self.assertIn("run_in_background: true", hints["interactive main"])
+        self.assertIn("--timeout 0", hints["interactive main"])
+        self.assertIn("one completion notification", hints["interactive main"])
+        self.assertIn("foreground", hints["headless main"])
+        self.assertIn("repeat only if wait reports still running", hints["headless main"])
+        self.assertIn("FAILED (exit 124) is final", hints["headless main"])
+        self.assertIn("never end the turn", hints["headless main"])
+        self.assertIn("--timeout 240", hints["subagent"])
+        self.assertNotIn("--timeout", hints["headless main"])
+        self.assertIn("return known long jobs to parent", hints["subagent"])
+        for session_type, hint in hints.items():
+            with self.subTest(session_type=session_type):
+                # Execute the printed command, not a separately constructed
+                # equivalent: a wrong id/flag must not give usable advice.
+                command = shlex.split(hint.split("  (", 1)[0])
+                waited = subprocess.run([sys.executable, *command], cwd=self.cwd, env=self.env,
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(waited.returncode, 7, waited.stdout + waited.stderr)
+                self.assertIn(f"{job_id}: FAILED (exit 7)", waited.stdout)
+                self.assertIn("hint-result", waited.stdout)
+
+    def test_jobs_own_private_scratch_even_with_an_inherited_peer_path(self):
+        self.env["KANDELO_AGENT_SCRATCH_DIR"] = "/must-not-reuse-peer-scratch"
+        ids = []
+        for label in ("a", "b"):
+            started = self.agent_job("start", "--", "bash", "-c",
+                f'printf {label} > "$KANDELO_AGENT_SCRATCH_DIR/integ.log"').stdout
+            ids.append(started.splitlines()[0])
+        for label, job_id in zip(("a", "b"), ids):
+            self.agent_job("wait", job_id, "--timeout", "30")
+            meta = json.loads(pathlib.Path(self.jobs_dir, "jobs", job_id, "meta.json").read_text())
+            scratch = pathlib.Path(meta["payload_dir"], "scratch")
+            self.assertEqual((scratch / "integ.log").read_text(), label)
+            self.assertEqual(scratch.stat().st_mode & 0o777, 0o700)
+
     def test_multi_word_command_keeps_inner_bash_c_script_whole(self):
         # The 2026-10-01 shape: a wrapper, then `bash -c` with a script that
         # has spaces and `&&`. The whole script must run in the inner shell.
@@ -102,6 +156,19 @@ class AgentJobTest(JobsDirCase):
         # outer shell would run `true`: a failure reported as success.
         code, _ = self.run_job("bash", "-c", "exit 7; true")
         self.assertEqual(code, 7)
+
+    def test_finished_exit_124_is_a_final_failure_not_a_wait_timeout(self):
+        job_id = self.agent_job("start", "--", "exit 124").stdout.splitlines()[0]
+        for timeout in ("30", "0"):
+            with self.subTest(timeout=timeout):
+                waited = self.agent_job("wait", job_id, "--timeout", timeout, check=False)
+                self.assertEqual(waited.returncode, 124, waited.stdout + waited.stderr)
+                self.assertIn(f"{job_id}: FAILED (exit 124)", waited.stdout)
+                self.assertNotIn("agent-job: still running", waited.stdout)
+                self.assertNotIn("resume with:", waited.stdout)
+        result = self.agent_job("result", job_id, check=False)
+        self.assertEqual(result.returncode, 124)
+        self.assertIn(f"{job_id}: FAILED (exit 124)", result.stdout)
 
     def test_job_key_unchanged_for_common_commands(self):
         # Timing history ("usually takes 18m") is keyed by job_key. The same
@@ -136,7 +203,7 @@ class PeerJobTest(JobsDirCase):
         self.env.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com", GIT_COMMITTER_NAME="t",
                         GIT_COMMITTER_EMAIL="t@example.com", GIT_CONFIG_GLOBAL=os.devnull,
                         GIT_CONFIG_NOSYSTEM="1")
-        # Two worktrees of one clone, like two Conductor workspaces: `main`
+        # Two worktrees of one ordinary clone: `main`
         # at commit A, `peer` one commit ahead (B, a descendant of A).
         # realpath: git reports macOS's /var/folders as /private/var/folders.
         root = os.path.realpath(self.tmp.name)
@@ -196,6 +263,185 @@ class PeerJobTest(JobsDirCase):
                 json.dump(result, f)
         with open(os.path.join(d, "output.log"), "w") as f:
             f.write("old log\n")
+
+    def finish(self, cwd, text="owned", code=0):
+        jid = self.start(cwd, f"printf '{text}\\n'; exit {code}")
+        self.agent_job("wait", jid, "--timeout", "30", check=False)
+        return jid, pathlib.Path(self.meta(jid)["payload_dir"])
+
+    def test_release_preserves_exit_summary_and_peer_evidence(self):
+        first, payload = self.finish(self.main, "first-owner", 7)
+        peer, peer_payload = self.finish(self.peer, "peer-owner")
+        self.assertFalse(pathlib.Path(self.jobs_dir, "jobs", first, "output.log").exists())
+        self.agent_job("release", first, "--dry-run")
+        self.assertTrue(payload.exists())
+        self.agent_job("release", first)
+        self.assertFalse(payload.exists())
+        self.assertIn("peer-owner", (peer_payload / "output.log").read_text())
+        result = self.agent_job("result", first, check=False)
+        self.assertEqual(result.returncode, 7)
+        self.assertIn("retained summary", result.stdout)
+        self.assertIn("first-owner", result.stdout)
+        self.assertNotIn("LOST", result.stdout)
+        self.agent_job("release", first)  # idempotent
+
+    def test_cleanup_blocks_new_starts_and_refuses_live_writers(self):
+        first = self.start_running(self.main, "sleep 60")
+        _, peer_payload = self.finish(self.peer, "peer-preserved")
+        refused = self.agent_job("cleanup", cwd=self.main, check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("active writers", refused.stderr)
+        self.assertTrue(pathlib.Path(self.meta(first)["payload_dir"]).exists())
+        started = self.agent_job("start", "--", "true", cwd=self.main, check=False)
+        self.assertNotEqual(started.returncode, 0)
+        self.assertIn("closed for cleanup", started.stderr)
+        self.stop(first)
+        self.agent_job("cleanup", cwd=self.main)
+        self.assertFalse(pathlib.Path(self.meta(first)["payload_dir"]).exists())
+        self.assertIn("peer-preserved", (peer_payload / "output.log").read_text())
+        self.agent_job("cleanup", cwd=self.main)
+        self.agent_job("reopen", cwd=self.main)
+        self.finish(self.main, "new-run")
+
+    def test_cleanup_command_runs_from_an_ordinary_checkout(self):
+        scripts = pathlib.Path(self.main, "scripts")
+        scripts.mkdir()
+        for name in ("agent-job", "validation_artifacts.py"):
+            shutil.copy(REPO / "scripts" / name, scripts / name)
+        _, payload = self.finish(self.main, "archive-me")
+        peer = self.start_running(self.peer, "sleep 60")
+        result = subprocess.run([sys.executable, "scripts/agent-job", "cleanup"],
+            cwd=self.main, env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(payload.exists())
+        self.assertTrue(pathlib.Path(self.meta(peer)["payload_dir"]).exists())
+
+    def test_managed_paths_are_ignored_without_private_git_excludes(self):
+        shutil.copy(REPO / ".gitignore", pathlib.Path(self.main, ".gitignore"))
+        self.git(self.main, "add", ".gitignore")
+        self.git(self.main, "commit", "-q", "-m", "repository ignore rules")
+        self.finish(self.main, "ignored-payload")
+        report = pathlib.Path(self.main, "packages/registry/fixture/test/browser/test-results/run/report.json")
+        report.parent.mkdir(parents=True)
+        report.write_text("{}")
+        self.assertEqual(self.git(self.main, "status", "--porcelain", "--untracked-files=all"), "")
+
+    def test_removing_worktree_removes_payload_without_external_bulk(self):
+        jid, payload = self.finish(self.peer, "removed-owner")
+        _, peer_payload = self.finish(self.main, "surviving-owner")
+        self.git(self.main, "worktree", "remove", "--force", self.peer)
+        self.assertFalse(payload.exists())
+        self.assertIn("surviving-owner", (peer_payload / "output.log").read_text())
+        self.agent_job("gc", "--dry-run", cwd=self.main)
+        self.agent_job("gc", cwd=self.main)
+        result = self.agent_job("result", jid, check=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("removed-owner", result.stdout)
+        files = list(pathlib.Path(self.jobs_dir, "jobs", jid).iterdir())
+        self.assertEqual({p.name for p in files}, {"meta.json", "result.json"})
+
+    def test_recreated_worktree_path_cannot_own_or_read_old_payload(self):
+        old, payload = self.finish(self.peer, "old-owner")
+        old_id = self.meta(old)["workspace_id"]
+        relative = payload.relative_to(self.peer)
+        self.git(self.main, "worktree", "remove", "--force", self.peer)
+        self.git(self.main, "worktree", "add", "-q", self.peer, "peer")
+        new, new_payload = self.finish(self.peer, "new-owner")
+        self.assertNotEqual(old_id, self.meta(new)["workspace_id"])
+        copy = pathlib.Path(self.peer, relative)
+        copy.mkdir(parents=True)
+        (copy / "output.log").write_text("unrelated replacement contents")
+        self.agent_job("gc", cwd=self.main)
+        self.assertTrue(copy.exists())
+        self.assertIn("new-owner", (new_payload / "output.log").read_text())
+        result = self.agent_job("result", old)
+        self.assertIn("old-owner", result.stdout)
+        self.assertNotIn("unrelated replacement", result.stdout)
+
+    def test_release_rejects_symlink_to_peer_payload(self):
+        first, payload = self.finish(self.main)
+        _, peer_payload = self.finish(self.peer, "never-delete-peer")
+        moved = payload.with_name(payload.name + "-saved")
+        payload.rename(moved)
+        payload.symlink_to(peer_payload, target_is_directory=True)
+        try:
+            result = self.agent_job("release", first, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("directly owned", result.stderr)
+            self.assertIn("never-delete-peer", (peer_payload / "output.log").read_text())
+        finally:
+            payload.unlink()
+            moved.rename(payload)
+
+    def test_supervisor_crash_leaves_child_lease_that_blocks_collection(self):
+        ready = pathlib.Path(self.tmp.name, "orphan-ready")
+        jid = self.start(self.peer, f"touch {shlex.quote(str(ready))}; sleep 60")
+        deadline = time.time() + 10
+        while not ready.exists() or not self.meta(jid).get("child_pid"):
+            self.assertLess(time.time(), deadline)
+            time.sleep(0.02)
+        meta = self.meta(jid)
+        os.kill(meta["supervisor_pid"], signal.SIGKILL)
+        try:
+            result = self.agent_job("release", jid, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("active writers", result.stderr)
+            self.git(self.main, "worktree", "remove", "--force", self.peer)
+            self.agent_job("gc", cwd=self.main)
+            record = pathlib.Path(self.jobs_dir, "artifacts", meta["artifact_id"] + ".json")
+            self.assertNotIn("released_at", json.loads(record.read_text()))
+        finally:
+            # Only this test's child group; never match a process by name.
+            try:
+                os.killpg(meta["child_pid"], signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            self.agent_job("gc", cwd=self.main)
+            if json.loads(record.read_text()).get("released_at"):
+                break
+            time.sleep(0.05)
+        self.assertTrue(json.loads(record.read_text()).get("released_at"))
+        result = self.agent_job("result", jid, check=False)
+        self.assertEqual(result.returncode, 125)  # lost exit evidence is never invented
+
+    def test_gc_recovers_interrupted_release_in_existing_worktree(self):
+        jid, payload = self.finish(self.main, "release-before-crash")
+        meta = self.meta(jid)
+        record_path = pathlib.Path(self.jobs_dir, "artifacts", meta["artifact_id"] + ".json")
+        record = json.loads(record_path.read_text())
+        original = record["roots"][0]
+        parked = payload.with_name(".released-" + meta["artifact_id"])
+        identity = payload.stat()
+        record["cleanup_pending"] = {original: {"path": str(parked.relative_to(self.main)),
+            "identity": [identity.st_dev, identity.st_ino]}}
+        record_path.write_text(json.dumps(record))
+        payload.rename(parked)  # simulate interruption after durable rename
+        (parked / ".kandelo-artifact.json").unlink()  # rmtree was partly complete
+        self.agent_job("gc", cwd=self.main)
+        self.assertFalse(parked.exists())
+        self.assertTrue(json.loads(record_path.read_text())["released_at"])
+        self.assertIn("release-before-crash", self.agent_job("result", jid).stdout)
+
+    def test_gc_recovers_only_orphaned_legacy_payloads(self):
+        jid = "legacy-0101-000000-0000"
+        absent = os.path.join(self.tmp.name, "absent-worktree")
+        self.write_old_job(jid, dict(id=jid, cmd="true", worktree=absent, cwd=absent,
+            started=time.time()-120, supervisor_pid=2**22+12345),
+            dict(exit_code=3, signal=None, duration=1, ended=time.time()-60))
+        cache = pathlib.Path(self.tmp.name, "shared-build-cache")
+        cache.mkdir()
+        (cache / "receipt").write_text("preserve")
+        log = pathlib.Path(self.jobs_dir, "jobs", jid, "output.log")
+        self.agent_job("gc", "--dry-run")
+        self.assertTrue(log.exists())
+        self.agent_job("gc")
+        self.assertFalse(log.exists())
+        self.assertEqual((cache / "receipt").read_text(), "preserve")
+        result = self.agent_job("result", jid, check=False)
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("old log", result.stdout)
 
     def test_start_records_head_and_uncommitted_paths(self):
         pathlib.Path(self.main, "f").write_text("edited\n")
@@ -325,6 +571,38 @@ class PeerJobTest(JobsDirCase):
         self.assertIn(f"waiting on {job_id}", r.stdout)
         self.assertIn("a descendant of your HEAD (1 commit ahead of it)", r.stdout)
         self.assertIn(f"{job_id}: FAILED (exit 5)", r.stdout)
+
+    def test_timed_out_peer_wait_prints_retry_pinned_to_original_job(self):
+        marker = "peer-retry-5c2d"
+        release = pathlib.Path(self.tmp.name, "release-peer")
+        original = self.start_running(self.peer,
+            f"while [ ! -e {shlex.quote(str(release))} ]; do sleep 0.05; done; exit 7; : {marker}")
+        timed_out = self.agent_job("wait", "--peer", marker, "--timeout", "1",
+                                   cwd=self.main, check=False)
+        self.assertEqual(timed_out.returncode, 124, timed_out.stdout + timed_out.stderr)
+        self.assertIn(f"waiting on {original}", timed_out.stdout)
+        self.assertIn("agent-job: still running", timed_out.stdout)
+        resume = [line.removeprefix("resume with: ") for line in timed_out.stdout.splitlines()
+                  if line.startswith("resume with: ")]
+        self.assertEqual(len(resume), 1, timed_out.stdout)
+        command = shlex.split(resume[0])
+        self.assertNotIn("--peer", command)
+        self.assertEqual(command[-2:], ["--timeout", "1"])
+
+        release.touch()
+        finished = self.agent_job("wait", original, "--timeout", "30", check=False)
+        self.assertEqual(finished.returncode, 7, finished.stdout + finished.stderr)
+        # A selector no longer finds the original after it finishes.
+        missing = self.agent_job("wait", "--peer", marker, check=False)
+        self.assertEqual(missing.returncode, 2)
+        replacement = self.start_running(self.main, f"sleep 60; : {marker}")
+        # Execute the printed retry while a replacement matches the same
+        # selector. It must still report the original job's failure.
+        retried = subprocess.run([sys.executable, *command], cwd=self.main, env=self.env,
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(retried.returncode, 7, retried.stdout + retried.stderr)
+        self.assertIn(f"{original}: FAILED (exit 7)", retried.stdout)
+        self.assertNotIn(replacement, retried.stdout)
 
     def test_wait_timeout_exits_124_without_ps_on_path(self):
         # scripts/dev-shell.sh's PATH has no `ps`. A timed-out wait prints

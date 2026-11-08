@@ -22,6 +22,30 @@ export type DevCorsProxyFetch = (
   init: RequestInit,
 ) => Promise<Response>;
 
+/** Follow anonymous server-side GET/HEAD redirects with a fresh origin per hop.
+ * Node's same-origin Fetch mode rejects a cross-origin automatic redirect.
+ * Constructing each request separately preserves ordinary HTTP relay behavior.
+ */
+async function fetchFromServer(target: URL, init: RequestInit): Promise<Response> {
+  let current = target;
+  for (let redirects = 0; ; redirects++) {
+    const response = await fetch(current, { ...init, redirect: "manual" });
+    if (init.redirect !== "follow" || ![301, 302, 303, 307, 308].includes(response.status)) {
+      return response;
+    }
+    const location = response.headers.get("location");
+    if (location === null) return response;
+    await response.body?.cancel();
+    if (redirects >= 20) throw new TypeError("Too many upstream redirects");
+    const next = new URL(location, current);
+    if (!["http:", "https:"].includes(next.protocol) || next.username || next.password) {
+      throw new TypeError("Unsupported upstream redirect target");
+    }
+    next.hash = ""; // URL fragments are not part of an HTTP request target.
+    current = next;
+  }
+}
+
 // WHY: this local relay proves anonymous public Git and package transport.
 // Forwarding credentials needs a separately reviewed host/proxy protocol;
 // ambient browser Authorization must not become guest authority by accident.
@@ -279,7 +303,7 @@ export async function handleDevCorsProxyRequest(
   request: IncomingMessage,
   response: ServerResponse,
   proxyPath: string,
-  fetchImpl: DevCorsProxyFetch = (target, init) => fetch(target, init),
+  fetchImpl: DevCorsProxyFetch = fetchFromServer,
 ): Promise<boolean> {
   if (request.url === undefined) return false;
   const requestUrl = new URL(request.url, "http://localhost");
@@ -311,8 +335,7 @@ export async function relayDevCorsProxyRequest(
   request: IncomingMessage,
   response: ServerResponse,
   target: string,
-  fetchImpl: DevCorsProxyFetch = (fetchTarget, init) =>
-    fetch(fetchTarget, init),
+  fetchImpl: DevCorsProxyFetch = fetchFromServer,
 ): Promise<void> {
   const method = request.method?.toUpperCase() ?? "";
   if (!ALLOWED_METHODS.has(method)) {
@@ -405,6 +428,11 @@ export async function relayDevCorsProxyRequest(
           ? Uint8Array.from(requestBody).buffer
           : undefined,
       credentials: "omit",
+      // This is a server-side relay, with no browser CORS origin. Node Fetch
+      // otherwise synthesizes Sec-Fetch-Mode: cors, which makes origins with
+      // archive hotlink protection (including GitLab) reject native guest
+      // downloads. Forwarded headers still pass the reviewed allow-list.
+      mode: "same-origin",
       // WHY: the browser's outer fetch follows Location by default and would
       // bypass this relay on its next hop. Observe redirects here so the relay
       // can reject them instead of granting unreviewed network authority.

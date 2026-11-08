@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 
 const helperModuleUrl = "/pages/kandelo/panes/terminal-focus.ts";
 const fixtureModuleUrl = "/test/fixtures/terminal-autofocus-fixture.ts";

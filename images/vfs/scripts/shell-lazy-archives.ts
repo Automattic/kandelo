@@ -53,6 +53,20 @@ function withArchiveAddresses<const T extends readonly Omit<ShellLazyArchiveSpec
 
 export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
   {
+    id: "rust-std",
+    dependency: "rustc",
+    resolverPath: "programs/wasm32/rustc/rust-std.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "lib/rustlib/wasm32-unknown-kandelo-std/target.json",
+  },
+  {
+    id: "harper",
+    dependency: "harper-browser-bundle",
+    resolverPath: "programs/wasm32/harper.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/harper-cli",
+  },
+  {
     id: "composer",
     dependency: "composer",
     resolverPath: "programs/wasm32/composer.zip",
@@ -188,8 +202,17 @@ export const SHELL_LAZY_DATA_ARCHIVE_SPECS = withArchiveAddresses([
  * terminal type, and TLS trust anchors. Adding a script here reaches both
  * images by construction; there is no second list to keep in step.
  */
-export function registerShellProfileScripts(fs: VfsImageFilesystem): void {
-  for (const script of SHELL_PROFILE_SCRIPTS) script.register(fs);
+export function registerShellProfileScripts(
+  fs: VfsImageFilesystem,
+  includesPackage: (pkg: string) => boolean = () => true,
+): void {
+  for (const script of SHELL_PROFILE_SCRIPTS) {
+    // A partial shell (images/vfs/scripts/shell-selection.ts) omits a script
+    // whose package it does not carry: python.sh pointing PYTHONHOME at an
+    // absent interpreter would describe software the image does not have.
+    if ("owner" in script && !includesPackage(script.owner)) continue;
+    script.register(fs);
+  }
 }
 
 /**
@@ -202,21 +225,47 @@ const SHELL_PROFILE_SCRIPTS = [
     path: "/etc/profile.d/00-kandelo-shell.sh",
     register: registerDemoShellProfile,
   },
-  { path: "/etc/profile.d/python.sh", register: registerPythonShellProfile },
-  { path: "/etc/profile.d/node.sh", register: registerNodeShellProfile },
-  { path: "/etc/profile.d/man.sh", register: registerManShellProfile },
+  {
+    path: "/etc/profile.d/python.sh",
+    register: registerPythonShellProfile,
+    owner: "python-browser-bundle",
+  },
+  {
+    path: "/etc/profile.d/node.sh",
+    register: registerNodeShellProfile,
+    owner: "node-browser-bundle",
+  },
+  {
+    path: "/etc/profile.d/man.sh",
+    register: registerManShellProfile,
+    owner: "mandoc-browser-bundle",
+  },
+  {
+    path: "/etc/profile.d/rust.sh",
+    register: registerRustShellProfile,
+    owner: "kandelo-rustc",
+  },
 ] as const satisfies ReadonlyArray<{
   path: string;
   register: (fs: VfsImageFilesystem) => void;
+  /** The package the script configures, when it configures one. */
+  owner?: string;
 }>;
 
 /** Guest paths of every script `registerShellProfileScripts` writes. */
 export const SHELL_PROFILE_SCRIPT_PATHS: readonly string[] =
   SHELL_PROFILE_SCRIPTS.map((script) => script.path);
 
+export function registerRustShellProfile(fs: VfsImageFilesystem): void {
+  ensureDirRecursive(fs, "/etc/profile.d");
+  // The prebuilt standard library uses musl's time64 ABI on this target.
+  writeVfsFile(fs, "/etc/profile.d/rust.sh",
+    "export RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1\n", 0o644);
+}
+
 // The maker account's interactive identity: prompt, history file, locale,
 // terminal type, and the TLS trust anchors curl/wget/etc. expect at their
-// well-known paths. `/usr/bin/login -p -f maker` (the image's
+// well-known paths. `/bin/login -p -f maker` (the image's
 // experimental-terminal-session initial program) sets HOME/USER/LOGNAME/PATH
 // from /etc/passwd and preserves the caller's TERM, but nothing sets these
 // the rest of the way — that used to be the browser app's job (a SHELL_ENV
@@ -233,7 +282,7 @@ export function registerDemoShellProfile(fs: VfsImageFilesystem): void {
     "# The demo account's interactive shell identity. login sets HOME/USER/\n" +
       "# LOGNAME/PATH from /etc/passwd already; this fills in the rest.\n" +
       'if [ "${HOME:-}" = /home/maker ]; then\n' +
-      "  export PS1='kandelo$ '\n" +
+      "  export PS1='\\u@\\h:\\W\\$ '\n" +
       '  export HISTFILE="$HOME/.bash_history"\n' +
       "  export TMPDIR=/tmp\n" +
       "  export LANG=en_US.UTF-8\n" +
@@ -339,9 +388,8 @@ export function registerManShellProfile(fs: VfsImageFilesystem): void {
  * lazy-archive's `bin/man` member mounts a formatting `man` front-end at the
  * exact same path, so registering the archive over an existing applet would
  * throw EEXIST. Clear the applet's entry first so the archive's own symlink
- * can claim /usr/bin/man — mandoc must win. /bin/man is an existing symlink
- * to /usr/bin/man (not a separate inode), so it needs no separate removal:
- * it keeps resolving to whatever now lives at /usr/bin/man.
+ * can claim /usr/bin/man — mandoc must win. The command has only that one
+ * installed location; the image does not create a second /bin/man alias.
  */
 export function displacePosixUtilsLiteManApplet(fs: VfsImageFilesystem): void {
   try {

@@ -7,6 +7,7 @@ guide for the contract your change touches.
 | Contract | Read when touching |
 |---|---|
 | `validation.md` | Test selection, evidence, completion claims |
+| `campaigns.md` | Long-campaign dispatch, phase checkpoints, context reminders and handoffs |
 | `debugging-and-posix.md` | Root-cause debugging, syscall/process/VFS/device behavior |
 | `abi.md` | ABI surface, snapshot policy, package/VFS ABI consequences |
 | `host-runtime.md` | Node/browser parity, worker protocols, host runtime failures |
@@ -18,6 +19,12 @@ guide for the contract your change touches.
 
 Keep `CLAUDE.md` concise. Put detailed, contract-specific operating rules here
 unless an invariant must be visible to every agent on every turn.
+
+For reviewed patch integration and evidence bookkeeping, see the
+[integration CLI](../agent-integration.md). Its versioned manifest, durable
+ledger and compact handoff work before project binaries are built. It
+imports reviewed results and leaves validation execution to its owner;
+using it does not broaden evidence scope or close compatibility findings.
 
 [Architecture reflections](../architecture-reflections.md) explain the
 reusable design lessons behind these rules. They cover temporary memory

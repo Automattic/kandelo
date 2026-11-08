@@ -12,6 +12,24 @@ GLES 2.0 and advertised EGL 1.5/extensions conformance continue in
 [follow-up PR #1594](https://github.com/Automattic/kandelo/pull/1594),
 tracked by the [graphics baseline](compatibility-v1.md).
 
+## Incremental landing approval, 2026-11-08
+
+The maintainer authorized landing this foundation followed by B1 in #1594
+as separate squash merges, then pausing to choose the next deliverable.
+The approved incremental shipment uses generally working graphical demos
+as its release criterion. Remaining defect diagnosis, full validation and
+performance measurements are explicit follow-up work, not reported passes.
+Historical stricter shipment gates below are retained as the original plan;
+they do not supersede this latest maintainer decision.
+
+This main integration preserves the foundation's compositor work and main's
+process authority, admission and image layout. Its contract is program 56,
+host 4, GL 17 and fork 21. The minimum program baseline is 56, as already
+approved before deployment. ABI-55 fixtures remain unchanged; the foundation's
+ABI-56 fixture cohort must be freshly built for its source-derived digest.
+B1 then supplies the subsequent graphics and shared-memory fixes; this first
+landing does not claim those fixes or the final native-feel targets.
+
 ## Contract being landed
 
 - Normal wasm32 package builds, declared dependencies and VFS images

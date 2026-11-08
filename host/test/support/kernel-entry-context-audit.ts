@@ -87,7 +87,7 @@ const ROOT_INGRESS_METHODS = new Map([
   ["#runImmediateKernelEntry", 1],
   ["#runOrDeferKernelEntry", 1],
   ["#runOrDeferChannelKernelEntry", 2],
-  ["#runOrDeferPendingSpawnCompletionKernelEntry", 2],
+  ["#runOrDeferPendingChildCompletionKernelEntry", 2],
   // This private constructor supplies the facade to an operation while the
   // canonical gate callback still owns its scope. Its call sites are checked
   // separately below; it cannot open an entry from an arbitrary caller.
@@ -95,10 +95,10 @@ const ROOT_INGRESS_METHODS = new Map([
 ]);
 const TRANSACTION_COMPLETION_INGRESS_METHODS = new Set([
   "#runOrDeferChannelKernelEntry",
-  // Spawn owns a second kernel Process after child reservation. Its detached
-  // completion must retain cleanup authority when the parent channel has
-  // retired, while the completion body separately gates parent-memory writes.
-  "#runOrDeferPendingSpawnCompletionKernelEntry",
+  // Fork and spawn own a second kernel Process after child reservation.
+  // Detached completion must retain cleanup authority when the parent channel
+  // has retired; the completion body separately gates parent-memory writes.
+  "#runOrDeferPendingChildCompletionKernelEntry",
 ]);
 const ENTRY_SELECTORS = new Set([
   "#kernelInstanceForEntry",
@@ -544,7 +544,7 @@ export function auditKernelEntryContext(
   const canonicalConstructionOwners = new Map([
     ["CentralizedKernelWorker.#runOrDeferKernelEntry", "runOrDeferVoidIngress"],
     ["CentralizedKernelWorker.#runImmediateKernelEntry", "runImmediateVoidIngress"],
-    ["CentralizedKernelWorker.#runOrDeferPendingSpawnCompletionKernelEntry", "runOrDeferVoidIngress"],
+    ["CentralizedKernelWorker.#runOrDeferPendingChildCompletionKernelEntry", "runOrDeferVoidIngress"],
   ]);
   const isCanonicalEntryConstruction = (
     call: ts.CallExpression,

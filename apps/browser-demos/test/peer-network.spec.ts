@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "../playwright-test";
 import { writeFileSync } from "node:fs";
 import { startPiplet } from "./support/piplet";
 
@@ -20,44 +20,18 @@ async function pair(browser: Browser, baseURL: string) {
     return { host: pages[0], joiner: pages[1], close };
   } catch (error) { await close(); throw error; }
 }
-/** Both game guests are joiners, so every game packet crosses the forwarding host. */
-async function forwardedGamePair(browser: Browser, baseURL: string) {
-  const connected = await pair(browser, baseURL);
-  const thirdContext = await browser.newContext({ permissions: ["microphone"] });
-  try {
-    const joiner = await thirdContext.newPage();
-    const signalling = await connected.host.inputValue("#server");
-    await joiner.goto(`${baseURL}/pages/peer-network/?signalling=${encodeURIComponent(signalling)}`);
-    await connected.host.fill("#session", "forwarded-game");
-    await joiner.fill("#session", "forwarded-game");
-    await connected.host.click("#host");
-    await expect(connected.host.locator("#status")).toContainText('Hosting "forwarded-game"');
-    await joiner.click("#join");
-    await expect(joiner.locator("#status")).toContainText("Connected as 10.89.0.3", { timeout: 60_000 });
-    await expect.poll(() => connected.joiner.evaluate(() => (window as any).__peerNetwork.snapshot()?.members.length)).toBe(3);
-    await joiner.fill("#destination", "peer-2");
-    return { host: connected.joiner, joiner, router: connected.host,
-      close: async () => { await thirdContext.close(); await connected.close(); } };
-  } catch (error) { await thirdContext.close(); await connected.close(); throw error; }
-}
 async function binding(page: Page, port: number) {
   await expect.poll(() => page.evaluate((port) => (window as any).__peerNetwork.snapshot()?.bindings.some((binding: any) => binding.port === port), port)).toBe(true);
 }
-const gameOutput = (page: Page) => page.evaluate(() => {
-  const demo = (window as any).__peerNetwork;
-  const process = demo.processes()[demo.gamePid()];
-  return process ? process.stdout + process.stderr + process.terminal : document.getElementById("status")!.textContent;
-});
 
-async function diagnostics(pages: Page[], game: string) {
+async function diagnostics(pages: Page[], label: string) {
   const state = await Promise.allSettled(pages.map((page) => page.evaluate(() => ({
     status: document.getElementById("status")?.textContent,
     output: document.getElementById("output")?.textContent,
     directory: (window as any).__peerNetwork.snapshot(),
-    gamePid: (window as any).__peerNetwork.gamePid(),
     processes: (window as any).__peerNetwork.processes(),
   }))));
-  writeFileSync(`../../.context/phase2-${game}-diagnostics.json`, JSON.stringify(state.map((entry) => entry.status === "fulfilled" ? entry.value : { error: String(entry.reason) }), null, 2));
+  writeFileSync(`../../.context/phase2-${label}-diagnostics.json`, JSON.stringify(state.map((entry) => entry.status === "fulfilled" ? entry.value : { error: String(entry.reason) }), null, 2));
 }
 
 test("two browsers exchange actual guest nc UDP datagrams through a named piplet", async ({ browser, baseURL, browserName }) => {
@@ -113,62 +87,6 @@ test("the forwarding host carries actual guest datagrams between two browser joi
     await host.screenshot({ path: "../../.context/phase2-guest-udp-star.png", fullPage: true });
   } finally { await thirdContext.close(); await close(); }
 });
-
-test("two browser guests play Doom through a separate forwarding host", async ({ browser, baseURL, browserName }) => {
-  test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
-  test.setTimeout(300_000);
-  const { host, joiner, router, close } = await forwardedGamePair(browser, baseURL!);
-  try {
-    await host.click("#doom-host");
-    await expect.poll(() => gameOutput(host), { timeout: 90_000 }).toContain("waiting for server");
-    await binding(joiner, 2342);
-    await joiner.click("#doom-join");
-    for (const page of [host, joiner]) {
-      await expect.poll(() => gameOutput(page), { timeout: 90_000 }).toContain("game starting");
-      await expect.poll(() => page.evaluate(() => (window as any).__peerNetwork.screen()), { timeout: 60_000 }).toBeGreaterThan(100_000);
-      expect(await page.evaluate(() => (window as any).__peerNetwork.processes()[(window as any).__peerNetwork.gamePid()].exit)).toBeNull();
-    }
-    await expect.poll(() => gameOutput(host)).toMatch(/player 1 of 2/i);
-    await expect.poll(() => gameOutput(joiner)).toMatch(/player 2 of 2/i);
-    await joiner.locator("#screen").click();
-    const before = await joiner.evaluate(() => (window as any).__peerNetwork.screen());
-    await joiner.keyboard.down("ArrowUp");
-    await expect.poll(() => joiner.evaluate(() => (window as any).__peerNetwork.screen()), { timeout: 15_000 }).not.toBe(before);
-    await joiner.keyboard.up("ArrowUp");
-    await host.screenshot({ path: "../../.context/phase2-doom-host.png", fullPage: true });
-    await joiner.screenshot({ path: "../../.context/phase2-doom-joiner.png", fullPage: true });
-    await joiner.locator("#screen").screenshot({ path: "../../.context/phase2-doom-game.png" });
-  } finally { try { await diagnostics([host, joiner, router], "doom"); } finally { await close(); } }
-});
-
-test("two browser guests play TyrQuake through a separate forwarding host", async ({ browser, baseURL, browserName }) => {
-  test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
-  test.setTimeout(360_000);
-  const { host, joiner, router, close } = await forwardedGamePair(browser, baseURL!);
-  try {
-    await host.click("#quake-host");
-    await expect.poll(() => host.evaluate(() => (window as any).__peerNetwork.gamePid()), { timeout: 120_000 }).toBeGreaterThan(0);
-    // UDP_Init binds before the map loads; wait for the actual server to run.
-    await expect.poll(() => gameOutput(host), { timeout: 120_000 }).toContain("CL_SignonReply: 4");
-    await binding(joiner, 26000);
-    await joiner.click("#quake-join");
-    await expect.poll(() => gameOutput(host), { timeout: 120_000 }).toMatch(/client 10\.89\.0\.3.*connected/i);
-    await expect.poll(() => gameOutput(joiner), { timeout: 90_000 }).toContain("CL_SignonReply: 4");
-    for (const page of [host, joiner]) {
-      await expect.poll(() => page.evaluate(() => (window as any).__peerNetwork.screen()), { timeout: 60_000 }).toBeGreaterThan(100_000);
-      expect(await page.evaluate(() => (window as any).__peerNetwork.processes()[(window as any).__peerNetwork.gamePid()].exit)).toBeNull();
-    }
-    await joiner.locator("#screen").click();
-    const before = await joiner.evaluate(() => (window as any).__peerNetwork.screen());
-    await joiner.keyboard.down("ArrowUp");
-    await expect.poll(() => joiner.evaluate(() => (window as any).__peerNetwork.screen()), { timeout: 15_000 }).not.toBe(before);
-    await joiner.keyboard.up("ArrowUp");
-    await host.screenshot({ path: "../../.context/phase2-quake-host.png", fullPage: true });
-    await joiner.screenshot({ path: "../../.context/phase2-quake-joiner.png", fullPage: true });
-    await joiner.locator("#screen").screenshot({ path: "../../.context/phase2-quake-game.png" });
-  } finally { try { await diagnostics([host, joiner, router], "quake"); } finally { await close(); } }
-});
-
 
 test("one browser guest serves HTTP and another fetches it with packaged curl", async ({browser,baseURL,browserName}) => {
   test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");

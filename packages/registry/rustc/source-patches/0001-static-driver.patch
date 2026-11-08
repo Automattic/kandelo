@@ -1,0 +1,13 @@
+# WebAssembly supports C side modules, but Rust dylib linkage is not part
+# of Kandelo's Rust target. Link the upstream driver into the compiler.
+--- a/compiler/rustc_driver/Cargo.toml
++++ b/compiler/rustc_driver/Cargo.toml
+@@ -4,7 +4,7 @@
+ edition = "2024"
+ 
+ [lib]
+-crate-type = ["dylib"]
++crate-type = ["rlib"]
+ 
+ [dependencies]
+ # tidy-alphabetical-start

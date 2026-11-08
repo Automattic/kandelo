@@ -10,6 +10,7 @@ import { retryKernelEntryResult } from "./kernel-entry-retry";
 const EAGAIN = 11;
 const EFBIG = 27;
 const EIO = 5;
+const ENOENT = 2;
 const ENOEXEC = 8;
 const ENOMEM = 12;
 const EOVERFLOW = 75;
@@ -26,8 +27,10 @@ const ETIMEDOUT = 110;
 // timer period to every first exec of a lazy file. Only an EAGAIN with no
 // fetch in flight falls back to this plain delay between retries.
 const EXEC_TARGET_EAGAIN_RETRY_DELAY_MS = 10;
-// Backstop only: a fetch normally settles long before this. It exists so a
-// stuck fetch fails exec with a truthful timeout instead of hanging it.
+// Budget for EAGAIN while no deferred fetch is in flight. A fetch in flight is
+// bounded by the transport's own deadlines (`withLazyResponse` in
+// `vfs/lazy-fetch-bytes.ts`), so a clock here could only misjudge a slow but
+// healthy fetch, such as one still preparing, as stuck.
 const EXEC_TARGET_EAGAIN_MAX_WAIT_MS = 30_000;
 
 /** What the kernel decides a retained target is (`kernel_exec_target_admit`). */
@@ -62,6 +65,18 @@ export class PreparedExecTargetError extends Error {
     this.errno = errno;
     this.targetCancelled = targetCancelled;
   }
+}
+
+/**
+ * The message a failed spawn reports. A missing program keeps the
+ * `ENOENT: <path>` form that callers map to "file not found".
+ */
+export function spawnFailureMessage(error: unknown, programPath?: string): string {
+  if (!(error instanceof PreparedExecTargetError)) return String(error);
+  if (error.errno === ENOENT && programPath !== undefined) {
+    return `ENOENT: ${programPath} (errno ${ENOENT})`;
+  }
+  return `${error.name}: ${error.message} (errno ${error.errno})`;
 }
 
 function targetError(cause: unknown, fallback: string): PreparedExecTargetError {
@@ -139,7 +154,7 @@ export async function readPreparedExecTarget(
     }
 
     let offset = 0n;
-    let eagainSince: number | undefined;
+    let idleEagainMs = 0;
     while (offset < size) {
       const start = Number(offset);
       const capacity = Math.min(
@@ -160,9 +175,12 @@ export async function readPreparedExecTarget(
       if (read === -EAGAIN) {
         // The deferred bytes are still being fetched: retry the same offset
         // once the fetch has settled.
-        eagainSince ??= Date.now();
-        const eagainWaitedMs = Date.now() - eagainSince;
-        if (eagainWaitedMs >= EXEC_TARGET_EAGAIN_MAX_WAIT_MS) {
+        const inFlight = kernel.deferredFetchSettled?.() ?? null;
+        if (inFlight !== null) {
+          await inFlight;
+          continue;
+        }
+        if (idleEagainMs >= EXEC_TARGET_EAGAIN_MAX_WAIT_MS) {
           throw new PreparedExecTargetError(
             "prepared exec target read did not become available after "
               + `${EXEC_TARGET_EAGAIN_MAX_WAIT_MS}ms of retrying a transient `
@@ -170,13 +188,9 @@ export async function readPreparedExecTarget(
             ETIMEDOUT,
           );
         }
-        const inFlight = kernel.deferredFetchSettled?.() ?? null;
-        await waitForDeferredFetch(
-          inFlight,
-          inFlight === null
-            ? EXEC_TARGET_EAGAIN_RETRY_DELAY_MS
-            : EXEC_TARGET_EAGAIN_MAX_WAIT_MS - eagainWaitedMs,
-        );
+        const started = performance.now();
+        await waitForDeferredFetch(null, EXEC_TARGET_EAGAIN_RETRY_DELAY_MS);
+        idleEagainMs += performance.now() - started;
         continue;
       }
       if (read < 0) {

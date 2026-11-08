@@ -47,10 +47,10 @@ grep -F '"$FORK_SIDE_MODULE_ABI_OBJECT"' "$php" >/dev/null ||
 spidermonkey="$REPO_ROOT/packages/registry/spidermonkey/build-spidermonkey.sh"
 grep -F 'if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then' \
     "$spidermonkey" >/dev/null ||
-    fail "SpiderMonkey does not publish its Node runtime to resolver output"
-grep -F 'install_local_binary spidermonkey-node "$BIN_DIR/node.wasm" node.wasm' \
+    fail "SpiderMonkey does not publish to resolver output"
+grep -F 'install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm' \
     "$spidermonkey" >/dev/null ||
-    fail "SpiderMonkey resolver output omits node.wasm"
+    fail "SpiderMonkey resolver output omits its declared js.wasm"
 grep -F 'WASM_POSIX_DEP_WORK_DIR' "$spidermonkey" >/dev/null ||
     fail "SpiderMonkey sealed builds do not use the resolver work root"
 grep -F 'WASM_POSIX_DEP_SOURCE_DIR' "$spidermonkey" >/dev/null ||
@@ -222,9 +222,10 @@ env \
     fail "SpiderMonkey valid path mutated the resolver-owned source"
 [ "$(cat "$spidermonkey_valid_work/spidermonkey-source/source-marker")" = staged-copy ] ||
     fail "SpiderMonkey valid path did not mutate its caller-owned source copy"
-[ -f "$spidermonkey_valid_out/js.wasm" ] &&
-    [ -f "$spidermonkey_valid_out/node.wasm" ] ||
-    fail "SpiderMonkey valid SourceOnly path did not publish both declared outputs"
+[ -f "$spidermonkey_valid_out/js.wasm" ] ||
+    fail "SpiderMonkey valid SourceOnly path did not publish its declared output"
+[ ! -e "$spidermonkey_valid_out/node.wasm" ] ||
+    fail "SpiderMonkey valid SourceOnly path published another package's output"
 spidermonkey_valid_sysroot_after="$(tree_digest "$spidermonkey_valid_sysroot")"
 [ "$spidermonkey_valid_sysroot_after" = "$spidermonkey_valid_sysroot_before" ] ||
     fail "SpiderMonkey SourceOnly build mutated its shared SDK sysroot"

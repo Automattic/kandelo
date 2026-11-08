@@ -11,22 +11,20 @@ import {
 import { posix as guestPath } from "node:path";
 
 import type { NodeSessionSeedTree } from "../host/src/vfs/default-mounts-node";
+import type { PersistentImageIntegrityPolicy } from "../images/vfs/lib/kandelo-image-fs";
 import {
   DEFAULT_MOUNT_SPEC,
   type MountSpec,
 } from "../host/src/vfs/default-mounts";
 
-// The isolated conformance fixture is seeded under `/run`, which the in-kernel
-// tmpfs deliberately does NOT claim, unlike `/tmp` and the other scratch
-// prefixes it owns (KERNEL_TMPFS_OWNED_PREFIXES). A host-seeded tree under an
-// owned prefix is invisible to the guest: the kernel serves that prefix from
-// its own tmpfs, so a spawned child's `chdir` into the fixture would ENOENT.
-// `/run` stays a host-backed scratch mount, so the fixture is visible.
-const ISOLATED_FIXTURE_DESTINATION = "/run/kandelo-run";
+// Writable conformance fixtures live below /var/lib/kandelo-tests. The
+// isolated mode mounts its private host scratch tree here; persistent mode
+// stores the same work tree in the root image. /run is kernel-owned tmpfs.
+const ISOLATED_FIXTURE_DESTINATION = "/var/lib/kandelo-tests/runner";
 
 /** Host-backed mount that carries the isolated fixture, outside tmpfs's reach. */
 const ISOLATED_FIXTURE_MOUNT: MountSpec = {
-  path: "/run",
+  path: "/var/lib/kandelo-tests",
   source: "scratch",
   mode: 0o755,
   nosuid: true,
@@ -52,6 +50,10 @@ export interface RunExampleFilesystem {
   guestCwd: string;
   guestProgram?: string;
   rootfsImage?: "default";
+  persistentFixtureRoot?: string;
+  persistentImageIntegrityPolicy?: PersistentImageIntegrityPolicy;
+  experimentalResizablePersistencePath?: string;
+  verifyPersistenceReopen?: true;
   /** Overrides `DEFAULT_MOUNT_SPEC` when the boot needs an extra fixture mount. */
   rootfsMountSpec?: readonly MountSpec[];
   sessionSeedTrees?: readonly NodeSessionSeedTree[];
@@ -132,11 +134,24 @@ export function resolveRunExampleFilesystem(
   hostCwd: string,
 ): RunExampleFilesystem {
   const requestedMode = nonEmptyControl(env, "KANDELO_RUNNER_VFS");
-  if (requestedMode !== undefined && requestedMode !== "raw" && requestedMode !== "isolated") {
-    throw new Error('KANDELO_RUNNER_VFS must be "raw" or "isolated"');
+  if (requestedMode !== undefined && requestedMode !== "raw" && requestedMode !== "isolated" && requestedMode !== "persistent") {
+    throw new Error('KANDELO_RUNNER_VFS must be "raw", "isolated", or "persistent"');
   }
 
-  const isolated = requestedMode === "isolated";
+  const isolated = requestedMode === "isolated" || requestedMode === "persistent";
+  const persistent = requestedMode === "persistent";
+  const checking = nonEmptyControl(env, "KANDELO_RUNNER_PERSISTENCE_CHECKING");
+  if (checking !== undefined && (!persistent || (checking !== "crc32c" && checking !== "sha256"))) {
+    throw new Error("KANDELO_RUNNER_PERSISTENCE_CHECKING requires persistent mode and crc32c or sha256");
+  }
+  const persistencePath = nonEmptyControl(env, "KANDELO_RUNNER_PERSISTENCE_PATH");
+  if (persistent ? persistencePath === undefined || !isAbsolute(persistencePath) : persistencePath !== undefined) {
+    throw new Error("KANDELO_RUNNER_PERSISTENCE_PATH requires persistent mode and an absolute path");
+  }
+  const reopenControl = nonEmptyControl(env, "KANDELO_RUNNER_VERIFY_REOPEN");
+  if (reopenControl !== undefined && (reopenControl !== "1" || !persistent)) {
+    throw new Error("KANDELO_RUNNER_VERIFY_REOPEN=1 requires persistent mode");
+  }
   const fixtureRootInput = nonEmptyControl(
     env,
     "KANDELO_RUNNER_FIXTURE_ROOT",
@@ -170,6 +185,9 @@ export function resolveRunExampleFilesystem(
     );
   }
   if (fixtureRootInput === undefined) {
+    if (persistent) {
+      throw new Error("persistent runner mode requires KANDELO_RUNNER_FIXTURE_ROOT");
+    }
     if (fixtureCwdInput !== undefined) {
       throw new Error(
         "KANDELO_RUNNER_FIXTURE_CWD requires KANDELO_RUNNER_FIXTURE_ROOT",
@@ -217,11 +235,20 @@ export function resolveRunExampleFilesystem(
     ...(guestProgram === undefined ? {} : { guestProgram }),
     isolated: true,
     rootfsImage: "default",
-    rootfsMountSpec: [...DEFAULT_MOUNT_SPEC, ISOLATED_FIXTURE_MOUNT],
-    sessionSeedTrees: [{
-      destinationPath: ISOLATED_FIXTURE_DESTINATION,
-      sourcePath: sourceRoot,
-    }],
+    ...(persistent
+      ? {
+        persistentFixtureRoot: sourceRoot,
+        persistentImageIntegrityPolicy: checking ?? "crc32c",
+        experimentalResizablePersistencePath: persistencePath,
+        ...(reopenControl === undefined ? {} : { verifyPersistenceReopen: true as const }),
+      }
+      : {
+        rootfsMountSpec: [...DEFAULT_MOUNT_SPEC, ISOLATED_FIXTURE_MOUNT],
+        sessionSeedTrees: [{
+          destinationPath: ISOLATED_FIXTURE_DESTINATION,
+          sourcePath: sourceRoot,
+        }],
+      }),
   };
 }
 
@@ -236,6 +263,7 @@ export function buildRunExampleGuestEnvironment(
   isolated: boolean,
   kernelPath: string,
   guestHome = "/root",
+  guestTmpdir = "/tmp",
 ): string[] {
   const inherited = Object.entries(env)
     .filter(([name, value]) =>
@@ -254,7 +282,7 @@ export function buildRunExampleGuestEnvironment(
     ...(isolated
       ? [
         `PWD=${guestCwd}`,
-        "TMPDIR=/tmp",
+        `TMPDIR=${guestTmpdir}`,
         `HOME=${guestHome}`,
       ]
       : []),

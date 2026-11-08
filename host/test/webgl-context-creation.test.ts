@@ -186,17 +186,26 @@ describe("context creation acknowledgement", () => {
     }, {get: (object,key) => Reflect.get(object,key) ?? (() => null)}) as unknown as WebGL2RenderingContext;
     const original = renderer(); let selected = original;
     kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
-    kernel.gl.attachCanvas(7,{width:4,height:3,getContext:() => selected} as unknown as OffscreenCanvas);
+    const originalCanvas = {width:4,height:3,getContext:() => selected} as unknown as OffscreenCanvas;
+    kernel.gl.attachCanvas(7,originalCanvas);
     expect(create(7,21,11)).toBe(0);
     const b = kernel.gl.get(7,11)!; b.surfaceId = 71;
     expect(ensurePresentTarget(b)).toBe(true); const target = b.presentTarget;
     imports.host_gl_destroy_context(7,21);
     selected = renderer();
-    expect(create(7,22,11)).toBe(-19);
+    // A canvas retains its native renderer across consumers. Mutating the
+    // fake callback alone must not counterfeit a different renderer.
+    expect(create(7,22,11)).toBe(0); expect(b.gl).toBe(original);
+    expect(b.presentTarget).toBe(target); expect(deleted).toEqual([]);
+    imports.host_gl_destroy_context(7,22);
+    // Only a distinct canvas selects a replacement renderer. Its context
+    // cannot consume the retained surface objects owned by the original.
+    kernel.gl.attachCanvas(7,{width:4,height:3,getContext:() => selected} as unknown as OffscreenCanvas);
+    expect(create(7,23,11)).toBe(-19);
     expect(b.contextId).toBeNull(); expect(b.gl).toBeNull();
     expect(b.presentTarget).toBe(target); expect(deleted).toEqual([]);
-    selected = original;
-    expect(create(7,23,11)).toBe(0); expect(b.gl).toBe(original);
+    selected = original; kernel.gl.attachCanvas(7,originalCanvas);
+    expect(create(7,24,11)).toBe(0); expect(b.gl).toBe(original);
     expect(ensurePresentTarget(b)).toBe(true); expect(b.presentTarget).toBe(target);
     imports.host_gl_unbind(7,11);
     expect(deleted).toEqual([target!.fbo]);

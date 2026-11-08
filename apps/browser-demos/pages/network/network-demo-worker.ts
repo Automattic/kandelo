@@ -246,7 +246,7 @@ async function runProgram(
   const rootfsImage = maybeDecompressImage(artifacts.rootfs);
   configureRootfsOverlayFromImage(kernelWorker, {
     imageRead: imageReadFromContainer(rootfsImage),
-    imageBytes: rootfsImage,
+    imageLength: rootfsImage.byteLength,
     foreignPrefixes: [],
     nosuid: false,
     lazyFetcher: (url) => fetch(url),

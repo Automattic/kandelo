@@ -43,7 +43,7 @@ describe.skipIf(!dash || !coreutils || !grep)("shell pipelines into head", () =>
       execPrograms.set(`/usr/bin/${name}`, coreutils!);
     }
     execPrograms.set("/bin/grep", grep!);
-    execPrograms.set("/usr/bin/grep", grep!);
+    execPrograms.set("/bin/grep", grep!);
     return runCentralizedProgram({
       programPath: dash!,
       argv: ["dash", "-c", script],

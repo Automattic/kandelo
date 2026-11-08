@@ -1,0 +1,66 @@
+# Unix Wasm supports threads and blocking futures through std. Select the
+# native executor and reader instead of browser-only wasm-bindgen scheduling.
+# This also avoids JS binding metadata in a standalone Unix executable.
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -208,7 +208,7 @@
+ [target.'cfg(not(target_os = "none"))'.dependencies.web-time]
+ version = "1.1.0"
+ 
+-[target.'cfg(target_family = "wasm")'.dependencies.wasm-bindgen-futures]
++[target.'cfg(all(target_family = "wasm", not(unix)))'.dependencies.wasm-bindgen-futures]
+ version = "0.4.45"
+ 
+ [target.'cfg(target_has_atomic = "ptr")'.dependencies.spin]
+--- a/src/future.rs
++++ b/src/future.rs
+@@ -9,7 +9,7 @@
+ /// on WASM. The returned JoinOnDrop will join the thread when it is dropped.
+ pub fn spawn_detached_fut(fut: impl Future<Output = ()> + Send + 'static) {
+     cfg_if::cfg_if! {
+-        if #[cfg(target_family = "wasm")] {
++        if #[cfg(all(target_family = "wasm", not(unix)))] {
+             wasm_bindgen_futures::spawn_local(fut);
+         } else if #[cfg(feature = "std")] {
+             std::thread::spawn(|| block_on(fut));
+@@ -22,17 +22,17 @@
+ 
+ /// Block until the [future](Future) is completed and returns the result.
+ pub fn block_on<O>(fut: impl Future<Output = O>) -> O {
+-    #[cfg(target_family = "wasm")]
++    #[cfg(all(target_family = "wasm", not(unix)))]
+     {
+         super::reader::read_sync(fut)
+     }
+ 
+-    #[cfg(all(not(target_family = "wasm"), not(feature = "std")))]
++    #[cfg(all(not(all(target_family = "wasm", not(unix))), not(feature = "std")))]
+     {
+         embassy_futures::block_on(fut)
+     }
+ 
+-    #[cfg(all(not(target_family = "wasm"), feature = "std"))]
++    #[cfg(all(not(all(target_family = "wasm", not(unix))), feature = "std"))]
+     {
+         futures_lite::future::block_on(fut)
+     }
+--- a/src/reader.rs
++++ b/src/reader.rs
+@@ -14,7 +14,7 @@
+ /// On WASM futures cannot block, so this only succeeds if the future returns immediately.
+ /// otherwise this returns None.
+ pub fn try_read_sync<F: Future<Output = T>, T>(f: F) -> Option<T> {
+-    #[cfg(target_family = "wasm")]
++    #[cfg(all(target_family = "wasm", not(unix)))]
+     {
+         use core::task::Poll;
+ 
+@@ -23,7 +23,7 @@
+             _ => None,
+         }
+     }
+-    #[cfg(not(target_family = "wasm"))]
++    #[cfg(not(all(target_family = "wasm", not(unix))))]
+     {
+         Some(super::future::block_on(f))
+     }

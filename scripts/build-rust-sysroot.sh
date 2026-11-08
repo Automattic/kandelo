@@ -37,6 +37,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIBC_UPSTREAM="$REPO_ROOT/sdk/rust/libc-upstream"      # rust-lang/libc, pinned to the version std uses
 LIBC_PATCH="$REPO_ROOT/sdk/rust/libc-kandelo.patch"    # kandelo delta only
 STD_OVERLAY="$REPO_ROOT/sdk/rust/std-overlay"
+STD_PATCH="$REPO_ROOT/sdk/rust/std-kandelo.patch"
 
 OUT_DIR="${KANDELO_RUST_DIR:-$HOME/.kandelo/rust}"
 MYSYS="$OUT_DIR/sysroot"
@@ -76,7 +77,7 @@ REAL_RUSTC="$REALSYS/bin/rustc"
 STAMP="$OUT_DIR/.inputs-sha256"
 input_digest() {
   {
-    cat "$0" "$LIBC_PATCH" "$REPO_ROOT/sdk/rust/wasm32-unknown-kandelo-std.json"
+    cat "$0" "$LIBC_PATCH" "$STD_PATCH" "$REPO_ROOT/sdk/rust/wasm32-unknown-kandelo-std.json"
     git -C "$LIBC_UPSTREAM" rev-parse HEAD
     git -C "$LIBC_UPSTREAM" diff HEAD
     if [ -d "$STD_OVERLAY" ]; then
@@ -90,6 +91,7 @@ input_digest() {
 }
 DIGEST="$(input_digest)"
 if [ -x "$WRAP" ] && [ -d "$MYSYS/lib/rustlib/wasm32-unknown-kandelo-std/lib" ] \
+    && compgen -G "$MYSYS/lib/rustlib/wasm32-unknown-kandelo-std/lib/libtest-*.rlib" >/dev/null \
     && [ "$(cat "$STAMP" 2>/dev/null)" = "$DIGEST" ]; then
   echo "==> Rust sysroot at $OUT_DIR is up to date"
   exit 0
@@ -158,6 +160,8 @@ else
   echo "==> No std overlay yet ($STD_OVERLAY absent) — skipping"
 fi
 
+patch --fuzz=0 -d "$MYSYS/lib/rustlib/src/rust/library" -p1 < "$STD_PATCH"
+
 echo "==> Writing rustc wrapper $WRAP"
 mkdir -p "$OUT_DIR"
 cat > "$WRAP" <<EOF
@@ -166,7 +170,15 @@ cat > "$WRAP" <<EOF
 # private sysroot (forked libc/std, prebuilt std for the Kandelo target).
 # -Zunstable-options: rustc only resolves a custom target by name from
 # <sysroot>/lib/rustlib/<target>/target.json with it.
-exec "$REAL_RUSTC" --sysroot "$MYSYS" -Zunstable-options "\$@"
+test_flags=()
+for arg in "\$@"; do
+  if [ "\$arg" = --test ]; then
+    # The abort-only target uses libtest's subprocess isolation.
+    test_flags=(-Zpanic-abort-tests)
+    break
+  fi
+done
+exec "$REAL_RUSTC" --sysroot "$MYSYS" -Zunstable-options "\${test_flags[@]}" "\$@"
 EOF
 chmod +x "$WRAP"
 
@@ -179,7 +191,7 @@ TARGET_DIR="$MYSYS/lib/rustlib/$TARGET"
 mkdir -p "$TARGET_DIR/lib"
 cp "$REPO_ROOT/sdk/rust/$TARGET.json" "$TARGET_DIR/target.json"
 
-echo "==> Building std for $TARGET into the sysroot"
+echo "==> Building std and libtest for $TARGET into the sysroot"
 STD_BUILD="$OUT_DIR/std-build"
 rm -rf "$STD_BUILD"
 mkdir -p "$STD_BUILD/src"
@@ -201,14 +213,26 @@ TOML
 # from STD_BUILD.
 (
   cd "$STD_BUILD"
+  # Installed std rlibs must work with consumer profiles that enable LTO,
+  # like upstream Rust targets. Cargo otherwise omits their LLVM bitcode
+  # when this bootstrap crate itself builds without LTO.
+  if [ -n "${CARGO_ENCODED_RUSTFLAGS:-}" ]; then
+    export CARGO_ENCODED_RUSTFLAGS="${CARGO_ENCODED_RUSTFLAGS}"$'\037''-Cembed-bitcode=yes'
+  else
+    export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Cembed-bitcode=yes"
+  fi
   RUSTC="$WRAP" RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 \
     cargo build --release --quiet \
-      -Z build-std=std,panic_abort \
+      -Z build-std=std,test,panic_abort \
       --target "$TARGET" \
       --target-dir "$STD_BUILD/target"
 )
 cp "$STD_BUILD/target/$TARGET/release/deps/"*.rlib "$TARGET_DIR/lib/"
 rm -f "$TARGET_DIR/lib/"libkandelo_std_build-*.rlib
+# Do not publish a fresh sysroot stamp if the test harness was omitted.
+compgen -G "$TARGET_DIR/lib/libtest-*.rlib" >/dev/null || {
+  echo "libtest is missing from the built Rust sysroot" >&2; exit 1
+}
 rm -rf "$STD_BUILD"
 
 echo "$DIGEST" > "$STAMP"

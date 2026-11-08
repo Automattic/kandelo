@@ -18,12 +18,13 @@ import { resolve, dirname, isAbsolute } from "path";
 import { NodeKernelHost, resolveRootfsArtifact } from "../host/src/node-kernel-host";
 import { tryResolveBinaries } from "../host/src/binary-resolver";
 import { writeAllSync } from "./run-example-output";
+import { assertPersistentFixtureUnchanged, inspectPersistentFixture } from "./run-example-persistence-verification";
 import {
     resolveRunExampleBuiltinPrograms,
     type ResolvedBuiltinPrograms,
 } from "./run-example-builtins";
 import { isWithinRealDirectory } from "./run-example-paths";
-import { prepareRunExampleRootfs } from "./run-example-rootfs";
+import { prepareCheckedPersistentRunExampleRootfs, prepareRunExampleRootfs } from "./run-example-rootfs";
 import {
     buildRunExampleGuestEnvironment,
     resolveRunExampleFilesystem,
@@ -444,16 +445,30 @@ async function main() {
             ? prepareRunExampleRootfs(new Uint8Array(
                 readFileSync(resolveRootfsArtifact().selectedPath),
             ))
-            : {};
+            : undefined;
+        const persistentImage = runnerFilesystem.persistentFixtureRoot === undefined
+            ? undefined
+            : await prepareCheckedPersistentRunExampleRootfs(
+                rootfs!.rootfsImage,
+                runnerFilesystem.persistentFixtureRoot,
+                runnerFilesystem.experimentalResizablePersistencePath! + ".base",
+                runnerFilesystem.persistentImageIntegrityPolicy!,
+            );
         host = new NodeKernelHost({
             maxWorkers: 4,
             // Exec authority stays in the image; local bytes only supply
             // its declared lazy transport.
-            rootfsImage: runnerFilesystem.rootfsImage,
+            ...(persistentImage ?? { rootfsImage: runnerFilesystem.rootfsImage }),
+            experimentalResizablePersistencePath: runnerFilesystem.experimentalResizablePersistencePath,
+            rootfsLazyUrlBase: persistentImage === undefined ? undefined : rootfs?.rootfsLazyUrlBase,
+            rootfsLazyAssets: persistentImage === undefined ? undefined : rootfs?.rootfsLazyAssets,
             ...(runnerFilesystem.rootfsMountSpec === undefined
                 ? {}
                 : { rootfsMountSpec: runnerFilesystem.rootfsMountSpec }),
             sessionSeedTrees: runnerFilesystem.sessionSeedTrees,
+            ...(runnerNetwork() === "offline-egress"
+                ? { offlineEgressLink: true }
+                : {}),
             onStdout: (_pid, data) => writeGuestOutput(process.stdout, data),
             onStderr: (_pid, data) => writeGuestOutput(process.stderr, data),
         });
@@ -473,6 +488,9 @@ async function main() {
                     runnerFilesystem.isolated,
                     process.env.KERNEL_PATH ?? "/usr/local/bin:/usr/bin:/bin",
                     uid !== undefined && uid !== 0 ? "/home/maker" : "/root",
+                    runnerFilesystem.persistentFixtureRoot === undefined
+                        ? "/tmp"
+                        : runnerFilesystem.guestCwd,
                 ),
                 ...gitEnv,
             ],
@@ -504,6 +522,37 @@ async function main() {
         } else {
             status = outcome;
         }
+        if (runnerFilesystem.verifyPersistenceReopen && outcome !== timedOut) {
+            try {
+                if (persistentImage === undefined || runnerFilesystem.experimentalResizablePersistencePath === undefined) {
+                    throw new Error("persistent runner reboot requires a composed image and journal");
+                }
+                const fixtureBeforeReboot = await inspectPersistentFixture(host);
+                await host.destroy();
+                const shutdownFailure = host.getPersistenceShutdownFailure();
+                host = undefined;
+                if (shutdownFailure !== null) {
+                    throw new Error(`persistent runner shutdown sync failed: ${shutdownFailure}`);
+                }
+                const reopened = new NodeKernelHost({
+                    maxWorkers: 4,
+                    ...persistentImage,
+                    rootfsLazyUrlBase: rootfs?.rootfsLazyUrlBase,
+                    rootfsLazyAssets: rootfs?.rootfsLazyAssets,
+                    experimentalResizablePersistencePath: runnerFilesystem.experimentalResizablePersistencePath,
+                    requireExistingRootfsPersistence: true,
+                });
+                try {
+                    await reopened.init();
+                    assertPersistentFixtureUnchanged(fixtureBeforeReboot, await inspectPersistentFixture(reopened));
+                } finally {
+                    await reopened.destroy();
+                }
+            } catch (error) {
+                console.error("persistent runner verification failed:", error);
+                status = 125;
+            }
+        }
     } finally {
         await host?.destroy().catch(() => {});
         if (guestOutputFd !== null) closeSync(guestOutputFd);
@@ -516,3 +565,17 @@ main().catch((e) => {
     console.error(e);
     process.exit(1);
 });
+
+/**
+ * The machine's network, from `KANDELO_RUNNER_NETWORK`. Unset is a
+ * loopback-only machine. `offline-egress` is the machine the browser host
+ * boots (eth0 behind the internet egress gateway) with nothing behind the
+ * gateway, so the conformance runners observe the browser's machine without
+ * ever reaching the host's network.
+ */
+function runnerNetwork(): "loopback" | "offline-egress" {
+    const value = process.env.KANDELO_RUNNER_NETWORK;
+    if (value === undefined || value === "") return "loopback";
+    if (value === "offline-egress") return value;
+    throw new Error('KANDELO_RUNNER_NETWORK must be unset or "offline-egress"');
+}
